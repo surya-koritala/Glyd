@@ -1,0 +1,3 @@
+ok   installed: glyd 0.29.1 | glyd-gpu 0.29.1 | vllm 0.30.0 | torch 2.13.0 | transformers 5.18.0
+ok   glyd run google/gemma-4-12B-it --prompt: exit 0, Paris, no traceback; Settings: 124,928-token context (the most that fits), compiled mode (CUDA graphs), 92% of GPU memory (23.2 GB), tool calls (gemma4), thinking shown apart (gemma4); PyTorch sampler (no CUDA toolkit); z
+ok   glyd run google/gemma-4-12B-it: one start

@@ -1,0 +1,31 @@
+Tue Oct  6 04:24:22 UTC 2026
+NVIDIA L40S, 46068 MiB, 580.159.03, 2520 MHz, 350.00 W
+x86_64
+128
+               total        used        free      shared  buff/cache   available
+Mem:            1007          70         219           0         725         937
+overlay         200G   88M  200G   1% /
+glyd 0.29.0 | glyd-gpu 0.29.0 | vllm 0.30.0 | torch 2.13.0 | transformers 5.18.0 
+
+## Qwen3.8-27B
+
+- vLLM bf16: started did not start; ; nvidia-smi: 
+- Glyd: started try 3:  --max-num-seqs 48; Model loading took 35.6 GiB; GPU KV cache size: 34,588 tokens; Maximum concurrency for 16,384 tokens per request: 2.11x; log's highest prefix cache hit rate 0.0%; nvidia-smi: after start: 40399 MiB / idle after warm-up: 41139 MiB
+
+| Users | Server | req/s | out tok/s | TTFT p50 ms | TTFT p99 ms | TPOT p50 ms | TPOT p99 ms | Prefix hit % | Peak MiB | SM MHz | Glyd against bf16 |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| 1 | bf16 | - | - | - | - | - | - | - | - | - | |
+| 1 | Glyd | 0.06 | 14.3 | 1,091.2 | 1,793.1 | 63.9 | 88.4 | 0.0 | 41,139 | 1,125 |  |
+| 2 | bf16 | - | - | - | - | - | - | - | - | - | |
+| 2 | Glyd | 0.12 | 30.2 | 1,872.3 | 2,294.4 | 58.9 | 65.3 | 0.0 | 41,139 | 1,455 |  |
+| 4 | bf16 | - | - | - | - | - | - | - | - | - | |
+| 4 | Glyd | 0.22 | 56.8 | 2,181.7 | 3,057.7 | 58.1 | 69.7 | 0.0 | 41,139 | 1,740 |  |
+| 8 | bf16 | - | - | - | - | - | - | - | - | - | |
+| 8 | Glyd | 0.36 | 92.5 | 3,957.0 | 5,027.5 | 65.0 | 93.2 | 0.0 | 41,139 | 1,725 |  |
+| 16 | bf16 | - | - | - | - | - | - | - | - | - | |
+| 16 | Glyd | 0.37 | 94.0 | 13,904.5 | 35,952.9 | 85.9 | 131.9 | 0.0 | 41,139 | 1,095 |  |
+| 32 | bf16 | - | - | - | - | - | - | - | - | - | |
+| 32 | Glyd | 0.35 | 89.3 | 60,210.2 | 89,162.4 | 99.2 | 138.8 | 0.0 | 41,139 | 952 |  |
+| 64 | bf16 | - | - | - | - | - | - | - | - | - | |
+| 64 | Glyd | 0.34 | 88.3 | 146,954.8 | 173,988.2 | 104.2 | 143.0 | 0.0 | 41,570 | 750 |  |
+

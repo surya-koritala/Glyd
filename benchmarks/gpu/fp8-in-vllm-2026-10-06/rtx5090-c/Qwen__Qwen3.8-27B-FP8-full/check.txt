@@ -1,0 +1,10 @@
+  stock-graphq: ERROR exit 1 in 64 s
+INFO: stock-graphq did not start: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 288.00 MiB. GPU 0 has a total capacity of 31.40 GiB of which 250.56 MiB is free. Including non-PyTorch memory, this process has 31.14 GiB memory in use. Of the allocated memory 29.97 GiB is allocated by PyTorch, and 509.69 MiB is reserved
+  glyd-graphq: ok in 438 s; weights 25.15 GiB, KV 24576 tokens, concurrency (8192, 3.0)
+  glyd-graphq-poison: ok in 95 s; weights 25.15 GiB, KV 24576 tokens, concurrency (8192, 3.0)
+GPU NVIDIA GeForce RTX 5090
+PASS: packed[graphq]: 256 layers packed (0 of them experts' layers): 19.01 GiB held for 22.66 GiB of weights as vLLM's kernels are fed them (16.1% less, 6.713 bits a value), scratches 0.17 GiB; methods {'UnquantizedLinearMethod': 206, 'UnquantizedEmbeddingMethod': 2, 'Fp8LinearMethod': 256, 'Fp8KVCacheMethod': 16}; f8_linear for few tokens: 0 Linears
+INFO: glyd[graphq]: weights 25.15 GiB, KV cache 24576 tokens (2.05 GiB), concurrency (8192, 3.0)
+INFO: stock[graphq] did not start: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 288.00 MiB. GPU 0 has a total capacity of 31.40 GiB of which 250.56 MiB is free. Including non-PyTorch memory, this process has 31.14 GiB memory in use. Of the allocated memory 29.97 GiB is allocated by PyTorch, and 509.69 MiB is reserved: no comparison; Glyd started, so this checkpoint fits here only packed
+PASS: verify[graphq]: 256 packs decoded back at load bit for bit the bytes they were made from (22.66 GiB; every Linear and every expert packed)
+PASS: 0 failed; /root/results/Qwen__Qwen3.8-27B-FP8-full/check_fp8_vllm.json

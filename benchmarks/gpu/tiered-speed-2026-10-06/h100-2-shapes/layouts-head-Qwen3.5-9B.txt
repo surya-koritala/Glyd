@@ -1,0 +1,12 @@
+NVIDIA H100 80GB HBM3 (compute 9.0, 132 SMs, L2 50 MiB, route code 7090, clk a step at 1980 MHz); /root/tsw/m/head-Qwen3.5-9B.safetensors
+lm_head 248320x4096: 2 copies; bf16 1:722.0 8:724.4 16:730.1 32:731.1 64:738.8 us
+lm_head 248320x4096 M=    1    mma   base  default (way 1):    932.3 us =  1.29x bf16,    245 clk/step
+lm_head 248320x4096 M=    8    mma   base  default (way 1):    955.0 us =  1.32x bf16,    251 clk/step
+lm_head 248320x4096 M=   16    mma   base  default (way 1):   1028.9 us =  1.41x bf16,    271 clk/step
+lm_head 248320x4096 M=   32    mma   base  default (way 1):   1312.4 us =  1.80x bf16,    345 clk/step
+lm_head 248320x4096 M=   64    mma   base  default (way 1):   1629.6 us =  2.21x bf16,    429 clk/step
+lm_head 248320x4096 M=    1  mma12   base  default (way 1):    637.6 us =  0.88x bf16,    168 clk/step
+lm_head 248320x4096 M=    8  mma12   base  default (way 1):    642.1 us =  0.89x bf16,    169 clk/step
+lm_head 248320x4096 M=   16  mma12   base  default (way 1):    647.6 us =  0.89x bf16,    170 clk/step
+lm_head 248320x4096 M=   32  mma12   base  default (way 3):    660.4 us =  0.90x bf16,    174 clk/step
+lm_head 248320x4096 M=   64  mma12   base  default (way 3):    679.0 us =  0.92x bf16,    179 clk/step

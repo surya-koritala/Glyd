@@ -1,0 +1,2 @@
+/home/ubuntu/w/out/lt-old.json /home/ubuntu/w/out/lt-new.json differ: char 2992, line 1
+cmp exit 1

@@ -1,0 +1,12 @@
+04:53 created n3tu6ran29kw9w (NVIDIA H100 80GB HBM3)
+ssh on pod n3tu6ran29kw9w ready after 53s: ssh reachable at 103.207.149.126:14276
+04:53 ssh ready at 103.207.149.126:14276 after 62 s
+NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
+NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
+NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
+NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
+04:54 job started
+04:55 job done
+terminating n3tu6ran29kw9w
+pods left: [('4dv8jvayjz9lgz', 'glyd-bench-ts5090f', 'RUNNING'), ('b4v3cadft70h3t', 'glyd-bench-fp8s-a2', 'RUNNING'), ('mbqxctrawzoxns', 'glyd-bench-hfpp5', 'RUNNING'), ('63n0j56i6tbdwa', 'glyd-bench-kv26a', 'RUNNING'), ('7qj34ihb54r612', 'glyd-bench-e35r1', 'RUNNING'), ('6iilaycjsd9rsx', 'glyd-bench-sbh100', 'RUNNING'), ('njy948nrbnon35', 'glyd-bench-sbl40s', 'RUNNING'), ('dc0k30x832lyht', 'glyd-bench-sb4090', 'RUNNING'), ('h6n2xoqundxe4u', 'glyd-bench-runfam26', 'RUNNING')]
+2 min

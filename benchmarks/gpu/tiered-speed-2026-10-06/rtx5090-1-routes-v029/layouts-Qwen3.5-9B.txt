@@ -1,0 +1,259 @@
+NVIDIA GeForce RTX 5090 (compute 12.0, 170 SMs, L2 96 MiB, route code 1120, clk a step at 3090 MHz); /root/tsw/m/Qwen3.5-9B.safetensors
+down 4096x12288: 7 copies; bf16 1:64.5 2:65.2 4:76.1 8:76.3 16:76.5 24:68.4 32:68.5 48:69.7 64:70.5 128:83.5 512:255.7 1024:488.7 2048:1030.8 us
+down 4096x12288 M=    1    mma  default (way 1):     50.3 us =  0.78x bf16,    538 clk/step
+down 4096x12288 M=    2    mma  default (way 1):     50.2 us =  0.77x bf16,    536 clk/step
+down 4096x12288 M=    4    mma  default (way 1):     52.4 us =  0.69x bf16,    560 clk/step
+down 4096x12288 M=    8    mma  default (way 1):     55.6 us =  0.73x bf16,    594 clk/step
+down 4096x12288 M=   16    mma  default (way 1):     64.4 us =  0.84x bf16,    688 clk/step
+down 4096x12288 M=   24    mma  default (way 1):     56.0 us =  0.82x bf16,    598 clk/step
+down 4096x12288 M=   32    mma  default (way 1):     57.7 us =  0.84x bf16,    617 clk/step
+down 4096x12288 M=   48    mma  default (way 1):     74.8 us =  1.07x bf16,    800 clk/step
+down 4096x12288 M=   64    mma  default (way 1):     86.4 us =  1.22x bf16,    923 clk/step
+down 4096x12288 M=  128    mma  default (way 4):     71.7 us =  0.86x bf16,    766 clk/step
+down 4096x12288 M=  128    mma      big (way 4):     72.0 us =  0.86x bf16,    769 clk/step
+down 4096x12288 M=  128    mma   decode (way 4):    174.4 us =  2.09x bf16,   1864 clk/step
+down 4096x12288 M=  512    mma  default (way 4):    259.7 us =  1.02x bf16,   2775 clk/step
+down 4096x12288 M=  512    mma      big (way 4):    259.7 us =  1.02x bf16,   2775 clk/step
+down 4096x12288 M=  512    mma   decode (way 4):    342.7 us =  1.34x bf16,   3662 clk/step
+down 4096x12288 M= 1024    mma  default (way 4):    528.6 us =  1.08x bf16,   5649 clk/step
+down 4096x12288 M= 1024    mma      big (way 4):    530.2 us =  1.09x bf16,   5666 clk/step
+down 4096x12288 M= 1024    mma   decode (way 4):    571.5 us =  1.17x bf16,   6108 clk/step
+down 4096x12288 M= 2048    mma  default (way 4):   1099.0 us =  1.07x bf16,  11745 clk/step
+down 4096x12288 M= 2048    mma      big (way 4):   1098.8 us =  1.07x bf16,  11744 clk/step
+down 4096x12288 M= 2048    mma   decode (way 4):   1113.2 us =  1.08x bf16,  11897 clk/step
+down 4096x12288 M=    1  mma12  default (way 1):     51.1 us =  0.79x bf16,    546 clk/step
+down 4096x12288 M=    2  mma12  default (way 1):     51.2 us =  0.79x bf16,    547 clk/step
+down 4096x12288 M=    4  mma12  default (way 1):     51.5 us =  0.68x bf16,    550 clk/step
+down 4096x12288 M=    8  mma12  default (way 1):     52.7 us =  0.69x bf16,    563 clk/step
+down 4096x12288 M=   16  mma12  default (way 1):     55.3 us =  0.72x bf16,    591 clk/step
+down 4096x12288 M=   24  mma12  default (way 1):     56.8 us =  0.83x bf16,    607 clk/step
+down 4096x12288 M=   32  mma12  default (way 1):     58.3 us =  0.85x bf16,    623 clk/step
+down 4096x12288 M=   48  mma12  default (way 1):     65.6 us =  0.94x bf16,    701 clk/step
+down 4096x12288 M=   64  mma12  default (way 1):     71.4 us =  1.01x bf16,    763 clk/step
+down 4096x12288 M=  128  mma12  default (way 4):     67.9 us =  0.81x bf16,    725 clk/step
+down 4096x12288 M=  128  mma12      big (way 4):     67.7 us =  0.81x bf16,    724 clk/step
+down 4096x12288 M=  128  mma12   decode (way 4):    179.4 us =  2.15x bf16,   1917 clk/step
+down 4096x12288 M=  512  mma12  default (way 4):    252.7 us =  0.99x bf16,   2701 clk/step
+down 4096x12288 M=  512  mma12      big (way 4):    252.9 us =  0.99x bf16,   2703 clk/step
+down 4096x12288 M=  512  mma12   decode (way 4):    350.0 us =  1.37x bf16,   3740 clk/step
+down 4096x12288 M= 1024  mma12  default (way 4):    516.7 us =  1.06x bf16,   5522 clk/step
+down 4096x12288 M= 1024  mma12      big (way 4):    517.4 us =  1.06x bf16,   5530 clk/step
+down 4096x12288 M= 1024  mma12   decode (way 4):    581.4 us =  1.19x bf16,   6214 clk/step
+down 4096x12288 M= 2048  mma12  default (way 4):   1070.3 us =  1.04x bf16,  11439 clk/step
+down 4096x12288 M= 2048  mma12      big (way 4):   1071.4 us =  1.04x bf16,  11451 clk/step
+down 4096x12288 M= 2048  mma12   decode (way 4):   1120.5 us =  1.09x bf16,  11976 clk/step
+gate_up 24576x4096: 4 copies; bf16 1:121.0 2:122.6 4:123.2 8:123.9 16:125.1 24:131.9 32:132.6 48:132.6 64:133.3 128:150.3 512:490.1 1024:945.3 2048:1824.0 us
+gate_up 24576x4096 M=    1    mma  default (way 1):     90.3 us =  0.75x bf16,    483 clk/step
+gate_up 24576x4096 M=    2    mma  default (way 1):     90.1 us =  0.74x bf16,    482 clk/step
+gate_up 24576x4096 M=    4    mma  default (way 1):     91.4 us =  0.74x bf16,    488 clk/step
+gate_up 24576x4096 M=    8    mma  default (way 1):     93.2 us =  0.75x bf16,    498 clk/step
+gate_up 24576x4096 M=   16    mma  default (way 1):     98.8 us =  0.79x bf16,    528 clk/step
+gate_up 24576x4096 M=   24    mma  default (way 1):     98.0 us =  0.74x bf16,    524 clk/step
+gate_up 24576x4096 M=   32    mma  default (way 1):    100.2 us =  0.76x bf16,    535 clk/step
+gate_up 24576x4096 M=   48    mma  default (way 1):    131.1 us =  0.99x bf16,    700 clk/step
+gate_up 24576x4096 M=   64    mma  default (way 1):    148.1 us =  1.11x bf16,    792 clk/step
+gate_up 24576x4096 M=  128    mma  default (way 4):    175.0 us =  1.16x bf16,    935 clk/step
+gate_up 24576x4096 M=  128    mma      big (way 4):    174.4 us =  1.16x bf16,    932 clk/step
+gate_up 24576x4096 M=  128    mma   decode (way 4):    343.3 us =  2.28x bf16,   1835 clk/step
+gate_up 24576x4096 M=  512    mma  default (way 4):    512.2 us =  1.05x bf16,   2737 clk/step
+gate_up 24576x4096 M=  512    mma      big (way 4):    513.2 us =  1.05x bf16,   2742 clk/step
+gate_up 24576x4096 M=  512    mma   decode (way 4):    683.8 us =  1.40x bf16,   3654 clk/step
+gate_up 24576x4096 M= 1024    mma  default (way 4):   1026.3 us =  1.09x bf16,   5484 clk/step
+gate_up 24576x4096 M= 1024    mma      big (way 4):   1025.8 us =  1.09x bf16,   5482 clk/step
+gate_up 24576x4096 M= 1024    mma   decode (way 4):   1139.4 us =  1.21x bf16,   6088 clk/step
+gate_up 24576x4096 M= 2048    mma  default (way 4):   1927.1 us =  1.06x bf16,  10298 clk/step
+gate_up 24576x4096 M= 2048    mma      big (way 4):   1948.6 us =  1.07x bf16,  10413 clk/step
+gate_up 24576x4096 M= 2048    mma   decode (way 4):   2066.5 us =  1.13x bf16,  11042 clk/step
+gate_up 24576x4096 M=    1  mma12  default (way 1):     96.5 us =  0.80x bf16,    516 clk/step
+gate_up 24576x4096 M=    2  mma12  default (way 1):     97.0 us =  0.79x bf16,    519 clk/step
+gate_up 24576x4096 M=    4  mma12  default (way 1):     97.4 us =  0.79x bf16,    520 clk/step
+gate_up 24576x4096 M=    8  mma12  default (way 1):     98.4 us =  0.79x bf16,    526 clk/step
+gate_up 24576x4096 M=   16  mma12  default (way 1):    101.5 us =  0.81x bf16,    543 clk/step
+gate_up 24576x4096 M=   24  mma12  default (way 1):    104.9 us =  0.80x bf16,    561 clk/step
+gate_up 24576x4096 M=   32  mma12  default (way 1):    106.5 us =  0.80x bf16,    569 clk/step
+gate_up 24576x4096 M=   48  mma12  default (way 1):    116.5 us =  0.88x bf16,    622 clk/step
+gate_up 24576x4096 M=   64  mma12  default (way 1):    125.8 us =  0.94x bf16,    672 clk/step
+gate_up 24576x4096 M=  128  mma12  default (way 4):    160.0 us =  1.06x bf16,    855 clk/step
+gate_up 24576x4096 M=  128  mma12      big (way 4):    160.1 us =  1.06x bf16,    855 clk/step
+gate_up 24576x4096 M=  128  mma12   decode (way 4):    356.5 us =  2.37x bf16,   1905 clk/step
+gate_up 24576x4096 M=  512  mma12  default (way 4):    499.0 us =  1.02x bf16,   2666 clk/step
+gate_up 24576x4096 M=  512  mma12      big (way 4):    501.5 us =  1.02x bf16,   2680 clk/step
+gate_up 24576x4096 M=  512  mma12   decode (way 4):    700.0 us =  1.43x bf16,   3741 clk/step
+gate_up 24576x4096 M= 1024  mma12  default (way 4):    995.0 us =  1.05x bf16,   5317 clk/step
+gate_up 24576x4096 M= 1024  mma12      big (way 4):    995.1 us =  1.05x bf16,   5317 clk/step
+gate_up 24576x4096 M= 1024  mma12   decode (way 4):   1153.9 us =  1.22x bf16,   6166 clk/step
+gate_up 24576x4096 M= 2048  mma12  default (way 4):   1867.6 us =  1.02x bf16,   9980 clk/step
+gate_up 24576x4096 M= 2048  mma12      big (way 4):   1883.7 us =  1.03x bf16,  10066 clk/step
+gate_up 24576x4096 M= 2048  mma12   decode (way 4):   2071.0 us =  1.14x bf16,  11067 clk/step
+gdn_in 12288x4096: 7 copies; bf16 1:61.5 2:62.8 4:63.2 8:63.6 16:64.8 24:67.8 32:66.6 48:66.4 64:66.4 128:80.2 512:249.1 1024:487.7 2048:938.6 us
+gdn_in 12288x4096 M=    1    mma  default (way 1):     48.3 us =  0.79x bf16,    516 clk/step
+gdn_in 12288x4096 M=    2    mma  default (way 1):     48.3 us =  0.77x bf16,    516 clk/step
+gdn_in 12288x4096 M=    4    mma  default (way 1):     49.6 us =  0.78x bf16,    530 clk/step
+gdn_in 12288x4096 M=    8    mma  default (way 1):     51.7 us =  0.81x bf16,    553 clk/step
+gdn_in 12288x4096 M=   16    mma  default (way 1):     58.1 us =  0.90x bf16,    621 clk/step
+gdn_in 12288x4096 M=   24    mma  default (way 1):     53.2 us =  0.79x bf16,    569 clk/step
+gdn_in 12288x4096 M=   32    mma  default (way 1):     54.5 us =  0.82x bf16,    582 clk/step
+gdn_in 12288x4096 M=   48    mma  default (way 1):     71.1 us =  1.07x bf16,    760 clk/step
+gdn_in 12288x4096 M=   64    mma  default (way 1):     80.0 us =  1.20x bf16,    855 clk/step
+gdn_in 12288x4096 M=  128    mma  default (way 4):     83.8 us =  1.05x bf16,    896 clk/step
+gdn_in 12288x4096 M=  128    mma      big (way 4):     83.8 us =  1.05x bf16,    896 clk/step
+gdn_in 12288x4096 M=  128    mma   decode (way 4):    166.3 us =  2.07x bf16,   1777 clk/step
+gdn_in 12288x4096 M=  512    mma  default (way 4):    285.9 us =  1.15x bf16,   3056 clk/step
+gdn_in 12288x4096 M=  512    mma      big (way 4):    287.1 us =  1.15x bf16,   3069 clk/step
+gdn_in 12288x4096 M=  512    mma   decode (way 4):    331.3 us =  1.33x bf16,   3541 clk/step
+gdn_in 12288x4096 M= 1024    mma  default (way 4):    509.8 us =  1.05x bf16,   5449 clk/step
+gdn_in 12288x4096 M= 1024    mma      big (way 4):    509.9 us =  1.05x bf16,   5449 clk/step
+gdn_in 12288x4096 M= 1024    mma   decode (way 4):    571.2 us =  1.17x bf16,   6104 clk/step
+gdn_in 12288x4096 M= 2048    mma  default (way 4):   1020.0 us =  1.09x bf16,  10901 clk/step
+gdn_in 12288x4096 M= 2048    mma      big (way 4):   1020.0 us =  1.09x bf16,  10901 clk/step
+gdn_in 12288x4096 M= 2048    mma   decode (way 4):   1029.2 us =  1.10x bf16,  10999 clk/step
+gdn_in 12288x4096 M=    1  mma12  default (way 1):     51.6 us =  0.84x bf16,    551 clk/step
+gdn_in 12288x4096 M=    2  mma12  default (way 1):     51.4 us =  0.82x bf16,    549 clk/step
+gdn_in 12288x4096 M=    4  mma12  default (way 1):     51.7 us =  0.82x bf16,    553 clk/step
+gdn_in 12288x4096 M=    8  mma12  default (way 1):     52.7 us =  0.83x bf16,    563 clk/step
+gdn_in 12288x4096 M=   16  mma12  default (way 1):     54.3 us =  0.84x bf16,    580 clk/step
+gdn_in 12288x4096 M=   24  mma12  default (way 1):     56.8 us =  0.84x bf16,    607 clk/step
+gdn_in 12288x4096 M=   32  mma12  default (way 1):     57.7 us =  0.87x bf16,    617 clk/step
+gdn_in 12288x4096 M=   48  mma12  default (way 1):     70.0 us =  1.06x bf16,    748 clk/step
+gdn_in 12288x4096 M=   64  mma12  default (way 1):     71.4 us =  1.07x bf16,    763 clk/step
+gdn_in 12288x4096 M=  128  mma12  default (way 4):     79.1 us =  0.99x bf16,    845 clk/step
+gdn_in 12288x4096 M=  128  mma12      big (way 4):     79.3 us =  0.99x bf16,    847 clk/step
+gdn_in 12288x4096 M=  128  mma12   decode (way 4):    173.2 us =  2.16x bf16,   1851 clk/step
+gdn_in 12288x4096 M=  512  mma12  default (way 4):    279.7 us =  1.12x bf16,   2989 clk/step
+gdn_in 12288x4096 M=  512  mma12      big (way 4):    280.7 us =  1.13x bf16,   3000 clk/step
+gdn_in 12288x4096 M=  512  mma12   decode (way 4):    341.8 us =  1.37x bf16,   3652 clk/step
+gdn_in 12288x4096 M= 1024  mma12  default (way 4):    498.4 us =  1.02x bf16,   5327 clk/step
+gdn_in 12288x4096 M= 1024  mma12      big (way 4):    498.7 us =  1.02x bf16,   5330 clk/step
+gdn_in 12288x4096 M= 1024  mma12   decode (way 4):    580.2 us =  1.19x bf16,   6201 clk/step
+gdn_in 12288x4096 M= 2048  mma12  default (way 4):    989.7 us =  1.05x bf16,  10577 clk/step
+gdn_in 12288x4096 M= 2048  mma12      big (way 4):    990.8 us =  1.06x bf16,  10589 clk/step
+gdn_in 12288x4096 M= 2048  mma12   decode (way 4):   1032.2 us =  1.10x bf16,  11031 clk/step
+gdn_out 4096x4096: 20 copies; bf16 1:23.6 2:24.3 4:24.4 8:24.6 16:25.1 24:25.1 32:25.2 48:26.0 64:26.2 128:27.5 512:95.6 1024:193.5 2048:346.8 us
+gdn_out 4096x4096 M=    1    mma  default (way 1):     18.8 us =  0.80x bf16,    602 clk/step, hot     11.5
+gdn_out 4096x4096 M=    2    mma  default (way 1):     18.9 us =  0.78x bf16,    607 clk/step, hot     11.7
+gdn_out 4096x4096 M=    4    mma  default (way 1):     21.0 us =  0.86x bf16,    674 clk/step, hot     13.1
+gdn_out 4096x4096 M=    8    mma  default (way 1):     24.4 us =  0.99x bf16,    782 clk/step, hot     15.9
+gdn_out 4096x4096 M=   16    mma  default (way 1):     30.3 us =  1.21x bf16,    972 clk/step, hot     22.6
+gdn_out 4096x4096 M=   24    mma  default (way 1):     25.5 us =  1.02x bf16,    818 clk/step, hot     22.7
+gdn_out 4096x4096 M=   32    mma  default (way 1):     27.0 us =  1.07x bf16,    866 clk/step, hot     24.4
+gdn_out 4096x4096 M=   48    mma  default (way 1):     38.2 us =  1.47x bf16,   1225 clk/step, hot     37.1
+gdn_out 4096x4096 M=   64    mma  default (way 1):     43.0 us =  1.64x bf16,   1380 clk/step, hot     41.6
+gdn_out 4096x4096 M=  128    mma  default (way 4):     29.6 us =  1.08x bf16,    950 clk/step
+gdn_out 4096x4096 M=  128    mma      big (way 4):     29.7 us =  1.08x bf16,    953 clk/step
+gdn_out 4096x4096 M=  128    mma   decode (way 4):     47.4 us =  1.72x bf16,   1519 clk/step
+gdn_out 4096x4096 M=  512    mma  default (way 4):    102.8 us =  1.08x bf16,   3297 clk/step
+gdn_out 4096x4096 M=  512    mma      big (way 4):    103.0 us =  1.08x bf16,   3304 clk/step
+gdn_out 4096x4096 M=  512    mma   decode (way 4):    116.7 us =  1.22x bf16,   3741 clk/step
+gdn_out 4096x4096 M= 1024    mma  default (way 4):    194.2 us =  1.00x bf16,   6227 clk/step
+gdn_out 4096x4096 M= 1024    mma      big (way 4):    194.4 us =  1.00x bf16,   6234 clk/step
+gdn_out 4096x4096 M= 1024    mma   decode (way 4):    214.1 us =  1.11x bf16,   6865 clk/step
+gdn_out 4096x4096 M= 2048    mma  default (way 4):    392.1 us =  1.13x bf16,  12571 clk/step
+gdn_out 4096x4096 M= 2048    mma      big (way 4):    392.0 us =  1.13x bf16,  12568 clk/step
+gdn_out 4096x4096 M= 2048    mma   decode (way 4):    367.1 us =  1.06x bf16,  11771 clk/step
+gdn_out 4096x4096 M=    1  mma12  default (way 1):     21.6 us =  0.92x bf16,    691 clk/step, hot     10.8
+gdn_out 4096x4096 M=    2  mma12  default (way 1):     21.4 us =  0.88x bf16,    685 clk/step, hot     10.8
+gdn_out 4096x4096 M=    4  mma12  default (way 1):     21.4 us =  0.88x bf16,    687 clk/step, hot     11.1
+gdn_out 4096x4096 M=    8  mma12  default (way 1):     22.4 us =  0.91x bf16,    718 clk/step, hot     12.3
+gdn_out 4096x4096 M=   16  mma12  default (way 1):     25.1 us =  1.00x bf16,    805 clk/step, hot     15.0
+gdn_out 4096x4096 M=   24  mma12  default (way 1):     26.3 us =  1.05x bf16,    842 clk/step, hot     18.2
+gdn_out 4096x4096 M=   32  mma12  default (way 1):     27.9 us =  1.11x bf16,    895 clk/step, hot     20.6
+gdn_out 4096x4096 M=   48  mma12  default (way 1):     36.9 us =  1.42x bf16,   1183 clk/step, hot     32.0
+gdn_out 4096x4096 M=   64  mma12  default (way 1):     39.2 us =  1.50x bf16,   1256 clk/step, hot     35.4
+gdn_out 4096x4096 M=  128  mma12  default (way 4):     29.4 us =  1.07x bf16,    943 clk/step
+gdn_out 4096x4096 M=  128  mma12      big (way 4):     29.5 us =  1.07x bf16,    945 clk/step
+gdn_out 4096x4096 M=  128  mma12   decode (way 4):     53.8 us =  1.95x bf16,   1724 clk/step
+gdn_out 4096x4096 M=  512  mma12  default (way 4):    100.5 us =  1.05x bf16,   3223 clk/step
+gdn_out 4096x4096 M=  512  mma12      big (way 4):    100.9 us =  1.06x bf16,   3236 clk/step
+gdn_out 4096x4096 M=  512  mma12   decode (way 4):    122.9 us =  1.29x bf16,   3942 clk/step
+gdn_out 4096x4096 M= 1024  mma12  default (way 4):    188.6 us =  0.97x bf16,   6047 clk/step
+gdn_out 4096x4096 M= 1024  mma12      big (way 4):    188.6 us =  0.97x bf16,   6048 clk/step
+gdn_out 4096x4096 M= 1024  mma12   decode (way 4):    220.2 us =  1.14x bf16,   7060 clk/step
+gdn_out 4096x4096 M= 2048  mma12  default (way 4):    381.7 us =  1.10x bf16,  12237 clk/step
+gdn_out 4096x4096 M= 2048  mma12      big (way 4):    381.5 us =  1.10x bf16,  12232 clk/step
+gdn_out 4096x4096 M= 2048  mma12   decode (way 4):    373.6 us =  1.08x bf16,  11977 clk/step
+o 4096x4096: 20 copies; bf16 1:23.6 2:24.3 4:24.4 8:24.7 16:25.0 24:25.1 32:25.3 48:26.0 64:26.2 128:27.8 512:95.8 1024:193.4 2048:346.7 us
+o 4096x4096 M=    1    mma  default (way 1):     18.8 us =  0.80x bf16,    601 clk/step, hot     11.6
+o 4096x4096 M=    2    mma  default (way 1):     19.0 us =  0.78x bf16,    608 clk/step, hot     11.7
+o 4096x4096 M=    4    mma  default (way 1):     20.8 us =  0.85x bf16,    668 clk/step, hot     13.2
+o 4096x4096 M=    8    mma  default (way 1):     24.3 us =  0.98x bf16,    779 clk/step, hot     16.0
+o 4096x4096 M=   16    mma  default (way 1):     30.2 us =  1.21x bf16,    970 clk/step, hot     22.6
+o 4096x4096 M=   24    mma  default (way 1):     25.4 us =  1.01x bf16,    815 clk/step, hot     22.7
+o 4096x4096 M=   32    mma  default (way 1):     27.0 us =  1.07x bf16,    865 clk/step, hot     24.3
+o 4096x4096 M=   48    mma  default (way 1):     38.2 us =  1.47x bf16,   1223 clk/step, hot     37.1
+o 4096x4096 M=   64    mma  default (way 1):     43.0 us =  1.64x bf16,   1380 clk/step, hot     41.5
+o 4096x4096 M=  128    mma  default (way 4):     29.7 us =  1.07x bf16,    953 clk/step
+o 4096x4096 M=  128    mma      big (way 4):     29.7 us =  1.07x bf16,    953 clk/step
+o 4096x4096 M=  128    mma   decode (way 4):     47.4 us =  1.71x bf16,   1521 clk/step
+o 4096x4096 M=  512    mma  default (way 4):    102.8 us =  1.07x bf16,   3297 clk/step
+o 4096x4096 M=  512    mma      big (way 4):    103.1 us =  1.08x bf16,   3305 clk/step
+o 4096x4096 M=  512    mma   decode (way 4):    116.1 us =  1.21x bf16,   3721 clk/step
+o 4096x4096 M= 1024    mma  default (way 4):    194.3 us =  1.00x bf16,   6231 clk/step
+o 4096x4096 M= 1024    mma      big (way 4):    194.3 us =  1.00x bf16,   6229 clk/step
+o 4096x4096 M= 1024    mma   decode (way 4):    213.7 us =  1.10x bf16,   6852 clk/step
+o 4096x4096 M= 2048    mma  default (way 4):    392.1 us =  1.13x bf16,  12571 clk/step
+o 4096x4096 M= 2048    mma      big (way 4):    392.2 us =  1.13x bf16,  12575 clk/step
+o 4096x4096 M= 2048    mma   decode (way 4):    366.8 us =  1.06x bf16,  11761 clk/step
+o 4096x4096 M=    1  mma12  default (way 1):     21.6 us =  0.92x bf16,    694 clk/step, hot     11.1
+o 4096x4096 M=    2  mma12  default (way 1):     21.4 us =  0.88x bf16,    686 clk/step, hot     11.1
+o 4096x4096 M=    4  mma12  default (way 1):     21.5 us =  0.88x bf16,    688 clk/step, hot     11.2
+o 4096x4096 M=    8  mma12  default (way 1):     22.5 us =  0.91x bf16,    723 clk/step, hot     12.5
+o 4096x4096 M=   16  mma12  default (way 1):     24.9 us =  0.99x bf16,    798 clk/step, hot     14.9
+o 4096x4096 M=   24  mma12  default (way 1):     26.2 us =  1.04x bf16,    841 clk/step, hot     18.2
+o 4096x4096 M=   32  mma12  default (way 1):     27.6 us =  1.09x bf16,    886 clk/step, hot     20.6
+o 4096x4096 M=   48  mma12  default (way 1):     37.0 us =  1.42x bf16,   1186 clk/step, hot     31.4
+o 4096x4096 M=   64  mma12  default (way 1):     39.1 us =  1.49x bf16,   1253 clk/step, hot     35.0
+o 4096x4096 M=  128  mma12  default (way 4):     29.6 us =  1.07x bf16,    949 clk/step
+o 4096x4096 M=  128  mma12      big (way 4):     29.5 us =  1.06x bf16,    946 clk/step
+o 4096x4096 M=  128  mma12   decode (way 4):     54.0 us =  1.95x bf16,   1731 clk/step
+o 4096x4096 M=  512  mma12  default (way 4):    100.6 us =  1.05x bf16,   3227 clk/step
+o 4096x4096 M=  512  mma12      big (way 4):    100.5 us =  1.05x bf16,   3224 clk/step
+o 4096x4096 M=  512  mma12   decode (way 4):    122.9 us =  1.28x bf16,   3941 clk/step
+o 4096x4096 M= 1024  mma12  default (way 4):    188.8 us =  0.98x bf16,   6054 clk/step
+o 4096x4096 M= 1024  mma12      big (way 4):    188.8 us =  0.98x bf16,   6052 clk/step
+o 4096x4096 M= 1024  mma12   decode (way 4):    220.2 us =  1.14x bf16,   7061 clk/step
+o 4096x4096 M= 2048  mma12  default (way 4):    381.1 us =  1.10x bf16,  12219 clk/step
+o 4096x4096 M= 2048  mma12      big (way 4):    381.1 us =  1.10x bf16,  12220 clk/step
+o 4096x4096 M= 2048  mma12   decode (way 4):    373.9 us =  1.08x bf16,  11988 clk/step
+qkv 10240x4096: 8 copies; bf16 1:51.6 2:52.8 4:52.9 8:53.8 16:55.2 24:54.4 32:54.5 48:54.9 64:55.2 128:57.5 512:195.4 1024:387.8 2048:775.5 us
+qkv 10240x4096 M=    1    mma  default (way 1):     40.3 us =  0.78x bf16,    517 clk/step
+qkv 10240x4096 M=    2    mma  default (way 1):     40.4 us =  0.76x bf16,    518 clk/step
+qkv 10240x4096 M=    4    mma  default (way 1):     41.6 us =  0.79x bf16,    534 clk/step
+qkv 10240x4096 M=    8    mma  default (way 1):     43.1 us =  0.80x bf16,    553 clk/step
+qkv 10240x4096 M=   16    mma  default (way 1):     47.4 us =  0.86x bf16,    608 clk/step
+qkv 10240x4096 M=   24    mma  default (way 1):     44.5 us =  0.82x bf16,    571 clk/step
+qkv 10240x4096 M=   32    mma  default (way 1):     45.2 us =  0.83x bf16,    579 clk/step
+qkv 10240x4096 M=   48    mma  default (way 1):     61.3 us =  1.12x bf16,    786 clk/step
+qkv 10240x4096 M=   64    mma  default (way 1):     68.2 us =  1.24x bf16,    874 clk/step
+qkv 10240x4096 M=  128    mma  default (way 4):     62.2 us =  1.08x bf16,    797 clk/step
+qkv 10240x4096 M=  128    mma      big (way 4):     61.9 us =  1.08x bf16,    794 clk/step
+qkv 10240x4096 M=  128    mma   decode (way 4):    131.1 us =  2.28x bf16,   1682 clk/step
+qkv 10240x4096 M=  512    mma  default (way 4):    203.8 us =  1.04x bf16,   2614 clk/step
+qkv 10240x4096 M=  512    mma      big (way 4):    204.3 us =  1.05x bf16,   2620 clk/step
+qkv 10240x4096 M=  512    mma   decode (way 4):    271.8 us =  1.39x bf16,   3486 clk/step
+qkv 10240x4096 M= 1024    mma  default (way 4):    405.7 us =  1.05x bf16,   5203 clk/step
+qkv 10240x4096 M= 1024    mma      big (way 4):    405.6 us =  1.05x bf16,   5202 clk/step
+qkv 10240x4096 M= 1024    mma   decode (way 4):    458.5 us =  1.18x bf16,   5880 clk/step
+qkv 10240x4096 M= 2048    mma  default (way 4):    820.0 us =  1.06x bf16,  10517 clk/step
+qkv 10240x4096 M= 2048    mma      big (way 4):    825.2 us =  1.06x bf16,  10583 clk/step
+qkv 10240x4096 M= 2048    mma   decode (way 4):    861.3 us =  1.11x bf16,  11046 clk/step
+qkv 10240x4096 M=    1  mma12  default (way 1):     43.3 us =  0.84x bf16,    555 clk/step
+qkv 10240x4096 M=    2  mma12  default (way 1):     43.3 us =  0.82x bf16,    556 clk/step
+qkv 10240x4096 M=    4  mma12  default (way 1):     43.5 us =  0.82x bf16,    558 clk/step
+qkv 10240x4096 M=    8  mma12  default (way 1):     44.0 us =  0.82x bf16,    565 clk/step
+qkv 10240x4096 M=   16  mma12  default (way 1):     45.9 us =  0.83x bf16,    589 clk/step
+qkv 10240x4096 M=   24  mma12  default (way 1):     47.1 us =  0.87x bf16,    604 clk/step
+qkv 10240x4096 M=   32  mma12  default (way 1):     47.7 us =  0.87x bf16,    612 clk/step
+qkv 10240x4096 M=   48  mma12  default (way 1):     54.0 us =  0.98x bf16,    692 clk/step
+qkv 10240x4096 M=   64  mma12  default (way 1):     57.2 us =  1.04x bf16,    733 clk/step
+qkv 10240x4096 M=  128  mma12  default (way 4):     58.7 us =  1.02x bf16,    753 clk/step
+qkv 10240x4096 M=  128  mma12      big (way 4):     58.8 us =  1.02x bf16,    754 clk/step
+qkv 10240x4096 M=  128  mma12   decode (way 4):    135.5 us =  2.35x bf16,   1737 clk/step
+qkv 10240x4096 M=  512  mma12  default (way 4):    199.7 us =  1.02x bf16,   2562 clk/step
+qkv 10240x4096 M=  512  mma12      big (way 4):    199.8 us =  1.02x bf16,   2563 clk/step
+qkv 10240x4096 M=  512  mma12   decode (way 4):    276.1 us =  1.41x bf16,   3541 clk/step
+qkv 10240x4096 M= 1024  mma12  default (way 4):    397.2 us =  1.02x bf16,   5094 clk/step
+qkv 10240x4096 M= 1024  mma12      big (way 4):    397.6 us =  1.03x bf16,   5099 clk/step
+qkv 10240x4096 M= 1024  mma12   decode (way 4):    464.1 us =  1.20x bf16,   5951 clk/step
+qkv 10240x4096 M= 2048  mma12  default (way 4):    792.2 us =  1.02x bf16,  10159 clk/step
+qkv 10240x4096 M= 2048  mma12      big (way 4):    795.3 us =  1.03x bf16,  10199 clk/step
+qkv 10240x4096 M= 2048  mma12   decode (way 4):    855.8 us =  1.10x bf16,  10976 clk/step

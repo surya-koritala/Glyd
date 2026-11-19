@@ -1,0 +1,282 @@
+{
+  "completed": true,
+  "model": "Qwen/Qwen3.8-27B",
+  "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "fraction_bits": 3,
+  "block_values": 1024,
+  "scope": "every BF16 tensor encoded and decoded; byte inventory, not runtime VRAM or performance",
+  "representation": "GLYDL27 version 1 reference format; no model artifact retained",
+  "entropy_scope": "empirical independent-symbol estimate by tensor, not an absolute compression bound",
+  "total": {
+    "source_bytes": 55562855904,
+    "packed_bytes": 26237246509,
+    "tensor_header_bytes": 33572,
+    "block_header_bytes": 325567716,
+    "dictionary_bytes": 189951319,
+    "field_bytes": 24309353904,
+    "exception_bytes": 1412339998,
+    "raw_bytes": 0,
+    "values": 27781427952,
+    "changed_values": 26047158570,
+    "bits_per_weight": 7.555334176294179,
+    "reduction_vs_bf16": 0.5277916139816139,
+    "tensor_count": 1199,
+    "empirical_iid_entropy_bits_conditioned_on_tensor": 6.500050824438571
+  },
+  "groups": {
+    "embedding": {
+      "source_bytes": 2542796800,
+      "packed_bytes": 1201945179,
+      "tensor_header_bytes": 28,
+      "block_header_bytes": 14899200,
+      "dictionary_bytes": 8691641,
+      "field_bytes": 1112480000,
+      "exception_bytes": 65874310,
+      "raw_bytes": 0,
+      "values": 1271398400,
+      "changed_values": 1191947633,
+      "bits_per_weight": 7.562980598371054,
+      "reduction_vs_bf16": 0.5273137126018091,
+      "tensor_count": 1,
+      "empirical_iid_entropy_bits_conditioned_on_tensor": 6.518081251594998
+    },
+    "full_attention": {
+      "source_bytes": 3355459584,
+      "packed_bytes": 1585863913,
+      "tensor_header_bytes": 2688,
+      "block_header_bytes": 19661184,
+      "dictionary_bytes": 11469709,
+      "field_bytes": 1468026496,
+      "exception_bytes": 86703836,
+      "raw_bytes": 0,
+      "values": 1677729792,
+      "changed_values": 1572972843,
+      "bits_per_weight": 7.561951492126808,
+      "reduction_vs_bf16": 0.5273780317420744,
+      "tensor_count": 96,
+      "empirical_iid_entropy_bits_conditioned_on_tensor": 6.522475366522599
+    },
+    "head": {
+      "source_bytes": 2542796800,
+      "packed_bytes": 1204032024,
+      "tensor_header_bytes": 28,
+      "block_header_bytes": 14899200,
+      "dictionary_bytes": 8691200,
+      "field_bytes": 1112473600,
+      "exception_bytes": 67967996,
+      "raw_bytes": 0,
+      "values": 1271398400,
+      "changed_values": 1191982084,
+      "bits_per_weight": 7.5761116200869845,
+      "reduction_vs_bf16": 0.5264930237445635,
+      "tensor_count": 1,
+      "empirical_iid_entropy_bits_conditioned_on_tensor": 6.507836353770424
+    },
+    "linear_attention_matrix": {
+      "source_bytes": 11120148480,
+      "packed_bytes": 5247149344,
+      "tensor_header_bytes": 6720,
+      "block_header_bytes": 65157120,
+      "dictionary_bytes": 38010388,
+      "field_bytes": 4865100416,
+      "exception_bytes": 278874700,
+      "raw_bytes": 0,
+      "values": 5560074240,
+      "changed_values": 5212942217,
+      "bits_per_weight": 7.549754362992103,
+      "reduction_vs_bf16": 0.5281403523129935,
+      "tensor_count": 240,
+      "empirical_iid_entropy_bits_conditioned_on_tensor": 6.503367191578414
+    },
+    "linear_attention_other": {
+      "source_bytes": 3953664,
+      "packed_bytes": 2029372,
+      "tensor_header_bytes": 5376,
+      "block_header_bytes": 24768,
+      "dictionary_bytes": 27032,
+      "field_bytes": 1940602,
+      "exception_bytes": 31594,
+      "raw_bytes": 0,
+      "values": 1976832,
+      "changed_values": 1853075,
+      "bits_per_weight": 8.212623025123024,
+      "reduction_vs_bf16": 0.486711060929811,
+      "tensor_count": 192,
+      "empirical_iid_entropy_bits_conditioned_on_tensor": 7.24640866708582
+    },
+    "mlp": {
+      "source_bytes": 34225520640,
+      "packed_bytes": 16155621329,
+      "tensor_header_bytes": 5376,
+      "block_header_bytes": 200540160,
+      "dictionary_bytes": 116982235,
+      "field_bytes": 14973673472,
+      "exception_bytes": 864420086,
+      "raw_bytes": 0,
+      "values": 17112760320,
+      "changed_values": 16044820505,
+      "bits_per_weight": 7.552549572084464,
+      "reduction_vs_bf16": 0.527965651744721,
+      "tensor_count": 192,
+      "empirical_iid_entropy_bits_conditioned_on_tensor": 6.492004764588509
+    },
+    "mtp": {
+      "source_bytes": 849398784,
+      "packed_bytes": 402590502,
+      "tensor_header_bytes": 420,
+      "block_header_bytes": 4976964,
+      "dictionary_bytes": 2903174,
+      "field_bytes": 371609984,
+      "exception_bytes": 23099960,
+      "raw_bytes": 0,
+      "values": 424699392,
+      "changed_values": 398118287,
+      "bits_per_weight": 7.583538089925026,
+      "reduction_vs_bf16": 0.5260288693796858,
+      "tensor_count": 15,
+      "empirical_iid_entropy_bits_conditioned_on_tensor": 6.558443904182255
+    },
+    "other": {
+      "source_bytes": 1320960,
+      "packed_bytes": 611872,
+      "tensor_header_bytes": 3612,
+      "block_header_bytes": 7740,
+      "dictionary_bytes": 4214,
+      "field_bytes": 563456,
+      "exception_bytes": 32850,
+      "raw_bytes": 0,
+      "values": 660480,
+      "changed_values": 619145,
+      "bits_per_weight": 7.4112403100775195,
+      "reduction_vs_bf16": 0.536797480620155,
+      "tensor_count": 129,
+      "empirical_iid_entropy_bits_conditioned_on_tensor": 5.4833781960779495
+    },
+    "vision": {
+      "source_bytes": 921460192,
+      "packed_bytes": 437402974,
+      "tensor_header_bytes": 9324,
+      "block_header_bytes": 5401380,
+      "dictionary_bytes": 3171726,
+      "field_bytes": 403485878,
+      "exception_bytes": 25334666,
+      "raw_bytes": 0,
+      "values": 460730096,
+      "changed_values": 431902781,
+      "bits_per_weight": 7.594953796983994,
+      "reduction_vs_bf16": 0.5253153876885004,
+      "tensor_count": 333,
+      "empirical_iid_entropy_bits_conditioned_on_tensor": 6.550412024494602
+    }
+  },
+  "shards": [
+    {
+      "file": "model-00001-of-00018.safetensors",
+      "bytes": 3966730552,
+      "sha256": "ba0ce20aae489ad196733da5064bcdf159a1fe84f53336648196e1ebb7751b1c",
+      "tensor_count": 392
+    },
+    {
+      "file": "model-00002-of-00018.safetensors",
+      "bytes": 3043080328,
+      "sha256": "06a148c01bfbe3faa14a5f184a7ff29a706f7ae1c8b2705d2058e26d17a001fb",
+      "tensor_count": 47
+    },
+    {
+      "file": "model-00003-of-00018.safetensors",
+      "bytes": 2542796952,
+      "sha256": "2e1bf62cbcd406eaa64b60d10353e1f0ef4039d0976e56f05cabe953454f9968",
+      "tensor_count": 1
+    },
+    {
+      "file": "model-00004-of-00018.safetensors",
+      "bytes": 3988973152,
+      "sha256": "511e34063187882659753c4d93f3859f93c019fd438d8813071921c81d9a3f1a",
+      "tensor_count": 69
+    },
+    {
+      "file": "model-00005-of-00018.safetensors",
+      "bytes": 2099339864,
+      "sha256": "635cb53446dc74f219740fc59e18b774f877b803b9722e289ca62575a6efa701",
+      "tensor_count": 37
+    },
+    {
+      "file": "model-00006-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "0bc5214fac607f0e6cc92eec3789d4b8559410ef9fce66621ba8158e8410dae0",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00007-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "80b0c49033e9a0d5762562aa12f4acdb7f54da586f3d0110f28c48d91cf07892",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00008-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "7192c5b66185d3592927daabee1cc19e6f6e0ce75988ee20e824b624765fda79",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00009-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "af3c48cc37af44f3db6ae0579baf019180d48d9c527caa0a1f03ff85813a56d8",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00010-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "163490a76f3bea3a40855b7efc04ce6d27afaf1a34f0bbde495b9491f76457c9",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00011-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "5f3ae1b948aeee39da77aec558e8236cd65fe4d7cb7686a76bb007acc563c6d8",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00012-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "a3de1c7114677a8f5ac5c4892c90e8238ea5c1e2038c80e757dfc87c3902ca55",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00013-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "06ab79a41f74c9c5cb734816feb0c7fc364104b227165ee7391231e1155aa02a",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00014-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "4138ed94603065ba884bbcadedb04d7718bb40117e85e6f5c6fc5b9c05b7a85b",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00015-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "69224e27b9de4e7dbf6fc936c6eaae08447bda3b80a6c31a871ab451173afd22",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00016-of-00018.safetensors",
+      "bytes": 3979564040,
+      "sha256": "73cb9a1089fb6155cb648609478d6633be8a5c7d9ca5a05bc8925ce8a553cefe",
+      "tensor_count": 77
+    },
+    {
+      "file": "model-00017-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "beb51f01056142ac4984bd800507b0dd0fd18de57f8e9ef6ea41d1a3598983a8",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00018-of-00018.safetensors",
+      "bytes": 3392197344,
+      "sha256": "1d3479509e21494658f9b64d317f5ea8e55c4025d28c702d6c4d0b356ce8ea06",
+      "tensor_count": 16
+    }
+  ]
+}

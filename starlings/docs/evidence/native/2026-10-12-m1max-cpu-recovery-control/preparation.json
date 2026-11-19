@@ -1,0 +1,23 @@
+{
+  "kind": "NativeServiceRecoveryPreparation",
+  "implementation_commit": "419a6fdbb6e26d008d7e407ce3c4121738dbd86f",
+  "binary_sha256": "4b1abdea6193208a776999faa08045b5c85c382879004e1dcf8af6340c708a89",
+  "configuration": "569a84cd782df96aba006075dd0960c7920b82f7050ec8031328a3699c8ce1fb",
+  "worker_record_digest": "22b9b73545aea1f494168c08a76138ff20c02965c7bee079f7b367a8a15eb4af",
+  "profile_evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+  "worker_file_sha256": "e5af4603b37dc3907c09aa985361b5c9fa6277c4a191535b6ebbbebed2257c75",
+  "coordinator_template_sha256": "6572204255df4671a2a232a6619abcba695612fd215ba16f44ecd9ec8a1d87d5",
+  "policy_scope": "proposed fixed-input monitored CPU experiment; verified cache path/node/cluster plus disabled diagnostic backtrace and exact pre-reviewed cleanup policy; bounded experimental route, not a general qualification",
+  "native_started": false,
+  "approval_granted": false,
+  "prior_quarantine_preserved": true,
+  "old_ownership_files_sha256": {
+    "/private/tmp/glyd-m2-daemon-3-7ca2939d/worker/cache/models/service-start.json": "395fa4b0fff37d98934b5cb3e117a79fe7da9d23254b6de3a0e1544300315f52",
+    "/private/tmp/glyd-m2-daemon-3-7ca2939d/worker/cache/models/pin-dca8b946-a014-4b0c-b1dd-10464ca752de.json": "5dd3e7288fec2769757ae9ff2858629e61b5de034a5b8c55fc7356f49131fe6e",
+    "/private/tmp/glyd-m2-qualification-8f993f22/worker/cache/models/service-start.json": "a95423df5ba4f301b74dfefac735cc2dc44bb975d034775ba8b793aaf4b84f60",
+    "/private/tmp/glyd-m2-qualification-8f993f22/worker/cache/models/pin-badac062-7b66-40a7-a94f-43ffe56339e4.json": "f661d0659c851c57bc7a92be0432d4de988299e0a23c913daa5f23439861f58e"
+  },
+  "runner_sha256": "3d432dd9a04a4123ce467c80322e1b00cc56814db6d2a16e6165e3d5befc33bb",
+  "cleanup_policy_source_review": "697cab7b280d1bf94871df36601f7816446d1c753616386cc274d5e4f70861a0",
+  "preflight_requires_host_permission": true
+}

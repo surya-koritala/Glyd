@@ -1,0 +1,9 @@
+20:04 created w75ltmzt5q8fbu (NVIDIA GeForce RTX 4090)
+ssh on pod w75ltmzt5q8fbu ready after 24s: ssh reachable at 103.196.86.56:11285
+20:04 ssh ready at 103.196.86.56:11285 after 28 s
+NVIDIA GeForce RTX 4090, 595.91.07, 24564 MiB
+20:04 job started
+20:25 job done
+terminating w75ltmzt5q8fbu
+pods left: []
+21 min

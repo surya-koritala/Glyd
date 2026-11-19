@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "fixture": true,
+  "key": {
+    "manifest_digest": "2cf0a7baefd7dc2e2534896e2c845a23b723793111ff6148fae4de4172c80b1a",
+    "backend_build_digest": "2cf0a7baefd7dc2e2534896e2c845a23b723793111ff6148fae4de4172c80b1a",
+    "runtime_config_digest": "2cf0a7baefd7dc2e2534896e2c845a23b723793111ff6148fae4de4172c80b1a",
+    "device_digest": "2cf0a7baefd7dc2e2534896e2c845a23b723793111ff6148fae4de4172c80b1a",
+    "pool_inventory_digest": "2cf0a7baefd7dc2e2534896e2c845a23b723793111ff6148fae4de4172c80b1a",
+    "execution_profile": "fixture-bf16",
+    "boundary_profile": "fixture-hidden-residual",
+    "workload": {
+      "context_tokens": 8,
+      "prompt_tokens": 4,
+      "output_tokens": 4,
+      "prefill_chunk_tokens": 2,
+      "sessions": 1
+    }
+  },
+  "inputs": [
+    {
+      "role": "hidden",
+      "dtype": "bf16",
+      "shape": [
+        {
+          "kind": "fixed",
+          "value": 1
+        },
+        {
+          "kind": "tokens"
+        },
+        {
+          "kind": "fixed",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "role": "residual",
+      "dtype": "bf16",
+      "shape": [
+        {
+          "kind": "fixed",
+          "value": 1
+        },
+        {
+          "kind": "tokens"
+        },
+        {
+          "kind": "fixed",
+          "value": 2
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "role": "hidden",
+      "dtype": "bf16",
+      "shape": [
+        {
+          "kind": "fixed",
+          "value": 1
+        },
+        {
+          "kind": "tokens"
+        },
+        {
+          "kind": "fixed",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "role": "residual",
+      "dtype": "bf16",
+      "shape": [
+        {
+          "kind": "fixed",
+          "value": 1
+        },
+        {
+          "kind": "tokens"
+        },
+        {
+          "kind": "fixed",
+          "value": 2
+        }
+      ]
+    }
+  ],
+  "output_tokens": "same_chunk"
+}

@@ -1,0 +1,4 @@
+17:18:38 tp2 up (or gone) after 2595 s
+17:19:03 tp2 tools done in 25 s
+17:19:48 tp2 passkey done in 45 s
+17:20:52 tp2 long done in 64 s

@@ -1,0 +1,1 @@
+18G	/root/.cache/huggingface/hub/models--glyd--Qwen3.8-27B-swift

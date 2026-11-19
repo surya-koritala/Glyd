@@ -1,0 +1,12 @@
+rustup: rc=0 7 s
+install: rc=0 31 s
+hfvenv: rc=0 5 s
+download: rc=0 29 s
+build-before: rc=0 87 s
+build-after: rc=0 86 s
+bench-before-a: rc=0 80 s
+bench-after-a: rc=0 76 s
+bench-after-mma: rc=0 48 s
+profile-after-a: rc=0 69 s
+vllm-fp8: rc=0 224 s
+done

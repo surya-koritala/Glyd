@@ -1,0 +1,40 @@
+[    5.006101] mlx5_core 0000:05:00.0 eno1: Link up
+[   19.638811] EXT4-fs (vda1): resizing filesystem from 13078779 to 738169083 blocks
+[   20.240684] evm: overlay not supported
+[   20.244630] ACPI Warning: \_SB.PCI0.S15.S00._DSM: Argument #4 type mismatch - Found [Buffer], ACPI requires [Package] (20230628/nsarguments-61)
+[   20.327273] kauditd_printk_skb: 30 callbacks suppressed
+[   20.327278] audit: type=1400 audit(1792641882.625:41): apparmor="STATUS" operation="profile_load" profile="unconfined" name="docker-default" pid=1522 comm="apparmor_parser"
+[   20.353877] Initializing XFRM netlink socket
+[   20.490986] bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.
+[   21.221467] EXT4-fs (vda1): resizing filesystem from 536870912 to 738169083 blocks
+[   21.221475] EXT4-fs (vda1): Converting file system to meta_bg
+[   21.221488] EXT4-fs (vda1): resizing filesystem from 536870912 to 738169083 blocks
+[   21.510904] loop6: detected capacity change from 0 to 8
+[   21.938875] EXT4-fs (vda1): resized filesystem to 738169083
+[   93.039336] overlayfs: fs on '/home/ubuntu/.local/share/containers/storage/overlay/compat2512942619/lower1' does not support file handles, falling back to xino=off.
+[   93.058254] overlayfs: fs on '/home/ubuntu/.local/share/containers/storage/overlay/metacopy-check481521391/l1' does not support file handles, falling back to xino=off.
+[   93.061908] overlayfs: fs on '/home/ubuntu/.local/share/containers/storage/overlay/opaque-bug-check3903858015/l2' does not support file handles, falling back to xino=off.
+[  326.393519] loop6: detected capacity change from 0 to 125464
+[  326.533712] audit: type=1400 audit(1792642189.147:42): apparmor="STATUS" operation="profile_replace" info="same as current profile, skipping" profile="unconfined" name="snap.aws-cli.aws" pid=5862 comm="apparmor_parser"
+[  326.536532] audit: type=1400 audit(1792642189.150:43): apparmor="STATUS" operation="profile_replace" info="same as current profile, skipping" profile="unconfined" name="snap-update-ns.aws-cli" pid=5864 comm="apparmor_parser"
+[  584.619136] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  584.717950] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  584.822366] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  584.980142] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  654.139502] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  654.240750] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  654.347742] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  654.513025] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  723.319853] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  723.409977] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  723.513024] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  723.952216] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  725.523197] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  743.865480] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  743.966917] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  744.063470] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  744.221364] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  811.763383] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  811.856613] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  811.953517] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)
+[  812.115750] NVRM: refcntRequestReference_IMPL: Failed to enter state 1 (current state: 0, status: 0x00000056)

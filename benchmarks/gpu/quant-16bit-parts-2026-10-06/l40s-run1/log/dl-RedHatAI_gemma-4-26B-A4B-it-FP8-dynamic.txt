@@ -1,0 +1,4 @@
+Fetching 14 files:   0%|          | 0/14 [00:00<?, ?it/s]Fetching 14 files:   7%|▋         | 1/14 [00:00<00:04,  3.11it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 14 files:  14%|█▍        | 2/14 [00:00<00:02,  4.07it/s]Fetching 14 files:  29%|██▊       | 4/14 [00:00<00:01,  7.66it/s]Fetching 14 files:  57%|█████▋    | 8/14 [00:00<00:00, 15.38it/s]Fetching 14 files:  79%|███████▊  | 11/14 [00:00<00:00, 17.74it/s]Fetching 14 files:  93%|█████████▎| 13/14 [00:20<00:00, 17.74it/s]Fetching 14 files: 100%|██████████| 14/14 [01:13<00:00,  8.91s/it]Fetching 14 files: 100%|██████████| 14/14 [01:13<00:00,  5.23s/it]
+/root/w/hf/hub/models--RedHatAI--gemma-4-26B-A4B-it-FP8-dynamic/snapshots/ed35d7abe5d940da41b4ff06eb482feb0be8cb44
+exit 0 after 75 s; 104K

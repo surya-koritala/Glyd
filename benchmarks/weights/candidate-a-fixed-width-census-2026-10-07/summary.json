@@ -1,0 +1,1923 @@
+{
+  "completed": true,
+  "model": "Qwen/Qwen3.8-27B",
+  "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "fraction_bits": 3,
+  "scope": "every two-dimensional BF16 tensor after Candidate A rounding; counts of values that are exactly values of each format (e4m3fn; 7-bit e3m3 and 6-bit e2m3 with three fraction bits, subnormals and no NaN) times the smallest power-of-two scale covering their block. Not a quality, memory or speed result.",
+  "all_matrices": {
+    "values": 27776577536,
+    "zeros": 7528,
+    "specials": 0,
+    "tensors": 617,
+    "geometries": [
+      {
+        "format": "e4m3fn",
+        "block": [
+          128,
+          128
+        ],
+        "blocks": 1697930,
+        "blocks_inexact": 1444698,
+        "inexact": 3782164,
+        "underflow": 726027,
+        "max_block_inexact": 267,
+        "min_scale_exponent": -15,
+        "max_scale_exponent": -6,
+        "exact_fraction": 0.9998638362125392,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e4m3fn",
+        "block": [
+          1,
+          128
+        ],
+        "blocks": 217016176,
+        "blocks_inexact": 2122315,
+        "inexact": 2136346,
+        "underflow": 407885,
+        "max_block_inexact": 4,
+        "min_scale_exponent": -42,
+        "max_scale_exponent": -6,
+        "exact_fraction": 0.9999230882207417,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e4m3fn",
+        "block": [
+          1,
+          32
+        ],
+        "blocks": 868033600,
+        "blocks_inexact": 1682278,
+        "inexact": 1685308,
+        "underflow": 323338,
+        "max_block_inexact": 3,
+        "min_scale_exponent": -43,
+        "max_scale_exponent": -6,
+        "exact_fraction": 0.9999393262903676,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e4m3fn",
+        "block": [
+          1,
+          0
+        ],
+        "blocks": 4748912,
+        "blocks_inexact": 2042771,
+        "inexact": 3073020,
+        "underflow": 582499,
+        "max_block_inexact": 107,
+        "min_scale_exponent": -41,
+        "max_scale_exponent": -6,
+        "exact_fraction": 0.9998893664996699,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e3m3",
+        "block": [
+          128,
+          128
+        ],
+        "blocks": 1697930,
+        "blocks_inexact": 1697930,
+        "inexact": 896432712,
+        "underflow": 167855048,
+        "max_block_inexact": 9800,
+        "min_scale_exponent": -11,
+        "max_scale_exponent": -2,
+        "exact_fraction": 0.9677270278947011,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e3m3",
+        "block": [
+          1,
+          128
+        ],
+        "blocks": 217016176,
+        "blocks_inexact": 192152279,
+        "inexact": 507784359,
+        "underflow": 94870650,
+        "max_block_inexact": 117,
+        "min_scale_exponent": -38,
+        "max_scale_exponent": -2,
+        "exact_fraction": 0.9817189731765231,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e3m3",
+        "block": [
+          1,
+          32
+        ],
+        "blocks": 868033600,
+        "blocks_inexact": 316856030,
+        "inexact": 399609263,
+        "underflow": 74650793,
+        "max_block_inexact": 28,
+        "min_scale_exponent": -39,
+        "max_scale_exponent": -2,
+        "exact_fraction": 0.9856134449075994,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e3m3",
+        "block": [
+          1,
+          0
+        ],
+        "blocks": 4748912,
+        "blocks_inexact": 4748908,
+        "inexact": 738753256,
+        "underflow": 138421018,
+        "max_block_inexact": 9098,
+        "min_scale_exponent": -37,
+        "max_scale_exponent": -2,
+        "exact_fraction": 0.9734037335937974,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e2m3",
+        "block": [
+          128,
+          128
+        ],
+        "blocks": 1697930,
+        "blocks_inexact": 1697930,
+        "inexact": 11988343011,
+        "underflow": 2661739509,
+        "max_block_inexact": 16304,
+        "min_scale_exponent": -9,
+        "max_scale_exponent": 0,
+        "exact_fraction": 0.5684010027706821,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e2m3",
+        "block": [
+          1,
+          128
+        ],
+        "blocks": 217016176,
+        "blocks_inexact": 217016066,
+        "inexact": 7702323315,
+        "underflow": 1515321164,
+        "max_block_inexact": 127,
+        "min_scale_exponent": -36,
+        "max_scale_exponent": 0,
+        "exact_fraction": 0.7227043790755949,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e2m3",
+        "block": [
+          1,
+          32
+        ],
+        "blocks": 868033600,
+        "blocks_inexact": 866733652,
+        "inexact": 6169473483,
+        "underflow": 1193088634,
+        "max_block_inexact": 31,
+        "min_scale_exponent": -37,
+        "max_scale_exponent": 0,
+        "exact_fraction": 0.7778893574989929,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e2m3",
+        "block": [
+          1,
+          0
+        ],
+        "blocks": 4748912,
+        "blocks_inexact": 4748910,
+        "inexact": 10348398860,
+        "underflow": 2187024885,
+        "max_block_inexact": 17056,
+        "min_scale_exponent": -35,
+        "max_scale_exponent": 0,
+        "exact_fraction": 0.6274415432719205,
+        "tensors_all_exact": 0
+      }
+    ]
+  },
+  "text_products": {
+    "values": 25621954560,
+    "zeros": 0,
+    "specials": 0,
+    "tensors": 497,
+    "geometries": [
+      {
+        "format": "e4m3fn",
+        "block": [
+          128,
+          128
+        ],
+        "blocks": 1566240,
+        "blocks_inexact": 1331527,
+        "inexact": 3439084,
+        "underflow": 641633,
+        "max_block_inexact": 149,
+        "min_scale_exponent": -14,
+        "max_scale_exponent": -8,
+        "exact_fraction": 0.9998657758918451,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e4m3fn",
+        "block": [
+          1,
+          128
+        ],
+        "blocks": 200171520,
+        "blocks_inexact": 1946656,
+        "inexact": 1957112,
+        "underflow": 365189,
+        "max_block_inexact": 3,
+        "min_scale_exponent": -25,
+        "max_scale_exponent": -8,
+        "exact_fraction": 0.9999236158195731,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e4m3fn",
+        "block": [
+          1,
+          32
+        ],
+        "blocks": 800686080,
+        "blocks_inexact": 1536874,
+        "inexact": 1538563,
+        "underflow": 286959,
+        "max_block_inexact": 2,
+        "min_scale_exponent": -26,
+        "max_scale_exponent": -8,
+        "exact_fraction": 0.9999399513805086,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e4m3fn",
+        "block": [
+          1,
+          0
+        ],
+        "blocks": 4152320,
+        "blocks_inexact": 1870071,
+        "inexact": 2755767,
+        "underflow": 513896,
+        "max_block_inexact": 107,
+        "min_scale_exponent": -23,
+        "max_scale_exponent": -8,
+        "exact_fraction": 0.9998924450906528,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e3m3",
+        "block": [
+          128,
+          128
+        ],
+        "blocks": 1566240,
+        "blocks_inexact": 1566240,
+        "inexact": 823708396,
+        "underflow": 154134282,
+        "max_block_inexact": 9800,
+        "min_scale_exponent": -11,
+        "max_scale_exponent": -4,
+        "exact_fraction": 0.9678514613679808,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e3m3",
+        "block": [
+          1,
+          128
+        ],
+        "blocks": 200171520,
+        "blocks_inexact": 177124083,
+        "inexact": 467335010,
+        "underflow": 87284364,
+        "max_block_inexact": 117,
+        "min_scale_exponent": -21,
+        "max_scale_exponent": -4,
+        "exact_fraction": 0.9817603684798667,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e3m3",
+        "block": [
+          1,
+          32
+        ],
+        "blocks": 800686080,
+        "blocks_inexact": 291737040,
+        "inexact": 367549006,
+        "underflow": 68638531,
+        "max_block_inexact": 28,
+        "min_scale_exponent": -22,
+        "max_scale_exponent": -4,
+        "exact_fraction": 0.9856549192943381,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e3m3",
+        "block": [
+          1,
+          0
+        ],
+        "blocks": 4152320,
+        "blocks_inexact": 4152320,
+        "inexact": 667137492,
+        "underflow": 124677906,
+        "max_block_inexact": 9098,
+        "min_scale_exponent": -19,
+        "max_scale_exponent": -4,
+        "exact_fraction": 0.973962271674562,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e2m3",
+        "block": [
+          128,
+          128
+        ],
+        "blocks": 1566240,
+        "blocks_inexact": 1566240,
+        "inexact": 11062731116,
+        "underflow": 2447744681,
+        "max_block_inexact": 16304,
+        "min_scale_exponent": -9,
+        "max_scale_exponent": -2,
+        "exact_fraction": 0.5682323497181317,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e2m3",
+        "block": [
+          1,
+          128
+        ],
+        "blocks": 200171520,
+        "blocks_inexact": 200171519,
+        "inexact": 7097793303,
+        "underflow": 1394997674,
+        "max_block_inexact": 127,
+        "min_scale_exponent": -19,
+        "max_scale_exponent": -2,
+        "exact_fraction": 0.7229800214351797,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e2m3",
+        "block": [
+          1,
+          32
+        ],
+        "blocks": 800686080,
+        "blocks_inexact": 799499628,
+        "inexact": 5679219760,
+        "underflow": 1097521497,
+        "max_block_inexact": 31,
+        "min_scale_exponent": -20,
+        "max_scale_exponent": -2,
+        "exact_fraction": 0.7783455689650556,
+        "tensors_all_exact": 0
+      },
+      {
+        "format": "e2m3",
+        "block": [
+          1,
+          0
+        ],
+        "blocks": 4152320,
+        "blocks_inexact": 4152320,
+        "inexact": 9557107406,
+        "underflow": 1987768534,
+        "max_block_inexact": 17056,
+        "min_scale_exponent": -17,
+        "max_scale_exponent": -2,
+        "exact_fraction": 0.6269953807146241,
+        "tensors_all_exact": 0
+      }
+    ]
+  },
+  "groups": {
+    "embedding": {
+      "values": 1271398400,
+      "zeros": 7528,
+      "specials": 0,
+      "tensors": 1,
+      "geometries": [
+        {
+          "format": "e4m3fn",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 77600,
+          "blocks_inexact": 63578,
+          "inexact": 144665,
+          "underflow": 26779,
+          "max_block_inexact": 29,
+          "min_scale_exponent": -15,
+          "max_scale_exponent": -9,
+          "exact_fraction": 0.9998862158391894,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 9932800,
+          "blocks_inexact": 92540,
+          "inexact": 93028,
+          "underflow": 17222,
+          "max_block_inexact": 3,
+          "min_scale_exponent": -25,
+          "max_scale_exponent": -9,
+          "exact_fraction": 0.9999268301737677,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 39731200,
+          "blocks_inexact": 75995,
+          "inexact": 76066,
+          "underflow": 14061,
+          "max_block_inexact": 2,
+          "min_scale_exponent": -25,
+          "max_scale_exponent": -9,
+          "exact_fraction": 0.9999401713892356,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 248320,
+          "blocks_inexact": 91332,
+          "inexact": 116444,
+          "underflow": 21715,
+          "max_block_inexact": 43,
+          "min_scale_exponent": -25,
+          "max_scale_exponent": -9,
+          "exact_fraction": 0.9999084126580622,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 77600,
+          "blocks_inexact": 77600,
+          "inexact": 32547483,
+          "underflow": 6094644,
+          "max_block_inexact": 6235,
+          "min_scale_exponent": -11,
+          "max_scale_exponent": -5,
+          "exact_fraction": 0.9744002485766853,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 9932800,
+          "blocks_inexact": 8816548,
+          "inexact": 22686262,
+          "underflow": 4242295,
+          "max_block_inexact": 107,
+          "min_scale_exponent": -21,
+          "max_scale_exponent": -5,
+          "exact_fraction": 0.9821564491507934,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 39731200,
+          "blocks_inexact": 14388286,
+          "inexact": 18081661,
+          "underflow": 3382145,
+          "max_block_inexact": 25,
+          "min_scale_exponent": -21,
+          "max_scale_exponent": -5,
+          "exact_fraction": 0.9857781313866684,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 248320,
+          "blocks_inexact": 248317,
+          "inexact": 27580904,
+          "underflow": 5162793,
+          "max_block_inexact": 4083,
+          "min_scale_exponent": -21,
+          "max_scale_exponent": -5,
+          "exact_fraction": 0.9783066393665432,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 77600,
+          "blocks_inexact": 77600,
+          "inexact": 462745092,
+          "underflow": 96762702,
+          "max_block_inexact": 15604,
+          "min_scale_exponent": -9,
+          "max_scale_exponent": -3,
+          "exact_fraction": 0.6360345490445796,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 9932800,
+          "blocks_inexact": 9932691,
+          "inexact": 347213922,
+          "underflow": 67719238,
+          "max_block_inexact": 127,
+          "min_scale_exponent": -19,
+          "max_scale_exponent": -3,
+          "exact_fraction": 0.72690391776488,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 39731200,
+          "blocks_inexact": 39655404,
+          "inexact": 280183822,
+          "underflow": 53997916,
+          "max_block_inexact": 31,
+          "min_scale_exponent": -19,
+          "max_scale_exponent": -3,
+          "exact_fraction": 0.7796254722359255,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 248320,
+          "blocks_inexact": 248318,
+          "inexact": 411406020,
+          "underflow": 82172957,
+          "max_block_inexact": 5103,
+          "min_scale_exponent": -19,
+          "max_scale_exponent": -3,
+          "exact_fraction": 0.6764145526689352,
+          "tensors_all_exact": 0
+        }
+      ]
+    },
+    "full_attention": {
+      "values": 1677721600,
+      "zeros": 0,
+      "specials": 0,
+      "tensors": 64,
+      "geometries": [
+        {
+          "format": "e4m3fn",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 102400,
+          "blocks_inexact": 92074,
+          "inexact": 271208,
+          "underflow": 50216,
+          "max_block_inexact": 50,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9998383474349976,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 13107200,
+          "blocks_inexact": 123844,
+          "inexact": 124481,
+          "underflow": 23197,
+          "max_block_inexact": 3,
+          "min_scale_exponent": -19,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9999258035421371,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 52428800,
+          "blocks_inexact": 104524,
+          "inexact": 104635,
+          "underflow": 19478,
+          "max_block_inexact": 2,
+          "min_scale_exponent": -20,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9999376326799393,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 311296,
+          "blocks_inexact": 147806,
+          "inexact": 210059,
+          "underflow": 38821,
+          "max_block_inexact": 107,
+          "min_scale_exponent": -15,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9998747950792313,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 102400,
+          "blocks_inexact": 102400,
+          "inexact": 65472428,
+          "underflow": 12273460,
+          "max_block_inexact": 8131,
+          "min_scale_exponent": -9,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9609753918647767,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 13107200,
+          "blocks_inexact": 11659423,
+          "inexact": 30473782,
+          "underflow": 5693643,
+          "max_block_inexact": 117,
+          "min_scale_exponent": -15,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.981836210489273,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 52428800,
+          "blocks_inexact": 19929090,
+          "inexact": 25347646,
+          "underflow": 4737244,
+          "max_block_inexact": 28,
+          "min_scale_exponent": -17,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9848916256427764,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 311296,
+          "blocks_inexact": 311296,
+          "inexact": 49299710,
+          "underflow": 9234173,
+          "max_block_inexact": 4772,
+          "min_scale_exponent": -11,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9706150829792023,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 102400,
+          "blocks_inexact": 102400,
+          "inexact": 826695092,
+          "underflow": 193808000,
+          "max_block_inexact": 16114,
+          "min_scale_exponent": -7,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.5072513270378113,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 13107200,
+          "blocks_inexact": 13107200,
+          "inexact": 461732416,
+          "underflow": 90946904,
+          "max_block_inexact": 127,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.7247860336303711,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 52428800,
+          "blocks_inexact": 52352101,
+          "inexact": 390190014,
+          "underflow": 75685778,
+          "max_block_inexact": 31,
+          "min_scale_exponent": -15,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.767428628206253,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 311296,
+          "blocks_inexact": 311296,
+          "inexact": 683760953,
+          "underflow": 146680627,
+          "max_block_inexact": 5924,
+          "min_scale_exponent": -9,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.5924467128515243,
+          "tensors_all_exact": 0
+        }
+      ]
+    },
+    "head": {
+      "values": 1271398400,
+      "zeros": 0,
+      "specials": 0,
+      "tensors": 1,
+      "geometries": [
+        {
+          "format": "e4m3fn",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 77600,
+          "blocks_inexact": 69998,
+          "inexact": 191793,
+          "underflow": 35563,
+          "max_block_inexact": 20,
+          "min_scale_exponent": -14,
+          "max_scale_exponent": -10,
+          "exact_fraction": 0.9998491479932647,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 9932800,
+          "blocks_inexact": 96685,
+          "inexact": 97227,
+          "underflow": 18131,
+          "max_block_inexact": 3,
+          "min_scale_exponent": -16,
+          "max_scale_exponent": -10,
+          "exact_fraction": 0.9999235275111248,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 39731200,
+          "blocks_inexact": 78083,
+          "inexact": 78179,
+          "underflow": 14777,
+          "max_block_inexact": 2,
+          "min_scale_exponent": -17,
+          "max_scale_exponent": -10,
+          "exact_fraction": 0.9999385094396847,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 248320,
+          "blocks_inexact": 119339,
+          "inexact": 172340,
+          "underflow": 32073,
+          "max_block_inexact": 17,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -10,
+          "exact_fraction": 0.9998644484687097,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 77600,
+          "blocks_inexact": 77600,
+          "inexact": 44883410,
+          "underflow": 8390433,
+          "max_block_inexact": 3862,
+          "min_scale_exponent": -11,
+          "max_scale_exponent": -6,
+          "exact_fraction": 0.964697603835273,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 9932800,
+          "blocks_inexact": 8903294,
+          "inexact": 23817467,
+          "underflow": 4452356,
+          "max_block_inexact": 50,
+          "min_scale_exponent": -12,
+          "max_scale_exponent": -6,
+          "exact_fraction": 0.9812667162393787,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 39731200,
+          "blocks_inexact": 14750629,
+          "inexact": 18718877,
+          "underflow": 3498900,
+          "max_block_inexact": 16,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -6,
+          "exact_fraction": 0.9852769383695936,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 248320,
+          "blocks_inexact": 248320,
+          "inexact": 41097666,
+          "underflow": 7685886,
+          "max_block_inexact": 1826,
+          "min_scale_exponent": -10,
+          "max_scale_exponent": -6,
+          "exact_fraction": 0.9676752259559238,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 77600,
+          "blocks_inexact": 77600,
+          "inexact": 601103006,
+          "underflow": 133617227,
+          "max_block_inexact": 14980,
+          "min_scale_exponent": -9,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.5272111353923365,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 9932800,
+          "blocks_inexact": 9932800,
+          "inexact": 361181446,
+          "underflow": 71092403,
+          "max_block_inexact": 125,
+          "min_scale_exponent": -10,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.7159179640307869,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 39731200,
+          "blocks_inexact": 39658863,
+          "inexact": 288868057,
+          "underflow": 55895498,
+          "max_block_inexact": 31,
+          "min_scale_exponent": -11,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.7727950129558131,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 248320,
+          "blocks_inexact": 248320,
+          "inexact": 554739618,
+          "underflow": 122247617,
+          "max_block_inexact": 4887,
+          "min_scale_exponent": -8,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.5636775868209367,
+          "tensors_all_exact": 0
+        }
+      ]
+    },
+    "linear_attention_matrix": {
+      "values": 5560074240,
+      "zeros": 0,
+      "specials": 0,
+      "tensors": 240,
+      "geometries": [
+        {
+          "format": "e4m3fn",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 341760,
+          "blocks_inexact": 303199,
+          "inexact": 844577,
+          "underflow": 158281,
+          "max_block_inexact": 149,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9998480996901221,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 43438080,
+          "blocks_inexact": 390107,
+          "inexact": 392159,
+          "underflow": 73356,
+          "max_block_inexact": 3,
+          "min_scale_exponent": -25,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9999294687475252,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 173752320,
+          "blocks_inexact": 342382,
+          "inexact": 342752,
+          "underflow": 64082,
+          "max_block_inexact": 2,
+          "min_scale_exponent": -26,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9999383547799534,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 1036800,
+          "blocks_inexact": 492075,
+          "inexact": 690109,
+          "underflow": 129121,
+          "max_block_inexact": 20,
+          "min_scale_exponent": -23,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9998758813335558,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 341760,
+          "blocks_inexact": 341760,
+          "inexact": 204404063,
+          "underflow": 38333019,
+          "max_block_inexact": 8144,
+          "min_scale_exponent": -9,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.963237170192893,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 43438080,
+          "blocks_inexact": 38385774,
+          "inexact": 96648516,
+          "underflow": 18046982,
+          "max_block_inexact": 62,
+          "min_scale_exponent": -21,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9826174054827009,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 173752320,
+          "blocks_inexact": 65962952,
+          "inexact": 83522838,
+          "underflow": 15594074,
+          "max_block_inexact": 21,
+          "min_scale_exponent": -22,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9849781074146233,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 1036800,
+          "blocks_inexact": 1036800,
+          "inexact": 160547498,
+          "underflow": 29996928,
+          "max_block_inexact": 3071,
+          "min_scale_exponent": -19,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9711249362742322,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 341760,
+          "blocks_inexact": 341760,
+          "inexact": 2678004946,
+          "underflow": 606028236,
+          "max_block_inexact": 16091,
+          "min_scale_exponent": -7,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.5183508654013944,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 43438080,
+          "blocks_inexact": 43438079,
+          "inexact": 1475506602,
+          "underflow": 288528536,
+          "max_block_inexact": 125,
+          "min_scale_exponent": -19,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.734624658177226,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 173752320,
+          "blocks_inexact": 173490457,
+          "inexact": 1289567912,
+          "underflow": 249392804,
+          "max_block_inexact": 31,
+          "min_scale_exponent": -20,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.7680664220771268,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 1036800,
+          "blocks_inexact": 1036800,
+          "inexact": 2250977627,
+          "underflow": 478200088,
+          "max_block_inexact": 6017,
+          "min_scale_exponent": -17,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.5951533145355987,
+          "tensors_all_exact": 0
+        }
+      ]
+    },
+    "mlp": {
+      "values": 17112760320,
+      "zeros": 0,
+      "specials": 0,
+      "tensors": 192,
+      "geometries": [
+        {
+          "format": "e4m3fn",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 1044480,
+          "blocks_inexact": 866256,
+          "inexact": 2131506,
+          "underflow": 397573,
+          "max_block_inexact": 43,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9998754434725817,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 133693440,
+          "blocks_inexact": 1336020,
+          "inexact": 1343245,
+          "underflow": 250505,
+          "max_block_inexact": 3,
+          "min_scale_exponent": -16,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9999215062342438,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 534773760,
+          "blocks_inexact": 1011885,
+          "inexact": 1012997,
+          "underflow": 188622,
+          "max_block_inexact": 2,
+          "min_scale_exponent": -17,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9999408045820162,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 2555904,
+          "blocks_inexact": 1110851,
+          "inexact": 1683259,
+          "underflow": 313881,
+          "max_block_inexact": 37,
+          "min_scale_exponent": -14,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9999016372012157,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 1044480,
+          "blocks_inexact": 1044480,
+          "inexact": 508948495,
+          "underflow": 95137370,
+          "max_block_inexact": 9800,
+          "min_scale_exponent": -9,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9702591232809366,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 133693440,
+          "blocks_inexact": 118175592,
+          "inexact": 316395245,
+          "underflow": 59091383,
+          "max_block_inexact": 66,
+          "min_scale_exponent": -12,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9815111507972082,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 534773760,
+          "blocks_inexact": 191094369,
+          "inexact": 239959645,
+          "underflow": 44808313,
+          "max_block_inexact": 20,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9859777358817119,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 2555904,
+          "blocks_inexact": 2555904,
+          "inexact": 416192618,
+          "underflow": 77760919,
+          "max_block_inexact": 9098,
+          "min_scale_exponent": -11,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9756793988685982,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 1044480,
+          "blocks_inexact": 1044480,
+          "inexact": 6956928072,
+          "underflow": 1514291218,
+          "max_block_inexact": 16304,
+          "min_scale_exponent": -7,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.593465464255389,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 133693440,
+          "blocks_inexact": 133693440,
+          "inexact": 4799372839,
+          "underflow": 944429831,
+          "max_block_inexact": 126,
+          "min_scale_exponent": -10,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.7195442027321048,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 534773760,
+          "blocks_inexact": 533998207,
+          "inexact": 3710593777,
+          "underflow": 716547417,
+          "max_block_inexact": 31,
+          "min_scale_exponent": -11,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.783168015702098,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 2555904,
+          "blocks_inexact": 2555904,
+          "inexact": 6067629208,
+          "underflow": 1240640202,
+          "max_block_inexact": 17056,
+          "min_scale_exponent": -9,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.6454324670866424,
+          "tensors_all_exact": 0
+        }
+      ]
+    },
+    "mtp": {
+      "values": 424673280,
+      "zeros": 0,
+      "specials": 0,
+      "tensors": 8,
+      "geometries": [
+        {
+          "format": "e4m3fn",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 25920,
+          "blocks_inexact": 23985,
+          "inexact": 82226,
+          "underflow": 15192,
+          "max_block_inexact": 89,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9998063782115042,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 3317760,
+          "blocks_inexact": 33770,
+          "inexact": 34068,
+          "underflow": 6359,
+          "max_block_inexact": 3,
+          "min_scale_exponent": -16,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9999197783293547,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 13271040,
+          "blocks_inexact": 26727,
+          "inexact": 26764,
+          "underflow": 4963,
+          "max_block_inexact": 2,
+          "min_scale_exponent": -17,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9999369774335697,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 64512,
+          "blocks_inexact": 33515,
+          "inexact": 129987,
+          "underflow": 24127,
+          "max_block_inexact": 33,
+          "min_scale_exponent": -15,
+          "max_scale_exponent": -8,
+          "exact_fraction": 0.9996939129299588,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 25920,
+          "blocks_inexact": 25920,
+          "inexact": 19773965,
+          "underflow": 3710939,
+          "max_block_inexact": 7134,
+          "min_scale_exponent": -9,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9534372282616886,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 3317760,
+          "blocks_inexact": 2978891,
+          "inexact": 8356567,
+          "underflow": 1565699,
+          "max_block_inexact": 76,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9803223621698074,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 13271040,
+          "blocks_inexact": 5033439,
+          "inexact": 6478825,
+          "underflow": 1211082,
+          "max_block_inexact": 24,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9847439777703932,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 64512,
+          "blocks_inexact": 64512,
+          "inexact": 30550075,
+          "underflow": 6030283,
+          "max_block_inexact": 5145,
+          "min_scale_exponent": -12,
+          "max_scale_exponent": -4,
+          "exact_fraction": 0.9280621681684329,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 25920,
+          "blocks_inexact": 25920,
+          "inexact": 228082962,
+          "underflow": 58065663,
+          "max_block_inexact": 15884,
+          "min_scale_exponent": -7,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.46292132624873406,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 3317760,
+          "blocks_inexact": 3317760,
+          "inexact": 122475835,
+          "underflow": 24720508,
+          "max_block_inexact": 127,
+          "min_scale_exponent": -11,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.7115998562471366,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 13271040,
+          "blocks_inexact": 13252880,
+          "inexact": 98558202,
+          "underflow": 19288532,
+          "max_block_inexact": 31,
+          "min_scale_exponent": -11,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.7679199360035084,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 64512,
+          "blocks_inexact": 64512,
+          "inexact": 202485792,
+          "underflow": 77372377,
+          "max_block_inexact": 15296,
+          "min_scale_exponent": -10,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.5231962981047453,
+          "tensors_all_exact": 0
+        }
+      ]
+    },
+    "vision": {
+      "values": 458551296,
+      "zeros": 0,
+      "specials": 0,
+      "tensors": 111,
+      "geometries": [
+        {
+          "format": "e4m3fn",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 28170,
+          "blocks_inexact": 25608,
+          "inexact": 116189,
+          "underflow": 42423,
+          "max_block_inexact": 267,
+          "min_scale_exponent": -13,
+          "max_scale_exponent": -6,
+          "exact_fraction": 0.9997466172246954,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 3594096,
+          "blocks_inexact": 49349,
+          "inexact": 52138,
+          "underflow": 19115,
+          "max_block_inexact": 4,
+          "min_scale_exponent": -42,
+          "max_scale_exponent": -6,
+          "exact_fraction": 0.9998862984349738,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 14345280,
+          "blocks_inexact": 42682,
+          "inexact": 43915,
+          "underflow": 17355,
+          "max_block_inexact": 3,
+          "min_scale_exponent": -43,
+          "max_scale_exponent": -6,
+          "exact_fraction": 0.9999042309979645,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e4m3fn",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 283760,
+          "blocks_inexact": 47853,
+          "inexact": 70822,
+          "underflow": 22761,
+          "max_block_inexact": 31,
+          "min_scale_exponent": -41,
+          "max_scale_exponent": -6,
+          "exact_fraction": 0.999845552720889,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 28170,
+          "blocks_inexact": 28170,
+          "inexact": 20402868,
+          "underflow": 3915183,
+          "max_block_inexact": 9714,
+          "min_scale_exponent": -9,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.955505811066337,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 3594096,
+          "blocks_inexact": 3232757,
+          "inexact": 9406520,
+          "underflow": 1778292,
+          "max_block_inexact": 106,
+          "min_scale_exponent": -38,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.9794864389610186,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 14345280,
+          "blocks_inexact": 5697265,
+          "inexact": 7499771,
+          "underflow": 1419035,
+          "max_block_inexact": 25,
+          "min_scale_exponent": -39,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.9836446411439213,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e3m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 283760,
+          "blocks_inexact": 283759,
+          "inexact": 13484785,
+          "underflow": 2550036,
+          "max_block_inexact": 3591,
+          "min_scale_exponent": -37,
+          "max_scale_exponent": -2,
+          "exact_fraction": 0.970592635725535,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            128,
+            128
+          ],
+          "blocks": 28170,
+          "blocks_inexact": 28170,
+          "inexact": 234783841,
+          "underflow": 59166463,
+          "max_block_inexact": 16148,
+          "min_scale_exponent": -7,
+          "max_scale_exponent": 0,
+          "exact_fraction": 0.4879878368068117,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            128
+          ],
+          "blocks": 3594096,
+          "blocks_inexact": 3594096,
+          "inexact": 134840255,
+          "underflow": 27883744,
+          "max_block_inexact": 127,
+          "min_scale_exponent": -36,
+          "max_scale_exponent": 0,
+          "exact_fraction": 0.70594292028781,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            32
+          ],
+          "blocks": 14345280,
+          "blocks_inexact": 14325740,
+          "inexact": 111511699,
+          "underflow": 22280689,
+          "max_block_inexact": 31,
+          "min_scale_exponent": -37,
+          "max_scale_exponent": 0,
+          "exact_fraction": 0.7568173943183011,
+          "tensors_all_exact": 0
+        },
+        {
+          "format": "e2m3",
+          "block": [
+            1,
+            0
+          ],
+          "blocks": 283760,
+          "blocks_inexact": 283760,
+          "inexact": 177399642,
+          "underflow": 39711017,
+          "max_block_inexact": 4303,
+          "min_scale_exponent": -35,
+          "max_scale_exponent": 0,
+          "exact_fraction": 0.6131302134625305,
+          "tensors_all_exact": 0
+        }
+      ]
+    }
+  },
+  "not_matrices": {
+    "tensors": 582,
+    "values": 4850416
+  },
+  "shards": [
+    {
+      "file": "model-00001-of-00018.safetensors",
+      "bytes": 3966730552,
+      "sha256": "ba0ce20aae489ad196733da5064bcdf159a1fe84f53336648196e1ebb7751b1c",
+      "tensor_count": 392
+    },
+    {
+      "file": "model-00002-of-00018.safetensors",
+      "bytes": 3043080328,
+      "sha256": "06a148c01bfbe3faa14a5f184a7ff29a706f7ae1c8b2705d2058e26d17a001fb",
+      "tensor_count": 47
+    },
+    {
+      "file": "model-00003-of-00018.safetensors",
+      "bytes": 2542796952,
+      "sha256": "2e1bf62cbcd406eaa64b60d10353e1f0ef4039d0976e56f05cabe953454f9968",
+      "tensor_count": 1
+    },
+    {
+      "file": "model-00004-of-00018.safetensors",
+      "bytes": 3988973152,
+      "sha256": "511e34063187882659753c4d93f3859f93c019fd438d8813071921c81d9a3f1a",
+      "tensor_count": 69
+    },
+    {
+      "file": "model-00005-of-00018.safetensors",
+      "bytes": 2099339864,
+      "sha256": "635cb53446dc74f219740fc59e18b774f877b803b9722e289ca62575a6efa701",
+      "tensor_count": 37
+    },
+    {
+      "file": "model-00006-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "0bc5214fac607f0e6cc92eec3789d4b8559410ef9fce66621ba8158e8410dae0",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00007-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "80b0c49033e9a0d5762562aa12f4acdb7f54da586f3d0110f28c48d91cf07892",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00008-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "7192c5b66185d3592927daabee1cc19e6f6e0ce75988ee20e824b624765fda79",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00009-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "af3c48cc37af44f3db6ae0579baf019180d48d9c527caa0a1f03ff85813a56d8",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00010-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "163490a76f3bea3a40855b7efc04ce6d27afaf1a34f0bbde495b9491f76457c9",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00011-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "5f3ae1b948aeee39da77aec558e8236cd65fe4d7cb7686a76bb007acc563c6d8",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00012-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "a3de1c7114677a8f5ac5c4892c90e8238ea5c1e2038c80e757dfc87c3902ca55",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00013-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "06ab79a41f74c9c5cb734816feb0c7fc364104b227165ee7391231e1155aa02a",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00014-of-00018.safetensors",
+      "bytes": 3979553696,
+      "sha256": "4138ed94603065ba884bbcadedb04d7718bb40117e85e6f5c6fc5b9c05b7a85b",
+      "tensor_count": 76
+    },
+    {
+      "file": "model-00015-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "69224e27b9de4e7dbf6fc936c6eaae08447bda3b80a6c31a871ab451173afd22",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00016-of-00018.safetensors",
+      "bytes": 3979564040,
+      "sha256": "73cb9a1089fb6155cb648609478d6633be8a5c7d9ca5a05bc8925ce8a553cefe",
+      "tensor_count": 77
+    },
+    {
+      "file": "model-00017-of-00018.safetensors",
+      "bytes": 2108759344,
+      "sha256": "beb51f01056142ac4984bd800507b0dd0fd18de57f8e9ef6ea41d1a3598983a8",
+      "tensor_count": 30
+    },
+    {
+      "file": "model-00018-of-00018.safetensors",
+      "bytes": 3392197344,
+      "sha256": "1d3479509e21494658f9b64d317f5ea8e55c4025d28c702d6c4d0b356ce8ea06",
+      "tensor_count": 16
+    }
+  ]
+}

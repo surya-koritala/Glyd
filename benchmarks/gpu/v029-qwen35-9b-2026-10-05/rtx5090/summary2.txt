@@ -1,0 +1,24 @@
+v0.29 pre-release run on NVIDIA GeForce RTX 5090 (with both appended blocks)
+passed 18, failed 3
+FAIL the engine's API checks (tools, logprobs, n, logit_bias, Open WebUI, loopback): exit 0
+FAIL glyd serve (default): vLLM runs it
+FAIL no traceback in the user commands' output
+--- one user's speed
+engine-qwen3-8b                  TTFT     94.4 ms  decode  111.91 tok/s
+glyd-qwen3.5-9b                  TTFT    148.0 ms  decode   28.71 tok/s
+glydcompiled-qwen3-8b            TTFT    102.2 ms  decode  116.78 tok/s
+glydcompiled-qwen3.5-9b          TTFT    131.2 ms  decode  115.85 tok/s
+glydvllm-qwen3-8b                TTFT    103.2 ms  decode   49.81 tok/s
+--- numbers
+glyd serve Qwen3.5-9B: 
+glyd serve Qwen3-8B: 
+glyd serve compiled Qwen3-8B: GPU KV cache size: 118,368 tokens;Model loading took 11.5 GiB;glyd: mma12 layout;
+glyd serve compiled Qwen3.5-9B: GPU KV cache size: 389,307 tokens;Model loading took 13.89 GiB;glyd: mma12 layout;
+--- times
+install: 44 s
+engine8b up in 4 s, GPU memory used 16782 MiB
+glydvllm8b up in 0 s, GPU memory used 2 MiB
+glyd_q35_9b up in 72 s, GPU memory used 28934 MiB
+glydvllm8b_b up in 33 s, GPU memory used 30212 MiB
+glydc8b up in 137 s, GPU memory used 29858 MiB
+glydc_q35 up in 135 s, GPU memory used 28478 MiB

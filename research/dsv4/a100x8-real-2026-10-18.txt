@@ -1,0 +1,50 @@
+DeepSeek-V4-Flash on the dynamic engine, exact to the release, first run on the real model (GLY-329)
+2026-10-18 09:12-09:50 Eastern, Lambda gpu_8x_a100 (8x A100-SXM4-40GB, driver 580.126.20, 124 vCPU), ~44 min, ~$12.
+
+Weights: the release's checkpoint as it is (deepseek-ai/DeepSeek-V4-Flash, 46 shards, 159.6 GB), decoded exactly at load:
+FP8 E4M3 x E8M0 128x128 block scales -> bf16 (exact) -> packed lossless (tiered, ~10.8 bits a weight); FP4 E2M1 x E8M0 run
+scales -> five-bit runs (twice the E2M1 value, -12..12; the run's scale halved; exact) at 5.50 bits a weight. Activations as
+the release quantizes them (FP8 before each FP8/FP4 product, the cache's FP8 channels, the indexer's FP4 and rotation).
+Split over the 8 GPUs (cuts 6,11,17,22,28,33,38; slots handed over through host memory). Stage 0: 26.5 GiB of weights.
+Load (pack included, 8 stages at once): 136-153 s.
+
+Greedy, raw text (start token + prompt), chunk 256, CUDA graph per stage:
+  "The capital of France is" -> " Paris. It is one of the most famous cities in the world. Paris is known for its beautiful landmarks like the E"
+  "Question: What is 17 multiplied by 23? Answer:" -> " 391. Explanation: 17 multiplied by 23 equals 391. This is a simple multiplication problem.<end>"
+  decode 40.2-40.6 ms a token (24.7-24.9 tok/s) at a few dozen tokens; 47-49 ms at 1.5-3.1K of context.
+Score (a token at a time, 517 tokens: prose, the Declaration's opening, Python): mean log-probability -0.7984, perplexity 2.222.
+Needle (the code in the first line, then filler, then the question):
+  1,566 tokens (entries 391 < the indexer's 512: all read): "The secret code is 7341." prompt 3.15 s
+  3,138 tokens (entries 784: the indexer picks 512): "The secret code is 7341." prompt 6.77 s
+  -> the window (128), the compressed caches (ratios 4 and 128) and the indexer's picks all reach the first line.
+
+vLLM 0.32.0 (DeepseekV4ForCausalLM listed): fails on A100, "Assertion error (csrc/apis/hyperconnection.hpp:58): Unsupported
+architecture" (its mHC kernel is Hopper and later). The per-token comparison waits for an H100/B200 session (ours.txt kept).
+
+Gaps: decode is ~18% of the A100 pipeline's bytes ceiling (~11 GB a token at 1.555 TB/s = ~7 ms); the FP8 matrices at 10.8 bits
+(the library's lossless FP8 format: ~6.7) and the experts at 5.5 (an exact E2M1 layout: 4.25) are the size levers; the stage
+hand-overs through the host and the attention's three launches the time ones. MTP drafting not yet.
+
+--- gen1.txt
+The capital of France is Paris. It is one of the most famous cities in the world. Paris is known for its beautiful landmarks like the E
+prompt of 6 tokens in 62 ms; 23 tokens at 40.16 ms each (24.9 a second)
+--- gen2.txt
+Question: What is 17 multiplied by 23? Answer: 391. Explanation: 17 multiplied by 23 equals 391. This is a simple multiplication problem.<｜end▁of▁sentence｜> Pregunta: ¿Cuánto es 17 multiplicado por 23?
+prompt of 14 tokens in 80 ms; 39 tokens at 40.55 ms each (24.7 a second)
+--- score.txt
+517 tokens of /home/ubuntu/v4_text.txt: mean log-probability -0.7984, perplexity 2.222 (44.4 ms a token)
+--- needle2.txt (tail)
+ + b
+    return b
+
+for i in range(10):
+    print(i, fibonacci(i))
+
+
+Question: What is the secret code mentioned at the very beginning of this text? Answer: The secret code is 7341.<｜end▁of▁sentence｜> P 0.9
+Question
+prompt of 3138 tokens in 6768 ms; 11 tokens at 49.37 ms each (20.3 a second)
+
+--- vllm.txt (the error)
+(MainProcess pid=32709) WARNING 10-18 13:42:20 [flashinfer.py:99] FlashInfer kernels are disabled: flashinfer-cubin is not installed and nvcc (CUDA_HOME, CUDA_PATH, PATH or /usr/local/cuda) or ninja (PATH) is missing. Set CUDA_HOME to a CUDA toolkit 
+(MainProcess pid=32709) WARNING 10-18 13:42:21 [vllm.py:1703] Enforce eager set, disabling torch.compile, CUDAGraphs, and JIT kernel warmup. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none and --kernel_config.enable_jit_warmup=Fal

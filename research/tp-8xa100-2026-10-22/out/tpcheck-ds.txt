@@ -1,0 +1,7 @@
+one GPU: NVIDIA A100-SXM4-80GB (sm_80): DeepSeek-V4 on the dynamic engine, 5 layers, weights 0.093 GiB (layout mma), KV 0.001 GiB (1024 positions), 0.59 of 79.25 GiB in use
+2 GPUs, every layer sliced across them; GPU 0: NVIDIA A100-SXM4-80GB (sm_80): DeepSeek-V4 on the dynamic engine, 5 layers, weights 0.057 GiB (layout mma), KV 0.001 GiB (1024 positions), 0.59 of 79.25 GiB in use
+step     0: 0 of 4096 logits differ, the largest by 0.00000
+step     1: 0 of 4096 logits differ, the largest by 0.00000
+step     2: 0 of 4096 logits differ, the largest by 0.00000
+prompt  24: 0 of 4096 logits differ, the largest by 0.00000
+25 of 25 passes the same to the bit

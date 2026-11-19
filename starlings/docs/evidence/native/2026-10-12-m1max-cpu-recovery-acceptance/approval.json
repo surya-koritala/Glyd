@@ -1,0 +1,19 @@
+{
+  "kind": "NativeCpuRecoveryRenewedApproval",
+  "approved": true,
+  "user_authorization": "Approve one corrected bounded recovery attempt",
+  "implementation": "419a6fdbb6e26d008d7e407ce3c4121738dbd86f",
+  "required_pr": 37,
+  "required_pr_head": "1ad905020c1d6aa7dcabb4dc59269aae67352efd",
+  "attempts": 1,
+  "requests_max": 2,
+  "output_tokens_per_request_max": 8,
+  "count_calls_upper_bound": 4,
+  "cpu_threads": 2,
+  "runtime_seconds_max": 300,
+  "sampled_rss_cap_bytes": 4294967296,
+  "external_spend_usd": 0,
+  "cached_assets_only": true,
+  "old_quarantine_reset": false,
+  "general_deployment": false
+}

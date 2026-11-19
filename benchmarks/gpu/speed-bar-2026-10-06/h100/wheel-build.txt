@@ -1,0 +1,288 @@
+error: externally-managed-environment
+
+× This environment is externally managed
+╰─> To install Python packages system-wide, try apt install
+    python3-xyz, where xyz is the package you are trying to
+    install.
+    
+    If you wish to install a non-Debian-packaged Python package,
+    create a virtual environment using python3 -m venv path/to/venv.
+    Then use path/to/venv/bin/python and path/to/venv/bin/pip. Make
+    sure you have python3-full installed.
+    
+    If you wish to install a non-Debian packaged Python application,
+    it may be easiest to use pipx install xyz, which will manage a
+    virtual environment for you. Make sure you have pipx installed.
+    
+    See /usr/share/doc/python3.12/README.venv for more information.
+
+note: If you believe this is a mistake, please contact your Python installation or OS distribution provider. You can override this, at the risk of breaking your Python installation or OS, by passing --break-system-packages.
+hint: See PEP 668 for the detailed specification.
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+* Creating isolated environment: venv+pip...
+* Installing packages in isolated environment:
+  - Cython>=3.1
+  - setuptools>=77
+  - wheel
+* Getting build dependencies for wheel...
+Compiling glyd_gpu/__init__.py because it changed.
+Compiling glyd_gpu/_cli.py because it changed.
+Compiling glyd_gpu/_lib.py because it changed.
+Compiling glyd_gpu/chat.py because it changed.
+Compiling glyd_gpu/engine.py because it changed.
+Compiling glyd_gpu/fit.py because it changed.
+Compiling glyd_gpu/format.py because it changed.
+Compiling glyd_gpu/hf.py because it changed.
+Compiling glyd_gpu/kernels.py because it changed.
+Compiling glyd_gpu/kvcal.py because it changed.
+Compiling glyd_gpu/measured.py because it changed.
+Compiling glyd_gpu/model.py because it changed.
+Compiling glyd_gpu/moe.py because it changed.
+Compiling glyd_gpu/page.py because it changed.
+Compiling glyd_gpu/preflight.py because it changed.
+Compiling glyd_gpu/run.py because it changed.
+Compiling glyd_gpu/vllm_admit.py because it changed.
+Compiling glyd_gpu/vllm_entry.py because it changed.
+Compiling glyd_gpu/vllm_kv.py because it changed.
+Compiling glyd_gpu/vllm_plugin.py because it changed.
+Compiling glyd_gpu/vllm_sched.py because it changed.
+[ 1/21] Cythonizing glyd_gpu/__init__.py
+[ 2/21] Cythonizing glyd_gpu/_cli.py
+[ 3/21] Cythonizing glyd_gpu/_lib.py
+[ 4/21] Cythonizing glyd_gpu/chat.py
+[ 5/21] Cythonizing glyd_gpu/engine.py
+[ 6/21] Cythonizing glyd_gpu/fit.py
+[ 7/21] Cythonizing glyd_gpu/format.py
+[ 8/21] Cythonizing glyd_gpu/hf.py
+[ 9/21] Cythonizing glyd_gpu/kernels.py
+[10/21] Cythonizing glyd_gpu/kvcal.py
+[11/21] Cythonizing glyd_gpu/measured.py
+[12/21] Cythonizing glyd_gpu/model.py
+[13/21] Cythonizing glyd_gpu/moe.py
+[14/21] Cythonizing glyd_gpu/page.py
+[15/21] Cythonizing glyd_gpu/preflight.py
+[16/21] Cythonizing glyd_gpu/run.py
+[17/21] Cythonizing glyd_gpu/vllm_admit.py
+[18/21] Cythonizing glyd_gpu/vllm_entry.py
+[19/21] Cythonizing glyd_gpu/vllm_kv.py
+[20/21] Cythonizing glyd_gpu/vllm_plugin.py
+[21/21] Cythonizing glyd_gpu/vllm_sched.py
+running egg_info
+creating glyd_gpu.egg-info
+writing glyd_gpu.egg-info/PKG-INFO
+writing dependency_links to glyd_gpu.egg-info/dependency_links.txt
+writing entry points to glyd_gpu.egg-info/entry_points.txt
+writing requirements to glyd_gpu.egg-info/requires.txt
+writing top-level names to glyd_gpu.egg-info/top_level.txt
+writing manifest file 'glyd_gpu.egg-info/SOURCES.txt'
+reading manifest file 'glyd_gpu.egg-info/SOURCES.txt'
+adding license file 'LICENSE'
+writing manifest file 'glyd_gpu.egg-info/SOURCES.txt'
+* Installed build dependency versions:
+  - cython==3.3.0
+  - setuptools==84.0.0
+  - wheel==0.48.0
+* Building wheel...
+Compiling glyd_gpu/__init__.py because it changed.
+Compiling glyd_gpu/_cli.py because it changed.
+Compiling glyd_gpu/_lib.py because it changed.
+Compiling glyd_gpu/chat.py because it changed.
+Compiling glyd_gpu/engine.py because it changed.
+Compiling glyd_gpu/fit.py because it changed.
+Compiling glyd_gpu/format.py because it changed.
+Compiling glyd_gpu/hf.py because it changed.
+Compiling glyd_gpu/kernels.py because it changed.
+Compiling glyd_gpu/kvcal.py because it changed.
+Compiling glyd_gpu/measured.py because it changed.
+Compiling glyd_gpu/model.py because it changed.
+Compiling glyd_gpu/moe.py because it changed.
+Compiling glyd_gpu/page.py because it changed.
+Compiling glyd_gpu/preflight.py because it changed.
+Compiling glyd_gpu/run.py because it changed.
+Compiling glyd_gpu/vllm_admit.py because it changed.
+Compiling glyd_gpu/vllm_entry.py because it changed.
+Compiling glyd_gpu/vllm_kv.py because it changed.
+Compiling glyd_gpu/vllm_plugin.py because it changed.
+Compiling glyd_gpu/vllm_sched.py because it changed.
+[ 1/21] Cythonizing glyd_gpu/__init__.py
+[ 2/21] Cythonizing glyd_gpu/_cli.py
+[ 3/21] Cythonizing glyd_gpu/_lib.py
+[ 4/21] Cythonizing glyd_gpu/chat.py
+[ 5/21] Cythonizing glyd_gpu/engine.py
+[ 6/21] Cythonizing glyd_gpu/fit.py
+[ 7/21] Cythonizing glyd_gpu/format.py
+[ 8/21] Cythonizing glyd_gpu/hf.py
+[ 9/21] Cythonizing glyd_gpu/kernels.py
+[10/21] Cythonizing glyd_gpu/kvcal.py
+[11/21] Cythonizing glyd_gpu/measured.py
+[12/21] Cythonizing glyd_gpu/model.py
+[13/21] Cythonizing glyd_gpu/moe.py
+[14/21] Cythonizing glyd_gpu/page.py
+[15/21] Cythonizing glyd_gpu/preflight.py
+[16/21] Cythonizing glyd_gpu/run.py
+[17/21] Cythonizing glyd_gpu/vllm_admit.py
+[18/21] Cythonizing glyd_gpu/vllm_entry.py
+[19/21] Cythonizing glyd_gpu/vllm_kv.py
+[20/21] Cythonizing glyd_gpu/vllm_plugin.py
+[21/21] Cythonizing glyd_gpu/vllm_sched.py
+running bdist_wheel
+running build
+running build_py
+creating build/lib.linux-x86_64-cpython-312/glyd_gpu
+copying glyd_gpu/__main__.py -> build/lib.linux-x86_64-cpython-312/glyd_gpu
+copying glyd_gpu/_trace.py -> build/lib.linux-x86_64-cpython-312/glyd_gpu
+running egg_info
+writing glyd_gpu.egg-info/PKG-INFO
+writing dependency_links to glyd_gpu.egg-info/dependency_links.txt
+writing entry points to glyd_gpu.egg-info/entry_points.txt
+writing requirements to glyd_gpu.egg-info/requires.txt
+writing top-level names to glyd_gpu.egg-info/top_level.txt
+reading manifest file 'glyd_gpu.egg-info/SOURCES.txt'
+adding license file 'LICENSE'
+writing manifest file 'glyd_gpu.egg-info/SOURCES.txt'
+copying glyd_gpu/chat.html -> build/lib.linux-x86_64-cpython-312/glyd_gpu
+copying glyd_gpu/glyd_gpu.h -> build/lib.linux-x86_64-cpython-312/glyd_gpu
+copying glyd_gpu/kvcorpus.bin -> build/lib.linux-x86_64-cpython-312/glyd_gpu
+copying glyd_gpu/libglyd_gpu_cuda12.so -> build/lib.linux-x86_64-cpython-312/glyd_gpu
+copying glyd_gpu/libglyd_gpu_cuda13.so -> build/lib.linux-x86_64-cpython-312/glyd_gpu
+running build_ext
+building 'glyd_gpu.__init__' extension
+building 'glyd_gpu._cli' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/__init__.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/__init__.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/_cli.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/_cli.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+building 'glyd_gpu._lib' extension
+building 'glyd_gpu.engine' extension
+building 'glyd_gpu.chat' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/_lib.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/_lib.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/engine.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/engine.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/chat.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/chat.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+building 'glyd_gpu.fit' extension
+building 'glyd_gpu.format' extension
+building 'glyd_gpu.hf' extension
+building 'glyd_gpu.kernels' extension
+building 'glyd_gpu.kvcal' extension
+building 'glyd_gpu.measured' extension
+building 'glyd_gpu.model' extension
+building 'glyd_gpu.moe' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/fit.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/fit.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+building 'glyd_gpu.page' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/format.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/format.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+building 'glyd_gpu.preflight' extension
+building 'glyd_gpu.run' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/hf.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/hf.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+building 'glyd_gpu.vllm_admit' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/kernels.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/kernels.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+building 'glyd_gpu.vllm_entry' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/kvcal.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/kvcal.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/model.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/model.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/measured.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/measured.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+building 'glyd_gpu.vllm_plugin' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/moe.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/moe.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+building 'glyd_gpu.vllm_kv' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/page.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/page.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+building 'glyd_gpu.vllm_sched' extension
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/preflight.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/preflight.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_sched.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_sched.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_admit.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_admit.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_entry.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_entry.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_plugin.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_plugin.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_kv.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_kv.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -DPy_LIMITED_API=0x030A0000 -DCYTHON_LIMITED_API=1 -I/tmp/build-env-9_bu6_l5/include -I/usr/include/python3.12 -c /root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/run.c -o build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/run.o -O2 -g0 -fvisibility=hidden -DCYTHON_CLINE_IN_TRACEBACK=0
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/measured.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/measured.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/__init__.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/__init__.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/_cli.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/_cli.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_entry.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_entry.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_admit.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_admit.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/page.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/page.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/chat.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/chat.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/fit.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/fit.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/engine.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/engine.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_sched.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_sched.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/hf.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/hf.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/moe.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/moe.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/format.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/format.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/kvcal.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/kvcal.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/preflight.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/preflight.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/kernels.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/kernels.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/run.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/run.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_kv.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_kv.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/model.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/model.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/_lib.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/_lib.abi3.so -Wl,--strip-all
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -Wl,-z,relro -g -fwrapv -O2 build/temp.linux-x86_64-cpython-312/root/gsrc/glyd-gpu-py/build/cython/glyd_gpu/vllm_plugin.o -L/usr/lib/x86_64-linux-gnu -o build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_plugin.abi3.so -Wl,--strip-all
+installing to build/bdist.linux-x86_64/wheel
+running install
+running install_lib
+creating build/bdist.linux-x86_64/wheel
+creating build/bdist.linux-x86_64/wheel/glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/__main__.py -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/_trace.py -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/chat.html -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/glyd_gpu.h -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/kvcorpus.bin -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/libglyd_gpu_cuda12.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/libglyd_gpu_cuda13.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/measured.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/__init__.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/_cli.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_entry.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_admit.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/page.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/chat.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/fit.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/engine.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_sched.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/hf.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/moe.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/format.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/kvcal.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/preflight.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/kernels.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/run.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_kv.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/model.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/_lib.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+copying build/lib.linux-x86_64-cpython-312/glyd_gpu/vllm_plugin.abi3.so -> build/bdist.linux-x86_64/wheel/./glyd_gpu
+running install_egg_info
+Copying glyd_gpu.egg-info to build/bdist.linux-x86_64/wheel/./glyd_gpu-0.29.0-py3.12.egg-info
+running install_scripts
+creating build/bdist.linux-x86_64/wheel/glyd_gpu-0.29.0.dist-info/WHEEL
+creating '/root/gsrc/glyd-gpu-py/dist/.tmp-841zcj9j/glyd_gpu-0.29.0-cp310-abi3-linux_x86_64.whl' and adding 'build/bdist.linux-x86_64/wheel' to it
+adding 'glyd_gpu/__init__.abi3.so'
+adding 'glyd_gpu/__main__.py'
+adding 'glyd_gpu/_cli.abi3.so'
+adding 'glyd_gpu/_lib.abi3.so'
+adding 'glyd_gpu/_trace.py'
+adding 'glyd_gpu/chat.abi3.so'
+adding 'glyd_gpu/chat.html'
+adding 'glyd_gpu/engine.abi3.so'
+adding 'glyd_gpu/fit.abi3.so'
+adding 'glyd_gpu/format.abi3.so'
+adding 'glyd_gpu/glyd_gpu.h'
+adding 'glyd_gpu/hf.abi3.so'
+adding 'glyd_gpu/kernels.abi3.so'
+adding 'glyd_gpu/kvcal.abi3.so'
+adding 'glyd_gpu/kvcorpus.bin'
+adding 'glyd_gpu/libglyd_gpu_cuda12.so'
+adding 'glyd_gpu/libglyd_gpu_cuda13.so'
+adding 'glyd_gpu/measured.abi3.so'
+adding 'glyd_gpu/model.abi3.so'
+adding 'glyd_gpu/moe.abi3.so'
+adding 'glyd_gpu/page.abi3.so'
+adding 'glyd_gpu/preflight.abi3.so'
+adding 'glyd_gpu/run.abi3.so'
+adding 'glyd_gpu/vllm_admit.abi3.so'
+adding 'glyd_gpu/vllm_entry.abi3.so'
+adding 'glyd_gpu/vllm_kv.abi3.so'
+adding 'glyd_gpu/vllm_plugin.abi3.so'
+adding 'glyd_gpu/vllm_sched.abi3.so'
+adding 'glyd_gpu-0.29.0.dist-info/licenses/LICENSE'
+adding 'glyd_gpu-0.29.0.dist-info/METADATA'
+adding 'glyd_gpu-0.29.0.dist-info/WHEEL'
+adding 'glyd_gpu-0.29.0.dist-info/entry_points.txt'
+adding 'glyd_gpu-0.29.0.dist-info/top_level.txt'
+adding 'glyd_gpu-0.29.0.dist-info/RECORD'
+removing build/bdist.linux-x86_64/wheel
+Successfully built glyd_gpu-0.29.0-cp310-abi3-linux_x86_64.whl
+total 29812
+-rw-r--r-- 1 root root 30524058 Oct  6 04:31 glyd_gpu-0.29.0-cp310-abi3-linux_x86_64.whl
+glyd_gpu-0.29.0-cp310-abi3-linux_x86_64.whl

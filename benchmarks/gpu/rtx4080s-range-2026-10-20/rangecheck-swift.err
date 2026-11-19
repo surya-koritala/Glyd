@@ -1,0 +1,2 @@
+worker 0..16 of 32 layers of /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d (swift): glyd-range/1, incarnation ddf04fa59e748c56
+worker 16..32 of 32 layers of /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d (swift): glyd-range/1, incarnation fbca29a3b0cea080

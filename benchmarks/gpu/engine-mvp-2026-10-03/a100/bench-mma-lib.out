@@ -1,0 +1,7 @@
+loaded in 2.2 s: NVIDIA A100-SXM4-40GB (sm_80): weights 10.37 GiB (67.9% of bf16's 15.26), cache 4096 tokens (0.43 GiB), workspaces 553 MiB, 11.83 of 39.49 GiB in use
+KV cache: nothing lost
+prefill ms of the 3 timed runs: 181.1, 180.8, 180.8
+{"prompt_tokens":1024,"new_tokens":64,"prefill_ms":180.8,"decode_ms_mean":15.401,"decode_ms_p50":15.405,"decode_ms_p99":15.431,"decode_tokens_per_s":64.93,"load_s":2.20,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+KV cache: nothing lost
+prefill ms of the 3 timed runs: 623.1, 623.2, 623.4
+{"prompt_tokens":3500,"new_tokens":64,"prefill_ms":623.2,"decode_ms_mean":15.608,"decode_ms_p50":15.616,"decode_ms_p99":15.651,"decode_tokens_per_s":64.07,"load_s":2.20,"weights_gib":10.365,"cache_tokens":4096,"graph":true}

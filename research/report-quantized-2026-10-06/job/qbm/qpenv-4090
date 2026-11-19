@@ -1,0 +1,4 @@
+END=6600
+QP_MODELS="RedHatAI/Qwen3.5-9B-quantized.w8a8
+google/gemma-4-12B-it-qat-w4a16-ct
+cyankiwi/Qwen3.6-27B-AWQ-INT4|--dtype bfloat16"

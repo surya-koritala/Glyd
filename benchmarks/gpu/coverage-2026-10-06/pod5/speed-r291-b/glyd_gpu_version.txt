@@ -1,0 +1,2 @@
+0.29.0+r291 /root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/glyd_gpu/__init__.abi3.so True
+glyd-gpu                                 0.29.0+r291

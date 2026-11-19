@@ -1,0 +1,97 @@
+18:49:12 == every tile's bits against the first tile's (M = 1024, 2048, 3500)
+M=1024 gate+up  N=24576 K=4096: cuBLAS 3.556 ms (58.0 TFLOPS) [1035 MHz, 38 W, 79 C]
+    v3 128x256 s3      3.944 ms (52.3 TFLOPS, 1.11x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 s4      4.224 ms (48.8 TFLOPS, 1.19x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 s3      3.986 ms (51.7 TFLOPS, 1.12x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 4.174 ms (49.4 TFLOPS, 1.17x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 3.989 ms (51.7 TFLOPS, 1.12x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 3.821 ms (54.0 TFLOPS, 1.07x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 4.074 ms (50.6 TFLOPS, 1.15x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+M=1024 down     N=4096 K=12288: cuBLAS 1.999 ms (51.6 TFLOPS) [975 MHz, 50 W, 79 C]
+    v3 128x256 s3      2.138 ms (48.2 TFLOPS, 1.07x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 128x128 s4      2.151 ms (47.9 TFLOPS, 1.08x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 256x128 s3      2.110 ms (48.8 TFLOPS, 1.06x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 2.254 ms (45.7 TFLOPS, 1.13x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 2.215 ms (46.5 TFLOPS, 1.11x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 2.175 ms (47.4 TFLOPS, 1.09x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 2.210 ms (46.7 TFLOPS, 1.11x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+M=1024 qkv      N=6144 K=4096: cuBLAS 1.168 ms (44.1 TFLOPS) [840 MHz, 49 W, 80 C]
+    v3 128x256 s3      1.017 ms (50.7 TFLOPS, 0.87x cuBLAS's time) relative L2 difference from cuBLAS 2.67e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 128x128 s4      1.072 ms (48.1 TFLOPS, 0.92x cuBLAS's time) relative L2 difference from cuBLAS 2.67e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 256x128 s3      1.025 ms (50.3 TFLOPS, 0.88x cuBLAS's time) relative L2 difference from cuBLAS 2.67e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 1.086 ms (47.5 TFLOPS, 0.93x cuBLAS's time) relative L2 difference from cuBLAS 2.67e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 1.029 ms (50.1 TFLOPS, 0.88x cuBLAS's time) relative L2 difference from cuBLAS 2.67e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 1.003 ms (51.4 TFLOPS, 0.86x cuBLAS's time) relative L2 difference from cuBLAS 2.67e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 1.042 ms (49.4 TFLOPS, 0.89x cuBLAS's time) relative L2 difference from cuBLAS 2.67e-03, largest 0.0625, 0 values differ in bits from the first variant's
+M=1024 o        N=4096 K=4096: cuBLAS 0.630 ms (54.5 TFLOPS) [1035 MHz, 55 W, 80 C]
+    v3 128x256 s3      0.667 ms (51.5 TFLOPS, 1.06x cuBLAS's time) relative L2 difference from cuBLAS 2.15e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 128x128 s4      0.618 ms (55.6 TFLOPS, 0.98x cuBLAS's time) relative L2 difference from cuBLAS 2.15e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 256x128 s3      0.668 ms (51.4 TFLOPS, 1.06x cuBLAS's time) relative L2 difference from cuBLAS 2.15e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 0.677 ms (50.7 TFLOPS, 1.07x cuBLAS's time) relative L2 difference from cuBLAS 2.15e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 0.609 ms (56.4 TFLOPS, 0.97x cuBLAS's time) relative L2 difference from cuBLAS 2.15e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 0.667 ms (51.5 TFLOPS, 1.06x cuBLAS's time) relative L2 difference from cuBLAS 2.15e-03, largest 0.0625, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 0.680 ms (50.5 TFLOPS, 1.08x cuBLAS's time) relative L2 difference from cuBLAS 2.15e-03, largest 0.0625, 0 values differ in bits from the first variant's
+M=2048 gate+up  N=24576 K=4096: cuBLAS 7.296 ms (56.5 TFLOPS) [990 MHz, 51 W, 79 C]
+    v3 128x256 s3      7.908 ms (52.1 TFLOPS, 1.08x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 s4      8.432 ms (48.9 TFLOPS, 1.16x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 s3      7.245 ms (56.9 TFLOPS, 0.99x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 8.342 ms (49.4 TFLOPS, 1.14x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 7.960 ms (51.8 TFLOPS, 1.09x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 7.748 ms (53.2 TFLOPS, 1.06x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 7.149 ms (57.7 TFLOPS, 0.98x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+M=2048 down     N=4096 K=12288: cuBLAS 3.905 ms (52.8 TFLOPS) [990 MHz, 48 W, 78 C]
+    v3 128x256 s3      4.200 ms (49.1 TFLOPS, 1.08x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 128x128 s4      4.562 ms (45.2 TFLOPS, 1.17x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 256x128 s3      4.175 ms (49.4 TFLOPS, 1.07x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 4.558 ms (45.2 TFLOPS, 1.17x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 4.452 ms (46.3 TFLOPS, 1.14x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 4.166 ms (49.5 TFLOPS, 1.07x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 4.256 ms (48.4 TFLOPS, 1.09x cuBLAS's time) relative L2 difference from cuBLAS 2.64e-03, largest 0.125, 0 values differ in bits from the first variant's
+M=2048 qkv      N=6144 K=4096: cuBLAS 1.774 ms (58.1 TFLOPS) [1080 MHz, 50 W, 79 C]
+    v3 128x256 s3      1.993 ms (51.7 TFLOPS, 1.12x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 s4      2.182 ms (47.2 TFLOPS, 1.23x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 s3      1.856 ms (55.5 TFLOPS, 1.05x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 2.170 ms (47.5 TFLOPS, 1.22x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 2.054 ms (50.2 TFLOPS, 1.16x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 1.991 ms (51.8 TFLOPS, 1.12x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 1.855 ms (55.6 TFLOPS, 1.05x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+M=2048 o        N=4096 K=4096: cuBLAS 1.471 ms (46.7 TFLOPS) [855 MHz, 48 W, 79 C]
+    v3 128x256 s3      1.301 ms (52.8 TFLOPS, 0.88x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 s4      1.394 ms (49.3 TFLOPS, 0.95x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 s3      1.272 ms (54.0 TFLOPS, 0.86x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 1.390 ms (49.4 TFLOPS, 0.94x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 1.325 ms (51.9 TFLOPS, 0.90x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 1.289 ms (53.3 TFLOPS, 0.88x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 1.271 ms (54.1 TFLOPS, 0.86x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+M=3500 gate+up  N=24576 K=4096: cuBLAS 12.613 ms (55.9 TFLOPS) [1665 MHz, 48 W, 78 C]
+    v3 128x256 s3      14.157 ms (49.8 TFLOPS, 1.12x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 s4      14.946 ms (47.1 TFLOPS, 1.18x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 s3      12.825 ms (54.9 TFLOPS, 1.02x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 14.747 ms (47.8 TFLOPS, 1.17x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 14.105 ms (50.0 TFLOPS, 1.12x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 13.551 ms (52.0 TFLOPS, 1.07x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 12.605 ms (55.9 TFLOPS, 1.00x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+M=3500 down     N=4096 K=12288: cuBLAS 6.778 ms (52.0 TFLOPS) [945 MHz, 49 W, 77 C]
+    v3 128x256 s3      7.326 ms (48.1 TFLOPS, 1.08x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 s4      8.212 ms (42.9 TFLOPS, 1.21x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 s3      7.093 ms (49.7 TFLOPS, 1.05x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 8.125 ms (43.4 TFLOPS, 1.20x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 7.845 ms (44.9 TFLOPS, 1.16x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 7.403 ms (47.6 TFLOPS, 1.09x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 7.379 ms (47.7 TFLOPS, 1.09x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+M=3500 qkv      N=6144 K=4096: cuBLAS 3.115 ms (56.5 TFLOPS) [1020 MHz, 48 W, 78 C]
+    v3 128x256 s3      3.529 ms (49.9 TFLOPS, 1.13x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 s4      3.744 ms (47.1 TFLOPS, 1.20x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 s3      3.208 ms (54.9 TFLOPS, 1.03x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 3.734 ms (47.2 TFLOPS, 1.20x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 3.590 ms (49.1 TFLOPS, 1.15x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 3.434 ms (51.3 TFLOPS, 1.10x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 3.193 ms (55.2 TFLOPS, 1.02x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+M=3500 o        N=4096 K=4096: cuBLAS 2.074 ms (56.6 TFLOPS) [1050 MHz, 48 W, 78 C]
+    v3 128x256 s3      2.180 ms (53.9 TFLOPS, 1.05x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 s4      2.354 ms (49.9 TFLOPS, 1.14x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 s3      2.179 ms (53.9 TFLOPS, 1.05x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s2 2.401 ms (48.9 TFLOPS, 1.16x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x128 bk64 s3 2.260 ms (52.0 TFLOPS, 1.09x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 128x256 bk64 s2 2.134 ms (55.0 TFLOPS, 1.03x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's
+    v3 256x128 bk64 s2 2.167 ms (54.2 TFLOPS, 1.04x cuBLAS's time) relative L2 difference from cuBLAS 0.00e+00, largest 0, 0 values differ in bits from the first variant's

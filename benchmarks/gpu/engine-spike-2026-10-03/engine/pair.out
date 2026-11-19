@@ -1,0 +1,24 @@
+15:44:03 lock held
+warm-up engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":458.4,"decode_ms_mean":47.137,"decode_ms_p50":46.922,"decode_ms_p99":49.817,"decode_tokens_per_s":21.21,"load_s":2.47,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+warm-up engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":454.5,"decode_ms_mean":47.237,"decode_ms_p50":46.927,"decode_ms_p99":49.910,"decode_tokens_per_s":21.17,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+warm-up engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":456.5,"decode_ms_mean":46.935,"decode_ms_p50":46.697,"decode_ms_p99":48.931,"decode_tokens_per_s":21.31,"load_s":2.37,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 61.28 W, 81
+round 1 vllm {"model": "Qwen/Qwen3-8B", "mode": "glyd1", "prompt_tokens": 1024, "new_tokens": 256, "load_s": 51.9, "decode_ms": [47.462, 47.48, 47.614], "decode_ms_median": 47.48, "decode_tokens_per_s": 21.06, "prefill_ms": [424.1, 431.9, 429.0], "prefill_ms_median": 429.0}
+2040 MHz, 53.43 W, 80
+round 1 engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":454.7,"decode_ms_mean":47.071,"decode_ms_p50":46.849,"decode_ms_p99":49.765,"decode_tokens_per_s":21.24,"load_s":2.47,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+round 1 engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":455.2,"decode_ms_mean":47.063,"decode_ms_p50":46.687,"decode_ms_p99":49.473,"decode_tokens_per_s":21.25,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+round 1 engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":456.5,"decode_ms_mean":47.340,"decode_ms_p50":46.934,"decode_ms_p99":50.411,"decode_tokens_per_s":21.12,"load_s":2.40,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 64.13 W, 81
+round 2 vllm {"model": "Qwen/Qwen3-8B", "mode": "glyd1", "prompt_tokens": 1024, "new_tokens": 256, "load_s": 51.5, "decode_ms": [46.98, 46.978, 46.935], "decode_ms_median": 46.978, "decode_tokens_per_s": 21.29, "prefill_ms": [403.5, 403.8, 400.8], "prefill_ms_median": 403.5}
+2040 MHz, 48.53 W, 64
+round 2 engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":435.0,"decode_ms_mean":45.661,"decode_ms_p50":45.686,"decode_ms_p99":46.000,"decode_tokens_per_s":21.90,"load_s":2.49,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+round 2 engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":435.6,"decode_ms_mean":45.724,"decode_ms_p50":45.714,"decode_ms_p99":46.031,"decode_tokens_per_s":21.87,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+round 2 engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":439.6,"decode_ms_mean":45.795,"decode_ms_p50":45.769,"decode_ms_p99":46.245,"decode_tokens_per_s":21.84,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 63.28 W, 70
+round 3 vllm {"model": "Qwen/Qwen3-8B", "mode": "glyd1", "prompt_tokens": 1024, "new_tokens": 256, "load_s": 51.8, "decode_ms": [47.813, 47.521, 47.548], "decode_ms_median": 47.548, "decode_tokens_per_s": 21.03, "prefill_ms": [434.8, 439.7, 427.4], "prefill_ms_median": 434.8}
+2040 MHz, 53.57 W, 80
+round 3 engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":454.7,"decode_ms_mean":46.494,"decode_ms_p50":46.215,"decode_ms_p99":48.004,"decode_tokens_per_s":21.51,"load_s":2.48,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+round 3 engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":452.4,"decode_ms_mean":46.692,"decode_ms_p50":46.446,"decode_ms_p99":48.295,"decode_tokens_per_s":21.42,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+round 3 engine {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":452.4,"decode_ms_mean":46.847,"decode_ms_p50":46.556,"decode_ms_p99":49.279,"decode_tokens_per_s":21.35,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 63.07 W, 80
+15:52:38 done

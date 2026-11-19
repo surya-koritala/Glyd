@@ -1,0 +1,5 @@
+model-00002-of-00046.safetensors: 56 terms over 55 xorb ranges for its first 4 GiB
+bridge, one connection: 1074 MB in 6.9 s, 154.7 MB/s
+xorbs, one at a time: 1138 MB in 16.6 s, 68.4 MB/s (18 ranges)
+bridge, 16 connections of GB/4: 3566 MB in 3.4 s, 1060.9 MB/s
+xorbs, 16 at once: 1004 MB in 1.1 s, 914.9 MB/s

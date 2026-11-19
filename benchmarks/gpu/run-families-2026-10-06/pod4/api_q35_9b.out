@@ -1,0 +1,1 @@
+{"model": "Qwen/Qwen3.5-9B", "max_model_len": 183296, "tool_call": true, "tool_result_turn": true, "thinking": true, "long_prompt": true, "ok": true}

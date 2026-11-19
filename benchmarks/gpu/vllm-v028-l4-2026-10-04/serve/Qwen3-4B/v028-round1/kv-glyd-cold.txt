@@ -1,3 +1,7 @@
+glyd: the lossless KV cache takes tables of /home/ubuntu/hf/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c for 4,096 positions, made once on vLLM itself (first start: about 1-2 minutes on an L4, then kept in /home/ubuntu/p28/gc-v028-q4/kv); its log: kvtab-28bb85dca7b06b04.log
+glyd: the KV cache's tables for /home/ubuntu/hf/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c made in 94 s: /home/ubuntu/p28/gc-v028-q4/kv/kvtab-28bb85dca7b06b04.npz
+glyd: mma layout, the KV cache lossless (tables /home/ubuntu/p28/gc-v028-q4/kv/kvtab-28bb85dca7b06b04.npz)
+glyd: the embedding and the LM head packed too (tied: one table)
 Model loading took 5.41 GiB memory and 15.002382 seconds
 GPU KV cache size: 129,072 tokens, Maximum concurrency for 4,096 tokens per request: 31.51x
 20374 MiB, 23034 MiB

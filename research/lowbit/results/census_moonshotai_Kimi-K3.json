@@ -1,0 +1,98 @@
+{
+ "repo": "moonshotai/Kimi-K3",
+ "files": 96,
+ "total_bytes": 1560860324864,
+ "kinds": [
+  {
+   "role": "attention",
+   "payload": "bf16",
+   "tensors": 1025,
+   "elements": 36181769216,
+   "bytes": 72363538432
+  },
+  {
+   "role": "attention",
+   "payload": "other_F32",
+   "tensors": 414,
+   "elements": 11040000,
+   "bytes": 44160000
+  },
+  {
+   "role": "dense_mlp",
+   "payload": "bf16",
+   "tensors": 3,
+   "elements": 726663168,
+   "bytes": 1453326336
+  },
+  {
+   "role": "embed",
+   "payload": "bf16",
+   "tensors": 1,
+   "elements": 1174405120,
+   "bytes": 2348810240
+  },
+  {
+   "role": "expert_latent_proj",
+   "payload": "bf16",
+   "tensors": 276,
+   "elements": 4727310336,
+   "bytes": 9454620672
+  },
+  {
+   "role": "lm_head",
+   "payload": "bf16",
+   "tensors": 1,
+   "elements": 1174405120,
+   "bytes": 2348810240
+  },
+  {
+   "role": "other",
+   "payload": "bf16",
+   "tensors": 280,
+   "elements": 2007040,
+   "bytes": 4014080
+  },
+  {
+   "role": "routed_experts",
+   "payload": "fp4_packed",
+   "tensors": 247296,
+   "elements": 1361370415104,
+   "bytes": 1361370415104
+  },
+  {
+   "role": "routed_experts",
+   "payload": "scale",
+   "tensors": 247296,
+   "elements": 85085650944,
+   "bytes": 85085650944
+  },
+  {
+   "role": "router",
+   "payload": "bf16",
+   "tensors": 92,
+   "elements": 590872576,
+   "bytes": 1181745152
+  },
+  {
+   "role": "router",
+   "payload": "other_F32",
+   "tensors": 92,
+   "elements": 82432,
+   "bytes": 329728
+  },
+  {
+   "role": "shared_experts",
+   "payload": "bf16",
+   "tensors": 276,
+   "elements": 12155092992,
+   "bytes": 24310185984
+  },
+  {
+   "role": "vision",
+   "payload": "bf16",
+   "tensors": 168,
+   "elements": 447358976,
+   "bytes": 894717952
+  }
+ ]
+}

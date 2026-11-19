@@ -1,0 +1,133 @@
+{
+  "answer": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Topic: Why the sky is blue.\n    *   Constraint: Explain in exactly three sentences.\n\n2.  **Identify Key Scientific Concepts:**\n    *   Sunlight contains all colors of the visible spectrum.\n   ",
+  "chunk_tokens": 32,
+  "client_stream_ms": 1635.0560910000002,
+  "engine_sha256": "3e3a2f307991c2c03a7d0212019042677da498483915024f821f01e64a38bf05",
+  "manifest": "09d73185bf312ddba52ffdd6ec0fffbc6bd6f160db8dfc70f924d88d9e658730",
+  "max_tokens": 64,
+  "model": "/home/surya-koritala/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d",
+  "pipeline_reports": [
+    {
+      "finish": "length",
+      "ms": 1607.065395,
+      "plan": "f3e583b58154fa7fcb2d42488ff01c926f314e7e91e60e461a605bff5cc4d92d",
+      "prompt_tokens": 21,
+      "setup_ms": 11.97598,
+      "stages": [
+        {
+          "accepted": 0,
+          "decode_steps": 63,
+          "drafted": 0,
+          "ended_tokens": 84,
+          "engine_ms": 277.567524,
+          "first": true,
+          "last": false,
+          "layers": [
+            0,
+            16
+          ],
+          "prefill_steps": 1,
+          "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+          "prompt_tokens": 21,
+          "refused_connections": 0,
+          "rows": 84,
+          "session_closed": true,
+          "stopped": false,
+          "tokens": 64,
+          "tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af"
+        },
+        {
+          "accepted": 0,
+          "decode_steps": 63,
+          "drafted": 0,
+          "ended_tokens": 84,
+          "engine_ms": 1296.533272,
+          "first": false,
+          "last": true,
+          "layers": [
+            16,
+            32
+          ],
+          "prefill_steps": 1,
+          "prompt_sha256": null,
+          "prompt_tokens": 21,
+          "refused_connections": 0,
+          "rows": 84,
+          "session_closed": true,
+          "stopped": false,
+          "tokens": 64,
+          "tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af"
+        }
+      ]
+    },
+    {
+      "finish": "length",
+      "ms": 1616.454284,
+      "plan": "81d2c312ab20cc2b482cf2fc1e3d508d8dda183cf2b9080e021715ef451baf9e",
+      "prompt_tokens": 21,
+      "setup_ms": 11.285886999999999,
+      "stages": [
+        {
+          "accepted": 0,
+          "decode_steps": 63,
+          "drafted": 0,
+          "ended_tokens": 84,
+          "engine_ms": 278.36894199999995,
+          "first": true,
+          "last": false,
+          "layers": [
+            0,
+            16
+          ],
+          "prefill_steps": 1,
+          "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+          "prompt_tokens": 21,
+          "refused_connections": 0,
+          "rows": 84,
+          "session_closed": true,
+          "stopped": false,
+          "tokens": 64,
+          "tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af"
+        },
+        {
+          "accepted": 0,
+          "decode_steps": 63,
+          "drafted": 0,
+          "ended_tokens": 84,
+          "engine_ms": 1301.6047509999996,
+          "first": false,
+          "last": true,
+          "layers": [
+            16,
+            32
+          ],
+          "prefill_steps": 1,
+          "prompt_sha256": null,
+          "prompt_tokens": 21,
+          "refused_connections": 0,
+          "rows": 84,
+          "session_closed": true,
+          "stopped": false,
+          "tokens": 64,
+          "tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af"
+        }
+      ]
+    }
+  ],
+  "pipeline_tokens": 64,
+  "pipeline_tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af",
+  "prompt_text": "Explain in three sentences why the sky is blue.",
+  "prompt_tokens": 21,
+  "seed": 7,
+  "stop_tokens": [
+    248044,
+    248046
+  ],
+  "temperature": 0.7,
+  "test": "real_pipeline_daemons_generate_through_two_stages_like_the_whole_model",
+  "tokens_equal": true,
+  "top_p": 0.9,
+  "whole_model_ms": 1562.751553,
+  "whole_tokens": 64,
+  "whole_tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af"
+}

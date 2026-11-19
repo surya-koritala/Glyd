@@ -6,11 +6,13 @@ use std::time::Instant;
 fn print_usage() {
     eprintln!(r#"Glyd: compression for cloud storage
 Usage: glyd [OPTIONS] [INPUT] [-o OUTPUT]
+       glyd pack MODEL OUT | glyd verify PATH   (a model's weights for Glyd's GPU layouts:
+       packed and checked on the CPU by the glyd-gpu command; glyd pack --help)
        (the store, which compresses across objects, is the glyd-store command)
-       glyd run MODEL[:LEVEL] | serve MODEL | doctor | login | pack MODEL OUT | verify PATH   (the local chat, and a
-       model's weights packed for the GPU, on Linux with an NVIDIA GPU: the Python tool's commands, which this program
-       passes to it; a file named run is ./run. LEVEL: penguin, lossless, the default; kestrel, 6.5 bits per weight;
-       swift, 5.5)
+       glyd run MODEL | serve MODEL | fetch MODEL | verify MODEL | doctor | login   (the local chat, on Linux with an NVIDIA GPU: the
+       Python tool's commands, which this program passes to it; glyd run uses Glyd's own engine, the
+       glyd-engine command, on the GPUs where it is measured at least as fast as vLLM; GLYD_ENGINE=1
+       uses it on any GPU it runs on, GLYD_ENGINE=0 keeps vLLM; a file named run is ./run)
 
 Options:
     -c, --compress         Compress input (default if output is .glyd)
@@ -71,6 +73,20 @@ fn print_version() {
     println!("SIMD: scalar");
 }
 
+/// `glyd pack` and `glyd verify`: the glyd-gpu command's (the GPU weights' packer and checker, a program of its own
+/// under their license), found beside this one, else on PATH; its exit status this one's.
+fn gpu_command(args: &[String]) -> ! {
+    let beside = env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("glyd-gpu"))).filter(|p| p.exists());
+    let exe = beside.unwrap_or_else(|| "glyd-gpu".into());
+    match std::process::Command::new(&exe).args(args).status() {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(e) => {
+            eprintln!("glyd {}: the glyd-gpu command ({}): {e}; it ships beside glyd (cargo install --git https://github.com/surya-koritala/Glyd glyd-gpu)", args[0], exe.display());
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Whether a file is a console script of Glyd's Python tool: a `#!` line, and the module it imports (glyd.cli) in its first 4 KB.
 fn is_python_tool(path: &Path) -> bool {
     let mut head = Vec::new();
@@ -95,18 +111,18 @@ fn find_python_tool() -> Option<PathBuf> {
         .find(|exe| exe.is_file() && exe.canonicalize().ok() != me && is_python_tool(exe))
 }
 
-/// `glyd run`, `glyd serve`, `glyd doctor`, `glyd login`, `glyd pack` and `glyd verify` are the GPU half's commands (the local chat, and a
-/// model's weights packed and checked), in Glyd's Python tool (install.sh, `pip install "glyd[vllm]"`): not a file's name here, which is
-/// what `glyd run MODEL` was before, with the usage text for an answer.
+/// `glyd run`, `glyd serve`, `glyd doctor` and `glyd login` are the local chat's commands, in Glyd's Python tool (install.sh,
+/// `pip install "glyd[vllm]"`): not a file's name here, which is what `glyd run MODEL` was before, with the usage text for an answer.
 /// The tool's `glyd` takes them over from this program (its Ctrl-C and its exit status are its own), started with GLYD_FORWARDED=1:
 /// the tool passes the compression commands the other way with the same variable and takes none of them back, so an older tool that
 /// sends `run` here cannot start a loop. Where there is no tool the answer says what to do, or that this computer is not for it.
-fn python_command(args: &[String]) -> ! {
+/// `extra`: variables for the tool alone (GLYD_ENGINE=0, where this program has already said that the command goes the vLLM way).
+fn python_command(args: &[String], extra: &[(&str, &str)]) -> ! {
     let forwarded = env::var_os("GLYD_FORWARDED").map_or(false, |v| !v.is_empty()); // (empty is not set, as the Python tool takes it)
     if !forwarded {
         if let Some(exe) = find_python_tool() {
             let mut cmd = std::process::Command::new(&exe);
-            cmd.args(args).env("GLYD_FORWARDED", "1");
+            cmd.args(args).env("GLYD_FORWARDED", "1").envs(extra.iter().copied());
             #[cfg(unix)]
             let e = std::os::unix::process::CommandExt::exec(&mut cmd);
             #[cfg(not(unix))]
@@ -121,12 +137,156 @@ fn python_command(args: &[String]) -> ! {
     let why = if forwarded {
         "the Python tool's glyd sent it back to this program, so it has no such command: update it with curl -LsSf https://getglyd.com/install.sh | sh"
     } else if cfg!(target_os = "linux") {
-        "that is a command of Glyd's Python tool (the GPU half), which is not installed here. On Linux with an NVIDIA GPU: pip install \"glyd[gpu]\" (glyd run and glyd serve: \"glyd[vllm]\"), or curl -LsSf https://getglyd.com/install.sh | sh"
+        "that is the local chat's command, in Glyd's Python tool, which is not installed here. On Linux with an NVIDIA GPU: curl -LsSf https://getglyd.com/install.sh | sh"
     } else {
-        "needs Linux with an NVIDIA GPU, and this computer is not one (this program compresses files: glyd --help)"
+        "glyd run needs Linux with an NVIDIA GPU, and this computer is not one (this program compresses files: glyd --help)"
     };
     eprintln!("glyd {}: {why} (a file named {} is compressed as ./{})", args[0], args[0], args[0]);
     std::process::exit(127);
+}
+
+/// What GLYD_ENGINE says: Off (0, off, no, false or vllm: the Python tool's vLLM path), Auto (unset, 1, on, yes, true or auto), or the path of an engine program.
+#[derive(Debug, PartialEq)]
+enum Engine {
+    Off,
+    Auto,
+    Path(PathBuf),
+}
+
+fn engine_choice() -> Engine {
+    let v = env::var("GLYD_ENGINE").unwrap_or_default();
+    match v.trim().to_ascii_lowercase().as_str() {
+        "0" | "off" | "no" | "false" | "vllm" => Engine::Off,
+        "" | "1" | "on" | "yes" | "true" | "auto" => Engine::Auto,
+        _ => Engine::Path(PathBuf::from(v.trim())),
+    }
+}
+
+/// Whether GLYD_ENGINE asks for the engine by name (1, on, yes or true, any case); `auto` and nothing leave it to the default: `glyd serve` is vLLM's, as the engine serves up to 8 users at once.
+fn engine_asked_for() -> bool {
+    matches!(env::var("GLYD_ENGINE").unwrap_or_default().trim().to_ascii_lowercase().as_str(), "1" | "on" | "yes" | "true")
+}
+
+/// Glyd's engine, the glyd-engine command (a program of its own under the GPU code's license): the program GLYD_ENGINE names, else beside this program, else
+/// on PATH. (The one in the Python tool's package is the Python tool's to start: it is what `run` and `serve` are passed to.)
+fn find_engine(choice: &Engine) -> Option<PathBuf> {
+    if let Engine::Path(p) = choice {
+        return Some(p.clone()).filter(|p| p.is_file());
+    }
+    let beside = env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("glyd-engine"))).filter(|p| p.is_file());
+    beside.or_else(|| {
+        env::var_os("PATH").and_then(|p| env::split_paths(&p).filter(|d| !d.as_os_str().is_empty()).map(|d| d.join("glyd-engine")).find(|e| e.is_file()))
+    })
+}
+
+/// The engine's commands about a model that are not the local chat's: in a Rust-only install (install.sh without the Python tool) this program
+/// passes them to the engine; a file of one of these names (./fetch) is still compressed where the engine is not installed.
+fn is_model_command(cmd: &str) -> bool {
+    matches!(cmd, "fetch" | "preflight" | "prepare" | "supports" | "costs" | "rates")
+}
+
+/// Whether the glyd-gpu command (the packer and file checker) is beside this program, as the full install has it.
+fn gpu_tool_beside() -> bool {
+    env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("glyd-gpu"))).is_some_and(|p| p.exists())
+}
+
+/// The model of `glyd run MODEL ...`: the first word that is not a flag or a flag's value.
+fn model_arg(args: &[String]) -> Option<&str> {
+    const WITH_VALUE: [&str; 12] = ["--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables", "--api-key", "--hf-token"];
+    let mut it = args.iter().skip(1);
+    while let Some(a) = it.next() {
+        if a == "--" {
+            return None;
+        }
+        if WITH_VALUE.contains(&a.as_str()) {
+            it.next();
+        } else if !a.starts_with('-') {
+            return Some(a.as_str());
+        }
+    }
+    None
+}
+
+/// A flag that carries a secret (`--api-key KEY`, `--api-key=KEY`) taken out of `args` with its value, for the engine's environment: a secret on a command line is in `ps` and in a log. None where the flag is not
+/// there or has no value after it (`--hf-token` alone means the saved login: it stays). Words after a lone `--` are not looked at, nor are the values of the engine's other flags.
+fn take_secret(args: &mut Vec<String>, names: &[&str]) -> Option<String> {
+    const WITH_VALUE: [&str; 10] = ["--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables"];
+    let (mut found, mut i) = (None, 0);
+    while i < args.len() {
+        if args[i] == "--" {
+            break;
+        }
+        let (name, eq) = match args[i].split_once('=') {
+            Some((n, v)) => (n.to_string(), Some(v.to_string())),
+            None => (args[i].clone(), None),
+        };
+        if names.contains(&name.as_str()) {
+            if let Some(v) = eq {
+                found = Some(v);
+                args.remove(i);
+                continue;
+            }
+            if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                found = Some(args[i + 1].clone());
+                args.drain(i..=i + 1);
+                continue;
+            }
+        } else if WITH_VALUE.contains(&name.as_str()) && eq.is_none() {
+            i += 1; // (the flag's value is not a flag of ours, whatever it looks like)
+        }
+        i += 1;
+    }
+    found
+}
+
+/// `glyd run`, `glyd serve`, `glyd doctor` and `glyd login`. Where there is a Python tool, `run` and `serve` are its: for `run` it asks the engine (the program GLYD_ENGINE names, else the one this program
+/// found beside it or on PATH, else the one of the tool's own package) whether it is used on this GPU (where it is measured at least as fast as vLLM) and will certainly run the model, before anything is
+/// downloaded, runs the engine as its child where it will, and runs vLLM, with one line saying why, where it will not and where the engine refuses before it is up; `serve` is vLLM's unless GLYD_ENGINE asks for
+/// the engine (the engine serves up to 8 users at once). This program says nothing of its own: it tells the tool which engine it found (GLYD_ENGINE, where the user named none, and for `serve` where
+/// the user asked for the engine), and the tool, which has vLLM to fall back to, does the rest. Where there is no tool there is no other runner: an engine program found here runs the
+/// command (an API key or a token given as a flag goes to it in its environment, not on its command line), and its refusals are the last word. `doctor` and `login` are the engine's where one is found here, else the tool's.
+fn local_chat(args: &[String]) -> ! {
+    let forwarded = env::var_os("GLYD_FORWARDED").map_or(false, |v| !v.is_empty());
+    let (cmd, choice) = (args[0].as_str(), engine_choice());
+    if forwarded {
+        python_command(args, &[]); // (it says what this program would say: the tool has the engine's choice to make, and no loop to start)
+    }
+    if is_model_command(cmd) && find_python_tool().is_some() {
+        python_command(args, &[]); // (the tool knows the models vLLM runs too)
+    }
+    if matches!(cmd, "run" | "serve") && find_python_tool().is_some() {
+        let found = if choice == Engine::Auto && (cmd == "run" || engine_asked_for()) { find_engine(&choice) } else { None }; // (a path in GLYD_ENGINE asks the tool for the engine on `serve`: it is only given where it was asked for)
+        match found.as_ref().and_then(|p| p.to_str()) {
+            Some(path) if engine_asked_for() => python_command(args, &[("GLYD_ENGINE", path), ("GLYD_ENGINE_ASKED", "1")]), // (the user's 1, which the path takes the place of)
+            Some(path) => python_command(args, &[("GLYD_ENGINE", path)]),
+            None => python_command(args, &[]), // (GLYD_ENGINE=0, or a program the user named, which the tool is told by the environment; or no engine here: the tool's own package has one, or vLLM runs it)
+        }
+    }
+    let engine = if choice == Engine::Off { None } else { find_engine(&choice) };
+    let Some(engine) = engine else { python_command(args, &[]) };
+    let model = if matches!(cmd, "run" | "serve") && !args.iter().any(|a| a == "-h" || a == "--help") { model_arg(args) } else { None };
+    if let Some(model) = model {
+        eprintln!("glyd {cmd}: {model} on glyd-engine (GLYD_ENGINE=0: vLLM instead).");
+    }
+    let mut c = std::process::Command::new(&engine);
+    // an API key or a token given as a flag goes to the engine in its environment, not on its command line (where `ps` and a log show it)
+    let mut run_args = args.to_vec();
+    for (names, var, what) in [(&["--api-key", "--api_key"][..], "GLYD_API_KEY", "API key"), (&["--hf-token", "--hf_token"][..], "HF_TOKEN", "Hugging Face token")] {
+        if let Some(v) = take_secret(&mut run_args, names) {
+            c.env(var, v);
+            eprintln!("glyd {cmd}: the {what} goes to the engine in {var}, not on its command line (next time set {var} yourself: a shell's history keeps what you type).");
+        }
+    }
+    c.args(&run_args);
+    #[cfg(unix)]
+    let e = std::os::unix::process::CommandExt::exec(&mut c);
+    #[cfg(not(unix))]
+    let e = match c.status() {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(e) => e,
+    };
+    eprintln!("glyd {}: could not start {}: {e}", args[0], engine.display());
+    std::process::exit(126);
 }
 
 fn main() -> io::Result<()> {
@@ -135,8 +295,17 @@ fn main() -> io::Result<()> {
         print_usage();
         return Ok(());
     }
-    if matches!(args[1].as_str(), "run" | "serve" | "doctor" | "login" | "pack" | "verify") {
-        python_command(&args[1..]); // (a file named run: ./run)
+    if args[1] == "verify" && !gpu_tool_beside() && find_python_tool().is_none() && find_engine(&engine_choice()).is_some() {
+        local_chat(&args[1..]); // (the Rust-only install: no glyd-gpu beside this program, so `glyd verify MODEL` is the engine's)
+    }
+    if matches!(args[1].as_str(), "pack" | "verify") {
+        gpu_command(&args[1..]); // (a file named pack or verify: ./pack)
+    }
+    if matches!(args[1].as_str(), "run" | "serve" | "doctor" | "login") {
+        local_chat(&args[1..]); // (a file named run: ./run)
+    }
+    if is_model_command(&args[1]) && (find_python_tool().is_some() || find_engine(&engine_choice()).is_some()) {
+        local_chat(&args[1..]); // (a model's command: the Python tool's where there is one, else the engine's, as in the Rust-only install)
     }
 
     let mut input_path: Option<String> = None;
@@ -593,4 +762,23 @@ fn run_benchmark(path_str: &str) {
     println!("  1-Core Decompress (Ver):  {:>7.2} GB/s", ver_1c_gb);
     println!("  Multi-Core Decomp (Raw):  {:>7.2} GB/s", raw_par_gb);
     println!("  Multi-Core Decomp (Ver):  {:>7.2} GB/s", ver_par_gb);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_arg;
+
+    fn a(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_model_of_a_run() {
+        assert_eq!(model_arg(&a(&["run", "Qwen/Qwen3-8B"])), Some("Qwen/Qwen3-8B"));
+        assert_eq!(model_arg(&a(&["run", "--context", "4096", "Qwen/Qwen3-8B", "--prompt", "hi"])), Some("Qwen/Qwen3-8B"));
+        assert_eq!(model_arg(&a(&["run", "-p", "hi", "--no-think", "m"])), Some("m"));
+        assert_eq!(model_arg(&a(&["run", "--no-think", "m", "--", "--max-model-len", "2048"])), Some("m"));
+        assert_eq!(model_arg(&a(&["run", "--", "x"])), None);
+        assert_eq!(model_arg(&a(&["doctor"])), None);
+    }
 }

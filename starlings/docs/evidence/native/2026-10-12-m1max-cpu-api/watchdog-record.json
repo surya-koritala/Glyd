@@ -1,0 +1,12 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 21.135,
+  "configuration_digest": "7301dc288edb39846356254010cc821565c0b4462dd5027464bc5a0023a21867",
+  "owned_server_observed": true,
+  "owned_server_remaining": false,
+  "sampled_server_peak_rss_kib": 1631520,
+  "rss_sample_period_ms": 100,
+  "rss_is_reservation_profile": false,
+  "external_spend_usd": 0,
+  "manifest_identity_is_catalog_qualified": false
+}

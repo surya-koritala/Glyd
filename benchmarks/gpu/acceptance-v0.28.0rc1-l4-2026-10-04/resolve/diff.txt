@@ -1,0 +1,5 @@
+pip 26.2.1, CPython 3.12.3, x86_64; a dry run of pip install "glyd[vllm]==V" in a clean virtual environment
+glyd[vllm]==0.27.0: 200 packages; glyd[vllm]==0.28.0rc1: 200 packages
+  differs from 0.27.0: glyd: 0.27.0 -> 0.28.0rc1
+  differs from 0.27.0: glyd-gpu: 0.27.0 -> 0.28.0rc1
+  only glyd and glyd-gpu differ

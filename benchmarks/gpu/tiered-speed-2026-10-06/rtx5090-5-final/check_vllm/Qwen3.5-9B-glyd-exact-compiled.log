@@ -1,0 +1,8 @@
+INFO 10-06 05:16:57 [arg_utils.py:849] HF_HUB_OFFLINE is True, replace model_id [Qwen/Qwen3.5-9B] to model_path [/root/tsw/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a]
+INFO 10-06 05:16:57 [api_utils.py:286] non-default args: {'dtype': 'bfloat16', 'max_model_len': 4096, 'gpu_memory_utilization': 0.85, 'disable_log_stats': True, 'quantization': 'glyd', 'model': '/root/tsw/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a'}
+WARNING 10-06 05:16:57 [arg_utils.py:1812] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 10-06 05:16:57 [model.py:692] Resolved architecture: Qwen3_5ForConditionalGeneration
+INFO 10-06 05:16:57 [model.py:2030] Using max model len 4096
+WARNING 10-06 05:16:57 [model.py:994] Model does not support mm_device_do_normalize, forcing mm_device_do_normalize = False.
+INFO 10-06 05:16:59 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=8192.
+INFO 10-06 05:16:59 [config.py:625] Mamba cache mode is set to 'align' for Qwen3_5ForConditionalGeneration by default when prefix caching is enabled

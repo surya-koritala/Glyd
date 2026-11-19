@@ -1,0 +1,129 @@
+{
+ "decode": {
+  "gens": 20,
+  "steps": 2540,
+  "mean_step_s": 0.097
+ },
+ "generations": [
+  {
+   "domain": "chat",
+   "prompt": "Explain the difference between a mutex and a semaphore, with a short example of each.",
+   "steps": 127,
+   "text": "Certainly! Here's a clear, concise explanation of the difference between a **mutex** and a **semaphore**, followed by short, practical examples of each.\n\n---\n\n### 🔑 **Mutex (Mutual Exclusion)**\n\n- **Purpose**: Ensures that **only one thread** can access a shared resource at a time.\n- **Ownership**: "
+  },
+  {
+   "domain": "chat",
+   "prompt": "Write a friendly email to a colleague asking to move our weekly sync from Tuesday to Thursday.",
+   "steps": 127,
+   "text": "Subject: Quick Request: Moving Our Weekly Sync to Thursday  \n\nHi [Colleague's Name],  \n\nHope you're having a great week!  \n\nI wanted to kindly ask if we could move our weekly sync from Tuesday to Thursday instead. I’ve got a recurring commitment on Tuesdays that’s been making it tough to join fully "
+  },
+  {
+   "domain": "chat",
+   "prompt": "Give me three tips for preparing for a job interview at a software company.",
+   "steps": 127,
+   "text": "Absolutely! Here are three essential tips for preparing for a job interview at a software company:\n\n### 1. **Master the Technical Fundamentals (and Practice Coding)**\nSoftware interviews often include coding challenges, system design questions, or algorithmic problem-solving.  \n- **Review core conce"
+  },
+  {
+   "domain": "chat",
+   "prompt": "Summarize the plot of Romeo and Juliet in five sentences.",
+   "steps": 127,
+   "text": "Romeo and Juliet, two young lovers from feuding families in Verona, meet and fall in love at a masquerade ball despite their families’ longstanding hatred. After secretly marrying with the help of Friar Laurence, Romeo is banished for killing Juliet’s cousin Tybalt in a duel. To avoid an arranged ma"
+  },
+  {
+   "domain": "code",
+   "prompt": "Write a Python function that merges two sorted lists into one sorted list without using sort().",
+   "steps": 127,
+   "text": "Certainly! Here's a Python function that merges two sorted lists into one sorted list **without using `sort()`** or any built-in sorting function. It uses the classic **two-pointer technique**, which is the core idea behind the merge step in Merge Sort.\n\n### ✅ Function: `merge_sorted_lists`\n\n```pyth"
+  },
+  {
+   "domain": "code",
+   "prompt": "Write a SQL query that returns the top 3 customers by total order value from customers(id, name) and orders(id, customer_id, amount).",
+   "steps": 127,
+   "text": "Here is a clear, correct SQL query that returns the **top 3 customers by total order value**, using the tables `customers(id, name)` and `orders(id, customer_id, amount)`:\n\n```sql\nSELECT \n    c.id AS customer_id,\n    c.name AS customer_name,\n    SUM(o.amount) AS total_order_value\nFROM \n    customers"
+  },
+  {
+   "domain": "code",
+   "prompt": "Write a Rust function that reverses the words in a string.",
+   "steps": 127,
+   "text": "Certainly! Below is a clean, efficient, and idiomatic Rust function that reverses the **words** in a string (not the characters within each word, but the order of the words themselves).\n\nFor example:\n- Input: `\"hello world rust\"`\n- Output: `\"rust world hello\"`\n\n### ✅ Rust Function: Reverse Words in "
+  },
+  {
+   "domain": "code",
+   "prompt": "def avg(xs): return sum(xs) / len(xs) fails on an empty list. Show the corrected function.",
+   "steps": 127,
+   "text": "The function `avg(xs) = sum(xs) / len(xs)` fails on an empty list because `len(xs)` is `0`, leading to a `ZeroDivisionError`.\n\nTo correct it, we should handle the empty list case explicitly. A common and reasonable approach is to return `None` (or raise a more descriptive exception) when the list is"
+  },
+  {
+   "domain": "math",
+   "prompt": "A train travels 180 km in 2.5 hours. What is its average speed in km/h? How long would 450 km take at that speed?",
+   "steps": 127,
+   "text": "To find the average speed of the train, we use the formula:\n\n$$\n\\text{Average speed} = \\frac{\\text{Distance}}{\\text{Time}}\n$$\n\nGiven:\n- Distance = 180 km  \n- Time = 2.5 hours\n\n$$\n\\text{Average speed} = \\frac{180}{2.5} = 72 \\text{ km/h}\n$$\n\n---\n\nNow, to find how long it would take to travel 450 km at"
+  },
+  {
+   "domain": "math",
+   "prompt": "Solve for x: 3x + 7 = 2x - 5.",
+   "steps": 127,
+   "text": "To solve the equation:\n\n$$\n3x + 7 = 2x - 5\n$$\n\n### Step 1: Subtract $2x$ from both sides to get all $x$-terms on one side.\n$$\n3x - 2x + 7 = -5\n$$\n$$\nx + 7 = -5\n$$\n\n### Step 2: Subtract 7 from both sides to isolate $x$.\n$$\nx = -5 - 7\n$$\n$$\nx = -12\n$$\n\n### Step 3: Verify the solution by plugging $x = "
+  },
+  {
+   "domain": "math",
+   "prompt": "What is the sum of the first 20 positive odd numbers? Show the reasoning briefly.",
+   "steps": 127,
+   "text": "The sum of the first \\( n \\) positive odd numbers is given by the formula:\n\n\\[\n1 + 3 + 5 + \\cdots + (2n-1) = n^2\n\\]\n\nThis is a well-known result in number theory, which can be proven by induction or by pairing terms (e.g., Gauss’s method adapted for odds).\n\nFor the first 20 positive odd numbers, \\( "
+  },
+  {
+   "domain": "math",
+   "prompt": "A rectangle has perimeter 36 and its length is twice its width. Find its area.",
+   "steps": 127,
+   "text": "We are given:\n\n- The **perimeter** of a rectangle is 36.\n- The **length** is twice the **width**.\n- We are to find the **area**.\n\n---\n\n### Step 1: Define variables\n\nLet the **width** be $ w $.\n\nThen the **length** is $ 2w $ (since length is twice the width).\n\n---\n\n### Step 2: Use the perimeter formu"
+  },
+  {
+   "domain": "multi",
+   "prompt": "请用中文简要介绍一下长城的历史。",
+   "steps": 127,
+   "text": "长城是中国古代伟大的军事防御工程，也是中华民族智慧与毅力的象征。其修建始于西周时期的诸侯国，但真正规模化、系统化的建设始于秦朝。公元前221年，秦始皇统一六国后，下令连接并加固秦、赵、燕三国既有的长城，形成了“万里长城”的雏形，主要用于抵御北方匈奴的侵扰"
+  },
+  {
+   "domain": "multi",
+   "prompt": "Explica brevemente cómo funciona la fotosíntesis.",
+   "steps": 127,
+   "text": "La fotosíntesis es el proceso mediante el cual las plantas, algas y algunas bacterias convierten la energía luminosa del sol en energía química almacenada en glucosa, liberando oxígeno como subproducto. Ocurre principalmente en los cloroplastos de las células vegetales, donde el pigmento clorofila a"
+  },
+  {
+   "domain": "multi",
+   "prompt": "Объясните простыми словами, что такое инфляция.",
+   "steps": 127,
+   "text": "Конечно! Вот простое объяснение инфляции:\n\n**Инфляция — это когда деньги со временем покупают меньше, чем раньше.**\n\nПредставь, что у тебя есть 100 рублей. В прошлом году на эти деньги ты мог купить, скажем, 10 булок хлеба. А сейчас, на те же 100 рублей, ты можешь купить только 8 булок. Значит, хлеб"
+  },
+  {
+   "domain": "multi",
+   "prompt": "Erkläre kurz, warum der Himmel blau ist.",
+   "steps": 127,
+   "text": "Der Himmel erscheint blau, weil die Moleküle in der Erdatmosphäre das Sonnenlicht streuen – ein Phänomen namens **Rayleigh-Streuung**.  \n\nKürzere Wellenlängen des Lichts (wie Blau und Violett) werden stärker gestreut als längere (wie Rot oder Gelb). Obwohl Violett noch stärker gestreut wird als Blau"
+  },
+  {
+   "domain": "wiki",
+   "prompt": "Who was Ada Lovelace and why is she remembered?",
+   "steps": 127,
+   "text": "Ada Lovelace (1815–1852), born Augusta Ada King, Countess of Lovelace, was an English mathematician and writer widely regarded as the world’s first computer programmer. She is remembered for her visionary work on Charles Babbage’s proposed mechanical general-purpose computer, the Analytical Engine.\n"
+  },
+  {
+   "domain": "wiki",
+   "prompt": "Describe the main causes of the French Revolution.",
+   "steps": 127,
+   "text": "The French Revolution (1789–1799) was a transformative period in modern history, driven by a complex interplay of long-term structural issues and immediate triggers. Its main causes can be categorized into social, economic, political, and intellectual factors:\n\n### 1. **Social Inequality and the Est"
+  },
+  {
+   "domain": "reason",
+   "prompt": "Three friends share a pizza cut into 8 slices. Alice eats twice as many as Bob and Carol eats one more than Bob. All slices are eaten. How many does each eat?",
+   "steps": 127,
+   "text": "Let’s solve this step by step.\n\nWe are told:\n- The pizza has **8 slices**, and **all are eaten**.\n- Alice eats **twice as many** as Bob.\n- Carol eats **one more** than Bob.\n- We need to find how many slices each person eats.\n\n---\n\n### Step 1: Define variables\n\nLet:\n- $ B $ = number of slices Bob eat"
+  },
+  {
+   "domain": "reason",
+   "prompt": "Is 221 a prime number? Explain how you decide.",
+   "steps": 127,
+   "text": "To determine whether **221** is a prime number, we need to check if it has any divisors other than 1 and itself.\n\n### Step-by-step reasoning:\n\nA **prime number** is a natural number greater than 1 that has no positive divisors other than 1 and itself.\n\nSo, to test if 221 is prime, we check for divis"
+  }
+ ]
+}

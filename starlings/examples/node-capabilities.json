@@ -1,0 +1,52 @@
+{
+  "kind": "NodeCapabilities",
+  "protocol_version": 1,
+  "fixture": true,
+  "node_id": "00000000-0000-4000-8000-000000000001",
+  "cluster_id": "00000000-0000-4000-8000-000000000100",
+  "snapshot_id": "00000000-0000-4000-8000-000000000101",
+  "observed_at": "2026-10-11T20:00:00-04:00",
+  "sample_age_ms": 0,
+  "state": "ready",
+  "os": "linux",
+  "architecture": "x86_64",
+  "memory_pools": [
+    {
+      "pool_id": "mock-device-0",
+      "kind": "device",
+      "total_bytes": "67108864",
+      "available_bytes": "67108864",
+      "reserved_bytes": "0",
+      "device_ids": [
+        "mock:0"
+      ]
+    }
+  ],
+  "backends": [
+    {
+      "backend_id": "fake-v1",
+      "build_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "architectures": [
+        "synthetic-hybrid-32"
+      ],
+      "execution_profiles": [
+        "fixture-bf16"
+      ],
+      "boundary_profiles": [
+        "hidden-bf16-v1"
+      ],
+      "task_types": [
+        "generate"
+      ],
+      "layer_sharding": true,
+      "max_context_tokens": 2048,
+      "max_sessions": 1,
+      "device_id": "mock:0",
+      "memory_pool_ids": [
+        "mock-device-0"
+      ]
+    }
+  ],
+  "control_endpoint": "https://worker-a.invalid:9741",
+  "tensor_endpoint": "tls://worker-a.invalid:9742"
+}

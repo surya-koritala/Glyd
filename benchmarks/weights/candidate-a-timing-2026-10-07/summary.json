@@ -1,0 +1,339 @@
+{
+  "scope": "Bias-free medians of five CUDA-event groups; each timed operation reads its own weight copy (>=192 MiB per path for model shapes). Products above 64 rows exclude shapes whose inner dimension is not a multiple of 64 (documented refusals).",
+  "summed_model_shapes_ms": {
+    "1": {
+      "matrices": 15,
+      "compact": 0.5626,
+      "expanded": 0.782,
+      "bf16": 1.0364,
+      "fp8": 0.5842,
+      "unpack": 1.4927
+    },
+    "2": {
+      "matrices": 15,
+      "compact": 0.5637,
+      "expanded": 0.7825,
+      "bf16": 1.1015,
+      "fp8": 0.5852,
+      "unpack": 1.4928
+    },
+    "8": {
+      "matrices": 15,
+      "compact": 0.574,
+      "expanded": 0.8135,
+      "bf16": 1.0986,
+      "fp8": 0.5827,
+      "unpack": 1.4932
+    },
+    "16": {
+      "matrices": 15,
+      "compact": 0.5907,
+      "expanded": 0.8696,
+      "bf16": 1.1262,
+      "fp8": 0.5834,
+      "unpack": 1.493
+    },
+    "17": {
+      "matrices": 15,
+      "compact": 0.7462,
+      "expanded": 0.8544,
+      "bf16": 1.2009,
+      "fp8": 0.5826,
+      "unpack": 1.4934
+    },
+    "32": {
+      "matrices": 15,
+      "compact": 0.7698,
+      "expanded": 0.8861,
+      "bf16": 1.2238,
+      "fp8": 0.5877,
+      "unpack": 1.4925
+    },
+    "33": {
+      "matrices": 15,
+      "compact": 0.9421,
+      "expanded": 0.9512,
+      "bf16": 1.2393,
+      "fp8": 0.6189,
+      "unpack": 1.4927
+    },
+    "64": {
+      "matrices": 15,
+      "compact": 1.1373,
+      "expanded": 1.1408,
+      "bf16": 1.24,
+      "fp8": 0.62,
+      "unpack": 1.493
+    },
+    "65": {
+      "matrices": 14,
+      "compact": 1.1024,
+      "expanded": 1.1028,
+      "bf16": 1.4603,
+      "fp8": 0.6343,
+      "unpack": 1.4797,
+      "compact_variant_1": 1.1029,
+      "compact_variant_2": 1.8015
+    },
+    "127": {
+      "matrices": 14,
+      "compact": 1.1272,
+      "expanded": 1.1269,
+      "bf16": 1.4389,
+      "fp8": 0.6942,
+      "unpack": 1.4798,
+      "compact_variant_1": 1.1273,
+      "compact_variant_2": 1.8195
+    },
+    "128": {
+      "matrices": 14,
+      "compact": 1.1284,
+      "expanded": 1.1286,
+      "bf16": 1.4413,
+      "fp8": 0.6935,
+      "unpack": 1.4801,
+      "compact_variant_1": 1.1282,
+      "compact_variant_2": 1.8198
+    },
+    "129": {
+      "matrices": 14,
+      "compact": 1.8187,
+      "expanded": 1.8172,
+      "bf16": 1.4207,
+      "fp8": 0.7776,
+      "unpack": 1.4784,
+      "compact_variant_1": 1.9591,
+      "compact_variant_2": 1.8187
+    },
+    "256": {
+      "matrices": 14,
+      "compact": 1.8688,
+      "expanded": 1.8529,
+      "bf16": 2.1674,
+      "fp8": 1.0203,
+      "unpack": 1.4791,
+      "compact_variant_1": 1.9797,
+      "compact_variant_2": 1.8715
+    },
+    "512": {
+      "matrices": 14,
+      "compact": 3.4924,
+      "expanded": 3.4346,
+      "bf16": 3.9245,
+      "fp8": 1.7682,
+      "unpack": 1.4793,
+      "compact_variant_1": 3.6735,
+      "compact_variant_2": 3.4512
+    },
+    "1024": {
+      "matrices": 14,
+      "compact": 6.7592,
+      "expanded": 6.5512,
+      "bf16": 7.3989,
+      "fp8": 3.0848,
+      "unpack": 1.4781,
+      "compact_variant_1": 7.0281,
+      "compact_variant_2": 6.5783
+    },
+    "2048": {
+      "matrices": 14,
+      "compact": 12.9671,
+      "expanded": 12.9748,
+      "bf16": 13.3213,
+      "fp8": 5.8602,
+      "unpack": 1.4688,
+      "compact_variant_1": 13.7272,
+      "compact_variant_2": 12.7905
+    }
+  },
+  "text_decoder_step_ms": {
+    "note": "Each language-model matrix shape times its count in the pinned checkpoint (64 layers); matrix products only. lm_head scaled linearly from the 4,096-row embedding-shape slice. MTP and vision excluded; 48-row matrices are unsupported and excluded.",
+    "counts": {
+      "1024x5120": 32,
+      "5120x6144": 64,
+      "5120x17408": 64,
+      "6144x5120": 48,
+      "10240x5120": 48,
+      "12288x5120": 16,
+      "17408x5120": 128
+    },
+    "rows": {
+      "1": {
+        "compact": 24.636,
+        "fp8": 27.927,
+        "bf16": 50.521,
+        "expanded": 36.955,
+        "lm_head": {
+          "compact": 1.536,
+          "fp8": 1.552,
+          "bf16": 2.707
+        }
+      },
+      "2": {
+        "compact": 24.697,
+        "fp8": 27.987,
+        "bf16": 52.924,
+        "expanded": 37.019,
+        "lm_head": {
+          "compact": 1.536,
+          "fp8": 1.552,
+          "bf16": 2.887
+        }
+      },
+      "8": {
+        "compact": 25.114,
+        "fp8": 28.129,
+        "bf16": 53.056,
+        "expanded": 38.234,
+        "lm_head": {
+          "compact": 1.562,
+          "fp8": 1.552,
+          "bf16": 2.887
+        }
+      },
+      "16": {
+        "compact": 25.714,
+        "fp8": 28.237,
+        "bf16": 53.574,
+        "expanded": 40.126,
+        "lm_head": {
+          "compact": 1.604,
+          "fp8": 1.546,
+          "bf16": 2.874
+        }
+      },
+      "17": {
+        "compact": 33.278,
+        "fp8": 28.17,
+        "bf16": 58.782,
+        "expanded": 39.326,
+        "lm_head": {
+          "compact": 1.997,
+          "fp8": 1.552,
+          "bf16": 3.048
+        }
+      },
+      "32": {
+        "compact": 34.037,
+        "fp8": 28.424,
+        "bf16": 60.256,
+        "expanded": 40.67,
+        "lm_head": {
+          "compact": 2.075,
+          "fp8": 1.676,
+          "bf16": 3.067
+        }
+      },
+      "33": {
+        "compact": 41.506,
+        "fp8": 31.044,
+        "bf16": 62.737,
+        "expanded": 42.313,
+        "lm_head": {
+          "compact": 2.504,
+          "fp8": 1.564,
+          "bf16": 3.122
+        }
+      },
+      "64": {
+        "compact": 50.546,
+        "fp8": 30.759,
+        "bf16": 60.231,
+        "expanded": 51.175,
+        "lm_head": {
+          "compact": 3.156,
+          "fp8": 1.57,
+          "bf16": 3.185
+        }
+      },
+      "65": {
+        "compact": 49.59,
+        "fp8": 32.01,
+        "bf16": 71.056,
+        "expanded": 49.672,
+        "lm_head": {
+          "compact": 3.176,
+          "fp8": 1.62,
+          "bf16": 3.005
+        }
+      },
+      "127": {
+        "compact": 50.577,
+        "fp8": 34.681,
+        "bf16": 69.003,
+        "expanded": 50.652,
+        "lm_head": {
+          "compact": 3.29,
+          "fp8": 1.626,
+          "bf16": 2.992
+        }
+      },
+      "128": {
+        "compact": 50.632,
+        "fp8": 34.644,
+        "bf16": 69.057,
+        "expanded": 50.709,
+        "lm_head": {
+          "compact": 3.295,
+          "fp8": 1.626,
+          "bf16": 2.986
+        }
+      },
+      "129": {
+        "compact": 86.712,
+        "fp8": 38.945,
+        "bf16": 68.288,
+        "expanded": 86.835,
+        "lm_head": {
+          "compact": 4.977,
+          "fp8": 2.222,
+          "bf16": 4.259
+        }
+      },
+      "256": {
+        "compact": 88.906,
+        "fp8": 49.669,
+        "bf16": 104.079,
+        "expanded": 88.075,
+        "lm_head": {
+          "compact": 5.106,
+          "fp8": 2.254,
+          "bf16": 5.01
+        }
+      },
+      "512": {
+        "compact": 169.984,
+        "fp8": 85.337,
+        "bf16": 188.503,
+        "expanded": 166.024,
+        "lm_head": {
+          "compact": 9.09,
+          "fp8": 4.284,
+          "bf16": 9.473
+        }
+      },
+      "1024": {
+        "compact": 330.328,
+        "fp8": 150.985,
+        "bf16": 356.2,
+        "expanded": 323.501,
+        "lm_head": {
+          "compact": 17.786,
+          "fp8": 8.275,
+          "bf16": 18.332
+        }
+      },
+      "2048": {
+        "compact": 639.685,
+        "fp8": 290.537,
+        "bf16": 668.792,
+        "expanded": 650.485,
+        "lm_head": {
+          "compact": 34.992,
+          "fp8": 15.47,
+          "bf16": 33.79
+        }
+      }
+    }
+  }
+}

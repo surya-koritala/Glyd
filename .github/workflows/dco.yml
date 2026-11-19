@@ -1,6 +1,6 @@
 # Every commit in a pull request must carry a Signed-off-by trailer,
-# which accepts CLA.md.
-name: CLA
+# certifying the Developer Certificate of Origin (DCO).
+name: DCO
 on:
   pull_request:
 jobs:
@@ -16,7 +16,7 @@ jobs:
             ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} \
             | awk '/^[0-9a-f]{40} /{if(h!="" && !ok) print h; h=$1; ok=0} /^Signed-off-by: /{ok=1} END{if(h!="" && !ok) print h}')
           if [ -n "$missing" ]; then
-            echo "Commits without Signed-off-by (git commit -s; see CLA.md):"
+            echo "Commits without Signed-off-by (git commit -s; see DCO and CONTRIBUTING.md):"
             echo "$missing"
             exit 1
           fi

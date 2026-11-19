@@ -1,0 +1,21 @@
+Gemma 4 12B-it (i6) with google/gemma-4-12B-it-assistant drafting, RTX 4080 SUPER 16 GB (owner's PC), engine 0b82a491, 2026-10-15
+g4spec 12b ref-31b-qat.json --draft draft12 --layout i6 --ctx 4096 --chunk 256 (5 prompts, greedy, plain step vs drafted, same prompt and length)
+
+k (drafts a round)   plain tok/s   drafted tok/s   speed-up   tokens a round   outputs
+3  (256 tokens)      61.8          160.0           2.59x      3.06             the same, token for token
+4  (96 tokens)       61.9          170.4           2.75x      3.33             the same
+6  (256 tokens)      61.8          183.1           2.96x      3.98             the same
+8  (256 tokens)      61.8          182.5           2.95x      4.25             the same
+
+Draft model packed i6: 0.321 GiB. The big model checks every draft, so the output is its own greedy output.
+
+Through the server (glyd-engine serve 12b-i6 [--draft draft12 | --no-draft], /v1/chat/completions, temperature 0, 5 chat prompts,
+up to 400 tokens, engine 16fd1751, wall time incl. the prompt): drafted 1,579 tokens in 11.0 s = 143.5 tok/s, plain 1,579 in 25.6 s =
+61.7 tok/s (2.33x; per reply 109-235 vs 61.6-61.7). Replies identical, character for character, 5 of 5 (before 16fd1751, 1 of 3
+differed at a near tie: the verify pass's attention summed in another order than the step's; now it takes the step's kernel).
+Saved i6 directory loads in 12 s (the draft model packed at load).
+
+Sampled replies (the model's defaults: temperature 1.0, top-k 64, top-p 0.95; engine e65683e2, each draft checked by the sampler,
+the tokens distributed as steps' draws; sampler test check_draft_keeps_the_distribution, 200,000 draws a case, within 0.006):
+drafted 1,542 tokens in 15.2 s = 101.6 tok/s, plain 1,579 in 25.8 s = 61.1 tok/s (1.66x; per reply 76-136 vs 61.1-61.2).
+Fewer drafts are kept than greedy (a draw matches the draft less often). Replies read normally (code, a story, lists).

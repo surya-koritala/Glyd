@@ -1,0 +1,2 @@
+glyd-v1: 253 packs checked, 146 tensors hashed, 16.38 GB of bf16 read, 3 shards (10.1 s)
+embedding 151936 x 4096 packed (mma) and checked: 10.86 bits a weight (5.9 s); wrote /home/ubuntu/packed-mma/engine.safetensors

@@ -1,0 +1,46 @@
+{
+  "ci_complete": true,
+  "preparation_passed": true,
+  "ci_tree_matches_head": true,
+  "head_sha": "1b98b90040a859bad93b4cccacfbc0daaf1d0fdc",
+  "ci_run": 37832201735,
+  "ci_merge_sha": "0eb2e481d8bf173749171b01fafb973ad1f6ab76",
+  "merged_main_sha": "907d74ed5bba371dce03d62713879187d658a9a7",
+  "pr": 111,
+  "repository": "Sigbound/glyd-gpu-private",
+  "artifact_id": 11573569845,
+  "artifact_zip_sha256": "2ca5555a302243435871ebebacfd9752524be54c3e5adf90ae1399eb2bc35b58",
+  "bundle_sha256": "bae153374ecde04364ebcba68e47be9a82eec75c263659eacdf4895823290733",
+  "members_verified": 33,
+  "job_path": "/private/tmp/glyd-gpu-check-venv-20261008/verified-bundle/pod_gpu_check.sh",
+  "job_sha256": "efe5f1f3149d6e133036ec165bd883fea2e9bed1f66eb7f44d591fb59928c9de",
+  "proposed_name": "gc-q35v-20261008",
+  "proposed_gpu": "first with capacity: L40 <= $0.82, RTX 4090 <= $0.89 per hour",
+  "proposed_max_minutes": 25,
+  "capacity_wait_minutes": 60,
+  "workload_max_minutes": 20,
+  "proposed_max_total_usd": 0.38,
+  "maximum_disk_gb": 50,
+  "no_retry": true,
+  "guard_soft_usd": 66,
+  "guard_hard_usd": 67,
+  "guard_emergency_floor_usd": 6,
+  "maximum_pods": 1,
+  "previous_attempts": [
+    {
+      "name": "gc-q35-20261008",
+      "result": "RTX 4090 at $0.89/h above its $0.74 cap: deleted before the job"
+    },
+    {
+      "name": "gc-q35r-20261008",
+      "result": "pip refused by the image's Python (PEP 668) in the first minute; 193 s accounted, $0.048"
+    }
+  ],
+  "approved": true,
+  "approval_pending": false,
+  "approval": {
+    "at_utc": "2026-10-08T19:52:23+00:00",
+    "offered": "pod gc-q35v-20261008: first available L40 (<= $0.82/h) or RTX 4090 (<= $0.89/h), one pod, at most 25 minutes and $0.37, auto-delete, no rerun",
+    "owner_reply": "Yes, launch gc-q35v-20261008"
+  }
+}

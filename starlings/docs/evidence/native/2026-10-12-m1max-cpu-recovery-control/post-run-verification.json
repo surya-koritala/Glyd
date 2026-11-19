@@ -1,0 +1,14 @@
+{
+  "kind": "NativeRecoveryPostRunVerification",
+  "temporary_token_in_database": false,
+  "remaining_token_rows": 0,
+  "withdrawal_required_control_only_followup": true,
+  "old_ownership_files_unchanged": true,
+  "new_record_phase": "drained",
+  "new_record_lease": "b8e097f9-9a2f-4e3a-b482-a8566b741dac",
+  "new_pin_retained": true,
+  "approval_consumed": true,
+  "native_requests": 0,
+  "external_spend_usd": 0,
+  "recovery_not_attempted": true
+}

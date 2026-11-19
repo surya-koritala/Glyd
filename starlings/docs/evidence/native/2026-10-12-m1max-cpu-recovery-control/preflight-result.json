@@ -1,0 +1,10 @@
+{
+  "kind": "NativeDaemonPreflight",
+  "success": true,
+  "model_started": false,
+  "approval_consumed": false,
+  "process_observation_available": true,
+  "loopback_bind_available": true,
+  "configuration": "569a84cd782df96aba006075dd0960c7920b82f7050ec8031328a3699c8ce1fb",
+  "binary_sha256": "4b1abdea6193208a776999faa08045b5c85c382879004e1dcf8af6340c708a89"
+}

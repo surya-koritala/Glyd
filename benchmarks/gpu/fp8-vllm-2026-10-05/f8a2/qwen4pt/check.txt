@@ -1,0 +1,10 @@
+  stock-eager: ok in 111 s; weights 6.29 GiB, KV 1827726 tokens
+  glyd-eager: ok in 43 s; weights 6.45 GiB, KV 1802695 tokens
+GPU NVIDIA GeForce RTX 4090
+PASS: exact[eager]: tokens, token log probabilities and the top 20 prompt log probabilities of 4 prompts (40036 values) bit for bit stock vLLM's
+PASS: kernel[eager]: the FP8 kernel lines vLLM logs are the same in both (1: Selected CutlassFP8ScaledMMLinearKernel for Fp8LinearMethod)
+PASS: packed[eager]: 16 Linears packed (1450 MiB held for 1450 MiB of weights as vLLM's kernel is fed them), scratch 170 MiB; methods {'UnquantizedEmbeddingMethod': 2, 'UnquantizedLinearMethod': 6, 'Fp8LinearMethod': 16, 'Fp8KVCacheMethod': 1}; sample weights [['language_model.model.layers.0.mlp.gate_up_proj.weight', [5120, 34816], 'torch.float8_e4m3fn'], ['language_model.model.layers.0.mlp.down_proj.weight', [17408, 5120], 'torch.float8_e4m3fn']]
+PASS: weights[eager]: vLLM logs 6.29 GiB stock, 6.45 GiB Glyd: +0.16 GiB, the scratch 0.17 GiB (the identity codec holds the weights whole)
+INFO: KV cache[eager]: stock 1827726 tokens (12.01 GiB), Glyd 1802695 tokens (11.85 GiB)
+INFO: speed[eager] (Glyd / stock, tokens a second): prefill 0.97 (60375 -> 58704), decode1 0.74 (173 -> 127), decode16 0.75 (2531 -> 1906), decode64 0.78 (7762 -> 6046)
+PASS: 0 failed; /root/results/qwen4pt/check_fp8_vllm.json

@@ -1,0 +1,18 @@
+{
+ "object": "glyd.tiers",
+ "schema": "glyd-costs/1",
+ "note": "written by hand from the record's own lines (GLY-236): the rates the predictor takes for the pod; nothing was measured again",
+ "record": "benchmarks/gpu/nh-offload-4090-2026-10-10 (a pod of RTX 4090s; Nemotron 3 Super wren, copy mode, 123 of 512 experts a layer on the GPU)",
+ "rates": {
+  "vram_read": {
+   "gbs": 1008.0,
+   "basis": "spec",
+   "from": "NVIDIA's figure for the RTX 4090 (1,008 GB/s); the record measured no GPU read rate"
+  },
+  "link_h2d_pinned": {
+   "gbs": 12.6,
+   "basis": "measured",
+   "from": "README.md line 15: 72,403 experts copied in, 224.2 GB in 17.8 s of copying (12.6 GB/s)"
+  }
+ }
+}

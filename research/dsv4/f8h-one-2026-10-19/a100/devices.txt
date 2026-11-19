@@ -1,0 +1,26 @@
+crw-rw-rw- 1 root root 195, 254 Oct 20 00:35 /dev/nvidia-modeset
+crw-rw-rw- 1 root root 234,   0 Oct 20 00:25 /dev/nvidia-uvm
+crw-rw-rw- 1 root root 234,   1 Oct 20 00:25 /dev/nvidia-uvm-tools
+crw-rw-rw- 1 root root 195,   0 Oct 20 00:25 /dev/nvidia0
+crw-rw-rw- 1 root root 195, 255 Oct 20 00:25 /dev/nvidiactl
+
+/dev/nvidia-caps:
+total 0
+cr-------- 1 root root 239, 1 Oct 20 00:35 nvidia-cap1
+cr--r--r-- 1 root root 239, 2 Oct 20 00:35 nvidia-cap2
+LD_LIBRARY_PATH=/home/ubuntu/compat:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
+total 313848
+drwxr-xr-x 2 root root     4096 Apr 14  2026 compat
+lrwxrwxrwx 1 root root       12 Feb 18  2026 libcuda.so -> libcuda.so.1
+lrwxrwxrwx 1 root root       21 Feb 18  2026 libcuda.so.1 -> libcuda.so.580.126.20
+-rw-r--r-- 1 root root 96284520 Feb 18  2026 libcuda.so.580.126.20
+lrwxrwxrwx 1 root root       29 Feb 18  2026 libcudadebugger.so.1 -> libcudadebugger.so.580.126.20
+-rw-r--r-- 1 root root 10444456 Feb 18  2026 libcudadebugger.so.580.126.20
+-rw-r--r-- 1 root root 72261240 Feb 18  2026 libnvidia-gpucomp.so.580.126.20
+lrwxrwxrwx 1 root root       19 Feb 18  2026 libnvidia-nvvm.so -> libnvidia-nvvm.so.4
+lrwxrwxrwx 1 root root       28 Feb 18  2026 libnvidia-nvvm.so.4 -> libnvidia-nvvm.so.580.126.20
+-rw-r--r-- 1 root root 78111720 Feb 18  2026 libnvidia-nvvm.so.580.126.20
+-rw-r--r-- 1 root root 24829456 Nov  8  2025 libnvidia-nvvm70.so.4
+-rw-r--r-- 1 root root    14336 Feb 18  2026 libnvidia-pkcs11-openssl3.so.580.126.20
+lrwxrwxrwx 1 root root       38 Feb 18  2026 libnvidia-ptxjitcompiler.so.1 -> libnvidia-ptxjitcompiler.so.580.126.20
+-rw-r--r-- 1 root root 39422584 Feb 18  2026 libnvidia-ptxjitcompiler.so.580.126.20

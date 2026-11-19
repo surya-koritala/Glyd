@@ -1,0 +1,11 @@
+Scoped automatic-reload authorization: this consumer batch may start at the balance-only stop; daily caps unchanged.
+21:19 created nv1e8pz64eec5u (NVIDIA GeForce RTX 5090)
+Verified hourly GPU quote: 0.99
+ssh on pod nv1e8pz64eec5u ready after 12s: ssh reachable at 74.2.96.213:16336
+21:19 ssh ready at 74.2.96.213:16336 after 17 s
+NVIDIA GeForce RTX 5090, 595.91.07, 32607 MiB
+21:19 job started
+22:29 job done
+terminating nv1e8pz64eec5u
+pods left: []
+70 min

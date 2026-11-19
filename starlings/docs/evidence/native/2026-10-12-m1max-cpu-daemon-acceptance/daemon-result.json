@@ -1,0 +1,130 @@
+{
+  "kind": "NativeDaemonAcceptanceExperiment",
+  "success": true,
+  "service_status_history": [
+    {
+      "state": "waiting_for_registry",
+      "pin": null,
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": null,
+      "reserved_bytes": null
+    },
+    {
+      "state": "verifying_catalog",
+      "pin": null,
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": null,
+      "reserved_bytes": null
+    },
+    {
+      "state": "verifying_catalog",
+      "pin": null,
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "reserved_bytes": null
+    },
+    {
+      "state": "loading",
+      "pin": "dca8b946-a014-4b0c-b1dd-10464ca752de",
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "reserved_bytes": null
+    },
+    {
+      "state": "ready",
+      "pin": "dca8b946-a014-4b0c-b1dd-10464ca752de",
+      "process_group_absent": false,
+      "inference_qualified": true,
+      "error": null,
+      "endpoint": "127.0.0.1:57401",
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "reserved_bytes": "0"
+    },
+    {
+      "state": "failed_pins_retained",
+      "pin": "dca8b946-a014-4b0c-b1dd-10464ca752de",
+      "process_group_absent": true,
+      "inference_qualified": false,
+      "error": "SECURITY_Transport: operation refused",
+      "endpoint": "127.0.0.1:57401",
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "reserved_bytes": "1140850688"
+    }
+  ],
+  "implementation": "d329e9ffcc43d3f832f479c61a748c6b051ea6ea",
+  "binary_sha256": "6dd1102c98692dd880c8ccd1263479e87c92e676daa6fc6191a38c62b1ca0080",
+  "manifest": "8f993f2242910f9f535611e0e82e62e6054bcaccc96dc28297f09bc6731e0835",
+  "service_configuration": "80229aa172edc4e1975264410c2d10f2e380a3f0fcd08349f0293a0678735846",
+  "worker_record": "ef82fae64db7b6464b830e9129d42c490fd578cacd73f2fa8464c516aeb3d38a",
+  "profile_evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+  "generations_requested": 4,
+  "count_call_upper_bound": 9,
+  "count_calls_instrumented": false,
+  "output_tokens_total_cap": 32,
+  "runs": [
+    {
+      "stream": false,
+      "revoked_midstream": false,
+      "elapsed_ms": 6420,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": false,
+      "revoked_midstream": false,
+      "elapsed_ms": 6373,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": true,
+      "revoked_midstream": false,
+      "elapsed_ms": 6396,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": true,
+      "revoked_midstream": true,
+      "elapsed_ms": 3989,
+      "trusted_request_drained": false
+    }
+  ],
+  "refusal_statuses": [
+    401,
+    400,
+    400,
+    400,
+    401
+  ],
+  "json_sse_semantic_parity": true,
+  "revocation_withdraws_done": true,
+  "failed_reservation_retained": true,
+  "quarantine_retained": true,
+  "process_observation_available": true,
+  "owned_server_groups_observed": 1,
+  "owned_group_remaining": false,
+  "sampled_owned_peak_rss_bytes": 1718403072,
+  "sample_interval_ms": 100,
+  "elapsed_seconds": 52.033,
+  "external_spend_usd": 0,
+  "faults": [],
+  "general_production_qualification_issued": false,
+  "service_cleanup_qualified": false,
+  "base_conversion_fidelity_qualified": false
+}

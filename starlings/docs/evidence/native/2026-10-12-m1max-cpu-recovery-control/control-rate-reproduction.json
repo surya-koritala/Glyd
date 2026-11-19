@@ -1,0 +1,119 @@
+{
+  "kind": "ModelFreeAdminAdmissionReproduction",
+  "model_started": false,
+  "state": "/private/tmp/glyd-control-rate-c52dd399",
+  "results": [
+    {
+      "returncode": 0,
+      "elapsed_ms": 68,
+      "error": ""
+    },
+    {
+      "returncode": 0,
+      "elapsed_ms": 41,
+      "error": ""
+    },
+    {
+      "returncode": 0,
+      "elapsed_ms": 48,
+      "error": ""
+    },
+    {
+      "returncode": 0,
+      "elapsed_ms": 41,
+      "error": ""
+    },
+    {
+      "returncode": 0,
+      "elapsed_ms": 51,
+      "error": ""
+    },
+    {
+      "returncode": 0,
+      "elapsed_ms": 47,
+      "error": ""
+    },
+    {
+      "returncode": 0,
+      "elapsed_ms": 43,
+      "error": ""
+    },
+    {
+      "returncode": 0,
+      "elapsed_ms": 48,
+      "error": ""
+    },
+    {
+      "returncode": 1,
+      "elapsed_ms": 25,
+      "error": "DAEMON_UNAVAILABLE: start the daemon or check private endpoint permissions (security: Transport)"
+    },
+    {
+      "returncode": 1,
+      "elapsed_ms": 25,
+      "error": "DAEMON_UNAVAILABLE: start the daemon or check private endpoint permissions (security: Transport)"
+    },
+    {
+      "returncode": 1,
+      "elapsed_ms": 24,
+      "error": "DAEMON_UNAVAILABLE: start the daemon or check private endpoint permissions (security: Transport)"
+    },
+    {
+      "returncode": 1,
+      "elapsed_ms": 25,
+      "error": "DAEMON_UNAVAILABLE: start the daemon or check private endpoint permissions (security: Transport)"
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    },
+    {
+      "paced": true,
+      "returncode": 0,
+      "error": ""
+    }
+  ],
+  "daemon_exit": 0,
+  "spend_usd": 0
+}

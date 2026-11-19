@@ -1,0 +1,1984 @@
+{
+ "repo": "nvidia/Qwen3.8-27B-NVFP4",
+ "dir": "/root/w/hf/hub/models--nvidia--Qwen3.8-27B-NVFP4/snapshots/482ca0f3832238542f8f5295dde86b5f22711d80",
+ "checkpoint_bytes": 21921697280,
+ "kinds": {
+  "mlp": {
+   "tensors": 192,
+   "packs": 192,
+   "bytes": 8556380160,
+   "packed": 8585772456,
+   "option": 8556380160,
+   "plain": 331,
+   "patches": 1044480,
+   "checked": 8556380160,
+   "bits": 4.0137,
+   "h0": 3.9413,
+   "saved": 0,
+   "saved_of_checkpoint": 0.0
+  },
+  "lm_head": {
+   "tensors": 1,
+   "packs": 1,
+   "bytes": 635699200,
+   "packed": 637977420,
+   "option": 635699200,
+   "plain": 0,
+   "patches": 77600,
+   "checked": 635699200,
+   "bits": 4.0143,
+   "h0": 3.9419,
+   "saved": 0,
+   "saved_of_checkpoint": 0.0
+  },
+  "all": {
+   "tensors": 193,
+   "packs": 193,
+   "bytes": 9192079360,
+   "packed": 9223749876,
+   "option": 9192079360,
+   "plain": 331,
+   "patches": 1122080,
+   "checked": 9192079360,
+   "bits": 4.0138,
+   "h0": 3.9413,
+   "saved": 0,
+   "saved_of_checkpoint": 0.0
+  }
+ },
+ "failed": [],
+ "seconds": 15.1,
+ "gpu": "NVIDIA GeForce RTX 5090",
+ "rows": [
+  {
+   "key": "lm_head.weight",
+   "kind": "lm_head",
+   "items": 1,
+   "bytes": 635699200,
+   "packed": 637977420,
+   "bits": 4.0143,
+   "h0": 3.9419,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.0.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44610704,
+   "bits": 4.0041,
+   "h0": 3.934,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.0.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44603784,
+   "bits": 4.0035,
+   "h0": 3.9316,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.0.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44606056,
+   "bits": 4.0037,
+   "h0": 3.9317,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.1.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44693004,
+   "bits": 4.0115,
+   "h0": 3.9398,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.1.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44640496,
+   "bits": 4.0068,
+   "h0": 3.9346,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.1.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44642848,
+   "bits": 4.007,
+   "h0": 3.9348,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.10.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44738856,
+   "bits": 4.0157,
+   "h0": 3.9424,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.10.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44685424,
+   "bits": 4.0109,
+   "h0": 3.938,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.10.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44687456,
+   "bits": 4.011,
+   "h0": 3.9383,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.11.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44722936,
+   "bits": 4.0142,
+   "h0": 3.9413,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.11.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44683408,
+   "bits": 4.0107,
+   "h0": 3.9378,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.11.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44684620,
+   "bits": 4.0108,
+   "h0": 3.9381,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.12.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44713012,
+   "bits": 4.0133,
+   "h0": 3.9403,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.12.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44683960,
+   "bits": 4.0107,
+   "h0": 3.9383,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.12.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44687220,
+   "bits": 4.011,
+   "h0": 3.9386,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.13.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44714392,
+   "bits": 4.0135,
+   "h0": 3.9405,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.13.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44685932,
+   "bits": 4.0109,
+   "h0": 3.9385,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.13.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44689392,
+   "bits": 4.0112,
+   "h0": 3.9389,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.14.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44716028,
+   "bits": 4.0136,
+   "h0": 3.9406,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.14.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44668840,
+   "bits": 4.0094,
+   "h0": 3.9365,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.14.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44672432,
+   "bits": 4.0097,
+   "h0": 3.937,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.15.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44693340,
+   "bits": 4.0116,
+   "h0": 3.9389,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.15.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44673168,
+   "bits": 4.0098,
+   "h0": 3.9374,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.15.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44676832,
+   "bits": 4.0101,
+   "h0": 3.9379,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.16.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44700196,
+   "bits": 4.0122,
+   "h0": 3.9403,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.16.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44667824,
+   "bits": 4.0093,
+   "h0": 3.937,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.16.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44673596,
+   "bits": 4.0098,
+   "h0": 3.9378,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.17.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44702964,
+   "bits": 4.0124,
+   "h0": 3.94,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.17.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44674520,
+   "bits": 4.0099,
+   "h0": 3.9375,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.17.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44678500,
+   "bits": 4.0102,
+   "h0": 3.938,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.18.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44705940,
+   "bits": 4.0127,
+   "h0": 3.942,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.18.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44669064,
+   "bits": 4.0094,
+   "h0": 3.9373,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.18.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44680080,
+   "bits": 4.0104,
+   "h0": 3.9383,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.19.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44713208,
+   "bits": 4.0133,
+   "h0": 3.9409,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.19.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44676980,
+   "bits": 4.0101,
+   "h0": 3.9374,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.19.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44684356,
+   "bits": 4.0108,
+   "h0": 3.9383,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.2.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44766704,
+   "bits": 4.0182,
+   "h0": 3.9449,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.2.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44688664,
+   "bits": 4.0111,
+   "h0": 3.9385,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.2.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44688704,
+   "bits": 4.0112,
+   "h0": 3.9388,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.20.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44742756,
+   "bits": 4.016,
+   "h0": 3.9433,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.20.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44669356,
+   "bits": 4.0094,
+   "h0": 3.9365,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.20.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44674744,
+   "bits": 4.0099,
+   "h0": 3.9375,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.21.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44741404,
+   "bits": 4.0159,
+   "h0": 3.9424,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.21.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44679584,
+   "bits": 4.0103,
+   "h0": 3.9373,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.21.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44684788,
+   "bits": 4.0108,
+   "h0": 3.9382,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.22.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44740520,
+   "bits": 4.0158,
+   "h0": 3.9429,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.22.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44688736,
+   "bits": 4.0112,
+   "h0": 3.9382,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.22.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44690756,
+   "bits": 4.0113,
+   "h0": 3.939,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.23.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44751528,
+   "bits": 4.0168,
+   "h0": 3.9435,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.23.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44687544,
+   "bits": 4.011,
+   "h0": 3.9379,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.23.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44689628,
+   "bits": 4.0112,
+   "h0": 3.9389,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.24.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44750624,
+   "bits": 4.0167,
+   "h0": 3.9439,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.24.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44691564,
+   "bits": 4.0114,
+   "h0": 3.9391,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.24.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44693552,
+   "bits": 4.0116,
+   "h0": 3.9401,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.25.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44732296,
+   "bits": 4.0151,
+   "h0": 3.9422,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.25.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44675696,
+   "bits": 4.01,
+   "h0": 3.9376,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.25.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44678332,
+   "bits": 4.0102,
+   "h0": 3.9388,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.26.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44735356,
+   "bits": 4.0153,
+   "h0": 3.9432,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.26.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44683604,
+   "bits": 4.0107,
+   "h0": 3.9389,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.26.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44685564,
+   "bits": 4.0109,
+   "h0": 3.94,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.27.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44710776,
+   "bits": 4.0131,
+   "h0": 3.9409,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.27.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44671920,
+   "bits": 4.0096,
+   "h0": 3.9377,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.27.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44673344,
+   "bits": 4.0098,
+   "h0": 3.9388,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.28.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44712144,
+   "bits": 4.0133,
+   "h0": 3.9414,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.28.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44650620,
+   "bits": 4.0077,
+   "h0": 3.9357,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.28.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44655548,
+   "bits": 4.0082,
+   "h0": 3.9369,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.29.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44721168,
+   "bits": 4.0141,
+   "h0": 3.9419,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.29.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44653084,
+   "bits": 4.008,
+   "h0": 3.936,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.29.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44652472,
+   "bits": 4.0079,
+   "h0": 3.9365,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.3.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44748240,
+   "bits": 4.0165,
+   "h0": 3.9435,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.3.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44672172,
+   "bits": 4.0097,
+   "h0": 3.9375,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.3.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44676724,
+   "bits": 4.0101,
+   "h0": 3.9381,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.30.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44728384,
+   "bits": 4.0147,
+   "h0": 3.9427,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.30.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44662628,
+   "bits": 4.0088,
+   "h0": 3.9374,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.30.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44661052,
+   "bits": 4.0087,
+   "h0": 3.9378,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.31.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44725244,
+   "bits": 4.0144,
+   "h0": 3.9426,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.31.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44649148,
+   "bits": 4.0076,
+   "h0": 3.9357,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.31.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44652652,
+   "bits": 4.0079,
+   "h0": 3.9367,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.32.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44715988,
+   "bits": 4.0136,
+   "h0": 3.942,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.32.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44664156,
+   "bits": 4.0089,
+   "h0": 3.9377,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.32.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44666580,
+   "bits": 4.0092,
+   "h0": 3.9385,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.33.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44719380,
+   "bits": 4.0139,
+   "h0": 3.9427,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.33.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44673060,
+   "bits": 4.0097,
+   "h0": 3.9386,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.33.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44674228,
+   "bits": 4.0099,
+   "h0": 3.9389,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.34.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44728884,
+   "bits": 4.0148,
+   "h0": 3.9444,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.34.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44681620,
+   "bits": 4.0105,
+   "h0": 3.9401,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.34.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44696816,
+   "bits": 4.0119,
+   "h0": 3.9416,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.35.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44753836,
+   "bits": 4.017,
+   "h0": 3.9449,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.35.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44687736,
+   "bits": 4.0111,
+   "h0": 3.9395,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.35.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44694820,
+   "bits": 4.0117,
+   "h0": 3.9406,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.36.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44750224,
+   "bits": 4.0167,
+   "h0": 3.9434,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.36.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44701220,
+   "bits": 4.0123,
+   "h0": 3.9403,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.36.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44710628,
+   "bits": 4.0131,
+   "h0": 3.9416,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.37.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44771456,
+   "bits": 4.0186,
+   "h0": 3.9447,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.37.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44708824,
+   "bits": 4.013,
+   "h0": 3.94,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.37.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44717340,
+   "bits": 4.0137,
+   "h0": 3.9411,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.38.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44774296,
+   "bits": 4.0188,
+   "h0": 3.9453,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.38.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44721036,
+   "bits": 4.0141,
+   "h0": 3.9415,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.38.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44733412,
+   "bits": 4.0152,
+   "h0": 3.9432,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.39.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44775300,
+   "bits": 4.0189,
+   "h0": 3.9448,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.39.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44722424,
+   "bits": 4.0142,
+   "h0": 3.9407,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.39.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44728168,
+   "bits": 4.0147,
+   "h0": 3.9416,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.4.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44756932,
+   "bits": 4.0173,
+   "h0": 3.944,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.4.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44675216,
+   "bits": 4.0099,
+   "h0": 3.9377,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.4.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44681180,
+   "bits": 4.0105,
+   "h0": 3.9383,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.40.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44779196,
+   "bits": 4.0193,
+   "h0": 3.9456,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.40.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44709136,
+   "bits": 4.013,
+   "h0": 3.94,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.40.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44713528,
+   "bits": 4.0134,
+   "h0": 3.9413,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.41.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44761488,
+   "bits": 4.0177,
+   "h0": 3.9442,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.41.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44702956,
+   "bits": 4.0124,
+   "h0": 3.9397,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.41.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44708116,
+   "bits": 4.0129,
+   "h0": 3.941,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.42.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44767856,
+   "bits": 4.0183,
+   "h0": 3.9453,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.42.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44709200,
+   "bits": 4.013,
+   "h0": 3.9412,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.42.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44715496,
+   "bits": 4.0136,
+   "h0": 3.9425,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.43.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44765560,
+   "bits": 4.018,
+   "h0": 3.9451,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.43.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44696188,
+   "bits": 4.0118,
+   "h0": 3.9395,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.43.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44703680,
+   "bits": 4.0125,
+   "h0": 3.9409,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.44.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44761676,
+   "bits": 4.0177,
+   "h0": 3.9446,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.44.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44689288,
+   "bits": 4.0112,
+   "h0": 3.9389,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.44.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44699156,
+   "bits": 4.0121,
+   "h0": 3.9404,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.45.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44773684,
+   "bits": 4.0188,
+   "h0": 3.9456,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.45.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44693500,
+   "bits": 4.0116,
+   "h0": 3.9393,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.45.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44695604,
+   "bits": 4.0118,
+   "h0": 3.94,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.46.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44780256,
+   "bits": 4.0194,
+   "h0": 3.9464,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.46.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44710392,
+   "bits": 4.0131,
+   "h0": 3.9411,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.46.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44712476,
+   "bits": 4.0133,
+   "h0": 3.9418,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.47.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44780728,
+   "bits": 4.0194,
+   "h0": 3.9466,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.47.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44704036,
+   "bits": 4.0125,
+   "h0": 3.9405,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.47.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44704508,
+   "bits": 4.0126,
+   "h0": 3.941,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.48.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44782280,
+   "bits": 4.0195,
+   "h0": 3.9471,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.48.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44711496,
+   "bits": 4.0132,
+   "h0": 3.9415,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.48.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44719640,
+   "bits": 4.0139,
+   "h0": 3.9426,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.49.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44793760,
+   "bits": 4.0206,
+   "h0": 3.9482,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.49.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44718020,
+   "bits": 4.0138,
+   "h0": 3.9422,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.49.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44730432,
+   "bits": 4.0149,
+   "h0": 3.9434,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.5.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44759692,
+   "bits": 4.0175,
+   "h0": 3.9439,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.5.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44684292,
+   "bits": 4.0108,
+   "h0": 3.938,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.5.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44687224,
+   "bits": 4.011,
+   "h0": 3.9386,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.50.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44795816,
+   "bits": 4.0208,
+   "h0": 3.9495,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.50.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44714832,
+   "bits": 4.0135,
+   "h0": 3.9429,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.50.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44727728,
+   "bits": 4.0147,
+   "h0": 3.9437,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.51.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44808152,
+   "bits": 4.0219,
+   "h0": 3.9495,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.51.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44721448,
+   "bits": 4.0141,
+   "h0": 3.9423,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.51.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44732672,
+   "bits": 4.0151,
+   "h0": 3.9433,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.52.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44803504,
+   "bits": 4.0215,
+   "h0": 3.948,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.52.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44729412,
+   "bits": 4.0148,
+   "h0": 3.9427,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.52.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44744300,
+   "bits": 4.0161,
+   "h0": 3.944,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.53.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44800368,
+   "bits": 4.0212,
+   "h0": 3.9478,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.53.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44736204,
+   "bits": 4.0154,
+   "h0": 3.9429,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.53.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44749588,
+   "bits": 4.0166,
+   "h0": 3.9442,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.54.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44814508,
+   "bits": 4.0224,
+   "h0": 3.9495,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.54.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44739464,
+   "bits": 4.0157,
+   "h0": 3.9432,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.54.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44752672,
+   "bits": 4.0169,
+   "h0": 3.9444,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.55.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44816820,
+   "bits": 4.0226,
+   "h0": 3.9484,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.55.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44743800,
+   "bits": 4.0161,
+   "h0": 3.9429,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.55.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44759076,
+   "bits": 4.0175,
+   "h0": 3.9443,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.56.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44814400,
+   "bits": 4.0224,
+   "h0": 3.9479,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.56.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44747952,
+   "bits": 4.0165,
+   "h0": 3.943,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.56.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44761596,
+   "bits": 4.0177,
+   "h0": 3.9443,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.57.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44804924,
+   "bits": 4.0216,
+   "h0": 3.9469,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.57.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44740688,
+   "bits": 4.0158,
+   "h0": 3.9419,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.57.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44749228,
+   "bits": 4.0166,
+   "h0": 3.9428,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.58.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44819172,
+   "bits": 4.0229,
+   "h0": 3.9483,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.58.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44750184,
+   "bits": 4.0167,
+   "h0": 3.9431,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.58.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44760388,
+   "bits": 4.0176,
+   "h0": 3.9441,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.59.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44831724,
+   "bits": 4.024,
+   "h0": 3.9492,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.59.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44749624,
+   "bits": 4.0166,
+   "h0": 3.9433,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.59.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44763160,
+   "bits": 4.0178,
+   "h0": 3.9444,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.6.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44749792,
+   "bits": 4.0166,
+   "h0": 3.9443,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.6.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44688548,
+   "bits": 4.0111,
+   "h0": 3.9387,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.6.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44690832,
+   "bits": 4.0113,
+   "h0": 3.9389,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.60.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44821924,
+   "bits": 4.0231,
+   "h0": 3.9486,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.60.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44744932,
+   "bits": 4.0162,
+   "h0": 3.9431,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.60.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44760572,
+   "bits": 4.0176,
+   "h0": 3.9441,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.61.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44827556,
+   "bits": 4.0236,
+   "h0": 3.9494,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.61.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44740016,
+   "bits": 4.0158,
+   "h0": 3.9427,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.61.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44755388,
+   "bits": 4.0171,
+   "h0": 3.9435,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.62.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44829456,
+   "bits": 4.0238,
+   "h0": 3.9515,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.62.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44735756,
+   "bits": 4.0154,
+   "h0": 3.9428,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.62.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44751572,
+   "bits": 4.0168,
+   "h0": 3.9435,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.63.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44830304,
+   "bits": 4.0239,
+   "h0": 3.9545,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.63.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44724200,
+   "bits": 4.0143,
+   "h0": 3.942,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.63.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44737468,
+   "bits": 4.0155,
+   "h0": 3.9429,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.7.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44753992,
+   "bits": 4.017,
+   "h0": 3.9436,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.7.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44680376,
+   "bits": 4.0104,
+   "h0": 3.9372,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.7.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44679252,
+   "bits": 4.0103,
+   "h0": 3.9374,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.8.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44756260,
+   "bits": 4.0172,
+   "h0": 3.9431,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.8.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44690228,
+   "bits": 4.0113,
+   "h0": 3.9381,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.8.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44688992,
+   "bits": 4.0112,
+   "h0": 3.9382,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.9.mlp.down_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44747232,
+   "bits": 4.0164,
+   "h0": 3.9425,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.9.mlp.gate_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44700784,
+   "bits": 4.0122,
+   "h0": 3.9396,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.9.mlp.up_proj.weight",
+   "kind": "mlp",
+   "items": 1,
+   "bytes": 44564480,
+   "packed": 44703628,
+   "bits": 4.0125,
+   "h0": 3.94,
+   "bit_for_bit": true
+  }
+ ]
+}

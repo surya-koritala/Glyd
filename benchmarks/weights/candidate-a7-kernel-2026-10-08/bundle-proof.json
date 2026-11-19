@@ -1,0 +1,53 @@
+{
+  "ci_complete": true,
+  "preparation_passed": true,
+  "ci_tree_matches_head": true,
+  "head_sha": "a834dd8123191cdd5d593a6895e71fc443ff09b6",
+  "ci_run": 37790199387,
+  "ci_merge_sha": "12250f7dc79bc10061771dfc8bc9c856e0aa3966",
+  "research_tree_sha": "3bb58371b610d4a796aa8bde76cb6c888330d689",
+  "gpu_tree_sha": "4496a9c96786d56664c0bbd389d4cf0023ee4f9d",
+  "merged_main_sha": "187c477c5d4c9875601ca46f2d648a068014e1f7",
+  "pr": 99,
+  "kernel_pr": 97,
+  "repository": "Sigbound/glyd-gpu-private",
+  "artifact_id": 11557355941,
+  "artifact_zip_sha256": "0d00fb01a90027de70c3e7c023c501537c128de818b7a5db5c2d94cd6fe2c29f",
+  "bundle_sha256": "a8c5c62f0b191aeb82ad2b66609f29fc5a426a738ff07a8cece3e901170cc899",
+  "members_verified": 136,
+  "job_path": "/private/tmp/glyd-candidate-a7-kernel-any-20261008/verified-bundle/pod_job_a7.sh",
+  "job_sha256": "08b360249b4d672204e1bea34aba5f3ed0926e5fa20513719a0e68191b8d05d4",
+  "proposed_name": "ca-a7any-20261008",
+  "proposed_gpu": "first SM89 type with capacity: RTX 4090 <= $0.74, L40 <= $0.82, RTX 6000 Ada <= $0.84, L40S <= $1.09 per hour",
+  "proposed_max_minutes": 30,
+  "capacity_wait_minutes": 60,
+  "workload_max_minutes": 25,
+  "proposed_max_total_usd": 0.55,
+  "maximum_disk_gb": 50,
+  "no_retry": true,
+  "guard_soft_usd": 66,
+  "guard_hard_usd": 67,
+  "guard_emergency_floor_usd": 6,
+  "maximum_pods": 1,
+  "previous_attempts": [
+    {
+      "name": "ca-a7-20261008",
+      "result": "no instance at creation; nothing created or billed"
+    },
+    {
+      "name": "ca-a7r-20261008",
+      "result": "no instance at creation; nothing created or billed"
+    },
+    {
+      "name": "ca-a7l40-20261008",
+      "result": "no instance at creation; nothing created or billed"
+    }
+  ],
+  "approved": true,
+  "approval_pending": false,
+  "approval": {
+    "at_utc": "2026-10-08T14:32:10+00:00",
+    "offered": "pod ca-a7any-20261008: first SM89 type with capacity (4090/L40/RTX 6000 Ada/L40S), creation retried up to an hour, one pod, 30 minutes including startup, at most $0.55, auto-delete, no rerun",
+    "owner_reply": "Yes, launch ca-a7any-20261008"
+  }
+}

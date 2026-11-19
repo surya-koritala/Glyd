@@ -1,0 +1,3 @@
+17:58:29 (+329 s) env: 327 s
+17:59:03 (+362 s) tests: exit 0 (36 ok; 0 tracebacks)
+18:07:25 (+864 s) qwen4 (check): exit 1: FAIL: stock-eager did not run (exit 1); the log's end:|FAIL: glyd-eager did not run (exit 1); the log's end:|FAIL: stock-graph did not run (exit 1); the log's end:|FAIL: glyd-graph did not run (exit 1); the log's end:|FAIL: 4 failed; /root/results/qwen4/check_fp8_vllm.json|

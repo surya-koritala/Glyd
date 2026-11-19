@@ -1,0 +1,12 @@
+{
+  "python": "3.12.3",
+  "torch": "2.8.0+cu128",
+  "torch_cuda": "12.8",
+  "numpy": "2.1.2",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "cc": [
+    8,
+    9
+  ],
+  "total_memory": 25250627584
+}

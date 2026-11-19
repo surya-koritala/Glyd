@@ -1,0 +1,31 @@
+{
+ "model": "RedHatAI/Qwen3.5-9B-quantized.w8a8",
+ "args": {
+  "model": "RedHatAI/Qwen3.5-9B-quantized.w8a8",
+  "out": "/root/results/RedHatAI_Qwen3.5-9B-quantized.w8a8",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "max_num_seqs": 64,
+  "layout": "auto",
+  "steps": "stock-eager,glyd-exact,stock",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "stock": {
+  "weights_gib": 12.73,
+  "kv_tokens": null,
+  "kv_gib": null,
+  "concurrency": null,
+  "tps": null,
+  "quantization": null,
+  "quant_config": null,
+  "start_s": null,
+  "error": "RuntimeError: dispatch_scaled_mm, /workspace/csrc/libtorch_stable/quantization/w8a8/cutlass/c3x/scaled_mm_helper.hpp:34, Int8 not supported on SM120. Use FP8 quantization instead, or run on older arch (SM < 100).",
+  "log_tail": []
+ }
+}

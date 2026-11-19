@@ -1,0 +1,7 @@
+client 0: 700 of 700 tokens, first text 0.05 s, same text as alone
+client 1: 700 of 700 tokens, first text 0.14 s, same text as alone
+client 2: 700 of 700 tokens, first text 0.24 s, same text as alone
+3 of 3 read what they read alone; 3 clients together 43.6 s (one at a time 96.9 s)
+stats: {'prompt_tokens': 2919, 'prefix_hit_tokens': 1376, 'preemptions': 1, 'steps': 2999, 'rows': 4193} since the start: {'preemptions': 1, 'steps': 2999, 'rows': 4193}
+after a client left midway: 0 running, 0 waiting
+ok

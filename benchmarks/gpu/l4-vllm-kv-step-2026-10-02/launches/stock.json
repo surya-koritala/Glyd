@@ -1,0 +1,15 @@
+{
+ "mode": "stock",
+ "eager": false,
+ "cudagraph_mode": "FULL_AND_PIECEWISE",
+ "rows": 8,
+ "tokens": 1024,
+ "layers": 36,
+ "steps": 8,
+ "kernels_a_step": 491.2,
+ "kernels_a_step_a_layer_by_kind": {
+  "flash cache write": 1.0,
+  "flash attention (its split-KV kernel and its merge)": 2.0
+ },
+ "attention_launches_a_layer": 3.0
+}

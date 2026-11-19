@@ -1,0 +1,26 @@
+round 0: right after the prompts 127401984 values checked, 0 differing
+round 0: after a decode step 133890048 values checked, 0 differing
+round 1: right after the prompts 103809024 values checked, 0 differing
+round 1: after a decode step 109780992 values checked, 0 differing
+round 2: right after the prompts 112066560 values checked, 0 differing
+round 2: after a decode step 116858880 values checked, 0 differing
+differing by head (keys, values): [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+300 rounds of churn first; values checked against the bf16 copy 100407214080, differing 0, values in blocks the cache had named lost (not compared) 0
+KV cache: 5937345 entries past a block's own room in 118371 blocks, 5483 blocks took units of the first extra memory (used at most 31 of 56392 at once), 0 blocks kept in the second (used at most 0 of 256 units), 0 blocks lost; blocks named lost 0
+rows 1, the sequence in row 0: token 220 logits hash 4351ad4cbd71c125
+rows 1, the sequence in row 0: token 220 logits hash 4351ad4cbd71c125
+rows 2, the sequence in row 0: token 220 logits hash 4351ad4cbd71c125
+rows 2, the sequence in row 1: token 220 logits hash 4351ad4cbd71c125
+rows 3, the sequence in row 0: token 220 logits hash 4351ad4cbd71c125
+rows 3, the sequence in row 2: token 220 logits hash 4351ad4cbd71c125
+rows 4, the sequence in row 0: token 220 logits hash 4351ad4cbd71c125
+rows 4, the sequence in row 3: token 220 logits hash 4351ad4cbd71c125
+rows 5, the sequence in row 0: token 220 logits hash 4351ad4cbd71c125
+rows 5, the sequence in row 4: token 220 logits hash 4351ad4cbd71c125
+rows 6, the sequence in row 0: token 220 logits hash 4351ad4cbd71c125
+rows 6, the sequence in row 5: token 220 logits hash 4351ad4cbd71c125
+rows 7, the sequence in row 0: token 220 logits hash 4351ad4cbd71c125
+rows 7, the sequence in row 6: token 220 logits hash 4351ad4cbd71c125
+rows 8, the sequence in row 0: token 220 logits hash 4351ad4cbd71c125
+rows 8, the sequence in row 7: token 220 logits hash 4351ad4cbd71c125
+the sequence's logits are the same bit for bit at every number of rows and in either row

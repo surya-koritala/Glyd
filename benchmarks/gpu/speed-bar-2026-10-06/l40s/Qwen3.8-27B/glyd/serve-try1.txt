@@ -1,0 +1,9 @@
+glyd serve: the flags after -- are vLLM's; using vLLM.
+Qwen3.8-27B: 40.3 GB on the GPU with Glyd, instead of 55.6 GB, which does not fit the 47.7 GB your GPU has free.
+Qwen3.8-27B is downloaded already.
+Settings: 16,384-token context (the most that fits), compiled mode (CUDA graphs), 92% of GPU memory (43.9 GB).
+Loading Qwen3.8-27B with Glyd: 40.3 GB instead of 55.6 GB...
+glyd: the server stopped while starting: the GPU ran out of memory while loading the model.
+  Close programs that use the GPU (nvidia-smi lists them), or run a smaller model
+  Or try Qwen/Qwen3.5-9B, which needs about 18.4 GB: glyd serve Qwen/Qwen3.5-9B
+  The server's log: /root/results/Qwen3.8-27B/glyd/state-try1/glyd/logs/serve-20261006-043425.log

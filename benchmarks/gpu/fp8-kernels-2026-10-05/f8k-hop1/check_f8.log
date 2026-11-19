@@ -1,0 +1,24 @@
+check_f8 on GPU NVIDIA H100 80GB HBM3
+test_layout ok (0.0 s)
+test_every_byte_pattern ok (0.3 s)
+  4096x7168: 6.6467 bits a value, 3.5 s with the data
+test_shapes ok (4.9 s)
+test_all_escapes_is_plain ok (0.0 s)
+test_mixed_across_steps ok (0.3 s)
+test_fuzz ok (0.3 s)
+test_all_zero_patch ok (0.0 s)
+test_layout_of_the_bytes ok (0.0 s)
+test_rejected ok (0.0 s)
+  zai-org/GLM-5.3-Flash: 6.6649 bits a value
+  Qwen/Qwen3.8-27B-FP8: 6.6852 bits a value
+  MiniMaxAI/MiniMax-M3-MXFP8: 6.6869 bits a value
+  mistralai/Mistral-Small-4-119B-2603: 6.6665 bits a value
+  deepseek-ai/DeepSeek-V4.1-Flash: 6.7199 bits a value
+  50 samples of 5 repos, bit for bit
+test_real_samples ok (26.5 s)
+case_strides ok (0.0 s)
+case_experts ok (0.1 s)
+case_graph ok (0.0 s)
+bandwidth: 7168 x 18432 e4m3 on NVIDIA H100 80GB HBM3: unpack 178.0 us = 742 GB/s of e4m3 written (1359 GB/s with the packed bytes read; runs of 200: 178.0, 178.0, 178.1, 178.2, 178.2 us); pack 0.4 ms best of 4 (0.4 ms median, the size query's wait and the allocations in); 6.647 bits a value, 0 plain patches
+ALL BIT FOR BIT
+check_f8 exit 0

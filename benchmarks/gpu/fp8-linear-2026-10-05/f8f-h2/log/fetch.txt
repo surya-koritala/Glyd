@@ -1,0 +1,6 @@
+zai-org/GLM-5.3-Flash: 10 samples, 96 MB, 6 s
+Qwen/Qwen3.8-27B-FP8: 10 samples, 122 MB, 6 s
+MiniMaxAI/MiniMax-M3-MXFP8: 10 samples, 126 MB, 5 s
+mistralai/Mistral-Small-4-119B-2603: 10 samples, 105 MB, 3 s
+deepseek-ai/DeepSeek-V4.1-Flash: 10 samples, 122 MB, 6 s
+fetch exit 0

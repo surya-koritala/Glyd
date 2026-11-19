@@ -1,0 +1,9 @@
+{
+ "url": "http://127.0.0.1:8006",
+ "model": "Qwen/Qwen3-8B",
+ "rounds": 3,
+ "ttft_ms_median": 102.2,
+ "decode_tok_s_median": 116.78,
+ "prompt_tokens": 1024,
+ "new": 256
+}

@@ -1,0 +1,5 @@
+11:09:53 (+0 s) downloads (background): 3 checkpoints
+11:09:53 (+0 s) vLLM 0.30.0, nvcc, the library (sm_120)
+11:13:31 (+218 s) environment: vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA GeForce RTX 5090
+11:14:47 (+294 s) plugin tests: 28 ok; 2 failed; 2 tracebacks
+11:14:47 (+294 s) nvidia/Qwen3.6-35B-A3B-NVFP4: quant_parts.py --max-num-seqs 64 (at most 4086 s; exit 0 after 19 s; 12M)

@@ -1,0 +1,57 @@
+INFO 10-06 13:57:54 [api_utils.py:286] non-default args: {'max_model_len': 8192, 'gpu_memory_utilization': 0.9, 'disable_log_stats': True, 'quantization': 'glyd', 'enforce_eager': True, 'additional_config': {'glyd': {'layout': 'auto', 'exact': True, 'verify': True}}, 'model': 'google/gemma-4-12B-it-qat-w4a16-ct'}
+WARNING 10-06 13:57:54 [arg_utils.py:1812] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 10-06 13:57:54 [model.py:692] Resolved architecture: Gemma4UnifiedForConditionalGeneration
+INFO 10-06 13:57:54 [model.py:2030] Using max model len 8192
+WARNING 10-06 13:57:54 [model.py:994] Model does not support mm_device_do_normalize, forcing mm_device_do_normalize = False.
+[transformers] `SiglipImageProcessorFast` is deprecated. The `Fast` suffix for image processors has been removed; use `SiglipImageProcessor` instead.
+INFO 10-06 13:58:11 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=8192.
+INFO 10-06 13:58:11 [config.py:252] Gemma4 model has heterogeneous head dimensions {'sliding_attention': 256, 'full_attention': 512}. FA4 not available, forcing TRITON_ATTN backend.
+WARNING 10-06 13:58:12 [vllm.py:1547] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 10-06 13:58:12 [vllm.py:1570] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 10-06 13:58:12 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-06 13:58:12 [vllm.py:1780] Cudagraph is disabled under eager mode
+WARNING 10-06 13:58:12 [cuda.py:351] Forcing --disable_chunked_mm_input for models with multimodal-bidirectional attention.
+INFO 10-06 13:58:12 [compilation.py:336] Enabled custom fusions: norm_quant, act_quant
+INFO 10-06 13:58:29 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='google/gemma-4-12B-it-qat-w4a16-ct', speculative_config=None, tokenizer='google/gemma-4-12B-it-qat-w4a16-ct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=main, tokenizer_revision=main, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=glyd, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=google/gemma-4-12B-it-qat-w4a16-ct, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+INFO 10-06 13:58:29 [parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///root/w/tmp/vllm_dist_3f79d3fe1d6149e9b8af7a24a21584ad backend=nccl
+INFO 10-06 13:58:29 [parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank N/A, EPLB rank N/A
+INFO 10-06 13:58:29 [gpu_worker.py:441] Using V2 Model Runner
+INFO 10-06 13:58:30 [model_runner.py:396] Loading model from scratch...
+INFO 10-06 13:58:30 [vllm_quant.py:122] glyd: a compressed-tensors checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+INFO 10-06 13:58:30 [vllm_plugin.py:886] glyd: mma12 layout, exact, verified
+INFO 10-06 13:58:30 [vllm_plugin.py:891] glyd: the embedding and the LM head stay as vLLM runs them (exact mode keeps the LM head's matrix, which a tied embedding is, as vLLM runs it: its logits stay vLLM's bit for bit)
+INFO 10-06 13:58:30 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-06 13:58:30 [compressed_tensors_wNa16.py:132] Using MarlinLinearKernel for CompressedTensorsWNA16
+INFO 10-06 13:58:31 [cuda.py:478] Using AttentionBackendEnum.TRITON_ATTN backend.
+INFO 10-06 13:58:31 [cuda.py:478] Using AttentionBackendEnum.TRITON_ATTN backend.
+INFO 10-06 13:58:34 [weight_utils.py:895] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 9.56 GiB. Available RAM: 15.11 GiB.
+INFO 10-06 13:58:34 [weight_utils.py:918] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:01<00:00,  1.42s/it]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:01<00:00,  1.42s/it]
+
+INFO 10-06 13:58:35 [default_loader.py:430] Loading weights took 1.42 seconds
+INFO 10-06 13:58:39 [model_runner.py:428] Model loading took 8.27 GiB memory and 9.016474 seconds
+INFO 10-06 13:58:39 [topk_topp_sampler.py:62] FlashInfer top-p/top-k sampling disabled via VLLM_USE_FLASHINFER_SAMPLER=0.
+INFO 10-06 13:58:39 [utils.py:320] Using LBNHC KV cache layout.
+INFO 10-06 13:58:51 [encoder_runner.py:131] Encoder cache will be initialized with a budget of 8192 tokens, and profiled with 3 video items of the maximum feature size.
+INFO 10-06 13:58:53 [gpu_worker.py:640] Available KV cache memory: 18.34 GiB
+INFO 10-06 13:58:53 [kv_cache_utils.py:2395] GPU KV cache size: 57,121 tokens, Maximum concurrency for 8,192 tokens per request: 6.97x
+INFO 10-06 13:58:53 [kernel_warmup.py:172] JIT kernel warmup starting.
+INFO 10-06 13:58:53 [kernel_warmup.py:185] JIT kernel warmup finished in 0.00s.
+INFO 10-06 13:58:54 [kernel_warmup.py:438] Using FlashInfer autotune cache file: /root/w/vllmcache/flashinfer_autotune_cache/0.6.18.post1/120f/a517b854dcef4e1ff4a0723c411b3e92982bb8495c2ab2d92df861a7c7ea3291/autotune_configs.json
+2026-10-06 13:58:54,800 - INFO - autotuner.py:972 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+INFO 10-06 13:58:54 [kernel_warmup.py:359] Running FlashInfer autotune with 8192 tokens and token buckets (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2560, 3072, 3584, 4096, 8192).
+2026-10-06 13:58:55,106 - INFO - autotuner.py:995 - flashinfer.jit: [Autotuner]: Autotuning process ends
+2026-10-06 13:58:55,165 - INFO - autotuner.py:2652 - flashinfer.jit: [Autotuner]: Saved 0 configs to /root/w/vllmcache/flashinfer_autotune_cache/0.6.18.post1/120f/a517b854dcef4e1ff4a0723c411b3e92982bb8495c2ab2d92df861a7c7ea3291/autotune_configs.json (0 new, 0 from previous config)
+INFO 10-06 13:58:56 [gpu_worker.py:888] Free memory on device (30.86/31.36 GiB) on startup. Desired GPU memory utilization is (0.9, 28.22 GiB). Actual usage is 8.89 GiB for consumed memory (weights + non-torch), 0.99 GiB for peak activation, and 0.0 GiB for CUDAGraph memory. Replace gpu_memory_utilization config with `--kv-cache-memory=19533484647` (18.19 GiB) to fit into requested memory, or `--kv-cache-memory=22369594368` (20.83 GiB) to fully utilize gpu memory. Current kv cache memory in use is 18.34 GiB.
+INFO 10-06 13:58:57 [jit_monitor.py:85] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
+INFO 10-06 13:58:57 [torch_utils.py:287] Reducing Torch threads from 64 to 1 for serving. Set OMP_NUM_THREADS in the external environment to override.
+INFO 10-06 13:58:57 [core.py:379] init engine (profile, create kv cache, warmup model) took 18.35 s
+INFO 10-06 13:58:57 [kv_cache_utils.py:748] kv cache group sizes [16, 16, 16, 16, 16, 64]
+INFO 10-06 13:58:57 [kv_cache_utils.py:749] kv lcm block sizes 64
+INFO 10-06 13:59:00 [hf.py:642] Detected the chat template content format to be 'openai'. You can set `--chat-template-content-format` to override this.
+INFO 10-06 13:59:29 [base.py:261] Multi-modal warmup completed in 29.161s
+INFO 10-06 13:59:29 [base.py:261] Readonly multi-modal warmup completed in 0.134s
+WARNING 10-06 13:59:29 [jit_monitor.py:141] Triton kernel JIT compilation during inference: kernel_unified_attention. This causes a latency spike; consider extending warmup to cover this shape/config.
+[rank0]:[W1006 13:59:34.297124985 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

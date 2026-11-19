@@ -1,0 +1,1 @@
+{"id":"chatcmpl-2","object":"chat.completion","created":1792592958,"model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"message":{"role":"assistant","content":"The capital of France is Paris."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":16,"completion_tokens":8,"total_tokens":24}}

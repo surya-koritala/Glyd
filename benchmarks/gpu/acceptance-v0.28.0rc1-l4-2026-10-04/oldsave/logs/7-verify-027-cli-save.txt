@@ -1,0 +1,20 @@
+Traceback (most recent call last):
+  File "/opt/dlami/nvme/rel028/oldsave/v027/bin/glyd", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/glyd/cli.py", line 73, in main
+    return _cli.main(args, prog="glyd")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "glyd_gpu/_cli.py", line 63, in glyd_gpu._cli.main
+  File "glyd_gpu/hf.py", line 74, in glyd_gpu.hf.from_pretrained
+  File "glyd_gpu/hf.py", line 71, in glyd_gpu.hf.from_pretrained
+  File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/transformers/models/auto/auto_factory.py", line 409, in from_pretrained
+    return model_class.from_pretrained(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/transformers/modeling_utils.py", line 4296, in from_pretrained
+    hf_quantizer.preprocess_model(
+  File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/transformers/quantizers/base.py", line 175, in preprocess_model
+    self._process_model_before_weight_loading(model, **kwargs)
+  File "glyd_gpu/hf.py", line 208, in glyd_gpu.hf.GlydQuantizer._process_model_before_weight_loading
+  File "glyd_gpu/format.py", line 198, in glyd_gpu.format.read_manifest
+ValueError: /opt/dlami/nvme/rel028/oldsave/save028-v4-cli/glyd.json: format 'glyd-v4'; this glyd reads glyd-v1 and glyd-v2 and glyd-v3

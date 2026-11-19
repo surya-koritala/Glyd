@@ -1,0 +1,217 @@
+INFO 10-06 10:14:36 [api_utils.py:286] non-default args: {'dtype': 'bfloat16', 'max_model_len': 8192, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.95, 'max_num_seqs': 64, 'disable_log_stats': True, 'compilation_config': {'mode': None, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': [], 'ir_enable_torch_wrap': None, 'splitting_ops': None, 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': None, 'compile_ranges_endpoints': None, 'inductor_compile_config': {'deterministic': True, 'combo_kernels': True, 'benchmark_combo_kernel': False, 'enable_auto_functionalized_v2': False}, 'inductor_passes': {}, 'cudagraph_mode': None, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': None, 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': None, 'pass_config': {}, 'max_cudagraph_capture_size': None, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': None, 'static_all_moe_layers': []}, 'model': '/root/q8w/m/Qwen__Qwen3.8-27B-FP8'}
+WARNING 10-06 10:14:36 [arg_utils.py:1812] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 10-06 10:14:52 [model.py:692] Resolved architecture: Qwen3_5ForConditionalGeneration
+INFO 10-06 10:14:52 [model.py:2030] Using max model len 8192
+WARNING 10-06 10:14:52 [model.py:994] Model does not support mm_device_do_normalize, forcing mm_device_do_normalize = False.
+INFO 10-06 10:14:54 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=8192.
+WARNING 10-06 10:14:54 [vllm.py:1387] Auto-disabled DeepGemm for model_type=qwen3_5_text on Blackwell. DeepGemm E8M0 scale format causes accuracy degradation for this architecture. Falling back to CUTLASS. To disable DeepGemm globally, set VLLM_USE_DEEP_GEMM=0.
+INFO 10-06 10:14:54 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-06 10:14:54 [compilation.py:336] Enabled custom fusions: norm_quant, act_quant
+[transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+INFO 10-06 10:15:02 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='/root/q8w/m/Qwen__Qwen3.8-27B-FP8', speculative_config=None, tokenizer='/root/q8w/m/Qwen__Qwen3.8-27B-FP8', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=fp8, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/root/q8w/m/Qwen__Qwen3.8-27B-FP8, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['+quant_fp8', 'none', '+quant_fp8'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::qwen4_exp_ple_short_conv', 'vllm::qwen4_exp_qsa_with_output', 'vllm::linear_attention', 'vllm::qwen_gdn_attention_core', 'vllm::qwen_gdn_attention_core_fused_norm_packed', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::hpc_rope_norm_forward', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'deterministic': True, 'combo_kernels': True, 'benchmark_combo_kernel': False, 'enable_auto_functionalized_v2': False}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 128, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+INFO 10-06 10:15:02 [parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///root/q8w/tmp/vllm_dist_c349c76308cd471090923ef76177f02f backend=nccl
+INFO 10-06 10:15:02 [parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank N/A, EPLB rank N/A
+INFO 10-06 10:15:02 [gpu_worker.py:441] Using V2 Model Runner
+INFO 10-06 10:15:03 [model_runner.py:396] Loading model from scratch...
+INFO 10-06 10:15:03 [cuda.py:597] Using backend AttentionBackendEnum.FLASH_ATTN for vit attention
+INFO 10-06 10:15:03 [mm_encoder_attention.py:372] Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.
+INFO 10-06 10:15:03 [__init__.py:726] Selected CutlassFp8BlockScaledMMKernel for Fp8LinearMethod
+INFO 10-06 10:15:03 [qwen_gdn_linear_attn.py:176] Using FlashInfer GDN prefill kernel (requested=auto, head_k_dim=128).
+INFO 10-06 10:15:03 [qwen_gdn_linear_attn.py:528] GDN decode kernel: cuda
+INFO 10-06 10:15:05 [cuda.py:538] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 10-06 10:15:05 [flash_attn.py:1116] Using FlashAttention version 2
+INFO 10-06 10:15:06 [weight_utils.py:895] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 28.75 GiB. Available RAM: 93.42 GiB.
+INFO 10-06 10:15:06 [weight_utils.py:918] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/66 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:   2% Completed | 1/66 [00:00<00:08,  7.75it/s]
+Loading safetensors checkpoint shards:   3% Completed | 2/66 [00:00<00:08,  7.35it/s]
+Loading safetensors checkpoint shards:   5% Completed | 3/66 [00:00<00:08,  7.25it/s]
+Loading safetensors checkpoint shards:   6% Completed | 4/66 [00:00<00:08,  7.27it/s]
+Loading safetensors checkpoint shards:   8% Completed | 5/66 [00:00<00:08,  7.12it/s]
+Loading safetensors checkpoint shards:   9% Completed | 6/66 [00:00<00:09,  6.35it/s]
+Loading safetensors checkpoint shards:  11% Completed | 7/66 [00:01<00:09,  6.11it/s]
+Loading safetensors checkpoint shards:  12% Completed | 8/66 [00:01<00:09,  6.36it/s]
+Loading safetensors checkpoint shards:  14% Completed | 9/66 [00:01<00:08,  6.49it/s]
+Loading safetensors checkpoint shards:  15% Completed | 10/66 [00:01<00:08,  6.56it/s]
+Loading safetensors checkpoint shards:  17% Completed | 11/66 [00:01<00:08,  6.64it/s]
+Loading safetensors checkpoint shards:  18% Completed | 12/66 [00:01<00:08,  6.74it/s]
+Loading safetensors checkpoint shards:  20% Completed | 13/66 [00:01<00:07,  6.76it/s]
+Loading safetensors checkpoint shards:  21% Completed | 14/66 [00:02<00:07,  6.50it/s]
+Loading safetensors checkpoint shards:  23% Completed | 15/66 [00:02<00:07,  6.52it/s]
+Loading safetensors checkpoint shards:  24% Completed | 16/66 [00:02<00:07,  6.75it/s]
+Loading safetensors checkpoint shards:  26% Completed | 17/66 [00:02<00:07,  6.89it/s]
+Loading safetensors checkpoint shards:  27% Completed | 18/66 [00:02<00:07,  6.42it/s]
+Loading safetensors checkpoint shards:  29% Completed | 19/66 [00:02<00:07,  6.63it/s]
+Loading safetensors checkpoint shards:  30% Completed | 20/66 [00:02<00:06,  6.86it/s]
+Loading safetensors checkpoint shards:  32% Completed | 21/66 [00:03<00:06,  6.95it/s]
+Loading safetensors checkpoint shards:  33% Completed | 22/66 [00:03<00:06,  6.95it/s]
+Loading safetensors checkpoint shards:  35% Completed | 23/66 [00:03<00:06,  6.93it/s]
+Loading safetensors checkpoint shards:  36% Completed | 24/66 [00:03<00:06,  6.97it/s]
+Loading safetensors checkpoint shards:  38% Completed | 25/66 [00:03<00:05,  6.86it/s]
+Loading safetensors checkpoint shards:  39% Completed | 26/66 [00:03<00:06,  6.43it/s]
+Loading safetensors checkpoint shards:  41% Completed | 27/66 [00:04<00:05,  6.65it/s]
+Loading safetensors checkpoint shards:  42% Completed | 28/66 [00:04<00:05,  6.64it/s]
+Loading safetensors checkpoint shards:  44% Completed | 29/66 [00:04<00:05,  6.78it/s]
+Loading safetensors checkpoint shards:  45% Completed | 30/66 [00:04<00:05,  6.88it/s]
+Loading safetensors checkpoint shards:  47% Completed | 31/66 [00:04<00:05,  6.69it/s]
+Loading safetensors checkpoint shards:  48% Completed | 32/66 [00:04<00:04,  6.89it/s]
+Loading safetensors checkpoint shards:  50% Completed | 33/66 [00:04<00:04,  6.99it/s]
+Loading safetensors checkpoint shards:  52% Completed | 34/66 [00:05<00:04,  7.06it/s]
+Loading safetensors checkpoint shards:  53% Completed | 35/66 [00:05<00:04,  6.69it/s]
+Loading safetensors checkpoint shards:  55% Completed | 36/66 [00:05<00:04,  6.86it/s]
+Loading safetensors checkpoint shards:  56% Completed | 37/66 [00:05<00:04,  6.93it/s]
+Loading safetensors checkpoint shards:  58% Completed | 38/66 [00:05<00:04,  6.97it/s]
+Loading safetensors checkpoint shards:  59% Completed | 39/66 [00:05<00:03,  7.02it/s]
+Loading safetensors checkpoint shards:  61% Completed | 40/66 [00:05<00:03,  7.15it/s]
+Loading safetensors checkpoint shards:  62% Completed | 41/66 [00:06<00:03,  7.17it/s]
+Loading safetensors checkpoint shards:  64% Completed | 42/66 [00:06<00:03,  6.71it/s]
+Loading safetensors checkpoint shards:  65% Completed | 43/66 [00:06<00:03,  6.84it/s]
+Loading safetensors checkpoint shards:  67% Completed | 44/66 [00:06<00:03,  6.99it/s]
+Loading safetensors checkpoint shards:  68% Completed | 45/66 [00:06<00:02,  7.06it/s]
+Loading safetensors checkpoint shards:  70% Completed | 46/66 [00:06<00:02,  7.03it/s]
+Loading safetensors checkpoint shards:  71% Completed | 47/66 [00:06<00:02,  7.07it/s]
+Loading safetensors checkpoint shards:  73% Completed | 48/66 [00:07<00:02,  7.14it/s]
+Loading safetensors checkpoint shards:  74% Completed | 49/66 [00:07<00:02,  7.16it/s]
+Loading safetensors checkpoint shards:  76% Completed | 50/66 [00:07<00:02,  7.15it/s]
+Loading safetensors checkpoint shards:  77% Completed | 51/66 [00:07<00:02,  7.15it/s]
+Loading safetensors checkpoint shards:  79% Completed | 52/66 [00:07<00:01,  7.20it/s]
+Loading safetensors checkpoint shards:  80% Completed | 53/66 [00:07<00:01,  7.18it/s]
+Loading safetensors checkpoint shards:  82% Completed | 54/66 [00:07<00:01,  7.17it/s]
+Loading safetensors checkpoint shards:  83% Completed | 55/66 [00:08<00:01,  7.18it/s]
+Loading safetensors checkpoint shards:  85% Completed | 56/66 [00:08<00:01,  7.22it/s]
+Loading safetensors checkpoint shards:  86% Completed | 57/66 [00:08<00:01,  7.21it/s]
+Loading safetensors checkpoint shards:  88% Completed | 58/66 [00:08<00:01,  7.17it/s]
+Loading safetensors checkpoint shards:  89% Completed | 59/66 [00:08<00:00,  7.13it/s]
+Loading safetensors checkpoint shards:  91% Completed | 60/66 [00:08<00:00,  7.11it/s]
+Loading safetensors checkpoint shards:  92% Completed | 61/66 [00:08<00:00,  7.11it/s]
+Loading safetensors checkpoint shards:  94% Completed | 62/66 [00:08<00:00,  7.11it/s]
+Loading safetensors checkpoint shards:  95% Completed | 63/66 [00:09<00:00,  7.14it/s]
+Loading safetensors checkpoint shards:  97% Completed | 64/66 [00:09<00:00,  7.21it/s]
+Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:11<00:00,  1.90it/s]
+Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:11<00:00,  5.89it/s]
+
+INFO 10-06 10:15:17 [default_loader.py:430] Loading weights took 11.42 seconds
+INFO 10-06 10:15:18 [model_runner.py:428] Model loading took 28.51 GiB memory and 15.590530 seconds
+INFO 10-06 10:15:18 [topk_topp_sampler.py:62] FlashInfer top-p/top-k sampling disabled via VLLM_USE_FLASHINFER_SAMPLER=0.
+INFO 10-06 10:15:18 [interface.py:933] Setting attention block size to 784 tokens to ensure that attention page size is >= mamba page size.
+INFO 10-06 10:15:18 [interface.py:957] Padding mamba page size by 0.13% to ensure that mamba page size and attention page size are exactly equal.
+INFO 10-06 10:15:18 [utils.py:320] Using LBNHC KV cache layout.
+INFO 10-06 10:15:19 [encoder_runner.py:131] Encoder cache will be initialized with a budget of 16384 tokens, and profiled with 1 image items of the maximum feature size.
+[rank0]:[W1006 10:15:27.763392485 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 564133888 bytes (free: 119209984, total: 33668726784).
+[rank0]:[W1006 10:15:28.883723372 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 301989888 bytes (free: 198901760, total: 33668726784).
+[rank0]:[W1006 10:15:28.894158444 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 150994944 bytes (free: 47906816, total: 33668726784).
+[rank0]:[W1006 10:15:28.894254353 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 150994944 bytes (free: 47906816, total: 33668726784).
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/root/q8w/src/gpu/fp8/check_fp8_vllm.py", line 456, in <module>
+[rank0]:     main()
+[rank0]:   File "/root/q8w/src/gpu/fp8/check_fp8_vllm.py", line 347, in main
+[rank0]:     res = child(json.loads(args[1]))
+[rank0]:           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/src/gpu/fp8/check_fp8_vllm.py", line 128, in child
+[rank0]:     llm = LLM(**kw)
+[rank0]:           ^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 343, in __init__
+[rank0]:     self.llm_engine = LLMEngine.from_engine_args(
+[rank0]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 184, in from_engine_args
+[rank0]:     return cls(
+[rank0]:            ^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 109, in __init__
+[rank0]:     self.engine_core = EngineCoreClient.make_client(
+[rank0]:                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 129, in make_client
+[rank0]:     return InprocClient(vllm_config, executor_class, log_stats)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 354, in __init__
+[rank0]:     self.engine_core = EngineCore(
+[rank0]:                        ^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 145, in __init__
+[rank0]:     kv_cache_config = self._initialize_kv_caches(vllm_config)
+[rank0]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 308, in _initialize_kv_caches
+[rank0]:     available_gpu_memory = self.model_executor.determine_available_memory()
+[rank0]:                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 149, in determine_available_memory
+[rank0]:     return self.collective_rpc("determine_available_memory")
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 103, in collective_rpc
+[rank0]:     result = run_method(self.driver_worker, method, args, kwargs)
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/serial_utils.py", line 510, in run_method
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 572, in determine_available_memory
+[rank0]:     self.model_runner.profile_run()
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 951, in profile_run
+[rank0]:     self.model_state.encoder_runner.profile_encoder_cache(
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/mm/encoder_runner.py", line 139, in profile_encoder_cache
+[rank0]:     dummy_encoder_outputs = self.execute_mm_encoder(dummy_mm_inputs)
+[rank0]:                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/mm/encoder_runner.py", line 168, in execute_mm_encoder
+[rank0]:     else self.model.embed_multimodal(**mm_kwargs_batch)
+[rank0]:          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_vl.py", line 2906, in embed_multimodal
+[rank0]:     image_embeddings = self._process_image_input(multimodal_input)
+[rank0]:                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_vl.py", line 2316, in _process_image_input
+[rank0]:     image_embeds = self.visual(pixel_values, grid_thw=grid_thw)
+[rank0]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_vl.py", line 872, in forward
+[rank0]:     hidden_states = blk(
+[rank0]:                     ^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/compilation/decorators.py", line 509, in __call__
+[rank0]:     return self.forward(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_vl.py", line 490, in forward
+[rank0]:     x = x + self.attn(
+[rank0]:             ^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/models/qwen2_5_vl.py", line 459, in forward
+[rank0]:     output, _ = self.proj(context_layer)
+[rank0]:                 ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/linear.py", line 1773, in forward
+[rank0]:     output_parallel = self.quant_method.apply(self, input_parallel, bias_)
+[rank0]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/linear.py", line 238, in apply
+[rank0]:     return self._gemm_impl(layer, x, layer.weight, bias)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/utils.py", line 90, in default_unquantized_gemm
+[rank0]:     return torch.nn.functional.linear(x, weight, bias)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/parameter.py", line 126, in __torch_function__
+[rank0]:     return super().__torch_function__(func, types, args, kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 144.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 45.69 MiB is free. Including non-PyTorch memory, this process has 31.30 GiB memory in use. Of the allocated memory 30.43 GiB is allocated by PyTorch, and 237.25 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+[rank0]:[W1006 10:15:29.046930535 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

@@ -1,0 +1,11 @@
+Existing automatic-reload authorization: the named approved quality batch may start at a balance-only stop; daily caps unchanged.
+00:10 created sd6ffjpdphxacv (NVIDIA A100-SXM4-80GB)
+Verified hourly GPU quote: 1.59
+ssh on pod sd6ffjpdphxacv ready after 6s: ssh reachable at 154.54.102.27:15263
+00:10 ssh ready at 154.54.102.27:15263 after 9 s
+NVIDIA A100-SXM4-80GB, 580.126.16, 81920 MiB
+00:10 job started
+00:11 job done
+terminating sd6ffjpdphxacv
+pods left: []
+1 min

@@ -1,0 +1,376 @@
+{
+ "engine": "http://127.0.0.1:8000",
+ "vllm": null,
+ "results": [
+  {
+   "kind": "ok",
+   "name": "[engine] tools auto: a call for a question that needs one",
+   "detail": "{'content': None, 'reasoning': '', 'calls': [('chatcmpl-tool-844ccf0a4419af77', 'get_weather', '{\"city\": \"Paris\"}')], 'finish': 'tool_calls', 'lps': []}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the call has an id, the function, JSON arguments with the city",
+   "detail": "[('chatcmpl-tool-844ccf0a4419af77', 'get_weather', '{\"city\": \"Paris\"}')]"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the text beside a call is none or white space",
+   "detail": "None"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] streamed: the same call, finish tool_calls, the usage",
+   "detail": "{'content': '', 'reasoning': '', 'calls': [('chatcmpl-tool-06a5eea5353d7a58', 'get_weather', '{\"city\": \"Paris\"}')], 'finish': 'tool_calls', 'lps': []}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] tools offered and not needed: an ordinary reply",
+   "detail": "{'content': 'Five.', 'reasoning': '', 'calls': [], 'finish': 'stop', 'lps': []}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the same streamed",
+   "detail": "{'content': 'Five.', 'reasoning': '', 'calls': [], 'finish': 'stop', 'lps': []}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a tool's result in the history is answered from",
+   "detail": "the current weather in paris is sunny with a temperature of 21\u00b0c."
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] tool_choice none: no call is read",
+   "detail": "{'content': '<tool_call>\\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\\n</tool_call>', 'reasoning': '', 'calls': [], 'finish': 'stop', 'lps': []}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] tool_choice required: a call even for a question that needs none",
+   "detail": "{'content': '', 'reasoning': '', 'calls': [('chatcmpl-tool-1e2d1ef6e7262b27', 'get_weather', '{\"city\": \"Paris\"}')], 'finish': 'tool_calls', 'lps': []}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a named function: its call, finish stop as vLLM's",
+   "detail": "{'content': '', 'reasoning': '', 'calls': [('chatcmpl-tool-8ff5f504925798c7', 'get_time', '{\"city\": \"Rome\"}'), ('chatcmpl-tool-7ab06b4db882677a', 'get_weather', '{\"city\": \"Rome\"}')], 'finish': 'stop', 'lps': []}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] parallel_tool_calls false: one call at the most",
+   "detail": "(2, 1)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] with the thinking on: the thinking apart, then the call",
+   "detail": "{'content': 'None', 'reasoning': \"Okay, the user is asking for the current weather in Paris. I need to use the get_weather function. Let me check the function's parameters. The function requires a city name, and the example given is P\", 'calls': '[(\\'chatcmpl-tool-f2d9c698b36e0ea3\\', \\'get_weather\\', \\'{\"city\": \"Paris\"}\\')]', 'finish': 'tool_calls', 'lps': '[]'}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] chat logprobs: an entry for each token (the end token's too), top_logprobs of 5, the chosen token first (greedy)",
+   "detail": "(7, {'prompt': 16, 'completion': 7, 'total': 23})"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the 5 are in order, with their bytes",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] streamed: the same tokens",
+   "detail": "(7, 7)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] logprobs with no top_logprobs: the chosen token's alone",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] top_logprobs 20",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the log-probability is the model's, not the draw's (top_k 1 at temperature 0.5 is the same number)",
+   "detail": "(-0.01918274063689296, -0.01918274063689296)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a plain completion's logprobs: tokens, token_logprobs, top_logprobs of 3, text_offset",
+   "detail": "([' Paris', '.', ' The', ' capital', ' of', ' Italy'], [0, 6, 7, 11, 19, 22])"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] top_logprobs 21 is refused in vLLM's words",
+   "detail": "Requested sample logprobs of 21, which is greater than max allowed: 20"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] n of 3: indices 0 to 2, a finish reason each",
+   "detail": "[0, 1, 2]"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] n of 3: the usage is the prompt once and every choice's tokens",
+   "detail": "({'prompt': 19, 'completion': 44, 'total': 63}, {'prompt': 19, 'completion': 16, 'total': 35})"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] n of 3: the choices differ",
+   "detail": "['The sea stretches endlessly, w', 'The sea whispers secrets to th', 'The sea stretches endlessly, w']"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] n of 8: indices 0 to 7, a finish reason each",
+   "detail": "[0, 1, 2, 3, 4, 5, 6, 7]"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] n of 8: the usage is the prompt once and every choice's tokens",
+   "detail": "({'prompt': 19, 'completion': 132, 'total': 151}, {'prompt': 19, 'completion': 16, 'total': 35})"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] n of 8: the choices differ",
+   "detail": "['The sea stretches endlessly, w', 'The sea whispers secrets to th', 'The sea stretches endlessly, w', 'The sea stretches endlessly, w', 'The sea stretches endlessly, w', 'The sea stretches endlessly, w', 'The sea stretches endlessly, w', 'The sea stretches endlessly, a']"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the same seed gives the same choices",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] streamed: a role chunk for each choice first, each ended, the texts the whole ones'",
+   "detail": "({0: 'The sea stretches en', 1: 'The sea whispers sec', 2: 'The sea stretches en'}, {'prompt': 19, 'completion': 44, 'total': 63})"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] n of 2 at temperature 0 is refused as vLLM's greedy sampling is",
+   "detail": "n must be 1 when using greedy sampling, got 2."
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] n of 4: the prompt was run once, the other three found its blocks in the cache",
+   "detail": "4872 prompt tokens counted (4 prompts), 3648 found in the cache"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] n of 9 is refused (the engine runs 8 sequences)",
+   "detail": "n must be at most 8, got 9. (This engine runs up to 8 sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a bias of -100 on the token the reply begins with: it does not begin with it",
+   "detail": "token_id:6033"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a bias of +100 on a token among the largest: the reply is that token",
+   "detail": "['token_id:6033', 'token_id:6033', 'token_id:6033', 'token_id:6033', 'token_id:6033']"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a bias of +100 on a token that is the twentieth: the reply is that token",
+   "detail": "['token_id:60159', 'token_id:60159', 'token_id:60159', 'token_id:60159', 'token_id:60159']"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a bias on a token that is nowhere among the largest, drawn with top_k 20: it is the token",
+   "detail": "token_id:1000"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a key that is no token id is refused",
+   "detail": "logit_bias contains key(s) that cannot be converted to integer token IDs: [\"x\"]"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a token id out of the vocabulary is refused",
+   "detail": "token_id(s) [99999999] in logit_bias contain out-of-vocab token ids. Vocabulary size: 151936"
+  },
+  {
+   "kind": "FAIL",
+   "name": "[engine] stop_token_ids: the reply ends before the token, finish stop, the token counted",
+   "detail": "('One', {'prompt': 20, 'completion': 2, 'total': 22})"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] min_tokens 20: at least 20 tokens",
+   "detail": "{'prompt': 15, 'completion': 29, 'total': 44}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] include_stop_str_in_output: the text ends with the stop string",
+   "detail": "One, two, three"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] echo: the prompt comes first",
+   "detail": "Hello, I'm trying to"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a list of prompts: a choice each, in order",
+   "detail": "[0, 1, 2]"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a prompt as token ids",
+   "detail": "CompletionUsage(completion_tokens=3, prompt_tokens=3, total_tokens=6, completion_tokens_details=None, prompt_tokens_details=None)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a plain completion with no max_tokens is 16 tokens",
+   "detail": "CompletionUsage(completion_tokens=16, prompt_tokens=4, total_tokens=20, completion_tokens_details=None, prompt_tokens_details=None)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] request_id is the id",
+   "detail": "cmpl-mine-1"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] reasoning_effort none: no thinking",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] allowed_token_ids: only that token",
+   "detail": "['token_id:3966', 'token_id:3966', 'token_id:3966', 'token_id:3966', 'token_id:3966', 'token_id:3966']"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] response_format json_object: refused in words that name the way to vLLM",
+   "detail": "response_format of type json_object (constrained decoding) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] response_format json_schema: refused in words that name the way to vLLM",
+   "detail": "response_format of type json_schema (constrained decoding) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] structured_outputs: refused in words that name the way to vLLM",
+   "detail": "structured_outputs (constrained decoding) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] bad_words: refused in words that name the way to vLLM",
+   "detail": "bad_words is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] prompt_logprobs: refused in words that name the way to vLLM",
+   "detail": "prompt_logprobs is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Open WebUI's chat (its tools offered, streamed, usage asked for): an ordinary answer, finish stop, the usage",
+   "detail": "('Paris', {'prompt': 304, 'completion': 2, 'total': 306})"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] a question that asks for a tool: the call is search_web with a query",
+   "detail": "{'content': None, 'reasoning': '', 'calls': [('chatcmpl-tool-02f6e553c767fda3', 'search_web', '{\"query\": \"glyd compression\", \"count\": 1}')], 'finish': 'tool_calls', 'lps': []}"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the follow-up after a tool's result is answered from it",
+   "detail": "The search results for \"glyd compression\" show a link to \"Glyd: lossless compression\" at [https://ge"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] its title request: an answer, finish stop",
+   "detail": "{ \"title\": \"Paris \ud83c\uddeb\ud83c\uddf7\" }"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host localhost is answered",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host localhost:8000 is answered",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host 127.0.0.1:8000 is answered",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host [::1]:8000 is answered",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host evil.example (a page whose DNS points here) is 421, the page too",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host evil.example:8000 (a page whose DNS points here) is 421, the page too",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host localhost.evil.example (a page whose DNS points here) is 421, the page too",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host 127.0.0.1.evil.example (a page whose DNS points here) is 421, the page too",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host 192.168.1.5:8000 (a page whose DNS points here) is 421, the page too",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Host 0.0.0.0:8000 (a page whose DNS points here) is 421, the page too",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the page's own origin is answered",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Origin http://evil.example is 403",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Origin https://localhost:8000 is 403",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Origin http://localhost:5173 is 403",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] Origin null is 403",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] another site's preflight is 403",
+   "detail": ""
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the page's own preflight is answered with its origin",
+   "detail": "(200, {'content-type': 'text/plain; charset=utf-8', 'content-length': '2', 'cache-control': 'no-store', 'access-control-allow-methods': 'DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT', 'access-control-max-age': '600', 'access-control-allow-origin': 'http://localhost:8000', 'vary': 'Origin', 'access-control-allow-headers': 'content-type', 'connection': 'close'})"
+  },
+  {
+   "kind": "ok",
+   "name": "[engine] the page has its headers",
+   "detail": "{'content-type': 'text/html; charset=utf-8', 'content-length': '21073', 'cache-control': 'no-store', 'content-security-policy': \"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\", 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'connection': 'close'}"
+  }
+ ]
+}

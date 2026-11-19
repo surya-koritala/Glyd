@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glyd chat</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233358e6'/%3E%3Ctext x='16' y='23' font-size='20' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='white'%3EG%3C/text%3E%3C/svg%3E">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --surface: #f5f6f8; --text: #1b1c20; --muted: #62646e; --line: #e2e4ea;
+  --accent: #2f55e0; --accent-text: #ffffff; --user: #edf0fc; --code: #f0f1f5;
+  --warn-bg: #fff4d6; --warn-text: #6b4700; --warn-line: #ecd596;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131416; --surface: #1b1c20; --text: #e9eaee; --muted: #9b9ea9; --line: #2b2d34;
+    --accent: #7f99ff; --accent-text: #0e1220; --user: #222744; --code: #22242a;
+    --warn-bg: #3a2f10; --warn-text: #f2d48a; --warn-line: #5b4a1c;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: grid; grid-template-rows: auto 1fr auto auto; height: 100dvh;
+  background: var(--bg); color: var(--text);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+button, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 auto; }
+.brand b { font-size: 17px; letter-spacing: .2px; }
+#model { color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tools { display: flex; align-items: center; gap: 14px; font-size: 14px; color: var(--muted); }
+.tools label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+#meter { display: none; align-items: center; gap: 8px; }
+#meter.on { display: inline-flex; }
+.bar { width: 64px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+#meter.high .bar i { background: #d98b00; }
+#meter.full .bar i { background: #c0392b; }
+.ghost { border: 1px solid var(--line); background: transparent; border-radius: 8px; padding: 5px 12px; font-size: 14px; }
+.ghost:hover { background: var(--surface); }
+#log { overflow-y: auto; padding: 18px 16px 8px; }
+.wrap { max-width: 780px; margin: 0 auto; }
+.msg { margin: 0 0 18px; }
+.msg.user { display: flex; justify-content: flex-end; }
+.bubble { background: var(--user); border-radius: 14px; padding: 8px 14px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.answer > :first-child { margin-top: 0; }
+.answer > :last-child { margin-bottom: 0; }
+.answer p, .answer li, .think .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.answer p { margin: 0 0 .8em; }
+.answer ul, .answer ol { margin: 0 0 .8em; padding-left: 1.4em; }
+.answer h2, .answer h3, .answer h4, .answer h5 { margin: 1em 0 .4em; line-height: 1.3; }
+.answer code { background: var(--code); border-radius: 4px; padding: .1em .35em; font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.answer pre { background: var(--code); border-radius: 10px; padding: 12px 14px; overflow-x: auto; margin: 0 0 .9em; }
+.answer pre code { background: none; padding: 0; white-space: pre; }
+.answer a { color: var(--accent); }
+details.think { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+details.think summary { cursor: pointer; padding: 6px 12px; color: var(--muted); font-size: 14px; }
+details.think .body { padding: 2px 14px 10px; color: var(--muted); font-size: 14px; max-height: 320px; overflow-y: auto; }
+.note { color: var(--muted); font-size: 14px; margin-top: 6px; }
+#empty { text-align: center; color: var(--muted); margin-top: 12vh; }
+#empty h1 { font-size: 22px; color: var(--text); margin: 0 0 6px; }
+#empty p { margin: 0 0 18px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 6px 14px; font-size: 14px; }
+.chip:hover { border-color: var(--accent); }
+#notice { margin: 0 16px; }
+#notice .wrap { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 10px 14px; border-radius: 10px; font-size: 15px; background: var(--warn-bg); color: var(--warn-text); border: 1px solid var(--warn-line); }
+#notice[hidden] { display: none; }
+#notice button { flex: none; background: var(--accent); color: var(--accent-text); border: 0; border-radius: 8px; padding: 6px 14px; font-weight: 600; }
+form { padding: 10px 16px 16px; }
+form .wrap { display: flex; gap: 8px; align-items: flex-end; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 8px; }
+form .wrap:focus-within { border-color: var(--accent); }
+textarea:focus-visible { outline: none; }
+textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; max-height: 40vh; padding: 6px 8px; line-height: 1.45; }
+#send, #stop { border: 0; border-radius: 10px; padding: 8px 16px; font-weight: 600; background: var(--accent); color: var(--accent-text); }
+#stop { background: transparent; color: var(--text); border: 1px solid var(--line); }
+#send:disabled { opacity: .45; cursor: default; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (max-width: 560px) { .bar { display: none; } .tools { gap: 10px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>Glyd</b><span id="model">connecting&hellip;</span></div>
+  <div class="tools">
+    <span id="meter" title="Tokens of this conversation, against the model's window"><span id="used"></span><span class="bar"><i id="fill"></i></span></span>
+    <label title="Let the model think before it answers (models that support it)"><input type="checkbox" id="think" checked> Thinking</label>
+    <button class="ghost" id="new" type="button">New chat</button>
+  </div>
+</header>
+<main id="log" role="log" aria-label="Conversation">
+  <div class="wrap" id="msgs">
+    <div id="empty">
+      <h1>Ask anything</h1>
+      <p>The model runs on this computer's GPU. Nothing you type leaves it.</p>
+      <div class="chips">
+        <button class="chip" type="button">Explain lossless compression in two sentences.</button>
+        <button class="chip" type="button">Write a Python function that checks whether a string is a palindrome.</button>
+        <button class="chip" type="button">Give me three ideas for a weekend project.</button>
+      </div>
+    </div>
+  </div>
+</main>
+<div id="notice" role="alert" hidden><div class="wrap"><span id="noticeText"></span><button type="button" id="noticeNew">New chat</button></div></div>
+<form id="form">
+  <div class="wrap">
+    <textarea id="box" rows="1" placeholder="Message" title="Enter sends, Shift+Enter adds a line" aria-label="Message"></textarea>
+    <button id="send" type="submit">Send</button>
+    <button id="stop" type="button" hidden>Stop</button>
+  </div>
+</form>
+<div class="sr" role="status" id="status"></div>
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const fmt = (n) => n.toLocaleString('en-US');
+const S = { model: '', window: 0, messages: [], busy: false, abort: null, used: 0 };
+const log = $('#log'), msgs = $('#msgs'), box = $('#box'), EMPTY = $('#empty');
+
+// ---- model text to DOM: as text nodes, never as HTML ----
+function inline(parent, text) {
+  const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parent.append(text.slice(last, m.index));
+    const t = m[0];
+    if (t[0] === '`') parent.append(el('code', null, t.slice(1, -1)));
+    else if (t.startsWith('**')) parent.append(el('strong', null, t.slice(2, -2)));
+    else if (t[0] === '*') parent.append(el('em', null, t.slice(1, -1)));
+    else {
+      const k = t.indexOf('](');
+      const a = el('a', null, t.slice(1, k));
+      a.href = t.slice(k + 2, -1); a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = a.hostname;  // (where the link goes, whatever its text says)
+      parent.append(a);
+    }
+    last = re.lastIndex;
+  }
+  if (last < text.length) parent.append(text.slice(last));
+}
+function markdown(root, text) {
+  root.textContent = '';
+  const lines = text.split('\n');
+  let i = 0, para = [], list = null;
+  const flush = () => { if (para.length) { const p = el('p'); inline(p, para.join('\n')); root.append(p); para = []; } };
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^```/.test(line)) {
+      flush(); list = null;
+      const code = [];
+      for (i++; i < lines.length && !/^```\s*$/.test(lines[i]); i++) code.push(lines[i]);
+      i++;
+      const pre = el('pre'); pre.append(el('code', null, code.join('\n'))); root.append(pre);
+      continue;
+    }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { flush(); list = null; const e = el('h' + (h[1].length + 1)); inline(e, h[2]); root.append(e); i++; continue; }
+    const li = line.match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);
+    if (li) {
+      flush();
+      const ordered = /\d/.test(li[1]);
+      if (!list || list.ordered !== ordered) { list = { ordered, el: el(ordered ? 'ol' : 'ul') }; root.append(list.el); }
+      const item = el('li'); inline(item, li[2]); list.el.append(item); i++;
+      continue;
+    }
+    if (!line.trim()) { flush(); list = null; i++; continue; }
+    list = null; para.push(line); i++;
+  }
+  flush();
+}
+
+// ---- <think>...</think> inline, for a server with no reasoning parser (the same rule as glyd.gpu.chat.Think) ----
+function Think() { this.mode = 'start'; this.buf = ''; this.lead = false; }
+Think.prototype.feed = function (text, final) {
+  this.buf += text;
+  const out = [];
+  for (;;) {
+    if (this.mode === 'start') {
+      const s = this.buf.replace(/^\s+/, '');
+      if (s.startsWith('<think>')) { this.buf = s.slice(7).replace(/^\n+/, ''); this.mode = 'inside'; continue; }
+      if (!final && '<think>'.startsWith(s)) break;
+      this.mode = 'done';
+    } else if (this.mode === 'inside') {
+      const i = this.buf.indexOf('</think>');
+      if (i >= 0) {
+        if (i) out.push(['reasoning', this.buf.slice(0, i)]);
+        this.buf = this.buf.slice(i + 8); this.mode = 'done'; this.lead = true;
+        continue;
+      }
+      let hold = 0;
+      if (!final) for (let k = 7; k > 0; k--) if (this.buf.endsWith('</think>'.slice(0, k))) { hold = k; break; }
+      if (this.buf.length > hold) out.push(['reasoning', this.buf.slice(0, this.buf.length - hold)]);
+      this.buf = this.buf.slice(this.buf.length - hold);
+      break;
+    } else {
+      if (this.lead) { this.buf = this.buf.replace(/^\n+/, ''); this.lead = !this.buf; }
+      if (this.buf) { out.push(['content', this.buf]); this.buf = ''; }
+      break;
+    }
+  }
+  return out;
+};
+
+// ---- the page ----
+function scrollDown(force) {
+  if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 90) log.scrollTop = log.scrollHeight;
+}
+function say(text) { $('#status').textContent = text; }
+function notice(text) { $('#noticeText').textContent = text; $('#notice').hidden = false; }
+function hideNotice() { $('#notice').hidden = true; }
+function meter() {
+  const m = $('#meter');
+  if (!S.window || !S.used) { m.className = ''; return; }
+  const f = Math.min(1, S.used / S.window);
+  $('#used').textContent = fmt(S.used) + ' / ' + fmt(S.window) + ' tokens';
+  $('#fill').style.width = (f * 100).toFixed(1) + '%';
+  m.className = 'on' + (f >= 0.97 ? ' full' : f >= 0.8 ? ' high' : '');
+}
+function windowText() { return S.window ? ' (' + fmt(S.window) + ' tokens)' : ''; }
+function fullNotice() { notice("This conversation is longer than the model's window" + windowText() + '. Start a new chat.'); }
+function setBusy(b) {
+  S.busy = b;
+  $('#send').hidden = b; $('#stop').hidden = !b;
+  log.setAttribute('aria-busy', b ? 'true' : 'false');
+}
+function newChat() {
+  if (S.abort) S.abort.abort();
+  S.messages = []; S.used = 0;
+  msgs.textContent = '';
+  msgs.append(EMPTY);
+  hideNotice(); meter();
+  box.focus();
+}
+function addUser(text) {
+  EMPTY.remove();
+  const m = el('div', 'msg user'); m.append(el('div', 'bubble', text)); msgs.append(m); scrollDown(true);
+  return m;
+}
+function addBot() {
+  const m = el('div', 'msg bot');
+  const details = el('details', 'think'); details.hidden = true;
+  const summary = el('summary', null, 'Thinking…'); const body = el('div', 'body');
+  details.append(summary, body);
+  const answer = el('div', 'answer');
+  m.append(details, answer); msgs.append(m);
+  return { details, summary, body, answer, root: m };
+}
+
+async function send(text) {
+  if (S.busy || !text.trim()) return;
+  hideNotice();
+  S.messages.push({ role: 'user', content: text });
+  const userEl = addUser(text);
+  const bot = addBot();
+  const ctl = new AbortController(); S.abort = ctl; setBusy(true); say('The model is answering');
+  let reasoning = '', content = '', usage = 0, finish = '', t0 = Date.now(), tThink = 0, frame = 0;
+  const split = new Think();
+  const waiting = el('span', 'note', '\u2026'); bot.answer.append(waiting);
+  const draw = () => {
+    frame = 0;
+    if (reasoning || content) waiting.remove();
+    const near = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
+    if (reasoning) { bot.details.hidden = false; bot.body.textContent = reasoning; if (!content) bot.body.scrollTop = bot.body.scrollHeight; }
+    if (content) markdown(bot.answer, content);
+    if (near) log.scrollTop = log.scrollHeight;
+  };
+  const feed = (kind, piece) => {
+    if (!(kind === 'reasoning' ? reasoning : content)) piece = piece.replace(/^\n+/, '');  // (the template's newlines after <think> and </think> are not text)
+    if (!piece) return;
+    if (kind === 'reasoning') { if (!reasoning) bot.details.open = true; reasoning += piece; }
+    else {
+      if (!content && reasoning) { tThink = Math.round((Date.now() - t0) / 1000); bot.summary.textContent = 'Thought for ' + tThink + ' s'; bot.details.open = false; }
+      content += piece;
+    }
+    if (!frame) frame = setTimeout(draw, 40);  // (not requestAnimationFrame: a tab in the background would hold the answer back)
+  };
+  let failure = null;
+  try {
+    const r = await fetch('/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctl.signal,
+      body: JSON.stringify({ model: S.model, messages: S.messages, stream: true, stream_options: { include_usage: true }, chat_template_kwargs: { enable_thinking: $('#think').checked } }),
+    });
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status;
+      try { const j = await r.json(); msg = (j.error && j.error.message) || j.message || msg; } catch (e) { /* not JSON */ }
+      failure = { status: r.status, message: msg };
+    } else {
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = '', ended = false;
+      const cut = (why) => { if (!failure) failure = { status: 0, cut: true, message: why }; };
+      const handle = (line) => {
+        line = line.trim();
+        if (!line.startsWith('data:')) return;
+        const data = line.slice(5).trim();
+        if (data === '[DONE]') { ended = true; return; }
+        let j;
+        try { j = JSON.parse(data); } catch (e) { cut('a message arrived cut in two'); return; }
+        if (j.error) { failure = { status: 0, cut: true, serverError: true, message: (j.error && j.error.message) || String(j.error) }; return; }
+        if (j.usage && j.usage.total_tokens) usage = j.usage.total_tokens;
+        for (const ch of j.choices || []) {
+          const d = ch.delta || {};
+          const r1 = d.reasoning_content || d.reasoning;
+          if (r1) feed('reasoning', r1);
+          if (d.content) for (const [k, p] of split.feed(d.content, false)) feed(k, p);
+          if (ch.finish_reason) { finish = ch.finish_reason; ended = true; }
+        }
+      };
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) { handle(buf.slice(0, i)); buf = buf.slice(i + 1); }
+      }
+      if (buf.trim()) handle(buf);
+      for (const [k, p] of split.feed('', true)) feed(k, p);
+      if (!ended) cut('the connection closed before the answer was finished');
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') failure = { status: 0, message: String(e && e.message || e) };
+  }
+  if (frame) clearTimeout(frame);
+  draw(); waiting.remove();
+  const stopped = ctl.signal.aborted;
+  if (!failure && !stopped && !content && !reasoning) failure = { status: 0, empty: true, message: 'no answer' };
+  S.abort = null; setBusy(false);
+  if (failure || (stopped && !content)) {  // (the question is taken back, as if unasked, and put back in the box)
+    bot.root.remove(); userEl.remove(); S.messages.pop();
+    if (!S.messages.length) msgs.append(EMPTY);
+    box.value = text; grow();
+    if (!failure) { say('Stopped'); return; }
+    if (/maximum context length|max_model_len|context (length|window)/i.test(failure.message)) fullNotice();
+    else if (failure.status === 401) notice('This server wants an API key, and this page does not send one.');
+    else if (failure.empty) notice('The model sent no answer. Your question is back in the box: ask again.');
+    else if (failure.cut) notice(failure.serverError ? 'The server could not finish the answer: ' + failure.message + '. Your question is back in the box.' : 'The server stopped answering in the middle of the answer (' + failure.message + '). Your question is back in the box: ask again.');
+    else if (failure.status === 0) notice('Cannot reach the model server. If you started it with glyd run, check that it is still running in the terminal.');
+    else notice('The server refused the request: ' + failure.message);
+    say('The request failed');
+    return;
+  }
+  if (stopped) bot.answer.append(el('div', 'note', '(Stopped.)'));
+  if (content) S.messages.push({ role: 'assistant', content });
+  else S.messages.pop();  // (thinking that never ended: no answer to keep, and no empty assistant turn)
+  if (reasoning && !content) { bot.summary.textContent = 'Thinking'; }
+  if (usage) { S.used = usage; meter(); }
+  if (finish === 'length') {
+    bot.answer.append(el('div', 'note', content ? '(The answer was cut off: the conversation reached the model’s window.)' : '(The model was still thinking when the conversation reached its window.)'));
+    fullNotice();
+  } else if (S.window && S.used >= 0.97 * S.window) fullNotice();
+  say('Answer ready');
+  scrollDown(false);
+}
+
+function grow() { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, window.innerHeight * 0.4) + 'px'; }
+$('#form').addEventListener('submit', (e) => { e.preventDefault(); const t = box.value; if (!t.trim() || S.busy) return; box.value = ''; grow(); send(t); });
+box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#form').requestSubmit(); } });
+box.addEventListener('input', grow);
+$('#stop').addEventListener('click', () => { if (S.abort) S.abort.abort(); });
+$('#new').addEventListener('click', newChat);
+$('#noticeNew').addEventListener('click', newChat);
+for (const c of document.querySelectorAll('.chip')) c.addEventListener('click', () => { box.value = c.textContent; grow(); $('#form').requestSubmit(); });
+try { if (localStorage.getItem('glyd.think') === '0') $('#think').checked = false; } catch (e) { /* storage blocked */ }
+$('#think').addEventListener('change', () => { try { localStorage.setItem('glyd.think', $('#think').checked ? '1' : '0'); } catch (e) { /* storage blocked */ } });
+
+(async () => {
+  try {
+    const r = await fetch('/v1/models');
+    if (r.status === 401) { $('#model').textContent = 'needs an API key'; notice('This server wants an API key (it was started with --api-key), and this page does not send one. Use another client, or start the server without a key.'); box.focus(); return; }
+    const d = (await r.json()).data[0];
+    S.model = d.id; S.window = d.max_model_len || 0;
+    $('#model').textContent = d.id + (S.window ? ' · ' + fmt(S.window) + '-token window' : '');
+    document.title = 'Glyd · ' + d.id;
+  } catch (e) {
+    $('#model').textContent = 'no model server';
+    notice('Cannot reach the model server. If you started it with glyd run, check that it is still running in the terminal.');
+  }
+  box.focus();
+})();
+</script>
+</body>
+</html>

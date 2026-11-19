@@ -1,0 +1,5 @@
+prompt logprobs: 723 of 17906 prompt tokens bit for bit (7 prompts of 64, 300, 1000, 2049, 3000, 4500, 7000 tokens, in chunks of 2,048)
+greedy tokens: 1 of 13 sequences the same to the end; 397 of 1280 tokens before the first that differs
+prefix hits: cached tokens [2640, 2640, 2640, 2640, 2640, 2640] and [2816, 2816, 2816, 2816, 2816, 2816] (NOT equal); first tokens' 5 logprobs bit for bit: 0 of 6
+KV cache: 154,903 tokens (416 blocks of 528) and 183,409 (403 blocks of 704): 1.184x; concurrency at 8,192 tokens 18.91 and 22.39
+NOT BIT FOR BIT

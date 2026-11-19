@@ -1,0 +1,11 @@
+  stock-graphq: ok in 116 s; weights 30.2 GiB, KV 631808 tokens, concurrency (8192, 77.12)
+  glyd-graphq: ok in 174 s; weights 26.84 GiB, KV 914432 tokens, concurrency (8192, 111.62)
+GPU NVIDIA L40S
+PASS: packed[graphq]: 127 layers packed (23 of them experts' layers): 24.14 GiB held for 28.74 GiB of weights as vLLM's kernels are fed them (16.0% less, 6.717 bits a value), scratches 1.22 GiB; methods {'UnquantizedEmbeddingMethod': 2, 'UnquantizedLinearMethod': 46, 'CompressedTensorsLinearMethod': 104, 'GlydCompressedTensorsW8A8Fp8MoEMethod': 23, 'CompressedTensorsKVCacheMethod': 6}; f8_linear for few tokens: 0 Linears
+INFO: glyd[graphq]: weights 26.84 GiB, KV cache 914432 tokens (10.72 GiB), concurrency (8192, 111.62)
+PASS: exact[graphq]: tokens, token log probabilities and the top 20 prompt log probabilities of 4 prompts (38551 values) bit for bit stock vLLM's
+PASS: kernel[graphq]: the FP8 kernel lines vLLM logs are the same in both (2: Selected CutlassFP8ScaledMMLinearKernel for CompressedTensorsW8A8Fp8; Using TRITON Fp8 MoE backend out of potential backends: ['AITER', 'FLASHINFER_TRTLLM', 'FLASHINFER_CUTLASS', 'DEEPGEMM', 'VLLM_CUTLASS', 'TRITON', 'MARLIN', 'HUMMING', 'BATCHED_DEEPGEMM', 'BATCHED_VLLM_CUTLASS', 'BATCHED_TRITON', )
+PASS: weights[graphq]: vLLM logs 30.2 GiB stock, 26.84 GiB Glyd (-3.36 GiB, 11.1% less); expected 26.81 (stock less the packs' saving 4.61, plus the scratches 1.22)
+INFO: KV cache[graphq]: stock 631808 tokens (7.4 GiB, concurrency (8192, 77.12)), Glyd 914432 tokens (10.72 GiB, concurrency (8192, 111.62))
+INFO: speed[graphq] (output tokens a second, Glyd / stock): users1 91.9 / 141.2 = 0.65, users8 208.1 / -, users32 428.9 / 923.5 = 0.46
+PASS: 0 failed; /root/results/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8/check_fp8_vllm.json

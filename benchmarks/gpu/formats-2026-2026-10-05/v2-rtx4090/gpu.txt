@@ -1,0 +1,6 @@
+NVIDIA GeForce RTX 4090, 570.195.03, 24564 MiB
+96
+torch 2.8.0+cu128 12.8 True
+glyd_gpu ok 175448
+glyd 0.28.0
+SIMD: AVX2

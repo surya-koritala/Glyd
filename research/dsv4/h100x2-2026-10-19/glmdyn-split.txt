@@ -1,0 +1,10 @@
+NVIDIA H100 80GB HBM3 (sm_90): weights 0.016 GiB (layout mma), states 0.001 GiB, workspaces 0.003 GiB, 0.54 of 79.18 GiB in use
+stage 0: NVIDIA H100 80GB HBM3 (sm_90): GLM-5.3-Flash on the dynamic engine, 0..2 of 8 layers, weights 0.003 GiB (layout mma), KV 0.000 GiB (1024 positions), 0.55 of 79.18 GiB in use; stage 1: NVIDIA H100 80GB HBM3 (sm_90): GLM-5.3-Flash on the dynamic engine, 2..8 of 8 layers, weights 0.013 GiB (layout mma), KV 0.000 GiB (1024 positions), 0.54 of 79.18 GiB in use
+   0 token    11: this engine  1317 (4.1875), dynamic  1317 (4.1875), largest difference 0.0000
+   1 token    48: this engine  1965 (3.4688), dynamic  1965 (3.4688), largest difference 0.0000
+   2 token    85: this engine  1160 (3.3438), dynamic  1160 (3.3438), largest difference 0.0000
+   3 token   122: this engine  1932 (3.1875), dynamic  1932 (3.1875), largest difference 0.0000
+   4 token   159: this engine  1988 (3.3750), dynamic  1988 (3.3750), largest difference 0.0000
+   5 token   196: this engine   163 (3.2969), dynamic   163 (3.2969), largest difference 0.0000
+48 of 48 steps the same token; the largest logit difference 0.0000
+a prompt of 48 in chunks of 64: this engine 1497, dynamic 1497, largest logit difference 1.1602

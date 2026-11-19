@@ -1,0 +1,31 @@
+{
+  "kind": "NativeRoutingProfilePreparation",
+  "implementation_commit": "78b737495ff52fc69e05b928a460f400fcd4af70",
+  "binary_sha256": "46f702186fb5d22c1d27ffa93bb215f9abb130f8799267e5f0a0788389a6521c",
+  "configuration": "cc6d5929c066828006fcdd893ff362a94d54c760d561f6d883884e01d903bba0",
+  "worker_record_digest": "a46c07b079532ac13e86be2f81efefc93e8564c6a33ea1e4adb0a4fb149ff3fb",
+  "profile_evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+  "worker_file_sha256": "293bf46076b8565bce7d089382c4f29ee5c416e5c20505c544c2780c3df1109e",
+  "coordinator_template_sha256": "91e8f4fbb09d823857148de83f84cf524a3b678d1be39cace3fe76b7e483fa9b",
+  "policy_scope": "proposed fixed-input monitored CPU experiment; only verified cache path and enrolled node/cluster changed from measured configuration",
+  "direct_pin_record_sha256": "cc0f292b64806e8e5b82a88778127402dacda1dd5524a1ddfe16cd511340a71a",
+  "direct_pin_file_sha256": "df47c2f90a0f7fe5f332c7046b865f6bcb73152b392db3d7217e59ad3b4e9989",
+  "native_started": false,
+  "approval_granted": false,
+  "prior_quarantine_preserved": true,
+  "runner_sha256": "6f0f6a62b78dbef11be7f3d21453a37890d6dabe2c548743f0d9faafe47a388c",
+  "old_ownership_files_sha256": {
+    "/private/tmp/glyd-m2-daemon-3-7ca2939d/worker/cache/models/service-start.json": "395fa4b0fff37d98934b5cb3e117a79fe7da9d23254b6de3a0e1544300315f52",
+    "/private/tmp/glyd-m2-daemon-3-7ca2939d/worker/cache/models/pin-dca8b946-a014-4b0c-b1dd-10464ca752de.json": "5dd3e7288fec2769757ae9ff2858629e61b5de034a5b8c55fc7356f49131fe6e",
+    "/private/tmp/glyd-m2-qualification-8f993f22/worker/cache/models/service-start.json": "a95423df5ba4f301b74dfefac735cc2dc44bb975d034775ba8b793aaf4b84f60",
+    "/private/tmp/glyd-m2-qualification-8f993f22/worker/cache/models/pin-badac062-7b66-40a7-a94f-43ffe56339e4.json": "f661d0659c851c57bc7a92be0432d4de988299e0a23c913daa5f23439861f58e",
+    "/private/tmp/glyd-m2-recovery-59a5aee6/worker/cache/models/service-start.json": "04fef73431770ed0c3880606d65173c8bf47cb535669f506d2188346949f22ff",
+    "/private/tmp/glyd-m2-recovery-59a5aee6/worker/cache/models/pin-b8e097f9-9a2f-4e3a-b482-a8566b741dac.json": "6b2a8740d7dbd91c237ceecb772474e23a1051cf0e37b4b961a54178f0e241cd",
+    "/Users/suryakoritala/Documents/Codex/2026-10-11/referenced-chatgpt-conversation-this-is-an/work/native-check/routing-profile-current-patched/run_profile.py": "c9af0a01c2be78ca6aaffe705239a02be87127fec647da59dde76a8ba169ef18",
+    "/Users/suryakoritala/Documents/Codex/2026-10-11/referenced-chatgpt-conversation-this-is-an/work/native-check/routing-profile-current-patched/daemon-result.json": "26e4c9c02d1c6531df56b290837916867375746819633a1eef76ded8b7afd3e1",
+    "/Users/suryakoritala/Documents/Codex/2026-10-11/referenced-chatgpt-conversation-this-is-an/work/native-check/routing-profile-current-patched/started-once": "fa04314af597f4e8b991926a329f1fe2c92d6e67b4de6af4dee6fbf4fd0297b7",
+    "/Users/suryakoritala/Documents/Codex/2026-10-11/referenced-chatgpt-conversation-this-is-an/work/native-check/routing-profile-current-patched/user-approval.json": "496f6b13e6381dccd1a1616961d80803cbb507492a2697473b59ae04886291a1",
+    "/Users/suryakoritala/Documents/Codex/2026-10-11/referenced-chatgpt-conversation-this-is-an/work/native-check/routing-profile-current-patched/direct-pin.json": "85d9a1b472f9488d3c20b3bf0e1bad76ef2e3285834473713fbf77f3ffbad39e",
+    "/private/tmp/glyd-m2-daemon-3-6947cdfd/worker/cache/models/pin-74d94af8-06c5-42de-8b4d-1a9ca5bd6969.json": "490b78c4a444125a8dfb8acbe76c708f1d65280d9c3a521b721a928536894121"
+  }
+}

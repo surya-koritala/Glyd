@@ -1,0 +1,10 @@
+11:45 created lmsaeqow1spwzl (NVIDIA L40S)
+ssh on pod lmsaeqow1spwzl ready after 23s: ssh reachable at 202.181.159.239:13587
+11:45 ssh ready at 202.181.159.239:13587 after 30 s
+NVIDIA L40S, 580.126.09, 46068 MiB
+11:45 job started
+12:31 job done
+terminating lmsaeqow1spwzl
+pods left: [('18p9xqdxcpkke4', 'glyd-bench-qcf-l40s', 'RUNNING'), ('tr9qsg1m104lor', 'glyd-bench-qnv-5090a', 'RUNNING'), ('kckzdn7et252ac', 'glyd-bench-qmx2', 'RUNNING'), ('r1yrwvvmt43200', 'glyd-bench-qf8-5090c', 'RUNNING'), ('82lfi37tjizxoa', 'glyd-bench-qbm-5090b', 'RUNNING'), ('6mjx37q0csvz6f', 'glyd-bench-r291-val2', 'RUNNING')]
+46 min
+rp_run exit 0

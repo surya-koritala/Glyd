@@ -1,0 +1,2478 @@
+{
+ "repo": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+ "dir": "/root/w/hf/hub/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/1355db6a052410cfd62085d94b58866fd0f2c3c5",
+ "checkpoint_bytes": 23424338320,
+ "kinds": {
+  "experts": {
+   "tensors": 30720,
+   "packs": 120,
+   "bytes": 16106127360,
+   "packed": 16163419540,
+   "option": 16053942880,
+   "plain": 100892,
+   "patches": 1966080,
+   "checked": 16106127360,
+   "bits": 4.0142,
+   "h0": 3.9565,
+   "saved": 52184480,
+   "saved_of_checkpoint": 0.00222778886161511
+  },
+  "lm_head": {
+   "tensors": 1,
+   "packs": 1,
+   "bytes": 254279680,
+   "packed": 256137352,
+   "option": 254279680,
+   "plain": 3621,
+   "patches": 31040,
+   "checked": 254279680,
+   "bits": 4.0292,
+   "h0": 3.9704,
+   "saved": 0,
+   "saved_of_checkpoint": 0.0
+  },
+  "shared_experts": {
+   "tensors": 120,
+   "packs": 120,
+   "bytes": 62914560,
+   "packed": 63469636,
+   "option": 62914560,
+   "plain": 7505,
+   "patches": 7680,
+   "checked": 62914560,
+   "bits": 4.0353,
+   "h0": 3.9738,
+   "saved": 0,
+   "saved_of_checkpoint": 0.0
+  },
+  "all": {
+   "tensors": 30841,
+   "packs": 241,
+   "bytes": 16423321600,
+   "packed": 16483026528,
+   "option": 16371137120,
+   "plain": 112018,
+   "patches": 2004800,
+   "checked": 16423321600,
+   "bits": 4.0145,
+   "h0": 3.9568,
+   "saved": 52184480,
+   "saved_of_checkpoint": 0.00222778886161511
+  }
+ },
+ "failed": [],
+ "seconds": 39.8,
+ "gpu": "NVIDIA GeForce RTX 5090",
+ "rows": [
+  {
+   "key": "lm_head.weight",
+   "kind": "lm_head",
+   "items": 1,
+   "bytes": 254279680,
+   "packed": 256137352,
+   "bits": 4.0292,
+   "h0": 3.9704,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.0.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 118947580,
+   "bits": 3.5449,
+   "h0": 3.5295,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.0.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 115773404,
+   "bits": 3.4503,
+   "h0": 3.4447,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.0.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 115747720,
+   "bits": 3.4496,
+   "h0": 3.4439,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9748,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528728,
+   "bits": 4.0339,
+   "h0": 3.9729,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.0.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9732,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.1.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135332128,
+   "bits": 4.0332,
+   "h0": 3.9798,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.1.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135125968,
+   "bits": 4.0271,
+   "h0": 3.9695,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.1.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135137248,
+   "bits": 4.0274,
+   "h0": 3.9697,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.1.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9749,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.1.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9738,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.1.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9731,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.10.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135124812,
+   "bits": 4.027,
+   "h0": 3.9677,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.10.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135157584,
+   "bits": 4.028,
+   "h0": 3.9687,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.10.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135168108,
+   "bits": 4.0283,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.10.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9751,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.10.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9743,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.10.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9741,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.11.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135136856,
+   "bits": 4.0274,
+   "h0": 3.9694,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.11.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135157376,
+   "bits": 4.028,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.11.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135166340,
+   "bits": 4.0283,
+   "h0": 3.9692,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.11.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.974,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.11.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9742,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.11.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.975,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.12.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135120352,
+   "bits": 4.0269,
+   "h0": 3.9676,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.12.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135153772,
+   "bits": 4.0279,
+   "h0": 3.9686,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.12.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135171556,
+   "bits": 4.0284,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.12.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9745,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.12.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9745,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.12.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9747,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.13.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135127452,
+   "bits": 4.0271,
+   "h0": 3.9682,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.13.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135155292,
+   "bits": 4.0279,
+   "h0": 3.9688,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.13.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135176932,
+   "bits": 4.0286,
+   "h0": 3.9693,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.13.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9741,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.13.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9733,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.13.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9733,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.14.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135113532,
+   "bits": 4.0267,
+   "h0": 3.9677,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.14.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135159060,
+   "bits": 4.0281,
+   "h0": 3.9688,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.14.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135171996,
+   "bits": 4.0284,
+   "h0": 3.9692,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.14.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9741,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.14.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9728,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.14.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9729,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.15.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135116632,
+   "bits": 4.0268,
+   "h0": 3.9676,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.15.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135159456,
+   "bits": 4.0281,
+   "h0": 3.9689,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.15.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135177192,
+   "bits": 4.0286,
+   "h0": 3.9692,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.15.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9739,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.15.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9726,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.15.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9736,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.16.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135122872,
+   "bits": 4.027,
+   "h0": 3.9677,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.16.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135167772,
+   "bits": 4.0283,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.16.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135181076,
+   "bits": 4.0287,
+   "h0": 3.9694,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.16.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9734,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.16.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9738,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.16.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9731,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.17.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135124424,
+   "bits": 4.027,
+   "h0": 3.9679,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.17.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135170940,
+   "bits": 4.0284,
+   "h0": 3.9693,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.17.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135182280,
+   "bits": 4.0287,
+   "h0": 3.9695,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.17.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9745,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.17.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9731,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.17.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9718,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.18.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135119032,
+   "bits": 4.0269,
+   "h0": 3.9676,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.18.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135166244,
+   "bits": 4.0283,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.18.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135178952,
+   "bits": 4.0286,
+   "h0": 3.9693,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.18.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9741,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.18.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9731,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.18.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9732,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.19.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135123504,
+   "bits": 4.027,
+   "h0": 3.9677,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.19.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135163928,
+   "bits": 4.0282,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.19.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135176064,
+   "bits": 4.0286,
+   "h0": 3.9692,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.19.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9748,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.19.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9745,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.19.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9743,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.2.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135123840,
+   "bits": 4.027,
+   "h0": 3.9732,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.2.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135128984,
+   "bits": 4.0272,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.2.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135136596,
+   "bits": 4.0274,
+   "h0": 3.9692,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.2.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9757,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.2.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9737,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.2.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9742,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.20.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135114508,
+   "bits": 4.0267,
+   "h0": 3.9676,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.20.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135141128,
+   "bits": 4.0275,
+   "h0": 3.9685,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.20.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135166804,
+   "bits": 4.0283,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.20.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9742,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.20.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9727,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.20.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9734,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.21.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135123404,
+   "bits": 4.027,
+   "h0": 3.9679,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.21.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135159284,
+   "bits": 4.0281,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.21.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135178744,
+   "bits": 4.0286,
+   "h0": 3.9694,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.21.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9756,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.21.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9721,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.21.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9728,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.22.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135130368,
+   "bits": 4.0272,
+   "h0": 3.9678,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.22.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135171276,
+   "bits": 4.0284,
+   "h0": 3.9693,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.22.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135182704,
+   "bits": 4.0288,
+   "h0": 3.9694,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.22.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9752,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.22.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.974,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.22.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9731,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.23.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135137892,
+   "bits": 4.0274,
+   "h0": 3.9694,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.23.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135171216,
+   "bits": 4.0284,
+   "h0": 3.9696,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.23.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135180704,
+   "bits": 4.0287,
+   "h0": 3.9697,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.23.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9736,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.23.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9739,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.23.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9736,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.24.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135122908,
+   "bits": 4.027,
+   "h0": 3.9676,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.24.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135160720,
+   "bits": 4.0281,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.24.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135179008,
+   "bits": 4.0286,
+   "h0": 3.9694,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.24.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9731,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.24.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9728,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.24.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.973,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.25.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135129628,
+   "bits": 4.0272,
+   "h0": 3.9681,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.25.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135163448,
+   "bits": 4.0282,
+   "h0": 3.9692,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.25.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135177664,
+   "bits": 4.0286,
+   "h0": 3.9694,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.25.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9749,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.25.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9724,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.25.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9707,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.26.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135120252,
+   "bits": 4.0269,
+   "h0": 3.9678,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.26.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135157700,
+   "bits": 4.028,
+   "h0": 3.9689,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.26.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135169080,
+   "bits": 4.0284,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.26.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9738,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.26.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9731,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.26.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9718,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.27.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135121680,
+   "bits": 4.0269,
+   "h0": 3.9677,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.27.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135162312,
+   "bits": 4.0282,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.27.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135171888,
+   "bits": 4.0284,
+   "h0": 3.9692,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.27.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9742,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.27.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9741,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.27.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9738,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.28.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135127532,
+   "bits": 4.0271,
+   "h0": 3.9678,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.28.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135161756,
+   "bits": 4.0281,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.28.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135168800,
+   "bits": 4.0283,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.28.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9743,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.28.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9743,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.28.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9727,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.29.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135127744,
+   "bits": 4.0271,
+   "h0": 3.9681,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.29.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135168800,
+   "bits": 4.0283,
+   "h0": 3.9693,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.29.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135176148,
+   "bits": 4.0286,
+   "h0": 3.9693,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.29.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9756,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.29.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9751,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.29.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9733,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.3.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135115476,
+   "bits": 4.0268,
+   "h0": 3.9698,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.3.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135131716,
+   "bits": 4.0272,
+   "h0": 3.9684,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.3.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135139356,
+   "bits": 4.0275,
+   "h0": 3.9686,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.3.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9746,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.3.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9739,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.3.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9739,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.30.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135125616,
+   "bits": 4.0271,
+   "h0": 3.9678,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.30.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135162188,
+   "bits": 4.0281,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.30.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135169768,
+   "bits": 4.0284,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.30.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9752,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.30.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9739,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.30.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9733,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.31.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135130004,
+   "bits": 4.0272,
+   "h0": 3.9678,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.31.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135164104,
+   "bits": 4.0282,
+   "h0": 3.9693,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.31.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135170912,
+   "bits": 4.0284,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.31.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9758,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.31.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9753,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.31.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9738,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.32.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135148376,
+   "bits": 4.0277,
+   "h0": 3.9684,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.32.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135202820,
+   "bits": 4.0294,
+   "h0": 3.9707,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.32.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135199448,
+   "bits": 4.0293,
+   "h0": 3.9701,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.32.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9728,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.32.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.975,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.32.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.974,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.33.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135161140,
+   "bits": 4.0281,
+   "h0": 3.9688,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.33.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135203472,
+   "bits": 4.0294,
+   "h0": 3.9707,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.33.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135199268,
+   "bits": 4.0293,
+   "h0": 3.9701,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.33.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.975,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.33.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9759,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.33.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9753,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.34.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135159112,
+   "bits": 4.0281,
+   "h0": 3.9687,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.34.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135190668,
+   "bits": 4.029,
+   "h0": 3.9701,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.34.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135189168,
+   "bits": 4.029,
+   "h0": 3.9697,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.34.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9764,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.34.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9726,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.34.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9733,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.35.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135133780,
+   "bits": 4.0273,
+   "h0": 3.9679,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.35.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135156756,
+   "bits": 4.028,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.35.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135160272,
+   "bits": 4.0281,
+   "h0": 3.9688,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.35.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9745,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.35.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9749,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.35.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9739,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.36.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135139724,
+   "bits": 4.0275,
+   "h0": 3.9681,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.36.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135157376,
+   "bits": 4.028,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.36.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135166708,
+   "bits": 4.0283,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.36.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9749,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.36.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9753,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.36.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9745,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.37.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135147624,
+   "bits": 4.0277,
+   "h0": 3.9689,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.37.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135166596,
+   "bits": 4.0283,
+   "h0": 3.9693,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.37.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135166828,
+   "bits": 4.0283,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.37.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9753,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.37.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9752,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.37.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.974,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.38.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135148280,
+   "bits": 4.0277,
+   "h0": 3.9684,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.38.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135177800,
+   "bits": 4.0286,
+   "h0": 3.9694,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.38.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135169252,
+   "bits": 4.0284,
+   "h0": 3.969,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.38.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9745,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.38.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9745,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.38.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9735,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.39.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135179336,
+   "bits": 4.0287,
+   "h0": 3.971,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.39.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135163000,
+   "bits": 4.0282,
+   "h0": 3.9694,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.39.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135160848,
+   "bits": 4.0281,
+   "h0": 3.9691,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.39.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528384,
+   "bits": 4.0312,
+   "h0": 3.9581,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.39.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528340,
+   "bits": 4.0309,
+   "h0": 3.9708,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.39.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528536,
+   "bits": 4.0324,
+   "h0": 3.9716,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.4.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135116524,
+   "bits": 4.0268,
+   "h0": 3.9686,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.4.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135131952,
+   "bits": 4.0272,
+   "h0": 3.9682,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.4.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135140100,
+   "bits": 4.0275,
+   "h0": 3.9684,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.4.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9739,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.4.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9728,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.4.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9742,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.5.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135111584,
+   "bits": 4.0266,
+   "h0": 3.9675,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.5.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135132708,
+   "bits": 4.0273,
+   "h0": 3.968,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.5.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135141096,
+   "bits": 4.0275,
+   "h0": 3.9682,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.5.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9746,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.5.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9739,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.5.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9748,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.6.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135110392,
+   "bits": 4.0266,
+   "h0": 3.9674,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.6.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135137828,
+   "bits": 4.0274,
+   "h0": 3.9681,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.6.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135147644,
+   "bits": 4.0277,
+   "h0": 3.9683,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.6.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9749,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.6.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9733,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.6.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9746,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.7.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135111788,
+   "bits": 4.0266,
+   "h0": 3.9674,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.7.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135133924,
+   "bits": 4.0273,
+   "h0": 3.968,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.7.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135147608,
+   "bits": 4.0277,
+   "h0": 3.9683,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.7.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9734,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.7.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9738,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.7.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9751,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.8.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135114276,
+   "bits": 4.0267,
+   "h0": 3.9676,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.8.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135130164,
+   "bits": 4.0272,
+   "h0": 3.9679,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.8.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135151404,
+   "bits": 4.0278,
+   "h0": 3.9684,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.8.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9748,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.8.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9742,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.8.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9745,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.9.mlp.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135123408,
+   "bits": 4.027,
+   "h0": 3.9679,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.9.mlp.experts.*.gate_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135147284,
+   "bits": 4.0277,
+   "h0": 3.9684,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.9.mlp.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 256,
+   "bytes": 134217728,
+   "packed": 135163108,
+   "bits": 4.0282,
+   "h0": 3.9689,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.9.mlp.shared_expert.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9746,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.9.mlp.shared_expert.gate_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9741,
+   "bit_for_bit": true
+  },
+  {
+   "key": "model.language_model.layers.9.mlp.shared_expert.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 524288,
+   "packed": 528928,
+   "bits": 4.0354,
+   "h0": 3.9742,
+   "bit_for_bit": true
+  }
+ ]
+}

@@ -1,0 +1,42 @@
+samples 41209.0 instr executed 11152896.0
+  stall_long_sb             28.0%
+  stall_selected            15.0%
+  stall_wait                14.2%
+  stall_not_selected        11.1%
+  stall_math                 9.2%
+  stall_barrier              8.7%
+  stall_dispatch             4.1%
+  stall_short_sb             4.0%
+  stall_imc                  2.2%
+  stall_mio                  1.4%
+0x7b0eb7ce5cd0  27.5%       IMAD.MOV.U32 R90, RZ, RZ, R54                          long_sb:97 not_selected:0 branch_resolving:0
+0x7b0eb7ce7160   3.7%       BSSY B0, 0x7b0eb7ce7880                                barrier:99 wait:0 not_selected:0
+0x7b0eb7ce78b0   2.6%       BSSY B0, 0x7b0eb7ce89b0                                barrier:99 selected:0 not_selected:0
+0x7b0eb7ce89f0   2.4% @!P0  CALL.REL.NOINC 0x7b0eb7ce8a10                          barrier:99 wait:0 not_selected:0
+0x7b0eb7ce5f10   2.2%       PRMT R36, R91, 0x404, RZ                               math:44 not_selected:42 dispatch:7
+0x7b0eb7ce4500   1.5%       IMAD.MOV.U32 R1, RZ, RZ, c[0x0][0x28]                  imc:62 no_inst:37 selected:0
+0x7b0eb7ce6830   1.4%       ISETP.GE.U32.AND P0, PT, R83, R62, PT                  math:51 not_selected:34 dispatch:5
+0x7b0eb7ce6090   1.3% @!P0  IADD3 R48, R46, 0xffffffe, RZ                          short_sb:60 math:16 not_selected:10
+0x7b0eb7ce6550   1.3%       PRMT R91, R91, 0x3434, RZ                              math:41 not_selected:40 dispatch:6
+0x7b0eb7ce6960   1.2%       HMMA.16816.F32.BF16 R20, R36, R52, R20                 wait:54 not_selected:28 math:9
+0x7b0eb7ce60b0   1.2%       IMAD.MOV R47, RZ, RZ, -R45                             short_sb:75 not_selected:8 selected:5
+0x7b0eb7ce61b0   1.2% @P1   IADD3 R45, R45, -c[0x0][0x170], RZ                     wait:47 math:24 not_selected:19
+0x7b0eb7ce6080   1.0% @!P0  MUFU.RCP R46, R46                                      short_sb:39 wait:32 not_selected:18
+0x7b0eb7ce68b0   1.0%       SHF.R.U32.HI R44, RZ, 0x6, R85                         not_selected:33 math:32 wait:22
+0x7b0eb7ce4510   1.0%       IMAD.MOV.U32 R2, RZ, RZ, c[0x0][0x188]                 imc:94 no_inst:2 wait:0
+0x7b0eb7ce66f0   0.9%       LOP3.LUT R53, R43, 0x1c001c0, RZ, 0xc0, !PT            math:41 not_selected:38 dispatch:7
+0x7b0eb7ce6230   0.9% @P4   IADD3 R44, R44, 0x1, RZ                                math:33 wait:31 not_selected:25
+0x7b0eb7ce62e0   0.9%       LOP3.LUT R55, R47, 0xf8, RZ, 0xc0, !PT                 math:39 not_selected:33 wait:16
+0x7b0eb7ce6600   0.9%       SHF.R.U32.HI R45, RZ, 0x1, R91                         math:40 not_selected:40 selected:9
+0x7b0eb7ce6970   0.9%       IMAD.MOV.U32 R53, RZ, RZ, R83                          wait:61 not_selected:19 math:8
+0x7b0eb7ce6180   0.8% @!P0  ISETP.GE.U32.AND P4, PT, R45, c[0x0][0x170], PT        math:32 wait:31 not_selected:23
+0x7b0eb7ce4560   0.8%       ISETP.GE.AND P0, PT, R5, R2, PT                        long_sb:99 selected:0
+0x7b0eb7ce6390   0.8%       IADD3 R44, P1, R52, R55, RZ                            not_selected:45 math:35 selected:10
+0x7b0eb7ce6000   0.8%       ISETP.NE.AND P0, PT, RZ, c[0x0][0x174], PT             wait:36 math:26 not_selected:23
+0x7b0eb7ce6150   0.7%       LEA.HI.X R98, R47, c[0x0][0x164], R98, 0x9, P2         not_selected:43 math:39 selected:7
+0x7b0eb7ce6220   0.7%       ISETP.NE.AND.EX P1, PT, R77, RZ, PT, P1                math:32 wait:30 not_selected:25
+0x7b0eb7ce6060   0.7% @!P0  I2F.U32.RP R46, c[0x0][0x170]                          wait:60 not_selected:24 selected:9
+0x7b0eb7ce6190   0.7% @!P0  PLOP3.LUT P1, PT, P4, PT, PT, 0x80, 0x0                not_selected:29 wait:29 math:27
+0x7b0eb7ce60a0   0.7% @!P0  F2I.FTZ.U32.TRUNC.NTZ R45, R48                         wait:58 not_selected:26 selected:8
+0x7b0eb7ce6400   0.5%       IMAD.X R45, RZ, RZ, R98, P1                            wait:29 not_selected:24 math:21
+mix: IMAD:28.0 LOP3:18.8 SHF:8.8 HFMA2:7.1 IADD3:6.3 ISETP:6.0 LEA:4.0 LDG:3.7 PRMT:3.5 HMMA:3.5 PLOP3:1.8 BRA:1.2 CS2R:0.9 STS:0.9 LDS:0.9 FADD:0.9 S2R:0.6 I2F:0.5

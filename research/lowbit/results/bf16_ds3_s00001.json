@@ -1,0 +1,53 @@
+{
+ "embed": {
+  "tensors": 1,
+  "small_bytes": 0,
+  "big_n": 926679040,
+  "sums": {
+   "H_word": 9742835841.789936,
+   "H_exp": 2398615814.9556317,
+   "exc12": 160885.0000000032,
+   "fast3_bits": 10373932104.0,
+   "fast3_esc": 22557833.0,
+   "tier3_bits": 9912728682.0,
+   "tier3_raw": 7188273.0
+  }
+ },
+ "attention": {
+  "tensors": 0,
+  "small_bytes": 748620672,
+  "big_n": 0,
+  "sums": {}
+ },
+ "dense_mlp": {
+  "tensors": 1,
+  "small_bytes": 2584319488,
+  "big_n": 1835008,
+  "sums": {
+   "H_word": 19366834.33670992,
+   "H_exp": 4811200.0528567275,
+   "exc12": 350.0,
+   "fast3_bits": 20704824.0,
+   "fast3_esc": 64967.0,
+   "tier3_bits": 19755434.0,
+   "tier3_raw": 16329.0
+  }
+ },
+ "other": {
+  "tensors": 0,
+  "small_bytes": 86016,
+  "big_n": 0,
+  "sums": {}
+ },
+ "shared_experts": {
+  "tensors": 0,
+  "small_bytes": 44050944,
+  "big_n": 0,
+  "sums": {}
+ },
+ "_meta": {
+  "file": "model-00001-of-000163.safetensors",
+  "seconds": 3.778315782546997,
+  "min_elements": 1000000
+ }
+}

@@ -1,0 +1,17 @@
+nvidia/Qwen3.6-35B-A3B-NVFP4
+nvidia/Gemma-4-31B-IT-NVFP4
+nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+nvidia/Qwen3.8-27B-NVFP4
+moonshotai/Kimi-K3
+deepseek-ai/DeepSeek-V4.1-Flash
+amd/MiniMax-M3-MXFP4
+RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic
+mistralai/Mistral-Small-4-119B-2603
+Qwen/Qwen3.8-27B-FP8
+Qwen/Qwen3.6-35B-A3B-FP8
+cyankiwi/Qwen3.6-27B-AWQ-INT4
+RedHatAI/Qwen3.8-27B-INT4
+QuantTrio/Qwen3.6-35B-A3B-AWQ
+Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
+google/gemma-4-12B-it-qat-w4a16-ct
+RedHatAI/Qwen3.5-9B-quantized.w8a8

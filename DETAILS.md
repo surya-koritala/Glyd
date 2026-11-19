@@ -138,10 +138,10 @@ terminal and at http://localhost:8000; `glyd serve MODEL` leaves it up as an
 OpenAI API, and `glyd doctor` says what this machine has and which models fit.
 The steps, the settings and the manual `vllm serve` commands:
 [getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/#local-chat-like-ollama).
-From v0.27 the GPU package, `glyd-gpu`, ships compiled; the install commands
-are the same. It is under the Business Source License 1.1, as all of Glyd is
-from v0.29.0 ([License](#license)). Its source up to v0.26 is in those
-releases' tags.
+The GPU package, `glyd-gpu`, its kernels and Glyd's engine are open source
+in this repository (`gpu/`, `glyd-gpu/`, `glyd-gpu-py/`, `glyd-engine/`),
+under the Apache License 2.0 as all of Glyd ([License](#license)). Releases
+v0.27 to v0.32.1 shipped them compiled only.
 
 vLLM holds the whole model packed: the Linears, from v0.28.0 the embedding
 and the output layer too (every embedding row comes back bit for bit), and a
@@ -651,7 +651,7 @@ from a coarse map of the base (one anchor per KB), so a version with
 48 MB inserted before the kernel tree still costs 18.4 MB (zstd -3
 --patch-from 18.7; a fixed window around the unit's own position,
 33.5). Chunk-level dedup, the backup approach, gains 1–4× on the same
-pairs ([experiments/structure/README.md](experiments/structure/README.md)).
+pairs ([research/codec/experiments/structure/README.md](research/codec/experiments/structure/README.md)).
 
 Over a chain of versions, the Linux 6.10 point releases (15 versions
 of a 1.5 GB tree; `scripts/download_chain.sh`, `scripts/bench_chain.sh`),
@@ -839,7 +839,7 @@ every one — at 13–22 MB/s in and 25–46 out on this Mac's cores, the
 identical JPEG back — inside a zip or an Office document too, stored
 or deflated. Parquet (its columns as records,
 26–40%, the same table rather than the same bytes) is measured in
-[experiments/research](experiments/research/README.md#j-re-doing-what-is-already-compressed)
+[research/codec/experiments/research](research/codec/experiments/research/README.md#j-re-doing-what-is-already-compressed)
 and not yet built.
 
 ### The cold level: context mixing for what is read rarely
@@ -1067,9 +1067,9 @@ Design: [docs/design/format-v7.md](docs/design/format-v7.md) (formats v7–v9,
 dictionaries, record mode, the matcher, base mode) and
 [docs/design/ultra-parse.md](docs/design/ultra-parse.md). Every
 measurement, refuted idea and floor: [docs/engineering-notes.md](docs/engineering-notes.md),
-[CHANGELOG-BENCH.md](CHANGELOG-BENCH.md) and
-[experiments/structure/README.md](experiments/structure/README.md). What
-comes next: [ROADMAP.md](ROADMAP.md).
+[research/codec/CHANGELOG-BENCH.md](research/codec/CHANGELOG-BENCH.md) and
+[research/codec/experiments/structure/README.md](research/codec/experiments/structure/README.md). What
+comes next: [research/codec/ROADMAP.md](research/codec/ROADMAP.md).
 
 Safety: the decoder is fuzzed with a million random mutations per run into
 exact-size buffers with sentinel guards, on every level; corrupted record
@@ -1146,9 +1146,9 @@ Contributing: open an issue with the measured number for anything that
 touches speed or ratio (`examples/bench_suite.rs`, `examples/v7_bench.rs`
 and `scripts/bench_versions.sh` print same-run comparisons); pull requests
 run the full suite including the 1M-mutation fuzz in CI. Every commit
-needs a `Signed-off-by:` line (`git commit -s`), which accepts the
-[contributor license agreement](CLA.md): you keep your copyright and
-grant the project the right to use and relicense the contribution. The
+needs a `Signed-off-by:` line (`git commit -s`), certifying the
+[Developer Certificate of Origin](DCO): you keep your copyright and the
+contribution is licensed under Apache-2.0, like the project. The
 whole of it is in [CONTRIBUTING.md](CONTRIBUTING.md); the
 [code of conduct](CODE_OF_CONDUCT.md) applies to everyone taking part.
 
@@ -1169,13 +1169,14 @@ machines with an NVIDIA GPU before each release.
 
 ## License
 
-From v0.29.0 **all of Glyd is under the [Business Source License
-1.1](LICENSE)**: the `glyd` crate and CLI, the C ABI, the Python and Go
-bindings, the store (`glyd-store`) and the GPU package (`glyd-gpu`: model
-weights and the KV cache held compressed in GPU memory; compiled wheels).
+**All of Glyd is open source under the [Apache License 2.0](LICENSE)**: the
+`glyd` crate and CLI, the C ABI, the Python and Go bindings, the store
+(`glyd-store`), the GPU library and its kernels (`gpu/`), the packer
+(`glyd-gpu`), the Python GPU package (`glyd-gpu-py`), the inference engine
+(`glyd-engine`), Condor (`condor/`) and Starlings (`starlings/`). Any use,
+commercial included, with no license to ask for.
 
-Free forever for personal and non-commercial use (including education, research and nonprofits) on computers you own or rent for yourself, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release. The source is available; the Business Source License is not an Open Source license.
-
+Releases v0.29.0 to v0.32.1 shipped under the Business Source License 1.1.
 Releases up to v0.28 keep the licenses they shipped with, in those
 releases' tags:
 

@@ -1,0 +1,181 @@
+(APIServer pid=1712) Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+(EngineCore pid=1836) Loading safetensors checkpoint shards:   0% Completed | 0/5 [00:00<?, ?it/s]
+(EngineCore pid=1836) Loading safetensors checkpoint shards:  20% Completed | 1/5 [00:00<00:01,  2.28it/s]
+(EngineCore pid=1836) Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:01<00:01,  1.83it/s]
+(EngineCore pid=1836) Loading safetensors checkpoint shards:  60% Completed | 3/5 [00:01<00:01,  1.73it/s]
+(EngineCore pid=1836) Loading safetensors checkpoint shards:  80% Completed | 4/5 [00:02<00:00,  1.79it/s]
+(EngineCore pid=1836) Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:02<00:00,  2.18it/s]
+(EngineCore pid=1836) Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:02<00:00,  2.01it/s]
+(EngineCore pid=1836) 
+(EngineCore pid=1836) Capturing CUDA graphs (PIECEWISE):   0%|          | 0/51 [00:00<?, ?it/s]Capturing CUDA graphs (PIECEWISE):   2%|▏         | 1/51 [00:00<00:05,  8.34it/s]Capturing CUDA graphs (PIECEWISE):   4%|▍         | 2/51 [00:00<00:05,  8.88it/s]Capturing CUDA graphs (PIECEWISE):   6%|▌         | 3/51 [00:00<00:05,  9.17it/s]Capturing CUDA graphs (PIECEWISE):   8%|▊         | 4/51 [00:00<00:05,  9.30it/s]Capturing CUDA graphs (PIECEWISE):  10%|▉         | 5/51 [00:00<00:04,  9.39it/s]Capturing CUDA graphs (PIECEWISE):  12%|█▏        | 6/51 [00:00<00:04,  9.47it/s]Capturing CUDA graphs (PIECEWISE):  14%|█▎        | 7/51 [00:00<00:04,  9.54it/s]Capturing CUDA graphs (PIECEWISE):  16%|█▌        | 8/51 [00:00<00:04,  9.61it/s]Capturing CUDA graphs (PIECEWISE):  20%|█▉        | 10/51 [00:01<00:04,  9.90it/s]Capturing CUDA graphs (PIECEWISE):  24%|██▎       | 12/51 [00:01<00:03, 10.04it/s]Capturing CUDA graphs (PIECEWISE):  27%|██▋       | 14/51 [00:01<00:03, 10.15it/s]Capturing CUDA graphs (PIECEWISE):  31%|███▏      | 16/51 [00:01<00:03, 10.25it/s]Capturing CUDA graphs (PIECEWISE):  35%|███▌      | 18/51 [00:01<00:02, 11.01it/s]Capturing CUDA graphs (PIECEWISE):  39%|███▉      | 20/51 [00:01<00:02, 11.69it/s]Capturing CUDA graphs (PIECEWISE):  43%|████▎     | 22/51 [00:02<00:02, 12.19it/s]Capturing CUDA graphs (PIECEWISE):  47%|████▋     | 24/51 [00:02<00:02, 12.50it/s]Capturing CUDA graphs (PIECEWISE):  51%|█████     | 26/51 [00:02<00:01, 12.70it/s]Capturing CUDA graphs (PIECEWISE):  55%|█████▍    | 28/51 [00:02<00:01, 13.01it/s]Capturing CUDA graphs (PIECEWISE):  59%|█████▉    | 30/51 [00:02<00:01, 13.28it/s]Capturing CUDA graphs (PIECEWISE):  63%|██████▎   | 32/51 [00:02<00:01, 13.54it/s]Capturing CUDA graphs (PIECEWISE):  67%|██████▋   | 34/51 [00:02<00:01, 13.50it/s]Capturing CUDA graphs (PIECEWISE):  71%|███████   | 36/51 [00:03<00:01, 13.79it/s]Capturing CUDA graphs (PIECEWISE):  75%|███████▍  | 38/51 [00:03<00:00, 14.01it/s]Capturing CUDA graphs (PIECEWISE):  78%|███████▊  | 40/51 [00:03<00:00, 13.78it/s]Capturing CUDA graphs (PIECEWISE):  82%|████████▏ | 42/51 [00:03<00:00, 14.11it/s]Capturing CUDA graphs (PIECEWISE):  86%|████████▋ | 44/51 [00:03<00:00, 14.36it/s]Capturing CUDA graphs (PIECEWISE):  90%|█████████ | 46/51 [00:03<00:00, 14.44it/s]Capturing CUDA graphs (PIECEWISE):  94%|█████████▍| 48/51 [00:03<00:00, 14.63it/s]Capturing CUDA graphs (PIECEWISE):  98%|█████████▊| 50/51 [00:04<00:00, 14.63it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 51/51 [00:04<00:00, 12.33it/s]
+(EngineCore pid=1836) Capturing CUDA graphs (FULL):   0%|          | 0/2 [00:00<?, ?it/s]Capturing CUDA graphs (FULL): 100%|██████████| 2/2 [00:00<00:00, 19.82it/s]Capturing CUDA graphs (FULL): 100%|██████████| 2/2 [00:00<00:00, 19.78it/s]
+(EngineCore pid=1836) Process EngineCore:
+(EngineCore pid=1836) Traceback (most recent call last):
+(EngineCore pid=1836)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=1836)     self.run()
+(EngineCore pid=1836)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
+(EngineCore pid=1836)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1370, in run_engine_core
+(EngineCore pid=1836)     raise e
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1328, in run_engine_core
+(EngineCore pid=1836)     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=1836)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1836)     return func(*args, **kwargs)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1085, in __init__
+(EngineCore pid=1836)     super().__init__(
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 145, in __init__
+(EngineCore pid=1836)     kv_cache_config = self._initialize_kv_caches(vllm_config)
+(EngineCore pid=1836)                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1836)     return func(*args, **kwargs)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 356, in _initialize_kv_caches
+(EngineCore pid=1836)     self.model_executor.compile_or_warm_up_model()
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 126, in compile_or_warm_up_model
+(EngineCore pid=1836)     compilation_times: list[CompilationTimes] = self.collective_rpc(
+(EngineCore pid=1836)                                                 ^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 103, in collective_rpc
+(EngineCore pid=1836)     result = run_method(self.driver_worker, method, args, kwargs)
+(EngineCore pid=1836)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/serial_utils.py", line 510, in run_method
+(EngineCore pid=1836)     return func(*args, **kwargs)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1836)     return func(*args, **kwargs)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 811, in compile_or_warm_up_model
+(EngineCore pid=1836)     warmup_kernels(self.model_runner, self.execute_model, self.sample_tokens)
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=1836)     return func(*args, **kwargs)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/warmup.py", line 235, in warmup_kernels
+(EngineCore pid=1836)     _warmup_kernels(model_runner, worker_execute_model, worker_sample_tokens)
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/warmup.py", line 373, in _warmup_kernels
+(EngineCore pid=1836)     worker_sample_tokens(grammar_output)
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=1836)     return func(*args, **kwargs)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 1145, in sample_tokens
+(EngineCore pid=1836)     return self.model_runner.sample_tokens(grammar_output)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=1836)     return func(*args, **kwargs)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/eplb_utils.py", line 27, in wrapper
+(EngineCore pid=1836)     result = fn(self, *args, **kwargs)
+(EngineCore pid=1836)              ^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 2048, in sample_tokens
+(EngineCore pid=1836)     sampler_output, num_sampled, num_rejected = self.sample(
+(EngineCore pid=1836)                                                 ^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 1554, in sample
+(EngineCore pid=1836)     sampler_output = self.sampler(logits, input_batch)
+(EngineCore pid=1836)                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/sample/sampler.py", line 141, in __call__
+(EngineCore pid=1836)     sampled, processed_logits = self.sample(
+(EngineCore pid=1836)                                 ^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/sample/sampler.py", line 310, in sample
+(EngineCore pid=1836)     return self._sample_random(
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/sample/sampler.py", line 331, in _sample_random
+(EngineCore pid=1836)     sampled = flashinfer_sample(processed_logits, top_k, top_p).to(torch.int64)
+(EngineCore pid=1836)               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/sample/ops/topk_topp_sampler.py", line 522, in flashinfer_sample
+(EngineCore pid=1836)     next_token_ids = flashinfer.sampling.top_k_top_p_sampling_from_logits(
+(EngineCore pid=1836)                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+(EngineCore pid=1836)     return _inner(*args, **kwargs)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/flashinfer/sampling.py", line 1547, in top_k_top_p_sampling_from_logits
+(EngineCore pid=1836)     masked_logits = top_k_mask_logits(logits, top_k)
+(EngineCore pid=1836)                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+(EngineCore pid=1836)     return _inner(*args, **kwargs)
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/flashinfer/sampling.py", line 1974, in top_k_mask_logits
+(EngineCore pid=1836)     return get_sampling_module().top_k_mask_logits(
+(EngineCore pid=1836)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/flashinfer/sampling.py", line 68, in get_sampling_module
+(EngineCore pid=1836)     module = gen_sampling_module().build_and_load()
+(EngineCore pid=1836)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/flashinfer/jit/core.py", line 320, in build_and_load
+(EngineCore pid=1836)     self.build()
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/flashinfer/jit/core.py", line 427, in build
+(EngineCore pid=1836)     run_ninja(self.build_dir, self.ninja_path, verbose)
+(EngineCore pid=1836)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 370, in run_ninja
+(EngineCore pid=1836)     subprocess.run(
+(EngineCore pid=1836)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 548, in run
+(EngineCore pid=1836)     with Popen(*popenargs, **kwargs) as process:
+(EngineCore pid=1836)          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1836)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 1026, in __init__
+(EngineCore pid=1836)     self._execute_child(args, executable, preexec_fn, close_fds,
+(EngineCore pid=1836)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 1955, in _execute_child
+(EngineCore pid=1836)     raise child_exception_type(errno_num, err_msg, err_filename)
+(EngineCore pid=1836) FileNotFoundError: [Errno 2] No such file or directory: 'ninja'
+[rank0]:[W1006 01:37:50.027888716 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+(APIServer pid=1712) Traceback (most recent call last):
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/bin/vllm", line 10, in <module>
+(APIServer pid=1712)     sys.exit(main())
+(APIServer pid=1712)              ^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 106, in main
+(APIServer pid=1712)     args.dispatch_function(args)
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/cli/serve.py", line 154, in cmd
+(APIServer pid=1712)     uvloop.run(run_server(args))
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=1712)     return __asyncio.run(
+(APIServer pid=1712)            ^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 195, in run
+(APIServer pid=1712)     return runner.run(main)
+(APIServer pid=1712)            ^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=1712)     return self._loop.run_until_complete(task)
+(APIServer pid=1712)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "uvloop/loop.pyx", line 1515, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=1712)     return await main
+(APIServer pid=1712)            ^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 176, in run_server
+(APIServer pid=1712)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 190, in run_server_worker
+(APIServer pid=1712)     async with build_async_engine_client(
+(APIServer pid=1712)                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=1712)     return await anext(self.gen)
+(APIServer pid=1712)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 58, in build_async_engine_client
+(APIServer pid=1712)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=1712)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=1712)     return await anext(self.gen)
+(APIServer pid=1712)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 94, in build_async_engine_client_from_engine_args
+(APIServer pid=1712)     async_llm = AsyncLLM.from_vllm_config(
+(APIServer pid=1712)                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/async_llm.py", line 235, in from_vllm_config
+(APIServer pid=1712)     return cls(
+(APIServer pid=1712)            ^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/async_llm.py", line 169, in __init__
+(APIServer pid=1712)     self.engine_core = EngineCoreClient.make_async_mp_client(
+(APIServer pid=1712)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1712)     return func(*args, **kwargs)
+(APIServer pid=1712)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 163, in make_async_mp_client
+(APIServer pid=1712)     return AsyncMPClient(
+(APIServer pid=1712)            ^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1712)     return func(*args, **kwargs)
+(APIServer pid=1712)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 1060, in __init__
+(APIServer pid=1712)     super().__init__(
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 656, in __init__
+(APIServer pid=1712)     with launch_core_engines(
+(APIServer pid=1712)          ^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1712)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 144, in __exit__
+(APIServer pid=1712)     next(self.gen)
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1240, in launch_core_engines
+(APIServer pid=1712)     wait_for_engine_startup(
+(APIServer pid=1712)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1320, in wait_for_engine_startup
+(APIServer pid=1712)     raise RuntimeError(
+(APIServer pid=1712) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}

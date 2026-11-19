@@ -1,0 +1,446 @@
+{
+ "gpu": "NVIDIA L4",
+ "order": "seq",
+ "rows": [
+  {
+   "B": 32,
+   "L": 1024,
+   "copies": 2,
+   "max_abs_difference_to_fa2": 0.00195,
+   "max_abs_output": 53.25,
+   "inputs_finite": true,
+   "kv_decode_us": 391.99,
+   "kv_decode_range_us": [
+    391.78,
+    392.19
+   ],
+   "kv_decode_eager_us": 395.41,
+   "kv_decode_eager_range_us": [
+    395.26,
+    395.46
+   ],
+   "fa2_decode_us": 547.53,
+   "fa2_decode_range_us": [
+    547.07,
+    548.45
+   ],
+   "fa2_decode_eager_us": 560.99,
+   "fa2_decode_eager_range_us": [
+    558.69,
+    561.92
+   ],
+   "kv_write_us": 10.39,
+   "kv_write_range_us": [
+    10.34,
+    10.75
+   ],
+   "kv_write_eager_us": 26.16,
+   "kv_write_eager_range_us": [
+    25.59,
+    26.89
+   ],
+   "vllm_write_us": 2.66,
+   "vllm_write_range_us": [
+    2.56,
+    2.71
+   ],
+   "vllm_write_eager_us": 32.72,
+   "vllm_write_eager_range_us": [
+    32.1,
+    33.18
+   ],
+   "kv_write_cold_us": 18.24,
+   "vllm_write_cold_us": 7.17,
+   "step_ms_write_extra_cold_36_layers": 0.399,
+   "decode_ratio_fa2_over_kv_eager": 1.419,
+   "decode_ratio_fa2_over_kv": 1.397,
+   "step_ms_saved_36_layers": 5.599,
+   "step_ms_write_extra_36_layers": 0.278
+  },
+  {
+   "B": 4,
+   "L": 8192,
+   "copies": 2,
+   "max_abs_difference_to_fa2": 0.00049,
+   "max_abs_output": 95.0,
+   "inputs_finite": true,
+   "kv_decode_us": 394.14,
+   "kv_decode_range_us": [
+    393.83,
+    394.24
+   ],
+   "kv_decode_eager_us": 397.82,
+   "kv_decode_eager_range_us": [
+    397.47,
+    399.0
+   ],
+   "fa2_decode_us": 547.99,
+   "fa2_decode_range_us": [
+    547.94,
+    548.86
+   ],
+   "fa2_decode_eager_us": 562.89,
+   "fa2_decode_eager_range_us": [
+    561.05,
+    563.1
+   ],
+   "kv_write_us": 9.06,
+   "kv_write_range_us": [
+    8.86,
+    9.11
+   ],
+   "kv_write_eager_us": 21.66,
+   "kv_write_eager_range_us": [
+    20.47,
+    22.27
+   ],
+   "vllm_write_us": 2.41,
+   "vllm_write_range_us": [
+    2.36,
+    2.41
+   ],
+   "vllm_write_eager_us": 37.79,
+   "vllm_write_eager_range_us": [
+    26.11,
+    46.49
+   ],
+   "kv_write_cold_us": 11.26,
+   "vllm_write_cold_us": 6.14,
+   "step_ms_write_extra_cold_36_layers": 0.184,
+   "decode_ratio_fa2_over_kv_eager": 1.415,
+   "decode_ratio_fa2_over_kv": 1.39,
+   "step_ms_saved_36_layers": 5.539,
+   "step_ms_write_extra_36_layers": 0.239
+  },
+  {
+   "B": 1,
+   "L": 8192,
+   "copies": 8,
+   "max_abs_difference_to_fa2": 0.00024,
+   "max_abs_output": 0.25781,
+   "inputs_finite": true,
+   "kv_decode_us": 105.27,
+   "kv_decode_range_us": [
+    105.26,
+    105.88
+   ],
+   "kv_decode_eager_us": 108.08,
+   "kv_decode_eager_range_us": [
+    107.62,
+    108.96
+   ],
+   "fa2_decode_us": 141.47,
+   "fa2_decode_range_us": [
+    141.36,
+    141.52
+   ],
+   "fa2_decode_eager_us": 148.22,
+   "fa2_decode_eager_range_us": [
+    148.17,
+    149.09
+   ],
+   "kv_write_us": 6.66,
+   "kv_write_range_us": [
+    6.55,
+    6.71
+   ],
+   "kv_write_eager_us": 19.97,
+   "kv_write_eager_range_us": [
+    19.92,
+    21.87
+   ],
+   "vllm_write_us": 2.09,
+   "vllm_write_range_us": [
+    2.05,
+    2.15
+   ],
+   "vllm_write_eager_us": 27.29,
+   "vllm_write_eager_range_us": [
+    25.4,
+    27.29
+   ],
+   "kv_write_cold_us": 11.26,
+   "vllm_write_cold_us": 5.12,
+   "step_ms_write_extra_cold_36_layers": 0.221,
+   "decode_ratio_fa2_over_kv_eager": 1.371,
+   "decode_ratio_fa2_over_kv": 1.344,
+   "step_ms_saved_36_layers": 1.303,
+   "step_ms_write_extra_36_layers": 0.165
+  },
+  {
+   "B": 8,
+   "L": 4096,
+   "copies": 2,
+   "max_abs_difference_to_fa2": 0.00049,
+   "max_abs_output": 95.0,
+   "inputs_finite": true,
+   "kv_decode_us": 393.93,
+   "kv_decode_range_us": [
+    393.73,
+    394.09
+   ],
+   "kv_decode_eager_us": 398.69,
+   "kv_decode_eager_range_us": [
+    396.34,
+    399.87
+   ],
+   "fa2_decode_us": 548.4,
+   "fa2_decode_range_us": [
+    548.35,
+    549.43
+   ],
+   "fa2_decode_eager_us": 563.56,
+   "fa2_decode_eager_range_us": [
+    560.64,
+    570.47
+   ],
+   "kv_write_us": 8.76,
+   "kv_write_range_us": [
+    8.7,
+    8.91
+   ],
+   "kv_write_eager_us": 19.56,
+   "kv_write_eager_range_us": [
+    19.3,
+    21.2
+   ],
+   "vllm_write_us": 2.34,
+   "vllm_write_range_us": [
+    2.25,
+    2.35
+   ],
+   "vllm_write_eager_us": 26.83,
+   "vllm_write_eager_range_us": [
+    24.93,
+    28.67
+   ],
+   "kv_write_cold_us": 12.29,
+   "vllm_write_cold_us": 6.14,
+   "step_ms_write_extra_cold_36_layers": 0.221,
+   "decode_ratio_fa2_over_kv_eager": 1.414,
+   "decode_ratio_fa2_over_kv": 1.392,
+   "step_ms_saved_36_layers": 5.561,
+   "step_ms_write_extra_36_layers": 0.231
+  },
+  {
+   "B": 3,
+   "L": 8192,
+   "copies": 3,
+   "max_abs_difference_to_fa2": 0.00049,
+   "max_abs_output": 159.0,
+   "inputs_finite": true,
+   "kv_decode_us": 298.65,
+   "kv_decode_range_us": [
+    298.39,
+    298.65
+   ],
+   "kv_decode_eager_us": 303.97,
+   "kv_decode_eager_range_us": [
+    301.41,
+    305.51
+   ],
+   "fa2_decode_us": 407.35,
+   "fa2_decode_range_us": [
+    407.14,
+    407.44
+   ],
+   "fa2_decode_eager_us": 427.46,
+   "fa2_decode_eager_range_us": [
+    420.4,
+    428.29
+   ],
+   "kv_write_us": 7.73,
+   "kv_write_range_us": [
+    6.86,
+    7.88
+   ],
+   "kv_write_eager_us": 24.28,
+   "kv_write_eager_range_us": [
+    23.29,
+    26.68
+   ],
+   "vllm_write_us": 2.3,
+   "vllm_write_range_us": [
+    2.25,
+    2.36
+   ],
+   "vllm_write_eager_us": 48.08,
+   "vllm_write_eager_range_us": [
+    32.2,
+    48.74
+   ],
+   "kv_write_cold_us": 10.24,
+   "vllm_write_cold_us": 6.14,
+   "step_ms_write_extra_cold_36_layers": 0.148,
+   "decode_ratio_fa2_over_kv_eager": 1.406,
+   "decode_ratio_fa2_over_kv": 1.364,
+   "step_ms_saved_36_layers": 3.913,
+   "step_ms_write_extra_36_layers": 0.195
+  },
+  {
+   "B": 1,
+   "L": 1024,
+   "copies": 62,
+   "max_abs_difference_to_fa2": 0.00098,
+   "max_abs_output": 0.30664,
+   "inputs_finite": true,
+   "kv_decode_us": 18.28,
+   "kv_decode_range_us": [
+    18.23,
+    18.33
+   ],
+   "kv_decode_eager_us": 37.02,
+   "kv_decode_eager_range_us": [
+    33.52,
+    39.88
+   ],
+   "fa2_decode_us": 27.03,
+   "fa2_decode_range_us": [
+    27.03,
+    27.14
+   ],
+   "fa2_decode_eager_us": 145.16,
+   "fa2_decode_eager_range_us": [
+    138.5,
+    172.7
+   ],
+   "kv_write_us": 6.6,
+   "kv_write_range_us": [
+    6.55,
+    6.71
+   ],
+   "kv_write_eager_us": 22.83,
+   "kv_write_eager_range_us": [
+    21.92,
+    24.06
+   ],
+   "vllm_write_us": 2.25,
+   "vllm_write_range_us": [
+    2.1,
+    2.51
+   ],
+   "vllm_write_eager_us": 31.33,
+   "vllm_write_eager_range_us": [
+    30.83,
+    33.89
+   ],
+   "kv_write_cold_us": 10.24,
+   "vllm_write_cold_us": 6.11,
+   "step_ms_write_extra_cold_36_layers": 0.149,
+   "decode_ratio_fa2_over_kv_eager": 3.921,
+   "decode_ratio_fa2_over_kv": 1.479,
+   "step_ms_saved_36_layers": 0.315,
+   "step_ms_write_extra_36_layers": 0.157
+  },
+  {
+   "B": 44,
+   "L": 1024,
+   "copies": 2,
+   "max_abs_difference_to_fa2": 0.00195,
+   "max_abs_output": 99.5,
+   "inputs_finite": true,
+   "kv_decode_us": 537.96,
+   "kv_decode_range_us": [
+    537.44,
+    538.31
+   ],
+   "kv_decode_eager_us": 544.31,
+   "kv_decode_eager_range_us": [
+    541.08,
+    544.47
+   ],
+   "fa2_decode_us": 757.09,
+   "fa2_decode_range_us": [
+    756.63,
+    757.86
+   ],
+   "fa2_decode_eager_us": 783.82,
+   "fa2_decode_eager_range_us": [
+    771.79,
+    785.36
+   ],
+   "kv_write_us": 10.96,
+   "kv_write_range_us": [
+    10.85,
+    11.06
+   ],
+   "kv_write_eager_us": 31.49,
+   "kv_write_eager_range_us": [
+    29.29,
+    32.0
+   ],
+   "vllm_write_us": 2.61,
+   "vllm_write_range_us": [
+    2.61,
+    2.71
+   ],
+   "vllm_write_eager_us": 40.14,
+   "vllm_write_eager_range_us": [
+    38.76,
+    42.29
+   ],
+   "kv_write_cold_us": 19.46,
+   "vllm_write_cold_us": 7.17,
+   "step_ms_write_extra_cold_36_layers": 0.442,
+   "decode_ratio_fa2_over_kv_eager": 1.44,
+   "decode_ratio_fa2_over_kv": 1.407,
+   "step_ms_saved_36_layers": 7.889,
+   "step_ms_write_extra_36_layers": 0.301
+  },
+  {
+   "B": 5,
+   "L": 8192,
+   "copies": 2,
+   "max_abs_difference_to_fa2": 0.0625,
+   "max_abs_output": 9.1875,
+   "inputs_finite": true,
+   "kv_decode_us": 490.39,
+   "kv_decode_range_us": [
+    490.04,
+    490.5
+   ],
+   "kv_decode_eager_us": 496.64,
+   "kv_decode_eager_range_us": [
+    493.16,
+    498.28
+   ],
+   "fa2_decode_us": 674.09,
+   "fa2_decode_range_us": [
+    673.98,
+    674.82
+   ],
+   "fa2_decode_eager_us": 693.9,
+   "fa2_decode_eager_range_us": [
+    687.0,
+    696.42
+   ],
+   "kv_write_us": 8.29,
+   "kv_write_range_us": [
+    8.24,
+    8.35
+   ],
+   "kv_write_eager_us": 29.81,
+   "kv_write_eager_range_us": [
+    28.62,
+    32.92
+   ],
+   "vllm_write_us": 2.51,
+   "vllm_write_range_us": [
+    2.46,
+    2.66
+   ],
+   "vllm_write_eager_us": 38.97,
+   "vllm_write_eager_range_us": [
+    37.02,
+    41.06
+   ],
+   "kv_write_cold_us": 10.24,
+   "vllm_write_cold_us": 6.14,
+   "step_ms_write_extra_cold_36_layers": 0.148,
+   "decode_ratio_fa2_over_kv_eager": 1.397,
+   "decode_ratio_fa2_over_kv": 1.375,
+   "step_ms_saved_36_layers": 6.613,
+   "step_ms_write_extra_36_layers": 0.208
+  }
+ ]
+}

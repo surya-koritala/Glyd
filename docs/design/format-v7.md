@@ -1,6 +1,6 @@
 # Format v7: beat zstd -3 on ratio at 2x its decode speed
 
-Date: 2026-09-18. Status: implemented (`--max` level); measured results in CHANGELOG-BENCH.md.
+Date: 2026-09-18. Status: implemented (`--max` level); measured results in research/codec/CHANGELOG-BENCH.md.
 
 ## Goal
 
@@ -153,7 +153,7 @@ dictionary), each with a small exact test; round-trip tests on generated
 shapes as for the fast and turbo levels; fuzz extended.
 
 **Milestones**, each with a measured number recorded in
-`CHANGELOG-BENCH.md` before the next starts:
+`research/codec/CHANGELOG-BENCH.md` before the next starts:
 1. Entropy coders (Huffman-8, tANS-8): standalone, correct, >= 0.5
    ns/symbol.
 2. v7 streams and decoder passes 1-3 fed by the current parse:

@@ -1,0 +1,10 @@
+glyd run: Qwen3.5-9B is a Qwen3_5ForConditionalGeneration model, and this engine runs Qwen3 models so far; using vLLM.
+Qwen3.5-9B: 14.3 GB on the GPU with Glyd, instead of 19.3 GB; your GPU has 25.3 GB free.
+Qwen3.5-9B is downloaded already.
+Settings: 189,440-token context (the most that fits), compiled mode (CUDA graphs), 92% of GPU memory (23.2 GB); PyTorch sampler (no CUDA toolkit).
+KV cache: vLLM's (GLYD_KV=auto for Glyd's lossless cache on supported GPUs)
+Loading Qwen3.5-9B with Glyd: 14.3 GB instead of 19.3 GB...
+Stopping the server (it is still loading: up to half a minute)...
+
+Stopped.
+rc=130

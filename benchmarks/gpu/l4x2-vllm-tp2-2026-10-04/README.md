@@ -1,7 +1,7 @@
 # Tensor parallel 2 with the embedding and the output layer packed: two L4s (2026-10-04)
 
 `vllm serve --quantization glyd` over two GPUs (vLLM's tensor parallel, 2 ranks) with the embedding and the LM head (the output layer) packed, checked on two NVIDIA L4s of an AWS g6.12xlarge (4 x L4, 48 vCPUs; driver 595.91.07), vLLM 0.30.0, torch 2.13.0+cu130, transformers 5.18.0. Under tensor parallel vLLM splits the embedding's rows and the output layer's rows over the ranks (here 16,032 rows each of the tiny models' table, which vLLM pads from 32,001 to 32,064 rows, and 75,968 of Qwen3-4B's 151,936): each rank packs its own share.
-The code is the whole-model packing as of the run's day, before the release's last merges; the check was not repeated on the final tree.
+The code is the whole-model packing as of the run's day, the tree of commit 156b85e8 (the whole-model packing, before the smallest layout's new form and the later merges that are in private main 11c0661f; the check was not repeated on that tree).
 This is a check, not a benchmark: it says the packed tables and the packed layers are right over two GPUs, and makes no claim about speed or memory (the weights `check_vllm` prints for its Glyd runs are of a run with `verify` on).
 
 ## Two tiny random models over 2 GPUs (`tables_check.py --tp 2`)
@@ -24,4 +24,4 @@ A tied model (`to`, one table) and an untied one (`uo`, two), a vocabulary of 32
 
 ## Files
 
-`tables/report.txt` and `real/report.txt` (the checks above), `steps.txt` (the steps of the job with their times: 756 s in all), `env.txt`, `machine-short.txt`.
+`tables/report.txt` and `real/report.txt` (the checks above) with each run's JSON and log beside them (`tables/*.json`, `*.log`, `real/*.json`, `*.log`), `steps.txt` (the steps of the job with their times: 756 s in all), `sweep.txt` (Qwen3-8B's head on one GPU), `summary.txt` (the job's own summary), `env.txt`, `machine.txt`, `machine-short.txt`, `log/` (the downloads and the environment). The job: `gpu/vllm/tp2_job.sh`. The instance was terminated after 22 minutes.

@@ -1,0 +1,9 @@
+{
+  "kind": "ModelFreeCorrectedRecoveryRunnerCheck",
+  "model_started": false,
+  "paced_status_calls_passed": 12,
+  "control_failures_recorded": true,
+  "missing_resource_is_not_ready": true,
+  "ready_resource_required": true,
+  "spend_usd": 0
+}

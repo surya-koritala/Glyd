@@ -1,0 +1,6 @@
+15:57:09 lock held
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":435.9,"decode_ms_mean":45.607,"decode_ms_p50":45.625,"decode_ms_p99":45.904,"decode_tokens_per_s":21.93,"load_s":2.44,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":436.7,"decode_ms_mean":45.669,"decode_ms_p50":45.696,"decode_ms_p99":45.964,"decode_tokens_per_s":21.90,"load_s":2.43,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":438.3,"decode_ms_mean":45.721,"decode_ms_p50":45.717,"decode_ms_p99":46.032,"decode_tokens_per_s":21.87,"load_s":2.43,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+score: same bytes
+15:58:36 done

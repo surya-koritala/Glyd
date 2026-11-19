@@ -1,0 +1,25 @@
+chat: 89.4 tokens/s
+4K: read in 1.8 s, then 63.8 tokens/s
+16K: read in 6.4 s, then 73.3 tokens/s
+32K: read in 11.8 s, then 67.5 tokens/s
+report: bench-report.md
+
+---- paste from here ----
+```
+GPU:     NVIDIA A10, 23028 MiB
+Driver:  580.126.20
+PCIe:    now gen 4 x16, max gen 4 x16
+CPU:     Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz
+RAM:     222 GiB
+OS:      Ubuntu 24.04.4 LTS, kernel 6.8.0-1046-nvidia
+Mode:    precise
+Engine:  glyd-engine 0.32.1, sha256 fd9c617f8694
+Repo:    fe1b10a
+| Test | Prompt tokens | Reading the prompt (s) | Writing (tokens/s) | Tokens written |
+|---|--:|--:|--:|--:|
+| Chat (short prompt) | 33 | 0.3 | 89.4 | 512 |
+| 4K prompt | 3287 | 1.8 | 63.8 | 256 |
+| 16K prompt | 13063 | 6.4 | 73.3 | 256 |
+| 32K prompt | 26094 | 11.8 | 67.5 | 256 |
+```
+---- to here ----

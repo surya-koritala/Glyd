@@ -1,0 +1,3 @@
+/root/w/save/gemma-4-E4B-it: 595 tensors decode to glyd.json's sha256, 1484 saved as they are match theirs
+answer: A lossless compressor guarantees that the original data can be perfectly reconstructed from the compressed data without any loss of information.
+{"save_bytes": 12977806155, "same_tensors_bf16_bytes": 15882203604, "source_bytes": 15992595884, "save_vs_same_bf16": 0.1829, "gpu_bytes": 12078450176}

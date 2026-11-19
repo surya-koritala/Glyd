@@ -1,0 +1,39 @@
+the model: 19329302904 bytes in 12 s
+04:43:50 (+86 s) environment: 86 s
+04:44:52 (+148 s) libraries: branch exit 0, main exit 0 (62 s)
+04:44:52 (+148 s) tests (at most 600 s)
+04:45:05 (+161 s) tests: exit 0 after 13 s
+04:45:05 (+161 s) kernels (at most 900 s)
+04:45:11 (+167 s) kernels: exit 1 after 6 s
+04:45:11 (+167 s) kernel checks: 95 pass, 1 fail
+04:45:11 (+167 s) bits-main (at most 300 s)
+04:45:13 (+169 s) bits-main: exit 0 after 2 s
+04:45:13 (+169 s) bits-branch (at most 300 s)
+04:45:15 (+171 s) bits-branch: exit 0 after 2 s
+04:45:15 (+171 s) kv_bits: 38 of 40 outputs the same bits; differ: ['status', 'pool']
+04:45:15 (+171 s) bench256 (at most 900 s)
+04:45:26 (+182 s) bench256: exit 0 after 11 s
+04:45:26 (+182 s) hybrid-stock (at most 1200 s)
+04:48:02 (+338 s) hybrid-stock: exit 0 after 156 s
+04:48:02 (+338 s) hybrid-kv (at most 1800 s)
+04:53:00 (+636 s) hybrid-kv: exit 0 after 298 s
+04:53:00 (+636 s) compare: exit 1
+04:53:00 (+636 s) hybrid-verify (at most 1200 s)
+04:54:00 (+696 s) hybrid-verify: exit 0 after 60 s
+04:54:00 (+696 s) serve stock (kv off)
+04:55:56 (+812 s) stock up in 115 s, GPU memory 20042 MiB
+04:56:13 (+829 s) stock at warm: exit 0
+04:56:52 (+868 s) stock at 1: exit 0
+04:57:13 (+889 s) stock at 8: exit 0
+04:57:41 (+917 s) stock at 32: exit 0
+04:58:21 (+957 s) stock at 64: exit 0
+04:59:35 (+1031 s) stock at all: exit 0
+04:59:40 (+1036 s) serve kv (kv lossless)
+05:01:35 (+1151 s) kv up in 115 s, GPU memory 20038 MiB
+05:01:53 (+1169 s) kv at warm: exit 0
+05:02:31 (+1207 s) kv at 1: exit 0
+05:02:52 (+1228 s) kv at 8: exit 0
+05:03:20 (+1256 s) kv at 32: exit 0
+05:04:00 (+1296 s) kv at 64: exit 0
+05:05:07 (+1363 s) kv at all: exit 0
+05:05:12 (+1368 s) end

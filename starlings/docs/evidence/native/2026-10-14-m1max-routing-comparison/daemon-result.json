@@ -1,0 +1,208 @@
+{
+  "kind": "NativeCurrentRouteCPUComparison",
+  "success": false,
+  "service_status_history": [
+    {
+      "state": "waiting_for_registry",
+      "pin": null,
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "registry_failure": null,
+      "startup_error": null,
+      "startup_phase": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": null,
+      "backend_version_declared": "llama.cpp-0.6.0-d81235049384534c167caea52b85a694f6103d14",
+      "execution_profile_declared": "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1",
+      "startup_properties": null,
+      "reserved_bytes": null,
+      "cleanup_proven": false
+    },
+    {
+      "state": "verifying_catalog",
+      "pin": null,
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "registry_failure": null,
+      "startup_error": null,
+      "startup_phase": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": null,
+      "backend_version_declared": "llama.cpp-0.6.0-d81235049384534c167caea52b85a694f6103d14",
+      "execution_profile_declared": "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1",
+      "startup_properties": null,
+      "reserved_bytes": null,
+      "cleanup_proven": false
+    },
+    {
+      "state": "verifying_catalog",
+      "pin": null,
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "registry_failure": null,
+      "startup_error": null,
+      "startup_phase": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "backend_version_declared": "llama.cpp-0.6.0-d81235049384534c167caea52b85a694f6103d14",
+      "execution_profile_declared": "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1",
+      "startup_properties": null,
+      "reserved_bytes": null,
+      "cleanup_proven": false
+    },
+    {
+      "state": "loading",
+      "pin": "bbd93a85-dd96-4287-9379-6e7b76a9d96e",
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "registry_failure": null,
+      "startup_error": "BACKEND_PROBE: backend: Transport",
+      "startup_phase": "model_auth_refusal",
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "backend_version_declared": "llama.cpp-0.6.0-d81235049384534c167caea52b85a694f6103d14",
+      "execution_profile_declared": "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1",
+      "startup_properties": null,
+      "reserved_bytes": null,
+      "cleanup_proven": false
+    },
+    {
+      "state": "loading",
+      "pin": "bbd93a85-dd96-4287-9379-6e7b76a9d96e",
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "registry_failure": null,
+      "startup_error": "BACKEND_PROBE: backend: Unavailable",
+      "startup_phase": "model_auth_refusal",
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "backend_version_declared": "llama.cpp-0.6.0-d81235049384534c167caea52b85a694f6103d14",
+      "execution_profile_declared": "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1",
+      "startup_properties": null,
+      "reserved_bytes": null,
+      "cleanup_proven": false
+    },
+    {
+      "state": "ready",
+      "pin": "bbd93a85-dd96-4287-9379-6e7b76a9d96e",
+      "process_group_absent": false,
+      "inference_qualified": true,
+      "error": null,
+      "registry_failure": null,
+      "startup_error": null,
+      "startup_phase": "complete",
+      "endpoint": "127.0.0.1:54200",
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "backend_version_declared": "llama.cpp-0.6.0-d81235049384534c167caea52b85a694f6103d14",
+      "execution_profile_declared": "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1",
+      "startup_properties": null,
+      "reserved_bytes": "0",
+      "cleanup_proven": false
+    }
+  ],
+  "implementation": "78b737495ff52fc69e05b928a460f400fcd4af70",
+  "binary_sha256": "46f702186fb5d22c1d27ffa93bb215f9abb130f8799267e5f0a0788389a6521c",
+  "manifest": "8f993f2242910f9f535611e0e82e62e6054bcaccc96dc28297f09bc6731e0835",
+  "service_configuration": "cc6d5929c066828006fcdd893ff362a94d54c760d561f6d883884e01d903bba0",
+  "worker_record": "a46c07b079532ac13e86be2f81efefc93e8564c6a33ea1e4adb0a4fb149ff3fb",
+  "profile_evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+  "generations_requested": 10,
+  "count_call_upper_bound": 21,
+  "count_calls_instrumented": false,
+  "output_tokens_total_cap": 160,
+  "runs": [
+    {
+      "stream": false,
+      "stage": "direct",
+      "elapsed_ms": 6294,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": true,
+      "stage": "direct",
+      "elapsed_ms": 6238,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": false,
+      "stage": "direct",
+      "elapsed_ms": 6239,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": true,
+      "stage": "direct",
+      "elapsed_ms": 6403,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": false,
+      "stage": "direct",
+      "elapsed_ms": 6291,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": true,
+      "stage": "direct",
+      "elapsed_ms": 6251,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": false,
+      "stage": "direct",
+      "elapsed_ms": 6238,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": true,
+      "stage": "direct",
+      "elapsed_ms": 6288,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": false,
+      "stage": "direct",
+      "elapsed_ms": 6236,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": true,
+      "stage": "direct",
+      "elapsed_ms": 6249,
+      "trusted_request_drained": true
+    }
+  ],
+  "json_sse_semantic_parity": false,
+  "matched_direct_proxy": false,
+  "physical_hosts": 1,
+  "two_machine_qualification": false,
+  "temporary_token_rows": 0,
+  "old_ownership_preserved": true,
+  "direct_pin_retained": true,
+  "quarantine_retained": true,
+  "process_observation_available": true,
+  "owned_server_groups_observed": 2,
+  "owned_group_remaining": false,
+  "sampled_owned_peak_rss_bytes": 1685716992,
+  "sample_interval_ms": 100,
+  "elapsed_seconds": 93.235,
+  "external_spend_usd": 0,
+  "faults": [
+    "ACCEPTANCE_RuntimeError"
+  ],
+  "failure_phase": "worker_readiness",
+  "general_production_qualification_issued": false,
+  "service_cleanup_qualified": false,
+  "base_conversion_fidelity_qualified": false
+}

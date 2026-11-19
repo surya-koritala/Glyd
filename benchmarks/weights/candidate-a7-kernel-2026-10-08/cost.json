@@ -1,0 +1,19 @@
+{
+  "pod_id": "xxy9hgju7w2vs9",
+  "name": "glyd-bench-ca-a7any-20261008",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "gpu_hourly_usd": 0.74,
+  "guard_accounted_seconds": 464.0,
+  "guard_gpu_estimate_usd": 0.095378,
+  "scope": "Conservative guard GPU estimate from retained pod uptime plus guard allowance; not an invoice; excludes storage.",
+  "storage_gb": 50,
+  "maximum_minutes": 30,
+  "approved_total_cap_usd": 0.55,
+  "retry_count": 0,
+  "earlier_attempts_without_a_pod": [
+    "ca-a7-20261008",
+    "ca-a7r-20261008",
+    "ca-a7l40-20261008"
+  ],
+  "ledger_row": "xxy9hgju7w2vs9\tglyd-bench-ca-a7any-20261008\t0.74\t464.0"
+}

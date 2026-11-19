@@ -1,0 +1,21 @@
+Tue Oct  6 15:56:29 UTC 2026
+NVIDIA GeForce RTX 4090, 24564 MiB, 580.126.20
+x86_64
+PRETTY_NAME="Ubuntu 24.04.3 LTS"
+32
+               total        used        free      shared  buff/cache   available
+Mem:             124          16          96           0          12         108
+overlay         200G   16M  200G   1% /
+15:56:36 (+0 min) getglyd.com does not serve the v0.29.1 tag's install.sh (GLYD_VERSION="${GLYD_VERSION:-0.29.0}"): the run installs from https://raw.githubusercontent.com/surya-koritala/Glyd/v0.29.1/scripts/install.sh, no --served
+15:56:36 (+0 min) acceptance: --flow glyd --host  --install-url https://raw.githubusercontent.com/surya-koritala/Glyd/v0.29.1/scripts/install.sh --model Qwen/Qwen3.5-9B --webui uvx
+15:56:38 (+0 min) acceptance: exit 1, 2 ok, 2 FAIL, last: FAILED (1): install.sh exited 1 (logs/install.log); 
+15:56:43 (+0 min) gemma: install (the tag's install.sh, a fresh home)
+15:57:14 (+0 min) gemma: install exit 0: Ready: glyd run Qwen/Qwen3.5-9B|==> Next: glyd run Qwen/Qwen3.5-9B|
+glyd 0.29.1 | glyd-gpu 0.29.1 | vllm 0.30.0 | torch 2.13.0 | transformers 5.18.0
+15:57:14 (+0 min) gemma: glyd run google/gemma-4-12B-it --prompt (at most 1800 s)
+16:00:47 (+4 min) gemma: exit 0 after 213 s; answer: Paris
+ok   installed: glyd 0.29.1 | glyd-gpu 0.29.1 | vllm 0.30.0 | torch 2.13.0 | transformers 5.18.0
+ok   glyd run google/gemma-4-12B-it --prompt: exit 0, Paris, no traceback; Settings: 124,928-token context (the most that fits), compiled mode (CUDA graphs), 92% of GPU memory (23.2 GB), tool calls (gemma4), thinking shown apart (gemma4); PyTorch sampler (no CUDA toolkit); z
+ok   glyd run google/gemma-4-12B-it: one start
+16:00:52 (+4 min) job done
+16:00:52 (+4 min) ending

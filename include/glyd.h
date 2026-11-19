@@ -1,7 +1,7 @@
 /*
  * Glyd C API.
  *
- * License: BUSL-1.1 (see LICENSE).
+ * License: Apache-2.0 (see LICENSE).
  */
 
 #ifndef GLYD_H

@@ -240,10 +240,10 @@ Throughput against bf16, exact mode
 compiled, mixtures of experts and what is not supported yet:
 [the docs](https://getglyd.com/docs/vllm/).
 
-The GPU half is the `glyd-gpu` package (compiled wheels; `glyd.gpu` re-exports its API).
+The GPU half is the `glyd-gpu` package (its source is `glyd-gpu-py/`, `gpu/` and `glyd-engine/` in this repository; `glyd.gpu` re-exports its API).
 
 ## License
 
-From v0.29.0 all of Glyd is under the Business Source License 1.1 (`LICENSE`). Free forever for personal and non-commercial use (including education, research and nonprofits) on computers you own or rent for yourself, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release.
+All of Glyd is open source under the Apache License 2.0 (`LICENSE`), for any use, commercial included.
 
-Releases up to v0.28 keep the licenses they shipped with.
+Releases v0.29.0 to v0.32.1 shipped under the Business Source License 1.1; releases up to v0.28 keep the licenses they shipped with.

@@ -1,0 +1,1 @@
+{"prompt_tokens":7500,"new_tokens":128,"prefill_ms":6180.9,"decode_ms_mean":48.875,"decode_ms_p50":48.881,"decode_ms_p99":49.240,"decode_tokens_per_s":20.46,"load_s":2.46,"weights_gib":10.366,"cache_tokens":8192,"graph":true}

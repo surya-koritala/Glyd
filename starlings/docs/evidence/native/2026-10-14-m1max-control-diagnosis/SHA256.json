@@ -1,0 +1,14 @@
+{
+  "README.md": "1a3b61c39712849423532bf0333dc0b8be196eb2229ebe82eda6c9479a947466",
+  "approved-plan.md": "11a6c273f17279b65b907e09366f4611226811518efa6ce49fe076fefa4193bd",
+  "approved-run.log": "3ceb0d5028605902bceb9c075c1668e950165106794baa4a18851083306676fa",
+  "coordinator-route.template.json": "55aec017d7ef2f36d5d82d5055a99ae6ab82c20d8a4f0617e1ea76e65dd9b09e",
+  "daemon-result.json": "8f46aa8f3b6400676ef353f891cc73e11d8003ec3eb148999f5eb0fb99924d56",
+  "direct-pin.json": "5aa632095c41930d5f5601451331907cec81de46035ba685d931591f7acb7d62",
+  "identities.json": "52d8b939a3d116ba0a4ce6943ec88a70a242e827914c042dbeeb2e8a18a55aa6",
+  "preflight-result.json": "3f24149759b05d68c7f89cc8a722a48fe3db642713a27c0691bf134543ed4a20",
+  "preparation.json": "1c0f46269b5c80f2d5542b4edef0ed6a36474722bd9d3e4c59699ca52c9aa868",
+  "started-once": "fa04314af597f4e8b991926a329f1fe2c92d6e67b4de6af4dee6fbf4fd0297b7",
+  "user-approval.json": "0bd5603bd3affb1b28549a98a21a5ebd1559128dec44ed3318f240715c2a4c45",
+  "worker-route.proposed.json": "68916630ff8b50319300b13c0c769d668bae2956a2b98f8ff97c2d1ee6f7e0b6"
+}

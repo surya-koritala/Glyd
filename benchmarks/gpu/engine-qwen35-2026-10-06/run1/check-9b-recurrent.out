@@ -1,0 +1,3 @@
+loaded in 19.3 s: NVIDIA GeForce RTX 4090 (sm_89): weights 11.220 GiB (67.3% of the checkpoint's 16.678 GiB for the same tensors; 348 vision and MTP tensors not loaded; layout Tiered), states 0.048 GiB, KV cache 4096 positions 0.125 GiB, workspaces 0.681 GiB, 12.46 of 47.37 GiB in use
+16 prompts of up to 32 tokens, 64 new tokens each
+/root/results/tokens-9b-recurrent.json

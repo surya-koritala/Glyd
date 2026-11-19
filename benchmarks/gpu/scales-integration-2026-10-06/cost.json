@@ -1,0 +1,11 @@
+{
+  "pod_id": "k9slfciopzp2vb",
+  "guard_seconds": 4968,
+  "hourly_gpu_usd": 0.99,
+  "estimated_gpu_usd": 1.3661999999999999,
+  "excludes": [
+    "storage",
+    "other provider fees"
+  ],
+  "invoice": false
+}

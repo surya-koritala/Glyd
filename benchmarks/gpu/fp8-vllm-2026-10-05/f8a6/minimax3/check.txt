@@ -1,0 +1,16 @@
+  stock-eager: ok in 85 s; weights 5.72 GiB, KV 2300016 tokens
+  glyd-eager: ok in 39 s; weights 5.84 GiB, KV 2279536 tokens
+  stock-graph: ok in 42 s; weights 5.72 GiB, KV 2285008 tokens
+  glyd-graph: ok in 42 s; weights 5.84 GiB, KV 2264176 tokens
+GPU NVIDIA GeForce RTX 4090
+PASS: exact[eager]: tokens, token log probabilities and the top 20 prompt log probabilities of 4 prompts (34929 values) bit for bit stock vLLM's
+PASS: kernel[eager]: the FP8 kernel lines vLLM logs are the same in both (1: Using MarlinMxfp8LinearKernel for MXFP8 GEMM)
+PASS: packed[eager]: 12 Linears packed (954 MiB held for 954 MiB of weights as vLLM's kernel is fed them), scratch 144 MiB; methods {'UnquantizedEmbeddingMethod': 1, 'ModelOptLinearMethod': 12, 'ModelOptKVCacheMethod': 3, 'UnquantizedLinearMethod': 1}; sample weights [['language_model.model.layers.0.mlp.gate_up_proj.weight', [384, 98304], 'torch.int32'], ['language_model.model.layers.0.mlp.down_proj.weight', [768, 24576], 'torch.int32']]
+PASS: weights[eager]: vLLM logs 5.72 GiB stock, 5.84 GiB Glyd: +0.12 GiB, the scratch 0.14 GiB (the identity codec holds the weights whole)
+INFO: KV cache[eager]: stock 2300016 tokens (13.16 GiB), Glyd 2279536 tokens (13.04 GiB)
+PASS: exact[graph]: tokens, token log probabilities and the top 20 prompt log probabilities of 4 prompts (34929 values) bit for bit stock vLLM's
+PASS: kernel[graph]: the FP8 kernel lines vLLM logs are the same in both (1: Using MarlinMxfp8LinearKernel for MXFP8 GEMM)
+PASS: packed[graph]: 12 Linears packed (954 MiB held for 954 MiB of weights as vLLM's kernel is fed them), scratch 144 MiB; methods {'UnquantizedEmbeddingMethod': 1, 'ModelOptLinearMethod': 12, 'ModelOptKVCacheMethod': 3, 'UnquantizedLinearMethod': 1}; sample weights [['language_model.model.layers.0.mlp.gate_up_proj.weight', [384, 98304], 'torch.int32'], ['language_model.model.layers.0.mlp.down_proj.weight', [768, 24576], 'torch.int32']]
+PASS: weights[graph]: vLLM logs 5.72 GiB stock, 5.84 GiB Glyd: +0.12 GiB, the scratch 0.14 GiB (the identity codec holds the weights whole)
+INFO: KV cache[graph]: stock 2285008 tokens (13.07 GiB), Glyd 2264176 tokens (12.96 GiB)
+PASS: 0 failed; /root/results/minimax3/check_fp8_vllm.json

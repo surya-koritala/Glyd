@@ -1,0 +1,9 @@
+18:52 created 9mrwuz17uqx727 (NVIDIA H100 80GB HBM3)
+ssh on pod 9mrwuz17uqx727 ready after 17s: ssh reachable at 31.24.80.40:14222
+18:53 ssh ready at 31.24.80.40:14222 after 23 s
+NVIDIA H100 80GB HBM3, 580.159.03, 81559 MiB
+18:53 job started
+19:01 job done
+terminating 9mrwuz17uqx727
+pods left: []
+9 min

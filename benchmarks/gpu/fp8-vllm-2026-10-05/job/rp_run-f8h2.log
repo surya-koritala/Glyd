@@ -1,0 +1,10 @@
+19:04 created hkwws092w2isja (NVIDIA H100 80GB HBM3)
+ssh on pod hkwws092w2isja ready after 31s: ssh reachable at 103.207.149.91:13704
+19:04 ssh ready at 103.207.149.91:13704 after 41 s
+NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
+19:04 job started
+/private/tmp/claude-501/-Users-suryakoritala-alatirok/a9feedc0-e067-4d76-bca6-e4b6b9538345/scratchpad/rp_run.sh: line 65: unexpected EOF while looking for matching `"'
+/private/tmp/claude-501/-Users-suryakoritala-alatirok/a9feedc0-e067-4d76-bca6-e4b6b9538345/scratchpad/rp_run.sh: line 66: syntax error: unexpected end of file
+terminating hkwws092w2isja
+pods left: []
+27 min

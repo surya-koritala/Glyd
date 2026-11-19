@@ -1,0 +1,7 @@
+kvtab-acf7b9c03bd919a7.lock
+kvtab-acf7b9c03bd919a7.log
+kvtab-acf7b9c03bd919a7.npz
+glyd kvcal: 20 documents, sequences of 8,192 tokens, 8 layers (63 s to load)
+glyd kvcal: pass 1 of 3 (2 s)
+glyd kvcal: pass 2 of 3 (2 s)
+glyd kvcal: /root/results/glydcache/kv/kvtab-acf7b9c03bd919a7.npz: 8,192 positions; values that compress poorly, worst kind left out: K 0.0103%, V 0.0311%; 248,320 tokens checked (121 s): 0 need the lossless cache's second extra memory (0 made from text) (189 s)

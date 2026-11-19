@@ -1,0 +1,605 @@
+{
+ "load_s": 59.7,
+ "gpus": 4,
+ "batches": [
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 11.32
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.98
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.28
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.23
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.35
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.25
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.27
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.33
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.18
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.11
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.19
+  },
+  {
+   "domain": "wiki",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.19
+  },
+  {
+   "domain": "wiki",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.15
+  },
+  {
+   "domain": "wiki",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.12
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.12
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.39
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.21
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.12
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.18
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.21
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.39
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.11
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.19
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.21
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.23
+  },
+  {
+   "domain": "code",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.17
+  },
+  {
+   "domain": "code",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.15
+  },
+  {
+   "domain": "code",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.08
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.34
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.2
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.27
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.13
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.22
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.2
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.19
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.2
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.12
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.19
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.18
+  },
+  {
+   "domain": "chat",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.12
+  },
+  {
+   "domain": "chat",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.3
+  },
+  {
+   "domain": "chat",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.2
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.2
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.27
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.13
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.19
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.2
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.3
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.21
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.22
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.2
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.26
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.12
+  },
+  {
+   "domain": "math",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.2
+  },
+  {
+   "domain": "math",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.33
+  },
+  {
+   "domain": "math",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.17
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.26
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.09
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.23
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.17
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.13
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.27
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.22
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.19
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.12
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.27
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.41
+  },
+  {
+   "domain": "multi",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.29
+  },
+  {
+   "domain": "multi",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.26
+  },
+  {
+   "domain": "multi",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.16
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.2
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.13
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.1
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.11
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.17
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.24
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.19
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.18
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.22
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.19
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.21
+  },
+  {
+   "domain": "reason",
+   "split": "calib",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.32
+  },
+  {
+   "domain": "reason",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.12
+  },
+  {
+   "domain": "reason",
+   "split": "held",
+   "seqs": 2,
+   "tokens": 4096,
+   "s": 3.17
+  }
+ ],
+ "decode": {
+  "gens": 20,
+  "steps": 2540,
+  "mean_step_s": 0.097
+ },
+ "gpu_gib": [
+  56.9,
+  61.3,
+  61.2,
+  45.3
+ ]
+}

@@ -1,0 +1,1 @@
+a2907d7d73d08f40991963fbc9b827895909e7b0 fp8: check_fp8_vllm --max-num-seqs (a hybrid model's Mamba cache bounds the sequences where little memory is left)

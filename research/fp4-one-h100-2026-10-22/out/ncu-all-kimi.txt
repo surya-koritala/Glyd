@@ -1,0 +1,805 @@
+==PROF== Connected to process 5260 (/home/ubuntu/dc/glyd-engine)
+NVIDIA H100 80GB HBM3 (sm_90): Kimi-K3 on the dynamic engine, 2 layers, weights 19.332 GiB (layout mma), KV 0.000 GiB (2048 positions), 20.12 of 79.19 GiB in use
+==PROF== Profiling "conv_silu_w32" - 0 (1/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 1 (2/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_gemm_kernel" - 2 (3/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "small_linear" - 3 (4/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 4 (5/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "glm_kda_rec" - 5 (6/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "glm_kda_out_w32" - 6 (7/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 7 (8/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_add" - 8 (9/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_res_mix" - 9 (10/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_rms2" - 10 (11/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_gemm_kernel" - 11 (12/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "moe_act" - 12 (13/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_gemm_kernel" - 13 (14/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_add" - 14 (15/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_res_mix" - 15 (16/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_rms2" - 16 (17/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 17 (18/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "conv_silu_w32" - 18 (19/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 19 (20/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_gemm_kernel" - 20 (21/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "small_linear" - 21 (22/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 22 (23/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "glm_kda_rec" - 23 (24/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "glm_kda_out_w32" - 24 (25/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 25 (26/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_add" - 26 (27/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_res_mix" - 27 (28/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_rms2" - 28 (29/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "moe_logits" - 29 (30/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "moe_select32" - 30 (31/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 31 (32/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "moe_route_kernel" - 32 (33/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_moe_kernel" - 33 (34/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "moe_act" - 34 (35/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_moe_kernel" - 35 (36/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "moe_sum_kernel" - 36 (37/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_rms2" - 37 (38/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 38 (39/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 39 (40/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "moe_act" - 40 (41/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 41 (42/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "moe_add" - 42 (43/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_add" - 43 (44/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_res_mix" - 44 (45/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_rms2" - 45 (46/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 46 (47/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "argmax_bf16" - 47 (48/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_unpack_kernel" - 48 (49/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "copy_row" - 49 (50/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_res_mix" - 50 (51/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_push" - 51 (52/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_rms2" - 52 (53/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 53 (54/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "conv_silu_w32" - 54 (55/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 55 (56/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_gemm_kernel" - 56 (57/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "small_linear" - 57 (58/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 58 (59/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "glm_kda_rec" - 59 (60/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "glm_kda_out_w32" - 60 (61/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "step_kernel" - 61 (62/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_add" - 62 (63/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_res_mix" - 63 (64/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_rms2" - 64 (65/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_gemm_kernel" - 65 (66/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "moe_act" - 66 (67/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "mma_gemm_kernel" - 67 (68/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_add" - 68 (69/70): 0%....50%....100% - 1 pass
+==PROF== Profiling "kimi_res_mix" - 69 (70/70): 0%....50%....100% - 1 pass
+without a graph: 5.874 ms a step; the stages 5.513 ms:
+    0.982 ms  17.8%  mixture of experts
+    0.955 ms  17.3%  head
+    0.829 ms  15.0%  delta attention: qkv product
+    0.543 ms   9.8%  depth mix
+    0.427 ms   7.7%  norms
+    0.393 ms   7.1%  delta attention: gates
+    0.359 ms   6.5%  delta attention: output gate
+    0.322 ms   5.8%  MLP: gate and up product
+    0.258 ms   4.7%  delta attention: o product
+    0.191 ms   3.5%  MLP: down product
+    0.137 ms   2.5%  linear attention: gated norm
+    0.051 ms   0.9%  linear attention: delta rule
+    0.044 ms   0.8%  linear attention: convolution
+    0.023 ms   0.4%  MLP: activation
+kernels: 32 launches a step, 1.232 ms of kernel time a step; the most:
+    0.347 ms    5.0 a step  kimi_res_mix
+    0.287 ms    6.0 a step  kimi_rms2
+    0.106 ms    2.0 a step  small_linear
+    0.103 ms    2.0 a step  glm_kda_out_w32
+    0.069 ms    4.0 a step  kimi_add
+    0.069 ms    1.0 a step  moe_select32
+    0.063 ms    1.0 a step  moe_logits
+    0.053 ms    1.0 a step  copy_row
+    0.052 ms    1.0 a step  kimi_push
+    0.020 ms    1.0 a step  argmax_bf16
+    0.020 ms    2.0 a step  glm_kda_rec
+    0.018 ms    3.0 a step  moe_act
+    0.015 ms    1.0 a step  moe_add
+    0.010 ms    2.0 a step  conv_silu_w32
+with a graph: 3.749 ms a step (1 steps after 1 tokens)
+==PROF== Disconnected from process 5260
+[5260] glyd-engine@127.0.0.1
+  conv_silu_w32 (144, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         4.80
+    launch__block_size                          256
+    launch__grid_size                           144
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (28, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        15.30
+    launch__block_size                          128
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  void mma_gemm_kernel<Nib, 1, 0, 0>(T1, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *, int) (48, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        19.14
+    launch__block_size                          256
+    launch__grid_size                            48
+    ---------------------- ----------- ------------
+
+  small_linear (1, 12, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        13.82
+    launch__block_size                          256
+    launch__grid_size                            12
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       130.05
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  glm_kda_rec (96, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         9.06
+    launch__block_size                          128
+    launch__grid_size                            96
+    ---------------------- ----------- ------------
+
+  glm_kda_out_w32 (1, 96, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.62
+    launch__block_size                          128
+    launch__grid_size                            96
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        78.24
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  kimi_add (28, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.20
+    launch__block_size                          256
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  kimi_res_mix (1, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        33.12
+    launch__block_size                          256
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  kimi_rms2 (1, 1, 1)x(512, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        14.78
+    launch__block_size                          512
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  void mma_gemm_kernel<Nib, 1, 0, 0>(T1, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *, int) (264, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       274.50
+    launch__block_size                          256
+    launch__grid_size                           264
+    ---------------------- ----------- ------------
+
+  moe_act (1, 17, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         5.41
+    launch__block_size                          256
+    launch__grid_size                            17
+    ---------------------- ----------- ------------
+
+  void mma_gemm_kernel<Nib, 1, 0, 0>(T1, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *, int) (264, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       142.53
+    launch__block_size                          256
+    launch__grid_size                           264
+    ---------------------- ----------- ------------
+
+  kimi_add (28, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.01
+    launch__block_size                          256
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  kimi_res_mix (1, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        33.22
+    launch__block_size                          256
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  kimi_rms2 (1, 1, 1)x(512, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        14.27
+    launch__block_size                          512
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       380.74
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  conv_silu_w32 (144, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         4.35
+    launch__block_size                          256
+    launch__grid_size                           144
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (28, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        14.88
+    launch__block_size                          128
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  void mma_gemm_kernel<Nib, 1, 0, 0>(T1, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *, int) (48, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        18.78
+    launch__block_size                          256
+    launch__grid_size                            48
+    ---------------------- ----------- ------------
+
+  small_linear (1, 12, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        13.89
+    launch__block_size                          256
+    launch__grid_size                            12
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       130.78
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  glm_kda_rec (96, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         9.12
+    launch__block_size                          128
+    launch__grid_size                            96
+    ---------------------- ----------- ------------
+
+  glm_kda_out_w32 (1, 96, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.71
+    launch__block_size                          128
+    launch__grid_size                            96
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        81.47
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  kimi_add (28, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.14
+    launch__block_size                          256
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  kimi_res_mix (1, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        33.89
+    launch__block_size                          256
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  kimi_rms2 (1, 1, 1)x(512, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        14.85
+    launch__block_size                          512
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  moe_logits (448, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        15.46
+    launch__block_size                          256
+    launch__grid_size                           448
+    ---------------------- ----------- ------------
+
+  moe_select32 (1, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        24.74
+    launch__block_size                          128
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        31.10
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  moe_route_kernel(const long *, long, int, int *) (1, 1, 1)x(32, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         8.80
+    launch__block_size                           32
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  void mma_moe_kernel<Fp4R, 1, 0, 2>(T1, long, long, const int *, int, long, int, const __nv_bfloat16 *, const __nv_bfloat16 *, const void *, int, __nv_bfloat16 *, float *, long, float *, int *, int) (96, 16, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       155.23
+    launch__block_size                          256
+    launch__grid_size                          1536
+    ---------------------- ----------- ------------
+
+  moe_act (16, 2, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         5.18
+    launch__block_size                          256
+    launch__grid_size                            32
+    ---------------------- ----------- ------------
+
+  void mma_moe_kernel<Fp4R, 1, 0, 2>(T1, long, long, const int *, int, long, int, const __nv_bfloat16 *, const __nv_bfloat16 *, const void *, int, __nv_bfloat16 *, float *, long, float *, int *, int) (56, 16, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        84.51
+    launch__block_size                          256
+    launch__grid_size                           896
+    ---------------------- ----------- ------------
+
+  moe_sum_kernel(const float *, const long *, int, long, long, long, __nv_bfloat16 *) (4, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        10.53
+    launch__block_size                          256
+    launch__grid_size                             4
+    ---------------------- ----------- ------------
+
+  kimi_rms2 (1, 1, 1)x(512, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         8.58
+    launch__block_size                          512
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        31.84
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        77.15
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  moe_act (1, 3, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         4.83
+    launch__block_size                          256
+    launch__grid_size                             3
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        44.42
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  moe_add (1, 4, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.26
+    launch__block_size                          256
+    launch__grid_size                             4
+    ---------------------- ----------- ------------
+
+  kimi_add (28, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.04
+    launch__block_size                          256
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  kimi_res_mix (1, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        33.86
+    launch__block_size                          256
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  kimi_rms2 (1, 1, 1)x(512, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        14.72
+    launch__block_size                          512
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       874.40
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  argmax_bf16 (1, 1, 1)x(1024, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        19.04
+    launch__block_size                         1024
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  void mma_unpack_kernel<Tiered, 0, 0>(T1, long, long, long, unsigned short *, const int *) (56, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         6.08
+    launch__block_size                          256
+    launch__grid_size                            56
+    ---------------------- ----------- ------------
+
+  copy_row (28, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         2.88
+    launch__block_size                          256
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  kimi_res_mix (1, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        19.68
+    launch__block_size                          256
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  kimi_push (28, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.26
+    launch__block_size                          256
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  kimi_rms2 (1, 1, 1)x(512, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        14.08
+    launch__block_size                          512
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       356.13
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  conv_silu_w32 (144, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.87
+    launch__block_size                          256
+    launch__grid_size                           144
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (28, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        15.26
+    launch__block_size                          128
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  void mma_gemm_kernel<Nib, 1, 0, 0>(T1, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *, int) (48, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        19.33
+    launch__block_size                          256
+    launch__grid_size                            48
+    ---------------------- ----------- ------------
+
+  small_linear (1, 12, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        13.57
+    launch__block_size                          256
+    launch__grid_size                            12
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       130.78
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  glm_kda_rec (96, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         9.09
+    launch__block_size                          128
+    launch__grid_size                            96
+    ---------------------- ----------- ------------
+
+  glm_kda_out_w32 (1, 96, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.90
+    launch__block_size                          128
+    launch__grid_size                            96
+    ---------------------- ----------- ------------
+
+  void step_kernel<1>(Tiered, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *) (528, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        78.91
+    launch__block_size                          128
+    launch__grid_size                           528
+    ---------------------- ----------- ------------
+
+  kimi_add (28, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         2.82
+    launch__block_size                          256
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  kimi_res_mix (1, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        33.22
+    launch__block_size                          256
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  kimi_rms2 (1, 1, 1)x(512, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        14.40
+    launch__block_size                          512
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+
+  void mma_gemm_kernel<Nib, 1, 0, 0>(T1, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *, int) (264, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       271.68
+    launch__block_size                          256
+    launch__grid_size                           264
+    ---------------------- ----------- ------------
+
+  moe_act (1, 17, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         5.25
+    launch__block_size                          256
+    launch__grid_size                            17
+    ---------------------- ----------- ------------
+
+  void mma_gemm_kernel<Nib, 1, 0, 0>(T1, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *, int) (264, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us       140.70
+    launch__block_size                          256
+    launch__grid_size                           264
+    ---------------------- ----------- ------------
+
+  kimi_add (28, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us         3.04
+    launch__block_size                          256
+    launch__grid_size                            28
+    ---------------------- ----------- ------------
+
+  kimi_res_mix (1, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: Command line profiler metrics
+    ---------------------- ----------- ------------
+    Metric Name            Metric Unit Metric Value
+    ---------------------- ----------- ------------
+    gpu__time_duration.sum          us        33.18
+    launch__block_size                          256
+    launch__grid_size                             1
+    ---------------------- ----------- ------------
+

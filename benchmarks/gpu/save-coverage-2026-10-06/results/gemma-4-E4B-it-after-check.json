@@ -1,0 +1,42 @@
+{
+ "save": "/root/w/save-after",
+ "verified": 597,
+ "hashed": 1482,
+ "unhashed": 0,
+ "load_s": 23.6,
+ "gpu_bytes": 12078450176,
+ "gpu_peak_bytes": 27244803072,
+ "prompt": "In one sentence: what does a lossless compressor guarantee?",
+ "answer": "A lossless compressor guarantees that the original data can be perfectly reconstructed from the compressed data without any loss of information.",
+ "gen_s": 0.9,
+ "glyd_gpu": "/root/w/after/glyd_gpu",
+ "save_bytes": 10679328807,
+ "same_tensors_bf16_bytes": 15882203604,
+ "packs": 504,
+ "packed_tensors": 594,
+ "as_is_tensors": 1482,
+ "as_is_bytes": 33108436,
+ "source_bytes": 15992595884,
+ "source_tensors": 2130,
+ "source_groups": {
+  "model.audio_tower": 751,
+  "model.embed_audio": 1,
+  "model.embed_vision": 1,
+  "model.language_model": 719,
+  "model.vision_tower": 658
+ },
+ "save_groups": {
+  "model.audio_tower": 751,
+  "model.embed_audio": 1,
+  "model.embed_vision": 1,
+  "model.language_model": 665,
+  "model.vision_tower": 658
+ },
+ "save_vs_same_bf16": 0.3276,
+ "format": "glyd-v5",
+ "glyd": "0.29.0",
+ "source": {
+  "repo": "/root/w/hf/hub/models--google--gemma-4-E4B-it/snapshots/ee0ef6023621cff504d758262d4e04895a5af4a2",
+  "revision": null
+ }
+}

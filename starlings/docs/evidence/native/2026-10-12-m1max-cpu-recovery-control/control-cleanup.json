@@ -1,0 +1,9 @@
+{
+  "kind": "NativeRecoveryControlOnlyTokenCleanup",
+  "model_started": false,
+  "revoke_exit": 0,
+  "revoke_code": "TOKEN_REVOKED",
+  "remaining_token_rows": 0,
+  "coordinator_exit": 0,
+  "spend_usd": 0
+}

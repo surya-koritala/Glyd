@@ -1,0 +1,31 @@
+Sat Oct 10 08:33:45 EDT 2026
+GPU 0: NVIDIA GeForce RTX 5090 (UUID: GPU-2732e646-7bab-a45b-959b-c4e5895d3b64)
+GPU 1: NVIDIA GeForce RTX 5090 (UUID: GPU-d6acbc93-42f5-be2c-307e-5ffffb46edc6)
+Sat Oct 10 12:33:45 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.16             Driver Version: 580.126.16     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 5090        On  |   00000000:81:00.0 Off |                  N/A |
+|  0%   22C    P8             10W /  575W |       2MiB /  32607MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+Cuda compilation tools, release 12.8, V12.8.93
+Build cuda_12.8.r12.8/compiler.35583870_0
+arch sm_120; a pod of 2 GPUs, the job uses GPU 0; 55 CPUs of 55; 175 GiB of memory (host or control group)
+               total        used        free      shared  buff/cache   available
+Mem:             755         114         306           0         342         641
+Swap:              0           0           0
+overlay         450G  455M  450G   1% /
+1793b709

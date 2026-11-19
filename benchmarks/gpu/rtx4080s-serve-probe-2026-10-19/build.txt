@@ -1,0 +1,9 @@
+engine: glyd-engine 0.32.1, the development build (default features), commit 86530a29ad1096f8f116aab2578b1a911c64217d (GLYD_SOURCE_COMMIT), GLYD_ENGINE_ARCHS=89, cargo build --release -p glyd-engine
+df423a5d5c77edd7aaa96c3a6feca6340594a2fa449c89b02da7105240f52f9a  ~/glyd-scratch/gly238/target/release/glyd-engine
+95fe09bc5713e13dc570cb1cf342ed9bc97999f718972cbed6edbd26d1e67254  ~/glyd-scratch/reg166/lib2/libglyd_gpu_cuda13.so
+rustc 1.98.1 (48a229cea 2026-09-01)
+Cuda compilation tools, release 13.2, V13.2.86
+Build cuda_13.2.r13.2/compiler.37953736_0
+Linux 7.0.0-38-generic
+model name	: AMD Ryzen 9 7950X3D 16-Core Processor
+NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  595.91.07  Release Build  (dvs-builder@U22-I3-B08-02-2)  Wed Jul 29 03:01:16 UTC 2026

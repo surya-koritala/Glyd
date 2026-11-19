@@ -1,0 +1,3 @@
++ apt-get update -qq
++ DEBIAN_FRONTEND=noninteractive
++ apt-get install -y -qq nsight-compute-2025.3.1

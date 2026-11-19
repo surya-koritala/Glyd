@@ -1,0 +1,33 @@
+{
+  "size_gb": 0.616,
+  "gpus": [
+    {
+      "name": "NVIDIA GeForce RTX 4090",
+      "tok_s": 672.84,
+      "first_token_ms": 35.0,
+      "mem_gib_4k": 1.249,
+      "fits_32k": true
+    },
+    {
+      "name": "NVIDIA RTX A6000",
+      "tok_s": 494.77,
+      "first_token_ms": 53.1,
+      "mem_gib_4k": 1.154,
+      "fits_32k": true
+    },
+    {
+      "name": "NVIDIA L40S",
+      "tok_s": 568.19,
+      "first_token_ms": 31.6,
+      "mem_gib_4k": 1.33,
+      "fits_32k": true
+    }
+  ],
+  "kl_bf16": 0.0072548988954184305,
+  "kl_fp8_ref": null,
+  "date": "2026-10-09",
+  "versions": {
+    "glyd": "0.29.4",
+    "commit": "b2172dd5"
+  }
+}

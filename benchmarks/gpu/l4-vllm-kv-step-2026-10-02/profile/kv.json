@@ -16,7 +16,49 @@
     "gemm": 58.737,
     "kv write": 0.135,
     "attention": 3.721
-   }
+   },
+   "top": [
+    [
+     "std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16,",
+     58.737
+    ],
+    [
+     "void kvc::attn_kernel<false, true>(kvc::AttnParams)",
+     3.721
+    ],
+    [
+     "kvc::write_kernel(kvc::WriteParams)",
+     0.135
+    ],
+    [
+     "triton_red_fused_fused_add_rms_norm_2",
+     0.107
+    ],
+    [
+     "triton_red_fused_fused_add_rms_norm_0",
+     0.095
+    ],
+    [
+     "triton_red_fused_3",
+     0.073
+    ],
+    [
+     "triton_poi_fused_mul_silu_slice_1",
+     0.052
+    ],
+    [
+     "void at::native::index_elementwise_kernel<128, 4, at::native::gpu_index_kernel<at::native::index_ker",
+     0.012
+    ],
+    [
+     "_gumbel_sample_kernel",
+     0.011
+    ],
+    [
+     "Memcpy DtoH (Device -> Pinned)",
+     0.007
+    ]
+   ]
   },
   {
    "B": 3,
@@ -30,7 +72,49 @@
     "gemm": 61.865,
     "kv write": 0.179,
     "attention": 10.623
-   }
+   },
+   "top": [
+    [
+     "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x2_tn_align8>(cutlass_",
+     54.578
+    ],
+    [
+     "void kvc::attn_kernel<false, true>(kvc::AttnParams)",
+     10.623
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x1_tn_align8>(cutlass_",
+     7.287
+    ],
+    [
+     "kvc::write_kernel(kvc::WriteParams)",
+     0.178
+    ],
+    [
+     "triton_red_fused_fused_add_rms_norm_2",
+     0.118
+    ],
+    [
+     "triton_red_fused_fused_add_rms_norm_0",
+     0.101
+    ],
+    [
+     "triton_red_fused_3",
+     0.08
+    ],
+    [
+     "triton_poi_fused_mul_silu_slice_1",
+     0.071
+    ],
+    [
+     "_gumbel_sample_kernel",
+     0.013
+    ],
+    [
+     "void at::native::index_elementwise_kernel<128, 4, at::native::gpu_index_kernel<at::native::index_ker",
+     0.008
+    ]
+   ]
   },
   {
    "B": 32,
@@ -44,7 +128,49 @@
     "gemm": 68.309,
     "kv write": 0.252,
     "attention": 13.408
-   }
+   },
+   "top": [
+    [
+     "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_tn",
+     32.27
+    ],
+    [
+     "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x3_tn",
+     17.197
+    ],
+    [
+     "void kvc::attn_kernel<false, true>(kvc::AttnParams)",
+     13.408
+    ],
+    [
+     "ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_64x3_tn",
+     8.105
+    ],
+    [
+     "ampere_bf16_s16816gemm_bf16_64x128_ldg8_f2f_stages_32x6_tn",
+     5.411
+    ],
+    [
+     "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn",
+     5.326
+    ],
+    [
+     "kvc::write_kernel(kvc::WriteParams)",
+     0.251
+    ],
+    [
+     "triton_poi_fused_mul_silu_slice_1",
+     0.203
+    ],
+    [
+     "triton_red_fused_fused_add_rms_norm_2",
+     0.13
+    ],
+    [
+     "triton_red_fused_3",
+     0.125
+    ]
+   ]
   },
   {
    "B": 1,
@@ -58,7 +184,49 @@
     "gemm": 58.736,
     "kv write": 0.138,
     "attention": 0.664
-   }
+   },
+   "top": [
+    [
+     "std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16,",
+     58.736
+    ],
+    [
+     "void kvc::attn_kernel<false, true>(kvc::AttnParams)",
+     0.664
+    ],
+    [
+     "kvc::write_kernel(kvc::WriteParams)",
+     0.138
+    ],
+    [
+     "triton_red_fused_fused_add_rms_norm_2",
+     0.108
+    ],
+    [
+     "triton_red_fused_fused_add_rms_norm_0",
+     0.095
+    ],
+    [
+     "triton_red_fused_3",
+     0.073
+    ],
+    [
+     "triton_poi_fused_mul_silu_slice_1",
+     0.053
+    ],
+    [
+     "void at::native::index_elementwise_kernel<128, 4, at::native::gpu_index_kernel<at::native::index_ker",
+     0.012
+    ],
+    [
+     "_gumbel_sample_kernel",
+     0.01
+    ],
+    [
+     "Memcpy DtoH (Device -> Pinned)",
+     0.007
+    ]
+   ]
   }
  ]
 }

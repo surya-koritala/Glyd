@@ -1,0 +1,4 @@
+Fetching 15 files:   0%|          | 0/15 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 15 files:   7%|▋         | 1/15 [00:00<00:02,  5.07it/s]Fetching 15 files:  13%|█▎        | 2/15 [00:00<00:02,  6.11it/s]Fetching 15 files:  27%|██▋       | 4/15 [00:00<00:01,  8.47it/s]Fetching 15 files:  47%|████▋     | 7/15 [00:00<00:00, 13.99it/s]Fetching 15 files:  60%|██████    | 9/15 [00:00<00:00, 13.02it/s]Fetching 15 files:  73%|███████▎  | 11/15 [00:01<00:00,  4.32it/s]Fetching 15 files:  87%|████████▋ | 13/15 [00:17<00:05,  2.71s/it]Fetching 15 files: 100%|██████████| 15/15 [00:17<00:00,  1.18s/it]
+/root/w/hf/hub/models--cyankiwi--Qwen3.6-27B-AWQ-INT4/snapshots/e5cc0400fb2403c437c2c40a7c52fb5ae93fda18
+exit 0 after 19 s; 10M

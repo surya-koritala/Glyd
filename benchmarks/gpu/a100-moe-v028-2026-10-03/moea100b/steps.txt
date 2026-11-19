@@ -1,0 +1,16 @@
+21:46:03 (+0 s) machine
+21:46:30 (+27 s) env: 27 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA A100-SXM4-40GB)
+21:47:13 (+70 s) thermal preflight: ok: 43 s of load: the last 10 s 64 C at most, SM clock 1272 MHz, 369 W, thermal slowdown in 0 of them, power cap in 10
+21:48:38 (+155 s) build: sm_80 in 128 s (library: C API 14 | GPU code 80)
+21:54:27 (+504 s) serve bf16: exit 0 in 357 s
+21:54:43 (+520 s) check: exit 0 in 16 s, 101 checks ()
+21:54:45 (+522 s) check: the wgmma workspace's test passed (  (no H100, or GLYD_GPU_MOE_WG set: the library's sizes not asked))
+22:03:28 (+1045 s) serve glyd-picked+kv: exit 0 in 523 s
+22:08:34 (+1351 s) serve glyd-picked+kv+bf16-attn: exit 0 in 306 s
+22:13:57 (+1674 s) serve bf16-2: exit 0 in 323 s
+22:13:58 (+1675 s) serve: COMPARABLE: bf16 1410 MHz, 61 C; bf16-2 1410 MHz, 61 C; glyd-picked+kv 1410 MHz, 58 C; glyd-picked+kv+bf16-attn 1410 MHz, 58 C
+22:15:41 (+1778 s) sweep: exit 0 in 103 s
+22:15:41 (+1778 s) dense: not started, 22 s left
+download dl-Qwen3-16B-A3B-whole: exit 0: 32078677512 bytes in 104 s (at +146 s)
+download dl-Qwen3-30B-A3B-layer: exit 0: 4016999536 bytes in 15 s (at +42 s)
+22:15:41 (+1778 s) done

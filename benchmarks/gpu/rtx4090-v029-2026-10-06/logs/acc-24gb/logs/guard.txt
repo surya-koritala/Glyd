@@ -1,0 +1,11 @@
+ok   a program, no Origin (curl): 200
+ok   the page's own origin, localhost: 200
+ok   the page's own origin, 127.0.0.1: 200
+ok   a script of another site (Origin): 403
+ok   its preflight: 403
+ok   its POST: 403
+ok   a rebinding name (Host): 421
+ok   the page under a rebinding name: 421
+ok   the page itself: 200
+ok   no CORS grant to another site: 0
+ok   CORS names the page's own origin: http://localhost:8000

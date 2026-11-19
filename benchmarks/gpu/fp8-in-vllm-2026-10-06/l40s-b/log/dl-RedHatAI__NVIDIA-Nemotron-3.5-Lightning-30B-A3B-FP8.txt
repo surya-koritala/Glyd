@@ -1,0 +1,8 @@
+Fetching 11 files:   0%|          | 0/11 [00:00<?, ?it/s]Still waiting to acquire lock on /root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8/.cache/huggingface/.gitignore.lock (elapsed: 0.1 seconds)
+Still waiting to acquire lock on /root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8/.cache/huggingface/.gitignore.lock (elapsed: 0.1 seconds)
+Still waiting to acquire lock on /root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8/.cache/huggingface/.gitignore.lock (elapsed: 0.1 seconds)
+Fetching 11 files:   9%|▉         | 1/11 [00:00<00:01,  5.97it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 11 files:  36%|███▋      | 4/11 [00:00<00:00, 16.35it/s]Fetching 11 files:  64%|██████▎   | 7/11 [00:00<00:00, 20.41it/s]Fetching 11 files:  82%|████████▏ | 9/11 [00:20<00:00, 20.41it/s]Fetching 11 files:  91%|█████████ | 10/11 [01:07<00:09,  9.72s/it]Fetching 11 files: 100%|██████████| 11/11 [01:20<00:00, 10.22s/it]Fetching 11 files: 100%|██████████| 11/11 [01:20<00:00,  7.28s/it]
+[32m✓ Downloaded[0m
+  path: /root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8
+exit 0 in 81 s, 31G

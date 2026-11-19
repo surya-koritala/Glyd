@@ -1,0 +1,1 @@
+39400c4050c11eef3309151a13cc4cd05af71653 fp8: check_fp8_vllm reruns Glyd with stock's KV cache blocks where the batches' tokens differ (vLLM admits requests by the blocks free)

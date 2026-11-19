@@ -1,0 +1,38 @@
+NVIDIA A100-SXM4-80GB (sm_80): GLM-5.3-Flash on the dynamic engine, 4 layers, weights 5.283 GiB (layout mma12), KV 0.000 GiB (2048 positions), 5.80 of 79.25 GiB in use
+without a graph: 5.046 ms a step; the stages 5.040 ms:
+    1.875 ms  37.2%  mixture of experts
+    0.798 ms  15.8%  hyper-connections
+    0.626 ms  12.4%  head
+    0.307 ms   6.1%  linear attention: qkv product
+    0.266 ms   5.3%  linear attention: gates
+    0.188 ms   3.7%  mla indexer products and key groups
+    0.146 ms   2.9%  linear attention: o product
+    0.101 ms   2.0%  linear attention: delta rule
+    0.094 ms   1.9%  mla values
+    0.086 ms   1.7%  linear attention: convolution
+    0.084 ms   1.7%  linear attention: gated norm
+    0.083 ms   1.6%  mla query (q_a, q_b)
+    0.079 ms   1.6%  mla absorb
+    0.074 ms   1.5%  latent attention
+    0.071 ms   1.4%  mla attention
+    0.062 ms   1.2%  start
+    0.041 ms   0.8%  mla latent (kv_a)
+    0.027 ms   0.5%  mla indexer scores
+    0.027 ms   0.5%  mla select
+    0.004 ms   0.1%  mla start
+kernels: 80 launches a step, 1.039 ms of kernel time a step; the most:
+    0.165 ms    8.0 a step  glm_hc_fin
+    0.113 ms    8.0 a step  glm_hc_proj
+    0.075 ms    1.0 a step  glm_expand_v
+    0.067 ms    8.0 a step  moe_act
+    0.065 ms    8.0 a step  glm_hc_post
+    0.059 ms    1.0 a step  glm_absorb
+    0.055 ms    4.0 a step  small_linear
+    0.047 ms    4.0 a step  moe_select8
+    0.044 ms    4.0 a step  moe_logits
+    0.043 ms    3.0 a step  glm_kda_rec
+    0.038 ms    4.0 a step  moe_wsum
+    0.031 ms    1.0 a step  argmax_bf16
+    0.030 ms    4.0 a step  moe_add
+    0.030 ms    4.0 a step  moe_inv
+with a graph: 3.016 ms a step (32 steps after 256 tokens)

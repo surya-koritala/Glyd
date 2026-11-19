@@ -1,0 +1,82 @@
+# f8_linear_kernel, layout H, one token, DeepSeek-V4-Flash dense 8192 x 4096 (random weights, real exponent spread), RTX 4080 SUPER, Nsight Compute 2025.4.1
+# warp instructions 95546225, 5831.7 a warp-step (a 16 x 128 row block); per line: instructions a step, share, file:line, source
+  325.0   5.6% glyd_gpu.cu:7256 __device__ __forceinline__ uint32_t f8_bf_hi(uint32_t o) { return (f8_prmt(o, 0, 0xB3A2) << 4) & 0x87F087F0u; }
+  279.5   4.8% glyd_gpu.cu:7255 __device__ __forceinline__ uint32_t f8_bf_lo(uint32_t o) { return (f8_prmt(o, 0, 0x9180) << 4) & 0x87F087F0u; }
+  258.7   4.4% glyd_gpu.cu:7925 const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, g = lane >> 2, t = lane & 3, mb = warp & 3, half = warp >> 2;
+  195.0   3.3% glyd_gpu.cu:7774 put(E[gi >> 1][2 * (gi & 1) + 1], f8_prmt(LB0, LB1, (f[gi] >> 16) * 0x1110u + p1));
+  169.0   2.9% glyd_gpu.cu:7988 if constexpr (H) f8h_decode(P, (2 * rg + half) * P.KT + kp, mb, lane, h[0], h[1], cw + (j % S) * CS, vw + (j % S) * VB, o);
+  167.6   2.9% glyd_gpu.cu:8074 if (++kp == P.KT) kp = 0, rg++;
+  156.0   2.7% glyd_gpu.cu:7011 uint32_t y = (v & 0xFFFu) | ((v << 4) & 0x0FFF0000u);
+  156.0   2.7% glyd_gpu.cu:7012 y = (y & 0x003F003Fu) | ((y << 2) & 0x3F003F00u);
+  156.0   2.7% glyd_gpu.cu:7013 return (y & 0x07070707u) | ((y << 1) & 0x70707070u);
+  156.0   2.7% glyd_gpu.cu:7747 f[gi] = y[gi] & (y[gi] >> 1) & (y[gi] >> 2) & 0x11111111u;
+  156.0   2.7% glyd_gpu.cu:7754 for (int q = 0; q < 4; q++) E[ks][q] = f8_prmt(T0, T1, y[2 * ks + (q >> 1)] >> (16 * (q & 1)));
+  155.3   2.7% glyd_gpu.cu:7820 for (uint32_t i = lane; i < n; i += 32) f8_cp4(vw + i, src + i);
+  149.5   2.6% glyd_gpu.cu:7772 const uint32_t p1 = pre + __popc(f[gi] & 0xFFFFu) * 0x1111u;
+  123.5   2.1% glyd_gpu.cu:7748 c += __popc(f[gi]);
+  117.0   2.0% glyd_gpu.cu:7766 e = (e & ~M) | (lit & M);
+  110.5   1.9% glyd_gpu.cu:7773 put(E[gi >> 1][2 * (gi & 1)], f8_prmt(LB0, LB1, f[gi] * 0x1110u + pre));
+  104.0   1.8% glyd_gpu.cu:8027 const uint4 v = *(const uint4*)(xsl + min(8 * nt + g, P.M - 1) * XROW + 64 * (ks ^ g1));
+   84.5   1.4% glyd_gpu.cu:7976 if constexpr (H) f8h_core_in(P, (2 * rg + half) * P.KT + kp, mb, lane, cw + (j % S) * CS);
+   78.7   1.3% glyd_gpu.cu:7805 if (c < HGB / 16) f8_cp16(cw + 4 * c, cs + c);
+   78.0   1.3% glyd_gpu.cu:7833 f8h_granule(cw, n <= (uint32_t)VB ? vw : P.var + hA.x + w0, s & 7, hA.y, lane, o);
+   78.0   1.3% glyd_gpu.cu:8157 if (kpA == P.KT - 1 || j == n - 1) {  // the end of the CTA's part of row group rgA: its sums out
+   76.4   1.3% glyd_gpu.cu:7973 auto mine = [&](int64_t rg) { return rg * LW + warp < RB; };  // (the warp's row block of row group rg in the matrix)
+   71.5   1.2% glyd_gpu.cu:8211 step(rgX, kpX);
+   65.0   1.1% glyd_gpu.cu:7726 const uint32_t a = hB.x & 0xFFFF, b = hB.x >> 16, c = hB.y & 0xFFFF, n = hB.y >> 16;
+   65.0   1.1% glyd_gpu.cu:7794 o[ks][3] = (__funnelshift_l(s1, s1, 4) & 0x87878787u) | E[ks][3];
+   62.4   1.1% glyd_gpu.cu:7926 const int64_t W = (int64_t)P.RG * P.KT, cta = blockIdx.x;
+   58.5   1.0% glyd_gpu.cu:6998 return t << 3;
+   58.5   1.0% glyd_gpu.cu:7341 if (lane >= d) x += y;
+   52.0   0.9% glyd_gpu.cu:6997 t = (t | (t << 4)) & 0x0F0F0F0Fu;
+   52.0   0.9% glyd_gpu.cu:7739 for (int w = 0; w < 8; w++) sm[w] = cw[w * 32 + lane];
+   52.0   0.9% glyd_gpu.cu:7792 o[ks][1] = (__funnelshift_l(s0, s0, 4) & 0x87878787u) | E[ks][1];
+   52.0   0.9% glyd_gpu.cu:8032 if (nt < nts) f8_mma(DIRECT ? acc[nt] : tmp[nt], a0_, a1_, a2_, a3_, xb[nt].x, xb[nt].z);
+   52.0   0.9% glyd_gpu.cu:8060 const float s = ((const float*)P.scale)[rg * P.lds + kp];
+   52.0   0.9% glyd_gpu.cu:8071 prod_end(j, rg, kp);
+   52.0   0.9% glyd_gpu.cu:8155 product(j, rgA, kpA, oc);
+   50.6   0.9% glyd_gpu.cu:7975 if (!mine(rg)) return;
+   49.9   0.9% glyd_gpu.cu:7982 if constexpr (H) f8h_var_in(P, mb, lane, h[0], h[1], vw + (j % S) * VB);
+   45.5   0.8% glyd_gpu.cu:7761 const uint32_t w0 = lp[k >> 3], w1 = lp[(k >> 3) + 1], w2 = lp[(k >> 3) + 2], sh = 4 * (k & 7);
+   45.5   0.8% glyd_gpu.cu:7775 pre += __popc(f[gi]) * 0x1111u;
+   45.5   0.8% glyd_gpu.cu:8035 if (nt < nts) f8_mma(DIRECT ? acc[nt] : tmp[nt], b0_, b1_, b2_, b3_, xb[nt].y, xb[nt].w);
+   41.1   0.7% glyd_gpu.cu:7727 s = mb == 0 ? 0u : mb == 1 ? a : mb == 2 ? b : c;
+   39.0   0.7% sm_30_intrinsics.hpp:122 return __nvvm_vote_any_sync(mask, pred);
+   39.0   0.7% sm_30_intrinsics.hpp:385 ret = __nvvm_shfl_up_sync(mask, var, delta, c);
+   39.0   0.7% glyd_gpu.cu:7741 for (int w = 0; w < 6; w++) cd[w] = cw[(8 + w) * 32 + lane];
+   39.0   0.7% glyd_gpu.cu:7812 return ((e + 7) >> 3) - w0 + 2;
+   39.0   0.7% glyd_gpu.cu:7987 const uint4* h = hs + (j % HS) * 4 + 2 * half;
+   39.0   0.7% glyd_gpu.cu:8018 const uint32_t a0_ = f8_bf_lo(ok[0]), a1_ = f8_bf_lo(ok[1]), a2_ = f8_bf_lo(ok[2]), a3_ = f8_bf_lo(ok[3]);
+   39.0   0.7% glyd_gpu.cu:8126 if (j + S - 1 + D < n) {
+   37.0   0.6% sm_20_intrinsics.hpp:151 return __nv_cvta_generic_to_shared_impl(p);
+   32.5   0.6% glyd_gpu.cu:7801 const uint4* cs = (const uint4*)(P.core + p * HCORE + mb * HGB);
+   32.5   0.6% glyd_gpu.cu:8064 for (int i = 0; i < 4; i++) acc[nt][i] += tmp[nt][i] * s;
+   29.0   0.5% glyd_gpu.cu:7981 const uint4* h = hs + (j % HS) * 4 + 2 * half;
+   27.9   0.5% glyd_gpu.cu:8131 if (j + 2 * S - 2 + D < n) heads_in(j + 2 * S - 2 + D, rgH, kpH);
+   26.7   0.5% glyd_gpu.cu:7815 if (hA.w >> 31) return;
+   26.0   0.4% glyd_gpu.cu:6996 uint32_t t = f8_prmt(v, 0, 0x4140);
+   26.0   0.4% glyd_gpu.cu:7187 __host__ __device__ constexpr int f8_xslot(int M, bool a8) { return a8 ? (M * (PC + 4) + 15) & ~15 : M * XROW; }
+   26.0   0.4% glyd_gpu.cu:7736 const uint32_t T0 = f8_nib4(tab), T1 = (f8_nib4(tab >> 16) & 0x00FFFFFFu) | 0x80000000u;  // ranks 0-3; 4-6 and the mark
+   26.0   0.4% glyd_gpu.cu:7769 if (!__any_sync(0xffffffffu, c > 8)) {
+   26.0   0.4% glyd_gpu.cu:7791 o[ks][0] = (s0 & 0x87878787u) | E[ks][0];
+   26.0   0.4% glyd_gpu.cu:7793 o[ks][2] = (s1 & 0x87878787u) | E[ks][2];
+   26.0   0.4% glyd_gpu.cu:7811 w0 = s >> 3;
+   26.0   0.4% glyd_gpu.cu:7824 if (hA.w >> 31) {  // plain: the lane's 64 stream bytes (row blocks 0-2 in core, 3 in var)
+   26.0   0.4% glyd_gpu.cu:8019 const uint32_t b0_ = f8_bf_hi(ok[0]), b1_ = f8_bf_hi(ok[1]), b2_ = f8_bf_hi(ok[2]), b3_ = f8_bf_hi(ok[3]);
+   26.0   0.4% glyd_gpu.cu:8026 if (nt < nts) {
+   26.0   0.4% glyd_gpu.cu:8028 xb[nt] = make_uint4(f8_x64(v.x), f8_x64(v.y), f8_x64(v.z), f8_x64(v.w));
+   25.3   0.4% glyd_gpu.cu:7930 uint32_t* cw = f8_smem + HS * 16 + warp * (S * CS + S * VB);  // the warp's S slots of core, then its S of variable parts (H: of l
+   22.7   0.4% glyd_gpu.cu:8162 const int cf = (int)(((i0 + 1) * P.ctas - 1) / W), cl = (int)(((i0 + P.KT) * P.ctas - 1) / W);  // the CTAs that hold its patches
+   19.5   0.3% glyd_gpu.cu:7755 if (__any_sync(0xffffffffu, c != 0)) {
+   19.5   0.3% glyd_gpu.cu:7756 const uint32_t k = kb + f8_wexcl(c, lane);  // the lane's first literal, from lp's first
+   19.5   0.3% glyd_gpu.cu:7763 const uint32_t LB0 = f8_nib4(L0), LB1 = f8_nib4(L0 >> 16);
+   19.5   0.3% glyd_gpu.cu:7810 f8h_lits(hB, mb, s, e);
+   19.5   0.3% glyd_gpu.cu:7819 const uint32_t* src = P.var + hA.x + w0;
+   19.5   0.3% glyd_gpu.cu:7995 const int g1 = g & 1;
+   19.5   0.3% glyd_gpu.cu:8210 step(rgH, kpH);
+   19.0   0.3% glyd_gpu.cu:7927 const int64_t a0 = cta * W / P.ctas;           // the CTA's part of the work: patches a0 to a0 + n - 1 (patch a: row group a / KT,
+   19.0   0.3% glyd_gpu.cu:8076 const int64_t rg0 = a0 / P.KT;
+   18.6   0.3% glyd_gpu.cu:7956 for (int idx = tid; idx < P.M * 16; idx += LNT) {
+   16.9   0.3% glyd_gpu.cu:7928 const int n = (int)((cta + 1) * W / P.ctas - a0);
+   13.0   0.2% sm_30_intrinsics.hpp:390 return (unsigned int) __shfl_up_sync(mask, (int)var, delta, width);
+   13.0   0.2% glyd_gpu.cu:7340 const uint32_t y = __shfl_up_sync(0xffffffffu, x, d);

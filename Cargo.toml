@@ -7,11 +7,13 @@ repository = "https://github.com/surya-koritala/Glyd"
 readme = "README.md"
 keywords = ["compression", "storage", "s3", "zstd", "deduplication"]
 categories = ["compression"]
-license = "BUSL-1.1"
-exclude = ["corpus/", "benchmarks/", "experiments/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/"]
+license = "Apache-2.0"
+exclude = ["corpus/", "benchmarks/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/", "glyd-engine/", "glyd-gpu-py/", "condor/", "starlings/", "research/", "tools/", "cards/", "huggingface/", "ckpt/"]
 
 [workspace]
-members = [".", "glyd-store"]
+members = [".", "glyd-store", "glyd-gpu", "glyd-engine"]
+# starlings/ is its own workspace (edition 2024, its own pinned toolchain); condor/ has no Rust
+exclude = ["starlings", "condor"]
 
 [features]
 default = ["deflate", "jpeg"]

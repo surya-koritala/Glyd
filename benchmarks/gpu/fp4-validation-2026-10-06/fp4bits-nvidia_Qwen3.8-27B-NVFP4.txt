@@ -1,0 +1,5 @@
+fp4_bits nvidia/Qwen3.8-27B-NVFP4: 20.42 GiB of safetensors; kind | tensors | code GiB | bits a code packed | order-0 | plain patches | option: GiB saved (smaller packs only) | of the checkpoint | kernel bit for bit
+  mlp | 192 | 7.969 | 4.0137 | 3.9413 | 331 of 1044480 | 0.0000 | 0.00% | all
+  lm_head | 1 | 0.592 | 4.0143 | 3.9419 | 0 of 77600 | 0.0000 | 0.00% | all
+  all | 193 | 8.561 | 4.0138 | 3.9413 | 331 of 1122080 | 0.0000 | 0.00% | all
+fp4_bits: all bit for bit (15.1 s)

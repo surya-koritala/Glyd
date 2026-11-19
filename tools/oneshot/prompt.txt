@@ -1,0 +1,10 @@
+Build a polished arcade space shooter called "Star Drift" as ONE self-contained HTML file (inline CSS and JavaScript only: no libraries, images, fonts or network requests).
+
+- Full-window canvas with a three-layer parallax starfield and a dark nebula glow.
+- The player's ship moves with the mouse or the arrow keys / WASD and fires with Space or the mouse button. It has 3 lives and a short shield after it is hit.
+- Enemies come in waves with formations: drifters that weave, divers that swoop at the player, and turrets that fire aimed shots. Every 5th wave is a boss with a health bar and two attack patterns.
+- Power-ups drop from destroyed enemies: spread shot, rapid fire, shield, and a smart bomb. Each has its own color and icon.
+- Score, a combo multiplier for quick kills, and a best score kept in localStorage.
+- Juice: particle explosions, screen shake, muzzle flashes, glowing neon colors, and simple sound effects made with the Web Audio API.
+- A title screen, a pause key (P), and a game-over screen with "press Enter to play again".
+- If the page URL ends with #autoplay, a simple AI flies the ship (dodges bullets, follows enemies, fires constantly) so the game plays itself.

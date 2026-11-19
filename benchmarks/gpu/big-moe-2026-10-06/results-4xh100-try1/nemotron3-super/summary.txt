@@ -1,0 +1,2 @@
+[+1 s] 4 x NVIDIA H100 80GB HBM3; model nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16, TP 4, modes bf16 glyd, util 0.9, max-model-len 32768; 400G free
+[+1 s] FAIL: vLLM and glyd[vllm] did not install (log/env.txt)

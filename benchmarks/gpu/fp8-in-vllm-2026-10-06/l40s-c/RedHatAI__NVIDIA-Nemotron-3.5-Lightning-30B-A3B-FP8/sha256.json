@@ -1,0 +1,17 @@
+{
+ "glyd-graphq-poison": {
+  "tokens": "2d395d7db4ae6accef82eb5a8792d74da44b08b7e82756b886178d6fecfe8231",
+  "logprobs": "4d4dd036f06be04086d9a5a0851bdb59bd1c72482ef48a9fd7317f91863c36b2",
+  "prompt_logprobs": "8ac9f1fe9265dddb8212151f5428b31994122647dcde505432ed9c63ffea4666"
+ },
+ "glyd-graphq": {
+  "tokens": "2d395d7db4ae6accef82eb5a8792d74da44b08b7e82756b886178d6fecfe8231",
+  "logprobs": "4d4dd036f06be04086d9a5a0851bdb59bd1c72482ef48a9fd7317f91863c36b2",
+  "prompt_logprobs": "8ac9f1fe9265dddb8212151f5428b31994122647dcde505432ed9c63ffea4666"
+ },
+ "stock-graphq": {
+  "tokens": "2d395d7db4ae6accef82eb5a8792d74da44b08b7e82756b886178d6fecfe8231",
+  "logprobs": "4d4dd036f06be04086d9a5a0851bdb59bd1c72482ef48a9fd7317f91863c36b2",
+  "prompt_logprobs": "8ac9f1fe9265dddb8212151f5428b31994122647dcde505432ed9c63ffea4666"
+ }
+}

@@ -1,0 +1,25 @@
+18:44:53 == the terminal chat in a pseudo-terminal
+ok   Ctrl-C stops the answer and the prompt comes back -- is kind. While other foxes were content with hunting rabbits and chasing the scent of the wind, Finn had a curious mind and an insatiable desire to learn^C. He
+|(86 tokens, 21.1 tokens/s, stopped)
+|> 
+ok   a question after it is answered -- What is 2+2? Answer in one word.
+|Four.
+|(2 tokens, 12.0 tokens/s)
+|> 
+ok   /bye leaves with status 0
+ok   the prompt comes up again
+ok   Ctrl-D leaves with status 0
+ok   the prompt comes up a third time
+ok   Ctrl-C at the prompt leaves (130)
+ok   login asks for a token -- Paste a Hugging Face token (a read token from https://huggingface.co/settings/tokens), then press Enter. It is not shown.
+|
+ok   the terminal does not echo while the token is typed -- False
+ok   Ctrl-C leaves login (130)
+FAIL and the terminal echoes again -- False
+ok   a token the Hub does not accept is refused in words -- //huggingface.co/settings/tokens), then press Enter. It is not shown.
+|
+|glyd: the Hub did not accept that token.
+|  Make a new one at https://huggingface.co/settings/tokens and run glyd login again
+|
+ok   login leaves with status 1
+FAILED: and the terminal echoes again

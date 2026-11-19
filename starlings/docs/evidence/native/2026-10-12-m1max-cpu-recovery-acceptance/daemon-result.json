@@ -1,0 +1,220 @@
+{
+  "kind": "NativeServiceRecoveryExperiment",
+  "success": false,
+  "failure_stage": "recovery_checks",
+  "control_failures": [
+    {
+      "operation": "cluster/status",
+      "role": "coordinator",
+      "returncode": 1,
+      "code": "DAEMON_UNAVAILABLE"
+    },
+    {
+      "operation": "cluster/status",
+      "role": "worker",
+      "returncode": 1,
+      "code": "DAEMON_UNAVAILABLE"
+    }
+  ],
+  "control_spacing_seconds": 0.2,
+  "resource_history": [
+    {
+      "sample": {
+        "sequence": "12",
+        "capabilities": {
+          "kind": "NodeCapabilities",
+          "protocol_version": 1,
+          "fixture": false,
+          "node_id": "8e0a5ea9-49cd-4819-b631-def132f7bf9c",
+          "cluster_id": "55896768-d449-4896-a60f-71057e431378",
+          "snapshot_id": "edf07589-9153-4772-97ae-5e9084d2a04e",
+          "observed_at": "2026-10-13T01:26:41.184366Z",
+          "sample_age_ms": 0,
+          "state": "ready",
+          "os": "macos",
+          "architecture": "aarch64",
+          "memory_pools": [
+            {
+              "pool_id": "host",
+              "kind": "unified",
+              "total_bytes": "34359738368",
+              "available_bytes": "28798484480",
+              "reserved_bytes": "0",
+              "device_ids": [
+                "cpu",
+                "apple-unified"
+              ]
+            }
+          ],
+          "backends": [
+            {
+              "backend_id": "cpu-service",
+              "build_digest": "66b94f533a684c97b8954b80a1bda9eb952f8e924f15c5eb16e71a36209e1398",
+              "architectures": [
+                "qwen35"
+              ],
+              "execution_profiles": [
+                "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1"
+              ],
+              "boundary_profiles": [],
+              "task_types": [
+                "generate"
+              ],
+              "layer_sharding": false,
+              "max_context_tokens": 128,
+              "max_sessions": 1,
+              "device_id": "cpu",
+              "memory_pool_ids": [
+                "host"
+              ]
+            }
+          ],
+          "control_endpoint": "tls://127.0.0.1:62174",
+          "tensor_endpoint": "unavailable"
+        },
+        "links": []
+      },
+      "age_ms": 385
+    }
+  ],
+  "service_status_history": [
+    {
+      "state": "waiting_for_registry",
+      "pin": null,
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": null,
+      "reserved_bytes": null,
+      "cleanup_proven": false
+    },
+    {
+      "state": "verifying_catalog",
+      "pin": null,
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": null,
+      "reserved_bytes": null,
+      "cleanup_proven": false
+    },
+    {
+      "state": "verifying_catalog",
+      "pin": null,
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "reserved_bytes": null,
+      "cleanup_proven": false
+    },
+    {
+      "state": "loading",
+      "pin": "80dcf60b-7e70-4b21-8ee3-8b4ad63fbbb2",
+      "process_group_absent": false,
+      "inference_qualified": false,
+      "error": null,
+      "endpoint": null,
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "reserved_bytes": null,
+      "cleanup_proven": false
+    },
+    {
+      "state": "ready",
+      "pin": "80dcf60b-7e70-4b21-8ee3-8b4ad63fbbb2",
+      "process_group_absent": false,
+      "inference_qualified": true,
+      "error": null,
+      "endpoint": "127.0.0.1:62174",
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "reserved_bytes": "0",
+      "cleanup_proven": false
+    },
+    {
+      "state": "failed_cleanup_proven",
+      "pin": "80dcf60b-7e70-4b21-8ee3-8b4ad63fbbb2",
+      "process_group_absent": true,
+      "inference_qualified": false,
+      "error": "SECURITY_Transport: operation refused",
+      "endpoint": "127.0.0.1:62174",
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "reserved_bytes": "0",
+      "cleanup_proven": true
+    },
+    {
+      "state": "recovered",
+      "pin": null,
+      "process_group_absent": true,
+      "inference_qualified": false,
+      "error": "SECURITY_Transport: operation refused",
+      "endpoint": "127.0.0.1:62174",
+      "fixture": false,
+      "model_architecture": "qwen35",
+      "reserved_bytes": "0",
+      "cleanup_proven": true
+    }
+  ],
+  "implementation": "419a6fdbb6e26d008d7e407ce3c4121738dbd86f",
+  "binary_sha256": "4b1abdea6193208a776999faa08045b5c85c382879004e1dcf8af6340c708a89",
+  "manifest": "8f993f2242910f9f535611e0e82e62e6054bcaccc96dc28297f09bc6731e0835",
+  "service_configuration": "db15560f87a2cdf03c8e984add657f4f4a06fb47272854c65f34ed03b0552b1f",
+  "worker_record": "10361f54e172cbe3f1004f7b944f679cea0430f6845438b36636a723517f0cc4",
+  "profile_evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+  "generations_requested": 2,
+  "count_call_upper_bound": 4,
+  "count_calls_instrumented": false,
+  "output_tokens_total_cap": 16,
+  "cleanup_policy_source_review": "697cab7b280d1bf94871df36601f7816446d1c753616386cc274d5e4f70861a0",
+  "cleanup_policy": {
+    "version": 1,
+    "configuration": "db15560f87a2cdf03c8e984add657f4f4a06fb47272854c65f34ed03b0552b1f",
+    "target": "f32a6b3e25cb84ad5cb153c604d25a9435a3e6646e074621d744ca2431376e68",
+    "evidence": "697cab7b280d1bf94871df36601f7816446d1c753616386cc274d5e4f70861a0",
+    "scope": "posix-cpu-group-v1",
+    "no_device_work_reviewed": true,
+    "no_escaped_children_reviewed": true
+  },
+  "runs": [
+    {
+      "stream": false,
+      "revoked_midstream": false,
+      "elapsed_ms": 6397,
+      "trusted_request_drained": true
+    },
+    {
+      "stream": true,
+      "revoked_midstream": true,
+      "elapsed_ms": 4006,
+      "trusted_request_drained": false
+    }
+  ],
+  "refusal_statuses": [],
+  "json_sse_semantic_parity": false,
+  "revocation_withdraws_done": false,
+  "qualified_failed_reservation_released": false,
+  "recovery_record_retained": true,
+  "exact_launch_recovered": false,
+  "old_quarantines_preserved": true,
+  "process_observation_available": true,
+  "owned_server_groups_observed": 1,
+  "owned_group_remaining": false,
+  "sampled_owned_peak_rss_bytes": 1716879360,
+  "sample_interval_ms": 100,
+  "elapsed_seconds": 43.396,
+  "external_spend_usd": 0,
+  "faults": [
+    "ACCEPTANCE_TimeoutExpired"
+  ],
+  "general_production_qualification_issued": false,
+  "bounded_cpu_service_cleanup_qualified": false,
+  "base_conversion_fidelity_qualified": false
+}

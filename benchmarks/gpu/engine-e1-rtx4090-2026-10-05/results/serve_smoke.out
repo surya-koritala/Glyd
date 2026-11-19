@@ -1,0 +1,20 @@
+ok   GET /health (no key needed) -- b'{"status":"ok"}'
+ok   GET /v1/models -- ['Qwen/Qwen3-8B']
+ok   GET / is the chat page -- 21073 bytes
+ok   chat, greedy -- 'Four.' in 0.04 s, {'prompt_tokens': 24, 'completion_tokens': 2, 'total_tokens': 26}, stop
+ok   stream = non-stream text -- 'Four.'; first event 0.02 s, 5 events, last [DONE]
+ok   max_tokens ends with length -- length
+ok   same seed, same text -- The sea whispers secrets to the shore with each gentle wave.
+ok   another seed, another text -- The sea glimmers with endless waves, whispering secrets of the deep to the wind.
+ok   stop string cuts the text -- 'One, two, '
+ok   completions -- ' Paris. The capital of Italy is Rome'
+ok   a long prompt twice (prefix reuse) -- 2024 tokens: 0.220 s, then 0.023 s
+ok   a conversation's next turn -- first turn 1355 tokens 0.32 s; second 1394 tokens 0.09 s: 'Pangram repeated.'
+FAIL a prompt longer than the context is refused -- {'id': 'chatcmpl-19', 'object': 'chat.completion', 'created': 1791239964, 'model': 'Qwen/Qwen3-8B', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': "It seems like you've entered a long string of repeated characters, possibly as a test or placeholder. If you have a specific question or need assistance with something,"}, 'finish_reason': 'length'}], 'usage': {'prompt_tokens': 6013, 'completion_tokens': 32, 'total_tokens': 6045}}
+ok   bad JSON is refused -- {'error': {'message': 'the body is not JSON', 'type': 'invalid_request_error', 'code': 400}}
+ok   a request for several choices is refused, not ignored -- n other than 1 is not supported
+ok   a request for tool calls is refused, not ignored -- tool calls are not supported by this server
+ok   a request for log-probabilities is refused, not ignored -- logprobs are not supported by this server
+ok   a request for a JSON object is refused, not ignored -- response_format other than text is not supported
+ok   two requests at once -- [200, 200]
+FAILED: a prompt longer than the context is refused

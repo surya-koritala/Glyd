@@ -1,0 +1,29 @@
+glyd run: Qwen3.5-9B is a Qwen3_5ForConditionalGeneration model, and this engine runs Qwen3 models so far; using vLLM.
+[KReading the model's details...[KQwen/Qwen3.5-9B is already being served at http://127.0.0.1:8000: using that server.
+Chat here, or open http://localhost:8000 in a browser.
+Chatting with Qwen/Qwen3.5-9B. /bye to leave, /clear for a new chat, /? for more.
+>>> Write a long story, at least 2000 words, about a lighthouse keeper, and do not stop before the end. /no_think
+[2mThinking...[0m
+[2mThinking[0m[2m Process[0m[2m:[0m[2m
+
+[0m[2m1[0m[2m.[0m[2m [0m[2m **[0m[2mAn[0m[2malyze[0m[2m the[0m[2m Request[0m[2m:**[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mTopic[0m[2m:**[0m[2m A[0m[2m story[0m[2m about[0m[2m a[0m[2m l[0m[2mighthouse[0m[2m keeper[0m[2m.[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mLength[0m[2m:**[0m[2m At[0m[2m least[0m[2m [0m[2m2[0m[2m0[0m[2m0[0m[2m0[0m[2m words[0m[2m.[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mConstraint[0m[2m:**[0m[2m "[0m[2mdo[0m[2m not[0m[2m stop[0m[2m before[0m[2m the[0m[2m end[0m[2m"[0m[2m ([0m[2mimpl[0m[2mies[0m[2m I[0m[2m need[0m[2m to[0m[2m ensure[0m[2m the[0m[2m story[0m[2m has[0m[2m a[0m[2m proper[0m[2m conclusion[0m[2m and[0m[2m doesn[0m[2m't[0m[2m cut[0m[2m off[0m[2m prematurely[0m[2m).[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mInstruction[0m[2m:**[0m[2m `/[0m[2mno[0m[2m_th[0m[2mink[0m[2m`[0m[2m ([0m[2mThis[0m[2m usually[0m[2m means[0m[2m don[0m[2m't[0m[2m show[0m[2m the[0m[2m internal[0m[2m thinking[0m[2m process[0m[2m in[0m[2m the[0m[2m output[0m[2m,[0m[2m just[0m[2m provide[0m[2m the[0m[2m story[0m[2m.[0m[2m I[0m[2m will[0m[2m follow[0m[2m this[0m[2m by[0m[2m generating[0m[2m the[0m[2m final[0m[2m text[0m[2m directly[0m[2m).[0m[2m
+
+[0m[2m2[0m[2m.[0m[2m [0m[2m **[0m[2mBrain[0m[2mstorm[0m[2ming[0m[2m &[0m[2m Plot[0m[2m Outline[0m[2m:**[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mPro[0m[2mtagon[0m[2mist[0m[2m:**[0m[2m Elias[0m[2m Th[0m[2morne[0m[2m.[0m[2m An[0m[2m old[0m[2m,[0m[2m stubborn[0m[2m man[0m[2m who[0m[2m has[0m[2m been[0m[2m on[0m[2m the[0m[2m rock[0m[2m for[0m[2m [0m[2m4[0m[2m0[0m[2m years[0m[2m.[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mSetting[0m[2m:**[0m[2m The[0m[2m Black[0m[2mwood[0m[2m Light[0m[2m,[0m[2m a[0m[2m remote[0m[2m,[0m[2m dangerous[0m[2m l[0m[2mighthouse[0m[2m on[0m[2m a[0m[2m jag[0m[2mged[0m[2m coast[0m[2m.[0m[2m Storm[0m[2my[0m[2m,[0m[2m isolated[0m[2m,[0m[2m sea[0m[2m-f[0m[2maring[0m[2m atmosphere[0m[2m.[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mInc[0m[2miting[0m[2m Incident[0m[2m:**[0m[2m The[0m[2m relief[0m[2m keeper[0m[2m,[0m[2mSarah[0m[2m,[0m[2m arrives[0m[2m to[0m[2m take[0m[2m over[0m[2m.[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mConflict[0m[2m:**[0m[2m Elias[0m[2m is[0m[2m resistant[0m[2m to[0m[2m change[0m[2m.[0m[2m His[0m[2m eyes[0m[2might[0m[2m is[0m[2m failing[0m[2m,[0m[2m but[0m[2m his[0m[2m pride[0m[2m is[0m[2m higher[0m[2m.[0m[2m He[0m[2m fears[0m[2m being[0m[2m forgotten[0m[2m or[0m[2m replaced[0m[2m by[0m[2m technology[0m[2m.[0m[2m Sarah[0m[2m represents[0m[2m the[0m[2m new[0m[2m age[0m[2m ([0m[2mautomation[0m[2m,[0m[2m efficiency[0m[2m).[0m[2m There[0m[2m's[0m[2m also[0m[2m a[0m[2m mystery[0m[2m:[0m[2m a[0m[2m ship[0m[2m predicted[0m[2m to[0m[2m be[0m[2m going[0m[2m down[0m[2m that[0m[2m only[0m[2m Elias[0m[2m knows[0m[2m about[0m[2m due[0m[2m to[0m[2m bad[0m[2m charts[0m[2m.[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mR[0m[2mising[0m[2m Action[0m[2m:**[0m[2m
+[0m[2m       [0m[2m *[0m[2m  [0m[2m The[0m[2m fog[0m[2m rolls[0m[2m in[0m[2m.[0m[2m The[0m[2m storm[0m[2m brew[0m[2ms[0m[2m.[0m[2m
+[0m[2m       [0m[2m *[0m[2m  [0m[2m Sarah[0m[2m tries[0m[2m to[0m[2m fix[0m[2m the[0m[2m mechanism[0m[2m;[0m[2m Elias[0m[2m refuses[0m[2m,[0m[2m saying[0m[2m "[0m[2mIt[0m[2m needs[0m[2m oil[0m[2ming[0m[2m by[0m[2m hand[0m[2m."[0m[2m
+[0m[2m       [0m[2m *[0m[2m  [0m[2m Communication[0m[2m breakdown[0m[2m via[0m[2m radio[0m[2m.[0m[2m
+[0m[2m       [0m[2m *[0m[2m  [0m[2m Elias[0m[2m finds[0m[2m something[0m[2m in[0m[2m the[0m[2m log[0m[2mbook[0m[2m or[0m[2m the[0m[2m l[0m[2mighthouse[0m[2m ruins[0m[2m that[0m[2m hints[0m[2m at[0m[2m a[0m[2m lost[0m[2m ship[0m[2m from[0m[2m decades[0m[2m ago[0m[2m.[0m[2m
+[0m[2m       [0m[2m *[0m[2m  [0m[2m The[0m[2m Storm[0m[2m hits[0m[2m.[0m[2m
+[0m[2m   [0m[2m *[0m[2m  [0m[2m **[0m[2mC[0m[2mlim[0m[2max[0m[2m:**[0m[2m The[0m
+The server could not finish the answer: EngineCore encountered an issue. See stack trace (above) for the root cause. Ask again.
+
+>>> /bye

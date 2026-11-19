@@ -1,0 +1,1 @@
+bandwidth: 7168 x 18432 e4m3 on NVIDIA GeForce RTX 4090: unpack 265.3 us = 498 GB/s of e4m3 written (912 GB/s with the packed bytes read; runs of 200: 265.3, 265.4, 265.3, 265.4, 265.3 us); pack 0.5 ms best of 4 (0.5 ms median, the size query's wait and the allocations in); 6.647 bits a value, 0 plain patches

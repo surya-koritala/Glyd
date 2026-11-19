@@ -1,0 +1,14 @@
+{
+  "model": "fixture/synthetic-hybrid-32@fixture-bf16",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Synthetic protocol fixture; not a model benchmark."
+    }
+  ],
+  "max_tokens": 8,
+  "temperature": 0,
+  "top_p": 1,
+  "seed": 1,
+  "stream": true
+}

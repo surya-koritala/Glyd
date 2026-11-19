@@ -1,0 +1,3 @@
+stock-eager: ok (77 s) weights 19.92 GiB, KV 55,416 tokens
+glyd-exact: ok (77 s) weights 19.81 GiB, KV 56,380 tokens
+EXACT FAIL: Glyd exact eager against stock eager, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 707 tokens, one image chat; 83 of 83 packs verified bit for bit; differs at {"long_logprobs": "[520][0][1]: -0.14144456386566162 != -0.07739576697349548"}; stock eager against itself: {"tokens": null, "logprobs": null, "long_ids": null, "long_logprobs": null, "image_tokens": null, "image_logprobs": null}

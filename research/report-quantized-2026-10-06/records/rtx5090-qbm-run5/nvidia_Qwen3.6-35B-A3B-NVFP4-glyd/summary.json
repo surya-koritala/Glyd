@@ -1,0 +1,98 @@
+{
+ "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+ "args": {
+  "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+  "out": "/root/results/nvidia_Qwen3.6-35B-A3B-NVFP4-glyd",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "max_num_seqs": 64,
+  "layout": "auto",
+  "steps": "glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,8,32,64",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "glyd": {
+  "weights_gib": 20.24,
+  "kv_tokens": 153892,
+  "kv_gib": 5.3,
+  "concurrency": 18.79,
+  "tps": {
+   "1": {
+    "median": 253.59,
+    "runs": [
+     255.36,
+     251.82
+    ]
+   },
+   "8": {
+    "median": 1241.67,
+    "runs": [
+     1235.5,
+     1247.84
+    ]
+   },
+   "32": {
+    "median": 2779.55,
+    "runs": [
+     2771.77,
+     2787.33
+    ]
+   },
+   "64": {
+    "median": 3442.69,
+    "runs": [
+     3456.09,
+     3429.3
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantModelOptMixedPrecisionConfig",
+  "glyd_key": {
+   "layout": "mma12",
+   "exact": false,
+   "verify": false,
+   "fraction": 1.0,
+   "kv": "off",
+   "glyd": "0.29.0",
+   "packs": "e77ac884a886a81e"
+  },
+  "start_s": 180.5
+ },
+ "inventory": {
+  "packed_count": 83,
+  "packed_bf16_bytes": 615739392,
+  "packed_pack_bytes": 463243092,
+  "saved_bytes": 152496300,
+  "gpu_tensor_bytes": 21700447768,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.0031851334497332573,
+  "left_16bit_top": {
+   "VocabParallelEmbedding / UnquantizedEmbeddingMethod / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 1017118720,
+    "example": "language_model.model.embed_tokens.weight"
+   },
+   "ColumnParallelLinear / GlydLinearMethod / weight / bfloat16": {
+    "tensors": 27,
+    "bytes": 267743232,
+    "example": "visual.blocks.0.mlp.linear_fc1.weight"
+   },
+   "Embedding / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 5308416,
+    "example": "visual.pos_embed.weight"
+   },
+   "Conv3dLayer / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 3538944,
+    "example": "visual.patch_embed.proj.weight"
+   }
+  }
+ }
+}

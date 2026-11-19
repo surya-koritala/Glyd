@@ -32,14 +32,20 @@ if [ ! -f "$CORPUS_DIR/enwik8" ]; then
     ENWIK_ZIP=$(mktemp /tmp/enwik8.XXXXXX.zip)
     # Two hosts carry it; a host that answers with a page instead of the
     # zip (it has) fails the check and the next one is tried.
+    got=no
     for url in "http://mattmahoney.net/dc/enwik8.zip" "https://cs.fit.edu/~mmahoney/compression/enwik8.zip"; do
-        curl -fsSL --retry 3 "$url" -o "$ENWIK_ZIP" && unzip -tq "$ENWIK_ZIP" >/dev/null 2>&1 && break
+        curl -fsSL --retry 3 "$url" -o "$ENWIK_ZIP" && unzip -tq "$ENWIK_ZIP" >/dev/null 2>&1 && got=yes && break
         echo "enwik8: $url did not give a zip, trying the next" >&2
     done
-    echo "Extracting enwik8 into $CORPUS_DIR..."
-    unzip -q -o "$ENWIK_ZIP" -d "$CORPUS_DIR"
+    if [ "$got" = yes ]; then
+        echo "Extracting enwik8 into $CORPUS_DIR..."
+        unzip -q -o "$ENWIK_ZIP" -d "$CORPUS_DIR"
+        echo "enwik8 downloaded successfully ($(stat -c%s "$CORPUS_DIR/enwik8") bytes)."
+    else
+        # only the benchmarks (examples/bench.rs, examples/v7_bench.rs) read enwik8; the tests do not
+        echo "enwik8: no host gave it; skipped (the benchmarks that use it will say so)" >&2
+    fi
     rm -f "$ENWIK_ZIP"
-    echo "enwik8 downloaded successfully ($(stat -c%s "$CORPUS_DIR/enwik8") bytes)."
 else
     echo "enwik8 already present."
 fi

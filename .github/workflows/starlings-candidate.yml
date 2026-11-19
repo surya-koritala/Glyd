@@ -1,0 +1,63 @@
+name: Starlings native candidate qualification
+
+# Push only an explicitly approved, source-qualified main SHA to its matching ref.
+# No automatic PR/main run, publication, executable invocation or artifact upload.
+on:
+  push:
+    branches: ['qualify-candidate/*']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "2"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  linux:
+    name: Native candidate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+        working-directory: starlings
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Require the exact approved revision ref
+        run: |
+          [[ "$GITHUB_REF_NAME" == "qualify-candidate/$GITHUB_SHA" ]]
+          [[ $(git rev-parse HEAD) == "$GITHUB_SHA" && -z $(git status --porcelain) ]]
+      - name: Install pinned compiler
+        run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Fetch only locked native build dependencies
+        run: |
+          if ! rustup run 1.97.1 cargo fetch --target host-tuple --locked > "$RUNNER_TEMP/fetch.stdout" 2> "$RUNNER_TEMP/fetch.stderr"; then
+            echo '::error::LOCKED_DEPENDENCY_FETCH_FAILED: no candidate build started.'
+            exit 1
+          fi
+      - name: Build and verify a private native candidate
+        run: |
+          if ! bash scripts/build-candidate.sh "$RUNNER_TEMP/glyd-native-candidate" > "$RUNNER_TEMP/candidate.stdout" 2> "$RUNNER_TEMP/candidate.stderr"; then
+            echo '::error::CANDIDATE_BUILD_FAILED: compiler output remains private on the ephemeral runner.'
+            exit 1
+          fi
+          if grep -Eq '^warning(:|\[)' "$RUNNER_TEMP/candidate.stderr"; then
+            echo '::error::CANDIDATE_BUILD_WARNING: qualification refused.'
+            exit 1
+          fi
+          python3 -I scripts/verify-candidate.py "$RUNNER_TEMP/glyd-native-candidate"
+      - name: Failure summary
+        if: failure()
+        run: echo '::error::Native candidate qualification failed. No candidate was executed or uploaded; inspect the first failed phase.'

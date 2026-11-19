@@ -1,0 +1,10 @@
+[2026-10-19T19:10:02-04:00] start: glyd-engine serve /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d --ctx 4096 --port 8238 (dir)
+[2026-10-19T19:10:04-04:00] ready (dir) after 2.6 s, pid 969541
+[2026-10-19T19:10:14-04:00] cancel asked at 1792451414.872; the request ended (the engine let go of it) at 1792451414.888, 0.016 s later
+[2026-10-19T19:10:18-04:00] the client went away at 1792451418.016; the request ended at 1792451418.047, 0.031 s later
+[2026-10-19T19:10:18-04:00] a cancel 0.2 s into a prompt of 3790 tokens, asked at 1792451418.323: the request ended at 1792451418.956, 0.633 s later
+[2026-10-19T19:10:19-04:00] the server stopped (exit status 143)
+[2026-10-19T19:10:19-04:00] start: glyd-engine serve Qwen/Qwen3.5-9B:swift --ctx 4096 --port 8238 (hubname)
+[2026-10-19T19:10:21-04:00] ready (hubname) after 2.5 s, pid 970099
+[2026-10-19T19:10:21-04:00] the server stopped (exit status 143)
+[2026-10-19T19:10:21-04:00] done

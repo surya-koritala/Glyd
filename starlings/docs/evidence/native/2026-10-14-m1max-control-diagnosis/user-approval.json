@@ -1,0 +1,28 @@
+{
+  "kind": "NativeControlDiagnosisApproval",
+  "response": "Approve one bounded control diagnosis",
+  "recorded_at_utc": "2026-10-14T18:10:04.141134+00:00",
+  "plan_sha256": "11a6c273f17279b65b907e09366f4611226811518efa6ce49fe076fefa4193bd",
+  "runner_sha256": "f447da3193204f430ba08ba3cb5294481343db89c0faeb012dd7c31ff7b0d8cc",
+  "reviewed_merge": "55989bde757be6e4839e2038e50678f102eb9466",
+  "bounds": {
+    "attempts": 1,
+    "cpu_service_starts": 1,
+    "cpu_threads": 2,
+    "generation_requests": 0,
+    "count_api_calls": 0,
+    "output_tokens": 0,
+    "inference_client_token": false,
+    "wall_seconds_including_cleanup": 300,
+    "monitored_owned_rss_bytes": 4294967296,
+    "spend_usd": 0,
+    "loopback_only": true,
+    "cached_assets_only": true,
+    "download": false,
+    "rebuild": false,
+    "gpu": false,
+    "ubuntu": false,
+    "automatic_repeat": false,
+    "quarantine_reset": false
+  }
+}

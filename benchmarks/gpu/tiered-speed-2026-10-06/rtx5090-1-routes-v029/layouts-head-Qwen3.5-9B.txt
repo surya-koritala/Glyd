@@ -1,0 +1,12 @@
+NVIDIA GeForce RTX 5090 (compute 12.0, 170 SMs, L2 96 MiB, route code 1120, clk a step at 3090 MHz); /root/tsw/m/head-Qwen3.5-9B.safetensors
+lm_head 248320x4096: 2 copies; bf16 1:1267.4 8:1210.0 16:1213.9 32:1228.8 64:1250.5 us
+lm_head 248320x4096 M=    1    mma  default (way 1):    981.5 us =  0.77x bf16,    519 clk/step
+lm_head 248320x4096 M=    8    mma  default (way 1):   1002.7 us =  0.83x bf16,    530 clk/step
+lm_head 248320x4096 M=   16    mma  default (way 1):   1058.8 us =  0.87x bf16,    560 clk/step
+lm_head 248320x4096 M=   32    mma  default (way 1):    907.2 us =  0.74x bf16,    480 clk/step
+lm_head 248320x4096 M=   64    mma  default (way 1):   1316.4 us =  1.05x bf16,    696 clk/step
+lm_head 248320x4096 M=    1  mma12  default (way 1):    923.0 us =  0.73x bf16,    488 clk/step
+lm_head 248320x4096 M=    8  mma12  default (way 1):    929.6 us =  0.77x bf16,    492 clk/step
+lm_head 248320x4096 M=   16  mma12  default (way 1):    935.6 us =  0.77x bf16,    495 clk/step
+lm_head 248320x4096 M=   32  mma12  default (way 1):    942.1 us =  0.77x bf16,    498 clk/step
+lm_head 248320x4096 M=   64  mma12  default (way 1):   1065.1 us =  0.85x bf16,    563 clk/step

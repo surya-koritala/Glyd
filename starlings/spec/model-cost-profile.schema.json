@@ -1,0 +1,445 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:starlings:model-cost-profile:v1",
+  "title": "Proposed InspectModel costs; validation does not qualify a backend",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "ModelCostProfile"
+    },
+    "version": {
+      "const": 1
+    },
+    "fixture": {
+      "type": "boolean"
+    },
+    "key": {
+      "$ref": "#/$defs/key"
+    },
+    "costs": {
+      "$ref": "#/$defs/costs"
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "fixture",
+    "key",
+    "costs"
+  ],
+  "$defs": {
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "context_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "prefill_chunk_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "sessions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        }
+      },
+      "required": [
+        "context_tokens",
+        "prompt_tokens",
+        "output_tokens",
+        "prefill_chunk_tokens",
+        "sessions"
+      ]
+    },
+    "key": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "manifest_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "execution_profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "boundary_profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "backend_build_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "device_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "pool_inventory_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "workload": {
+          "$ref": "#/$defs/workload"
+        },
+        "runtime_config_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "manifest_digest",
+        "execution_profile",
+        "boundary_profile",
+        "backend_build_digest",
+        "device_digest",
+        "pool_inventory_digest",
+        "workload",
+        "runtime_config_digest"
+      ]
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "basis": {
+          "enum": [
+            "estimated",
+            "measured"
+          ]
+        },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "valid_for_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "relative_error_bps": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "basis",
+        "evidence_digest",
+        "observed_at",
+        "valid_for_ms",
+        "samples",
+        "relative_error_bps"
+      ]
+    },
+    "pool_cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pool_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "resident_weight_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "active_weight_bytes_per_token": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "kv_bytes_per_token": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "recurrent_bytes_per_session": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "convolution_bytes_per_session": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "prefill_scratch_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "decode_scratch_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "staging_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "reserve_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "resident_overhead_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        }
+      },
+      "required": [
+        "pool_id",
+        "resident_weight_bytes",
+        "active_weight_bytes_per_token",
+        "kv_bytes_per_token",
+        "recurrent_bytes_per_session",
+        "convolution_bytes_per_session",
+        "prefill_scratch_bytes",
+        "decode_scratch_bytes",
+        "staging_bytes",
+        "reserve_bytes",
+        "resident_overhead_bytes"
+      ]
+    },
+    "phase_cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prefill_us": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "decode_us_per_token": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        }
+      },
+      "required": [
+        "prefill_us",
+        "decode_us_per_token"
+      ]
+    },
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "layer_type": {
+          "enum": [
+            "full_attention",
+            "linear_attention",
+            "other"
+          ]
+        },
+        "state_profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "pools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pool_cost"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "timing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/phase_cost"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "index",
+        "layer_type",
+        "state_profile",
+        "pools",
+        "timing"
+      ]
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "disposition": {
+          "enum": [
+            "executed",
+            "not_in_scope",
+            "unsupported"
+          ]
+        },
+        "owner_role": {
+          "enum": [
+            "first",
+            "last",
+            "none"
+          ]
+        },
+        "pools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pool_cost"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "timing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/phase_cost"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "disposition",
+        "owner_role",
+        "pools",
+        "timing"
+      ]
+    },
+    "costs": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Z0-9_]+$"
+            }
+          },
+          "required": [
+            "status",
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "measurement": {
+              "$ref": "#/$defs/measurement"
+            },
+            "pool_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_.:/-]+$"
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "layers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/layer"
+              },
+              "minItems": 1,
+              "maxItems": 4096
+            },
+            "components": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/component"
+              },
+              "minItems": 0,
+              "maxItems": 128
+            },
+            "per_stage": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pool_cost"
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "per_stage_timing": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/phase_cost"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "measurement",
+            "pool_ids",
+            "layers",
+            "components",
+            "per_stage",
+            "per_stage_timing"
+          ]
+        }
+      ]
+    }
+  }
+}

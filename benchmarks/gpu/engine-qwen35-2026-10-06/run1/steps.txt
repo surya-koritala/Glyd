@@ -1,0 +1,53 @@
+04:39:59 (+0 min) GPU sm_89, tree 05379a9d
+04:39:59 (+0 min) setup: uv, the venv (vLLM 0.30.0, glyd-gpu 0.28.0's plugin entry, nvcc), Rust, the downloads
+04:41:25 (+1 min) env: vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | glyd-gpu 0.28.0 | NVIDIA GeForce RTX 4090
+04:43:25 (+3 min) built: the library and the engine
+04:43:25 (+3 min) models: /root/e35/hf/hub/models--Qwen--Qwen3.5-0.8B/snapshots/2fc06364715b967f1860aea9cf38778875588b17, /root/e35/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a
+04:43:25 (+3 min) start kcheck35 (at most 300 s)
+04:43:25 (+3 min) end kcheck35: exit 1
+04:43:25 (+3 min) start ref-0.8b (at most 900 s)
+04:47:57 (+7 min) end ref-0.8b: exit 0
+04:47:57 (+7 min) start ref-9b (at most 1200 s)
+04:50:29 (+10 min) end ref-9b: exit 0
+04:50:29 (+10 min) start check-0.8b (at most 900 s)
+04:50:35 (+10 min) end check-0.8b: exit 0
+04:50:35 (+10 min) start compare-0.8b (at most 60 s)
+04:50:35 (+10 min) end compare-0.8b: exit 0
+04:50:35 (+10 min) start check-0.8b-recurrent (at most 900 s)
+04:50:41 (+10 min) end check-0.8b-recurrent: exit 0
+04:50:41 (+10 min) start compare-0.8b-recurrent (at most 60 s)
+04:50:41 (+10 min) end compare-0.8b-recurrent: exit 0
+04:50:41 (+10 min) start check-9b (at most 900 s)
+04:51:16 (+11 min) end check-9b: exit 0
+04:51:16 (+11 min) start compare-9b (at most 60 s)
+04:51:16 (+11 min) end compare-9b: exit 0
+04:51:16 (+11 min) start check-9b-recurrent (at most 900 s)
+04:51:48 (+11 min) end check-9b-recurrent: exit 0
+04:51:48 (+11 min) start compare-9b-recurrent (at most 60 s)
+04:51:48 (+11 min) end compare-9b-recurrent: exit 0
+04:51:49 (+11 min) start check-0.8b-chunk100 (at most 900 s)
+04:51:54 (+11 min) end check-0.8b-chunk100: exit 0
+04:51:54 (+11 min) start compare-0.8b-chunk100 (at most 60 s)
+04:51:54 (+11 min) end compare-0.8b-chunk100: exit 0
+04:51:54 (+11 min) start dump-0.8b (at most 300 s)
+04:51:58 (+11 min) end dump-0.8b: exit 0
+04:51:58 (+11 min) start dump-0.8b-ref (at most 600 s)
+04:52:09 (+12 min) end dump-0.8b-ref: exit 1
+04:52:09 (+12 min) start dump-0.8b-recurrent (at most 300 s)
+04:52:14 (+12 min) end dump-0.8b-recurrent: exit 0
+04:52:14 (+12 min) start dump-0.8b-recurrent-ref (at most 600 s)
+04:52:25 (+12 min) end dump-0.8b-recurrent-ref: exit 1
+04:52:25 (+12 min) start generate-9b (at most 300 s)
+04:52:46 (+12 min) end generate-9b: exit 0
+04:52:46 (+12 min) start bench-9b (at most 900 s)
+04:53:11 (+13 min) end bench-9b: exit 0
+04:53:11 (+13 min) start bench-9b-recurrent (at most 900 s)
+04:53:36 (+13 min) end bench-9b-recurrent: exit 0
+04:53:36 (+13 min) start speed-9b-vllm (at most 1200 s)
+04:55:56 (+15 min) end speed-9b-vllm: exit 1
+04:55:56 (+15 min) start speed-9b-vllm-eager (at most 1200 s)
+04:57:51 (+17 min) end speed-9b-vllm-eager: exit 1
+04:57:51 (+17 min) start speed-9b-glyd (at most 1200 s)
+05:00:37 (+20 min) end speed-9b-glyd: exit 1
+05:00:37 (+20 min) summary
+05:00:38 (+20 min) done

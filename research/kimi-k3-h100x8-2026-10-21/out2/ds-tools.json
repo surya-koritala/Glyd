@@ -1,0 +1,1 @@
+{"id":"chatcmpl-4","object":"chat.completion","created":1792623041,"model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"message":{"role":"assistant","content":"I will check the current weather in Paris for you.</think>{\"city\": \"Paris\"}"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":301,"completion_tokens":19,"total_tokens":320}}

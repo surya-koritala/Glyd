@@ -1,0 +1,7 @@
+one GPU: NVIDIA A100-SXM4-80GB (sm_80): Kimi-K3 on the dynamic engine, 8 layers, weights 0.014 GiB (layout mma), KV 0.000 GiB (1024 positions), 0.49 of 79.25 GiB in use
+2 GPUs, every layer sliced across them; GPU 0: NVIDIA A100-SXM4-80GB (sm_80): Kimi-K3 on the dynamic engine, 8 layers, weights 0.008 GiB (layout mma), KV 0.000 GiB (1024 positions), 0.52 of 79.25 GiB in use
+step     0: 0 of 4096 logits differ, the largest by 0.00000
+step     1: 0 of 4096 logits differ, the largest by 0.00000
+step     2: 0 of 4096 logits differ, the largest by 0.00000
+prompt  40: 0 of 4096 logits differ, the largest by 0.00000
+41 of 41 passes the same to the bit

@@ -1,0 +1,7 @@
+known-answer test of the KV cache: 36 layers, 15 blocks of 16 tokens of 8 heads in each (keys and values), written as a run of tokens, token by token and in pieces
+  first writes:       17694720 values (318 zeros, 317 negative zeros, 16976 subnormals, 631 infinities, 17451 NaNs, 3850210 outside their windows), differing 0
+  written again:      17694720 values (318 zeros, 317 negative zeros, 16976 subnormals, 631 infinities, 17451 NaNs, 3850210 outside their windows), differing 0
+  tokens 8-15 again:  17694720 values (328 zeros, 329 negative zeros, 17052 subnormals, 620 infinities, 17496 NaNs, 3850868 outside their windows), differing 0
+  in all: values checked 53084160, differing 0
+  the cache's status: entries without a place 5010892, blocks kept in the second extra memory 612, blocks lost 0; extra memory in use after releasing every block: first 0 of 22767, second 0 of 256
+known-answer test: every value read back bit for bit

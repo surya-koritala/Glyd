@@ -1,0 +1,13 @@
+{
+  "harness_commit": "9b1dede4906e2f340c9b539de8e5be92b7a53b7f",
+  "harness_sha256": "64529a8c68e073eebe978a2514202c8db43c55643697db92cef92fb17abc1973",
+  "rust_toolchain": "1.97.1-aarch64-apple-darwin",
+  "rustflags": "-D warnings",
+  "profile_debug": 0,
+  "profile_incremental": false,
+  "approval": "one CPU cancellation request, two threads, eight output tokens, five-minute total cap",
+  "native_run_count": 1,
+  "runtime_rebuilt": false,
+  "new_download_bytes": 0,
+  "external_spend_usd": 0
+}

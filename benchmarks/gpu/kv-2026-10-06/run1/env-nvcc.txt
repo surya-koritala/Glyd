@@ -1,0 +1,19 @@
+Using Python 3.12.3 environment at: w/venv
+Resolved 5 packages in 87ms
+Downloading nvidia-cuda-cccl (3.0MiB)
+Downloading nvidia-cuda-nvcc (35.7MiB)
+Downloading nvidia-nvvm (58.7MiB)
+ Downloading nvidia-cuda-cccl
+ Downloading nvidia-cuda-nvcc
+ Downloading nvidia-nvvm
+Prepared 4 packages in 899ms
+Uninstalled 4 packages in 39ms
+Installed 4 packages in 35ms
+ - nvidia-cuda-cccl==13.3.4.3.1
+ + nvidia-cuda-cccl==13.0.85
+ - nvidia-cuda-crt==13.4.92
+ + nvidia-cuda-crt==13.0.88
+ - nvidia-cuda-nvcc==13.4.92
+ + nvidia-cuda-nvcc==13.0.88
+ - nvidia-nvvm==13.4.92
+ + nvidia-nvvm==13.0.88

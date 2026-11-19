@@ -1,0 +1,4 @@
+FAIL granite-vision-4.1-4b glyd: ValidationError: 1 validation error for ModelConfig
+  Value error, Model architectures ['Granite4VisionForConditionalGeneration'] failed to be inspected. Please check the logs for more details. [type=value_error, input_value=ArgsKwargs((), {'model': ...nderer_num_workers': 1}), input_type=ArgsKwargs
+FAIL granite-vision-4.1-4b glyd-towers: ValidationError: 1 validation error for ModelConfig
+  Value error, Model architectures ['Granite4VisionForConditionalGeneration'] failed to be inspected. Please check the logs for more details. [type=value_error, input_value=ArgsKwargs((), {'model': ...nderer_num_workers': 1}), input_type=ArgsKwargs

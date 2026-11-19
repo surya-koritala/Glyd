@@ -1,0 +1,457 @@
+# NVIDIA H100 80GB HBM3 (sm_90), 89 shapes, tokens [1, 8, 32, 64], samples: yes
+INFO 10-05 17:41:29 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 10-05 17:41:29 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-05 17:41:32 [__init__.py:726] Selected CutlassFp8BlockScaledMMKernel for bench
+GLM-5.3-Flash              qkv_a           tp1   2048 x 4096   M=1   vllm     14.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     14.8  ratio nan 
+GLM-5.3-Flash              qkv_a           tp1   2048 x 4096   M=8   vllm     21.7 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     14.6  ratio nan 
+GLM-5.3-Flash              qkv_a           tp1   2048 x 4096   M=32  vllm     20.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     14.6  ratio nan 
+GLM-5.3-Flash              qkv_a           tp1   2048 x 4096   M=64  vllm     20.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     14.5  ratio nan 
+   (24.8 s, 24 copies)
+GLM-5.3-Flash              q_b             tp1  16384 x 1536   M=1   vllm     15.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.3  ratio nan 
+GLM-5.3-Flash              q_b             tp1  16384 x 1536   M=8   vllm     19.7 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.9  ratio nan 
+GLM-5.3-Flash              q_b             tp1  16384 x 1536   M=32  vllm     20.4 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.9  ratio nan 
+GLM-5.3-Flash              q_b             tp1  16384 x 1536   M=64  vllm     20.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.9  ratio nan 
+   (0.2 s, 8 copies)
+GLM-5.3-Flash              o               tp1   4096 x 16384  M=1   vllm     33.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     91.9  ratio nan 
+GLM-5.3-Flash              o               tp1   4096 x 16384  M=8   vllm     54.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     91.9  ratio nan 
+GLM-5.3-Flash              o               tp1   4096 x 16384  M=32  vllm     54.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     91.0  ratio nan 
+GLM-5.3-Flash              o               tp1   4096 x 16384  M=64  vllm     55.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     90.9  ratio nan 
+   (0.2 s, 3 copies)
+GLM-5.3-Flash              mlp_gate_up     tp1  24576 x 4096   M=1   vllm     43.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    133.5  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp1  24576 x 4096   M=8   vllm     50.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    133.5  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp1  24576 x 4096   M=32  vllm     52.1 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    133.4  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp1  24576 x 4096   M=64  vllm     53.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    134.5  ratio nan 
+   (0.2 s, 2 copies)
+GLM-5.3-Flash              mlp_down        tp1   4096 x 12288  M=1   vllm     27.5 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     70.0  ratio nan 
+GLM-5.3-Flash              mlp_down        tp1   4096 x 12288  M=8   vllm     43.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     69.9  ratio nan 
+GLM-5.3-Flash              mlp_down        tp1   4096 x 12288  M=32  vllm     44.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     69.6  ratio nan 
+GLM-5.3-Flash              mlp_down        tp1   4096 x 12288  M=64  vllm     44.2 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     69.6  ratio nan 
+   (0.2 s, 4 copies)
+GLM-5.3-Flash              expert_gate_up  tp1   4096 x 4096   M=1   vllm     14.2 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     26.6  ratio nan 
+GLM-5.3-Flash              expert_gate_up  tp1   4096 x 4096   M=8   vllm     21.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     26.6  ratio nan 
+GLM-5.3-Flash              expert_gate_up  tp1   4096 x 4096   M=32  vllm     21.5 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     26.6  ratio nan 
+GLM-5.3-Flash              expert_gate_up  tp1   4096 x 4096   M=64  vllm     21.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     26.7  ratio nan 
+   (0.3 s, 12 copies)
+GLM-5.3-Flash              expert_down     tp1   4096 x 2048   M=1   vllm     10.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     14.7  ratio nan 
+GLM-5.3-Flash              expert_down     tp1   4096 x 2048   M=8   vllm     15.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     14.7  ratio nan 
+GLM-5.3-Flash              expert_down     tp1   4096 x 2048   M=32  vllm     16.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     14.7  ratio nan 
+GLM-5.3-Flash              expert_down     tp1   4096 x 2048   M=64  vllm     16.5 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     14.7  ratio nan 
+   (0.4 s, 24 copies)
+GLM-5.3-Flash              q_b             tp2   8192 x 1536   M=1   vllm     11.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.7  ratio nan 
+GLM-5.3-Flash              q_b             tp2   8192 x 1536   M=8   vllm     15.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.6  ratio nan 
+GLM-5.3-Flash              q_b             tp2   8192 x 1536   M=32  vllm     15.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.6  ratio nan 
+GLM-5.3-Flash              q_b             tp2   8192 x 1536   M=64  vllm     16.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.8  ratio nan 
+   (0.3 s, 16 copies)
+GLM-5.3-Flash              o               tp2   4096 x 8192   M=1   vllm     21.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     48.5  ratio nan 
+GLM-5.3-Flash              o               tp2   4096 x 8192   M=8   vllm     32.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     48.5  ratio nan 
+GLM-5.3-Flash              o               tp2   4096 x 8192   M=32  vllm     33.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     48.4  ratio nan 
+GLM-5.3-Flash              o               tp2   4096 x 8192   M=64  vllm     33.1 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     48.4  ratio nan 
+   (0.2 s, 6 copies)
+GLM-5.3-Flash              mlp_gate_up     tp2  12288 x 4096   M=1   vllm     26.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     69.7  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp2  12288 x 4096   M=8   vllm     32.4 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     69.6  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp2  12288 x 4096   M=32  vllm     33.1 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     70.0  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp2  12288 x 4096   M=64  vllm     32.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     69.9  ratio nan 
+   (0.2 s, 4 copies)
+GLM-5.3-Flash              mlp_down        tp2   4096 x 6144   M=1   vllm     17.7 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.6  ratio nan 
+GLM-5.3-Flash              mlp_down        tp2   4096 x 6144   M=8   vllm     27.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.6  ratio nan 
+GLM-5.3-Flash              mlp_down        tp2   4096 x 6144   M=32  vllm     27.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.6  ratio nan 
+GLM-5.3-Flash              mlp_down        tp2   4096 x 6144   M=64  vllm     27.5 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.7  ratio nan 
+   (0.3 s, 8 copies)
+GLM-5.3-Flash              expert_down     tp2   4096 x 1024   M=1   vllm      9.1 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      8.6  ratio nan 
+GLM-5.3-Flash              expert_down     tp2   4096 x 1024   M=8   vllm     12.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      8.5  ratio nan 
+GLM-5.3-Flash              expert_down     tp2   4096 x 1024   M=32  vllm     13.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      8.5  ratio nan 
+GLM-5.3-Flash              expert_down     tp2   4096 x 1024   M=64  vllm     13.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      8.4  ratio nan 
+   (0.6 s, 48 copies)
+GLM-5.3-Flash              q_b             tp4   4096 x 1536   M=1   vllm      9.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     12.3  ratio nan 
+GLM-5.3-Flash              q_b             tp4   4096 x 1536   M=8   vllm     14.5 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     12.3  ratio nan 
+GLM-5.3-Flash              q_b             tp4   4096 x 1536   M=32  vllm     14.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     12.3  ratio nan 
+GLM-5.3-Flash              q_b             tp4   4096 x 1536   M=64  vllm     14.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     12.4  ratio nan 
+   (0.5 s, 32 copies)
+GLM-5.3-Flash              mlp_gate_up     tp4   6144 x 4096   M=1   vllm     17.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.6  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp4   6144 x 4096   M=8   vllm     22.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.9  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp4   6144 x 4096   M=32  vllm     22.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.8  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp4   6144 x 4096   M=64  vllm     22.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     37.7  ratio nan 
+   (0.2 s, 8 copies)
+GLM-5.3-Flash              mlp_down        tp4   4096 x 3072   M=1   vllm     12.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.8  ratio nan 
+GLM-5.3-Flash              mlp_down        tp4   4096 x 3072   M=8   vllm     18.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.8  ratio nan 
+GLM-5.3-Flash              mlp_down        tp4   4096 x 3072   M=32  vllm     18.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.6  ratio nan 
+GLM-5.3-Flash              mlp_down        tp4   4096 x 3072   M=64  vllm     18.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.6  ratio nan 
+   (0.3 s, 16 copies)
+GLM-5.3-Flash              expert_gate_up  tp4   1024 x 4096   M=1   vllm     13.2 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      8.5  ratio nan 
+GLM-5.3-Flash              expert_gate_up  tp4   1024 x 4096   M=8   vllm     20.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      8.4  ratio nan 
+GLM-5.3-Flash              expert_gate_up  tp4   1024 x 4096   M=32  vllm     20.4 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      8.3  ratio nan 
+GLM-5.3-Flash              expert_gate_up  tp4   1024 x 4096   M=64  vllm     20.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      8.4  ratio nan 
+   (0.7 s, 48 copies)
+GLM-5.3-Flash              expert_down     tp4   4096 x 512    M=1   vllm      7.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      5.6  ratio nan 
+GLM-5.3-Flash              expert_down     tp4   4096 x 512    M=8   vllm     11.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      5.6  ratio nan 
+GLM-5.3-Flash              expert_down     tp4   4096 x 512    M=32  vllm     11.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      5.6  ratio nan 
+GLM-5.3-Flash              expert_down     tp4   4096 x 512    M=64  vllm     11.5 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      5.5  ratio nan 
+   (0.7 s, 64 copies)
+GLM-5.3-Flash              q_b             tp8   2048 x 1536   M=1   vllm      9.4 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      7.0  ratio nan 
+GLM-5.3-Flash              q_b             tp8   2048 x 1536   M=8   vllm     13.7 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      7.0  ratio nan 
+GLM-5.3-Flash              q_b             tp8   2048 x 1536   M=32  vllm     14.2 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      6.9  ratio nan 
+GLM-5.3-Flash              q_b             tp8   2048 x 1536   M=64  vllm     14.1 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      7.0  ratio nan 
+   (0.8 s, 64 copies)
+GLM-5.3-Flash              mlp_gate_up     tp8   3072 x 4096   M=1   vllm     13.7 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.5  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp8   3072 x 4096   M=8   vllm     21.4 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.8  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp8   3072 x 4096   M=32  vllm     21.1 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.5  ratio nan 
+GLM-5.3-Flash              mlp_gate_up     tp8   3072 x 4096   M=64  vllm     21.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     20.5  ratio nan 
+   (0.3 s, 16 copies)
+GLM-5.3-Flash              expert_gate_up  tp8    512 x 4096   M=1   vllm     13.2 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      5.6  ratio nan 
+GLM-5.3-Flash              expert_gate_up  tp8    512 x 4096   M=8   vllm     20.4 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      5.5  ratio nan 
+GLM-5.3-Flash              expert_gate_up  tp8    512 x 4096   M=32  vllm     20.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      5.4  ratio nan 
+GLM-5.3-Flash              expert_gate_up  tp8    512 x 4096   M=64  vllm     20.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      5.4  ratio nan 
+   (0.9 s, 64 copies)
+GLM-5.3-Flash              expert_down     tp8   4096 x 256    M=1   vllm      7.2 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      4.6  ratio nan 
+GLM-5.3-Flash              expert_down     tp8   4096 x 256    M=8   vllm      9.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      4.5  ratio nan 
+GLM-5.3-Flash              expert_down     tp8   4096 x 256    M=32  vllm     10.4 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      4.5  ratio nan 
+GLM-5.3-Flash              expert_down     tp8   4096 x 256    M=64  vllm     10.5 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack      4.5  ratio nan 
+   (0.6 s, 64 copies)
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=1   vllm     34.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    100.8  ratio nan 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=8   vllm     39.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    100.6  ratio nan 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=32  vllm     39.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    100.1  ratio nan 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=64  vllm     41.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    100.0  ratio nan 
+   (0.3 s, 3 copies)
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=1   vllm     19.7 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     45.9  ratio nan 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=8   vllm     27.7 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     45.9  ratio nan 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=32  vllm     27.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     45.9  ratio nan 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=64  vllm     27.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     45.4  ratio nan 
+   (0.2 s, 7 copies)
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=1   vllm     37.4 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    112.3  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=8   vllm     42.7 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    112.1  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=32  vllm     43.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    112.1  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=64  vllm     45.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    112.2  ratio nan 
+   (0.2 s, 3 copies)
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=1   vllm     26.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     72.3  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=8   vllm     30.8 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     73.1  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=32  vllm     31.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     73.1  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=64  vllm     33.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     72.7  ratio nan 
+   (0.2 s, 4 copies)
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=1   vllm     19.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     45.7  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=8   vllm     25.3 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     46.0  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=32  vllm     25.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     45.6  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=64  vllm     25.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack     45.6  ratio nan 
+   (0.2 s, 7 copies)
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=1   vllm     75.2 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    233.4  ratio nan 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=8   vllm     92.9 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    233.4  ratio nan 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=32  vllm     94.6 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    233.5  ratio nan 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=64  vllm     95.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    234.7  ratio nan 
+   (0.3 s, 2 copies)
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=1   vllm     39.7 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    121.6  ratio nan 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=8   vllm     59.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    122.4  ratio nan 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=32  vllm     58.0 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    121.3  ratio nan 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=64  vllm     59.1 us (CutlassFp8BlockScaledMMKernel)  ours      nan  unpack    119.8  ratio nan 
+   (0.2 s, 3 copies)
+INFO 10-05 17:41:50 [__init__.py:923] Using MarlinMxfp8LinearKernel for MXFP8 GEMM
+MiniMax-M3-MXFP8           qkv             tp1   9216 x 6144   M=1   vllm     26.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     79.1  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp1   9216 x 6144   M=8   vllm     26.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     79.0  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp1   9216 x 6144   M=32  vllm     31.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     78.8  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp1   9216 x 6144   M=64  vllm     41.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     78.8  ratio nan 
+   (0.6 s, 4 copies)
+MiniMax-M3-MXFP8           o               tp1   6144 x 8192   M=1   vllm     24.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     70.2  ratio nan 
+MiniMax-M3-MXFP8           o               tp1   6144 x 8192   M=8   vllm     24.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     70.3  ratio nan 
+MiniMax-M3-MXFP8           o               tp1   6144 x 8192   M=32  vllm     29.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     70.4  ratio nan 
+MiniMax-M3-MXFP8           o               tp1   6144 x 8192   M=64  vllm     40.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     70.3  ratio nan 
+   (0.2 s, 4 copies)
+MiniMax-M3-MXFP8           mlp_gate_up     tp1  24576 x 6144   M=1   vllm     59.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    199.8  ratio nan 
+MiniMax-M3-MXFP8           mlp_gate_up     tp1  24576 x 6144   M=8   vllm     59.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    199.7  ratio nan 
+MiniMax-M3-MXFP8           mlp_gate_up     tp1  24576 x 6144   M=32  vllm     64.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    199.9  ratio nan 
+MiniMax-M3-MXFP8           mlp_gate_up     tp1  24576 x 6144   M=64  vllm     76.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    198.5  ratio nan 
+   (0.2 s, 2 copies)
+MiniMax-M3-MXFP8           mlp_down        tp1   6144 x 12288  M=1   vllm     33.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    102.1  ratio nan 
+MiniMax-M3-MXFP8           mlp_down        tp1   6144 x 12288  M=8   vllm     33.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    102.0  ratio nan 
+MiniMax-M3-MXFP8           mlp_down        tp1   6144 x 12288  M=32  vllm     39.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    102.0  ratio nan 
+MiniMax-M3-MXFP8           mlp_down        tp1   6144 x 12288  M=64  vllm     53.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    102.1  ratio nan 
+   (0.2 s, 3 copies)
+MiniMax-M3-MXFP8           expert_gate_up  tp1   6144 x 6144   M=1   vllm     19.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     53.4  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp1   6144 x 6144   M=8   vllm     20.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     53.4  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp1   6144 x 6144   M=32  vllm     23.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     53.3  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp1   6144 x 6144   M=64  vllm     32.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     53.0  ratio nan 
+   (0.2 s, 6 copies)
+MiniMax-M3-MXFP8           expert_down     tp1   6144 x 3072   M=1   vllm     13.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     29.1  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp1   6144 x 3072   M=8   vllm     13.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     29.4  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp1   6144 x 3072   M=32  vllm     14.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     29.4  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp1   6144 x 3072   M=64  vllm     21.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     29.4  ratio nan 
+   (0.2 s, 11 copies)
+INFO 10-05 17:41:51 [marlin_utils.py:612] Marlin kernel can achieve better performance for small size_n with experimental use_atomic_add feature. You can consider set environment variable VLLM_MARLIN_USE_ATOMIC_ADD to 1 if possible.
+MiniMax-M3-MXFP8           index_q         tp1    512 x 6144   M=1   vllm     20.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      7.0  ratio nan 
+MiniMax-M3-MXFP8           index_q         tp1    512 x 6144   M=8   vllm     20.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      7.1  ratio nan 
+MiniMax-M3-MXFP8           index_q         tp1    512 x 6144   M=32  vllm     23.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      7.1  ratio nan 
+MiniMax-M3-MXFP8           index_q         tp1    512 x 6144   M=64  vllm     35.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      7.0  ratio nan 
+   (0.9 s, 64 copies)
+MiniMax-M3-MXFP8           qkv             tp2   4608 x 6144   M=1   vllm     17.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     41.9  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp2   4608 x 6144   M=8   vllm     17.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     42.0  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp2   4608 x 6144   M=32  vllm     19.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     41.7  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp2   4608 x 6144   M=64  vllm     27.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     41.4  ratio nan 
+   (0.3 s, 8 copies)
+MiniMax-M3-MXFP8           o               tp2   6144 x 4096   M=1   vllm     15.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     37.3  ratio nan 
+MiniMax-M3-MXFP8           o               tp2   6144 x 4096   M=8   vllm     15.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     37.8  ratio nan 
+MiniMax-M3-MXFP8           o               tp2   6144 x 4096   M=32  vllm     17.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     37.8  ratio nan 
+MiniMax-M3-MXFP8           o               tp2   6144 x 4096   M=64  vllm     24.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     37.6  ratio nan 
+   (0.2 s, 8 copies)
+MiniMax-M3-MXFP8           mlp_gate_up     tp2  12288 x 6144   M=1   vllm     33.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    102.1  ratio nan 
+MiniMax-M3-MXFP8           mlp_gate_up     tp2  12288 x 6144   M=8   vllm     33.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    102.1  ratio nan 
+MiniMax-M3-MXFP8           mlp_gate_up     tp2  12288 x 6144   M=32  vllm     37.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    102.7  ratio nan 
+MiniMax-M3-MXFP8           mlp_gate_up     tp2  12288 x 6144   M=64  vllm     45.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack    102.8  ratio nan 
+   (0.2 s, 3 copies)
+MiniMax-M3-MXFP8           expert_gate_up  tp2   3072 x 6144   M=1   vllm     13.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     29.4  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp2   3072 x 6144   M=8   vllm     13.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     29.5  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp2   3072 x 6144   M=32  vllm     15.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     29.1  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp2   3072 x 6144   M=64  vllm     21.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     29.1  ratio nan 
+   (0.2 s, 11 copies)
+MiniMax-M3-MXFP8           expert_down     tp2   6144 x 1536   M=1   vllm     10.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     16.4  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp2   6144 x 1536   M=8   vllm     10.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     16.3  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp2   6144 x 1536   M=32  vllm     11.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     16.3  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp2   6144 x 1536   M=64  vllm     16.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     16.3  ratio nan 
+   (0.3 s, 22 copies)
+MiniMax-M3-MXFP8           qkv             tp4   2304 x 6144   M=1   vllm     13.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     23.2  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp4   2304 x 6144   M=8   vllm     12.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     23.2  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp4   2304 x 6144   M=32  vllm     14.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     23.2  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp4   2304 x 6144   M=64  vllm     20.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     23.1  ratio nan 
+   (0.3 s, 15 copies)
+MiniMax-M3-MXFP8           o               tp4   6144 x 2048   M=1   vllm     11.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     20.5  ratio nan 
+MiniMax-M3-MXFP8           o               tp4   6144 x 2048   M=8   vllm     11.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     20.7  ratio nan 
+MiniMax-M3-MXFP8           o               tp4   6144 x 2048   M=32  vllm     12.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     20.6  ratio nan 
+MiniMax-M3-MXFP8           o               tp4   6144 x 2048   M=64  vllm     17.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     20.6  ratio nan 
+   (0.3 s, 16 copies)
+MiniMax-M3-MXFP8           expert_gate_up  tp4   1536 x 6144   M=1   vllm     13.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     16.3  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp4   1536 x 6144   M=8   vllm     13.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     16.3  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp4   1536 x 6144   M=32  vllm     14.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     16.2  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp4   1536 x 6144   M=64  vllm     20.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     16.2  ratio nan 
+   (0.3 s, 22 copies)
+MiniMax-M3-MXFP8           expert_down     tp4   6144 x 768    M=1   vllm      7.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      9.8  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp4   6144 x 768    M=8   vllm      7.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      9.8  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp4   6144 x 768    M=32  vllm      9.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      9.7  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp4   6144 x 768    M=64  vllm     13.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      9.7  ratio nan 
+   (0.4 s, 43 copies)
+MiniMax-M3-MXFP8           qkv             tp8   1152 x 6144   M=1   vllm     13.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.8  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp8   1152 x 6144   M=8   vllm     13.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     13.0  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp8   1152 x 6144   M=32  vllm     15.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     13.0  ratio nan 
+MiniMax-M3-MXFP8           qkv             tp8   1152 x 6144   M=64  vllm     22.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     13.0  ratio nan 
+   (0.4 s, 29 copies)
+MiniMax-M3-MXFP8           o               tp8   6144 x 1024   M=1   vllm      9.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.2  ratio nan 
+MiniMax-M3-MXFP8           o               tp8   6144 x 1024   M=8   vllm      9.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.2  ratio nan 
+MiniMax-M3-MXFP8           o               tp8   6144 x 1024   M=32  vllm     10.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.2  ratio nan 
+MiniMax-M3-MXFP8           o               tp8   6144 x 1024   M=64  vllm     14.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.2  ratio nan 
+   (0.4 s, 32 copies)
+MiniMax-M3-MXFP8           expert_gate_up  tp8    768 x 6144   M=1   vllm     15.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      9.7  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp8    768 x 6144   M=8   vllm     15.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      9.7  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp8    768 x 6144   M=32  vllm     18.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      9.8  ratio nan 
+MiniMax-M3-MXFP8           expert_gate_up  tp8    768 x 6144   M=64  vllm     26.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      9.7  ratio nan 
+   (0.6 s, 43 copies)
+MiniMax-M3-MXFP8           expert_down     tp8   6144 x 384    M=1   vllm      7.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.7  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp8   6144 x 384    M=8   vllm      7.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.7  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp8   6144 x 384    M=32  vllm      5.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.7  ratio nan 
+MiniMax-M3-MXFP8           expert_down     tp8   6144 x 384    M=64  vllm      7.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.7  ratio nan 
+   (0.4 s, 64 copies)
+INFO 10-05 17:41:57 [__init__.py:758] Selected CutlassFP8ScaledMMLinearKernel for bench
+INFO 10-05 17:41:57 [deep_gemm.py:192] deep_gemm not found in site-packages, trying vendored vllm.third_party.deep_gemm
+INFO 10-05 17:41:57 [deep_gemm.py:219] DeepGEMM PDL enabled on vllm.third_party.deep_gemm.
+INFO 10-05 17:41:57 [deep_gemm.py:136] DeepGEMM E8M0 enabled on current platform.
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=1   vllm      6.9 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     11.5  ratio nan 
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=8   vllm      7.1 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     11.5  ratio nan 
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=32  vllm      8.2 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     11.3  ratio nan 
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=64  vllm      8.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     11.3  ratio nan 
+   (1.2 s, 37 copies)
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=1   vllm      5.9 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      8.6  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=8   vllm      6.0 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      8.5  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=32  vllm      6.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      8.5  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=64  vllm      6.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      8.4  ratio nan 
+   (0.4 s, 48 copies)
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=1   vllm      5.1 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.4  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=8   vllm      5.1 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.4  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=32  vllm      5.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.4  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=64  vllm      5.5 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.4  ratio nan 
+   (0.4 s, 64 copies)
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=1   vllm     10.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     26.8  ratio nan 
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=8   vllm     10.4 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     26.7  ratio nan 
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=32  vllm     11.1 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     26.7  ratio nan 
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=64  vllm     10.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     26.8  ratio nan 
+   (0.2 s, 12 copies)
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=1   vllm      7.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     14.7  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=8   vllm      7.5 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     14.7  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=32  vllm      7.7 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     14.7  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=64  vllm      7.7 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     14.6  ratio nan 
+   (0.3 s, 24 copies)
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=1   vllm      5.4 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.5  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=8   vllm      5.4 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.5  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=32  vllm      5.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.5  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=64  vllm      5.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.5  ratio nan 
+   (0.5 s, 64 copies)
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=1   vllm      4.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.5  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=8   vllm      4.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.4  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=32  vllm      5.0 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.4  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=64  vllm      5.1 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.4  ratio nan 
+   (0.4 s, 64 copies)
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=1   vllm      7.6 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     14.6  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=8   vllm      7.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     14.6  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=32  vllm      8.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     14.5  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=64  vllm      8.7 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack     14.3  ratio nan 
+   (0.3 s, 24 copies)
+Mistral-Small-4-119B-2603  q_b             tp4   1024 x 1024   M=1   vllm      5.2 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.5  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp4   1024 x 1024   M=8   vllm      5.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.5  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp4   1024 x 1024   M=32  vllm      5.5 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.5  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp4   1024 x 1024   M=64  vllm      5.5 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.5  ratio nan 
+   (0.4 s, 64 copies)
+Mistral-Small-4-119B-2603  kv_b            tp4   1536 x 256    M=1   vllm      3.7 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.4  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp4   1536 x 256    M=8   vllm      3.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.3  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp4   1536 x 256    M=32  vllm      4.0 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.3  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp4   1536 x 256    M=64  vllm      4.1 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.3  ratio nan 
+   (0.4 s, 64 copies)
+Mistral-Small-4-119B-2603  expert_gate_up  tp4   1024 x 4096   M=1   vllm      6.9 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      8.5  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp4   1024 x 4096   M=8   vllm      7.1 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      8.5  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp4   1024 x 4096   M=32  vllm      7.2 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      8.5  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp4   1024 x 4096   M=64  vllm      7.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      8.5  ratio nan 
+   (0.4 s, 48 copies)
+Mistral-Small-4-119B-2603  expert_down     tp4   4096 x 512    M=1   vllm      5.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.6  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp4   4096 x 512    M=8   vllm      5.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.6  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp4   4096 x 512    M=32  vllm      5.7 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.6  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp4   4096 x 512    M=64  vllm      5.7 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.5  ratio nan 
+   (0.5 s, 64 copies)
+Mistral-Small-4-119B-2603  q_b             tp8    512 x 1024   M=1   vllm      4.5 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.4  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp8    512 x 1024   M=8   vllm      4.5 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.3  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp8    512 x 1024   M=32  vllm      4.6 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.3  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp8    512 x 1024   M=64  vllm      4.7 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.4  ratio nan 
+   (0.4 s, 64 copies)
+Mistral-Small-4-119B-2603  kv_b            tp8    768 x 256    M=1   vllm      3.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.2  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp8    768 x 256    M=8   vllm      3.9 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.1  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp8    768 x 256    M=32  vllm      4.0 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.1  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp8    768 x 256    M=64  vllm      4.0 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.1  ratio nan 
+   (0.4 s, 64 copies)
+Mistral-Small-4-119B-2603  expert_gate_up  tp8    512 x 4096   M=1   vllm      6.7 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.6  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp8    512 x 4096   M=8   vllm      6.8 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.5  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp8    512 x 4096   M=32  vllm      6.9 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.5  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp8    512 x 4096   M=64  vllm      7.1 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      5.5  ratio nan 
+   (0.5 s, 64 copies)
+Mistral-Small-4-119B-2603  expert_down     tp8   4096 x 256    M=1   vllm      4.9 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.5  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp8   4096 x 256    M=8   vllm      4.9 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.5  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp8   4096 x 256    M=32  vllm      5.1 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.5  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp8   4096 x 256    M=64  vllm      5.3 us (CutlassFP8ScaledMMLinearKernel)  ours      nan  unpack      4.5  ratio nan 
+   (0.4 s, 64 copies)
+DeepSeek-V4.1-Flash        wq_a            tp1   1280 x 5120   M=1   vllm     12.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.8  ratio nan 
+DeepSeek-V4.1-Flash        wq_a            tp1   1280 x 5120   M=8   vllm     12.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.8  ratio nan 
+DeepSeek-V4.1-Flash        wq_a            tp1   1280 x 5120   M=32  vllm     14.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.8  ratio nan 
+DeepSeek-V4.1-Flash        wq_a            tp1   1280 x 5120   M=64  vllm     20.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.7  ratio nan 
+   (0.5 s, 31 copies)
+DeepSeek-V4.1-Flash        wkv             tp1    512 x 5120   M=1   vllm     18.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.9  ratio nan 
+DeepSeek-V4.1-Flash        wkv             tp1    512 x 5120   M=8   vllm     18.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.9  ratio nan 
+DeepSeek-V4.1-Flash        wkv             tp1    512 x 5120   M=32  vllm     21.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.9  ratio nan 
+DeepSeek-V4.1-Flash        wkv             tp1    512 x 5120   M=64  vllm     30.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      7.0  ratio nan 
+   (0.8 s, 64 copies)
+DeepSeek-V4.1-Flash        wq_b            tp1  32768 x 1280   M=1   vllm     20.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     59.8  ratio nan 
+DeepSeek-V4.1-Flash        wq_b            tp1  32768 x 1280   M=8   vllm     21.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     60.1  ratio nan 
+DeepSeek-V4.1-Flash        wq_b            tp1  32768 x 1280   M=32  vllm     20.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     60.1  ratio nan 
+DeepSeek-V4.1-Flash        wq_b            tp1  32768 x 1280   M=64  vllm     24.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     60.2  ratio nan 
+   (0.2 s, 5 copies)
+DeepSeek-V4.1-Flash        wo_a            tp1   8192 x 4096   M=1   vllm     17.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     49.1  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp1   8192 x 4096   M=8   vllm     17.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     49.2  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp1   8192 x 4096   M=32  vllm     18.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     49.1  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp1   8192 x 4096   M=64  vllm     24.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     48.8  ratio nan 
+   (0.2 s, 6 copies)
+DeepSeek-V4.1-Flash        wo_b            tp1   5120 x 8192   M=1   vllm     22.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     59.7  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp1   5120 x 8192   M=8   vllm     22.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     59.7  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp1   5120 x 8192   M=32  vllm     25.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     59.7  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp1   5120 x 8192   M=64  vllm     34.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     60.1  ratio nan 
+   (0.2 s, 5 copies)
+DeepSeek-V4.1-Flash        indexer_wq_b    tp1   4096 x 1280   M=1   vllm      7.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     10.2  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp1   4096 x 1280   M=8   vllm      7.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     10.2  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp1   4096 x 1280   M=32  vllm      8.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     10.2  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp1   4096 x 1280   M=64  vllm     11.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     10.2  ratio nan 
+   (0.3 s, 39 copies)
+DeepSeek-V4.1-Flash        shared_w13      tp1   4608 x 5120   M=1   vllm     15.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     35.9  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp1   4608 x 5120   M=8   vllm     15.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     35.9  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp1   4608 x 5120   M=32  vllm     16.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     35.6  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp1   4608 x 5120   M=64  vllm     23.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     35.4  ratio nan 
+   (0.2 s, 9 copies)
+DeepSeek-V4.1-Flash        shared_w2       tp1   5120 x 2304   M=1   vllm     10.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     19.5  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp1   5120 x 2304   M=8   vllm     10.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     19.5  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp1   5120 x 2304   M=32  vllm     12.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     19.5  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp1   5120 x 2304   M=64  vllm     17.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     19.6  ratio nan 
+   (0.3 s, 17 copies)
+DeepSeek-V4.1-Flash        wq_b            tp2  16384 x 1280   M=1   vllm     11.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     32.5  ratio nan 
+DeepSeek-V4.1-Flash        wq_b            tp2  16384 x 1280   M=8   vllm     11.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     32.6  ratio nan 
+DeepSeek-V4.1-Flash        wq_b            tp2  16384 x 1280   M=32  vllm     14.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     32.5  ratio nan 
+DeepSeek-V4.1-Flash        wq_b            tp2  16384 x 1280   M=64  vllm     18.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     32.5  ratio nan 
+   (0.2 s, 10 copies)
+DeepSeek-V4.1-Flash        wo_a            tp2   4096 x 4096   M=1   vllm     11.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     27.0  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp2   4096 x 4096   M=8   vllm     11.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     27.0  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp2   4096 x 4096   M=32  vllm     12.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     27.0  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp2   4096 x 4096   M=64  vllm     17.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     27.0  ratio nan 
+   (0.2 s, 12 copies)
+DeepSeek-V4.1-Flash        wo_b            tp2   5120 x 4096   M=1   vllm     14.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     32.6  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp2   5120 x 4096   M=8   vllm     14.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     32.8  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp2   5120 x 4096   M=32  vllm     15.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     32.7  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp2   5120 x 4096   M=64  vllm     22.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     32.6  ratio nan 
+   (0.2 s, 10 copies)
+DeepSeek-V4.1-Flash        indexer_wq_b    tp2   2048 x 1280   M=1   vllm      8.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.9  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp2   2048 x 1280   M=8   vllm      8.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.9  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp2   2048 x 1280   M=32  vllm      9.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.9  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp2   2048 x 1280   M=64  vllm     13.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      6.9  ratio nan 
+   (0.5 s, 64 copies)
+DeepSeek-V4.1-Flash        shared_w13      tp2   2304 x 5120   M=1   vllm     12.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     19.3  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp2   2304 x 5120   M=8   vllm     12.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     19.3  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp2   2304 x 5120   M=32  vllm     13.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     19.3  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp2   2304 x 5120   M=64  vllm     19.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     19.4  ratio nan 
+   (0.3 s, 17 copies)
+DeepSeek-V4.1-Flash        shared_w2       tp2   5120 x 1152   M=1   vllm      8.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.2  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp2   5120 x 1152   M=8   vllm      8.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.2  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp2   5120 x 1152   M=32  vllm     10.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.1  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp2   5120 x 1152   M=64  vllm     13.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.0  ratio nan 
+   (0.4 s, 34 copies)
+DeepSeek-V4.1-Flash        wq_b            tp4   8192 x 1280   M=1   vllm      9.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     17.6  ratio nan 
+DeepSeek-V4.1-Flash        wq_b            tp4   8192 x 1280   M=8   vllm      9.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     17.8  ratio nan 
+DeepSeek-V4.1-Flash        wq_b            tp4   8192 x 1280   M=32  vllm      8.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     17.8  ratio nan 
+DeepSeek-V4.1-Flash        wq_b            tp4   8192 x 1280   M=64  vllm     11.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     17.8  ratio nan 
+   (0.3 s, 20 copies)
+DeepSeek-V4.1-Flash        wo_a            tp4   2048 x 4096   M=1   vllm     10.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     15.0  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp4   2048 x 4096   M=8   vllm     10.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     15.0  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp4   2048 x 4096   M=32  vllm     11.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     15.0  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp4   2048 x 4096   M=64  vllm     16.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     15.0  ratio nan 
+   (0.3 s, 24 copies)
+DeepSeek-V4.1-Flash        wo_b            tp4   5120 x 2048   M=1   vllm     11.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     17.8  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp4   5120 x 2048   M=8   vllm     11.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     17.8  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp4   5120 x 2048   M=32  vllm     11.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     17.7  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp4   5120 x 2048   M=64  vllm     16.6 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     17.7  ratio nan 
+   (0.3 s, 20 copies)
+DeepSeek-V4.1-Flash        indexer_wq_b    tp4   1024 x 1280   M=1   vllm      8.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      5.4  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp4   1024 x 1280   M=8   vllm      8.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      5.5  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp4   1024 x 1280   M=32  vllm     10.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      5.5  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp4   1024 x 1280   M=64  vllm     14.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      5.4  ratio nan 
+   (0.5 s, 64 copies)
+DeepSeek-V4.1-Flash        shared_w13      tp4   1152 x 5120   M=1   vllm     13.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.2  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp4   1152 x 5120   M=8   vllm     13.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.2  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp4   1152 x 5120   M=32  vllm     15.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.1  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp4   1152 x 5120   M=64  vllm     21.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     12.1  ratio nan 
+   (0.4 s, 34 copies)
+DeepSeek-V4.1-Flash        shared_w2       tp4   5120 x 576    M=1   vllm      7.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      8.4  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp4   5120 x 576    M=8   vllm      7.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      8.5  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp4   5120 x 576    M=32  vllm     13.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      8.4  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp4   5120 x 576    M=64  vllm     18.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      8.4  ratio nan 
+   (0.6 s, 64 copies)
+DeepSeek-V4.1-Flash        wo_a            tp8   1024 x 4096   M=1   vllm     12.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      8.7  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp8   1024 x 4096   M=8   vllm     12.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      8.8  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp8   1024 x 4096   M=32  vllm     15.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      8.8  ratio nan 
+DeepSeek-V4.1-Flash        wo_a            tp8   1024 x 4096   M=64  vllm     21.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      8.8  ratio nan 
+   (0.5 s, 48 copies)
+DeepSeek-V4.1-Flash        wo_b            tp8   5120 x 1024   M=1   vllm      9.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     10.2  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp8   5120 x 1024   M=8   vllm      9.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     10.2  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp8   5120 x 1024   M=32  vllm     10.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     10.2  ratio nan 
+DeepSeek-V4.1-Flash        wo_b            tp8   5120 x 1024   M=64  vllm     13.8 us (MarlinMxfp8LinearKernel)  ours      nan  unpack     10.0  ratio nan 
+   (0.4 s, 39 copies)
+DeepSeek-V4.1-Flash        indexer_wq_b    tp8    512 x 1280   M=1   vllm     13.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      4.5  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp8    512 x 1280   M=8   vllm     13.2 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      4.5  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp8    512 x 1280   M=32  vllm     15.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      4.5  ratio nan 
+DeepSeek-V4.1-Flash        indexer_wq_b    tp8    512 x 1280   M=64  vllm     22.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      4.5  ratio nan 
+   (0.6 s, 64 copies)
+DeepSeek-V4.1-Flash        shared_w13      tp8    576 x 5120   M=1   vllm     19.0 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      7.1  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp8    576 x 5120   M=8   vllm     18.9 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      7.0  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp8    576 x 5120   M=32  vllm     21.5 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      7.0  ratio nan 
+DeepSeek-V4.1-Flash        shared_w13      tp8    576 x 5120   M=64  vllm     31.1 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      7.0  ratio nan 
+   (0.9 s, 64 copies)
+WARNING 10-05 17:42:13 [marlin_utils.py:238] Marlin requires thread-tile padding for some weight shapes in this model. Activations and/or outputs of the padded layers are padded/sliced on every forward; performance may be degraded.
+DeepSeek-V4.1-Flash        shared_w2       tp8   5120 x 288    M=1   vllm      9.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      5.7  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp8   5120 x 288    M=8   vllm     10.3 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      5.7  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp8   5120 x 288    M=32  vllm     15.7 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      5.7  ratio nan 
+DeepSeek-V4.1-Flash        shared_w2       tp8   5120 x 288    M=64  vllm     21.4 us (MarlinMxfp8LinearKernel)  ours      nan  unpack      5.7  ratio nan 
+   (0.6 s, 64 copies)
+bench exit 0

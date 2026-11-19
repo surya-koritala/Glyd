@@ -1,0 +1,8 @@
+{
+  "kind": "NativeDaemonPostRunVerification",
+  "temporary_token_in_database": false,
+  "current_quarantine_retained": true,
+  "prior_quarantine_retained": true,
+  "approval_consumed": true,
+  "external_spend_usd": 0
+}

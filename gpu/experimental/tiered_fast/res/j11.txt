@@ -1,0 +1,98 @@
+=== j11_o10_m1_every0.txt
+=== j11_o10_m1_every1.txt
+packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+FLAGEVERY=1: 16384 of 16384 steps flagged cold
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 7 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         188.2     298.6   1.586   ok, = v1 bit for bit
+v2 lib         165.8     262.6   1.584   ok, = v1 bit for bit
+o552u1w2b8s     157.0     249.3   1.588   ok, = v1 bit for bit
+o552u1w4b4s     163.8     259.6   1.585   ok, = v1 bit for bit
+o568u3w4b4s     160.8     255.1   1.588   ok, = v1 bit for bit
+=== j11_o10_m1_every10.txt
+packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+FLAGEVERY=10: 1639 of 16384 steps flagged cold
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 7 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         187.9     298.1   1.586   ok, = v1 bit for bit
+v2 lib         165.7     262.4   1.583   ok, = v1 bit for bit
+o552u1w2b8s     132.0     209.4   1.588   ok, = v1 bit for bit
+o552u1w4b4s     138.9     220.4   1.585   ok, = v1 bit for bit
+o568u3w4b4s     134.6     213.4   1.585   ok, = v1 bit for bit
+=== j11_o10_m1_every100.txt
+packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+FLAGEVERY=100: 164 of 16384 steps flagged cold
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 7 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         188.1     298.3   1.586   ok, = v1 bit for bit
+v2 lib         165.6     262.9   1.584   ok, = v1 bit for bit
+o552u1w2b8s     128.6     203.8   1.584   ok, = v1 bit for bit
+o552u1w4b4s     137.8     216.5   1.573   ok, = v1 bit for bit
+o568u3w4b4s     131.1     206.7   1.577   ok, = v1 bit for bit
+=== j11_o10_m1_every2.txt
+packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+FLAGEVERY=2: 8192 of 16384 steps flagged cold
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 7 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         189.7     298.7   1.573   ok, = v1 bit for bit
+v2 lib         167.1     262.9   1.579   ok, = v1 bit for bit
+o552u1w2b8s     142.9     226.3   1.583   ok, = v1 bit for bit
+o552u1w4b4s     150.7     237.0   1.572   ok, = v1 bit for bit
+o568u3w4b4s     148.1     232.9   1.580   ok, = v1 bit for bit
+=== j11_o10_m1_every20.txt
+packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+FLAGEVERY=20: 820 of 16384 steps flagged cold
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 7 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         189.6     297.9   1.571   ok, = v1 bit for bit
+v2 lib         166.7     262.2   1.571   ok, = v1 bit for bit
+o552u1w2b8s     131.6     207.1   1.571   ok, = v1 bit for bit
+o552u1w4b4s     139.1     218.5   1.572   ok, = v1 bit for bit
+o568u3w4b4s     133.6     209.7   1.564   ok, = v1 bit for bit
+=== j11_o10_m1_every5.txt
+packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+FLAGEVERY=5: 3277 of 16384 steps flagged cold
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 7 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         189.8     298.4   1.571   ok, = v1 bit for bit
+v2 lib         167.3     262.9   1.572   ok, = v1 bit for bit
+o552u1w2b8s     135.2     212.2   1.571   ok, = v1 bit for bit
+o552u1w4b4s     142.8     224.5   1.570   ok, = v1 bit for bit
+o568u3w4b4s     138.8     218.0   1.571   ok, = v1 bit for bit
+=== j11_o10_m8_every0.txt
+=== j11_o10_m8_every20.txt
+packs/o10: 4096x4096, M=8, 58 SMs, 1 weight copies
+FLAGEVERY=20: 820 of 16384 steps flagged cold
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 5 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         197.0     307.0   1.556   ok, = v1 bit for bit
+v2 lib         174.8     272.1   1.553   ok, = v1 bit for bit
+o552u1w2b8s     153.5     238.8   1.555   ok, differs from v1's
+o552u1w4b4s     152.8     237.7   1.556   ok, differs from v1's
+o568u3w4b4s     146.8     228.0   1.561   ok, differs from v1's
+=== j11_o10_m8_every5.txt
+packs/o10: 4096x4096, M=8, 58 SMs, 1 weight copies
+FLAGEVERY=5: 3277 of 16384 steps flagged cold
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 5 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         198.9     306.9   1.542   ok, = v1 bit for bit
+v2 lib         176.6     272.2   1.541   ok, = v1 bit for bit
+o552u1w2b8s     158.3     244.1   1.542   ok, differs from v1's
+o552u1w4b4s     157.5     242.6   1.544   ok, differs from v1's
+o568u3w4b4s     152.1     235.7   1.547   ok, differs from v1's

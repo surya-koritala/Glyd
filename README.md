@@ -1,83 +1,73 @@
 <h1 align="center">Glyd</h1>
-<h3 align="center">Lossless AI compression: 33% less GPU memory, bit for bit.</h3>
+<p align="center">Open-source LLM inference in Rust. Name a model; Glyd fits it to your GPU.</p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
 <a href="https://github.com/surya-koritala/Glyd/releases"><img alt="Release" src="https://img.shields.io/github/v/release/surya-koritala/Glyd?label=release"></a>
-<a href="#license"><img alt="License: BUSL-1.1" src="https://img.shields.io/badge/license-BUSL--1.1-blue.svg"></a>
+<a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 </p>
 
-Glyd keeps a bf16 model's weights and KV cache in fewer bits in GPU memory and rebuilds the exact values
-as the model runs. It is the same model in about a third less memory, so it fits a smaller GPU or serves
-more requests on the same one.
+- **Lossless compression in GPU memory**: weights and KV cache in ~10.8 and 12 bits, decoded in the kernels, bit for bit
+  (about a third less memory than bf16; `glyd verify` proves a pack equals the original).
+- **Lossy levels when that is not enough**: 6.5, 5.5, 4.5 and ~2-3 bits, chosen for the machine.
+- **MoE larger than the GPU**: busy experts in VRAM, the rest in RAM or on NVMe, misses computed on the CPU.
+- **Many GPUs and machines**: layer split across GPUs; one model across machines ([starlings/](starlings/), beta).
+- **One binary, driver only** (the goal; see Status): no CUDA toolkit, no Python. OpenAI and Anthropic APIs, a chat page.
 
-## Run it
+## Status
+
+The Rust engine runs Qwen3 dense (lossless), Qwen3.5/3.8 and Nemotron-H (lossy levels), Gemma 4 12B/31B and Condor's
+180B MoE on NVIDIA Ampere or newer, Linux x86_64, driver 580+. The current release (v0.32.1) still sends other models, and
+`glyd run` by default, through a frozen vLLM path that needs Python. v0.33.0 is the first release built only from this
+repository, with an engine install that needs no Python; Windows, aarch64 and CUDA 12 drivers follow in v0.34.0. Plan and
+dates: [ROADMAP.md](ROADMAP.md).
+
+## Run the engine
 
 ```bash
-curl -LsSf https://getglyd.com/install.sh | sh
-glyd run Qwen/Qwen3.5-9B                       # settings for your GPU, then a chat in the terminal
-glyd run Qwen/Qwen3.8-27B:swift                # fewer bits, not lossless: :kestrel 6.5 bits per weight, :swift 5.5
+cargo build --release -p glyd-engine                    # needs the CUDA toolkit to build kernels: CONTRIBUTING.md
+target/release/glyd-engine fit Qwen/Qwen3-32B             # the plan and predicted speed for this GPU, before any download
+target/release/glyd-engine run Qwen/Qwen3-8B             # download, pack, chat in the terminal and at http://localhost:8000
+target/release/glyd-engine run Qwen/Qwen3.8-27B:swift    # a lossy level: :kestrel 6.5 bits, :swift 5.5
+target/release/glyd-engine serve MODEL                   # OpenAI and Anthropic APIs
+target/release/glyd-engine doctor                        # what this machine can run, and why not
 ```
 
-With vLLM, or in Python:
-
-```bash
-pip install "glyd[vllm]"
-vllm serve Qwen/Qwen3.5-9B --quantization glyd
-```
-```python
-import glyd
-model = glyd.from_pretrained("Qwen/Qwen3.5-9B")
-```
-
-Linux (x86_64 or aarch64) with an NVIDIA GPU: Ampere, Ada, Hopper or Blackwell, driver 580 or newer.
+A 180B MoE on one 12-16 GB GPU, on Linux or Windows: [condor/](condor/).
 
 ## Results
 
-| Measured | bf16 | Glyd |
-| :--- | ---: | ---: |
-| Qwen3.5-9B under vLLM on an RTX 4090: weights | 17.66 GiB | **12.68 GiB** (−28.2%) |
-| Qwen3.5-9B under vLLM on an RTX 5090: weights | 17.66 GiB | **13.89 GiB** (−21.3%) |
-| Qwen3.5-9B on an RTX 4090 (24 GB): context | out of memory at start (even at 4,096 tokens) | **189,440 tokens** |
-| Qwen3.8-27B under vLLM on an H100: weights | 50.22 GiB | **38.77 GiB** (−22.8%) |
-| Qwen3.8-27B: its layers' matrices, read back bit for bit | 49.52 GB | **33.28 GB** (−32.8%) |
+| Measured | bf16 | Glyd | Path |
+| :--- | ---: | ---: | :--- |
+| Qwen3-32B: 48 GB GPUs needed | 2 | **1** | vLLM plugin |
+| Qwen3.8-27B layer matrices, bit for bit | 49.52 GB | **33.28 GB** | pack |
+| Qwen3.5-9B on an RTX 4090: max context | out of memory | **189,440 tokens** | vLLM plugin |
+| Qwen3.8-Flash-Next 180B MoE on an RTX 4080 SUPER 16 GB | does not fit | **91 tokens/s** | engine (2.9 bits, MTP on) |
 
-The freed memory becomes KV cache. Logs: [rtx4090-5090-qwen35-9b-v029-2026-10-06](benchmarks/gpu/rtx4090-5090-qwen35-9b-v029-2026-10-06)
-(Qwen3.5-9B, vLLM 0.30.0; [CHANGELOG v0.29.0](CHANGELOG.md#v0290--2026-10-06)),
-[h100-qwen38-v028-2026-10-03](benchmarks/gpu/h100-qwen38-v028-2026-10-03) and
-[open-models-a10-2026-09-27](benchmarks/gpu/open-models-a10-2026-09-27) (`sizes.txt`). Every result:
-[getglyd.com/benchmarks](https://getglyd.com/benchmarks/).
+Logs: [benchmarks/](benchmarks/), [condor/results/](condor/results/). All results: [DETAILS.md](DETAILS.md).
 
-**What lossless means here:** every weight, and every key and value in the KV cache, reads back as the
-exact bf16 value. Outputs can still differ from bf16's in the last bits, because Glyd's kernels add the
-same products in a different order, as any two GPU kernels do. `exact=True` gives bf16's logits exactly.
+## Repository
 
-## The codec
+| Path | What |
+| :--- | :--- |
+| [`glyd-engine/`](glyd-engine/) | Inference engine (Rust) and its CUDA/HIP kernels |
+| [`gpu/`](gpu/) | GPU library behind a C API: compressed weights and KV cache |
+| [`glyd-gpu/`](glyd-gpu/) | Packer and verifier (CPU) |
+| [`starlings/`](starlings/) | One model across GPUs and machines |
+| [`condor/`](condor/) | Big MoE on one consumer GPU: setup, chat app, benchmarks |
+| [`src/`](src/), [`glyd-store/`](glyd-store/) | Lossless compression codec and store |
+| [`bindings/`](bindings/), [`glyd-gpu-py/`](glyd-gpu-py/) | Python/Go bindings; Python GPU package and vLLM plugin (frozen) |
 
-Underneath the GPU work, Glyd is a lossless compression library and CLI in Rust with a C ABI: a drop-in
-alternative to LZ4, Snappy and zstd that also turns logs and table dumps into typed columns (`-r`) and
-compresses a new version of a file against the old one (`--base`).
+## Develop
 
 ```bash
-brew install surya-koritala/glyd/glyd          # or a release's tarball
-glyd --max events.json -o events.glyd          # fewer bytes than zstd -3, faster reads
-glyd -d events.glyd -o events.json
+cargo build --release --workspace
+cargo test --release --workspace
 ```
 
-## Docs
-
-- [getglyd.com/docs](https://getglyd.com/docs/): getting started, vLLM, the GPU package, the codec.
-- [DETAILS.md](DETAILS.md): everything on one page, with the results and their logs
-  ([as text for LLMs](https://getglyd.com/llms-full.txt)).
-- [CHANGELOG.md](CHANGELOG.md), [the roadmap](https://getglyd.com/roadmap/), [SECURITY.md](SECURITY.md).
+Design: [docs/architecture.md](docs/architecture.md). Work list: [ROADMAP.md](ROADMAP.md). Building with CUDA or ROCm,
+GPU tests, adding a model: [CONTRIBUTING.md](CONTRIBUTING.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-From v0.29.0 all of Glyd is under the [Business Source License 1.1](LICENSE): the `glyd` crate and CLI, the C ABI, the
-Python and Go bindings, the store (`glyd-store`) and the GPU package (`glyd-gpu`).
-
-Free forever for personal and non-commercial use (including education, research and nonprofits) on computers you own or rent for yourself, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release.
-
-Releases up to v0.28 keep the licenses they shipped with, in those releases' tags: the codec (the `glyd` crate, CLI, C ABI
-and bindings) under BSD-3-Clause OR GPL-2.0, the store and the GPU package under BUSL-1.1. Code in
-[third_party/](third_party/) keeps its own license.
+Apache-2.0, all of it ([LICENSE](LICENSE), [NOTICE](NOTICE)). Code in [third_party/](third_party/) keeps its own license.

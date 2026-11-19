@@ -1,0 +1,27 @@
+# Optional fuzz graph: narrower than the production allowlist, with the same
+# advisory/source rules. This grants no license to the unpublished project.
+[graph]
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "MIT-0", "Unicode-3.0", "Zlib"]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[[licenses.exceptions]]
+name = "libfuzzer-sys"
+version = "=0.4.13"
+allow = ["NCSA"]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

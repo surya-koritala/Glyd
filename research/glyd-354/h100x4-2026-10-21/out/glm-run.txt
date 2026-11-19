@@ -1,0 +1,6 @@
+GLM-5.3-Flash (GLM-5.3-Flash): about 266.0 GiB on the GPUs at the penguin level (lossless: the release's weights exactly); layers 0..14 on GPU 0 (NVIDIA H100 80GB HBM3), layers 14..25 on GPU 1 (NVIDIA H100 80GB HBM3), layers 25..36 on GPU 2 (NVIDIA H100 80GB HBM3), layers 36..45 on GPU 3 (NVIDIA H100 80GB HBM3).
+Its FP8 matrices are held coded (the same values in about 7 bits of 8) for it to fit; as they are, they do not.
+Ready in 2m29s: GLM-5.3-Flash on 4 GPUs, 266.0 GiB of weights, 8192 tokens of context, one user at a time.
+The user is asking a simple factual question: What is the capital of France? They want the answer in one sentence.
+
+This is straightforward. The capital of France is Paris. I should answer in one sentence as requested.The capital of France is Paris.

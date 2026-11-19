@@ -1,0 +1,17 @@
+{
+  "kind": "NativeDaemonAcceptancePreparation",
+  "implementation_commit": "d329e9ffcc43d3f832f479c61a748c6b051ea6ea",
+  "binary_sha256": "6dd1102c98692dd880c8ccd1263479e87c92e676daa6fc6191a38c62b1ca0080",
+  "configuration": "80229aa172edc4e1975264410c2d10f2e380a3f0fcd08349f0293a0678735846",
+  "worker_record_digest": "ef82fae64db7b6464b830e9129d42c490fd578cacd73f2fa8464c516aeb3d38a",
+  "profile_evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+  "worker_file_sha256": "506186eef0897f31ff0593c65187f33e923fab7221430d5585a5a6e597ddf9a4",
+  "coordinator_template_sha256": "60841e6001177f92c8462e9896d5beb8658f604ea612aff398c4087e62b80010",
+  "policy_scope": "proposed fixed-input monitored CPU experiment; only verified cache path and enrolled node/cluster changed from measured configuration",
+  "native_started": false,
+  "approval_granted": false,
+  "prior_quarantine_preserved": true,
+  "runner_sha256": "0b4b2696bee5b9d06c50f44a99dd4be8c7623d3645c5bf41c76d28ca0551557c",
+  "preflight_requires_host_permission": true,
+  "service_startup_fail_fast": true
+}

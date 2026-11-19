@@ -1,0 +1,225 @@
+NVIDIA A100-SXM4-40GB (compute 8.0, sm_80, 40960 MiB, class a100, top clock 1410 MHz), x86_64 host, 30 CPUs; tree moe-a100 9267523e (moe_layer.py: the layer's files by name from the cache, no snapshot (a download of one layer leaves an incomplete one: IncompleteSnapshotError), gpu/hf_cache.py and its test) on private/main ddaefb8a; parts check serve sweep dense; model Qwen/Qwen3-30B-A3B, serve kalomaze/Qwen3-16B-A3B; rates 1 inf
+
+################ COMPARABLE: bf16 1410 MHz, 61 C; bf16-2 1410 MHz, 61 C; glyd-picked+kv 1410 MHz, 58 C; glyd-picked+kv+bf16-attn 1410 MHz, 58 C
+
+21:46:03 (+0 s) machine
+21:46:30 (+27 s) env: 27 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA A100-SXM4-40GB)
+21:47:13 (+70 s) thermal preflight: ok: 43 s of load: the last 10 s 64 C at most, SM clock 1272 MHz, 369 W, thermal slowdown in 0 of them, power cap in 10
+21:48:38 (+155 s) build: sm_80 in 128 s (library: C API 14 | GPU code 80)
+21:54:27 (+504 s) serve bf16: exit 0 in 357 s
+21:54:43 (+520 s) check: exit 0 in 16 s, 101 checks ()
+21:54:45 (+522 s) check: the wgmma workspace's test passed (  (no H100, or GLYD_GPU_MOE_WG set: the library's sizes not asked))
+22:03:28 (+1045 s) serve glyd-picked+kv: exit 0 in 523 s
+22:08:34 (+1351 s) serve glyd-picked+kv+bf16-attn: exit 0 in 306 s
+22:13:57 (+1674 s) serve bf16-2: exit 0 in 323 s
+22:13:58 (+1675 s) serve: COMPARABLE: bf16 1410 MHz, 61 C; bf16-2 1410 MHz, 61 C; glyd-picked+kv 1410 MHz, 58 C; glyd-picked+kv+bf16-attn 1410 MHz, 58 C
+22:15:41 (+1778 s) sweep: exit 0 in 103 s
+22:15:41 (+1778 s) dense: not started, 22 s left
+download dl-Qwen3-16B-A3B-whole: exit 0: 32078677512 bytes in 104 s (at +146 s)
+download dl-Qwen3-30B-A3B-layer: exit 0: 4016999536 bytes in 15 s (at +42 s)
+22:15:41 (+1778 s) done
+
+################ can the modes be compared? the SM clock and temperature of each saturated pass, over the seconds its server's iteration lines cover
+COMPARABLE: bf16 1410 MHz, 61 C; bf16-2 1410 MHz, 61 C; glyd-picked+kv 1410 MHz, 58 C; glyd-picked+kv+bf16-attn 1410 MHz, 58 C
+
+| Mode | Pass | Requests/s | SM clock median (MHz) | lowest | Highest temperature (C) | Power median (W) | Seconds |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 1 |  | 1410 | 1095 | 50 | 207 | 92 |
+| bf16 | inf | 4.02 | 1410 | 1395 | 61 | 272 | 63 |
+| bf16-2 | 1 |  | 1410 | 1095 | 50 | 206 | 90 |
+| bf16-2 | inf | 4.00 | 1410 | 1395 | 61 | 274 | 63 |
+| glyd-picked+kv | 1 |  | 1410 | 1095 | 49 | 195 | 89 |
+| glyd-picked+kv | inf | 5.32 | 1410 | 1095 | 58 | 255 | 71 |
+| glyd-picked+kv+bf16-attn | 1 |  | 1410 | 1095 | 48 | 203 | 90 |
+| glyd-picked+kv+bf16-attn | inf | 5.44 | 1410 | 1410 | 58 | 264 | 46 |
+bf16-2: the driver's slowdown reasons, seconds active of 324: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 2, hardware power brake 0
+bf16: the driver's slowdown reasons, seconds active of 357: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 1, hardware power brake 0
+glyd-picked+kv+bf16-attn: the driver's slowdown reasons, seconds active of 306: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 0, hardware power brake 0
+glyd-picked+kv: the driver's slowdown reasons, seconds active of 523: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 0, hardware power brake 0
+
+################ serve, each mode against bf16 (the tables below)
+| Rate (req/s) | Mode | Requests/s | vs bf16 | First token (ms) | vs bf16 | Each token (ms) | vs bf16 | SM clock, median (MHz) | Highest temperature (C) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.94 | 1.00x | 102 | 1.00x | 14.3 | 1.00x | 1410 | 50 |
+| 1 | glyd-picked+kv | 0.95 | 1.01x | 125 | 1.23x | 12.5 | 0.87x | 1410 | 49 |
+| 1 | glyd-picked+kv+bf16-attn | 0.95 | 1.01x | 119 | 1.17x | 12.3 | 0.86x | 1410 | 48 |
+| 1 | bf16-2 | 0.94 | 1.00x | 102 | 1.00x | 14.6 | 1.02x | 1410 | 50 |
+| inf | bf16 | 4.02 | 1.00x | 27299 | 1.00x | 31.8 | 1.00x | 1410 | 61 |
+| inf | glyd-picked+kv | 5.32 | 1.32x | 16435 | 0.60x | 72.0 | 2.26x | 1410 | 58 |
+| inf | glyd-picked+kv+bf16-attn | 5.44 | 1.35x | 15933 | 0.58x | 67.5 | 2.12x | 1410 | 58 |
+| inf | bf16-2 | 4.00 | 1.00x | 27477 | 1.01x | 31.8 | 1.00x | 1410 | 61 |
+
+################ bf16's fused-MoE configuration (its server's log: the baseline's)
+(EngineCore pid=3611) WARNING 10-03 21:50:37.227 [fused_moe.py:1167] Using default MoE config. Performance might be sub-optimal! Config file not found at /home/ubuntu/m28w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/configs/E=64,N=768,device_name=NVIDIA_A100-SXM4-40GB.json
+
+################ where the saturated pass's time went (the servers' iteration lines)
+| Mode | Steps | Seconds | Prompt steps | s | ms a step | us a token | Decode steps | s | ms a step | us a token | Decode steps' mean sequences | Highest KV usage |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 2077 | 63.3 | 174 | 15.9 | 91 | 52 | 1903 | 47.4 | 24.9 | 784 | 32 | 100% |
+| glyd-picked+kv | 4610 | 120.1 | 216 | 54.6 | 253 | 153 | 4394 | 65.6 | 14.9 | 1041 | 38 | 100% |
+| glyd-picked+kv+bf16-attn | 790 | 46.5 | 165 | 23.1 | 140 | 76 | 625 | 23.4 | 37.5 | 465 | 95 | 100% |
+| bf16-2 | 2077 | 63.5 | 173 | 15.9 | 92 | 52 | 1904 | 47.7 | 25.0 | 789 | 32 | 100% |
+
+| Mode | Steps | Count | Seconds | Mean |
+| :--- | :--- | ---: | ---: | ---: |
+| bf16 | decode steps of <64 sequences | 1903 | 47.4 s | 24.9 ms a step |
+| glyd-picked+kv | decode steps of <64 sequences | 4003 | 46.6 s | 11.6 ms a step |
+| glyd-picked+kv | decode steps of 64-127 sequences | 343 | 16.7 s | 48.6 ms a step |
+| glyd-picked+kv | decode steps of 128-191 sequences | 48 | 2.3 s | 48.5 ms a step |
+| glyd-picked+kv+bf16-attn | decode steps of <64 sequences | 233 | 5.5 s | 23.4 ms a step |
+| glyd-picked+kv+bf16-attn | decode steps of 64-127 sequences | 375 | 17.2 s | 45.9 ms a step |
+| glyd-picked+kv+bf16-attn | decode steps of 128-191 sequences | 17 | 0.8 s | 45.6 ms a step |
+| bf16-2 | decode steps of <64 sequences | 1904 | 47.7 s | 25.0 ms a step |
+
+################ the KV cache's lines in its server's log
+(APIServer pid=4528) INFO 10-03 21:55:26.088 [kvcal.py:539] glyd: the lossless KV cache takes tables of /home/ubuntu/hf/hub/models--kalomaze--Qwen3-16B-A3B/snapshots/f36205d54f3ff80f21c89b122785b79382a8a98f for 4,096 positions, made once on vLLM itself (first start: about 1-2 minutes on an L4, then kept in /home/ubuntu/.cache/glyd/kv); its log: kvtab-451cba1f33fb302c.log
+(APIServer pid=4528) INFO 10-03 21:57:17.141 [kvcal.py:550] glyd: the KV cache's tables for /home/ubuntu/hf/hub/models--kalomaze--Qwen3-16B-A3B/snapshots/f36205d54f3ff80f21c89b122785b79382a8a98f made in 111 s: /home/ubuntu/.cache/glyd/kv/kvtab-451cba1f33fb302c.npz
+(EngineCore pid=5091) INFO 10-03 21:57:37.909 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='/home/ubuntu/hf/hub/models--kalomaze--Qwen3-16B-A3B/snapshots/f36205d54f3ff80f21c89b122785b79382a8a98f', speculative_config=None, tokenizer='/home/ubuntu/hf/hub/models--kalomaze--Qwen3-16B-A3B/snapshots/f36205d54f3ff80f21c89b122785b79382a8a98f', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=glyd, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=True, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/home/ubuntu/hf/hub/models--kalomaze--Qwen3-16B-A3B/snapshots/f36205d54f3ff80f21c89b122785b79382a8a98f, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::qwen4_exp_ple_short_conv', 'vllm::qwen4_exp_qsa_with_output', 'vllm::linear_attention', 'vllm::qwen_gdn_attention_core', 'vllm::qwen_gdn_attention_core_fused_norm_packed', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::hpc_rope_norm_forward', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 272, 288, 304, 320, 336, 352, 368, 384, 400, 416, 432, 448, 464, 480, 496, 512], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 512, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+(EngineCore pid=5091) INFO 10-03 21:57:39.635 [vllm_kv.py:926] glyd kv: extra memory of 1.03% and 1.03% of the KV cache
+(EngineCore pid=5091) INFO 10-03 21:57:39.635 [vllm_kv.py:928] glyd kv: 2 tokens of this model's vocabulary need the lossless cache's second extra memory
+(EngineCore pid=5091) INFO 10-03 21:57:39.638 [vllm_plugin.py:586] glyd: mma12 layout, the KV cache lossless (tables /home/ubuntu/.cache/glyd/kv/kvtab-451cba1f33fb302c.npz)
+(EngineCore pid=5091) INFO 10-03 21:58:01.699 [vllm_kv.py:268] glyd kv: tracking up to 2040 blocks a step
+(EngineCore pid=5091) INFO 10-03 21:58:01.700 [vllm_kv.py:334] glyd kv: extra memory 98.8 MiB (1.03% of the KV cache's estimated 9.36 GiB) and 98.8 MiB (1.03%)
+(EngineCore pid=5091) INFO 10-03 21:58:01.728 [vllm_kv.py:403] glyd kv: decode workspace of 9.1 MiB (up to 256 rows)
+(EngineCore pid=5091) INFO 10-03 21:58:16.627 [backends.py:1094] Using cache directory: /home/ubuntu/m28w/cache/kv+glyd/torch_compile_cache/b357c316ea/rank_0_0/backbone for vLLM's torch.compile
+(EngineCore pid=5091) INFO 10-03 22:00:10.474 [decorators.py:719] saved AOT compiled function to /home/ubuntu/m28w/cache/kv+glyd/torch_compile_cache/torch_aot_compile/a0297aff0d8031851b5fa2b80e9bcaaf4ca8948bda6047f0ff54186a85e26a9b/rank_0_0/model
+
+################ check
+101 checks
+T=  232          pb1: checked, 64 experts hit; gate+up 1.4e-03, down 2.3e-03 (against fp32)
+T= 1152          new: checked, 64 experts hit; gate+up 2.9e-03, down 3.0e-03 (against fp32)
+T= 1152       rows17: checked, 64 experts hit; gate+up 2.9e-03, down 3.0e-03 (against fp32)
+T= 1152          pb1: checked, 64 experts hit; gate+up 2.9e-03, down 3.0e-03 (against fp32)
+
+################ sweep/summary.txt
+Qwen/Qwen3-30B-A3B's layer 0 on NVIDIA A100-SXM4-40GB (tree moe-a100 9267523e (moe_layer.py: the layer's files by name from the cache, no snapshot (a download of one layer leaves an incomplete one: IncompleteSnapshotError), gpu/hf_cache.py and its test) on private/main ddaefb8a): GPU time a layer under CUDA graphs, us (new: the built-in settings; rowsN: the rows kernel from N tokens a step; bigN: the tiled GEMM from N pairs an expert; na1: the m-tiles with no pairs left out; pb1: the exceptions of a step loaded together; pf4: the L2 prefetch 4 steps ahead)
+Qwen/Qwen3-30B-A3B layer 0: NVIDIA A100-SXM4-40GB, layout mma12, 12.05 bits a weight (gate+up), 12.05 (down), an expert 4.74 + 2.37 MB packed, copy rate 1360 GB/s (read + write), env GLYD_GPU_LIB=/home/ubuntu/m28w/lib/new/libglyd_gpu_cuda13.so
+
+| Tokens a step | bf16 (vLLM's layer) | v027 | new | best variant | best / bf16 | the plugin's decoded route* / bf16 |
+| ---: | ---: | ---: | ---: | :--- | ---: | ---: |
+| 16 | 617 us | - | 493 us | rows65 463 us | 0.75x | 2.91x |
+| 24 | 694 us | - | 784 us | rows17 685 us | 0.99x | 3.08x |
+| 32 | 762 us | - | 857 us | rows17 763 us | 1.00x | 3.07x |
+| 48 | 830 us | - | 1,194 us | rows33 967 us | 1.17x | 3.06x |
+| 64 | 854 us | - | 1,222 us | rows33 982 us | 1.15x | 3.05x |
+| 128 | 919 us | - | 1,285 us | rows65 1,022 us | 1.11x | 2.93x |
+| 232 | 946 us | - | 1,341 us | rows33 1,053 us | 1.11x | 2.88x |
+| 384 | 976 us | - | 1,426 us | rows17 1,101 us | 1.13x | 2.83x |
+| 512 | 997 us | - | 1,501 us | rows65 1,143 us | 1.15x | 2.79x |
+| 768 | 1,157 us | - | 2,135 us | big96 1,658 us | 1.43x | 2.55x |
+| 1,152 | 1,214 us | - | 2,440 us | big24 2,440 us | 2.01x | 2.48x |
+| 2,048 | 1,540 us | - | 2,815 us | pf4 2,815 us | 1.83x | 2.18x |
+| 4,096 | 2,482 us | - | 4,865 us | new 4,865 us | 1.96x | 1.75x |
+| 8,192 | 4,450 us | - | 8,983 us | rows65 8,980 us | 2.02x | 1.44x |
+
+*route + the experts decoded + vLLM's own layer on them (the decoded route's GPU time, vLLM's kernels taken as the bf16 layer's).
+
+Each variant, us a layer (all = route, gate+up, down with the sum), against new:
+| Tokens | new | big24 | big96 | na1 | pb1 | pf4 | rows17 | rows33 | rows65 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 493 | 463 (0.94) | 464 (0.94) | 463 (0.94) | 463 (0.94) | 487 (0.99) | 464 (0.94) | 464 (0.94) | 463 (0.94) |
+| 24 | 784 | 784 (1.00) | 784 (1.00) | 759 (0.97) | 784 (1.00) | 753 (0.96) | 685 (0.87) | 784 (1.00) | 784 (1.00) |
+| 32 | 857 | 858 (1.00) | 858 (1.00) | 832 (0.97) | 857 (1.00) | 826 (0.96) | 763 (0.89) | 858 (1.00) | 858 (1.00) |
+| 48 | 1,194 | 1,194 (1.00) | 1,194 (1.00) | 1,090 (0.91) | 1,194 (1.00) | 1,168 (0.98) | 967 (0.81) | 967 (0.81) | 1,194 (1.00) |
+| 64 | 1,222 | 1,222 (1.00) | 1,222 (1.00) | 1,116 (0.91) | 1,222 (1.00) | 1,201 (0.98) | 982 (0.80) | 982 (0.80) | 1,222 (1.00) |
+| 128 | 1,285 | 1,286 (1.00) | 1,286 (1.00) | 1,168 (0.91) | 1,285 (1.00) | 1,284 (1.00) | 1,022 (0.79) | 1,022 (0.80) | 1,022 (0.79) |
+| 232 | 1,341 | 1,340 (1.00) | 1,340 (1.00) | 1,235 (0.92) | 1,340 (1.00) | 1,361 (1.02) | 1,053 (0.79) | 1,053 (0.79) | 1,053 (0.79) |
+| 384 | 1,426 | 1,622 (1.14) | 1,426 (1.00) | 1,347 (0.94) | 1,426 (1.00) | 1,460 (1.02) | 1,101 (0.77) | 1,101 (0.77) | 1,101 (0.77) |
+| 512 | 1,501 | 1,813 (1.21) | 1,501 (1.00) | 1,451 (0.97) | 1,501 (1.00) | 1,545 (1.03) | 1,144 (0.76) | 1,144 (0.76) | 1,143 (0.76) |
+| 768 | 2,135 | 2,133 (1.00) | 1,658 (0.78) | 2,132 (1.00) | 2,134 (1.00) | 2,134 (1.00) | 2,134 (1.00) | 2,133 (1.00) | 2,133 (1.00) |
+| 1,152 | 2,440 | 2,440 (1.00) | 2,704 (1.11) | 2,441 (1.00) | 2,440 (1.00) | 2,440 (1.00) | 2,441 (1.00) | 2,440 (1.00) | 2,441 (1.00) |
+| 2,048 | 2,815 | 2,817 (1.00) | 2,817 (1.00) | 2,816 (1.00) | 2,816 (1.00) | 2,815 (1.00) | 2,817 (1.00) | 2,815 (1.00) | 2,817 (1.00) |
+| 4,096 | 4,865 | 4,867 (1.00) | 4,867 (1.00) | 4,867 (1.00) | 4,866 (1.00) | 4,867 (1.00) | 4,866 (1.00) | 4,865 (1.00) | 4,868 (1.00) |
+| 8,192 | 8,983 | 8,983 (1.00) | 8,984 (1.00) | 8,984 (1.00) | 8,985 (1.00) | 8,983 (1.00) | 8,983 (1.00) | 8,982 (1.00) | 8,980 (1.00) |
+
+gate+up and down alone (us), by variant:
+gate_up_us:
+| Tokens | new | big24 | big96 | na1 | pb1 | pf4 | rows17 | rows33 | rows65 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 301 | 293 | 293 | 292 | 292 | 301 | 292 | 292 | 293 |
+| 24 | 451 | 451 | 451 | 435 | 451 | 414 | 451 | 450 | 451 |
+| 32 | 491 | 491 | 491 | 475 | 491 | 454 | 491 | 491 | 491 |
+| 48 | 652 | 652 | 652 | 589 | 652 | 602 | 652 | 652 | 652 |
+| 64 | 665 | 665 | 665 | 601 | 665 | 618 | 665 | 665 | 665 |
+| 128 | 693 | 692 | 692 | 619 | 692 | 663 | 692 | 692 | 692 |
+| 232 | 707 | 707 | 707 | 638 | 707 | 699 | 707 | 707 | 707 |
+| 384 | 730 | 1,018 | 730 | 672 | 730 | 733 | 730 | 730 | 730 |
+| 512 | 750 | 1,166 | 750 | 710 | 750 | 756 | 750 | 750 | 750 |
+| 768 | 1,423 | 1,426 | 797 | 1,426 | 1,426 | 1,426 | 1,426 | 1,427 | 1,425 |
+| 1,152 | 1,647 | 1,646 | 1,352 | 1,647 | 1,648 | 1,647 | 1,647 | 1,647 | 1,648 |
+| 2,048 | 1,693 | 1,695 | 1,692 | 1,693 | 1,693 | 1,695 | 1,694 | 1,694 | 1,693 |
+| 4,096 | 2,897 | 2,897 | 2,897 | 2,899 | 2,897 | 2,897 | 2,897 | 2,896 | 2,898 |
+| 8,192 | 5,327 | 5,328 | 5,331 | 5,329 | 5,334 | 5,330 | 5,331 | 5,332 | 5,332 |
+
+down_us:
+| Tokens | new | big24 | big96 | na1 | pb1 | pf4 | rows17 | rows33 | rows65 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 185 | 167 | 167 | 167 | 167 | 181 | 168 | 167 | 167 |
+| 24 | 326 | 326 | 326 | 317 | 326 | 332 | 227 | 326 | 326 |
+| 32 | 359 | 359 | 359 | 349 | 359 | 362 | 265 | 359 | 359 |
+| 48 | 531 | 532 | 532 | 491 | 532 | 556 | 304 | 304 | 531 |
+| 64 | 549 | 549 | 550 | 507 | 549 | 575 | 309 | 309 | 549 |
+| 128 | 583 | 583 | 583 | 539 | 583 | 610 | 319 | 319 | 319 |
+| 232 | 620 | 620 | 620 | 584 | 620 | 650 | 334 | 333 | 333 |
+| 384 | 680 | 576 | 679 | 658 | 680 | 711 | 355 | 355 | 355 |
+| 512 | 731 | 610 | 731 | 721 | 731 | 770 | 374 | 374 | 374 |
+| 768 | 677 | 677 | 835 | 678 | 677 | 677 | 677 | 677 | 677 |
+| 1,152 | 753 | 753 | 1,315 | 753 | 753 | 753 | 753 | 753 | 753 |
+| 2,048 | 1,059 | 1,059 | 1,059 | 1,059 | 1,059 | 1,060 | 1,059 | 1,059 | 1,059 |
+| 4,096 | 1,855 | 1,856 | 1,855 | 1,855 | 1,855 | 1,856 | 1,856 | 1,856 | 1,855 |
+| 8,192 | 3,437 | 3,437 | 3,437 | 3,437 | 3,437 | 3,437 | 3,437 | 3,437 | 3,437 |
+
+route_us:
+| Tokens | new | big24 | big96 | na1 | pb1 | pf4 | rows17 | rows33 | rows65 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 7 | 5 | 5 | 5 | 5 | 5 | 5 | 5 | 5 |
+| 24 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 |
+| 32 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 |
+| 48 | 11 | 11 | 11 | 11 | 11 | 11 | 11 | 11 | 11 |
+| 64 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 |
+| 128 | 10 | 10 | 10 | 10 | 10 | 10 | 10 | 10 | 10 |
+| 232 | 12 | 12 | 12 | 12 | 12 | 13 | 13 | 13 | 12 |
+| 384 | 16 | 16 | 16 | 16 | 16 | 16 | 16 | 16 | 16 |
+| 512 | 19 | 19 | 19 | 19 | 19 | 19 | 19 | 19 | 19 |
+| 768 | 24 | 24 | 24 | 24 | 24 | 24 | 24 | 24 | 24 |
+| 1,152 | 34 | 34 | 34 | 34 | 34 | 34 | 34 | 34 | 34 |
+| 2,048 | 54 | 54 | 54 | 54 | 54 | 54 | 54 | 54 | 54 |
+| 4,096 | 101 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| 8,192 | 196 | 194 | 194 | 194 | 194 | 194 | 194 | 194 | 194 |
+
+
+################ serve/summary.txt
+kalomaze/Qwen3-16B-A3B on NVIDIA A100-SXM4-40GB (tree moe-a100 9267523e (moe_layer.py: the layer's files by name from the cache, no snapshot (a download of one layer leaves an incomplete one: IncompleteSnapshotError), gpu/hf_cache.py and its test) on private/main ddaefb8a); vllm bench serve, 1,024 tokens in and 256 out, rates 1 inf, prompts 64 256 (a seed a pass)
+
+######## bf16
+bf16: weights 29.87 GiB, KV cache 40,288 tokens, max concurrency 9.84x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): bf16 0.9%
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.94 | 241.8 | 102 / 399 | 14.3 / 18.1 | 64 | 1410 MHz, 50 C |
+| inf | bf16 | 4.02 | 1028.4 | 27299 / 58704 | 31.8 / 55.1 | 256 | 1410 MHz, 61 C |
+
+######## glyd-picked+kv
+kv+glyd: weights 23.59 GiB, KV cache 140,336 tokens, max concurrency 34.26x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): kv+glyd 0.9%
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | kv+glyd | 0.95 | 243.2 | 125 / 212 | 12.5 / 16.4 | 64 | 1410 MHz, 49 C |
+| inf | kv+glyd | 5.32 | 1360.7 | 16435 / 42508 | 72.0 / 114.4 | 256 | 1410 MHz, 58 C |
+
+######## glyd-picked+kv+bf16-attn
+kv+glyd: weights 23.97 GiB, KV cache 138,336 tokens, max concurrency 33.77x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): kv+glyd 0.7%
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | kv+glyd | 0.95 | 243.7 | 119 / 195 | 12.3 / 16.2 | 64 | 1410 MHz, 48 C |
+| inf | kv+glyd | 5.44 | 1393.0 | 15933 / 40461 | 67.5 / 108.8 | 256 | 1410 MHz, 58 C |
+
+######## bf16-2
+bf16: weights 29.87 GiB, KV cache 40,288 tokens, max concurrency 9.84x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): bf16 1.0%
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.94 | 240.2 | 102 / 395 | 14.6 / 19.6 | 64 | 1410 MHz, 50 C |
+| inf | bf16 | 4.00 | 1024.5 | 27477 / 58842 | 31.8 / 54.8 | 256 | 1410 MHz, 61 C |
+

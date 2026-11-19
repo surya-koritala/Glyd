@@ -1,0 +1,36 @@
+[package]
+name = "starlings-adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[example]]
+name = "service_check"
+test = true
+
+[features]
+test-backend = ["dep:starlings-core"]
+
+[lints]
+workspace = true
+
+[dependencies]
+starlings-core = { workspace = true, optional = true }
+starlings-protocol.workspace = true
+process-wrap = { version = "10.0.1", default-features = false, features = ["std", "process-group", "job-object"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+nvml-wrapper = { version = "=0.13.0", default-features = false }
+
+sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk", "component"] }
+ureq = { version = "3.4.2", default-features = false }
+
+time = { workspace = true, features = ["formatting"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.5", features = ["event", "fs", "process"] }

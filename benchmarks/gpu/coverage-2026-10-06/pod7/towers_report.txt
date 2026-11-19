@@ -1,0 +1,2 @@
+FAIL granite-vision-4.1-4b glyd: ValidationError: 1 validation error for ModelConfig
+FAIL granite-vision-4.1-4b glyd-towers: ValidationError: 1 validation error for ModelConfig

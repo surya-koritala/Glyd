@@ -1,0 +1,44 @@
+18:53:10 lock held
+round 1 vllm {"model": "Qwen/Qwen3-8B", "mode": "glyd1", "load_s": 57.9, "prompts": {"1024": {"prefill_ms": [399.1, 427.7, 398.2, 416.1, 408.0, 403.0, 420.5], "prefill_ms_median": 408.0}, "3500": {"prefill_ms": [1134.9, 1137.3, 1144.9, 1144.8, 1147.1, 1165.1, 1172.9], "prefill_ms_median": 1144.9}}}
+2040 MHz, 50.95 W, 70
+round 1 engine own
+prefill ms of the 7 timed runs: 389.1, 384.1, 376.9, 396.8, 376.7, 392.1, 397.8
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":389.1,"decode_ms_mean":45.971,"decode_ms_p50":45.960,"decode_ms_p99":46.144,"decode_tokens_per_s":21.75,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1121.1, 1147.2, 1125.8, 1127.3, 1154.8, 1127.1, 1155.3
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1127.3,"decode_ms_mean":47.358,"decode_ms_p50":47.269,"decode_ms_p99":47.559,"decode_tokens_per_s":21.12,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 64.06 W, 72
+round 1 engine blas
+prefill ms of the 7 timed runs: 391.5, 425.7, 406.5, 409.6, 403.9, 398.5, 412.6
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":406.5,"decode_ms_mean":45.961,"decode_ms_p50":45.827,"decode_ms_p99":46.102,"decode_tokens_per_s":21.76,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1155.5, 1181.8, 1157.9, 1184.8, 1158.3, 1160.4, 1187.9
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1160.4,"decode_ms_mean":47.362,"decode_ms_p50":47.178,"decode_ms_p99":47.757,"decode_tokens_per_s":21.11,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2040 MHz, 58.63 W, 72
+round 2 vllm {"model": "Qwen/Qwen3-8B", "mode": "glyd1", "load_s": 51.8, "prompts": {"1024": {"prefill_ms": [401.2, 432.8, 403.2, 420.9, 412.9, 410.8, 423.6], "prefill_ms_median": 412.9}, "3500": {"prefill_ms": [1150.4, 1155.3, 1159.6, 1159.9, 1161.7, 1164.5, 1164.6], "prefill_ms_median": 1159.9}}}
+2040 MHz, 55.08 W, 73
+round 2 engine own
+prefill ms of the 7 timed runs: 399.4, 406.8, 381.7, 410.6, 392.2, 391.0, 394.9
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":394.9,"decode_ms_mean":45.943,"decode_ms_p50":45.889,"decode_ms_p99":46.025,"decode_tokens_per_s":21.77,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1144.2, 1142.1, 1165.3, 1152.5, 1151.2, 1146.8, 1170.7
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1151.2,"decode_ms_mean":47.535,"decode_ms_p50":47.538,"decode_ms_p99":47.572,"decode_tokens_per_s":21.04,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 64.00 W, 75
+round 2 engine blas
+prefill ms of the 7 timed runs: 398.6, 427.4, 405.1, 427.8, 417.1, 420.7, 426.3
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":420.7,"decode_ms_mean":46.249,"decode_ms_p50":46.069,"decode_ms_p99":46.521,"decode_tokens_per_s":21.62,"load_s":2.29,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1183.8, 1178.7, 1205.9, 1182.9, 1214.2, 1187.4, 1183.2
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1183.8,"decode_ms_mean":47.309,"decode_ms_p50":47.177,"decode_ms_p99":47.564,"decode_tokens_per_s":21.14,"load_s":2.29,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 61.09 W, 76
+round 3 vllm {"model": "Qwen/Qwen3-8B", "mode": "glyd1", "load_s": 51.7, "prompts": {"1024": {"prefill_ms": [411.8, 452.6, 426.5, 442.1, 437.0, 435.7, 444.5], "prefill_ms_median": 437.0}, "3500": {"prefill_ms": [1181.8, 1189.4, 1187.7, 1185.4, 1193.9, 1186.2, 1194.7], "prefill_ms_median": 1187.7}}}
+2040 MHz, 52.46 W, 77
+round 3 engine own
+prefill ms of the 7 timed runs: 408.0, 393.7, 387.2, 410.3, 386.6, 406.2, 394.2
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":394.2,"decode_ms_mean":45.995,"decode_ms_p50":45.966,"decode_ms_p99":46.222,"decode_tokens_per_s":21.74,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1157.6, 1156.4, 1153.7, 1157.6, 1156.2, 1157.5, 1154.9
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1156.4,"decode_ms_mean":47.352,"decode_ms_p50":47.221,"decode_ms_p99":47.622,"decode_tokens_per_s":21.12,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 60.82 W, 76
+round 3 engine blas
+prefill ms of the 7 timed runs: 404.0, 436.5, 408.0, 428.7, 421.3, 414.4, 430.0
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":421.3,"decode_ms_mean":46.340,"decode_ms_p50":46.241,"decode_ms_p99":46.742,"decode_tokens_per_s":21.58,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1186.5, 1210.8, 1185.9, 1215.3, 1191.3, 1220.2, 1193.3
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1193.3,"decode_ms_mean":47.565,"decode_ms_p50":47.417,"decode_ms_p99":47.865,"decode_tokens_per_s":21.02,"load_s":2.28,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 61.18 W, 77
+18:58:33 done

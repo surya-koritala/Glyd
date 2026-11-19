@@ -1,0 +1,4 @@
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files:   8%|▊         | 1/13 [00:00<00:01,  6.47it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 13 files:  38%|███▊      | 5/13 [00:00<00:00, 18.12it/s]Fetching 13 files:  62%|██████▏   | 8/13 [00:00<00:00, 17.99it/s]Fetching 13 files:  69%|██████▉   | 9/13 [00:20<00:00, 17.99it/s]Fetching 13 files:  77%|███████▋  | 10/13 [00:28<00:13,  4.45s/it]Fetching 13 files:  85%|████████▍ | 11/13 [00:47<00:14,  7.14s/it]Fetching 13 files:  92%|█████████▏| 12/13 [01:06<00:09,  9.53s/it]Fetching 13 files: 100%|██████████| 13/13 [01:10<00:00,  8.34s/it]Fetching 13 files: 100%|██████████| 13/13 [01:10<00:00,  5.46s/it]
+/root/w/hf/hub/models--nvidia--Gemma-4-31B-IT-NVFP4/snapshots/4135a98a9b728a548947683219633b25682223ac
+exit 0 after 72 s; 512K

@@ -1,0 +1,129 @@
+{
+ "decode": {
+  "gens": 20,
+  "steps": 2540,
+  "mean_step_s": 0.15
+ },
+ "generations": [
+  {
+   "domain": "chat",
+   "prompt": "Explain the difference between a mutex and a semaphore, with a short example of each.",
+   "steps": 127,
+   "text": "# Mutex vs. Semaphore\n\n## Mutex (Mutual Exclusion)\n\nA **mutex** is a locking mechanism where only **one thread** can access a shared resource at a time. The thread that locks it must be the one to unlock it — it has *ownership*.\n\n**Key idea:** \"This resource is mine. Everyone else, wait.\"\n\n### Examp"
+  },
+  {
+   "domain": "chat",
+   "prompt": "Write a friendly email to a colleague asking to move our weekly sync from Tuesday to Thursday.",
+   "steps": 127,
+   "text": "Here's a friendly email you can use:\n\n---\n\n**Subject:** Quick favor — moving our weekly sync?\n\nHi [Name],\n\nHope your week is going well! I wanted to check if it would be possible to move our weekly sync from Tuesday to Thursday instead. [Brief reason, e.g., \"I have a recurring conflict on Tuesdays\" "
+  },
+  {
+   "domain": "chat",
+   "prompt": "Give me three tips for preparing for a job interview at a software company.",
+   "steps": 127,
+   "text": "Here are three tips for preparing for a job interview at a software company:\n\n1. **Practice coding problems regularly.** Most software companies include technical interviews, so work through problems on platforms like LeetCode, HackerRank, or CodeSignal. Focus on data structures (arrays, hash maps, "
+  },
+  {
+   "domain": "chat",
+   "prompt": "Summarize the plot of Romeo and Juliet in five sentences.",
+   "steps": 127,
+   "text": "# Romeo and Juliet: Plot Summary\n\nIn fair Verona, two feuding families—the Montagues and Capulets—have children who fall hopelessly in love at first sight. Despite the bitter hatred between their households, Romeo Montague and Juliet Capulet secretly marry with the help of Friar Laurence, hoping the"
+  },
+  {
+   "domain": "code",
+   "prompt": "Write a Python function that merges two sorted lists into one sorted list without using sort().",
+   "steps": 127,
+   "text": "# Merging Two Sorted Lists\n\nHere's a classic **two-pointer approach** that merges two sorted lists in O(n + m) time:\n\n```python\ndef merge_sorted_lists(list1, list2):\n    \"\"\"\n    Merge two sorted lists into one sorted list.\n    \n    Args:\n        list1: First sorted list\n        list2: Second sorted "
+  },
+  {
+   "domain": "code",
+   "prompt": "Write a SQL query that returns the top 3 customers by total order value from customers(id, name) and orders(id, customer_id, amount).",
+   "steps": 127,
+   "text": "```sql\nSELECT c.id, c.name, SUM(o.amount) AS total_order_value\nFROM customers c\nJOIN orders o ON o.customer_id = c.id\nGROUP BY c.id, c.name\nORDER BY total_order_value DESC\nLIMIT 3;\n```\n\n**How it works:**\n\n1. **JOIN** — links each order to its customer via `customer_id`.\n2. **GROUP BY** — aggregates "
+  },
+  {
+   "domain": "code",
+   "prompt": "Write a Rust function that reverses the words in a string.",
+   "steps": 127,
+   "text": "Here's a Rust function that reverses the words in a string:\n\n```rust\nfn reverse_words(s: &str) -> String {\n    s.split_whitespace()\n        .rev()\n        .collect::<Vec<_>>()\n        .join(\" \")\n    }\n```\n\n**Example usage:**\n\n```rust\nfn main() {\n    let original = \"Hello world from Rust\";\n    let re"
+  },
+  {
+   "domain": "code",
+   "prompt": "def avg(xs): return sum(xs) / len(xs) fails on an empty list. Show the corrected function.",
+   "steps": 127,
+   "text": "```python\ndef avg(xs):\n    if not xs:\n        return 0.0\n    return sum(xs) / len(xs)\n```\n\nThe guard `if not xs` catches the empty list before the division, returning `0.0` instead of raising `ZeroDivisionError`.\n\nA note on design: returning `0.0` for an empty list is a silent default that can mask "
+  },
+  {
+   "domain": "math",
+   "prompt": "A train travels 180 km in 2.5 hours. What is its average speed in km/h? How long would 450 km take at that speed?",
+   "steps": 127,
+   "text": "# Average Speed Problem\n\n## Part 1: Finding the Average Speed\n\n$$\\text{Speed} = \\frac{\\text{Distance}}{\\text{Time}} = \\frac{180 \\text{ km}}{2.5 \\text{ h}} = 72 \\text{ km/h}$$\n\n## Part 2: Time for 450 km\n\nRearranging the formula:\n\n$$\\text{Time} = \\frac{\\text{Distance}}{\\text{Speed}} = \\frac{450 \\text"
+  },
+  {
+   "domain": "math",
+   "prompt": "Solve for x: 3x + 7 = 2x - 5.",
+   "steps": 127,
+   "text": "# Solving 3x + 7 = 2x − 5\n\n**Step 1:** Subtract 2x from both sides to get all x-terms on one side.\n\n$$3x - 2x + 7 = -5$$\n\n$$x + 7 = -5$$\n\n**Step 2:** Subtract 7 from both sides.\n\n$$x = -5 - 7$$\n\n$$x = -12$$\n\n**Check:** Substitute x = −12 back into the original equation:\n- Left side: 3(−12) + 7 = −36"
+  },
+  {
+   "domain": "math",
+   "prompt": "What is the sum of the first 20 positive odd numbers? Show the reasoning briefly.",
+   "steps": 127,
+   "text": "# Sum of the First 20 Positive Odd Numbers\n\n**Key fact:** The sum of the first *n* odd numbers equals *n*².\n\n**Why this works:** The odd numbers are 1, 3, 5, 7, ... and there's a nice pattern:\n- 1 = 1²\n- 1 + 3 = 4 = 2²\n- 1 + 3 + 5 = 9 = 3²\n- 1 + 3 + 5 + 7 = 16 = 4²\n\nEach new odd number added extends"
+  },
+  {
+   "domain": "math",
+   "prompt": "A rectangle has perimeter 36 and its length is twice its width. Find its area.",
+   "steps": 127,
+   "text": "# Setting Up the Problem\n\nLet the width = $w$ and the length = $2w$ (since the length is twice the width).\n\n## Using the Perimeter\n\nThe perimeter formula is:\n$$P = 2(\\text{length} + \\text{width})$$\n\n$$36 = 2(2w + w)$$\n\n$$36 = 2(3w)$$\n\n$$36 = 6w$$\n\n$$w = 6$$\n\n## Finding the Dimensions\n\n- **Width:** $"
+  },
+  {
+   "domain": "multi",
+   "prompt": "请用中文简要介绍一下长城的历史。",
+   "steps": 127,
+   "text": "# 长城的历史简介\n\n长城是中国古代规模最宏大的军事防御工程，其修建历史绵延两千余年。\n\n## 起源与早期修建\n\n长城的雏形可追溯至**西周时期**，当时为防御北方游牧民族，出现了烽火台等防御设施。**春秋战国时期**(公元前770—前221年)，各诸侯国为互相防御及抵御北方胡人，纷纷修筑城墙，如燕、赵、秦等国都建有各自的长城。\n\n## 秦代统一修筑\n\n**公元前221年**，秦始皇统一六国后"
+  },
+  {
+   "domain": "multi",
+   "prompt": "Explica brevemente cómo funciona la fotosíntesis.",
+   "steps": 127,
+   "text": "# La Fotosíntesis\n\nLa fotosíntesis es el proceso por el cual las plantas, algas y algunas bacterias convierten la **energía lumínica** en **energía química**.\n\n## Proceso básico\n\nLas plantas toman:\n- 🌬️ **Dióxido de carbono (CO₂)** del aire\n- 💧 **Agua (H₂O)** de las raíces\n- ☀️ **Luz solar** captada"
+  },
+  {
+   "domain": "multi",
+   "prompt": "Объясните простыми словами, что такое инфляция.",
+   "steps": 127,
+   "text": "# Что такое инфляция?\n\n**Инфляция** — это когда деньги постепенно теряют свою покупательную способность, а цены на товары и услуги растут.\n\n## Простая аналогия 🛒\n\nПредставьте, что сегодня на 100 рублей вы можете купить 10 булочек по 10 рублей. Через год те же булочки стоят уже 12 рублей, и на ваши 1"
+  },
+  {
+   "domain": "multi",
+   "prompt": "Erkläre kurz, warum der Himmel blau ist.",
+   "steps": 127,
+   "text": "# Warum ist der Himmel blau?\n\nDer Himmel erscheint blau wegen der **Rayleigh-Streuung** von Sonnenlicht in der Atmosphäre.\n\n## Der Vorgang in Kürze:\n\n1. **Sonnenlicht** besteht aus allen Farben des Spektrums\n2. Beim Durchgang durch die Luft stoßen die Lichtwellen auf **Sauerstoff- und Stickstoffmole"
+  },
+  {
+   "domain": "wiki",
+   "prompt": "Who was Ada Lovelace and why is she remembered?",
+   "steps": 127,
+   "text": "Ada Lovelace (1815–1852) was an English mathematician and writer, born Augusta Ada Byron, the only legitimate child of the poet Lord Byron. Her parents separated when she was an infant, and her mother, Lady Byron, steered her firmly toward mathematics—partly, it's often said, to suppress any inherit"
+  },
+  {
+   "domain": "wiki",
+   "prompt": "Describe the main causes of the French Revolution.",
+   "steps": 127,
+   "text": "The French Revolution (1789–1799) was one of the most transformative events in world history, and its causes were complex and interconnected. Here are the main factors:\n\n## Financial Crisis\n\nFrance was essentially bankrupt by the late 1780s. Decades of expensive wars—including costly support for the"
+  },
+  {
+   "domain": "reason",
+   "prompt": "Three friends share a pizza cut into 8 slices. Alice eats twice as many as Bob and Carol eats one more than Bob. All slices are eaten. How many does each eat?",
+   "steps": 127,
+   "text": "# Setting Up the Problem\n\nLet **Bob** = x slices.\n\n- **Alice** = 2x (twice as many as Bob)\n- **Carol** = x + 1 (one more than Bob)\n\n# Solving the Equation\n\nAll 8 slices are eaten:\n\n$$x + 2x + (x + 1) = 8$$\n\n$$4x + 1 = 8$$\n\n$$4x = 7$$\n\n$$x = 1.75$$\n\n# Answer\n\n- **Bob:** 1.75 slices\n- **Alice:** 3.5 s"
+  },
+  {
+   "domain": "reason",
+   "prompt": "Is 221 a prime number? Explain how you decide.",
+   "steps": 127,
+   "text": "# Is 221 Prime?\n\n**No, 221 is not a prime number.**\n\n## How I decided\n\nTo test whether 221 is prime, I check whether it has any divisors other than 1 and itself. I only need to test prime numbers up to √221 ≈ 14.9, so I check: **2, 3, 5, 7, 11, 13**.\n\n**2** — No. 221 is odd.\n\n**3** — No. Digit sum: "
+  }
+ ]
+}

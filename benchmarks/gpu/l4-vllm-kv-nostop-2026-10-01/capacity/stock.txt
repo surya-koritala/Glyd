@@ -1,0 +1,3 @@
+INFO 10-01 09:26:07 [gpu_worker.py:640] Available KV cache memory: 3.47 GiB
+INFO 10-01 09:26:07 [kv_cache_utils.py:2395] GPU KV cache size: 25,232 tokens, Maximum concurrency for 8,704 tokens per request: 2.90x
+INFO 10-01 09:26:08 [gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 15.5 GiB for consumed memory (weights + non-torch), 0.86 GiB for peak activation, and 0.0 GiB for CUDAGraph memory. Replace gpu_memory_utilization config with `--kv-cache-memory=3563697869` (3.32 GiB) to fit into requested memory, or `--kv-cache-memory=5726398976` (5.33 GiB) to fully utilize gpu memory. Current kv cache memory in use is 3.47 GiB.

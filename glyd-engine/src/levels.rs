@@ -1,0 +1,202 @@
+//! Glyd's levels and the `MODEL:level` tag, in one place: the five levels and the layout each packs weights in, the tag
+//! parser every command uses, a level's name from a layout, the Hub repo a model is pre-packed in at a level, and the
+//! checkpoints whose wren is exact (quantization-aware releases).
+//!
+//! Levels: penguin (lossless), kestrel (6.5 bits), swift (5.5), wren (4.5), hummingbird (MoE experts at 2-4 bits by use).
+
+use crate::weights::Layout;
+
+/// A level: its name, the layout its weights are packed in (None: penguin, lossless, the normal path), its bits per
+/// weight as messages say them, and whether it gives back the release's weights exactly.
+pub struct Level {
+    pub name: &'static str,
+    pub layout: Option<Layout>,
+    pub bits: &'static str,
+    pub lossless: bool,
+}
+
+/// The levels a tag on MODEL names (`Qwen/Qwen3.8-27B:swift`). Wren is the four-bit layout with its plain rounding (exact on a
+/// QAT checkpoint); hummingbird is Nemotron 3 Super's routed experts at 3 and 2 bits from a calibration (src/moe_hb.rs; every
+/// other matrix six-bit), from `glyd-engine pack MODEL OUT --layout hummingbird --codes DIR` or downloaded pre-packed. The
+/// three-bit layout (`--layout i3`) is no level.
+pub static LEVELS: [Level; 5] = [
+    Level { name: "penguin", layout: None, bits: "about 10.8", lossless: true },
+    Level { name: "kestrel", layout: Some(Layout::Int6), bits: "6.5", lossless: false },
+    Level { name: "swift", layout: Some(Layout::Int5), bits: "5.5", lossless: false },
+    Level { name: "wren", layout: Some(Layout::Int4), bits: "4.5", lossless: false },
+    Level { name: "hummingbird", layout: Some(Layout::Hummingbird), bits: "2-4 on experts", lossless: false },
+];
+
+/// Wren on a checkpoint that is not quantization-aware runs in a development build only (`--features dev`, the default).
+pub const PREVIEW: bool = cfg!(feature = "dev");
+
+/// The names of the levels this build runs (a release build's without wren, which still runs exact on a QAT checkpoint).
+pub fn names_now() -> Vec<&'static str> {
+    LEVELS.iter().map(|l| l.name).filter(|&n| PREVIEW || n != "wren").collect()
+}
+
+/// The level named `name`, in any case.
+pub fn by_name(name: &str) -> Option<&'static Level> {
+    LEVELS.iter().find(|l| l.name.eq_ignore_ascii_case(name))
+}
+
+/// MODEL and its tag: the text after the last ':' where it is all ASCII letters, lowercased (a Hub name has no ':'; in a
+/// path the text after one has a '/' or more; `m:v2`, `m:4bit` carry no tag).
+pub fn split_tag(model: &str) -> (&str, Option<String>) {
+    match model.rsplit_once(':') {
+        Some((rest, tag)) if !tag.is_empty() && tag.bytes().all(|b| b.is_ascii_alphabetic()) => (rest, Some(tag.to_ascii_lowercase())),
+        _ => (model, None),
+    }
+}
+
+/// Why a tag was refused, in the words a refusal shows: what is wrong, and what to do.
+#[derive(Debug, PartialEq)]
+pub struct TagError {
+    pub what: String,
+    pub fix: String,
+}
+
+/// MODEL without its tag, and the layout of its level (None: lossless). `--lossy` is `:kestrel`. A pre-packed repo's own name
+/// (`glyd/NAME-swift`) is its level. Refused: a tag that is no level this build runs (wren is run exact on a QAT checkpoint in
+/// any build), and `--lossy` with another level.
+pub fn parse(model: &str, lossy: bool) -> Result<(&str, Option<Layout>), TagError> {
+    let (rest, tag) = split_tag(model);
+    let Some(tag) = tag else {
+        return Ok((model, lossy.then_some(Layout::Int6).or_else(|| repo_level(model))));
+    };
+    let Some(level) = by_name(&tag).filter(|l| names_now().contains(&l.name) || (l.name == "wren" && is_qat(rest))) else {
+        let what = if tag == "wren" { format!(":{tag} is not built yet") } else { format!(":{tag} is not a level") };
+        return Err(TagError { what, fix: format!("The levels available now: {}", names_now().join(", ")) });
+    };
+    if lossy && level.layout != Some(Layout::Int6) {
+        return Err(TagError { what: format!("--lossy is :kestrel, not :{}", level.name), fix: "Give one or the other".into() });
+    }
+    Ok((rest, level.layout))
+}
+
+/// A level's name from a layout (penguin for the lossless layouts; a layout that is no level, the three-bit one, by its own name).
+pub fn name_of(layout: Layout) -> &'static str {
+    match layout {
+        Layout::Tiered | Layout::Twelve | Layout::Compact => "penguin",
+        Layout::Int6 | Layout::Int6Row => "kestrel",
+        Layout::Int5 | Layout::Int5Row => "swift",
+        Layout::Int4 | Layout::Int4H | Layout::Int4Row => "wren",
+        Layout::Hummingbird | Layout::Cb3Row | Layout::Cb2Row => "hummingbird",
+        Layout::Int3 => "i3",
+    }
+}
+
+/// A layout from a level's name or from glyd.json's layout word (`mma`, `i6`, `hb`, ...).
+pub fn layout_of(word: &str) -> Option<Layout> {
+    Some(match word {
+        "penguin" | "mma" => Layout::Tiered,
+        "mma12" => Layout::Twelve,
+        "kestrel" | "i6" => Layout::Int6,
+        "swift" | "i5" => Layout::Int5,
+        "wren" | "i4" => Layout::Int4,
+        "i4x" => Layout::Int4H,
+        "i3" => Layout::Int3,
+        "hummingbird" | "hb" => Layout::Hummingbird,
+        _ => return None,
+    })
+}
+
+/// A model's name on the Hub: the text after its org (`Qwen/Qwen3.8-27B` → `Qwen3.8-27B`).
+pub fn short_name(model: &str) -> String {
+    model.trim_end_matches('/').rsplit('/').next().unwrap_or(model).to_string()
+}
+
+/// A model's Hub name and the shorter one its pre-packed repos have (glyd-gpu-py's engine.REPO_NAMES is the same table).
+/// Gemma 4: the instruction-tuned model is the plain name (its wren packed from Google's QAT checkpoint), the base model "-base".
+const REPO_NAMES: [(&str, &str); 7] = [("NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "nemotron-3"), ("gemma-4-31B-it-qat-q4_0-unquantized", "gemma-4-31B"), ("gemma-4-31B-it", "gemma-4-31B"), ("gemma-4-31B", "gemma-4-31B-base"), ("gemma-4-12B-it-qat-q4_0-unquantized", "gemma-4-12B"), ("gemma-4-12B-it", "gemma-4-12B"), ("gemma-4-12B", "gemma-4-12B-base")];
+
+/// The Hub repo of MODEL (`Qwen/Qwen3.8-27B`) at `level` (`swift`) packed ahead: `glyd/Qwen3.8-27B-swift`, under a shorter name
+/// where `REPO_NAMES` gives one (`glyd/nemotron-3-hummingbird`). A pre-packed repo's own name is its repo.
+pub fn packed_repo(model: &str, level: &str) -> String {
+    if model.strip_prefix("glyd/").is_some_and(|n| !n.contains('/') && n.ends_with(&format!("-{level}"))) {
+        return model.to_string();
+    }
+    let name = short_name(model);
+    let name = REPO_NAMES.iter().find(|(long, _)| *long == name).map_or(name.as_str(), |(_, short)| short);
+    format!("glyd/{name}-{level}")
+}
+
+/// The layout of a pre-packed repo given by its own name (`glyd/Qwen3.8-27B-swift`), where MODEL is one.
+pub fn repo_level(model: &str) -> Option<Layout> {
+    let name = model.strip_prefix("glyd/").filter(|n| !n.contains('/'))?;
+    LEVELS.iter().find(|l| name.ends_with(&format!("-{}", l.name))).and_then(|l| l.layout)
+}
+
+/// The models whose wren repo is packed from Google's QAT checkpoint of them.
+pub const QAT_WREN: [&str; 2] = ["gemma-4-31B-it", "gemma-4-12B-it"];
+
+/// Whether MODEL names a checkpoint trained to four bits (Google's "-qat-" releases), or a model whose wren repo is packed from
+/// one: its wren is the exact four-bit layout (i4x).
+pub fn is_qat(model: &str) -> bool {
+    let name = short_name(model);
+    name.to_ascii_lowercase().contains("-qat") || QAT_WREN.contains(&name.as_str())
+}
+
+/// The layout `layout` takes for MODEL: wren on a QAT checkpoint is the exact four-bit layout.
+pub fn layout_for(model: &str, layout: Layout) -> Layout {
+    if layout == Layout::Int4 && is_qat(model) { Layout::Int4H } else { layout }
+}
+
+/// The layout `ship` packs MODEL at for `level` (penguin, kestrel, swift or wren), else None (hummingbird comes from a calibration).
+pub fn ship_layout(model: &str, level: &str) -> Option<Layout> {
+    match by_name(level)?.layout {
+        None => Some(Layout::Tiered),
+        Some(Layout::Hummingbird) => None,
+        Some(l) => Some(layout_for(model, l)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_table_names_each_level_once_and_its_layout_names_it_back() {
+        for l in &LEVELS {
+            assert!(std::ptr::eq(by_name(l.name).unwrap(), l));
+            assert_eq!(by_name(&l.name.to_ascii_uppercase()).unwrap().name, l.name);
+            assert_eq!(l.layout.map_or("penguin", name_of), l.name);
+            assert_eq!(layout_of(l.name), Some(l.layout.unwrap_or(Layout::Tiered)));
+        }
+        assert_eq!(LEVELS.iter().filter(|l| l.lossless).count(), 1);
+        assert!(by_name("sparrow").is_none() && layout_of("x").is_none());
+        assert_eq!((name_of(Layout::Twelve), name_of(Layout::Int4H), name_of(Layout::Cb2Row), name_of(Layout::Int3)), ("penguin", "wren", "hummingbird", "i3"));
+    }
+
+    #[test]
+    fn a_tag_is_letters_after_the_last_colon() {
+        assert_eq!(split_tag("Qwen/Qwen3.5-9B:Swift"), ("Qwen/Qwen3.5-9B", Some("swift".to_string())));
+        assert_eq!(split_tag("a:b:kestrel"), ("a:b", Some("kestrel".to_string())));
+        for plain in ["/a/b:c/d", "glyd/Qwen3.5-9B-swift", "m:v2", "m:4bit", "m:ké", "C:\\models\\Qwen", "m:", ":"] {
+            assert_eq!(split_tag(plain), (plain, None), "{plain}");
+        }
+    }
+
+    #[test]
+    fn parse_refuses_what_is_no_level_and_lossy_with_another() {
+        let m = "Qwen/Qwen3.8-27B";
+        assert_eq!(parse(&format!("{m}:SWIFT"), false).unwrap(), (m, Some(Layout::Int5)));
+        assert_eq!(parse(m, true).unwrap(), (m, Some(Layout::Int6)));
+        assert_eq!(parse("glyd/Qwen3.5-9B-swift", false).unwrap(), ("glyd/Qwen3.5-9B-swift", Some(Layout::Int5)));
+        assert_eq!(parse(&format!("{m}:falcon"), false).unwrap_err().what, ":falcon is not a level");
+        assert_eq!(parse(&format!("{m}:swift"), true).unwrap_err().what, "--lossy is :kestrel, not :swift");
+        // wren is exact on a QAT checkpoint in any build
+        assert_eq!(parse("google/gemma-4-31B-it:wren", false).unwrap(), ("google/gemma-4-31B-it", Some(Layout::Int4)));
+        assert_eq!(layout_for("google/gemma-4-31B-it", Layout::Int4), Layout::Int4H);
+    }
+
+    #[test]
+    fn packed_repos_and_ship_layouts() {
+        assert_eq!(packed_repo("Qwen/Qwen3.5-9B", "swift"), "glyd/Qwen3.5-9B-swift");
+        assert_eq!(packed_repo("glyd/gemma-4-12B-wren", "wren"), "glyd/gemma-4-12B-wren");
+        assert_eq!(packed_repo("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "hummingbird"), "glyd/nemotron-3-hummingbird");
+        assert_eq!(repo_level("glyd/Qwen3.8-27B-kestrel"), Some(Layout::Int6));
+        assert_eq!(repo_level("glyd/a/b-swift"), None);
+        assert_eq!((ship_layout("m", "penguin"), ship_layout("m", "hummingbird"), ship_layout("google/gemma-4-12B-it", "wren")), (Some(Layout::Tiered), None, Some(Layout::Int4H)));
+    }
+}

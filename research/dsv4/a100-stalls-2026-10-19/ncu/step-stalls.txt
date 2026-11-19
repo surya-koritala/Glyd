@@ -1,0 +1,42 @@
+samples 50767.0 instr executed 12089828.0
+  stall_wait                20.6%
+  stall_short_sb            19.2%
+  stall_selected            13.8%
+  stall_long_sb             11.9%
+  stall_not_selected         8.8%
+  stall_barrier              8.0%
+  stall_math                 6.8%
+  stall_no_inst              2.2%
+  stall_membar               2.0%
+  stall_mio                  1.8%
+0x754c632f5420   5.4% @!P0  BRA 0x754c632f54d0                                     barrier:99 wait:0 not_selected:0
+0x754c632efd50   3.1%       ISETP.LT.AND P0, PT, R56, RZ, PT                       long_sb:98 selected:0 not_selected:0
+0x754c632f7dd0   1.7%       LDS R6, [RZ]                                           barrier:98 wait:1 selected:0
+0x754c632f7c70   1.6%       ERRBAR                                                 membar:98 wait:0 selected:0
+0x754c632efac0   1.4%       LOP3.LUT R41, R7, 0x7ffffffc, RZ, 0xc0, !PT            long_sb:99 selected:0 not_selected:0
+0x754c632eeb00   1.3%       IMAD.MOV.U32 R1, RZ, RZ, c[0x0][0x28]                  imc:70 no_inst:28 not_selected:0
+0x754c632f1820   1.1%       LOP3.LUT R19, R15, 0x7ffffffc, RZ, 0xc0, !PT           long_sb:93 selected:2 math:2
+0x754c632f2ee0   1.0%       LOP3.LUT R9, R7, 0x7ffffffc, RZ, 0xc0, !PT             long_sb:94 not_selected:2 math:1
+0x754c632f1cd0   1.0%       SHF.R.W.U32 R99, R99, R98, R58                         short_sb:79 not_selected:9 math:6
+0x754c632f3360   0.9%       SHF.R.W.U32 R97, R97, R96, R58                         short_sb:82 math:8 not_selected:4
+0x754c632f2300   0.9%       SHF.R.W.U32 R59, R59, R96, R58                         short_sb:78 math:9 not_selected:7
+0x754c632f14d0   0.9%       IMAD.SHL.U32 R69, R60, 0x4, RZ                         long_sb:70 no_inst:19 branch_resolving:5
+0x754c632f1b10   0.9%       SEL R57, R56, RZ, P0                                   short_sb:76 not_selected:7 math:7
+0x754c632f3990   0.8%       SHF.R.W.U32 R59, R59, R94, R58                         short_sb:83 not_selected:6 math:5
+0x754c632f3220   0.8%       SEL R56, R56, RZ, P5                                   short_sb:84 math:6 not_selected:5
+0x754c632f3250   0.8%       SEL R97, R58, RZ, P4                                   short_sb:83 math:6 not_selected:4
+0x754c632f4d50   0.8%       IMAD.MOV.U32 R69, RZ, RZ, R61                          long_sb:100
+0x754c632f1b90   0.8%       SEL R97, R58, RZ, P0                                   short_sb:82 not_selected:6 math:5
+0x754c632f31f0   0.7%       SEL R57, R56, RZ, P2                                   short_sb:88 not_selected:4 math:2
+0x754c632f3280   0.7%       SEL R58, R58, RZ, P3                                   short_sb:88 not_selected:5 math:4
+0x754c632f19c0   0.7%       IMAD.U32 R58, RZ, RZ, UR7                              short_sb:90 not_selected:3 selected:1
+0x754c632f1bd0   0.7%       SEL R58, R58, RZ, P0                                   short_sb:85 math:5 not_selected:4
+0x754c632f1d00   0.7%       IMAD.U32 R58, RZ, RZ, UR7                              short_sb:90 selected:3 wait:2
+0x754c632f32b0   0.7%       SEL R99, R96, RZ, P0                                   short_sb:90 math:4 not_selected:2
+0x754c632f4200   0.7% @P0   CALL.REL.NOINC 0x754c632f4220                          long_sb:57 wait:37 selected:2
+0x754c632f1c20   0.7%       SEL R57, R57, RZ, P0                                   short_sb:86 math:5 not_selected:3
+0x754c632f2b90   0.7%       IMAD.SHL.U32 R69, R14, 0x4, RZ                         long_sb:79 wait:17 selected:2
+0x754c632f3390   0.6%       IMAD.U32 R58, RZ, RZ, UR7                              short_sb:92 selected:3 not_selected:2
+0x754c632f1b50   0.6%       SEL R56, R56, RZ, P0                                   short_sb:84 not_selected:7 math:4
+0x754c632f46d0   0.6%       CALL.REL.NOINC 0x754c632f9af0                          long_sb:100
+mix: IMAD:20.4 LOP3:16.0 SHF:15.5 LDS:8.3 PRMT:8.2 ISETP:4.9 LEA:4.6 IADD3:3.5 BRA:3.2 LDG:2.9 SHFL:2.9 SEL:1.7 HMMA:1.0 STS:0.9 POPC:0.8 NOP:0.8 ULDC:0.6 BSYNC:0.6

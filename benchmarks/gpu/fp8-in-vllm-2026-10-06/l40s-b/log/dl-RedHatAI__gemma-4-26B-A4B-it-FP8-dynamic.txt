@@ -1,0 +1,5 @@
+Fetching 10 files:   0%|          | 0/10 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 10 files:  10%|█         | 1/10 [00:00<00:03,  2.78it/s]Fetching 10 files:  50%|█████     | 5/10 [00:00<00:00, 13.12it/s]Fetching 10 files:  80%|████████  | 8/10 [00:00<00:00, 15.42it/s]Fetching 10 files:  90%|█████████ | 9/10 [00:20<00:00, 15.42it/s]Fetching 10 files: 100%|██████████| 10/10 [00:55<00:00,  8.55s/it]Fetching 10 files: 100%|██████████| 10/10 [00:55<00:00,  5.51s/it]
+[32m✓ Downloaded[0m
+  path: /root/q8w/m/RedHatAI__gemma-4-26B-A4B-it-FP8-dynamic
+exit 0 in 56 s, 27G

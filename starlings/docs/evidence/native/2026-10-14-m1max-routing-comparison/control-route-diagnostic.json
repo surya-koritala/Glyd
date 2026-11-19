@@ -1,0 +1,13 @@
+{
+  "kind": "ModelFreeRouteControlDiagnostic",
+  "configuration_sha256": "f4b560e2690fddd5b6e1924d210f51efc3ccc003ae73ad4539e91444dfaeb55a",
+  "generated_route_digest": "e368e3eeb1dd89206082434e982ae117c629017784839449cd6aa2e6035ea14c",
+  "cluster_deliberately_mismatched": true,
+  "returncode": 1,
+  "stdout": "",
+  "stderr": "REFUSED: ROUTE_ACTIVATION_REFUSED\n",
+  "elapsed_seconds": 0.058,
+  "runtime_started": false,
+  "generation_requests": 0,
+  "frozen_native_attempt_repeated": false
+}

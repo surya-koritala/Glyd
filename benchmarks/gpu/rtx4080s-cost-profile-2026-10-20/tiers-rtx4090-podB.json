@@ -1,0 +1,23 @@
+{
+ "object": "glyd.tiers",
+ "schema": "glyd-costs/1",
+ "note": "written by hand from the record's own lines (GLY-236): the rates the predictor takes for the pod; nothing was measured again",
+ "record": "benchmarks/gpu/nh-hb-cpu-4090-2026-10-10 (a pod of two RTX 4090, 28 CPUs, Ryzen 9 7950X, 114 GiB; hummingbird, copy and cpu modes)",
+ "rates": {
+  "vram_read": {
+   "gbs": 1008.0,
+   "basis": "spec",
+   "from": "NVIDIA's figure for the RTX 4090 (1,008 GB/s); the record measured no GPU read rate"
+  },
+  "link_h2d_pinned": {
+   "gbs": 13.0,
+   "basis": "measured",
+   "from": "README.md line 46: this pod's host-to-GPU copies ran at 13.0 GB/s"
+  },
+  "ram_read": {
+   "gbs": 44.8,
+   "basis": "measured",
+   "from": "summary.txt line 197: streaming read, 26 threads: 44.8 GB/s (the host's memory as threads stream it)"
+  }
+ }
+}

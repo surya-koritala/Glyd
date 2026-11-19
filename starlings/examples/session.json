@@ -1,0 +1,20 @@
+{
+  "kind": "Session",
+  "protocol_version": 1,
+  "session_id": "00000000-0000-4000-8000-000000000104",
+  "generation_id": "00000000-0000-4000-8000-000000000105",
+  "client_id": "00000000-0000-4000-8000-000000000107",
+  "lease_id": "00000000-0000-4000-8000-000000000103",
+  "plan_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "authority_epoch": "1",
+  "prompt_token_count": 2,
+  "max_output_tokens": 8,
+  "context_limit": 2048,
+  "sampling": {
+    "profile": "sample-v1",
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 1
+  },
+  "state": "queued"
+}

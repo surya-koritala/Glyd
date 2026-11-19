@@ -1,0 +1,115 @@
+glyd-engine, Qwen3.5 (2026), on NVIDIA GeForce RTX 4090; tree cb2950d6; vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | glyd-gpu 0.28.0 | NVIDIA GeForce RTX 4090
+--- kernels against the CPU (kcheck35)
+ok   norm (1 + w): 20480 values, 20463 equal (99.92%), at most 1 bf16 places apart, largest difference 6.02e-3 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   norm (1 + w) with the residual: the norm: 20480 values, 20476 equal (99.98%), at most 1 bf16 places apart, largest difference 2.21e-3 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   norm (1 + w) with the residual: the sum: 20480 values, bit for bit
+ok   query norm and rotary (64 of 256 dims): 28672 values, 28671 equal (100.00%), at most 1 bf16 places apart, largest difference 2.76e-3 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   key norm and rotary into the cache: 48128 values, 48128 equal (100.00%), at most 0 bf16 places apart, largest difference 0.00e0 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   values into the cache: 48128 values, bit for bit
+ok   attention, head 256, a prompt's rows, times sigmoid(gate) (against the largest output): 28672 values, largest difference 6.49e-3 of the largest value (bound 1e-2)
+ok   attention, decode steps (the keys in 16 parts, combined), against the CPU: 28672 values, largest difference 6.49e-3 of the largest value (bound 1e-2)
+ok   attention, decode steps against the prompt's rows: 28672 values, 24296 equal (84.74%), at most 27959 bf16 places apart, largest difference 3.25e-3 of the largest value (bound 2 places, or 7.8e-3 of the largest)
+ok   causal convolution and SiLU (one rounding, vLLM's): 227328 values, 227328 equal (100.00%), at most 0 bf16 places apart, largest difference 0.00e0 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   causal convolution and SiLU against the reference (two roundings, transformers'): 227328 values, 227328 equal (100.00%), at most 0 bf16 places apart, largest difference 0.00e0 of the largest value (bound 4 places, or 1.6e-2 of the largest)
+ok   causal convolution: the state after: 18432 values, bit for bit
+ok   gated delta rule, token by token: outputs (150 tokens): 76800 values, 76780 equal (99.97%), at most 5 bf16 places apart, largest difference 6.51e-4 of the largest value (bound 2 places, or 7.8e-3 of the largest)
+ok   gated delta rule, token by token: the state after: 65536 values, largest difference 1.12e-7 of the largest value (bound 1e-4)
+ok   gated delta rule in chunks of 64 (normed q, k in bf16): outputs (150 tokens: two chunks and 22): 76800 values, 76756 equal (99.94%), at most 13 bf16 places apart, largest difference 1.30e-3 of the largest value (bound 2 places, or 7.8e-3 of the largest)
+ok   gated delta rule in chunks: the state after: 65536 values, largest difference 1.25e-5 of the largest value (bound 1e-4)
+ok   gated delta rule: chunks against token by token (q, k in fp32), outputs: 76800 values, largest difference 5.21e-3 of the largest value (bound 2e-2)
+ok   gated delta rule, a decode step: outputs: 512 values, 512 equal (100.00%), at most 0 bf16 places apart, largest difference 0.00e0 of the largest value (bound 2 places, or 7.8e-3 of the largest)
+ok   gated delta rule, a decode step: the state after: 65536 values, largest difference 2.43e-7 of the largest value (bound 1e-5)
+ok   gated norm (one rounding, vLLM's): 36864 values, 36863 equal (100.00%), at most 1 bf16 places apart, largest difference 4.91e-5 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   gated norm against the reference (two roundings, transformers'): 36864 values, 26006 equal (70.55%), at most 1 bf16 places apart, largest difference 6.33e-3 of the largest value (bound 2 places, or 7.8e-3 of the largest)
+ok   the small product (b and a of the 0.8B): 352 values, 352 equal (100.00%), at most 0 bf16 places apart, largest difference 0.00e0 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+all of Qwen3.5's kernels within their bounds
+--- compare-0.8b
+Traceback (most recent call last):
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 58, in <module>
+    main(*sys.argv[1:])
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 37, in main
+    e = json.load(open(engine))
+                  ^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/root/results/tokens-0.8b.json'
+--- compare-0.8b-recurrent
+Traceback (most recent call last):
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 58, in <module>
+    main(*sys.argv[1:])
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 37, in main
+    e = json.load(open(engine))
+                  ^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/root/results/tokens-0.8b-recurrent.json'
+--- compare-0.8b-chunk100
+Traceback (most recent call last):
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 58, in <module>
+    main(*sys.argv[1:])
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 37, in main
+    e = json.load(open(engine))
+                  ^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/root/results/tokens-0.8b-chunk100.json'
+--- compare-9b
+Traceback (most recent call last):
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 58, in <module>
+    main(*sys.argv[1:])
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 37, in main
+    e = json.load(open(engine))
+                  ^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/root/results/tokens-9b.json'
+--- compare-9b-recurrent
+Traceback (most recent call last):
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 58, in <module>
+    main(*sys.argv[1:])
+  File "/root/e35/src/glyd-engine/tools/compare.py", line 37, in main
+    e = json.load(open(engine))
+                  ^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/root/results/tokens-9b-recurrent.json'
+--- hidden states against transformers (0.8B)
+Traceback (most recent call last):
+  File "/root/e35/src/glyd-engine/tools/ref_dump35.py", line 60, in <module>
+    main(*sys.argv[1:])
+  File "/root/e35/src/glyd-engine/tools/ref_dump35.py", line 16, in main
+    eng = json.load(open(engine_file))
+                    ^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/root/results/dump-0.8b.json'
+Traceback (most recent call last):
+  File "/root/e35/src/glyd-engine/tools/ref_dump35.py", line 60, in <module>
+    main(*sys.argv[1:])
+  File "/root/e35/src/glyd-engine/tools/ref_dump35.py", line 16, in main
+    eng = json.load(open(engine_file))
+                    ^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/root/results/dump-0.8b-recurrent.json'
+--- a completion (9B)
+glyd-engine: fewer matrices than the layers take
+--- one user, Qwen3.5-9B, 1,024 prompt tokens, 256 new
+bench-9b: 
+bench-9b-recurrent: 
+--- the engine's decode step by kind of work (9B)
+speed-9b-vllm: {"model": "/root/e35/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a", "mode": "bf16", "prompt_tokens": 1024, "new_tokens": 256, "load_s": 94.6, "decode_ms": [17.817, 17.809, 17.825], "decode_ms_median": 17.817, "decode_tokens_per_s": 56.13, "prefill_ms": [110.1, 109.2, 110.0], "prefill_ms_median": 110.0, "torch_reserved_gib": 20.002, "torch_max_allocated_gib": 19.897, "model_memory_gib": 16.803}
+INFO 10-06 05:18:57 [model_runner.py:428] Model loading took 16.8 GiB memory and 5.415577 seconds
+INFO 10-06 05:20:14 [kv_cache_utils.py:2395] GPU KV cache size: 67,770 tokens, Maximum concurrency for 4,096 tokens per request: 16.55x
+speed-9b-glyd: {"model": "/root/e35/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a", "mode": "glyd1", "prompt_tokens": 1024, "new_tokens": 256, "load_s": 116.7, "decode_ms": [12.902, 12.959, 12.883], "decode_ms_median": 12.902, "decode_tokens_per_s": 77.51, "prefill_ms": [133.9, 128.5, 139.9], "prefill_ms_median": 133.9, "torch_reserved_gib": 20.379, "torch_max_allocated_gib": 19.974, "model_memory_gib": 11.996}
+INFO 10-06 05:21:17 [model_runner.py:428] Model loading took 12.0 GiB memory and 16.612641 seconds
+INFO 10-06 05:22:44 [kv_cache_utils.py:2395] GPU KV cache size: 177,245 tokens, Maximum concurrency for 4,096 tokens per request: 43.27x
+--- GPU memory used at most during each step (nvidia-smi, MiB)
+kcheck35: 1
+ref-0.8b: 21536
+ref-9b: 20976
+check-0.8b: 1158
+compare-0.8b: None
+check-0.8b-recurrent: 1158
+compare-0.8b-recurrent: None
+check-9b: 11922
+compare-9b: None
+check-9b-recurrent: 9402
+compare-9b-recurrent: None
+check-0.8b-chunk100: 4618
+compare-0.8b-chunk100: None
+dump-0.8b: 1158
+dump-0.8b-ref: 1158
+dump-0.8b-recurrent: 1158
+dump-0.8b-recurrent-ref: 1
+generate-9b: 11922
+bench-9b: 11922
+bench-9b-recurrent: 10164
+speed-9b-vllm: 21034
+speed-9b-glyd: 21420

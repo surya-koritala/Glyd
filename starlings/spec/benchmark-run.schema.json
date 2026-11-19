@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:starlings:benchmark-run:v1",
+  "title": "Benchmark record; validation does not confer native qualification",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "BenchmarkRun"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "measured",
+        "failed"
+      ]
+    },
+    "compute_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "backend_build_digests": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "minItems": 1,
+      "maxItems": 16
+    },
+    "manifest_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "execution_profile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "plan_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "baseline_run_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "hardware_inventory_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "hardware_inventory_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "workload_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "network_profile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 40
+    },
+    "timing_source": {
+      "const": "client-monotonic"
+    },
+    "definitions_version": {
+      "const": "benchmark-v1"
+    },
+    "warmup_requests_excluded": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "success",
+              "oom",
+              "cancelled",
+              "timeout",
+              "error"
+            ]
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647
+          },
+          "output_tokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647
+          },
+          "ttft_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "duration_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "inter_token_ms": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "minimum": 0
+            },
+            "minItems": 0,
+            "maxItems": 1048576
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "request_id",
+          "outcome",
+          "prompt_tokens",
+          "output_tokens",
+          "ttft_ms",
+          "duration_ms",
+          "inter_token_ms",
+          "error_code"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "success"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "error_code": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "error_code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Z0-9_]+$"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 100000
+    },
+    "peak_memory_pools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "pool_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "peak_bytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$",
+            "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+          }
+        },
+        "required": [
+          "node_id",
+          "pool_id",
+          "peak_bytes"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "raw_logs_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "raw_logs_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "fixture": {
+      "type": "boolean",
+      "description": "Synthetic records require explicit simulation mode and never qualify a backend."
+    }
+  },
+  "required": [
+    "kind",
+    "schema_version",
+    "fixture",
+    "run_id",
+    "status",
+    "compute_commit",
+    "backend_build_digests",
+    "manifest_digest",
+    "execution_profile",
+    "plan_digest",
+    "baseline_run_id",
+    "hardware_inventory_path",
+    "hardware_inventory_sha256",
+    "workload_sha256",
+    "network_profile",
+    "concurrency",
+    "started_at",
+    "timing_source",
+    "definitions_version",
+    "warmup_requests_excluded",
+    "requests",
+    "peak_memory_pools",
+    "raw_logs_path",
+    "raw_logs_sha256",
+    "notes"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "measured"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "requests": {
+            "minItems": 1,
+            "items": {
+              "properties": {
+                "outcome": {
+                  "const": "success"
+                }
+              }
+            }
+          },
+          "peak_memory_pools": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

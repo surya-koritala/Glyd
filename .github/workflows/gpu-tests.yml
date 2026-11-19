@@ -1,0 +1,73 @@
+name: GPU tests (reusable)
+
+# The engine and the GPU library built for the runner's GPU, the kernel checks that need no model, and a small model end to end.
+# Called by gpu.yml (the self-hosted GPU machine) and gpu-cloud.yml (an ephemeral cloud GPU instance).
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: runs-on, as JSON (a label list)
+        type: string
+        required: true
+      archs:
+        description: GLYD_ENGINE_ARCHS for this GPU (e.g. "89"; "86"; "90a")
+        type: string
+        default: "89"
+      model:
+        type: string
+        default: Qwen/Qwen3-0.6B
+
+permissions:
+  contents: read
+
+jobs:
+  gpu:
+    name: GPU (sm_${{ inputs.archs }})
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 90
+    container:
+      image: nvidia/cuda:13.0.3-devel-ubuntu24.04
+      # (a named volume keeps the Hub cache, cargo's registry and the build between runs on a persistent machine)
+      options: --gpus all -v glyd-ci-cache:/cache
+    env:
+      HF_HOME: /cache/hf
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cache/target-sm${{ inputs.archs }}
+      GLYD_ENGINE_ARCHS: ${{ inputs.archs }}
+      NVCC: /usr/local/cuda/bin/nvcc
+      CARGO_PROFILE_RELEASE_LTO: "false"          # (CI builds: no fat LTO, many codegen units; release builds keep both)
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - name: Tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential pkg-config curl git ca-certificates python3 > /dev/null
+          [ -x "$CARGO_HOME/bin/cargo" ] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          nvidia-smi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build the engine (development build, kernels for sm_${{ inputs.archs }}) and the GPU library
+        run: |
+          cargo build --release --locked -p glyd-engine
+          bash gpu/build_lib.sh "$CARGO_TARGET_DIR/gpu"
+          echo "GLYD_GPU_LIB=$(ls "$CARGO_TARGET_DIR"/gpu/libglyd_gpu_cuda*.so | head -1)" >> "$GITHUB_ENV"
+          echo "E=$CARGO_TARGET_DIR/release/glyd-engine" >> "$GITHUB_ENV"
+      - name: Kernel checks (no model)
+        run: |
+          "$E" --version
+          "$E" bandwidth
+          "$E" topkcheck
+          "$E" kcheck35
+      - name: MoE kernel checks (non-blocking until sized for 16 GB cards)
+        continue-on-error: true
+        run: '"$E" moecheck'
+      - name: ${{ inputs.model }} end to end
+        run: |
+          out=$("$E" run "${{ inputs.model }}" --prompt "What is 17 + 25? Answer with the number only." --no-think)
+          echo "$out"
+          echo "$out" | grep -q 42
+          "$E" kvtest "${{ inputs.model }}"
+      - name: The workspace back to the runner's user
+        if: always()
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

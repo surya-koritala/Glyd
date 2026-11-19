@@ -1,0 +1,1 @@
+NVIDIA GH200 480GB (compute 9.0, sm_90a, 95 GB), aarch64 host, 64 CPUs; tree d766885b (kv-vllm); steps env,build,test,decode,tps,profile,serve,check,ext

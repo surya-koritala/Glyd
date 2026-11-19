@@ -1,0 +1,44 @@
+{
+ "sequences": 512,
+ "length": 2048,
+ "tokens": 1048576,
+ "sources": [
+  {
+   "name": "wikitext-2-train",
+   "dataset": "Salesforce/wikitext",
+   "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+   "file": "wikitext-2-raw-v1/train-00000-of-00001.parquet",
+   "sha256": "e83889baabc497075506f91975be5fac0d45c5290b6b20582c8cd1e853d0c9f7",
+   "license": "CC-BY-SA-3.0 and GFDL",
+   "rows": null
+  },
+  {
+   "name": "python-code",
+   "dataset": "iamtarun/python_code_instructions_18k_alpaca",
+   "revision": "7cae181e29701a8663a07a3ea43c8e105b663ba1",
+   "file": "data/train-00000-of-00001-8b6e212f3e1ece96.parquet",
+   "sha256": "bbc6fa528fcc17a845e863da8652bc02c2523373cd8cc0b9af1ffb374e9ae378",
+   "license": "CC-BY-NC-4.0 (research use)",
+   "rows": 4000
+  },
+  {
+   "name": "ultrachat-chat",
+   "dataset": "HuggingFaceH4/ultrachat_200k",
+   "revision": "8049631c405ae6576f93f445c6b8166f76f5505a",
+   "file": "data/train_sft-00000-of-00003-a3ecf92756993583.parquet",
+   "sha256": "afa8fa7426081b2a0e732fb50dbb5cd402a28ad5f0dbe66c0d996d63e7220727",
+   "license": "MIT",
+   "rows": 1000
+  }
+ ],
+ "order": "round robin over sources",
+ "source_tokens": [
+  2505800,
+  794662,
+  1170659
+ ],
+ "eval_windows": 256,
+ "skipped_for_shared_32gram": 1,
+ "sequences_sharing_a_32gram_with_eval": 0,
+ "ids_sha256": "635d1fab25717314b9ac0cdba0355b8a2971453a597a561c92091c71470bd336"
+}

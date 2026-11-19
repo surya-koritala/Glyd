@@ -1,0 +1,8 @@
+Linux 6.11.0-26-generic #26~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Thu Apr 17 19:20:47 UTC 2 x86_64 GNU/Linux
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+NVIDIA GeForce RTX 5090, 12.0, 580.126.20, 32607 MiB, 3135 MHz, 575.00 W
+120
+               total        used        free      shared  buff/cache   available
+Mem:             944         193         449           0         309         751
+overlay         200G   19M  200G   1% /
+Tue Oct  6 18:45:16 UTC 2026

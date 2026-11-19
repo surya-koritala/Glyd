@@ -1,0 +1,5 @@
+whole model: prompt 94.1 ms, a step 21.85 ms (the logits read each step); tokens [220, 17, 15, 16, 24, 95859, 16, 15, 96212, 16, 15, 95971]..; sha256(tokens, logits) f6b04004a96fe874eba1ba85851da020eda5f470fcca4ffdd7dcc189ccbfe9be
+whole model, the second prompt (192 tokens): tokens [271, 248068, 198, 760, 1156, 682, 3106, 264, 1876, 421, 7701, 310]..; sha256 ef9aa13e120994469321d259cd4c9544b77346dab8e7f9aa32bd431bbe1e9336
+stages: prompt 95.4 ms, a step 21.75 ms; sha256 f6b04004a96fe874eba1ba85851da020eda5f470fcca4ffdd7dcc189ccbfe9be
+workers: prompt 103.2 ms, a step 22.27 ms (the frames and the logits' body each step); sha256 f6b04004a96fe874eba1ba85851da020eda5f470fcca4ffdd7dcc189ccbfe9be
+all checks passed

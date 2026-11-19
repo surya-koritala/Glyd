@@ -1,0 +1,12 @@
+glyd serve: the flags after -- are vLLM's; using vLLM.
+Qwen3.5-35B-A3B: 56.3 GB on the GPU with Glyd, instead of 71.9 GB; your GPU has 85.0 GB free.
+Qwen3.5-35B-A3B is downloaded already.
+Settings: 262,144-token context (the model's own limit), compiled mode (CUDA graphs), 92% of GPU memory (78.2 GB).
+Loading Qwen3.5-35B-A3B with Glyd: 56.3 GB instead of 71.9 GB...
+Ready in 2m03s. (The server's log: /root/results/Qwen3.5-35B-A3B/glyd/state-try1/glyd/logs/serve-20261006-051548.log)
+
+Serving Qwen/Qwen3.5-35B-A3B with Glyd (262,144-token window).
+  OpenAI API   http://localhost:8200/v1   (model name: Qwen/Qwen3.5-35B-A3B)
+  Chat page    http://localhost:8200
+  Log          /root/results/Qwen3.5-35B-A3B/glyd/state-try1/glyd/logs/serve-20261006-051548.log
+Press Ctrl-C to stop.

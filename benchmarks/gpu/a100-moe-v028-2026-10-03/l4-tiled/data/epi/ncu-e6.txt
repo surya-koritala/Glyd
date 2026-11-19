@@ -1,0 +1,7 @@
+==PROF== Connected to process 595471 (/usr/bin/python3.12)
+synthetic 6 experts, top 2, hidden 2048, intermediate 768: NVIDIA L4, layout mma12, 12.05 bits a weight (gate+up), 12.05 (down), an expert 4.74 + 2.37 MB packed, copy rate 229 GB/s (read + write), env GLYD_GPU_LIB=/home/ubuntu/dev/epil2/lib/libglyd_gpu_cuda13.so
+==PROF== Profiling "mma_gemm_big_kernel": 0%....50%....100% - 44 passes
+==PROF== Profiling "mma_gemm_big_kernel": 0%....50%....100% - 44 passes
+T= 1536          new: checked, 6 experts hit; gate+up 3.4e-03, down 1.7e-03 (against fp32)
+==PROF== Disconnected from process 595471
+==PROF== Report: /home/ubuntu/dev/out/epi/e6.ncu-rep

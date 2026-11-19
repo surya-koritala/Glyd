@@ -1,0 +1,14 @@
+{
+  "kind": "ReadOnlyPinReadinessDiagnostic",
+  "elapsed_seconds": 11.19,
+  "success": true,
+  "exit_code": 0,
+  "ready_report": {
+    "inference_validated": false,
+    "ready": true
+  },
+  "model_started": false,
+  "mutation": false,
+  "native_approval_reused": false,
+  "external_spend_usd": 0
+}

@@ -1,0 +1,220 @@
+(APIServer pid=5161) Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+(APIServer pid=5161) [transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+(EngineCore pid=5425) Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+(EngineCore pid=5425) Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:00<00:01,  1.76it/s]
+(EngineCore pid=5425) Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:01<00:01,  1.45it/s]
+(EngineCore pid=5425) Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:02<00:00,  1.35it/s]
+(EngineCore pid=5425) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.40it/s]
+(EngineCore pid=5425) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.42it/s]
+(EngineCore pid=5425) 
+(APIServer pid=5161) [transformers] Qwen3VL video processing does not apply the per-frame pixel cap the reference implementation (qwen-vl-utils) applies, so some videos cost far more tokens than they would there. In v5.22 the capped behavior will become the default and `cap_pixels_per_frame` will be removed. Pass `cap_pixels_per_frame=True` to adopt the reference behavior now, or `False` to keep the current behavior and silence this warning.
+(EngineCore pid=5425) [transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+(EngineCore pid=5425) /root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/triton/language/core.py:2284: UserWarning: tl.make_block_ptr is deprecated. Use TensorDescriptor or tl.make_tensor_descriptor instead.
+(EngineCore pid=5425)   warn("tl.make_block_ptr is deprecated. Use TensorDescriptor or tl.make_tensor_descriptor instead.")
+(EngineCore pid=5425) Capturing CUDA graphs (PIECEWISE):   0%|          | 0/51 [00:00<?, ?it/s][rank0]:[W1006 01:48:11.501983953 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 127664128, total: 25252724736).
+[rank0]:[W1006 01:48:11.502152454 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 127664128, total: 25252724736).
+Capturing CUDA graphs (PIECEWISE):   0%|          | 0/51 [00:00<?, ?it/s]
+(EngineCore pid=5425) Process EngineCore:
+(EngineCore pid=5425) Traceback (most recent call last):
+(EngineCore pid=5425)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=5425)     self.run()
+(EngineCore pid=5425)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
+(EngineCore pid=5425)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1370, in run_engine_core
+(EngineCore pid=5425)     raise e
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1328, in run_engine_core
+(EngineCore pid=5425)     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=5425)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=5425)     return func(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1085, in __init__
+(EngineCore pid=5425)     super().__init__(
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 145, in __init__
+(EngineCore pid=5425)     kv_cache_config = self._initialize_kv_caches(vllm_config)
+(EngineCore pid=5425)                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=5425)     return func(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 308, in _initialize_kv_caches
+(EngineCore pid=5425)     available_gpu_memory = self.model_executor.determine_available_memory()
+(EngineCore pid=5425)                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 149, in determine_available_memory
+(EngineCore pid=5425)     return self.collective_rpc("determine_available_memory")
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 103, in collective_rpc
+(EngineCore pid=5425)     result = run_method(self.driver_worker, method, args, kwargs)
+(EngineCore pid=5425)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/serial_utils.py", line 510, in run_method
+(EngineCore pid=5425)     return func(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=5425)     return func(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 585, in determine_available_memory
+(EngineCore pid=5425)     cudagraph_memory_estimate = self.model_runner.profile_cudagraph_memory()
+(EngineCore pid=5425)                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=5425)     return func(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 985, in profile_cudagraph_memory
+(EngineCore pid=5425)     return _profile_cudagraph_memory(self)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=5425)     return func(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/cudagraph_utils.py", line 921, in profile_cudagraph_memory
+(EngineCore pid=5425)     measured = int(runner.capture_model(profile_only=True))
+(EngineCore pid=5425)                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=5425)     return func(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 1028, in capture_model
+(EngineCore pid=5425)     self.cudagraph_manager.capture(
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/cudagraph_utils.py", line 747, in capture
+(EngineCore pid=5425)     super().capture(create_forward_fn, progress_bar_desc)
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=5425)     return func(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/cudagraph_utils.py", line 439, in capture
+(EngineCore pid=5425)     forward_fn(CUDAGraphMode.NONE)
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/worker/gpu/cudagraph_utils.py", line 736, in forward_fn
+(EngineCore pid=5425)     model_output = model(**model_inputs)
+(EngineCore pid=5425)                    ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+(EngineCore pid=5425)     return self._call_impl(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+(EngineCore pid=5425)     return forward_call(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_5.py", line 591, in forward
+(EngineCore pid=5425)     hidden_states = self.language_model.model(
+(EngineCore pid=5425)                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/compilation/decorators.py", line 522, in __call__
+(EngineCore pid=5425)     return self.aot_compiled_fn(self, *args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/_dynamo/aot_compile.py", line 244, in __call__
+(EngineCore pid=5425)     return self.fn(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_next.py", line 688, in forward
+(EngineCore pid=5425)     def forward(
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/compilation/caching.py", line 225, in __call__
+(EngineCore pid=5425)     return self.optimized_call(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "<string>", line 147, in execution_fn
+(EngineCore pid=5425)   File "<string>", line 5, in __vllm_inlined_submods__1
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/_ops.py", line 1279, in __call__
+(EngineCore pid=5425)     return self._op(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py", line 1979, in qwen_gdn_attention_core_fused_norm_packed
+(EngineCore pid=5425)     self._forward_core_fused_norm_packed(
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py", line 1817, in _forward_core_fused_norm_packed
+(EngineCore pid=5425)     self._forward_core_fused_norm(
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py", line 1907, in _forward_core_fused_norm
+(EngineCore pid=5425)     self._forward_core(
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py", line 1531, in _forward_core
+(EngineCore pid=5425)     ) = self.chunk_gated_delta_rule(
+(EngineCore pid=5425)         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+(EngineCore pid=5425)     return self._call_impl(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+(EngineCore pid=5425)     return forward_call(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/model_executor/custom_op.py", line 136, in forward
+(EngineCore pid=5425)     return self._forward_method(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py", line 310, in forward_native
+(EngineCore pid=5425)     return fla_chunk_gated_delta_rule(
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 1446, in _fn
+(EngineCore pid=5425)     return fn(*args, **kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/chunk.py", line 230, in chunk_gated_delta_rule
+(EngineCore pid=5425)     o, final_state = ChunkGatedDeltaRuleFunction.apply(
+(EngineCore pid=5425)                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/autograd/function.py", line 625, in apply
+(EngineCore pid=5425)     return super().apply(*args, **kwargs)  # type: ignore[misc]
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/utils.py", line 115, in wrapper
+(EngineCore pid=5425)     return fn(*contiguous_args, **contiguous_kwargs)
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/torch/amp/autocast_mode.py", line 481, in decorate_fwd
+(EngineCore pid=5425)     return fwd(*args, **kwargs)  # pyrefly: ignore [not-callable]
+(EngineCore pid=5425)            ^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/chunk.py", line 113, in forward
+(EngineCore pid=5425)     g, o, A, final_state, w, h, v_new = chunk_gated_delta_rule_fwd(
+(EngineCore pid=5425)                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/chunk.py", line 61, in chunk_gated_delta_rule_fwd
+(EngineCore pid=5425)     h, v_new, final_state = chunk_gated_delta_rule_fwd_h(
+(EngineCore pid=5425)                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/third_party/flash_linear_attention/ops/chunk_delta_h.py", line 354, in chunk_gated_delta_rule_fwd_h
+(EngineCore pid=5425)     k.new_empty(N, H, V, K, dtype=torch.float32) if output_final_state else None
+(EngineCore pid=5425)     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=5425) torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 512.00 MiB. GPU 0 has a total capacity of 23.52 GiB of which 121.75 MiB is free. Including non-PyTorch memory, this process has 23.39 GiB memory in use. Of the allocated memory 22.87 GiB is allocated by PyTorch, and 46.77 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+[rank0]:[W1006 01:48:13.673245796 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+(APIServer pid=5161) Traceback (most recent call last):
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/bin/vllm", line 10, in <module>
+(APIServer pid=5161)     sys.exit(main())
+(APIServer pid=5161)              ^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 106, in main
+(APIServer pid=5161)     args.dispatch_function(args)
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/cli/serve.py", line 154, in cmd
+(APIServer pid=5161)     uvloop.run(run_server(args))
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=5161)     return __asyncio.run(
+(APIServer pid=5161)            ^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 195, in run
+(APIServer pid=5161)     return runner.run(main)
+(APIServer pid=5161)            ^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=5161)     return self._loop.run_until_complete(task)
+(APIServer pid=5161)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "uvloop/loop.pyx", line 1515, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=5161)     return await main
+(APIServer pid=5161)            ^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 176, in run_server
+(APIServer pid=5161)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 190, in run_server_worker
+(APIServer pid=5161)     async with build_async_engine_client(
+(APIServer pid=5161)                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=5161)     return await anext(self.gen)
+(APIServer pid=5161)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 58, in build_async_engine_client
+(APIServer pid=5161)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=5161)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=5161)     return await anext(self.gen)
+(APIServer pid=5161)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 94, in build_async_engine_client_from_engine_args
+(APIServer pid=5161)     async_llm = AsyncLLM.from_vllm_config(
+(APIServer pid=5161)                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/async_llm.py", line 235, in from_vllm_config
+(APIServer pid=5161)     return cls(
+(APIServer pid=5161)            ^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/async_llm.py", line 169, in __init__
+(APIServer pid=5161)     self.engine_core = EngineCoreClient.make_async_mp_client(
+(APIServer pid=5161)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=5161)     return func(*args, **kwargs)
+(APIServer pid=5161)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 163, in make_async_mp_client
+(APIServer pid=5161)     return AsyncMPClient(
+(APIServer pid=5161)            ^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=5161)     return func(*args, **kwargs)
+(APIServer pid=5161)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 1060, in __init__
+(APIServer pid=5161)     super().__init__(
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 656, in __init__
+(APIServer pid=5161)     with launch_core_engines(
+(APIServer pid=5161)          ^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=5161)   File "/root/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 144, in __exit__
+(APIServer pid=5161)     next(self.gen)
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1240, in launch_core_engines
+(APIServer pid=5161)     wait_for_engine_startup(
+(APIServer pid=5161)   File "/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1320, in wait_for_engine_startup
+(APIServer pid=5161)     raise RuntimeError(
+(APIServer pid=5161) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}

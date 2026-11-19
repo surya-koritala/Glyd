@@ -1,0 +1,18 @@
+NVIDIA A100-SXM4-40GB: 108 SMs, 1555 GB/s peak (29.4 MB a matrix, 3584 patches, W 1792, KT 56)
+L2 40 MB: 12 copies of the matrix in turn
+stream4          32.8 us     896 GB/s  (min 31.7)  sum 60500000
+stream8          32.8 us     896 GB/s  (min 31.7)  sum 60500000
+stream4x16       36.9 us     796 GB/s  (min 35.8)  sum 60500000
+ours1            38.9 us     755 GB/s  (min 36.9)  sum 60500000
+ours2            48.1 us     610 GB/s  (min 47.1)  sum 60500000
+cpasync          29.7 us     989 GB/s  (min 27.6)  sum 60500000
+cpasync32k       28.7 us    1024 GB/s  (min 27.6)  sum 60500000
+adjacent         38.9 us     755 GB/s  (min 37.9)  sum 60500000
+interleaved      28.7 us    1024 GB/s  (min 28.7)  sum 60500000
+interleav2       48.1 us     610 GB/s  (min 46.1)  sum 60500000
+wide             29.7 us     989 GB/s  (min 29.7)  sum 60500000
+many             43.0 us     683 GB/s  (min 38.9)  sum 60500000
+many-inter       28.7 us    1024 GB/s  (min 28.7)  sum 60500000
+one-cta-sm       39.9 us     735 GB/s  (min 38.9)  sum 60500000
+cpasync-adj      28.7 us    1024 GB/s  (min 28.7)  sum 60500000
+checksums equal

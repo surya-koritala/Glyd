@@ -1,0 +1,34 @@
+[package]
+name = "starlings-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.97.1"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+
+[dependencies.starlings-protocol]
+version = "0.1.0"
+path = "../crates/starlings-protocol"
+
+# Keep the optional instrumented runtime outside normal platform builds.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "data_header"
+path = "fuzz_targets/data_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "receive_cursor"
+path = "fuzz_targets/receive_cursor.rs"
+test = false
+doc = false
+bench = false

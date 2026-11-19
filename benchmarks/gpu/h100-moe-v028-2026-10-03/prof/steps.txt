@@ -1,0 +1,7 @@
+21:45:10 (+0 s) machine
+21:45:29 (+19 s) env: 19 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA H100 80GB HBM3)
+21:46:10 (+60 s) thermal preflight: ok: 42 s of load: the last 10 s 66 C at most, SM clock 1366 MHz, 698 W, thermal slowdown in 0 of them, power cap in 10
+21:47:05 (+115 s) build: sm_90a in 96 s (library: C API 14 | GPU code 7090)
+21:47:44 (+154 s) prof: ncu in 39 s, 2 reports
+download dl-Qwen3-30B-A3B-layer: exit 0: 4016999536 bytes in 18 s (at +37 s)
+21:47:44 (+154 s) done

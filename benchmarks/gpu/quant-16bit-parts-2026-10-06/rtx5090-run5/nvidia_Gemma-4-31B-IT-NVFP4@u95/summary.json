@@ -1,0 +1,83 @@
+{
+ "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+ "args": {
+  "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+  "out": "/root/results/nvidia_Gemma-4-31B-IT-NVFP4@u95",
+  "util": 0.95,
+  "mml": 4096,
+  "dtype": "auto",
+  "max_num_seqs": 32,
+  "layout": "mma",
+  "steps": "stock,glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "glyd": {
+  "weights_gib": 25.25,
+  "kv_tokens": 5559,
+  "kv_gib": 2.34,
+  "concurrency": 1.36,
+  "tps": {
+   "1": {
+    "median": 42.05,
+    "runs": [
+     42.06,
+     42.04
+    ]
+   },
+   "32": {
+    "median": 285.4,
+    "runs": [
+     285.3,
+     285.5
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantModelOptNvFp4Config",
+  "glyd_key": {
+   "layout": "mma",
+   "verify": true,
+   "kv": "off"
+  },
+  "start_s": 343.0
+ },
+ "inventory": {
+  "packed_count": 122,
+  "verified_count": 122,
+  "packed_bf16_bytes": 19994247168,
+  "packed_pack_bytes": 13463557369,
+  "saved_bytes": 6530689799,
+  "gpu_tensor_bytes": 26725420963,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.003194817341864109,
+  "left_16bit_top": {
+   "ReplicatedLinear / UnquantizedLinearMethod / weight / bfloat16": {
+    "tensors": 190,
+    "bytes": 1102270464,
+    "example": "vision_tower.encoder.layers.0.self_attn.q_proj.linear.weight"
+   },
+   "Gemma4VisionPatchEmbedder / NoneType / position_embedding_table / bfloat16": {
+    "tensors": 1,
+    "bytes": 47185920,
+    "example": "vision_tower.patch_embedder.position_embedding_table"
+   }
+  }
+ },
+ "stock": {
+  "weights_gib": null,
+  "kv_tokens": null,
+  "kv_gib": null,
+  "concurrency": null,
+  "tps": null,
+  "quantization": null,
+  "quant_config": null,
+  "start_s": null,
+  "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 112.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 46.94 MiB is free. Including non-PyTorch memory, this process has 31.30 GiB memory in use. Of the allocated memory 30.44 GiB is allocated by PyTorch, and 229.50 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+  "log_tail": []
+ }
+}

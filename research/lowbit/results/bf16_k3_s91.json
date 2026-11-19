@@ -1,0 +1,69 @@
+{
+ "router": {
+  "tensors": 1,
+  "small_bytes": 3584,
+  "big_n": 6422528,
+  "sums": {
+   "H_word": 67535223.63970275,
+   "H_exp": 16619591.54144184,
+   "exc12": 833.0,
+   "fast3_bits": 72258440.0,
+   "fast3_esc": 201329.0,
+   "tier3_bits": 68769576.0,
+   "tier3_raw": 51568.99999999999
+  }
+ },
+ "attention": {
+  "tensors": 6,
+  "small_bytes": 3851264,
+  "big_n": 441974784,
+  "sums": {
+   "H_word": 4667822975.591126,
+   "H_exp": 1162688758.4482548,
+   "exc12": 336099.0000000075,
+   "fast3_bits": 4973367528.0,
+   "fast3_esc": 13955613.0,
+   "tier3_bits": 4749405568.0,
+   "tier3_raw": 4203900.0
+  }
+ },
+ "expert_latent_proj": {
+  "tensors": 2,
+  "small_bytes": 7168,
+  "big_n": 51380224,
+  "sums": {
+   "H_word": 538195167.1498973,
+   "H_exp": 131235816.48345745,
+   "exc12": 9398.99999999901,
+   "fast3_bits": 575002688.0,
+   "fast3_esc": 1227528.0,
+   "tier3_bits": 546784664.0,
+   "tier3_raw": 317291.0
+  }
+ },
+ "shared_experts": {
+  "tensors": 3,
+  "small_bytes": 0,
+  "big_n": 132120576,
+  "sums": {
+   "H_word": 1392816561.6850386,
+   "H_exp": 345068715.3199923,
+   "exc12": 22009.999999998137,
+   "fast3_bits": 1484076512.0,
+   "fast3_esc": 3843772.0,
+   "tier3_bits": 1418152048.0,
+   "tier3_raw": 1151789.0
+  }
+ },
+ "other": {
+  "tensors": 0,
+  "small_bytes": 15722434560,
+  "big_n": 0,
+  "sums": {}
+ },
+ "_meta": {
+  "file": "model-00091-of-000096.safetensors",
+  "seconds": 2.541937828063965,
+  "min_elements": 1000000
+ }
+}

@@ -1,0 +1,21 @@
+glyd run: NVIDIA-Nemotron-3-Nano-4B-BF16 is a NemotronHForCausalLM model, and this engine runs Qwen3 models so far; using vLLM.
+NVIDIA-Nemotron-3-Nano-4B-BF16: 5.7 GB on the GPU with Glyd, instead of 7.9 GB; your GPU has 25.2 GB free.
+Downloading NVIDIA-Nemotron-3-Nano-4B-BF16: 10% (0.8 GB of 8.0 GB)
+Downloading NVIDIA-Nemotron-3-Nano-4B-BF16: 20% (1.7 GB of 8.0 GB)
+Downloading NVIDIA-Nemotron-3-Nano-4B-BF16: 30% (2.5 GB of 8.0 GB)
+Downloading NVIDIA-Nemotron-3-Nano-4B-BF16: 40% (3.6 GB of 8.0 GB)
+Downloading NVIDIA-Nemotron-3-Nano-4B-BF16: 50% (4.0 GB of 8.0 GB)
+Downloading NVIDIA-Nemotron-3-Nano-4B-BF16: 60% (4.8 GB of 8.0 GB)
+Downloading NVIDIA-Nemotron-3-Nano-4B-BF16: 70% (5.9 GB of 8.0 GB)
+Downloading NVIDIA-Nemotron-3-Nano-4B-BF16: 90% (7.6 GB of 8.0 GB)
+Downloading NVIDIA-Nemotron-3-Nano-4B-BF16: 100% (8.0 GB of 8.0 GB)
+Downloaded NVIDIA-Nemotron-3-Nano-4B-BF16 (8.0 GB).
+Settings: 262,144-token context (the model's own limit), compiled mode (CUDA graphs), 71% of GPU memory (17.9 GB), tool calls (qwen3_coder), thinking shown apart (nemotron_v3).
+KV cache: vLLM's (GLYD_KV=auto for Glyd's lossless cache on supported GPUs)
+Loading NVIDIA-Nemotron-3-Nano-4B-BF16 with Glyd: 5.7 GB instead of 7.9 GB...
+Ready in 3m09s. (The server's log: /root/.local/state/glyd/logs/run-20261006-112522.log)
+Thinking...
+The user asks: "What is 17 times 23? Give the number." So compute 17*23 = 391. Provide the number.
+...done thinking.
+
+Stopping the server (a few seconds)...

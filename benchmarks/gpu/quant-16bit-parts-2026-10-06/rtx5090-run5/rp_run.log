@@ -1,0 +1,10 @@
+13:19 created xghi02thddpoyl (NVIDIA GeForce RTX 5090)
+ssh on pod xghi02thddpoyl ready after 17s: ssh reachable at 74.2.96.60:12407
+13:19 ssh ready at 74.2.96.60:12407 after 23 s
+NVIDIA GeForce RTX 5090, 580.126.09, 32607 MiB
+13:19 job started
+14:17 job done
+terminating xghi02thddpoyl
+pods left: [('4c61jbxb0qtvyd', 'glyd-bench-fp8s-5090r3', 'RUNNING'), ('hub3wn313g937a', 'glyd-bench-qsc-5090a', 'RUNNING'), ('t7z2ayt0zx8tuc', 'glyd-bench-qf8-l40s7', 'RUNNING'), ('ugjjmjchpd979o', 'glyd-bench-qnv-5090c', 'RUNNING'), ('k0aozkwksbuclw', 'glyd-bench-qmx-5090', 'RUNNING'), ('due6l4mqr14kf2', 'glyd-bench-qcf-l40s3', 'RUNNING')]
+58 min
+rp_run exit 0

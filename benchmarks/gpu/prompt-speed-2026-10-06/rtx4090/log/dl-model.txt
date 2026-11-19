@@ -1,0 +1,4 @@
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 13 files:   8%|▊         | 1/13 [00:00<00:01,  8.32it/s]Fetching 13 files:  54%|█████▍    | 7/13 [00:00<00:00, 35.13it/s]Fetching 13 files:  85%|████████▍ | 11/13 [00:15<00:03,  1.81s/it]Fetching 13 files:  92%|█████████▏| 12/13 [00:18<00:01,  1.87s/it]Fetching 13 files: 100%|██████████| 13/13 [00:19<00:00,  1.53s/it]
+/root/psw/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a
+exit 0

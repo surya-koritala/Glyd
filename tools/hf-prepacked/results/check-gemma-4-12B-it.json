@@ -1,0 +1,38 @@
+{
+ "save": "/root/w/save/gemma-4-12B-it",
+ "verified": 333,
+ "hashed": 346,
+ "unhashed": 0,
+ "load_s": 55.4,
+ "gpu_bytes": 17799651328,
+ "gpu_peak_bytes": 22564127232,
+ "prompt": "In one sentence: what does a lossless compressor guarantee?",
+ "answer": "A lossless compressor guarantees that the original data can be perfectly reconstructed, bit-for-bit, from the compressed file.",
+ "gen_s": 3.0,
+ "save_bytes": 16780342996,
+ "same_tensors_bf16_bytes": 23919460448,
+ "packs": 203,
+ "packed_tensors": 331,
+ "as_is_tensors": 346,
+ "as_is_bytes": 2032074848,
+ "source_bytes": 23919549408,
+ "source_tensors": 677,
+ "source_groups": {
+  "model.embed_audio": 1,
+  "model.embed_vision": 1,
+  "model.language_model": 666,
+  "model.vision_embedder": 9
+ },
+ "save_groups": {
+  "model.embed_audio": 1,
+  "model.embed_vision": 10,
+  "model.language_model": 666
+ },
+ "save_vs_same_bf16": 0.2985,
+ "format": "glyd-v4",
+ "glyd": "0.29.0",
+ "source": {
+  "repo": "google/gemma-4-12B-it",
+  "revision": null
+ }
+}

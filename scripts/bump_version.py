@@ -12,9 +12,9 @@ same version. The argument or tag may be in either spelling (a leading v is allo
 own ecosystem's, and --check fails on a file in the other's. Only X.Y.Z and its alpha, beta and rc
 pre-releases (X.Y.Zrc3, X.Y.Za1, X.Y.Zb2) exist here.
 
-What carries it: the two Cargo.toml (and glyd-store's dependency on glyd), the two glyd entries in
-Cargo.lock, pyproject.toml (and its extras' pins of glyd-gpu), glyd/__init__.py and scripts/install.sh (the release it installs), in every version. In a release (X.Y.Z) also ROADMAP.md,
-docs/adoption.md and docs/index.html, where they name the current release, and CHANGELOG.md's heading
+What carries it: the four Cargo.toml (and glyd-store's dependency on glyd), the four glyd entries in
+Cargo.lock, pyproject.toml (and its extras' pins of glyd-gpu), glyd/__init__.py, glyd-gpu-py's pyproject.toml and glyd_gpu/__init__.py and scripts/install.sh (the release it installs), in every version. In a release (X.Y.Z) also ROADMAP.md
+and docs/index.html, where they name the current release, and CHANGELOG.md's heading
 (`## Unreleased` or `## vX.Y.Z (Unreleased)` becomes `## vX.Y.Z` with the date). Formula/glyd.rb is not
 here: it needs the release's files to exist, see scripts/bump_formula.py.
 """
@@ -37,17 +37,20 @@ CODE = [
     ("Cargo.toml", "cargo", r'^version = "(?P<v>[^"]+)"', 1),
     ("glyd-store/Cargo.toml", "cargo", r'^version = "(?P<v>[^"]+)"', 1),
     ("glyd-store/Cargo.toml", "cargo", r'^glyd = \{ version = "(?P<v>[^"]+)"', 1),
-    ("Cargo.lock", "cargo", r'^name = "glyd(?:-store)?"\nversion = "(?P<v>[^"]+)"', 2),
+    ("glyd-gpu/Cargo.toml", "cargo", r'^version = "(?P<v>[^"]+)"', 1),
+    ("glyd-engine/Cargo.toml", "cargo", r'^version = "(?P<v>[^"]+)"', 1),  # the engine ships in the glyd-gpu wheels, as glyd-engine's own version
+    ("Cargo.lock", "cargo", r'^name = "glyd(?:-engine|-gpu|-store)?"\nversion = "(?P<v>[^"]+)"', 4),
     ("bindings/python/pyproject.toml", "py", r'^version = "(?P<v>[^"]+)"', 1),
     ("bindings/python/pyproject.toml", "py", r'^gpu = \["glyd-gpu\[gpu\]==(?P<v>[^"]+)"\]', 1),  # the extras pin the glyd-gpu of the same version
     ("bindings/python/pyproject.toml", "py", r'^vllm = \["glyd-gpu\[vllm\]==(?P<v>[^"]+)"\]', 1),
     ("bindings/python/glyd/__init__.py", "py", r'^__version__ = "(?P<v>[^"]+)"', 1),
+    ("glyd-gpu-py/pyproject.toml", "py", r'^version = "(?P<v>[^"]+)"', 1),  # glyd-gpu: the same version as glyd
+    ("glyd-gpu-py/glyd_gpu/__init__.py", "py", r'^__version__ = "(?P<v>[^"]+)"', 1),
     ("scripts/install.sh", "py", r'^GLYD_VERSION="\$\{GLYD_VERSION:-(?P<v>[^}]+)\}"', 1),  # the release the installer pins
 ]
 # where a release is named in prose: the text (version in group v) and what a release writes there
 DOCS = [
     ("ROADMAP.md", r"^## Where it stands \(v(?P<v>[\d.]+), \d{4}-\d{2}-\d{2}\)$", "## Where it stands (v{v}, {date})"),
-    ("docs/adoption.md", r"stands on each \(v(?P<v>[\d.]+), [A-Z][a-z]+ \d{4}\)", "stands on each (v{v}, {month})"),
     ("docs/index.html", r"Rust, C ABI, CLI; v(?P<v>[\d.]+), [A-Z][a-z]+ \d{4}\.", "Rust, C ABI, CLI; v{v}, {month}."),
 ]
 
@@ -149,37 +152,41 @@ def selftest():
     day = datetime.date(2031, 2, 3)
     with tempfile.TemporaryDirectory() as d:
         root = tree(d)
-        released = re.sub(r"^## (?:(v\S+) \(Unreleased\)|Unreleased)$", lambda m: f"## {m.group(1) or 'v0.0.0'} {DASH} 2000-01-01", read(root, CHANGELOG), flags=re.M)
+        released = re.sub(r"^(## v\S+) \(Unreleased\)$", rf"\1 {DASH} 2000-01-01", read(root, CHANGELOG), flags=re.M)
+        released = re.sub(r"^## Unreleased$", f"## v0.0.0 {DASH} 2000-01-01", released, flags=re.M)  # (a branch's notes under a plain heading, before its release)
         (root / CHANGELOG).write_text("## v9.9.9 (Unreleased)\n\n" + released, encoding="utf-8")  # (whatever the real one says, now)
         docs = {p: read(root, p) for p, *_ in DOCS}
 
         bump(root, "9.9.9rc1", day)  # a pre-release: the code only, in each ecosystem's spelling
         assert not problems(root) and not problems(root, parse("v9.9.9-rc.1")) and problems(root, parse("9.9.9rc2"))
-        assert 'version = "9.9.9-rc.1"' in read(root, "Cargo.toml") and read(root, "Cargo.lock").count('version = "9.9.9-rc.1"') == 2
+        assert 'version = "9.9.9-rc.1"' in read(root, "Cargo.toml") and read(root, "Cargo.lock").count('version = "9.9.9-rc.1"') == 4
         assert 'glyd = { version = "9.9.9-rc.1"' in read(root, "glyd-store/Cargo.toml")
         assert 'version = "9.9.9rc1"' in read(root, "bindings/python/pyproject.toml") and '__version__ = "9.9.9rc1"' in read(root, "bindings/python/glyd/__init__.py")
         assert 'gpu = ["glyd-gpu[gpu]==9.9.9rc1"]' in read(root, "bindings/python/pyproject.toml") and 'vllm = ["glyd-gpu[vllm]==9.9.9rc1"]' in read(root, "bindings/python/pyproject.toml")
+        assert 'version = "9.9.9rc1"' in read(root, "glyd-gpu-py/pyproject.toml") and '__version__ = "9.9.9rc1"' in read(root, "glyd-gpu-py/glyd_gpu/__init__.py")
         assert 'GLYD_VERSION="${GLYD_VERSION:-9.9.9rc1}"' in read(root, "scripts/install.sh")
         assert all(read(root, p) == t for p, t in docs.items()) and "## v9.9.9 (Unreleased)" in read(root, CHANGELOG)
 
         bump(root, "v9.9.9-rc.2", day)  # rc to rc
         assert not problems(root) and "9.9.9rc2" in read(root, "bindings/python/pyproject.toml")
 
-        changed = bump(root, "9.9.9", day)  # the release: the docs and the heading too (v0.25.1's ten files, and the installer's pin)
-        assert not problems(root) and len(changed) == 10, changed
+        changed = bump(root, "9.9.9", day)  # the release: the docs and the heading too (v0.25.1's ten files, the engine's Cargo.toml, and the installer's pin)
+        assert not problems(root) and len(changed) == 13, changed
         assert f"## v9.9.9 {DASH} 2031-02-03\n" in read(root, CHANGELOG) and "(Unreleased)" not in read(root, CHANGELOG)
-        assert "(v9.9.9, 2031-02-03)" in read(root, "ROADMAP.md") and "(v9.9.9, February 2031)" in read(root, "docs/adoption.md")
+        assert "(v9.9.9, 2031-02-03)" in read(root, "ROADMAP.md")
         assert "CLI; v9.9.9, February 2031." in read(root, "docs/index.html")
         assert bump(root, "9.9.9", day) == []  # a second run changes nothing
 
         for path, old, new in [  # each slip is found
             ("bindings/python/pyproject.toml", 'version = "9.9.9"', 'version = "9.9.9-rc.1"'),
-            ("bindings/python/pyproject.toml", 'gpu = ["glyd-gpu[gpu]==9.9.9"]', 'gpu = ["glyd-gpu[gpu]==9.9.8"]'),
-            ("bindings/python/pyproject.toml", 'vllm = ["glyd-gpu[vllm]==9.9.9"]', 'vllm = ["glyd-gpu[vllm]==9.9.8"]'),
             ("bindings/python/glyd/__init__.py", '"9.9.9"', '"9.9.8"'),
+            ("glyd-gpu-py/pyproject.toml", 'version = "9.9.9"', 'version = "9.9.8"'),
+            ("glyd-gpu-py/glyd_gpu/__init__.py", '"9.9.9"', '"9.9.8"'),
             ("scripts/install.sh", "GLYD_VERSION:-9.9.9}", "GLYD_VERSION:-9.9.8}"),
             ("glyd-store/Cargo.toml", 'glyd = { version = "9.9.9"', 'glyd = { version = "9.9.8"'),
-            ("Cargo.lock", 'name = "glyd-store"\nversion = "9.9.9"', 'name = "glyd-store"\nversion = "9.9.8"'),
+            ("glyd-gpu/Cargo.toml", 'version = "9.9.9"', 'version = "9.9.8"'),
+            ("glyd-engine/Cargo.toml", 'version = "9.9.9"', 'version = "9.9.8"'),
+            ("Cargo.lock", 'name = "glyd-gpu"\nversion = "9.9.9"', 'name = "glyd-gpu"\nversion = "9.9.8"'),
             ("ROADMAP.md", "(v9.9.9,", "(v9.9.8,"),
             ("docs/index.html", "CLI; v9.9.9,", "CLI; v9.9.8,"),
             (CHANGELOG, f"## v9.9.9 {DASH} 2031-02-03", "## v9.9.9 (Unreleased)"),

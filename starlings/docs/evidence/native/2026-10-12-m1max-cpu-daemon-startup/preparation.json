@@ -1,0 +1,16 @@
+{
+  "kind": "NativeDaemonAcceptancePreparation",
+  "implementation_commit": "8d2eb777edcc56ad1eca6f9729b7e06b7da582f0",
+  "binary_sha256": "66f58631f7544e647f2e614799c2df3478794a3b051d20d6ba95f57778883819",
+  "configuration": "c11fcf2921da6478d1c2ef23e1101c1edb2f4d5c236e013a8a32e961b25ac683",
+  "worker_record_digest": "9ab2ade0826f900d4fa9ee6e74c258becfedab017657fec21ccd732abb1139b0",
+  "profile_evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+  "policy_scope": "proposed fixed-input, monitored CPU experiment only; no general qualification or deployment",
+  "native_started": false,
+  "approval_granted": false,
+  "worker_file_sha256": "078057ca45e1389cc734f659aac4d0d49595c56f75eaa833a02a9cdb44b1bd18",
+  "coordinator_template_sha256": "4fb656461c03ce869b964d4df84b06d7f89b724c5e71a1c8dd2041bf511c244e",
+  "runner_sha256": "7d003eb8768f01d94189b2fb64ce64fd9b4bb4ea8ace78da64df8d0851c869ee",
+  "preflight_success": true,
+  "preflight_requires_host_permission": true
+}

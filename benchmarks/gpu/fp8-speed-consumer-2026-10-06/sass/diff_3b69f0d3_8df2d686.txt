@@ -1,0 +1,4 @@
+# python3 sassdiff.py MAIN.sass HEAD.sass: cuobjdump -sass of the library (nvcc 13.0.2, -O3, -cubin), main = 3b69f0d3, head = 8df2d686 (this PR's kernels
+# after it change only f8c functions: 851cf2e8 X's 2^64, e1970149 host code); functions named f8c (the FP8 kernels) left out; addresses and encodings ignored
+out/main89.sass vs out2/head89.sass: non-f8 functions 266 / 266; identical SASS 266; different 0; in one only 0
+out/main120.sass vs out2/head120.sass: non-f8 functions 266 / 266; identical SASS 266; different 0; in one only 0

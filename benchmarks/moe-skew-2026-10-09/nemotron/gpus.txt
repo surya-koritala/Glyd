@@ -1,0 +1,10 @@
+index, name, driver_version, memory.total [MiB]
+0, NVIDIA A100-SXM4-80GB, 580.173.02, 81920 MiB
+1, NVIDIA A100-SXM4-80GB, 580.173.02, 81920 MiB
+2, NVIDIA A100-SXM4-80GB, 580.173.02, 81920 MiB
+3, NVIDIA A100-SXM4-80GB, 580.173.02, 81920 MiB
+index, memory.used [MiB]
+0, 0 MiB
+1, 0 MiB
+2, 0 MiB
+3, 0 MiB

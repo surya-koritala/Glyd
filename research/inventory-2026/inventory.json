@@ -1,0 +1,4548 @@
+{
+ "what": "Per 2026 bf16 open model: the weights the glyd vLLM plugin (private/main glyd-gpu-py/glyd_gpu/vllm_plugin.py) packs under vLLM 0.30.0 and the ones it leaves unpacked, with bytes. Desk inventory from safetensors headers read by HTTP range and vLLM 0.30.0's model source; nothing run.",
+ "date": "2026-10-06",
+ "method": {
+  "bytes": "checkpoint bytes (GB = 1e9) from each safetensors header; 'loaded by vLLM' drops what vLLM 0.30.0's model file maps to None or skips (MTP / nextn layers, Gemma 4's KV-shared k/v)",
+  "packed": "GlydConfig.get_quant_method: a LinearBase built with the quant config of >= 1<<20 weights (vLLM's merged layer: q/k/v, gate/up, in_proj_qkv/z, b/a, MLA q_a/kv_a summed), rows % 64 == 0, columns % 16 == 0, bf16; RoutedExperts: SiLU, no bias, no expert parallel, H % 64, 2I % 128, I % 16; VocabParallelEmbedding / ParallelLMHead (exact types) built with the quant config: dim % 64, >= 4096 rows, head_dtype bf16. Layout rule on an RTX 4090/5090 (on an A100/H100 a MoE model's attention Linears stay bf16: dense_stays)",
+  "projections": "PROJECTED, not measured: saving = packed bytes x (1 - bits/16) / bytes vLLM loads; tiered 10.80 bits a weight, 12-bit 12.04. Ceilings with everything packed: 32.5% / 24.75%",
+  "check": "Qwen3.5-9B: 17.53 GiB loaded (18.83 GB), 15.36 GiB of it packed -> 12.54 GiB tiered + 0.13 GiB vLLM's own buffers (bf16's measured 17.66 GiB less 17.53 checkpoint GiB) = 12.67 GiB against 12.68 GiB measured (RTX 4090, v0.29, 2026-10-05); 12-bit: 13.86 against 13.89 GiB measured (RTX 5090). The alternatives (embedding packed: 12.05; vision tower unpacked: 12.86) do not match."
+ },
+ "models": [
+  {
+   "model": "arcee-ai/Trinity-Large-Thinking",
+   "arch": "AfmoeForCausalLM",
+   "created": "2026-04-01",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/afmoe.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 797.271,
+   "loaded_by_vllm_gb": 797.271,
+   "packed_gb": 795.954,
+   "unpacked_gb": 1.316,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.23,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0849,
+    "norms": 0.0015
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.23,
+    "MoE routers": 0.0849,
+    "norms": 0.0015
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.45,
+   "projected_12bit_saving_pct": 24.71,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.05
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 7.55,
+   "projected_12bit_saving_on_a100_h100_pct": 24.47,
+   "unpacked_classes": "embedding built without the quant config 1.23 GB; MoE routers (quant_config=None, fp32 gates) 0.08 GB"
+  },
+  {
+   "model": "swiss-ai/Apertus-v1.1-0.5B-Instruct",
+   "arch": "ApertusForCausalLM",
+   "created": "2026-05-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 1.145,
+   "loaded_by_vllm_gb": 1.145,
+   "packed_gb": 1.145,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "swiss-ai/Apertus-v1.1-1.5B-Instruct",
+   "arch": "ApertusForCausalLM",
+   "created": "2026-05-03",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 3.02,
+   "loaded_by_vllm_gb": 3.02,
+   "packed_gb": 3.02,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "swiss-ai/Apertus-v1.1-4B-Instruct",
+   "arch": "ApertusForCausalLM",
+   "created": "2026-05-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 7.651,
+   "loaded_by_vllm_gb": 7.651,
+   "packed_gb": 7.65,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "inclusionAI/Ling-2.5-1T",
+   "arch": "BailingMoeV2_5ForCausalLM",
+   "created": "2026-02-14",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/bailing_moe_linear.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 2024.462,
+   "loaded_by_vllm_gb": 2024.462,
+   "packed_gb": 2021.564,
+   "unpacked_gb": 2.898,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 2.5753,
+    "MoE routers (quant_config=None, fp32 gates)": 0.3188,
+    "norms": 0.0039
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 2.5753,
+    "MoE routers": 0.3188,
+    "norms": 0.0039
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.45,
+   "projected_12bit_saving_pct": 24.71,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.04
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 49.21,
+   "projected_12bit_saving_on_a100_h100_pct": 24.11,
+   "unpacked_classes": "embedding built without the quant config 2.58 GB; MoE routers (quant_config=None, fp32 gates) 0.32 GB"
+  },
+  {
+   "model": "inclusionAI/Ling-2.6-flash",
+   "arch": "BailingMoeV2_5ForCausalLM",
+   "created": "2026-04-28",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/bailing_moe_linear.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 214.989,
+   "loaded_by_vllm_gb": 208.374,
+   "packed_gb": 207.02,
+   "unpacked_gb": 1.353,
+   "not_loaded_gb": {
+    "mtp": 6.615
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.2877,
+    "MoE routers (quant_config=None, fp32 gates)": 0.065,
+    "norms": 0.0008
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.2877,
+    "MoE routers": 0.065,
+    "norms": 0.0008
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.29,
+   "projected_12bit_saving_pct": 24.59,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.2,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 5.01,
+   "projected_12bit_saving_on_a100_h100_pct": 23.99,
+   "unpacked_classes": "embedding built without the quant config 1.29 GB; MoE routers (quant_config=None, fp32 gates) 0.07 GB"
+  },
+  {
+   "model": "inclusionAI/Ling-3.0-flash",
+   "arch": "BailingMoeV3ForCausalLM",
+   "created": "2026-08-02",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 254.973,
+   "loaded_by_vllm_gb": 248.829,
+   "packed_gb": 247.908,
+   "unpacked_gb": 0.921,
+   "not_loaded_gb": {
+    "mtp": 6.144
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.8048,
+    "MoE routers (quant_config=None, fp32 gates)": 0.1049,
+    "small Linears (< 1M weights)": 0.0069,
+    "conv weights / patch embeddings": 0.0034,
+    "small params (A_log, dt_bias, D, scales)": 0.0007
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.8048,
+    "MoE routers": 0.1049,
+    "small Linears (< 1M weights)": 0.0069,
+    "conv weights": 0.0034,
+    "small params (A_log, dt_bias, D, scales)": 0.0007
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.38,
+   "projected_12bit_saving_pct": 24.66,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.11,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 4.85,
+   "projected_12bit_saving_on_a100_h100_pct": 24.18,
+   "unpacked_classes": "embedding built without the quant config 0.80 GB; MoE routers (quant_config=None, fp32 gates) 0.10 GB"
+  },
+  {
+   "model": "inclusionAI/Ling-3.0-tiny",
+   "arch": "BailingMoeV3ForCausalLM",
+   "created": "2026-08-10",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 15.787,
+   "loaded_by_vllm_gb": 15.787,
+   "packed_gb": 15.247,
+   "unpacked_gb": 0.54,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.4829,
+    "small Linears (< 1M weights)": 0.0468,
+    "MoE routers (quant_config=None, fp32 gates)": 0.009,
+    "conv weights / patch embeddings": 0.0009
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.4829,
+    "small Linears (< 1M weights)": 0.0468,
+    "MoE routers": 0.009,
+    "conv weights": 0.0009
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 31.39,
+   "projected_12bit_saving_pct": 23.9,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.99,
+    "small Linears (< 1M weights)": 0.1,
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 0.758,
+   "projected_12bit_saving_on_a100_h100_pct": 22.72,
+   "unpacked_classes": "embedding built without the quant config 0.48 GB; small Linears (< 1M weights) 0.05 GB"
+  },
+  {
+   "model": "inclusionAI/Ling-3.0-flash-VL",
+   "arch": "BailingMoeV3VLForConditionalGeneration",
+   "created": "2026-09-04",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 249.697,
+   "loaded_by_vllm_gb": 249.697,
+   "packed_gb": 248.499,
+   "unpacked_gb": 1.198,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.8048,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "MoE routers (quant_config=None, fp32 gates)": 0.1049,
+    "conv weights / patch embeddings": 0.007,
+    "small Linears (< 1M weights)": 0.0069,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0007,
+    "small params (A_log, dt_bias, D, scales)": 0.0007,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.8048,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "MoE routers": 0.1049,
+    "small Linears (< 1M weights)": 0.0069,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "vision: conv / patch embed": 0.0035,
+    "conv weights": 0.0034,
+    "small params (A_log, dt_bias, D, scales)": 0.0007,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.591
+   },
+   "projected_tiered_saving_pct": 32.34,
+   "projected_12bit_saving_pct": 24.63,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.1,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.03,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 4.85,
+   "projected_12bit_saving_on_a100_h100_pct": 24.15,
+   "unpacked_classes": "embedding built without the quant config 0.80 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; MoE routers (quant_config=None, fp32 gates) 0.10 GB"
+  },
+  {
+   "model": "CohereLabs/North-Mini-Code-1.0",
+   "arch": "Cohere2MoeForCausalLM",
+   "created": "2026-06-05",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 60.969,
+   "loaded_by_vllm_gb": 60.969,
+   "packed_gb": 59.869,
+   "unpacked_gb": 1.099,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.0737,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0252
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.0737,
+    "MoE routers": 0.0252
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 31.91,
+   "projected_12bit_saving_pct": 24.3,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.57,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 1.85,
+   "projected_12bit_saving_on_a100_h100_pct": 23.55,
+   "unpacked_classes": "embedding built without the quant config 1.07 GB; MoE routers (quant_config=None, fp32 gates) 0.03 GB"
+  },
+  {
+   "model": "CohereLabs/command-a-plus-05-2026-bf16",
+   "arch": "Cohere2VisionForConditionalGeneration",
+   "created": "2026-05-11",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 437.501,
+   "loaded_by_vllm_gb": 437.501,
+   "packed_gb": 434.615,
+   "unpacked_gb": 2.885,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 2.1475,
+    "vision/audio tower not given the quant config": 0.5355,
+    "vision/audio projector / patch Linears built without the quant config": 0.1636,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0336,
+    "plain nn.Linear / nn.Embedding in towers": 0.0024,
+    "conv weights / patch embeddings": 0.0018,
+    "biases": 0.0006,
+    "norms": 0.0005
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 2.1475,
+    "vision: MLP not given the quant config by vLLM (intermediate not a multiple of 64)": 0.5355,
+    "vision: layer built without the quant config": 0.1636,
+    "MoE routers": 0.0336,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0024,
+    "vision: conv / patch embed": 0.0018,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.287
+   },
+   "projected_tiered_saving_pct": 32.29,
+   "projected_12bit_saving_pct": 24.59,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.16,
+    "vision/audio tower not given the quant config": 0.04,
+    "vision/audio projector / patch Linears built without the quant config": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 9.127,
+   "projected_12bit_saving_on_a100_h100_pct": 24.07,
+   "unpacked_classes": "embedding built without the quant config 2.15 GB; vision/audio tower not given the quant config 0.54 GB; vision/audio projector / patch Linears built without the quant config 0.16 GB; MoE routers (quant_config=None, fp32 gates) 0.03 GB"
+  },
+  {
+   "model": "CohereLabs/North-Micro-Vision-Instruct",
+   "arch": "CohereCompassForConditionalGeneration",
+   "created": "2026-08-10",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 4.97,
+   "loaded_by_vllm_gb": 4.97,
+   "packed_gb": 3.618,
+   "unpacked_gb": 1.351,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.0737,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "conv weights / patch embeddings": 0.0035,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.0737,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "vision: conv / patch embed": 0.0035,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.8
+   },
+   "projected_tiered_saving_pct": 23.66,
+   "projected_12bit_saving_pct": 18.02,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 7.02,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 1.75,
+    "plain nn.Linear / nn.Embedding in towers": 0.03,
+    "conv weights / patch embeddings": 0.02
+   },
+   "unpacked_classes": "embedding built without the quant config 1.07 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB"
+  },
+  {
+   "model": "ai-sage/GigaChat3.1-10B-A1.8B-bf16",
+   "arch": "DeepseekV3ForCausalLM",
+   "created": "2026-03-21",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/deepseek_v2.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 22.96,
+   "loaded_by_vllm_gb": 21.345,
+   "packed_gb": 21.294,
+   "unpacked_gb": 0.051,
+   "not_loaded_gb": {
+    "mtp": 1.614
+   },
+   "unpacked_by_class_gb": {
+    "small Linears (< 1M weights)": 0.046,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0049
+   },
+   "unpacked_detail_gb": {
+    "small Linears (< 1M weights)": 0.046,
+    "MoE routers": 0.0049
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.42,
+   "projected_12bit_saving_pct": 24.69,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "small Linears (< 1M weights)": 0.07
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 1.254,
+   "projected_12bit_saving_on_a100_h100_pct": 23.24,
+   "unpacked_classes": "small Linears (< 1M weights) 0.05 GB"
+  },
+  {
+   "model": "ai-sage/GigaChat3.1-702B-A36B-bf16",
+   "arch": "DeepseekV3ForCausalLM",
+   "created": "2026-03-21",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/deepseek_v2.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 1430.876,
+   "loaded_by_vllm_gb": 1404.088,
+   "packed_gb": 1403.862,
+   "unpacked_gb": 0.226,
+   "not_loaded_gb": {
+    "mtp": 26.788
+   },
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.2239,
+    "norms": 0.0021
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.2239,
+    "norms": 0.0021
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "moe_attention_linears_bf16_on_a100_h100_gb": 16.97,
+   "projected_12bit_saving_on_a100_h100_pct": 24.45,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.22 GB"
+  },
+  {
+   "model": "jdopensource/JoyAI-LLM-Flash",
+   "arch": "DeepseekV3ForCausalLM",
+   "created": "2026-02-14",
+   "license": null,
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/deepseek_v2.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 98.572,
+   "loaded_by_vllm_gb": 97.885,
+   "packed_gb": 97.844,
+   "unpacked_gb": 0.041,
+   "not_loaded_gb": {
+    "mtp": 0.687
+   },
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0409
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0409
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 2.108,
+   "projected_12bit_saving_on_a100_h100_pct": 24.21,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.04 GB"
+  },
+  {
+   "model": "kakaocorp/kanana-2-30b-a3b-instruct-2601",
+   "arch": "DeepseekV3ForCausalLM",
+   "created": "2026-01-14",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/deepseek_v2.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 61.342,
+   "loaded_by_vllm_gb": 61.342,
+   "packed_gb": 61.317,
+   "unpacked_gb": 0.025,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0246
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0246
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 2.529,
+   "projected_12bit_saving_on_a100_h100_pct": 23.72,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.02 GB"
+  },
+  {
+   "model": "google/diffusiongemma-26B-A4B-it",
+   "arch": "DiffusionGemmaForBlockDiffusion",
+   "created": "2026-06-09",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 51.648,
+   "loaded_by_vllm_gb": 51.648,
+   "packed_gb": 4.803,
+   "unpacked_gb": 46.845,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE experts: GELU-tanh (Gemma 4)": 45.676,
+    "vision/audio tower not given the quant config": 1.0981,
+    "conv weights / patch embeddings": 0.0472,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0216,
+    "norms": 0.0015
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation gelu_tanh, not SiLU)": 45.676,
+    "vision: tower not given the quant config by vLLM (vision intermediate 4304 not a multiple of 64)": 1.0981,
+    "vision: conv / patch embed": 0.0472,
+    "MoE routers": 0.0216,
+    "norms": 0.0012
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 3.02,
+   "projected_12bit_saving_pct": 2.3,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: GELU-tanh (Gemma 4)": 28.74,
+    "vision/audio tower not given the quant config": 0.69,
+    "conv weights / patch embeddings": 0.03,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "unpacked_classes": "MoE experts: GELU-tanh (Gemma 4) 45.68 GB; vision/audio tower not given the quant config 1.10 GB; conv weights / patch embeddings 0.05 GB; MoE routers (quant_config=None, fp32 gates) 0.02 GB"
+  },
+  {
+   "model": "dots-studio/dots3-note-prev",
+   "arch": "Dots3NoteForCausalLM",
+   "created": "2026-08-09",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/models/dots3_note/nvidia/model.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 576.887,
+   "loaded_by_vllm_gb": 574.618,
+   "packed_gb": 574.422,
+   "unpacked_gb": 0.197,
+   "not_loaded_gb": {
+    "mtp": 2.268
+   },
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.118,
+    "small Linears (< 1M weights)": 0.0661,
+    "conv weights / patch embeddings": 0.0101,
+    "norms": 0.0016,
+    "biases": 0.001
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.118,
+    "small Linears (< 1M weights)": 0.0642,
+    "audio: conv weights": 0.0083,
+    "vision: small Linears (< 1M weights)": 0.0019,
+    "vision: conv / patch embed": 0.0018,
+    "norms": 0.0011,
+    "audio: biases": 0.001
+   },
+   "towers_packed_gb": {
+    "audio": 1.763,
+    "vision": 13.739
+   },
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "moe_attention_linears_bf16_on_a100_h100_gb": 9.676,
+   "projected_12bit_saving_on_a100_h100_pct": 24.32,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.12 GB; small Linears (< 1M weights) 0.07 GB; conv weights / patch embeddings 0.01 GB"
+  },
+  {
+   "model": "LGAI-EXAONE/EXAONE-4.5-33B",
+   "arch": "Exaone4_5_ForConditionalGeneration",
+   "created": "2026-04-04",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 68.7,
+   "loaded_by_vllm_gb": 67.628,
+   "packed_gb": 67.621,
+   "unpacked_gb": 0.007,
+   "not_loaded_gb": {
+    "mtp": 1.072
+   },
+   "unpacked_by_class_gb": {
+    "conv weights / patch embeddings": 0.0048,
+    "norms": 0.0016,
+    "biases": 0.001
+   },
+   "unpacked_detail_gb": {
+    "vision: conv / patch embed": 0.0048,
+    "norms": 0.0014,
+    "vision: biases": 0.001
+   },
+   "towers_packed_gb": {
+    "vision": 2.567
+   },
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "LGAI-EXAONE/K-EXAONE-2.0-750B-A37B",
+   "arch": "ExaoneMoeForCausalLM",
+   "created": "2026-07-29",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 1498.715,
+   "loaded_by_vllm_gb": 1497.658,
+   "packed_gb": 1497.417,
+   "unpacked_gb": 0.241,
+   "not_loaded_gb": {
+    "mtp": 1.057
+   },
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.2391,
+    "norms": 0.002
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.2391,
+    "norms": 0.002
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "moe_attention_linears_bf16_on_a100_h100_gb": 17.666,
+   "projected_12bit_saving_on_a100_h100_pct": 24.45,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.24 GB"
+  },
+  {
+   "model": "tiiuae/Falcon-H1-Tiny-R-0.6B",
+   "arch": "FalconH1ForCausalLM",
+   "created": "2026-01-12",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/falcon_h1.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 1.245,
+   "loaded_by_vllm_gb": 1.245,
+   "packed_gb": 0.692,
+   "unpacked_gb": 0.553,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "Linear shape: rows not a multiple of 64 (decoder)": 0.3021,
+    "small Linears (< 1M weights)": 0.1153,
+    "LM head built without the quant config": 0.0671,
+    "embedding built without the quant config": 0.0671,
+    "conv weights / patch embeddings": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "Linear shape (rows % 64 or columns % 16)": 0.3021,
+    "small Linears (< 1M weights)": 0.1153,
+    "LM head (built without the quant config)": 0.0671,
+    "embedding (built without the quant config)": 0.0671,
+    "conv weights": 0.0006
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 18.07,
+   "projected_12bit_saving_pct": 13.76,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "Linear shape: rows not a multiple of 64 (decoder)": 7.89,
+    "small Linears (< 1M weights)": 3.01,
+    "LM head built without the quant config": 1.75,
+    "embedding built without the quant config": 1.75,
+    "conv weights / patch embeddings": 0.02
+   },
+   "unpacked_classes": "Linear shape: rows not a multiple of 64 (decoder) 0.30 GB; small Linears (< 1M weights) 0.12 GB; LM head built without the quant config 0.07 GB; embedding built without the quant config 0.07 GB"
+  },
+  {
+   "model": "google/gemma-4-26B-A4B-it",
+   "arch": "Gemma4ForConditionalGeneration",
+   "created": "2026-03-11",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 51.612,
+   "loaded_by_vllm_gb": 51.612,
+   "packed_gb": 4.767,
+   "unpacked_gb": 46.845,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE experts: GELU-tanh (Gemma 4)": 45.676,
+    "vision/audio tower not given the quant config": 1.0981,
+    "conv weights / patch embeddings": 0.0472,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0216,
+    "norms": 0.0015
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation gelu_tanh, not SiLU)": 45.676,
+    "vision: tower not given the quant config by vLLM (vision intermediate 4304 not a multiple of 64)": 1.0981,
+    "vision: conv / patch embed": 0.0472,
+    "MoE routers": 0.0216,
+    "norms": 0.0012
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 3.0,
+   "projected_12bit_saving_pct": 2.29,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: GELU-tanh (Gemma 4)": 28.76,
+    "vision/audio tower not given the quant config": 0.69,
+    "conv weights / patch embeddings": 0.03,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "unpacked_classes": "MoE experts: GELU-tanh (Gemma 4) 45.68 GB; vision/audio tower not given the quant config 1.10 GB; conv weights / patch embeddings 0.05 GB; MoE routers (quant_config=None, fp32 gates) 0.02 GB"
+  },
+  {
+   "model": "google/gemma-4-31B-it",
+   "arch": "Gemma4ForConditionalGeneration",
+   "created": "2026-03-11",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 62.546,
+   "loaded_by_vllm_gb": 62.546,
+   "packed_gb": 61.392,
+   "unpacked_gb": 1.154,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "vision/audio tower not given the quant config": 1.104,
+    "conv weights / patch embeddings": 0.0472,
+    "norms": 0.0029
+   },
+   "unpacked_detail_gb": {
+    "vision: tower not given the quant config by vLLM (vision intermediate 4304 not a multiple of 64)": 1.104,
+    "vision: conv / patch embed": 0.0472,
+    "norms": 0.0027
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 31.9,
+   "projected_12bit_saving_pct": 24.29,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "vision/audio tower not given the quant config": 0.57,
+    "conv weights / patch embeddings": 0.02
+   },
+   "unpacked_classes": "vision/audio tower not given the quant config 1.10 GB; conv weights / patch embeddings 0.05 GB"
+  },
+  {
+   "model": "google/gemma-4-E2B-it",
+   "arch": "Gemma4ForConditionalGeneration",
+   "created": "2026-03-02",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 10.246,
+   "loaded_by_vllm_gb": 10.209,
+   "packed_gb": 10.044,
+   "unpacked_gb": 0.164,
+   "not_loaded_gb": {
+    "KV-shared layers' k/v (skipped by vLLM)": 0.038
+   },
+   "unpacked_by_class_gb": {
+    "small Linears (< 1M weights)": 0.1317,
+    "conv weights / patch embeddings": 0.0317,
+    "norms": 0.0009
+   },
+   "unpacked_detail_gb": {
+    "vision: small Linears (< 1M weights)": 0.0767,
+    "small Linears (< 1M weights)": 0.0551,
+    "vision: conv / patch embed": 0.0315,
+    "norms": 0.0006
+   },
+   "towers_packed_gb": {
+    "audio": 0.614,
+    "vision": 0.229
+   },
+   "projected_tiered_saving_pct": 31.98,
+   "projected_12bit_saving_pct": 24.35,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "small Linears (< 1M weights)": 0.42,
+    "conv weights / patch embeddings": 0.1
+   },
+   "unpacked_classes": "small Linears (< 1M weights) 0.13 GB; conv weights / patch embeddings 0.03 GB"
+  },
+  {
+   "model": "google/gemma-4-E4B-it",
+   "arch": "Gemma4ForConditionalGeneration",
+   "created": "2026-03-02",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 15.992,
+   "loaded_by_vllm_gb": 15.882,
+   "packed_gb": 15.662,
+   "unpacked_gb": 0.22,
+   "not_loaded_gb": {
+    "KV-shared layers' k/v (skipped by vLLM)": 0.11
+   },
+   "unpacked_by_class_gb": {
+    "small Linears (< 1M weights)": 0.1868,
+    "conv weights / patch embeddings": 0.0317,
+    "norms": 0.0015
+   },
+   "unpacked_detail_gb": {
+    "small Linears (< 1M weights)": 0.1101,
+    "vision: small Linears (< 1M weights)": 0.0767,
+    "vision: conv / patch embed": 0.0315,
+    "norms": 0.0011
+   },
+   "towers_packed_gb": {
+    "audio": 0.617,
+    "vision": 0.23
+   },
+   "projected_tiered_saving_pct": 32.05,
+   "projected_12bit_saving_pct": 24.41,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "small Linears (< 1M weights)": 0.38,
+    "conv weights / patch embeddings": 0.06
+   },
+   "unpacked_classes": "small Linears (< 1M weights) 0.19 GB; conv weights / patch embeddings 0.03 GB"
+  },
+  {
+   "model": "google/gemma-4-12B-it",
+   "arch": "Gemma4UnifiedForConditionalGeneration",
+   "created": "2026-05-23",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 23.919,
+   "loaded_by_vllm_gb": 23.919,
+   "packed_gb": 23.901,
+   "unpacked_gb": 0.019,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "conv weights / patch embeddings": 0.0172,
+    "norms": 0.0016
+   },
+   "unpacked_detail_gb": {
+    "vision: conv / patch embed": 0.0172,
+    "norms": 0.0015
+   },
+   "towers_packed_gb": {
+    "audio": 0.005,
+    "vision": 0.083
+   },
+   "projected_tiered_saving_pct": 32.47,
+   "projected_12bit_saving_pct": 24.73,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "conv weights / patch embeddings": 0.02
+   },
+   "unpacked_classes": "conv weights / patch embeddings 0.02 GB"
+  },
+  {
+   "model": "zai-org/GLM-4.7-Flash",
+   "arch": "Glm4MoeLiteForCausalLM",
+   "created": "2026-01-19",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 62.443,
+   "loaded_by_vllm_gb": 59.887,
+   "packed_gb": 59.874,
+   "unpacked_gb": 0.013,
+   "not_loaded_gb": {
+    "mtp": 2.556
+   },
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0121,
+    "norms": 0.0005
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0121,
+    "norms": 0.0005
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "moe_attention_linears_bf16_on_a100_h100_gb": 2.045,
+   "projected_12bit_saving_on_a100_h100_pct": 23.9,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.01 GB"
+  },
+  {
+   "model": "zai-org/GLM-5.3-Flash-BF16",
+   "arch": "Glm5NextForConditionalGeneration",
+   "created": "2026-08-25",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 642.647,
+   "loaded_by_vllm_gb": 627.781,
+   "packed_gb": 623.549,
+   "unpacked_gb": 4.232,
+   "not_loaded_gb": {
+    "mtp": 14.865
+   },
+   "unpacked_by_class_gb": {
+    "MLA attention built with quant_config=None": 2.7365,
+    "embedding built without the quant config": 1.2688,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0991,
+    "hyper-connection parameters (plain)": 0.0708,
+    "conv weights / patch embeddings": 0.0426,
+    "small Linears (< 1M weights)": 0.0115,
+    "small params (A_log, dt_bias, D, scales)": 0.0012,
+    "norms": 0.0009,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "MLA attention built with quant_config=None": 2.7365,
+    "embedding (built without the quant config)": 1.2688,
+    "MoE routers": 0.0991,
+    "hyper-connection parameters (plain)": 0.0708,
+    "vision: conv / patch embed": 0.036,
+    "small Linears (< 1M weights)": 0.0115,
+    "conv weights": 0.0067,
+    "small params (A_log, dt_bias, D, scales)": 0.0012,
+    "norms": 0.0008,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 1.091
+   },
+   "projected_tiered_saving_pct": 32.28,
+   "projected_12bit_saving_pct": 24.58,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MLA attention built with quant_config=None": 0.14,
+    "embedding built without the quant config": 0.07
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 9.359,
+   "projected_12bit_saving_on_a100_h100_pct": 24.21,
+   "unpacked_classes": "MLA attention built with quant_config=None 2.74 GB; embedding built without the quant config 1.27 GB; MoE routers (quant_config=None, fp32 gates) 0.10 GB; hyper-connection parameters (plain) 0.07 GB; conv weights / patch embeddings 0.04 GB; small Linears (< 1M weights) 0.01 GB",
+   "packed_with_caveat_gb": {
+    "packed (clamped SwiGLU: the grouped products omit the clamp)": 608.812
+   }
+  },
+  {
+   "model": "zai-org/GLM-5",
+   "arch": "GlmMoeDsaForCausalLM",
+   "created": "2026-02-11",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 1507.728,
+   "loaded_by_vllm_gb": 1487.822,
+   "packed_gb": 1487.431,
+   "unpacked_gb": 0.392,
+   "not_loaded_gb": {
+    "mtp": 19.906
+   },
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.2359,
+    "decoder Linears built without the quant config (hyper-connections, misc)": 0.1534,
+    "norms": 0.0024
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.2359,
+    "layer built without the quant config": 0.1534,
+    "norms": 0.0024
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "moe_attention_linears_bf16_on_a100_h100_gb": 27.052,
+   "projected_12bit_saving_on_a100_h100_pct": 24.29,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.24 GB; decoder Linears built without the quant config (hyper-connections, misc) 0.15 GB"
+  },
+  {
+   "model": "zai-org/GLM-5.3-BF16",
+   "arch": "GlmMoeDsaForCausalLM",
+   "created": "2026-08-25",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 1506.66,
+   "loaded_by_vllm_gb": 1486.754,
+   "packed_gb": 1486.474,
+   "unpacked_gb": 0.28,
+   "not_loaded_gb": {
+    "mtp": 19.906
+   },
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.2359,
+    "decoder Linears built without the quant config (hyper-connections, misc)": 0.0413,
+    "norms": 0.0023
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.2359,
+    "layer built without the quant config": 0.0413,
+    "norms": 0.0023
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "moe_attention_linears_bf16_on_a100_h100_gb": 26.095,
+   "projected_12bit_saving_on_a100_h100_pct": 24.31,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.24 GB; decoder Linears built without the quant config (hyper-connections, misc) 0.04 GB"
+  },
+  {
+   "model": "ibm-granite/granite-vision-4.1-4b",
+   "arch": "Granite4VisionForConditionalGeneration",
+   "created": "2026-04-16",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 7.994,
+   "loaded_by_vllm_gb": 7.994,
+   "packed_gb": 7.396,
+   "unpacked_gb": 0.599,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "vision/audio tower not given the quant config": 0.5355,
+    "vision/audio projector / patch Linears built without the quant config": 0.0472,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.0099,
+    "conv weights / patch embeddings": 0.0032,
+    "plain nn.Linear / nn.Embedding in towers": 0.0013,
+    "norms": 0.0009,
+    "biases": 0.0008
+   },
+   "unpacked_detail_gb": {
+    "vision: MLP not given the quant config by vLLM (intermediate not a multiple of 64)": 0.5355,
+    "vision: layer built without the quant config": 0.0472,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.0099,
+    "vision: conv / patch embed": 0.0032,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0013,
+    "vision: biases": 0.0008
+   },
+   "towers_packed_gb": {
+    "vision": 0.59
+   },
+   "projected_tiered_saving_pct": 30.07,
+   "projected_12bit_saving_pct": 22.9,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "vision/audio tower not given the quant config": 2.18,
+    "vision/audio projector / patch Linears built without the quant config": 0.19,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.04,
+    "conv weights / patch embeddings": 0.01
+   },
+   "unpacked_classes": "vision/audio tower not given the quant config 0.54 GB; vision/audio projector / patch Linears built without the quant config 0.05 GB"
+  },
+  {
+   "model": "ibm-granite/granite-4.1-30b",
+   "arch": "GraniteForCausalLM",
+   "created": "2026-04-06",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 57.731,
+   "loaded_by_vllm_gb": 57.731,
+   "packed_gb": 57.73,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0011
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0011
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "ibm-granite/granite-4.1-3b",
+   "arch": "GraniteForCausalLM",
+   "created": "2026-04-06",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 6.806,
+   "loaded_by_vllm_gb": 6.806,
+   "packed_gb": 6.805,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "ibm-granite/granite-4.1-8b",
+   "arch": "GraniteForCausalLM",
+   "created": "2026-04-06",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 17.583,
+   "loaded_by_vllm_gb": 17.583,
+   "packed_gb": 17.583,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0007
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0007
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "ibm-granite/granite-4.2-30b",
+   "arch": "GraniteForCausalLM",
+   "created": "2026-08-07",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 58.554,
+   "loaded_by_vllm_gb": 58.554,
+   "packed_gb": 58.552,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0011
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0011
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "ibm-granite/granite-4.2-3b",
+   "arch": "GraniteForCausalLM",
+   "created": "2026-08-07",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 7.319,
+   "loaded_by_vllm_gb": 7.319,
+   "packed_gb": 7.319,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "ibm-granite/granite-4.2-8b",
+   "arch": "GraniteForCausalLM",
+   "created": "2026-08-07",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 17.583,
+   "loaded_by_vllm_gb": 17.583,
+   "packed_gb": 17.583,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0007
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0007
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "ibm-granite/granite-swash-3b-a600m",
+   "arch": "GraniteMoeSWAForCausalLM",
+   "created": "2026-07-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 6.041,
+   "loaded_by_vllm_gb": 6.041,
+   "packed_gb": 6.037,
+   "unpacked_gb": 0.004,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0034
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0034
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.48,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 0.22,
+   "projected_12bit_saving_on_a100_h100_pct": 23.83,
+   "unpacked_classes": ""
+  },
+  {
+   "model": "ibm-granite/granite-swash-2b",
+   "arch": "GraniteSWAForCausalLM",
+   "created": "2026-07-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 4.289,
+   "loaded_by_vllm_gb": 4.289,
+   "packed_gb": 4.289,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "tencent/Hy3",
+   "arch": "HYV3ForCausalLM",
+   "created": "2026-07-02",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 597.572,
+   "loaded_by_vllm_gb": 590.067,
+   "packed_gb": 588.952,
+   "unpacked_gb": 1.116,
+   "not_loaded_gb": {
+    "mtp": 7.505
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.9899,
+    "MoE routers (quant_config=None, fp32 gates)": 0.1243,
+    "norms": 0.0014
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.9899,
+    "MoE routers": 0.1243,
+    "norms": 0.0014
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.44,
+   "projected_12bit_saving_pct": 24.7,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.05
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 12.08,
+   "projected_12bit_saving_on_a100_h100_pct": 24.2,
+   "unpacked_classes": "embedding built without the quant config 0.99 GB; MoE routers (quant_config=None, fp32 gates) 0.12 GB"
+  },
+  {
+   "model": "tencent/Hy4-preview",
+   "arch": "HYV4ForCausalLM",
+   "created": "2026-08-27",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 1559.984,
+   "loaded_by_vllm_gb": 1539.876,
+   "packed_gb": 1536.498,
+   "unpacked_gb": 3.379,
+   "not_loaded_gb": {
+    "mtp": 20.107
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.4848,
+    "LM head kept in float32 (head_dtype)": 1.4848,
+    "MoE routers (quant_config=None, fp32 gates)": 0.2422,
+    "not bf16 (F32 tensors)": 0.1231,
+    "small Linears (< 1M weights)": 0.0413,
+    "norms": 0.0023
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.4848,
+    "LM head (head_dtype float32: kept as vLLM runs it)": 1.4848,
+    "MoE routers": 0.2422,
+    "not bf16 (F32)": 0.1231,
+    "small Linears (< 1M weights)": 0.0413,
+    "norms": 0.0023
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.43,
+   "projected_12bit_saving_pct": 24.7,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.03,
+    "LM head kept in float32 (head_dtype)": 0.03
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 41.799,
+   "projected_12bit_saving_on_a100_h100_pct": 24.02,
+   "unpacked_classes": "embedding built without the quant config 1.48 GB; LM head kept in float32 (head_dtype) 1.48 GB; MoE routers (quant_config=None, fp32 gates) 0.24 GB; not bf16 (F32 tensors) 0.12 GB; small Linears (< 1M weights) 0.04 GB",
+   "packed_with_caveat_gb": {
+    "packed (clamped SwiGLU: the grouped products omit the clamp)": 1488.206
+   }
+  },
+  {
+   "model": "sapientinc/HRM-Text-1B",
+   "arch": "HrmTextForCausalLM",
+   "created": "2026-05-17",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/hrm_text.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 2.366,
+   "loaded_by_vllm_gb": 2.366,
+   "packed_gb": 2.366,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "IQuestLab/IQuest-Coder-V1-14B-Instruct",
+   "arch": "IQuestCoderForCausalLM",
+   "created": "2026-02-14",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/llama.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 28.878,
+   "loaded_by_vllm_gb": 28.878,
+   "packed_gb": 28.878,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0006
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "thinkingmachines/Inkling",
+   "arch": "InklingForConditionalGeneration",
+   "created": "2026-07-14",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 1904.755,
+   "loaded_by_vllm_gb": 1894.234,
+   "packed_gb": 1876.871,
+   "unpacked_gb": 17.363,
+   "not_loaded_gb": {
+    "mtp": 10.521
+   },
+   "unpacked_by_class_gb": {
+    "shared sink experts as plain parameters (Inkling)": 14.4955,
+    "embedding as a plain parameter (Inkling)": 2.4702,
+    "MoE routers (quant_config=None, fp32 gates)": 0.2029,
+    "vision/audio tower not given the quant config": 0.1832,
+    "conv weights / patch embeddings": 0.0085,
+    "norms": 0.0017,
+    "decoder Linears built without the quant config (hyper-connections, misc)": 0.0013
+   },
+   "unpacked_detail_gb": {
+    "shared (sink) experts held as plain parameters": 14.4955,
+    "embedding (a plain parameter, not a VocabParallelEmbedding)": 2.4702,
+    "MoE routers": 0.2029,
+    "vision: tower built without the quant config": 0.1675,
+    "audio: tower built without the quant config": 0.0157,
+    "conv weights": 0.0085,
+    "norms": 0.0017,
+    "layer built without the quant config": 0.0013
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.2,
+   "projected_12bit_saving_pct": 24.52,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "shared sink experts as plain parameters (Inkling)": 0.25,
+    "embedding as a plain parameter (Inkling)": 0.04
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 17.163,
+   "projected_12bit_saving_on_a100_h100_pct": 24.3,
+   "unpacked_classes": "shared sink experts as plain parameters (Inkling) 14.50 GB; embedding as a plain parameter (Inkling) 2.47 GB; MoE routers (quant_config=None, fp32 gates) 0.20 GB; vision/audio tower not given the quant config 0.18 GB"
+  },
+  {
+   "model": "thinkingmachines/Inkling-Small",
+   "arch": "InklingForConditionalGeneration",
+   "created": "2026-07-27",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 531.913,
+   "loaded_by_vllm_gb": 527.449,
+   "packed_gb": 521.548,
+   "unpacked_gb": 5.902,
+   "not_loaded_gb": {
+    "mtp": 4.464
+   },
+   "unpacked_by_class_gb": {
+    "shared sink experts as plain parameters (Inkling)": 4.0265,
+    "embedding as a plain parameter (Inkling)": 1.6468,
+    "vision/audio tower not given the quant config": 0.1386,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0845,
+    "conv weights / patch embeddings": 0.0034,
+    "decoder Linears built without the quant config (hyper-connections, misc)": 0.0008,
+    "norms": 0.0008
+   },
+   "unpacked_detail_gb": {
+    "shared (sink) experts held as plain parameters": 4.0265,
+    "embedding (a plain parameter, not a VocabParallelEmbedding)": 1.6468,
+    "vision: tower built without the quant config": 0.1281,
+    "MoE routers": 0.0845,
+    "audio: tower built without the quant config": 0.0105,
+    "conv weights": 0.0034,
+    "layer built without the quant config": 0.0008,
+    "norms": 0.0007
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.14,
+   "projected_12bit_saving_pct": 24.47,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "shared sink experts as plain parameters (Inkling)": 0.25,
+    "embedding as a plain parameter (Inkling)": 0.1
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 3.699,
+   "projected_12bit_saving_on_a100_h100_pct": 24.3,
+   "unpacked_classes": "shared sink experts as plain parameters (Inkling) 4.03 GB; embedding as a plain parameter (Inkling) 1.65 GB; vision/audio tower not given the quant config 0.14 GB; MoE routers (quant_config=None, fp32 gates) 0.08 GB"
+  },
+  {
+   "model": "ai21labs/AI21-Jamba2-3B",
+   "arch": "JambaForCausalLM",
+   "created": "2026-01-06",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 6.394,
+   "loaded_by_vllm_gb": 6.394,
+   "packed_gb": 3.578,
+   "unpacked_gb": 2.816,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "Mamba (v1) mixer Linears built without the quant config (Jamba)": 2.1384,
+    "LM head built without the quant config": 0.3355,
+    "embedding built without the quant config": 0.3355,
+    "small Linears (< 1M weights)": 0.0043,
+    "conv weights / patch embeddings": 0.0011,
+    "biases": 0.0005
+   },
+   "unpacked_detail_gb": {
+    "Mamba mixer Linears built without the quant config": 2.1384,
+    "LM head (built without the quant config)": 0.3355,
+    "embedding (built without the quant config)": 0.3355,
+    "small Linears (< 1M weights)": 0.0043,
+    "conv weights": 0.0011,
+    "biases": 0.0005
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 18.19,
+   "projected_12bit_saving_pct": 13.85,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "Mamba (v1) mixer Linears built without the quant config (Jamba)": 10.87,
+    "LM head built without the quant config": 1.71,
+    "embedding built without the quant config": 1.71,
+    "small Linears (< 1M weights)": 0.02
+   },
+   "unpacked_classes": "Mamba (v1) mixer Linears built without the quant config (Jamba) 2.14 GB; LM head built without the quant config 0.34 GB; embedding built without the quant config 0.34 GB"
+  },
+  {
+   "model": "ai21labs/AI21-Jamba2-Mini",
+   "arch": "JambaForCausalLM",
+   "created": "2026-01-06",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 103.141,
+   "loaded_by_vllm_gb": 103.141,
+   "packed_gb": 96.167,
+   "unpacked_gb": 6.974,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "Mamba (v1) mixer Linears built without the quant config (Jamba)": 5.8867,
+    "embedding built without the quant config": 0.5369,
+    "LM head built without the quant config": 0.5369,
+    "small Linears (< 1M weights)": 0.0073,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0021,
+    "conv weights / patch embeddings": 0.0018,
+    "biases": 0.0009,
+    "norms": 0.0005
+   },
+   "unpacked_detail_gb": {
+    "Mamba mixer Linears built without the quant config": 5.8867,
+    "embedding (built without the quant config)": 0.5369,
+    "LM head (built without the quant config)": 0.5369,
+    "small Linears (< 1M weights)": 0.0073,
+    "MoE routers": 0.0021,
+    "conv weights": 0.0018,
+    "biases": 0.0009,
+    "norms": 0.0005
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 30.3,
+   "projected_12bit_saving_pct": 23.08,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "Mamba (v1) mixer Linears built without the quant config (Jamba)": 1.85,
+    "embedding built without the quant config": 0.17,
+    "LM head built without the quant config": 0.17
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 0.336,
+   "projected_12bit_saving_on_a100_h100_pct": 23.0,
+   "unpacked_classes": "Mamba (v1) mixer Linears built without the quant config (Jamba) 5.89 GB; embedding built without the quant config 0.54 GB; LM head built without the quant config 0.54 GB"
+  },
+  {
+   "model": "IFM/K2-Horizon-0.9B",
+   "arch": "K2HorizonForCausalLM",
+   "created": "2026-09-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/k2_horizon.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 2.157,
+   "loaded_by_vllm_gb": 2.157,
+   "packed_gb": 2.156,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "IFM/K2-Horizon-3.7B",
+   "arch": "K2HorizonForCausalLM",
+   "created": "2026-09-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/k2_horizon.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 10.117,
+   "loaded_by_vllm_gb": 10.117,
+   "packed_gb": 10.116,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "IFM/K2-Horizon-32B",
+   "arch": "K2HorizonForCausalLM",
+   "created": "2026-09-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/k2_horizon.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 69.559,
+   "loaded_by_vllm_gb": 69.559,
+   "packed_gb": 69.557,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0013
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0013
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "IFM/K2-Horizon-375B-A23B",
+   "arch": "K2HorizonForCausalLM",
+   "created": "2026-09-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/k2_horizon.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 758.334,
+   "loaded_by_vllm_gb": 758.334,
+   "packed_gb": 758.196,
+   "unpacked_gb": 0.138,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.1368,
+    "norms": 0.0015
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.1368,
+    "norms": 0.0015
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "moe_attention_linears_bf16_on_a100_h100_gb": 10.746,
+   "projected_12bit_saving_on_a100_h100_pct": 24.39,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.14 GB"
+  },
+  {
+   "model": "IFM/K2-Horizon-7B",
+   "arch": "K2HorizonForCausalLM",
+   "created": "2026-09-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/k2_horizon.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 17.998,
+   "loaded_by_vllm_gb": 17.998,
+   "packed_gb": 17.998,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0006
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "IFM/K2-Horizon-MoVA-36B-A4B",
+   "arch": "K2HorizonForCausalLM",
+   "created": "2026-09-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/k2_horizon.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 74.89,
+   "loaded_by_vllm_gb": 74.89,
+   "packed_gb": 74.851,
+   "unpacked_gb": 0.038,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.023,
+    "small Linears (< 1M weights)": 0.0147
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.023,
+    "small Linears (< 1M weights)": 0.0147
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.48,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "moe_attention_linears_bf16_on_a100_h100_gb": 18.387,
+   "projected_12bit_saving_on_a100_h100_pct": 18.66,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.02 GB; small Linears (< 1M weights) 0.01 GB"
+  },
+  {
+   "model": "poolside/Laguna-M.1",
+   "arch": "LagunaForCausalLM",
+   "created": "2026-06-15",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/laguna.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 451.591,
+   "loaded_by_vllm_gb": 451.591,
+   "packed_gb": 451.45,
+   "unpacked_gb": 0.142,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.1405,
+    "norms": 0.0012
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.1405,
+    "norms": 0.0012
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 15.267,
+   "projected_12bit_saving_on_a100_h100_pct": 23.91,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.14 GB"
+  },
+  {
+   "model": "poolside/Laguna-S-2.1",
+   "arch": "LagunaForCausalLM",
+   "created": "2026-07-13",
+   "license": "openmdw-1.1",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/laguna.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 235.124,
+   "loaded_by_vllm_gb": 235.124,
+   "packed_gb": 235.03,
+   "unpacked_gb": 0.094,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0739,
+    "small Linears (< 1M weights)": 0.0195,
+    "norms": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0739,
+    "small Linears (< 1M weights)": 0.0195,
+    "norms": 0.0006
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 5.587,
+   "projected_12bit_saving_on_a100_h100_pct": 24.15,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.07 GB; small Linears (< 1M weights) 0.02 GB"
+  },
+  {
+   "model": "poolside/Laguna-XS-2.1",
+   "arch": "LagunaForCausalLM",
+   "created": "2026-06-20",
+   "license": "openmdw-1.1",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/laguna.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 66.885,
+   "loaded_by_vllm_gb": 66.885,
+   "packed_gb": 66.834,
+   "unpacked_gb": 0.051,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0409,
+    "small Linears (< 1M weights)": 0.0098
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0409,
+    "small Linears (< 1M weights)": 0.0098
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.48,
+   "projected_12bit_saving_pct": 24.73,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 2.852,
+   "projected_12bit_saving_on_a100_h100_pct": 23.68,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.04 GB"
+  },
+  {
+   "model": "poolside/Laguna-XS.2",
+   "arch": "LagunaForCausalLM",
+   "created": "2026-04-23",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/laguna.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 66.885,
+   "loaded_by_vllm_gb": 66.885,
+   "packed_gb": 66.834,
+   "unpacked_gb": 0.051,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0409,
+    "small Linears (< 1M weights)": 0.0098
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0409,
+    "small Linears (< 1M weights)": 0.0098
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.48,
+   "projected_12bit_saving_pct": 24.73,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 2.852,
+   "projected_12bit_saving_on_a100_h100_pct": 23.68,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.04 GB"
+  },
+  {
+   "model": "LiquidAI/LFM2.5-1.2B-Instruct",
+   "arch": "Lfm2ForCausalLM",
+   "created": "2026-01-06",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 2.341,
+   "loaded_by_vllm_gb": 2.341,
+   "packed_gb": 2.072,
+   "unpacked_gb": 0.269,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.2684
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.2684
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 28.77,
+   "projected_12bit_saving_pct": 21.91,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 3.73
+   },
+   "unpacked_classes": "embedding built without the quant config 0.27 GB"
+  },
+  {
+   "model": "LiquidAI/LFM2.5-2.6B",
+   "arch": "Lfm2ForCausalLM",
+   "created": "2026-07-28",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 5.394,
+   "loaded_by_vllm_gb": 5.394,
+   "packed_gb": 4.87,
+   "unpacked_gb": 0.525,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.5243
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.5243
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 29.34,
+   "projected_12bit_saving_pct": 22.34,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 3.16
+   },
+   "unpacked_classes": "embedding built without the quant config 0.52 GB"
+  },
+  {
+   "model": "LiquidAI/LFM2.5-230M",
+   "arch": "Lfm2ForCausalLM",
+   "created": "2026-06-24",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 0.459,
+   "loaded_by_vllm_gb": 0.459,
+   "packed_gb": 0.325,
+   "unpacked_gb": 0.134,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.1342
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.1342
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 23.0,
+   "projected_12bit_saving_pct": 17.51,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 9.5
+   },
+   "unpacked_classes": "embedding built without the quant config 0.13 GB"
+  },
+  {
+   "model": "LiquidAI/LFM2.5-350M",
+   "arch": "Lfm2ForCausalLM",
+   "created": "2026-03-31",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 0.709,
+   "loaded_by_vllm_gb": 0.709,
+   "packed_gb": 0.575,
+   "unpacked_gb": 0.134,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.1342
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.1342
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 26.34,
+   "projected_12bit_saving_pct": 20.06,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 6.15
+   },
+   "unpacked_classes": "embedding built without the quant config 0.13 GB"
+  },
+  {
+   "model": "LiquidAI/LFM2-24B-A2B",
+   "arch": "Lfm2MoeForCausalLM",
+   "created": "2026-02-24",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 47.687,
+   "loaded_by_vllm_gb": 47.687,
+   "packed_gb": 47.408,
+   "unpacked_gb": 0.279,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.2684,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.2684,
+    "MoE routers": 0.01
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.31,
+   "projected_12bit_saving_pct": 24.61,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.18
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 0.21,
+   "projected_12bit_saving_on_a100_h100_pct": 24.5,
+   "unpacked_classes": "embedding built without the quant config 0.27 GB; MoE routers (quant_config=None, fp32 gates) 0.01 GB"
+  },
+  {
+   "model": "LiquidAI/LFM2.5-8B-A1B",
+   "arch": "Lfm2MoeForCausalLM",
+   "created": "2026-05-28",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 16.936,
+   "loaded_by_vllm_gb": 16.936,
+   "packed_gb": 16.408,
+   "unpacked_gb": 0.528,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.5243,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0029
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.5243,
+    "MoE routers": 0.0029
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 31.49,
+   "projected_12bit_saving_pct": 23.98,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 1.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 0.126,
+   "projected_12bit_saving_on_a100_h100_pct": 23.8,
+   "unpacked_classes": "embedding built without the quant config 0.52 GB"
+  },
+  {
+   "model": "LiquidAI/LFM2.5-VL-1.6B",
+   "arch": "Lfm2VlForConditionalGeneration",
+   "created": "2026-01-05",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 3.193,
+   "loaded_by_vllm_gb": 3.193,
+   "packed_gb": 2.626,
+   "unpacked_gb": 0.567,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.2684,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "vision/audio projector / patch Linears built without the quant config": 0.029,
+    "plain nn.Linear / nn.Embedding in towers": 0.0006,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.2684,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "vision: layer built without the quant config": 0.029,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0006,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.554
+   },
+   "projected_tiered_saving_pct": 26.73,
+   "projected_12bit_saving_pct": 20.36,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 2.73,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 2.73,
+    "vision/audio projector / patch Linears built without the quant config": 0.3
+   },
+   "unpacked_classes": "embedding built without the quant config 0.27 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; vision/audio projector / patch Linears built without the quant config 0.03 GB"
+  },
+  {
+   "model": "LiquidAI/LFM2.5-VL-3B",
+   "arch": "Lfm2VlForConditionalGeneration",
+   "created": "2026-08-11",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 6.247,
+   "loaded_by_vllm_gb": 6.247,
+   "packed_gb": 5.424,
+   "unpacked_gb": 0.823,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.5243,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "vision/audio projector / patch Linears built without the quant config": 0.029,
+    "plain nn.Linear / nn.Embedding in towers": 0.0006,
+    "biases": 0.0006,
+    "norms": 0.0005
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.5243,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "vision: layer built without the quant config": 0.029,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0006,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.554
+   },
+   "projected_tiered_saving_pct": 28.22,
+   "projected_12bit_saving_pct": 21.49,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 2.73,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 1.39,
+    "vision/audio projector / patch Linears built without the quant config": 0.15
+   },
+   "unpacked_classes": "embedding built without the quant config 0.52 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; vision/audio projector / patch Linears built without the quant config 0.03 GB"
+  },
+  {
+   "model": "LiquidAI/LFM2.5-VL-450M",
+   "arch": "Lfm2VlForConditionalGeneration",
+   "created": "2026-04-08",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 0.897,
+   "loaded_by_vllm_gb": 0.897,
+   "packed_gb": 0.73,
+   "unpacked_gb": 0.167,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.1342,
+    "vision/audio projector / patch Linears built without the quant config": 0.018,
+    "small Linears (< 1M weights)": 0.0142
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.1342,
+    "vision: layer built without the quant config": 0.018,
+    "vision: small Linears (< 1M weights)": 0.0142
+   },
+   "towers_packed_gb": {
+    "vision": 0.156
+   },
+   "projected_tiered_saving_pct": 26.45,
+   "projected_12bit_saving_pct": 20.14,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 4.86,
+    "vision/audio projector / patch Linears built without the quant config": 0.65,
+    "small Linears (< 1M weights)": 0.51,
+    "plain nn.Linear / nn.Embedding in towers": 0.01
+   },
+   "unpacked_classes": "embedding built without the quant config 0.13 GB; vision/audio projector / patch Linears built without the quant config 0.02 GB; small Linears (< 1M weights) 0.01 GB"
+  },
+  {
+   "model": "Nanbeige/Nanbeige4.1-3B",
+   "arch": "LlamaForCausalLM",
+   "created": "2026-02-10",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 7.867,
+   "loaded_by_vllm_gb": 7.867,
+   "packed_gb": 7.867,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "llm-jp/llm-jp-4-33b-thinking",
+   "arch": "LlamaForCausalLM",
+   "created": "2026-08-14",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 66.439,
+   "loaded_by_vllm_gb": 66.439,
+   "packed_gb": 66.438,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0013
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0013
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "llm-jp/llm-jp-4-8b-instruct",
+   "arch": "LlamaForCausalLM",
+   "created": "2026-03-30",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 17.18,
+   "loaded_by_vllm_gb": 17.18,
+   "packed_gb": 17.18,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0005
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0005
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "llm-jp/llm-jp-4.1-33b-thinking",
+   "arch": "LlamaForCausalLM",
+   "created": "2026-09-16",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 66.439,
+   "loaded_by_vllm_gb": 66.439,
+   "packed_gb": 66.438,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0013
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0013
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "llm-jp/llm-jp-4.1-8b-thinking",
+   "arch": "LlamaForCausalLM",
+   "created": "2026-09-15",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 17.18,
+   "loaded_by_vllm_gb": 17.18,
+   "packed_gb": 17.18,
+   "unpacked_gb": 0.001,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0005
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0005
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "openbmb/MiniCPM5-1B",
+   "arch": "LlamaForCausalLM",
+   "created": "2026-05-21",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 2.161,
+   "loaded_by_vllm_gb": 2.161,
+   "packed_gb": 2.161,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "openbmb/MiniCPM5-2B",
+   "arch": "LlamaForCausalLM",
+   "created": "2026-09-06",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 5.034,
+   "loaded_by_vllm_gb": 5.034,
+   "packed_gb": 5.033,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "meituan-longcat/LongCat-Flash-Lite",
+   "arch": "LongcatFlashNgramForCausalLM",
+   "created": "2026-01-27",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 138.18,
+   "loaded_by_vllm_gb": 137.158,
+   "packed_gb": 73.453,
+   "unpacked_gb": 63.705,
+   "not_loaded_gb": {
+    "mtp": 1.022
+   },
+   "unpacked_by_class_gb": {
+    "n-gram embedding table built without the quant config (LongCat-Flash-Lite)": 62.814,
+    "embedding built without the quant config": 0.8053,
+    "not bf16 (F32 tensors)": 0.0661,
+    "n-gram projections (plain parameter)": 0.0189
+   },
+   "unpacked_detail_gb": {
+    "n-gram embedding table (built without the quant config)": 62.814,
+    "embedding (built without the quant config)": 0.8053,
+    "not bf16 (F32)": 0.0661,
+    "n-gram projections (a plain stacked parameter)": 0.0189
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 17.4,
+   "projected_12bit_saving_pct": 13.25,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "n-gram embedding table built without the quant config (LongCat-Flash-Lite)": 14.88,
+    "embedding built without the quant config": 0.19,
+    "not bf16 (F32 tensors)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 1.831,
+   "projected_12bit_saving_on_a100_h100_pct": 12.92,
+   "unpacked_classes": "n-gram embedding table built without the quant config (LongCat-Flash-Lite) 62.81 GB; embedding built without the quant config 0.81 GB; not bf16 (F32 tensors) 0.07 GB; n-gram projections (plain parameter) 0.02 GB"
+  },
+  {
+   "model": "JetBrains/Mellum2-12B-A2.5B-Instruct",
+   "arch": "MellumForCausalLM",
+   "created": "2026-05-26",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 24.3,
+   "loaded_by_vllm_gb": 24.3,
+   "packed_gb": 24.291,
+   "unpacked_gb": 0.009,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0083
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0083
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 1.189,
+   "projected_12bit_saving_on_a100_h100_pct": 23.53,
+   "unpacked_classes": ""
+  },
+  {
+   "model": "openbmb/MiniCPM-o-4_5",
+   "arch": "MiniCPMO",
+   "created": "2026-02-03",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/minicpmo.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 18.744,
+   "loaded_by_vllm_gb": 18.744,
+   "packed_gb": 17.112,
+   "unpacked_gb": 1.631,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.2923,
+    "Linear shape: rows not a multiple of 64 (decoder)": 0.3023,
+    "small Linears (< 1M weights)": 0.0265,
+    "conv weights / patch embeddings": 0.0081,
+    "norms": 0.0012,
+    "biases": 0.001
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.2923,
+    "Linear shape (rows % 64 or columns % 16)": 0.3023,
+    "small Linears (< 1M weights)": 0.0265,
+    "conv weights": 0.0081,
+    "norms": 0.0012,
+    "biases": 0.001
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 29.67,
+   "projected_12bit_saving_pct": 22.6,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 2.24,
+    "Linear shape: rows not a multiple of 64 (decoder)": 0.52,
+    "small Linears (< 1M weights)": 0.05,
+    "conv weights / patch embeddings": 0.01
+   },
+   "unpacked_classes": "embedding built without the quant config 1.29 GB; Linear shape: rows not a multiple of 64 (decoder) 0.30 GB; small Linears (< 1M weights) 0.03 GB"
+  },
+  {
+   "model": "openbmb/MiniCPM-V-4.6",
+   "arch": "MiniCPMV4_6ForConditionalGeneration",
+   "created": "2026-04-13",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/minicpmv4_6.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 2.601,
+   "loaded_by_vllm_gb": 2.509,
+   "packed_gb": 1.748,
+   "unpacked_gb": 0.762,
+   "not_loaded_gb": {
+    "mtp": 0.091
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.5081,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.238,
+    "plain nn.Linear / nn.Embedding in towers": 0.0113,
+    "conv weights / patch embeddings": 0.0022,
+    "small Linears (< 1M weights)": 0.0012,
+    "biases": 0.0005
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.5081,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.238,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0113,
+    "vision: conv / patch embed": 0.0014,
+    "small Linears (< 1M weights)": 0.0012,
+    "conv weights": 0.0009,
+    "vision: biases": 0.0005
+   },
+   "towers_packed_gb": {
+    "vision": 0.702
+   },
+   "projected_tiered_saving_pct": 22.63,
+   "projected_12bit_saving_pct": 17.24,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 6.58,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 3.08,
+    "plain nn.Linear / nn.Embedding in towers": 0.15,
+    "conv weights / patch embeddings": 0.03,
+    "small Linears (< 1M weights)": 0.02
+   },
+   "unpacked_classes": "embedding built without the quant config 0.51 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.24 GB; plain nn.Linear / nn.Embedding in towers 0.01 GB"
+  },
+  {
+   "model": "MiniMaxAI/MiniMax-M3",
+   "arch": "MiniMaxM3SparseForConditionalGeneration",
+   "created": "2026-06-02",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 854.173,
+   "loaded_by_vllm_gb": 854.173,
+   "packed_gb": 27.651,
+   "unpacked_gb": 826.522,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE experts: swigluoai (MiniMax-M3)": 826.2443,
+    "MoE routers (quant_config=None, fp32 gates)": 0.1793,
+    "small Linears (< 1M weights)": 0.0897,
+    "not bf16 (F32 tensors)": 0.006,
+    "norms": 0.0019,
+    "biases": 0.0008
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation swigluoai_uninterleave, not SiLU)": 826.2443,
+    "MoE routers": 0.1793,
+    "small Linears (< 1M weights)": 0.0897,
+    "vision: not bf16 (F32)": 0.006,
+    "norms": 0.0015,
+    "vision: biases": 0.0008
+   },
+   "towers_packed_gb": {
+    "vision": 1.727
+   },
+   "projected_tiered_saving_pct": 1.05,
+   "projected_12bit_saving_pct": 0.8,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: swigluoai (MiniMax-M3)": 31.44
+   },
+   "unpacked_classes": "MoE experts: swigluoai (MiniMax-M3) 826.24 GB; MoE routers (quant_config=None, fp32 gates) 0.18 GB; small Linears (< 1M weights) 0.09 GB"
+  },
+  {
+   "model": "meta-models/Muse-Glimmer-30B",
+   "arch": "MuseGlimmerForConditionalGeneration",
+   "created": "2026-08-09",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 59.553,
+   "loaded_by_vllm_gb": 59.553,
+   "packed_gb": 53.017,
+   "unpacked_gb": 6.536,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "vision/audio tower not given the quant config": 3.8346,
+    "embedding built without the quant config": 2.6897,
+    "conv weights / patch embeddings": 0.0068,
+    "norms": 0.0034,
+    "biases": 0.0017
+   },
+   "unpacked_detail_gb": {
+    "vision: tower built without the quant config": 3.8346,
+    "embedding (built without the quant config)": 2.6897,
+    "vision: conv / patch embed": 0.0068,
+    "norms": 0.0028,
+    "vision: biases": 0.0017,
+    "vision: norms": 0.0006
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 28.93,
+   "projected_12bit_saving_pct": 22.03,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "vision/audio tower not given the quant config": 2.09,
+    "embedding built without the quant config": 1.47
+   },
+   "unpacked_classes": "vision/audio tower not given the quant config 3.83 GB; embedding built without the quant config 2.69 GB"
+  },
+  {
+   "model": "Nanbeige/Nanbeige4.2-3B",
+   "arch": "NanbeigeForCausalLM",
+   "created": "2026-07-21",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/transformers/ (Transformers backend) (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 8.34,
+   "loaded_by_vllm_gb": 8.34,
+   "packed_gb": 8.339,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+   "arch": "NemotronHForCausalLM",
+   "created": "2026-03-07",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 7.947,
+   "loaded_by_vllm_gb": 7.947,
+   "packed_gb": 4.817,
+   "unpacked_gb": 3.13,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "Linear shape: rows not a multiple of 64 (decoder)": 2.3055,
+    "embedding built without the quant config": 0.8221,
+    "conv weights / patch embeddings": 0.0016,
+    "norms": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "Linear shape (rows % 64 or columns % 16)": 2.3055,
+    "embedding (built without the quant config)": 0.8221,
+    "conv weights": 0.0016,
+    "norms": 0.0006
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 19.7,
+   "projected_12bit_saving_pct": 15.0,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "Linear shape: rows not a multiple of 64 (decoder)": 9.43,
+    "embedding built without the quant config": 3.36
+   },
+   "unpacked_classes": "Linear shape: rows not a multiple of 64 (decoder) 2.31 GB; embedding built without the quant config 0.82 GB"
+  },
+  {
+   "model": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+   "arch": "NemotronHForCausalLM",
+   "created": "2026-03-10",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 247.222,
+   "loaded_by_vllm_gb": 241.337,
+   "packed_gb": 14.605,
+   "unpacked_gb": 226.733,
+   "not_loaded_gb": {
+    "mtp": 5.885
+   },
+   "unpacked_by_class_gb": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 225.4858,
+    "embedding built without the quant config": 1.0737,
+    "MoE routers (quant_config=None, fp32 gates)": 0.1678,
+    "conv weights / patch embeddings": 0.0033,
+    "norms": 0.0014,
+    "biases": 0.0008
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation relu2 without a gate, not SiLU)": 225.4858,
+    "embedding (built without the quant config)": 1.0737,
+    "MoE routers": 0.1678,
+    "conv weights": 0.0033,
+    "norms": 0.0014,
+    "biases": 0.0008
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 1.97,
+   "projected_12bit_saving_pct": 1.5,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 30.37,
+    "embedding built without the quant config": 0.14,
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "unpacked_classes": "MoE experts: relu2 without a gate (Nemotron-H) 225.49 GB; embedding built without the quant config 1.07 GB; MoE routers (quant_config=None, fp32 gates) 0.17 GB"
+  },
+  {
+   "model": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+   "arch": "NemotronHForCausalLM",
+   "created": "2026-06-03",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 1121.049,
+   "loaded_by_vllm_gb": 1098.618,
+   "packed_gb": 65.263,
+   "unpacked_gb": 1033.355,
+   "not_loaded_gb": {
+    "mtp": 22.431
+   },
+   "unpacked_by_class_gb": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 1030.7922,
+    "embedding built without the quant config": 2.1475,
+    "MoE routers (quant_config=None, fp32 gates)": 0.4027,
+    "conv weights / patch embeddings": 0.0071,
+    "norms": 0.0034,
+    "biases": 0.0018
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation relu2 without a gate, not SiLU)": 1030.7922,
+    "embedding (built without the quant config)": 2.1475,
+    "MoE routers": 0.4027,
+    "conv weights": 0.0071,
+    "norms": 0.0034,
+    "biases": 0.0018
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 1.93,
+   "projected_12bit_saving_pct": 1.47,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 30.49,
+    "embedding built without the quant config": 0.06,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "unpacked_classes": "MoE experts: relu2 without a gate (Nemotron-H) 1030.79 GB; embedding built without the quant config 2.15 GB; MoE routers (quant_config=None, fp32 gates) 0.40 GB"
+  },
+  {
+   "model": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+   "arch": "NemotronHForCausalLM",
+   "created": "2026-08-01",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 65.827,
+   "loaded_by_vllm_gb": 63.156,
+   "packed_gb": 3.684,
+   "unpacked_gb": 59.472,
+   "not_loaded_gb": {
+    "mtp": 2.671
+   },
+   "unpacked_by_class_gb": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 58.7496,
+    "embedding built without the quant config": 0.7046,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0158,
+    "conv weights / patch embeddings": 0.0011
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation relu2 without a gate, not SiLU)": 58.7496,
+    "embedding (built without the quant config)": 0.7046,
+    "MoE routers": 0.0158,
+    "conv weights": 0.0011
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 1.9,
+   "projected_12bit_saving_pct": 1.44,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 30.23,
+    "embedding built without the quant config": 0.36
+   },
+   "unpacked_classes": "MoE experts: relu2 without a gate (Nemotron-H) 58.75 GB; embedding built without the quant config 0.70 GB; MoE routers (quant_config=None, fp32 gates) 0.02 GB"
+  },
+  {
+   "model": "nvidia/NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-BF16",
+   "arch": "NemotronHPuzzleForCausalLM",
+   "created": "2026-06-24",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 156.591,
+   "loaded_by_vllm_gb": 150.707,
+   "packed_gb": 15.511,
+   "unpacked_gb": 135.196,
+   "not_loaded_gb": {
+    "mtp": 5.885
+   },
+   "unpacked_by_class_gb": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 135.023,
+    "MoE routers (quant_config=None, fp32 gates)": 0.1678,
+    "conv weights / patch embeddings": 0.0031,
+    "norms": 0.0014,
+    "biases": 0.0008
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation relu2 without a gate, not SiLU)": 135.023,
+    "MoE routers": 0.1678,
+    "conv weights": 0.0031,
+    "norms": 0.0014,
+    "biases": 0.0008
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 3.34,
+   "projected_12bit_saving_pct": 2.55,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 29.12,
+    "MoE routers (quant_config=None, fp32 gates)": 0.04
+   },
+   "unpacked_classes": "MoE experts: relu2 without a gate (Nemotron-H) 135.02 GB; MoE routers (quant_config=None, fp32 gates) 0.17 GB"
+  },
+  {
+   "model": "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16",
+   "arch": "NemotronH_Nano_Omni_Reasoning_V3",
+   "created": "2026-04-20",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 66.031,
+   "loaded_by_vllm_gb": 66.031,
+   "packed_gb": 3.684,
+   "unpacked_gb": 62.347,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 58.7496,
+    "vision/audio tower not given the quant config": 2.6799,
+    "embedding built without the quant config": 0.7046,
+    "conv weights / patch embeddings": 0.1949,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0158,
+    "norms": 0.0014,
+    "biases": 0.001
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation relu2 without a gate, not SiLU)": 58.7496,
+    "vision: tower built without the quant config": 1.584,
+    "audio: tower built without the quant config": 1.0959,
+    "embedding (built without the quant config)": 0.7046,
+    "audio: conv weights": 0.1518,
+    "vision: conv weights": 0.0419,
+    "MoE routers": 0.0158,
+    "conv weights": 0.0011,
+    "vision: biases": 0.0007,
+    "audio: norms": 0.0006
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 1.81,
+   "projected_12bit_saving_pct": 1.38,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: relu2 without a gate (Nemotron-H)": 28.92,
+    "vision/audio tower not given the quant config": 1.32,
+    "embedding built without the quant config": 0.35,
+    "conv weights / patch embeddings": 0.1
+   },
+   "unpacked_classes": "MoE experts: relu2 without a gate (Nemotron-H) 58.75 GB; vision/audio tower not given the quant config 2.68 GB; embedding built without the quant config 0.70 GB; conv weights / patch embeddings 0.19 GB; MoE routers (quant_config=None, fp32 gates) 0.02 GB"
+  },
+  {
+   "model": "allenai/Olmo-Hybrid-7B",
+   "arch": "OlmoHybridForCausalLM",
+   "created": "2026-01-28",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 14.862,
+   "loaded_by_vllm_gb": 14.862,
+   "packed_gb": 14.077,
+   "unpacked_gb": 0.785,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.7707,
+    "small Linears (< 1M weights)": 0.0111,
+    "conv weights / patch embeddings": 0.0022,
+    "norms": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.7707,
+    "small Linears (< 1M weights)": 0.0111,
+    "conv weights": 0.0022,
+    "norms": 0.0006
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 30.78,
+   "projected_12bit_saving_pct": 23.44,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 1.69,
+    "small Linears (< 1M weights)": 0.02
+   },
+   "unpacked_classes": "embedding built without the quant config 0.77 GB; small Linears (< 1M weights) 0.01 GB"
+  },
+  {
+   "model": "allenai/Olmo-Hybrid-Instruct-DPO-7B",
+   "arch": "OlmoHybridForCausalLM",
+   "created": "2026-02-20",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 14.862,
+   "loaded_by_vllm_gb": 14.862,
+   "packed_gb": 14.077,
+   "unpacked_gb": 0.785,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.7707,
+    "small Linears (< 1M weights)": 0.0111,
+    "conv weights / patch embeddings": 0.0022,
+    "norms": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.7707,
+    "small Linears (< 1M weights)": 0.0111,
+    "conv weights": 0.0022,
+    "norms": 0.0006
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 30.78,
+   "projected_12bit_saving_pct": 23.44,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 1.69,
+    "small Linears (< 1M weights)": 0.02
+   },
+   "unpacked_classes": "embedding built without the quant config 0.77 GB; small Linears (< 1M weights) 0.01 GB"
+  },
+  {
+   "model": "bharatgenai/Param2-17B-A2.4B-Thinking",
+   "arch": "Param2MoEForCausalLM",
+   "created": "2026-02-16",
+   "license": null,
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/param2moe.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 34.302,
+   "loaded_by_vllm_gb": 34.302,
+   "packed_gb": 34.297,
+   "unpacked_gb": 0.005,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0052
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0052
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "moe_attention_linears_bf16_on_a100_h100_gb": 0.44,
+   "projected_12bit_saving_on_a100_h100_pct": 24.43,
+   "unpacked_classes": ""
+  },
+  {
+   "model": "microsoft/Phi-4-reasoning-vision-15B",
+   "arch": "Phi4ForCausalLMV",
+   "created": "2026-01-23",
+   "license": "mit",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/phi4siglip.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 30.239,
+   "loaded_by_vllm_gb": 30.239,
+   "packed_gb": 28.93,
+   "unpacked_gb": 1.309,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.0276,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2777,
+    "conv weights / patch embeddings": 0.0018,
+    "norms": 0.0011,
+    "plain nn.Linear / nn.Embedding in towers": 0.0006,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.0276,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2777,
+    "vision: conv / patch embed": 0.0018,
+    "norms": 0.0008,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0006,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.639
+   },
+   "projected_tiered_saving_pct": 31.09,
+   "projected_12bit_saving_pct": 23.68,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 1.1,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.3
+   },
+   "unpacked_classes": "embedding built without the quant config 1.03 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.28 GB"
+  },
+  {
+   "model": "kakaocorp/kanana-2-3b-instruct",
+   "arch": "Qwen3ForCausalLM",
+   "created": "2026-07-24",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/qwen3.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 7.018,
+   "loaded_by_vllm_gb": 7.018,
+   "packed_gb": 7.018,
+   "unpacked_gb": 0.0,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {},
+   "unpacked_detail_gb": {},
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  },
+  {
+   "model": "ATH-MaaS/Marco-Mini-Instruct",
+   "arch": "Qwen3MoeForCausalLM",
+   "created": "2026-04-08",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/qwen3_moe.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 34.501,
+   "loaded_by_vllm_gb": 34.501,
+   "packed_gb": 34.486,
+   "unpacked_gb": 0.015,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0147
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0147
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 0.352,
+   "projected_12bit_saving_on_a100_h100_pct": 24.49,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.01 GB"
+  },
+  {
+   "model": "ATH-MaaS/Marco-Nano-Instruct",
+   "arch": "Qwen3MoeForCausalLM",
+   "created": "2026-04-03",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/qwen3_moe.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 16.003,
+   "loaded_by_vllm_gb": 16.003,
+   "packed_gb": 15.989,
+   "unpacked_gb": 0.013,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.0133
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.0133
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.47,
+   "projected_12bit_saving_pct": 24.73,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.03
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 0.352,
+   "projected_12bit_saving_on_a100_h100_pct": 24.18,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.01 GB"
+  },
+  {
+   "model": "llm-jp/llm-jp-4-32b-a3b-thinking",
+   "arch": "Qwen3MoeForCausalLM",
+   "created": "2026-03-16",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/qwen3_moe.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 64.278,
+   "loaded_by_vllm_gb": 64.278,
+   "packed_gb": 64.257,
+   "unpacked_gb": 0.021,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.021
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.021
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 1.845,
+   "projected_12bit_saving_on_a100_h100_pct": 24.03,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.02 GB"
+  },
+  {
+   "model": "llm-jp/llm-jp-4.1-32b-a3b-thinking",
+   "arch": "Qwen3MoeForCausalLM",
+   "created": "2026-09-16",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/qwen3_moe.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 64.278,
+   "loaded_by_vllm_gb": 64.278,
+   "packed_gb": 64.257,
+   "unpacked_gb": 0.021,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.021
+   },
+   "unpacked_detail_gb": {
+    "MoE routers": 0.021
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.49,
+   "projected_12bit_saving_pct": 24.74,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 1.845,
+   "projected_12bit_saving_on_a100_h100_pct": 24.03,
+   "unpacked_classes": "MoE routers (quant_config=None, fp32 gates) 0.02 GB"
+  },
+  {
+   "model": "Qwen/Qwen3-Coder-Next",
+   "arch": "Qwen3NextForCausalLM",
+   "created": "2026-01-30",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 159.349,
+   "loaded_by_vllm_gb": 159.349,
+   "packed_gb": 157.991,
+   "unpacked_gb": 1.358,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.6223,
+    "LM head built without the quant config": 0.6223,
+    "MoE routers (quant_config=None, fp32 gates)": 0.1007,
+    "small Linears (< 1M weights)": 0.0096,
+    "conv weights / patch embeddings": 0.0024
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.6223,
+    "LM head (built without the quant config)": 0.6223,
+    "MoE routers": 0.1007,
+    "small Linears (< 1M weights)": 0.0096,
+    "conv weights": 0.0024
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.22,
+   "projected_12bit_saving_pct": 24.54,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.13,
+    "LM head built without the quant config": 0.13,
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 3.07,
+   "projected_12bit_saving_on_a100_h100_pct": 24.06,
+   "unpacked_classes": "embedding built without the quant config 0.62 GB; LM head built without the quant config 0.62 GB; MoE routers (quant_config=None, fp32 gates) 0.10 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.5-0.8B",
+   "arch": "Qwen3_5ForConditionalGeneration",
+   "created": "2026-02-28",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 1.747,
+   "loaded_by_vllm_gb": 1.706,
+   "packed_gb": 1.175,
+   "unpacked_gb": 0.531,
+   "not_loaded_gb": {
+    "mtp": 0.041
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 0.5086,
+    "small Linears (< 1M weights)": 0.0153,
+    "plain nn.Linear / nn.Embedding in towers": 0.0035,
+    "conv weights / patch embeddings": 0.0032
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 0.5086,
+    "vision: small Linears (< 1M weights)": 0.0142,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0035,
+    "vision: conv / patch embed": 0.0024,
+    "small Linears (< 1M weights)": 0.0012,
+    "conv weights": 0.0009
+   },
+   "towers_packed_gb": {
+    "vision": 0.181
+   },
+   "projected_tiered_saving_pct": 22.38,
+   "projected_12bit_saving_pct": 17.05,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 9.69,
+    "small Linears (< 1M weights)": 0.29,
+    "plain nn.Linear / nn.Embedding in towers": 0.07,
+    "conv weights / patch embeddings": 0.06
+   },
+   "unpacked_classes": "embedding built without the quant config 0.51 GB; small Linears (< 1M weights) 0.02 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.5-27B",
+   "arch": "Qwen3_5ForConditionalGeneration",
+   "created": "2026-02-24",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 55.563,
+   "loaded_by_vllm_gb": 54.713,
+   "packed_gb": 51.841,
+   "unpacked_gb": 2.873,
+   "not_loaded_gb": {
+    "mtp": 0.849
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 2.5428,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "small Linears (< 1M weights)": 0.0472,
+    "conv weights / patch embeddings": 0.0075,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0016,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 2.5428,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "small Linears (< 1M weights)": 0.0472,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "conv weights": 0.0039,
+    "vision: conv / patch embed": 0.0035,
+    "norms": 0.0014,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.644
+   },
+   "projected_tiered_saving_pct": 30.79,
+   "projected_12bit_saving_pct": 23.45,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 1.51,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.16,
+    "small Linears (< 1M weights)": 0.03
+   },
+   "unpacked_classes": "embedding built without the quant config 2.54 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; small Linears (< 1M weights) 0.05 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.5-2B",
+   "arch": "Qwen3_5ForConditionalGeneration",
+   "created": "2026-02-28",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 4.548,
+   "loaded_by_vllm_gb": 4.426,
+   "packed_gb": 3.397,
+   "unpacked_gb": 1.029,
+   "not_loaded_gb": {
+    "mtp": 0.122
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.0171,
+    "plain nn.Linear / nn.Embedding in towers": 0.0047,
+    "conv weights / patch embeddings": 0.004,
+    "small Linears (< 1M weights)": 0.0024
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.0171,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0047,
+    "vision: conv / patch embed": 0.0031,
+    "small Linears (< 1M weights)": 0.0024,
+    "conv weights": 0.0009
+   },
+   "towers_packed_gb": {
+    "vision": 0.654
+   },
+   "projected_tiered_saving_pct": 24.94,
+   "projected_12bit_saving_pct": 19.0,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 7.47,
+    "plain nn.Linear / nn.Embedding in towers": 0.03,
+    "conv weights / patch embeddings": 0.03,
+    "small Linears (< 1M weights)": 0.02
+   },
+   "unpacked_classes": "embedding built without the quant config 1.02 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.5-4B",
+   "arch": "Qwen3_5ForConditionalGeneration",
+   "created": "2026-02-27",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 9.32,
+   "loaded_by_vllm_gb": 9.079,
+   "packed_gb": 7.789,
+   "unpacked_gb": 1.29,
+   "not_loaded_gb": {
+    "mtp": 0.241
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.2714,
+    "small Linears (< 1M weights)": 0.0079,
+    "plain nn.Linear / nn.Embedding in towers": 0.0047,
+    "conv weights / patch embeddings": 0.0047,
+    "norms": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.2714,
+    "small Linears (< 1M weights)": 0.0079,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0047,
+    "vision: conv / patch embed": 0.0031,
+    "conv weights": 0.0016
+   },
+   "towers_packed_gb": {
+    "vision": 0.659
+   },
+   "projected_tiered_saving_pct": 27.88,
+   "projected_12bit_saving_pct": 21.23,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 4.55,
+    "small Linears (< 1M weights)": 0.03,
+    "plain nn.Linear / nn.Embedding in towers": 0.02,
+    "conv weights / patch embeddings": 0.02
+   },
+   "unpacked_classes": "embedding built without the quant config 1.27 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.5-9B",
+   "arch": "Qwen3_5ForConditionalGeneration",
+   "created": "2026-02-27",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 19.306,
+   "loaded_by_vllm_gb": 18.82,
+   "packed_gb": 16.493,
+   "unpacked_gb": 2.326,
+   "not_loaded_gb": {
+    "mtp": 0.487
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 2.0342,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "small Linears (< 1M weights)": 0.0126,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "conv weights / patch embeddings": 0.0051,
+    "norms": 0.0008,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 2.0342,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "small Linears (< 1M weights)": 0.0126,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "vision: conv / patch embed": 0.0035,
+    "conv weights": 0.0016,
+    "vision: biases": 0.0006,
+    "norms": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.635
+   },
+   "projected_tiered_saving_pct": 28.48,
+   "projected_12bit_saving_pct": 21.69,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 3.51,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.46,
+    "small Linears (< 1M weights)": 0.02
+   },
+   "unpacked_classes": "embedding built without the quant config 2.03 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; small Linears (< 1M weights) 0.01 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.6-27B",
+   "arch": "Qwen3_5ForConditionalGeneration",
+   "created": "2026-04-21",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 55.563,
+   "loaded_by_vllm_gb": 54.713,
+   "packed_gb": 51.841,
+   "unpacked_gb": 2.873,
+   "not_loaded_gb": {
+    "mtp": 0.849
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 2.5428,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "small Linears (< 1M weights)": 0.0472,
+    "conv weights / patch embeddings": 0.0075,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0016,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 2.5428,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "small Linears (< 1M weights)": 0.0472,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "conv weights": 0.0039,
+    "vision: conv / patch embed": 0.0035,
+    "norms": 0.0013,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.644
+   },
+   "projected_tiered_saving_pct": 30.79,
+   "projected_12bit_saving_pct": 23.45,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 1.51,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.16,
+    "small Linears (< 1M weights)": 0.03
+   },
+   "unpacked_classes": "embedding built without the quant config 2.54 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; small Linears (< 1M weights) 0.05 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.8-27B",
+   "arch": "Qwen3_5ForConditionalGeneration",
+   "created": "2026-08-05",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 55.563,
+   "loaded_by_vllm_gb": 54.713,
+   "packed_gb": 51.841,
+   "unpacked_gb": 2.873,
+   "not_loaded_gb": {
+    "mtp": 0.849
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 2.5428,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "small Linears (< 1M weights)": 0.0472,
+    "conv weights / patch embeddings": 0.0075,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0016,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 2.5428,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "small Linears (< 1M weights)": 0.0472,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "conv weights": 0.0039,
+    "vision: conv / patch embed": 0.0035,
+    "norms": 0.0013,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.644
+   },
+   "projected_tiered_saving_pct": 30.79,
+   "projected_12bit_saving_pct": 23.45,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 1.51,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.16,
+    "small Linears (< 1M weights)": 0.03
+   },
+   "unpacked_classes": "embedding built without the quant config 2.54 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; small Linears (< 1M weights) 0.05 GB"
+  },
+  {
+   "model": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+   "arch": "Qwen3_5ForConditionalGeneration",
+   "created": "2026-09-21",
+   "license": "mit",
+   "derived": "Qwen3.5-9B architecture (distilled)",
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 18.82,
+   "loaded_by_vllm_gb": 18.82,
+   "packed_gb": 16.493,
+   "unpacked_gb": 2.326,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 2.0342,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "small Linears (< 1M weights)": 0.0126,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "conv weights / patch embeddings": 0.0051,
+    "norms": 0.0008,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 2.0342,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "small Linears (< 1M weights)": 0.0126,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "vision: conv / patch embed": 0.0035,
+    "conv weights": 0.0016,
+    "vision: biases": 0.0006,
+    "norms": 0.0005
+   },
+   "towers_packed_gb": {
+    "vision": 0.635
+   },
+   "projected_tiered_saving_pct": 28.48,
+   "projected_12bit_saving_pct": 21.69,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 3.51,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.46,
+    "small Linears (< 1M weights)": 0.02
+   },
+   "unpacked_classes": "embedding built without the quant config 2.03 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; small Linears (< 1M weights) 0.01 GB"
+  },
+  {
+   "model": "ornith-ai/Ornith-1.5-9B",
+   "arch": "Qwen3_5ForConditionalGeneration",
+   "created": "2026-08-18",
+   "license": "mit",
+   "derived": "Qwen3.5-9B fine-tune (third party)",
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 19.306,
+   "loaded_by_vllm_gb": 18.82,
+   "packed_gb": 16.493,
+   "unpacked_gb": 2.326,
+   "not_loaded_gb": {
+    "mtp": 0.487
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 2.0342,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "small Linears (< 1M weights)": 0.0126,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "conv weights / patch embeddings": 0.0051,
+    "norms": 0.0008,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 2.0342,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "small Linears (< 1M weights)": 0.0126,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "vision: conv / patch embed": 0.0035,
+    "conv weights": 0.0016,
+    "vision: biases": 0.0006,
+    "norms": 0.0005
+   },
+   "towers_packed_gb": {
+    "vision": 0.635
+   },
+   "projected_tiered_saving_pct": 28.48,
+   "projected_12bit_saving_pct": 21.69,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 3.51,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.46,
+    "small Linears (< 1M weights)": 0.02
+   },
+   "unpacked_classes": "embedding built without the quant config 2.03 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; small Linears (< 1M weights) 0.01 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.8-2.4T-A95B",
+   "arch": "Qwen3_5MoeForCausalLM",
+   "created": "2026-08-08",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 4892.365,
+   "loaded_by_vllm_gb": 4839.609,
+   "packed_gb": 4834.753,
+   "unpacked_gb": 4.856,
+   "not_loaded_gb": {
+    "mtp": 52.756
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 4.0685,
+    "MoE routers (quant_config=None, fp32 gates)": 0.7718,
+    "conv weights / patch embeddings": 0.0113,
+    "norms": 0.0031,
+    "small Linears (< 1M weights)": 0.0015
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 4.0685,
+    "MoE routers": 0.7718,
+    "conv weights": 0.0113,
+    "norms": 0.0031,
+    "small Linears (< 1M weights)": 0.0015
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.47,
+   "projected_12bit_saving_pct": 24.73,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.03
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 79.78,
+   "projected_12bit_saving_on_a100_h100_pct": 24.32,
+   "unpacked_classes": "embedding built without the quant config 4.07 GB; MoE routers (quant_config=None, fp32 gates) 0.77 GB; conv weights / patch embeddings 0.01 GB"
+  },
+  {
+   "model": "Kwaipilot/KAT-Coder-V2.5-Dev",
+   "arch": "Qwen3_5MoeForConditionalGeneration",
+   "created": "2026-07-23",
+   "license": "apache-2.0",
+   "derived": "Qwen3.5-MoE architecture",
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 69.321,
+   "loaded_by_vllm_gb": 69.321,
+   "packed_gb": 68.252,
+   "unpacked_gb": 1.069,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.0171,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0419,
+    "small Linears (< 1M weights)": 0.008,
+    "conv weights / patch embeddings": 0.002
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.0171,
+    "MoE routers": 0.0419,
+    "small Linears (< 1M weights)": 0.008,
+    "conv weights": 0.002
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.0,
+   "projected_12bit_saving_pct": 24.37,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.48,
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 2.559,
+   "projected_12bit_saving_on_a100_h100_pct": 23.45,
+   "unpacked_classes": "embedding built without the quant config 1.02 GB; MoE routers (quant_config=None, fp32 gates) 0.04 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.5-122B-A10B",
+   "arch": "Qwen3_5MoeForConditionalGeneration",
+   "created": "2026-02-24",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 250.173,
+   "loaded_by_vllm_gb": 245.126,
+   "packed_gb": 243.214,
+   "unpacked_gb": 1.911,
+   "not_loaded_gb": {
+    "mtp": 5.047
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.5257,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0755,
+    "small Linears (< 1M weights)": 0.0286,
+    "conv weights / patch embeddings": 0.0071,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0009,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.5257,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "MoE routers": 0.0755,
+    "small Linears (< 1M weights)": 0.0286,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "conv weights": 0.0035,
+    "vision: conv / patch embed": 0.0035,
+    "norms": 0.0006,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.625
+   },
+   "projected_tiered_saving_pct": 32.25,
+   "projected_12bit_saving_pct": 24.56,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.2,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.04,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 8.229,
+   "projected_12bit_saving_on_a100_h100_pct": 23.73,
+   "unpacked_classes": "embedding built without the quant config 1.53 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; MoE routers (quant_config=None, fp32 gates) 0.08 GB; small Linears (< 1M weights) 0.03 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.5-35B-A3B",
+   "arch": "Qwen3_5MoeForConditionalGeneration",
+   "created": "2026-02-24",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 71.904,
+   "loaded_by_vllm_gb": 70.214,
+   "packed_gb": 68.868,
+   "unpacked_gb": 1.347,
+   "not_loaded_gb": {
+    "mtp": 1.689
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.0171,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0419,
+    "small Linears (< 1M weights)": 0.008,
+    "conv weights / patch embeddings": 0.0055,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0006,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.0171,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "MoE routers": 0.0419,
+    "small Linears (< 1M weights)": 0.008,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "vision: conv / patch embed": 0.0035,
+    "conv weights": 0.002,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.616
+   },
+   "projected_tiered_saving_pct": 31.88,
+   "projected_12bit_saving_pct": 24.28,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.47,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.12,
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 2.559,
+   "projected_12bit_saving_on_a100_h100_pct": 23.37,
+   "unpacked_classes": "embedding built without the quant config 1.02 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; MoE routers (quant_config=None, fp32 gates) 0.04 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.5-397B-A17B",
+   "arch": "Qwen3_5MoeForConditionalGeneration",
+   "created": "2026-02-16",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 806.796,
+   "loaded_by_vllm_gb": 793.605,
+   "packed_gb": 790.988,
+   "unpacked_gb": 2.616,
+   "not_loaded_gb": {
+    "mtp": 13.191
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 2.0342,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "MoE routers (quant_config=None, fp32 gates)": 0.2517,
+    "small Linears (< 1M weights)": 0.0477,
+    "conv weights / patch embeddings": 0.008,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0013,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 2.0342,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "MoE routers": 0.2517,
+    "small Linears (< 1M weights)": 0.0477,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "conv weights": 0.0044,
+    "vision: conv / patch embed": 0.0035,
+    "norms": 0.001,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.635
+   },
+   "projected_tiered_saving_pct": 32.39,
+   "projected_12bit_saving_pct": 24.67,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.08,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.01,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 13.715,
+   "projected_12bit_saving_on_a100_h100_pct": 24.24,
+   "unpacked_classes": "embedding built without the quant config 2.03 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; MoE routers (quant_config=None, fp32 gates) 0.25 GB; small Linears (< 1M weights) 0.05 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.6-35B-A3B",
+   "arch": "Qwen3_5MoeForConditionalGeneration",
+   "created": "2026-04-15",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 71.904,
+   "loaded_by_vllm_gb": 70.214,
+   "packed_gb": 68.868,
+   "unpacked_gb": 1.347,
+   "not_loaded_gb": {
+    "mtp": 1.689
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.0171,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0419,
+    "small Linears (< 1M weights)": 0.008,
+    "conv weights / patch embeddings": 0.0055,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0006,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.0171,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "MoE routers": 0.0419,
+    "small Linears (< 1M weights)": 0.008,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "vision: conv / patch embed": 0.0035,
+    "conv weights": 0.002,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.616
+   },
+   "projected_tiered_saving_pct": 31.88,
+   "projected_12bit_saving_pct": 24.28,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.47,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.12,
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 2.559,
+   "projected_12bit_saving_on_a100_h100_pct": 23.37,
+   "unpacked_classes": "embedding built without the quant config 1.02 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; MoE routers (quant_config=None, fp32 gates) 0.04 GB"
+  },
+  {
+   "model": "ornith-ai/Ornith-1.5-35B-A3B",
+   "arch": "Qwen3_5MoeForConditionalGeneration",
+   "created": "2026-08-18",
+   "license": "mit",
+   "derived": "Qwen3.5-35B-A3B fine-tune (third party)",
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 71.904,
+   "loaded_by_vllm_gb": 70.214,
+   "packed_gb": 68.868,
+   "unpacked_gb": 1.347,
+   "not_loaded_gb": {
+    "mtp": 1.689
+   },
+   "unpacked_by_class_gb": {
+    "embedding built without the quant config": 1.0171,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0419,
+    "small Linears (< 1M weights)": 0.008,
+    "conv weights / patch embeddings": 0.0055,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0006,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "embedding (built without the quant config)": 1.0171,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "MoE routers": 0.0419,
+    "small Linears (< 1M weights)": 0.008,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "vision: conv / patch embed": 0.0035,
+    "conv weights": 0.002,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.616
+   },
+   "projected_tiered_saving_pct": 31.88,
+   "projected_12bit_saving_pct": 24.28,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "embedding built without the quant config": 0.47,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.12,
+    "MoE routers (quant_config=None, fp32 gates)": 0.02
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 2.559,
+   "projected_12bit_saving_on_a100_h100_pct": 23.37,
+   "unpacked_classes": "embedding built without the quant config 1.02 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; MoE routers (quant_config=None, fp32 gates) 0.04 GB"
+  },
+  {
+   "model": "Qwen/Qwen3.8-Flash-Next",
+   "arch": "Qwen4ExpForConditionalGeneration",
+   "created": "2026-08-24",
+   "license": "other",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 360.0,
+   "loaded_by_vllm_gb": 354.786,
+   "packed_gb": 248.137,
+   "unpacked_gb": 106.649,
+   "not_loaded_gb": {
+    "mtp": 5.214
+   },
+   "unpacked_by_class_gb": {
+    "n-gram (PLE) embedding table (Qwen4Exp: refuses the glyd config)": 102.4005,
+    "decoder Linears built without the quant config (hyper-connections, misc)": 1.2793,
+    "embedding built without the quant config": 1.2714,
+    "LM head built without the quant config": 1.2714,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.2677,
+    "MoE routers (quant_config=None, fp32 gates)": 0.1258,
+    "small Linears (< 1M weights)": 0.0179,
+    "conv weights / patch embeddings": 0.0066,
+    "plain nn.Linear / nn.Embedding in towers": 0.0053,
+    "norms": 0.0023,
+    "biases": 0.0006
+   },
+   "unpacked_detail_gb": {
+    "n-gram (PLE) embedding table": 102.4005,
+    "layer built without the quant config": 1.2793,
+    "embedding (built without the quant config)": 1.2714,
+    "LM head (built without the quant config)": 1.2714,
+    "vision: Linear shape (rows % 64 or columns % 16)": 0.2677,
+    "MoE routers": 0.1258,
+    "small Linears (< 1M weights)": 0.0179,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0053,
+    "vision: conv / patch embed": 0.0035,
+    "conv weights": 0.003,
+    "norms": 0.0021,
+    "vision: biases": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 0.62
+   },
+   "projected_tiered_saving_pct": 22.73,
+   "projected_12bit_saving_pct": 17.31,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "n-gram (PLE) embedding table (Qwen4Exp: refuses the glyd config)": 9.38,
+    "decoder Linears built without the quant config (hyper-connections, misc)": 0.12,
+    "embedding built without the quant config": 0.12,
+    "LM head built without the quant config": 0.12,
+    "Linear shape: rows not a multiple of 64 (vision MLP 4304)": 0.02,
+    "MoE routers (quant_config=None, fp32 gates)": 0.01
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 5.387,
+   "projected_12bit_saving_on_a100_h100_pct": 16.93,
+   "unpacked_classes": "n-gram (PLE) embedding table (Qwen4Exp: refuses the glyd config) 102.40 GB; decoder Linears built without the quant config (hyper-connections, misc) 1.28 GB; embedding built without the quant config 1.27 GB; LM head built without the quant config 1.27 GB; Linear shape: rows not a multiple of 64 (vision MLP 4304) 0.27 GB; MoE routers (quant_config=None, fp32 gates) 0.13 GB; small Linears (< 1M weights) 0.02 GB",
+   "blocker": "vLLM's Qwen4Exp PLE embedding raises NotImplementedError for a quant config other than FP8/ModelOpt: the model does not load with --quantization glyd",
+   "today_saving_pct": 0.0
+  },
+  {
+   "model": "stepfun-ai/Step-3.5-Flash",
+   "arch": "Step3p5ForCausalLM",
+   "created": "2026-02-01",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 398.769,
+   "loaded_by_vllm_gb": 393.912,
+   "packed_gb": 374.605,
+   "unpacked_gb": 19.307,
+   "not_loaded_gb": {
+    "mtp": 4.856
+   },
+   "unpacked_by_class_gb": {
+    "MoE experts: swiglustep (Step 3.5/3.7 clamped layers)": 18.1194,
+    "embedding built without the quant config": 1.0559,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0991,
+    "small Linears (< 1M weights)": 0.0322,
+    "norms": 0.0008
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation swiglustep, not SiLU)": 18.1194,
+    "embedding (built without the quant config)": 1.0559,
+    "MoE routers": 0.0991,
+    "small Linears (< 1M weights)": 0.0322,
+    "norms": 0.0008
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 30.91,
+   "projected_12bit_saving_pct": 23.54,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: swiglustep (Step 3.5/3.7 clamped layers)": 1.49,
+    "embedding built without the quant config": 0.09
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 9.009,
+   "projected_12bit_saving_on_a100_h100_pct": 22.97,
+   "unpacked_classes": "MoE experts: swiglustep (Step 3.5/3.7 clamped layers) 18.12 GB; embedding built without the quant config 1.06 GB; MoE routers (quant_config=None, fp32 gates) 0.10 GB; small Linears (< 1M weights) 0.03 GB"
+  },
+  {
+   "model": "stepfun-ai/Step-3.7-Flash",
+   "arch": "Step3p7ForConditionalGeneration",
+   "created": "2026-05-23",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 402.731,
+   "loaded_by_vllm_gb": 397.874,
+   "packed_gb": 378.13,
+   "unpacked_gb": 19.745,
+   "not_loaded_gb": {
+    "mtp": 4.856
+   },
+   "unpacked_by_class_gb": {
+    "MoE experts: swiglustep (Step 3.5/3.7 clamped layers)": 18.1194,
+    "embedding built without the quant config": 1.0559,
+    "conv weights / patch embeddings": 0.4265,
+    "MoE routers (quant_config=None, fp32 gates)": 0.0991,
+    "small Linears (< 1M weights)": 0.0322,
+    "plain nn.Linear / nn.Embedding in towers": 0.0083,
+    "norms": 0.0014,
+    "biases": 0.0011,
+    "small params (A_log, dt_bias, D, scales)": 0.0008
+   },
+   "unpacked_detail_gb": {
+    "MoE experts (activation swiglustep, not SiLU)": 18.1194,
+    "embedding (built without the quant config)": 1.0559,
+    "vision: conv / patch embed": 0.4265,
+    "MoE routers": 0.0991,
+    "small Linears (< 1M weights)": 0.0322,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0083,
+    "vision: biases": 0.0011,
+    "norms": 0.0008,
+    "vision: small params (A_log, dt_bias, D, scales)": 0.0007,
+    "vision: norms": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 3.525
+   },
+   "projected_tiered_saving_pct": 30.89,
+   "projected_12bit_saving_pct": 23.52,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "MoE experts: swiglustep (Step 3.5/3.7 clamped layers)": 1.48,
+    "embedding built without the quant config": 0.09,
+    "conv weights / patch embeddings": 0.03
+   },
+   "moe_attention_linears_bf16_on_a100_h100_gb": 9.009,
+   "projected_12bit_saving_on_a100_h100_pct": 22.96,
+   "unpacked_classes": "MoE experts: swiglustep (Step 3.5/3.7 clamped layers) 18.12 GB; embedding built without the quant config 1.06 GB; conv weights / patch embeddings 0.43 GB; MoE routers (quant_config=None, fp32 gates) 0.10 GB; small Linears (< 1M weights) 0.03 GB"
+  },
+  {
+   "model": "stepfun-ai/Step3-VL-10B",
+   "arch": "StepVLForConditionalGeneration",
+   "created": "2026-01-13",
+   "license": "apache-2.0",
+   "derived": null,
+   "vllm_rules": "hand-read from vLLM 0.30.0's model file",
+   "total_gb": 20.344,
+   "loaded_by_vllm_gb": 20.344,
+   "packed_gb": 19.906,
+   "unpacked_gb": 0.438,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "conv weights / patch embeddings": 0.4265,
+    "plain nn.Linear / nn.Embedding in towers": 0.0083,
+    "norms": 0.0012,
+    "biases": 0.0011,
+    "small params (A_log, dt_bias, D, scales)": 0.0007
+   },
+   "unpacked_detail_gb": {
+    "vision: conv / patch embed": 0.4265,
+    "vision: plain layer (nn.Linear / nn.Embedding)": 0.0083,
+    "vision: biases": 0.0011,
+    "vision: small params (A_log, dt_bias, D, scales)": 0.0007,
+    "norms": 0.0006,
+    "vision: norms": 0.0006
+   },
+   "towers_packed_gb": {
+    "vision": 3.525
+   },
+   "projected_tiered_saving_pct": 31.8,
+   "projected_12bit_saving_pct": 24.22,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {
+    "conv weights / patch embeddings": 0.68,
+    "plain nn.Linear / nn.Embedding in towers": 0.01
+   },
+   "unpacked_classes": "conv weights / patch embeddings 0.43 GB"
+  },
+  {
+   "model": "Tele-AI/TeleChat3-Coder-36B-Thinking",
+   "arch": "TeleChat3ForCausalLM",
+   "created": "2026-01-29",
+   "license": null,
+   "derived": null,
+   "vllm_rules": "auto from vllm/model_executor/models/llama.py (embedding/head quant config, mtp; towers not hand-checked)",
+   "total_gb": 72.479,
+   "loaded_by_vllm_gb": 72.479,
+   "packed_gb": 72.478,
+   "unpacked_gb": 0.002,
+   "not_loaded_gb": {},
+   "unpacked_by_class_gb": {
+    "norms": 0.0016
+   },
+   "unpacked_detail_gb": {
+    "norms": 0.0016
+   },
+   "towers_packed_gb": {},
+   "projected_tiered_saving_pct": 32.5,
+   "projected_12bit_saving_pct": 24.75,
+   "projected_if_all_packed_tiered_pct": 32.5,
+   "projected_if_all_packed_12bit_pct": 24.75,
+   "gain_if_class_packed_tiered_pts": {},
+   "unpacked_classes": ""
+  }
+ ],
+ "ranking": [
+  {
+   "cls": "MoE experts: relu2 without a gate (Nemotron-H)",
+   "total_gb": 1508.8,
+   "models": 5
+  },
+  {
+   "cls": "MoE experts: swigluoai (MiniMax-M3)",
+   "total_gb": 826.244,
+   "models": 1
+  },
+  {
+   "cls": "n-gram (PLE) embedding table (Qwen4Exp: refuses the glyd config)",
+   "total_gb": 102.4,
+   "models": 1
+  },
+  {
+   "cls": "MoE experts: GELU-tanh (Gemma 4)",
+   "total_gb": 91.352,
+   "models": 2
+  },
+  {
+   "cls": "n-gram embedding table built without the quant config (LongCat-Flash-Lite)",
+   "total_gb": 62.814,
+   "models": 1
+  },
+  {
+   "cls": "embedding built without the quant config",
+   "total_gb": 58.389,
+   "models": 52
+  },
+  {
+   "cls": "MoE experts: swiglustep (Step 3.5/3.7 clamped layers)",
+   "total_gb": 36.239,
+   "models": 2
+  },
+  {
+   "cls": "shared sink experts as plain parameters (Inkling)",
+   "total_gb": 18.522,
+   "models": 2
+  },
+  {
+   "cls": "vision/audio tower not given the quant config",
+   "total_gb": 11.208,
+   "models": 9
+  },
+  {
+   "cls": "Mamba (v1) mixer Linears built without the quant config (Jamba)",
+   "total_gb": 8.025,
+   "models": 2
+  },
+  {
+   "cls": "MoE routers (quant_config=None, fp32 gates)",
+   "total_gb": 5.792,
+   "models": 55
+  },
+  {
+   "cls": "embedding as a plain parameter (Inkling)",
+   "total_gb": 4.117,
+   "models": 2
+  },
+  {
+   "cls": "Linear shape: rows not a multiple of 64 (vision MLP 4304)",
+   "total_gb": 4.006,
+   "models": 16
+  },
+  {
+   "cls": "Linear shape: rows not a multiple of 64 (decoder)",
+   "total_gb": 2.91,
+   "models": 3
+  },
+  {
+   "cls": "LM head built without the quant config",
+   "total_gb": 2.833,
+   "models": 5
+  },
+  {
+   "cls": "MLA attention built with quant_config=None",
+   "total_gb": 2.737,
+   "models": 1
+  },
+  {
+   "cls": "conv weights / patch embeddings",
+   "total_gb": 1.49,
+   "models": 57
+  },
+  {
+   "cls": "LM head kept in float32 (head_dtype)",
+   "total_gb": 1.485,
+   "models": 1
+  },
+  {
+   "cls": "decoder Linears built without the quant config (hyper-connections, misc)",
+   "total_gb": 1.476,
+   "models": 5
+  },
+  {
+   "cls": "small Linears (< 1M weights)",
+   "total_gb": 1.244,
+   "models": 38
+  },
+  {
+   "cls": "vision/audio projector / patch Linears built without the quant config",
+   "total_gb": 0.287,
+   "models": 5
+  },
+  {
+   "cls": "not bf16 (F32 tensors)",
+   "total_gb": 0.195,
+   "models": 4
+  },
+  {
+   "cls": "plain nn.Linear / nn.Embedding in towers",
+   "total_gb": 0.105,
+   "models": 23
+  },
+  {
+   "cls": "norms",
+   "total_gb": 0.102,
+   "models": 112
+  },
+  {
+   "cls": "hyper-connection parameters (plain)",
+   "total_gb": 0.071,
+   "models": 1
+  },
+  {
+   "cls": "biases",
+   "total_gb": 0.026,
+   "models": 45
+  },
+  {
+   "cls": "n-gram projections (plain parameter)",
+   "total_gb": 0.019,
+   "models": 1
+  },
+  {
+   "cls": "small params (A_log, dt_bias, D, scales)",
+   "total_gb": 0.007,
+   "models": 73
+  }
+ ],
+ "ranking_by_models": [
+  {
+   "cls": "norms",
+   "total_gb": 0.102,
+   "models": 112
+  },
+  {
+   "cls": "small params (A_log, dt_bias, D, scales)",
+   "total_gb": 0.007,
+   "models": 73
+  },
+  {
+   "cls": "conv weights / patch embeddings",
+   "total_gb": 1.49,
+   "models": 57
+  },
+  {
+   "cls": "MoE routers (quant_config=None, fp32 gates)",
+   "total_gb": 5.792,
+   "models": 55
+  },
+  {
+   "cls": "embedding built without the quant config",
+   "total_gb": 58.389,
+   "models": 52
+  },
+  {
+   "cls": "biases",
+   "total_gb": 0.026,
+   "models": 45
+  },
+  {
+   "cls": "small Linears (< 1M weights)",
+   "total_gb": 1.244,
+   "models": 38
+  },
+  {
+   "cls": "plain nn.Linear / nn.Embedding in towers",
+   "total_gb": 0.105,
+   "models": 23
+  },
+  {
+   "cls": "Linear shape: rows not a multiple of 64 (vision MLP 4304)",
+   "total_gb": 4.006,
+   "models": 16
+  },
+  {
+   "cls": "vision/audio tower not given the quant config",
+   "total_gb": 11.208,
+   "models": 9
+  },
+  {
+   "cls": "MoE experts: relu2 without a gate (Nemotron-H)",
+   "total_gb": 1508.8,
+   "models": 5
+  },
+  {
+   "cls": "LM head built without the quant config",
+   "total_gb": 2.833,
+   "models": 5
+  },
+  {
+   "cls": "decoder Linears built without the quant config (hyper-connections, misc)",
+   "total_gb": 1.476,
+   "models": 5
+  },
+  {
+   "cls": "vision/audio projector / patch Linears built without the quant config",
+   "total_gb": 0.287,
+   "models": 5
+  },
+  {
+   "cls": "not bf16 (F32 tensors)",
+   "total_gb": 0.195,
+   "models": 4
+  },
+  {
+   "cls": "Linear shape: rows not a multiple of 64 (decoder)",
+   "total_gb": 2.91,
+   "models": 3
+  },
+  {
+   "cls": "MoE experts: GELU-tanh (Gemma 4)",
+   "total_gb": 91.352,
+   "models": 2
+  },
+  {
+   "cls": "MoE experts: swiglustep (Step 3.5/3.7 clamped layers)",
+   "total_gb": 36.239,
+   "models": 2
+  },
+  {
+   "cls": "shared sink experts as plain parameters (Inkling)",
+   "total_gb": 18.522,
+   "models": 2
+  },
+  {
+   "cls": "Mamba (v1) mixer Linears built without the quant config (Jamba)",
+   "total_gb": 8.025,
+   "models": 2
+  },
+  {
+   "cls": "embedding as a plain parameter (Inkling)",
+   "total_gb": 4.117,
+   "models": 2
+  },
+  {
+   "cls": "MoE experts: swigluoai (MiniMax-M3)",
+   "total_gb": 826.244,
+   "models": 1
+  },
+  {
+   "cls": "n-gram (PLE) embedding table (Qwen4Exp: refuses the glyd config)",
+   "total_gb": 102.4,
+   "models": 1
+  },
+  {
+   "cls": "n-gram embedding table built without the quant config (LongCat-Flash-Lite)",
+   "total_gb": 62.814,
+   "models": 1
+  },
+  {
+   "cls": "MLA attention built with quant_config=None",
+   "total_gb": 2.737,
+   "models": 1
+  },
+  {
+   "cls": "LM head kept in float32 (head_dtype)",
+   "total_gb": 1.485,
+   "models": 1
+  },
+  {
+   "cls": "hyper-connection parameters (plain)",
+   "total_gb": 0.071,
+   "models": 1
+  },
+  {
+   "cls": "n-gram projections (plain parameter)",
+   "total_gb": 0.019,
+   "models": 1
+  }
+ ],
+ "ranking_note": "unpacked classes over the models inventoried (fine-tunes of a listed base counted once), by GB and by number of models with >= 0.5 MB of the class",
+ "excluded": {
+  "moonshotai/Kimi-K3": "not a bf16 checkpoint: experts MXFP4 (U8, 2.72T values), 57B bf16 params (attention, embeddings)",
+  "moonshotai/Kimi-K2.5": "not a bf16 checkpoint: experts INT4 (I32-packed, 1.01T), 12B bf16 params",
+  "moonshotai/Kimi-K2.6": "not a bf16 checkpoint: experts INT4 (I32-packed), as K2.5",
+  "moonshotai/Kimi-K2.7-Code": "not a bf16 checkpoint: experts INT4 (I32-packed), as K2.5",
+  "swiss-ai/Apertus-v1.5-8B": "gated on Hugging Face: headers need an accepted license and a token (8.6B bf16 params + 294M F32; ApertusForCausalLM, as Apertus-v1.1-4B: everything packable)",
+  "swiss-ai/Apertus-v1.5-70B": "gated on Hugging Face (71.7B bf16 params + 294M F32; ApertusForCausalLM)",
+  "zai-org/GLM-5.1": "same architecture and parameter count as zai-org/GLM-5 (753,864,119,552 bf16): GLM-5's row applies (282 shards not re-read)",
+  "zai-org/GLM-5.2": "same architecture and parameter count as zai-org/GLM-5.3-BF16 (753,329,921,024 bf16): GLM-5.3-BF16's row applies",
+  "Motif-Technologies/Motif-3": "MotifForCausalLM: listed in vLLM 0.30.0's registry as removed (since 0.10.2): vLLM does not serve it",
+  "ornith-ai/Ornith-1.5-397B": "a Qwen3.5-397B-A17B fine-tune (third party): Qwen3.5-397B-A17B's row applies",
+  "ibm-granite/granite-4.0-3b-vision": "a LoRA layout (base_model.model.*, lora_A/lora_B over GraniteMoeHybrid): not a plain bf16 checkpoint",
+  "google/gemma-4-E2B, -E4B, -12B, -26B-A4B, -31B (base)": "the same tensors as the -it rows",
+  "google/gemma-4-*-it-assistant": "speculative drafts (vLLM keeps a draft bf16 unless --speculative-config asks for glyd)",
+  "facebook/MobileMoE-S-SFT": "gated on Hugging Face (1.3B params, MobileMoEForCausalLM): headers need an accepted license and a token",
+  "facebook/MobileMoE-M-SFT": "gated on Hugging Face (2.8B params, MobileMoEForCausalLM): headers need an accepted license and a token",
+  "facebook/MobileMoE-L-SFT": "gated on Hugging Face (5.3B params, MobileMoEForCausalLM): headers need an accepted license and a token",
+  "mistralai/Mistral-Small-4-119B-2603": "not a bf16 checkpoint (fp8)",
+  "mistralai/Mistral-Medium-3.5-128B": "not a bf16 checkpoint (fp8)",
+  "microsoft/Mage-VL": "MageVLForConditionalGeneration: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "nvidia/Nemotron-Labs-Diffusion-3B": "NemotronLabsDiffusionModel: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "nvidia/Nemotron-Labs-Diffusion-8B": "NemotronLabsDiffusionModel: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "nvidia/Nemotron-Labs-Diffusion-14B": "NemotronLabsDiffusionModel: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "deepseek-ai/DeepSeek-V4-Flash": "not a bf16 checkpoint (fp8)",
+  "deepseek-ai/DeepSeek-V4-Pro": "not a bf16 checkpoint (fp8)",
+  "deepseek-ai/DeepSeek-V4.1-Flash": "not a bf16 checkpoint (fp8)",
+  "zai-org/GLM-5.3": "not a bf16 checkpoint (fp8)",
+  "zai-org/GLM-5.3-Flash": "not a bf16 checkpoint (fp8)",
+  "MiniMaxAI/MiniMax-M2.5": "not a bf16 checkpoint (fp8)",
+  "MiniMaxAI/MiniMax-M2.7": "not a bf16 checkpoint (fp8)",
+  "XiaomiMiMo/MiMo-V2.5": "not a bf16 checkpoint (fp8)",
+  "XiaomiMiMo/MiMo-V2.5-Pro": "not a bf16 checkpoint (fp8)",
+  "XiaomiMiMo/MiMo-V2.6-Flash-RL": "not a bf16 checkpoint (fp8)",
+  "XiaomiMiMo/MiMo-V2.6-Pro-RL": "not a bf16 checkpoint (fp8)",
+  "ByteDance-Seed/Stable-DiffCoder-8B-Instruct": "StableDiffcoderForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "meituan-longcat/LongCat-Flash-Thinking-2601": "LongcatCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "meituan-longcat/LongCat-Next": "LongcatNextForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "meituan-longcat/LongCat-2.0": "LongcatCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "inclusionAI/Ring-2.5-1T": "not a bf16 checkpoint (compressed-tensors)",
+  "inclusionAI/Ling-2.6-1T": "not a bf16 checkpoint (compressed-tensors)",
+  "inclusionAI/Ring-2.6-1T": "not a bf16 checkpoint (compressed-tensors)",
+  "inclusionAI/Ming-flash-omni-2.0": "BailingMM2NativeForConditionalGeneration: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "inclusionAI/LLaDA2.1-mini": "LLaDA2MoeModelLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "inclusionAI/LLaDA2.1-flash": "LLaDA2MoeModelLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "inclusionAI/LLaDA2.2-mini": "LLaDA2MoeModelLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "inclusionAI/LLaDA2.2-flash": "LLaDA2MoeModelLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "Kwai-Keye/Keye-VL-2.0-30B-A3B": "KeyeVL2MoeForConditionalGeneration: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "CohereLabs/tiny-aya-global": "gated on Hugging Face (3.3B params, Cohere2ForCausalLM): headers need an accepted license and a token",
+  "upstage/Solar-Open2-250B": "SolarOpen2ForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "sarvamai/sarvam-30b": "not a bf16 checkpoint (F32 32.2B)",
+  "sarvamai/sarvam-105b": "not a bf16 checkpoint (F32 106.0B)",
+  "ServiceNow-AI/SuperApriel-15B-Instruct": "not a bf16 checkpoint ()",
+  "RekaAI/reka-edge-2603": "Yasa2ForConditionalGeneration: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "openbmb/MiniCPM-SALA": "MiniCPMSALAForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "internlm/Intern-S1-Pro": "not a bf16 checkpoint (fp8)",
+  "amd/Instella-MoE-16B-A3B-Think": "InstellaMoEForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "Zyphra/ZAYA1-8B": "ZayaForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "Zyphra/ZAYA1-VL-8B": "Zaya1VLForConditionalGeneration: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "Zyphra/ZAYA1-74B-preview": "ZayaForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "kakaocorp/kanana-2-1.3b-instruct": "Kanana2TinyForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "trillionlabs/Gravity-16B-A3B-Preview": "GravityMoEForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "trillionlabs/Gravity-30B-A5B-Preview": "GravityMoEForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "trillionlabs/Tri-21B-Think": "not a bf16 checkpoint (F32 20.7B)",
+  "trillionlabs/Trida-7B": "TridaForDLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "skt/A.X-K2": "not a bf16 checkpoint (fp8)",
+  "Aleph-Alpha/Kolibri-1": "not a bf16 checkpoint (fp8)",
+  "PleIAs/Baguettotron-MoE": "BaguettotronMoeForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "pfnet/plamo-3-nict-2604-31b-base": "gated on Hugging Face (31.8B params, Plamo3ForCausalLM): headers need an accepted license and a token",
+  "yandex/AliceAI-Foundation-80B-A3B-Base": "AliceAIForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "yandex/AliceAI-T5-35B-A0.6B": "AliceAIT5MoEForConditionalGeneration: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "XingChen-AGI/Xing4.0-29B-A4B": "Xing4_0ForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "Agnes-AI/Agnes-3.0-Flash": "AgnesForConditionalGeneration: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "Agnes-AI/Agnes-2.5-Flash-Base": "not a bf16 checkpoint (fp8)",
+  "RWKV/RWKV7-G1k-1.5B-20260930": "Rwkv7ForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "RWKV/RWKV7-G1k-2.9B-20260930": "Rwkv7ForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "RWKV/RWKV7-G1k-7.2B-20260930": "Rwkv7ForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "RWKV/RWKV7-G1k-13.3B-20260930": "Rwkv7ForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "ai-sage/GigaChat3.5-432B-A28B": "not a bf16 checkpoint (fp8)",
+  "ai-sage/GFusion-10B-A1.8B-bf16": "GFusionForDiffusionLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "moondream/moondream3.1-9B-A2B": "not a bf16 checkpoint (F32 0.0B, BF16 1.2B, F8_E4M3 8.1B)",
+  "Gensyn/open-1b-sft": "not a bf16 checkpoint (F32 1.6B)",
+  "EssentialAI/rnj-1.5-instruct": "not a bf16 checkpoint (F32 8.3B)",
+  "TaichuAI/ZDTaichu5.0-9B": "ZDTaichu5_0_ForConditionalGeneration: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "IQuestLab/IQuest-Q1": "IQuestQ1ForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "NaiveAI/Naive-N0.5-Flash": "not a bf16 checkpoint ()",
+  "Soofi-Project/Soofi-S-Instruct-Preview": "gated on Hugging Face (31.6B params, NemotronHForCausalLM): headers need an accepted license and a token",
+  "Maincode/matilda-jev-v1": "MatildaJevModel: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "openpangu/openPangu-2.0-Flash": "OpenPanguV2ForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)",
+  "openpangu/openPangu-2.0-Pro": "OpenPanguV2ForCausalLM: not in vLLM 0.30.0's registry (vLLM does not serve it; the plugin does not apply)"
+ },
+ "packed_with_caveat": [
+  "tencent/Hy4-preview",
+  "zai-org/GLM-5.3-Flash-BF16"
+ ]
+}

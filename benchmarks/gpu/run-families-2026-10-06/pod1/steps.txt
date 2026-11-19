@@ -1,0 +1,10 @@
+install 0 93
+doctor 0 0
+run_q35_9b 0 623
+api_q35_9b 0 62
+run_gemma4_12b 1 357
+run_granite42_8b 0 330
+api_granite42_8b 0 17
+run_nemotron3_4b 1 107
+run_minicpm5_2b 0 188
+api_minicpm5_2b 0 20

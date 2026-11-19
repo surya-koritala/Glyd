@@ -1,0 +1,61 @@
+# GLY-328 H100 session 2026-10-17 21:27-22:15 Eastern (Lambda gpu_1x_h100_pcie, $3.29/h): penguin through the dynamic engine against the old one on the real models
+# commit gly-328-nemotron cbe595b8 + the layer-name fix; the engine built there (GLYD_ENGINE_ARCHS=90a)
+
+name, memory.total [MiB], driver_version
+NVIDIA H100 PCIe, 81559 MiB, 580.126.20
+26
+/dev/vda1       991G   18G  974G   2% /
+
+## Gemma 4 12B penguin (g4check, gemma-ref.json: the QAT model's reference, so the KL is penguin's distance from it)
+== g4check penguin old
+loaded in 5.3 s: NVIDIA H100 PCIe (sm_90): Gemma 4 48 layers, weights 14.937 GiB (layout mma), KV 0.688 GiB (4096 positions, 2048 in the sliding layers), 16.68 of 79.18 GiB in use
+25 prompt tokens in 24 ms, then 27.75 ms a token (36.0 tok/s): top-1 agrees 2/2, KL (top-8) 0.00016
+26 prompt tokens in 24 ms, then 14.30 ms a token (70.0 tok/s): top-1 agrees 27/32, KL (top-8) 0.16520
+23 prompt tokens in 24 ms, then 14.31 ms a token (69.9 tok/s): top-1 agrees 25/32, KL (top-8) 0.94754
+24 prompt tokens in 24 ms, then 14.38 ms a token (69.5 tok/s): top-1 agrees 25/27, KL (top-8) 0.31207
+23 prompt tokens in 24 ms, then 16.16 ms a token (61.9 tok/s): top-1 agrees 6/7, KL (top-8) 0.71484
+top-1 agrees 85/100, mean KL over the reference's top 8: 0.49037
+== g4check penguin --dynamic
+loaded in 5.2 s: NVIDIA H100 PCIe (sm_90): Gemma 4 on the dynamic engine, 48 layers, weights 14.934 GiB (layout mma), KV 0.688 GiB (4096 positions), 16.68 of 79.18 GiB in use
+25 prompt tokens in 24 ms, then 27.77 ms a token (36.0 tok/s): top-1 agrees 2/2, KL (top-8) 0.00016
+26 prompt tokens in 23 ms, then 14.23 ms a token (70.3 tok/s): top-1 agrees 27/32, KL (top-8) 0.16520
+23 prompt tokens in 24 ms, then 14.29 ms a token (70.0 tok/s): top-1 agrees 25/32, KL (top-8) 0.94754
+24 prompt tokens in 24 ms, then 14.36 ms a token (69.6 tok/s): top-1 agrees 25/27, KL (top-8) 0.31207
+23 prompt tokens in 24 ms, then 16.16 ms a token (61.9 tok/s): top-1 agrees 6/7, KL (top-8) 0.71484
+top-1 agrees 85/100, mean KL over the reference's top 8: 0.49037
+
+## penguin products, one row (prodbench)
+NVIDIA H100 PCIe: copy 1933.2 GB/s; 48 layout mma, the first 12 layers' matrices, one row
+   q/k/v   8704 x 3840   43.0 MB     40.1 us  1073.1 GB/s   55.5% of the copy rate
+       o   3840 x 8192   24.8 MB     26.6 us   932.0 GB/s   48.2% of the copy rate
+ gate_up  30720 x 3840   159.6 MB    107.7 us  1481.3 GB/s   76.6% of the copy rate
+    down   3840 x 15360  79.8 MB     60.1 us  1326.6 GB/s   68.6% of the copy rate
+
+## Qwen3.8-27B penguin (check: 8 prompts and 2 of up to 2100 tokens, 64 new each)
+== qwen old
+loaded in 38.0 s: NVIDIA H100 PCIe (sm_90): weights 33.698 GiB (67.3% of the checkpoint's 50.098 GiB for the same tensors; 348 vision and MTP tensors not loaded; layout mma), states 0.143 GiB, KV cache 4096 positions 0.250 GiB, workspaces 1.416 GiB, 35.96 of 79.18 GiB in use
+8 prompts of up to 31 tokens, 64 new tokens each
+2 long_prompts of up to 2100 tokens, 64 new tokens each
+== qwen --dynamic
+loaded in 36.9 s: NVIDIA H100 PCIe (sm_90): Qwen3.5 on the dynamic engine, 64 layers, weights 33.698 GiB (layout mma), KV 0.250 GiB (4096 positions), 36.02 of 79.18 GiB in use
+8 prompts of up to 31 tokens, 64 new tokens each
+2 long_prompts of up to 2100 tokens, 64 new tokens each
+q---dynamic.json; a decode step 27.774 ms over 630
+"decode_ms_mean":27.695
+{'tokens': '8/8', 'long_tokens': '2/2', 'logprobs': '8/8', 'long_logprobs': '2/2'} identical
+
+## Nemotron 3.5 Lightning 30B-A3B penguin (check: 4 prompts and 2 of up to 2100 tokens, 32 new each)
+== lightning old
+loaded in 340.1 s: NVIDIA H100 PCIe (sm_90): weights 39.611 GiB (layout mma), states 0.046 GiB, KV cache 4096 positions 0.023 GiB, workspaces 0.617 GiB, 40.96 of 79.18 GiB in use
+4 prompts of up to 90 tokens, 32 new tokens each
+2 long_prompts of up to 2100 tokens, 32 new tokens each
+n-old.json; a decode step 6.349 ms over 155
+== lightning --dynamic
+loaded in 339.1 s: NVIDIA H100 PCIe (sm_90): Nemotron-H on the dynamic engine, 52 layers, weights 39.611 GiB (layout mma), KV 0.047 GiB (4096 positions), 41.00 of 79.18 GiB in use
+4 prompts of up to 90 tokens, 32 new tokens each
+2 long_prompts of up to 2100 tokens, 32 new tokens each
+n---dynamic.json; a decode step 6.382 ms over 155
+{'tokens': '4/4', 'long_tokens': '2/2', 'logits': '4/4', 'long_logits': '2/2'} identical
+
+Lightning at kestrel through run, 'What is 17 times 23? Answer with the number only.': reasons, answers 391 (the experts at the model's width are right).
+Load: 340 s at penguin, the experts' stacked matrices packed on one thread (to do: in parallel).

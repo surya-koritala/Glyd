@@ -1,0 +1,4 @@
+install 0 59
+doctor 0 1
+run_nemotron3_4b 0 240
+api_nemotron3_4b 0 25

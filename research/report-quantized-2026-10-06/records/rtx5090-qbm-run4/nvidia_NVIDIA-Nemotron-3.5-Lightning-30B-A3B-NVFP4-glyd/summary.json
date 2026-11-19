@@ -1,0 +1,83 @@
+{
+ "model": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+ "args": {
+  "model": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+  "out": "/root/results/nvidia_NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-glyd",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "max_num_seqs": 64,
+  "layout": "auto",
+  "steps": "glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,8,32,64",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "glyd": {
+  "weights_gib": 17.74,
+  "kv_tokens": 517734,
+  "kv_gib": 7.56,
+  "concurrency": 63.2,
+  "tps": {
+   "1": {
+    "median": 314.95,
+    "runs": [
+     314.93,
+     314.96
+    ]
+   },
+   "8": {
+    "median": 1272.62,
+    "runs": [
+     1308.99,
+     1236.25
+    ]
+   },
+   "32": {
+    "median": 2809.28,
+    "runs": [
+     2745.87,
+     2872.68
+    ]
+   },
+   "64": {
+    "median": 3751.71,
+    "runs": [
+     3843.95,
+     3659.47
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantModelOptMixedPrecisionConfig",
+  "glyd_key": {
+   "layout": "mma12",
+   "exact": false,
+   "verify": false,
+   "fraction": 1.0,
+   "kv": "off",
+   "glyd": "0.29.0",
+   "packs": "932defa4eed54499"
+  },
+  "start_s": 83.2
+ },
+ "inventory": {
+  "packed_count": 12,
+  "packed_bf16_bytes": 280756224,
+  "packed_pack_bytes": 211250288,
+  "saved_bytes": 69505936,
+  "gpu_tensor_bytes": 18819434492,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.002931653754785657,
+  "left_16bit_top": {
+   "VocabParallelEmbedding / UnquantizedEmbeddingMethod / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 704643072,
+    "example": "model.embed_tokens.weight"
+   }
+  }
+ }
+}

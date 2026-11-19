@@ -1,0 +1,1 @@
+{"spec": {"model": "Qwen/Qwen3-8B", "kv": true, "r1": true}, "blocks": 1817, "block_size": 16, "cudagraph_mode": "FULL_AND_PIECEWISE", "graphs_captured": 1922, "num_layers": 36, "glyd": {"layout": "mma", "exact": false, "verify": false, "fraction": 0.0, "kv": "lossless", "glyd": "0.26.0rc2", "packs": "", "kv_tables": {"path": "/home/ubuntu/kvv/tables/qwen3-8b-16k.npz"}}}

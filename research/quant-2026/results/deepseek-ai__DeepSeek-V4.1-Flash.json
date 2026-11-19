@@ -1,0 +1,838 @@
+{
+ "repo": "deepseek-ai/DeepSeek-V4.1-Flash",
+ "quant_method": "fp8",
+ "census": {
+  "bf16:bf16:attn": {
+   "tensors": 19,
+   "bytes": 39845888
+  },
+  "bf16:bf16:embed": {
+   "tensors": 1,
+   "bytes": 1323827200
+  },
+  "bf16:bf16:mlp": {
+   "tensors": 40,
+   "bytes": 157286400
+  },
+  "bf16:bf16:mtp": {
+   "tensors": 5,
+   "bytes": 136314880
+  },
+  "bf16:bf16:other": {
+   "tensors": 3,
+   "bytes": 1470627840
+  },
+  "bf16:bf16:vision": {
+   "tensors": 129,
+   "bytes": 823287808
+  },
+  "fp8:codes:attn": {
+   "tensors": 208,
+   "bytes": 5106565120
+  },
+  "fp8:codes:embed": {
+   "tensors": 2,
+   "bytes": 196613849600
+  },
+  "fp8:codes:mlp": {
+   "tensors": 120,
+   "bytes": 1415577600
+  },
+  "fp8:codes:mtp": {
+   "tensors": 25,
+   "bytes": 564658176
+  },
+  "fp8:codes:other": {
+   "tensors": 2,
+   "bytes": 314572800
+  },
+  "fp8:scales:attn": {
+   "tensors": 208,
+   "bytes": 4986880
+  },
+  "fp8:scales:embed": {
+   "tensors": 2,
+   "bytes": 6144182800
+  },
+  "fp8:scales:mlp": {
+   "tensors": 120,
+   "bytes": 1382400
+  },
+  "fp8:scales:mtp": {
+   "tensors": 25,
+   "bytes": 551424
+  },
+  "fp8:scales:other": {
+   "tensors": 2,
+   "bytes": 307200
+  },
+  "mxfp4:codes:expert": {
+   "tensors": 46080,
+   "bytes": 271790899200
+  },
+  "mxfp4:codes:mtp": {
+   "tensors": 1152,
+   "bytes": 6794772480
+  },
+  "mxfp4:scales:expert": {
+   "tensors": 46080,
+   "bytes": 16986931200
+  },
+  "mxfp4:scales:mtp": {
+   "tensors": 1152,
+   "bytes": 424673280
+  },
+  "other:other:attn": {
+   "tensors": 288,
+   "bytes": 79215840
+  },
+  "other:other:mlp": {
+   "tensors": 240,
+   "bytes": 79180000
+  },
+  "other:other:mtp": {
+   "tensors": 42,
+   "bytes": 11904392
+  },
+  "other:other:other": {
+   "tensors": 10,
+   "bytes": 225280
+  },
+  "other:other:vision": {
+   "tensors": 130,
+   "bytes": 397312
+  }
+ },
+ "samples": [
+  {
+   "format": "mxfp4",
+   "category": "expert",
+   "tensor": "layers.28.ffn.experts.7.w3.weight",
+   "rows": [
+    0,
+    2304
+   ],
+   "expert": null,
+   "shape": [
+    2304,
+    2560
+   ],
+   "dtype": "I8",
+   "codes": {
+    "n": 11796480,
+    "H0": 3.8822376311344264,
+    "huffman": 3.915431382921007,
+    "contexts": {
+     "left": 3.8568137734376844,
+     "above": 3.8822235054113867,
+     "scale": 3.750436678310775,
+     "block max (side info counted)": 3.8028443513906987
+    },
+    "ceiling": 3.750436678310775,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    2304,
+    5120
+   ],
+   "scales": {
+    "n": 368640,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 0.9944032203672751,
+    "contexts": {
+     "left": 0.9923987129889613,
+     "above": 0.9793950612667477
+    },
+    "ceiling": 0.9793950612667477,
+    "fixed": 2.0006727430555555,
+    "fixed_name": "2-bit index into the tensor's commonest + escape"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 2.6
+  },
+  {
+   "format": "mxfp4",
+   "category": "expert",
+   "tensor": "layers.3.ffn.experts.73.w3.weight",
+   "rows": [
+    0,
+    2304
+   ],
+   "expert": null,
+   "shape": [
+    2304,
+    2560
+   ],
+   "dtype": "I8",
+   "codes": {
+    "n": 11796480,
+    "H0": 3.896809721472664,
+    "huffman": 3.930212148030599,
+    "contexts": {
+     "left": 3.8698965250377277,
+     "above": 3.896803532674807,
+     "scale": 3.7691705561010003,
+     "block max (side info counted)": 3.8079225025617167
+    },
+    "ceiling": 3.7691705561010003,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    2304,
+    5120
+   ],
+   "scales": {
+    "n": 368640,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 0.9822089560389575,
+    "contexts": {
+     "left": 0.9822167376202614,
+     "above": 0.9822314103625641
+    },
+    "ceiling": 0.9822089560389575,
+    "fixed": 2.0,
+    "fixed_name": "2-bit index into the tensor's commonest + escape"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 2.6
+  },
+  {
+   "format": "mxfp4",
+   "category": "expert",
+   "tensor": "layers.10.ffn.experts.202.w2.weight",
+   "rows": [
+    0,
+    5120
+   ],
+   "expert": null,
+   "shape": [
+    5120,
+    1152
+   ],
+   "dtype": "I8",
+   "codes": {
+    "n": 11796480,
+    "H0": 3.8972932901599293,
+    "huffman": 3.929800838894314,
+    "contexts": {
+     "left": 3.8724662960785685,
+     "above": 3.897291006848871,
+     "scale": 3.7809751943593013,
+     "block max (side info counted)": 3.8181903679018756
+    },
+    "ceiling": 3.7809751943593013,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    5120,
+    2304
+   ],
+   "scales": {
+    "n": 368640,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 0.9457957942599553,
+    "contexts": {
+     "left": 0.9457627687340687,
+     "above": 0.9457876994604086
+    },
+    "ceiling": 0.9457627687340687,
+    "fixed": 2.0,
+    "fixed_name": "2-bit index into the tensor's commonest + escape"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 2.4
+  },
+  {
+   "format": "mxfp4",
+   "category": "expert",
+   "tensor": "layers.21.ffn.experts.350.w2.weight",
+   "rows": [
+    0,
+    5120
+   ],
+   "expert": null,
+   "shape": [
+    5120,
+    1152
+   ],
+   "dtype": "I8",
+   "codes": {
+    "n": 11796480,
+    "H0": 3.8946016940869903,
+    "huffman": 3.9280587090386283,
+    "contexts": {
+     "left": 3.8676097197314827,
+     "above": 3.8945903790080294,
+     "scale": 3.767446936274308,
+     "block max (side info counted)": 3.807073420134812
+    },
+    "ceiling": 3.767446936274308,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    5120,
+    2304
+   ],
+   "scales": {
+    "n": 368640,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 0.9850121593959333,
+    "contexts": {
+     "left": 0.9850017937592509,
+     "above": 0.9850026895152533
+    },
+    "ceiling": 0.9850017937592509,
+    "fixed": 2.0,
+    "fixed_name": "2-bit index into the tensor's commonest + escape"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 2.5
+  },
+  {
+   "format": "mxfp4",
+   "category": "expert",
+   "tensor": "layers.35.ffn.experts.129.w1.weight",
+   "rows": [
+    0,
+    2304
+   ],
+   "expert": null,
+   "shape": [
+    2304,
+    2560
+   ],
+   "dtype": "I8",
+   "codes": {
+    "n": 11796480,
+    "H0": 3.8932201971350864,
+    "huffman": 3.926264190673828,
+    "contexts": {
+     "left": 3.866200233851634,
+     "above": 3.8931451857307997,
+     "scale": 3.7633290734190705,
+     "block max (side info counted)": 3.80516342397792
+    },
+    "ceiling": 3.7633290734190705,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    2304,
+    5120
+   ],
+   "scales": {
+    "n": 368640,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 1.0352126850644052,
+    "contexts": {
+     "left": 1.0333487456663164,
+     "above": 1.0244004349472042
+    },
+    "ceiling": 1.0244004349472042,
+    "fixed": 2.001931423611111,
+    "fixed_name": "2-bit index into the tensor's commonest + escape"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 2.5
+  },
+  {
+   "format": "mxfp4",
+   "category": "expert",
+   "tensor": "layers.33.ffn.experts.321.w2.weight",
+   "rows": [
+    0,
+    5120
+   ],
+   "expert": null,
+   "shape": [
+    5120,
+    1152
+   ],
+   "dtype": "I8",
+   "codes": {
+    "n": 11796480,
+    "H0": 3.895011945860656,
+    "huffman": 3.9288181728786893,
+    "contexts": {
+     "left": 3.867755898799959,
+     "above": 3.895005229334833,
+     "scale": 3.7650437773712766,
+     "block max (side info counted)": 3.8052696450808434
+    },
+    "ceiling": 3.7650437773712766,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    5120,
+    2304
+   ],
+   "scales": {
+    "n": 368640,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 0.9931754247243323,
+    "contexts": {
+     "left": 0.9934206870694934,
+     "above": 0.9931745610826412
+    },
+    "ceiling": 0.9931745610826412,
+    "fixed": 2.0,
+    "fixed_name": "2-bit index into the tensor's commonest + escape"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 2.7
+  },
+  {
+   "format": "fp8",
+   "category": "other",
+   "tensor": "layers.14.engram.wkv.weight",
+   "rows": [
+    9856,
+    11904
+   ],
+   "expert": null,
+   "shape": [
+    25600,
+    6144
+   ],
+   "dtype": "F8_E4M3",
+   "codes": {
+    "n": 12582912,
+    "H0": 6.825223324805599,
+    "huffman": 6.85417381922404,
+    "contexts": {
+     "left": 6.7397373479090295,
+     "above": 6.793071460586395,
+     "scale": 6.729478906792868
+    },
+    "ceiling": 6.729478906792868,
+    "fixed": 6.957888285319011,
+    "fixed_name": "fp8ref (as built), round trip exact",
+    "H_sign_exp_plus_mantissa": 6.867727226802188
+   },
+   "codes_shape": [
+    2048,
+    6144
+   ],
+   "scales": {
+    "n": 12288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 1.8208304778960658,
+    "contexts": {
+     "left": 1.0327354313108759,
+     "above": 1.763247263242563
+    },
+    "ceiling": 1.0327354313108759,
+    "fixed": 2.0481770833333335,
+    "fixed_name": "2-bit window a row + escape"
+   },
+   "scale_block": [
+    32,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 2.9
+  },
+  {
+   "format": "fp8",
+   "category": "other",
+   "tensor": "layers.1.engram.wkv.weight",
+   "rows": [
+    11648,
+    13696
+   ],
+   "expert": null,
+   "shape": [
+    25600,
+    6144
+   ],
+   "dtype": "F8_E4M3",
+   "codes": {
+    "n": 12582912,
+    "H0": 6.723588415243391,
+    "huffman": 6.7445798714955645,
+    "contexts": {
+     "left": 6.6770500397940244,
+     "above": 6.702077112928205,
+     "scale": 6.5845647423443845
+    },
+    "ceiling": 6.5845647423443845,
+    "fixed": 6.866630554199219,
+    "fixed_name": "fp8ref (as built), round trip exact",
+    "H_sign_exp_plus_mantissa": 6.771192563317392
+   },
+   "codes_shape": [
+    2048,
+    6144
+   ],
+   "scales": {
+    "n": 12288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 1.4211150766599667,
+    "contexts": {
+     "left": 1.0781547220471066,
+     "above": 1.3313860460516227
+    },
+    "ceiling": 1.0781547220471066,
+    "fixed": 2.0,
+    "fixed_name": "2-bit index into the tensor's commonest + escape"
+   },
+   "scale_block": [
+    32,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 3.0
+  },
+  {
+   "format": "fp8",
+   "category": "embed",
+   "tensor": "layers.1.engram.embed.weight",
+   "rows": [
+    270951680,
+    271000832
+   ],
+   "expert": null,
+   "shape": [
+    384006168,
+    256
+   ],
+   "dtype": "F8_E4M3",
+   "codes": {
+    "n": 12582912,
+    "H0": 6.557313073733567,
+    "huffman": 6.597863515218099,
+    "contexts": {
+     "left": 6.545273604172029,
+     "above": 6.556136990145589,
+     "scale": 6.456395496068395
+    },
+    "ceiling": 6.456395496068395,
+    "fixed": 6.7499135335286455,
+    "fixed_name": "fp8ref (as built), round trip exact",
+    "H_sign_exp_plus_mantissa": 6.619082485243492
+   },
+   "codes_shape": [
+    49152,
+    256
+   ],
+   "scales": {
+    "n": 393216,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 0.9465906951739409,
+    "contexts": {
+     "left": 0.946603732339269,
+     "above": 0.9465959649354317
+    },
+    "ceiling": 0.9465906951739409,
+    "fixed": 2.0,
+    "fixed_name": "2-bit index into the tensor's commonest + escape"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 3.2
+  },
+  {
+   "format": "fp8",
+   "category": "embed",
+   "tensor": "layers.14.engram.embed.weight",
+   "rows": [
+    151310464,
+    151359616
+   ],
+   "expert": null,
+   "shape": [
+    384016682,
+    256
+   ],
+   "dtype": "F8_E4M3",
+   "codes": {
+    "n": 12582912,
+    "H0": 6.544771873085175,
+    "huffman": 6.5845567385355634,
+    "contexts": {
+     "left": 6.5345353680318645,
+     "above": 6.543509744570107,
+     "scale": 6.460032386446728
+    },
+    "ceiling": 6.460032386446728,
+    "fixed": 6.7349700927734375,
+    "fixed_name": "fp8ref (as built), round trip exact",
+    "H_sign_exp_plus_mantissa": 6.606923209298429
+   },
+   "codes_shape": [
+    49152,
+    256
+   ],
+   "scales": {
+    "n": 393216,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 0.8697665487395081,
+    "contexts": {
+     "left": 0.8678155954515522,
+     "above": 0.8697613103711228
+    },
+    "ceiling": 0.8678155954515522,
+    "fixed": 2.0,
+    "fixed_name": "2-bit index into the tensor's commonest + escape"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "F8_E8M0",
+   "seconds": 3.2
+  },
+  {
+   "format": "bf16",
+   "category": "other",
+   "tensor": "aligner.w1.weight",
+   "rows": [
+    768,
+    1408
+   ],
+   "expert": null,
+   "shape": [
+    5120,
+    9216
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 5898240,
+    "H0": 10.510150227629609,
+    "ceiling": 10.510150227629609,
+    "H_exp": 2.583495117984892,
+    "fixed": 10.674676174587674,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.2
+  },
+  {
+   "format": "bf16",
+   "category": "embed",
+   "tensor": "embed.weight",
+   "rows": [
+    119168,
+    120320
+   ],
+   "expert": null,
+   "shape": [
+    129280,
+    5120
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 5898240,
+    "H0": 10.480099793382722,
+    "ceiling": 10.480099793382722,
+    "H_exp": 2.558425198041842,
+    "fixed": 10.645833333333332,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.1
+  },
+  {
+   "format": "bf16",
+   "category": "vision",
+   "tensor": "vision.blocks.17.attn.wqkv.weight",
+   "rows": [
+    0,
+    3072
+   ],
+   "expert": null,
+   "shape": [
+    3072,
+    1024
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 3145728,
+    "H0": 10.559434600796271,
+    "ceiling": 10.559434600796271,
+    "H_exp": 2.628221649017167,
+    "fixed": 10.721198399861654,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.1
+  },
+  {
+   "format": "bf16",
+   "category": "mlp",
+   "tensor": "layers.26.ffn.gate.weight",
+   "rows": [
+    0,
+    384
+   ],
+   "expert": null,
+   "shape": [
+    384,
+    5120
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 1966080,
+    "H0": 10.493887440348209,
+    "ceiling": 10.493887440348209,
+    "H_exp": 2.570677643914131,
+    "fixed": 10.690255737304687,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.0
+  }
+ ],
+ "projection": {
+  "stored": 510286023000,
+  "fixed": {
+   "bytes": 459311554605.7003,
+   "saved": 0.09989391458268426,
+   "parts": {
+    "bf16:bf16": {
+     "bytes": 3951190016,
+     "ratio": 0.6672090223059912,
+     "unsampled_bytes": 176160768
+    },
+    "fp8:codes": {
+     "bytes": 204015223296,
+     "ratio": 0.8432066377326883,
+     "unsampled_bytes": 7086800896
+    },
+    "fp8:scales": {
+     "bytes": 6151410704,
+     "ratio": 0.25000025302749,
+     "unsampled_bytes": 6920704
+    },
+    "mxfp4:codes": {
+     "bytes": 278585671680,
+     "ratio": 1.0,
+     "unsampled_bytes": 6794772480
+    },
+    "mxfp4:scales": {
+     "bytes": 17411604480,
+     "ratio": 0.2500542534722222,
+     "unsampled_bytes": 424673280
+    },
+    "other:other": {
+     "bytes": 170922824,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    }
+   }
+  },
+  "H0": {
+   "bytes": 443936689757.4101,
+   "saved": 0.13002381067096147,
+   "parts": {
+    "bf16:bf16": {
+     "bytes": 3951190016,
+     "ratio": 0.6568475523947647,
+     "unsampled_bytes": 176160768
+    },
+    "fp8:codes": {
+     "bytes": 204015223296,
+     "ratio": 0.8194082906147632,
+     "unsampled_bytes": 7086800896
+    },
+    "fp8:scales": {
+     "bytes": 6151410704,
+     "ratio": 0.11352981497725366,
+     "unsampled_bytes": 6920704
+    },
+    "mxfp4:codes": {
+     "bytes": 278585671680,
+     "ratio": 0.9732989366604063,
+     "unsampled_bytes": 6794772480
+    },
+    "mxfp4:scales": {
+     "bytes": 17411604480,
+     "ratio": 0.12366267166355954,
+     "unsampled_bytes": 424673280
+    },
+    "other:other": {
+     "bytes": 170922824,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    }
+   }
+  },
+  "ceiling": {
+   "bytes": 432693315674.0947,
+   "saved": 0.15205728518632244,
+   "parts": {
+    "bf16:bf16": {
+     "bytes": 3951190016,
+     "ratio": 0.6568475523947647,
+     "unsampled_bytes": 176160768
+    },
+    "fp8:codes": {
+     "bytes": 204015223296,
+     "ratio": 0.8077466803185337,
+     "unsampled_bytes": 7086800896
+    },
+    "fp8:scales": {
+     "bytes": 6151410704,
+     "ratio": 0.11340195030625319,
+     "unsampled_bytes": 6920704
+    },
+    "mxfp4:codes": {
+     "bytes": 278585671680,
+     "ratio": 0.9415167589931556,
+     "unsampled_bytes": 6794772480
+    },
+    "mxfp4:scales": {
+     "bytes": 17411604480,
+     "ratio": 0.1231238244964348,
+     "unsampled_bytes": 424673280
+    },
+    "other:other": {
+     "bytes": 170922824,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    }
+   }
+  }
+ },
+ "seconds": 7,
+ "f16_bytes": {},
+ "fp8ref": "glyd-gpu-py/glyd_gpu/fp8ref.py layout 2 (fp8-lossless@42e6999f, blob aafce648, the same file on private main since #15)"
+}

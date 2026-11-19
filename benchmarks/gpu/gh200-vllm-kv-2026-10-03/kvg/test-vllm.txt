@@ -1,0 +1,39 @@
+test_version_rule ok
+test_options ok
+test_fraction ok
+test_quant_method ok
+test_saved ok
+test_pieces ok
+test_refusals ok
+test_draft ok
+test_moe_route ok
+test_kv_page ok
+test_kv_backend ok
+test_kv_fa3_schedule ok
+test_kv_refusals ok
+INFO 10-03 04:14:31 [vllm_plugin.py:763] glyd: the KV cache stays vLLM's (kv auto): --max-model-len 65,536: the base tables cover up to 40,960 positions
+WARNING 10-03 04:14:31 [vllm_plugin.py:785] glyd: the KV cache stays vLLM's (kv auto): its tables for m could not be had (RuntimeError: no room on the GPU); kv lossless asks for them and says why they are not there
+WARNING 10-03 04:14:31 [vllm_plugin.py:785] glyd: the KV cache stays vLLM's (kv auto): its tables for m could not be had (ValueError: the model's values compress too poorly in 12 bits: too many outside); kv lossless asks for them and says why they are not there
+test_kv_auto ok
+INFO 10-03 04:14:31 [vllm_kv.py:907] glyd kv: the first reserve is 1.05% of the KV cache, the second 8.29%
+INFO 10-03 04:14:31 [vllm_kv.py:907] glyd kv: the first reserve is 1.05% of the KV cache, the second 8.29%
+INFO 10-03 04:14:31 [vllm_kv.py:907] glyd kv: the first reserve is 1.05% of the KV cache, the second 8.29%
+INFO 10-03 04:14:31 [vllm_kv.py:907] glyd kv: the first reserve is 1.05% of the KV cache, the second 49.74%
+INFO 10-03 04:14:31 [vllm_kv.py:909] glyd kv: 1 tokens of this model's vocabulary need the second reserve
+INFO 10-03 04:14:31 [vllm_kv.py:907] glyd kv: the first reserve is 1.05% of the KV cache, the second 49.74%
+INFO 10-03 04:14:31 [vllm_kv.py:909] glyd kv: 1 tokens of this model's vocabulary need the second reserve
+test_kv_refused_tables ok
+WARNING 10-03 04:14:31 [vllm_sched.py:266] glyd kv: the second reserve was full: 2 requests preempted (1 blocks lost), they run again one after another as the requests that hold it finish
+ERROR 10-03 04:14:31 [vllm_sched.py:254] glyd kv: 1 requests ended with an error: they exhausted the second reserve and are the only ones that hold any of it (or have done so 6 times)
+WARNING 10-03 04:14:31 [vllm_sched.py:266] glyd kv: the second reserve was full: 1 requests preempted (1 blocks lost), they run again one after another as the requests that hold it finish
+WARNING 10-03 04:14:31 [vllm_sched.py:266] glyd kv: the second reserve was full: 2 requests preempted (0 blocks lost, more than are tracked: every running request), they run again one after another as the requests that hold it finish
+test_kv_lost_pages ok
+ERROR 10-03 04:14:31 [vllm_sched.py:181] glyd kv: request never ended with an error: its 320 tokens are predicted to need 200 of the second reserve, which holds 100
+test_kv_admission ok
+WARNING 10-03 04:14:31 [vllm_admit.py:44] glyd kv: the tables /home/ubuntu/vllmw/tmp/tmp_81m34an/t.npz have no per-token figures (made by an earlier version): requests are not held for the second reserve before they run, only preempted where it runs out; make new tables (python -m glyd.gpu.kvcal MODEL)
+WARNING 10-03 04:14:31 [vllm_admit.py:87] glyd kv: this process cannot read the KV tables /home/ubuntu/vllmw/tmp/tmp_81m34an/none.npz (FileNotFoundError: [Errno 2] No such file or directory: '/home/ubuntu/vllmw/tmp/tmp_81m34an/none.npz'): a prompt that could never fit the cache's reserve is ended by the engine with an error finish, not refused with a 400
+test_kv_predict ok
+test_kv_warmup_skip ok
+test_kv_staging_groups ok
+test_kvcal ok
+test_kvcal_steps ok

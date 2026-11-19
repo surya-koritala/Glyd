@@ -1,0 +1,6 @@
+name, compute_cap, driver_version, memory.total [MiB]
+NVIDIA A100-SXM4-80GB, 8.0, 580.159.04, 81920 MiB
+255
+               total        used        free      shared  buff/cache   available
+Mem:            1007          87         246           0         680         919
+overlay         250G   87M  250G   1% /

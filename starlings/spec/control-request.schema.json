@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:starlings:control-request:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "request_id",
+    "authority_epoch",
+    "request_hash",
+    "operation",
+    "request_sequence"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "authority_epoch": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "request_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "plan",
+            "lease"
+          ],
+          "properties": {
+            "op": {
+              "const": "prepare"
+            },
+            "plan": {
+              "$ref": "urn:starlings:control:v1#/$defs/PlacementPlan"
+            },
+            "lease": {
+              "$ref": "urn:starlings:control:v1#/$defs/Lease"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "lease_id"
+          ],
+          "properties": {
+            "op": {
+              "const": "commit"
+            },
+            "lease_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "lease_id"
+          ],
+          "properties": {
+            "op": {
+              "const": "release"
+            },
+            "lease_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "session"
+          ],
+          "properties": {
+            "op": {
+              "const": "begin"
+            },
+            "session": {
+              "$ref": "urn:starlings:control:v1#/$defs/Session"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "session",
+            "invocation_id",
+            "request"
+          ],
+          "properties": {
+            "op": {
+              "const": "start_request"
+            },
+            "session": {
+              "$ref": "urn:starlings:control:v1#/$defs/Session"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "request": {
+              "$ref": "urn:starlings:chat-request:v1"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "header",
+            "input_digest"
+          ],
+          "properties": {
+            "op": {
+              "const": "start_step"
+            },
+            "header": {
+              "$ref": "urn:starlings:tensor-header:v1"
+            },
+            "input_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "generation_id",
+            "invocation_id"
+          ],
+          "properties": {
+            "op": {
+              "const": "complete_step"
+            },
+            "generation_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "generation_id"
+          ],
+          "properties": {
+            "op": {
+              "const": "cancel"
+            },
+            "generation_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "generation_id"
+          ],
+          "properties": {
+            "op": {
+              "const": "finish"
+            },
+            "generation_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          }
+        }
+      ]
+    },
+    "request_sequence": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    }
+  }
+}

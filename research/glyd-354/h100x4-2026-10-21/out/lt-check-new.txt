@@ -1,0 +1,4 @@
+loaded in 91.1 s: NVIDIA H100 80GB HBM3 (sm_90): Nemotron-H on the dynamic engine, 52 layers, weights 39.611 GiB (layout mma), KV 0.047 GiB (4096 positions), 41.06 of 79.19 GiB in use
+3 prompts of up to 98 tokens, 64 new tokens each
+1 long_prompts of up to 1501 tokens, 64 new tokens each
+/home/ubuntu/w/out/lt-new.json; a decode step 5.077 ms over 190

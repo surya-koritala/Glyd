@@ -1,0 +1,92 @@
+=== j13_done.txt
+done
+=== j13_o10_m17.txt
+packs/o10: 4096x4096, M=17, 58 SMs, 1 weight copies
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 5 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         271.6     452.0   1.662   ok, = v1 bit for bit
+v1 route       268.3     454.6   1.689   ok, = v1 bit for bit
+12-bit route     174.0     294.6   1.693   ok, differs from v1's
+12-bit         123.4     208.5   1.690   ok, = v1 bit for bit
+v2 lib         231.2     390.0   1.687   ok, = v1 bit for bit
+o8u1           224.1     378.9   1.690   ok, = v1 bit for bit
+o40u1          227.0     374.1   1.668   ok, = v1 bit for bit
+o552u1w4b2     218.3     357.8   1.639   ok, differs from v1's
+o552u1w4b3     219.1     360.3   1.635   ok, differs from v1's
+o552u1w8b1     223.0     370.4   1.661   ok, = v1 bit for bit
+o552u1w2b4     317.3     517.0   1.644   ok, differs from v1's
+o552u1w2b6     322.2     520.8   1.620   ok, differs from v1's
+=== j13_o10_m24.txt
+packs/o10: 4096x4096, M=24, 58 SMs, 1 weight copies
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 5 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         278.4     461.8   1.659   ok, = v1 bit for bit
+v1 route       274.7     461.6   1.667   ok, = v1 bit for bit
+12-bit route     175.9     294.4   1.673   ok, differs from v1's
+12-bit         130.1     217.0   1.671   ok, = v1 bit for bit
+v2 lib         239.6     400.9   1.673   ok, = v1 bit for bit
+o8u1           235.1     389.8   1.647   ok, = v1 bit for bit
+o40u1          236.7     382.7   1.619   ok, = v1 bit for bit
+o552u1w4b2     235.0     380.6   1.616   ok, differs from v1's
+o552u1w4b3     236.9     379.7   1.601   ok, differs from v1's
+o552u1w8b1     232.8     379.6   1.630   ok, = v1 bit for bit
+o552u1w2b4     341.8     543.1   1.612   ok, differs from v1's
+o552u1w2b6     340.5     549.3   1.609   ok, differs from v1's
+=== j13_o10_m32.txt
+packs/o10: 4096x4096, M=32, 58 SMs, 1 weight copies
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 5 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         290.9     472.8   1.625   ok, = v1 bit for bit
+v1 route       284.5     471.5   1.657   ok, = v1 bit for bit
+12-bit route     178.1     295.5   1.657   ok, differs from v1's
+12-bit         140.8     232.3   1.654   ok, = v1 bit for bit
+v2 lib         252.0     414.4   1.644   ok, = v1 bit for bit
+o8u1           243.8     402.3   1.643   ok, = v1 bit for bit
+o40u1          250.1     396.7   1.613   ok, = v1 bit for bit
+o552u1w4b2     253.9     400.0   1.586   ok, differs from v1's
+o552u1w4b3     254.5     403.3   1.584   ok, differs from v1's
+o552u1w8b1     246.5     388.0   1.579   ok, = v1 bit for bit
+o552u1w2b4     364.4     570.7   1.574   ok, differs from v1's
+o552u1w2b6     362.9     575.6   1.584   ok, differs from v1's
+=== j13_o10_m48.txt
+packs/o10: 4096x4096, M=48, 58 SMs, 1 weight copies
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 5 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         327.7     641.7   1.958   ok, = v1 bit for bit
+v1 route       327.6     641.4   1.958   ok, = v1 bit for bit
+12-bit route     200.1     369.2   1.855   ok, differs from v1's
+12-bit         202.7     361.4   1.783   ok, = v1 bit for bit
+v2 lib         310.9     540.9   1.698   ok, = v1 bit for bit
+o8u1           321.5     518.4   1.615   ok, = v1 bit for bit
+o40u1          324.7     518.8   1.584   ok, = v1 bit for bit
+o552u1w4b2     444.9     685.3   1.542   ok, differs from v1's
+o552u1w4b3     993.3    1583.2   1.594   ok, differs from v1's
+o552u1w8b1     307.2     512.3   1.668   ok, = v1 bit for bit
+o552u1w2b4     709.5    1235.0   1.730   ok, differs from v1's
+o552u1w2b6    1448.6    2648.7   1.828   ok, differs from v1's
+=== j13_o10_m64.txt
+packs/o10: 4096x4096, M=64, 58 SMs, 1 weight copies
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 5 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         345.4     671.6   1.944   ok, = v1 bit for bit
+v1 route       353.8     681.0   1.918   ok, = v1 bit for bit
+12-bit route     198.4     367.8   1.841   ok, differs from v1's
+12-bit         225.2     392.5   1.734   ok, = v1 bit for bit
+v2 lib         352.0     574.4   1.632   ok, = v1 bit for bit
+o8u1           345.4     546.4   1.566   ok, = v1 bit for bit
+o40u1          367.9     550.5   1.495   ok, = v1 bit for bit
+o552u1w4b2     505.0     759.0   1.505   ok, differs from v1's
+o552u1w4b3    1041.0    1632.0   1.566   ok, differs from v1's
+o552u1w8b1     329.0     534.9   1.620   ok, = v1 bit for bit
+o552u1w2b4     766.7    1276.7   1.683   ok, differs from v1's
+o552u1w2b6    1515.8    2786.1   1.819   ok, differs from v1's

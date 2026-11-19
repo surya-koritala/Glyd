@@ -1,0 +1,42 @@
+name: Kernels compile
+
+on:
+  push:
+    branches: [main]
+    paths: ['glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml']
+  pull_request:
+    branches: [main]
+    paths: ['glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  engine-kernels:
+    # the engine's CUDA kernels as a development build has them (kernels/engine.cu, and Qwen3.5's in kernels/qwen35.cu) compiled by nvcc 13 for every architecture a build takes,
+    # with no GPU: a kernel that does not compile never reaches one. ptxas's registers and spills of Qwen3.5's kernels on sm_89 are in the log.
+    name: The engine's kernels compile (nvcc 13, no GPU)
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (its own container on either; never the PC for a fork's pull request)
+    timeout-minutes: 40
+    container: nvidia/cuda:13.0.3-devel-rockylinux8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: nvcc for sm_80, 86, 89, 90a, 100 and 120
+        run: |
+          set -e
+          dnf install -y -q --disablerepo="cuda*" --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils
+          source /opt/rh/gcc-toolset-13/enable
+          cd glyd-engine/kernels
+          nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_89 -Xptxas -v -o /tmp/engine_89.cubin engine.cu > /tmp/ptxas.txt 2>&1 || { cat /tmp/ptxas.txt; exit 1; }
+          grep -A3 -E "entry function '(rmsnorm1p|rmsnorm1p_add|q35_prep|attn256|attn256_split|attn256_merge|conv_silu|gdn_recurrent|gdn_chunk|gated_norm|small_linear)'" /tmp/ptxas.txt || true
+          for a in 80 86 90a 100 120; do nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_$a -o /tmp/engine_$a.cubin engine.cu; done
+      - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)
+        if: always() && runner.environment == 'self-hosted'
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE"

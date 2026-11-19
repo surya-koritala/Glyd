@@ -1,0 +1,19 @@
+[package]
+name = "starlings-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+time.workspace = true
+starlings-protocol.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

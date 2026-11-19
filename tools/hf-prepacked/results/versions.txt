@@ -1,0 +1,2 @@
+torch 2.8.0+cu128 cuda 12.8 transformers 5.18.0 hub 1.33.0 glyd_gpu 0.29.0 /root/w/src/glyd_gpu/__init__.py
+glyd CLI: /root/w/venv/bin/glyd (glyd 0.29.0); glyd-gpu beside it: none

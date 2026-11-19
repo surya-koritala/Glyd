@@ -1,0 +1,50 @@
+== 10:23:50 bf16: vllm serve Qwen/Qwen3-8B , first (cold where VLLM_CACHE_ROOT is empty)
+Model loading took 15.27 GiB memory and 3.275288 seconds
+GPU KV cache size: 27,024 tokens, Maximum concurrency for 4,096 tokens per request: 6.60x
+20402 MiB, 23034 MiB
+== 10:26:42 bf16: vllm serve Qwen/Qwen3-8B  (the GPU at 59 C)
+Model loading took 15.27 GiB memory and 3.268538 seconds
+GPU KV cache size: 27,024 tokens, Maximum concurrency for 4,096 tokens per request: 6.60x
+20402 MiB, 23034 MiB
+== 10:27:32 bf16: rate 1, 16 prompts
+   exit 0
+== 10:28:02 bf16: rate inf, 32 prompts
+   exit 0
+== 10:28:50 bf16: one user, 8 requests one at a time
+   exit 0
+== 10:29:21 kv: vllm serve Qwen/Qwen3-8B --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: mma layout, 0 of 36 layers packed (fraction 0), the KV cache lossless (12 bits a value; tables /home/ubuntu/kvv/tables/qwen3-8b-16k.npz)
+Model loading took 15.34 GiB memory and 3.269070 seconds
+GPU KV cache size: 35,504 tokens, Maximum concurrency for 4,096 tokens per request: 8.67x
+20346 MiB, 23034 MiB
+== 10:32:07 kv: vllm serve Qwen/Qwen3-8B --quantization glyd (the GPU at 58 C)
+glyd: mma layout, 0 of 36 layers packed (fraction 0), the KV cache lossless (12 bits a value; tables /home/ubuntu/kvv/tables/qwen3-8b-16k.npz)
+Model loading took 15.34 GiB memory and 3.283111 seconds
+GPU KV cache size: 35,504 tokens, Maximum concurrency for 4,096 tokens per request: 8.67x
+20346 MiB, 23034 MiB
+== 10:32:52 kv: rate 1, 16 prompts
+   exit 0
+== 10:33:23 kv: rate inf, 32 prompts
+   exit 0
+== 10:34:08 kv: one user, 8 requests one at a time
+   exit 0
+bf16: weights 15.27 GiB, KV cache 27,024 tokens, max concurrency 6.60x at 4,096 tokens (started cold, on an empty compile cache: weights 15.27 GiB, KV cache 27,024 tokens, max concurrency 6.60x at 4,096 tokens)
+kv: weights 15.34 GiB, KV cache 35,504 tokens, max concurrency 8.67x at 4,096 tokens (started cold, on an empty compile cache: weights 15.34 GiB, KV cache 35,504 tokens, max concurrency 8.67x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.79 | 12.7 | 1967 / 3128 | 268.3 / 437.5 | 16 | 1065 MHz, 71 C |
+| 1 | kv | 0.80 | 12.7 | 1934 / 3085 | 258.8 / 434.8 | 16 | 1065 MHz, 69 C |
+| inf | bf16 | 0.87 | 13.9 | 18319 / 35341 | 376.0 / 448.0 | 32 | 1065 MHz, 75 C |
+| inf | kv | 0.92 | 14.7 | 17588 / 33651 | 500.5 / 605.6 | 32 | 1065 MHz, 75 C |
+| one | bf16 | 0.51 | 8.1 | 1051 / 1059 | 61.9 / 61.9 | 8 |  |
+| one | kv | 0.50 | 8.1 | 1065 / 1069 | 61.5 / 61.5 | 8 |  |
+
+| Rate (req/s) | Mode | Weights (GiB) | KV cache (tokens) | Requests/s | TTFT mean (ms) | TPOT mean (ms) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 15.27 | 27,024 | 0.79 | 1,967 | 268.3 |
+| 1 | kv | 15.34 (1.00x) | 35,504 (1.31x) | 0.80 (1.00x) | 1,934 (0.98x) | 258.8 (0.96x) |
+| inf | bf16 | 15.27 | 27,024 | 0.87 | 18,319 | 376.0 |
+| inf | kv | 15.34 (1.00x) | 35,504 (1.31x) | 0.92 (1.05x) | 17,588 (0.96x) | 500.5 (1.33x) |
+| one | bf16 | 15.27 | 27,024 | 0.51 | 1,051 | 61.9 |
+| one | kv | 15.34 (1.00x) | 35,504 (1.31x) | 0.50 (1.00x) | 1,065 (1.01x) | 61.5 (0.99x) |

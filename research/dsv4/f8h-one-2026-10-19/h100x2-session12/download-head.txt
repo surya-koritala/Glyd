@@ -1,0 +1,6 @@
++ python3 -m pip install -q --user huggingface_hub hf_transfer
+  WARNING: The script tqdm is installed in '/home/ubuntu/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+download exit 0
++ du -sh /home/ubuntu/w/ds-real
+149G	/home/ubuntu/w/ds-real

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Versions of an object: Glyd base mode against zstd --patch-from on
 # pairs of consecutive versions (corpus/versions, see
-# experiments/structure/README.md). Sizes and wall times, every rebuild
+# research/codec/experiments/structure/README.md). Sizes and wall times, every rebuild
 # byte-exact (Glyd's checked by examples/base_delta; zstd's by cmp).
 #   scripts/bench_versions.sh old new [old new ...]
 set -euo pipefail

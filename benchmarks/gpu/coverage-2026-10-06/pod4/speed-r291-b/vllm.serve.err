@@ -1,0 +1,11 @@
+(APIServer pid=14053) Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+(APIServer pid=14053) [transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+(EngineCore pid=14419) Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+(EngineCore pid=14419) Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:03<00:09,  3.30s/it]
+(APIServer pid=14053) [transformers] Qwen3VL video processing does not apply the per-frame pixel cap the reference implementation (qwen-vl-utils) applies, so some videos cost far more tokens than they would there. In v5.22 the capped behavior will become the default and `cap_pixels_per_frame` will be removed. Pass `cap_pixels_per_frame=True` to adopt the reference behavior now, or `False` to keep the current behavior and silence this warning.
+(EngineCore pid=14419) Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:08<00:08,  4.44s/it]
+(EngineCore pid=14419) Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:12<00:04,  4.13s/it]
+(EngineCore pid=14419) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:16<00:00,  4.15s/it]
+(EngineCore pid=14419) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:16<00:00,  4.12s/it]
+(EngineCore pid=14419) 
+(EngineCore pid=14419) [transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.

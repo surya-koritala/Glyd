@@ -1,0 +1,49 @@
+==PROF== Connected to process 4530 (/home/ubuntu/dc/glyd-engine)
+NVIDIA H100 80GB HBM3 (sm_90): DeepSeek-V4 on the dynamic engine, 3 layers, weights 2.899 GiB (layout mma), KV 0.001 GiB (2048 positions), 3.70 of 79.19 GiB in use
+==PROF== Profiling "mma_moe_kernel": 0%....50%....100% - 23 passes
+==PROF== Profiling "mma_moe_kernel": 0%....50%....100% - 23 passes
+without a graph: 8.879 ms a step; the stages 8.558 ms:
+    2.366 ms  27.6%  mixture of experts
+    1.452 ms  17.0%  hyper-connections
+    0.637 ms   7.4%  activations to FP8
+    0.613 ms   7.2%  attention: o low rank
+    0.601 ms   7.0%  attention: attention
+    0.406 ms   4.7%  attention: compressor
+    0.397 ms   4.6%  head
+    0.275 ms   3.2%  attention: q up
+    0.272 ms   3.2%  attention: o
+    0.223 ms   2.6%  attention: kv norm, rotary, cache
+    0.219 ms   2.6%  norms
+    0.197 ms   2.3%  attention: q norm, rotary
+    0.196 ms   2.3%  attention: q down
+    0.196 ms   2.3%  indexer: compressor
+    0.182 ms   2.1%  attention: kv
+    0.135 ms   1.6%  indexer: picks
+    0.130 ms   1.5%  indexer: q
+    0.060 ms   0.7%  indexer: weights
+the experts' steps, a step:
+    1.108 ms  moe: router
+    0.170 ms  moe: plan
+    0.328 ms  moe: up
+    0.108 ms  moe: act
+    0.395 ms  moe: down
+    0.022 ms  moe: shared joined
+    0.207 ms  moe: add
+kernels: 80 launches a step, 4.134 ms of kernel time a step; the most:
+    0.485 ms    9.0 a step  v4_fp8
+    0.375 ms    7.0 a step  v4_hc_proj
+    0.344 ms    6.0 a step  v4_hc_fin
+    0.312 ms    6.0 a step  v4_hc_post
+    0.218 ms    6.0 a step  v4_moe_act
+    0.173 ms    3.0 a step  v4_kv_prep
+    0.169 ms    3.0 a step  rmsnorm
+    0.163 ms    3.0 a step  v4_comp_out
+    0.162 ms    3.0 a step  v4_lin32_1
+    0.162 ms    3.0 a step  v4_attn_out
+    0.160 ms    3.0 a step  v4_attn_scores
+    0.159 ms    3.0 a step  moe_logits
+    0.159 ms    3.0 a step  v4_comp_pool
+    0.158 ms    3.0 a step  v4_attn_soft
+with a graph: 6.072 ms a step (1 steps after 1 tokens)
+==PROF== Disconnected from process 4530
+==PROF== Report: /home/ubuntu/w/out/moe.ncu-rep

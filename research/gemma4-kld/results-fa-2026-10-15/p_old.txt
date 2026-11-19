@@ -1,0 +1,14 @@
+NVIDIA A100-SXM4-80GB (sm_80): Gemma 4 60 layers, weights 16.213 GiB (layout i4x), KV 3.364 GiB (28736 positions, the sliding ring 1536), 20.59 of 79.25 GiB in use
+28672 tokens in 56.06 s (511 tokens/s), GPU time 56.06 s:
+           qkv (sliding)   1426.7 ms    2.5%
+                    prep    182.3 ms    0.3%
+     attention (sliding)   6649.8 ms   11.9%
+                       o   1230.2 ms    2.2%
+                   norms    277.5 ms    0.5%
+                 gate_up   4326.0 ms    7.7%
+                    gelu    217.0 ms    0.4%
+                    down   2547.0 ms    4.5%
+             qk (global)    334.8 ms    0.6%
+      attention (global)  38710.9 ms   69.1%
+                   start    155.2 ms    0.3%
+                    head      1.3 ms    0.0%

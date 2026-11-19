@@ -1,0 +1,14 @@
+# Windows builds take SSE4.1 (every x86-64 CPU since 2008 has it, the host of any card the engine supports among them): without it
+# f32::round_ties_even is a call to a software routine there (Linux's glibc has a fast one), and a load's packing of the always-on
+# matrices took 513 s instead of 16.7 s on an AWS EPYC 7R13 (2026-10-18), with the same answers.
+# +crt-static: the C runtime linked in, so a clean Windows needs no Visual C++ redistributable (the release gate allows the system's DLLs alone).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+sse4.1,+crt-static"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+sse4.1"]
+
+# The regex library's C (onig_sys) built as a static library on Windows: without ONIG_STATIC its MSVC build marks every function dllexport, and the program
+# exported ~150 of them (cc reads the target's CFLAGS; other targets do not read this one)
+[env]
+CFLAGS_x86_64_pc_windows_msvc = "/DONIG_STATIC"

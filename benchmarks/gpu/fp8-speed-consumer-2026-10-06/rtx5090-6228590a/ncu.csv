@@ -1,0 +1,9 @@
+==PROF== Connected to process 204208 (/usr/bin/python3.12)
+==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM
+ncu shape Qwen3.8-27B-FP8 gate_up 34816 x 5120 M=1 kind block bits 6.719
+ncu shape Qwen3.8-27B-FP8 gate_up 34816 x 5120 M=64 kind block bits 6.719
+ncu shape gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding 8192 x 2816 M=1 kind channel bits 6.764
+ncu shape gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding 8192 x 2816 M=64 kind channel bits 6.764
+ncu shape Mistral-Small-4-119B-2603 o 4096 x 4096 M=1 kind tensor bits 6.701
+ncu shape Mistral-Small-4-119B-2603 o 4096 x 4096 M=64 kind tensor bits 6.701
+==PROF== Disconnected from process 204208

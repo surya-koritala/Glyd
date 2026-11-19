@@ -1,0 +1,6 @@
+nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16: 6513 tensors; the slice: 818 tensors of layers [0]..[6] and 3 outside the layers, 8.82 GiB (BF16 8.82, F32 0.00)
+model-00001-of-00003.safetensors: 364 tensors, 4.00 GiB so far, 52 s
+model-00002-of-00003.safetensors: 433 tensors, 7.99 GiB so far, 97 s
+model-00003-of-00003.safetensors: 21 tensors, 8.82 GiB so far, 101 s
+/root/w/nemotron: 818 tensors, 8.82 GiB, 5 small files, ends of a sample checked against the source: ok, 143 s
+exit 0

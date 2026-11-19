@@ -1,0 +1,8 @@
+Linux 6.8.0-134-generic #134~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue Jun 30 14:05:04 UTC  x86_64 GNU/Linux
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+NVIDIA GeForce RTX 4090, 8.9, 610.43.02, 49140 MiB, 3105 MHz, 450.00 W
+256
+               total        used        free      shared  buff/cache   available
+Mem:            1007          95         453           7         471         911
+overlay         100G   20M  100G   1% /
+Tue Oct  6 19:23:28 UTC 2026

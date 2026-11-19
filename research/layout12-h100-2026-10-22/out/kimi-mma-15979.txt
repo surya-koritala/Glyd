@@ -1,0 +1,33 @@
+NVIDIA H100 80GB HBM3 (sm_90): Kimi-K3 on the dynamic engine, 2 layers, weights 19.332 GiB (layout mma), KV 0.000 GiB (1024 positions), 19.99 of 79.19 GiB in use
+without a graph: 3.157 ms a step; the stages 3.151 ms:
+    0.735 ms  23.3%  head
+    0.619 ms  19.6%  delta attention: qkv product
+    0.497 ms  15.8%  mixture of experts
+    0.261 ms   8.3%  MLP: gate and up product
+    0.227 ms   7.2%  delta attention: output gate
+    0.154 ms   4.9%  depth mix
+    0.137 ms   4.4%  delta attention: o product
+    0.137 ms   4.3%  MLP: down product
+    0.117 ms   3.7%  norms
+    0.113 ms   3.6%  delta attention: gates
+    0.040 ms   1.3%  linear attention: delta rule
+    0.038 ms   1.2%  start
+    0.030 ms   1.0%  linear attention: convolution
+    0.030 ms   0.9%  linear attention: gated norm
+    0.016 ms   0.5%  MLP: activation
+kernels: 32 launches a step, 0.283 ms of kernel time a step; the most:
+    0.061 ms    6.0 a step  kimi_rms2
+    0.054 ms    5.0 a step  kimi_res_mix
+    0.027 ms    2.0 a step  small_linear
+    0.024 ms    1.0 a step  moe_select32
+    0.019 ms    2.0 a step  glm_kda_rec
+    0.017 ms    1.0 a step  argmax_bf16
+    0.017 ms    4.0 a step  kimi_add
+    0.016 ms    3.0 a step  moe_act
+    0.015 ms    1.0 a step  moe_logits
+    0.010 ms    2.0 a step  conv_silu_w32
+    0.010 ms    2.0 a step  glm_kda_out_w32
+    0.005 ms    1.0 a step  kimi_push
+    0.004 ms    1.0 a step  moe_add
+    0.004 ms    1.0 a step  copy_row
+with a graph: 2.674 ms a step (64 steps after 64 tokens)

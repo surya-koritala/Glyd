@@ -1,0 +1,5 @@
+/root/q8w/lib/libglyd_gpu_cuda13.so
+
+real	5m13.813s
+user	26m22.343s
+sys	0m36.527s

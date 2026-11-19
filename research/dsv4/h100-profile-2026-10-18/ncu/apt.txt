@@ -1,0 +1,19 @@
+Selecting previously unselected package nsight-compute-2026.3.1.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 103189 files and directories currently installed.)
+Preparing to unpack .../nsight-compute-2026.3.1_2026.3.1.2-1_amd64.deb ...
+Unpacking nsight-compute-2026.3.1 (2026.3.1.2-1) ...
+Setting up nsight-compute-2026.3.1 (2026.3.1.2-1) ...
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+ncu: /opt/nvidia/nsight-compute/2026.3.1/ncu
+NVIDIA (R) Nsight Compute Command Line Profiler
+Copyright (c) 2018-2026 NVIDIA Corporation
+Version 2026.3.1.0 (build 38829034) (public-release)

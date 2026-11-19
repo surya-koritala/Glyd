@@ -1,8 +1,8 @@
 # Glyd engineering notes
 
 The measurement history behind the numbers in the README: formats, floors,
-refuted ideas, per-file tables. `CHANGELOG-BENCH.md` has every step with
-its number; `docs/history/GOAL*.md` the rules the work was done under.
+refuted ideas, per-file tables. `research/codec/CHANGELOG-BENCH.md` has every step with
+its number; `research/codec/history/GOAL*.md` the rules the work was done under.
 
 ## Format v6 (current)
 
@@ -54,7 +54,7 @@ branch: no x86 machine was available.
 Honest framing: `--max` beats zstd -3's ratio (not by much: +0.4%) and
 decodes 1.29x as fast, at 91% of its compression speed. It does not reach
 2x zstd -3 decode or match its compression speed outright; see
-`CHANGELOG-BENCH.md` (`v7 milestone 5`) for the per-file breakdown and the
+`research/codec/CHANGELOG-BENCH.md` (`v7 milestone 5`) for the per-file breakdown and the
 milestones that got here.
 
 ### Dictionary API
@@ -101,7 +101,7 @@ compression, so this measures framing overhead, not entropy coding).
 The GitHub Archive loss is real, if small: zstd -3 is both denser and
 faster on that file, most likely because its search is more thorough
 than v7's `dfast` (double-fast) parse on this file's very repetitive
-JSON structure. Full per-file numbers are in `CHANGELOG-BENCH.md`
+JSON structure. Full per-file numbers are in `research/codec/CHANGELOG-BENCH.md`
 (`v7 milestone 5`).
 
 ---
@@ -238,7 +238,7 @@ with `examples/bench.rs`.
 | Minimum match 7 (tokens -20%) | **106-109%** |
 
 Every step and every refuted idea is recorded with its numbers in
-`CHANGELOG-BENCH.md`.
+`research/codec/CHANGELOG-BENCH.md`.
 
 ---
 
@@ -252,7 +252,7 @@ the output, 25 tests green including 1M-mutation fuzz.
 took the ratio from 2.39 to 2.19 and compression from 0.42 to 0.35 GB/s.
 Ratio and decode speed trade against each other in this design; that was
 measured every way we could think of (entropy-coded tokens, bit-packed
-offsets, bigger windows, all refuted in `CHANGELOG-BENCH.md`) before choosing
+offsets, bigger windows, all refuted in `research/codec/CHANGELOG-BENCH.md`) before choosing
 speed.
 
 **Next, in order:**
@@ -402,12 +402,8 @@ LD_LIBRARY_PATH=target/release ./target/release/test_c_abi
 
 ## License
 
-From v0.29.0 all of Glyd (the `glyd` crate, CLI, C ABI, bindings, the
-store and the GPU package) is under the
-[Business Source License 1.1](../LICENSE): free forever for personal and
-non-commercial use (including education, research and nonprofits) on
-computers you own or rent for yourself, a commercial license for any
-commercial use (suryakoritala@getglyd.com), and each version converts to
-the Apache License 2.0 four years after its release.
-Releases up to v0.28 keep the licenses they shipped with: the codec
-under the BSD 3-Clause License or, at your option, the GPL version 2.
+All of Glyd (the `glyd` crate, CLI, C ABI and bindings, the store, the
+GPU library, the engine) is under the [Apache License 2.0](../LICENSE).
+Releases v0.29.0 to v0.32.1 shipped under the Business Source License
+1.1; v0.28 and earlier: the codec BSD-3-Clause or GPL-2.0, the store
+BUSL-1.1.

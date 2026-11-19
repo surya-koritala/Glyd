@@ -1,0 +1,46 @@
+{
+ "model": "NousResearch/Meta-Llama-3.1-8B",
+ "api_servers": 2,
+ "tmp_api": "",
+ "second_reserve_percent": "0.55",
+ "start_seconds": 39.0,
+ "ordinary": [
+  200,
+  " Canberra, but the largest city is Sydney. The country is located in the southern"
+ ],
+ "heavy_700": 200,
+ "heavy_1400": 200,
+ "heavy_4000": [
+  400,
+  "{\"error\":{\"message\":\"glyd kv: this prompt's tokens need more of the lossless KV cache's reserve for tokens it cannot store at 12 bits than the cache holds (3,250 against 1,457): send a shorter prompt, or serve with kv off (parameter=prompt, value=4000)\",\"type\":\"BadRequestError\",\"param\":\"prompt\",\"code\":400}}"
+ ],
+ "many_4000": {
+  "codes": [
+   400
+  ],
+  "n400": 40,
+  "messages": [
+   "{\"error\":{\"message\":\"glyd kv: this prompt's tokens need more of the lossless KV cache's reserve for tokens it cannot store at N bits than the cache holds (N against N): send a shorter promptN or serve"
+  ],
+  "rooms": [
+   1457
+  ]
+ },
+ "flood_1400": [
+  200
+ ],
+ "alive": true,
+ "access_400_by_process": {
+  "ApiServer_0": 21,
+  "ApiServer_1": 20
+ },
+ "engine_second_reserve_units": [
+  "1449"
+ ],
+ "server_log_glyd": [
+  "(EngineCore pid=115604) WARNING 10-02 14:21:49 [vllm_kv.py:864] glyd kv: the second reserve is 0.55% of the KV cache (GLYD_KV_RESERVE_2), not 1.55%",
+  "(EngineCore pid=115604) WARNING 10-02 14:22:01 [scheduler.py:224] Using custom scheduler class glyd.gpu.vllm_sched.make. This scheduler interface is not public and compatibility may not be maintained. If you have subclassed Schedu",
+  "(EngineCore pid=115604) WARNING 10-02 14:22:08 [vllm_kv.py:225] glyd kv: the second reserve has had 78% of its room taken at once: requests that would take more wait for room, and where it runs out the requests that need it are pr"
+ ],
+ "files_in_tmp": []
+}

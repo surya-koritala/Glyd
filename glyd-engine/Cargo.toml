@@ -1,0 +1,27 @@
+[package]
+name = "glyd-engine"
+version = "0.32.1"
+edition = "2021"
+description = "Glyd's own inference engine: Qwen3 on CUDA from Glyd-packed weights, every matrix compressed, the lossless KV cache, a chat and an OpenAI-compatible API"
+license = "Apache-2.0"
+publish = false
+build = "build.rs"
+
+# `dev` (the default): the checks, the proofs and the tuning variables of a development build. The release build (release-gpu.yml, `cargo build --release
+# --no-default-features`) leaves them out to stay small; its kernels keep the names the sources give them.
+[features]
+default = ["dev"]
+dev = []
+
+[dependencies]
+glyd-gpu = { path = "../glyd-gpu" }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+minijinja = { version = "2.24.0", features = ["builtins", "json", "loop_controls", "multi_template", "preserve_order"] }
+minijinja-contrib = { version = "2.24.0", features = ["pycompat"] }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+sha2 = "0.11"
+ureq = "3"
+
+[[bin]]
+name = "glyd-engine"
+path = "src/main.rs"

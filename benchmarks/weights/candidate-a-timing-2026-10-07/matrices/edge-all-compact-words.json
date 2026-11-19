@@ -1,0 +1,29 @@
+{
+  "case": "edge-all-compact-words",
+  "shape": [
+    64,
+    64
+  ],
+  "unpack_bit_exact": true,
+  "weight_buffer_bytes": 13360,
+  "host_symbol_bytes": 12,
+  "compact_weight_allocator_delta": 14336,
+  "memory_before": {
+    "allocated": 0,
+    "reserved": 0,
+    "peak_allocated": 0,
+    "peak_reserved": 0,
+    "device_free": 24771297280,
+    "device_total": 25250627584
+  },
+  "memory_weights": {
+    "allocated": 14336,
+    "reserved": 2097152,
+    "peak_allocated": 14336,
+    "peak_reserved": 2097152,
+    "device_free": 24769200128,
+    "device_total": 25250627584
+  },
+  "products": [],
+  "complete": true
+}

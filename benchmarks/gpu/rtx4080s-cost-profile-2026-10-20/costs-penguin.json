@@ -1,0 +1,905 @@
+{
+  "object": "glyd.costs",
+  "schema": "glyd-costs/1",
+  "build": {
+    "version": "0.32.1",
+    "commit": "3f6345985c2625da6c1dc9bcc42e31f7373c9265",
+    "development": true
+  },
+  "model": {
+    "id": "/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-penguin/snapshots/5985564d007e847509609c23d7647a8688867889",
+    "repo": "glyd/Qwen3.5-9B-penguin",
+    "revision": "5985564d007e847509609c23d7647a8688867889",
+    "family": "Qwen3.5",
+    "format": "glyd-v4",
+    "layout": "mma",
+    "source": {
+      "repo": "Qwen/Qwen3.5-9B",
+      "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+    },
+    "made_by": "glyd 0.29.4",
+    "hidden": 4096,
+    "vocab": 248320,
+    "max_context": 262144,
+    "layers": 32
+  },
+  "level": {
+    "requested": null,
+    "effective": "penguin",
+    "lossless": true
+  },
+  "basis": {
+    "sizes": "file",
+    "packs_from_files": 130,
+    "packs_estimated": 0,
+    "kv_and_state": "formula (the engine allocates the same: checked against /v1/glyd/info's counters on the record)",
+    "working_memory": "unavailable",
+    "note": "sizes are the bytes the loader uploads: the packs as the files hold them, the kept tensors as the kernels take them (fp32 ones four bytes wide)"
+  },
+  "precision": {
+    "weights": "penguin level, layout mma: 11.37 bits per weight over the packed matrices",
+    "bits_per_weight": 11.371,
+    "activations": "bf16",
+    "sums": "fp32",
+    "kv": "bf16",
+    "state": "fp32 (the delta rule's), bf16 (the convolution's)"
+  },
+  "device": {
+    "ordinal": 0,
+    "name": "NVIDIA GeForce RTX 4080 SUPER",
+    "compute_capability": "8.9",
+    "cuda": "13.2",
+    "driver": "595.91.07",
+    "total_bytes": 16717119488,
+    "free_bytes": 13865648128
+  },
+  "host": {
+    "cpu": "AMD Ryzen 9 7950X3D 16-Core Processor",
+    "threads": 32,
+    "ram_total_bytes": 65442029568,
+    "ram_available_bytes": 56463794176
+  },
+  "workload": {
+    "context_tokens": 4096,
+    "prompt_tokens": 1024,
+    "output_tokens": 256,
+    "prefill_chunk_tokens": 2048,
+    "sessions": 1
+  },
+  "observed_at": 1792468050.371,
+  "samples": 0,
+  "layers": [
+    {
+      "index": 0,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90811380,
+        "norms": 16384,
+        "mlp": 203522090,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294416094
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294416094,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 1,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90447810,
+        "norms": 16384,
+        "mlp": 203439670,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 293970104
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 293970104,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 2,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90427820,
+        "norms": 16384,
+        "mlp": 203440886,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 293951330
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 293951330,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 3,
+      "kind": "full_attention",
+      "resident_bytes": {
+        "projections": 79127503,
+        "norms": 17408,
+        "mlp": 203249527,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 0,
+        "other": 0,
+        "total": 282394438
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 282394438,
+      "kv_bytes_per_token": 4096,
+      "state_bytes_per_session": 0
+    },
+    {
+      "index": 4,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90459681,
+        "norms": 16384,
+        "mlp": 203339765,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 293882070
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 293882070,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 5,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90485409,
+        "norms": 16384,
+        "mlp": 203468083,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294036116
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294036116,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 6,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90589422,
+        "norms": 16384,
+        "mlp": 203664685,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294336731
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294336731,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 7,
+      "kind": "full_attention",
+      "resident_bytes": {
+        "projections": 78986515,
+        "norms": 17408,
+        "mlp": 203480770,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 0,
+        "other": 0,
+        "total": 282484693
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 282484693,
+      "kv_bytes_per_token": 4096,
+      "state_bytes_per_session": 0
+    },
+    {
+      "index": 8,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90593798,
+        "norms": 16384,
+        "mlp": 203536462,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294212884
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294212884,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 9,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90585240,
+        "norms": 16384,
+        "mlp": 203545521,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294213385
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294213385,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 10,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90642600,
+        "norms": 16384,
+        "mlp": 203718606,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294443830
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294443830,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 11,
+      "kind": "full_attention",
+      "resident_bytes": {
+        "projections": 79039109,
+        "norms": 17408,
+        "mlp": 203639373,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 0,
+        "other": 0,
+        "total": 282695890
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 282695890,
+      "kv_bytes_per_token": 4096,
+      "state_bytes_per_session": 0
+    },
+    {
+      "index": 12,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90760667,
+        "norms": 16384,
+        "mlp": 203782429,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294625720
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294625720,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 13,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90685004,
+        "norms": 16384,
+        "mlp": 203900376,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294668004
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294668004,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 14,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90792772,
+        "norms": 16384,
+        "mlp": 204021662,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294897058
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294897058,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 15,
+      "kind": "full_attention",
+      "resident_bytes": {
+        "projections": 79055427,
+        "norms": 17408,
+        "mlp": 204023201,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 0,
+        "other": 0,
+        "total": 283096036
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 283096036,
+      "kv_bytes_per_token": 4096,
+      "state_bytes_per_session": 0
+    },
+    {
+      "index": 16,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90734740,
+        "norms": 16384,
+        "mlp": 204100390,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294917754
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294917754,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 17,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90748756,
+        "norms": 16384,
+        "mlp": 204061360,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294892740
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294892740,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 18,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90724503,
+        "norms": 16384,
+        "mlp": 204251074,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 295058201
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 295058201,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 19,
+      "kind": "full_attention",
+      "resident_bytes": {
+        "projections": 79204781,
+        "norms": 17408,
+        "mlp": 203759317,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 0,
+        "other": 0,
+        "total": 282981506
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 282981506,
+      "kv_bytes_per_token": 4096,
+      "state_bytes_per_session": 0
+    },
+    {
+      "index": 20,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90697462,
+        "norms": 16384,
+        "mlp": 203512473,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294292559
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294292559,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 21,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90637221,
+        "norms": 16384,
+        "mlp": 203424806,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294144651
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294144651,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 22,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90543312,
+        "norms": 16384,
+        "mlp": 203438567,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 294064503
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 294064503,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 23,
+      "kind": "full_attention",
+      "resident_bytes": {
+        "projections": 79114330,
+        "norms": 17408,
+        "mlp": 203098860,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 0,
+        "other": 0,
+        "total": 282230598
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 282230598,
+      "kv_bytes_per_token": 4096,
+      "state_bytes_per_session": 0
+    },
+    {
+      "index": 24,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90643492,
+        "norms": 16384,
+        "mlp": 202974570,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 293700686
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 293700686,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 25,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90628158,
+        "norms": 16384,
+        "mlp": 202872246,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 293583028
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 293583028,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 26,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90525373,
+        "norms": 16384,
+        "mlp": 202824404,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 293432401
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 293432401,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 27,
+      "kind": "full_attention",
+      "resident_bytes": {
+        "projections": 79630827,
+        "norms": 17408,
+        "mlp": 202750013,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 0,
+        "other": 0,
+        "total": 282398248
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 282398248,
+      "kv_bytes_per_token": 4096,
+      "state_bytes_per_session": 0
+    },
+    {
+      "index": 28,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90668810,
+        "norms": 16384,
+        "mlp": 202757699,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 293509133
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 293509133,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 29,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90464730,
+        "norms": 16384,
+        "mlp": 202745041,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 293292395
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 293292395,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 30,
+      "kind": "linear_attention",
+      "resident_bytes": {
+        "projections": 90687050,
+        "norms": 16384,
+        "mlp": 202930580,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 66240,
+        "other": 0,
+        "total": 293700254
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 293700254,
+      "kv_bytes_per_token": 0,
+      "state_bytes_per_session": 2146304
+    },
+    {
+      "index": 31,
+      "kind": "full_attention",
+      "resident_bytes": {
+        "projections": 79527841,
+        "norms": 17408,
+        "mlp": 203426285,
+        "experts": 0,
+        "experts_count": 0,
+        "expert_mean": 0,
+        "expert_min": 0,
+        "expert_max": 0,
+        "shared_experts": 0,
+        "router": 0,
+        "recurrent": 0,
+        "other": 0,
+        "total": 282971534
+      },
+      "top_k": 0,
+      "active_bytes_per_token": 282971534,
+      "kv_bytes_per_token": 4096,
+      "state_bytes_per_session": 0
+    }
+  ],
+  "non_layer": {
+    "embeddings_bytes": 2034237440,
+    "final_norm_bytes": 8192,
+    "head_bytes": 1362850583,
+    "head_tied": false,
+    "other_bytes": 0,
+    "active_bytes_per_token": 1362866967
+  },
+  "totals": {
+    "resident_bytes": 12718590789,
+    "resident_layer_bytes": 9321494574,
+    "resident_expert_bytes": 0,
+    "active_bytes_per_token": 10684361541,
+    "active_expert_bytes_per_token": 0,
+    "active_dense_bytes_per_token": 10684361541,
+    "kv_bytes_per_token": 32768,
+    "kv_bytes_at_context": 134217728,
+    "state_bytes_per_session": 51511296,
+    "working_bytes": null,
+    "overhead_bytes": null,
+    "engine_bytes_at_context": 12904319813,
+    "bf16_bytes": 17907606528,
+    "weights": 8946450432
+  },
+  "allocated": null,
+  "excluded": [
+    {
+      "what": "vision tower",
+      "bytes_in_files": 0,
+      "note": "model.visual.*: not loaded by the engine"
+    },
+    {
+      "what": "MTP head",
+      "bytes_in_files": 0,
+      "note": "mtp.*: not loaded by the engine"
+    },
+    {
+      "what": "draft model",
+      "bytes_in_files": 0,
+      "note": "none for this family"
+    }
+  ],
+  "timing": {
+    "prefill_tok_s": null,
+    "decode_tok_s": {
+      "value": 58.03,
+      "basis": "estimated",
+      "placement": "vram"
+    }
+  },
+  "predictions": [
+    {
+      "placement": "vram",
+      "tok_s": 58.03,
+      "ms_per_token": 17.234,
+      "tok_s_overlapped": 58.03,
+      "bytes_per_token": {
+        "vram": 10825132869,
+        "link": 0,
+        "ram": 0,
+        "ssd": 0
+      },
+      "basis": "estimated",
+      "assumes": {
+        "positions_read": 1152,
+        "gpu_share_of_experts": 1.000,
+        "hit": 1.000,
+        "ram_share_of_experts": 1.000
+      }
+    },
+    {
+      "placement": "stream_ssd",
+      "tok_s": 0.50,
+      "ms_per_token": 1990.434,
+      "tok_s_overlapped": 0.50,
+      "bytes_per_token": {
+        "vram": 10825132869,
+        "link": 10684361541,
+        "ram": 0,
+        "ssd": 10684361541
+      },
+      "basis": "estimated",
+      "assumes": {
+        "positions_read": 1152,
+        "gpu_share_of_experts": 1.000,
+        "hit": 1.000,
+        "ram_share_of_experts": 1.000
+      }
+    }
+  ],
+  "tiers": {
+    "vram_gbs": 628.1,
+    "link_gbs": 26.9,
+    "ram_gbs": 74.5,
+    "ssd_gbs": 6.78
+  }
+}

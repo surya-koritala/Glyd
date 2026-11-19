@@ -1,0 +1,58 @@
+INFO 10-06 04:45:36 [api_utils.py:286] non-default args: {'max_model_len': 8192, 'enable_prefix_caching': True, 'gpu_memory_utilization': 0.9, 'max_num_batched_tokens': 2048, 'max_num_seqs': 64, 'disable_log_stats': True, 'quantization': 'glyd', 'language_model_only': True, 'enable_chunked_prefill': True, 'additional_config': {'glyd': {'kv': 'off', 'fraction': 1.0}}, 'model': '/root/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a'}
+WARNING 10-06 04:45:36 [arg_utils.py:1812] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 10-06 04:45:47 [model.py:692] Resolved architecture: Qwen3_5ForConditionalGeneration
+INFO 10-06 04:45:47 [model.py:2030] Using max model len 8192
+WARNING 10-06 04:45:47 [model.py:994] Model does not support mm_device_do_normalize, forcing mm_device_do_normalize = False.
+INFO 10-06 04:45:49 [registry.py:146] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+INFO 10-06 04:45:49 [model.py:900] Disabled mm_prefix attention mode because multimodal inputs are configuration-disabled. Attention backends without mm_prefix support may now be selected.
+INFO 10-06 04:45:49 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 10-06 04:45:49 [config.py:625] Mamba cache mode is set to 'align' for Qwen3_5ForConditionalGeneration by default when prefix caching is enabled
+INFO 10-06 04:45:49 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-06 04:45:51 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='/root/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a', speculative_config=None, tokenizer='/root/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=glyd, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/root/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::qwen4_exp_ple_short_conv', 'vllm::qwen4_exp_qsa_with_output', 'vllm::linear_attention', 'vllm::qwen_gdn_attention_core', 'vllm::qwen_gdn_attention_core_fused_norm_packed', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::hpc_rope_norm_forward', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 128, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+INFO 10-06 04:45:51 [parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///root/w/tmp/vllm_dist_0c7bb391b9ba43c19cbdd2a0580fbb0b backend=nccl
+INFO 10-06 04:45:51 [parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank N/A, EPLB rank N/A
+INFO 10-06 04:45:51 [gpu_worker.py:441] Using V2 Model Runner
+INFO 10-06 04:45:52 [model_runner.py:396] Loading model from scratch...
+INFO 10-06 04:45:52 [vllm_plugin.py:671] glyd: mma layout
+INFO 10-06 04:45:52 [vllm_plugin.py:676] glyd: the embedding and the LM head packed too
+INFO 10-06 04:45:52 [cuda.py:597] Using backend AttentionBackendEnum.FLASH_ATTN for vit attention
+INFO 10-06 04:45:52 [mm_encoder_attention.py:372] Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.
+INFO 10-06 04:45:52 [qwen_gdn_linear_attn.py:176] Using Triton/FLA GDN prefill kernel (requested=auto, head_k_dim=128).
+INFO 10-06 04:45:52 [qwen_gdn_linear_attn.py:528] GDN decode kernel: cuda
+INFO 10-06 04:45:53 [cuda.py:538] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 10-06 04:45:53 [flash_attn.py:1116] Using FlashAttention version 2
+INFO 10-06 04:45:54 [weight_utils.py:895] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 17.98 GiB. Available RAM: 39.37 GiB.
+INFO 10-06 04:45:54 [weight_utils.py:918] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+INFO 10-06 04:46:05 [default_loader.py:430] Loading weights took 11.27 seconds
+INFO 10-06 04:46:05 [model_runner.py:428] Model loading took 12.0 GiB memory and 13.854192 seconds
+INFO 10-06 04:46:05 [topk_topp_sampler.py:78] Using FlashInfer for top-p & top-k sampling.
+INFO 10-06 04:46:05 [interface.py:933] Setting attention block size to 528 tokens to ensure that attention page size is >= mamba page size.
+INFO 10-06 04:46:05 [interface.py:957] Padding mamba page size by 0.76% to ensure that mamba page size and attention page size are exactly equal.
+INFO 10-06 04:46:05 [utils.py:320] Using LBNHC KV cache layout.
+INFO 10-06 04:46:09 [backends.py:1094] Using cache directory: /root/w/vllmcache/torch_compile_cache/535fd580d1/rank_0_0/backbone for vLLM's torch.compile
+INFO 10-06 04:46:09 [backends.py:1155] Dynamo bytecode transform time: 2.35 s
+INFO 10-06 04:46:20 [backends.py:393] Compiling a graph for compile range (1, 2048) takes 11.42 s
+INFO 10-06 04:46:21 [backends.py:920] collected artifacts: 33 entries, 33 artifacts, 34887604 bytes total
+INFO 10-06 04:46:21 [decorators.py:719] saved AOT compiled function to /root/w/vllmcache/torch_compile_cache/torch_aot_compile/1b196f1b4fb38174845a70ea46095397017c328af53e0d6ec7336fadc82dd7eb/rank_0_0/model
+INFO 10-06 04:46:21 [monitor.py:53] torch.compile took 15.03 s in total
+INFO 10-06 04:47:00 [monitor.py:81] Initial profiling/warmup run took 39.00 s
+INFO 10-06 04:47:06 [model_runner.py:1066] Graph capturing finished in 4 secs, took 0.17 GiB
+INFO 10-06 04:47:07 [gpu_worker.py:640] Available KV cache memory: 6.7 GiB
+INFO 10-06 04:47:07 [gpu_worker.py:655] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9000 is equivalent to --gpu-memory-utilization=0.8924 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9076. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+INFO 10-06 04:47:07 [kv_cache_utils.py:2395] GPU KV cache size: 154,903 tokens, Maximum concurrency for 8,192 tokens per request: 18.91x
+INFO 10-06 04:47:07 [kernel_warmup.py:172] JIT kernel warmup starting.
+INFO 10-06 04:47:07 [kernel_warmup.py:185] JIT kernel warmup finished in 0.00s.
+INFO 10-06 04:47:07 [qwen_triton_warmup.py:294] Warming up Qwen GDN Triton kernels for model_type=qwen3_5_text.
+INFO 10-06 04:47:07 [qwen_vl_triton_warmup.py:98] Warmed M-RoPE Triton kernels.
+INFO 10-06 04:47:07 [mamba_triton_warmup.py:42] Warmed Mamba batch_memcpy_kernel.
+INFO 10-06 04:47:53 [model_runner.py:1066] Graph capturing finished in 3 secs, took 0.10 GiB
+INFO 10-06 04:47:53 [gpu_worker.py:825] CUDA graph pool memory: 0.1 GiB (actual), 0.18 GiB (estimated), difference: 0.08 GiB (73.6%).
+INFO 10-06 04:47:53 [gpu_worker.py:888] Free memory on device (23.13/23.52 GiB) on startup. Desired GPU memory utilization is (0.9, 21.16 GiB). Actual usage is 12.29 GiB for consumed memory (weights + non-torch), 2.17 GiB for peak activation, and 0.1 GiB for CUDAGraph memory. Replace gpu_memory_utilization config with `--kv-cache-memory=6929944986` (6.45 GiB) to fit into requested memory, or `--kv-cache-memory=9040689152` (8.42 GiB) to fully utilize gpu memory. Current kv cache memory in use is 6.7 GiB.
+INFO 10-06 04:47:54 [jit_monitor.py:85] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
+INFO 10-06 04:47:54 [torch_utils.py:287] Reducing Torch threads from 16 to 1 for serving. Set OMP_NUM_THREADS in the external environment to override.
+INFO 10-06 04:47:55 [core.py:372] init engine (profile, create kv cache, warmup model) took 109.00 s (compilation: 15.03 s)
+INFO 10-06 04:47:55 [kv_cache_utils.py:748] kv cache group sizes [528, 528, 528, 528]
+INFO 10-06 04:47:55 [kv_cache_utils.py:749] kv lcm block sizes 528
+INFO 10-06 04:47:55 [hf.py:642] Detected the chat template content format to be 'openai'. You can set `--chat-template-content-format` to override this.
+cache: {'num_gpu_blocks': 416, 'block_size': 528, 'kv_cache_size_tokens': 154903, 'max_concurrency': 18.90909090909091, 'mamba_cache_mode': 'align', 'kv_cache_layout': 'LBNHC'}
+run: /root/results/hybrid-stock.json (6.1 s)

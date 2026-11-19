@@ -1,0 +1,152 @@
+{
+ "versions": {
+  "glyd": "0.27.0",
+  "glyd-gpu": "0.27.0"
+ },
+ "memory": [
+  {
+   "prompt": "What is the capital of France? Answer in one word.",
+   "tokens": [
+    59604,
+    151645
+   ],
+   "text": "Paris"
+  },
+  {
+   "prompt": "What is 17 plus 25? Answer with the number only.",
+   "tokens": [
+    16,
+    22,
+    488,
+    220,
+    17,
+    20,
+    284,
+    220,
+    19,
+    17,
+    13,
+    151645
+   ],
+   "text": "17 + 25 = 42."
+  },
+  {
+   "prompt": "Complete the sentence in at most ten words: The quick brown fox",
+   "tokens": [
+    785,
+    3974,
+    13876,
+    38835,
+    34208,
+    916,
+    279,
+    24650,
+    13,
+    151645
+   ],
+   "text": "The quick brown fox jumps over the fence."
+  },
+  {
+   "prompt": "Write one sentence about the sea.",
+   "tokens": [
+    785,
+    9396,
+    374,
+    264,
+    12767,
+    323,
+    25382,
+    2487,
+    315,
+    3015,
+    429,
+    70274,
+    279,
+    1879,
+    323,
+    25963,
+    279,
+    13143,
+    315,
+    1181,
+    39090,
+    13,
+    151645
+   ],
+   "text": "The sea is a vast and mysterious body of water that surrounds the world and reflects the beauty of its surroundings."
+  }
+ ],
+ "loaded": [
+  {
+   "prompt": "What is the capital of France? Answer in one word.",
+   "tokens": [
+    59604,
+    151645
+   ],
+   "text": "Paris"
+  },
+  {
+   "prompt": "What is 17 plus 25? Answer with the number only.",
+   "tokens": [
+    16,
+    22,
+    488,
+    220,
+    17,
+    20,
+    284,
+    220,
+    19,
+    17,
+    13,
+    151645
+   ],
+   "text": "17 + 25 = 42."
+  },
+  {
+   "prompt": "Complete the sentence in at most ten words: The quick brown fox",
+   "tokens": [
+    785,
+    3974,
+    13876,
+    38835,
+    34208,
+    916,
+    279,
+    24650,
+    13,
+    151645
+   ],
+   "text": "The quick brown fox jumps over the fence."
+  },
+  {
+   "prompt": "Write one sentence about the sea.",
+   "tokens": [
+    785,
+    9396,
+    374,
+    264,
+    12767,
+    323,
+    25382,
+    2487,
+    315,
+    3015,
+    429,
+    70274,
+    279,
+    1879,
+    323,
+    25963,
+    279,
+    13143,
+    315,
+    1181,
+    39090,
+    13,
+    151645
+   ],
+   "text": "The sea is a vast and mysterious body of water that surrounds the world and reflects the beauty of its surroundings."
+  }
+ ]
+}

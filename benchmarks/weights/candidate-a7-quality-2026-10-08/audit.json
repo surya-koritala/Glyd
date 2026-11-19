@@ -1,0 +1,76 @@
+{
+  "complete": true,
+  "questions_per_arm": 13243,
+  "arms": 3,
+  "candidate": "candidate-a7",
+  "scores_recomputed": 39729,
+  "question_files_verified": 62,
+  "request_manifest_sha256": "0bd800dec7fcd13ab453c9e5fb67925c623358a9cb92bbade366b079b3751e33",
+  "source_commit": "3bd50e81849d45ed6d7e8ac336cb1ebe482f3f5a",
+  "versions": {
+    "torch": "2.8.0+cu128",
+    "transformers": "5.18.0",
+    "lm_eval": "0.4.14.dev0"
+  },
+  "group_scores": {
+    "arc_challenge": {
+      "n": 1172,
+      "bf16": 0.590443686006826,
+      "candidate-a7": 0.5836177474402731,
+      "fp8": 0.5921501706484642
+    },
+    "hellaswag": {
+      "n": 2048,
+      "bf16": 0.84423828125,
+      "candidate-a7": 0.84033203125,
+      "fp8": 0.841796875
+    },
+    "winogrande": {
+      "n": 1267,
+      "bf16": 0.7561168113654302,
+      "candidate-a7": 0.7671665351223362,
+      "fp8": 0.7584846093133386
+    },
+    "piqa": {
+      "n": 1838,
+      "bf16": 0.8161044613710555,
+      "candidate-a7": 0.8150163220892275,
+      "fp8": 0.8155603917301415
+    },
+    "boolq": {
+      "n": 3270,
+      "bf16": 0.8660550458715597,
+      "candidate-a7": 0.8755351681957186,
+      "fp8": 0.8666666666666667
+    },
+    "mmlu": {
+      "n": 3648,
+      "bf16": 0.8396381578947368,
+      "candidate-a7": 0.8404605263157895,
+      "fp8": 0.8382675438596491
+    }
+  },
+  "macro_scores": {
+    "bf16": 0.7854327406266014,
+    "fp8": 0.7854877095363767,
+    "candidate-a7": 0.7870213884022242
+  },
+  "comparisons": {
+    "bf16": {
+      "candidate_delta_pp": 0.15886477756227926,
+      "loss_interval_pp": [
+        -1.6627584092597032,
+        1.3453491672223172
+      ]
+    },
+    "fp8": {
+      "candidate_delta_pp": 0.1533678865847468,
+      "loss_interval_pp": [
+        -1.7483713768501719,
+        1.4416529571427006
+      ]
+    }
+  },
+  "quality_decision": "inconclusive",
+  "interval_audit": "Independent inversion of binomial CDF tails agrees with recorded beta-quantile intervals within 1e-11."
+}

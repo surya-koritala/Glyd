@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "status": "research_candidate_not_built",
+  "repository": "https://github.com/exo-explore/exo",
+  "commit": "bc412e2230f395e652c23426a5eb88dfa515769b",
+  "commit_date": "2026-10-13T20:11:46Z",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "176868021ebcf900b1397d5cb8d4ae94d5c196fbeae094bc5b57673a3586f09e",
+      "url": "https://github.com/exo-explore/exo/blob/bc412e2230f395e652c23426a5eb88dfa515769b/README.md"
+    },
+    {
+      "path": "PLATFORMS.md",
+      "sha256": "c8c46593b08a0c0344bc34c02612458ca146e10532a8d19df8e5e63a7d396692",
+      "url": "https://github.com/exo-explore/exo/blob/bc412e2230f395e652c23426a5eb88dfa515769b/PLATFORMS.md"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "fafd987089987a77de7b002831a7557635f802f7d8b462dc8c30e0404c2a7168",
+      "url": "https://github.com/exo-explore/exo/blob/bc412e2230f395e652c23426a5eb88dfa515769b/pyproject.toml"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "d454306733ce29b7126c1a79dec29dd9e574a887ff18c18945d2b8a3bb8e0452",
+      "url": "https://github.com/exo-explore/exo/blob/bc412e2230f395e652c23426a5eb88dfa515769b/Cargo.toml"
+    },
+    {
+      "path": "uv.lock",
+      "sha256": "7f6768afefa3fbdee940e0b3157d62f9f0a17bf1688c210a88e1b861e6b2a161",
+      "url": "https://github.com/exo-explore/exo/blob/bc412e2230f395e652c23426a5eb88dfa515769b/uv.lock"
+    },
+    {
+      "path": "bench/METHODOLOGY.md",
+      "sha256": "8c265f18049dc9aa22c230bd0f8051d16566e2825ccdf539fdb0daea7c327a1c",
+      "url": "https://github.com/exo-explore/exo/blob/bc412e2230f395e652c23426a5eb88dfa515769b/bench/METHODOLOGY.md"
+    },
+    {
+      "path": "src/exo/api/types/api.py",
+      "sha256": "a3155fb6b97510790b323af2412889efc545b03b554a8e196951e986d95988ab",
+      "url": "https://github.com/exo-explore/exo/blob/bc412e2230f395e652c23426a5eb88dfa515769b/src/exo/api/types/api.py"
+    },
+    {
+      "path": "src/exo/api/adapters/chat_completions.py",
+      "sha256": "8ab7d27d8cb241eced033d81b503bff4f88c4ba22b887cd89037936409f4d30e",
+      "url": "https://github.com/exo-explore/exo/blob/bc412e2230f395e652c23426a5eb88dfa515769b/src/exo/api/adapters/chat_completions.py"
+    },
+    {
+      "path": "bench/pyproject.toml",
+      "sha256": "d7a507bd3193e1f8ee27e0119498cf97616a49821d54346e48b0dbd89c25a882",
+      "url": "https://github.com/exo-explore/exo/blob/bc412e2230f395e652c23426a5eb88dfa515769b/bench/pyproject.toml"
+    }
+  ],
+  "python_constraint": "==3.13.*",
+  "targets": {
+    "macos_apple": "not_built_or_measured",
+    "linux_nvidia": "installation_extras_present_support_matrix_planned_not_qualified"
+  },
+  "patches_applied": [],
+  "build_recipe_validated": false,
+  "model_workload_approved": false
+}

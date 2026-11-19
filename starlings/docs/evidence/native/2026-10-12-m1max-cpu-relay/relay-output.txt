@@ -1,0 +1,6 @@
+
+running 1 test
+test inference::tests::native_relay_acceptance ... {"catalog_qualified":false,"configuration_digest":"d4d455b75dce64a5eadcf1603a2a00416237d511d94fcbc64208a501f84f9bf5","daemon_activated":false,"device_drain_qualified":false,"elapsed_ms":21422,"executable_sha256":"66b94f533a684c97b8954b80a1bda9eb952f8e924f15c5eb16e71a36209e1398","kind":"RelayAcceptanceOnly","memory_qualified":false,"runs":[{"count_matches_usage":true,"owned_group_exit":true,"relay_ms":6418,"semantic_parity":true,"streaming":false},{"count_matches_usage":true,"owned_group_exit":true,"relay_ms":6402,"semantic_parity":true,"streaming":true}],"usage":{"completion_tokens":8,"prompt_tokens":17,"prompt_tokens_details":{"cached_tokens":0},"total_tokens":25}}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 21.70s

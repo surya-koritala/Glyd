@@ -1,0 +1,249 @@
+
+big_o10_m1024.txt: packs/o10: 4096x4096, M=1024, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 big          5838.9  1.474      2.00x      1.00x  ok, = v1 bit for bit
+  v2 big          4991.1  1.543      1.71x      0.85x  ok, = v1 bit for bit
+  12-bit big      2922.8  1.496      1.00x      0.50x  ok, = v1 bit for bit
+
+big_o10_m128.txt: packs/o10: 4096x4096, M=128, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 big           836.6  2.034      1.59x      1.00x  ok, = v1 bit for bit
+  v2 big           740.8  2.034      1.41x      0.89x  ok, = v1 bit for bit
+  12-bit big       526.7  2.032      1.00x      0.63x  ok, = v1 bit for bit
+
+big_o10_m256.txt: packs/o10: 4096x4096, M=256, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 big          1647.8  2.026      1.61x      1.00x  ok, = v1 bit for bit
+  v2 big          1451.0  2.028      1.42x      0.88x  ok, = v1 bit for bit
+  12-bit big      1020.8  2.035      1.00x      0.62x  ok, = v1 bit for bit
+
+cold20pc_o10_m1.txt: packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           298.4  1.611          -      1.00x  ok, = v1 bit for bit
+  v2 lib           262.9  1.573          -      0.88x  ok, = v1 bit for bit
+  o552u1w4b4s      224.6  1.646          -      0.75x  ok, = v1 bit for bit
+  o568u3w4b4s      218.0  1.644          -      0.73x  ok, = v1 bit for bit
+
+cold5pc_o10_m1.txt: packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           299.0  1.604          -      1.00x  ok, = v1 bit for bit
+  v2 lib           262.8  1.587          -      0.88x  ok, = v1 bit for bit
+  o552u1w4b4s      219.1  1.643          -      0.73x  ok, = v1 bit for bit
+  o568u3w4b4s      210.8  1.646          -      0.71x  ok, = v1 bit for bit
+
+heavy_g1_m1.txt: packs/g1: 2048x4096, M=1, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           484.8  1.812          -      1.00x  ok, = v1 bit for bit
+  v2 lib           475.0  1.810          -      0.98x  ok, = v1 bit for bit
+  o552u1w2b8s      660.4  1.843          -      1.36x  ok, = v1 bit for bit
+  o552u1w4b4s      469.6  1.842          -      0.97x  ok, = v1 bit for bit
+  o568u3w4b4s      484.1  1.827          -      1.00x  ok, = v1 bit for bit
+  o536u3w4b4s      505.1  1.809          -      1.04x  ok, = v1 bit for bit
+
+hot_o10_m1.txt: packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           298.5  1.572      2.25x      1.00x  ok, = v1 bit for bit
+  12-bit           132.6  1.587      1.00x      0.44x  ok, = v1 bit for bit
+  v2 lib           262.4  1.587      1.98x      0.88x  ok, = v1 bit for bit
+  o40u1w4          224.0  1.593      1.69x      0.75x  ok, = v1 bit for bit
+  o152u3w4b4s      207.0  1.589      1.56x      0.69x  ok, = v1 bit for bit
+  o168u1w2b8s      201.6  1.586      1.52x      0.68x  ok, = v1 bit for bit
+  o552u1w2b8s      203.7  1.568      1.54x      0.68x  ok, = v1 bit for bit
+  o552u1w4b4s      215.5  1.572      1.63x      0.72x  ok, = v1 bit for bit
+  o552u1w1b16s     259.7  1.556      1.96x      0.87x  ok, differs from v1's
+  o520u1w2b8s      200.9  1.550      1.52x      0.67x  ok, = v1 bit for bit
+  o568u3w4b4s      205.7  1.580      1.55x      0.69x  ok, = v1 bit for bit
+  o536u3w4b4s      209.1  1.572      1.58x      0.70x  ok, = v1 bit for bit
+  o16936u1w4b2s     263.5  1.571      1.99x      0.88x  ok, differs from v1's
+  o33320u1w4b4s     225.8  1.571      1.70x      0.76x  ok, = v1 bit for bit
+  o16952u3w4b2s     254.5  1.573      1.92x      0.85x  ok, differs from v1's
+  o33336u3w4b4s     247.5  1.570      1.87x      0.83x  ok, differs from v1's
+
+hot_o10_m16.txt: packs/o10: 4096x4096, M=16, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           320.4  1.572      2.05x      1.00x  ok, = v1 bit for bit
+  12-bit           156.4  1.600      1.00x      0.49x  ok, = v1 bit for bit
+  v2 lib           287.2  1.599      1.84x      0.90x  ok, = v1 bit for bit
+  o40u1w4          264.8  1.570      1.69x      0.83x  ok, differs from v1's
+  o552u1w2b8       339.0  1.557      2.17x      1.06x  ok, differs from v1's
+  o552u1w4b4       261.0  1.542      1.67x      0.81x  ok, differs from v1's
+  o568u3w4b4       301.9  1.542      1.93x      0.94x  ok, differs from v1's
+  o33320u1w4b4     309.4  1.556      1.98x      0.97x  ok, differs from v1's
+  o16936u1w4b2     407.9  1.547      2.61x      1.27x  ok, differs from v1's
+
+hot_o10_m32.txt: packs/o10: 4096x4096, M=32, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           471.0  1.599      2.02x      1.00x  ok, = v1 bit for bit
+  v1 route         471.2  1.600      2.02x      1.00x  ok, = v1 bit for bit
+  12-bit route     295.9  1.599      1.27x      0.63x  ok, differs from v1's
+  12-bit           232.7  1.618      1.00x      0.49x  ok, = v1 bit for bit
+  v2 lib           412.9  1.616      1.77x      0.88x  ok, = v1 bit for bit
+  o8u1             399.9  1.608      1.72x      0.85x  ok, = v1 bit for bit
+
+hot_o10_m64.txt: packs/o10: 4096x4096, M=64, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           664.1  1.558      1.71x      1.00x  ok, = v1 bit for bit
+  v1 route         663.5  1.570      1.70x      1.00x  ok, = v1 bit for bit
+  12-bit route     368.7  1.573      0.95x      0.56x  ok, differs from v1's
+  12-bit           389.2  1.571      1.00x      0.59x  ok, = v1 bit for bit
+  v2 lib           570.2  1.570      1.47x      0.86x  ok, = v1 bit for bit
+  o8u1             546.6  1.563      1.40x      0.82x  ok, = v1 bit for bit
+
+hot_o10_m8.txt: packs/o10: 4096x4096, M=8, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           306.7  1.561      2.16x      1.00x  ok, = v1 bit for bit
+  12-bit           142.2  1.569      1.00x      0.46x  ok, = v1 bit for bit
+  v2 lib           272.4  1.573      1.92x      0.89x  ok, = v1 bit for bit
+  o40u1w4          241.4  1.572      1.70x      0.79x  ok, differs from v1's
+  o152u3w4b4s      226.8  1.569      1.59x      0.74x  ok, differs from v1's
+  o168u1w2b8s      232.3  1.550      1.63x      0.76x  ok, differs from v1's
+  o552u1w2b8s      236.0  1.541      1.66x      0.77x  ok, differs from v1's
+  o552u1w4b4s      234.2  1.540      1.65x      0.76x  ok, differs from v1's
+  o552u1w1b16s     312.1  1.543      2.19x      1.02x  ok, differs from v1's
+  o520u1w2b8s      232.5  1.540      1.64x      0.76x  ok, differs from v1's
+  o568u3w4b4s      224.7  1.547      1.58x      0.73x  ok, differs from v1's
+  o536u3w4b4s      228.5  1.557      1.61x      0.75x  ok, differs from v1's
+  o16936u1w4b2s     276.7  1.553      1.95x      0.90x  ok, differs from v1's
+  o33320u1w4b4s     242.2  1.542      1.70x      0.79x  ok, differs from v1's
+  o16952u3w4b2s     267.7  1.543      1.88x      0.87x  ok, differs from v1's
+  o33336u3w4b4s     261.7  1.552      1.84x      0.85x  ok, differs from v1's
+
+mixed_m2_m1.txt: packs/m2: 4096x2560, M=1, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           368.5  1.917          -      1.00x  ok, = v1 bit for bit
+  v2 lib           357.8  1.872          -      0.97x  ok, = v1 bit for bit
+  o552u1w2b8s      360.6  1.917          -      0.98x  ok, differs from v1's
+  o552u1w4b4s      328.6  1.913          -      0.89x  ok, differs from v1's
+  o568u3w4b4s      337.0  1.913          -      0.91x  ok, differs from v1's
+  o536u3w4b4s      351.8  1.915          -      0.95x  ok, differs from v1's
+
+mixed_m2_m16.txt: packs/m2: 4096x2560, M=16, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           393.4  1.900          -      1.00x  ok, = v1 bit for bit
+  v2 lib           387.7  1.842          -      0.99x  ok, = v1 bit for bit
+  o552u1w4b4       430.2  1.960          -      1.09x  ok, differs from v1's
+  o568u3w4b4       559.9  1.963          -      1.42x  ok, differs from v1's
+
+mixed_m2_m8.txt: packs/m2: 4096x2560, M=8, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           379.2  1.856          -      1.00x  ok, = v1 bit for bit
+  v2 lib           369.1  1.818          -      0.97x  ok, = v1 bit for bit
+  o552u1w2b8s      413.1  1.908          -      1.09x  ok, differs from v1's
+  o552u1w4b4s      348.0  1.856          -      0.92x  ok, differs from v1's
+  o568u3w4b4s      356.7  1.854          -      0.94x  ok, differs from v1's
+  o536u3w4b4s      375.2  1.859          -      0.99x  ok, differs from v1's
+
+small_c2_m1.txt: packs/c2: 2048x4096, M=1, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           366.3  1.705      1.87x      1.00x  ok, = v1 bit for bit
+  12-bit           195.6  1.705      1.00x      0.53x  ok, = v1 bit for bit
+  v2 lib           331.3  1.720      1.69x      0.90x  ok, = v1 bit for bit
+  o552u1w2b8s      288.3  1.719      1.47x      0.79x  ok, = v1 bit for bit
+  o552u1w4b4s      257.8  1.718      1.32x      0.70x  ok, = v1 bit for bit
+  o568u3w4b4s      254.1  1.718      1.30x      0.69x  ok, = v1 bit for bit
+
+small_c2_m8.txt: packs/c2: 2048x4096, M=8, 58 SMs, 1 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           383.4  1.679      1.82x      1.00x  ok, = v1 bit for bit
+  12-bit           210.5  1.677      1.00x      0.55x  ok, = v1 bit for bit
+  v2 lib           348.9  1.692      1.66x      0.91x  ok, = v1 bit for bit
+  o552u1w2b8s      341.7  1.690      1.62x      0.89x  ok, = v1 bit for bit
+  o552u1w4b4s      289.1  1.682      1.37x      0.75x  ok, differs from v1's
+  o568u3w4b4s      285.7  1.679      1.36x      0.75x  ok, differs from v1's
+
+stream_u10_m1.txt: packs/u10: 12288x4096, M=1, 58 SMs, 3 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           420.2  1.258      0.94x      1.00x  ok, = v1 bit for bit
+  12-bit           445.5  1.244      1.00x      1.06x  ok, = v1 bit for bit
+  v2 lib           432.1  1.295      0.97x      1.03x  ok, = v1 bit for bit
+  o40u1w4          442.4  1.286      0.99x      1.05x  ok, differs from v1's
+  o152u3w4b4s      427.4  1.282      0.96x      1.02x  ok, differs from v1's
+  o168u1w2b8s      425.9  1.286      0.96x      1.01x  ok, differs from v1's
+  o552u1w2b8s      426.3  1.286      0.96x      1.01x  ok, differs from v1's
+  o552u1w4b4s      434.9  1.315      0.98x      1.03x  ok, differs from v1's
+  o552u1w1b16s     439.6  1.315      0.99x      1.05x  ok, differs from v1's
+  o520u1w2b8s      435.8  1.317      0.98x      1.04x  ok, differs from v1's
+  o568u3w4b4s      447.6  1.326      1.00x      1.07x  ok, differs from v1's
+  o536u3w4b4s      461.1  1.347      1.04x      1.10x  ok, differs from v1's
+  o16936u1w4b2s     450.9  1.361      1.01x      1.07x  ok, differs from v1's
+  o33320u1w4b4s     441.0  1.333      0.99x      1.05x  ok, differs from v1's
+  o16952u3w4b2s     423.5  1.286      0.95x      1.01x  ok, differs from v1's
+  o33336u3w4b4s     424.7  1.288      0.95x      1.01x  ok, differs from v1's
+
+stream_u10_m16.txt: packs/u10: 12288x4096, M=16, 58 SMs, 3 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           430.3  1.219      0.94x      1.00x  ok, = v1 bit for bit
+  12-bit           458.4  1.235      1.00x      1.07x  ok, = v1 bit for bit
+  v2 lib           450.5  1.294      0.98x      1.05x  ok, = v1 bit for bit
+  o40u1w4          460.2  1.289      1.00x      1.07x  ok, differs from v1's
+  o552u1w2b8       457.4  1.256      1.00x      1.06x  ok, differs from v1's
+  o552u1w4b4       448.5  1.257      0.98x      1.04x  ok, differs from v1's
+  o568u3w4b4       452.7  1.249      0.99x      1.05x  ok, differs from v1's
+  o33320u1w4b4     434.3  1.241      0.95x      1.01x  ok, differs from v1's
+  o16936u1w4b2     436.0  1.244      0.95x      1.01x  ok, differs from v1's
+
+stream_u10_m32.txt: packs/u10: 12288x4096, M=32, 58 SMs, 3 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           417.9  1.092      0.94x      1.00x  ok, = v1 bit for bit
+  v1 route         416.0  1.053      0.93x      1.00x  ok, = v1 bit for bit
+  12-bit route     414.0  1.091      0.93x      0.99x  ok, differs from v1's
+  12-bit           445.4  1.159      1.00x      1.07x  ok, = v1 bit for bit
+  v2 lib           431.6  1.205      0.97x      1.03x  ok, = v1 bit for bit
+  o8u1             417.7  1.159      0.94x      1.00x  ok, = v1 bit for bit
+
+stream_u10_m64.txt: packs/u10: 12288x4096, M=64, 58 SMs, 3 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           581.3  1.024      1.22x      1.00x  ok, = v1 bit for bit
+  v1 route         583.8  1.106      1.23x      1.00x  ok, = v1 bit for bit
+  12-bit route     445.1  1.131      0.94x      0.77x  ok, differs from v1's
+  12-bit           476.0  1.143      1.00x      0.82x  ok, = v1 bit for bit
+  v2 lib           514.7  1.093      1.08x      0.89x  ok, = v1 bit for bit
+  o8u1             471.5  1.027      0.99x      0.81x  ok, = v1 bit for bit
+
+stream_u10_m8.txt: packs/u10: 12288x4096, M=8, 58 SMs, 3 weight copies
+  variant       clk/step    GHz  vs 12-bit  vs v1 lib  check
+  v1 lib           410.3  1.197      0.94x      1.00x  ok, = v1 bit for bit
+  12-bit           438.2  1.197      1.00x      1.07x  ok, = v1 bit for bit
+  v2 lib           428.1  1.242      0.98x      1.04x  ok, = v1 bit for bit
+  o40u1w4          432.7  1.221      0.99x      1.05x  ok, differs from v1's
+  o152u3w4b4s      413.1  1.206      0.94x      1.01x  ok, differs from v1's
+  o168u1w2b8s      440.7  1.271      1.01x      1.07x  ok, differs from v1's
+  o552u1w2b8s      442.9  1.271      1.01x      1.08x  ok, differs from v1's
+  o552u1w4b4s      441.3  1.289      1.01x      1.08x  ok, differs from v1's
+  o552u1w1b16s     471.4  1.295      1.08x      1.15x  ok, differs from v1's
+  o520u1w2b8s      457.2  1.318      1.04x      1.11x  ok, differs from v1's
+  o568u3w4b4s      458.1  1.325      1.05x      1.12x  ok, differs from v1's
+  o536u3w4b4s      466.9  1.333      1.07x      1.14x  ok, differs from v1's
+  o16936u1w4b2s     448.1  1.325      1.02x      1.09x  ok, differs from v1's
+  o33320u1w4b4s     440.7  1.302      1.01x      1.07x  ok, differs from v1's
+  o16952u3w4b2s     430.5  1.270      0.98x      1.05x  ok, differs from v1's
+  o33336u3w4b4s     424.6  1.256      0.97x      1.03x  ok, differs from v1's
+
+ncu (one launch each; per-warp CPI = 1 + the stall columns):
+                                 best        mma12       t1_lib       t2_lib
+  duration us                    0.03         0.02         0.05         0.04
+  registers                    128.00       128.00       126.00       127.00
+  warps active/SMSP              3.54         3.85         3.73         3.68
+  eligible/SMSP                  0.94         0.69         1.02         1.02
+  issue active %                51.93        41.83        56.01        54.72
+  ALU pipe %                    55.35        43.17        56.43        55.90
+  FMA-heavy pipe %              18.28        17.03        23.10        23.31
+  tensor pipe %                  7.64        22.70        10.47        11.94
+  LSU wavefronts %              58.62        26.85        49.16        52.75
+  DRAM %                          nan          nan          nan          nan
+  smem wavefronts          1707814.00    335913.00   2147211.00   1969525.00
+  smem bank conflicts       881444.00    202752.00   1017906.00   1024212.00
+  warp instr               6222584.00   3018534.00   9892634.00   8400308.00
+  stall wait                     1.21         1.38         1.34         1.39
+  stall short_scoreboard         1.10         0.25         1.30         1.06
+  stall long_scoreboard          0.85         2.37         0.15         0.26
+  stall not_selected             0.81         0.64         0.82         0.86
+  stall math_pipe_throttle         0.68         1.09         0.68         0.73
+  stall barrier                  0.34         1.35         0.54         0.63
+  stall mio_throttle             0.39         0.25         0.18         0.24
+  stall branch_resolving         0.08         0.17         0.25         0.19
+  stall no_instruction           0.10         0.13         0.17         0.16
+  stall dispatch_stall           0.09         0.21         0.12         0.11
+  stall membar                   0.08         0.22         0.06         0.08
+  stall lg_throttle              0.02         0.02         0.00         0.01
+  stall imc_miss                 0.05         0.14         0.04         0.04

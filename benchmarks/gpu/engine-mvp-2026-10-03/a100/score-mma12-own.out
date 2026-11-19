@@ -1,0 +1,2 @@
+loaded in 2.2 s: NVIDIA A100-SXM4-40GB (sm_80): weights 11.48 GiB (75.3% of bf16's 15.26), cache 4096 tokens (0.43 GiB), workspaces 848 MiB, 13.24 of 39.49 GiB in use
+1535 positions scored in 0.2 s

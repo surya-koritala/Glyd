@@ -1,0 +1,4 @@
+racecheck case_strides exit 0
+racecheck case_experts exit 0
+memcheck case_strides exit 0
+memcheck case_experts exit 0

@@ -1,0 +1,20 @@
+{
+  "ci_complete": true,
+  "checkpoint_audit_passed": true,
+  "source": {
+    "head": "88ea1ae57e34025a76f88a8e947b6ddc82bbeacb",
+    "head_tree": "d2f42b0a68e5b257a5e053b985e9899fd562c80d",
+    "built_commit": "8d4470108b98d8210096f1e8b712bb6bfa93cfcc",
+    "built_tree": "d2f42b0a68e5b257a5e053b985e9899fd562c80d"
+  },
+  "ci": {
+    "quality": 37558294094,
+    "reference": 37558294084,
+    "signoff": 37558294060
+  },
+  "bundle_sha256": "42c37f11fe3412ab48f0b0880877fd4cd2a548af7f5c538e452949a7d44b111f",
+  "bundle_bytes": 18073600,
+  "evaluation_sha256": "2ec8a91f18f5482ab44f111d3cfc92e269ea8e20825db88c06dbf3cbc0e779e9",
+  "scored_targets": 16384,
+  "job_sha256": "e7882109b96935b29e256c69d8f8d25266b5a254ef65b282e65e0106280e37c8"
+}

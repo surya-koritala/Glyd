@@ -1,0 +1,19 @@
+loaded in 28.5 s: NVIDIA A100 80GB PCIe (sm_80): weights 33.698 GiB (67.3% of the checkpoint's 50.098 GiB for the same tensors; 348 vision and MTP tensors not loaded; layout Tiered), states 0.143 GiB, KV cache 4096 positions 0.250 GiB, workspaces 1.369 GiB, 35.88 of 79.25 GiB in use
+one decode step's GPU time by kind of work (eager, 20 steps' mean, at 1171 tokens):
+   12.731 ms  27.7%    64 launches  MLP: gate and up product, SiLU
+   11.819 ms  25.7%    48 launches  linear attention: ba product
+    6.789 ms  14.8%    64 launches  MLP: down product
+    4.773 ms  10.4%    48 launches  linear attention: qkvz product
+    2.352 ms   5.1%    48 launches  linear attention: out product
+    1.770 ms   3.9%     1 launches  LM head product
+    1.517 ms   3.3%    16 launches  attention: qkv product
+    1.311 ms   2.9%   129 launches  norms
+    0.764 ms   1.7%    16 launches  attention: attention
+    0.758 ms   1.7%    16 launches  attention: o product
+    0.559 ms   1.2%    48 launches  linear attention: delta rule
+    0.314 ms   0.7%    48 launches  linear attention: convolution
+    0.291 ms   0.6%    48 launches  linear attention: gated norm
+    0.108 ms   0.2%    16 launches  attention: q/k norm, rotary, cache write
+    0.040 ms   0.1%     1 launches  argmax
+    0.024 ms   0.1%     1 launches  embedding row
+   45.919 ms 100.0%     0 launches  total

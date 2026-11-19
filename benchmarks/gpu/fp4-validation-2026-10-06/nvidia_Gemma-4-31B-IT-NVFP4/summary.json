@@ -1,0 +1,61 @@
+{
+ "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+ "args": {
+  "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+  "out": "/root/results/nvidia_Gemma-4-31B-IT-NVFP4",
+  "util": 0.97,
+  "mml": 4096,
+  "dtype": "auto",
+  "max_num_seqs": 32,
+  "layout": "mma",
+  "scales": true,
+  "codes": true,
+  "codes_exact_all": true,
+  "steps": "glyd-exact-16,glyd-exact,glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 3,
+  "no_image": false,
+  "language_model_only": false,
+  "max_batched_tokens": null,
+  "fallback_layout": null
+ },
+ "exact": {
+  "reference": "glyd-exact-16",
+  "equal": true,
+  "diffs": {
+   "tokens": null,
+   "logprobs": null,
+   "long_ids": null,
+   "long_logprobs": null,
+   "image_tokens": null,
+   "image_logprobs": null
+  },
+  "image": true,
+  "image_error": null,
+  "verified": 120,
+  "packed": 120,
+  "codes": {
+   "layers": 120,
+   "pack_bytes": 10480681376,
+   "code_bytes": 10404495360,
+   "scratch_bytes": 115605504,
+   "saved_bytes": -191791520,
+   "verified": 120,
+   "verified_bytes": 10404495360
+  },
+  "codes_forced": true
+ },
+ "glyd": {
+  "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 336.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 321.69 MiB is free. Including non-PyTorch memory, this process has 31.04 GiB memory in use. Of the allocated memory 29.51 GiB is allocated by PyTorch, and 832.79 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+  "log_tail": [
+   "INFO 10-06 21:59:39 [vllm_codes.py:174] glyd: language_model.model.layers.57.mlp.gate_up_proj.weight: its codes' pack would save under 3% (4.028 bits a code): they stay as vLLM holds them",
+   "INFO 10-06 21:59:39 [vllm_codes.py:174] glyd: language_model.model.layers.57.mlp.down_proj.weight: its codes' pack would save under 3% (4.029 bits a code): they stay as vLLM holds them",
+   "INFO 10-06 21:59:39 [vllm_codes.py:174] glyd: language_model.model.layers.58.mlp.gate_up_proj.weight: its codes' pack would save under 3% (4.028 bits a code): they stay as vLLM holds them",
+   "INFO 10-06 21:59:39 [vllm_codes.py:174] glyd: language_model.model.layers.58.mlp.down_proj.weight: its codes' pack would save under 3% (4.029 bits a code): they stay as vLLM holds them",
+   "INFO 10-06 21:59:39 [vllm_codes.py:174] glyd: language_model.model.layers.59.mlp.gate_up_proj.weight: its codes' pack would save under 3% (4.028 bits a code): they stay as vLLM holds them",
+   "INFO 10-06 21:59:39 [vllm_codes.py:174] glyd: language_model.model.layers.59.mlp.down_proj.weight: its codes' pack would save under 3% (4.033 bits a code): they stay as vLLM holds them"
+  ]
+ }
+}

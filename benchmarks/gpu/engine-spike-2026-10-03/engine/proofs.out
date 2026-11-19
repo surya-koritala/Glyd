@@ -1,0 +1,96 @@
+15:27:10 lock held
+== bandwidth
+NVIDIA L4: 258.9 GB/s streaming read
+== info --util 0.9
+NVIDIA L4 (sm_89): weights 10.37 GiB (68.0% of bf16's 15.26), cache 84080 tokens (8.86 GiB), workspaces 356 MiB, 19.79 of 22.04 GiB in use
+start 2.4 s
+weights 10.374 GiB for 15.256 GiB of bf16 (68.0%); cache 84080 tokens in 8.857 GiB (110.5 KiB a token); workspaces and activations 0.348 GiB; in use 19.789 of 22.036 GiB
+bits a weight: qkv 10.80, o 10.76, gate_up 10.93, down 10.85, embed 10.86, lm_head 10.77
+== start (GLYD_ENGINE_TIMING)
+    0.13 s  device, library and kernels
+    2.33 s  weights uploaded
+    2.33 s  product workspaces
+    2.33 s  attention workspace
+    2.33 s  KV cache
+    2.38 s  decode graph
+loaded in 2.4 s: NVIDIA L4 (sm_89): weights 10.37 GiB (67.9% of bf16's 15.26), cache 4096 tokens (0.43 GiB), workspaces 355 MiB, 11.41 of 22.04 GiB in use
+The capital of France is Paris
+5 prompt tokens, 1 generated in 0.05 s
+
+real	0m3.088s
+user	0m1.196s
+sys	0m2.145s
+== bench 1024/256, graph x5
+KV cache: nothing lost
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":452.5,"decode_ms_mean":46.514,"decode_ms_p50":46.268,"decode_ms_p99":47.857,"decode_tokens_per_s":21.50,"load_s":2.40,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+KV cache: nothing lost
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":451.6,"decode_ms_mean":46.799,"decode_ms_p50":46.682,"decode_ms_p99":47.915,"decode_tokens_per_s":21.37,"load_s":2.40,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+KV cache: nothing lost
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":452.1,"decode_ms_mean":46.807,"decode_ms_p50":46.551,"decode_ms_p99":48.878,"decode_tokens_per_s":21.36,"load_s":2.40,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+KV cache: nothing lost
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":454.3,"decode_ms_mean":46.939,"decode_ms_p50":46.586,"decode_ms_p99":49.516,"decode_tokens_per_s":21.30,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+KV cache: nothing lost
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":454.7,"decode_ms_mean":46.725,"decode_ms_p50":46.481,"decode_ms_p99":48.251,"decode_tokens_per_s":21.40,"load_s":2.40,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+== bench 1024/256, eager
+KV cache: nothing lost
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":455.5,"decode_ms_mean":46.941,"decode_ms_p50":46.812,"decode_ms_p99":48.251,"decode_tokens_per_s":21.30,"load_s":2.35,"weights_gib":10.365,"cache_tokens":4096,"graph":false}
+== bench 128/256
+KV cache: nothing lost
+{"prompt_tokens":128,"new_tokens":256,"prefill_ms":88.9,"decode_ms_mean":46.392,"decode_ms_p50":45.996,"decode_ms_p99":48.482,"decode_tokens_per_s":21.56,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+== bench 3500/128
+KV cache: nothing lost
+{"prompt_tokens":3500,"new_tokens":128,"prefill_ms":2043.4,"decode_ms_mean":47.367,"decode_ms_p50":47.316,"decode_ms_p99":48.063,"decode_tokens_per_s":21.11,"load_s":2.40,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+== profile
+loaded in 2.4 s: NVIDIA L4 (sm_89): weights 10.37 GiB (67.9% of bf16's 15.26), cache 4096 tokens (0.43 GiB), workspaces 355 MiB, 11.41 of 22.04 GiB in use
+KV cache: nothing lost
+one decode step's GPU time by kind of work (eager, 20 steps' mean):
+   20.787 ms  44.4%    36 launches  gate and up product
+   10.718 ms  22.9%    36 launches  down product
+    5.490 ms  11.7%    36 launches  qkv product
+    3.895 ms   8.3%    36 launches  o product
+    3.486 ms   7.4%     1 launches  LM head product
+    1.009 ms   2.2%    36 launches  attention over the cache
+    0.334 ms   0.7%    36 launches  norm (input, with the residual)
+    0.329 ms   0.7%    36 launches  norm (after attention, with the residual)
+    0.322 ms   0.7%    36 launches  KV write
+    0.206 ms   0.4%    36 launches  SiLU product
+    0.205 ms   0.4%    36 launches  query/key norm and rotary
+    0.027 ms   0.1%     1 launches  argmax
+    0.016 ms   0.0%     1 launches  embedding row
+    0.009 ms   0.0%     1 launches  final norm
+   46.833 ms 100.0%     0 launches  total
+{"prompt_tokens":1024,"new_tokens":64,"prefill_ms":450.3,"decode_ms_mean":46.596,"decode_ms_p50":46.309,"decode_ms_p99":48.177,"decode_tokens_per_s":21.46,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+== check
+8 prompts of up to 31 tokens, 64 new tokens each
+3 long_prompts of up to 3500 tokens, 64 new tokens each
+KV cache: nothing lost
+/home/ubuntu/engine-out/final2/eng-8b.json
+== score
+1535 positions scored in 0.8 s
+== text
+
+First, I need to understand what lossless compression means in this context. Lossless compression means that the original data can be perfectly reconstructed from the compressed data. So, for a language model, this would mean that the compressed weights can be decompressed back to the original weights without any loss of information.
+
+Now, the key insight is that the weights are not random. So, there's some structure or pattern in the weights
+11 prompt tokens, 120 generated in 5.46 s
+== kcheck
+rmsnorm (4096 rows of 4096):
+  against native, eager:          74.175% equal bits, largest difference 0.03125
+  against native, compiled:      100.000% equal bits, largest difference 0.01562
+  against vLLM's CUDA op:        100.000% equal bits, largest difference 0.01562
+rmsnorm with the residual add:
+  residual, against eager:       100.000% equal bits, largest difference 0 | compiled: 100.000% equal bits, largest difference 0
+  normalized, against eager:      74.204% equal bits, largest difference 0.0625
+  normalized, against compiled:  100.000% equal bits, largest difference 0.01562
+  normalized, against the CUDA op:  78.954% equal bits, largest difference 0.03125 | residual: 100.000% equal bits, largest difference 0
+SiLU product:
+  against native, eager:          72.688% equal bits, largest difference 0.25
+  against native, compiled:      100.000% equal bits, largest difference 0
+  against vLLM's CUDA op:         72.688% equal bits, largest difference 0.25
+query/key norm and rotary:
+  query, against eager:           56.403% equal bits, largest difference 0.0625 | compiled:  99.999% equal bits, largest difference 0.01562
+  key,   against eager:           56.321% equal bits, largest difference 0.0625 | compiled:  99.999% equal bits, largest difference 0.007812
+rotary tables (the engine's, fp32 as torch then bf16):
+  cos against torch on the GPU:   99.993% equal bits, largest difference 0.001953 | on the CPU: 100.000% equal bits, largest difference 0.001953
+  sin against torch on the GPU:   99.995% equal bits, largest difference 0.003906 | on the CPU: 100.000% equal bits, largest difference 0
+15:30:19 done

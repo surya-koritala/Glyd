@@ -1,0 +1,55 @@
+{
+  "kind": "DerivedNativeDirectProxyElapsedSummary",
+  "raw_result_sha256": "f1600542573020482bd9663bf11a80aa3b212a734b46902532293383b88d4619",
+  "overall_success": true,
+  "physical_hosts": 1,
+  "elapsed_includes_generation_decode_and_drain": true,
+  "fixed_direct_then_proxy_order": true,
+  "causal_overhead_qualified": false,
+  "ttft_tpot_throughput_measured": false,
+  "actual_output_token_total_recorded": false,
+  "cells": [
+    {
+      "format": "JSON",
+      "samples_per_stage": 5,
+      "direct_elapsed_ms": [
+        6254,
+        6234,
+        6312,
+        6245,
+        6231
+      ],
+      "proxy_elapsed_ms": [
+        6449,
+        6390,
+        6459,
+        6388,
+        6404
+      ],
+      "direct_median_ms": 6245,
+      "proxy_median_ms": 6404,
+      "observed_median_difference_ms": 159
+    },
+    {
+      "format": "SSE",
+      "samples_per_stage": 5,
+      "direct_elapsed_ms": [
+        6243,
+        6231,
+        6238,
+        6234,
+        6234
+      ],
+      "proxy_elapsed_ms": [
+        6433,
+        6393,
+        6400,
+        6406,
+        6354
+      ],
+      "direct_median_ms": 6234,
+      "proxy_median_ms": 6400,
+      "observed_median_difference_ms": 166
+    }
+  ]
+}

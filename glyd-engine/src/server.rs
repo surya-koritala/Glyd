@@ -1,0 +1,3606 @@
+//! An OpenAI-compatible server for one user at a time (HTTP/1.1 on a socket of its own: no framework): `GET /` the chat page, `GET /v1/models`, `POST /v1/chat/completions` and
+//! `POST /v1/completions` (streamed as server-sent events or whole), `GET /health`. Connections are read on threads of their own (a browser's idle connection waits for no one), the
+//! page, the health check and the model's name answered there, and the completions handed to the engine's thread, which runs one reply at a time in the order they come (the
+//! terminal's chat sends its replies the same way).
+
+use crate::chat::{Chat, Message};
+use crate::choice::{Cfg, Choice, Delta, Done, ToolsCfg};
+use crate::conv::{Gen, Outcome, Request, Talk};
+use crate::ffi::{err, Error, Result};
+use crate::model::{Engine, Finish, Reply, MAX_ROWS};
+use crate::sampler::{fresh_seed, Lp, Params};
+use crate::sched::{stats_json, Backend, Ev, Sched, Submit};
+use crate::tok::Tok;
+use crate::tools::{self, Format, ToolChoice, ToolEv, Tools};
+use crate::wire;
+use glyd_gpu::json::{self, Value};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::Arc;
+use std::time::Duration;
+
+const PAGE: &str = include_str!("../data/chat.html");
+const MAX_BODY: usize = 16 << 20;
+const MAX_CONNECTIONS: usize = 64;
+/// The sequences one request may make (its prompts times `n`).
+const MAX_CHOICES: usize = 64;
+
+pub struct Req {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+    /// The Authorization header's value, as it came.
+    auth: Option<String>,
+    /// The Host and Origin headers, and a CORS preflight's questions (the method and the headers it asks about).
+    host: String,
+    origin: String,
+    preflight: Option<(String, Option<String>)>,
+    /// The headers that go with an answer for a browser's script (CORS), as the server's rules allow them for this request's Origin.
+    cors: String,
+}
+
+/// What the engine's thread is asked to do.
+pub enum Job {
+    /// A completions request, its connection open for the reply.
+    Http { s: TcpStream, req: Req, chat: bool, id: u64 },
+    /// An Anthropic Messages request (`count`: /v1/messages/count_tokens), its connection open for the reply.
+    Messages { s: TcpStream, req: Req, count: bool, id: u64 },
+    /// A reply for the terminal's chat: its pieces (and, last, how it ended) come back on `out`.
+    Term { messages: Vec<Message>, request: Request, out: Sender<Piece>, abort: Arc<AtomicBool> },
+    /// A sequence for the scheduler (what a request's thread sends: `Remote`).
+    Seq(Submit),
+    /// The engine's thread returns.
+    Stop,
+}
+
+pub enum Piece {
+    Text(String),
+    End(std::result::Result<Outcome, String>),
+}
+
+/// A request that is not read, with the status it is answered with.
+type Rejected = (u16, String);
+
+/// The bounds of the header block, the request line and the header lines together, checked as it is read and before anything in it is looked at, the key included: a client with no credential cannot
+/// make the server hold what it likes. vLLM's server stopped a block at 4 MiB and 256 headers (uvicorn's limits, which its launcher sets) and its httptools parser sooner; a client's cookies and tokens
+/// are a few KiB. A block past either is answered with 431.
+const MAX_HEAD: usize = 64 << 10;
+const MAX_HEADERS: usize = 256;
+
+/// What the request line and the headers of a request say that the server uses.
+struct Head {
+    method: String,
+    path: String,
+    len: usize,
+    expect: bool,
+    auth: Option<String>,
+    host: String,
+    origin: String,
+    ask_method: Option<String>,
+    ask_headers: Option<String>,
+}
+
+/// One line of the header block read into `buf` within what is left of `budget` (a line past it is refused where it is, never read to its end); false at the end of the input.
+fn head_line(r: &mut impl BufRead, budget: &mut usize, buf: &mut Vec<u8>) -> std::result::Result<bool, Rejected> {
+    buf.clear();
+    let n = r.by_ref().take(*budget as u64 + 1).read_until(b'\n', buf).map_err(|e| (400, e.to_string()))?;
+    if n > *budget {
+        return Err((431, format!("the request's header block is over {} KiB", MAX_HEAD >> 10)));
+    }
+    *budget -= n;
+    Ok(n > 0)
+}
+
+/// The request line and the headers from `r`, within MAX_HEAD bytes and MAX_HEADERS headers; None where the input ends before a request.
+fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Rejected> {
+    let (mut budget, mut buf) = (MAX_HEAD, Vec::new());
+    if !head_line(r, &mut budget, &mut buf)? {
+        return Ok(None);
+    }
+    let line = String::from_utf8_lossy(&buf).into_owned();
+    let mut it = line.split_whitespace();
+    let mut h = Head { method: it.next().unwrap_or("").to_string(), path: it.next().unwrap_or("").to_string(), len: 0, expect: false, auth: None, host: String::new(), origin: String::new(), ask_method: None, ask_headers: None };
+    let mut headers = 0;
+    while head_line(r, &mut budget, &mut buf)? && buf != b"\r\n" && buf != b"\n" {
+        headers += 1;
+        if headers > MAX_HEADERS {
+            return Err((431, format!("the request has more than {MAX_HEADERS} headers")));
+        }
+        let line = String::from_utf8_lossy(&buf).into_owned();
+        let low = line.to_ascii_lowercase();
+        let value = line.split_once(':').map(|(_, v)| v.trim().to_string()).unwrap_or_default();
+        if let Some(v) = low.strip_prefix("content-length:") {
+            h.len = v.trim().parse().unwrap_or(0);
+        } else if low.starts_with("authorization:") {
+            h.auth = Some(value);
+        } else if low.starts_with("host:") {
+            h.host = value;
+        } else if low.starts_with("origin:") {
+            h.origin = value;
+        } else if low.starts_with("access-control-request-method:") {
+            h.ask_method = Some(value);
+        } else if low.starts_with("access-control-request-headers:") {
+            h.ask_headers = Some(value);
+        } else if low.starts_with("expect:") && low.contains("100-continue") {
+            h.expect = true;
+        }
+    }
+    Ok(Some(h))
+}
+
+fn read_request(s: &mut TcpStream) -> std::result::Result<Option<Req>, Rejected> {
+    let bad = |e: std::io::Error| (400, e.to_string());
+    s.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    let mut r = BufReader::new(s.try_clone().map_err(bad)?);
+    let Some(h) = read_head(&mut r)? else { return Ok(None) };
+    if h.len > MAX_BODY {
+        return Err((400, "the request's body is too large".to_string()));
+    }
+    if h.expect {
+        s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").ok();
+    }
+    let mut body = vec![0u8; h.len];
+    r.read_exact(&mut body).map_err(bad)?;
+    let preflight = if h.method == "OPTIONS" && !h.origin.is_empty() { h.ask_method.map(|m| (m, h.ask_headers)) } else { None };
+    Ok(Some(Req { method: h.method, path: h.path, body, auth: h.auth, host: h.host, origin: h.origin, preflight, cors: String::new() }))
+}
+
+/// After an answer that was sent before the request was read to its end (a header block past its bounds): the end of the connection that sends no more, and what the client still sends read and thrown away
+/// for a few seconds, so that the answer is not lost to a reset (closing with unread data) while the client is writing. Nothing of it is kept.
+fn drain(s: &mut TcpStream) {
+    let _ = s.shutdown(std::net::Shutdown::Write);
+    s.set_read_timeout(Some(Duration::from_millis(500))).ok();
+    let (end, mut sink) = (std::time::Instant::now() + Duration::from_secs(3), [0u8; 16 << 10]);
+    while std::time::Instant::now() < end {
+        match s.read(&mut sink) {
+            Ok(n) if n > 0 => {}
+            _ => break,
+        }
+    }
+}
+
+fn status_text(code: u16) -> &'static str {
+    match code {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        421 => "Misdirected Request",
+        431 => "Request Header Fields Too Large",
+        503 => "Service Unavailable",
+        _ => "Internal Server Error",
+    }
+}
+
+fn respond(s: &mut TcpStream, code: u16, ctype: &str, body: &[u8]) {
+    respond_with(s, code, ctype, "", body);
+}
+
+/// `respond` with more header lines (each ending in CRLF).
+fn respond_with(s: &mut TcpStream, code: u16, ctype: &str, extra: &str, body: &[u8]) {
+    let head = format!("HTTP/1.1 {code} {}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n", status_text(code), body.len());
+    if s.write_all(head.as_bytes()).is_ok() {
+        s.write_all(body).ok();
+    }
+}
+
+/// The names this server answers to where it is on this computer's own address: the Host of a request must be one of them (the name a page whose DNS points at this computer has is not).
+const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "[::1]"];
+
+/// The name in a Host header: `localhost:8000` is `localhost`, `[::1]:8000` is `[::1]`.
+fn hostname(host: &str) -> String {
+    let h = host.trim().to_lowercase();
+    if h.starts_with('[') {
+        if let Some(i) = h.find(']') {
+            return h[..=i].to_string();
+        }
+    }
+    h.split(':').next().unwrap_or("").to_string()
+}
+
+/// A string as Python's repr writes it (the first `n` characters, in single quotes), as the Python server's refusals did.
+fn py_repr(s: &str, n: usize) -> String {
+    let t: String = s.chars().take(n).collect();
+    let quote = if t.contains('\'') && !t.contains('"') { '"' } else { '\'' };
+    let mut o = String::new();
+    o.push(quote);
+    for c in t.chars() {
+        match c {
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if c == quote => {
+                o.push('\\');
+                o.push(c);
+            }
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => o.push_str(&format!("\\x{:02x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push(quote);
+    o
+}
+
+/// (status, why) for a request that a server on this computer's own address does not answer, or None: a Host that is not a loopback name is a DNS-rebinding page's (421), an Origin that is not `http://` and
+/// the Host is another page's script (403, a preflight too). A request with no Host or no Origin is not refused for the missing one (curl and the OpenAI libraries send no Origin).
+pub fn refusal(host: &str, origin: &str) -> Option<(u16, String)> {
+    if !host.is_empty() && !LOOPBACK.contains(&hostname(host).as_str()) {
+        return Some((421, format!("this server answers to localhost, 127.0.0.1 and [::1], not to {} (glyd serve --host sets another address)", py_repr(host, 80))));
+    }
+    if !origin.is_empty() && origin.to_lowercase() != format!("http://{}", host.trim().to_lowercase()) {
+        return Some((403, format!("this server answers to its own page, not to a script from {} (to let a web app of your own in: glyd serve MODEL --host 127.0.0.1 turns these checks off for every origin; GLYD_ENGINE=0 glyd serve MODEL --host 127.0.0.1 -- --allowed-origins '[\"http://localhost:5173\"]' keeps vLLM's limit to the origin named)", py_repr(origin, 80))));
+    }
+    None
+}
+
+/// The origins this server's own page has (what the CORS answers of a server on this computer's own address allow).
+fn own_origins(port: u16) -> Vec<String> {
+    LOOPBACK.iter().map(|h| format!("http://{h}:{port}")).collect()
+}
+
+/// The CORS header lines for an answer to a request from `origin`: none where it sends none; on this computer's own address its own origin where it is one of its own; else, where the checks are off, every origin (as vLLM's
+/// default does).
+fn cors_headers(local_only: bool, port: u16, origin: &str) -> String {
+    if origin.is_empty() {
+        String::new()
+    } else if !local_only {
+        "Access-Control-Allow-Origin: *\r\n".to_string()
+    } else if own_origins(port).iter().any(|o| o == origin) {
+        format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n")
+    } else {
+        String::new()
+    }
+}
+
+/// A CORS preflight's answer as Starlette's CORSMiddleware gives it (vLLM's): 200 `OK` with what is allowed where the origin is, 400 `Disallowed CORS origin` where it is not (a method outside the list too).
+fn preflight(s: &mut TcpStream, local_only: bool, port: u16, origin: &str, method: &str, headers: Option<&str>) {
+    const METHODS: [&str; 7] = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
+    let allowed = !local_only || own_origins(port).iter().any(|o| o == origin);
+    let mut failures = Vec::new();
+    if !allowed {
+        failures.push("origin");
+    }
+    if !METHODS.contains(&method) {
+        failures.push("method");
+    }
+    let mut extra = format!("Access-Control-Allow-Methods: {}\r\nAccess-Control-Max-Age: 600\r\n", METHODS.join(", "));
+    if allowed {
+        extra.push_str(&if local_only { format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n") } else { "Access-Control-Allow-Origin: *\r\n".to_string() });
+    }
+    if let Some(h) = headers {
+        extra.push_str(&format!("Access-Control-Allow-Headers: {h}\r\n"));
+    }
+    if failures.is_empty() {
+        respond_with(s, 200, "text/plain; charset=utf-8", &extra, b"OK");
+    } else {
+        respond_with(s, 400, "text/plain; charset=utf-8", &extra, format!("Disallowed CORS {}", failures.join(", ")).as_bytes());
+    }
+}
+
+/// Whether an Authorization header's value carries the key, as vLLM's middleware checks it: the scheme `Bearer` (any case), then the token after the first space, compared as SHA-256 digests in constant time.
+fn key_matches(digest: &[u8; 32], auth: Option<&str>) -> bool {
+    let Some((scheme, token)) = auth.and_then(|a| a.split_once(' ')) else { return false };
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return false;
+    }
+    let got = key_digest(token);
+    got.iter().zip(digest).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0
+}
+
+fn key_digest(key: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(key.as_bytes()).into()
+}
+
+/// The page's own headers: what a script in it may load and be framed by (itself only), no sniffing, no referrer.
+const PAGE_HEADERS: &str = "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n";
+
+/// A JSON string literal.
+pub fn jstr(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 2);
+    o.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+fn error_body(msg: &str, code: u16) -> String {
+    format!("{{\"error\":{{\"message\":{},\"type\":\"invalid_request_error\",\"code\":{code}}}}}", jstr(&said(msg)))
+}
+
+/// The server runs alone (qwenserve): no vLLM behind it for a refusal to point at, `tool_choice: "none"` keeps the tools out of the prompt (the model would write calls that are not read), and `response_format`'s
+/// JSON is asked for in the prompt, the answer begun with `{` (not a grammar: the model can still write JSON that does not parse, or that misses the schema).
+pub static STANDALONE: AtomicBool = AtomicBool::new(false);
+
+/// A refusal's words; where the server runs alone, without the notes that point at vLLM.
+fn said(msg: &str) -> String {
+    if STANDALONE.load(Ordering::Relaxed) { without_vllm(msg) } else { msg.to_string() }
+}
+
+/// A message without its notes in brackets that point at vLLM (`GLYD_ENGINE=0 ...`).
+fn without_vllm(msg: &str) -> String {
+    let mut m = msg.to_string();
+    loop {
+        let Some(i) = m.find("GLYD_ENGINE=0") else { break };
+        let (Some(a), Some(b)) = (m[..i].rfind('('), m[i..].find(')')) else { break };
+        let a = if m[..a].ends_with(' ') { a - 1 } else { a };
+        m.replace_range(a..=i + b, "");
+    }
+    m
+}
+
+/// The instruction for JSON mode where the server runs alone and the request asks for it (`response_format` json_object, or json_schema with its schema).
+fn json_rule(v: &Value, standalone: bool) -> Option<String> {
+    let rf = v.get("response_format").filter(|_| standalone)?;
+    let rule = "Reply with one JSON object and nothing else: no code fence, no text before or after it.";
+    match rf.get("type").and_then(Value::as_str)? {
+        "json_object" => Some(rule.to_string()),
+        "json_schema" => {
+            let schema = rf.get("json_schema").and_then(|j| j.get("schema")).map_or("{}".to_string(), json::to_compact);
+            Some(format!("{rule} It must match this JSON schema: {schema}"))
+        }
+        _ => None,
+    }
+}
+
+fn num(v: &Value, k: &str) -> Option<f64> {
+    match v.get(k)? {
+        Value::Number(n) => n.parse().ok(),
+        _ => None,
+    }
+}
+
+/// The request's sampling and limits (the OpenAI names, and vLLM's top_k, min_p and repetition_penalty).
+pub fn request_of(v: &Value, window: usize, defaults: &Params) -> Request {
+    let mut r = Request { max_new: window, ..Request::default() };
+    let p = &mut r.params;
+    *p = defaults.clone();
+    if let Some(x) = num(v, "temperature") {
+        // (a temperature above 0 and below 0.01 is 0.01, as vLLM holds it: only 0 is greedy)
+        p.temperature = if x > 0.0 && x < 0.01 { 0.01 } else { x as f32 };
+    }
+    if let Some(x) = num(v, "top_p") {
+        p.top_p = x as f32;
+    }
+    if let Some(x) = num(v, "top_k") {
+        p.top_k = x.max(0.0) as usize;
+    }
+    if let Some(x) = num(v, "min_p") {
+        p.min_p = x as f32;
+    }
+    if let Some(x) = num(v, "presence_penalty") {
+        p.presence_penalty = x as f32;
+    }
+    if let Some(x) = num(v, "frequency_penalty") {
+        p.frequency_penalty = x as f32;
+    }
+    if let Some(x) = num(v, "repetition_penalty") {
+        p.repetition_penalty = x as f32;
+    }
+    p.seed = fresh_seed();
+    if let Some(x) = num(v, "seed").filter(|&x| x != -1.0) {
+        p.seed = x as i64 as u64;
+    }
+    p.logit_bias = logit_bias_of(v, usize::MAX).unwrap_or_default();
+    if let Some(b) = v.get("ignore_eos").and_then(Value::as_bool) {
+        r.ignore_eos = b;
+    }
+    if let Some(n) = num(v, "max_completion_tokens").or_else(|| num(v, "max_tokens")) {
+        r.max_new = (n.max(1.0) as usize).min(window.max(1));
+    }
+    match v.get("stop") {
+        Some(Value::String(s)) => r.stop.push(s.clone()),
+        Some(Value::Array(a)) => r.stop.extend(a.iter().filter_map(|x| x.as_str().map(str::to_string))),
+        _ => {}
+    }
+    r.stop_ids = ids_of(v, "stop_token_ids");
+    r.include_stop = v.get("include_stop_str_in_output").and_then(Value::as_bool) == Some(true);
+    r.skip_special = v.get("skip_special_tokens").and_then(Value::as_bool) != Some(false);
+    p.min_tokens = num(v, "min_tokens").map_or(0, |x| x.max(0.0) as usize);
+    p.allowed = ids_of(v, "allowed_token_ids");
+    // `chat_template_kwargs` as vLLM takes them: each key a variable of the template (`enable_thinking` also sets the engine's own flag)
+    if let Some(kw) = v.get("chat_template_kwargs").and_then(Value::as_object) {
+        for (k, x) in kw {
+            match (k.as_str(), x.as_bool()) {
+                ("enable_thinking", Some(b)) => r.thinking = Some(b),
+                _ => r.template_kwargs.push((k.clone(), x.clone())),
+            }
+        }
+    }
+    // vLLM gives the template `reasoning_effort` and, where `enable_thinking` is not given, thinking on unless the effort is none; `documents` go to the template as they are
+    if let Some(e) = v.get("reasoning_effort").and_then(Value::as_str) {
+        r.template_kwargs.push(("reasoning_effort".to_string(), Value::from(e)));
+        if r.thinking.is_none() {
+            r.thinking = Some(e != "none");
+        }
+    }
+    if let Some(d @ Value::Array(_)) = v.get("documents") {
+        r.template_kwargs.push(("documents".to_string(), d.clone()));
+    }
+    r
+}
+
+/// A request's list of token ids (absent or null: none).
+fn ids_of(v: &Value, k: &str) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::new();
+    for t in v.get(k).and_then(Value::as_array).unwrap_or(&[]).iter().filter_map(Value::as_u64) {
+        if !out.contains(&(t as u32)) {
+            out.push(t as u32);
+        }
+    }
+    out
+}
+
+/// The request's `logit_bias` as vLLM takes it: an object whose keys are token ids (as strings) and whose values are numbers, each value held to -100..100; an id must be in the vocabulary. A later key of the
+/// same id wins. The message says what is wrong, as vLLM's does.
+pub fn logit_bias_of(v: &Value, vocab: usize) -> std::result::Result<Vec<(u32, f32)>, String> {
+    let o = match v.get("logit_bias") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err("logit_bias must be an object of token ids and numbers".to_string()),
+    };
+    let (mut out, mut not_ids, mut outside): (Vec<(u32, f32)>, Vec<&str>, Vec<i64>) = (Vec::new(), Vec::new(), Vec::new());
+    for (k, x) in o {
+        let Value::Number(n) = x else { return Err(format!("logit_bias: the value of {k:?} is not a number")) };
+        let Ok(bias) = n.parse::<f64>() else { return Err(format!("logit_bias: the value of {k:?} is not a number")) };
+        let Ok(id) = k.trim().parse::<i64>() else {
+            not_ids.push(k);
+            continue;
+        };
+        if id < 0 || id as usize >= vocab {
+            outside.push(id);
+            continue;
+        }
+        let bias = bias.clamp(-100.0, 100.0) as f32;
+        match out.iter_mut().find(|(t, _)| *t == id as u32) {
+            Some(e) => e.1 = bias,
+            None => out.push((id as u32, bias)),
+        }
+    }
+    if !not_ids.is_empty() {
+        return Err(format!("logit_bias contains key(s) that cannot be converted to integer token IDs: {not_ids:?}"));
+    }
+    if !outside.is_empty() {
+        return Err(format!("token_id(s) {outside:?} in logit_bias contain out-of-vocab token ids. Vocabulary size: {vocab}"));
+    }
+    Ok(out)
+}
+
+/// What is wrong in a request's values (a message as vLLM words it), before any work is done for it.
+pub fn invalid(v: &Value, chat: bool, vocab: usize) -> Option<String> {
+    api_of(v, chat, vocab).err()
+}
+
+/// The request fields this server does not do, each with the value that means it was not asked for (null is never a request): where a request has another value it is refused, in words, instead of ignored.
+const NOT_DONE: &[(&str, &str)] = &[
+    ("use_beam_search", "false"),
+    ("bad_words", "[]"),
+    ("prompt_logprobs", "null"),
+    ("logprob_token_ids", "null"),
+    ("thinking_token_budget", "null"),
+    ("truncate_prompt_tokens", "null"),
+    ("truncation_side", "null"),
+    ("return_token_ids", "false"),
+    ("return_prompt_text", "false"),
+    ("return_token_offsets", "false"),
+    ("return_assistant_tokens_mask", "false"),
+    ("cache_salt", "null"),
+    ("kv_transfer_params", "null"),
+    ("ec_transfer_params", "null"),
+    ("vllm_xargs", "null"),
+    ("repetition_detection", "null"),
+    ("stream_interval", "null"),
+    ("priority", "0"),
+    ("chat_template", "null"),
+    ("media_io_kwargs", "null"),
+    ("mm_processor_kwargs", "null"),
+    ("continue_final_message", "false"),
+    ("suffix", "null"),
+    ("prompt_embeds", "null"),
+    ("functions", "null"),
+    ("function_call", "null"),
+    ("audio", "null"),
+    ("prediction", "null"),
+    ("web_search_options", "null"),
+];
+
+/// The fields of constrained decoding (a grammar, a JSON schema, a regular expression, a choice): not done yet.
+const CONSTRAINED: &[&str] = &["structured_outputs", "guided_json", "guided_regex", "guided_choice", "guided_grammar", "guided_decoding_backend", "guided_whitespace_pattern"];
+
+/// What an engine that runs one sequence at a time (`work_gen`'s: a level's) does not do besides NOT_DONE, as NOT_DONE lists it: it gives no log-probabilities, and no least length (`min_tokens`).
+pub const ONE_AT_A_TIME: &[(&str, &str)] = &[("logprobs", "false"), ("min_tokens", "0")];
+
+/// Whether the request sets `name` to something other than null and `default`, the value that means it was not asked for.
+fn asked(v: &Value, name: &str, default: &str) -> bool {
+    v.get(name).is_some_and(|x| *x != Value::Null && json::parse(default).map_or(true, |d| *x != d))
+}
+
+/// What a request asks for that this server does not do, said instead of ignored (a client that asks for a JSON schema, a beam search or the prompt's log-probabilities and gets none of them would go on as if it had).
+pub fn unsupported(v: &Value) -> Option<String> {
+    let yet = "is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)";
+    if let Some(t) = v.get("response_format").and_then(|r| r.get("type")).and_then(Value::as_str).filter(|t| *t != "text" && json_rule(v, STANDALONE.load(Ordering::Relaxed)).is_none()) {
+        return Some(format!("response_format of type {t} (constrained decoding) {yet}"));
+    }
+    for name in CONSTRAINED {
+        if v.get(name).is_some_and(|x| *x != Value::Null) {
+            return Some(format!("{name} (constrained decoding) {yet}"));
+        }
+    }
+    if let Some((name, _)) = NOT_DONE.iter().find(|(n, d)| asked(v, n, d)) {
+        return Some(format!("{name} {yet}"));
+    }
+    if v.get("best_of").and_then(Value::as_u64).is_some_and(|b| b > num(v, "n").map_or(1, |n| n as u64)) {
+        return Some(format!("best_of more than n {yet}"));
+    }
+    None
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// The OpenAI limit on the likeliest tokens a step's log-probabilities list (vLLM's default `--max-logprobs`).
+const MAX_LOGPROBS: i64 = 20;
+
+/// What a request asks for beside its sampling: whether it streams and what the stream carries, how many choices, the log-probabilities.
+struct Api {
+    stream: bool,
+    include_usage: bool,
+    n: usize,
+    /// The likeliest tokens a token's log-probabilities list (0: the chosen token's alone); None: none asked for.
+    logprobs: Option<usize>,
+    /// Log-probabilities name a token as `token_id:N` (vLLM's `return_tokens_as_token_ids`).
+    as_ids: bool,
+    /// The thinking is left out of the reply (vLLM's `include_reasoning: false`).
+    hide_reasoning: bool,
+    /// The functions the model may call, and how it chooses (a chat's).
+    tools: Option<Tools>,
+    /// The generation prompt is added (a chat's `add_generation_prompt`, true unless said), and whether the tokenizer adds its special tokens (`add_special_tokens`; unset: a chat's no, a plain prompt's yes).
+    add_generation_prompt: bool,
+    add_special: Option<bool>,
+    /// A plain completion's `echo`: the prompt comes first in each choice's text.
+    echo: bool,
+    /// The id the reply is given (`request_id`).
+    request_id: Option<String>,
+    /// How many choices the request makes in all (its prompts times `n`), and the text each prompt's choices begin with where they echo it.
+    total: usize,
+    echo_texts: Vec<String>,
+}
+
+/// A request's integer field: absent or null is None; a number that is not whole is refused.
+fn int_field(v: &Value, k: &str) -> std::result::Result<Option<i64>, String> {
+    match v.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => match n.parse::<i64>().ok().or_else(|| n.parse::<f64>().ok().filter(|f| f.fract() == 0.0 && f.abs() < 9e18).map(|f| f as i64)) {
+            Some(i) => Ok(Some(i)),
+            None => Err(format!("`{k}` must be an integer.")),
+        },
+        Some(_) => Err(format!("`{k}` must be an integer.")),
+    }
+}
+
+/// A request's number field: absent or null is None; what is not a number is refused.
+fn float_field(v: &Value, k: &str) -> std::result::Result<Option<f64>, String> {
+    match v.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n.parse::<f64>().map(Some).map_err(|_| format!("`{k}` must be a number.")),
+        Some(_) => Err(format!("`{k}` must be a number.")),
+    }
+}
+
+/// The ranges and types of the sampling fields, in vLLM's words (SamplingParams' own checks).
+fn check_values(v: &Value, vocab: usize) -> std::result::Result<(), String> {
+    if let Some(t) = float_field(v, "temperature")? {
+        if t < 0.0 || t.is_nan() {
+            return Err(format!("temperature must be non-negative, got {t}."));
+        }
+        if t > 2.0 {
+            return Err(format!("temperature must be in [0, 2], got {t}."));
+        }
+    }
+    if let Some(p) = float_field(v, "top_p")? {
+        if !(p > 0.0 && p <= 1.0) {
+            return Err(format!("top_p must be in (0, 1], got {p}."));
+        }
+    }
+    if let Some(k) = int_field(v, "top_k")? {
+        if k < -1 {
+            return Err(format!("top_k must be 0 (disable), or at least 1, got {k}."));
+        }
+    }
+    if let Some(p) = float_field(v, "min_p")? {
+        if !(0.0..=1.0).contains(&p) {
+            return Err(format!("min_p must be in [0, 1], got {p}."));
+        }
+    }
+    for k in ["presence_penalty", "frequency_penalty"] {
+        if let Some(x) = float_field(v, k)? {
+            if !(-2.0..=2.0).contains(&x) {
+                return Err(format!("{k} must be in [-2, 2], got {x}."));
+            }
+        }
+    }
+    if let Some(x) = float_field(v, "repetition_penalty")? {
+        if x.is_nan() || x <= 0.0 {
+            return Err(format!("repetition_penalty must be greater than zero, got {x}."));
+        }
+    }
+    let max = match (int_field(v, "max_completion_tokens")?, int_field(v, "max_tokens")?) {
+        (Some(m), _) | (None, Some(m)) => Some(m),
+        _ => None,
+    };
+    if let Some(m) = max {
+        if m < 1 {
+            return Err(format!("max_tokens must be at least 1, got {m}."));
+        }
+    }
+    if let Some(m) = int_field(v, "min_tokens")? {
+        if m < 0 {
+            return Err(format!("min_tokens must be greater than or equal to 0, got {m}."));
+        }
+        if let Some(max) = max.filter(|&x| m > x) {
+            return Err(format!("min_tokens must be less than or equal to max_tokens={max}, got {m}."));
+        }
+    }
+    int_field(v, "seed")?;
+    match v.get("stop") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(s)) if !s.is_empty() => {}
+        Some(Value::Array(a)) if a.iter().all(|x| matches!(x, Value::String(s) if !s.is_empty())) => {}
+        Some(Value::String(_)) | Some(Value::Array(_)) => return Err("stop cannot contain an empty string.".to_string()),
+        Some(_) => return Err("`stop` must be a string or a list of strings.".to_string()),
+    }
+    for k in ["stop_token_ids", "allowed_token_ids"] {
+        match v.get(k) {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(a)) => {
+                let mut outside = Vec::new();
+                for x in a {
+                    match x.as_i64() {
+                        Some(t) if t >= 0 && (t as usize) < vocab => {}
+                        Some(t) => outside.push(t),
+                        None => return Err(format!("{k} must contain only integers.")),
+                    }
+                }
+                if !outside.is_empty() {
+                    return Err(format!("token_id(s) {outside:?} in {k} contain out-of-vocab token ids. Vocabulary size: {vocab}"));
+                }
+                if k == "allowed_token_ids" && a.is_empty() {
+                    return Err("allowed_token_ids is not None and empty!".to_string());
+                }
+            }
+            Some(_) => return Err(format!("`{k}` must be a list of token ids.")),
+        }
+    }
+    if let Some(e) = v.get("reasoning_effort").filter(|e| **e != Value::Null) {
+        if !matches!(e.as_str(), Some("none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max")) {
+            return Err("`reasoning_effort` must be one of none, minimal, low, medium, high, xhigh, max.".to_string());
+        }
+    }
+    match v.get("documents") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(a)) if a.iter().all(|d| d.as_object().is_some_and(|o| o.iter().all(|(_, x)| matches!(x, Value::String(_))))) => {}
+        Some(_) => return Err("`documents` must be a list of objects whose values are strings.".to_string()),
+    }
+    Ok(())
+}
+
+/// How many likeliest tokens a request asks each token's log-probabilities to list: a chat's `logprobs: true` with `top_logprobs`, a plain completion's `logprobs: N`, as vLLM reads them (and refuses the rest).
+fn logprobs_asked(v: &Value, chat: bool, vocab: usize) -> std::result::Result<Option<usize>, String> {
+    let (on, k) = if chat {
+        let on = match v.get("logprobs") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            Some(_) => return Err("`logprobs` must be true or false.".to_string()),
+        };
+        let top = int_field(v, "top_logprobs")?;
+        if let Some(t) = top {
+            if t < 0 && t != -1 {
+                return Err("`top_logprobs` must be a positive value or -1.".to_string());
+            }
+            if (t == -1 || t > 0) && !on {
+                return Err("when using `top_logprobs`, `logprobs` must be set to true.".to_string());
+            }
+        }
+        (on, top.unwrap_or(0))
+    } else {
+        match int_field(v, "logprobs")? {
+            None => (false, 0),
+            Some(k) if k < 0 && k != -1 => return Err("`logprobs` must be a positive value or -1.".to_string()),
+            Some(k) => (true, k),
+        }
+    };
+    if !on {
+        return Ok(None);
+    }
+    if k == -1 || k > MAX_LOGPROBS {
+        return Err(format!("Requested sample logprobs of {}, which is greater than max allowed: {MAX_LOGPROBS}", if k == -1 { vocab as i64 } else { k }));
+    }
+    Ok(Some(k as usize))
+}
+
+fn api_of(v: &Value, chat: bool, vocab: usize) -> std::result::Result<Api, String> {
+    logit_bias_of(v, vocab)?;
+    let stream = v.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let options = v.get("stream_options").filter(|o| !matches!(o, Value::Null) && !matches!(o, Value::Object(m) if m.is_empty())); // (null and {} are none: vLLM tests the dict's truth)
+    if options.is_some() && !stream {
+        return Err("Stream options can only be defined when `stream=True`.".to_string());
+    }
+    if options.and_then(|o| o.get("continuous_usage_stats")).and_then(Value::as_bool) == Some(true) {
+        return Err("stream_options.continuous_usage_stats is not supported by this server (GLYD_ENGINE=0 runs vLLM, which has it)".to_string());
+    }
+    let n = int_field(v, "n")?.unwrap_or(1);
+    if n < 1 {
+        return Err(format!("n must be at least 1, got {n}."));
+    }
+    if n > MAX_ROWS as i64 {
+        return Err(format!("n must be at most {MAX_ROWS}, got {n}. (This engine runs up to {MAX_ROWS} sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"));
+    }
+    check_values(v, vocab)?;
+    if chat && v.get("echo").and_then(Value::as_bool) == Some(true) {
+        return Err("echo of a chat reply is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)".to_string());
+    }
+    if !chat && v.get("echo").and_then(Value::as_bool) == Some(true) && logprobs_asked(v, false, vocab)?.is_some() {
+        return Err("logprobs with echo (the prompt's log-probabilities too) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)".to_string());
+    }
+    let hide_reasoning = v.get("include_reasoning").and_then(Value::as_bool) == Some(false);
+    let logprobs = logprobs_asked(v, chat, vocab)?;
+    Ok(Api {
+        stream,
+        include_usage: options.and_then(|o| o.get("include_usage")).and_then(Value::as_bool).unwrap_or(false),
+        n: n as usize,
+        logprobs: logprobs.filter(|_| !(chat && hide_reasoning)), // (as vLLM: a chat whose reasoning is hidden has no log-probabilities, which would spell it out token by token)
+        as_ids: v.get("return_tokens_as_token_ids").and_then(Value::as_bool).unwrap_or(false),
+        hide_reasoning,
+        tools: if chat { tools::tools_of(v)? } else { None },
+        add_generation_prompt: v.get("add_generation_prompt").and_then(Value::as_bool) != Some(false),
+        add_special: v.get("add_special_tokens").and_then(Value::as_bool),
+        echo: !chat && v.get("echo").and_then(Value::as_bool) == Some(true),
+        request_id: v.get("request_id").and_then(Value::as_str).filter(|r| !r.is_empty()).map(str::to_string),
+        total: n as usize,
+        echo_texts: Vec::new(),
+    })
+}
+
+/// One prompt of a request: its ids, its text (what an echo says), whether it ends inside the thinking, and the opening of the reply where it is a call that is asked for.
+struct Prompt {
+    ids: Vec<u32>,
+    text: String,
+    in_thinking: bool,
+    prefix: String,
+    /// Its images in order, where the model reads them (`vision::PREP`): each one's place in `ids` its tokens.
+    images: Vec<Arc<crate::vision::Image>>,
+}
+
+/// The prompts of a request: a chat's one, or a plain completion's `prompt` as a string, a list of strings, a list of token ids or a list of those (each a prompt of its own, as vLLM takes them).
+fn prompts_of(sh: &Shared, v: &Value, chat: bool, api: &Api, r: &Request) -> Result<Vec<Prompt>> {
+    if chat {
+        let (text, in_thinking, prefix, urls) = chat_text_of(sh, v, api, r)?;
+        let mut ids = sh.tok.encode_with(&text, api.add_special.unwrap_or(false))?;
+        // (the images read here, on the request's thread: each one's place made as long as its tokens)
+        let mut images = Vec::new();
+        if let (Some(prep), false) = (crate::vision::PREP.get(), urls.is_empty()) {
+            images = urls.iter().map(|u| prep.image(&crate::vision::fetch(u)?).map(Arc::new)).collect::<Result<Vec<_>>>()?;
+            ids = crate::vision::expand(&ids, prep.image_token, &images)?;
+        }
+        return Ok(vec![Prompt { ids, text, in_thinking, prefix, images }]);
+    }
+    let empty = || Error("Either prompt or prompt_embeds must be provided and non-empty.".into());
+    let special = api.add_special.unwrap_or(true);
+    let ids_of_list = |a: &[Value]| -> Result<Vec<u32>> {
+        let ids: Option<Vec<u32>> = a.iter().map(|x| x.as_u64().filter(|&t| (t as usize) < sh.vocab).map(|t| t as u32)).collect();
+        ids.ok_or_else(|| Error(format!("a prompt of token ids with one that is not a token of the vocabulary (size {})", sh.vocab)))
+    };
+    let from_text = |t: &str| -> Result<Prompt> { Ok(Prompt { ids: sh.tok.encode_with(t, special)?, text: t.to_string(), in_thinking: false, prefix: String::new(), images: Vec::new() }) };
+    let from_ids = |ids: Vec<u32>| -> Result<Prompt> { Ok(Prompt { text: sh.tok.decode(&ids)?, ids, in_thinking: false, prefix: String::new(), images: Vec::new() }) };
+    let wrong = || Error("`prompt` must be a string, a list of strings, a list of token ids or a list of lists of token ids".into());
+    let prompts = match v.get("prompt") {
+        Some(Value::String(t)) if !t.is_empty() => vec![from_text(t)?],
+        Some(Value::Array(a)) if !a.is_empty() && a.iter().all(|x| matches!(x, Value::Number(_))) => vec![from_ids(ids_of_list(a)?)?],
+        Some(Value::Array(a)) if !a.is_empty() && a.iter().all(|x| matches!(x, Value::String(_))) => a.iter().filter_map(Value::as_str).map(from_text).collect::<Result<_>>()?,
+        Some(Value::Array(a)) if !a.is_empty() && a.iter().all(|x| matches!(x, Value::Array(l) if !l.is_empty())) => a.iter().filter_map(Value::as_array).map(|l| from_ids(ids_of_list(l)?)).collect::<Result<_>>()?,
+        None | Some(Value::Null) | Some(Value::String(_)) => return Err(empty()),
+        Some(Value::Array(a)) if a.is_empty() => return Err(empty()),
+        _ => return Err(wrong()),
+    };
+    Ok(prompts)
+}
+
+/// The text of a chat prompt (the template's, with the tools, and a forced call's opening at its end), whether it ends inside the thinking, and that opening; and its images' URLs in order
+/// where the model reads images (`vision::PREP`).
+fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(String, bool, String, Vec<String>)> {
+    let mut urls = Vec::new();
+    let mut messages = tools::template_messages_with(v, crate::vision::PREP.get().map(|_| &mut urls)).map_err(Error)?;
+    let standalone = STANDALONE.load(Ordering::Relaxed);
+    let Some(c) = sh.chat.as_ref() else {
+        // (a model with no template: lines of `role: text`)
+        if api.tools.is_some() {
+            return err("this model has no chat template, so it has no way to be told of tools (GLYD_ENGINE=0 runs vLLM, which answers the request without them)");
+        }
+        let mut t = messages.iter().map(|m| format!("{}: {}", m.get("role").and_then(Value::as_str).unwrap_or(""), m.get("content").and_then(Value::as_str).unwrap_or(""))).collect::<Vec<_>>().join("\n");
+        t.push_str("\nassistant:");
+        return Ok((t, false, String::new(), urls));
+    };
+    let mut o = r.template_options();
+    o.add_generation_prompt = api.add_generation_prompt;
+    let mut prefix = String::new();
+    // (Kimi-K3's forced call: its opening, written after the template, by where the prompt ends)
+    let mut xtml_call: Option<Option<String>> = None;
+    if let Some(t) = api.tools.as_ref().filter(|t| !(standalone && t.choice == ToolChoice::None)) {
+        if !(c.mentions("tools") && (c.is_xtml() || c.mentions(Format::of(c).open()))) {
+            return err("this model's chat template has no tools, or no tool-call format for them: a request with tools cannot be served here (GLYD_ENGINE=0 runs vLLM, which answers it without them)");
+        }
+        o.tools = Some(t.list.clone());
+        // (a call required of one tool is a call of that tool: else the model may name one it was not given)
+        let only = (standalone && t.choice == ToolChoice::Required && t.list.len() == 1).then(|| t.list[0].get("function").and_then(|f| f.get("name")).and_then(Value::as_str)).flatten();
+        let choice = only.map_or(t.choice.clone(), |n| ToolChoice::Named(n.to_string()));
+        // (a call required of several tools opens with `<tool_call>` alone where the server runs alone: cut after `<function=`, the model named a tool it was not given, as `weather` for `get_weather`)
+        if c.is_xtml() {
+            xtml_call = match &choice {
+                ToolChoice::Required => Some(None),
+                ToolChoice::Named(n) => Some(Some(n.clone())),
+                _ => None,
+            };
+        }
+        let forced = tools::forced_prefix(&choice, Format::of(c)).filter(|_| !c.is_xtml()).map(|p| if standalone && choice == ToolChoice::Required { p.trim_end_matches(tools::FN_OPEN).to_string() } else { p });
+        if let Some(p) = forced {
+            // a forced call is the reply's first words: the thinking is closed in the prompt, where the template can
+            if c.mentions("enable_thinking") {
+                o.kwargs.retain(|(k, _)| k != "enable_thinking");
+                o.kwargs.push(("enable_thinking".to_string(), Value::Bool(false)));
+            }
+            prefix = p;
+        }
+    }
+    if let Some(rule) = json_rule(v, standalone) {
+        if api.tools.is_some() {
+            return err("response_format with tools is not supported yet: send one or the other");
+        }
+        // the rule goes in the system prompt (the template takes a system message first only), the thinking is closed and the answer begins with `{`
+        match messages.first_mut().filter(|m| m.get("role").and_then(Value::as_str) == Some("system")) {
+            Some(Value::Object(m)) => {
+                if let Some((_, Value::String(t))) = m.iter_mut().find(|(k, _)| k == "content") {
+                    *t = format!("{t}\n\n{rule}");
+                }
+            }
+            _ => messages.insert(0, tools::obj(vec![("role", Value::from("system")), ("content", Value::String(rule))])),
+        }
+        if c.mentions("enable_thinking") {
+            o.kwargs.retain(|(k, _)| k != "enable_thinking");
+            o.kwargs.push(("enable_thinking".to_string(), Value::Bool(false)));
+        }
+        prefix = "{".to_string();
+    }
+    let mut text = c.render_json(&Value::Array(messages), &o)?;
+    let mut in_thinking = text.trim_end().ends_with("<think>");
+    // (a reply that must begin with a call or a JSON object, where the template has no switch for the thinking and opens it, as GLM-5.3-Flash's: closed
+    // empty, as the template writes a turn without reasoning)
+    if in_thinking && !prefix.is_empty() && xtml_call.is_none() {
+        text.push_str("</think>");
+        in_thinking = false;
+    }
+    if let Some(name) = xtml_call {
+        // (the think channel closed empty where the prompt opened it, else the response the prompt opened)
+        let in_think = text.ends_with(crate::conv::XTML_THINK);
+        if !in_think && !text.ends_with("<|open|>response<|sep|>") {
+            return err("this model's prompt does not end where its reply begins, so a call cannot be required of it");
+        }
+        prefix = crate::xtml::forced(in_think, name.as_deref());
+    }
+    text.push_str(&prefix);
+    Ok((text, in_thinking, prefix, urls))
+}
+
+/// A choice as a reply that is not streamed has it.
+#[derive(Default)]
+struct Whole {
+    lps: Vec<Lp>,
+    ended: Option<(Done, String)>,
+}
+
+/// What a choice's thread tells the request's: what its text adds, and how it ended (with its thinking where the reply is not streamed), or why it could not.
+enum Out {
+    Delta(usize, Delta),
+    Done { i: usize, last: Delta, done: Done, thinking: Option<String> },
+    Failed(String),
+}
+
+/// The sequence of `h` asked to end, and waited for until the engine has let it go (its end comes last; a closed channel is an engine that has stopped): what it held is the engine's to use again
+/// when this returns.
+fn settle(h: &Handle) {
+    h.abort.store(true, Ordering::Relaxed);
+    while let Ok(ev) = h.events.recv() {
+        if matches!(ev, Ev::End(_)) {
+            break;
+        }
+    }
+}
+
+/// A choice's thread: the events of its sequence become text and log-probabilities for the request's thread. `first` is told when the first event has come (the others of the request wait for it: the prompt's blocks
+/// are then in the cache for them to find). It returns when the engine has let the sequence go: a choice that ends before the engine ends it (a stop string, its request gone) waits for that (`settle`).
+fn drive(i: usize, h: Handle, mut c: Choice, tok: &Tok, whole: bool, out: Sender<Out>, mut first: Option<Sender<()>>) {
+    loop {
+        let ev = h.events.recv();
+        if let Some(f) = first.take() {
+            let _ = f.send(());
+        }
+        let ended = matches!(ev, Ok(Ev::End(_)) | Err(_));
+        let step: std::result::Result<Option<Finish>, String> = match ev {
+            Ok(Ev::Lp(lp)) => {
+                c.lp(lp);
+                Ok(None)
+            }
+            Ok(Ev::Token(t)) => match c.token(tok, t) {
+                Ok(d) => {
+                    if !d.is_empty() && out.send(Out::Delta(i, d)).is_err() {
+                        return settle(&h);
+                    }
+                    if c.stopped() {
+                        h.abort.store(true, Ordering::Relaxed);
+                        Ok(Some(Finish::Stopped))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Err(e) => Err(e.to_string()),
+            },
+            Ok(Ev::End(Ok(f))) => Ok(Some(f)),
+            Ok(Ev::End(Err(e))) => Err(e),
+            Err(_) => Err("the engine stopped".to_string()),
+        };
+        match step {
+            Ok(None) => continue,
+            Ok(Some(f)) => {
+                let _ = match c.end(tok, f) {
+                    Ok((last, done)) => out.send(Out::Done { i, last, done, thinking: whole.then(|| c.reasoning.clone()) }),
+                    Err(e) => out.send(Out::Failed(e.to_string())),
+                };
+            }
+            Err(e) => {
+                let _ = out.send(Out::Failed(e));
+            }
+        }
+        if !ended {
+            settle(&h);
+        }
+        return;
+    }
+}
+
+/// The fields of a chat delta: the thinking (as `reasoning_content`, and `reasoning` as vLLM 0.30 names it), the answer, and the tool calls begun or continued (a call's function with its id, or more of its arguments).
+fn delta_fields(d: &Delta) -> String {
+    let mut f = Vec::new();
+    if !d.reasoning.is_empty() {
+        f.push(format!("\"reasoning_content\":{0},\"reasoning\":{0}", jstr(&d.reasoning)));
+    }
+    if !d.content.is_empty() {
+        f.push(format!("\"content\":{}", jstr(&d.content)));
+    }
+    if !d.calls.is_empty() {
+        let calls: Vec<String> = d
+            .calls
+            .iter()
+            .filter_map(|c| match c {
+                ToolEv::Start { index, id, name } => Some(format!("{{\"index\":{index},\"id\":{},\"type\":\"function\",\"function\":{{\"name\":{}}}}}", jstr(id), jstr(name))),
+                ToolEv::Args { index, args } => Some(format!("{{\"index\":{index},\"function\":{{\"arguments\":{}}}}}", jstr(args))),
+                ToolEv::Content(_) => None,
+            })
+            .collect();
+        f.push(format!("\"tool_calls\":[{}]", calls.join(",")));
+    }
+    f.join(",")
+}
+
+/// One completions request on `s`: chat (messages) or plain (a prompt); or, at /v1/glyd/tokenize, the count of its prompt's tokens alone (a chat's where it has messages), made as its reply's would be.
+fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, chat: bool, id: u64) {
+    let bad = |s: &mut TcpStream, msg: &str| respond_with(s, 400, "application/json", &req.cors, error_body(msg, 400).as_bytes());
+    let v = match std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()) {
+        Some(v) => v,
+        None => return bad(s, "the body is not JSON"),
+    };
+    let count = req.path.split('?').next() == Some("/v1/glyd/tokenize");
+    let chat = if count { v.get("messages").is_some() } else { chat };
+    warn_unknown(&v, chat);
+    let not_here = || sh.refused.iter().find(|(n, d)| asked(&v, n, d)).map(|(n, _)| format!("{n} is not supported by the engine this model runs on yet"));
+    if let Some(why) = unsupported(&v).or_else(not_here).or_else(|| invalid(&v, chat, sh.vocab)) {
+        return bad(s, &why);
+    }
+    let mut r = request_of(&v, sh.window, &sh.defaults);
+    r.thinking = r.thinking.or(sh.thinking);
+    // (the whole row is read for a draw with a bias: its tokens are the vocabulary's, which the engine's logits are as wide as)
+    r.params.logit_bias = logit_bias_of(&v, sh.vocab).unwrap_or_default();
+    if !chat && int_field(&v, "max_tokens").ok().flatten().is_none() {
+        r.max_new = 16; // (a plain completion's default, the legacy API's and vLLM's)
+    }
+    let mut api = match api_of(&v, chat, sh.vocab) {
+        Ok(a) => a,
+        Err(m) => return bad(s, &m),
+    };
+    if api.n > 1 && r.params.temperature <= 0.0 {
+        return bad(s, &format!("n must be 1 when using greedy sampling, got {}.", api.n));
+    }
+    let prompts = match prompts_of(sh, &v, chat, &api, &r) {
+        Ok(p) => p,
+        Err(e) => return bad(s, &e.to_string()),
+    };
+    if count {
+        let n: usize = prompts.iter().map(|p| p.ids.len()).sum();
+        return respond_with(s, 200, "application/json", &req.cors, format!("{{\"prompt_tokens\":{n},\"max_model_len\":{}}}", sh.window).as_bytes());
+    }
+    if let Some(p) = prompts.iter().find(|p| p.ids.len() + 1 > sh.window) {
+        return bad(s, &format!("This prompt has {} tokens, longer than the model's context of {} tokens: maximum context length (a longer one: --context N)", p.ids.len(), sh.window));
+    }
+    // a length asked for that the context has no room for after the prompt is refused, not cut short (a request that asks for none has the room there is)
+    if let Some(m) = int_field(&v, "max_completion_tokens").ok().flatten().or(int_field(&v, "max_tokens").ok().flatten()) {
+        if let Some(p) = prompts.iter().find(|p| p.ids.len() + m as usize > sh.window) {
+            return bad(s, &format!("This prompt has {} tokens and asks for up to {m} more, {} in all: longer than the model's context of {} tokens: maximum context length (a longer one: --context N)", p.ids.len(), p.ids.len() + m as usize, sh.window));
+        }
+    }
+    api.total = prompts.len() * api.n;
+    if api.total > MAX_CHOICES {
+        return bad(s, &format!("{} prompts of {} choices each are {} sequences: this engine takes up to {MAX_CHOICES} in a request", prompts.len(), api.n, api.total));
+    }
+    if api.echo {
+        api.echo_texts = (0..api.total).map(|i| prompts[i / api.n].text.clone()).collect();
+    }
+    let prompt_tokens: usize = prompts.iter().map(|p| p.ids.len()).sum();
+    let remote = Remote { tx: tx.clone(), window: sh.window };
+    let ident = format!("{}-{}", if chat { "chatcmpl" } else { "cmpl" }, api.request_id.clone().unwrap_or_else(|| id.to_string()));
+    if !track_begin(&ident) {
+        return bad(s, &format!("a request with the id {ident} is running: an id names one request at a time"));
+    }
+    let created = now();
+    let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
+    let (first_tx, first_rx) = std::sync::mpsc::channel::<()>();
+    let mut aborts: Vec<Arc<AtomicBool>> = Vec::new();
+    let mut failure: Option<String> = None;
+    let (name, tok) = (sh.name.as_str(), &sh.tok);
+    // the whole of a reply, where it is not streamed: each choice's log-probabilities, and how it ended with its thinking and its text
+    let mut acc: Vec<Whole> = (0..api.total).map(|_| Whole::default()).collect();
+    let (kind, stream_kind) = if chat { ("chat.completion", "chat.completion.chunk") } else { ("text_completion", "text_completion") };
+    let head = format!("{{\"id\":\"{ident}\",\"object\":\"{stream_kind}\",\"created\":{created},\"model\":{}", jstr(name));
+    let (mut started, mut gone) = (false, false);
+    let mut offsets = vec![0usize; api.total];
+    let mut completion_tokens = 0usize;
+    // a tool is read for calls where there are tools and the choice is not none; a call is one of the model's own words, the special tokens kept
+    let reading = api.tools.as_ref().filter(|t| t.choice != ToolChoice::None);
+    std::thread::scope(|sc| {
+        'prompts: for (pi, pr) in prompts.iter().enumerate() {
+            let max_new = r.max_new.min(sh.window - pr.ids.len()).max(1);
+            let tools_cfg = reading.map(|t| ToolsCfg { choice: t.choice.clone(), parallel: t.parallel, format: sh.chat.as_ref().map_or(Format::Hermes, Format::of), list: t.list.clone(), prefix: pr.prefix.clone(), stream: api.stream });
+            let lead = if reading.is_none() { pr.prefix.clone() } else { String::new() };
+            let cfg = Cfg { chat, in_thinking: pr.in_thinking, stops: r.stop.clone(), include_stop: r.include_stop, skip_special: r.skip_special && reading.is_none(), hide_reasoning: api.hide_reasoning, tools: tools_cfg, lead, xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)) };
+            for i in 0..api.n {
+                let idx = pi * api.n + i;
+                let mut reply = Reply { params: r.params.clone(), max_new, ignore_eos: r.ignore_eos, logprobs: api.logprobs, stop_ids: r.stop_ids.clone() };
+                reply.params.seed = r.params.seed.wrapping_add(i as u64);
+                let h = match remote.start_with(&pr.ids, pr.images.clone(), &reply) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        failure = Some(e.to_string());
+                        break 'prompts;
+                    }
+                };
+                aborts.push(h.abort.clone());
+                track_seq(&ident, &h.abort);
+                let (c, o, whole) = (Choice::new(cfg.clone()), out_tx.clone(), !api.stream);
+                let announce = (i == 0 && api.n > 1).then(|| first_tx.clone());
+                sc.spawn(move || drive(idx, h, c, tok, whole, o, announce));
+                if i == 0 && api.n > 1 {
+                    // (the others begin as this one does: they wait until its prompt has run and its blocks are in the cache)
+                    let _ = first_rx.recv();
+                }
+            }
+        }
+        drop(out_tx);
+        let mut ended = 0;
+        while ended < aborts.len() && failure.is_none() {
+            let out = match out_rx.recv_timeout(WAIT_TICK) {
+                Ok(out) => out,
+                Err(RecvTimeoutError::Timeout) => {
+                    // (nothing to send yet: the request waits for its turn or its prompt is read. A streamed reply's headers go out, then a comment each tick, so a client's read timeout does
+                    // not fire while it waits; a client that has gone ends the request before its prompt runs)
+                    if api.stream {
+                        gone = !if started { sse_comment(s) } else { started = true; start_stream(s, &head, chat, &api, &req.cors) };
+                    }
+                    gone = gone || client_gone(s);
+                    if gone {
+                        break;
+                    }
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            match out {
+                Out::Failed(e) => failure = Some(e),
+                Out::Delta(i, d) => {
+                    if !api.stream {
+                        acc[i].lps.extend(d.lps.iter().cloned());
+                    }
+                    if api.stream && !gone {
+                        let (lp, text) = (&d.lps, delta_fields(&d));
+                        gone = !stream_chunk(s, &req.cors, &mut started, &head, chat, &api, tok, i, &text, lp, &mut offsets[i], None);
+                    }
+                }
+                Out::Done { i, last, done, thinking } => {
+                    ended += 1;
+                    completion_tokens += done.tokens;
+                    if !api.stream {
+                        acc[i].lps.extend(last.lps.iter().cloned());
+                    }
+                    if api.stream && !gone {
+                        let text = delta_fields(&last);
+                        gone = !stream_chunk(s, &req.cors, &mut started, &head, chat, &api, tok, i, &text, &last.lps, &mut offsets[i], Some(done.finish_reason));
+                    }
+                    if let Some(reasoning) = thinking {
+                        acc[i].ended = Some((done, reasoning));
+                    }
+                }
+            }
+            if gone {
+                break;
+            }
+        }
+        if gone {
+            track_cancel(&ident, "client gone");
+        }
+        if gone || failure.is_some() {
+            for a in &aborts {
+                a.store(true, Ordering::Relaxed);
+            }
+        }
+        drop(out_rx);
+    });
+    // (each choice's thread has seen its sequence end: the engine has let go of them all)
+    track_end(&ident, failure.as_deref());
+    if let Some(msg) = failure {
+        eprintln!("glyd: a request failed: {msg}");
+        return if started {
+            let _ = sse(s, &format!("{{\"error\":{{\"message\":{},\"type\":\"server_error\"}}}}", jstr(&msg)));
+            let _ = sse(s, "[DONE]");
+            let _ = s.write_all(b"0\r\n\r\n");
+        } else {
+            bad(s, &msg)
+        };
+    }
+    if gone {
+        return;
+    }
+    if api.stream {
+        if !started {
+            start_stream(s, &head, chat, &api, &req.cors);
+        }
+        if api.include_usage {
+            let _ = sse(s, &format!("{head},\"choices\":[],\"usage\":{}}}", wire::usage(prompt_tokens, completion_tokens)));
+        }
+        let _ = sse(s, "[DONE]");
+        let _ = s.write_all(b"0\r\n\r\n");
+        return;
+    }
+    let choices: Vec<String> = acc
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let (lps, (done, reasoning)) = (&w.lps, w.ended.as_ref().expect("a choice that ended"));
+            let logprobs = if api.logprobs.is_none() {
+                "null".to_string()
+            } else if chat {
+                wire::chat_logprobs(tok, lps, api.as_ids)
+            } else {
+                wire::text_logprobs(tok, lps, api.as_ids, &mut 0)
+            };
+            if chat {
+                let think = if reasoning.is_empty() || api.hide_reasoning { String::new() } else { format!(",\"reasoning_content\":{0},\"reasoning\":{0}", jstr(reasoning)) };
+                let calls = if done.calls.is_empty() {
+                    String::new()
+                } else {
+                    let list: Vec<String> = done.calls.iter().map(|c| format!("{{\"id\":{},\"type\":\"function\",\"function\":{{\"name\":{},\"arguments\":{}}}}}", jstr(&tools::new_id()), jstr(&c.name), jstr(&c.arguments))).collect();
+                    format!(",\"tool_calls\":[{}]", list.join(","))
+                };
+                let content = done.content.as_deref().map_or("null".to_string(), jstr);
+                format!("{{\"index\":{i},\"message\":{{\"role\":\"assistant\",\"content\":{content}{think}{calls}}},\"logprobs\":{logprobs},\"finish_reason\":\"{}\"}}", done.finish_reason)
+            } else {
+                let text = format!("{}{}", api.echo_texts.get(i).map_or("", String::as_str), done.content.as_deref().unwrap_or(""));
+                format!("{{\"index\":{i},\"text\":{},\"logprobs\":{logprobs},\"finish_reason\":\"{}\"}}", jstr(&text), done.finish_reason)
+            }
+        })
+        .collect();
+    let body = format!("{{\"id\":\"{ident}\",\"object\":\"{kind}\",\"created\":{created},\"model\":{},\"choices\":[{}],\"usage\":{}}}", jstr(name), choices.join(","), wire::usage(prompt_tokens, completion_tokens));
+    respond_with(s, 200, "application/json", &req.cors, body.as_bytes());
+}
+
+/// The fields a request may carry that this server reads (a value of some is refused, in words: `unsupported`, `invalid`), with NO_EFFECT's, NOT_DONE's and CONSTRAINED's the ones it knows: another is said once on the
+/// program's standard error where it comes, not taken for something it is not.
+const DONE: &[&str] = &[
+    "messages", "prompt", "model", "frequency_penalty", "logit_bias", "logprobs", "top_logprobs", "max_tokens", "max_completion_tokens", "n", "presence_penalty", "response_format", "seed", "stop", "stream", "stream_options",
+    "temperature", "top_p", "tools", "tool_choice", "reasoning_effort", "include_reasoning", "parallel_tool_calls", "top_k", "min_p", "repetition_penalty", "stop_token_ids", "include_stop_str_in_output", "ignore_eos",
+    "min_tokens", "skip_special_tokens", "allowed_token_ids", "echo", "add_generation_prompt", "add_special_tokens", "documents", "chat_template_kwargs", "request_id", "return_tokens_as_token_ids", "best_of",
+];
+
+/// The fields that change nothing on a server of one model on this computer.
+const NO_EFFECT: &[&str] = &[
+    "user", "watermarking", "length_penalty", "spaces_between_special_tokens", "session_id", "store", "metadata", "safety_identifier", "prompt_cache_key", "verbosity", "modalities", "routed_experts_prompt_start",
+];
+
+/// A field of a request that the server does not know, said once.
+fn warn_unknown(v: &Value, chat: bool) {
+    static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    for (k, _) in v.as_object().unwrap_or(&[]) {
+        if DONE.contains(&k.as_str()) || NO_EFFECT.contains(&k.as_str()) || NOT_DONE.iter().any(|(n, _)| n == k) || CONSTRAINED.contains(&k.as_str()) {
+            continue;
+        }
+        if let Ok(mut said) = SAID.lock() {
+            if said.len() < 64 && !said.contains(k) {  // (a client that sends names without end is told of the first few: the list and its search stay small)
+                said.push(k.clone());
+                eprintln!("glyd: a {} request has a field this server does not know, {k:?}: it has no effect", if chat { "chat" } else { "completions" });
+            }
+        }
+    }
+}
+
+/// The headers of a streamed reply, and (a chat's) the first chunk of every choice, which carries the role.
+fn start_stream(s: &mut TcpStream, head: &str, chat: bool, api: &Api, cors: &str) -> bool {
+    let h = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+    if s.write_all(h.as_bytes()).is_err() {
+        return false;
+    }
+    for i in 0..api.total {
+        let first = if chat {
+            format!("{head},\"choices\":[{{\"index\":{i},\"delta\":{{\"role\":\"assistant\",\"content\":\"\"}},\"logprobs\":null,\"finish_reason\":null}}]}}")
+        } else if let Some(t) = api.echo_texts.get(i) {
+            // (a plain completion that echoes its prompt: the first chunk of each choice is the prompt)
+            format!("{head},\"choices\":[{{\"index\":{i},\"text\":{},\"logprobs\":null,\"finish_reason\":null}}]}}", jstr(t))
+        } else {
+            continue;
+        };
+        if sse(s, &first).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// A chunk of a streamed reply for choice `i`: its delta (`fields`, the inside of a chat's delta object, or a plain completion's text) with the log-probabilities that go with it, and the finish reason where it ends.
+/// False where the client has gone.
+#[allow(clippy::too_many_arguments)]
+fn stream_chunk(s: &mut TcpStream, cors: &str, started: &mut bool, head: &str, chat: bool, api: &Api, tok: &Tok, i: usize, fields: &str, lps: &[Lp], offset: &mut usize, finish: Option<&str>) -> bool {
+    if !*started {
+        *started = true;
+        if !start_stream(s, head, chat, api, cors) {
+            return false;
+        }
+    }
+    let logprobs = if api.logprobs.is_none() || (lps.is_empty() && finish.is_none()) {
+        "null".to_string()
+    } else if chat {
+        wire::chat_logprobs(tok, lps, api.as_ids)
+    } else {
+        wire::text_logprobs(tok, lps, api.as_ids, offset)
+    };
+    let finish = finish.map_or("null".to_string(), |f| format!("\"{f}\""));
+    let choice = if chat {
+        format!("{{\"index\":{i},\"delta\":{{{fields}}},\"logprobs\":{logprobs},\"finish_reason\":{finish}}}")
+    } else {
+        // (a plain completion's text is in `fields` as the chat's content key: its value is the text)
+        let text = fields.strip_prefix("\"content\":").unwrap_or("\"\"");
+        format!("{{\"index\":{i},\"text\":{text},\"logprobs\":{logprobs},\"finish_reason\":{finish}}}")
+    };
+    sse(s, &format!("{head},\"choices\":[{choice}]}}")).is_ok()
+}
+
+/// How long a request's thread waits for its reply's next piece before it looks at its client.
+const WAIT_TICK: Duration = Duration::from_secs(1);
+
+/// A comment of a server-sent stream (clients skip it): a stream that waits shows it is alive.
+fn sse_comment(s: &mut TcpStream) -> bool {
+    s.write_all(b"b\r\n: waiting\n\n\r\n").and_then(|_| s.flush()).is_ok()
+}
+
+/// A server-sent event as one chunk of the chunked body.
+fn sse(s: &mut TcpStream, data: &str) -> std::io::Result<()> {
+    let ev = format!("data: {data}\n\n");
+    // one write for the chunk (its size, the event, the line end): three small ones would wait on each other's acknowledgements
+    s.write_all(format!("{:x}\r\n{ev}\r\n", ev.len()).as_bytes())?;
+    s.flush()
+}
+
+/// Whether the client of a connection has closed it (a request that waited in line for a reply nobody reads).
+fn client_gone(s: &TcpStream) -> bool {
+    if s.set_nonblocking(true).is_err() {
+        return true;
+    }
+    let mut b = [0u8; 1];
+    let gone = match s.peek(&mut b) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+    };
+    let _ = s.set_nonblocking(false);
+    gone
+}
+
+/// Listens on `addr` (host:port): a thread accepts, a thread of its own reads each connection. The page, the health check and the model list are answered there; a completions request is
+/// sent as a `Job` to `tx`. Returns the address it is listening on.
+pub fn listen(addr: &str, name: &str, window: usize, key: Option<String>, local_only: bool, tx: Sender<Job>) -> Result<std::net::SocketAddr> {
+    listen_loading(addr, name, window, key, local_only, tx, Arc::new(AtomicBool::new(false)))
+}
+
+/// `listen` for a server that listens while its model loads (qwenserve): `/health` answers 503 `{"status":"loading"}` for as long as `loading` is set (the program clears it when the model can serve), so
+/// a script that waits for a 200 sends its first request after the load and not before. Nothing else answers differently: the model list, the page and the completions requests (which wait for their turn) are as they were.
+pub fn listen_loading(addr: &str, name: &str, window: usize, key: Option<String>, local_only: bool, tx: Sender<Job>, loading: Arc<AtomicBool>) -> Result<std::net::SocketAddr> {
+    let listener = TcpListener::bind(addr).map_err(|e| Error(format!("{addr}: {e}")))?;
+    let bound = listener.local_addr().map_err(|e| Error(e.to_string()))?;
+    let name = Arc::new(name.to_string());
+    let key = Arc::new(key.map(|k| key_digest(&k)));
+    let live = Arc::new(AtomicUsize::new(0));
+    let (port, guard) = (bound.port(), local_only);
+    // (the connections are counted for the process, not the server: a reply's id names one request of the process, which /v1/glyd/requests/ID finds)
+    static CONNECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut s) = conn else { continue };
+            let _ = s.set_nodelay(true);
+            if live.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                live.fetch_sub(1, Ordering::SeqCst);
+                respond(&mut s, 503, "application/json", error_body("too many connections", 503).as_bytes());
+                continue;
+            }
+            let id = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
+            let (tx, name, live, key, loading) = (tx.clone(), name.clone(), live.clone(), key.clone(), loading.clone());
+            std::thread::spawn(move || {
+                route(s, &name, window, &key, (guard, port), &tx, id, &loading);
+                live.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+    });
+    Ok(bound)
+}
+
+/// A refusal of the Host or the Origin as the Python server's was: a JSON error of type `Forbidden`.
+fn forbidden_body(why: &str, code: u16) -> String {
+    format!("{{\"error\":{{\"message\":{},\"type\":\"Forbidden\",\"code\":{code}}}}}", jstr(why))
+}
+
+/// One connection's request. The checks come in the order of the Python server's layers: the Host and the Origin where the server is on this computer's own address (everything is refused for them, the page too), a CORS
+/// preflight, the key for the API.
+#[allow(clippy::too_many_arguments)]
+fn route(mut s: TcpStream, name: &str, window: usize, key: &Option<[u8; 32]>, (local_only, port): (bool, u16), tx: &Sender<Job>, id: u64, loading: &AtomicBool) {
+    let mut req = match read_request(&mut s) {
+        Ok(Some(r)) => r,
+        Ok(None) => return,
+        Err((code, why)) => {
+            respond(&mut s, code, "application/json", error_body(&why, code).as_bytes());
+            if code == 431 {
+                drain(&mut s);
+            }
+            return;
+        }
+    };
+    if local_only {
+        if let Some((code, why)) = refusal(&req.host, &req.origin) {
+            return respond(&mut s, code, "application/json", forbidden_body(&why, code).as_bytes());
+        }
+    }
+    if let Some((method, headers)) = &req.preflight {
+        return preflight(&mut s, local_only, port, &req.origin, method, headers.as_deref());
+    }
+    req.cors = cors_headers(local_only, port, &req.origin);
+    let path = req.path.split('?').next().unwrap_or("").to_string();
+    let cors = req.cors.clone();
+    // the API wants the key where there is one (the page and the health check do not; nor does an OPTIONS)
+    if path.starts_with("/v1") && req.method != "OPTIONS" && key.as_ref().is_some_and(|k| !key_matches(k, req.auth.as_deref())) {
+        return respond_with(&mut s, 401, "application/json", &cors, b"{\"error\":\"Unauthorized\"}");
+    }
+    match (req.method.as_str(), path.as_str()) {
+        ("GET" | "HEAD", "/") | ("GET" | "HEAD", "/index.html") => {
+            // (a page given with the server, read for each request: its own headers, since it loads its files from /web/)
+            let (page, headers) = match PAGE_DIR.get() {
+                Some(d) => (std::fs::read(d.join("chat.html")).unwrap_or_else(|e| format!("<p>{}: {e}</p>", d.join("chat.html").display()).into_bytes()).into(), ""),
+                None => (std::borrow::Cow::Borrowed(PAGE.as_bytes()), PAGE_HEADERS),
+            };
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{headers}{cors}Connection: close\r\n\r\n", page.len());
+            if s.write_all(head.as_bytes()).is_ok() && req.method == "GET" {
+                s.write_all(&page).ok();
+            }
+        }
+        ("GET", p) if p.starts_with("/web/") && PAGE_DIR.get().is_some() => {
+            // (a file of the page's: a plain name, no path)
+            let f = &p[5..];
+            let file = PAGE_DIR.get().map(|d| d.join("web").join(f)).filter(|_| !f.is_empty() && f.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c)) && !f.starts_with('.'));
+            match file.and_then(|f| std::fs::read(f).ok()) {
+                Some(b) => {
+                    let kind = match f.rsplit('.').next() {
+                        Some("js") => "text/javascript; charset=utf-8",
+                        Some("css") => "text/css; charset=utf-8",
+                        Some("svg") => "image/svg+xml",
+                        Some("woff2") => "font/woff2",
+                        _ => "application/octet-stream",
+                    };
+                    respond_with(&mut s, 200, kind, &cors, &b);
+                }
+                None => respond_with(&mut s, 404, "application/json", &cors, error_body("not found", 404).as_bytes()),
+            }
+        }
+        ("GET", "/v1/glyd/status") if crate::monitor::on() => respond_with(&mut s, 200, "application/json", &cors, crate::monitor::json(name).as_bytes()),
+        ("GET", "/v1/glyd/info") => match INFO.get() {
+            Some(i) => respond_with(&mut s, 200, "application/json", &cors, info_json(i).as_bytes()),
+            None => respond_with(&mut s, 404, "application/json", &cors, error_body("this server has no description (glyd serve gives one)", 404).as_bytes()),
+        },
+        (m @ ("GET" | "POST"), p) if p.starts_with("/v1/glyd/requests/") => {
+            let rest = &p["/v1/glyd/requests/".len()..];
+            let answer = match (m, rest.strip_suffix("/cancel")) {
+                ("POST", Some(id)) => track_cancel(id, "asked"),
+                ("GET", None) => track_status(rest),
+                _ => return respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes()),
+            };
+            match answer {
+                Some(b) => respond_with(&mut s, 200, "application/json", &cors, b.as_bytes()),
+                None => respond_with(&mut s, 404, "application/json", &cors, error_body("no request has this id (the last 64 that ended are kept)", 404).as_bytes()),
+            }
+        }
+        ("GET", "/health" | "/v1/health") if loading.load(Ordering::Relaxed) => respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"loading\"}"),
+        ("GET", "/health" | "/v1/health") => respond_with(&mut s, 200, "application/json", &cors, b"{\"status\":\"ok\"}"),
+        ("GET", "/stats") => respond_with(&mut s, 200, "application/json", &cors, stats_json().as_bytes()),
+        ("GET", "/v1/models") => {
+            let body = format!("{{\"object\":\"list\",\"data\":[{{\"id\":{},\"object\":\"model\",\"created\":{},\"owned_by\":\"glyd\",\"max_model_len\":{window}}}]}}", jstr(name), now());
+            respond_with(&mut s, 200, "application/json", &cors, body.as_bytes());
+        }
+        ("POST", p @ ("/v1/chat/completions" | "/v1/completions" | "/v1/glyd/tokenize")) => {
+            let chat = p == "/v1/chat/completions";
+            if let Err(e) = tx.send(Job::Http { s: s.try_clone().expect("a connection clones"), req, chat, id }) {
+                respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
+                drop(e);
+            }
+        }
+        ("POST", p @ ("/v1/messages" | "/v1/messages/count_tokens")) => {
+            let count = p.ends_with("count_tokens");
+            if tx.send(Job::Messages { s: s.try_clone().expect("a connection clones"), req, count, id }).is_err() {
+                respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
+            }
+        }
+        (_, "/v1/chat/completions") | (_, "/v1/completions") | (_, "/v1/models") | (_, "/v1/messages") | (_, "/v1/glyd/tokenize") | (_, "/v1/glyd/info") => respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes()),
+        _ => respond_with(&mut s, 404, "application/json", &cors, error_body("not found", 404).as_bytes()),
+    }
+}
+
+/// What a request's thread needs besides its connection: the tokenizer and the chat template, the model's name and sampling defaults, the window.
+pub struct Shared {
+    pub tok: Tok,
+    pub chat: Option<Chat>,
+    pub name: String,
+    pub defaults: Params,
+    pub window: usize,
+    /// The tokens the model has a logit for (the width of a row of logits).
+    pub vocab: usize,
+    /// Thinking where a request does not say (None: the template's own default).
+    pub thinking: Option<bool>,
+    /// The fields the engine does not do besides NOT_DONE's (ONE_AT_A_TIME, or none): refused, in words, where a request sets one.
+    pub refused: &'static [(&'static str, &'static str)],
+}
+
+/// The chat page's directory where the server was given one (`chat.html`, and its files in `web/`), in place of the page built in.
+pub static PAGE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// What `GET /v1/glyd/info` says that does not change while the server runs, set by `serve` once the model is loaded: the fields `serve` knows (the model, its levels, the precision, the GPU: cli.rs
+/// `about`), the GPU to ask for its memory now, what the model holds there, the sequences it runs at once, its context, the fields its engine does not do, and when the load began.
+pub struct Info {
+    pub about: Vec<(&'static str, Value)>,
+    pub gpu: Option<i32>,
+    pub held: Option<crate::dev::Held>,
+    pub concurrency: usize,
+    pub window: usize,
+    pub refused: &'static [(&'static str, &'static str)],
+    pub started: f64,
+}
+
+pub static INFO: std::sync::OnceLock<Info> = std::sync::OnceLock::new();
+
+/// The version of what /v1/glyd/info, /v1/glyd/requests/ID and /v1/glyd/tokenize say (docs/serve-api.md).
+pub const API: &str = "glyd-serve/1";
+
+fn names<'a>(l: impl Iterator<Item = &'a str>) -> Value {
+    Value::Array(l.map(Value::from).collect())
+}
+
+/// /v1/glyd/info's answer: `i`, the build, the limits and the fields, and what is so now: whether the engine has failed, the requests, and the memory (the engine's buffers, and the GPU's as the driver has it:
+/// every program's on it).
+fn info_json(i: &Info) -> String {
+    use tools::obj;
+    let (num, secs) = (|n: usize| Value::from(n as u64), |t: f64| Value::Number(format!("{t:.3}")));
+    let (live, peak, peak_at) = crate::dev::held_now();
+    let gpu = i.gpu.and_then(|o| {
+        let g = crate::dev::Dev::probe(o).ok();
+        crate::dev::Dev::release(o);
+        g
+    });
+    let failed = FAILED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let (running, cancelling) = track_counts();
+    let here: Vec<&str> = i.refused.iter().map(|(n, _)| *n).collect();
+    let held = |f: fn(&crate::dev::Held) -> u64| i.held.as_ref().map_or(Value::Null, |h| Value::from(f(h)));
+    let mut o = vec![("object", Value::from("glyd.info")), ("api", Value::from(API))];
+    o.push(("build", obj(vec![("version", Value::from(env!("CARGO_PKG_VERSION"))), ("commit", option_env!("GLYD_SOURCE_COMMIT").filter(|c| !c.is_empty()).map_or(Value::Null, Value::from)), ("development", Value::Bool(cfg!(feature = "dev")))])));
+    o.extend(i.about.iter().cloned());
+    o.push(("limits", obj(vec![("context_tokens", num(i.window)), ("concurrency", num(i.concurrency)), ("max_choices", num(MAX_CHOICES)), ("max_body_bytes", num(MAX_BODY)), ("max_header_bytes", num(MAX_HEAD)), ("max_headers", num(MAX_HEADERS)), ("max_connections", num(MAX_CONNECTIONS)), ("read_timeout_seconds", num(30))])));
+    o.push(("fields", obj(vec![("read", names(DONE.iter().copied().filter(|f| !here.contains(f)))), ("no_effect", names(NO_EFFECT.iter().copied())), ("refused", names(NOT_DONE.iter().map(|(n, _)| *n).chain(CONSTRAINED.iter().copied()).chain(here.iter().copied())))])));
+    o.push(("state", Value::from(if failed.is_some() { "failed" } else { "ready" })));
+    o.push(("error", failed.map_or(Value::Null, |(t, e)| obj(vec![("at", secs(t)), ("message", Value::String(e))]))));
+    o.push(("requests", obj(vec![("running", num(running)), ("cancelling", num(cancelling))])));
+    let scratch = i.held.as_ref().map_or(Value::Null, |h| Value::from(live.saturating_sub(h.weights + h.kv + h.state)));
+    o.push((
+        "memory",
+        obj(vec![
+            ("gpu", i.gpu.map_or(Value::Null, |g| num(g as usize))),
+            ("measured_at", secs(crate::monitor::clock())),
+            ("engine_bytes", Value::from(live)),
+            ("weights_bytes", held(|h| h.weights)),
+            ("kv_bytes", held(|h| h.kv)),
+            ("state_bytes", held(|h| h.state)),
+            ("scratch_bytes", scratch),
+            ("peak_bytes", Value::from(peak)),
+            ("peak_at", secs(peak_at as f64 / 1000.0)),
+            ("peak_since", secs(i.started)),
+            ("device_total_bytes", gpu.as_ref().map_or(Value::Null, |g| Value::from(g.total))),
+            ("device_free_bytes", gpu.as_ref().map_or(Value::Null, |g| Value::from(g.free))),
+            ("not_counted", names(["the CUDA context and the kernels' code", "cuBLAS's own workspace", "the computer's memory"].into_iter())),
+        ]),
+    ));
+    json::to_compact(&obj(o))
+}
+
+/// The scheduler's sequences seen from a request's thread: a reply is a sequence sent to the engine's thread, its tokens read as they come.
+pub struct Remote {
+    pub tx: Sender<Job>,
+    pub window: usize,
+}
+
+/// A sequence sent to the scheduler: its events come back on `events`; `abort` ends it.
+pub struct Handle {
+    pub events: Receiver<Ev>,
+    pub abort: Arc<AtomicBool>,
+}
+
+impl Remote {
+    /// `prompt` and its reply sent to the scheduler as a sequence.
+    pub fn start(&self, prompt: &[u32], o: &Reply) -> Result<Handle> {
+        self.start_with(prompt, Vec::new(), o)
+    }
+
+    /// `start` with the prompt's images (their places in it their tokens).
+    pub fn start_with(&self, prompt: &[u32], images: Vec<Arc<crate::vision::Image>>, o: &Reply) -> Result<Handle> {
+        if prompt.is_empty() {
+            return err("an empty prompt");
+        }
+        if prompt.len() + 1 > self.window {
+            return err(format!("{} tokens, where the context holds {}", prompt.len(), self.window));
+        }
+        let (out, events) = std::sync::mpsc::channel();
+        let abort = Arc::new(AtomicBool::new(false));
+        self.tx.send(Job::Seq(Submit { prompt: prompt.to_vec(), reply: o.clone(), out, abort: abort.clone(), resumed: Default::default(), images })).map_err(|_| Error("the engine is not running".into()))?;
+        Ok(Handle { events, abort })
+    }
+}
+
+impl Gen for Remote {
+    fn capacity(&self) -> usize {
+        self.window
+    }
+
+    fn reply(&mut self, prompt: &[u32], o: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
+        let h = self.start(prompt, o)?;
+        let mut tokens = Vec::new();
+        loop {
+            match h.events.recv() {
+                Ok(Ev::Token(t)) => {
+                    tokens.push(t);
+                    if !each(t) {
+                        h.abort.store(true, Ordering::Relaxed);
+                        return Ok((tokens, Finish::Stopped));
+                    }
+                }
+                Ok(Ev::Lp(_)) => {}
+                Ok(Ev::End(Ok(f))) => return Ok((tokens, f)),
+                Ok(Ev::End(Err(e))) => return err(e),
+                Err(_) => return err("the engine stopped"),
+            }
+        }
+    }
+}
+
+/// The engine's thread: the scheduler's rounds (a step for every sequence that runs, a chunk of a prompt), and between them the jobs that come, until `Job::Stop`. A completions request and the terminal's chat
+/// each run on a thread of their own (their text, their connection) and ask the scheduler for a sequence through `tx`; the engine's thread never waits on a connection.
+pub fn work(e: &mut Engine, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>, users: usize) {
+    work_with(&mut Sched::new(e, users), shared, rx, tx);
+}
+
+/// A request's thread or the terminal's reply, started for `job` (the engine's thread never waits on a connection); any other job is not one.
+pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
+    let (sh, tx) = (shared.clone(), tx.clone());
+    match job {
+        Job::Http { mut s, req, chat, id } => {
+            std::thread::spawn(move || {
+                if client_gone(&s) {
+                    return;
+                }
+                handle_completion(&sh, &tx, &mut s, &req, chat, id);
+            });
+        }
+        Job::Messages { mut s, req, count, id } => {
+            std::thread::spawn(move || {
+                if !client_gone(&s) {
+                    handle_messages(&sh, &tx, &mut s, &req, count, id);
+                }
+            });
+        }
+        Job::Term { messages, request, out, abort } => {
+            std::thread::spawn(move || {
+                let mut remote = Remote { tx, window: sh.window };
+                let mut talk = Talk { e: &mut remote, tok: &sh.tok, chat: sh.chat.as_ref() };
+                let sink = out.clone();
+                let r = talk.reply(&messages, &request, &mut |t| sink.send(Piece::Text(t.to_string())).is_ok() && !abort.load(Ordering::Relaxed));
+                let _ = out.send(Piece::End(r.map_err(|e| e.to_string())));
+            });
+        }
+        _ => {}
+    }
+}
+
+/// `work` for an engine that has no scheduler (a lossy level's): the sequences are run one at a time, in the order they come; one that is asked to end before its turn (a cancel, its client gone) is not run.
+pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
+    while let Ok(job) = rx.recv() {
+        match job {
+            Job::Stop => return,
+            Job::Seq(sub) if sub.abort.load(Ordering::Relaxed) => {
+                let _ = sub.out.send(Ev::End(Ok(Finish::Stopped)));
+            }
+            Job::Seq(sub) => {
+                let r = e.reply(&sub.prompt, &sub.reply, &mut |t| sub.out.send(Ev::Token(t)).is_ok() && !sub.abort.load(Ordering::Relaxed));
+                if let Err(err) = &r {
+                    engine_failed(&err.to_string());
+                }
+                let _ = sub.out.send(Ev::End(r.map(|x| x.1).map_err(|e| e.to_string())));
+            }
+            _ => detach(job, &shared, tx),
+        }
+    }
+}
+
+/// `work` on any scheduler (the tests run it on a scheduler of a made-up model).
+pub fn work_with<B: Backend>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
+    let mut next: Option<Job> = None;
+    loop {
+        if next.is_none() {
+            next = if sched.idle() { rx.recv().ok() } else { rx.try_recv().ok() };
+            if next.is_none() && sched.idle() {
+                return;
+            }
+        }
+        while let Some(job) = next.take() {
+            match job {
+                Job::Stop => {
+                    sched.fail("the server is stopping");
+                    return;
+                }
+                Job::Seq(sub) => sched.submit(sub),
+                Job::Http { .. } | Job::Messages { .. } | Job::Term { .. } => detach(job, &shared, tx),
+            }
+            next = rx.try_recv().ok();
+        }
+        if let Err(err) = sched.tick() {
+            eprintln!("glyd: {err}");
+            engine_failed(&err.to_string());
+            sched.fail(&err.to_string());
+        }
+    }
+}
+
+// ---- a request by its id: how it stands, and a cancel ---------------------------------------------------------------------------------------------------
+
+/// A completions request by the id its reply carries: its sequences' stop flags, why it was asked to end before its time (a cancel, its client gone), when it began, and when the engine had let go of every
+/// sequence of it and how it ended.
+struct Track {
+    id: String,
+    aborts: Vec<Arc<AtomicBool>>,
+    cancel: Option<&'static str>,
+    began: f64,
+    ended: Option<(f64, String)>,
+}
+
+/// The requests that run, and the last KEPT that ended. One server a process: the ids are the process's (`listen_loading`'s count).
+static TRACKS: std::sync::Mutex<std::collections::VecDeque<Track>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+// (the tests' servers share the process, so each test's ended requests are kept while the others end theirs)
+const KEPT: usize = if cfg!(test) { 1 << 16 } else { 64 };
+
+fn tracks() -> std::sync::MutexGuard<'static, std::collections::VecDeque<Track>> {
+    TRACKS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A request begun under `id`; false where one of that id runs (an id names one request at a time). One that ended under it is forgotten.
+fn track_begin(id: &str) -> bool {
+    let mut t = tracks();
+    if t.iter().any(|x| x.id == id && x.ended.is_none()) {
+        return false;
+    }
+    t.retain(|x| x.id != id);
+    while t.iter().filter(|x| x.ended.is_some()).count() >= KEPT {
+        let first = t.iter().position(|x| x.ended.is_some()).expect("an ended request");
+        t.remove(first);
+    }
+    t.push_back(Track { id: id.to_string(), aborts: Vec::new(), cancel: None, began: crate::monitor::clock(), ended: None });
+    true
+}
+
+/// A sequence of request `id` begun: its stop flag, set at once where the request is asked to end already.
+fn track_seq(id: &str, abort: &Arc<AtomicBool>) {
+    if let Some(x) = tracks().iter_mut().find(|x| x.id == id && x.ended.is_none()) {
+        if x.cancel.is_some() {
+            abort.store(true, Ordering::Relaxed);
+        }
+        x.aborts.push(abort.clone());
+    }
+}
+
+/// Request `id` asked to end before its time, `why`: every sequence of it stops at its next step (or is skipped where its turn has not come). Its status, or None where no request has the id.
+fn track_cancel(id: &str, why: &'static str) -> Option<String> {
+    let mut t = tracks();
+    let x = t.iter_mut().find(|x| x.id == id)?;
+    if x.ended.is_none() {
+        x.cancel = x.cancel.or(Some(why));
+        for a in &x.aborts {
+            a.store(true, Ordering::Relaxed);
+        }
+    }
+    Some(track_json(x))
+}
+
+/// Request `id` over: the engine has let go of every sequence of it (each choice's thread has seen its end), so what they held is the engine's to use again. `failure`: the error it ended with.
+fn track_end(id: &str, failure: Option<&str>) {
+    if let Some(x) = tracks().iter_mut().find(|x| x.id == id && x.ended.is_none()) {
+        let how = match (failure, x.cancel) {
+            (Some(e), _) => format!("failed: {e}"),
+            (None, Some(_)) => "cancelled".to_string(),
+            (None, None) => "finished".to_string(),
+        };
+        x.ended = Some((crate::monitor::clock(), how));
+        x.aborts.clear();
+    }
+}
+
+/// How request `id` stands, or None where no request has the id.
+fn track_status(id: &str) -> Option<String> {
+    tracks().iter().find(|x| x.id == id).map(track_json)
+}
+
+/// (running, asked to end and not ended yet) of the requests.
+fn track_counts() -> (usize, usize) {
+    let t = tracks();
+    let running = t.iter().filter(|x| x.ended.is_none() && x.cancel.is_none()).count();
+    (running, t.iter().filter(|x| x.ended.is_none() && x.cancel.is_some()).count())
+}
+
+/// A request's status: `running`; `cancelling`, asked to end (a cancel, or its client gone) and the engine not done with it yet; `ended`, the engine has let go of it, with how (finished, cancelled, failed: ...).
+fn track_json(x: &Track) -> String {
+    let state = match (&x.ended, x.cancel) {
+        (Some(_), _) => "ended",
+        (None, Some(_)) => "cancelling",
+        (None, None) => "running",
+    };
+    let (ended, how) = x.ended.as_ref().map_or(("null".to_string(), "null".to_string()), |(t, h)| (format!("{t:.3}"), jstr(h)));
+    format!("{{\"id\":{},\"state\":\"{state}\",\"cancel\":{},\"began\":{:.3},\"ended\":{ended},\"how\":{how}}}", jstr(&x.id), x.cancel.map_or("null".to_string(), jstr), x.began)
+}
+
+/// The engine's first failure (when, and what): nothing is sure of the GPU after one, so /v1/glyd/info says the server has failed from then on.
+static FAILED: std::sync::Mutex<Option<(f64, String)>> = std::sync::Mutex::new(None);
+
+fn engine_failed(e: &str) {
+    let mut f = FAILED.lock().unwrap_or_else(|e| e.into_inner());
+    if f.is_none() {
+        *f = Some((crate::monitor::clock(), e.to_string()));
+    }
+}
+
+// ---- Anthropic's Messages API ------------------------------------------------------------------------------------------------------------------------
+
+/// An Anthropic Messages request in the OpenAI form the rest of the server reads: the system prompt a message of its own, an assistant's tool_use blocks its tool calls, a tool_result block a tool message, the tools
+/// as functions, `tool_choice` as OpenAI names it, `stop_sequences` as `stop`, and `thinking` the template's enable_thinking (off unless it is enabled).
+pub fn openai_of(v: &Value) -> std::result::Result<Value, String> {
+    openai_of_with(v, crate::vision::PREP.get().is_some())
+}
+
+/// `openai_of`, its image blocks image_url parts where `images` (the model reads them), else left out.
+pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, String> {
+    use tools::obj;
+    let text_of = |c: &Value| -> String {
+        match c {
+            Value::String(t) => t.clone(),
+            Value::Array(b) => b.iter().filter(|x| x.get("type").and_then(Value::as_str) == Some("text")).filter_map(|x| x.get("text").and_then(Value::as_str)).collect(),
+            _ => String::new(),
+        }
+    };
+    let mut msgs = Vec::new();
+    if let Some(sys) = v.get("system").map(text_of).filter(|t| !t.is_empty()) {
+        msgs.push(obj(vec![("role", Value::from("system")), ("content", Value::String(sys))]));
+    }
+    for m in v.get("messages").and_then(Value::as_array).ok_or("messages: Field required")? {
+        let role = m.get("role").and_then(Value::as_str).ok_or("a message with no role")?;
+        let blocks = match m.get("content") {
+            Some(Value::Array(b)) => b.as_slice(),
+            Some(c @ Value::String(_)) => {
+                msgs.push(obj(vec![("role", Value::from(role)), ("content", c.clone())]));
+                continue;
+            }
+            _ => return Err(format!("a {role} message whose content is neither text nor a list of blocks")),
+        };
+        let (mut text, mut calls) = (String::new(), Vec::new());
+        // (an image block: an image_url part, the message's content then the list of its text and image parts in order)
+        let mut parts: Vec<Value> = Vec::new();
+        for b in blocks {
+            let get = |k: &str| b.get(k).cloned().unwrap_or(Value::Null);
+            match b.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    let t = b.get("text").and_then(Value::as_str).unwrap_or("");
+                    text.push_str(t);
+                    parts.push(obj(vec![("type", Value::from("text")), ("text", Value::from(t))]));
+                }
+                // (where the model reads images; a text model's server leaves them out, as it always has)
+                Some("image") if images => {
+                    let src = b.get("source");
+                    let field = |k: &str| src.and_then(|s| s.get(k)).and_then(Value::as_str).unwrap_or("");
+                    let url = match field("type") {
+                        "base64" => format!("data:{};base64,{}", field("media_type"), field("data")),
+                        "url" => field("url").to_string(),
+                        t => return Err(format!("an image block whose source is of type {t:?}: base64 or url")),
+                    };
+                    parts.push(obj(vec![("type", Value::from("image_url")), ("image_url", obj(vec![("url", Value::String(url))]))]));
+                }
+                Some("tool_use") => calls.push(obj(vec![("id", get("id")), ("type", Value::from("function")), ("function", obj(vec![("name", get("name")), ("arguments", b.get("input").cloned().unwrap_or(Value::Object(vec![])))]))])),
+                Some("tool_result") => msgs.push(obj(vec![("role", Value::from("tool")), ("tool_call_id", get("tool_use_id")), ("content", Value::String(b.get("content").map(text_of).unwrap_or_default()))])),
+                _ => {}
+            }
+        }
+        let has_image = parts.iter().any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
+        if !text.is_empty() || !calls.is_empty() || has_image {
+            let mut o = vec![("role", Value::from(role)), ("content", if has_image { Value::Array(parts) } else { Value::String(text) })];
+            if !calls.is_empty() {
+                o.push(("tool_calls", Value::Array(calls)));
+            }
+            msgs.push(obj(o));
+        }
+    }
+    let mut o = vec![("messages", Value::Array(msgs))];
+    let tools: Vec<Value> = v.get("tools").and_then(Value::as_array).unwrap_or(&[]).iter().filter(|t| t.get("name").is_some()).map(|t| {
+        let get = |k: &str, or: Value| t.get(k).cloned().unwrap_or(or);
+        obj(vec![("type", Value::from("function")), ("function", obj(vec![("name", get("name", Value::Null)), ("description", get("description", Value::from(""))), ("parameters", get("input_schema", Value::Object(vec![])))]))])
+    }).collect();
+    if !tools.is_empty() {
+        o.push(("tools", Value::Array(tools)));
+        let choice = v.get("tool_choice");
+        let named = choice.and_then(|c| c.get("name")).cloned();
+        match choice.and_then(|c| c.get("type")).and_then(Value::as_str) {
+            Some("any") => o.push(("tool_choice", Value::from("required"))),
+            Some("none") => o.push(("tool_choice", Value::from("none"))),
+            Some("tool") if named.is_some() => o.push(("tool_choice", obj(vec![("type", Value::from("function")), ("function", obj(vec![("name", named.unwrap_or(Value::Null))]))]))),
+            _ => {}
+        }
+        if choice.and_then(|c| c.get("disable_parallel_tool_use")).and_then(Value::as_bool) == Some(true) {
+            o.push(("parallel_tool_calls", Value::Bool(false)));
+        }
+    }
+    for k in ["max_tokens", "temperature", "top_p", "top_k", "stream"] {
+        if let Some(x) = v.get(k) {
+            o.push((k, x.clone()));
+        }
+    }
+    if let Some(x) = v.get("stop_sequences") {
+        o.push(("stop", x.clone()));
+    }
+    let think = v.get("thinking").and_then(|t| t.get("type")).and_then(Value::as_str) == Some("enabled");
+    o.push(("chat_template_kwargs", obj(vec![("enable_thinking", Value::Bool(think))])));
+    Ok(obj(o))
+}
+
+fn anthropic_error(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
+    let kind = if code == 400 { "invalid_request_error" } else { "api_error" };
+    respond_with(s, code, "application/json", cors, format!("{{\"type\":\"error\",\"error\":{{\"type\":\"{kind}\",\"message\":{}}}}}", jstr(&said(msg))).as_bytes());
+}
+
+/// An event of a streamed Messages reply, as one chunk of the chunked body.
+fn event(s: &mut TcpStream, kind: &str, fields: &str) -> bool {
+    let ev = format!("event: {kind}\ndata: {{\"type\":\"{kind}\"{}{fields}}}\n\n", if fields.is_empty() { "" } else { "," });
+    s.write_all(format!("{:x}\r\n{ev}\r\n", ev.len()).as_bytes()).and_then(|_| s.flush()).is_ok()
+}
+
+/// The content blocks of a streamed Messages reply as its deltas come: text in a text block, each tool call a tool_use block of its own, its arguments as `input_json_delta`s. The thinking is not sent (Anthropic's
+/// thinking blocks carry a signature this server cannot make).
+#[derive(Default)]
+struct Blocks {
+    next: usize,
+    open: Option<bool>,
+    /// A tool_use block was sent (the reply's stop_reason is then tool_use, a named tool's too, as Anthropic's API has it).
+    called: bool,
+}
+
+impl Blocks {
+    fn close(&mut self, s: &mut TcpStream) -> bool {
+        if self.open.take().is_none() {
+            return true;
+        }
+        self.next += 1;
+        event(s, "content_block_stop", &format!("\"index\":{}", self.next - 1))
+    }
+
+    fn delta(&mut self, s: &mut TcpStream, d: &Delta) -> bool {
+        let mut ok = true;
+        if !d.content.is_empty() {
+            if self.open != Some(true) {
+                ok &= self.close(s) && event(s, "content_block_start", &format!("\"index\":{},\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}", self.next));
+                self.open = Some(true);
+            }
+            ok &= event(s, "content_block_delta", &format!("\"index\":{},\"delta\":{{\"type\":\"text_delta\",\"text\":{}}}", self.next, jstr(&d.content)));
+        }
+        for c in &d.calls {
+            match c {
+                ToolEv::Start { id, name, .. } => {
+                    ok &= self.close(s) && event(s, "content_block_start", &format!("\"index\":{},\"content_block\":{{\"type\":\"tool_use\",\"id\":{},\"name\":{},\"input\":{{}}}}", self.next, jstr(id), jstr(name)));
+                    self.open = Some(false);
+                    self.called = true;
+                }
+                ToolEv::Args { args, .. } if self.open == Some(false) => {
+                    ok &= event(s, "content_block_delta", &format!("\"index\":{},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{}}}", self.next, jstr(args)));
+                }
+                _ => {}
+            }
+        }
+        ok
+    }
+}
+
+fn stop_reason(finish: &str) -> &'static str {
+    match finish {
+        "tool_calls" => "tool_use",
+        "length" => "max_tokens",
+        _ => "end_turn",
+    }
+}
+
+/// One Messages request on `s` (Anthropic's API): the request read as the OpenAI one it is the same as, one choice made as a chat completion's, the reply in Anthropic's form.
+fn handle_messages(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, count: bool, id: u64) {
+    let cors = req.cors.as_str();
+    let bad = |s: &mut TcpStream, msg: &str| anthropic_error(s, cors, 400, msg);
+    let Some(v) = std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()) else { return bad(s, "the body is not JSON") };
+    let o = match openai_of(&v) {
+        Ok(o) => o,
+        Err(m) => return bad(s, &m),
+    };
+    let mut r = request_of(&o, sh.window, &sh.defaults);
+    r.thinking = r.thinking.or(sh.thinking);
+    let api = match api_of(&o, true, sh.vocab) {
+        Ok(a) => a,
+        Err(m) => return bad(s, &m),
+    };
+    let pr = match prompts_of(sh, &o, true, &api, &r) {
+        Ok(mut p) => p.remove(0),
+        Err(e) => return bad(s, &e.to_string()),
+    };
+    if count {
+        return respond_with(s, 200, "application/json", cors, format!("{{\"input_tokens\":{}}}", pr.ids.len()).as_bytes());
+    }
+    if pr.ids.len() + 1 > sh.window {
+        return bad(s, &format!("prompt is too long: {} tokens > {} maximum (the server's context: --ctx N)", pr.ids.len(), sh.window));
+    }
+    let reading = api.tools.as_ref().filter(|t| t.choice != ToolChoice::None);
+    let tools_cfg = reading.map(|t| ToolsCfg { choice: t.choice.clone(), parallel: t.parallel, format: sh.chat.as_ref().map_or(Format::Hermes, Format::of), list: t.list.clone(), prefix: pr.prefix.clone(), stream: api.stream });
+    let cfg = Cfg { chat: true, in_thinking: pr.in_thinking, stops: r.stop.clone(), include_stop: r.include_stop, skip_special: r.skip_special && reading.is_none(), hide_reasoning: true, tools: tools_cfg, lead: String::new(), xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)) };
+    let reply = Reply { params: r.params.clone(), max_new: r.max_new.min(sh.window - pr.ids.len()).max(1), ignore_eos: r.ignore_eos, logprobs: None, stop_ids: r.stop_ids.clone() };
+    let h = match (Remote { tx: tx.clone(), window: sh.window }).start_with(&pr.ids, pr.images.clone(), &reply) {
+        Ok(h) => h,
+        Err(e) => return anthropic_error(s, cors, 500, &e.to_string()),
+    };
+    let abort = h.abort.clone();
+    let mid = format!("msg_{:016x}{id:08x}", fresh_seed());
+    let (name, n_in) = (jstr(&sh.name), pr.ids.len());
+    let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
+    std::thread::scope(|sc| {
+        let tok = &sh.tok;
+        sc.spawn(move || drive(0, h, Choice::new(cfg), tok, !api.stream, out_tx, None));
+        if api.stream {
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+            let mut ok = s.write_all(head.as_bytes()).is_ok()
+                && event(s, "message_start", &format!("\"message\":{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":{n_in},\"output_tokens\":0}}}}"));
+            let mut blocks = Blocks::default();
+            while ok {
+                match out_rx.recv_timeout(WAIT_TICK) {
+                    // (waiting for its turn or its prompt: a ping, as Anthropic's API sends them, and a look at the client)
+                    Err(RecvTimeoutError::Timeout) => ok = event(s, "ping", "") && !client_gone(s),
+                    Ok(Out::Delta(_, d)) => ok = blocks.delta(s, &d),
+                    Ok(Out::Done { last, done, .. }) => {
+                        let _ = blocks.delta(s, &last)
+                            && blocks.close(s)
+                            && event(s, "message_delta", &format!("\"delta\":{{\"stop_reason\":\"{}\",\"stop_sequence\":null}},\"usage\":{{\"output_tokens\":{}}}", if blocks.called { "tool_use" } else { stop_reason(done.finish_reason) }, done.tokens))
+                            && event(s, "message_stop", "")
+                            && s.write_all(b"0\r\n\r\n").is_ok();
+                        return;
+                    }
+                    Ok(Out::Failed(e)) => {
+                        eprintln!("glyd: a request failed: {e}");
+                        let _ = event(s, "error", &format!("\"error\":{{\"type\":\"api_error\",\"message\":{}}}", jstr(&e))) && s.write_all(b"0\r\n\r\n").is_ok();
+                        return;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            // (the client went away: the engine stops after the pass it is in, or skips the reply where its turn has not come)
+            abort.store(true, Ordering::Relaxed);
+            return;
+        }
+        loop {
+            match out_rx.recv_timeout(WAIT_TICK) {
+                Err(RecvTimeoutError::Timeout) if client_gone(s) => {
+                    abort.store(true, Ordering::Relaxed);
+                    return;
+                }
+                Err(RecvTimeoutError::Timeout) | Ok(Out::Delta(..)) => {}
+                Ok(Out::Done { done, .. }) => {
+                    let mut content: Vec<String> = done.content.iter().filter(|t| !t.is_empty()).map(|t| format!("{{\"type\":\"text\",\"text\":{}}}", jstr(t))).collect();
+                    for c in &done.calls {
+                        let input = json::parse(&c.arguments).ok().filter(|x| matches!(x, Value::Object(_))).unwrap_or(Value::Object(vec![]));
+                        content.push(format!("{{\"type\":\"tool_use\",\"id\":{},\"name\":{},\"input\":{}}}", jstr(&tools::new_id()), jstr(&c.name), json::to_compact(&input)));
+                    }
+                    let body = format!(
+                        "{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[{}],\"stop_reason\":\"{}\",\"stop_sequence\":null,\"usage\":{{\"input_tokens\":{n_in},\"output_tokens\":{}}}}}",
+                        content.join(","),
+                        if done.calls.is_empty() { stop_reason(done.finish_reason) } else { "tool_use" },
+                        done.tokens
+                    );
+                    return respond_with(s, 200, "application/json", cors, body.as_bytes());
+                }
+                Ok(Out::Failed(e)) => return anthropic_error(s, cors, 500, &e),
+                Err(RecvTimeoutError::Disconnected) => return anthropic_error(s, cors, 500, "the engine stopped"),
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn an_anthropic_request_as_the_openai_one() {
+        let v = json::parse(r#"{"system":[{"type":"text","text":"Be brief."}],"max_tokens":50,"stop_sequences":["END"],"tool_choice":{"type":"any"},
+            "tools":[{"name":"ls","description":"list","input_schema":{"type":"object"}}],
+            "messages":[{"role":"user","content":"list"},{"role":"assistant","content":[{"type":"text","text":"Sure."},{"type":"tool_use","id":"t1","name":"ls","input":{"dir":"."}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"a.txt"}]}]}]}"#).unwrap();
+        let o = openai_of(&v).unwrap();
+        let roles: Vec<&str> = o.get("messages").and_then(Value::as_array).unwrap().iter().filter_map(|m| m.get("role").and_then(Value::as_str)).collect();
+        assert_eq!(roles, ["system", "user", "assistant", "tool"]);
+        let m = o.get("messages").and_then(Value::as_array).unwrap();
+        assert_eq!(m[2].get("tool_calls").and_then(Value::as_array).unwrap()[0].get("function").and_then(|f| f.get("name")).and_then(Value::as_str), Some("ls"));
+        assert_eq!(m[3].get("content").and_then(Value::as_str), Some("a.txt"));
+        assert_eq!(o.get("tool_choice").and_then(Value::as_str), Some("required"));
+        assert_eq!(o.get("stop").and_then(Value::as_array).map(|a| a.len()), Some(1));
+        assert_eq!(o.get("chat_template_kwargs").and_then(|k| k.get("enable_thinking")).and_then(Value::as_bool), Some(false));
+        // (the messages the template reads)
+        assert!(tools::template_messages(&o).is_ok());
+        // an image block: left out where the model reads text alone; where it reads images, an image_url part beside the text, in order
+        let v = json::parse(r#"{"max_tokens":9,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},{"type":"text","text":"What is it?"},{"type":"image","source":{"type":"url","url":"https://x/y.jpg"}}]}]}"#).unwrap();
+        let o = openai_of_with(&v, false).unwrap();
+        assert_eq!(o.get("messages").and_then(Value::as_array).and_then(|m| m.first()).and_then(|m| m.get("content")).and_then(Value::as_str), Some("What is it?"));
+        let o = openai_of_with(&v, true).unwrap();
+        let mut urls = Vec::new();
+        let m = tools::template_messages_with(&o, Some(&mut urls)).unwrap();
+        assert_eq!(urls, ["data:image/png;base64,AAAA", "https://x/y.jpg"]);
+        assert_eq!(m[0].get("content").and_then(Value::as_str), Some(format!("{0}What is it?{0}", tools::IMAGE_PLACE).as_str()));
+    }
+
+    use super::*;
+
+    #[test]
+    fn json_strings() {
+        assert_eq!(jstr("a\"b\\c\nd\u{1}é"), "\"a\\\"b\\\\c\\nd\\u0001é\"");
+    }
+
+    fn get(addr: std::net::SocketAddr, path: &str, auth: Option<&str>) -> String {
+        let mut c = TcpStream::connect(addr).unwrap();
+        let a = auth.map_or(String::new(), |k| format!("Authorization: Bearer {k}\r\n"));
+        c.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n{a}\r\n").as_bytes()).unwrap();
+        let mut out = String::new();
+        c.read_to_string(&mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn the_api_key_guards_the_api_and_not_the_page() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen("127.0.0.1:0", "m", 4096, Some("secret".to_string()), false, tx).unwrap();
+        assert!(get(addr, "/v1/models", None).starts_with("HTTP/1.1 401"));
+        assert!(get(addr, "/v1/models", Some("wrong")).starts_with("HTTP/1.1 401"));
+        let ok = get(addr, "/v1/models", Some("secret"));
+        assert!(ok.starts_with("HTTP/1.1 200") && ok.contains("\"max_model_len\":4096"), "{ok}");
+        assert!(get(addr, "/health", None).starts_with("HTTP/1.1 200"));
+        assert!(get(addr, "/", None).starts_with("HTTP/1.1 200"));
+        assert!(get(addr, "/nothing", None).starts_with("HTTP/1.1 404"));
+        // no key set: the API is open
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        let open = listen("127.0.0.1:0", "m", 4096, None, false, tx2).unwrap();
+        assert!(get(open, "/v1/models", None).starts_with("HTTP/1.1 200"));
+    }
+
+    /// A server that listens while its model loads: /health is 503 `loading` until the flag is cleared, then 200 `ok`; the model list answers throughout, and the key still guards /v1/health only.
+    #[test]
+    fn health_says_loading_until_the_model_can_serve() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let loading = Arc::new(AtomicBool::new(true));
+        let addr = listen_loading("127.0.0.1:0", "m", 4096, Some("secret".to_string()), false, tx, loading.clone()).unwrap();
+        let h = get(addr, "/health", None);
+        assert!(h.starts_with("HTTP/1.1 503 Service Unavailable") && h.ends_with("{\"status\":\"loading\"}"), "{h}");
+        assert!(get(addr, "/v1/health", None).starts_with("HTTP/1.1 401"));
+        assert!(get(addr, "/v1/health", Some("secret")).starts_with("HTTP/1.1 503"));
+        assert!(get(addr, "/v1/models", Some("secret")).starts_with("HTTP/1.1 200"), "the model list is not changed");
+        loading.store(false, Ordering::Relaxed);
+        let h = get(addr, "/health", None);
+        assert!(h.starts_with("HTTP/1.1 200 OK") && h.ends_with("{\"status\":\"ok\"}"), "{h}");
+        assert!(get(addr, "/v1/health", Some("secret")).starts_with("HTTP/1.1 200"));
+    }
+
+    #[test]
+    fn the_standalone_servers_words() {
+        assert_eq!(without_vllm("echo of a chat reply is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"), "echo of a chat reply is not supported by this engine yet");
+        assert_eq!(without_vllm("n must be at most 8, got 9. (This engine runs up to 8 sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"), "n must be at most 8, got 9.");
+        assert_eq!(without_vllm("a (b) c"), "a (b) c");
+        let v = |t: &str| json::parse(t).unwrap();
+        assert_eq!(json_rule(&v(r#"{"response_format":{"type":"json_object"}}"#), false), None);
+        assert!(json_rule(&v(r#"{"response_format":{"type":"json_object"}}"#), true).unwrap().starts_with("Reply with one JSON object"));
+        assert!(json_rule(&v(r#"{"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{"type":"object"}}}}"#), true).unwrap().ends_with(r#"schema: {"type":"object"}"#));
+        assert_eq!(json_rule(&v(r#"{"response_format":{"type":"text"}}"#), true), None);
+    }
+
+    #[test]
+    fn what_is_not_done_is_said() {
+        let u = |t: &str| unsupported(&json::parse(t).unwrap());
+        assert_eq!(u(r#"{"messages":[]}"#), None);
+        assert_eq!(u(r#"{"n":1,"logprobs":false,"tools":[],"response_format":{"type":"text"},"logit_bias":{}}"#), None);
+        assert_eq!(u(r#"{"n":2}"#), None); // (several choices are done: see `several_choices_from_one_prompt`)
+        assert_eq!(u(r#"{"tools":[{"type":"function"}]}"#), None); // (tools are done: see `tool_calls_through_the_api`; `invalid` says what is wrong in them)
+        assert!(u(r#"{"response_format":{"type":"json_object"}}"#).is_some());
+        // (log-probabilities are done: see `log_probabilities_through_the_api`)
+        assert_eq!(u(r#"{"logprobs":true}"#), None);
+        // (a logit bias is done now: see `logit_bias_as_vllm_takes_it`)
+        assert_eq!(u(r#"{"logit_bias":{"50256":-100}}"#), None);
+    }
+
+    /// vLLM's logit_bias: the keys are token ids as strings, a value is held to -100..100 (clamped, not refused), an id must be in the vocabulary, a later key of the same id wins; what is not a number or an id is refused in words.
+    #[test]
+    fn logit_bias_as_vllm_takes_it() {
+        let bias = |t: &str, vocab: usize| logit_bias_of(&json::parse(t).unwrap(), vocab);
+        assert_eq!(bias(r#"{"logit_bias":{"15":5,"7":-250,"3":1e3,"+9":0.5}}"#, 100).unwrap(), vec![(15, 5.0), (7, -100.0), (3, 100.0), (9, 0.5)]);
+        assert_eq!(bias(r#"{"logit_bias":{"15":5,"+15":-5}}"#, 100).unwrap(), vec![(15, -5.0)]);
+        assert_eq!(bias(r#"{"logit_bias":null}"#, 100).unwrap(), vec![]);
+        assert_eq!(bias(r#"{}"#, 100).unwrap(), vec![]);
+        assert_eq!(bias(r#"{"logit_bias":{}}"#, 100).unwrap(), vec![]);
+        let e = |t: &str| bias(t, 100).unwrap_err();
+        assert!(e(r#"{"logit_bias":{"abc":1}}"#).contains("cannot be converted to integer token IDs") && e(r#"{"logit_bias":{"abc":1}}"#).contains("abc"));
+        assert!(e(r#"{"logit_bias":{"100":1}}"#).contains("out-of-vocab") && e(r#"{"logit_bias":{"100":1}}"#).contains("Vocabulary size: 100"));
+        assert!(e(r#"{"logit_bias":{"-1":1}}"#).contains("out-of-vocab"));
+        assert!(e(r#"{"logit_bias":{"5":"x"}}"#).contains("logit_bias"));
+        assert!(e(r#"{"logit_bias":[1,2]}"#).contains("logit_bias"));
+        // the request carries it as the sampler wants it, and `invalid` says what is wrong before any work is done
+        let v = json::parse(r#"{"logit_bias":{"15":5,"7":-250}}"#).unwrap();
+        assert_eq!(request_of(&v, 4096, &Params::default()).params.logit_bias, vec![(15, 5.0), (7, -100.0)]);
+        assert_eq!(invalid(&v, true, 100), None);
+        assert!(invalid(&json::parse(r#"{"logit_bias":{"500":5}}"#).unwrap(), true, 100).unwrap().contains("out-of-vocab"));
+    }
+
+    #[test]
+    fn requests_as_the_openai_api_names_them() {
+        let v = json::parse(r#"{"messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}],"temperature":0.5,"top_p":0.9,"top_k":40,"max_tokens":64,"stop":["x","y"],"seed":7,"chat_template_kwargs":{"enable_thinking":false}}"#).unwrap();
+        let m = tools::template_messages(&v).unwrap();
+        assert_eq!((at(&m[0], &["role"]).as_str(), at(&m[0], &["content"]).as_str(), at(&m[1], &["content"]).as_str()), (Some("system"), Some("s"), Some("a\nb"))); // (text parts are joined by new lines, as vLLM's chat path joins them)
+        let r = request_of(&v, 4096, &Params { temperature: 1.0, ..Params::default() });
+        assert_eq!((r.params.temperature, r.params.top_p, r.params.top_k, r.params.seed, r.max_new), (0.5, 0.9, 40, 7, 64));
+        assert_eq!((r.stop.clone(), r.thinking), (vec!["x".to_string(), "y".to_string()], Some(false)));
+        assert!(r.template_kwargs.is_empty());
+        // every other key of chat_template_kwargs is a variable of the template, as given (vLLM's own rule: reasoning_effort, date_string ...)
+        let k = request_of(&json::parse(r#"{"chat_template_kwargs":{"reasoning_effort":"low","enable_thinking":true,"n":3}}"#).unwrap(), 4096, &Params::default());
+        assert_eq!(k.thinking, Some(true));
+        assert_eq!(k.template_kwargs, vec![("reasoning_effort".to_string(), json::Value::from("low")), ("n".to_string(), json::Value::from(3u64))]);
+        let o = k.template_options();
+        assert!(o.add_generation_prompt && o.tools.is_none());
+        assert_eq!(o.kwargs.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["enable_thinking", "reasoning_effort", "n"]);
+        // no limit asked: the window; no temperature: 1 (the API's default)
+        let d = request_of(&json::parse("{}").unwrap(), 4096, &Params { temperature: 1.0, ..Params::default() });
+        assert_eq!((d.max_new, d.params.temperature, d.ignore_eos), (4096, 1.0, false));
+        // vLLM's ignore_eos: a reply of the length asked for
+        assert!(request_of(&json::parse(r#"{"prompt":"p","ignore_eos":true,"max_tokens":8}"#).unwrap(), 4096, &Params::default()).ignore_eos);
+        assert!(tools::template_messages(&json::parse(r#"{"messages":[]}"#).unwrap()).is_err());
+    }
+
+    use crate::sched::tests::Fake;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    /// A server on a made-up model (`Fake`: a token after tokens is a hash of them, its row of logits has 10.0 for that token and 5.0 for the next) with a tokenizer whose words are its tokens: what a client of the API sees,
+    /// through the real handler, scheduler and sockets, with no GPU.
+    fn serve_fake(f: Fake, template: Option<&str>, users: usize) -> std::net::SocketAddr {
+        serve_fake_with(f, template, users, false, None, &[])
+    }
+
+    fn serve_fake_with(f: Fake, template: Option<&str>, users: usize, local_only: bool, key: Option<&str>, refused: &'static [(&'static str, &'static str)]) -> std::net::SocketAddr {
+        let words: Vec<String> = (1..=1100).map(|i| format!(" w{i}")).collect();
+        let refs: Vec<&str> = words.iter().map(String::as_str).collect();
+        let window = f.store.len() * crate::kv::PAGE;
+        let chat = template.map(|t| Chat::from_template(t).unwrap());
+        let shared = Arc::new(Shared { tok: crate::tok::tests::toy(&refs), chat, name: "fake".to_string(), defaults: Params { temperature: 1.0, ..Params::default() }, window, vocab: 2048, thinking: None, refused });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let addr = listen("127.0.0.1:0", "fake", window, key.map(str::to_string), local_only, tx.clone()).unwrap();
+        std::thread::spawn(move || work_with(&mut Sched::new(f, users), shared, &rx, &tx));
+        addr
+    }
+
+    /// A request and its whole answer: (status, the body, with a chunked body put together).
+    fn call(addr: std::net::SocketAddr, path: &str, body: &str) -> (u16, String) {
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+        let mut raw = Vec::new();
+        c.read_to_end(&mut raw).unwrap();
+        let raw = String::from_utf8(raw).unwrap();
+        let (head, rest) = raw.split_once("\r\n\r\n").unwrap();
+        let status: u16 = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+        if !head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+            return (status, rest.to_string());
+        }
+        let (mut out, mut at) = (String::new(), rest);
+        loop {
+            let (size, tail) = at.split_once("\r\n").unwrap();
+            let n = usize::from_str_radix(size.trim(), 16).unwrap();
+            if n == 0 {
+                break;
+            }
+            out.push_str(&tail[..n]);
+            at = &tail[n + 2..];
+        }
+        (status, out)
+    }
+
+    /// The JSON of each `data:` event of a streamed answer (`[DONE]` last, as the string it is).
+    fn events(body: &str) -> Vec<json::Value> {
+        body.split("\n\n").filter_map(|e| e.strip_prefix("data: ")).map(|d| if d == "[DONE]" { Value::String("[DONE]".to_string()) } else { json::parse(d).unwrap() }).collect()
+    }
+
+    fn f64_of(v: &Value) -> f64 {
+        match v {
+            Value::Number(n) => n.parse().unwrap(),
+            other => panic!("{other:?} is not a number"),
+        }
+    }
+
+    fn at<'a>(v: &'a Value, path: &[&str]) -> &'a Value {
+        path.iter().fold(v, |v, k| match k.parse::<usize>() {
+            Ok(i) => &v.as_array().unwrap_or_else(|| panic!("no list at {k} in {v:?}"))[i],
+            Err(_) => v.get(k).unwrap_or_else(|| panic!("no {k} in {v:?}")),
+        })
+    }
+
+    /// Log-probabilities as vLLM gives them (`raw_logprobs`): of the model's own row, whatever the draw; a chat's list per token with the likeliest tokens, a plain completion's in the legacy form; the same streamed and not; the end-of-sequence
+    /// token's among them and counted; and the refusals in vLLM's words.
+    #[test]
+    fn log_probabilities_through_the_api() {
+        let lse = (10f64.exp() + 5f64.exp() + 2046.0 * (-5f64).exp()).ln();
+        for gpu_top in [true, false] {
+            let mut f = Fake::new(64, 32);
+            f.gpu_top = gpu_top;
+            let addr = serve_fake(f, None, 4);
+            let q = r#""messages":[{"role":"user","content":"hello there"}],"max_tokens":5,"temperature":0"#;
+            let (st, body) = call(addr, "/v1/chat/completions", &format!("{{{q},\"logprobs\":true,\"top_logprobs\":2}}"));
+            assert_eq!(st, 200, "{body}");
+            let d = json::parse(&body).unwrap();
+            let content = at(&d, &["choices", "0", "logprobs", "content"]).as_array().unwrap().to_vec();
+            assert_eq!(content.len(), 5, "{body}");
+            assert_eq!(at(&d, &["usage", "completion_tokens"]), &Value::Number("5".into()));
+            for e in &content {
+                // the likeliest token is the chosen one (greedy), 10.0 of the row; the second is the token after it, 5.0
+                assert!((f64_of(at(e, &["logprob"])) - (10.0 - lse)).abs() < 1e-6, "gpu_top {gpu_top}: {e:?}");
+                let top = at(e, &["top_logprobs"]).as_array().unwrap();
+                assert_eq!(top.len(), 2);
+                assert_eq!(at(&top[0], &["token"]), at(e, &["token"]));
+                assert!((f64_of(at(&top[1], &["logprob"])) - (5.0 - lse)).abs() < 1e-6);
+                assert!(at(e, &["bytes"]).as_array().unwrap().len() >= 2);
+            }
+            let tokens: Vec<String> = content.iter().map(|e| at(e, &["token"]).as_str().unwrap().to_string()).collect();
+            assert_eq!(at(&d, &["choices", "0", "message", "content"]).as_str().unwrap(), tokens.concat(), "the text is the tokens'");
+            // `logprobs: true` alone lists the chosen token and no others
+            let (_, body) = call(addr, "/v1/chat/completions", &format!("{{{q},\"logprobs\":true}}"));
+            let d = json::parse(&body).unwrap();
+            assert_eq!(at(&d, &["choices", "0", "logprobs", "content", "0", "top_logprobs"]), &Value::Array(vec![]));
+            // none asked for: none sent
+            let (_, body) = call(addr, "/v1/chat/completions", &format!("{{{q}}}"));
+            assert_eq!(at(&json::parse(&body).unwrap(), &["choices", "0", "logprobs"]), &Value::Null);
+            // streamed: the same entries, in the chunks that carry their text, the last with the finish reason
+            let (st, body) = call(addr, "/v1/chat/completions", &format!("{{{q},\"logprobs\":true,\"top_logprobs\":2,\"stream\":true}}"));
+            assert_eq!(st, 200);
+            let ev = events(&body);
+            assert_eq!(ev.last().unwrap(), &Value::String("[DONE]".into()));
+            let mut streamed = Vec::new();
+            for e in &ev[..ev.len() - 1] {
+                if let Some(l) = e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("logprobs")).and_then(|l| l.get("content")) {
+                    streamed.extend(l.as_array().unwrap().iter().map(|x| at(x, &["token"]).as_str().unwrap().to_string()));
+                }
+            }
+            assert_eq!(streamed, tokens, "gpu_top {gpu_top}");
+            // a plain completion: the legacy lists
+            let (st, body) = call(addr, "/v1/completions", r#"{"prompt":"hello there","max_tokens":4,"temperature":0,"logprobs":2}"#);
+            assert_eq!(st, 200, "{body}");
+            let d = json::parse(&body).unwrap();
+            let l = at(&d, &["choices", "0", "logprobs"]);
+            assert_eq!(at(l, &["tokens"]).as_array().unwrap().len(), 4);
+            let offsets: Vec<f64> = at(l, &["text_offset"]).as_array().unwrap().iter().map(f64_of).collect();
+            assert_eq!(offsets[0], 0.0);
+            assert!(offsets.windows(2).all(|w| w[1] > w[0]));
+            assert!((f64_of(at(l, &["token_logprobs", "0"])) - (10.0 - lse)).abs() < 1e-6);
+            assert_eq!(at(l, &["top_logprobs", "0"]).as_object().unwrap().len(), 2);
+            // the refusals, in vLLM's words
+            for (path, extra, want) in [
+                ("/v1/chat/completions", r#""logprobs":true,"top_logprobs":21"#, "greater than max allowed: 20"),
+                ("/v1/chat/completions", r#""top_logprobs":2"#, "`logprobs` must be set to true"),
+                ("/v1/chat/completions", r#""logprobs":true,"top_logprobs":-3"#, "must be a positive value or -1"),
+                ("/v1/chat/completions", r#""logprobs":true,"top_logprobs":"two""#, "must be an integer"),
+                ("/v1/completions", r#""logprobs":21,"prompt":"x""#, "greater than max allowed: 20"),
+            ] {
+                let (st, body) = call(addr, path, &format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"x\"}}],{extra}}}"));
+                assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
+            }
+        }
+    }
+
+    /// The end-of-sequence token is a token of the reply with a log-probability of its own, and counted in the usage, as vLLM counts it; the text has none of it.
+    #[test]
+    fn the_end_token_is_counted_and_has_log_probabilities() {
+        let mut probe = Fake::new(64, 32);
+        probe.eos = vec![0];
+        let addr = serve_fake(probe, None, 4);
+        let q = r#""messages":[{"role":"user","content":"hello there"}],"temperature":0"#;
+        let (_, body) = call(addr, "/v1/chat/completions", &format!("{{{q},\"max_tokens\":4,\"logprobs\":true}}"));
+        let d = json::parse(&body).unwrap();
+        let first_four: Vec<String> = at(&d, &["choices", "0", "logprobs", "content"]).as_array().unwrap().iter().map(|e| at(e, &["token"]).as_str().unwrap().to_string()).collect();
+        // the model's fourth token is an end token for a server whose model ends there: the same prompt, the end token among the model's
+        let fourth_id: usize = first_four[3].trim().trim_start_matches('w').parse().unwrap();
+        let mut f = Fake::new(64, 32);
+        f.eos = vec![fourth_id as i64];
+        let addr = serve_fake(f, None, 4);
+        let (st, body) = call(addr, "/v1/chat/completions", &format!("{{{q},\"max_tokens\":50,\"logprobs\":true}}"));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        assert_eq!(at(&d, &["choices", "0", "finish_reason"]).as_str(), Some("stop"));
+        let list = at(&d, &["choices", "0", "logprobs", "content"]).as_array().unwrap();
+        let text = at(&d, &["choices", "0", "message", "content"]).as_str().unwrap();
+        // (the first three tokens, or fewer where the end token shows earlier)
+        let n_text = text.matches('w').count();
+        assert_eq!(list.len(), n_text + 1, "the end token's own entry comes last: {body}");
+        assert_eq!(at(&d, &["usage", "completion_tokens"]), &Value::Number((n_text + 1).to_string()), "the end token is counted");
+        assert!(at(list.last().unwrap(), &["token"]).as_str().unwrap().trim() == format!("w{fourth_id}"));
+    }
+
+    /// Several choices from one prompt: each with its own index and finish reason and its own draws (the seed of choice i is the request's plus i, as vLLM's; none given, each its own), the prompt run once and its
+    /// blocks found in the cache by the others, the usage counting the prompt once and every choice's tokens, the same streamed and whole, and the limits in vLLM's words.
+    #[test]
+    fn several_choices_from_one_prompt() {
+        let f = Fake::new(64, 32);
+        let ran = f.prefilled.clone();
+        let addr = serve_fake(f, None, 4);
+        let prompt = "w ".repeat(100); // 100 tokens
+        let q = |extra: &str| format!("{{\"prompt\":\"{prompt}\",\"max_tokens\":12,\"temperature\":2.0,\"top_k\":20{extra}}}");
+        let texts = |body: &str| -> Vec<String> { at(&json::parse(body).unwrap(), &["choices"]).as_array().unwrap().iter().map(|c| at(c, &["text"]).as_str().unwrap().to_string()).collect() };
+        let before = ran.load(Relaxed);
+        let (st, body) = call(addr, "/v1/completions", &q(",\"n\":4,\"seed\":7"));
+        assert_eq!(st, 200, "{body}");
+        // the first choice runs the prompt (100 tokens); each of the three others finds its six full blocks (96 tokens) and runs the last four
+        assert_eq!(ran.load(Relaxed) - before, 100 + 3 * 4, "the prompt was not shared");
+        let d = json::parse(&body).unwrap();
+        let cs = at(&d, &["choices"]).as_array().unwrap();
+        assert_eq!(cs.len(), 4);
+        for (i, c) in cs.iter().enumerate() {
+            assert_eq!(at(c, &["index"]), &Value::Number(i.to_string()));
+            assert_eq!(at(c, &["finish_reason"]).as_str(), Some("length"));
+        }
+        assert_eq!((at(&d, &["usage", "prompt_tokens"]), at(&d, &["usage", "completion_tokens"]), at(&d, &["usage", "total_tokens"])), (&Value::Number("100".into()), &Value::Number("48".into()), &Value::Number("148".into())), "{body}");
+        let t = texts(&body);
+        assert!(t.iter().any(|x| x != &t[0]), "four choices of one text: {t:?}");
+        // the same seed, the same four texts; another seed, other texts
+        assert_eq!(texts(&call(addr, "/v1/completions", &q(",\"n\":4,\"seed\":7")).1), t);
+        assert_ne!(texts(&call(addr, "/v1/completions", &q(",\"n\":4,\"seed\":8")).1), t);
+        // choice i alone, with the seed 7 + i, is the choice i (the seeds are what makes the choices apart)
+        for i in 0..4u64 {
+            assert_eq!(texts(&call(addr, "/v1/completions", &q(&format!(",\"seed\":{}", 7 + i))).1), vec![t[i as usize].clone()], "choice {i}");
+        }
+        // no seed: the choices differ from each other, and a second request from the first (a draw: here a choice is all the likeliest
+        // tokens about one time in three, so three choices alike come about one request in 25; up to 5 requests are made for one that differs)
+        let draw = || texts(&call(addr, "/v1/completions", &q(",\"n\":3")).1);
+        let ta = (0..5).map(|_| draw()).find(|t| t.iter().any(|x| x != &t[0]));
+        let tb = draw();
+        assert!(ta.as_ref().is_some_and(|ta| ta != &tb), "{ta:?} {tb:?}");
+        // streamed: a role chunk for each choice first, then deltas that carry their index, each choice ended once, the usage, [DONE]; each choice's text is the whole answer's
+        let chat = r#""messages":[{"role":"user","content":"hello there"}],"max_tokens":12,"temperature":2.0,"top_k":20,"n":3,"seed":11"#;
+        let (st, body) = call(addr, "/v1/chat/completions", &format!("{{{chat},\"stream\":true,\"stream_options\":{{\"include_usage\":true}}}}"));
+        assert_eq!(st, 200, "{body}");
+        let ev = events(&body);
+        assert_eq!(ev.last().unwrap(), &Value::String("[DONE]".into()));
+        let first: Vec<String> = ev[..3].iter().map(|e| format!("{}:{}", f64_of(at(e, &["choices", "0", "index"])), at(e, &["choices", "0", "delta", "role"]).as_str().unwrap())).collect();
+        assert_eq!(first, vec!["0:assistant", "1:assistant", "2:assistant"]);
+        let (mut built, mut finishes) = (vec![String::new(); 3], vec![0; 3]);
+        for e in &ev[3..ev.len() - 2] {
+            let c = at(e, &["choices", "0"]);
+            let i: usize = match at(c, &["index"]) {
+                Value::Number(n) => n.parse().unwrap(),
+                _ => unreachable!(),
+            };
+            if let Some(t) = c.get("delta").and_then(|d| d.get("content")).and_then(Value::as_str) {
+                built[i].push_str(t);
+            }
+            if c.get("finish_reason").and_then(Value::as_str).is_some() {
+                finishes[i] += 1;
+            }
+        }
+        assert_eq!(finishes, vec![1, 1, 1]);
+        let usage = ev[ev.len() - 2].get("usage").expect("a usage chunk before [DONE]");
+        assert_eq!((at(usage, &["completion_tokens"]), ev[ev.len() - 2].get("choices").unwrap()), (&Value::Number("36".into()), &Value::Array(vec![])));
+        let (_, whole) = call(addr, "/v1/chat/completions", &format!("{{{chat}}}"));
+        let whole: Vec<String> = at(&json::parse(&whole).unwrap(), &["choices"]).as_array().unwrap().iter().map(|c| at(c, &["message", "content"]).as_str().unwrap().to_string()).collect();
+        assert_eq!(built, whole, "streamed and whole choices are the same texts");
+        // the limits: 8 at the most (and 8 are served by 4 users, 4 waiting), none or fewer than one is wrong, and greedy draws are all one text
+        let (st, body) = call(addr, "/v1/completions", &q(",\"n\":8"));
+        assert_eq!((st, texts(&body).len()), (200, 8), "{body}");
+        for (extra, want) in [(",\"n\":9", "n must be at most 8, got 9"), (",\"n\":0", "n must be at least 1, got 0"), (",\"n\":2.5", "`n` must be an integer"), (",\"n\":2,\"temperature\":0", "n must be 1 when using greedy sampling, got 2")] {
+            let (st, body) = call(addr, "/v1/completions", &format!("{{\"prompt\":\"{prompt}\",\"max_tokens\":4{extra}}}"));
+            assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
+        }
+    }
+
+    /// A request as text, and the whole answer: (status, the header block in lower case, the body).
+    fn ask(addr: std::net::SocketAddr, method: &str, path: &str, headers: &[(&str, &str)]) -> (u16, String, String) {
+        let mut c = TcpStream::connect(addr).unwrap();
+        let h: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+        c.write_all(format!("{method} {path} HTTP/1.1\r\n{h}Connection: close\r\n\r\n").as_bytes()).unwrap();
+        let mut raw = Vec::new();
+        c.read_to_end(&mut raw).unwrap();
+        let raw = String::from_utf8(raw).unwrap();
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+        (head.split_whitespace().nth(1).unwrap().parse().unwrap(), head.to_lowercase(), body.to_string())
+    }
+
+    /// The server on this computer's own address, as the Python server's page guard was (glyd-gpu-py/glyd_gpu/page.py, its test in test_onboard.py): the Host must be localhost, 127.0.0.1 or [::1] (421 for another name:
+    /// a page whose DNS points at this computer, the page too), the Origin the server's own, `http://` and the Host (403, another page's script, a preflight too); programs that send no Origin and an address as
+    /// their Host (curl, the OpenAI libraries, Open WebUI's server) are answered, and so is the server's own page.
+    #[test]
+    fn this_computers_own_address_answers_its_own_page_and_programs() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen("127.0.0.1:0", "m", 4096, None, true, tx).unwrap();
+        let status = |method: &str, path: &str, h: &[(&str, &str)]| ask(addr, method, path, h).0;
+        for host in ["localhost:8000", "127.0.0.1:8000", "[::1]:8000", "LocalHost:8000", "localhost", "[::1]", "localhost:"] {
+            assert_eq!(status("GET", "/v1/models", &[("Host", host)]), 200, "{host}");
+            assert_eq!(status("GET", "/health", &[("Host", host)]), 200, "{host}");
+        }
+        // (HTTP/1.0 and a client with no Host: nothing to refuse for it)
+        assert_eq!(status("GET", "/v1/models", &[]), 200);
+        // the page's own requests: the Origin is `http://` and the Host, in any case
+        assert_eq!(status("GET", "/v1/models", &[("Host", "localhost:8000"), ("Origin", "http://localhost:8000")]), 200);
+        assert_eq!(status("GET", "/v1/models", &[("Host", "127.0.0.1:8000"), ("Origin", "http://127.0.0.1:8000")]), 200);
+        assert_eq!(status("GET", "/v1/models", &[("Host", "localhost:8000"), ("Origin", "HTTP://LOCALHOST:8000")]), 200);
+        assert_eq!(status("GET", "/", &[("Host", "localhost:8000")]), 200);
+        // a name that is not this computer's: the rebinding page's own, whatever the path (the page is not answered to it either)
+        for host in ["evil.example", "evil.example:8000", "localhost.evil.example:8000", "127.0.0.1.evil.example", "192.168.1.5:8000", "0.0.0.0:8000", "localhost.:8000", "[::1", "[::2]:8000", "[fe80::1]:8000"] {
+            for path in ["/v1/models", "/", "/health", "/stats"] {
+                let (st, _, body) = ask(addr, "GET", path, &[("Host", host)]);
+                assert_eq!(st, 421, "{host} {path}");
+                let e = json::parse(&body).unwrap();
+                assert_eq!((at(&e, &["error", "type"]).as_str(), f64_of(at(&e, &["error", "code"]))), (Some("Forbidden"), 421.0));
+                assert!(at(&e, &["error", "message"]).as_str().unwrap().contains(&format!("{:?}", host).replace('"', "")), "{body}");
+            }
+        }
+        // an Origin that is not the server's own: another site's script, another port, another scheme, another way of writing the address, `null`, a name that begins as the Host
+        for origin in ["http://evil.example", "https://localhost:8000", "http://localhost:5173", "http://127.0.0.1:8000", "null", "http://localhost:8000.evil.example", "http://"] {
+            let (st, _, body) = ask(addr, "POST", "/v1/chat/completions", &[("Host", "localhost:8000"), ("Origin", origin), ("Content-Length", "0")]);
+            assert_eq!(st, 403, "{origin}");
+            assert_eq!(at(&json::parse(&body).unwrap(), &["error", "type"]).as_str(), Some("Forbidden"));
+            assert_eq!(status("GET", "/v1/models", &[("Host", "localhost:8000"), ("Origin", origin)]), 403, "{origin}");
+        }
+        // an Origin with no Host to be the origin of
+        assert_eq!(status("GET", "/v1/models", &[("Origin", "http://localhost:8000")]), 403);
+        // the Host is judged first: a name that is not ours is 421 whatever the Origin
+        assert_eq!(status("GET", "/v1/models", &[("Host", "evil.example"), ("Origin", "http://evil.example")]), 421);
+        // the preflight of another site's script is refused (the page's own requests have none)
+        let pre = [("Host", "localhost:8000"), ("Origin", "http://evil.example"), ("Access-Control-Request-Method", "POST")];
+        assert_eq!(status("OPTIONS", "/v1/chat/completions", &pre), 403);
+        assert_eq!(status("OPTIONS", "/v1/chat/completions", &[("Host", "evil.example"), ("Origin", "http://evil.example"), ("Access-Control-Request-Method", "POST")]), 421);
+        // a preflight of the server's own origin, as the CORS middleware of vLLM answers it (the origins are the three addresses at the server's port); one of the right form for the Host but not this port, or for a method
+        // there is none of, is 400
+        let own = format!("http://localhost:{}", addr.port());
+        let host = format!("localhost:{}", addr.port());
+        let (st, head, body) = ask(addr, "OPTIONS", "/v1/chat/completions", &[("Host", &host), ("Origin", &own), ("Access-Control-Request-Method", "POST"), ("Access-Control-Request-Headers", "content-type,authorization")]);
+        assert_eq!((st, body.as_str()), (200, "OK"));
+        for line in [format!("access-control-allow-origin: {}", own.to_lowercase()), "access-control-allow-methods: delete, get, head, options, patch, post, put".to_string(), "access-control-allow-headers: content-type,authorization".to_string(), "access-control-max-age: 600".to_string(), "vary: origin".to_string()] {
+            assert!(head.contains(&line), "{line} in {head}");
+        }
+        let (st, head, body) = ask(addr, "OPTIONS", "/v1/chat/completions", &[("Host", "localhost:8000"), ("Origin", "http://localhost:8000"), ("Access-Control-Request-Method", "POST")]);
+        assert_eq!((st, body.as_str(), head.contains("access-control-allow-origin")), (400, "Disallowed CORS origin", false));
+        let (st, _, body) = ask(addr, "OPTIONS", "/v1/chat/completions", &[("Host", &host), ("Origin", &own), ("Access-Control-Request-Method", "TRACE")]);
+        assert_eq!((st, body.as_str()), (400, "Disallowed CORS method"));
+        // an OPTIONS with no question is an ordinary request (an API path does not take it)
+        assert_eq!(status("OPTIONS", "/v1/chat/completions", &[("Host", &host)]), 405);
+        // the answers to the server's own origin carry its CORS line; those to a program that sends no Origin carry none
+        let (_, head, _) = ask(addr, "GET", "/v1/models", &[("Host", &host), ("Origin", &own)]);
+        assert!(head.contains(&format!("access-control-allow-origin: {}", own.to_lowercase())), "{head}");
+        assert!(!ask(addr, "GET", "/v1/models", &[("Host", &host)]).1.contains("access-control"));
+        // the page: its own headers (it may talk to its own origin only, is not framed, not sniffed), and HEAD answers them with no body
+        let (st, head, body) = ask(addr, "GET", "/", &[("Host", &host)]);
+        assert_eq!(st, 200);
+        assert!(body.contains("<html") || body.contains("<!DOCTYPE") || body.contains("<!doctype"));
+        for want in ["content-security-policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'", "x-content-type-options: nosniff", "referrer-policy: no-referrer"] {
+            assert!(head.contains(want), "{want} in {head}");
+        }
+        let (st, head, body) = ask(addr, "HEAD", "/", &[("Host", &host)]);
+        assert_eq!((st, body.as_str(), head.contains("content-length")), (200, "", true));
+    }
+
+    /// An address the user named is theirs: nothing is refused for its Host or Origin, and a script of another origin is answered as vLLM's own CORS (all origins) answers it, preflight included.
+    #[test]
+    fn an_address_that_was_chosen_has_no_checks_and_every_origin() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen("127.0.0.1:0", "m", 4096, None, false, tx).unwrap();
+        let (st, head, _) = ask(addr, "GET", "/v1/models", &[("Host", "evil.example"), ("Origin", "http://evil.example")]);
+        assert_eq!(st, 200);
+        assert!(head.contains("access-control-allow-origin: *"), "{head}");
+        assert!(!ask(addr, "GET", "/v1/models", &[("Host", "evil.example")]).1.contains("access-control"));
+        let (st, head, body) = ask(addr, "OPTIONS", "/v1/chat/completions", &[("Host", "x:1"), ("Origin", "http://localhost:5173"), ("Access-Control-Request-Method", "POST"), ("Access-Control-Request-Headers", "authorization")]);
+        assert_eq!((st, body.as_str()), (200, "OK"));
+        assert!(head.contains("access-control-allow-origin: *") && head.contains("access-control-allow-headers: authorization") && head.contains("access-control-allow-methods: delete, get, head, options, patch, post, put"), "{head}");
+    }
+
+    /// The API key as vLLM's middleware checks it: `Authorization: Bearer KEY` (the scheme in any case; the token is what follows the first space), by the digests of both in constant time; for every path of /v1, and
+    /// not for an OPTIONS, the page, /health or /stats; the Host and Origin checks come before it.
+    #[test]
+    fn the_api_key_as_vllm_checks_it() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen("127.0.0.1:0", "m", 4096, Some("s3cret key".to_string()), true, tx).unwrap();
+        let get = |path: &str, auth: Option<&str>| {
+            let mut h = vec![("Host", "localhost:8000")];
+            if let Some(a) = auth {
+                h.push(("Authorization", a));
+            }
+            ask(addr, "GET", path, &h)
+        };
+        for ok in ["Bearer s3cret key", "bearer s3cret key", "BEARER s3cret key", "Bearer s3cret key  "] {
+            assert_eq!(get("/v1/models", Some(ok)).0, 200, "{ok:?}");
+        }
+        for bad in ["Bearer s3cret", "Bearer s3cret keyx", "Bearer  s3cret key", "Basic s3cret key", "s3cret key", "Bearer", "Bearer ", "", "Bearer S3CRET KEY", "Token s3cret key"] {
+            let (st, _, body) = get("/v1/models", Some(bad));
+            assert_eq!((st, body.as_str()), (401, "{\"error\":\"Unauthorized\"}"), "{bad:?}");
+        }
+        assert_eq!(get("/v1/models", None).0, 401);
+        // every path under /v1 asks for it, one that does not exist too (the key is asked before the route is looked for)
+        assert_eq!(get("/v1/nothing", None).0, 401);
+        assert_eq!(get("/v1", None).0, 401);
+        assert_eq!(get("/v1/nothing", Some("Bearer s3cret key")).0, 404);
+        assert_eq!(ask(addr, "POST", "/v1/chat/completions", &[("Host", "localhost:8000"), ("Content-Length", "0")]).0, 401);
+        // what is open
+        for open in ["/", "/health", "/stats", "/nothing"] {
+            assert_ne!(get(open, None).0, 401, "{open}");
+        }
+        // an OPTIONS is not asked for the key (it is the browser's question before it sends one)
+        assert_eq!(ask(addr, "OPTIONS", "/v1/models", &[("Host", "localhost:8000")]).0, 405);
+        // the Host is judged before the key
+        assert_eq!(ask(addr, "GET", "/v1/models", &[("Host", "evil.example")]).0, 421);
+        // the comparison: digests of the same length for any key
+        let d = key_digest("s3cret key");
+        assert!(key_matches(&d, Some("Bearer s3cret key")) && !key_matches(&d, Some("Bearer s3cret kez")) && !key_matches(&d, None));
+        assert!(key_matches(&key_digest("é"), Some("bearer é")));
+        // every byte of the digest counts: a digest that differs in any one byte, the last included, is another key
+        for i in 0..32 {
+            let mut other = d;
+            other[i] ^= 1;
+            assert!(!key_matches(&other, Some("Bearer s3cret key")), "byte {i}");
+        }
+    }
+
+    /// A connection whose request is written on a thread of its own while this one reads the answer (a server that answers before it has read it all must be read from at once); what came back.
+    fn send_raw(addr: std::net::SocketAddr, write: impl FnOnce(&mut TcpStream) + Send + 'static) -> String {
+        let mut c = TcpStream::connect(addr).unwrap();
+        let mut w = c.try_clone().unwrap();
+        let t = std::thread::spawn(move || write(&mut w));
+        let mut out = Vec::new();
+        let _ = c.read_to_end(&mut out);
+        drop(c);
+        t.join().unwrap();
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// The header block has bounds, 64 KiB and 256 headers, which are held before anything in it is looked at, the key included: a client with no credential that sends a header of 96 MiB, or 300 headers, is answered
+    /// 431 where the server reads no more than the bound and not 401 after reading it all; a block within the bounds is judged as before.
+    #[test]
+    fn a_header_block_is_bounded_before_the_key_is_asked_for() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen("127.0.0.1:0", "m", 4096, Some("secret".to_string()), false, tx).unwrap();
+        let first = |t: &str| t.lines().next().unwrap_or("").to_string();
+        // a header line of 96 MiB, written while the server answers
+        let t0 = std::time::Instant::now();
+        let out = send_raw(addr, |w| {
+            let _ = w.write_all(b"GET /v1/models HTTP/1.1\r\nHost: x\r\nX-Pad: ");
+            let chunk = vec![b'a'; 1 << 20];
+            for _ in 0..96 {
+                if w.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+            let _ = w.write_all(b"\r\n\r\n");
+        });
+        assert_eq!(first(&out), "HTTP/1.1 431 Request Header Fields Too Large", "{}", &out[..out.len().min(300)]);
+        assert!(out.contains("\"code\":431") && out.contains("header block"), "{out}");
+        assert!(t0.elapsed() < Duration::from_secs(20), "{:?}", t0.elapsed());
+        // a request line of 96 MiB is the same block
+        let out = send_raw(addr, |w| {
+            let _ = w.write_all(b"GET /");
+            let chunk = vec![b'a'; 1 << 20];
+            for _ in 0..96 {
+                if w.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+            let _ = w.write_all(b" HTTP/1.1\r\n\r\n");
+        });
+        assert!(first(&out).starts_with("HTTP/1.1 431"), "{}", &out[..out.len().min(300)]);
+        // 300 headers, 257 of them too many; 256 are within the bound
+        let many = |n: usize| {
+            move |w: &mut TcpStream| {
+                let h: String = (0..n).map(|i| format!("X-N{i}: 1\r\n")).collect();
+                let _ = w.write_all(format!("GET /v1/models HTTP/1.1\r\nHost: x\r\n{h}\r\n").as_bytes());
+            }
+        };
+        assert!(first(&send_raw(addr, many(300))).starts_with("HTTP/1.1 431"));
+        assert!(first(&send_raw(addr, many(257))).starts_with("HTTP/1.1 431"));
+        // (Host is one of the 256 here: 255 more are the most)
+        assert!(first(&send_raw(addr, many(255))).starts_with("HTTP/1.1 401"), "within the count the key is asked for");
+        // 60 KiB in one header is within the bound: the key is asked for, and with it the request is answered
+        let big = |auth: &'static str| {
+            move |w: &mut TcpStream| {
+                let _ = w.write_all(format!("GET /v1/models HTTP/1.1\r\nHost: x\r\nX-Pad: {}\r\n{auth}\r\n", "a".repeat(60 << 10)).as_bytes());
+            }
+        };
+        assert!(first(&send_raw(addr, big(""))).starts_with("HTTP/1.1 401"));
+        assert!(first(&send_raw(addr, big("Authorization: Bearer secret\r\n"))).starts_with("HTTP/1.1 200"));
+        // the bound is the block's, not a line's: two headers of 40 KiB are 80 KiB
+        let two = |w: &mut TcpStream| {
+            let pad = "a".repeat(40 << 10);
+            let _ = w.write_all(format!("GET /v1/models HTTP/1.1\r\nHost: x\r\nX-A: {pad}\r\nX-B: {pad}\r\n\r\n").as_bytes());
+        };
+        assert!(first(&send_raw(addr, two)).starts_with("HTTP/1.1 431"));
+        // the Host and Origin checks of an address of this computer's own come after the bound, as the key does
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        let local = listen("127.0.0.1:0", "m", 4096, None, true, tx2).unwrap();
+        let out = send_raw(local, many(300));
+        assert!(first(&out).starts_with("HTTP/1.1 431"), "{out}");
+        // and the server still answers
+        assert_eq!(ask(addr, "GET", "/v1/models", &[("Host", "x"), ("Authorization", "Bearer secret")]).0, 200);
+    }
+
+    /// What is read of an input that never ends is no more than the bound and a buffer: the header block is refused where it passes it, whatever the line, and is not read to its end.
+    #[test]
+    fn a_header_block_is_read_no_further_than_its_bound() {
+        struct Endless(usize, u8);
+        impl Read for Endless {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                buf.fill(self.1);
+                self.0 += buf.len();
+                Ok(buf.len())
+            }
+        }
+        for byte in *b"a\n" {
+            let mut r = BufReader::new(Endless(0, byte));
+            let e = read_head(&mut r);
+            // (a stream of newlines is blank lines: the first one ends the block with no request; a stream of letters is a line with no end)
+            if byte == b'a' {
+                assert_eq!(e.err().map(|e| e.0), Some(431));
+            } else {
+                assert!(matches!(e, Ok(Some(_)) | Ok(None)));
+            }
+            assert!(r.get_ref().0 <= MAX_HEAD + (16 << 10), "read {} bytes", r.get_ref().0);
+        }
+        // the lines that fit are read as they were: the fields the server uses
+        let text = "POST /v1/completions HTTP/1.1\r\nHost: localhost:8000\r\nOrigin: http://localhost:8000\r\nAuthorization: Bearer k\r\nContent-Length: 12\r\nExpect: 100-continue\r\nAccess-Control-Request-Method: POST\r\n\r\nbody";
+        let mut r = BufReader::new(text.as_bytes());
+        let h = read_head(&mut r).unwrap().unwrap();
+        assert_eq!((h.method.as_str(), h.path.as_str(), h.len, h.expect, h.host.as_str(), h.origin.as_str()), ("POST", "/v1/completions", 12, true, "localhost:8000", "http://localhost:8000"));
+        assert_eq!((h.auth.as_deref(), h.ask_method.as_deref(), h.ask_headers), (Some("Bearer k"), Some("POST"), None));
+        // (the body is left in the reader, for the body's own read)
+        let mut rest = String::new();
+        r.read_to_string(&mut rest).unwrap();
+        assert_eq!(rest, "body");
+        // a header that is not text is read, not refused: its bytes are what they are
+        let mut r = BufReader::new(&b"GET / HTTP/1.1\r\nHost: x\r\nX-Name: caf\xe9\r\n\r\n"[..]);
+        assert_eq!(read_head(&mut r).unwrap().unwrap().host, "x");
+        assert!(read_head(&mut BufReader::new(&b""[..])).unwrap().is_none());
+    }
+
+    /// Qwen3's own chat template, from the fixture of its tests (as transformers renders it).
+    fn qwen3_template() -> String {
+        let f = json::parse(include_str!("../tests/fixtures/chat_qwen3.json")).unwrap();
+        f.get("template").unwrap().as_str().unwrap().to_string()
+    }
+
+    const WEATHER: &str = r#"{"type":"function","function":{"name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}"#;
+
+    /// What the model is shown: the tools in the template as vLLM's chat path gives them (`tojson` as Python writes it), a conversation with a call and its result, and the opening of a forced call at the end of the
+    /// prompt, the thinking closed before it.
+    #[test]
+    fn the_prompt_of_a_request_with_tools() {
+        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(&qwen3_template()).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let text = |body: &str| {
+            let v = json::parse(body).unwrap();
+            let r = request_of(&v, 4096, &Params::default());
+            let api = api_of(&v, true, 2048).unwrap();
+            chat_text_of(&shared, &v, &api, &r).map(|(t, i, p, _)| (t, i, p)).unwrap()
+        };
+        let head = "<|im_start|>system\nBe brief.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n";
+        let msgs = r#""messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Weather in Paris?"}]"#;
+        let (t, thinking, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}]}}"));
+        assert_eq!((t.as_str(), thinking, prefix.as_str()), (format!("{head}<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n").as_str(), false, ""));
+        // none: the tools are shown all the same (vLLM does), and no call is read
+        assert_eq!(text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":\"none\"}}")).0, t);
+        // no tools: no tools block
+        let (plain, _, _) = text(&format!("{{{msgs}}}"));
+        assert!(plain.starts_with("<|im_start|>system\nBe brief.<|im_end|>\n") && !plain.contains("# Tools"), "{plain}");
+        // a call and its result in the conversation (as Open WebUI sends them: the arguments a string, the content null)
+        let conv = r#""messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Weather in Paris?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"sunny, 20C"}]"#;
+        let (t, _, _) = text(&format!("{{{conv},\"tools\":[{WEATHER}]}}"));
+        assert_eq!(t, format!("{head}<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{{\"name\": \"get_weather\", \"arguments\": {{\"city\": \"Paris\"}}}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nsunny, 20C\n</tool_response><|im_end|>\n<|im_start|>assistant\n"));
+        // a forced call: the thinking is closed in the prompt and the call opened (for a named function, to its arguments)
+        let (t, thinking, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
+        assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "), "{t}");
+        assert_eq!((thinking, prefix.as_str()), (false, "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "));
+        let (t, _, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":\"required\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}"));
+        assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n{\"name\": \""), "{t}");
+        assert_eq!(prefix, "<tool_call>\n{\"name\": \"");
+        // the thinking of the model, left on: the generation prompt as it is
+        let (t, _, _) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"chat_template_kwargs\":{{\"enable_thinking\":false}}}}"));
+        assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"), "{t}");
+    }
+
+    /// A server whose model says `reply` (a few characters a token) after any prompt, with Qwen3's template.
+    /// Kimi-K3's forced call: its own opening at the prompt's end (the think channel closed empty, an empty response, the call opened; a named function's to its
+    /// arguments), and none where the call is not forced.
+    #[test]
+    fn a_kimi_prompt_ends_with_its_forced_call() {
+        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(crate::chat::KIMI_CHAT).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let text = |body: &str| {
+            let v = json::parse(body).unwrap();
+            let r = request_of(&v, 4096, &Params::default());
+            let api = api_of(&v, true, 2048).unwrap();
+            chat_text_of(&shared, &v, &api, &r).map(|(t, _, p, _)| (t, p)).unwrap()
+        };
+        let msgs = r#""messages":[{"role":"user","content":"Weather in Paris?"}]"#;
+        let (t, p) = text(&format!("{{{msgs},\"tools\":[{WEATHER}]}}"));
+        assert!(t.ends_with(crate::conv::XTML_THINK) && p.is_empty(), "{t}");
+        let (t, p) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
+        assert_eq!(p, crate::xtml::forced(true, Some("get_weather")));
+        assert!(t.ends_with(&format!("{}{p}", crate::conv::XTML_THINK)), "{t}");
+        let (_, p) = text(&format!("{{{msgs},\"tools\":[{WEATHER}, {}],\"tool_choice\":\"required\"}}", WEATHER.replace("get_weather", "get_time")));
+        assert_eq!(p, crate::xtml::forced(true, None));
+    }
+
+    /// A template that opens the thinking with no switch for it (GLM-5.3-Flash's): a forced call closes it empty before the call's opening.
+    #[test]
+    fn a_forced_call_closes_a_thinking_the_template_opens() {
+        let template = "{%- for m in messages %}<|{{ m.role }}|>{{ m.content }}{% endfor %}{% if tools %}<tools>{% for t in tools %}{{ t | tojson }}{% endfor %}</tools><tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>{% endif %}{%- if add_generation_prompt %}<|assistant|><think>{% endif %}";
+        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(template).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let text = |body: &str| {
+            let v = json::parse(body).unwrap();
+            let r = request_of(&v, 4096, &Params::default());
+            let api = api_of(&v, true, 2048).unwrap();
+            chat_text_of(&shared, &v, &api, &r).map(|(t, i, p, _)| (t, i, p)).unwrap()
+        };
+        let msgs = r#""messages":[{"role":"user","content":"Weather in Paris?"}]"#;
+        let (t, thinking, _) = text(&format!("{{{msgs},\"tools\":[{WEATHER}]}}"));
+        assert!(t.ends_with("<|assistant|><think>") && thinking, "{t}");
+        let (t, thinking, p) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
+        assert!(!thinking && t.ends_with(&format!("<|assistant|><think></think>{p}")) && p.starts_with("<tool_call>get_weather"), "{t}");
+    }
+
+    fn serve_script(reply: &str) -> std::net::SocketAddr {
+        serve_script_with(reply, &qwen3_template())
+    }
+
+    /// `serve_script` with the chat template given.
+    fn serve_script_with(reply: &str, template: &str) -> std::net::SocketAddr {
+        // (a special token of the reply is a piece of its own)
+        let mut pieces: Vec<String> = Vec::new();
+        for (k, part) in reply.split("<|im_end|>").enumerate() {
+            if k > 0 {
+                pieces.push("<|im_end|>".to_string());
+            }
+            let chars: Vec<char> = part.chars().collect();
+            pieces.extend(chars.chunks(4).map(|c| c.iter().collect::<String>()));
+        }
+        let (mut words, mut script): (Vec<String>, Vec<u32>) = (Vec::new(), Vec::new());
+        for w in pieces {
+            let id = words.iter().position(|x| *x == w).unwrap_or_else(|| {
+                words.push(w.clone());
+                words.len() - 1
+            });
+            script.push(id as u32 + 1);
+        }
+        let mut f = Fake::new(64, 32);
+        f.script = Some(script);
+        let refs: Vec<&str> = words.iter().map(String::as_str).collect();
+        let window = f.store.len() * crate::kv::PAGE;
+        let shared = Arc::new(Shared { tok: crate::tok::tests::toy(&refs), chat: Some(Chat::from_template(template).unwrap()), name: "fake".into(), defaults: Params { temperature: 0.0, ..Params::default() }, window, vocab: 2048, thinking: None, refused: &[] });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let addr = listen("127.0.0.1:0", "fake", window, None, false, tx.clone()).unwrap();
+        std::thread::spawn(move || work_with(&mut Sched::new(f, 4), shared, &rx, &tx));
+        addr
+    }
+
+    /// A streamed chat answer put together: (thinking, content, the calls as (id, name, arguments) by index, the finish reasons, the usage's completion tokens).
+    #[allow(clippy::type_complexity)]
+    fn put_together(body: &str) -> (String, String, Vec<(String, String, String)>, Vec<String>, Option<f64>) {
+        let (mut think, mut content, mut calls, mut finishes, mut usage) = (String::new(), String::new(), Vec::<(String, String, String)>::new(), Vec::new(), None);
+        for e in events(body) {
+            let Some(c) = e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()) else {
+                if let Some(u) = e.get("usage") {
+                    usage = Some(f64_of(at(u, &["completion_tokens"])));
+                }
+                continue;
+            };
+            if let Some(d) = c.get("delta") {
+                think.push_str(d.get("reasoning_content").and_then(Value::as_str).unwrap_or(""));
+                content.push_str(d.get("content").and_then(Value::as_str).unwrap_or(""));
+                for t in d.get("tool_calls").and_then(Value::as_array).unwrap_or(&[]) {
+                    let i = f64_of(at(t, &["index"])) as usize;
+                    while calls.len() <= i {
+                        calls.push(Default::default());
+                    }
+                    if let Some(id) = t.get("id").and_then(Value::as_str) {
+                        assert_eq!(t.get("type").and_then(Value::as_str), Some("function"));
+                        calls[i].0 = id.to_string();
+                        calls[i].1 = at(t, &["function", "name"]).as_str().unwrap().to_string();
+                    }
+                    calls[i].2.push_str(t.get("function").and_then(|f| f.get("arguments")).and_then(Value::as_str).unwrap_or(""));
+                }
+            }
+            if let Some(f) = c.get("finish_reason").and_then(Value::as_str) {
+                finishes.push(f.to_string());
+            }
+        }
+        (think, content, calls, finishes, usage)
+    }
+
+    /// A chat whose reasoning is hidden (`include_reasoning: false`) has no log-probabilities, as vLLM's: they would spell the reasoning out token by token; a chat that shows its reasoning has them, and a plain completion's are as asked.
+    #[test]
+    fn hidden_reasoning_is_not_spelled_out_by_log_probabilities() {
+        let addr = serve_script("<think>\nsecret thought\n</think>\n\nthe answer");
+        let q = |extra: &str| format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}],\"max_tokens\":200,\"logprobs\":true,\"top_logprobs\":1{extra}}}");
+        let (st, body) = call(addr, "/v1/chat/completions", &q(",\"include_reasoning\":false"));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str().map(str::trim), at(&d, &["choices", "0", "logprobs"])), (Some("the answer"), &Value::Null), "{body}");
+        assert!(!body.contains("secr") && !body.contains("thought"), "{body}");
+        let (_, body) = call(addr, "/v1/chat/completions", &q(",\"include_reasoning\":false,\"stream\":true"));
+        let (think, content, _, _, _) = put_together(&body);
+        assert!(!body.contains("secr") && !body.contains("thought") && think.is_empty() && content.trim() == "the answer", "{body}");
+        for e in events(&body) {
+            for c in e.get("choices").and_then(Value::as_array).unwrap_or(&[]) {
+                assert_eq!(c.get("logprobs"), Some(&Value::Null), "{body}");
+            }
+        }
+        // the reasoning shown: the log-probabilities are there, and so is its text
+        let (_, body) = call(addr, "/v1/chat/completions", &q(""));
+        let d = json::parse(&body).unwrap();
+        assert!(at(&d, &["choices", "0", "logprobs", "content"]).as_array().is_some_and(|l| l.len() > 5), "{body}");
+        assert_eq!(at(&d, &["choices", "0", "message", "reasoning_content"]).as_str().map(str::trim), Some("secret thought"), "{body}");
+        // a plain completion has no reasoning to hide: the field changes nothing for it
+        let (st, body) = call(addr, "/v1/completions", r#"{"prompt":"hi","max_tokens":4,"logprobs":1,"include_reasoning":false}"#);
+        assert_eq!(st, 200, "{body}");
+        assert!(at(&json::parse(&body).unwrap(), &["choices", "0", "logprobs", "tokens"]).as_array().is_some_and(|t| !t.is_empty()), "{body}");
+    }
+
+    /// `stream_options` with nothing in it is none, as in vLLM (an empty dict is false there): a request that always sends it, whether it streams or not, is answered; one with an option and no stream is not.
+    #[test]
+    fn an_empty_stream_options_is_none() {
+        let a = |t: &str| api_of(&json::parse(t).unwrap(), true, 100).map(|a| (a.stream, a.include_usage));
+        assert_eq!(a(r#"{"stream_options":{}}"#), Ok((false, false)));
+        assert_eq!(a(r#"{"stream_options":null}"#), Ok((false, false)));
+        assert_eq!(a(r#"{"stream":true,"stream_options":{}}"#), Ok((true, false)));
+        assert_eq!(a(r#"{"stream":true,"stream_options":{"include_usage":true}}"#), Ok((true, true)));
+        assert!(a(r#"{"stream_options":{"include_usage":true}}"#).unwrap_err().contains("only be defined when `stream=True`"));
+    }
+
+    const CALL: &str = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>";
+
+    fn chat_body(extra: &str) -> String {
+        chat_body_with(WEATHER, extra)
+    }
+
+    fn chat_body_with(tool: &str, extra: &str) -> String {
+        format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"Weather in Paris?\"}}],\"max_tokens\":200,\"tools\":[{tool}]{extra}}}")
+    }
+
+    /// Tool calls through the API as vLLM's hermes parser gives them: the call (an id, the function, its arguments as Python writes them) in `tool_calls`, the content null and the finish reason `tool_calls`, the same
+    /// streamed (the function when its name is complete, then the arguments) with the usage counting the end token; an ordinary answer where tools are offered is an ordinary reply; a block that is not a call is text;
+    /// the thinking apart from the call; only the first of several where `parallel_tool_calls` is false; none read where the choice is none.
+    #[test]
+    fn tool_calls_through_the_api() {
+        let addr = serve_script(CALL);
+        let (st, body) = call(addr, "/v1/chat/completions", &chat_body(""));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        let c = at(&d, &["choices", "0"]);
+        assert_eq!(at(c, &["finish_reason"]).as_str(), Some("tool_calls"));
+        assert_eq!(at(c, &["message", "content"]), &Value::Null);
+        let tc = at(c, &["message", "tool_calls"]).as_array().unwrap();
+        assert_eq!(tc.len(), 1);
+        let id = at(&tc[0], &["id"]).as_str().unwrap();
+        assert!(id.starts_with("chatcmpl-tool-") && id.len() == 30, "{id}");
+        assert_eq!((at(&tc[0], &["type"]).as_str(), at(&tc[0], &["function", "name"]).as_str(), at(&tc[0], &["function", "arguments"]).as_str()), (Some("function"), Some("get_weather"), Some("{\"city\": \"Paris\"}")));
+        assert_eq!(f64_of(at(&d, &["usage", "completion_tokens"])), (CALL.chars().count().div_ceil(4) + 1) as f64, "the pieces of the call and the end token");
+        // streamed: a chunk with the function (its id), chunks of arguments, the finish; nothing as content; the same call
+        let (st, body) = call(addr, "/v1/chat/completions", &chat_body(",\"stream\":true,\"stream_options\":{\"include_usage\":true}"));
+        assert_eq!(st, 200);
+        let (think, content, calls, finishes, usage) = put_together(&body);
+        assert_eq!((think.as_str(), content.as_str(), finishes), ("", "", vec!["tool_calls".to_string()]));
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].0.starts_with("chatcmpl-tool-") && calls[0].1 == "get_weather" && calls[0].2 == "{\"city\": \"Paris\"}", "{calls:?}");
+        assert_eq!(usage, Some((CALL.chars().count().div_ceil(4) + 1) as f64));
+        // the first chunk of the call names the function and has no arguments; the rest have no id
+        let ev = events(&body);
+        let starts: Vec<&Value> = ev.iter().filter_map(|e| e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("delta")).and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).and_then(|t| t.first())).collect();
+        assert!(starts[0].get("id").is_some() && at(starts[0], &["function"]).get("arguments").is_none() && starts[1..].iter().all(|t| t.get("id").is_none()), "{starts:?}");
+        // an Open WebUI chat: every request carries its tools, and the model answers in text (a normal reply, whole and streamed)
+        let talk = serve_script("The weather in Paris is sunny.");
+        let (st, body) = call(talk, "/v1/chat/completions", &chat_body(""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((st, at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (200, Some("The weather in Paris is sunny."), Some("stop")), "{body}");
+        assert!(at(&d, &["choices", "0", "message"]).get("tool_calls").is_none());
+        let (_, body) = call(talk, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        let (_, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((content.as_str(), calls.len(), finishes), ("The weather in Paris is sunny.", 0, vec!["stop".to_string()]));
+        // text before the call is content; the call's own text is not
+        let both = serve_script(&format!("Let me look.\n{CALL}"));
+        let (_, body) = call(both, "/v1/chat/completions", &chat_body(""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some("Let me look.\n"), Some("tool_calls")));
+        let (_, body) = call(both, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        let (_, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((content.as_str(), calls.len(), finishes), ("Let me look.\n", 1, vec!["tool_calls".to_string()]));
+        // the thinking apart from the call
+        let thought = serve_script(&format!("<think>\nParis, so the weather tool.\n</think>\n\n{CALL}"));
+        let (_, body) = call(thought, "/v1/chat/completions", &chat_body(""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "message", "reasoning_content"]).as_str(), at(&d, &["choices", "0", "message", "reasoning"]).as_str(), at(&d, &["choices", "0", "message", "content"])), (Some("Paris, so the weather tool."), Some("Paris, so the weather tool."), &Value::Null), "{body}");
+        assert_eq!(at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(), Some("get_weather"));
+        let (_, body) = call(thought, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        let (think, content, calls, _, _) = put_together(&body);
+        assert_eq!((think.as_str(), content.as_str(), calls.len()), ("Paris, so the weather tool.", "", 1), "{body}");
+        // a block that is not a call is text, never an error
+        for text in ["<tool_call>\nnot json\n</tool_call>", "<tool_call>\n{\"name\": \"get_weather\"}\n</tool_call>", "Ok <tool_call>\n{\"name\": \"f\", \"arguments\": {"] {
+            let bad = serve_script(text);
+            let (st, body) = call(bad, "/v1/chat/completions", &chat_body(""));
+            let d = json::parse(&body).unwrap();
+            assert_eq!((st, at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (200, Some(text), Some("stop")), "{text}: {body}");
+            assert!(at(&d, &["choices", "0", "message"]).get("tool_calls").is_none());
+        }
+        let bad = serve_script("<tool_call>\nnot json\n</tool_call>");
+        let (_, body) = call(bad, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        let (_, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((content.as_str(), calls.len(), finishes), ("<tool_call>\nnot json\n</tool_call>", 0, vec!["stop".to_string()]));
+        // two calls: both, or the first where parallel calls are off
+        let two = serve_script(&format!("{CALL}\n{}", CALL.replace("Paris", "Rome")));
+        let (_, body) = call(two, "/v1/chat/completions", &chat_body(""));
+        assert_eq!(at(&json::parse(&body).unwrap(), &["choices", "0", "message", "tool_calls"]).as_array().unwrap().len(), 2);
+        let (_, body) = call(two, "/v1/chat/completions", &chat_body(",\"parallel_tool_calls\":false"));
+        let one = json::parse(&body).unwrap();
+        assert_eq!(at(&one, &["choices", "0", "message", "tool_calls"]).as_array().unwrap().len(), 1);
+        assert!(at(&one, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str().unwrap().contains("Paris"));
+        let (_, body) = call(two, "/v1/chat/completions", &chat_body(",\"parallel_tool_calls\":false,\"stream\":true"));
+        let (_, _, calls, _, _) = put_together(&body);
+        assert_eq!(calls.len(), 1);
+        let (_, body) = call(two, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        assert_eq!(put_together(&body).2.len(), 2);
+        // several choices, each its own call (top_k 1 so that every draw is the model's one token)
+        let pair = ",\"n\":2,\"temperature\":1,\"top_k\":1";
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(pair));
+        let d = json::parse(&body).unwrap();
+        for i in 0..2 {
+            let c = at(&d, &["choices", &i.to_string()]);
+            assert_eq!((at(c, &["finish_reason"]).as_str(), at(c, &["message", "tool_calls"]).as_array().unwrap().len(), at(c, &["message", "tool_calls", "0", "function", "name"]).as_str()), (Some("tool_calls"), 1, Some("get_weather")), "{body}");
+        }
+        assert_ne!(at(&d, &["choices", "0", "message", "tool_calls", "0", "id"]), at(&d, &["choices", "1", "message", "tool_calls", "0", "id"]), "each call has an id of its own");
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(&format!("{pair},\"stream\":true,\"stream_options\":{{\"include_usage\":true}}")));
+        let (mut per, mut finishes) = (vec![0usize; 2], vec![0usize; 2]);
+        for e in events(&body) {
+            if let Some(c) = e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()) {
+                let i = f64_of(at(c, &["index"])) as usize;
+                per[i] += c.get("delta").and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).map_or(0, |t| t.iter().filter(|x| x.get("id").is_some()).count());
+                finishes[i] += (c.get("finish_reason").and_then(Value::as_str) == Some("tool_calls")) as usize;
+            }
+        }
+        assert_eq!((per, finishes), (vec![1, 1], vec![1, 1]), "{body}");
+        // tool_choice none: the tools were shown, the text stays text
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"none\""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some(CALL), Some("stop")));
+        // refused, in vLLM's words
+        for (extra, want) in [(",\"tool_choice\":\"sometimes\"", "Invalid value for `tool_choice`"), (",\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"nope\"}}", "does not match any of the specified `tools`")] {
+            let (st, body) = call(addr, "/v1/chat/completions", &chat_body(extra));
+            assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
+        }
+        let (st, body) = call(addr, "/v1/chat/completions", "{\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"tools\":[]}");
+        assert!(st == 400 && body.contains("must not be an empty array"), "{body}");
+        let (st, body) = call(addr, "/v1/chat/completions", "{\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"tool_choice\":\"auto\"}");
+        assert!(st == 400 && body.contains("`tools` must be set"), "{body}");
+    }
+
+    /// A forced call: the reply begins in the prompt with the call's opening and the model writes the rest, which is read as a call (a named function's finish reason is the reply's own, as vLLM's: `stop`; a required one's is
+    /// `tool_calls`).
+    #[test]
+    fn a_call_that_is_asked_for() {
+        let named = r#","tool_choice":{"type":"function","function":{"name":"get_weather"}}"#;
+        let addr = serve_script("{\"city\": \"Paris\"}}\n</tool_call>");
+        let (st, body) = call(addr, "/v1/chat/completions", &chat_body(named));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "content"]).as_str()), (Some("stop"), Some("")), "{body}");
+        assert_eq!((at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()), (Some("get_weather"), Some("{\"city\": \"Paris\"}")));
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(&format!("{named},\"stream\":true")));
+        let (_, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((content.as_str(), finishes), ("", vec!["stop".to_string()]));
+        assert!(calls[0].1 == "get_weather" && calls[0].2 == "{\"city\": \"Paris\"}", "{calls:?}");
+        // required: the model names the function
+        let any = serve_script("get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>");
+        let (_, body) = call(any, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"required\""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str()), (Some("tool_calls"), Some("get_weather")), "{body}");
+        let (_, body) = call(any, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"required\",\"stream\":true"));
+        let (_, _, calls, finishes, _) = put_together(&body);
+        assert_eq!((finishes, calls[0].1.as_str(), calls[0].2.as_str()), (vec!["tool_calls".to_string()], "get_weather", "{\"city\": \"Paris\"}"));
+        // a forced call the model does not complete is text, and no failure
+        let cut = serve_script("{\"city\": ");
+        let (st, body) = call(cut, "/v1/chat/completions", &chat_body(named));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((st, at(&d, &["choices", "0", "finish_reason"]).as_str()), (200, Some("stop")), "{body}");
+        assert!(at(&d, &["choices", "0", "message"]).get("tool_calls").is_none());
+    }
+
+    /// The tools parts of Qwen3.5's own chat template (tests/fixtures), which writes its calls as XML.
+    fn qwen35_template() -> &'static str {
+        include_str!("../tests/fixtures/chat_qwen35_tools.jinja")
+    }
+
+    const XML_CALL: &str = "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>";
+
+    /// What a model whose template writes XML calls is shown: the tools as that template gives them, a call of the conversation and its result in XML, and the opening of a forced call (a named function's through the line after
+    /// its name, a required one's through `<function=`) at the end of the prompt, the thinking closed before it.
+    #[test]
+    fn the_prompt_of_a_request_with_xml_tools() {
+        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(qwen35_template()).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let text = |body: &str| {
+            let v = json::parse(body).unwrap();
+            let r = request_of(&v, 4096, &Params::default());
+            let api = api_of(&v, true, 2048).unwrap();
+            chat_text_of(&shared, &v, &api, &r).map(|(t, i, p, _)| (t, i, p)).unwrap()
+        };
+        let head = "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n";
+        let msgs = r#""messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Weather in Paris?"}]"#;
+        let (t, thinking, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}]}}"));
+        assert!(t.starts_with(head) && t.ends_with("</IMPORTANT>\n\nBe brief.<|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"), "{t}");
+        assert_eq!((thinking, prefix.as_str()), (false, ""));
+        // a call and its result in the conversation (the arguments a string, as Open WebUI sends them): the call as the template writes it, the arguments an object
+        let conv = r#""messages":[{"role":"user","content":"Weather in Paris?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"sunny, 20C"}]"#;
+        let (t, _, _) = text(&format!("{{{conv},\"tools\":[{WEATHER}]}}"));
+        assert!(t.contains("<|im_start|>assistant\n<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nsunny, 20C\n</tool_response><|im_end|>\n"), "{t}");
+        // a forced call: the thinking closed in the prompt and the call opened
+        let (t, thinking, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
+        assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=get_weather>\n"), "{t}");
+        assert_eq!((thinking, prefix.as_str()), (false, "<tool_call>\n<function=get_weather>\n"));
+        let (t, _, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":\"required\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}"));
+        assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function="), "{t}");
+        assert_eq!(prefix, "<tool_call>\n<function=");
+    }
+
+    /// Tool calls through the API as vLLM's `qwen3_coder` parser gives them: the call (an id, the function, its arguments as Python writes them, each parameter typed by the tool's schema) in `tool_calls`, the content null and the
+    /// finish reason `tool_calls`; an ordinary answer where tools are offered is an ordinary reply; what is not a call is text; the text before the call is the content; only the first of several calls where
+    /// `parallel_tool_calls` is false; none read where the choice is none.
+    #[test]
+    fn xml_tool_calls_through_the_api() {
+        let addr = serve_script_with(XML_CALL, qwen35_template());
+        let (st, body) = call(addr, "/v1/chat/completions", &chat_body(""));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        let c = at(&d, &["choices", "0"]);
+        assert_eq!((at(c, &["finish_reason"]).as_str(), at(c, &["message", "content"])), (Some("tool_calls"), &Value::Null));
+        let tc = at(c, &["message", "tool_calls"]).as_array().unwrap();
+        assert_eq!(tc.len(), 1);
+        let id = at(&tc[0], &["id"]).as_str().unwrap();
+        assert!(id.starts_with("chatcmpl-tool-") && id.len() == 30, "{id}");
+        assert_eq!((at(&tc[0], &["type"]).as_str(), at(&tc[0], &["function", "name"]).as_str(), at(&tc[0], &["function", "arguments"]).as_str()), (Some("function"), Some("get_weather"), Some("{\"city\": \"Paris\"}")));
+        assert_eq!(f64_of(at(&d, &["usage", "completion_tokens"])), (XML_CALL.chars().count().div_ceil(4) + 1) as f64, "the pieces of the call and the end token");
+        // the types of the tool's schema
+        let forecast = r#"{"type":"function","function":{"name":"forecast","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"},"metric":{"type":"boolean"},"tags":{"type":"array"}}}}}"#;
+        let typed = serve_script_with("<tool_call>\n<function=forecast>\n<parameter=city>\n12\n</parameter>\n<parameter=days>\n3\n</parameter>\n<parameter=metric>\nFalse\n</parameter>\n<parameter=tags>\n[\"a\", \"é\"]\n</parameter>\n</function>\n</tool_call>", qwen35_template());
+        let (_, body) = call(typed, "/v1/chat/completions", &chat_body_with(forecast, ""));
+        assert_eq!(at(&json::parse(&body).unwrap(), &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str(), Some("{\"city\": \"12\", \"days\": 3, \"metric\": false, \"tags\": [\"a\", \"é\"]}"), "{body}");
+        // an ordinary answer, with the tools offered
+        let talk = serve_script_with("The weather in Paris is sunny.", qwen35_template());
+        let (_, body) = call(talk, "/v1/chat/completions", &chat_body(""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some("The weather in Paris is sunny."), Some("stop")), "{body}");
+        assert!(at(&d, &["choices", "0", "message"]).get("tool_calls").is_none());
+        // text before the call is content
+        let both = serve_script_with(&format!("Let me look.\n\n{XML_CALL}"), qwen35_template());
+        let (_, body) = call(both, "/v1/chat/completions", &chat_body(""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some("Let me look.\n\n"), Some("tool_calls")));
+        // what is not a call is text, never an error: a JSON call (Qwen3's) in a block, a function with no `>`
+        for text in ["<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>", "Ok <tool_call>\n<function=get_weather\n</tool_call>"] {
+            let bad = serve_script_with(text, qwen35_template());
+            let (st, body) = call(bad, "/v1/chat/completions", &chat_body(""));
+            let d = json::parse(&body).unwrap();
+            assert_eq!((st, at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (200, Some(text), Some("stop")), "{text}: {body}");
+            assert!(at(&d, &["choices", "0", "message"]).get("tool_calls").is_none());
+        }
+        // two calls: both, or the first where parallel calls are off
+        let two = serve_script_with(&format!("{XML_CALL}\n{}", XML_CALL.replace("Paris", "Rome")), qwen35_template());
+        let (_, body) = call(two, "/v1/chat/completions", &chat_body(""));
+        assert_eq!(at(&json::parse(&body).unwrap(), &["choices", "0", "message", "tool_calls"]).as_array().unwrap().len(), 2);
+        let (_, body) = call(two, "/v1/chat/completions", &chat_body(",\"parallel_tool_calls\":false"));
+        let one = json::parse(&body).unwrap();
+        assert_eq!(at(&one, &["choices", "0", "message", "tool_calls"]).as_array().unwrap().len(), 1);
+        assert!(at(&one, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str().unwrap().contains("Paris"));
+        // tool_choice none: the tools were shown, the text stays text
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"none\""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some(XML_CALL), Some("stop")));
+    }
+
+    /// The same calls streamed: a chunk with the function (its id), chunks of arguments (the `{`, each parameter when its end is written, the `}`), the finish; the text before the call as content; the thinking apart; what is not a
+    /// call as text; the first call only where parallel calls are off; each choice its own calls.
+    #[test]
+    fn xml_tool_calls_streamed() {
+        let addr = serve_script_with(XML_CALL, qwen35_template());
+        let (st, body) = call(addr, "/v1/chat/completions", &chat_body(",\"stream\":true,\"stream_options\":{\"include_usage\":true}"));
+        assert_eq!(st, 200);
+        let (think, content, calls, finishes, usage) = put_together(&body);
+        assert_eq!((think.as_str(), content.as_str(), finishes), ("", "", vec!["tool_calls".to_string()]));
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].0.starts_with("chatcmpl-tool-") && calls[0].1 == "get_weather" && calls[0].2 == "{\"city\": \"Paris\"}", "{calls:?}");
+        assert_eq!(usage, Some((XML_CALL.chars().count().div_ceil(4) + 1) as f64));
+        // the first chunk of the call names the function and has no arguments; the rest have no id
+        let ev = events(&body);
+        let starts: Vec<&Value> = ev.iter().filter_map(|e| e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("delta")).and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).and_then(|t| t.first())).collect();
+        assert!(starts[0].get("id").is_some() && at(starts[0], &["function"]).get("arguments").is_none() && starts[1..].iter().all(|t| t.get("id").is_none()), "{starts:?}");
+        // the arguments come as the parameters are written, a chunk each: the `{`, then `"city": "Paris"`, then the `}`
+        let pieces: Vec<&str> = starts.iter().filter_map(|t| t.get("function").and_then(|f| f.get("arguments")).and_then(Value::as_str)).collect();
+        assert_eq!(pieces, vec!["{", "\"city\": \"Paris\"", "}"]);
+        for e in &ev {
+            assert!(e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("delta")).and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).map_or(true, |t| t.len() == 1), "a chunk of one update: {e:?}");
+        }
+        // the types of the tool's schema, as in the whole reply
+        let forecast = r#"{"type":"function","function":{"name":"forecast","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"},"metric":{"type":"boolean"},"tags":{"type":"array"}}}}}"#;
+        let typed = serve_script_with("<tool_call>\n<function=forecast>\n<parameter=city>\n12\n</parameter>\n<parameter=days>\n3\n</parameter>\n<parameter=metric>\nFalse\n</parameter>\n<parameter=tags>\n[\"a\", \"é\"]\n</parameter>\n</function>\n</tool_call>", qwen35_template());
+        let (_, body) = call(typed, "/v1/chat/completions", &chat_body_with(forecast, ",\"stream\":true"));
+        assert_eq!(put_together(&body).2[0].2, "{\"city\": \"12\", \"days\": 3, \"metric\": false, \"tags\": [\"a\", \"é\"]}", "{body}");
+        // an ordinary answer, with the tools offered
+        let talk = serve_script_with("The weather in Paris is sunny.", qwen35_template());
+        let (_, body) = call(talk, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        let (_, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((content.as_str(), calls.len(), finishes), ("The weather in Paris is sunny.", 0, vec!["stop".to_string()]));
+        // text before the call is content, and the thinking is apart from both
+        let both = serve_script_with(&format!("<think>\nParis, so the weather tool.\n</think>\n\nLet me look.\n\n{XML_CALL}"), qwen35_template());
+        let (_, body) = call(both, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        let (think, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((think.as_str(), content.trim(), calls.len(), finishes), ("Paris, so the weather tool.", "Let me look.", 1, vec!["tool_calls".to_string()]), "{body}");
+        // what is not a call is text, never an error
+        for text in ["<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>", "Ok <tool_call>\n<function=get_weather\n</tool_call>"] {
+            let bad = serve_script_with(text, qwen35_template());
+            let (_, body) = call(bad, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+            let (_, content, calls, finishes, _) = put_together(&body);
+            assert_eq!((content.as_str(), calls.len(), finishes), (text, 0, vec!["stop".to_string()]), "{text}");
+        }
+        // two calls: both, or the first where parallel calls are off
+        let two = serve_script_with(&format!("{XML_CALL}\n{}", XML_CALL.replace("Paris", "Rome")), qwen35_template());
+        let (_, body) = call(two, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        let (_, _, calls, _, _) = put_together(&body);
+        assert_eq!(calls.iter().map(|c| c.2.as_str()).collect::<Vec<_>>(), vec!["{\"city\": \"Paris\"}", "{\"city\": \"Rome\"}"]);
+        let (_, body) = call(two, "/v1/chat/completions", &chat_body(",\"parallel_tool_calls\":false,\"stream\":true"));
+        assert_eq!(put_together(&body).2.len(), 1);
+        // several choices, each its own call (top_k 1 so that every draw is the model's one token)
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(",\"n\":2,\"temperature\":1,\"top_k\":1,\"stream\":true"));
+        let (mut per, mut finishes) = (vec![0usize; 2], vec![0usize; 2]);
+        for e in events(&body) {
+            if let Some(c) = e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()) {
+                let i = f64_of(at(c, &["index"])) as usize;
+                per[i] += c.get("delta").and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).map_or(0, |t| t.iter().filter(|x| x.get("id").is_some()).count());
+                finishes[i] += (c.get("finish_reason").and_then(Value::as_str) == Some("tool_calls")) as usize;
+            }
+        }
+        assert_eq!((per, finishes), (vec![1, 1], vec![1, 1]), "{body}");
+    }
+
+    /// A forced call in the XML format: the reply begins in the prompt with the call's opening and the model writes the rest, which is read as a call (a named function's finish reason is the reply's own, `stop`; a required
+    /// one's is `tool_calls`).
+    #[test]
+    fn a_call_that_is_asked_for_in_xml() {
+        let named = r#","tool_choice":{"type":"function","function":{"name":"get_weather"}}"#;
+        let addr = serve_script_with("<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>", qwen35_template());
+        let (st, body) = call(addr, "/v1/chat/completions", &chat_body(named));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "content"]).as_str()), (Some("stop"), Some("")), "{body}");
+        assert_eq!((at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()), (Some("get_weather"), Some("{\"city\": \"Paris\"}")));
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(&format!("{named},\"stream\":true")));
+        let (_, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((content.as_str(), finishes), ("", vec!["stop".to_string()]));
+        assert!(calls[0].1 == "get_weather" && calls[0].2 == "{\"city\": \"Paris\"}", "{calls:?}");
+        // required: the model names the function
+        let any = serve_script_with("get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>", qwen35_template());
+        let (_, body) = call(any, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"required\""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()), (Some("tool_calls"), Some("get_weather"), Some("{\"city\": \"Paris\"}")), "{body}");
+        let (_, body) = call(any, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"required\",\"stream\":true"));
+        let (_, _, calls, finishes, _) = put_together(&body);
+        assert_eq!((finishes, calls[0].1.as_str(), calls[0].2.as_str()), (vec!["tool_calls".to_string()], "get_weather", "{\"city\": \"Paris\"}"));
+    }
+
+    /// What Open WebUI sends: a chat with its built-in tools (and the usage asked for in the stream), the follow-up after a tool call (the call in the history with its arguments as a string, its result as a tool message), and
+    /// the title it asks for in a request of its own: each is served, and the template of a model that has no tools is told so.
+    #[test]
+    fn open_webui_requests() {
+        let tools = r#"[{"type":"function","function":{"name":"search_web","description":"Search the web for information.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"The search query"},"count":{"type":"integer","description":"Results to return","default":5}},"required":["query"]}}},{"type":"function","function":{"name":"get_current_timestamp","description":"Get the current time.","parameters":{"type":"object","properties":{}}}}]"#;
+        let addr = serve_script("It is the capital.");
+        let chat = format!(r#"{{"stream":true,"model":"Qwen/Qwen3-8B","messages":[{{"role":"system","content":"You are a helpful assistant."}},{{"role":"user","content":"What is the capital of France?"}}],"tools":{tools},"stream_options":{{"include_usage":true}},"temperature":0.7,"top_p":0.9,"max_tokens":64}}"#);
+        let (st, body) = call(addr, "/v1/chat/completions", &chat);
+        assert_eq!(st, 200, "{body}");
+        let (_, content, calls, finishes, usage) = put_together(&body);
+        assert_eq!((content.as_str(), calls.len(), finishes, usage.is_some()), ("It is the capital.", 0, vec!["stop".to_string()], true));
+        // the follow-up, with the call and its result in the history
+        let follow = format!(r#"{{"stream":true,"model":"Qwen/Qwen3-8B","messages":[{{"role":"user","content":"Search for glyd"}},{{"role":"assistant","content":"","tool_calls":[{{"id":"call_ab12","type":"function","function":{{"name":"search_web","arguments":"{{\"query\": \"glyd\"}}"}}}}]}},{{"role":"tool","tool_call_id":"call_ab12","content":"{{\"results\": [\"a\", \"b\"]}}"}}],"tools":{tools},"stream_options":{{"include_usage":true}}}}"#);
+        let (st, body) = call(addr, "/v1/chat/completions", &follow);
+        assert_eq!(st, 200, "{body}");
+        assert_eq!(put_together(&body).1, "It is the capital.");
+        // its title request: no tools, not streamed, its own limits (it asks for 1,000 tokens, which a model's context of 4,096 has room for; this model's is 1,024, where 1,000 after this prompt
+        // is refused, as vLLM refuses it: 900 here)
+        let title = r####"{"model":"Qwen/Qwen3-8B","messages":[{"role":"user","content":"### Task:\nGenerate a concise, 3-5 word title with an emoji summarizing the chat history.\n### Output:\nJSON format: { \"title\": \"your concise title here\" }\n### Chat History:\n<chat_history>\nUSER: hi\n</chat_history>"}],"stream":false,"max_tokens":900,"temperature":0.1}"####;
+        let (st, body) = call(addr, "/v1/chat/completions", title);
+        assert_eq!(st, 200, "{body}");
+        assert_eq!(at(&json::parse(&body).unwrap(), &["choices", "0", "message", "content"]).as_str(), Some("It is the capital."));
+        // the native function-calling flow: the same chat with the model's call
+        let calling = serve_script("<tool_call>\n{\"name\": \"search_web\", \"arguments\": {\"query\": \"glyd\", \"count\": 3}}\n</tool_call>");
+        let (_, body) = call(calling, "/v1/chat/completions", &chat);
+        let (_, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((content.as_str(), calls.len(), finishes), ("", 1, vec!["tool_calls".to_string()]));
+        assert_eq!((calls[0].1.as_str(), calls[0].2.as_str()), ("search_web", "{\"query\": \"glyd\", \"count\": 3}"));
+    }
+
+    /// The ranges of the sampling fields and what is refused, in vLLM's words, before any work is done: a value that is not a number, out of its range or out of the vocabulary, and each field of vLLM's that this
+    /// engine does not do (constrained decoding names the way to vLLM), where another value than the one that means it was not asked for.
+    #[test]
+    fn values_and_what_is_not_done() {
+        let addr = serve_script("x");
+        let ask = |extra: &str| call(addr, "/v1/completions", &format!("{{\"prompt\":\"hi\"{extra}}}"));
+        for (extra, want) in [
+            (",\"temperature\":-1", "temperature must be non-negative, got -1."),
+            (",\"temperature\":2.5", "temperature must be in [0, 2], got 2.5."),
+            (",\"temperature\":\"hot\"", "`temperature` must be a number."),
+            (",\"top_p\":0", "top_p must be in (0, 1], got 0."),
+            (",\"top_p\":1.5", "top_p must be in (0, 1], got 1.5."),
+            (",\"top_k\":-5", "top_k must be 0 (disable), or at least 1, got -5."),
+            (",\"min_p\":2", "min_p must be in [0, 1], got 2."),
+            (",\"presence_penalty\":3", "presence_penalty must be in [-2, 2], got 3."),
+            (",\"frequency_penalty\":-2.5", "frequency_penalty must be in [-2, 2], got -2.5."),
+            (",\"repetition_penalty\":0", "repetition_penalty must be greater than zero, got 0."),
+            (",\"max_tokens\":0", "max_tokens must be at least 1, got 0."),
+            (",\"min_tokens\":-1", "min_tokens must be greater than or equal to 0, got -1."),
+            (",\"max_tokens\":4,\"min_tokens\":10", "min_tokens must be less than or equal to max_tokens=4, got 10."),
+            (",\"stop\":\"\"", "stop cannot contain an empty string."),
+            (",\"stop\":[\"a\",\"\"]", "stop cannot contain an empty string."),
+            (",\"stop\":5", "`stop` must be a string or a list of strings."),
+            (",\"stop_token_ids\":[999999]", "token_id(s) [999999] in stop_token_ids contain out-of-vocab token ids. Vocabulary size: 2048"),
+            (",\"allowed_token_ids\":[]", "allowed_token_ids is not None and empty!"),
+            (",\"allowed_token_ids\":[3000]", "in allowed_token_ids contain out-of-vocab"),
+            (",\"seed\":1.5", "`seed` must be an integer."),
+            (",\"response_format\":{\"type\":\"json_object\"}", "response_format of type json_object (constrained decoding) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"),
+            (",\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"x\",\"schema\":{}}}", "response_format of type json_schema (constrained decoding) is not supported"),
+            (",\"structured_outputs\":{\"json\":{}}", "structured_outputs (constrained decoding) is not supported by this engine yet"),
+            (",\"guided_json\":{}", "guided_json (constrained decoding) is not supported"),
+            (",\"bad_words\":[\"x\"]", "bad_words is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"),
+            (",\"prompt_logprobs\":1", "prompt_logprobs is not supported"),
+            (",\"suffix\":\"x\"", "suffix is not supported"),
+            (",\"best_of\":3", "best_of more than n is not supported"),
+            (",\"use_beam_search\":true", "use_beam_search is not supported"),
+            (",\"priority\":2", "priority is not supported"),
+            (",\"cache_salt\":\"s\"", "cache_salt is not supported"),
+            (",\"logprobs\":1,\"echo\":true", "logprobs with echo"),
+        ] {
+            let (st, body) = ask(extra);
+            assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
+        }
+        // what is not asked for is not refused: null, and the value that means it
+        for ok in [",\"response_format\":{\"type\":\"text\"}", ",\"response_format\":null", ",\"use_beam_search\":false", ",\"priority\":0", ",\"bad_words\":[]", ",\"suffix\":null", ",\"best_of\":1", ",\"user\":\"u\"", ",\"temperature\":0.001", ",\"top_k\":-1", ",\"stop\":null", ",\"stop\":[\"zz\"]", ",\"n\":1"] {
+            let (st, body) = ask(ok);
+            assert_eq!(st, 200, "{ok}: {body}");
+        }
+        for (extra, want) in [
+            (",\"echo\":true", "echo of a chat reply is not supported"),
+            (",\"continue_final_message\":true", "continue_final_message is not supported"),
+            (",\"functions\":[{\"name\":\"f\"}]", "functions is not supported"),
+            (",\"tool_choice\":\"auto\"", "`tools` must be set"),
+            (",\"reasoning_effort\":\"extreme\"", "reasoning_effort"),
+            (",\"documents\":[1]", "`documents`"),
+        ] {
+            let (st, body) = call(addr, "/v1/chat/completions", &format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}],\"max_tokens\":4{extra}}}"));
+            assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
+        }
+        // a temperature above 0 and below 0.01 is 0.01 (it is not greedy: n of several is allowed)
+        assert_eq!(request_of(&json::parse(r#"{"temperature":0.001}"#).unwrap(), 4096, &Params::default()).params.temperature, 0.01);
+        assert_eq!(request_of(&json::parse(r#"{"temperature":0}"#).unwrap(), 4096, &Params::default()).params.temperature, 0.0);
+    }
+
+    /// The fields that shape a reply, honoured as vLLM's are: the stop string kept in the text, the special tokens left out of it unless asked for, the stop tokens, the tokens allowed, a plain completion that echoes its
+    /// prompt, its prompts given in each way vLLM takes them (each a choice of its own, with its index), its default length, the id of the request, and a template that is not given the generation prompt.
+    #[test]
+    fn fields_that_shape_a_reply() {
+        let addr = serve_script("Hello world END and more<|im_end|> tail");
+        let text = |extra: &str| -> String {
+            let (st, body) = call(addr, "/v1/completions", &format!("{{\"prompt\":\"hi\",\"max_tokens\":100,\"temperature\":0{extra}}}"));
+            assert_eq!(st, 200, "{body}");
+            at(&json::parse(&body).unwrap(), &["choices", "0", "text"]).as_str().unwrap().to_string()
+        };
+        assert_eq!(text(""), "Hello world END and more tail", "the special token is left out of the text");
+        assert_eq!(text(",\"skip_special_tokens\":false"), "Hello world END and more<|im_end|> tail");
+        assert_eq!(text(",\"stop\":[\"END\"]"), "Hello world ");
+        assert_eq!(text(",\"stop\":[\"END\"],\"include_stop_str_in_output\":true"), "Hello world END");
+        assert_eq!(text(",\"echo\":true,\"stop\":[\"END\"]"), "hiHello world ");
+        // streamed with the prompt echoed: its text first
+        let (_, body) = call(addr, "/v1/completions", "{\"prompt\":\"hi\",\"max_tokens\":100,\"temperature\":0,\"echo\":true,\"stream\":true,\"stop\":[\"END\"]}");
+        let built: String = events(&body).iter().filter_map(|e| e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("text")).and_then(Value::as_str).map(str::to_string)).collect();
+        assert_eq!(built, "hiHello world ");
+        // the length a plain completion has where it gives none (16 tokens: the script is longer), and the id it asked for
+        let long = serve_script(&"ab".repeat(40));
+        let (_, body) = call(long, "/v1/completions", "{\"prompt\":\"hi\",\"temperature\":0,\"request_id\":\"mine-7\"}");
+        let d = json::parse(&body).unwrap();
+        assert_eq!((f64_of(at(&d, &["usage", "completion_tokens"])), at(&d, &["id"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (16.0, Some("cmpl-mine-7"), Some("length")), "{body}");
+        let (_, body) = call(long, "/v1/chat/completions", "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"temperature\":0}");
+        assert!(f64_of(at(&json::parse(&body).unwrap(), &["usage", "completion_tokens"])) > 16.0, "a chat has the context for its length");
+        // the prompts of a plain completion: a string, a list of strings, token ids, a list of them: each its own choice, the prompt tokens added up
+        let tokens = |prompt: &str| -> (Vec<String>, f64) {
+            let (st, body) = call(addr, "/v1/completions", &format!("{{\"prompt\":{prompt},\"max_tokens\":3,\"temperature\":0}}"));
+            assert_eq!(st, 200, "{prompt}: {body}");
+            let d = json::parse(&body).unwrap();
+            (at(&d, &["choices"]).as_array().unwrap().iter().map(|c| format!("{}:{}", f64_of(at(c, &["index"])), at(c, &["text"]).as_str().unwrap().chars().take(5).collect::<String>())).collect(), f64_of(at(&d, &["usage", "prompt_tokens"])))
+        };
+        let (one, p1) = tokens(r#""one two three""#);
+        assert_eq!((one.len(), p1), (1, 3.0));
+        let (two, p2) = tokens(r#"["a b", "c d e", "f"]"#);
+        assert_eq!((two.iter().map(|c| &c[..2]).collect::<Vec<_>>(), p2), (vec!["0:", "1:", "2:"], 6.0));
+        let (ids, p3) = tokens("[5, 6, 7, 8]");
+        assert_eq!((ids.len(), p3), (1, 4.0));
+        let (batch, p4) = tokens("[[1, 2], [3, 4, 5]]");
+        assert_eq!((batch.len(), p4), (2, 5.0));
+        // two prompts of two choices: four, in order
+        let (_, body) = call(addr, "/v1/completions", r#"{"prompt":["a b","c d"],"n":2,"max_tokens":2,"temperature":1.0,"top_k":5,"seed":3}"#);
+        let idx: Vec<f64> = at(&json::parse(&body).unwrap(), &["choices"]).as_array().unwrap().iter().map(|c| f64_of(at(c, &["index"]))).collect();
+        assert_eq!(idx, vec![0.0, 1.0, 2.0, 3.0]);
+        for (prompt, want) in [("\"\"", "Either prompt or prompt_embeds must be provided and non-empty."), ("[]", "Either prompt or prompt_embeds must be provided and non-empty."), ("[1, \"a\"]", "`prompt` must be a string"), ("[[1], \"a\"]", "`prompt` must be a string"), ("[99999]", "not a token of the vocabulary"), ("5", "`prompt` must be a string")] {
+            let (st, body) = call(addr, "/v1/completions", &format!("{{\"prompt\":{prompt}}}"));
+            assert!(st == 400 && body.contains(want), "{prompt}: {st} {body}");
+        }
+        let (st, body) = call(addr, "/v1/completions", "{\"max_tokens\":3}");
+        assert!(st == 400 && body.contains("Either prompt or prompt_embeds"), "{body}");
+        // too many sequences for one request
+        let (st, body) = call(addr, "/v1/completions", &format!("{{\"prompt\":[{}],\"n\":2,\"max_tokens\":2,\"temperature\":1}}", vec!["\"a\""; 40].join(",")));
+        assert!(st == 400 && body.contains("takes up to 64"), "{body}");
+        // the tokens allowed are the only ones: a model that would say others
+        let free = serve_fake(Fake::new(64, 32), None, 4);
+        let (_, body) = call(free, "/v1/completions", r#"{"prompt":"hi","max_tokens":12,"temperature":0,"allowed_token_ids":[5,6]}"#);
+        let said = at(&json::parse(&body).unwrap(), &["choices", "0", "text"]).as_str().unwrap().to_string();
+        assert!(said.split_whitespace().count() == 12 && said.split_whitespace().all(|w| w == "w5" || w == "w6"), "{said:?}");
+        // a stop token ends the reply before it, counted
+        let (_, body) = call(free, "/v1/completions", r#"{"prompt":"hi","max_tokens":12,"temperature":0}"#);
+        let plain = at(&json::parse(&body).unwrap(), &["choices", "0", "text"]).as_str().unwrap().to_string();
+        let words: Vec<&str> = plain.split_whitespace().collect();
+        let stop: u32 = words[3].trim_start_matches('w').parse().unwrap();
+        let (_, body) = call(free, "/v1/completions", &format!(r#"{{"prompt":"hi","max_tokens":12,"temperature":0,"stop_token_ids":[{stop}]}}"#));
+        let d = json::parse(&body).unwrap();
+        let cut = at(&d, &["choices", "0", "text"]).as_str().unwrap().to_string();
+        let first = words.iter().position(|w| *w == format!("w{stop}")).unwrap();
+        assert_eq!((cut.split_whitespace().count(), at(&d, &["choices", "0", "finish_reason"]).as_str(), f64_of(at(&d, &["usage", "completion_tokens"]))), (first, Some("stop"), (first + 1) as f64), "{cut:?} {body}");
+        // a chat that is not given the generation prompt, and effort none that closes the thinking
+        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(&qwen3_template()).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let prompt_text = |body: &str| {
+            let v = json::parse(body).unwrap();
+            chat_text_of(&shared, &v, &api_of(&v, true, 2048).unwrap(), &request_of(&v, 4096, &Params::default())).unwrap().0
+        };
+        let msgs = r#""messages":[{"role":"user","content":"hi"}]"#;
+        assert!(prompt_text(&format!("{{{msgs}}}")).ends_with("<|im_start|>assistant\n"));
+        assert!(prompt_text(&format!("{{{msgs},\"add_generation_prompt\":false}}")).ends_with("hi<|im_end|>\n"));
+        assert!(prompt_text(&format!("{{{msgs},\"reasoning_effort\":\"none\"}}")).ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
+        assert!(prompt_text(&format!("{{{msgs},\"reasoning_effort\":\"high\"}}")).ends_with("<|im_start|>assistant\n"));
+        assert!(prompt_text(&format!("{{{msgs},\"reasoning_effort\":\"none\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}")).ends_with("<|im_start|>assistant\n"), "a variable the request names wins over the effort");
+    }
+
+    /// /v1/glyd/info, behind the key: what `serve` set (the model, its levels), the build, the limits, the fields read, of no effect and refused (the engine's own refusals among them), whether the engine has
+    /// failed, the requests, and the memory: the model's parts as it holds them, the rest of the engine's buffers as its working memory, the peak since the load began; the GPU's own numbers null where no GPU is named.
+    #[test]
+    fn the_server_says_what_it_is_and_what_it_holds() {
+        let held = crate::dev::Held { weights: 5 << 30, kv: 1 << 28, state: 1 << 20, kv_type: "bf16", state_type: "fp32" };
+        let about = vec![("model", tools::obj(vec![("id", Value::from("Qwen/Qwen3.5-9B:swift"))])), ("level", tools::obj(vec![("requested", Value::from("swift")), ("effective", Value::from("swift"))]))];
+        assert!(INFO.set(Info { about, gpu: None, held: Some(held), concurrency: 1, window: 4096, refused: ONE_AT_A_TIME, started: 1.5 }).is_ok());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen("127.0.0.1:0", "Qwen/Qwen3.5-9B:swift", 4096, Some("k".into()), false, tx).unwrap();
+        assert_eq!(ask(addr, "GET", "/v1/glyd/info", &[("Host", "x")]).0, 401);
+        let info = || json::parse(&ask(addr, "GET", "/v1/glyd/info", &[("Host", "x"), ("Authorization", "Bearer k")]).2).unwrap();
+        let d = info();
+        assert_eq!((at(&d, &["object"]).as_str(), at(&d, &["api"]).as_str(), at(&d, &["model", "id"]).as_str(), at(&d, &["level", "effective"]).as_str()), (Some("glyd.info"), Some(API), Some("Qwen/Qwen3.5-9B:swift"), Some("swift")));
+        assert_eq!(at(&d, &["build", "version"]).as_str(), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!((f64_of(at(&d, &["limits", "context_tokens"])), f64_of(at(&d, &["limits", "concurrency"]))), (4096.0, 1.0));
+        let list = |k: &str| at(&d, &["fields", k]).as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
+        for f in ["logprobs", "min_tokens", "guided_json", "use_beam_search"] {
+            assert!(list("refused").contains(&f.to_string()), "{f}");
+        }
+        assert!(!list("read").contains(&"logprobs".to_string()) && list("read").contains(&"max_tokens".to_string()) && list("no_effect").contains(&"user".to_string()));
+        assert!(matches!(at(&d, &["state"]).as_str(), Some("ready" | "failed")));
+        let m = at(&d, &["memory"]);
+        assert_eq!((f64_of(at(m, &["weights_bytes"])), f64_of(at(m, &["kv_bytes"])), f64_of(at(m, &["state_bytes"]))), ((5u64 << 30) as f64, (1u64 << 28) as f64, (1u64 << 20) as f64));
+        let parts = ((5u64 << 30) + (1 << 28) + (1 << 20)) as f64;
+        assert_eq!(f64_of(at(m, &["scratch_bytes"])), (f64_of(at(m, &["engine_bytes"])) - parts).max(0.0), "the working memory is what the engine's buffers hold besides the model's parts");
+        assert!(f64_of(at(m, &["peak_bytes"])) >= f64_of(at(m, &["engine_bytes"])) && f64_of(at(m, &["peak_since"])) == 1.5);
+        assert_eq!((at(m, &["gpu"]), at(m, &["device_total_bytes"]), at(m, &["device_free_bytes"])), (&Value::Null, &Value::Null, &Value::Null));
+        // after a failure of the engine it says so (nothing is sure of the GPU after one), with when and what
+        engine_failed("cuLaunchKernel: an illegal memory access was encountered (700)");
+        let d = info();
+        assert!(at(&d, &["state"]).as_str() == Some("failed") && at(&d, &["error", "message"]).as_str().is_some(), "{d:?}");
+    }
+
+    /// A streamed request written, and its answer read up to its first event: the reader, kept open, and the reply's id.
+    fn first_event(addr: std::net::SocketAddr, body: &str) -> (BufReader<TcpStream>, String) {
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(format!("POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+        let mut r = BufReader::new(c);
+        let mut line = String::new();
+        while r.read_line(&mut line).unwrap() > 0 {
+            if let Some(d) = line.trim().strip_prefix("data: ") {
+                return (r, at(&json::parse(d).unwrap(), &["id"]).as_str().unwrap().to_string());
+            }
+            line.clear();
+        }
+        panic!("the stream ended before its first event");
+    }
+
+    /// A request by the id its reply carries: running while it runs; a cancel (POST /v1/glyd/requests/ID/cancel) makes it cancelling, then ended, cancelled, once the engine has let go of its sequences, its stream
+    /// ended as a client's stop ends one (a finish reason, [DONE]); a client that goes away ends it the same way (`client gone`); a running request's id is not taken by another; a request that runs to its end is
+    /// ended, finished, before its answer is sent; an id no request has is not found.
+    #[test]
+    fn a_request_by_its_id_its_cancel_and_its_end() {
+        let mut f = Fake::new(64, 32);
+        f.decode_delay = std::time::Duration::from_millis(20);
+        let addr = serve_fake(f, None, 4);
+        let status = |id: &str| -> Value {
+            let (st, _, body) = ask(addr, "GET", &format!("/v1/glyd/requests/{id}"), &[("Host", "x")]);
+            assert_eq!(st, 200, "{body}");
+            json::parse(&body).unwrap()
+        };
+        let ended = |id: &str| -> Value {
+            for _ in 0..500 {
+                let s = status(id);
+                if at(&s, &["state"]).as_str() == Some("ended") {
+                    return s;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("{id} did not end");
+        };
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":400,"temperature":0,"stream":true,"request_id":"job-1"}"#;
+        let (mut r, id) = first_event(addr, body);
+        assert_eq!(id, "chatcmpl-job-1");
+        let s = status(&id);
+        assert_eq!((at(&s, &["state"]).as_str(), at(&s, &["cancel"]), at(&s, &["ended"])), (Some("running"), &Value::Null, &Value::Null), "{s:?}");
+        let (st, b) = call(addr, "/v1/chat/completions", &body.replace(",\"stream\":true", ""));
+        assert!(st == 400 && b.contains("chatcmpl-job-1 is running"), "{st} {b}");
+        let (st, _, b) = ask(addr, "POST", &format!("/v1/glyd/requests/{id}/cancel"), &[("Host", "x"), ("Content-Length", "0")]);
+        assert!(st == 200 && matches!(at(&json::parse(&b).unwrap(), &["state"]).as_str(), Some("cancelling" | "ended")), "{st} {b}");
+        let s = ended(&id);
+        assert_eq!((at(&s, &["cancel"]).as_str(), at(&s, &["how"]).as_str()), (Some("asked"), Some("cancelled")), "{s:?}");
+        let mut rest = String::new();
+        r.read_to_string(&mut rest).unwrap();
+        assert!(rest.contains("\"finish_reason\":\"stop\"") && rest.contains("data: [DONE]"), "{rest}");
+        // ended, its id may be given again; a client that goes away ends its request as a cancel does
+        let (r, id) = first_event(addr, body);
+        drop(r);
+        let s = ended(&id);
+        assert_eq!((at(&s, &["cancel"]).as_str(), at(&s, &["how"]).as_str()), (Some("client gone"), Some("cancelled")), "{s:?}");
+        let (st, b) = call(addr, "/v1/chat/completions", r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":3,"temperature":0}"#);
+        assert_eq!(st, 200, "{b}");
+        let s = status(at(&json::parse(&b).unwrap(), &["id"]).as_str().unwrap());
+        assert_eq!((at(&s, &["state"]).as_str(), at(&s, &["how"]).as_str()), (Some("ended"), Some("finished")), "{s:?}");
+        assert_eq!(ask(addr, "GET", "/v1/glyd/requests/nothing", &[("Host", "x")]).0, 404);
+        assert_eq!(ask(addr, "POST", "/v1/glyd/requests/nothing/cancel", &[("Host", "x"), ("Content-Length", "0")]).0, 404);
+        assert_eq!(ask(addr, "GET", "/v1/glyd/requests/nothing/cancel", &[("Host", "x")]).0, 405);
+    }
+
+    /// What a level's engine does not do (ONE_AT_A_TIME: log-probabilities, a least length) is refused in words where it is asked for, and not where its value means it is not; a length the context has no room
+    /// for after the prompt is refused, not cut short (one that fits to the last token is served); and /v1/glyd/tokenize counts a prompt as its reply's usage does, a chat's or a plain completion's, and runs nothing.
+    #[test]
+    fn what_the_engine_does_not_do_is_refused_and_a_prompt_is_counted() {
+        let f = Fake::new(64, 32);
+        let (ran, window) = (f.prefilled.clone(), f.store.len() * crate::kv::PAGE);
+        let addr = serve_fake_with(f, None, 4, false, None, ONE_AT_A_TIME);
+        let chat = |extra: &str| call(addr, "/v1/chat/completions", &format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hello there\"}}],\"temperature\":0{extra}}}"));
+        for (extra, want) in [(",\"logprobs\":true", "logprobs is not supported by the engine this model runs on yet"), (",\"min_tokens\":2", "min_tokens is not supported by the engine this model runs on yet")] {
+            let (st, body) = chat(extra);
+            assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
+        }
+        for ok in [",\"logprobs\":false", ",\"logprobs\":null", ",\"min_tokens\":0", ""] {
+            let (st, body) = chat(&format!(",\"max_tokens\":4{ok}"));
+            assert_eq!(st, 200, "{ok}: {body}");
+        }
+        let (st, body) = call(addr, "/v1/completions", r#"{"prompt":"hi","max_tokens":2,"logprobs":0}"#);
+        assert!(st == 400 && body.contains("logprobs is not supported by the engine"), "{body}");
+        let (_, body) = chat(",\"max_tokens\":4");
+        let used = f64_of(at(&json::parse(&body).unwrap(), &["usage", "prompt_tokens"])) as usize;
+        let before = ran.load(Relaxed);
+        let (st, body) = call(addr, "/v1/glyd/tokenize", r#"{"messages":[{"role":"user","content":"hello there"}]}"#);
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        assert_eq!((f64_of(at(&d, &["prompt_tokens"])) as usize, f64_of(at(&d, &["max_model_len"])) as usize), (used, window));
+        let (_, body) = call(addr, "/v1/glyd/tokenize", r#"{"prompt":["a b", "c d e"]}"#);
+        assert_eq!(f64_of(at(&json::parse(&body).unwrap(), &["prompt_tokens"])), 5.0);
+        assert_eq!(ran.load(Relaxed), before, "a count runs nothing");
+        let (st, body) = call(addr, "/v1/glyd/tokenize", r#"{"messages":[{"role":"user","content":"x"}],"logprobs":true}"#);
+        assert!(st == 400 && body.contains("logprobs is not supported"), "a count refuses what the request would be refused for: {body}");
+        // a length the context has no room for: refused with the numbers, whichever field asks for it; one that fills the context to its last token is served
+        for field in ["max_tokens", "max_completion_tokens"] {
+            let (st, body) = chat(&format!(",\"{field}\":{}", window - used + 1));
+            assert!(st == 400 && body.contains(&format!("This prompt has {used} tokens and asks for up to {} more, {} in all", window - used + 1, window + 1)), "{field}: {st} {body}");
+        }
+        let (st, body) = chat(&format!(",\"max_tokens\":{}", window - used));
+        assert_eq!(st, 200, "{body}");
+    }
+
+    /// A level's engine (`work_gen`: one sequence at a time) does not run a sequence asked to end before its turn (a cancel, its client gone): it ends at once, stopped; the next runs.
+    #[test]
+    fn a_sequence_asked_to_end_before_its_turn_is_not_run() {
+        struct Count(usize);
+        impl Gen for Count {
+            fn capacity(&self) -> usize {
+                64
+            }
+            fn reply(&mut self, _: &[u32], _: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
+                self.0 += 1;
+                each(7);
+                Ok((vec![7], Finish::Length))
+            }
+        }
+        let shared = Arc::new(Shared { tok: crate::tok::tests::toy(&["x"]), chat: None, name: "m".into(), defaults: Params::default(), window: 64, vocab: 2048, thinking: None, refused: ONE_AT_A_TIME });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let seq = |abort: bool| {
+            let (out, events) = std::sync::mpsc::channel();
+            let reply = Reply { params: Params::default(), max_new: 4, ignore_eos: false, logprobs: None, stop_ids: Vec::new() };
+            tx.send(Job::Seq(Submit { prompt: vec![1, 2], reply, out, abort: Arc::new(AtomicBool::new(abort)), resumed: Default::default(), images: Vec::new() })).unwrap();
+            events
+        };
+        let (gone, kept) = (seq(true), seq(false));
+        tx.send(Job::Stop).unwrap();
+        let mut c = Count(0);
+        work_gen(&mut c, shared, &rx, &tx);
+        assert!(matches!(gone.recv().unwrap(), Ev::End(Ok(Finish::Stopped))));
+        assert!(matches!(kept.recv().unwrap(), Ev::Token(7)) && matches!(kept.recv().unwrap(), Ev::End(Ok(Finish::Length))));
+        assert_eq!(c.0, 1, "the sequence asked to end was not run");
+    }
+}

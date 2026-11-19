@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "lease": "80dcf60b-7e70-4b21-8ee3-8b4ad63fbbb2",
+  "manifest": "8f993f2242910f9f535611e0e82e62e6054bcaccc96dc28297f09bc6731e0835",
+  "configuration": "db15560f87a2cdf03c8e984add657f4f4a06fb47272854c65f34ed03b0552b1f",
+  "cleanup_qualification": "5f682e4301a225bf009ad0f0cc4d736c426343ab5e47f62cd4c2dd1c4deca6f2",
+  "phase": "recovered"
+}

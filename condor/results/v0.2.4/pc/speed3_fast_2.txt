@@ -1,0 +1,24 @@
+warm-up request ...
+| Chat (short prompt) | 33 | 0.17 | 194 | 111.3 | 512 |
+| ~4K prompt | 4016 | 1.32 | 3050 | 116.4 | 222 |
+| ~30K prompt | 29663 | 7.48 | 3966 | 123.1 | 183 |
+
+---- paste from here ----
+```
+compare.py compare-v1, 2026-10-21 00:44 EDT
+Server:  http://127.0.0.1:8099, model qwen3.8-flash-next
+Note:    fast
+GPU:     NVIDIA GeForce RTX 4080 SUPER, 16376 MiB
+Driver:  595.91.07
+PCIe:    now gen 4 x16, max gen 4 x16
+CPU:     AMD Ryzen 9 7950X3D 16-Core Processor
+RAM:     61 GiB
+OS:      Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic
+| Test | Prompt tokens | First token (s) | Prompt read (tokens/s) | Writing (tokens/s) | Tokens written |
+|---|--:|--:|--:|--:|--:|
+| Chat (short prompt) | 33 | 0.17 | 194 | 111.3 | 512 |
+| ~4K prompt | 4016 | 1.32 | 3050 | 116.4 | 222 |
+| ~30K prompt | 29663 | 7.48 | 3966 | 123.1 | 183 |
+Quality: not run (--speed-only)
+```
+---- to here ----

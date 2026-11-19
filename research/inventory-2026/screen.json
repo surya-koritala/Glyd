@@ -1,0 +1,2425 @@
+{
+"Qwen/Qwen3.5-0.8B": {
+"created": "2026-02-28",
+"params": {
+"F32": 2592,
+"BF16": 873436192
+},
+"arch": [
+"Qwen3_5ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"Qwen/Qwen3.5-2B": {
+"created": "2026-02-28",
+"params": {
+"F32": 2592,
+"BF16": 2274067232
+},
+"arch": [
+"Qwen3_5ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"Qwen/Qwen3.5-4B": {
+"created": "2026-02-27",
+"params": {
+"BF16": 4659861248,
+"F32": 3840
+},
+"arch": [
+"Qwen3_5ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"Qwen/Qwen3.5-9B": {
+"created": "2026-02-27",
+"params": {
+"BF16": 9653100528,
+"F32": 3840
+},
+"arch": [
+"Qwen3_5ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"Qwen/Qwen3.5-27B": {
+"created": "2026-02-24",
+"params": {
+"BF16": 27781419504,
+"F32": 8448
+},
+"arch": [
+"Qwen3_5ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 11
+},
+"Qwen/Qwen3.5-35B-A3B": {
+"created": "2026-02-24",
+"params": {
+"BF16": 35951817904,
+"F32": 4800
+},
+"arch": [
+"Qwen3_5MoeForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 14
+},
+"Qwen/Qwen3.5-122B-A10B": {
+"created": "2026-02-24",
+"params": {
+"BF16": 125086490096,
+"F32": 6912
+},
+"arch": [
+"Qwen3_5MoeForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 39
+},
+"Qwen/Qwen3.5-397B-A17B": {
+"created": "2026-02-16",
+"params": {
+"BF16": 403397920304,
+"F32": 8640
+},
+"arch": [
+"Qwen3_5MoeForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 94
+},
+"Qwen/Qwen3.6-27B": {
+"created": "2026-04-21",
+"params": {
+"BF16": 27781427952
+},
+"arch": [
+"Qwen3_5ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 15
+},
+"Qwen/Qwen3.6-35B-A3B": {
+"created": "2026-04-15",
+"params": {
+"BF16": 35951822704
+},
+"arch": [
+"Qwen3_5MoeForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 26
+},
+"Qwen/Qwen3.8-27B": {
+"created": "2026-08-05",
+"params": {
+"BF16": 27781427952
+},
+"arch": [
+"Qwen3_5ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 18
+},
+"Qwen/Qwen3.8-Flash-Next": {
+"created": "2026-08-24",
+"params": {
+"BF16": 179999981424,
+"I64": 35
+},
+"arch": [
+"Qwen4ExpForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 131
+},
+"Qwen/Qwen3.8-2.4T-A95B": {
+"created": "2026-08-08",
+"params": {
+"BF16": 2446182725504
+},
+"arch": [
+"Qwen3_5MoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 213
+},
+"Qwen/Qwen3-Coder-Next": {
+"created": "2026-01-30",
+"params": {
+"BF16": 79674391296
+},
+"arch": [
+"Qwen3NextForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 40
+},
+"google/gemma-4-E2B-it": {
+"created": "2026-03-02",
+"params": {
+"BF16": 5123178051
+},
+"arch": [
+"Gemma4ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"google/gemma-4-E4B-it": {
+"created": "2026-03-02",
+"params": {
+"BF16": 7996156490
+},
+"arch": [
+"Gemma4ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"google/gemma-4-12B-it": {
+"created": "2026-05-23",
+"params": {
+"BF16": 11959730224
+},
+"arch": [
+"Gemma4UnifiedForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"google/gemma-4-26B-A4B-it": {
+"created": "2026-03-11",
+"params": {
+"BF16": 25805936206
+},
+"arch": [
+"Gemma4ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"google/gemma-4-31B-it": {
+"created": "2026-03-11",
+"params": {
+"BF16": 31273088876
+},
+"arch": [
+"Gemma4ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"google/diffusiongemma-26B-A4B-it": {
+"created": "2026-06-09",
+"params": {
+"BF16": 25823781228
+},
+"arch": [
+"DiffusionGemmaForBlockDiffusion"
+],
+"quant": null,
+"gated": false,
+"shards": 11
+},
+"meta-models/Muse-Glimmer-30B": {
+"created": "2026-08-09",
+"params": {
+"BF16": 29776626688
+},
+"arch": [
+"MuseGlimmerForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"facebook/MobileMoE-S-SFT": {
+"created": "2026-06-11",
+"params": {
+"BF16": 1263374256
+},
+"arch": [
+"MobileMoEForCausalLM"
+],
+"quant": null,
+"gated": "auto",
+"shards": 1
+},
+"facebook/MobileMoE-M-SFT": {
+"created": "2026-06-11",
+"params": {
+"BF16": 2818390552
+},
+"arch": [
+"MobileMoEForCausalLM"
+],
+"quant": null,
+"gated": "auto",
+"shards": 2
+},
+"facebook/MobileMoE-L-SFT": {
+"created": "2026-06-11",
+"params": {
+"BF16": 5325704320
+},
+"arch": [
+"MobileMoEForCausalLM"
+],
+"quant": null,
+"gated": "auto",
+"shards": 3
+},
+"mistralai/Mistral-Small-4-119B-2603": {
+"created": "2026-01-23",
+"params": {
+"BF16": 1521452032,
+"F8_E4M3": 117879865344
+},
+"arch": [
+"Mistral3ForConditionalGeneration"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 10
+},
+"mistralai/Mistral-Medium-3.5-128B": {
+"created": "2026-03-31",
+"params": {
+"BF16": 5901622016,
+"F8_E4M3": 121802588160
+},
+"arch": [
+"Mistral3ForConditionalGeneration"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 6
+},
+"microsoft/Phi-4-reasoning-vision-15B": {
+"created": "2026-01-23",
+"params": {
+"BF16": 15119518144
+},
+"arch": [
+"Phi4ForCausalLMV"
+],
+"quant": null,
+"gated": false,
+"shards": 7
+},
+"microsoft/Mage-VL": {
+"created": "2026-07-25",
+"params": {
+"BF16": 4741793792
+},
+"arch": [
+"MageVLForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 3
+},
+"nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16": {
+"created": "2026-03-07",
+"params": {
+"BF16": 3973556832
+},
+"arch": [
+"NemotronHForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16": {
+"created": "2026-03-10",
+"params": {
+"F32": 20992,
+"BF16": 123611012096
+},
+"arch": [
+"NemotronHForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 50
+},
+"nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16": {
+"created": "2026-06-03",
+"params": {
+"BF16": 560524578816,
+"F32": 25088
+},
+"arch": [
+"NemotronHForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 225
+},
+"nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16": {
+"created": "2026-08-01",
+"params": {
+"F32": 3072,
+"BF16": 32913263168
+},
+"arch": [
+"NemotronHForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 14
+},
+"nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16": {
+"created": "2026-04-20",
+"params": {
+"F32": 2950,
+"BF16": 33015629264
+},
+"arch": [
+"NemotronH_Nano_Omni_Reasoning_V3"
+],
+"quant": null,
+"gated": false,
+"shards": 17
+},
+"nvidia/NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-BF16": {
+"created": "2026-06-24",
+"params": {
+"BF16": 78295649280,
+"F32": 20992
+},
+"arch": [
+"NemotronHPuzzleForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 32
+},
+"nvidia/Nemotron-Labs-Diffusion-3B": {
+"created": "2026-03-02",
+"params": {
+"BF16": 3831659520
+},
+"arch": [
+"NemotronLabsDiffusionModel"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"nvidia/Nemotron-Labs-Diffusion-8B": {
+"created": "2026-03-18",
+"params": {
+"BF16": 8489553920
+},
+"arch": [
+"NemotronLabsDiffusionModel"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"nvidia/Nemotron-Labs-Diffusion-14B": {
+"created": "2026-04-22",
+"params": {
+"BF16": 13506073600
+},
+"arch": [
+"NemotronLabsDiffusionModel"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"ibm-granite/granite-4.1-3b": {
+"created": "2026-04-06",
+"params": {
+"BF16": 3402836480
+},
+"arch": [
+"GraniteForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"ibm-granite/granite-4.1-8b": {
+"created": "2026-04-06",
+"params": {
+"BF16": 8791592960
+},
+"arch": [
+"GraniteForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"ibm-granite/granite-4.1-30b": {
+"created": "2026-04-06",
+"params": {
+"BF16": 28865728512
+},
+"arch": [
+"GraniteForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 12
+},
+"ibm-granite/granite-4.2-3b": {
+"created": "2026-08-07",
+"params": {
+"BF16": 3659737600
+},
+"arch": [
+"GraniteForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"ibm-granite/granite-4.2-8b": {
+"created": "2026-08-07",
+"params": {
+"BF16": 8791592960
+},
+"arch": [
+"GraniteForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"ibm-granite/granite-4.2-30b": {
+"created": "2026-08-07",
+"params": {
+"BF16": 29276770304
+},
+"arch": [
+"GraniteForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 11
+},
+"ibm-granite/granite-swash-2b": {
+"created": "2026-07-01",
+"params": {
+"BF16": 2144463840
+},
+"arch": [
+"GraniteSWAForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"ibm-granite/granite-swash-3b-a600m": {
+"created": "2026-07-01",
+"params": {
+"BF16": 3020382000
+},
+"arch": [
+"GraniteMoeSWAForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"allenai/Olmo-Hybrid-Instruct-DPO-7B": {
+"created": "2026-02-20",
+"params": {
+"BF16": 7430870688
+},
+"arch": [
+"OlmoHybridForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"deepseek-ai/DeepSeek-V4-Flash": {
+"created": "2026-04-22",
+"params": {
+"BF16": 1415259264,
+"I64": 2327040,
+"F32": 36168018,
+"F8_E4M3": 6023020544,
+"I8": 283467841536
+},
+"arch": [
+"DeepseekV4ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 46
+},
+"deepseek-ai/DeepSeek-V4-Pro": {
+"created": "2026-04-22",
+"params": {
+"BF16": 2816899328,
+"I64": 2327040,
+"F32": 87776414,
+"F8_E4M3": 23169335296,
+"I8": 1572763336704
+},
+"arch": [
+"DeepseekV4ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 64
+},
+"deepseek-ai/DeepSeek-V4.1-Flash": {
+"created": "2026-09-10",
+"params": {
+"BF16": 1976441856,
+"F32": 42307282,
+"F8_E4M3": 204015223296,
+"I8": 557171343360
+},
+"arch": [
+"DeepseekV41ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 48
+},
+"moonshotai/Kimi-K2.5": {
+"created": "2026-01-01",
+"params": {
+"F32": 23040,
+"I32": 1014686023680,
+"BF16": 12193329648
+},
+"arch": [
+"KimiK25ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 64
+},
+"moonshotai/Kimi-K2.6": {
+"created": "2026-04-14",
+"params": {
+"F32": 23040,
+"I32": 1014686023680,
+"BF16": 12193329648
+},
+"arch": [
+"KimiK25ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 64
+},
+"moonshotai/Kimi-K2.7-Code": {
+"created": "2026-06-11",
+"params": {
+"BF16": 12193329648,
+"F32": 23040,
+"I32": 1014686023680
+},
+"arch": [
+"KimiK25ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 64
+},
+"moonshotai/Kimi-K3": {
+"created": "2026-06-13",
+"params": {
+"F32": 11122432,
+"BF16": 57179884544,
+"U8": 2722740830208
+},
+"arch": [
+"KimiK3ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 96
+},
+"zai-org/GLM-4.7-Flash": {
+"created": "2026-01-19",
+"params": {
+"BF16": 31221485568,
+"F32": 3008
+},
+"arch": [
+"Glm4MoeLiteForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 48
+},
+"zai-org/GLM-5": {
+"created": "2026-02-11",
+"params": {
+"BF16": 753864119552,
+"F32": 19456
+},
+"arch": [
+"GlmMoeDsaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 282
+},
+"zai-org/GLM-5.1": {
+"created": "2026-04-03",
+"params": {
+"BF16": 753864119552,
+"F32": 19456
+},
+"arch": [
+"GlmMoeDsaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 282
+},
+"zai-org/GLM-5.2": {
+"created": "2026-06-16",
+"params": {
+"BF16": 753329921024,
+"F32": 19456
+},
+"arch": [
+"GlmMoeDsaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 282
+},
+"zai-org/GLM-5.3": {
+"created": "2026-08-25",
+"params": {
+"BF16": 2103729152,
+"F8_E4M3": 751226191872,
+"F32": 19456
+},
+"arch": [
+"GlmMoeDsaForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 141
+},
+"zai-org/GLM-5.3-Flash": {
+"created": "2026-08-25",
+"params": {
+"BF16": 6926096640,
+"F8_E4M3": 314396639232,
+"F32": 295518
+},
+"arch": [
+"Glm5NextForConditionalGeneration"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 62
+},
+"MiniMaxAI/MiniMax-M2.5": {
+"created": "2026-02-12",
+"params": {
+"F32": 62654720,
+"BF16": 1230021632,
+"F8_E4M3": 227410968576
+},
+"arch": [
+"MiniMaxM2ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 125
+},
+"MiniMaxAI/MiniMax-M2.7": {
+"created": "2026-04-09",
+"params": {
+"F32": 48774656,
+"BF16": 1230021632,
+"F8_E4M3": 227410968576
+},
+"arch": [
+"MiniMaxM2ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 125
+},
+"MiniMaxAI/MiniMax-M3": {
+"created": "2026-06-02",
+"params": {
+"BF16": 426993800960,
+"F32": 46339200
+},
+"arch": [
+"MiniMaxM3SparseForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 59
+},
+"XiaomiMiMo/MiMo-V2.5": {
+"created": "2026-04-27",
+"params": {
+"F32": 68012416,
+"BF16": 4052024960,
+"F8_E4M3": 306655002624
+},
+"arch": [
+"MiMoV2ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 18
+},
+"XiaomiMiMo/MiMo-V2.5-Pro": {
+"created": "2026-04-27",
+"params": {
+"F32": 162817920,
+"BF16": 9450733440,
+"F8_E4M3": 1013569290240
+},
+"arch": [
+"MiMoV2ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 34
+},
+"XiaomiMiMo/MiMo-V2.6-Flash-RL": {
+"created": "2026-09-21",
+"params": {
+"F32": 12032,
+"BF16": 4101308032,
+"F8_E4M3": 3859808256,
+"U8": 302795194368
+},
+"arch": [
+"MiMoV2ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 67
+},
+"XiaomiMiMo/MiMo-V2.6-Pro-RL": {
+"created": "2026-09-21",
+"params": {
+"BF16": 10647286656,
+"F32": 26496,
+"F8_E4M3": 13378781184,
+"U8": 1000190509056
+},
+"arch": [
+"MiMoV2ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 132
+},
+"tencent/Hy3": {
+"created": "2026-07-02",
+"params": {
+"BF16": 298786140416,
+"F32": 15360
+},
+"arch": [
+"HYV3ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 99
+},
+"tencent/Hy4-preview": {
+"created": "2026-08-27",
+"params": {
+"BF16": 779930197312,
+"F32": 30795421
+},
+"arch": [
+"HYV4ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 131
+},
+"ByteDance-Seed/Stable-DiffCoder-8B-Instruct": {
+"created": "2026-01-15",
+"params": {
+"BF16": 8250462208
+},
+"arch": [
+"StableDiffcoderForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"stepfun-ai/Step-3.5-Flash": {
+"created": "2026-02-01",
+"params": {
+"BF16": 199384289280,
+"F32": 12096
+},
+"arch": [
+"Step3p5ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 44
+},
+"stepfun-ai/Step-3.7-Flash": {
+"created": "2026-05-23",
+"params": {
+"BF16": 201365304064,
+"F32": 12096
+},
+"arch": [
+"Step3p7ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 26
+},
+"stepfun-ai/Step3-VL-10B": {
+"created": "2026-01-13",
+"params": {
+"BF16": 10171750144
+},
+"arch": [
+"StepVLForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 5
+},
+"meituan-longcat/LongCat-Flash-Lite": {
+"created": "2026-01-27",
+"params": {
+"F32": 16520448,
+"BF16": 69056815104
+},
+"arch": [
+"LongcatFlashNgramForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 26
+},
+"meituan-longcat/LongCat-Flash-Thinking-2601": {
+"created": "2026-01-14",
+"params": {
+"BF16": 561730738176,
+"F32": 132142080
+},
+"arch": [
+"LongcatCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 75
+},
+"meituan-longcat/LongCat-Next": {
+"created": "2026-03-25",
+"params": {
+"BF16": 73101777568,
+"F32": 1155453184
+},
+"arch": [
+"LongcatNextForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 16
+},
+"meituan-longcat/LongCat-2.0": {
+"created": "2026-07-05",
+"params": {
+"BF16": 1775271312256,
+"F32": 289178880
+},
+"arch": [
+"LongcatCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 194
+},
+"inclusionAI/Ling-2.5-1T": {
+"created": "2026-02-14",
+"params": {
+"BF16": 1012231140864,
+"F32": 19456
+},
+"arch": [
+"BailingMoeV2_5ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 163
+},
+"inclusionAI/Ring-2.5-1T": {
+"created": "2026-02-10",
+"params": {
+"F32": 19456,
+"BF16": 2736616960,
+"F8_E4M3": 1009494523904
+},
+"arch": [
+"BailingMoeV2_5ForCausalLM"
+],
+"quant": "compressed-tensors",
+"gated": false,
+"shards": 160
+},
+"inclusionAI/Ling-2.6-1T": {
+"created": "2026-04-29",
+"params": {
+"F32": 19712,
+"BF16": 15919881728,
+"F8_E4M3": 1009494523904
+},
+"arch": [
+"BailingMoeV2_5ForCausalLM"
+],
+"quant": "compressed-tensors",
+"gated": false,
+"shards": 161
+},
+"inclusionAI/Ring-2.6-1T": {
+"created": "2026-05-14",
+"params": {
+"F32": 19712,
+"BF16": 15919881728,
+"F8_E4M3": 1009494523904
+},
+"arch": [
+"BailingMoeV2_5ForCausalLM"
+],
+"quant": "compressed-tensors",
+"gated": false,
+"shards": 175
+},
+"inclusionAI/Ling-2.6-flash": {
+"created": "2026-04-28",
+"params": {
+"BF16": 107494401024,
+"F32": 8192
+},
+"arch": [
+"BailingMoeV2_5ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 27
+},
+"inclusionAI/Ling-3.0-flash": {
+"created": "2026-08-02",
+"params": {
+"F32": 165472,
+"BF16": 127486240128
+},
+"arch": [
+"BailingMoeV3ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 24
+},
+"inclusionAI/Ling-3.0-flash-VL": {
+"created": "2026-09-04",
+"params": {
+"F32": 164960,
+"BF16": 124848295536
+},
+"arch": [
+"BailingMoeV3VLForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 64
+},
+"inclusionAI/Ling-3.0-tiny": {
+"created": "2026-08-10",
+"params": {
+"F32": 40096,
+"BF16": 7893352704
+},
+"arch": [
+"BailingMoeV3ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 32
+},
+"inclusionAI/Ming-flash-omni-2.0": {
+"created": "2026-02-10",
+"params": {
+"BF16": 104251446768
+},
+"arch": [
+"BailingMM2NativeForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 53
+},
+"inclusionAI/LLaDA2.1-mini": {
+"created": "2026-02-09",
+"params": {
+"F32": 4864,
+"BF16": 16255638528
+},
+"arch": [
+"LLaDA2MoeModelLM"
+],
+"quant": null,
+"gated": false,
+"shards": 8
+},
+"inclusionAI/LLaDA2.1-flash": {
+"created": "2026-02-09",
+"params": {
+"F32": 7936,
+"BF16": 102889697280
+},
+"arch": [
+"LLaDA2MoeModelLM"
+],
+"quant": null,
+"gated": false,
+"shards": 32
+},
+"inclusionAI/LLaDA2.2-mini": {
+"created": "2026-09-05",
+"params": {
+"BF16": 16255643392
+},
+"arch": [
+"LLaDA2MoeModelLM"
+],
+"quant": null,
+"gated": false,
+"shards": 7
+},
+"inclusionAI/LLaDA2.2-flash": {
+"created": "2026-07-16",
+"params": {
+"F32": 7936,
+"BF16": 102889697280
+},
+"arch": [
+"LLaDA2MoeModelLM"
+],
+"quant": null,
+"gated": false,
+"shards": 32
+},
+"Kwai-Keye/Keye-VL-2.0-30B-A3B": {
+"created": "2026-05-25",
+"params": {
+"F32": 6144,
+"BF16": 31122076016
+},
+"arch": [
+"KeyeVL2MoeForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 13
+},
+"CohereLabs/command-a-plus-05-2026-bf16": {
+"created": "2026-05-11",
+"params": {
+"BF16": 218750277872
+},
+"arch": [
+"Cohere2VisionForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 9
+},
+"CohereLabs/North-Mini-Code-1.0": {
+"created": "2026-06-05",
+"params": {
+"BF16": 30484303872
+},
+"arch": [
+"Cohere2MoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 49
+},
+"CohereLabs/North-Micro-Vision-Instruct": {
+"created": "2026-08-10",
+"params": {
+"BF16": 2484847856
+},
+"arch": [
+"CohereCompassForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"CohereLabs/tiny-aya-global": {
+"created": "2026-02-13",
+"params": {
+"BF16": 3349227520
+},
+"arch": [
+"Cohere2ForCausalLM"
+],
+"quant": null,
+"gated": "auto",
+"shards": 2
+},
+"LGAI-EXAONE/EXAONE-4.5-33B": {
+"created": "2026-04-04",
+"params": {
+"BF16": 34350097664
+},
+"arch": [
+"Exaone4_5_ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"LGAI-EXAONE/K-EXAONE-2.0-750B-A37B": {
+"created": "2026-07-29",
+"params": {
+"F32": 19456,
+"BF16": 749357465344
+},
+"arch": [
+"ExaoneMoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 17
+},
+"upstage/Solar-Open2-250B": {
+"created": "2026-07-22",
+"params": {
+"BF16": 250287794944,
+"F32": 15360
+},
+"arch": [
+"SolarOpen2ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 94
+},
+"sarvamai/sarvam-30b": {
+"created": "2026-03-03",
+"params": {
+"F32": 32152650368
+},
+"arch": [
+"SarvamMoEForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 26
+},
+"sarvamai/sarvam-105b": {
+"created": "2026-03-03",
+"params": {
+"F32": 106031767424
+},
+"arch": [
+"SarvamMLAForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 85
+},
+"tiiuae/Falcon-H1-Tiny-R-0.6B": {
+"created": "2026-01-12",
+"params": {
+"BF16": 622326880
+},
+"arch": [
+"FalconH1ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"ServiceNow-AI/SuperApriel-15B-Instruct": {
+"created": "2026-04-07",
+"params": null,
+"arch": [
+"Apriel2ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 6
+},
+"LiquidAI/LFM2.5-230M": {
+"created": "2026-06-24",
+"params": {
+"BF16": 229693184
+},
+"arch": [
+"Lfm2ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"LiquidAI/LFM2.5-350M": {
+"created": "2026-03-31",
+"params": {
+"BF16": 354483968
+},
+"arch": [
+"Lfm2ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"LiquidAI/LFM2.5-1.2B-Instruct": {
+"created": "2026-01-06",
+"params": {
+"BF16": 1170340608
+},
+"arch": [
+"Lfm2ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"LiquidAI/LFM2.5-2.6B": {
+"created": "2026-07-28",
+"params": {
+"BF16": 2697198592
+},
+"arch": [
+"Lfm2ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"LiquidAI/LFM2.5-8B-A1B": {
+"created": "2026-05-28",
+"params": {
+"F32": 704,
+"BF16": 8467856128
+},
+"arch": [
+"Lfm2MoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"LiquidAI/LFM2-24B-A2B": {
+"created": "2026-02-24",
+"params": {
+"F32": 2432,
+"BF16": 23843659008
+},
+"arch": [
+"Lfm2MoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"LiquidAI/LFM2.5-VL-450M": {
+"created": "2026-04-08",
+"params": {
+"BF16": 448718848
+},
+"arch": [
+"Lfm2VlForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"LiquidAI/LFM2.5-VL-1.6B": {
+"created": "2026-01-05",
+"params": {
+"BF16": 1596625904
+},
+"arch": [
+"Lfm2VlForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"LiquidAI/LFM2.5-VL-3B": {
+"created": "2026-08-11",
+"params": {
+"BF16": 3123483888
+},
+"arch": [
+"Lfm2VlForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"arcee-ai/Trinity-Large-Thinking": {
+"created": "2026-04-01",
+"params": {
+"BF16": 398635272192,
+"F32": 13824
+},
+"arch": [
+"AfmoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 31
+},
+"RekaAI/reka-edge-2603": {
+"created": "2026-03-11",
+"params": {
+"BF16": 7128509568
+},
+"arch": [
+"Yasa2ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 3
+},
+"swiss-ai/Apertus-v1.1-0.5B-Instruct": {
+"created": "2026-05-01",
+"params": {
+"BF16": 572567080
+},
+"arch": [
+"ApertusForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"swiss-ai/Apertus-v1.1-1.5B-Instruct": {
+"created": "2026-05-03",
+"params": {
+"BF16": 1510019104
+},
+"arch": [
+"ApertusForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"swiss-ai/Apertus-v1.1-4B-Instruct": {
+"created": "2026-05-01",
+"params": {
+"BF16": 3825361968
+},
+"arch": [
+"ApertusForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"swiss-ai/Apertus-v1.5-8B": {
+"created": "2026-07-24",
+"params": {
+"BF16": 8609083456,
+"F32": 294464099
+},
+"arch": [
+"Apertus1p5ForConditionalGeneration"
+],
+"quant": null,
+"gated": "auto",
+"shards": 6
+},
+"swiss-ai/Apertus-v1.5-70B": {
+"created": "2026-07-24",
+"params": {
+"BF16": 71711355040,
+"F32": 294464099
+},
+"arch": [
+"Apertus1p5ForConditionalGeneration"
+],
+"quant": null,
+"gated": "auto",
+"shards": 5
+},
+"openbmb/MiniCPM5-1B": {
+"created": "2026-05-21",
+"params": {
+"BF16": 1080632832
+},
+"arch": [
+"LlamaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"openbmb/MiniCPM5-2B": {
+"created": "2026-09-06",
+"params": {
+"BF16": 2516756480
+},
+"arch": [
+"LlamaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"openbmb/MiniCPM-V-4.6": {
+"created": "2026-04-13",
+"params": {
+"BF16": 1300428016
+},
+"arch": [
+"MiniCPMV4_6ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"openbmb/MiniCPM-SALA": {
+"created": "2026-02-11",
+"params": {
+"BF16": 9477203968
+},
+"arch": [
+"MiniCPMSALAForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"openbmb/MiniCPM-o-4_5": {
+"created": "2026-02-03",
+"params": {
+"BF16": 9371787666
+},
+"arch": [
+"MiniCPMO"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"thinkingmachines/Inkling": {
+"created": "2026-07-14",
+"params": {
+"BF16": 952377607178,
+"F32": 16448
+},
+"arch": [
+"InklingForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 109
+},
+"thinkingmachines/Inkling-Small": {
+"created": "2026-07-27",
+"params": {
+"F32": 10280,
+"BF16": 265956428810
+},
+"arch": [
+"InklingForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 33
+},
+"ai21labs/AI21-Jamba2-3B": {
+"created": "2026-01-06",
+"params": {
+"BF16": 3197109632
+},
+"arch": [
+"JambaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"ai21labs/AI21-Jamba2-Mini": {
+"created": "2026-01-06",
+"params": {
+"BF16": 51570323328
+},
+"arch": [
+"JambaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 21
+},
+"JetBrains/Mellum2-12B-A2.5B-Instruct": {
+"created": "2026-05-26",
+"params": {
+"BF16": 12149923072
+},
+"arch": [
+"MellumForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 5
+},
+"internlm/Intern-S1-Pro": {
+"created": "2026-02-02",
+"params": {
+"BF16": 1953552664,
+"F8_E4M3": 915088080896,
+"F32": 2560000
+},
+"arch": [
+"InternS1ProForConditionalGeneration"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 74
+},
+"poolside/Laguna-XS.2": {
+"created": "2026-04-23",
+"params": {
+"BF16": 33442617088
+},
+"arch": [
+"LagunaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 14
+},
+"poolside/Laguna-XS-2.1": {
+"created": "2026-06-20",
+"params": {
+"BF16": 33442617088
+},
+"arch": [
+"LagunaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 14
+},
+"poolside/Laguna-S-2.1": {
+"created": "2026-07-13",
+"params": {
+"BF16": 117561977600
+},
+"arch": [
+"LagunaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 46
+},
+"poolside/Laguna-M.1": {
+"created": "2026-06-15",
+"params": {
+"BF16": 225795725568
+},
+"arch": [
+"LagunaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 89
+},
+"Nanbeige/Nanbeige4.1-3B": {
+"created": "2026-02-10",
+"params": {
+"BF16": 3933637120
+},
+"arch": [
+"LlamaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"Nanbeige/Nanbeige4.2-3B": {
+"created": "2026-07-21",
+"params": {
+"BF16": 4169800704
+},
+"arch": [
+"NanbeigeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"amd/Instella-MoE-16B-A3B-Think": {
+"created": "2026-07-23",
+"params": {
+"BF16": 15862787584,
+"F32": 1664
+},
+"arch": [
+"InstellaMoEForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 6
+},
+"IFM/K2-Horizon-0.9B": {
+"created": "2026-09-01",
+"params": {
+"BF16": 1078285824
+},
+"arch": [
+"K2HorizonForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"IFM/K2-Horizon-3.7B": {
+"created": "2026-09-01",
+"params": {
+"BF16": 5058255360
+},
+"arch": [
+"K2HorizonForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 36
+},
+"IFM/K2-Horizon-7B": {
+"created": "2026-09-01",
+"params": {
+"BF16": 8999178240
+},
+"arch": [
+"K2HorizonForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 36
+},
+"IFM/K2-Horizon-32B": {
+"created": "2026-09-01",
+"params": {
+"BF16": 34779304960
+},
+"arch": [
+"K2HorizonForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 64
+},
+"IFM/K2-Horizon-MoVA-36B-A4B": {
+"created": "2026-09-01",
+"params": {
+"BF16": 37444792020
+},
+"arch": [
+"K2HorizonForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 48
+},
+"IFM/K2-Horizon-375B-A23B": {
+"created": "2026-09-01",
+"params": {
+"BF16": 379167159168
+},
+"arch": [
+"K2HorizonForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 61
+},
+"Zyphra/ZAYA1-8B": {
+"created": "2026-05-04",
+"params": {
+"BF16": 8840489464
+},
+"arch": [
+"ZayaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"Zyphra/ZAYA1-VL-8B": {
+"created": "2026-04-20",
+"params": {
+"F32": 680,
+"BF16": 9722231632
+},
+"arch": [
+"Zaya1VLForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"Zyphra/ZAYA1-74B-preview": {
+"created": "2026-05-05",
+"params": {
+"F32": 1500,
+"BF16": 74793953144
+},
+"arch": [
+"ZayaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 31
+},
+"Motif-Technologies/Motif-3": {
+"created": "2026-08-07",
+"params": {
+"BF16": 314841775750
+},
+"arch": [
+"MotifForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 156
+},
+"kakaocorp/kanana-2-1.3b-instruct": {
+"created": "2026-07-24",
+"params": {
+"BF16": 1291478272
+},
+"arch": [
+"Kanana2TinyForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"kakaocorp/kanana-2-3b-instruct": {
+"created": "2026-07-24",
+"params": {
+"BF16": 3508972032
+},
+"arch": [
+"Qwen3ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 2
+},
+"kakaocorp/kanana-2-30b-a3b-instruct-2601": {
+"created": "2026-01-14",
+"params": {
+"BF16": 30670815104
+},
+"arch": [
+"DeepseekV3ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 13
+},
+"trillionlabs/Gravity-16B-A3B-Preview": {
+"created": "2026-04-15",
+"params": {
+"BF16": 16242181824
+},
+"arch": [
+"GravityMoEForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 0
+},
+"trillionlabs/Gravity-30B-A5B-Preview": {
+"created": "2026-09-09",
+"params": {
+"BF16": 29558815872
+},
+"arch": [
+"GravityMoEForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 12
+},
+"trillionlabs/Tri-21B-Think": {
+"created": "2026-02-18",
+"params": {
+"F32": 20725519360
+},
+"arch": [
+"TrillionForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 19
+},
+"trillionlabs/Trida-7B": {
+"created": "2026-01-19",
+"params": {
+"BF16": 7526944768
+},
+"arch": [
+"TridaForDLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"skt/A.X-K2": {
+"created": "2026-07-28",
+"params": {
+"F32": 15360,
+"BF16": 2515671296,
+"F8_E4M3": 689174544384
+},
+"arch": [
+"AXK2ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 346
+},
+"Aleph-Alpha/Kolibri-1": {
+"created": "2026-10-02",
+"params": {
+"BF16": 705058560,
+"F8_E4M3": 77398016000
+},
+"arch": [
+"Kolibri1ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 32
+},
+"PleIAs/Baguettotron-MoE": {
+"created": "2026-04-30",
+"params": {
+"BF16": 13290474240
+},
+"arch": [
+"BaguettotronMoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"llm-jp/llm-jp-4-8b-instruct": {
+"created": "2026-03-30",
+"params": {
+"BF16": 8590200832
+},
+"arch": [
+"LlamaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"llm-jp/llm-jp-4-32b-a3b-thinking": {
+"created": "2026-03-16",
+"params": {
+"BF16": 32139028992
+},
+"arch": [
+"Qwen3MoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 13
+},
+"llm-jp/llm-jp-4-33b-thinking": {
+"created": "2026-08-14",
+"params": {
+"BF16": 33219548160
+},
+"arch": [
+"LlamaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 14
+},
+"llm-jp/llm-jp-4.1-8b-thinking": {
+"created": "2026-09-15",
+"params": {
+"BF16": 8590200832
+},
+"arch": [
+"LlamaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"llm-jp/llm-jp-4.1-32b-a3b-thinking": {
+"created": "2026-09-16",
+"params": {
+"BF16": 32139028992
+},
+"arch": [
+"Qwen3MoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 13
+},
+"llm-jp/llm-jp-4.1-33b-thinking": {
+"created": "2026-09-16",
+"params": {
+"BF16": 33219548160
+},
+"arch": [
+"LlamaForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 14
+},
+"pfnet/plamo-3-nict-2604-31b-base": {
+"created": "2026-06-12",
+"params": {
+"BF16": 31757456384
+},
+"arch": [
+"Plamo3ForCausalLM"
+],
+"quant": null,
+"gated": "auto",
+"shards": 30
+},
+"yandex/AliceAI-Foundation-80B-A3B-Base": {
+"created": "2026-09-12",
+"params": {
+"BF16": 81286433408
+},
+"arch": [
+"AliceAIForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 49
+},
+"yandex/AliceAI-T5-35B-A0.6B": {
+"created": "2026-09-10",
+"params": {
+"F32": 43008,
+"BF16": 34561842176
+},
+"arch": [
+"AliceAIT5MoEForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 15
+},
+"XingChen-AGI/Xing4.0-29B-A4B": {
+"created": "2026-09-16",
+"params": {
+"F32": 2736,
+"BF16": 31215028352
+},
+"arch": [
+"Xing4_0ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 41
+},
+"Tele-AI/TeleChat3-Coder-36B-Thinking": {
+"created": "2026-01-29",
+"params": {
+"BF16": 36239579136
+},
+"arch": [
+"TeleChat3ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 20
+},
+"Agnes-AI/Agnes-3.0-Flash": {
+"created": "2026-09-11",
+"params": {
+"BF16": 33090501680
+},
+"arch": [
+"AgnesForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 20
+},
+"Agnes-AI/Agnes-2.5-Flash-Base": {
+"created": "2026-08-29",
+"params": {
+"I32": 2327256,
+"BF16": 1474237893,
+"F32": 12264448,
+"F8_E4M3": 200940716032
+},
+"arch": [
+"AgnesForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 37
+},
+"RWKV/RWKV7-G1k-1.5B-20260930": {
+"created": "2026-09-30",
+"params": {
+"BF16": 1527668736
+},
+"arch": [
+"Rwkv7ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"RWKV/RWKV7-G1k-2.9B-20260930": {
+"created": "2026-09-30",
+"params": {
+"BF16": 2948065280
+},
+"arch": [
+"Rwkv7ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 6
+},
+"RWKV/RWKV7-G1k-7.2B-20260930": {
+"created": "2026-09-30",
+"params": {
+"BF16": 7199932416
+},
+"arch": [
+"Rwkv7ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 15
+},
+"RWKV/RWKV7-G1k-13.3B-20260930": {
+"created": "2026-09-30",
+"params": {
+"BF16": 13270298624
+},
+"arch": [
+"Rwkv7ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 28
+},
+"ai-sage/GigaChat3.1-10B-A1.8B-bf16": {
+"created": "2026-03-21",
+"params": {
+"BF16": 11479750784
+},
+"arch": [
+"DeepseekV3ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 6
+},
+"ai-sage/GigaChat3.1-702B-A36B-bf16": {
+"created": "2026-03-21",
+"params": {
+"BF16": 715438157312
+},
+"arch": [
+"DeepseekV3ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 24
+},
+"ai-sage/GigaChat3.5-432B-A28B": {
+"created": "2026-07-05",
+"params": {
+"F32": 26238112,
+"BF16": 4022477312,
+"F8_E4M3": 429724532736
+},
+"arch": [
+"GigaChat35ForCausalLM"
+],
+"quant": "fp8",
+"gated": false,
+"shards": 28
+},
+"ai-sage/GFusion-10B-A1.8B-bf16": {
+"created": "2026-07-01",
+"params": {
+"BF16": 10672535616
+},
+"arch": [
+"GFusionForDiffusionLM"
+],
+"quant": null,
+"gated": false,
+"shards": 14
+},
+"moondream/moondream3.1-9B-A2B": {
+"created": "2026-06-30",
+"params": {
+"F32": 5242880,
+"BF16": 1215563248,
+"F8_E4M3": 8053063680
+},
+"arch": null,
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"dots-studio/dots3-note-prev": {
+"created": "2026-08-09",
+"params": {
+"BF16": 288443388736,
+"F32": 12128
+},
+"arch": [
+"Dots3NoteForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 133
+},
+"Gensyn/open-1b-sft": {
+"created": "2026-09-15",
+"params": {
+"F32": 1608011776
+},
+"arch": [
+"Open1BForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"EssentialAI/rnj-1.5-instruct": {
+"created": "2026-04-22",
+"params": {
+"F32": 8310501376
+},
+"arch": [
+"Rnj1ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 7
+},
+"TaichuAI/ZDTaichu5.0-9B": {
+"created": "2026-09-04",
+"params": {
+"BF16": 9794197510,
+"I64": 2
+},
+"arch": [
+"ZDTaichu5_0_ForConditionalGeneration"
+],
+"quant": null,
+"gated": false,
+"shards": 5
+},
+"IQuestLab/IQuest-Coder-V1-14B-Instruct": {
+"created": "2026-02-14",
+"params": {
+"BF16": 14439183360
+},
+"arch": [
+"IQuestCoderForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 6
+},
+"IQuestLab/IQuest-Q1": {
+"created": "2026-09-28",
+"params": {
+"BF16": 320318615552
+},
+"arch": [
+"IQuestQ1ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 176
+},
+"jdopensource/JoyAI-LLM-Flash": {
+"created": "2026-02-14",
+"params": {
+"BF16": 49286094592
+},
+"arch": [
+"DeepseekV3ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 42
+},
+"NaiveAI/Naive-N0.5-Flash": {
+"created": "2026-09-27",
+"params": null,
+"arch": [
+"NaiveN05FlashForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 49
+},
+"sapientinc/HRM-Text-1B": {
+"created": "2026-05-17",
+"params": {
+"BF16": 1182795264
+},
+"arch": [
+"HrmTextForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 1
+},
+"Soofi-Project/Soofi-S-Instruct-Preview": {
+"created": "2026-06-16",
+"params": {
+"F32": 2944,
+"BF16": 31577937344
+},
+"arch": [
+"NemotronHForCausalLM"
+],
+"quant": null,
+"gated": "manual",
+"shards": 13
+},
+"ATH-MaaS/Marco-Mini-Instruct": {
+"created": "2026-04-08",
+"params": {
+"BF16": 17250582528
+},
+"arch": [
+"Qwen3MoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 7
+},
+"ATH-MaaS/Marco-Nano-Instruct": {
+"created": "2026-04-03",
+"params": {
+"BF16": 8001454080
+},
+"arch": [
+"Qwen3MoeForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 3
+},
+"bharatgenai/Param2-17B-A2.4B-Thinking": {
+"created": "2026-02-16",
+"params": {
+"BF16": 17151124096,
+"F32": 1280
+},
+"arch": [
+"Param2MoEForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 4
+},
+"Maincode/matilda-jev-v1": {
+"created": "2026-09-30",
+"params": {
+"BF16": 26085330160
+},
+"arch": [
+"MatildaJevModel"
+],
+"quant": null,
+"gated": false,
+"shards": 12
+},
+"openpangu/openPangu-2.0-Flash": {
+"created": "2026-06-30",
+"params": {
+"F32": 12032,
+"BF16": 100136299961
+},
+"arch": [
+"OpenPanguV2ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 50
+},
+"openpangu/openPangu-2.0-Pro": {
+"created": "2026-07-30",
+"params": {
+"BF16": 541492214673,
+"F32": 19200
+},
+"arch": [
+"OpenPanguV2ForCausalLM"
+],
+"quant": null,
+"gated": false,
+"shards": 275
+}
+}

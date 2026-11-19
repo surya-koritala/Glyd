@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starlings</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233358e6'/%3E%3Ctext x='16' y='23' font-size='20' font-family='sans-serif' font-weight='700' text-anchor='middle' fill='white'%3ES%3C/text%3E%3C/svg%3E">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --surface: #f5f6f8; --text: #1b1c20; --muted: #62646e; --line: #e2e4ea;
+  --accent: #2f55e0; --accent-text: #ffffff; --user: #edf0fc; --code: #f0f1f5;
+  --stage2: #8da2ef; --ok: #1d8a4e; --bad: #c0392b; --reserved: #d98b00;
+  --warn-bg: #fff4d6; --warn-text: #6b4700; --warn-line: #ecd596;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131416; --surface: #1b1c20; --text: #e9eaee; --muted: #9b9ea9; --line: #2b2d34;
+    --accent: #7f99ff; --accent-text: #0e1220; --user: #222744; --code: #22242a;
+    --stage2: #4b5ca8; --ok: #4cc38a; --bad: #ff7b6b; --reserved: #e8a93a;
+    --warn-bg: #3a2f10; --warn-text: #f2d48a; --warn-line: #5b4a1c;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: grid; grid-template-rows: auto 1fr; grid-template-columns: minmax(0, 1fr); height: 100dvh;
+  background: var(--bg); color: var(--text);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+button, textarea, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 auto; }
+.brand b { font-size: 17px; letter-spacing: .2px; }
+#model { color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; padding: 2px; background: var(--surface); }
+.tabs button { border: 0; background: transparent; border-radius: 7px; padding: 4px 12px; font-size: 14px; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+.live { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; }
+.dot.on { background: var(--ok); }
+.dot.off { background: var(--bad); }
+main { min-height: 0; min-width: 0; }
+.view { height: 100%; }
+.view[hidden] { display: none; }
+.scroll { overflow-y: auto; }
+.wrap { max-width: 780px; margin: 0 auto; }
+.wrap.wide { max-width: 1120px; }
+.pad { padding: 16px 16px 32px; }
+h2 { font-size: 15px; margin: 22px 0 10px; }
+.pad > :first-child { margin-top: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
+.ghost { border: 1px solid var(--line); background: transparent; border-radius: 8px; padding: 4px 12px; font-size: 14px; }
+.ghost:hover { background: var(--surface); }
+.banner { padding: 10px 14px; border-radius: 10px; font-size: 15px; background: var(--warn-bg); color: var(--warn-text); border: 1px solid var(--warn-line); margin: 0 0 12px; }
+.banner[hidden] { display: none; }
+
+/* Cluster */
+.facts { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 14px; color: var(--muted); margin: 0; }
+.facts b { color: var(--text); font-weight: 600; }
+.layers { display: flex; height: 40px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+.seg { display: flex; flex-direction: column; justify-content: center; padding: 0 10px; min-width: 0; background: var(--accent); color: var(--accent-text); font-size: 12px; line-height: 1.25; white-space: nowrap; overflow: hidden; }
+.seg + .seg { border-left: 2px solid var(--bg); }
+.seg.alt { background: var(--stage2); color: var(--text); }
+.seg b { font-size: 13px; }
+.ends { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 13px; color: var(--muted); }
+.ends span:last-child { text-align: right; }
+.chain { display: flex; align-items: stretch; }
+.node { flex: 1 1 0; min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 12px 14px; }
+.node.stale { opacity: .55; }
+.nhead { display: flex; align-items: center; gap: 8px; }
+.nhead b { overflow: hidden; text-overflow: ellipsis; }
+.tag { margin-left: auto; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+.node .line { font-size: 13px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.node .line.text { color: var(--text); }
+.pool { margin-top: 10px; }
+.plabel { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.plabel span:first-child { color: var(--muted); }
+.meter { display: flex; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin-top: 3px; }
+.meter i { display: block; height: 100%; }
+.meter .used { background: var(--accent); }
+.meter .res { background: var(--reserved); }
+.link { flex: 0 0 104px; display: flex; align-items: center; justify-content: center; position: relative; text-align: center; font-size: 12px; line-height: 1.35; color: var(--muted); }
+.link::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 2px dashed var(--line); }
+.link span { position: relative; background: var(--bg); padding: 2px 6px; border-radius: 6px; }
+.link b { color: var(--text); font-weight: 600; }
+.list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 12px; }
+.list li { display: flex; align-items: center; gap: 8px; padding: 8px 14px; font-size: 14px; }
+.list li + li { border-top: 1px solid var(--line); }
+.list li .muted { margin-left: auto; font-size: 13px; }
+.steps { margin: 0; padding-left: 1.3em; }
+.steps li { margin: 0 0 12px; }
+.cmd { display: flex; align-items: center; gap: 8px; margin-top: 4px; background: var(--code); border-radius: 8px; padding: 6px 6px 6px 10px; }
+.cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.cmd button { flex: none; font-size: 13px; padding: 2px 10px; }
+@media (max-width: 640px) {
+  .chain { flex-direction: column; }
+  .link { flex-basis: 64px; }
+  .link::before { left: 50%; right: auto; top: 0; bottom: 0; border-top: 0; border-left: 2px dashed var(--line); }
+  .tabs button { padding: 4px 9px; }
+}
+
+/* Chat (Glyd's chat page) */
+.chatview { display: grid; grid-template-rows: 1fr auto auto; grid-template-columns: minmax(0, 1fr); }
+#log { padding: 18px 16px 8px; min-height: 0; }
+.msg { margin: 0 0 18px; }
+.msg.user { display: flex; justify-content: flex-end; }
+.bubble { background: var(--user); border-radius: 14px; padding: 8px 14px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.answer > :first-child { margin-top: 0; }
+.answer > :last-child { margin-bottom: 0; }
+.answer p, .answer li, .think .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.answer p { margin: 0 0 .8em; }
+.answer ul, .answer ol { margin: 0 0 .8em; padding-left: 1.4em; }
+.answer h2, .answer h3, .answer h4, .answer h5 { margin: 1em 0 .4em; line-height: 1.3; font-size: 1em; }
+.answer code { background: var(--code); border-radius: 4px; padding: .1em .35em; font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.answer pre { background: var(--code); border-radius: 10px; padding: 12px 14px; overflow-x: auto; margin: 0 0 .9em; }
+.answer pre code { background: none; padding: 0; white-space: pre; }
+.answer a { color: var(--accent); }
+details.think { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+details.think summary { cursor: pointer; padding: 6px 12px; color: var(--muted); font-size: 14px; }
+details.think .body { padding: 2px 14px 10px; color: var(--muted); font-size: 14px; max-height: 320px; overflow-y: auto; }
+.note, .stats { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.stats span + span::before { content: " · "; }
+.stats .ok { color: var(--ok); }
+.stats .bad { color: var(--bad); }
+#empty { text-align: center; color: var(--muted); margin-top: 10vh; }
+#empty h1 { font-size: 22px; color: var(--text); margin: 0 0 6px; }
+#empty p { margin: 0 0 18px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 6px 14px; font-size: 14px; }
+.chip:hover { border-color: var(--accent); }
+#notice { margin: 0 16px; }
+#notice .wrap { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 10px 14px; border-radius: 10px; font-size: 15px; background: var(--warn-bg); color: var(--warn-text); border: 1px solid var(--warn-line); }
+#notice[hidden] { display: none; }
+#notice button { flex: none; background: var(--accent); color: var(--accent-text); border: 0; border-radius: 8px; padding: 6px 14px; font-weight: 600; }
+form { padding: 8px 16px 16px; }
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
+.toolbar .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#settings { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; font-size: 14px; }
+#settings[hidden] { display: none; }
+#settings label { display: block; color: var(--muted); }
+#settings textarea { display: block; width: 100%; margin-top: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 6px 8px; resize: vertical; }
+#settings .row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+#settings .row label { display: flex; align-items: center; gap: 6px; }
+#settings input { width: 104px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 3px 8px; color: var(--text); }
+#settings p { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+.box { display: flex; gap: 8px; align-items: flex-end; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 8px; }
+.box:focus-within { border-color: var(--accent); }
+.box textarea:focus-visible { outline: none; }
+.box textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; max-height: 40vh; padding: 6px 8px; line-height: 1.45; }
+#send, #stop { border: 0; border-radius: 10px; padding: 8px 16px; font-weight: 600; background: var(--accent); color: var(--accent-text); }
+#stop { background: transparent; color: var(--text); border: 1px solid var(--line); }
+#send:disabled { opacity: .45; cursor: default; }
+
+/* Requests */
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { padding: 7px 10px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-weight: 600; color: var(--muted); background: var(--surface); border-bottom: 1px solid var(--line); }
+tr + tr td { border-top: 1px solid var(--line); }
+td.ok { color: var(--ok); }
+td.bad { color: var(--bad); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>Starlings</b><span id="model">connecting&hellip;</span></div>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="t-cluster" aria-controls="cluster" aria-selected="true">Cluster</button>
+    <button type="button" role="tab" id="t-chat" aria-controls="chat" aria-selected="false">Chat</button>
+    <button type="button" role="tab" id="t-requests" aria-controls="requests" aria-selected="false">Requests</button>
+  </nav>
+  <span class="live" title="Updates every 2 s while this tab is open"><span class="dot" id="liveDot"></span><span id="liveText">&hellip;</span></span>
+</header>
+<main>
+  <section id="cluster" class="view scroll" role="tabpanel" aria-labelledby="t-cluster">
+    <div class="wrap pad">
+      <p class="banner" id="clusterNotice" hidden></p>
+      <p class="facts" id="facts"></p>
+      <div id="splitBox">
+        <h2>Model split</h2>
+        <div class="layers" id="layers"></div>
+        <div class="ends" id="ends"></div>
+        <p class="facts small" id="routeFacts" style="margin-top:10px"></p>
+      </div>
+      <h2 id="chainTitle">Stages</h2>
+      <div class="chain" id="chain"></div>
+      <div id="idleBox"><h2>Other nodes</h2><ul class="list" id="idle"></ul></div>
+      <div id="joinBox"><h2>Add a machine</h2><ol class="steps" id="join"></ol></div>
+    </div>
+  </section>
+  <section id="chat" class="view chatview" role="tabpanel" aria-labelledby="t-chat" hidden>
+    <div id="log" class="scroll" role="log" aria-label="Conversation">
+      <div class="wrap" id="msgs">
+        <div id="empty">
+          <h1>Ask anything</h1>
+          <p id="emptyText">The model is split across this cluster's GPUs.</p>
+          <div class="chips">
+            <button class="chip" type="button">Explain how a model can run across two GPUs.</button>
+            <button class="chip" type="button">Write a Rust function that reverses a string.</button>
+            <button class="chip" type="button">Give me three ideas for a weekend project.</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="notice" role="alert" hidden><div class="wrap"><span id="noticeText"></span><button type="button" id="noticeNew">New chat</button></div></div>
+    <form id="form">
+      <div class="wrap">
+        <div class="toolbar">
+          <button class="ghost" id="settingsToggle" type="button" aria-expanded="false" aria-controls="settings">Settings</button>
+          <span class="grow" id="sampling"></span>
+          <button class="ghost" id="new" type="button">New chat</button>
+        </div>
+        <div id="settings" hidden>
+          <label>System prompt<textarea id="system" rows="2" placeholder="Optional"></textarea></label>
+          <div class="row">
+            <label>Temperature <input id="temp" type="number" min="0" max="2" step="0.1" value="0"></label>
+            <label>Seed <input id="seed" type="number" min="0" max="2147483647" step="1" value="1"></label>
+            <label>Max tokens <input id="max" type="number" min="1" step="1" value="256"></label>
+          </div>
+          <p>At temperature 0 the stages draft tokens ahead and keep the ones that hold. The same seed gives the same answer.</p>
+        </div>
+        <div class="box">
+          <textarea id="box" rows="1" placeholder="Message" title="Enter sends, Shift+Enter adds a line" aria-label="Message"></textarea>
+          <button id="send" type="submit">Send</button>
+          <button id="stop" type="button" hidden>Stop</button>
+        </div>
+      </div>
+    </form>
+  </section>
+  <section id="requests" class="view scroll" role="tabpanel" aria-labelledby="t-requests" hidden>
+    <div class="wrap wide pad">
+      <h2>Recent requests</h2>
+      <p class="muted small" id="reqNote">The last 50 answers the coordinator sent, newest first. Times are US Eastern.</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th scope="col">Time</th><th scope="col" title="Prompt tokens, then answer tokens">Tokens</th><th scope="col" title="Answer tokens after the first, per second">Decode</th>
+            <th scope="col" title="From the request's start to its first text">First text</th><th scope="col" title="Count, plan, leases and grants">Setup</th><th scope="col">Total</th>
+            <th scope="col" title="Engine time on each stage">Engine</th><th scope="col" title="Pipeline time minus the stages' engine time">Network</th>
+            <th scope="col" title="Drafted tokens that held, of those sent">Drafts</th><th scope="col">Finish</th><th scope="col" title="Both stages reported the same tokens">Stages</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p class="muted" id="noRows">No requests yet.</p>
+    </div>
+  </section>
+</main>
+<div class="sr" role="status" id="status"></div>
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const PREVIEW = window.STARLINGS_PREVIEW || null;  // (preview.html only: sample state, no server)
+const S = { state: null, messages: [], busy: false, abort: null, join: '' };
+const log = $('#log'), msgs = $('#msgs'), box = $('#box'), EMPTY = $('#empty'), EMPTY_TEXT = $('#emptyText');
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* blocked */ } } };
+
+// ---- this launch's secret: from the link the daemon printed, then kept for this tab only ----
+let KEY = '';
+try { KEY = sessionStorage.getItem('starlings.ui') || ''; } catch (e) { /* blocked */ }
+{
+  const m = location.hash.match(/^#k=([0-9a-f]{64})$/);
+  if (m) {
+    KEY = m[1];
+    try { sessionStorage.setItem('starlings.ui', KEY); } catch (e) { /* blocked */ }
+    history.replaceState(null, '', location.pathname);  // (the secret leaves the address bar)
+  }
+}
+const api = (path, init) => fetch(path, Object.assign({ cache: 'no-store' }, init, { headers: Object.assign({ 'X-Starlings-UI': KEY }, (init && init.headers) || {}) }));
+
+// ---- numbers ----
+const num = (x) => Number(x) || 0;
+function bytes(n) {
+  n = num(n);
+  if (n >= 2 ** 30) return (n / 2 ** 30).toFixed(1) + ' GiB';
+  if (n >= 2 ** 20) return Math.round(n / 2 ** 20) + ' MiB';
+  return n + ' B';
+}
+function rate(bps) {
+  bps = num(bps);
+  if (bps >= 1e9) return (bps / 1e9).toFixed(2) + ' GB/s';
+  if (bps >= 1e6) return (bps / 1e6).toFixed(0) + ' MB/s';
+  return (bps / 1e3).toFixed(0) + ' kB/s';
+}
+const ms = (x) => x == null ? '–' : x < 10 ? x.toFixed(1) + ' ms' : x < 10000 ? Math.round(x) + ' ms' : (x / 1000).toFixed(1) + ' s';
+const ago = (x) => x < 1000 ? 'just now' : x < 60000 ? (x / 1000).toFixed(1) + ' s ago' : Math.round(x / 60000) + ' min ago';
+const short = (d) => String(d || '').slice(0, 12);
+const node8 = (id) => String(id || '').slice(0, 8);
+const eastern = (t) => new Date(t).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', second: '2-digit' });
+
+// One report's numbers: what the coordinator measured and both stages reported.
+function figures(r) {
+  const st = r.stages || [], head = st[0] || {}, tail = st[st.length - 1] || {};
+  const tokens = num(head.tokens), total = num(r.setup_ms) + num(r.ms);
+  const first = r.first_text_ms == null ? null : num(r.first_text_ms);
+  const decodeMs = first == null ? 0 : total - first;
+  const engine = st.map((s) => num(s.engine_ms));
+  const agreed = st.length > 1 && st.every((s) => s.tokens === head.tokens && s.stopped === head.stopped && s.tokens_sha256 === head.tokens_sha256);
+  return {
+    prompt: num(r.prompt_tokens), tokens, total, first, setup: num(r.setup_ms), engine,
+    tps: tokens > 1 && decodeMs > 0 ? (tokens - 1) / (decodeMs / 1000) : null,
+    network: Math.max(0, num(r.ms) - engine.reduce((a, b) => a + b, 0)),
+    drafted: num(head.drafted), accepted: num(head.accepted), agreed, finish: r.finish || '', at: r.at,
+  };
+}
+
+// ---- the live view ----
+function setLive(ok, text) {
+  $('#liveDot').className = 'dot ' + (ok ? 'on' : 'off');
+  $('#liveText').textContent = text;
+}
+async function fetchState() {
+  if (PREVIEW) return previewState();
+  const r = await api('/ui/v1/state');
+  if (r.status === 401 || r.status === 403) throw new Error('key');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+async function poll() {
+  if (document.hidden) return;  // (no work at all for a tab in the background)
+  let st;
+  try {
+    st = await fetchState();
+  } catch (e) {
+    const locked = e.message === 'key';
+    setLive(false, locked ? 'locked' : 'offline');
+    const n = $('#clusterNotice');
+    n.textContent = locked
+      ? 'This page needs the address the daemon printed at start (UI_READY: http://…/#k=…). Open that link.'
+      : 'Cannot reach the coordinator. Check that its daemon is still running.';
+    n.hidden = false;
+    return;
+  }
+  S.state = st;
+  setLive(true, PREVIEW ? 'preview' : 'live');
+  render();
+}
+
+function family(state) {
+  for (const n of state.nodes || []) {
+    const b = n.resources && n.resources.sample.capabilities.backends[0];
+    if (b && b.architectures && b.architectures[0]) return b.architectures[0];
+  }
+  return '';
+}
+function render() {
+  const st = S.state, route = st.route;
+  $('#clusterNotice').hidden = true;
+  const fam = family(st);
+  $('#model').textContent = route ? (fam ? fam + ' · ' : '') + 'model ' + short(route.model) : 'no pipeline route';
+  renderCluster(st);
+  renderRequests(st);
+  renderChatState(st);
+}
+
+function nodeById(st, id) { return (st.nodes || []).find((n) => n.node === id); }
+function poolsOf(n) {
+  const pools = (n && n.resources && n.resources.sample.capabilities.memory_pools) || [];
+  return pools.slice().sort((a, b) => (a.kind === 'device' ? 0 : 1) - (b.kind === 'device' ? 0 : 1));
+}
+function linkBetween(st, a, b) {
+  for (const [from, to] of [[a, b], [b, a]]) {
+    const n = nodeById(st, from);
+    const l = n && n.resources && n.resources.sample.links.find((x) => x.peer === to);
+    if (l) return l;
+  }
+  return null;
+}
+function host(n) {
+  const e = n && n.resources && n.resources.sample.capabilities.control_endpoint;
+  const m = e && e.match(/^tls:\/\/(.+):\d+$/);
+  return m ? m[1].replace(/^\[|\]$/g, '') : '';
+}
+function card(st, n, stage, index) {
+  const res = n && n.resources;
+  const c = el('div', 'node' + (res ? '' : ' stale'));
+  const h = el('div', 'nhead');
+  h.append(el('span', 'dot ' + (n && n.status === 'online' ? 'on' : 'off')), el('b', 'mono', node8(stage ? stage.node : n.node)));
+  if (stage) h.append(el('span', 'tag', 'stage ' + index));
+  c.append(h);
+  const cap = res && res.sample.capabilities;
+  c.append(el('div', 'line', [host(n), n ? n.status : 'not enrolled', cap ? cap.state : 'no fresh sample'].filter(Boolean).join(' · ')));
+  if (stage) {
+    const owns = [stage.embedding && 'embedding', stage.head && 'head'].filter(Boolean).join(' + ');
+    c.append(el('div', 'line text', 'layers ' + stage.layer_start + '–' + stage.layer_end + (owns ? ' · ' + owns : '')));
+  }
+  for (const p of poolsOf(n)) {
+    const total = num(p.total_bytes), free = num(p.available_bytes), reserved = num(p.reserved_bytes);
+    const used = Math.max(0, total - free);
+    const pool = el('div', 'pool');
+    const label = el('div', 'plabel');
+    const name = p.kind === 'device' ? p.pool_id : p.kind === 'unified' ? 'unified memory' : 'host memory';
+    const gib = (n) => (n / 2 ** 30).toFixed(1);
+    label.append(el('span', null, name), el('span', null, gib(used) + ' / ' + gib(total) + ' GiB used' + (reserved ? ' · ' + gib(reserved) + ' reserved' : '')));
+    const meter = el('div', 'meter');
+    meter.setAttribute('role', 'img');
+    meter.setAttribute('aria-label', name + ': ' + bytes(used) + ' used, ' + bytes(reserved) + ' reserved, of ' + bytes(total));
+    const u = el('i', 'used'), r = el('i', 'res');
+    u.style.width = (total ? 100 * used / total : 0).toFixed(1) + '%';
+    r.style.width = (total ? 100 * Math.min(reserved, free) / total : 0).toFixed(1) + '%';
+    meter.append(u, r); pool.append(label, meter); c.append(pool);
+  }
+  const tail = [];
+  if (stage) tail.push('plan ' + bytes(stage.resident_bytes) + ' resident');
+  if (cap && cap.backends[0]) tail.push(cap.backends[0].device_id + ' · ' + cap.backends[0].max_sessions + ' session' + (cap.backends[0].max_sessions > 1 ? 's' : ''));
+  if (res) tail.push('sample ' + ago(res.age_ms));
+  if (tail.length) c.append(el('div', 'line', tail.join(' · ')));
+  return c;
+}
+function renderCluster(st) {
+  const route = st.route, nodes = st.nodes || [];
+  const workers = nodes.filter((n) => n.role === 'worker');
+  const online = workers.filter((n) => n.status === 'online');
+  const facts = $('#facts'); facts.textContent = '';
+  const fact = (k, v) => { const s = el('span', null, k + ' '); s.append(el('b', null, v)); facts.append(s); };
+  fact('cluster', node8(st.cluster));
+  fact('epoch', String(st.epoch == null ? '–' : st.epoch));
+  fact('workers online', online.length + ' of ' + workers.length);
+  if (route) fact('client API', 'http://' + route.listen + '/v1/chat/completions');
+
+  $('#splitBox').hidden = !route;
+  const chain = $('#chain'); chain.textContent = '';
+  if (route) {
+    const layers = $('#layers'); layers.textContent = '';
+    route.stages.forEach((s, i) => {
+      const seg = el('div', 'seg' + (i % 2 ? ' alt' : ''));
+      seg.style.flex = (s.layer_end - s.layer_start) + ' 1 0';
+      seg.title = 'stage ' + i + ': layers ' + s.layer_start + '–' + s.layer_end + ' on ' + s.node;
+      seg.append(el('b', null, s.layer_start + '–' + s.layer_end), el('span', null, node8(s.node)));
+      layers.append(seg);
+    });
+    const emb = route.stages.find((s) => s.embedding), head = route.stages.find((s) => s.head);
+    const ends = $('#ends'); ends.textContent = '';
+    ends.append(el('span', null, 'layer 0 · embedding on ' + (emb ? node8(emb.node) : '–')), el('span', null, 'layer ' + route.layers + ' · head on ' + (head ? node8(head.node) : '–')));
+    const rf = $('#routeFacts'); rf.textContent = '';
+    for (const [k, v] of [['plan', short(route.plan)], ['stages', route.stages.length], ['prefill chunk', route.chunk_tokens], ['drafts', route.draft_tokens || 'off'], ['sessions', route.sessions], ['lease', (route.lifetime_ms / 1000) + ' s'], ['max answer', route.max_output_tokens + ' tokens']]) {
+      const s = el('span', null, k + ' '); s.append(el('b', k === 'plan' ? 'mono' : null, String(v))); rf.append(s);
+    }
+    route.stages.forEach((s, i) => {
+      if (i) {
+        const prev = route.stages[i - 1].node, l = linkBetween(st, prev, s.node);
+        const link = el('div', 'link'), span = el('span');
+        if (l) {
+          span.append(el('b', null, 'RTT ' + ms(l.rtt_us / 1000)), el('br'), rate(l.bytes_per_second), el('br'), ago(l.age_ms));
+          link.title = 'Measured by ' + node8(prev) + ' or ' + node8(s.node);
+        } else {
+          span.append('no link sample');
+          link.title = 'No resource sample measures this link yet';
+          const last = (st.reports || [])[(st.reports || []).length - 1], f = last && figures(last);
+          const steps = last ? num(last.stages[0].prefill_steps) + num(last.stages[0].decode_steps) : 0;
+          if (steps) {
+            span.append(el('br'), ms(f.network / steps) + ' a step');
+            link.title = 'Last request: time outside both engines, per pipeline step (link round trips and overhead)';
+          }
+        }
+        link.append(span); chain.append(link);
+      }
+      chain.append(card(st, nodeById(st, s.node), s, i));
+    });
+  }
+  $('#chainTitle').textContent = route ? 'Stages' : 'Workers';
+  const inRoute = new Set(route ? route.stages.map((s) => s.node) : []);
+  if (!route) for (const n of workers) chain.append(card(st, n, null, 0));
+  const idle = nodes.filter((n) => !inRoute.has(n.node) && (route || n.role !== 'worker'));
+  const list = $('#idle'); list.textContent = '';
+  for (const n of idle) {
+    const li = el('li');
+    // A client runs no daemon, so it is never "online": it is listed without a status.
+    const client = n.role === 'controller';
+    li.append(el('span', 'dot ' + (client ? '' : n.status === 'online' ? 'on' : 'off')), el('span', 'mono', node8(n.node)), el('span', 'muted', client ? 'client' : n.role + ' · ' + n.status));
+    list.append(li);
+  }
+  $('#idleBox').hidden = !idle.length;
+  $('#joinBox').hidden = online.length >= 2;
+  if (online.length < 2) renderJoin(st.join || {});
+}
+function renderJoin(join) {
+  // The second machine joins through `starlings up --machines 2` and `starlings join` (GLY-362).
+  const steps = [
+    ['In the terminal that runs starlings up --machines 2: the join code and the cluster check.', null],
+    ['On the other machine, run this with the same model, paste the join code, and check that its cluster check is the same.', 'starlings join --model MODEL'],
+    ['Back in that terminal, paste its approval code and type the approval check it shows.', null],
+  ];
+  const key = JSON.stringify(steps);
+  if (key === S.join) return;  // (unchanged: keep any selection)
+  S.join = key;
+  const list = $('#join'); list.textContent = '';
+  for (const [text, cmd] of steps) {
+    const li = el('li', null, text);
+    list.append(li);
+    if (!cmd) continue;
+    const row = el('div', 'cmd'), code = el('code', null, cmd), copy = el('button', 'ghost', 'Copy');
+    copy.type = 'button';
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(cmd); copy.textContent = 'Copied'; }
+      catch (e) { getSelection().selectAllChildren(code); copy.textContent = 'Press Ctrl+C'; }
+      setTimeout(() => { copy.textContent = 'Copy'; }, 1600);
+    });
+    row.append(code, copy); li.append(row);
+  }
+}
+
+function renderRequests(st) {
+  const rows = $('#rows'); rows.textContent = '';
+  const reports = (st.reports || []).slice().reverse();
+  $('#noRows').hidden = reports.length > 0;
+  for (const r of reports) {
+    const f = figures(r), tr = el('tr');
+    const cell = (text, cls) => tr.append(el('td', cls, text));
+    cell(eastern(f.at));
+    cell(f.prompt + ' → ' + f.tokens);
+    cell(f.tps == null ? '–' : f.tps.toFixed(1) + ' tok/s');
+    cell(ms(f.first));
+    cell(ms(f.setup));
+    cell(ms(f.total));
+    cell(f.engine.map((e) => ms(e)).join(' + '));
+    cell(ms(f.network));
+    cell(f.drafted ? f.accepted + ' / ' + f.drafted : '–');
+    cell(f.finish);
+    cell(f.agreed ? 'agreed' : 'differ', f.agreed ? 'ok' : 'bad');
+    rows.append(tr);
+  }
+}
+
+// ---- tabs ----
+const TABS = ['cluster', 'chat', 'requests'];
+function show(tab) {
+  if (!TABS.includes(tab)) tab = 'cluster';
+  for (const t of TABS) { $('#' + t).hidden = t !== tab; $('#t-' + t).setAttribute('aria-selected', String(t === tab)); }
+  store.set('starlings.tab', tab);
+  if (tab === 'chat') box.focus();
+}
+for (const t of TABS) $('#t-' + t).addEventListener('click', () => show(t));
+
+// ---- chat: Glyd's chat page, with the pipeline's own account under each answer ----
+function inline(parent, text) {
+  const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parent.append(text.slice(last, m.index));
+    const t = m[0];
+    if (t[0] === '`') parent.append(el('code', null, t.slice(1, -1)));
+    else if (t[0] === '*') {
+      const bold = t.startsWith('**'), e = el(bold ? 'strong' : 'em');
+      inline(e, bold ? t.slice(2, -2) : t.slice(1, -1));
+      parent.append(e);
+    }
+    else {
+      const k = t.indexOf('](');
+      const a = el('a', null, t.slice(1, k));
+      a.href = t.slice(k + 2, -1); a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = a.href;
+      parent.append(a);
+      // Model output names the link; the reader always sees where it really goes.
+      parent.append(el('span', 'note', ' (' + a.hostname + ')'));
+    }
+    last = re.lastIndex;
+  }
+  if (last < text.length) parent.append(text.slice(last));
+}
+function markdown(root, text) {
+  root.textContent = '';
+  const lines = text.split('\n');
+  let i = 0, para = [], list = null;
+  const flush = () => { if (para.length) { const p = el('p'); inline(p, para.join('\n')); root.append(p); para = []; } };
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^```/.test(line)) {
+      flush(); list = null;
+      const code = [];
+      for (i++; i < lines.length && !/^```\s*$/.test(lines[i]); i++) code.push(lines[i]);
+      i++;
+      const pre = el('pre'); pre.append(el('code', null, code.join('\n'))); root.append(pre);
+      continue;
+    }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { flush(); list = null; const e = el('h' + (h[1].length + 1)); inline(e, h[2]); root.append(e); i++; continue; }
+    const li = line.match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);
+    if (li) {
+      flush();
+      const ordered = /\d/.test(li[1]);
+      if (!list || list.ordered !== ordered) { list = { ordered, el: el(ordered ? 'ol' : 'ul') }; root.append(list.el); }
+      const item = el('li'); inline(item, li[2]); list.el.append(item); i++;
+      continue;
+    }
+    if (!line.trim()) { flush(); list = null; i++; continue; }
+    list = null; para.push(line); i++;
+  }
+  flush();
+}
+// <think>...</think> at the start of an answer, shown apart. A template that opens the thinking
+// in the prompt (Qwen3.5) sends only its close: what came before it was the reasoning.
+function Think() { this.mode = 'start'; this.buf = ''; this.lead = false; this.closed = false; }
+Think.prototype.feed = function (text, final) {
+  this.buf += text;
+  const out = [];
+  for (;;) {
+    if (this.mode === 'start') {
+      const s = this.buf.replace(/^\s+/, '');
+      if (s.startsWith('<think>')) { this.buf = s.slice(7).replace(/^\n+/, ''); this.mode = 'inside'; continue; }
+      if (!final && '<think>'.startsWith(s)) break;
+      this.mode = 'done';
+    } else if (this.mode === 'inside') {
+      const i = this.buf.indexOf('</think>');
+      if (i >= 0) {
+        if (i) out.push(['reasoning', this.buf.slice(0, i)]);
+        this.buf = this.buf.slice(i + 8); this.mode = 'done'; this.lead = true; this.closed = true;
+        continue;
+      }
+      let hold = 0;
+      if (!final) for (let k = 7; k > 0; k--) if (this.buf.endsWith('</think>'.slice(0, k))) { hold = k; break; }
+      if (this.buf.length > hold) out.push(['reasoning', this.buf.slice(0, this.buf.length - hold)]);
+      this.buf = this.buf.slice(this.buf.length - hold);
+      break;
+    } else {
+      if (this.lead) { this.buf = this.buf.replace(/^\n+/, ''); this.lead = !this.buf; }
+      if (!this.closed) {
+        const i = this.buf.indexOf('</think>');
+        if (i >= 0) {
+          out.push(['rethink', this.buf.slice(0, i)]);
+          this.buf = this.buf.slice(i + 8); this.closed = true; this.lead = true;
+          continue;
+        }
+        let hold = 0;
+        if (!final) for (let k = 7; k > 0; k--) if (this.buf.endsWith('</think>'.slice(0, k))) { hold = k; break; }
+        if (this.buf.length > hold) out.push(['content', this.buf.slice(0, this.buf.length - hold)]);
+        this.buf = this.buf.slice(this.buf.length - hold);
+        break;
+      }
+      if (this.buf) { out.push(['content', this.buf]); this.buf = ''; }
+      break;
+    }
+  }
+  return out;
+};
+
+function scrollDown(force) {
+  if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 90) log.scrollTop = log.scrollHeight;
+}
+function say(text) { $('#status').textContent = text; }
+function notice(text) { $('#noticeText').textContent = text; $('#notice').hidden = false; }
+function hideNotice() { $('#notice').hidden = true; }
+function setBusy(b) {
+  S.busy = b;
+  $('#send').hidden = b; $('#stop').hidden = !b;
+  log.setAttribute('aria-busy', b ? 'true' : 'false');
+}
+function newChat() {
+  if (S.abort) S.abort.abort();
+  S.messages = [];
+  msgs.textContent = '';
+  msgs.append(EMPTY);
+  hideNotice();
+  box.focus();
+}
+function addUser(text) {
+  EMPTY.remove();
+  const m = el('div', 'msg user'); m.append(el('div', 'bubble', text)); msgs.append(m); scrollDown(true);
+  return m;
+}
+function addBot() {
+  const m = el('div', 'msg bot');
+  const details = el('details', 'think'); details.hidden = true;
+  const summary = el('summary', null, 'Thinking…'); const body = el('div', 'body');
+  details.append(summary, body);
+  const answer = el('div', 'answer');
+  m.append(details, answer); msgs.append(m);
+  return { details, summary, body, answer, root: m };
+}
+// The muted line under an answer: where its time went, and that both stages agreed.
+function statsLine(r) {
+  const f = figures(r), line = el('div', 'stats');
+  const part = (text, title, cls) => { const s = el('span', cls, text); if (title) s.title = title; line.append(s); };
+  part(f.tokens + ' tokens', f.prompt + ' prompt tokens');
+  if (f.tps != null) part(f.tps.toFixed(1) + ' tok/s', 'Answer tokens after the first, per second');
+  part('first text ' + ms(f.first), 'From the request\'s start to its first text');
+  part('setup ' + ms(f.setup), 'Count, plan, leases and grants');
+  part('engine ' + f.engine.map((e) => ms(e)).join(' + '), 'Engine time on each stage');
+  part('network ' + ms(f.network), 'Pipeline time minus the stages\' engine time');
+  if (f.drafted) part('drafts ' + f.accepted + ' of ' + f.drafted + ' held', 'Tokens guessed ahead that the model confirmed');
+  part(f.agreed ? 'stages agreed' : 'stages differ', 'Both stages reported the same token count, digest and stop', f.agreed ? 'ok' : 'bad');
+  return line;
+}
+function settings() {
+  const v = (id, lo, hi, d) => { const x = Number($(id).value); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d; };
+  const cap = (S.state && S.state.route && S.state.route.max_output_tokens) || 256;
+  return { temperature: v('#temp', 0, 2, 0), seed: Math.round(v('#seed', 0, 2147483647, 1)), max_tokens: Math.round(v('#max', 1, cap, cap)), system: $('#system').value };
+}
+function samplingText() {
+  const s = settings();
+  $('#sampling').textContent = (s.temperature === 0 ? 'greedy' : 'temperature ' + s.temperature) + ' · seed ' + s.seed + ' · up to ' + s.max_tokens + ' tokens' + (s.system.trim() ? ' · system prompt' : '');
+}
+function renderChatState(st) {
+  const off = !st.chat || !st.route;
+  $('#send').disabled = off; box.disabled = off;
+  EMPTY_TEXT.textContent = off
+    ? (st.route ? 'Chat is off. Start the coordinator with --ui-client NODE: an enrolled client with infer permission for this model.' : 'Chat needs a pipeline: start the coordinator with daemon --pipeline.')
+    : 'The model is split across ' + st.route.stages.length + ' machines. Each answer shows where its time went.';
+  const max = $('#max');
+  max.max = String(st.route ? st.route.max_output_tokens : 1);
+  if (!max.dataset.set && st.route) { max.value = String(st.route.max_output_tokens); max.dataset.set = '1'; samplingText(); }
+}
+
+async function send(text) {
+  if (S.busy || !text.trim()) return;
+  hideNotice();
+  const opts = settings();
+  S.messages.push({ role: 'user', content: text });
+  const userEl = addUser(text);
+  const bot = addBot();
+  const ctl = new AbortController(); S.abort = ctl; setBusy(true); say('The model is answering');
+  let reasoning = '', content = '', finish = '', report = null, t0 = Date.now(), frame = 0;
+  const split = new Think();
+  const waiting = el('span', 'note', '…'); bot.answer.append(waiting);
+  const draw = () => {
+    frame = 0;
+    if (reasoning || content) waiting.remove();
+    const near = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
+    if (reasoning) { bot.details.hidden = false; bot.body.textContent = reasoning; if (!content) bot.body.scrollTop = bot.body.scrollHeight; }
+    if (content) markdown(bot.answer, content);
+    if (near) log.scrollTop = log.scrollHeight;
+  };
+  const feed = (kind, piece) => {
+    if (kind === 'rethink') {
+      // The answer so far was the reasoning.
+      reasoning = (content + piece).replace(/\s+$/, ''); content = ''; bot.answer.textContent = '';
+      bot.summary.textContent = 'Thought for ' + Math.round((Date.now() - t0) / 1000) + ' s'; bot.details.open = false;
+      if (!frame) frame = setTimeout(draw, 40);
+      return;
+    }
+    if (!(kind === 'reasoning' ? reasoning : content)) piece = piece.replace(/^\n+/, '');
+    if (!piece) return;
+    if (kind === 'reasoning') { if (!reasoning) bot.details.open = true; reasoning += piece; }
+    else {
+      if (!content && reasoning) { bot.summary.textContent = 'Thought for ' + Math.round((Date.now() - t0) / 1000) + ' s'; bot.details.open = false; }
+      content += piece;
+    }
+    if (!frame) frame = setTimeout(draw, 40);  // (not requestAnimationFrame: a tab in the background would hold the answer back)
+  };
+  const turns = (opts.system.trim() ? [{ role: 'system', content: opts.system }] : []).concat(S.messages);
+  let failure = null;
+  try {
+    if (PREVIEW) {
+      for (const w of PREVIEW.answer.split(/(?<= )/)) {
+        if (ctl.signal.aborted) break;
+        await new Promise((r) => setTimeout(r, 28));
+        for (const [k, p] of split.feed(w, false)) feed(k, p);
+      }
+      finish = 'stop'; report = Object.assign({}, PREVIEW.report, { at: Date.now() });
+    } else {
+      const r = await api('/ui/v1/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctl.signal,
+        body: JSON.stringify({ messages: turns, max_tokens: opts.max_tokens, temperature: opts.temperature, seed: opts.seed }),
+      });
+      if (!r.ok) {
+        let msg = 'HTTP ' + r.status, code = '';
+        try { const j = await r.json(); msg = (j.error && j.error.message) || msg; code = (j.error && j.error.code) || ''; } catch (e) { /* not JSON */ }
+        failure = { status: r.status, code, message: msg };
+      } else {
+        const reader = r.body.getReader(), dec = new TextDecoder();
+        let buf = '', ended = false;
+        const handle = (line) => {
+          line = line.trim();
+          if (!line.startsWith('data:')) return;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') { ended = true; return; }
+          let j;
+          try { j = JSON.parse(data); } catch (e) { failure = { status: 0, cut: true, message: 'a message arrived cut in two' }; return; }
+          if (j.error) { failure = { status: 0, cut: true, code: j.error.code || '', message: j.error.message || String(j.error) }; return; }
+          if (j.starlings) report = j.starlings;
+          for (const ch of j.choices || []) {
+            const d = ch.delta || {};
+            if (d.content) for (const [k, p] of split.feed(d.content, false)) feed(k, p);
+            if (ch.finish_reason) finish = ch.finish_reason;
+          }
+        };
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf('\n')) >= 0) { handle(buf.slice(0, i)); buf = buf.slice(i + 1); }
+        }
+        if (buf.trim()) handle(buf);
+        if (!ended && !failure) failure = { status: 0, cut: true, message: 'the connection closed before the answer was finished' };
+      }
+    }
+    for (const [k, p] of split.feed('', true)) feed(k, p);
+  } catch (e) {
+    if (e.name !== 'AbortError') failure = { status: 0, message: String(e && e.message || e) };
+  }
+  if (frame) clearTimeout(frame);
+  draw(); waiting.remove();
+  const stopped = ctl.signal.aborted;
+  if (!failure && !stopped && !content && !reasoning) failure = { status: 0, empty: true, message: 'no answer' };
+  S.abort = null; setBusy(false);
+  if (failure || (stopped && !content)) {  // (the question is taken back and put back in the box)
+    bot.root.remove(); userEl.remove(); S.messages.pop();
+    if (!S.messages.length) msgs.append(EMPTY);
+    box.value = text; grow();
+    if (!failure) { say('Stopped'); return; }
+    if (failure.status === 401) notice('This page needs the address the daemon printed at start. Open that link again.');
+    else if (failure.code === 'CAPACITY_UNAVAILABLE' || failure.status === 503) notice('The pipeline is busy or the conversation is too long for it (' + failure.message + '). Your question is back in the box.');
+    else if (failure.empty) notice('The model sent no answer. Your question is back in the box: ask again.');
+    else if (failure.cut) notice('The pipeline stopped in the middle of the answer (' + failure.message + '). Your question is back in the box: ask again.');
+    else if (failure.status === 0) notice('Cannot reach the coordinator. Check that its daemon is still running.');
+    else notice('The coordinator refused the request: ' + failure.message);
+    say('The request failed');
+    return;
+  }
+  if (stopped) bot.answer.append(el('div', 'note', '(Stopped.)'));
+  if (content) S.messages.push({ role: 'assistant', content });
+  else S.messages.pop();
+  if (finish === 'length') bot.answer.append(el('div', 'note', '(Cut off at the answer limit.)'));
+  if (report) bot.root.append(statsLine(report));
+  say('Answer ready');
+  scrollDown(false);
+  if (!PREVIEW) poll();
+}
+
+function grow() { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, window.innerHeight * 0.4) + 'px'; }
+$('#form').addEventListener('submit', (e) => { e.preventDefault(); const t = box.value; if (!t.trim() || S.busy || $('#send').disabled) return; box.value = ''; grow(); send(t); });
+box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#form').requestSubmit(); } });
+box.addEventListener('input', grow);
+$('#stop').addEventListener('click', () => { if (S.abort) S.abort.abort(); });
+$('#new').addEventListener('click', newChat);
+$('#noticeNew').addEventListener('click', newChat);
+$('#settingsToggle').addEventListener('click', () => {
+  const p = $('#settings'); p.hidden = !p.hidden;
+  $('#settingsToggle').setAttribute('aria-expanded', String(!p.hidden));
+});
+for (const c of document.querySelectorAll('.chip')) c.addEventListener('click', () => { if ($('#send').disabled) return; box.value = c.textContent; grow(); $('#form').requestSubmit(); });
+for (const id of ['#system', '#temp', '#seed', '#max']) {
+  const v = store.get('starlings.' + id.slice(1));
+  if (v != null && id !== '#max') $(id).value = v;
+  $(id).addEventListener('input', () => { store.set('starlings.' + id.slice(1), $(id).value); if (id === '#max') $(id).dataset.set = '1'; samplingText(); });
+}
+samplingText();
+
+// ---- preview.html: the same page over sample state ----
+function previewState() {
+  const st = JSON.parse(JSON.stringify(PREVIEW.state)), now = Date.now();
+  st.now = now;
+  st.reports.forEach((r, i) => { r.at = now - (st.reports.length - i) * 47000; });
+  return st;
+}
+
+show((location.hash.match(/^#(cluster|chat|requests)$/) || [])[1] || store.get('starlings.tab') || 'cluster');
+setInterval(poll, 2000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+poll();
+if (PREVIEW && PREVIEW.ask) send(PREVIEW.ask);
+</script>
+</body>
+</html>

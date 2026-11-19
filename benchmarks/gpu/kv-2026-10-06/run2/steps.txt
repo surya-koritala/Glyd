@@ -1,0 +1,23 @@
+05:08:29 (+35 s) environment
+05:10:23 (+149 s) libraries: branch exit 0, main exit 0
+05:10:23 (+149 s) kernels-main-1 (at most 600 s)
+05:10:34 (+160 s) kernels-main-1: exit 1 after 10 s
+05:10:34 (+160 s) main's library, run 1: 79 pass; FAIL raw pages: 120 pages of ~650 exceptions for 64 chunks: the escape pool ran dry (65,184 entries found no place, 65 chunks taken at most), 120 pages were mad|
+05:10:34 (+160 s) kernels-branch-1 (at most 600 s)
+05:10:44 (+170 s) kernels-branch-1: exit 0 after 10 s
+05:10:44 (+170 s) the branch's library, run 1: 96 pass; 
+05:10:44 (+170 s) kernels-main-2 (at most 600 s)
+05:10:54 (+180 s) kernels-main-2: exit 1 after 10 s
+05:10:54 (+180 s) main's library, run 2: 79 pass; FAIL the escape pool: 64 chunks for 120 pages that need ten each run out: 65,173 entries found no place, 120 pages void and named in the ring, 65 chunks taken a|
+05:10:54 (+180 s) kernels-branch-2 (at most 600 s)
+05:11:05 (+191 s) kernels-branch-2: exit 0 after 11 s
+05:11:05 (+191 s) the branch's library, run 2: 96 pass; 
+05:11:05 (+191 s) hybrid-stock704 (at most 1200 s)
+05:14:54 (+420 s) hybrid-stock704: exit 0 after 229 s
+05:14:54 (+420 s) hybrid-kv (at most 1500 s)
+05:17:16 (+562 s) hybrid-kv: exit 0 after 142 s
+05:17:16 (+562 s) hybrid-stock704b (at most 1200 s)
+05:18:15 (+621 s) hybrid-stock704b: exit 0 after 59 s
+05:18:15 (+621 s) compare stock704 kv: exit 0
+05:18:16 (+622 s) compare stock704 stock704b: exit 0
+05:18:16 (+622 s) end

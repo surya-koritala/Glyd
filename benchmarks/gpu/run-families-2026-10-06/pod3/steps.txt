@@ -1,0 +1,5 @@
+install 0 61
+doctor 0 0
+run_gemma4_12b 0 445
+api_gemma4_12b 0 79
+run_nemotron3_4b 0 221

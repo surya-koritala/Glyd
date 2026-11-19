@@ -1,0 +1,14 @@
+Hint: The `hf-cli` skill is not installed. Run `hf skills add -g` to teach your AI agents how to use the `hf` CLI.
+
+Fetching 15 files:   0%|          | 0/15 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+
+Fetching 15 files:  13%|█▎        | 2/15 [00:00<00:00, 19.70it/s]
+Fetching 15 files:  40%|████      | 6/15 [00:00<00:00, 30.95it/s]
+Fetching 15 files:  67%|██████▋   | 10/15 [00:01<00:00,  8.42it/s]
+Fetching 15 files:  80%|████████  | 12/15 [00:13<00:05,  1.81s/it]
+Fetching 15 files:  87%|████████▋ | 13/15 [00:16<00:03,  2.00s/it]
+Fetching 15 files: 100%|██████████| 15/15 [00:17<00:00,  1.55s/it]
+Fetching 15 files: 100%|██████████| 15/15 [00:17<00:00,  1.20s/it]
+✓ Downloaded
+  path: /home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218
+download exit 0

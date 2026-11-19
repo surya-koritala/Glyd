@@ -1,0 +1,7 @@
+== 2026-10-06T15:56:36Z: glyd flow, glyd[vllm] as install.sh pins it, from PyPI, the host, GPU NVIDIA GeForce RTX 4090, 24564 MiB, budget all MiB free, card as is MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+-- install.sh: https://raw.githubusercontent.com/surya-koritala/Glyd/v0.29.1/scripts/install.sh, sha256 79ea9e3dbd25a71aee4dda61e265b9d63dc5c628e88ce0f3909f2fc06c96a152
+ok   a glyd of the user's own in ~/.local/bin: install.sh stopped before it installed Glyd and left that program as it was (glyd install: /home/acc/w-24gb/home-foreign/.local/bin/glyd is not Glyd's Python tool (it is the compression p...)
+-- install: curl -LsSf https://getglyd.com/install.sh | sh   (https://raw.githubusercontent.com/surya-koritala/Glyd/v0.29.1/scripts/install.sh instead of getglyd.com's)
+FAIL install.sh exited 1 (logs/install.log)
+FAILED (1): install.sh exited 1 (logs/install.log); 

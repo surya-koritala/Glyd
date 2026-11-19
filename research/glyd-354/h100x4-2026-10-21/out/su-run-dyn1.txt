@@ -1,0 +1,3 @@
+NVIDIA-Nemotron-3-Super-120B-A12B-BF16: about 45.3 GiB on the GPU at the hummingbird level (about 3.2 bits per weight, not lossless), in place of 224.8 GiB of bf16.
+Ready in 43s: NVIDIA-Nemotron-3-Super-120B-A12B-BF16 on the NVIDIA H100 80GB HBM3, 45.3 GiB of weights, 32768 tokens of context, one user at a time.
+The user asks: "What is the capital of France? Answer in one sentence." So answer: "The capital of France is Paris." One sentence. Provide that.The capital of France is Paris.

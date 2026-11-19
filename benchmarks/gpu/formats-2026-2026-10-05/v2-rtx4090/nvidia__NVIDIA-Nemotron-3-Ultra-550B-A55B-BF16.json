@@ -1,0 +1,1379 @@
+{
+ "repo": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+ "tensors": 51023,
+ "kinds": [
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.experts.N.down_proj.weight",
+   "bytes": 515396075520,
+   "tensors": 24576,
+   "samples": [
+    {
+     "name": "backbone.layers.94.mixer.experts.159.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.543036043919798,
+     "floor_bits": 10.543036043919798,
+     "mma": 0.6697048664093017,
+     "mma12": 0.7521989822387696,
+     "zstd_bytes": 2097152,
+     "zstd19": 1630485,
+     "glyd_max": 6515896
+    },
+    {
+     "name": "backbone.layers.8.mixer.experts.339.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 11.7540577463121,
+     "floor_bits": 11.7540577463121,
+     "mma": 0.9033678531646728,
+     "mma12": 0.970622444152832,
+     "zstd_bytes": 2097152,
+     "zstd19": 1767007,
+     "glyd_max": 7048163
+    },
+    {
+     "name": "backbone.layers.19.mixer.experts.285.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.663005894483963,
+     "floor_bits": 10.663005894483963,
+     "mma": 0.6853724479675293,
+     "mma12": 0.7548036575317383,
+     "zstd_bytes": 2097152,
+     "zstd19": 1647683,
+     "glyd_max": 6584238
+    },
+    {
+     "name": "backbone.layers.40.mixer.experts.49.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.56034749637762,
+     "floor_bits": 10.56034749637762,
+     "mma": 0.6725818157196045,
+     "mma12": 0.7522638320922852,
+     "zstd_bytes": 2097152,
+     "zstd19": 1637886,
+     "glyd_max": 6545897
+    },
+    {
+     "name": "backbone.layers.12.mixer.experts.246.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.640293984732615,
+     "floor_bits": 10.640293984732615,
+     "mma": 0.6804899215698242,
+     "mma12": 0.7531381607055664,
+     "zstd_bytes": 2097152,
+     "zstd19": 1646233,
+     "glyd_max": 6574676
+    },
+    {
+     "name": "backbone.layers.96.mixer.experts.425.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.544993369394469,
+     "floor_bits": 10.544993369394469,
+     "mma": 0.6711699008941651,
+     "mma12": 0.7522195816040039,
+     "zstd_bytes": 2097152,
+     "zstd19": 1626627,
+     "glyd_max": 6520211
+    },
+    {
+     "name": "backbone.layers.105.mixer.experts.43.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 12.688930377812099,
+     "floor_bits": 12.688930377812099,
+     "mma": 1.2331213474273681,
+     "mma12": 1.5235513687133788,
+     "zstd_bytes": 2097152,
+     "zstd19": 1835114,
+     "glyd_max": 7445697
+    },
+    {
+     "name": "backbone.layers.90.mixer.experts.455.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.543974559975737,
+     "floor_bits": 10.543974559975737,
+     "mma": 0.6695430278778076,
+     "mma12": 0.7521890640258789,
+     "zstd_bytes": 2097152,
+     "zstd19": 1631154,
+     "glyd_max": 6515368
+    },
+    {
+     "name": "backbone.layers.44.mixer.experts.159.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.551424017995448,
+     "floor_bits": 10.551424017995448,
+     "mma": 0.6716330528259278,
+     "mma12": 0.7522150039672851,
+     "zstd_bytes": 2097152,
+     "zstd19": 1615872,
+     "glyd_max": 6524647
+    },
+    {
+     "name": "backbone.layers.62.mixer.experts.199.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.544305994689935,
+     "floor_bits": 10.544305994689935,
+     "mma": 0.6706284999847412,
+     "mma12": 0.7522066116333008,
+     "zstd_bytes": 2097152,
+     "zstd19": 1613759,
+     "glyd_max": 6518356
+    },
+    {
+     "name": "backbone.layers.74.mixer.experts.48.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.542810499083151,
+     "floor_bits": 10.542810499083151,
+     "mma": 0.6698305606842041,
+     "mma12": 0.7522012710571289,
+     "zstd_bytes": 2097152,
+     "zstd19": 1627321,
+     "glyd_max": 6516790
+    },
+    {
+     "name": "backbone.layers.12.mixer.experts.302.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.604998927950076,
+     "floor_bits": 10.604998927950076,
+     "mma": 0.6775675296783448,
+     "mma12": 0.7529878616333008,
+     "zstd_bytes": 2097152,
+     "zstd19": 1613032,
+     "glyd_max": 6559693
+    },
+    {
+     "name": "backbone.layers.46.mixer.experts.395.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.554404344252266,
+     "floor_bits": 10.554404344252266,
+     "mma": 0.6738794803619385,
+     "mma12": 0.7522272109985352,
+     "zstd_bytes": 2097152,
+     "zstd19": 1608999,
+     "glyd_max": 6533287
+    },
+    {
+     "name": "backbone.layers.55.mixer.experts.460.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.546892670399147,
+     "floor_bits": 10.546892670399147,
+     "mma": 0.6716244220733643,
+     "mma12": 0.7522172927856445,
+     "zstd_bytes": 2097152,
+     "zstd19": 1632529,
+     "glyd_max": 6522227
+    },
+    {
+     "name": "backbone.layers.42.mixer.experts.207.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.557203599318685,
+     "floor_bits": 10.557203599318685,
+     "mma": 0.6734175205230712,
+     "mma12": 0.7522493362426758,
+     "zstd_bytes": 2097152,
+     "zstd19": 1626508,
+     "glyd_max": 6539682
+    },
+    {
+     "name": "backbone.layers.80.mixer.experts.142.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.543777071654944,
+     "floor_bits": 10.543777071654944,
+     "mma": 0.6695044994354248,
+     "mma12": 0.7521814346313477,
+     "zstd_bytes": 2097152,
+     "zstd19": 1629476,
+     "glyd_max": 6514269
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.experts.N.up_proj.weight",
+   "bytes": 515396075520,
+   "tensors": 24576,
+   "samples": [
+    {
+     "name": "backbone.layers.83.mixer.experts.93.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.547966307436724,
+     "floor_bits": 10.547966307436724,
+     "mma": 0.6693845748901367,
+     "mma12": 0.7521844863891601,
+     "zstd_bytes": 2097152,
+     "zstd19": 1630230,
+     "glyd_max": 6513200
+    },
+    {
+     "name": "backbone.layers.28.mixer.experts.138.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.571566054647786,
+     "floor_bits": 10.571566054647786,
+     "mma": 0.6751974105834961,
+     "mma12": 0.7522455215454101,
+     "zstd_bytes": 2097152,
+     "zstd19": 1637163,
+     "glyd_max": 6541265
+    },
+    {
+     "name": "backbone.layers.74.mixer.experts.265.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.546964387956306,
+     "floor_bits": 10.546964387956306,
+     "mma": 0.669359827041626,
+     "mma12": 0.7521783828735351,
+     "zstd_bytes": 2097152,
+     "zstd19": 1609003,
+     "glyd_max": 6513317
+    },
+    {
+     "name": "backbone.layers.62.mixer.experts.341.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.54658133057974,
+     "floor_bits": 10.54658133057974,
+     "mma": 0.6692846775054931,
+     "mma12": 0.7521745681762695,
+     "zstd_bytes": 2097152,
+     "zstd19": 1611104,
+     "glyd_max": 6512509
+    },
+    {
+     "name": "backbone.layers.58.mixer.experts.251.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.548415518531483,
+     "floor_bits": 10.548415518531483,
+     "mma": 0.670977783203125,
+     "mma12": 0.752220344543457,
+     "zstd_bytes": 2097152,
+     "zstd19": 1631185,
+     "glyd_max": 6520402
+    },
+    {
+     "name": "backbone.layers.69.mixer.experts.267.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.547655345128328,
+     "floor_bits": 10.547655345128328,
+     "mma": 0.6694005966186524,
+     "mma12": 0.7521707534790039,
+     "zstd_bytes": 2097152,
+     "zstd19": 1630113,
+     "glyd_max": 6513225
+    },
+    {
+     "name": "backbone.layers.33.mixer.experts.407.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.563575102962114,
+     "floor_bits": 10.563575102962114,
+     "mma": 0.6736289978027343,
+     "mma12": 0.7522668838500977,
+     "zstd_bytes": 2097152,
+     "zstd19": 1634617,
+     "glyd_max": 6533198
+    },
+    {
+     "name": "backbone.layers.103.mixer.experts.92.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.547685119611618,
+     "floor_bits": 10.547685119611618,
+     "mma": 0.6701099872589111,
+     "mma12": 0.7525949478149414,
+     "zstd_bytes": 2097152,
+     "zstd19": 1630971,
+     "glyd_max": 6519811
+    },
+    {
+     "name": "backbone.layers.74.mixer.experts.151.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.547882173633539,
+     "floor_bits": 10.547882173633539,
+     "mma": 0.6694178581237793,
+     "mma12": 0.7521722793579102,
+     "zstd_bytes": 2097152,
+     "zstd19": 1607798,
+     "glyd_max": 6513571
+    },
+    {
+     "name": "backbone.layers.1.mixer.experts.52.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.651052653904598,
+     "floor_bits": 10.651052653904598,
+     "mma": 0.6791345119476319,
+     "mma12": 0.7560632705688477,
+     "zstd_bytes": 2097152,
+     "zstd19": 1628695,
+     "glyd_max": 6538270
+    },
+    {
+     "name": "backbone.layers.107.mixer.experts.85.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 11.373451095683262,
+     "floor_bits": 11.373451095683262,
+     "mma": 0.7935953617095948,
+     "mma12": 0.831688117980957,
+     "zstd_bytes": 2097152,
+     "zstd19": 1675427,
+     "glyd_max": 6844849
+    },
+    {
+     "name": "backbone.layers.96.mixer.experts.126.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.54765837700456,
+     "floor_bits": 10.54765837700456,
+     "mma": 0.6697389602661132,
+     "mma12": 0.7521883010864258,
+     "zstd_bytes": 2097152,
+     "zstd19": 1627681,
+     "glyd_max": 6516381
+    },
+    {
+     "name": "backbone.layers.51.mixer.experts.34.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.549507418531155,
+     "floor_bits": 10.549507418531155,
+     "mma": 0.670169734954834,
+     "mma12": 0.752189826965332,
+     "zstd_bytes": 2097152,
+     "zstd19": 1631451,
+     "glyd_max": 6520425
+    },
+    {
+     "name": "backbone.layers.94.mixer.experts.308.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.546051677430022,
+     "floor_bits": 10.546051677430022,
+     "mma": 0.6695877075195312,
+     "mma12": 0.7521852493286133,
+     "zstd_bytes": 2097152,
+     "zstd19": 1615856,
+     "glyd_max": 6515224
+    },
+    {
+     "name": "backbone.layers.87.mixer.experts.45.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.547652846034755,
+     "floor_bits": 10.547652846034755,
+     "mma": 0.6694022178649902,
+     "mma12": 0.7521684646606446,
+     "zstd_bytes": 2097152,
+     "zstd19": 1609107,
+     "glyd_max": 6512961
+    },
+    {
+     "name": "backbone.layers.83.mixer.experts.105.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.548974661029648,
+     "floor_bits": 10.548974661029648,
+     "mma": 0.6692458152770996,
+     "mma12": 0.7521638870239258,
+     "zstd_bytes": 2097152,
+     "zstd19": 1611819,
+     "glyd_max": 6514675
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.in_proj.weight",
+   "bytes": 27581743104,
+   "tensors": 48,
+   "samples": [
+    {
+     "name": "backbone.layers.54.mixer.in_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.577261372624779,
+     "floor_bits": 10.577261372624779,
+     "mma": 0.6736682653427124,
+     "mma12": 0.7523409128189087,
+     "zstd_bytes": 2097152,
+     "zstd19": 1624707,
+     "glyd_max": 6548906
+    },
+    {
+     "name": "backbone.layers.102.mixer.in_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.577836312847753,
+     "floor_bits": 10.577836312847753,
+     "mma": 0.6702264249324799,
+     "mma12": 0.7521582841873169,
+     "zstd_bytes": 2097152,
+     "zstd19": 1634960,
+     "glyd_max": 6539784
+    },
+    {
+     "name": "backbone.layers.34.mixer.in_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.567882817546765,
+     "floor_bits": 10.567882817546765,
+     "mma": 0.6723238825798035,
+     "mma12": 0.7522121667861938,
+     "zstd_bytes": 2097152,
+     "zstd19": 1614133,
+     "glyd_max": 6538882
+    },
+    {
+     "name": "backbone.layers.66.mixer.in_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.601945369015244,
+     "floor_bits": 10.601945369015244,
+     "mma": 0.675020158290863,
+     "mma12": 0.7525988817214966,
+     "zstd_bytes": 2097152,
+     "zstd19": 1618182,
+     "glyd_max": 6557760
+    },
+    {
+     "name": "backbone.layers.63.mixer.in_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.576843090459093,
+     "floor_bits": 10.576843090459093,
+     "mma": 0.6705240607261658,
+     "mma12": 0.7524930238723755,
+     "zstd_bytes": 2097152,
+     "zstd19": 1628063,
+     "glyd_max": 6535457
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.out_proj.weight",
+   "bytes": 12884901888,
+   "tensors": 48,
+   "samples": [
+    {
+     "name": "backbone.layers.66.mixer.out_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.563406335560767,
+     "floor_bits": 10.563406335560767,
+     "mma": 0.6693441271781921,
+     "mma12": 0.7521539926528931,
+     "zstd_bytes": 2097152,
+     "zstd19": 1616054,
+     "glyd_max": 6533536
+    },
+    {
+     "name": "backbone.layers.18.mixer.out_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.577136933051937,
+     "floor_bits": 10.577136933051937,
+     "mma": 0.6707119345664978,
+     "mma12": 0.7525798082351685,
+     "zstd_bytes": 2097152,
+     "zstd19": 1616906,
+     "glyd_max": 6540732
+    },
+    {
+     "name": "backbone.layers.38.mixer.out_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.566620591857049,
+     "floor_bits": 10.566620591857049,
+     "mma": 0.6699358820915222,
+     "mma12": 0.7521759271621704,
+     "zstd_bytes": 2097152,
+     "zstd19": 1636076,
+     "glyd_max": 6538131
+    },
+    {
+     "name": "backbone.layers.13.mixer.out_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.5835537975072,
+     "floor_bits": 10.5835537975072,
+     "mma": 0.6710020899772644,
+     "mma12": 0.7522135972976685,
+     "zstd_bytes": 2097152,
+     "zstd19": 1633122,
+     "glyd_max": 6539655
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.experts.N.down_proj.weight",
+   "bytes": 10737418240,
+   "tensors": 512,
+   "samples": [
+    {
+     "name": "mtp.layers.1.mixer.experts.180.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.560245740516205,
+     "floor_bits": 10.560245740516205,
+     "mma": 0.6698772430419921,
+     "mma12": 0.752299690246582,
+     "zstd_bytes": 2097152,
+     "zstd19": 1624155,
+     "glyd_max": 6564801
+    },
+    {
+     "name": "mtp.layers.1.mixer.experts.218.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.557840611064158,
+     "floor_bits": 10.557840611064158,
+     "mma": 0.669404125213623,
+     "mma12": 0.7522928237915039,
+     "zstd_bytes": 2097152,
+     "zstd19": 1631375,
+     "glyd_max": 6566763
+    },
+    {
+     "name": "mtp.layers.1.mixer.experts.236.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.56868986499166,
+     "floor_bits": 10.56868986499166,
+     "mma": 0.670149850845337,
+     "mma12": 0.7523447036743164,
+     "zstd_bytes": 2097152,
+     "zstd19": 1643747,
+     "glyd_max": 6571872
+    },
+    {
+     "name": "mtp.layers.1.mixer.experts.133.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.572491263563755,
+     "floor_bits": 10.572491263563755,
+     "mma": 0.6707014560699462,
+     "mma12": 0.7523065567016601,
+     "zstd_bytes": 2097152,
+     "zstd19": 1631415,
+     "glyd_max": 6571041
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.experts.N.up_proj.weight",
+   "bytes": 10737418240,
+   "tensors": 512,
+   "samples": [
+    {
+     "name": "mtp.layers.1.mixer.experts.172.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.563773983328415,
+     "floor_bits": 10.563773983328415,
+     "mma": 0.6706233024597168,
+     "mma12": 0.7522897720336914,
+     "zstd_bytes": 2097152,
+     "zstd19": 1613077,
+     "glyd_max": 6562449
+    },
+    {
+     "name": "mtp.layers.1.mixer.experts.459.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.55125843287483,
+     "floor_bits": 10.55125843287483,
+     "mma": 0.6706398487091064,
+     "mma12": 0.7522668838500977,
+     "zstd_bytes": 2097152,
+     "zstd19": 1638834,
+     "glyd_max": 6548064
+    },
+    {
+     "name": "mtp.layers.1.mixer.experts.352.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.559520538394883,
+     "floor_bits": 10.559520538394883,
+     "mma": 0.6718493938446045,
+     "mma12": 0.7522684097290039,
+     "zstd_bytes": 2097152,
+     "zstd19": 1623527,
+     "glyd_max": 6549603
+    },
+    {
+     "name": "mtp.layers.1.mixer.experts.315.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.572592041448155,
+     "floor_bits": 10.572592041448155,
+     "mma": 0.6728556156158447,
+     "mma12": 0.7522684097290039,
+     "zstd_bytes": 2097152,
+     "zstd19": 1627563,
+     "glyd_max": 6555471
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.shared_experts.down_proj.weight",
+   "bytes": 8053063680,
+   "tensors": 48,
+   "samples": [
+    {
+     "name": "backbone.layers.26.mixer.shared_experts.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.65411622386005,
+     "floor_bits": 10.65411622386005,
+     "mma": 0.6809574584960938,
+     "mma12": 0.7569473876953124,
+     "zstd_bytes": 2097152,
+     "zstd19": 1623005,
+     "glyd_max": 6554612
+    },
+    {
+     "name": "backbone.layers.76.mixer.shared_experts.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.573750759726108,
+     "floor_bits": 10.573750759726108,
+     "mma": 0.6703361206054688,
+     "mma12": 0.7521993408203125,
+     "zstd_bytes": 2097152,
+     "zstd19": 1613038,
+     "glyd_max": 6536770
+    },
+    {
+     "name": "backbone.layers.3.mixer.shared_experts.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.578289356306309,
+     "floor_bits": 10.578289356306309,
+     "mma": 0.6713408813476562,
+     "mma12": 0.7525733642578125,
+     "zstd_bytes": 2097152,
+     "zstd19": 1618890,
+     "glyd_max": 6529760
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.shared_experts.up_proj.weight",
+   "bytes": 8053063680,
+   "tensors": 48,
+   "samples": [
+    {
+     "name": "backbone.layers.71.mixer.shared_experts.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.574967932992402,
+     "floor_bits": 10.574967932992402,
+     "mma": 0.6712575554847717,
+     "mma12": 0.752301812171936,
+     "zstd_bytes": 2097152,
+     "zstd19": 1616613,
+     "glyd_max": 6528995
+    },
+    {
+     "name": "backbone.layers.58.mixer.shared_experts.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.57269237150115,
+     "floor_bits": 10.57269237150115,
+     "mma": 0.6714743971824646,
+     "mma12": 0.7522603273391724,
+     "zstd_bytes": 2097152,
+     "zstd19": 1609764,
+     "glyd_max": 6528855
+    },
+    {
+     "name": "backbone.layers.107.mixer.shared_experts.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.596490861767572,
+     "floor_bits": 10.596490861767572,
+     "mma": 0.6713526248931885,
+     "mma12": 0.7521597146987915,
+     "zstd_bytes": 2097152,
+     "zstd19": 1636133,
+     "glyd_max": 6543282
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.embeddings.weight",
+   "bytes": 2147483648,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "backbone.embeddings.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.744928866680734,
+     "floor_bits": 10.744928866680734,
+     "mma": 0.6834750771522522,
+     "mma12": 0.7524715662002563,
+     "zstd_bytes": 2097152,
+     "zstd19": 1652493,
+     "glyd_max": 6614600
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "lm_head.weight",
+   "bytes": 2147483648,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "lm_head.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.60041483912267,
+     "floor_bits": 10.60041483912267,
+     "mma": 0.674435168504715,
+     "mma12": 0.7522326707839966,
+     "zstd_bytes": 2097152,
+     "zstd19": 1625763,
+     "glyd_max": 6531567
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.fc1_latent_proj.weight",
+   "bytes": 1610612736,
+   "tensors": 48,
+   "samples": [
+    {
+     "name": "backbone.layers.1.mixer.fc1_latent_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 11.198281256911292,
+     "floor_bits": 11.198281256911292,
+     "mma": 0.7377965748310089,
+     "mma12": 0.75471031665802,
+     "zstd_bytes": 2097152,
+     "zstd19": 1704305,
+     "glyd_max": 6820863
+    },
+    {
+     "name": "backbone.layers.80.mixer.fc1_latent_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.555796127896343,
+     "floor_bits": 10.555796127896343,
+     "mma": 0.669091135263443,
+     "mma12": 0.7521477937698364,
+     "zstd_bytes": 2097152,
+     "zstd19": 1618819,
+     "glyd_max": 6570856
+    },
+    {
+     "name": "backbone.layers.65.mixer.fc1_latent_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.563097515831839,
+     "floor_bits": 10.563097515831839,
+     "mma": 0.6693800389766693,
+     "mma12": 0.7522150278091431,
+     "zstd_bytes": 2097152,
+     "zstd19": 1623581,
+     "glyd_max": 6574164
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.fc2_latent_proj.weight",
+   "bytes": 1610612736,
+   "tensors": 48,
+   "samples": [
+    {
+     "name": "backbone.layers.44.mixer.fc2_latent_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.562774062651002,
+     "floor_bits": 10.562774062651002,
+     "mma": 0.6728232502937317,
+     "mma12": 0.7522116899490356,
+     "zstd_bytes": 2097152,
+     "zstd19": 1623084,
+     "glyd_max": 6567880
+    },
+    {
+     "name": "backbone.layers.30.mixer.fc2_latent_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.551695212185008,
+     "floor_bits": 10.551695212185008,
+     "mma": 0.6738967597484589,
+     "mma12": 0.7521873712539673,
+     "zstd_bytes": 2097152,
+     "zstd19": 1617558,
+     "glyd_max": 6555323
+    },
+    {
+     "name": "backbone.layers.96.mixer.fc2_latent_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.56764692466713,
+     "floor_bits": 10.56764692466713,
+     "mma": 0.6707371473312378,
+     "mma12": 0.7521668672561646,
+     "zstd_bytes": 2097152,
+     "zstd19": 1644963,
+     "glyd_max": 6575680
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.o_proj.weight",
+   "bytes": 1610612736,
+   "tensors": 12,
+   "samples": [
+    {
+     "name": "backbone.layers.48.mixer.o_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.559960110054792,
+     "floor_bits": 10.559960110054792,
+     "mma": 0.6711319983005524,
+     "mma12": 0.7521182298660278,
+     "zstd_bytes": 2097152,
+     "zstd19": 1626830,
+     "glyd_max": 6540944
+    },
+    {
+     "name": "backbone.layers.23.mixer.o_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.593748097425115,
+     "floor_bits": 10.593748097425115,
+     "mma": 0.6713229715824127,
+     "mma12": 0.752174973487854,
+     "zstd_bytes": 2097152,
+     "zstd19": 1636447,
+     "glyd_max": 6541092
+    },
+    {
+     "name": "backbone.layers.73.mixer.o_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.562372314025906,
+     "floor_bits": 10.562372314025906,
+     "mma": 0.6717932224273682,
+     "mma12": 0.7521339654922485,
+     "zstd_bytes": 2097152,
+     "zstd19": 1636716,
+     "glyd_max": 6542665
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.q_proj.weight",
+   "bytes": 1610612736,
+   "tensors": 12,
+   "samples": [
+    {
+     "name": "backbone.layers.82.mixer.q_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.565612175570562,
+     "floor_bits": 10.565612175570562,
+     "mma": 0.6692918241024017,
+     "mma12": 0.7521454095840454,
+     "zstd_bytes": 2097152,
+     "zstd19": 1635323,
+     "glyd_max": 6530837
+    },
+    {
+     "name": "backbone.layers.73.mixer.q_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.560786555926878,
+     "floor_bits": 10.560786555926878,
+     "mma": 0.668917715549469,
+     "mma12": 0.7521454095840454,
+     "zstd_bytes": 2097152,
+     "zstd19": 1612386,
+     "glyd_max": 6521428
+    },
+    {
+     "name": "backbone.layers.98.mixer.q_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.570169483367607,
+     "floor_bits": 10.570169483367607,
+     "mma": 0.669591635465622,
+     "mma12": 0.7521573305130005,
+     "zstd_bytes": 2097152,
+     "zstd19": 1614164,
+     "glyd_max": 6529884
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.gate.weight",
+   "bytes": 402653184,
+   "tensors": 48,
+   "samples": [
+    {
+     "name": "backbone.layers.42.mixer.gate.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.602883169249358,
+     "floor_bits": 10.602883169249358,
+     "mma": 0.6743199825286865,
+     "mma12": 0.7522416114807129,
+     "zstd_bytes": 2097152,
+     "zstd19": 1630154,
+     "glyd_max": 6547427
+    },
+    {
+     "name": "backbone.layers.94.mixer.gate.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.575388214682723,
+     "floor_bits": 10.575388214682723,
+     "mma": 0.6752889156341553,
+     "mma12": 0.7522320747375488,
+     "zstd_bytes": 2097152,
+     "zstd19": 1637217,
+     "glyd_max": 6544861
+    },
+    {
+     "name": "backbone.layers.105.mixer.gate.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.599986549010978,
+     "floor_bits": 10.599986549010978,
+     "mma": 0.6756649017333984,
+     "mma12": 0.7522740364074707,
+     "zstd_bytes": 2097152,
+     "zstd19": 1641323,
+     "glyd_max": 6558206
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.eh_proj.weight",
+   "bytes": 268435456,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.0.eh_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.59068481417128,
+     "floor_bits": 10.59068481417128,
+     "mma": 0.6759539544582367,
+     "mma12": 0.7523800134658813,
+     "zstd_bytes": 2097152,
+     "zstd19": 1637559,
+     "glyd_max": 6548050
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.shared_experts.down_proj.weight",
+   "bytes": 167772160,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.1.mixer.shared_experts.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.629446720160198,
+     "floor_bits": 10.629446720160198,
+     "mma": 0.6749331665039062,
+     "mma12": 0.7524571533203125,
+     "zstd_bytes": 2097152,
+     "zstd19": 1647424,
+     "glyd_max": 6583119
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.shared_experts.up_proj.weight",
+   "bytes": 167772160,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.1.mixer.shared_experts.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.587566648378498,
+     "floor_bits": 10.587566648378498,
+     "mma": 0.6740983128547668,
+     "mma12": 0.7522779703140259,
+     "zstd_bytes": 2097152,
+     "zstd19": 1642212,
+     "glyd_max": 6557237
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.o_proj.weight",
+   "bytes": 134217728,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.0.mixer.o_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.622614229656637,
+     "floor_bits": 10.622614229656637,
+     "mma": 0.6749800741672516,
+     "mma12": 0.752909779548645,
+     "zstd_bytes": 2097152,
+     "zstd19": 1617820,
+     "glyd_max": 6555045
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.q_proj.weight",
+   "bytes": 134217728,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.0.mixer.q_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.607520917865427,
+     "floor_bits": 10.607520917865427,
+     "mma": 0.6724929809570312,
+     "mma12": 0.7521644830703735,
+     "zstd_bytes": 2097152,
+     "zstd19": 1616482,
+     "glyd_max": 6524111
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.k_proj.weight",
+   "bytes": 50331648,
+   "tensors": 12,
+   "samples": [
+    {
+     "name": "backbone.layers.23.mixer.k_proj.weight",
+     "bytes": 4194304,
+     "native_bits": 16,
+     "split_bits": 10.58636649087303,
+     "floor_bits": 10.58636649087303,
+     "mma": 0.6712219715118408,
+     "mma12": 0.7523927688598633,
+     "zstd_bytes": 2097152,
+     "zstd19": 1627463,
+     "glyd_max": 3288326
+    },
+    {
+     "name": "backbone.layers.48.mixer.k_proj.weight",
+     "bytes": 4194304,
+     "native_bits": 16,
+     "split_bits": 10.571560296422913,
+     "floor_bits": 10.571560296422913,
+     "mma": 0.6730554103851318,
+     "mma12": 0.7523279190063477,
+     "zstd_bytes": 2097152,
+     "zstd19": 1616534,
+     "glyd_max": 3272639
+    },
+    {
+     "name": "backbone.layers.73.mixer.k_proj.weight",
+     "bytes": 4194304,
+     "native_bits": 16,
+     "split_bits": 10.559066503563853,
+     "floor_bits": 10.559066503563853,
+     "mma": 0.6691493988037109,
+     "mma12": 0.7522058486938477,
+     "zstd_bytes": 2097152,
+     "zstd19": 1615480,
+     "glyd_max": 3261482
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "backbone.layers.N.mixer.v_proj.weight",
+   "bytes": 50331648,
+   "tensors": 12,
+   "samples": [
+    {
+     "name": "backbone.layers.82.mixer.v_proj.weight",
+     "bytes": 4194304,
+     "native_bits": 16,
+     "split_bits": 10.57955561480591,
+     "floor_bits": 10.57955561480591,
+     "mma": 0.6730685234069824,
+     "mma12": 0.7523050308227539,
+     "zstd_bytes": 2097152,
+     "zstd19": 1640628,
+     "glyd_max": 3281353
+    },
+    {
+     "name": "backbone.layers.64.mixer.v_proj.weight",
+     "bytes": 4194304,
+     "native_bits": 16,
+     "split_bits": 10.581635192692522,
+     "floor_bits": 10.581635192692522,
+     "mma": 0.6708574295043945,
+     "mma12": 0.7523965835571289,
+     "zstd_bytes": 2097152,
+     "zstd19": 1625728,
+     "glyd_max": 3287606
+    },
+    {
+     "name": "backbone.layers.57.mixer.v_proj.weight",
+     "bytes": 4194304,
+     "native_bits": 16,
+     "split_bits": 10.55720052503155,
+     "floor_bits": 10.55720052503155,
+     "mma": 0.6720719337463379,
+     "mma12": 0.7520875930786133,
+     "zstd_bytes": 2097152,
+     "zstd19": 1620972,
+     "glyd_max": 3283946
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.fc1_latent_proj.weight",
+   "bytes": 33554432,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.1.mixer.fc1_latent_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.56642162929767,
+     "floor_bits": 10.56642162929767,
+     "mma": 0.6708381175994873,
+     "mma12": 0.7522894144058228,
+     "zstd_bytes": 2097152,
+     "zstd19": 1611036,
+     "glyd_max": 6558953
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.fc2_latent_proj.weight",
+   "bytes": 33554432,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.1.mixer.fc2_latent_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.569093490839924,
+     "floor_bits": 10.569093490839924,
+     "mma": 0.6701704263687134,
+     "mma12": 0.7527076005935669,
+     "zstd_bytes": 2097152,
+     "zstd19": 1625601,
+     "glyd_max": 6529658
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.gate.weight",
+   "bytes": 8388608,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.1.mixer.gate.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.684673553647446,
+     "floor_bits": 10.684673553647446,
+     "mma": 0.6792526245117188,
+     "mma12": 0.7521939277648926,
+     "zstd_bytes": 2097152,
+     "zstd19": 1621949,
+     "glyd_max": 6588483
+    }
+   ]
+  },
+  {
+   "class": "other",
+   "kind": "backbone.layers.N.mixer.conv1d.weight",
+   "bytes": 7077888,
+   "tensors": 48,
+   "samples": []
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.k_proj.weight",
+   "bytes": 4194304,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.0.mixer.k_proj.weight",
+     "bytes": 4194304,
+     "native_bits": 16,
+     "split_bits": 10.664829148542426,
+     "floor_bits": 10.664829148542426,
+     "mma": 0.6788017749786377,
+     "mma12": 0.7523775100708008,
+     "zstd_bytes": 2097152,
+     "zstd19": 1645250,
+     "glyd_max": 3279038
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "mtp.layers.N.mixer.v_proj.weight",
+   "bytes": 4194304,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "mtp.layers.0.mixer.v_proj.weight",
+     "bytes": 4194304,
+     "native_bits": 16,
+     "split_bits": 10.586931272145714,
+     "floor_bits": 10.586931272145714,
+     "mma": 0.6710255146026611,
+     "mma12": 0.7521753311157227,
+     "zstd_bytes": 2097152,
+     "zstd19": 1612388,
+     "glyd_max": 3267750
+    }
+   ]
+  },
+  {
+   "class": "other",
+   "kind": "backbone.layers.N.mixer.conv1d.bias",
+   "bytes": 1769472,
+   "tensors": 48,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "backbone.layers.N.norm.weight",
+   "bytes": 1769472,
+   "tensors": 108,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "backbone.layers.N.mixer.norm.weight",
+   "bytes": 1572864,
+   "tensors": 48,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "backbone.layers.N.mixer.gate.e_score_correction_bias",
+   "bytes": 98304,
+   "tensors": 48,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "mtp.layers.N.norm.weight",
+   "bytes": 32768,
+   "tensors": 2,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "backbone.layers.N.mixer.A_log",
+   "bytes": 24576,
+   "tensors": 48,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "backbone.layers.N.mixer.D",
+   "bytes": 24576,
+   "tensors": 48,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "backbone.layers.N.mixer.dt_bias",
+   "bytes": 24576,
+   "tensors": 48,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "backbone.norm_f.weight",
+   "bytes": 16384,
+   "tensors": 1,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "mtp.layers.N.enorm.weight",
+   "bytes": 16384,
+   "tensors": 1,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "mtp.layers.N.hnorm.weight",
+   "bytes": 16384,
+   "tensors": 1,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "mtp.layers.N.final_layernorm.weight",
+   "bytes": 16384,
+   "tensors": 1,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "mtp.layers.N.mixer.gate.e_score_correction_bias",
+   "bytes": 2048,
+   "tensors": 1,
+   "samples": []
+  }
+ ],
+ "download_s": 66,
+ "sampled_bytes": 2110783488,
+ "seconds": 137
+}

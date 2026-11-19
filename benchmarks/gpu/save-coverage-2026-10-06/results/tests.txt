@@ -1,0 +1,15 @@
+test_manifest_and_names ok
+test_check_files ok
+[transformers] Last layer must use `full_attention`, but got `sliding_attention`. Forcing last layer to `full_attention`.
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 89.92it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights:   2%|▏         | 1/55 [00:00<00:11,  4.65it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 210.68it/s]
+Loading weights:   0%|          | 0/87 [00:00<?, ?it/s]Loading weights: 100%|██████████| 87/87 [00:00<00:00, 9025.59it/s]
+test_tables_saved_packed ok
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 197.79it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 8737.67it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1303.06it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 12389.45it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 10063.23it/s]
+test_cli_pack_and_verify ok
+test_packed_weight_view ok
+exit 0

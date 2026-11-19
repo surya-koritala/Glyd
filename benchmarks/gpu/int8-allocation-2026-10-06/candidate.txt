@@ -1,0 +1,12 @@
+stock-eager: ok (50 s) weights 12.73 GiB, KV 140,753 tokens
+glyd-exact: ok (55 s) weights 10.53 GiB, KV 190,650 tokens, codes: 80 layers, 4.938 GiB in 4.477 GiB of packs + 96 MiB scratch, 80 packs verified at load
+stock: ok (83 s) weights 12.73 GiB, KV 136,657 tokens, tok/s {"1": 75.17, "32": 1431.67}
+glyd: ok (99 s) weights 9.92 GiB, KV 200,331 tokens, tok/s {"1": 50.61, "32": 1101.86}, codes: 80 layers, 4.938 GiB in 4.477 GiB of packs + 96 MiB scratch, 80 packs verified at load
+glyd-b: ok (100 s) weights 9.92 GiB, KV 200,331 tokens, tok/s {"1": 50.63, "32": 1101.62}, codes: 80 layers, 4.938 GiB in 4.477 GiB of packs + 96 MiB scratch, 80 packs verified at load
+stock-b: ok (82 s) weights 12.73 GiB, KV 136,657 tokens, tok/s {"1": 75.16, "32": 1431.33}
+glyd-16: ok (85 s) weights 10.28 GiB, KV 193,256 tokens, tok/s {"1": 84.49, "32": 1545.65}
+EXACT PASS: Glyd exact eager against stock eager, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 707 tokens, one image chat; 159 of 159 packs verified bit for bit; codes: 80 layers held packed, 80 packs verified
+PACKED: 160 layers (0 verified bit for bit as packed), 7.63 GiB bf16 held in 5.13 GiB (2.50 GiB saved); products of 4 against F.linear: worst relative error 3.05e-03; largest 16-bit left: Embedding / NoneType / weight / bfloat16 0.00 GiB; Conv3dLayer / NoneType / weight / bfloat16 0.00 GiB
+CODES: 80 layers' codes, 4.938 GiB held in 4.477 GiB of packs (7.254 bits a code) + 96.0 MiB of scratch: 0.367 GiB saved; 80 packs (4.938 GiB) verified bit for bit at load
+GLYD WITHOUT -> WITH THE CODES: weights 10.28 -> 9.92 GiB; KV tokens 193256 -> 200331; 1 user 84.49 -> 50.61 tok/s (0.599x); 32 users 1545.65 -> 1101.74 tok/s (0.713x); greedy agreement 0.8926
+STOCK -> GLYD: weights 12.73 -> 9.92 GiB; KV tokens 136657 -> 200331; 1 user 75.16 -> 50.61 tok/s (0.673x); 32 users 1431.57 -> 1101.74 tok/s (0.770x); greedy agreement 0.2559

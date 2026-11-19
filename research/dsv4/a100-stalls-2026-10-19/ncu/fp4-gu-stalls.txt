@@ -1,0 +1,42 @@
+samples 72560.0 instr executed 21300480.0
+  stall_long_sb             30.5%
+  stall_selected            16.1%
+  stall_wait                15.2%
+  stall_not_selected        11.8%
+  stall_math                10.6%
+  stall_dispatch             4.6%
+  stall_barrier              4.1%
+  stall_short_sb             3.8%
+  stall_imc                  1.4%
+  stall_mio                  0.8%
+0x7a8967ce5cd0  30.0%       IMAD.MOV.U32 R90, RZ, RZ, R54                          long_sb:97 branch_resolving:0 not_selected:0
+0x7a8967ce5f10   2.5%       PRMT R36, R91, 0x404, RZ                               math:45 not_selected:42 dispatch:6
+0x7a8967ce7160   1.8%       BSSY B0, 0x7a8967ce7880                                barrier:99 wait:0 not_selected:0
+0x7a8967ce6830   1.6%       ISETP.GE.U32.AND P0, PT, R83, R62, PT                  math:48 not_selected:36 wait:5
+0x7a8967ce61b0   1.6% @P1   IADD3 R45, R45, -c[0x0][0x170], RZ                     wait:50 math:22 not_selected:19
+0x7a8967ce6090   1.5% @!P0  IADD3 R48, R46, 0xffffffe, RZ                          short_sb:64 math:12 not_selected:11
+0x7a8967ce78b0   1.5%       BSSY B0, 0x7a8967ce89b0                                barrier:99 not_selected:0
+0x7a8967ce60b0   1.4%       IMAD.MOV R47, RZ, RZ, -R45                             short_sb:74 not_selected:8 wait:7
+0x7a8967ce6080   1.4% @!P0  MUFU.RCP R46, R46                                      short_sb:38 wait:36 not_selected:17
+0x7a8967ce6550   1.3%       PRMT R91, R91, 0x3434, RZ                              math:47 not_selected:35 wait:6
+0x7a8967ce6960   1.3%       HMMA.16816.F32.BF16 R20, R36, R52, R20                 wait:61 not_selected:20 math:9
+0x7a8967ce68b0   1.2%       SHF.R.U32.HI R44, RZ, 0x6, R85                         math:37 not_selected:29 wait:22
+0x7a8967ce66f0   1.1%       LOP3.LUT R53, R43, 0x1c001c0, RZ, 0xc0, !PT            math:44 not_selected:36 selected:6
+0x7a8967ce62e0   1.0%       LOP3.LUT R55, R47, 0xf8, RZ, 0xc0, !PT                 math:38 not_selected:33 wait:15
+0x7a8967ce6230   1.0% @P4   IADD3 R44, R44, 0x1, RZ                                wait:32 math:27 not_selected:26
+0x7a8967ce6150   1.0%       LEA.HI.X R98, R47, c[0x0][0x164], R98, 0x9, P2         math:43 not_selected:35 wait:8
+0x7a8967ce6180   1.0% @!P0  ISETP.GE.U32.AND P4, PT, R45, c[0x0][0x170], PT        wait:30 math:29 not_selected:28
+0x7a8967ce6970   0.9%       IMAD.MOV.U32 R53, RZ, RZ, R83                          wait:60 not_selected:14 math:12
+0x7a8967ce6600   0.9%       SHF.R.U32.HI R45, RZ, 0x1, R91                         math:40 not_selected:37 selected:9
+0x7a8967ce6000   0.9%       ISETP.NE.AND P0, PT, RZ, c[0x0][0x174], PT             wait:36 not_selected:24 math:23
+0x7a8967ce6220   0.9%       ISETP.NE.AND.EX P1, PT, R77, RZ, PT, P1                math:32 wait:27 not_selected:27
+0x7a8967ce6390   0.9%       IADD3 R44, P1, R52, R55, RZ                            math:40 not_selected:38 selected:8
+0x7a8967ce6190   0.8% @!P0  PLOP3.LUT P1, PT, P4, PT, PT, 0x80, 0x0                math:29 wait:29 not_selected:27
+0x7a8967ce4500   0.8%       IMAD.MOV.U32 R1, RZ, RZ, c[0x0][0x28]                  imc:87 no_inst:11 not_selected:0
+0x7a8967ce89f0   0.8% @!P0  CALL.REL.NOINC 0x7a8967ce8a10                          barrier:98 not_selected:1 wait:0
+0x7a8967ce60a0   0.8% @!P0  F2I.FTZ.U32.TRUNC.NTZ R45, R48                         wait:56 not_selected:26 selected:11
+0x7a8967ce6060   0.7% @!P0  I2F.U32.RP R46, c[0x0][0x170]                          wait:61 not_selected:24 selected:9
+0x7a8967ce6210   0.7%       ISETP.NE.U32.AND P1, PT, R78, RZ, PT                   math:39 not_selected:33 selected:12
+0x7a8967ce4560   0.6%       ISETP.GE.AND P0, PT, R5, R2, PT                        long_sb:96 math:1 not_selected:1
+0x7a8967ce6250   0.6% @!P0  IMAD.MOV.U32 R45, RZ, RZ, R44                          wait:51 not_selected:18 selected:14
+mix: IMAD:28.2 LOP3:19.6 SHF:9.0 HFMA2:7.4 IADD3:6.4 ISETP:6.0 LEA:4.2 LDG:3.8 PRMT:3.7 HMMA:3.7 PLOP3:1.8 BRA:1.1 CS2R:0.7 S2R:0.5 I2F:0.5 MUFU:0.5 F2I:0.5 WARPSYNC:0.5

@@ -1,0 +1,27 @@
+test_codec ok
+test_experts ok
+test_scheme ok
+test_gpu_refusal ok
+test_override_and_config ok
+test_modelopt_file ok
+test_refusals ok
+test_exact ok
+INFO 10-06 11:34:07 [vllm_fp8.py:256] glyd: an FP8 checkpoint (fp8-block): its Linears held packed (codec identity), vLLM's own products
+INFO 10-06 11:34:07 [vllm_fp8.py:256] glyd: an FP8 checkpoint (fp8-tensor): its Linears held packed (codec identity), vLLM's own products
+test_wrap ok
+test_matrix ok
+WARNING 10-06 11:34:07 [vllm_fp8.py:518] glyd: model.layers.0.mlp.up_proj: weight torch.float8_e4m3fn (64, 32) is a part of a larger storage: not a layout Glyd packs: stays as vLLM runs it
+test_scratch_and_flow ok
+test_ids ok
+test_poison ok
+test_storage_freed ok
+test_probe ok
+test_off ok
+test_compile ok
+test_lossless ok
+WARNING 10-06 11:34:19 [vllm_fp8.py:555] glyd: an FP8 checkpoint's experts stay as vLLM runs them: expert parallel
+WARNING 10-06 11:34:19 [vllm_fp8.py:555] glyd: an FP8 checkpoint's experts stay as vLLM runs them: vLLM's kernel for them picks each token's experts itself
+WARNING 10-06 11:34:20 [vllm_fp8.py:607] glyd: an FP8 checkpoint's experts stay as vLLM runs them: Module's w2_weight (torch.float8_e4m3fn (4, 64, 128)) is not a layout Glyd packs (E contiguous matrices of their own storage)
+test_experts_flow ok
+test_verify_and_poison ok
+test_fused ok

@@ -1,0 +1,7 @@
+stock-eager: ok (201 s) weights 25.8 GiB, KV 57,439 tokens
+glyd-exact: ok (176 s) weights 25.63 GiB, KV 58,488 tokens
+stock: ok (332 s) weights 25.8 GiB, KV 55,378 tokens, tok/s {"1": 111.15, "32": 1045.14}
+glyd: ok (343 s) weights 25.19 GiB, KV 58,592 tokens, tok/s {"1": 120.38, "32": 1059.25}
+EXACT PASS: Glyd exact eager against stock eager, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 725 tokens, one image chat; 136 of 136 packs verified bit for bit
+PACKED: 138 layers, 1.90 GiB bf16 held in 1.27 GiB (0.62 GiB saved); products of 4 against F.linear: worst relative error 3.60e-03; largest 16-bit left: ReplicatedLinear / GlydLinearMethod / weight / bfloat16 0.50 GiB; Gemma4VisionPatchEmbedder / NoneType / position_embedding_table / bfloat16 0.04 GiB
+STOCK -> GLYD: weights 25.8 -> 25.19 GiB; KV tokens 55378 -> 58592; 1 user 111.15 -> 120.38 tok/s (1.083x); 32 users 1045.14 -> 1059.25 tok/s (1.014x); greedy agreement 0.5117

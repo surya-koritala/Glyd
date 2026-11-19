@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=77", "wheel", "Cython>=3.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glyd-gpu"
+version = "0.32.1"
+description = "Glyd on the GPU: a bf16 model's weights held compressed in GPU memory, bit for bit, and multiplied from there. The GPU half of glyd (pip install \"glyd[gpu]\"), compiled."
+keywords = ["compression", "lossless", "llm", "gpu", "cuda", "bfloat16", "transformers", "pytorch", "vllm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Environment :: GPU :: NVIDIA CUDA :: 12",
+    "Environment :: GPU :: NVIDIA CUDA :: 13",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+]
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = []  # fit and the C library need none of the extras' packages
+
+[project.urls]
+Homepage = "https://getglyd.com"
+Documentation = "https://getglyd.com/docs/"
+Changelog = "https://getglyd.com/changelog/"
+
+[project.optional-dependencies]
+# from_pretrained builds on transformers' quantizer API as of 5.17 (register_quantizer, on-the-fly quantize ops); fit needs none of these;
+# what glyd 0.26's gpu extra held
+gpu = ["torch>=2.5", "transformers>=5.17,<6", "accelerate>=1.1", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
+# vllm serve MODEL --quantization glyd (glyd_gpu.vllm_plugin): the vLLM releases it is tested with (its plugin interfaces and its layerwise
+# loading move between minor releases); vLLM brings torch, transformers and the rest; what glyd 0.26's vllm extra held
+vllm = ["vllm>=0.30,<0.31", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
+
+[project.entry-points."vllm.general_plugins"]
+# vllm serve MODEL --quantization glyd: vLLM calls it in every process it starts; it loads glyd_gpu.vllm_plugin where vLLM is the
+# release it is tested with, and never raises
+glyd = "glyd_gpu.vllm_entry:register"
+
+[tool.setuptools]
+packages = ["glyd_gpu"]
+
+[tool.setuptools.package-data]
+# the chat page glyd run shows; the GPU kernels (gpu/build_lib.sh) for PyTorch built with CUDA 12 and with CUDA 13, and their C header; the text the lossless KV cache's
+# tables are calibrated on (gpu/vllm/make_kvcorpus.py); Glyd's own engine (glyd-engine, executable: setup.py), which glyd run and glyd serve start for the models it runs
+glyd_gpu = ["chat.html", "libglyd_gpu_cuda12.so", "libglyd_gpu_cuda13.so", "glyd_gpu.h", "kvcorpus.bin", "glyd-engine"]

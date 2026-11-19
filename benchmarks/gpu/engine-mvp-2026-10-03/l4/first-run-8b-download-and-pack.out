@@ -1,0 +1,34 @@
+== the 8B's download and packing, no GPU time
+Downloading Qwen3-8B: 10% (1.7 GB of 16.4 GB)
+Downloading Qwen3-8B: 20% (3.4 GB of 16.4 GB)
+Downloading Qwen3-8B: 30% (4.9 GB of 16.4 GB)
+Downloading Qwen3-8B: 40% (6.6 GB of 16.4 GB)
+Downloading Qwen3-8B: 50% (8.2 GB of 16.4 GB)
+Downloading Qwen3-8B: 60% (9.9 GB of 16.4 GB)
+Downloading Qwen3-8B: 70% (11.6 GB of 16.4 GB)
+Downloading Qwen3-8B: 80% (13.2 GB of 16.4 GB)
+Downloading Qwen3-8B: 90% (14.9 GB of 16.4 GB)
+Downloading Qwen3-8B: 100% (16.4 GB of 16.4 GB)
+Downloaded Qwen3-8B (16.4 GB).
+
+real	1m6.743s
+user	0m17.903s
+sys	0m41.089s
+Qwen3-8B: 10.3 GiB on the GPU with Glyd, instead of 15.3 GiB; layout mma: Ada: mma, the smallest layout, is as fast as mma12 (measured).
+Packing Qwen3-8B for this GPU (mma), once: /opt/dlami/nvme/glyd-cache-t3/engine/Qwen--Qwen3-8B-b968826d-mma
+Packing Qwen3-8B: 10% (1.2 GB of 11.1 GB)
+Packing Qwen3-8B: 20% (2.8 GB of 11.1 GB)
+Packing Qwen3-8B: 30% (3.4 GB of 11.1 GB)
+Packing Qwen3-8B: 40% (4.6 GB of 11.1 GB)
+Packing Qwen3-8B: 50% (5.7 GB of 11.1 GB)
+Packing Qwen3-8B: 60% (6.7 GB of 11.1 GB)
+Packing Qwen3-8B: 70% (7.8 GB of 11.1 GB)
+Packing Qwen3-8B: 80% (9.6 GB of 11.1 GB)
+Packing Qwen3-8B: 90% (10.3 GB of 11.1 GB)
+Packing Qwen3-8B: 100% (11.1 GB of 11.1 GB)
+Packed in 21s (12.4 GB).
+/opt/dlami/nvme/glyd-cache-t3/engine/Qwen--Qwen3-8B-b968826d-mma
+
+real	0m21.623s
+user	1m42.777s
+sys	0m26.591s

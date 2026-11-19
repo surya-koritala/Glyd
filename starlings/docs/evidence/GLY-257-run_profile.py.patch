@@ -1,0 +1,37 @@
+--- a/run_profile.py
++++ b/run_profile.py
+@@ -10 +10 @@
+-state_lock=threading.Lock();children={};locks={};groups=set();samples=[];faults=[];watch_stop=threading.Event();runs=[];statuses=[];requests=0;success=False;stage='direct';direct_generations=0;reference=None;service_history=[];token_path=coordinator/'routing-profile-token.json'
++state_lock=threading.Lock();children={};locks={};groups=set();samples=[];faults=[];watch_stop=threading.Event();runs=[];statuses=[];requests=0;success=False;stage='direct';failure_phase=None;phase='preflight';direct_generations=0;reference=None;service_history=[];token_path=coordinator/'routing-profile-token.json'
+@@ -26,0 +27,6 @@
++def verify_reference_pin():
++ pin_bytes=(ROOT/'direct-pin.json').read_bytes();assert hashlib.sha256(pin_bytes).hexdigest()==prep['direct_pin_record_sha256']
++ pin=json.loads(pin_bytes);assert pin['manifest']==worker_route['qualification']['replica']['manifest'] and pin['retained'] is True
++ pin_bytes=(worker/'cache/models'/('pin-'+pin['pin']+'.json')).read_bytes();assert hashlib.sha256(pin_bytes).hexdigest()==prep['direct_pin_file_sha256']
++ owned=json.loads(pin_bytes);assert owned=={'version':1,'manifest':pin['manifest'],'lease':pin['pin']}
++
+@@ -35,0 +42 @@
++ verify_reference_pin()
+@@ -170,0 +178 @@
++ phase='asset_hash_verification'
+@@ -185,2 +193 @@
+- direct_pin=str(__import__('uuid').uuid4());call(worker,'model','pin',worker_route['qualification']['replica']['manifest'],direct_pin)
+- save(ROOT/'direct-pin.json',{'pin':direct_pin,'retained':True})
++ phase='direct_launch'
+@@ -205,0 +213 @@
++ phase='direct_readiness'
+@@ -206,0 +215 @@
++ phase='direct_comparison'
+@@ -215,0 +225 @@
++ phase='proxy_control_preparation'
+@@ -221,0 +232 @@
++ phase='worker_launch'
+@@ -222,0 +234 @@
++ phase='worker_readiness'
+@@ -228,0 +241 @@
++ phase='proxy_comparison'
+@@ -235,0 +249 @@
++ failure_phase=phase
+@@ -261 +275 @@
+- result={'kind':'NativeCurrentRouteCPUComparison','success':success and not faults and remaining is False,'service_status_history':service_history,'implementation':prep['implementation_commit'],'binary_sha256':prep['binary_sha256'],'manifest':model,'service_configuration':prep['configuration'],'worker_record':prep['worker_record_digest'],'profile_evidence':prep['profile_evidence'],'generations_requested':requests,'count_call_upper_bound':requests*2+(1 if requests else 0),'count_calls_instrumented':False,'output_tokens_total_cap':160,'runs':runs,'json_sse_semantic_parity':success,'matched_direct_proxy':success,'physical_hosts':1,'two_machine_qualification':False,'temporary_token_rows':token_rows,'old_ownership_preserved':old_preserved,'direct_pin_retained':(ROOT/'direct-pin.json').exists(),'quarantine_retained':(worker/'cache/models/service-start.json').exists(),'process_observation_available':remaining is not None,'owned_server_groups_observed':len(server_groups),'owned_group_remaining':remaining,'sampled_owned_peak_rss_bytes':max(samples,default=0),'sample_interval_ms':100,'elapsed_seconds':round(time.monotonic()-START,3),'external_spend_usd':0,'faults':faults,'general_production_qualification_issued':False,'service_cleanup_qualified':False,'base_conversion_fidelity_qualified':False}
++ result={'kind':'NativeCurrentRouteCPUComparison','success':success and not faults and remaining is False,'service_status_history':service_history,'implementation':prep['implementation_commit'],'binary_sha256':prep['binary_sha256'],'manifest':worker_route['qualification']['replica']['manifest'],'service_configuration':prep['configuration'],'worker_record':prep['worker_record_digest'],'profile_evidence':prep['profile_evidence'],'generations_requested':requests,'count_call_upper_bound':requests*2+(1 if requests else 0),'count_calls_instrumented':False,'output_tokens_total_cap':160,'runs':runs,'json_sse_semantic_parity':success,'matched_direct_proxy':success,'physical_hosts':1,'two_machine_qualification':False,'temporary_token_rows':token_rows,'old_ownership_preserved':old_preserved,'direct_pin_retained':(ROOT/'direct-pin.json').exists(),'quarantine_retained':(worker/'cache/models/service-start.json').exists(),'process_observation_available':remaining is not None,'owned_server_groups_observed':len(server_groups),'owned_group_remaining':remaining,'sampled_owned_peak_rss_bytes':max(samples,default=0),'sample_interval_ms':100,'elapsed_seconds':round(time.monotonic()-START,3),'external_spend_usd':0,'faults':faults,'failure_phase':failure_phase,'general_production_qualification_issued':False,'service_cleanup_qualified':False,'base_conversion_fidelity_qualified':False}

@@ -1,0 +1,9 @@
+glyd engine 0.27.0-rc.1
+  GPU           NVIDIA A100-SXM4-40GB (compute capability 8.0), 39.1 GiB free of 39.5 GiB; the driver runs CUDA 13.0
+  GPU library   /home/ubuntu/libglyd_gpu_cuda13.so
+  cuBLAS        found (/home/ubuntu/enveng/lib/python3.12/site-packages/nvidia/cu13/lib/libcublas.so.13): long prompts run through it
+  cache         /home/ubuntu/glyd-cache (494.3 GB free)
+  models        /home/ubuntu/hf/hub (494.3 GB free)
+  Hub token     none (public models only; glyd login for a gated one)
+  Hub           https://huggingface.co reachable
+Everything glyd run needs is here.

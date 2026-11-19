@@ -1,0 +1,19 @@
+[2026-10-20T00:00:35-04:00] start
+[2026-10-20T00:00:35-04:00] bench before
+[2026-10-20T00:00:41-04:00] bench after
+[2026-10-20T00:00:47-04:00] generate before
+[2026-10-20T00:00:50-04:00] generate after
+[2026-10-20T00:00:53-04:00] generate: the same text before and after
+[2026-10-20T00:00:53-04:00] start: glyd-engine rangecheck /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-penguin/snapshots/5985564d007e847509609c23d7647a8688867889 --prompt 1024 --new 256 --workers
+[2026-10-20T00:01:26-04:00] rangecheck penguin: exit 0 after 32.5 s: all checks passed
+[2026-10-20T00:01:26-04:00] bench before
+[2026-10-20T00:01:32-04:00] bench after
+[2026-10-20T00:01:38-04:00] start: glyd-engine rangecheck /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d --prompt 1024 --new 256 --workers
+[2026-10-20T00:01:54-04:00] rangecheck swift: exit 0 after 15.7 s: all checks passed
+[2026-10-20T00:01:54-04:00] start: glyd-engine rangecheck /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7 --prompt 1024 --new 256 --workers
+[2026-10-20T00:02:13-04:00] rangecheck kestrel: exit 0 after 18.9 s: all checks passed
+[2026-10-20T00:02:13-04:00] start: glyd-engine rangecheck /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d --prompt 1024 --new 256 --cuts 11,23 --workers
+[2026-10-20T00:02:29-04:00] rangecheck swift-3: exit 0 after 15.7 s: all checks passed
+[2026-10-20T00:02:29-04:00] bench before
+[2026-10-20T00:02:34-04:00] bench after
+[2026-10-20T00:02:40-04:00] done

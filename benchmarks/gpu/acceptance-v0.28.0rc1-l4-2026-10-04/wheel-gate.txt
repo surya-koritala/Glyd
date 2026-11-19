@@ -1,0 +1,11 @@
+The wheel gate (glyd-gpu-py/check_wheel.py of private release-0.28.0-gpu be9f9292, v0.28.0rc1, the commit the wheels were built from) run on the two glyd-gpu wheels as PyPI serves them
+(sha256 checked against PyPI's: glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_x86_64.whl 89ce40b1..., ..._aarch64.whl fafc9dcf...), 2026-10-04, on the dev box with cuobjdump
+(CUDA 13.4.92: no PTX, machine code for sm_80, 86, 89, 90a, 100, 120, the symbols' names), readelf, nm and c++filt:
+
+  python3 glyd-gpu-py/check_wheel.py glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_ARCH.whl --version 0.28.0rc1 --platform manylinux_2_28_ARCH \
+      --source glyd-gpu-py/glyd_gpu --header glyd-gpu-py/include/glyd_gpu.h --license gpu/LICENSE --summary
+
+  x86_64:  ok glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_x86_64.whl   (0 lines: nothing wrong)   exit 0
+  aarch64: ok glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_aarch64.whl  (0 lines: nothing wrong)   exit 0
+
+(not given here: --sums, the sha256 of each library as the gpu-lib job listed them. The whole output is gate.out, the script scripts/gate.sh.)

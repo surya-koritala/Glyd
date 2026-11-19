@@ -1,0 +1,5 @@
+========= COMPUTE-SANITIZER
+check_f8 on GPU NVIDIA GeForce RTX 4090
+case_experts ok (0.9 s)
+ALL BIT FOR BIT
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

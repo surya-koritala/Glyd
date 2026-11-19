@@ -1,0 +1,95 @@
+== 22:59:08 real layer (Qwen3-30B-A3B layer 0, 128 experts)
+T=  384        bf16: vLLM's layer   5489.8 us (the weights' bf16 bytes    220 GB/s)
+T=  384          new: hits  128.0  route    15.0  gate+up   2543.9 (   238 GB/s)  down   1442.9 (   210 GB/s)  all   4022.7 (  226 GB/s, 1.96 of the copy rate)  unpack   8975.3  = 0.73x bf16  us a layer
+T=  384       rows17: hits  128.0  route    16.4  gate+up   2554.1 (   237 GB/s)  down   1438.6 (   211 GB/s)  all   4009.9 (  227 GB/s, 1.97 of the copy rate)  unpack   8974.2  = 0.73x bf16  us a layer
+T=  384        big96: hits  128.0  route    16.8  gate+up   2563.4 (   237 GB/s)  down   1438.2 (   211 GB/s)  all   4004.6 (  227 GB/s, 1.97 of the copy rate)  unpack   8974.9  = 0.73x bf16  us a layer
+T=  384       big192: hits  128.0  route    16.4  gate+up   2549.6 (   238 GB/s)  down   1438.6 (   211 GB/s)  all   4013.8 (  227 GB/s, 1.96 of the copy rate)  unpack   8974.8  = 0.73x bf16  us a layer
+T=  768        bf16: vLLM's layer   5801.4 us (the weights' bf16 bytes    208 GB/s)
+T=  768          new: hits  128.0  route    28.7  gate+up   3071.7 (   197 GB/s)  down   1888.4 (   161 GB/s)  all   4930.2 (  185 GB/s, 1.60 of the copy rate)  unpack   8973.7  = 0.85x bf16  us a layer
+T=  768       rows17: hits  128.0  route    26.5  gate+up   3120.0 (   194 GB/s)  down   1839.5 (   165 GB/s)  all   4911.6 (  185 GB/s, 1.61 of the copy rate)  unpack   8972.8  = 0.85x bf16  us a layer
+T=  768        big96: hits  128.0  route    29.4  gate+up   2933.6 (   207 GB/s)  down   1689.3 (   180 GB/s)  all   4392.4 (  207 GB/s, 1.80 of the copy rate)  unpack   8975.5  = 0.76x bf16  us a layer
+T=  768       big192: hits  128.0  route    27.6  gate+up   2835.9 (   214 GB/s)  down   1686.6 (   180 GB/s)  all   4395.8 (  207 GB/s, 1.79 of the copy rate)  unpack   8973.2  = 0.76x bf16  us a layer
+T= 1152        bf16: vLLM's layer   6072.1 us (the weights' bf16 bytes    199 GB/s)
+T= 1152          new: hits  128.0  route    41.6  gate+up   3294.7 (   184 GB/s)  down   2184.0 (   139 GB/s)  all   5422.7 (  168 GB/s, 1.45 of the copy rate)  unpack   8974.3  = 0.89x bf16  us a layer
+T= 1152       rows17: hits  128.0  route    41.0  gate+up   3272.9 (   185 GB/s)  down   2137.6 (   142 GB/s)  all   5467.6 (  166 GB/s, 1.44 of the copy rate)  unpack   8977.0  = 0.90x bf16  us a layer
+T= 1152        big96: hits  128.0  route    51.1  gate+up   3741.1 (   162 GB/s)  down   2233.4 (   136 GB/s)  all   5983.8 (  152 GB/s, 1.32 of the copy rate)  unpack   8975.1  = 0.99x bf16  us a layer
+T= 1152       big192: hits  128.0  route    51.0  gate+up   3774.8 (   161 GB/s)  down   2221.7 (   137 GB/s)  all   6004.8 (  152 GB/s, 1.31 of the copy rate)  unpack   8973.7  = 0.99x bf16  us a layer
+T= 2048        bf16: vLLM's layer   7622.7 us (the weights' bf16 bytes    158 GB/s)
+T= 2048          new: hits  128.0  route    67.8  gate+up   4346.6 (   140 GB/s)  down   3102.0 (    98 GB/s)  all   7510.7 (  121 GB/s, 1.05 of the copy rate)  unpack   8973.5  = 0.99x bf16  us a layer
+T= 2048       rows17: hits  128.0  route    71.5  gate+up   4304.3 (   141 GB/s)  down   3122.6 (    97 GB/s)  all   7526.4 (  121 GB/s, 1.05 of the copy rate)  unpack   8972.5  = 0.99x bf16  us a layer
+T= 2048        big96: hits  128.0  route    71.4  gate+up   4296.2 (   141 GB/s)  down   3129.5 (    97 GB/s)  all   7484.2 (  122 GB/s, 1.05 of the copy rate)  unpack   8975.3  = 0.98x bf16  us a layer
+T= 2048       big192: hits  128.0  route    73.6  gate+up   5141.6 (   118 GB/s)  down   3099.1 (    98 GB/s)  all   8430.5 (  108 GB/s, 0.94 of the copy rate)  unpack   8973.8  = 1.11x bf16  us a layer
+T= 4096        bf16: vLLM's layer  12085.6 us (the weights' bf16 bytes    100 GB/s)
+T= 4096          new: hits  128.0  route    99.2  gate+up   7125.8 (    85 GB/s)  down   5482.2 (    55 GB/s)  all  12711.1 (   72 GB/s, 0.62 of the copy rate)  unpack   8973.7  = 1.05x bf16  us a layer
+T= 4096       rows17: hits  128.0  route    90.1  gate+up   7140.1 (    85 GB/s)  down   5489.6 (    55 GB/s)  all  12734.6 (   71 GB/s, 0.62 of the copy rate)  unpack   8972.5  = 1.05x bf16  us a layer
+T= 4096        big96: hits  128.0  route   105.6  gate+up   7094.1 (    85 GB/s)  down   5599.0 (    54 GB/s)  all  12728.2 (   71 GB/s, 0.62 of the copy rate)  unpack   8972.7  = 1.05x bf16  us a layer
+T= 4096       big192: hits  128.0  route   108.2  gate+up   7148.2 (    85 GB/s)  down   5539.2 (    55 GB/s)  all  12792.5 (   71 GB/s, 0.62 of the copy rate)  unpack   8971.6  = 1.06x bf16  us a layer
+== 23:00:18 proxy (128 experts, hidden 512, intermediate 192: the weights in the L2 cache, the products bound by their own work)
+T=  384        bf16: vLLM's layer    400.0 us (the weights' bf16 bytes    189 GB/s)
+T=  384          new: hits  128.0  route    11.4  gate+up    100.8 (   376 GB/s)  down     42.9 (   441 GB/s)  all    302.8 (  188 GB/s, 1.62 of the copy rate)  unpack    560.0  = 0.76x bf16  us a layer
+T=  384       big192: hits  128.0  route    14.4  gate+up    129.0 (   294 GB/s)  down     50.9 (   373 GB/s)  all    311.0 (  183 GB/s, 1.58 of the copy rate)  unpack    560.3  = 0.78x bf16  us a layer
+T=  384       rows17: hits  128.0  route    14.4  gate+up    120.1 (   315 GB/s)  down     50.9 (   373 GB/s)  all    310.4 (  183 GB/s, 1.58 of the copy rate)  unpack    559.9  = 0.78x bf16  us a layer
+T=  768        bf16: vLLM's layer    376.6 us (the weights' bf16 bytes    200 GB/s)
+T=  768          new: hits  128.0  route    20.7  gate+up    284.7 (   133 GB/s)  down    161.3 (   117 GB/s)  all    509.5 (  112 GB/s, 0.97 of the copy rate)  unpack    560.2  = 1.35x bf16  us a layer
+T=  768       big192: hits  128.0  route    21.8  gate+up    153.3 (   247 GB/s)  down     84.1 (   225 GB/s)  all    368.2 (  154 GB/s, 1.34 of the copy rate)  unpack    560.8  = 0.98x bf16  us a layer
+T=  768       rows17: hits  128.0  route    22.6  gate+up    272.6 (   139 GB/s)  down    160.0 (   118 GB/s)  all    505.3 (  112 GB/s, 0.97 of the copy rate)  unpack    560.2  = 1.34x bf16  us a layer
+T= 1152        bf16: vLLM's layer    408.1 us (the weights' bf16 bytes    185 GB/s)
+T= 1152          new: hits  128.0  route    33.8  gate+up    316.3 (   120 GB/s)  down    192.7 (    98 GB/s)  all    607.1 (   94 GB/s, 0.81 of the copy rate)  unpack    560.9  = 1.49x bf16  us a layer
+T= 1152       big192: hits  128.0  route    30.6  gate+up    261.2 (   145 GB/s)  down    123.2 (   154 GB/s)  all    493.3 (  115 GB/s, 1.00 of the copy rate)  unpack    560.3  = 1.21x bf16  us a layer
+T= 1152       rows17: hits  128.0  route    32.4  gate+up    314.5 (   121 GB/s)  down    188.8 (   100 GB/s)  all    595.7 (   95 GB/s, 0.83 of the copy rate)  unpack    560.0  = 1.46x bf16  us a layer
+T= 2048        bf16: vLLM's layer    476.8 us (the weights' bf16 bytes    158 GB/s)
+T= 2048          new: hits  128.0  route    58.7  gate+up    444.5 (    85 GB/s)  down    330.5 (    57 GB/s)  all    860.5 (   66 GB/s, 0.57 of the copy rate)  unpack    560.3  = 1.80x bf16  us a layer
+T= 2048       big192: hits  128.0  route    50.7  gate+up    370.9 (   102 GB/s)  down    315.6 (    60 GB/s)  all    813.0 (   70 GB/s, 0.61 of the copy rate)  unpack    560.1  = 1.71x bf16  us a layer
+T= 2048       rows17: hits  128.0  route    51.8  gate+up    428.8 (    88 GB/s)  down    323.2 (    59 GB/s)  all    861.9 (   66 GB/s, 0.57 of the copy rate)  unpack    559.7  = 1.81x bf16  us a layer
+T= 4096        bf16: vLLM's layer    819.1 us (the weights' bf16 bytes     92 GB/s)
+T= 4096          new: hits  128.0  route   119.0  gate+up    755.7 (    50 GB/s)  down    809.1 (    23 GB/s)  all   1695.8 (   34 GB/s, 0.29 of the copy rate)  unpack    561.0  = 2.07x bf16  us a layer
+T= 4096       big192: hits  128.0  route    84.5  gate+up    735.0 (    52 GB/s)  down    822.0 (    23 GB/s)  all   1682.7 (   34 GB/s, 0.29 of the copy rate)  unpack    559.7  = 2.05x bf16  us a layer
+T= 4096       rows17: hits  128.0  route    89.9  gate+up    752.2 (    50 GB/s)  down    842.0 (    23 GB/s)  all   1709.3 (   33 GB/s, 0.29 of the copy rate)  unpack    559.7  = 2.09x bf16  us a layer
+T= 8192        bf16: vLLM's layer   1962.1 us (the weights' bf16 bytes     38 GB/s)
+T= 8192          new: hits  128.0  route   162.6  gate+up   1391.8 (    27 GB/s)  down   1676.3 (    11 GB/s)  all   3251.5 (   17 GB/s, 0.15 of the copy rate)  unpack    561.0  = 1.66x bf16  us a layer
+T= 8192       big192: hits  128.0  route   165.6  gate+up   1383.2 (    27 GB/s)  down   1744.7 (    11 GB/s)  all   3254.2 (   17 GB/s, 0.15 of the copy rate)  unpack    560.2  = 1.66x bf16  us a layer
+T= 8192       rows17: hits  128.0  route   149.7  gate+up   1398.6 (    27 GB/s)  down   1688.0 (    11 GB/s)  all   3308.2 (   17 GB/s, 0.15 of the copy rate)  unpack    560.0  = 1.69x bf16  us a layer
+== 23:00:34 ncu: the tiled kernel (gate+up, then down) on the real layer at 2,048 tokens
+
+/home/ubuntu/dev/out/base/raw-2048.csv: launch 0: void mma_gemm_big_kernel<Nib, 4, 4, 3, 2, 1>(T1, long, long, long, long, const __nv_bfloat16 *, cons  grid (16, 12, 128) block (256, 1, 1)
+  duration                           3.20 ms
+  SM throughput %                   47.33 %
+  memory throughput %               78.49 %
+  L1/TEX throughput %               22.96 %
+  L2 throughput %                   24.03 %
+  DRAM throughput %                 78.49 %
+  issue slots active %              20.05 %
+  L2 hit rate %                     65.89 %
+  L2 read sectors           53,231,239.00 sector
+  DRAM bytes                       723.70 Mbyte
+  registers a thread               244.00 register/thread
+  dynamic smem a block              98.30 Kbyte/block
+  warps active %                    12.85 %
+  stall wait                             24.5% of the sampled stalls
+  stall no_instructions                  18.0% of the sampled stalls
+  stall math_pipe_throttle               14.2% of the sampled stalls
+  stall long_scoreboard                  12.2% of the sampled stalls
+  stall barrier                          11.7% of the sampled stalls
+  stall selected                         10.4% of the sampled stalls
+
+/home/ubuntu/dev/out/base/raw-2048.csv: launch 1: void mma_gemm_big_kernel<Nib, 4, 4, 3, 2, 1>(T1, long, long, long, long, const __nv_bfloat16 *, cons  grid (16, 12, 128) block (256, 1, 1)
+  duration                           3.21 ms
+  SM throughput %                   44.35 %
+  memory throughput %               78.12 %
+  L1/TEX throughput %               21.45 %
+  L2 throughput %                   22.89 %
+  DRAM throughput %                 78.12 %
+  issue slots active %              18.84 %
+  L2 hit rate %                     65.37 %
+  L2 read sectors           52,043,514.00 sector
+  DRAM bytes                       724.02 Mbyte
+  registers a thread               244.00 register/thread
+  dynamic smem a block              98.30 Kbyte/block
+  warps active %                    13.02 %
+  stall wait                             23.0% of the sampled stalls
+  stall no_instructions                  16.7% of the sampled stalls
+  stall long_scoreboard                  14.8% of the sampled stalls
+  stall barrier                          14.0% of the sampled stalls
+  stall math_pipe_throttle               13.2% of the sampled stalls
+  stall selected                          9.8% of the sampled stalls
+== 23:00:53 done

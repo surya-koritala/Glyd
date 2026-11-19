@@ -1,0 +1,380 @@
+{
+  "kind": "ModelManifest",
+  "manifest_version": 1,
+  "fixture": true,
+  "manifest_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "canonicalization": "RFC8785-without-manifest_digest",
+  "model_id": "fixture/synthetic-hybrid-32",
+  "source": {
+    "repository": "fixture/synthetic-hybrid-32",
+    "revision": "0000000000000000000000000000000000000000",
+    "created_at_evidence": "2026-10-11T20:00:00-04:00"
+  },
+  "architecture": "synthetic-hybrid-32",
+  "source_precision": "bf16",
+  "execution_precision": "bf16",
+  "execution_profile": "fixture-bf16",
+  "is_lossy": false,
+  "execution_scope": [
+    "text"
+  ],
+  "required_boundary_profile": "hidden-bf16-v1",
+  "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "tokenizer_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "template_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "assets": [
+    {
+      "path": "config.json",
+      "role": "config",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": "128"
+    },
+    {
+      "path": "tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": "128"
+    },
+    {
+      "path": "template.txt",
+      "role": "template",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": "128"
+    },
+    {
+      "path": "weights.safetensors",
+      "role": "weights",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": "2097152"
+    }
+  ],
+  "layers": [
+    {
+      "index": 0,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 1,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 2,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 3,
+      "type": "full_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 4,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 5,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 6,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 7,
+      "type": "full_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 8,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 9,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 10,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 11,
+      "type": "full_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 12,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 13,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 14,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 15,
+      "type": "full_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 16,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 17,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 18,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 19,
+      "type": "full_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 20,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 21,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 22,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 23,
+      "type": "full_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 24,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 25,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 26,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 27,
+      "type": "full_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 28,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 29,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 30,
+      "type": "linear_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "index": 31,
+      "type": "full_attention",
+      "resident_weight_bytes": "32768",
+      "state_profile": "fixture-state-v1",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    }
+  ],
+  "non_layer_components": [
+    {
+      "name": "embedding",
+      "disposition": "executed",
+      "resident_weight_bytes": "524288",
+      "owner_role": "first",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "name": "final_norm_and_head",
+      "disposition": "executed",
+      "resident_weight_bytes": "524288",
+      "owner_role": "last",
+      "asset_paths": [
+        "weights.safetensors"
+      ]
+    },
+    {
+      "name": "vision",
+      "disposition": "not_in_scope",
+      "resident_weight_bytes": "0",
+      "owner_role": "none",
+      "asset_paths": []
+    },
+    {
+      "name": "mtp",
+      "disposition": "not_in_scope",
+      "resident_weight_bytes": "0",
+      "owner_role": "none",
+      "asset_paths": []
+    }
+  ],
+  "license": {
+    "source_identifier": "fixture-only-no-model",
+    "terms_url": "https://example.invalid/fixture",
+    "redistribution_approved": false
+  }
+}

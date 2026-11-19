@@ -1,0 +1,41 @@
+==PROF== Connected to process 3957 (/home/ubuntu/dc/glyd-engine)
+NVIDIA A100-SXM4-80GB (sm_80): DeepSeek-V4 on the dynamic engine, 3 layers, weights 2.813 GiB (layout mma), KV 0.001 GiB (2048 positions), 3.44 of 79.25 GiB in use
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 18 passes
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 18 passes
+without a graph: 11.777 ms a step; the stages 11.405 ms:
+    2.941 ms  25.8%  mixture of experts
+    1.945 ms  17.0%  hyper-connections
+    0.905 ms   7.9%  activations to FP8
+    0.855 ms   7.5%  attention: attention
+    0.763 ms   6.7%  attention: o low rank
+    0.655 ms   5.7%  head
+    0.571 ms   5.0%  attention: compressor
+    0.348 ms   3.1%  attention: q up
+    0.344 ms   3.0%  attention: o
+    0.293 ms   2.6%  norms
+    0.290 ms   2.5%  attention: kv norm, rotary, cache
+    0.290 ms   2.5%  indexer: compressor
+    0.280 ms   2.5%  attention: q down
+    0.259 ms   2.3%  attention: kv
+    0.211 ms   1.8%  attention: q norm, rotary
+    0.186 ms   1.6%  indexer: picks
+    0.182 ms   1.6%  indexer: q
+    0.087 ms   0.8%  indexer: weights
+kernels: 80 launches a step, 5.348 ms of kernel time a step; the most:
+    0.678 ms    9.0 a step  v4_fp8
+    0.501 ms    7.0 a step  v4_hc_proj
+    0.464 ms    6.0 a step  v4_hc_fin
+    0.353 ms    6.0 a step  v4_hc_post
+    0.233 ms    3.0 a step  v4_attn_scores
+    0.230 ms    3.0 a step  v4_comp_out
+    0.227 ms    3.0 a step  v4_comp_pool
+    0.224 ms    6.0 a step  v4_moe_act
+    0.220 ms    3.0 a step  v4_lin32_1
+    0.218 ms    3.0 a step  rmsnorm
+    0.216 ms    3.0 a step  moe_logits
+    0.216 ms    3.0 a step  v4_kv_prep
+    0.215 ms    3.0 a step  v4_attn_out
+    0.214 ms    3.0 a step  v4_attn_soft
+with a graph: 9.193 ms a step (1 steps after 1 tokens)
+==PROF== Disconnected from process 3957
+==PROF== Report: /home/ubuntu/w/out/l1.ncu-rep

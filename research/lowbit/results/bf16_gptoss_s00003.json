@@ -1,0 +1,39 @@
+{
+ "other": {
+  "tensors": 0,
+  "small_bytes": 34560,
+  "big_n": 0,
+  "sums": {}
+ },
+ "dense_mlp": {
+  "tensors": 0,
+  "small_bytes": 3954032640,
+  "big_n": 0,
+  "sums": {}
+ },
+ "router": {
+  "tensors": 0,
+  "small_bytes": 2212608,
+  "big_n": 0,
+  "sums": {}
+ },
+ "attention": {
+  "tensors": 12,
+  "small_bytes": 48384,
+  "big_n": 79626240,
+  "sums": {
+   "H_word": 858634396.1542374,
+   "H_exp": 227086913.76276326,
+   "exc12": 43198.00000000036,
+   "fast3_bits": 913155336.0,
+   "fast3_esc": 4658337.0,
+   "tier3_bits": 882496700.0,
+   "tier3_raw": 1582004.0
+  }
+ },
+ "_meta": {
+  "file": "model-00003-of-00014.safetensors",
+  "seconds": 0.35211634635925293,
+  "min_elements": 1000000
+ }
+}

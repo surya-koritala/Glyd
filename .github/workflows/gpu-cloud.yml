@@ -1,0 +1,79 @@
+name: GPU (cloud)
+
+# GPU tests on an ephemeral cloud instance, started for this run and terminated after it. By hand only. Configuration (repository
+# variables): AWS_ROLE_ARN (assumed through GitHub's OIDC), AWS_REGION, AWS_GPU_AMI (an image with the NVIDIA driver, Docker and the
+# NVIDIA container toolkit), AWS_SUBNET_ID, AWS_SG_ID; secret GH_RUNNER_TOKEN (a token that may register runners on this repository).
+on:
+  workflow_dispatch:
+    inputs:
+      instance:
+        description: Instance type
+        type: choice
+        options:
+          - g6.xlarge      # NVIDIA L4 24 GB, sm_89
+          - g5.xlarge      # NVIDIA A10G 24 GB, sm_86
+          - g6e.xlarge     # NVIDIA L40S 48 GB, sm_89
+          - g4dn.xlarge    # NVIDIA T4 16 GB, sm_75 (Turing: expected to be refused until ROADMAP V5)
+        default: g6.xlarge
+      model:
+        type: string
+        default: Qwen/Qwen3-0.6B
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      label: ${{ steps.runner.outputs.label }}
+      id: ${{ steps.runner.outputs.ec2-instance-id }}
+      archs: ${{ steps.archs.outputs.archs }}
+    steps:
+      - id: archs
+        run: |
+          case "${{ inputs.instance }}" in g5.*) a=86;; g4dn.*) a=75;; *) a=89;; esac
+          echo "archs=$a" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - id: runner
+        uses: machulav/ec2-github-runner@v2
+        with:
+          mode: start
+          github-token: ${{ secrets.GH_RUNNER_TOKEN }}
+          ec2-image-id: ${{ vars.AWS_GPU_AMI }}
+          ec2-instance-type: ${{ inputs.instance }}
+          subnet-id: ${{ vars.AWS_SUBNET_ID }}
+          security-group-id: ${{ vars.AWS_SG_ID }}
+          # (a cap whatever happens to the stop job: the instance shuts itself down after 3 hours)
+          pre-runner-script: shutdown -h +180
+          aws-resource-tags: '[{"Key": "Project", "Value": "glyd-ci"}, {"Key": "Run", "Value": "${{ github.run_id }}"}]'
+
+  test:
+    needs: start
+    uses: ./.github/workflows/gpu-tests.yml
+    with:
+      runner: '["${{ needs.start.outputs.label }}"]'
+      archs: ${{ needs.start.outputs.archs }}
+      model: ${{ inputs.model }}
+
+  stop:
+    needs: [start, test]
+    if: always() && needs.start.outputs.id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: machulav/ec2-github-runner@v2
+        with:
+          mode: stop
+          github-token: ${{ secrets.GH_RUNNER_TOKEN }}
+          label: ${{ needs.start.outputs.label }}
+          ec2-instance-id: ${{ needs.start.outputs.id }}

@@ -1,0 +1,23 @@
+Gemma 4 31B-it QAT at wren (exact i4x) + draft/ (the -assistant model), served (`glyd-engine serve wren`), Runpod secure RTX 4090 24 GB
+(EU-RO-1, Ryzen 9 7950X, 125 GiB, PCIe gen 4), engine 22a8608c, 2026-10-15 19:24-19:38 UTC. Context the plan chose: 32,768.
+compare.py compare-v1 (users-asks branch), greedy, thinking off; sampled = 5 chat prompts at the model's defaults, 400-token cap.
+
+                       prompt   first token   prompt read     writing, plain   writing, drafted (8)
+chat (short)             34       0.04 s        918 tok/s        46.3 tok/s       78.7 tok/s   (1.70x)
+~4K prompt             3839       2.2 s        1713-1746        43.5             76.5         (1.76x)
+~30K prompt           28374      34 s           830-838         36.1             45.7         (1.27x)
+sampled chat (5)                                                 46.0             86.6         (1.88x)
+
+GSM8K: the 25 questions whose result was read: 25/25 (compare.py's slice merge failed on the newer Inspect AI log format, so the
+second slice and MMLU-Pro didn't run; reported to the Qwen agent). Loads in 16 s (6 s warm).
+Notes: drafting gains less on compare.py's prompts (fact lookups in made-up notes) than on g4spec's (3.8x); the 30K prompt read
+(34 s, 830 tok/s) is slow next to the Qwen engine's 32K in 9 s: Gemma's prefill is not tuned yet.
+
+Rerun 2026-10-15 21:10-21:36 UTC, engine dcb1a039 (tensor-core prompt attention on), Runpod secure RTX 4090 (EUR-IS-1, EPYC 7282),
+served wren + draft (8 a round), compare.py d453a2f (fixed log reader), 75 + 75 questions:
+                       prompt   first token   prompt read     writing (drafted)
+chat (short)             34       0.04 s         831 tok/s      77.5 tok/s
+~4K prompt             3839       1.72 s        2228            79.8
+~30K prompt           28374      19.8 s         1432            41.1        (was 34 s / 830 tok/s before the tensor-core attention)
+GSM8K     72 / 75   (mean 165 tokens an answer, none at the 3,072 cap)
+MMLU-Pro  70 / 75   (mean 558 tokens an answer, none at the cap)

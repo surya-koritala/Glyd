@@ -1,0 +1,7 @@
+engine-qwen3-8b                  TTFT     94.4 ms  decode  111.91 tok/s
+glyd-qwen3.5-9b                  TTFT    148.0 ms  decode   28.71 tok/s
+glydcompiled-qwen3-8b            TTFT    102.2 ms  decode  116.78 tok/s
+glydcompiled-qwen3.5-9b          TTFT    131.2 ms  decode  115.85 tok/s
+glydvllm-qwen3-8b                TTFT    103.2 ms  decode   49.81 tok/s
+vllm-qwen3-8b                    TTFT     91.2 ms  decode   97.96 tok/s
+vllm-qwen3.5-9b                  TTFT    112.7 ms  decode   94.98 tok/s

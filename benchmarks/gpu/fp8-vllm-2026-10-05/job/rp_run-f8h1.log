@@ -1,0 +1,8 @@
+17:52 created t1r2nmf58t6qdh (NVIDIA H100 80GB HBM3)
+ssh on pod t1r2nmf58t6qdh ready after 16s: ssh reachable at 64.247.201.41:17083
+17:52 ssh ready at 64.247.201.41:17083 after 19 s
+NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
+17:53 job started
+terminating t1r2nmf58t6qdh
+pods left: []
+20 min

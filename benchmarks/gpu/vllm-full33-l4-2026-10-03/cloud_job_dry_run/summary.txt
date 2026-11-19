@@ -1,0 +1,89 @@
+1 x NVIDIA L4 (compute 8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; tree 25eef2d86228903e9f6acdeb9825576e6e20878c; steps sweep,tiny,real; TP 1
+01:14:44 (+1 s) machine
+01:14:44 (+1 s) env: /home/ubuntu/v027/venv/bin/python
+01:14:50 (+7 s) build: sm_89 in 1 s (library: C API 14 | GPU code 3089)
+01:15:51 (+68 s) sweep: exit 0 in 61 s (Qwen/Qwen3-8B: lm_head.weight 151936 x 4096 bf16 on NVIDIA L4 (GPU code 3089), torch 2.13.0+cu130)
+01:18:16 (+213 s) tiny: exit 0 in 145 s (tables_check: all passed (8 checks))
+01:24:26 (+583 s) real: exit 0 in 370 s (check_vllm: all passed (7 checks))
+download dl-Qwen3-4B: exit 0: 8060899111 bytes in 1 s (at +2 s)
+download dl-Qwen3-8B: exit 0: 16397464165 bytes in 0 s (at +1 s)
+01:24:26 (+583 s) done
+
+== sweep.txt
+Qwen/Qwen3-8B: lm_head.weight 151936 x 4096 bf16 on NVIDIA L4 (GPU code 3089), torch 2.13.0+cu130
+
+## mma: 10.77 bits a weight, 0.780 GiB (bf16 1.159 GiB)
+| rows | the library's route | packed ms | bf16 ms | packed / bf16 | decoded in 64 MB pieces + cuBLAS ms | / bf16 |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: |
+| 1 | gemm | 3.903 | 4.873 | 0.80 | 11.981 | 2.46 |
+| 2 | gemm | 3.596 | 4.932 | 0.73 | 12.055 | 2.44 |
+| 4 | gemm | 3.694 | 4.943 | 0.75 | 12.111 | 2.45 |
+| 8 | gemm | 3.865 | 4.961 | 0.78 | 12.123 | 2.44 |
+| 16 | gemm | 4.071 | 4.997 | 0.81 | 12.137 | 2.43 |
+| 32 | gemm | 4.502 | 5.754 | 0.78 | 12.986 | 2.26 |
+| 64 | gemm | 5.605 | 5.980 | 0.94 | 15.215 | 2.54 |
+| 65 | prompt kernel | 5.812 | 5.693 | 1.02 | 14.439 | 2.54 |
+| 128 | prompt kernel | 6.223 | 5.915 | 1.05 | 14.516 | 2.45 |
+| 256 | prompt kernel | 9.407 | 10.159 | 0.93 | 17.930 | 1.76 |
+| 512 | prompt kernel | 17.305 | 14.891 | 1.16 | 27.461 | 1.84 |
+| 768 | prompt kernel | 25.116 | 19.696 | 1.28 | 35.478 | 1.80 |
+| 1024 | decode | 33.008 | 24.279 | 1.36 | 41.622 | 1.71 |
+| 2048 | decode | 63.721 | 46.815 | 1.36 | 59.523 | 1.27 |
+
+the embedding's lookup, mma (ms a call; bf16 F.embedding in the last column):
+| tokens | uniform ids | zipf ids | bf16 |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.0140 | 0.0132 | 0.0085 |
+| 8 | 0.0131 | 0.0131 | 0.0085 |
+| 64 | 0.0391 | 0.0390 | 0.0140 |
+| 256 | 0.3431 | 0.1599 | 0.0133 |
+| 1024 | 1.3584 | 0.9919 | 0.0173 |
+| 4096 | 5.9034 | 4.1885 | 0.2436 |
+
+## mma12: 12.03 bits a weight, 0.872 GiB (bf16 1.159 GiB)
+| rows | the library's route | packed ms | bf16 ms | packed / bf16 | decoded in 64 MB pieces + cuBLAS ms | / bf16 |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: |
+| 1 | gemm | 3.625 | 4.876 | 0.74 | 12.355 | 2.53 |
+| 2 | gemm | 3.636 | 4.927 | 0.74 | 12.347 | 2.51 |
+| 4 | gemm | 3.652 | 4.940 | 0.74 | 12.389 | 2.51 |
+| 8 | gemm | 3.687 | 4.959 | 0.74 | 12.421 | 2.50 |
+| 16 | gemm | 3.721 | 4.995 | 0.74 | 12.477 | 2.50 |
+| 32 | x2 | 3.747 | 5.432 | 0.69 | 13.350 | 2.46 |
+| 64 | x2 | 4.255 | 5.771 | 0.74 | 13.780 | 2.39 |
+| 65 | prompt kernel | 4.514 | 5.773 | 0.78 | 13.981 | 2.42 |
+| 128 | prompt kernel | 5.184 | 6.284 | 0.83 | 14.359 | 2.29 |
+| 256 | prompt kernel | 8.352 | 9.631 | 0.87 | 17.296 | 1.80 |
+| 512 | prompt kernel | 14.701 | 14.653 | 1.00 | 25.951 | 1.77 |
+| 768 | prompt kernel | 20.605 | 18.659 | 1.10 | 33.919 | 1.82 |
+| 1024 | prompt kernel | 26.341 | 23.961 | 1.10 | 40.550 | 1.69 |
+| 2048 | prompt kernel | 50.233 | 46.413 | 1.08 | 58.845 | 1.27 |
+
+the embedding's lookup, mma12 (ms a call; bf16 F.embedding in the last column):
+| tokens | uniform ids | zipf ids | bf16 |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.0122 | 0.0116 | 0.0083 |
+| 8 | 0.0118 | 0.0119 | 0.0095 |
+| 64 | 0.0311 | 0.0307 | 0.0129 |
+| 256 | 0.3735 | 0.1813 | 0.0125 |
+| 1024 | 1.5175 | 0.7740 | 0.0130 |
+| 4096 | 6.1218 | 3.3795 | 0.2440 |
+
+== tables/report.txt
+PASS to: the embedding and the LM head packed (1 pack, 1 expected; shard rows [32064]), every lookup the checkpoint's row bit for bit on 1 rank, each product within 1e-2 (3.1e-03) and the same bits twice
+PASS to: the first token of every prompt bf16's where bf16's margin is over 0.1 (3 of 4)
+PASS to: prompt logprobs within 0.0062 on average of bf16's (at most 0.05; the largest 0.025)
+PASS to: exact: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit; the tied model stays as vLLM runs it ([('model.embed_tokens', 'UnquantizedEmbeddingMethod'), ('lm_head', 'UnquantizedEmbeddingMethod')])
+PASS uo: the embedding and the LM head packed (2 packs, 2 expected; shard rows [32064]), every lookup the checkpoint's row bit for bit on 1 rank, each product within 1e-2 (3.0e-03) and the same bits twice
+PASS uo: the first token of every prompt bf16's where bf16's margin is over 0.1 (2 of 4)
+PASS uo: prompt logprobs within 0.0064 on average of bf16's (at most 0.05; the largest 0.027)
+PASS uo: exact: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit; the embedding packed, the LM head as vLLM runs it ([('model.embed_tokens', 'GlydEmbeddingMethod'), ('lm_head', 'UnquantizedEmbeddingMethod')])
+
+== real/report.txt
+PASS Qwen3-4B auto: the embedding and the LM head packed (1 pack, 502 MiB; 1 expected), every lookup of random ids and of the shard's ends the checkpoint's own row bit for bit, each product within 1e-2 of its matrix (2.75e-03) and the same bits twice
+PASS Qwen3-4B auto: every pack (144) decoded to its weights bit for bit
+PASS Qwen3-4B auto: each layer's product within 1e-2 of F.linear (4.97e-03) and the same bits every run
+PASS Qwen3-4B auto: top-1 agreement with bf16 on its continuation 0.9890 (at least 0.97; bf16 eager's 0.9896)
+PASS Qwen3-4B auto: mean |logprob difference| 8.35e-03, at most 2.0x bf16 eager's against its graphs (9.25e-03)
+PASS Qwen3-4B exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True)
+PASS Qwen3-4B exact: the tied model's table stays as vLLM runs it ([('model.embed_tokens', 'UnquantizedEmbeddingMethod'), ('lm_head', 'UnquantizedEmbeddingMethod')])
+

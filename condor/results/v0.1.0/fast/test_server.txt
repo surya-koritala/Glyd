@@ -1,0 +1,10 @@
+PASS  chat page  
+PASS  openai plain  42
+PASS  openai streamed live  80 chunks over 1.15 s
+PASS  openai tool call  [{"id": "chatcmpl-tool-0f539bf3445ff20e", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}}]
+PASS  openai tool result used  It's currently **18°C and sunny** in Paris — a nice, mild day! ☀️ Anything else you'd like to know?
+PASS  anthropic plain  [{"type": "text", "text": "Blue"}]
+PASS  anthropic tool use  [{"type": "tool_use", "id": "chatcmpl-tool-61d6505f302e27df", "name": "get_weather", "input": {"city": "Tokyo"}}]
+PASS  anthropic streamed  message_start content_block_start content_block_delta content_block_stop message_delta message_stop
+PASS  after a dropped stream  42
+9 of 9 passed

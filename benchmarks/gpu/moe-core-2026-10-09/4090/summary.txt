@@ -1,0 +1,172 @@
+mixture-of-experts layer (GLY-101) on NVIDIA GeForce RTX 4090, 8.9, 580.159.04; tree 744a90c3234039e5ec68da6a90e647d1501c2d31; torch 2.8.0+cu128
+--- steps
+rustup: rc=0 8 s (job minute 0)
+engine: rc=0 90 s (job minute 1)
+lib: rc=0 309 s from the start
+emu: rc=1 0 s (job minute 5)
+selftest: rc=0 17 s (job minute 5)
+moecheck: rc=0 21 s (job minute 5)
+speed: rc=0 6 s (job minute 5)
+torch: rc=0 9 s (job minute 6)
+--- kernels/moe.cu on the host
+      |             ^~~~~
+--- the layer on the GPU against the CPU (moecheck)
+NVIDIA GeForce RTX 4090 (sm_89), /root/v/lib/libglyd_gpu_cuda12.so: the mixture-of-experts layer on the GPU against the CPU
+---- swiglu-8of128 int5: 128 experts, 8 of them a token, router over 512, experts over 512 (intermediate 256, SwiGlu { limit: None }), packed in 0.9 s: 35.0 MB of weights, 27.1 MB of scratch
+ok   swiglu-8of128 int5 T=1: logits 6.4e-8, experts 1/1 tokens equal, weights 4.7e-8, plan exact, intermediate rows 2.8e-6, routed sum 0.0e0, with the shared expert (256, gated) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int5 T=2: logits 1.2e-7, experts 2/2 tokens equal, weights 2.1e-7, plan exact, intermediate rows 5.9e-6, routed sum 0.0e0, with the shared expert (256, gated) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int5 T=5: logits 4.7e-8, experts 5/5 tokens equal, weights 1.6e-7, plan exact, intermediate rows 1.4e-7, routed sum 0.0e0, with the shared expert (256, gated) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int5 T=17: logits 7.3e-8, experts 17/17 tokens equal, weights 1.3e-7, plan exact, intermediate rows 7.6e-4, routed sum 2.0e-3, with the shared expert (256, gated) 2.2e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int5 T=33: logits 8.1e-8, experts 33/33 tokens equal, weights 2.5e-7, plan exact, intermediate rows 2.2e-5, routed sum 3.2e-4, with the shared expert (256, gated) 4.3e-4 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int5 T=64: logits 8.4e-8, experts 64/64 tokens equal, weights 2.0e-7, plan exact, intermediate rows 1.8e-4, routed sum 3.3e-3, with the shared expert (256, gated) 1.7e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int5 T=200: logits 8.2e-8, experts 200/200 tokens equal, weights 2.3e-7, plan exact, intermediate rows 3.7e-6, routed sum 2.6e-3, with the shared expert (256, gated) 3.0e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int5 T=1100: logits 7.6e-8, experts 1100/1100 tokens equal, weights 2.7e-7, plan exact, intermediate rows 8.1e-4, routed sum 1.8e-3, with the shared expert (256, gated) 2.6e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int5: single experts [0, 65, 127] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   swiglu-8of128 int5: the decode step as a CUDA graph, replayed twice: the eager step's bits
+---- swiglu-8of128 int6: 128 experts, 8 of them a token, router over 512, experts over 512 (intermediate 256, SwiGlu { limit: None }), packed in 0.8 s: 41.3 MB of weights, 27.1 MB of scratch
+ok   swiglu-8of128 int6 T=1: logits 6.7e-8, experts 1/1 tokens equal, weights 6.8e-8, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (256, gated) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int6 T=2: logits 5.5e-8, experts 2/2 tokens equal, weights 8.8e-8, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (256, gated) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int6 T=5: logits 4.6e-8, experts 5/5 tokens equal, weights 1.8e-7, plan exact, intermediate rows 2.3e-8, routed sum 5.4e-8, with the shared expert (256, gated) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int6 T=17: logits 1.0e-7, experts 17/17 tokens equal, weights 1.5e-7, plan exact, intermediate rows 8.8e-7, routed sum 0.0e0, with the shared expert (256, gated) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int6 T=33: logits 9.6e-8, experts 33/33 tokens equal, weights 2.1e-7, plan exact, intermediate rows 6.7e-5, routed sum 4.0e-4, with the shared expert (256, gated) 1.0e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int6 T=64: logits 9.9e-8, experts 64/64 tokens equal, weights 1.9e-7, plan exact, intermediate rows 1.3e-4, routed sum 7.7e-4, with the shared expert (256, gated) 9.4e-4 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int6 T=200: logits 8.3e-8, experts 200/200 tokens equal, weights 2.3e-7, plan exact, intermediate rows 1.5e-5, routed sum 1.5e-3, with the shared expert (256, gated) 1.6e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int6 T=1100: logits 7.3e-8, experts 1100/1100 tokens equal, weights 2.9e-7, plan exact, intermediate rows 1.6e-4, routed sum 2.5e-3, with the shared expert (256, gated) 2.7e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   swiglu-8of128 int6: single experts [0, 65, 127] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   swiglu-8of128 int6: the decode step as a CUDA graph, replayed twice: the eager step's bits
+---- geglu-8of128 int5: 128 experts, 8 of them a token, router over 512, experts over 512 (intermediate 192, GeGlu), packed in 0.6 s: 26.3 MB of weights, 7.7 MB of scratch
+ok   geglu-8of128 int5 T=1: logits 6.8e-8, experts 1/1 tokens equal, weights 4.8e-8, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (192) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   geglu-8of128 int5 T=9: logits 6.8e-8, experts 9/9 tokens equal, weights 1.8e-7, plan exact, intermediate rows 6.3e-8, routed sum 0.0e0, with the shared expert (192) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   geglu-8of128 int5 T=40: logits 9.1e-8, experts 40/40 tokens equal, weights 2.3e-7, plan exact, intermediate rows 8.3e-5, routed sum 3.7e-4, with the shared expert (192) 1.3e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   geglu-8of128 int5 T=300: logits 7.6e-8, experts 300/300 tokens equal, weights 3.0e-7, plan exact, intermediate rows 2.7e-5, routed sum 2.3e-3, with the shared expert (192) 5.0e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   geglu-8of128 int5: single experts [0, 65, 127] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   geglu-8of128 int5: the decode step as a CUDA graph, replayed twice: the eager step's bits
+---- geglu-8of128 int6: 128 experts, 8 of them a token, router over 512, experts over 512 (intermediate 192, GeGlu), packed in 0.6 s: 31.0 MB of weights, 7.7 MB of scratch
+ok   geglu-8of128 int6 T=1: logits 6.2e-8, experts 1/1 tokens equal, weights 7.5e-8, plan exact, intermediate rows 1.1e-8, routed sum 0.0e0, with the shared expert (192) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   geglu-8of128 int6 T=9: logits 9.0e-8, experts 9/9 tokens equal, weights 1.9e-7, plan exact, intermediate rows 7.6e-10, routed sum 1.7e-7, with the shared expert (192) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   geglu-8of128 int6 T=40: logits 8.2e-8, experts 40/40 tokens equal, weights 2.7e-7, plan exact, intermediate rows 2.1e-5, routed sum 1.4e-3, with the shared expert (192) 6.2e-4 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   geglu-8of128 int6 T=300: logits 8.4e-8, experts 300/300 tokens equal, weights 2.5e-7, plan exact, intermediate rows 1.8e-7, routed sum 1.0e-3, with the shared expert (192) 2.5e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   geglu-8of128 int6: single experts [0, 65, 127] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   geglu-8of128 int6: the decode step as a CUDA graph, replayed twice: the eager step's bits
+---- clamp-8of288 int5: 288 experts, 8 of them a token, router over 512, experts over 512 (intermediate 256, SwiGlu { limit: Some(0.5) }), packed in 1.8 s: 78.4 MB of weights, 5.9 MB of scratch
+ok   clamp-8of288 int5 T=1: logits 1.1e-7, experts 1/1 tokens equal, weights 0.0e0, plan exact, intermediate rows 3.9e-4, routed sum 1.0e-3, with the shared expert (256) 6.9e-4 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   clamp-8of288 int5 T=4: logits 9.6e-8, experts 4/4 tokens equal, weights 1.8e-7, plan exact, intermediate rows 1.2e-5, routed sum 4.9e-4, with the shared expert (256) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   clamp-8of288 int5 T=33: logits 9.4e-8, experts 33/33 tokens equal, weights 2.6e-7, plan exact, intermediate rows 7.9e-4, routed sum 1.8e-3, with the shared expert (256) 2.1e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   clamp-8of288 int5 T=150: logits 8.3e-8, experts 150/150 tokens equal, weights 2.7e-7, plan exact, intermediate rows 7.9e-4, routed sum 3.1e-3, with the shared expert (256) 1.9e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   clamp-8of288 int5: single experts [0, 145, 287] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   clamp-8of288 int5: the decode step as a CUDA graph, replayed twice: the eager step's bits
+---- clamp-8of288 int6: 288 experts, 8 of them a token, router over 512, experts over 512 (intermediate 256, SwiGlu { limit: Some(0.5) }), packed in 1.7 s: 92.6 MB of weights, 5.9 MB of scratch
+ok   clamp-8of288 int6 T=1: logits 8.6e-8, experts 1/1 tokens equal, weights 1.8e-7, plan exact, intermediate rows 1.2e-5, routed sum 1.5e-5, with the shared expert (256) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   clamp-8of288 int6 T=4: logits 1.1e-7, experts 4/4 tokens equal, weights 1.7e-7, plan exact, intermediate rows 6.1e-6, routed sum 2.9e-6, with the shared expert (256) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   clamp-8of288 int6 T=33: logits 7.6e-8, experts 33/33 tokens equal, weights 1.8e-7, plan exact, intermediate rows 3.1e-3, routed sum 3.5e-3, with the shared expert (256) 1.9e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   clamp-8of288 int6 T=150: logits 8.7e-8, experts 150/150 tokens equal, weights 3.6e-7, plan exact, intermediate rows 1.6e-3, routed sum 3.0e-3, with the shared expert (256) 3.7e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   clamp-8of288 int6: single experts [0, 145, 287] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   clamp-8of288 int6: the decode step as a CUDA graph, replayed twice: the eager step's bits
+---- relu2-22of512 int5: 512 experts, 22 of them a token, router over 512, experts over 256 (intermediate 384, Relu2), packed in 1.6 s: 69.9 MB of weights, 71.3 MB of scratch
+ok   relu2-22of512 int5 T=1: logits 8.8e-8, experts 1/1 tokens equal, weights 0.0e0, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=3: logits 1.1e-7, experts 3/3 tokens equal, weights 2.3e-7, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=16: logits 8.3e-8, experts 16/16 tokens equal, weights 2.3e-7, plan exact, intermediate rows 6.2e-6, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=40: logits 8.9e-8, experts 40/40 tokens equal, weights 2.4e-7, plan exact, intermediate rows 2.3e-3, routed sum 4.1e-3, with the shared expert (384) 3.8e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=128: logits 7.8e-8, experts 128/128 tokens equal, weights 3.2e-7, plan exact, intermediate rows 1.4e-4, routed sum 3.8e-3, with the shared expert (384) 3.7e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=1600: logits 7.0e-8, experts 1600/1600 tokens equal, weights 4.3e-7, plan exact, intermediate rows 5.3e-3, routed sum 3.7e-3, with the shared expert (384) 3.4e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5: single experts [0, 257, 511] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   relu2-22of512 int5: the decode step as a CUDA graph, replayed twice: the eager step's bits
+---- relu2-22of512 int6: 512 experts, 22 of them a token, router over 512, experts over 256 (intermediate 384, Relu2), packed in 1.5 s: 82.6 MB of weights, 71.3 MB of scratch
+ok   relu2-22of512 int6 T=1: logits 1.1e-7, experts 1/1 tokens equal, weights 2.3e-7, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=3: logits 1.0e-7, experts 3/3 tokens equal, weights 2.2e-7, plan exact, intermediate rows 5.9e-13, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=16: logits 8.4e-8, experts 16/16 tokens equal, weights 2.3e-7, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=40: logits 8.7e-8, experts 40/40 tokens equal, weights 2.3e-7, plan exact, intermediate rows 3.2e-4, routed sum 2.6e-4, with the shared expert (384) 2.1e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=128: logits 8.3e-8, experts 128/128 tokens equal, weights 2.9e-7, plan exact, intermediate rows 4.8e-6, routed sum 2.1e-3, with the shared expert (384) 1.9e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=1600: logits 7.1e-8, experts 1600/1600 tokens equal, weights 4.7e-7, plan exact, intermediate rows 2.5e-3, routed sum 3.6e-3, with the shared expert (384) 3.2e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6: single experts [0, 257, 511] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   relu2-22of512 int6: the decode step as a CUDA graph, replayed twice: the eager step's bits
+all of the mixture-of-experts layer's stages within their bounds
+--- PyTorch on the CPU reference's dump (the script's own check)
+ok   relu2-22of512-int5: 40 tokens; torch's experts equal the engine's for 40/40, weights 2.7e-07 (bound 1e-5); the layer's output 4.20e-03 of the largest value (bound 2.0e-02), 80.6% of its values equal
+ok   relu2-22of512-int6: 40 tokens; torch's experts equal the engine's for 40/40, weights 3.3e-07 (bound 1e-5); the layer's output 4.13e-03 of the largest value (bound 2.0e-02), 80.9% of its values equal
+ok   swiglu-8of128-int5: 33 tokens; torch's experts equal the engine's for 28/33 (+5 by a tie the other way), weights 1.2e-07 (bound 1e-5); the layer's output 6.71e-03 of the largest value (bound 2.0e-02), 31.1% of its values equal
+ok   swiglu-8of128-int6: 33 tokens; torch's experts equal the engine's for 26/33 (+7 by a tie the other way), weights 1.2e-07 (bound 1e-5); the layer's output 6.67e-03 of the largest value (bound 2.0e-02), 30.2% of its values equal
+all cases within the bound
+--- PyTorch on the GPU's outputs
+ok   clamp-8of288-int5: 33 tokens; torch's experts equal the engine's for 33/33, weights 1.7e-07 (bound 1e-5); the layer's output 8.37e-03 of the largest value (bound 2.0e-02), 46.9% of its values equal
+ok   clamp-8of288-int6: 33 tokens; torch's experts equal the engine's for 33/33, weights 2.5e-07 (bound 1e-5); the layer's output 7.46e-03 of the largest value (bound 2.0e-02), 46.2% of its values equal
+ok   geglu-8of128-int5: 40 tokens; torch's experts equal the engine's for 31/40 (+9 by a tie the other way), weights 7.9e-08 (bound 1e-5); the layer's output 5.18e-03 of the largest value (bound 2.0e-02), 41.1% of its values equal
+ok   geglu-8of128-int6: 40 tokens; torch's experts equal the engine's for 33/40 (+7 by a tie the other way), weights 1.8e-07 (bound 1e-5); the layer's output 9.95e-03 of the largest value (bound 2.0e-02), 42.5% of its values equal
+ok   relu2-22of512-int5: 40 tokens; torch's experts equal the engine's for 40/40, weights 2.8e-07 (bound 1e-5); the layer's output 3.76e-03 of the largest value (bound 2.0e-02), 80.7% of its values equal
+ok   relu2-22of512-int6: 40 tokens; torch's experts equal the engine's for 40/40, weights 2.3e-07 (bound 1e-5); the layer's output 4.24e-03 of the largest value (bound 2.0e-02), 79.8% of its values equal
+ok   swiglu-8of128-int5: 33 tokens; torch's experts equal the engine's for 25/33 (+8 by a tie the other way), weights 9.6e-08 (bound 1e-5); the layer's output 6.80e-03 of the largest value (bound 2.0e-02), 31.6% of its values equal
+ok   swiglu-8of128-int6: 33 tokens; torch's experts equal the engine's for 28/33 (+5 by a tie the other way), weights 1.1e-07 (bound 1e-5); the layer's output 8.33e-03 of the largest value (bound 2.0e-02), 31.1% of its values equal
+all cases within the bound
+--- speed
+qwen36 int5 (40 layers; 256 experts, 8 a token; router over 2048, experts over 2048, intermediate 512, SwiGlu { limit: None }): weights 0.56 GB a layer, scratch 0.17 GB for all
+  T=1          50.0 us a layer =    19981 tokens/s through it; 40 layers:  499.5 tokens/s; the experts' packs 8 x 2.16 MB read at 341 GB/s
+  T=2          67.5 us a layer =    29621 tokens/s through it; 40 layers:  740.5 tokens/s; the experts' packs 16 x 2.16 MB read at 498 GB/s
+  T=4         103.2 us a layer =    38754 tokens/s through it; 40 layers:  968.9 tokens/s; the experts' packs 30 x 2.16 MB read at 631 GB/s
+  T=8         176.3 us a layer =    45372 tokens/s through it; 40 layers: 1134.3 tokens/s; the experts' packs 57 x 2.16 MB read at 696 GB/s
+  T=16        287.7 us a layer =    55617 tokens/s through it; 40 layers: 1390.4 tokens/s; the experts' packs 101 x 2.16 MB read at 758 GB/s
+  T=64        790.9 us a layer =    80919 tokens/s through it; 40 layers: 2023.0 tokens/s; the experts' packs 221 x 2.16 MB read at 606 GB/s
+  T=512       972.5 us a layer =   526501 tokens/s through it; 40 layers: 13162.5 tokens/s; the experts' packs 256 x 2.16 MB read at 569 GB/s
+  T=2048     2286.6 us a layer =   895656 tokens/s through it; 40 layers: 22391.4 tokens/s; the experts' packs 256 x 2.16 MB read at 242 GB/s
+qwen36 int6 (40 layers; 256 experts, 8 a token; router over 2048, experts over 2048, intermediate 512, SwiGlu { limit: None }): weights 0.66 GB a layer, scratch 0.17 GB for all
+  T=1          52.4 us a layer =    19079 tokens/s through it; 40 layers:  477.0 tokens/s; the experts' packs 8 x 2.56 MB read at 385 GB/s
+  T=2          74.6 us a layer =    26824 tokens/s through it; 40 layers:  670.6 tokens/s; the experts' packs 16 x 2.56 MB read at 533 GB/s
+  T=4         118.3 us a layer =    33803 tokens/s through it; 40 layers:  845.1 tokens/s; the experts' packs 30 x 2.56 MB read at 651 GB/s
+  T=8         196.8 us a layer =    40650 tokens/s through it; 40 layers: 1016.3 tokens/s; the experts' packs 57 x 2.56 MB read at 737 GB/s
+  T=16        328.9 us a layer =    48651 tokens/s through it; 40 layers: 1216.3 tokens/s; the experts' packs 101 x 2.56 MB read at 784 GB/s
+  T=64        844.0 us a layer =    75827 tokens/s through it; 40 layers: 1895.7 tokens/s; the experts' packs 221 x 2.56 MB read at 671 GB/s
+  T=512      1091.9 us a layer =   468897 tokens/s through it; 40 layers: 11722.4 tokens/s; the experts' packs 256 x 2.56 MB read at 599 GB/s
+  T=2048     2303.8 us a layer =   888957 tokens/s through it; 40 layers: 22223.9 tokens/s; the experts' packs 256 x 2.56 MB read at 284 GB/s
+gemma4 int5 (30 layers; 128 experts, 8 a token; router over 2816, experts over 2816, intermediate 704, GeGlu): weights 0.54 GB a layer, scratch 0.25 GB for all
+  T=1          72.8 us a layer =    13733 tokens/s through it; 30 layers:  457.8 tokens/s; the experts' packs 8 x 4.09 MB read at 437 GB/s
+  T=2         106.6 us a layer =    18758 tokens/s through it; 30 layers:  625.3 tokens/s; the experts' packs 15 x 4.09 MB read at 579 GB/s
+  T=4         181.3 us a layer =    22063 tokens/s through it; 30 layers:  735.4 tokens/s; the experts' packs 28 x 4.09 MB read at 641 GB/s
+  T=8         285.8 us a layer =    27989 tokens/s through it; 30 layers:  933.0 tokens/s; the experts' packs 51 x 4.09 MB read at 723 GB/s
+  T=16        416.6 us a layer =    38409 tokens/s through it; 30 layers: 1280.3 tokens/s; the experts' packs 81 x 4.09 MB read at 796 GB/s
+  T=64        821.2 us a layer =    77934 tokens/s through it; 30 layers: 2597.8 tokens/s; the experts' packs 126 x 4.09 MB read at 626 GB/s
+  T=512      1044.5 us a layer =   490196 tokens/s through it; 30 layers: 16339.9 tokens/s; the experts' packs 128 x 4.09 MB read at 501 GB/s
+  T=2048     2943.4 us a layer =   695803 tokens/s through it; 30 layers: 23193.4 tokens/s; the experts' packs 128 x 4.09 MB read at 178 GB/s
+gemma4 int6 (30 layers; 128 experts, 8 a token; router over 2816, experts over 2816, intermediate 704, GeGlu): weights 0.63 GB a layer, scratch 0.25 GB for all
+  T=1          77.7 us a layer =    12874 tokens/s through it; 30 layers:  429.1 tokens/s; the experts' packs 8 x 4.83 MB read at 484 GB/s
+  T=2         124.4 us a layer =    16075 tokens/s through it; 30 layers:  535.8 tokens/s; the experts' packs 15 x 4.83 MB read at 586 GB/s
+  T=4         204.9 us a layer =    19519 tokens/s through it; 30 layers:  650.6 tokens/s; the experts' packs 28 x 4.83 MB read at 670 GB/s
+  T=8         322.1 us a layer =    24836 tokens/s through it; 30 layers:  827.9 tokens/s; the experts' packs 51 x 4.83 MB read at 758 GB/s
+  T=16        478.0 us a layer =    33472 tokens/s through it; 30 layers: 1115.7 tokens/s; the experts' packs 81 x 4.83 MB read at 820 GB/s
+  T=64        910.1 us a layer =    70323 tokens/s through it; 30 layers: 2344.1 tokens/s; the experts' packs 126 x 4.83 MB read at 667 GB/s
+  T=512      1137.3 us a layer =   450180 tokens/s through it; 30 layers: 15006.0 tokens/s; the experts' packs 128 x 4.83 MB read at 544 GB/s
+  T=2048     2953.2 us a layer =   693481 tokens/s through it; 30 layers: 23116.0 tokens/s; the experts' packs 128 x 4.83 MB read at 209 GB/s
+glm53 int5 (42 layers; 288 experts, 8 a token; router over 4096, experts over 4096, intermediate 2048, SwiGlu { limit: Some(10.0) }): weights 5.00 GB a layer, scratch 0.52 GB for all
+  T=1         200.3 us a layer =     4992 tokens/s through it; 42 layers:  118.9 tokens/s; the experts' packs 8 x 17.30 MB read at 683 GB/s
+  T=2         345.0 us a layer =     5798 tokens/s through it; 42 layers:  138.0 tokens/s; the experts' packs 16 x 17.30 MB read at 782 GB/s
+  T=4         619.2 us a layer =     6460 tokens/s through it; 42 layers:  153.8 tokens/s; the experts' packs 30 x 17.30 MB read at 848 GB/s
+  T=8        1126.5 us a layer =     7102 tokens/s through it; 42 layers:  169.1 tokens/s; the experts' packs 57 x 17.30 MB read at 883 GB/s
+  T=16       1988.9 us a layer =     8045 tokens/s through it; 42 layers:  191.5 tokens/s; the experts' packs 103 x 17.30 MB read at 900 GB/s
+  T=64       6038.3 us a layer =    10599 tokens/s through it; 42 layers:  252.4 tokens/s; the experts' packs 239 x 17.30 MB read at 686 GB/s
+  T=512      7532.9 us a layer =    67969 tokens/s through it; 42 layers: 1618.3 tokens/s; the experts' packs 288 x 17.30 MB read at 661 GB/s
+  T=2048    14699.0 us a layer =   139329 tokens/s through it; 42 layers: 3317.4 tokens/s; the experts' packs 288 x 17.30 MB read at 339 GB/s
+glm53 int6 (42 layers; 288 experts, 8 a token; router over 4096, experts over 4096, intermediate 2048, SwiGlu { limit: Some(10.0) }): weights 5.91 GB a layer, scratch 0.52 GB for all
+  T=1         240.9 us a layer =     4151 tokens/s through it; 42 layers:   98.8 tokens/s; the experts' packs 8 x 20.45 MB read at 671 GB/s
+  T=2         405.1 us a layer =     4937 tokens/s through it; 42 layers:  117.5 tokens/s; the experts' packs 16 x 20.45 MB read at 787 GB/s
+  T=4         735.4 us a layer =     5439 tokens/s through it; 42 layers:  129.5 tokens/s; the experts' packs 30 x 20.45 MB read at 843 GB/s
+  T=8        1330.6 us a layer =     6012 tokens/s through it; 42 layers:  143.1 tokens/s; the experts' packs 57 x 20.45 MB read at 883 GB/s
+  T=16       2314.4 us a layer =     6913 tokens/s through it; 42 layers:  164.6 tokens/s; the experts' packs 103 x 20.45 MB read at 914 GB/s
+  T=64       7232.0 us a layer =     8850 tokens/s through it; 42 layers:  210.7 tokens/s; the experts' packs 239 x 20.45 MB read at 677 GB/s
+  T=512      9016.6 us a layer =    56784 tokens/s through it; 42 layers: 1352.0 tokens/s; the experts' packs 288 x 20.45 MB read at 653 GB/s
+  T=2048    14664.2 us a layer =   139660 tokens/s through it; 42 layers: 3325.2 tokens/s; the experts' packs 288 x 20.45 MB read at 402 GB/s
+nemotron3 int5 (40 layers; 512 experts, 22 a token; router over 4096, experts over 1024, intermediate 2688, Relu2): weights 1.97 GB a layer, scratch 0.49 GB for all
+  T=1         175.7 us a layer =     5692 tokens/s through it; 40 layers:  142.3 tokens/s; the experts' packs 22 x 3.78 MB read at 464 GB/s
+  T=2         254.4 us a layer =     7862 tokens/s through it; 40 layers:  196.5 tokens/s; the experts' packs 42 x 3.78 MB read at 628 GB/s
+  T=4         419.8 us a layer =     9527 tokens/s through it; 40 layers:  238.2 tokens/s; the experts' packs 81 x 3.78 MB read at 730 GB/s
+  T=8         699.6 us a layer =    11435 tokens/s through it; 40 layers:  285.9 tokens/s; the experts' packs 149 x 3.78 MB read at 806 GB/s
+  T=16       1140.0 us a layer =    14035 tokens/s through it; 40 layers:  350.9 tokens/s; the experts' packs 255 x 3.78 MB read at 846 GB/s
+  T=64       2981.5 us a layer =    21466 tokens/s through it; 40 layers:  536.6 tokens/s; the experts' packs 479 x 3.78 MB read at 608 GB/s
+  T=512      3700.3 us a layer =   138368 tokens/s through it; 40 layers: 3459.2 tokens/s; the experts' packs 512 x 3.78 MB read at 524 GB/s
+  T=2048     8275.5 us a layer =   247479 tokens/s through it; 40 layers: 6187.0 tokens/s; the experts' packs 512 x 3.78 MB read at 234 GB/s
+nemotron3 int6 (40 layers; 512 experts, 22 a token; router over 4096, experts over 1024, intermediate 2688, Relu2): weights 2.33 GB a layer, scratch 0.49 GB for all
+  T=1         186.3 us a layer =     5368 tokens/s through it; 40 layers:  134.2 tokens/s; the experts' packs 22 x 4.47 MB read at 518 GB/s
+  T=2         288.2 us a layer =     6940 tokens/s through it; 40 layers:  173.5 tokens/s; the experts' packs 42 x 4.47 MB read at 655 GB/s
+  T=4         482.5 us a layer =     8291 tokens/s through it; 40 layers:  207.3 tokens/s; the experts' packs 81 x 4.47 MB read at 750 GB/s
+  T=8         818.3 us a layer =     9776 tokens/s through it; 40 layers:  244.4 tokens/s; the experts' packs 149 x 4.47 MB read at 815 GB/s
+  T=16       1330.4 us a layer =    12027 tokens/s through it; 40 layers:  300.7 tokens/s; the experts' packs 255 x 4.47 MB read at 856 GB/s
+  T=64       3002.6 us a layer =    21315 tokens/s through it; 40 layers:  532.9 tokens/s; the experts' packs 479 x 4.47 MB read at 714 GB/s
+  T=512      3807.2 us a layer =   134481 tokens/s through it; 40 layers: 3362.0 tokens/s; the experts' packs 512 x 4.47 MB read at 602 GB/s
+  T=2048     8291.3 us a layer =   247005 tokens/s through it; 40 layers: 6175.1 tokens/s; the experts' packs 512 x 4.47 MB read at 276 GB/s

@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "fixture": false,
+  "programs": {
+    "exo": null,
+    "glyd": null
+  },
+  "artifacts": [],
+  "cells": [
+    {
+      "id": "decode_tokens_per_second_default",
+      "metric": "decode_tokens_per_second",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "prefill_tokens_per_second_default",
+      "metric": "prefill_tokens_per_second",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "ttft_milliseconds_prompt_1024",
+      "metric": "ttft_milliseconds",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "ttft_milliseconds_prompt_8192",
+      "metric": "ttft_milliseconds",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "ttft_milliseconds_prompt_32768",
+      "metric": "ttft_milliseconds",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "scaling_ratio_default",
+      "metric": "scaling_ratio",
+      "matched": null,
+      "unavailable": "not measured - two qualified same-type nodes unavailable",
+      "observations": []
+    },
+    {
+      "id": "concurrent_tokens_per_second_concurrency_1",
+      "metric": "concurrent_tokens_per_second",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "concurrent_tokens_per_second_concurrency_4",
+      "metric": "concurrent_tokens_per_second",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "concurrent_tokens_per_second_concurrency_16",
+      "metric": "concurrent_tokens_per_second",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "peak_resident_bytes_default",
+      "metric": "peak_resident_bytes",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "largest_model_parameters_default",
+      "metric": "largest_model_parameters",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "maximum_context_tokens_default",
+      "metric": "maximum_context_tokens",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "quality_kl_default",
+      "metric": "quality_kl",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "quality_top1_fraction_default",
+      "metric": "quality_top1_fraction",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "quality_perplexity_default",
+      "metric": "quality_perplexity",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "setup_milliseconds_default",
+      "metric": "setup_milliseconds",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "setup_manual_steps_default",
+      "metric": "setup_manual_steps",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "reliability_successes20_default",
+      "metric": "reliability_successes20",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "recovery_milliseconds_default",
+      "metric": "recovery_milliseconds",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "cancel_retained_bytes_default",
+      "metric": "cancel_retained_bytes",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "api_pass_fraction_default",
+      "metric": "api_pass_fraction",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    },
+    {
+      "id": "model_families_count_default",
+      "metric": "model_families_count",
+      "matched": null,
+      "unavailable": "not run - pinned builds matched receipts and workload approval pending",
+      "observations": []
+    }
+  ]
+}

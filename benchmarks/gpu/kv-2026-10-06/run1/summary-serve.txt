@@ -1,0 +1,14 @@
+| server | load | requests/s | output tok/s | TTFT median ms | TPOT median ms |
+| :-- | :-- | --: | --: | --: | --: |
+| stock | 1 | 0.291 | 74.5 | 144.3 | 12.91 |
+| stock | 8 | 1.713 | 438.4 | 629.5 | 15.77 |
+| stock | 32 | 3.733 | 955.6 | 749.8 | 30.06 |
+| stock | 64 | 4.551 | 1165.1 | 986.1 | 50.24 |
+| stock | all | 4.211 | 1077.9 | 23508.8 | 60.16 |
+| kv | 1 | 0.292 | 74.7 | 151.2 | 12.84 |
+| kv | 8 | 1.716 | 439.3 | 641.6 | 15.65 |
+| kv | 32 | 3.800 | 972.8 | 734.2 | 29.52 |
+| kv | 64 | 4.684 | 1199.2 | 757.9 | 48.95 |
+| kv | all | 4.645 | 1189.2 | 22357.9 | 59.33 |
+stock : GPU KV cache size: 150,062 tokens; Maximum concurrency for 8,192 tokens per request: 18.32x; Model loading took 12.0 GiB; Setting attention block size to 528 tokens; 
+kv : GPU KV cache size: 177,493 tokens; Maximum concurrency for 8,192 tokens per request: 21.67x; Model loading took 12.18 GiB; Setting attention block size to 704 tokens; glyd kv: extra memory 46.1 MiB (0.59% of the KV cache's estimated 7.63 GiB) and 81.3 MiB (1.04%); glyd kv: extra memory of 0.59% and 1.04% of the KV cache; glyd: mma layout, the KV cache lossless (tables /root/results/glydcache/kv/kvtab-acf7b9c03bd919a7.npz); 

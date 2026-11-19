@@ -1,0 +1,7 @@
+PASS Qwen3-4B auto: the embedding and the LM head packed (1 pack, 502 MiB; 1 expected), every lookup of random ids and of the shard's ends the checkpoint's own row bit for bit, each product within 1e-2 of its matrix (2.75e-03) and the same bits twice
+PASS Qwen3-4B auto: every pack (144) decoded to its weights bit for bit
+PASS Qwen3-4B auto: each layer's product within 1e-2 of F.linear (4.97e-03) and the same bits every run
+PASS Qwen3-4B auto: top-1 agreement with bf16 on its continuation 0.9890 (at least 0.97; bf16 eager's 0.9896)
+PASS Qwen3-4B auto: mean |logprob difference| 8.35e-03, at most 2.0x bf16 eager's against its graphs (9.25e-03)
+PASS Qwen3-4B exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True)
+PASS Qwen3-4B exact: the tied model's table stays as vLLM runs it ([('model.embed_tokens', 'UnquantizedEmbeddingMethod'), ('lm_head', 'UnquantizedEmbeddingMethod')])

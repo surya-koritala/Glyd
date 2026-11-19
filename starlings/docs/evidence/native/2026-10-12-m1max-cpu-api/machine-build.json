@@ -1,0 +1,19 @@
+{
+  "code_commit": "4e1533eb4f90f8958e0309d9cd6aae65caaa504c",
+  "runtime_commit": "d81235049384534c167caea52b85a694f6103d14",
+  "runtime_source_clean": true,
+  "cpu": "Apple M1 Max",
+  "model": "MacBookPro18,2",
+  "ram_bytes": 34359738368,
+  "os": "27.0",
+  "os_build": "26A428",
+  "architecture": "arm64",
+  "compiler": "Apple clang 21.0.0 (clang-2100.3.34.2)",
+  "cmake": "3.31.10",
+  "cmake_wheel_sha256": "ad697643a00d9ba85179590a383c4f7401169b55ebf4b8b2938daf28c6bdeb6d",
+  "inference_threads": 2,
+  "cpu_only": true,
+  "external_spend_usd": 0,
+  "compiler_warning_count": 0,
+  "upstream_configuration_warning_count": 3
+}

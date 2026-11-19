@@ -1,0 +1,45 @@
+NVIDIA H100 80GB HBM3 (sm_90): DeepSeek-V4 on the dynamic engine, 3 layers, weights 3.237 GiB (layout mma12), KV 0.001 GiB (2048 positions), 3.85 of 79.19 GiB in use
+without a graph: 2.533 ms a step; the stages 2.527 ms:
+    0.603 ms  23.9%  mixture of experts
+    0.371 ms  14.7%  hyper-connections
+    0.300 ms  11.9%  head
+    0.277 ms  10.9%  attention: o low rank
+    0.185 ms   7.3%  attention: attention
+    0.136 ms   5.4%  activations to FP8
+    0.096 ms   3.8%  attention: compressor
+    0.093 ms   3.7%  attention: q up
+    0.089 ms   3.5%  attention: o
+    0.047 ms   1.9%  indexer: compressor
+    0.046 ms   1.8%  attention: kv norm, rotary, cache
+    0.045 ms   1.8%  norms
+    0.044 ms   1.8%  attention: q norm, rotary
+    0.044 ms   1.7%  start
+    0.039 ms   1.6%  attention: q down
+    0.036 ms   1.4%  attention: kv
+    0.036 ms   1.4%  indexer: picks
+    0.029 ms   1.1%  indexer: q
+    0.012 ms   0.5%  indexer: weights
+the experts' steps, a step:
+    0.233 ms  moe: router
+    0.020 ms  moe: plan
+    0.145 ms  moe: up
+    0.044 ms  moe: act
+    0.106 ms  moe: down
+    0.004 ms  moe: shared joined
+    0.042 ms  moe: add
+kernels: 80 launches a step, 0.586 ms of kernel time a step; the most:
+    0.088 ms    6.0 a step  v4_hc_fin
+    0.048 ms    3.0 a step  v4_attn_out
+    0.046 ms    9.0 a step  v4_fp8
+    0.042 ms    7.0 a step  v4_hc_proj
+    0.040 ms    3.0 a step  v4_attn_scores
+    0.035 ms    3.0 a step  moe_logits
+    0.028 ms    3.0 a step  v4_lin32_1
+    0.027 ms    6.0 a step  v4_moe_act
+    0.027 ms    6.0 a step  v4_hc_post
+    0.021 ms    3.0 a step  v4_comp_pool
+    0.019 ms    3.0 a step  v4_attn_soft
+    0.016 ms    3.0 a step  v4_kv_prep
+    0.015 ms    3.0 a step  v4_comp_out
+    0.015 ms    2.0 a step  moe_select8
+with a graph: 1.375 ms a step (64 steps after 256 tokens)

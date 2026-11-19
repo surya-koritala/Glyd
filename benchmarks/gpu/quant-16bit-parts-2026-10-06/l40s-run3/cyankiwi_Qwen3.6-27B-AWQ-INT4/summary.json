@@ -1,0 +1,133 @@
+{
+ "model": "cyankiwi/Qwen3.6-27B-AWQ-INT4",
+ "args": {
+  "model": "cyankiwi/Qwen3.6-27B-AWQ-INT4",
+  "out": "/root/results/cyankiwi_Qwen3.6-27B-AWQ-INT4",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "bfloat16",
+  "max_num_seqs": null,
+  "layout": "auto",
+  "steps": "stock-eager,glyd-exact,stock,glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "exact": {
+  "equal": true,
+  "diffs": {
+   "tokens": null,
+   "logprobs": null,
+   "long_ids": null,
+   "long_logprobs": null,
+   "image_tokens": null,
+   "image_logprobs": null
+  },
+  "image": true,
+  "image_error": null,
+  "verified": 111,
+  "packed": 111
+ },
+ "glyd": {
+  "weights_gib": 17.46,
+  "kv_tokens": 194198,
+  "kv_gib": 19.29,
+  "concurrency": 23.71,
+  "tps": {
+   "1": {
+    "median": 40.24,
+    "runs": [
+     40.25,
+     40.22
+    ]
+   },
+   "32": {
+    "median": 534.61,
+    "runs": [
+     535.29,
+     533.93
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantCompressedTensorsConfig",
+  "glyd_key": {
+   "layout": "mma",
+   "exact": false,
+   "verify": true,
+   "fraction": 1.0,
+   "kv": "off",
+   "glyd": "0.29.0",
+   "packs": "fa0da730349ad7c0"
+  },
+  "start_s": 438.8
+ },
+ "inventory": {
+  "packed_count": 112,
+  "verified_count": 112,
+  "packed_bf16_bytes": 5997387776,
+  "packed_pack_bytes": 4037996873,
+  "saved_bytes": 1959390903,
+  "gpu_tensor_bytes": 18298981929,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.0031288156751543283,
+  "left_16bit_top": {
+   "MergedColumnParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16": {
+    "tensors": 112,
+    "bytes": 964689920,
+    "example": "language_model.model.layers.0.linear_attn.in_proj_qkvz.weight_scale"
+   },
+   "RowParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16": {
+    "tensors": 64,
+    "bytes": 356515840,
+    "example": "language_model.model.layers.0.mlp.down_proj.weight_scale"
+   },
+   "QKVParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16": {
+    "tensors": 16,
+    "bytes": 73400320,
+    "example": "language_model.model.layers.3.self_attn.qkv_proj.weight_scale"
+   },
+   "Embedding / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 5308416,
+    "example": "visual.pos_embed.weight"
+   },
+   "Conv3dLayer / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 3538944,
+    "example": "visual.patch_embed.proj.weight"
+   }
+  }
+ },
+ "stock": {
+  "weights_gib": 19.2,
+  "kv_tokens": 176368,
+  "kv_gib": 17.52,
+  "concurrency": 21.53,
+  "tps": {
+   "1": {
+    "median": 38.64,
+    "runs": [
+     38.64,
+     38.64
+    ]
+   },
+   "32": {
+    "median": 523.08,
+    "runs": [
+     524.09,
+     522.08
+    ]
+   }
+  },
+  "quantization": "compressed-tensors",
+  "quant_config": "CompressedTensorsConfig",
+  "start_s": 436.7,
+  "error": null,
+  "log_tail": null
+ },
+ "fused_agreement": 0.8828
+}

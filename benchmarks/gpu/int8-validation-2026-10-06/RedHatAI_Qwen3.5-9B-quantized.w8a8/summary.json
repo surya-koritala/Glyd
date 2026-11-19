@@ -1,0 +1,205 @@
+{
+ "model": "RedHatAI/Qwen3.5-9B-quantized.w8a8",
+ "args": {
+  "model": "RedHatAI/Qwen3.5-9B-quantized.w8a8",
+  "out": "/root/results/RedHatAI_Qwen3.5-9B-quantized.w8a8",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "max_num_seqs": null,
+  "layout": "auto",
+  "scales": false,
+  "codes": true,
+  "codes_exact_all": false,
+  "steps": "stock-eager,glyd-exact,stock,glyd,glyd-b,stock-b,glyd-16",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 3,
+  "no_image": false,
+  "language_model_only": false,
+  "max_batched_tokens": null,
+  "fallback_layout": null
+ },
+ "exact": {
+  "reference": "stock-eager",
+  "equal": true,
+  "diffs": {
+   "tokens": null,
+   "logprobs": null,
+   "long_ids": null,
+   "long_logprobs": null,
+   "image_tokens": null,
+   "image_logprobs": null
+  },
+  "image": true,
+  "image_error": null,
+  "verified": 159,
+  "packed": 159,
+  "codes": {
+   "layers": 80,
+   "pack_bytes": 4807164644,
+   "code_bytes": 5301600256,
+   "codes": 5301600256,
+   "scratch_bytes": 100663296,
+   "saved_bytes": 393772316,
+   "verified": 80,
+   "verified_bytes": 5301600256
+  },
+  "codes_forced": false
+ },
+ "glyd": {
+  "weights_gib": 10.37,
+  "kv_tokens": 674350,
+  "kv_gib": 29.19,
+  "concurrency": 82.32,
+  "tps": {
+   "1": {
+    "median": 52.16,
+    "runs": [
+     52.14,
+     52.25,
+     52.21,
+     52.12,
+     52.12,
+     52.17
+    ]
+   },
+   "32": {
+    "median": 1130.29,
+    "runs": [
+     1130.36,
+     1130.3,
+     1130.24,
+     1132.82,
+     1130.23,
+     1130.28
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantCompressedTensorsConfig",
+  "glyd_key": {
+   "layout": "mma",
+   "exact": false,
+   "verify": false,
+   "fraction": 1.0,
+   "kv": "off",
+   "codes": true,
+   "glyd": "0.29.1",
+   "packs": "5e7986b3e8270b4e"
+  },
+  "start_s": 210.9
+ },
+ "inventory": {
+  "opts": {
+   "layout": "mma",
+   "exact": false,
+   "verify": false,
+   "fraction": 1.0,
+   "kv": "off"
+  },
+  "packed_count": 160,
+  "verified_count": 0,
+  "packed_bf16_bytes": 8192057344,
+  "packed_pack_bytes": 5503161429,
+  "saved_bytes": 2688895915,
+  "gpu_tensor_bytes": 5767132341,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.0030538991559296846,
+  "left_16bit_top": {
+   "Embedding / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 5308416,
+    "example": "visual.pos_embed.weight"
+   },
+   "Conv3dLayer / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 3538944,
+    "example": "visual.patch_embed.proj.weight"
+   }
+  },
+  "scales": {
+   "layers": 0,
+   "pack_bytes": 0,
+   "scale_bytes": 0,
+   "scratch_bytes": 0,
+   "saved_bytes": 0,
+   "verified": 0,
+   "verified_bytes": 0
+  },
+  "codes": {
+   "layers": 80,
+   "pack_bytes": 4807164644,
+   "code_bytes": 5301600256,
+   "codes": 5301600256,
+   "scratch_bytes": 100663296,
+   "saved_bytes": 393772316,
+   "verified": 80,
+   "verified_bytes": 5301600256
+  }
+ },
+ "stock": {
+  "weights_gib": 12.73,
+  "kv_tokens": 621847,
+  "kv_gib": 26.92,
+  "concurrency": 75.91,
+  "tps": {
+   "1": {
+    "median": 76.91,
+    "runs": [
+     77.1,
+     76.89,
+     76.85,
+     77.22,
+     76.91,
+     76.91
+    ]
+   },
+   "32": {
+    "median": 1458.38,
+    "runs": [
+     1462.47,
+     1457.77,
+     1457.61,
+     1459.25,
+     1458.46,
+     1458.3
+    ]
+   }
+  },
+  "quantization": "compressed-tensors",
+  "quant_config": "CompressedTensorsConfig",
+  "start_s": 198.1,
+  "error": null,
+  "log_tail": null
+ },
+ "glyd_16": {
+  "weights_gib": 10.28,
+  "kv_tokens": 678074,
+  "kv_gib": 29.35,
+  "concurrency": 82.77,
+  "tps": {
+   "1": {
+    "median": 86.87,
+    "runs": [
+     86.93,
+     86.79,
+     86.87
+    ]
+   },
+   "32": {
+    "median": 1582.22,
+    "runs": [
+     1582.22,
+     1584.68,
+     1581.19
+    ]
+   }
+  },
+  "start_s": 224.7,
+  "error": null,
+  "log_tail": null
+ },
+ "fused_agreement": 0.2403
+}

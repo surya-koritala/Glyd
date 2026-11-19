@@ -1,0 +1,16 @@
+COMPARABLE: bf16 1410 MHz, 61 C; bf16-2 1410 MHz, 61 C; glyd-picked+kv 1410 MHz, 58 C; glyd-picked+kv+bf16-attn 1410 MHz, 58 C
+
+| Mode | Pass | Requests/s | SM clock median (MHz) | lowest | Highest temperature (C) | Power median (W) | Seconds |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 1 |  | 1410 | 1095 | 50 | 207 | 92 |
+| bf16 | inf | 4.02 | 1410 | 1395 | 61 | 272 | 63 |
+| bf16-2 | 1 |  | 1410 | 1095 | 50 | 206 | 90 |
+| bf16-2 | inf | 4.00 | 1410 | 1395 | 61 | 274 | 63 |
+| glyd-picked+kv | 1 |  | 1410 | 1095 | 49 | 195 | 89 |
+| glyd-picked+kv | inf | 5.32 | 1410 | 1095 | 58 | 255 | 71 |
+| glyd-picked+kv+bf16-attn | 1 |  | 1410 | 1095 | 48 | 203 | 90 |
+| glyd-picked+kv+bf16-attn | inf | 5.44 | 1410 | 1410 | 58 | 264 | 46 |
+bf16-2: the driver's slowdown reasons, seconds active of 324: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 2, hardware power brake 0
+bf16: the driver's slowdown reasons, seconds active of 357: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 1, hardware power brake 0
+glyd-picked+kv+bf16-attn: the driver's slowdown reasons, seconds active of 306: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 0, hardware power brake 0
+glyd-picked+kv: the driver's slowdown reasons, seconds active of 523: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 0, hardware power brake 0

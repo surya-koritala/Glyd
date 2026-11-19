@@ -1,0 +1,9 @@
+18:35 created p9geccxwwxve5k (NVIDIA H100 80GB HBM3)
+ssh on pod p9geccxwwxve5k ready after 12s: ssh reachable at 87.120.211.204:15257
+18:35 ssh ready at 87.120.211.204:15257 after 18 s
+NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
+18:35 job started
+18:44 job done
+terminating p9geccxwwxve5k
+pods left: []
+9 min

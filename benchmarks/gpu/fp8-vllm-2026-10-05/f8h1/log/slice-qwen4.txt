@@ -1,0 +1,5 @@
+Qwen/Qwen3.8-27B-FP8: 1606 tensors; the slice: 81 tensors of layers [0]..[3] and 3 outside the layers, 6.16 GiB (BF16 4.74, F8_E4M3 1.42)
+model-00001-of-00002.safetensors: 79 tensors, 3.79 GiB so far, 49 s
+model-00002-of-00002.safetensors: 2 tensors, 6.16 GiB so far, 119 s
+/root/f8w/slice-qwen4: 81 tensors, 6.16 GiB, 10 small files, ends checked against the source: ok, 170 s
+exit 0

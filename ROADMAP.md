@@ -1,134 +1,244 @@
 # Roadmap
 
-The next releases, in order, and how releases are supported:
-[getglyd.com/roadmap](https://getglyd.com/roadmap/). This file is the codec's research plan.
+Milestones in dependency order; each ships as one release. Tracks within a milestone run in parallel. Each milestone ends
+on a gate measured on real hardware, with the result committed under `benchmarks/`. Design:
+[docs/architecture.md](docs/architecture.md). Every item is a GitHub issue with tasks, acceptance criteria, test hardware and
+dependencies, under its milestone's epic; the epics are tracked in [#118](https://github.com/surya-koritala/Glyd/issues/118). This file is generated from the same data
+as the issues.
 
-Every item has a measured gate, taken against the reference codec on the
-same machine and thread count, on named public data. Nothing ships on a
-number that was not reproduced.
+| Release | Milestone | Epic | Issues |
+| :--- | :--- | :--- | ---: |
+| v0.33.0 | [M0 Open-source baseline](https://github.com/surya-koritala/Glyd/milestone/1) | [#119](https://github.com/surya-koritala/Glyd/issues/119) | 15 |
+| v0.34.0 | [M1 Front door](https://github.com/surya-koritala/Glyd/milestone/2) | [#120](https://github.com/surya-koritala/Glyd/issues/120) | 28 |
+| v0.35.0 | [M2 One runtime](https://github.com/surya-koritala/Glyd/milestone/3) | [#121](https://github.com/surya-koritala/Glyd/issues/121) | 29 |
+| v0.36.0 | [M3 Models, formats and desktop](https://github.com/surya-koritala/Glyd/milestone/4) | [#122](https://github.com/surya-koritala/Glyd/issues/122) | 28 |
+| v0.37.0 | [M4 Every vendor](https://github.com/surya-koritala/Glyd/milestone/5) | [#123](https://github.com/surya-koritala/Glyd/issues/123) | 12 |
+| v0.38.0 | [M5 Many GPUs, many machines](https://github.com/surya-koritala/Glyd/milestone/6) | [#124](https://github.com/surya-koritala/Glyd/issues/124) | 10 |
+| v1.0.0 | [M6 Stable and operable](https://github.com/surya-koritala/Glyd/milestone/7) | [#125](https://github.com/surya-koritala/Glyd/issues/125) | 7 |
+| after 1.0 | [Later: datacenter scale](https://github.com/surya-koritala/Glyd/milestone/8) | [#210](https://github.com/surya-koritala/Glyd/issues/210) | 7 |
 
 ## Where it stands (v0.32.1, 2026-10-17)
 
-The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
-([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
-3.85) at 0.77× its write speed and 7× its read speed; `--ultra` 4.66
-(zstd -19 4.66); `--max -r` 4.71 at 643 MB/s; `--ultra -r` 5.22.
-Telemetry with `-r`: 2.5–3.5× fewer bytes than zstd -3; application and
-system logs (templates): 1.4–3.3× fewer than zstd -3 and 1.1–2.1× fewer
-than zstd -19; the cold level: 1.5–2.6× fewer than zstd -19 at 1.2–1.5
-MB/s per core. Versions with
-`--base`: 1.1–2.1× fewer bytes than `zstd -3 --patch-from` at 1.8–3× its
-speed; `--ultra --base` 5–21% fewer than zstd -19's patch. Model
-weights (safetensors, v0.14.9): 12–13% under zstd -19 at 25× its
-write speed; a checkpoint against the last, 24% under zstd -19's
-patch. PyTorch checkpoints with optimizer state (v0.15.0): 83% of their
-size alone, 77% against the one before (zstd -19 92%). Weights compressed
-in GPU memory (`gpu/`, from v0.17.0), measured on 2026 models: Qwen3.5-9B
-under vLLM 0.30.0 in 12.68 GiB on an RTX 4090 and 13.89 on an RTX 5090,
-where bf16 takes 17.66; Qwen3.8-27B on an H100 in 38.77 GiB against 50.22,
-its KV cache 1.67x bf16's in the same memory; the layers' matrices of
-Qwen3.8-27B and Gemma 4 26B-A4B 32.8% smaller, bit for bit. The GPU work by release, and which releases get fixes:
-[getglyd.com/roadmap](https://getglyd.com/roadmap/).
-Work on the GPU is bf16 only now. FP8 checkpoints load as they are; on FP8
-files cut from 2026 models the codec takes 19.1-30.3% off
-([benchmarks/weights/model-files-2026-10-05](benchmarks/weights/model-files-2026-10-05)). A terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
+- Released (v0.32.1): the `glyd` CLI, with most models and `glyd run` by default going through the frozen vLLM path (Python);
+  the engine is used where asked (`GLYD_ENGINE=1`). Releases v0.29 to v0.32.1 were BUSL-1.1; Apache-2.0 starts with v0.33.0.
+- On `open-source-monorepo` (unreleased): the engine runs Qwen3 dense (lossless), Qwen3.5/3.8 and Nemotron-H (lossy levels),
+  Gemma 4 12B/31B, GLM-5.3, Kimi-K3, DeepSeek-V4, Muse and Qwen3.8-Flash-Next (Condor), each through its own pipeline.
+- Batching on the Qwen3 path only (up to 8 sequences); other families serve one request at a time.
+- MoE experts on GPU/RAM/NVMe with CPU compute for misses (Condor's model); layer split over GPUs; two-machine pipeline
+  (Starlings beta). `glyd-engine fit` plans before download but does not yet drive loading.
+- NVIDIA Ampere-Blackwell, Linux x86_64, driver 580+. AMD RDNA 3/4 development builds. No Windows engine release, no aarch64,
+  Apple or CPU-only.
 
-Measured floors, not to be retried: JSON API events and crawl indexes
-are 20–65% hashes and random ids once compressed (typed columns gain
-0.1%); Parquet's pages open now (snappy and zstd reproduced, the
-values modeled: 31–44% under the file); generic text and binaries sit on the same
-entropy floor for every codec (zstd -19, xz, Glyd `--ultra` within 2%).
-Details: [experiments/structure/README.md](experiments/structure/README.md).
+## M0 Open-source baseline · v0.33.0
 
-The store (v0.8.0, at a terabyte v0.12.0, v0.14.7, v0.14.8 and v0.14.9): objects compressed
-across a bucket, 3.5× fewer bytes than zstd -3 per object on 1.18 TB of
-releases, dumps and events (4.6× on a 39 GB bucket) — the largest
-lever measured, because the redundancy of object storage is between
-objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
+[Milestone](https://github.com/surya-koritala/Glyd/milestone/1) · [Epic #119](https://github.com/surya-koritala/Glyd/issues/119)
 
-## Next, in order of what moves the bill
+One public repository for all of Glyd under Apache-2.0; a release built entirely from it that installs and runs without Python; docs that match the code; and the engineering baseline: security updates, lints, CI on every OS, GPU CI on real hardware.
 
-0. **The store at scale.** Done: packs for small puts, delete and
-   compaction, verification, levels, rebase, and S3 spoken directly
-   (SigV4 over HTTPS, the standard credential chain, any S3-compatible
-   endpoint; v0.11.0). Multipart upload (v0.11.1): 64 MB parts on 8
-   connections, aborted whole on any failure. Rebuild (v0.11.2): the
-   directory remade from the bucket alone. The gate
-   (v0.12.0, [report](docs/benchmarks/store-gate-2026-09-22.md)): 1.18
-   TB, 1,192 objects, 49.0 GB stored against zstd -3's 153.5 GB,
-   every object back byte-exact, rebuilt from the bucket and verified;
-   put 150 MB/s, get 186 MB/s on one im4gn.4xlarge. Left: overlapping
-   one object's upload with the next one's compression (the put rate
-   is one process, one object at a time).
+- [ ] S7 Security updates: rustls and Dependabot for every manifest ([#211](https://github.com/surya-koritala/Glyd/issues/211))
+- [ ] S1 Merge the monorepo branch and retire the predecessor repositories ([#126](https://github.com/surya-koritala/Glyd/issues/126))
+- [ ] S2 Self-hosted GPU runner for gpu.yml ([#127](https://github.com/surya-koritala/Glyd/issues/127))
+- [ ] S3 Ephemeral cloud GPU runners for gpu-cloud.yml ([#128](https://github.com/surya-koritala/Glyd/issues/128))
+- [ ] S4 Release v0.33.0 from this repository ([#129](https://github.com/surya-koritala/Glyd/issues/129))
+- [ ] S8 Rust baseline: toolchain, clippy, rustfmt, cargo-deny, all crates tested in CI ([#212](https://github.com/surya-koritala/Glyd/issues/212))
+- [ ] S6 Required checks and branch protection on main ([#131](https://github.com/surya-koritala/Glyd/issues/131))
+- [ ] S9 Windows and macOS compile and unit-test CI ([#213](https://github.com/surya-koritala/Glyd/issues/213))
+- [ ] S10 The engine on by default where it has been measured ([#214](https://github.com/surya-koritala/Glyd/issues/214))
+- [ ] S11 Docs and repository identity match the code ([#215](https://github.com/surya-koritala/Glyd/issues/215))
+- [ ] S12 Security policy for the inference product ([#216](https://github.com/surya-koritala/Glyd/issues/216))
+- [ ] S13 Community: discussions, issue templates, triage, first issues ([#217](https://github.com/surya-koritala/Glyd/issues/217))
+- [ ] S14 Governance: maintainers, decisions and trademark ([#218](https://github.com/surya-koritala/Glyd/issues/218))
+- [ ] S15 Hardware access plan for CI and release gates ([#219](https://github.com/surya-koritala/Glyd/issues/219))
+- [ ] S16 One kernel ABI check and no closed-source leftovers ([#220](https://github.com/surya-koritala/Glyd/issues/220))
 
-1. **Write speed of `--max`** (v0.14.5: 1.01–1.05× zstd -3 on one
-   Graviton3 core on three of five files, 0.89× on the log and the
-   table dump; 1.07–1.26× on a Ryzen 9; the parse is zstd -3's
-   double-fast without a lazy step; what is left on match-dense data
-   is the per-sequence cost of the eight-stream sections).
-   Done: `--dense`, a unit's blocks parsed in stripes on all cores, so
-   medium inputs keep 128 MB units and the same bytes as one core (ten
-   cores had cost 7–9%); opt-in, since reads then scale only with the
-   units. Left: the far pass is one core per unit (half of it the
-   anchor gather, which could split across cores), so a file of few
-   units idles cores at its start; and a decoder that decodes a unit's
-   stripes in parallel, holes for the far matches filled after, which
-   would make dense the default. Gate: 0.9× zstd -3 on one core with
-   the corpus ratio kept; at equal bytes, one core is already 3–10×
-   faster than the zstd level that reaches them.
-2. **Small objects**: a single-pass decoder for compact blocks and a
-   cheaper per-object encoder (zstd is 1.4–2× faster per object); a
-   dictionary that carries a record schema, so `-r` ratios reach
-   one-record objects. Gate: within 1.2× of zstd per object.
-3. **The x86-64 decoder** (0.79–0.97× zstd -3 on one Sapphire Rapids
-   core against 1.15–1.32× on Graviton3 and 1.00–1.30× on a Ryzen 9,
-   v0.14.7). Gate: 1.0× in the published run.
-4. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
-   today); the CLI already streams batches of units.
-5. **Already-compressed objects opened** (research section J). Done:
-   gzip (v0.12.0), zip, tar, Office documents, jars, PDF, zlib and PNG,
-   nested four deep (next release): 5–82% under the object at the
-   level that opens it, 16–74% where zstd -19 gets 3–53%; JPEG
-   recoded by Glyd's own model (v0.14.0), 22–26%, inside the others too.
-   Parquet with snappy or zstd pages (v0.14.8: every page written back
-   byte for byte by a port of the compressor that wrote it, the values
-   modeled, 31–44% under the file where zstd -19 gets 1%), and zstd
-   objects the same way (zstd 1.5.2 to 1.5.7, levels 1 and 3, as the
-   library and the command line write). Next: gzip, lz4 and brotli
-   pages and zstd 1.4, then
-   the recipe itself (preflate's corrections are a fifth of a pdfTeX
-   stream; a better predictor of zlib's choices would halve what
-   opening costs), then zip entries and PDF streams that are
-   themselves JPEG or PNG (a .docx's pictures). Gate: the measured
-   number on real objects, every one restored byte for byte.
-6. **Video: measure the headroom, decide nothing before.** The
-   residual an H.264 file keeps is what its block predictor could not
-   guess; how much a far stronger predictor would guess of the same
-   stream is unknown, not a limit (the 1–3% in the literature is from
-   weak attempts). The experiment, two weeks: pull the symbols the
-   codec stores (modes, motion vectors, coefficients) from real files,
-   predict them with the cold level's mixing conditioned on the
-   decoded frames before, count bits. Under 5%: closed for good. Over
-   15%: the largest byte class there is, and it moves to the top of
-   this list.
+Gate: A tag on main produces every release artifact from this repository, including the engine tarballs the installer downloads; on a clean Linux machine with an NVIDIA driver, install.sh gives a first token from the engine without Python; no open security advisory in any lockfile; Linux, Windows and macOS compile CI and GPU CI are green.
 
-Done since v0.5.0: record-mode reads (column-at-a-time rebuild, 1.4–1.7×
-faster; `--max -r` now within 1% of zstd -3's S3 row at ten CPU-billed
-reads a month); the template shape for logs; base mode's region chosen
-from a coarse map of the base (content found wherever it moved) and
-`--ultra --base` at the plain ultra speed (was 1–4 MB/s); the kernel
-point-release chain measured (15 versions in 228 MB, a step 1.8 MB, no
-rebasing needed inside a series). Not reached: the kernel pair under
-zstd -19's patch size at `--max` speed (`--max --base` 3.03 MB against
-2.58; `--ultra --base` 2.04 MB at 3 MB/s). The levers were sized
-against each other first
-([experiments/research/README.md](experiments/research/README.md)):
-version chains 5.7× over per-version compression, template logs 1.2–1.6×
-over zstd -19 (measured 1.1–2.1× once built), context mixing 1.2–1.5×
-at ~1 MB/s for cold data only, float columns nothing.
+## M1 Front door · v0.34.0
 
-The cold level (`--cold`, v0.7.0): context mixing at 1.2–1.3 MB/s
-per core, 1.5–2× fewer bytes than zstd -19 on logs, dumps, JSON and
-text, the zpaq -m5 class. Left there: a second match model for long
-repeats, an indirect (byte-history) context, SIMD for the mixer; each
-worth 1–2%. Gate for more: within 1% of zpaq -m5 on every class.
+[Milestone](https://github.com/surya-koritala/Glyd/milestone/2) · [Epic #120](https://github.com/surya-koritala/Glyd/issues/120)
+
+Make today's engine the least-friction way to run a model on an NVIDIA PC: one `glyd` binary, CUDA 12 and 13 builds, Windows and aarch64, a plan that is exactly what loads, a background service, Ollama, OpenAI and Anthropic APIs that common tools reach with default settings, secure defaults, signed releases, and the logits and benchmark harnesses that make the runtime refactor safe.
+
+- [x] R0 One levels module ([#132](https://github.com/surya-koritala/Glyd/issues/132))
+- [ ] R8 glyd bench: one benchmark harness with a regression gate ([#133](https://github.com/surya-koritala/Glyd/issues/133))
+- [ ] R5a Constrained decoding with llguidance ([#143](https://github.com/surya-koritala/Glyd/issues/143))
+- [ ] R5b Tool-call and reasoning parsers for every family ([#144](https://github.com/surya-koritala/Glyd/issues/144))
+- [ ] R7 Per-model logits tests on every merge ([#146](https://github.com/surya-koritala/Glyd/issues/146))
+- [ ] P1 One binary: glyd with the engine linked ([#147](https://github.com/surya-koritala/Glyd/issues/147))
+- [ ] P16 One capability matrix for fit, run and refusals ([#221](https://github.com/surya-koritala/Glyd/issues/221))
+- [ ] P2a The plan is what loads, on today's paths ([#148](https://github.com/surya-koritala/Glyd/issues/148))
+- [ ] P11 Secure defaults for every listener ([#222](https://github.com/surya-koritala/Glyd/issues/222))
+- [ ] P3 Background service: load on request, unload when idle ([#152](https://github.com/surya-koritala/Glyd/issues/152))
+- [ ] P4 Model names, manifest and pull/ls/rm ([#153](https://github.com/surya-koritala/Glyd/issues/153))
+- [ ] P5a OpenAI API completeness: Responses, errors, streaming options ([#154](https://github.com/surya-koritala/Glyd/issues/154))
+- [ ] P5b Anthropic Messages API: full streaming events and tool use ([#155](https://github.com/surya-koritala/Glyd/issues/155))
+- [ ] P5c Ollama-compatible API ([#156](https://github.com/surya-koritala/Glyd/issues/156))
+- [ ] P6 CUDA 12 and CUDA 13 builds chosen at run time ([#158](https://github.com/surya-koritala/Glyd/issues/158))
+- [ ] P13 Code-signing identities for Windows and macOS ([#223](https://github.com/surya-koritala/Glyd/issues/223))
+- [ ] P7a Windows x86_64 release of the engine ([#159](https://github.com/surya-koritala/Glyd/issues/159))
+- [ ] P10 glyd doctor and a support bundle ([#165](https://github.com/surya-koritala/Glyd/issues/165))
+- [ ] F3a GGUF reader ([#176](https://github.com/surya-koritala/Glyd/issues/176))
+- [ ] C5 Starlings crates into the main workspace ([#199](https://github.com/surya-koritala/Glyd/issues/199))
+- [ ] D3 Metrics, health, readiness and drain ([#204](https://github.com/surya-koritala/Glyd/issues/204))
+- [ ] D6 Signed releases and attestations ([#207](https://github.com/surya-koritala/Glyd/issues/207))
+- [ ] P12 Fuzz the engine's parsers ([#224](https://github.com/surya-koritala/Glyd/issues/224))
+- [ ] P14 User documentation site ([#225](https://github.com/surya-koritala/Glyd/issues/225))
+- [ ] P15 Model catalog: ownership and review ([#226](https://github.com/surya-koritala/Glyd/issues/226))
+- [ ] P17 Tools connect with default settings ([#227](https://github.com/surya-koritala/Glyd/issues/227))
+- [ ] P18 aarch64 Linux: GH200, GB200, DGX Spark and Jetson ([#228](https://github.com/surya-koritala/Glyd/issues/228))
+- [ ] P19 The codec's place: crate, CLI and docs ([#229](https://github.com/surya-koritala/Glyd/issues/229))
+
+Gate: On clean Ubuntu 24.04 and Windows 11 machines with only the NVIDIA driver (an 8 GB laptop GPU, a 16 GB desktop GPU, and one machine on the oldest supported driver): install → first token in under 2 minutes for a pinned list of 10 models the engine runs (`benchmarks/gates/m1-models.txt`, pre-packed repos present); the printed plan is what loads; Open WebUI, Continue and an OpenAI SDK client connect with default settings; JSON-schema output is valid on all 10; an Apple or AMD machine gets a one-line answer saying what to do; no Python anywhere.
+
+## M2 One runtime · v0.35.0
+
+[Milestone](https://github.com/surya-koritala/Glyd/milestone/3) · [Epic #121](https://github.com/surya-koritala/Glyd/issues/121)
+
+Replace the per-family pipelines with one runtime (layer kinds, config-driven descriptions, one scheduler with paged, content-addressed KV, expert tiering for every MoE) and prove it on the standard families most people run: Llama 3, Qwen 2/2.5, Mistral, Phi-4, Granite, OLMo, SmolLM.
+
+- [ ] R9 Runtime design: model step, layer-kind interface, backend seam ([#230](https://github.com/surya-koritala/Glyd/issues/230))
+- [ ] R2 Layer-kind library with a CPU f32 reference for each kind ([#135](https://github.com/surya-koritala/Glyd/issues/135))
+- [ ] R3a Config-driven model descriptions ([#136](https://github.com/surya-koritala/Glyd/issues/136))
+- [ ] R10 Pack-format compatibility suite ([#231](https://github.com/surya-koritala/Glyd/issues/231))
+- [ ] R3b Retire the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines ([#137](https://github.com/surya-koritala/Glyd/issues/137))
+- [ ] R4a Model-agnostic scheduler ([#138](https://github.com/surya-koritala/Glyd/issues/138))
+- [ ] R3c Qwen3 dense on the shared executor ([#139](https://github.com/surya-koritala/Glyd/issues/139))
+- [ ] R3d Condor's model (Qwen3.8-Flash-Next) on the shared executor ([#140](https://github.com/surya-koritala/Glyd/issues/140))
+- [ ] R4b Paged KV for every attention kind ([#141](https://github.com/surya-koritala/Glyd/issues/141))
+- [ ] R4c Content-addressed KV blocks and a radix prefix index ([#142](https://github.com/surya-koritala/Glyd/issues/142))
+- [ ] P2b Exact model sizes from file headers before download ([#149](https://github.com/surya-koritala/Glyd/issues/149))
+- [ ] P2c Measured rates and calibrated speed predictions ([#150](https://github.com/surya-koritala/Glyd/issues/150))
+- [ ] R12 Expert tiering for every MoE, and dense layers in RAM ([#232](https://github.com/surya-koritala/Glyd/issues/232))
+- [ ] P2d Visible degrade ladder with confirmation ([#151](https://github.com/surya-koritala/Glyd/issues/151))
+- [ ] F1a Llama 3.x ([#166](https://github.com/surya-koritala/Glyd/issues/166))
+- [ ] F1b Mistral and Ministral (dense) ([#167](https://github.com/surya-koritala/Glyd/issues/167))
+- [ ] F1d Qwen 2/2.5 and Qwen3 MoE ([#169](https://github.com/surya-koritala/Glyd/issues/169))
+- [ ] F1e Phi-4 family ([#170](https://github.com/surya-koritala/Glyd/issues/170))
+- [ ] F1h Granite, OLMo, SmolLM and other standard dense models ([#173](https://github.com/surya-koritala/Glyd/issues/173))
+- [ ] R11 Async HTTP front end and a request-level engine interface ([#233](https://github.com/surya-koritala/Glyd/issues/233))
+- [ ] R13 Retire or freeze the GLM development engine ([#234](https://github.com/surya-koritala/Glyd/issues/234))
+- [ ] R14 A quality bar for lossy levels ([#235](https://github.com/surya-koritala/Glyd/issues/235))
+- [ ] R15 A sound device API and typed kernel launches ([#236](https://github.com/surya-koritala/Glyd/issues/236))
+- [ ] R16 A runtime context and typed errors ([#237](https://github.com/surya-koritala/Glyd/issues/237))
+- [ ] R17 One kernel build: fold the GPU library into the engine ([#238](https://github.com/surya-koritala/Glyd/issues/238))
+- [ ] P2f Every path loads by the plan; per-path planners deleted ([#239](https://github.com/surya-koritala/Glyd/issues/239))
+- [ ] P4b Short names pick the size and level for this machine ([#240](https://github.com/surya-koritala/Glyd/issues/240))
+- [ ] P5e Anthropic prompt caching on content-addressed blocks ([#241](https://github.com/surya-koritala/Glyd/issues/241))
+- [ ] P20 Consumer benchmarks published every release ([#242](https://github.com/surya-koritala/Glyd/issues/242))
+
+Gate: A pinned per-GPU list (the smallest checkpoint of each family that the plan fits) serves 64 concurrent requests through one scheduler on an RTX 4080 SUPER and an L4 with logits matching the CPU reference; the large families (Kimi-K3, DeepSeek-V4, GLM-5.3) keep single-user parity on their reference hardware; no `glyd bench` regression beyond the measured noise band; every published pack since v0.29 still loads.
+
+## M3 Models, formats and desktop · v0.36.0
+
+[Milestone](https://github.com/surya-koritala/Glyd/milestone/4) · [Epic #122](https://github.com/surya-koritala/Glyd/issues/122)
+
+Run what people already have and make Glyd a desktop citizen: the remaining model families, vision, embeddings, GGUF quant kernels, quantized safetensors releases, consumer-Blackwell FP4, LoRA, long context, speculative decoding, a pack pipeline with license and quality rules, installers on every channel, macOS, self-update, and consumer benchmarks published against Ollama, llama.cpp and LM Studio.
+
+- [ ] R6 Speculative decoding for any model ([#145](https://github.com/surya-koritala/Glyd/issues/145))
+- [ ] P7c Installers: install.sh, winget, Homebrew, Docker ([#161](https://github.com/surya-koritala/Glyd/issues/161))
+- [ ] P7d macOS arm64 build of glyd ([#162](https://github.com/surya-koritala/Glyd/issues/162))
+- [ ] P8 Fold Condor into glyd run ([#163](https://github.com/surya-koritala/Glyd/issues/163))
+- [ ] P9 No Python on any install path ([#164](https://github.com/surya-koritala/Glyd/issues/164))
+- [ ] F1c Gemma 2, Gemma 3 and the remaining Gemma 4 models ([#168](https://github.com/surya-koritala/Glyd/issues/168))
+- [ ] F3c Quantized safetensors releases as released ([#178](https://github.com/surya-koritala/Glyd/issues/178))
+- [ ] F1f gpt-oss ([#171](https://github.com/surya-koritala/Glyd/issues/171))
+- [ ] F1g DeepSeek R1 distills ([#172](https://github.com/surya-koritala/Glyd/issues/172))
+- [ ] F2a Vision for every VLM family ([#174](https://github.com/surya-koritala/Glyd/issues/174))
+- [ ] F2b Embedding and reranker models ([#175](https://github.com/surya-koritala/Glyd/issues/175))
+- [ ] F3b GGUF quantization kernels ([#177](https://github.com/surya-koritala/Glyd/issues/177))
+- [ ] F4 LoRA adapters, batched ([#179](https://github.com/surya-koritala/Glyd/issues/179))
+- [ ] F8 Model license and gating policy ([#243](https://github.com/surya-koritala/Glyd/issues/243))
+- [ ] F5 Automated pack pipeline for new releases ([#180](https://github.com/surya-koritala/Glyd/issues/180))
+- [ ] F6 Long context past 40,960 tokens ([#181](https://github.com/surya-koritala/Glyd/issues/181))
+- [ ] F7 Retire the vLLM plugin path ([#182](https://github.com/surya-koritala/Glyd/issues/182))
+- [ ] F1i Llama 4 ([#244](https://github.com/surya-koritala/Glyd/issues/244))
+- [ ] F1j Mixtral ([#245](https://github.com/surya-koritala/Glyd/issues/245))
+- [ ] F1k DeepSeek V3 and R1 (full) ([#246](https://github.com/surya-koritala/Glyd/issues/246))
+- [ ] P3b Adapt to VRAM pressure at run time ([#247](https://github.com/surya-koritala/Glyd/issues/247))
+- [ ] F9 Day-0 model support process ([#248](https://github.com/surya-koritala/Glyd/issues/248))
+- [ ] F10 Rust library API and C ABI for embedding ([#249](https://github.com/surya-koritala/Glyd/issues/249))
+- [ ] P21 glyd update ([#250](https://github.com/surya-koritala/Glyd/issues/250))
+- [ ] P22 Scripts to cargo xtask; Python references to Rust ([#251](https://github.com/surya-koritala/Glyd/issues/251))
+- [ ] P23 Corporate networks: proxies, custom CAs, offline installs ([#252](https://github.com/surya-koritala/Glyd/issues/252))
+- [ ] P24 Opt-in crash and compatibility reports ([#253](https://github.com/surya-koritala/Glyd/issues/253))
+- [ ] V7a Consumer Blackwell FP4 and FP8 ([#254](https://github.com/surya-koritala/Glyd/issues/254))
+
+Gate: A dated snapshot of the top 50 text-generation models on the Hugging Face Hub (exclusions listed) runs; the 10 most-pulled local models run, including from GGUF; every installer channel passes its install test; consumer benchmarks are published per VRAM tier.
+
+## M4 Every vendor · v0.37.0
+
+[Milestone](https://github.com/surya-koritala/Glyd/milestone/5) · [Epic #123](https://github.com/surya-koritala/Glyd/issues/123)
+
+The same `glyd run` on AMD (RDNA 3/4, Strix Halo, MI300X), Apple Silicon, CPU-only machines and older NVIDIA cards, through a backend seam designed against Metal and CPU, vendor-native kernels, and proven kernel libraries where they are faster.
+
+- [ ] S5 macOS GPU CI runner for the Metal backend ([#130](https://github.com/surya-koritala/Glyd/issues/130))
+- [ ] R1 Device layer for CUDA and HIP, and the backend seam at the layer-kind level ([#134](https://github.com/surya-koritala/Glyd/issues/134))
+- [ ] P7b Small core that downloads its backend ([#160](https://github.com/surya-koritala/Glyd/issues/160))
+- [ ] V0 Kernel portability layer: warp size, lane masks, tensor-core fragments ([#183](https://github.com/surya-koritala/Glyd/issues/183))
+- [ ] V1 AMD RDNA 3/4 and Strix Halo: a beta first, then speed ([#184](https://github.com/surya-koritala/Glyd/issues/184))
+- [ ] V2 AMD CDNA 3/4 (MI300X, MI325X, MI355X) ([#185](https://github.com/surya-koritala/Glyd/issues/185))
+- [ ] V3a Metal backend through mlx-c ([#186](https://github.com/surya-koritala/Glyd/issues/186))
+- [ ] V3b Glyd formats as Metal kernels ([#187](https://github.com/surya-koritala/Glyd/issues/187))
+- [ ] V3c Unified-memory planning on every vendor ([#188](https://github.com/surya-koritala/Glyd/issues/188))
+- [ ] V4 CPU backend for whole models ([#189](https://github.com/surya-koritala/Glyd/issues/189))
+- [ ] V5 NVIDIA Turing (sm_75): fp16 paths ([#190](https://github.com/surya-koritala/Glyd/issues/190))
+- [ ] V8 Kernel libraries where they are faster ([#255](https://github.com/surya-koritala/Glyd/issues/255))
+
+Gate: Per device, the subset of the M3 model set that the plan fits passes with KL within the per-level threshold against the CUDA run: NVIDIA T4, L4, RTX 4080 SUPER, A100, H100, DGX Spark; AMD RX 7900 XTX, RX 9070 XT, Strix Halo, MI300X; Apple M1 and M4; CPU x86_64 and arm64.
+
+## M5 Many GPUs, many machines · v0.38.0
+
+[Milestone](https://github.com/surya-koritala/Glyd/milestone/6) · [Epic #124](https://github.com/surya-koritala/Glyd/issues/124)
+
+One planner from one GPU to several machines: collectives, tensor and expert parallelism in a node, an overlapped pipeline, GeForce boxes without peer access, `glyd cluster` for N machines, and a drop-in OpenAI server for one 8-GPU node.
+
+- [ ] C2a Collectives: NCCL/RCCL via cudarc and a custom all-reduce for decode ([#193](https://github.com/surya-koritala/Glyd/issues/193))
+- [ ] C1 Planner v2: one placement across GPUs, RAM, NVMe and machines ([#194](https://github.com/surya-koritala/Glyd/issues/194))
+- [ ] C2b Tensor parallelism for every layer kind ([#195](https://github.com/surya-koritala/Glyd/issues/195))
+- [ ] C2c Expert parallelism inside a node ([#196](https://github.com/surya-koritala/Glyd/issues/196))
+- [ ] C2d Overlapped pipeline for layer splits ([#197](https://github.com/surya-koritala/Glyd/issues/197))
+- [ ] C2e GeForce multi-GPU without peer access ([#198](https://github.com/surya-koritala/Glyd/issues/198))
+- [ ] C5b glyd cluster replaces the starlings binary ([#256](https://github.com/surya-koritala/Glyd/issues/256))
+- [ ] C3 glyd cluster: N machines, any GPU family, any model ([#200](https://github.com/surya-koritala/Glyd/issues/200))
+- [ ] C4 KvTransport trait with TLS over TCP ([#201](https://github.com/surya-koritala/Glyd/issues/201))
+- [ ] C6 One 8-GPU node as a drop-in OpenAI server ([#257](https://github.com/surya-koritala/Glyd/issues/257))
+
+Gate: Two consumer machines run a model neither holds alone at the speed `glyd fit` predicted (±10%); a 600B-class MoE runs on one 8× H100 node with experts in host RAM; tensor parallel on 2 GPUs is at least 1.7× one GPU on a model that fits one GPU; one 8-GPU node serves through the OpenAI API with data-parallel replicas and standard metrics.
+
+## M6 Stable and operable · v1.0.0
+
+[Milestone](https://github.com/surya-koritala/Glyd/milestone/7) · [Epic #125](https://github.com/surya-koritala/Glyd/issues/125)
+
+1.0 commits to stable CLI, HTTP APIs, library API and pack formats, with operations (Helm, LeaderWorkerSet, dashboards), router integration (llm-d, Gateway API inference extension, Dynamo, SMG), a deterministic mode, supply-chain security, and a published comparison with vLLM and SGLang.
+
+- [ ] D2 Integrate with KV-aware routers: llm-d, Gateway API, SMG ([#203](https://github.com/surya-koritala/Glyd/issues/203))
+- [ ] D5 Deterministic, batch-invariant mode ([#206](https://github.com/surya-koritala/Glyd/issues/206))
+- [ ] D7 Published comparison with vLLM and SGLang, per quality tier ([#208](https://github.com/surya-koritala/Glyd/issues/208))
+- [ ] D8 1.0 stability: CLI, API and pack formats ([#209](https://github.com/surya-koritala/Glyd/issues/209))
+- [ ] D3b Helm, LeaderWorkerSet, images and dashboards ([#258](https://github.com/surya-koritala/Glyd/issues/258))
+- [ ] D6b SBOM, provenance level and reproducible builds ([#259](https://github.com/surya-koritala/Glyd/issues/259))
+- [ ] D9 Token-level engine API for Dynamo and SMG ([#260](https://github.com/surya-koritala/Glyd/issues/260))
+
+Gate: A documented stable surface with CI compatibility checks; llm-d routes to Glyd pods by prefix-cache hits; a Helm install passes readiness on a GPU cluster; SBOM and provenance on every artifact; a comparison with vLLM and SGLang per quality tier (lossless against bf16, lossy levels against FP8 and NVFP4) on H100 and B200, published with configs and logs whatever the result.
+
+## Later: datacenter scale (after 1.0)
+
+[Milestone](https://github.com/surya-koritala/Glyd/milestone/8) · [Epic #210](https://github.com/surya-koritala/Glyd/issues/210)
+
+Work deferred until the single-node server is adopted: prefill/decode disaggregation, RDMA KV transport, wide expert parallelism and NVL72, RL weight updates, Blackwell tcgen05 kernels, a Vulkan fallback, an MCP wrapper.
+
+- [ ] P5d MCP server for any model ([#157](https://github.com/surya-koritala/Glyd/issues/157))
+- [ ] V6 A fallback for other GPUs ([#191](https://github.com/surya-koritala/Glyd/issues/191))
+- [ ] V7 Datacenter Blackwell: tcgen05 ([#192](https://github.com/surya-koritala/Glyd/issues/192))
+- [ ] D1 Prefill/decode disaggregation with compressed KV transfer ([#202](https://github.com/surya-koritala/Glyd/issues/202))
+- [ ] C4b NIXL transport for RDMA ([#261](https://github.com/surya-koritala/Glyd/issues/261))
+- [ ] D4 Wide expert parallelism across nodes and multi-node NVLink ([#205](https://github.com/surya-koritala/Glyd/issues/205))
+- [ ] D5b Weight updates for RL rollouts ([#262](https://github.com/surya-koritala/Glyd/issues/262))
+
+Revisited after 1.0, by demand.
+
+## Always
+
+- `glyd bench` (Rust) replaces the Python benchmarks; results in `benchmarks/`.
+- Python is ported or removed as each milestone replaces it (`glyd-gpu-py/`, `gpu/*.py`, `glyd-engine/tools/*.py`,
+  `condor/bench`, `scripts/*.py` → `cargo xtask`).

@@ -1,0 +1,13 @@
+2026-10-07T12:58:36Z start environment (cap 600s)
+2026-10-07T12:59:07Z pass environment
+2026-10-07T12:59:07Z start model-download (cap 1800s)
+2026-10-07T13:06:14Z pass model-download
+2026-10-07T13:06:14Z start bf16 (cap 7200s)
+2026-10-07T13:32:16Z pass bf16
+2026-10-07T13:32:16Z start candidate-a (cap 6379s)
+2026-10-07T13:58:15Z pass candidate-a
+2026-10-07T13:58:15Z start fp8 (cap 4820s)
+2026-10-07T14:24:38Z pass fp8
+2026-10-07T14:24:38Z start report (cap 120s)
+2026-10-07T14:24:39Z pass report
+2026-10-07T14:24:39Z completed fixed-choice quality baseline; compact GPU memory and serving speed remain separate

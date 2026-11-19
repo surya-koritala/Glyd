@@ -1,0 +1,28 @@
+{
+ "object": "glyd.tiers",
+ "schema": "glyd-costs/1",
+ "note": "written by hand from the record's own lines (GLY-236): the rates the predictor takes for the pod; nothing was measured again",
+ "record": "benchmarks/gpu/nh-hb-ssd-4090-2026-10-10 (a pod of one RTX 4090, 11 CPUs, 57 GiB; hummingbird with the SSD tier)",
+ "rates": {
+  "vram_read": {
+   "gbs": 1008.0,
+   "basis": "spec",
+   "from": "NVIDIA's figure for the RTX 4090 (1,008 GB/s); the record measured no GPU read rate"
+  },
+  "link_h2d_pinned": {
+   "gbs": 24.8,
+   "basis": "inferred",
+   "from": "not stated in the record; its copy-mode decode (32.36 tokens a second) equals pod A's (32.39) at 24.8 GB/s"
+  },
+  "ram_read": {
+   "gbs": 117.9,
+   "basis": "measured",
+   "from": "summary.txt line 675: streaming read, 9 threads: 117.9 GB/s"
+  },
+  "ssd_read_16": {
+   "gbs": 7.2,
+   "basis": "measured",
+   "from": "README.md line 13: diskcheck, 600 random experts, direct reads: 7.2 GB/s 16 at a time (4.0 one at a time)"
+  }
+ }
+}

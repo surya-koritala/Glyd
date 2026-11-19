@@ -1,0 +1,359 @@
+==PROF== Connected to process 4845 (/home/ubuntu/dc/glyd-engine)
+NVIDIA A100-SXM4-40GB (sm_80): DeepSeek-V4 on the dynamic engine, 3 layers, weights 2.899 GiB (layout mma), KV 0.001 GiB (2048 positions), 3.56 of 39.49 GiB in use
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "mma_moe_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "mma_moe_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "mma_moe_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "mma_moe_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+==PROF== Profiling "f8b_lin1_kernel": 0%....50%....100% - 4 passes
+without a graph: 13.051 ms a step; the stages 12.661 ms:
+    3.376 ms  26.7%  mixture of experts
+    2.058 ms  16.3%  hyper-connections
+    0.935 ms   7.4%  attention: o low rank
+    0.920 ms   7.3%  activations to FP8
+    0.871 ms   6.9%  attention: attention
+    0.750 ms   5.9%  head
+    0.590 ms   4.7%  attention: compressor
+    0.471 ms   3.7%  attention: q up
+    0.458 ms   3.6%  attention: o
+    0.352 ms   2.8%  norms
+    0.311 ms   2.5%  attention: kv norm, rotary, cache
+    0.310 ms   2.5%  indexer: compressor
+    0.298 ms   2.4%  attention: kv
+    0.265 ms   2.1%  attention: q down
+    0.223 ms   1.8%  attention: q norm, rotary
+    0.193 ms   1.5%  indexer: picks
+    0.189 ms   1.5%  indexer: q
+    0.090 ms   0.7%  indexer: weights
+kernels: 80 launches a step, 5.698 ms of kernel time a step; the most:
+    0.681 ms    9.0 a step  v4_fp8
+    0.535 ms    7.0 a step  v4_hc_proj
+    0.469 ms    6.0 a step  v4_hc_fin
+    0.394 ms    6.0 a step  v4_hc_post
+    0.269 ms    3.0 a step  rmsnorm
+    0.255 ms    6.0 a step  v4_moe_act
+    0.246 ms    3.0 a step  v4_comp_out
+    0.241 ms    3.0 a step  v4_lin32_1
+    0.232 ms    3.0 a step  v4_attn_scores
+    0.230 ms    3.0 a step  v4_kv_prep
+    0.226 ms    3.0 a step  v4_attn_out
+    0.226 ms    3.0 a step  moe_logits
+    0.224 ms    3.0 a step  v4_attn_soft
+    0.223 ms    3.0 a step  v4_comp_pool
+with a graph: 9.167 ms a step (1 steps after 1 tokens)
+==PROF== Disconnected from process 4845
+[4845] glyd-engine@127.0.0.1
+  void f8c::f8b_lin1_kernel<0, 3>(f8c::F8Lin) (432, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        33.72
+    gpu__time_duration.sum                                                                   us        41.82
+    launch__registers_per_thread                                                register/thread           64
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        46.30
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         2.27
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         6.09
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         1.03
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         1.23
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.60
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.81
+    smsp__inst_executed.sum                                                                inst      6610368
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        44.33
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<1, 3>(f8c::F8Lin) (40, 8, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        33.79
+    gpu__time_duration.sum                                                                   us        42.56
+    launch__registers_per_thread                                                register/thread           80
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        35.48
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         1.81
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         5.59
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         0.79
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         0.20
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.16
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.68
+    smsp__inst_executed.sum                                                                inst      6383488
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        42.53
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<0, 3>(f8c::F8Lin) (432, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        33.75
+    gpu__time_duration.sum                                                                   us        47.90
+    launch__registers_per_thread                                                register/thread           64
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        47.72
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         2.36
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         9.33
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         1.11
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         1.34
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.69
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.73
+    smsp__inst_executed.sum                                                                inst      6328960
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        45.64
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void mma_moe_kernel<Fp4R, 1, 0, 80>(T1, long, long, const int *, int, long, int, const __nv_bfloat16 *, const __nv_bfloat16 *, const void *, int, __nv_bfloat16 *, float *, long, float *, int *, int) (64, 6, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        51.19
+    gpu__time_duration.sum                                                                   us        94.82
+    launch__registers_per_thread                                                register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        22.33
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         0.19
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         0.51
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         0.88
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         0.12
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.09
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.24
+    smsp__inst_executed.sum                                                                inst     24300288
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        64.02
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void mma_moe_kernel<Fp4R, 1, 0, 80>(T1, long, long, const int *, int, long, int, const __nv_bfloat16 *, const __nv_bfloat16 *, const void *, int, __nv_bfloat16 *, float *, long, float *, int *, int) (64, 6, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        25.64
+    gpu__time_duration.sum                                                                   us        57.73
+    launch__registers_per_thread                                                register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        22.42
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         0.41
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         0.85
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         0.83
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         0.21
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.00
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.25
+    smsp__inst_executed.sum                                                                inst     12678144
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        58.94
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<0, 3>(f8c::F8Lin) (432, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        16.88
+    gpu__time_duration.sum                                                                   us        29.54
+    launch__registers_per_thread                                                register/thread           64
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        46.58
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         1.40
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         8.44
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         1.16
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         1.50
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.83
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.93
+    smsp__inst_executed.sum                                                                inst      3543680
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        41.98
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<0, 3>(f8c::F8Lin) (432, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte         8.45
+    gpu__time_duration.sum                                                                   us        21.28
+    launch__registers_per_thread                                                register/thread           64
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        46.65
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         1.15
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst        10.47
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         1.12
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         0.32
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.81
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         2.16
+    smsp__inst_executed.sum                                                                inst      2188480
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        40.64
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<0, 3>(f8c::F8Lin) (432, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        33.73
+    gpu__time_duration.sum                                                                   us           48
+    launch__registers_per_thread                                                register/thread           64
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        47.08
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         2.85
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         8.69
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         1.01
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         1.25
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.57
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.81
+    smsp__inst_executed.sum                                                                inst      6610368
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        44.51
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<1, 3>(f8c::F8Lin) (40, 8, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        33.80
+    gpu__time_duration.sum                                                                   us        49.70
+    launch__registers_per_thread                                                register/thread           80
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        35.77
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         2.14
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         8.15
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         0.80
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         0.19
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.17
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.68
+    smsp__inst_executed.sum                                                                inst      6383488
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        42.54
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<0, 3>(f8c::F8Lin) (432, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        33.75
+    gpu__time_duration.sum                                                                   us        47.01
+    launch__registers_per_thread                                                register/thread           64
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        47.78
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         2.35
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         9.46
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         1.11
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         1.33
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.70
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.73
+    smsp__inst_executed.sum                                                                inst      6328960
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        45.41
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void mma_moe_kernel<Fp4R, 1, 0, 80>(T1, long, long, const int *, int, long, int, const __nv_bfloat16 *, const __nv_bfloat16 *, const void *, int, __nv_bfloat16 *, float *, long, float *, int *, int) (64, 6, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        51.18
+    gpu__time_duration.sum                                                                   us        96.54
+    launch__registers_per_thread                                                register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        22.32
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         0.20
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         0.57
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         0.89
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         0.12
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.09
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.24
+    smsp__inst_executed.sum                                                                inst     24300288
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        63.96
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void mma_moe_kernel<Fp4R, 1, 0, 80>(T1, long, long, const int *, int, long, int, const __nv_bfloat16 *, const __nv_bfloat16 *, const void *, int, __nv_bfloat16 *, float *, long, float *, int *, int) (64, 6, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        25.64
+    gpu__time_duration.sum                                                                   us        57.41
+    launch__registers_per_thread                                                register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        22.52
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         0.41
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         0.87
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         0.83
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         0.22
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.01
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.25
+    smsp__inst_executed.sum                                                                inst     12678144
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        58.92
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<0, 3>(f8c::F8Lin) (432, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        16.88
+    gpu__time_duration.sum                                                                   us        30.43
+    launch__registers_per_thread                                                register/thread           64
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        46.63
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         1.38
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         8.53
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         1.14
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         1.50
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.81
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.93
+    smsp__inst_executed.sum                                                                inst      3543680
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        41.83
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<0, 3>(f8c::F8Lin) (432, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte         8.45
+    gpu__time_duration.sum                                                                   us        21.73
+    launch__registers_per_thread                                                register/thread           64
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        46.91
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         1.22
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst        10.38
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         1.12
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         0.33
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.80
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         2.16
+    smsp__inst_executed.sum                                                                inst      2188480
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        41.11
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<0, 3>(f8c::F8Lin) (432, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        33.73
+    gpu__time_duration.sum                                                                   us        47.90
+    launch__registers_per_thread                                                register/thread           64
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        47.02
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         2.84
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         8.36
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         1.02
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         1.32
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.58
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.81
+    smsp__inst_executed.sum                                                                inst      6610368
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        44.54
+    --------------------------------------------------------------------------- --------------- ------------
+
+  void f8c::f8b_lin1_kernel<1, 3>(f8c::F8Lin) (40, 8, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------------------------------- --------------- ------------
+    Metric Name                                                                     Metric Unit Metric Value
+    --------------------------------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                                                  Mbyte        33.80
+    gpu__time_duration.sum                                                                   us        48.19
+    launch__registers_per_thread                                                register/thread           80
+    sm__warps_active.avg.pct_of_peak_sustained_active                                         %        35.85
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                       inst         2.12
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio               inst         8.23
+    smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio            inst         0.81
+    smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio                  inst         0.20
+    smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio                  inst         1.18
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                          inst         1.68
+    smsp__inst_executed.sum                                                                inst      6383488
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                       %        42.46
+    --------------------------------------------------------------------------- --------------- ------------
+

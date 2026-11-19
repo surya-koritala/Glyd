@@ -1,0 +1,59 @@
+{
+  "kind": "CPUQualificationExperiment",
+  "success": true,
+  "configuration": "c11fcf2921da6478d1c2ef23e1101c1edb2f4d5c236e013a8a32e961b25ac683",
+  "target": "f32a6b3e25cb84ad5cb153c604d25a9435a3e6646e074621d744ca2431376e68",
+  "manifest": "8f993f2242910f9f535611e0e82e62e6054bcaccc96dc28297f09bc6731e0835",
+  "executable": "66b94f533a684c97b8954b80a1bda9eb952f8e924f15c5eb16e71a36209e1398",
+  "artifact": "cedf89af31c9041b601fa58303285bc46d99c51baee1b13f5e919626ca526ee5",
+  "context_envelope": 128,
+  "max_output_tokens": 8,
+  "runs": [
+    {
+      "stream": false,
+      "prompt_tokens": 17,
+      "completion_tokens": 8,
+      "elapsed_ms": 6287,
+      "slot_idle": true
+    },
+    {
+      "stream": true,
+      "prompt_tokens": 17,
+      "completion_tokens": 8,
+      "elapsed_ms": 6303,
+      "slot_idle": true
+    },
+    {
+      "stream": false,
+      "prompt_tokens": 120,
+      "completion_tokens": 8,
+      "elapsed_ms": 29144,
+      "slot_idle": true
+    },
+    {
+      "stream": true,
+      "prompt_tokens": 120,
+      "completion_tokens": 8,
+      "elapsed_ms": 29148,
+      "slot_idle": true
+    }
+  ],
+  "counts": 9,
+  "generations": 4,
+  "semantic_parity": true,
+  "slot_idle_verified": true,
+  "observed_loaded_idle_rss_bytes": 1668956160,
+  "os_child_peak_rss_bytes": 1693384704,
+  "sampled_group_peak_rss_bytes": 1693335552,
+  "sample_interval_ms": 100,
+  "proposed_loading_bytes": "2818572288",
+  "proposed_request_bytes": "1140850688",
+  "faults": [],
+  "owned_group_remaining": false,
+  "elapsed_seconds": 72.698,
+  "external_spend_usd": 0,
+  "qualification_issued": false,
+  "base_conversion_fidelity_qualified": false,
+  "service_cleanup_qualified": false,
+  "daemon_activated": false
+}

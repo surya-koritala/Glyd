@@ -1,0 +1,998 @@
+{
+ "repo": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+ "dir": "/root/w/hf/hub/models--nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/snapshots/bee7596271d1495f6992ae224aefde4410e816b8",
+ "checkpoint_bytes": 21561882284,
+ "kinds": {
+  "experts": {
+   "tensors": 5888,
+   "packs": 46,
+   "bytes": 14687404032,
+   "packed": 14716861992,
+   "option": 14687404032,
+   "plain": 251,
+   "patches": 1795840,
+   "checked": 14687404032,
+   "bits": 4.008,
+   "h0": 3.9355,
+   "saved": 0,
+   "saved_of_checkpoint": 0.0
+  },
+  "shared_experts": {
+   "tensors": 46,
+   "packs": 46,
+   "bytes": 229490688,
+   "packed": 229357680,
+   "option": 229178840,
+   "plain": 439,
+   "patches": 28014,
+   "checked": 229490688,
+   "bits": 3.9977,
+   "h0": 3.931,
+   "saved": 311848,
+   "saved_of_checkpoint": 1.446293027169557e-05
+  },
+  "lm_head": {
+   "tensors": 1,
+   "packs": 1,
+   "bytes": 176160768,
+   "packed": 176519920,
+   "option": 176160768,
+   "plain": 0,
+   "patches": 21504,
+   "checked": 176160768,
+   "bits": 4.0082,
+   "h0": 3.9341,
+   "saved": 0,
+   "saved_of_checkpoint": 0.0
+  },
+  "all": {
+   "tensors": 5935,
+   "packs": 93,
+   "bytes": 15093055488,
+   "packed": 15122739592,
+   "option": 15092743640,
+   "plain": 690,
+   "patches": 1845358,
+   "checked": 15093055488,
+   "bits": 4.0079,
+   "h0": 3.9354,
+   "saved": 311848,
+   "saved_of_checkpoint": 1.446293027169557e-05
+  }
+ },
+ "failed": [],
+ "seconds": 32.4,
+ "gpu": "NVIDIA GeForce RTX 5090",
+ "rows": [
+  {
+   "key": "backbone.layers.1.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319994740,
+   "bits": 4.0088,
+   "h0": 3.9376,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.1.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319591344,
+   "bits": 4.0038,
+   "h0": 3.9473,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.1.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4997220,
+   "bits": 4.0066,
+   "h0": 3.9345,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.1.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4991680,
+   "bits": 4.0022,
+   "h0": 3.9444,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.10.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319936056,
+   "bits": 4.0081,
+   "h0": 3.9358,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.10.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319946780,
+   "bits": 4.0082,
+   "h0": 3.9356,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.10.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4993428,
+   "bits": 4.0036,
+   "h0": 3.9342,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.10.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4986964,
+   "bits": 3.9984,
+   "h0": 3.9313,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.13.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319916428,
+   "bits": 4.0078,
+   "h0": 3.9348,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.13.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319927880,
+   "bits": 4.008,
+   "h0": 3.9347,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.13.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4993484,
+   "bits": 4.0037,
+   "h0": 3.9331,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.13.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4987852,
+   "bits": 3.9991,
+   "h0": 3.9313,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.15.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319899540,
+   "bits": 4.0076,
+   "h0": 3.9343,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.15.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319930320,
+   "bits": 4.008,
+   "h0": 3.9342,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.15.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4994524,
+   "bits": 4.0045,
+   "h0": 3.9341,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.15.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4991108,
+   "bits": 4.0017,
+   "h0": 3.9329,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.17.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319906488,
+   "bits": 4.0077,
+   "h0": 3.9342,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.17.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319905204,
+   "bits": 4.0077,
+   "h0": 3.9342,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.17.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4993400,
+   "bits": 4.0036,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.17.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4990792,
+   "bits": 4.0015,
+   "h0": 3.9325,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.20.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319912912,
+   "bits": 4.0078,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.20.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319909344,
+   "bits": 4.0077,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.20.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4993016,
+   "bits": 4.0033,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.20.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4991192,
+   "bits": 4.0018,
+   "h0": 3.9335,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.22.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319897964,
+   "bits": 4.0076,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.22.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319869508,
+   "bits": 4.0072,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.22.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4992576,
+   "bits": 4.0029,
+   "h0": 3.9335,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.22.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4992656,
+   "bits": 4.003,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.24.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319909900,
+   "bits": 4.0077,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.24.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319911640,
+   "bits": 4.0078,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.24.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4992684,
+   "bits": 4.003,
+   "h0": 3.9333,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.24.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4991468,
+   "bits": 4.002,
+   "h0": 3.934,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.27.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319916100,
+   "bits": 4.0078,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.27.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319901284,
+   "bits": 4.0076,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.27.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4990528,
+   "bits": 4.0013,
+   "h0": 3.9331,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.27.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4987900,
+   "bits": 3.9992,
+   "h0": 3.9329,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.29.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319906184,
+   "bits": 4.0077,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.29.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319882988,
+   "bits": 4.0074,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.29.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4990076,
+   "bits": 4.0009,
+   "h0": 3.9331,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.29.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4989580,
+   "bits": 4.0005,
+   "h0": 3.933,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.3.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 320149772,
+   "bits": 4.0108,
+   "h0": 3.9507,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.3.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319960300,
+   "bits": 4.0084,
+   "h0": 3.9484,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.3.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4929132,
+   "bits": 3.9521,
+   "h0": 3.8993,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.3.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4876148,
+   "bits": 3.9096,
+   "h0": 3.8818,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.31.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319916276,
+   "bits": 4.0078,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.31.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319918512,
+   "bits": 4.0079,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.31.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4991544,
+   "bits": 4.0021,
+   "h0": 3.9333,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.31.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4990148,
+   "bits": 4.001,
+   "h0": 3.9331,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.34.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319931272,
+   "bits": 4.008,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.34.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319929008,
+   "bits": 4.008,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.34.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4993172,
+   "bits": 4.0034,
+   "h0": 3.9334,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.34.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4992852,
+   "bits": 4.0031,
+   "h0": 3.9335,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.36.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319941908,
+   "bits": 4.0081,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.36.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319939380,
+   "bits": 4.0081,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.36.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4993900,
+   "bits": 4.004,
+   "h0": 3.9333,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.36.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4993600,
+   "bits": 4.0037,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.38.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319946964,
+   "bits": 4.0082,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.38.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319949308,
+   "bits": 4.0082,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.38.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4994192,
+   "bits": 4.0042,
+   "h0": 3.933,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.38.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4993016,
+   "bits": 4.0033,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.40.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319947824,
+   "bits": 4.0082,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.40.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319950384,
+   "bits": 4.0083,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.40.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4994972,
+   "bits": 4.0048,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.40.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4993104,
+   "bits": 4.0033,
+   "h0": 3.9335,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.43.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319958672,
+   "bits": 4.0084,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.43.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319957876,
+   "bits": 4.0083,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.43.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4995880,
+   "bits": 4.0056,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.43.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4994464,
+   "bits": 4.0044,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.45.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319958400,
+   "bits": 4.0084,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.45.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319956028,
+   "bits": 4.0083,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.45.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4996216,
+   "bits": 4.0058,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.45.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4995096,
+   "bits": 4.0049,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.47.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319957084,
+   "bits": 4.0083,
+   "h0": 3.9337,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.47.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319941836,
+   "bits": 4.0081,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.47.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4995836,
+   "bits": 4.0055,
+   "h0": 3.9336,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.47.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4996024,
+   "bits": 4.0057,
+   "h0": 3.9339,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.49.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319955120,
+   "bits": 4.0083,
+   "h0": 3.934,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.49.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319960460,
+   "bits": 4.0084,
+   "h0": 3.9339,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.49.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4995732,
+   "bits": 4.0055,
+   "h0": 3.9341,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.49.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4997400,
+   "bits": 4.0068,
+   "h0": 3.9341,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.51.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319924924,
+   "bits": 4.0079,
+   "h0": 3.9341,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.51.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319962596,
+   "bits": 4.0084,
+   "h0": 3.9339,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.51.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4994980,
+   "bits": 4.0049,
+   "h0": 3.9338,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.51.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4998080,
+   "bits": 4.0073,
+   "h0": 3.9339,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.6.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 320009652,
+   "bits": 4.009,
+   "h0": 3.9428,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.6.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319965136,
+   "bits": 4.0084,
+   "h0": 3.9419,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.6.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4948128,
+   "bits": 3.9673,
+   "h0": 3.9124,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.6.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4894524,
+   "bits": 3.9243,
+   "h0": 3.8973,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.8.mixer.experts.*.down_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319956240,
+   "bits": 4.0083,
+   "h0": 3.9373,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.8.mixer.experts.*.up_proj.weight",
+   "kind": "experts",
+   "items": 128,
+   "bytes": 319291392,
+   "packed": 319944456,
+   "bits": 4.0082,
+   "h0": 3.9371,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.8.mixer.shared_experts.down_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4996544,
+   "bits": 4.0061,
+   "h0": 3.9458,
+   "bit_for_bit": true
+  },
+  {
+   "key": "backbone.layers.8.mixer.shared_experts.up_proj.weight",
+   "kind": "shared_experts",
+   "items": 1,
+   "bytes": 4988928,
+   "packed": 4990868,
+   "bits": 4.0016,
+   "h0": 3.9409,
+   "bit_for_bit": true
+  },
+  {
+   "key": "lm_head.weight",
+   "kind": "lm_head",
+   "items": 1,
+   "bytes": 176160768,
+   "packed": 176519920,
+   "bits": 4.0082,
+   "h0": 3.9341,
+   "bit_for_bit": true
+  }
+ ]
+}

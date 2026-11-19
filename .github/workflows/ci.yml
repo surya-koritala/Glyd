@@ -1,85 +1,114 @@
 name: CI
 
+# The tests that need no GPU, on every push to main and every pull request (and by hand: gh workflow run ci.yml --ref BRANCH):
+# the version files, glyd_gpu's tests as Python sources and as the compiled wheel it ships (the same tests: Cython changes what a
+# module is), the vLLM plugin's with vLLM installed, the Rust crate, and the engine's (its tests as a development build and as the release build, the strings
+# of the release build's sources, the Rust glyd's hand-off). The wheels' own build, with the CUDA libraries and the engine, and their
+# publishing are release.yml's. This repository is private: a run is billed, so a newer push to a pull request stops its older run.
+# A run on main or by hand always runs to the end, each in its own group: release.yml needs CI's success on a release's exact commit.
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'benchmarks/**', 'research/**', 'condor/**', 'starlings/**', 'cards/**', 'tools/**']
   pull_request:
-    branches: [ main ]
-  # by hand on a tag (gh workflow run ci.yml --ref vX.Y.Z): release.yml publishes a tag only once CI succeeded on its commit
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'benchmarks/**', 'research/**', 'condor/**', 'starlings/**', 'cards/**', 'tools/**']
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 env:
-  CARGO_TERM_COLOR: always
-  # Portable baseline: GitHub runners are not the reference machine, so
-  # target-cpu=native would mean something different on every run. x86-64-v3
-  # gives AVX2 without AVX-512.
-  #
-  # This job validates CORRECTNESS ONLY. It must never be used to evaluate the
-  # docs/history/GOAL.md gates. Those are machine-specific and are measured locally with
-  # `-C target-cpu=native` per docs/history/GOAL.md section 1. The two builds differ
-  # measurably: enabling AVX-512 codegen moves single-core compression by about
-  # -6% and decompression by about +7% on Zen 4, because LLVM auto-vectorises
-  # the decoder's literal wildcopy to 512-bit stores.
-  RUSTFLAGS: "-C target-cpu=x86-64-v3"
+  # the build tools the wheels are made with (release.yml has the same)
+  BUILD_TOOLS: "build==1.6.1 wheel==0.48.0 setuptools==84.0.0 Cython==3.3.0"
 
 jobs:
-  test:
+  # The codec and store (the root crate and glyd-store): their tests, the regression floors, the C ABI and a CLI round trip.
+  # Its name is the required check on main.
+  codec:
     name: Build & Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (as below)
+    timeout-minutes: 45
+    env:
+      # the codec's release builds target x86-64-v3 (AVX2), as its benchmarks do
+      RUSTFLAGS: "-C target-cpu=x86-64-v3"
     steps:
-      - uses: actions/checkout@v4
-
-      # One version in Cargo's spelling (0.26.0-rc.2) and Python's (0.26.0rc2), in every file that has it; for
-      # a release (0.26.0) the docs and the CHANGELOG heading name it too. scripts/bump_version.py sets them.
-      - name: Versions agree (crate, store, GPU crate, Cargo.lock, Python package)
-        run: |
-          python3 scripts/bump_version.py --check
-          python3 scripts/bump_version.py --selftest
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Corpus cache
-        uses: actions/cache@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pc-job
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: actions/cache@v4
         with:
           path: corpus
           key: corpus-${{ hashFiles('scripts/download_corpus.sh') }}
-
-      - name: Download Corpus
-        run: bash scripts/download_corpus.sh
-
-      - name: Run Test Suite (correctness only, not gate measurement)
-        run: cargo test --release --all-targets --workspace
-
-      - name: Run Regression Floor Tests
-        run: cargo test --release --test regression_floors -- --nocapture
-
-      - name: Build Binaries
-        run: |
-          cargo build --release --bin glyd
-          cargo build --release --example bench
+      - run: bash scripts/download_corpus.sh
+      - run: cargo test --release --all-targets -p glyd -p glyd-store
+      - run: cargo test --release -p glyd --test regression_floors -- --nocapture
       - name: C ABI
         run: |
-          cargo build --release --lib
+          cargo build --release -p glyd --lib
           cc -O2 -o target/c_abi tests/test_c_abi.c -Ltarget/release -lglyd -Wl,-rpath,$PWD/target/release
           ./target/c_abi
       - name: CLI round trip and corruption
         run: |
+          cargo build --release -p glyd --bin glyd
           head -c 3000000 corpus/dickens > /tmp/sample.bin
           scripts/verify_roundtrip.sh /tmp/sample.bin
 
-  # glyd.gpu and the `glyd` command's GPU half are the glyd-gpu package's (its own repository tests it, with vLLM and the GPU): here,
-  # that they find it where it is asked for, and say so clearly where it is missing.
-  gpu-shim:
-    name: glyd.gpu shim (glyd-gpu missing, and a stand-in)
-    runs-on: ubuntu-latest
+  versions:
+    name: Versions agree
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          python-version: "3.12"
-      - run: python bindings/python/test_shim.py
+          persist-credentials: false
+      - uses: ./.github/actions/pc-job
+      # One version in Cargo's spelling (0.27.0-rc.1) and Python's (0.27.0rc1), in every file that has it
+      - run: |
+          bash -n gpu/vllm/acceptance.sh
+          python3 scripts/bump_version.py --check
+          python3 scripts/bump_version.py --selftest
+          python3 tools/report/report.py --selftest
+
+  rust:
+    name: The Rust glyd-gpu crate
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pc-job
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - run: cargo test --release --all-targets -p glyd-gpu
+
+  engine:
+    # glyd-engine (glyd-engine/) as a development build (the default features) and as the release build (--no-default-features): its host-side tests, with no nvcc (the crate
+    # is built without its kernels); and the Rust glyd's hand-off of glyd run and glyd serve to the engine or the Python tool.
+    name: The Rust engine (tests, the Rust glyd's hand-off)
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pc-job
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - name: The engine's tests (the development build, the release build)
+        run: |
+          cargo test --release -p glyd-engine
+          cargo test --release -p glyd-engine --no-default-features
+      - name: The Rust glyd's hand-off (the engine, the Python tool, GLYD_ENGINE=0)
+        run: cargo test --release -p glyd --test cli_python_tool

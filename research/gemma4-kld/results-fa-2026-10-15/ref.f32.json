@@ -1,0 +1,1 @@
+{"vocab": 262144, "rows_per_chunk": 255, "model": "m/qat", "chunks": 32, "transformers": "5.19.0", "torch": "2.7.0"}

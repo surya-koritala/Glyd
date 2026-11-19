@@ -1,0 +1,119 @@
+{
+ "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+ "args": {
+  "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+  "out": "/root/results/nvidia_Qwen3.6-35B-A3B-NVFP4/layers",
+  "cap": "/root/w/cap/nvidia_Qwen3.6-35B-A3B-NVFP4.pt",
+  "e2e": null,
+  "util": 0.85,
+  "mml": 4096,
+  "dtype": "bfloat16",
+  "max_num_seqs": 64,
+  "no_image": false
+ },
+ "moe": {
+  "calls": 200,
+  "differ": 86,
+  "not_told": 0,
+  "blocks": 40,
+  "examples": [
+   {
+    "name": "language_model.model.layers.2.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 2,
+     "of": 227328,
+     "max_abs": 7.62939453125e-06
+    }
+   },
+   {
+    "name": "language_model.model.layers.3.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 1,
+     "of": 227328,
+     "max_abs": 1.52587890625e-05
+    }
+   },
+   {
+    "name": "language_model.model.layers.6.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 43,
+     "of": 227328,
+     "max_abs": 6.103515625e-05
+    }
+   },
+   {
+    "name": "language_model.model.layers.7.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 1,
+     "of": 227328,
+     "max_abs": 1.52587890625e-05
+    }
+   },
+   {
+    "name": "language_model.model.layers.11.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 1,
+     "of": 227328,
+     "max_abs": 6.103515625e-05
+    }
+   }
+  ],
+  "not_told_examples": []
+ },
+ "units": {
+  "linear": 250,
+  "embedding": 1,
+  "logits": 1,
+  "moe": 40
+ },
+ "layers": {
+  "calls": 671,
+  "equal": 671,
+  "layers": 222,
+  "packed_layers": 111,
+  "packed_calls": 115,
+  "packed_equal": 115,
+  "stock_self_same": 671,
+  "glyd_repeat": 671,
+  "errors": [],
+  "not_equal": [],
+  "packed_not_called": [],
+  "pass": true
+ },
+ "weights": {
+  "packed": 111,
+  "packed_equal": 111,
+  "other": 1319,
+  "other_equal": 1319,
+  "differ": [],
+  "stock_only": [],
+  "glyd_only": [],
+  "verified": 111,
+  "pass": true
+ }
+}

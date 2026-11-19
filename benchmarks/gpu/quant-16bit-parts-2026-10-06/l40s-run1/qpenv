@@ -1,0 +1,8 @@
+END=8400
+QP_MODELS="nvidia/Gemma-4-31B-IT-NVFP4
+Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
+Qwen/Qwen3.8-27B-FP8
+google/gemma-4-12B-it-qat-w4a16-ct
+RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic
+Qwen/Qwen3.6-35B-A3B-FP8
+cyankiwi/Qwen3.6-27B-AWQ-INT4|--dtype bfloat16"

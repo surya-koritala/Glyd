@@ -1,0 +1,60 @@
+== the 8B through the glyd program from empty caches
+Downloading Qwen3-8B: 10% (1.7 GB of 16.4 GB)
+Downloading Qwen3-8B: 20% (3.3 GB of 16.4 GB)
+Downloading Qwen3-8B: 30% (4.9 GB of 16.4 GB)
+Downloading Qwen3-8B: 40% (6.7 GB of 16.4 GB)
+Downloading Qwen3-8B: 50% (8.3 GB of 16.4 GB)
+Downloading Qwen3-8B: 60% (10.0 GB of 16.4 GB)
+Downloading Qwen3-8B: 70% (11.5 GB of 16.4 GB)
+Downloading Qwen3-8B: 80% (13.2 GB of 16.4 GB)
+Downloading Qwen3-8B: 90% (14.8 GB of 16.4 GB)
+Downloading Qwen3-8B: 100% (16.4 GB of 16.4 GB)
+Downloaded Qwen3-8B (16.4 GB).
+Qwen3-8B: 10.3 GiB on the GPU with Glyd, instead of 15.3 GiB; layout mma: Ada: mma, the smallest layout, is as fast as mma12 (measured).
+Packing Qwen3-8B for this GPU (mma), once: /opt/dlami/nvme/glyd-cache-t5/engine/Qwen--Qwen3-8B-b968826d-mma
+Packing Qwen3-8B: 10% (1.6 GB of 11.1 GB)
+Packing Qwen3-8B: 20% (2.3 GB of 11.1 GB)
+Packing Qwen3-8B: 30% (3.6 GB of 11.1 GB)
+Packing Qwen3-8B: 40% (4.9 GB of 11.1 GB)
+Packing Qwen3-8B: 50% (6.3 GB of 11.1 GB)
+Packing Qwen3-8B: 60% (7.2 GB of 11.1 GB)
+Packing Qwen3-8B: 70% (8.1 GB of 11.1 GB)
+Packing Qwen3-8B: 80% (8.9 GB of 11.1 GB)
+Packing Qwen3-8B: 90% (10.4 GB of 11.1 GB)
+Packing Qwen3-8B: 100% (11.1 GB of 11.1 GB)
+Packed in 22s (12.4 GB).
+Making the lossless KV cache's tables for Qwen3-8B (8192 positions), once: a few minutes at most.
+Tables made in 55s.
+Ready in 2m27s: Qwen3-8B on the NVIDIA L4, 10.4 GiB of weights, 8192 tokens of context.
+Paris
+
+real	2m28.476s
+user	2m58.025s
+sys	1m8.669s
+== the second run
+Qwen3-8B: 10.3 GiB on the GPU with Glyd, instead of 15.3 GiB; layout mma: Ada: mma, the smallest layout, is as fast as mma12 (measured).
+Ready in 2s: Qwen3-8B on the NVIDIA L4, 10.4 GiB of weights, 8192 tokens of context.
+Paris
+
+real	0m3.182s
+user	0m1.339s
+sys	0m2.014s
+16G	/opt/dlami/nvme/hf-t5
+12G	/opt/dlami/nvme/glyd-cache-t5
+== glyd doctor
+glyd engine 0.27.0-rc.1
+  GPU           NVIDIA L4 (compute capability 8.9), 21.8 GiB free of 22.0 GiB; the driver runs CUDA 13.2
+  GPU library   /home/ubuntu/v027/venv/lib/python3.12/site-packages/glyd_gpu/libglyd_gpu_cuda13.so
+  cuBLAS        found (/usr/local/cuda/lib64/libcublas.so.13): long prompts run through it
+  cache         /opt/dlami/nvme/glyd-cache-t5 (471.7 GB free)
+  models        /opt/dlami/nvme/hf-t5/hub (471.7 GB free)
+  Hub token     none (public models only; glyd login for a gated one)
+  Hub           https://huggingface.co reachable
+Everything glyd run needs is here.
+== a model the engine does not run, no Python tool
+glyd: Qwen2.5-0.5B is a Qwen2ForCausalLM model, and this engine runs Qwen3 models so far.
+  Other models run with the vLLM-based glyd: pip install "glyd[vllm]" (https://getglyd.com)
+exit 3
+== a name the Hub does not know
+glyd: the Hugging Face Hub would not show no/such-model-xyz: the name is wrong, or it is a gated or private model.
+  Check the name (ORG/NAME, as in Qwen/Qwen3-8B). For a gated model (Llama, Gemma), accept its licence at https://huggingface.co/no/such-model-xyz, then run: glyd login   (it takes a token from https://huggingface.co/settings/tokens)
