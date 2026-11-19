@@ -17,7 +17,7 @@ const CARD: &str = include_str!("ship_card.md.j2");
 
 pub fn run(a: &Args) -> Result<()> {
     let (model, level, dir) = (a.need(1, "MODEL")?, a.need(2, "LEVEL")?, PathBuf::from(a.need(3, "DIR")?));
-    let layout = crate::cli::ship_layout(model, level).ok_or_else(|| Error(format!("{level}: ship packs penguin, kestrel, swift or wren")))?;
+    let layout = crate::levels::ship_layout(model, level).ok_or_else(|| Error(format!("{level}: ship packs penguin, kestrel, swift or wren")))?;
     let steps: Vec<&str> = a.flag("steps").map_or(STEPS.to_vec(), |s| s.split(',').map(str::trim).collect());
     if let Some(bad) = steps.iter().find(|s| !STEPS.contains(s)) {
         return Err(Error(format!("--steps {bad}: the steps are {}", STEPS.join(","))));
@@ -252,7 +252,7 @@ fn card(a: &Args, model: &str, level: &str, draft: Option<&str>, repo: &Path, me
     let ctx = minijinja::Value::from_iter([
         ("base", minijinja::Value::from(model.to_string())),
         ("title", minijinja::Value::from(a.flag("title").unwrap_or(name).to_string())),
-        ("repo", minijinja::Value::from(a.flag("repo").map_or_else(|| crate::cli::packed_repo(model, level), str::to_string))),
+        ("repo", minijinja::Value::from(a.flag("repo").map_or_else(|| crate::levels::packed_repo(model, level), str::to_string))),
         ("level", minijinja::Value::from(level.to_string())),
         ("license", minijinja::Value::from(license(model))),
         ("glyd", minijinja::Value::from(a.flag("glyd").map_or(minor, str::to_string))),

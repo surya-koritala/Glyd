@@ -936,16 +936,12 @@ impl Client {
 /// MODEL[:level] as a directory and the layout to pack at (None: the directory's own level, or the loader's lossless choice): a directory; a Hub id in the cache (a glyd/NAME-LEVEL
 /// snapshot, or a base model's checkpoint, packed at load); `ORG/NAME:level`: glyd/NAME-level from the cache where it is there, else the base model's checkpoint packed at that level.
 pub fn resolve(spec: &str) -> Result<(PathBuf, Option<Layout>)> {
-    let (model, tag) = match spec.rsplit_once(':') {
-        Some((m, t)) if !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphabetic()) => (m, Some(t.to_ascii_lowercase())),
-        _ => (spec, None),
-    };
-    let layout = match tag.as_deref() {
-        None | Some("penguin") => None,
-        Some("kestrel") => Some(Layout::Int6),
-        Some("swift") => Some(Layout::Int5),
-        Some("wren") => Some(Layout::Int4),
-        Some(t) => return err(format!(":{t} is not a level (penguin, kestrel, swift, wren)")),
+    let (model, tag) = crate::levels::split_tag(spec);
+    // (a range worker runs every level but hummingbird, whose experts come from a calibration)
+    let layout = match tag.as_deref().map(|t| crate::levels::by_name(t).filter(|l| l.name != "hummingbird")) {
+        None => None,
+        Some(Some(l)) => l.layout,
+        Some(None) => return err(format!(":{} is not a level (penguin, kestrel, swift, wren)", tag.unwrap_or_default())),
     };
     if Path::new(model).is_dir() {
         let dir = PathBuf::from(model);
@@ -954,7 +950,7 @@ pub fn resolve(spec: &str) -> Result<(PathBuf, Option<Layout>)> {
         return Ok((dir, if own { None } else { layout }));
     }
     if let Some(t) = &tag {
-        if let Ok(s) = glyd_gpu::save::Source::find(&crate::cli::packed_repo(model, t)) {
+        if let Ok(s) = glyd_gpu::save::Source::find(&crate::levels::packed_repo(model, t)) {
             return Ok((s.dir, None));
         }
     }

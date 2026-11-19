@@ -50,6 +50,7 @@ pub mod disk;
 pub mod ffi;
 pub mod os;
 pub mod fit;
+pub mod levels;
 pub mod glm;
 pub mod kimi;
 #[cfg(feature = "dev")]

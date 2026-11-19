@@ -18,40 +18,8 @@ pub const SCHEMA: &str = "glyd-costs/1";
 
 // ---- the levels and layouts ------------------------------------------------------------------------------------------------------------------------------------------------------
 
-/// A level's name from its layout (the levels' table of cli.rs, by layout).
-pub fn level_of(layout: Layout) -> &'static str {
-    match layout {
-        Layout::Tiered | Layout::Twelve | Layout::Compact => "penguin",
-        Layout::Int6 | Layout::Int6Row => "kestrel",
-        Layout::Int5 | Layout::Int5Row => "swift",
-        Layout::Int4 | Layout::Int4H | Layout::Int4Row => "wren",
-        Layout::Hummingbird | Layout::Cb3Row | Layout::Cb2Row => "hummingbird",
-        Layout::Int3 => "i3",
-    }
-}
-
-/// A layout from a level's name, or from glyd.json's layout word.
-fn layout_of(word: &str) -> Option<Layout> {
-    Some(match word {
-        "penguin" | "mma" => Layout::Tiered,
-        "mma12" => Layout::Twelve,
-        "kestrel" | "i6" => Layout::Int6,
-        "swift" | "i5" => Layout::Int5,
-        "wren" | "i4" => Layout::Int4,
-        "i4x" => Layout::Int4H,
-        "i3" => Layout::Int3,
-        "hummingbird" | "hb" => Layout::Hummingbird,
-        _ => return None,
-    })
-}
-
-/// MODEL and its level tag (`Qwen/Qwen3.5-9B:swift`): the text after the last ':' where it is all letters (a path's ':' has a '/' after it).
-fn split_tag(model: &str) -> (&str, Option<String>) {
-    match model.rsplit_once(':') {
-        Some((rest, tag)) if !tag.is_empty() && tag.bytes().all(|b| b.is_ascii_alphabetic()) => (rest, Some(tag.to_ascii_lowercase())),
-        _ => (model, None),
-    }
-}
+pub use crate::levels::name_of as level_of;
+use crate::levels::{layout_of, split_tag};
 
 // ---- where the files are ---------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -79,7 +47,7 @@ fn find(model: &str) -> Result<Found> {
     }
     // a Hub name: its pre-packed repo at the level (glyd/NAME-LEVEL), else the model itself
     let repo = match &tag {
-        Some(t) => crate::cli::packed_repo(name, t),
+        Some(t) => crate::levels::packed_repo(name, t),
         None => name.to_string(),
     };
     if let Ok(s) = glyd_gpu::save::Source::find(&repo) {
@@ -450,7 +418,7 @@ impl Profile {
         if let Some(t) = f.tag.as_deref().filter(|t| layout_of(t).is_none()) {
             return err(format!(":{t} is not a level"));
         }
-        let level = m_str("level").map(|s| LEVEL_NAMES.iter().copied().find(|n| *n == s).unwrap_or("other")).unwrap_or(level_of(layout));
+        let level = m_str("level").map(|s| crate::levels::by_name(&s).map_or("other", |l| l.name)).unwrap_or(level_of(layout));
         let table = f.table();
         // the packs' bytes by the name they are saved under (NAME.glyd_data, .glyd_blocks, .glyd_block_base or .glyd_codebook)
         let mut by_pack: HashMap<String, u64> = HashMap::new();
@@ -740,7 +708,6 @@ impl Profile {
     }
 }
 
-const LEVEL_NAMES: [&str; 5] = ["penguin", "kestrel", "swift", "wren", "hummingbird"];
 
 /// The workload the context-dependent numbers are given at.
 pub struct Workload {

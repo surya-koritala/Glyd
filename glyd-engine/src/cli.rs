@@ -8,6 +8,8 @@ use crate::dev::{Dev, Gpu};
 use crate::ffi::Blas;
 use crate::fit;
 use crate::hub::{self, Hub};
+use crate::levels::{self, is_qat, layout_for, QAT_WREN};
+pub use crate::levels::{packed_repo, ship_layout, short_name};
 use crate::machine;
 use crate::model::{Engine, Opts};
 use crate::model35::{Engine35, Opts35};
@@ -79,63 +81,10 @@ fn dim(s: &str, on: bool) -> String {
     }
 }
 
-/// A model's short name: ORG/NAME's NAME, or a directory's last part.
-pub fn short_name(model: &str) -> String {
-    model.trim_end_matches('/').rsplit('/').next().unwrap_or(model).to_string()
-}
 
-/// The levels a tag on MODEL names (`Qwen/Qwen3.8-27B:swift`), each with the layout it packs the weights in (None: penguin, lossless, the normal path). Wren is the four-bit layout with its plain rounding for now
-/// (the calibrated Wren is GLY-40). Hummingbird is Nemotron 3 Super's routed experts at 3 and 2 bits (codebook rows from a calibration, src/moe_hb.rs; every other matrix six-bit): a directory made by
-/// `glyd-engine pack MODEL OUT --layout hummingbird --codes DIR` or downloaded pre-packed.
-/// These five are Glyd's levels (the owner's, 2026-10-10); the three-bit layout, `--layout i3`, is no level (too coarse for a model alone).
-const LEVELS: [(&str, Option<Layout>); 5] = [("penguin", None), ("kestrel", Some(Layout::Int6)), ("swift", Some(Layout::Int5)), ("wren", Some(Layout::Int4)), ("hummingbird", Some(Layout::Hummingbird))];
-/// The wren level runs in a development build only (`--features dev`, the default): a release build refuses it as a level not built. Nemotron 3 Super and the hummingbird level run in both
-/// (the owner's go, 2026-10-10).
-const PREVIEW: bool = cfg!(feature = "dev");
-
-/// The names of the levels this build runs: a release build's without wren (`PREVIEW`); hummingbird, Nemotron 3 Super's level for a consumer card, is released.
-fn levels_now() -> Vec<&'static str> {
-    LEVELS.iter().map(|l| l.0).filter(|&n| PREVIEW || n != "wren").collect()
-}
-
-/// The Hub repo of MODEL (`Qwen/Qwen3.8-27B`) at `level` (`swift`) packed ahead: `glyd/Qwen3.8-27B-swift` (glyd-gpu-py's engine.packed_repo is the same rule, and the publish workflow's), under a
-/// shorter name where `REPO_NAMES` gives one (the owner's, 2026-10-10: `glyd/nemotron-3-hummingbird`).
-pub fn packed_repo(model: &str, level: &str) -> String {
-    // (a pre-packed repo's own name is its repo: `fetch glyd/gemma-4-12B-wren` asked the Hub for glyd/gemma-4-12B-wren-wren)
-    if model.strip_prefix("glyd/").is_some_and(|n| !n.contains('/') && n.ends_with(&format!("-{level}"))) {
-        return model.to_string();
-    }
-    let name = short_name(model);
-    let name = REPO_NAMES.iter().find(|(long, _)| *long == name).map_or(name.as_str(), |(_, short)| short);
-    format!("glyd/{name}-{level}")
-}
-
-/// A model's name on the Hub (the text after its org) and the shorter one its pre-packed repos have (glyd-gpu-py's engine.REPO_NAMES is the same table).
-/// Gemma 4: the instruction-tuned model is the plain name (its wren packed from Google's QAT checkpoint, which makes it exact), the base model "-base".
-const REPO_NAMES: [(&str, &str); 7] = [("NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "nemotron-3"), ("gemma-4-31B-it-qat-q4_0-unquantized", "gemma-4-31B"), ("gemma-4-31B-it", "gemma-4-31B"), ("gemma-4-31B", "gemma-4-31B-base"), ("gemma-4-12B-it-qat-q4_0-unquantized", "gemma-4-12B"), ("gemma-4-12B-it", "gemma-4-12B"), ("gemma-4-12B", "gemma-4-12B-base")];
-
-/// The layout of a pre-packed repo given by its own name (`glyd/Qwen3.8-27B-swift`), where MODEL is one.
-fn glyd_repo_level(model: &str) -> Option<Layout> {
-    let name = model.strip_prefix("glyd/").filter(|n| !n.contains('/'))?;
-    LEVELS.iter().find(|l| name.ends_with(&format!("-{}", l.0))).and_then(|l| l.1)
-}
-
-/// MODEL without its level tag, and the layout of its level (None: lossless). The tag is the text after the last ':' where that is all ASCII letters, in any case (a Hub name has no ':'; in a path the
-/// text after one has a '/' or more, and the model is left as it is). --lossy is `:kestrel`. A pre-packed repo's own name (`glyd/NAME-swift`) is its level. Refused: a tag that is no level built, and --lossy with another level.
+/// The level MODEL asks for, as a refusal where its tag is no level this build runs (src/levels.rs has the table and the rules).
 fn level(model: &str, lossy: bool) -> Done<(&str, Option<Layout>)> {
-    let Some((rest, tag)) = model.rsplit_once(':').filter(|(_, t)| !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphabetic())) else {
-        return Ok((model, lossy.then_some(Layout::Int6).or_else(|| glyd_repo_level(model))));
-    };
-    // (wren on a checkpoint trained to four bits, a QAT one, is its exact layout: released, where wren elsewhere is a preview)
-    let Some(&(name, layout)) = LEVELS.iter().find(|l| l.0.eq_ignore_ascii_case(tag) && (levels_now().contains(&l.0) || (l.0 == "wren" && is_qat(rest)))) else {
-        let tag = tag.to_ascii_lowercase();
-        let what = if tag == "wren" { format!(":{tag} is not built yet") } else { format!(":{tag} is not a level") };
-        return Err(Refusal::new(what, format!("The levels available now: {}", levels_now().join(", "))));
-    };
-    if lossy && layout != Some(Layout::Int6) {
-        return Err(Refusal::new(format!("--lossy is :kestrel, not :{name}"), "Give one or the other"));
-    }
-    Ok((rest, layout))
+    levels::parse(model, lossy).map_err(|e| Refusal::new(e.what, e.fix))
 }
 
 /// Whether MODEL is a Gemma 4 model: a directory whose config says so, or a Hub name of one (google/gemma-4-..., glyd/gemma-4-...).
@@ -146,24 +95,10 @@ fn is_gemma4_model(model: &str) -> bool {
     }
 }
 
-/// A lossy level's name, from its layout (a layout that is no level, the three-bit one: its own name). The exact four-bit layout is wren's on a QAT checkpoint.
+/// A level's name from its layout.
 fn level_name(layout: Layout) -> &'static str {
-    if layout == Layout::Tiered {
-        return "penguin"; // (the lossless layout on the levels' route: Gemma 4's penguin)
-    }
-    let layout = if layout == Layout::Int4H { Layout::Int4 } else { layout };
-    LEVELS.iter().find(|l| l.1 == Some(layout)).map_or(layout.name(), |l| l.0)
+    levels::name_of(layout)
 }
-
-/// Whether MODEL names a checkpoint trained to four bits (Google's "-qat-" Gemma 4 releases), or a model whose wren repo is packed from one
-/// (`google/gemma-4-31B-it:wren` is glyd/gemma-4-31B-wren, from Google's QAT checkpoint): its wren is the exact four-bit layout (i4x).
-fn is_qat(model: &str) -> bool {
-    let name = short_name(model);
-    name.to_ascii_lowercase().contains("-qat") || QAT_WREN.contains(&name.as_str())
-}
-
-/// The models whose wren repo is packed from Google's QAT checkpoint of them.
-const QAT_WREN: [&str; 2] = ["gemma-4-31B-it", "gemma-4-12B-it"];
 
 /// The wren repo of a Gemma 4 model that has one (the instruction-tuned 12B and 31B, packed exact from Google's QAT checkpoint), from its Hub name or its penguin repo's.
 fn gemma_wren(model: &str) -> Option<String> {
@@ -173,20 +108,6 @@ fn gemma_wren(model: &str) -> Option<String> {
         None => return None,
     };
     QAT_WREN.iter().any(|m| packed_repo(m, "wren") == repo).then_some(repo)
-}
-
-/// The layout `layout` takes for MODEL: wren on a QAT checkpoint is the exact four-bit layout (the save refuses a matrix that is not four-bit-trained, so nothing is rounded silently).
-fn layout_for(model: &str, layout: Layout) -> Layout {
-    if layout == Layout::Int4 && is_qat(model) { Layout::Int4H } else { layout }
-}
-
-/// The layout `ship` packs MODEL at for LEVEL (penguin, kestrel, swift or wren: wren of a QAT checkpoint the exact four-bit layout), else None.
-pub fn ship_layout(model: &str, level: &str) -> Option<Layout> {
-    match LEVELS.iter().find(|l| l.0 == level)? {
-        (_, None) => Some(Layout::Tiered),
-        (_, Some(Layout::Hummingbird)) => None,
-        (_, Some(l)) => Some(layout_for(model, *l)),
-    }
 }
 
 /// The layout of MODEL where it is a local glyd-v7 directory (a lossy level's packs, saved).
@@ -1177,7 +1098,7 @@ fn work_lossy(e: &mut dyn Gen, tok: &Tok, chat: Option<&Chat>, rx: &mpsc::Receiv
 /// The glyd-v7 directory of MODEL at `layout` that needs no packing here, or None (said in a line where the Hub has none): the pack in the cache, else the pre-packed repo (`packed_repo`) in the Hub cache or downloaded.
 /// A local directory, and a pre-packed repo given by its own name, are not looked up.
 fn pre_packed(model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<Option<PathBuf>> {
-    if Path::new(model).join("config.json").exists() || glyd_repo_level(model).is_some() {
+    if Path::new(model).join("config.json").exists() || levels::repo_level(model).is_some() {
         return Ok(None);
     }
     let level = level_name(layout);
@@ -1807,7 +1728,7 @@ fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<
     let (level, repo) = (level_name(layout), packed_repo(model, level_name(layout)));
     if !Path::new(model).join("config.json").exists() && Source::find(model).is_err() && Source::find(&repo).is_err() {
         // (a model with a pre-packed repo downloads that one, which is smaller)
-        let planned = if glyd_repo_level(model).is_some() { None } else { store::hub_plan_packed(&repo, level, ui)? };
+        let planned = if levels::repo_level(model).is_some() { None } else { store::hub_plan_packed(&repo, level, ui)? };
         let (hub, remote, wanted) = match planned {
             Some(p) => p,
             None => store::hub_plan(model, ui)?,
@@ -2218,7 +2139,7 @@ mod tests {
         let m = "Qwen/Qwen3.8-27B";
         // the tags, in any case: the model without them, and the layout the level packs in (none: lossless)
         for (tag, layout) in [("penguin", None), ("kestrel", Some(Layout::Int6)), ("swift", Some(Layout::Int5)), ("wren", Some(Layout::Int4)), ("hummingbird", Some(Layout::Hummingbird)), ("Penguin", None), ("KESTREL", Some(Layout::Int6)), ("sWiFt", Some(Layout::Int5)), ("Wren", Some(Layout::Int4)), ("HUMMINGBIRD", Some(Layout::Hummingbird))] {
-            if !PREVIEW && tag.eq_ignore_ascii_case("wren") {
+            if !levels::PREVIEW && tag.eq_ignore_ascii_case("wren") {
                 // (a release build: wren is not built; hummingbird is)
                 let r = level(&format!("{m}:{tag}"), false).unwrap_err();
                 assert!(r.code == 1 && r.what == format!(":{} is not built yet", tag.to_lowercase()) && r.fix == "The levels available now: penguin, kestrel, swift, hummingbird", "{tag}: {r}");
@@ -2235,7 +2156,7 @@ mod tests {
         // a name that is no level: refused with the levels there are (sparrow, once proposed, is no level)
         for (tag, said) in [("sparrow", "not a level"), ("falcon", "not a level"), ("x", "not a level"), ("mma", "not a level")] {
             let r = level(&format!("{m}:{tag}"), false).unwrap_err();
-            assert!(r.code == 1 && r.what == format!(":{} is {said}", tag.to_lowercase()) && r.fix == format!("The levels available now: {}", levels_now().join(", ")), "{tag}: {r}");
+            assert!(r.code == 1 && r.what == format!(":{} is {said}", tag.to_lowercase()) && r.fix == format!("The levels available now: {}", levels::names_now().join(", ")), "{tag}: {r}");
         }
         // what is not all letters after the last ':' is no tag: the model is left alone, --lossy or not
         for plain in ["Qwen/Qwen3-8B", "/models/mine/", "mine", "/mnt/disk:1/Qwen3", "./a:b/c", "/data/x:kestrel/model", "C:\\models\\Qwen", "Qwen/Qwen3-8B:", "m:v2", "m:4bit", "m:ké", "m: swift", ":", ""] {
@@ -2243,7 +2164,7 @@ mod tests {
             assert_eq!(level(plain, true).unwrap(), (plain, Some(Layout::Int6)), "{plain}");
         }
         // --lossy is :kestrel: with another level it is refused; a name that is no level built is refused as it is
-        for tag in ["penguin", "swift", "SWIFT", "wren", "hummingbird"].into_iter().filter(|t| PREVIEW || *t != "wren") {
+        for tag in ["penguin", "swift", "SWIFT", "wren", "hummingbird"].into_iter().filter(|t| levels::PREVIEW || *t != "wren") {
             let r = level(&format!("{m}:{tag}"), true).unwrap_err();
             assert!(r.code == 1 && r.what == format!("--lossy is :kestrel, not :{}", tag.to_lowercase()), "{tag}: {r}");
         }
@@ -2475,7 +2396,7 @@ mod tests {
     /// holds 20 GiB of them whatever the computer has (and 100 is all of them); more than the computer has free less the reserve, and less than a step's choices in each width of each layer (3.4 GiB), are refused with the
     /// figures; the wren level, which has no packed directory to read experts from, keeps its refusal; a model with no experts is told so.
     #[test]
-    #[cfg(feature = "dev")] // (Nemotron 3 Super runs in a development build only: PREVIEW)
+    #[cfg(feature = "dev")] // (Nemotron 3 Super runs in a development build only: levels::PREVIEW)
     fn the_computers_memory_for_the_experts_is_asked_for_in_gib() {
         let text = include_str!("../tests/fixtures/nemotron_h_config.json");
         let model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16";
