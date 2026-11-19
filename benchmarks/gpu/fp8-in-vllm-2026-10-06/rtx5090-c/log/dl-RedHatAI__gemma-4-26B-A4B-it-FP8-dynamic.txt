@@ -1,0 +1,6 @@
+Fetching 10 files:   0%|          | 0/10 [00:00<?, ?it/s]Still waiting to acquire lock on /root/q8w/m/RedHatAI__gemma-4-26B-A4B-it-FP8-dynamic/.cache/huggingface/.gitignore.lock (elapsed: 0.1 seconds)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 10 files:  10%|█         | 1/10 [00:00<00:01,  5.98it/s]Fetching 10 files:  40%|████      | 4/10 [00:00<00:00, 15.44it/s]Fetching 10 files:  90%|█████████ | 9/10 [00:01<00:00,  5.79it/s]Fetching 10 files:  90%|█████████ | 9/10 [00:20<00:00,  5.79it/s]Fetching 10 files: 100%|██████████| 10/10 [00:39<00:00,  6.10s/it]Fetching 10 files: 100%|██████████| 10/10 [00:39<00:00,  3.90s/it]
+[32m✓ Downloaded[0m
+  path: /root/q8w/m/RedHatAI__gemma-4-26B-A4B-it-FP8-dynamic
+exit 0 in 40 s, 27G

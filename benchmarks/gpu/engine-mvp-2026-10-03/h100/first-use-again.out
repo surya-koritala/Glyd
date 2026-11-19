@@ -1,0 +1,3 @@
+Qwen3-0.6B: 0.9 GiB on the GPU with Glyd, instead of 1.1 GiB; layout mma12: mma12, the faster layout, on this GPU (measured).
+Ready in 0s: Qwen3-0.6B on the NVIDIA H100 80GB HBM3, 0.8 GiB of weights, 4096 tokens of context.
+Paris

@@ -1,0 +1,104 @@
+{
+ "nvidia/Qwen3.6-35B-A3B-NVFP4": {
+  "created": "2026-05-27",
+  "downloads_30d": 5887505,
+  "downloads_all_time": 37345625,
+  "as_of": "2026-10-06"
+ },
+ "nvidia/Gemma-4-31B-IT-NVFP4": {
+  "created": "2026-04-02",
+  "downloads_30d": 1511901,
+  "downloads_all_time": 13033896,
+  "as_of": "2026-10-06"
+ },
+ "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4": {
+  "created": "2026-08-04",
+  "downloads_30d": 813060,
+  "downloads_all_time": 2016556,
+  "as_of": "2026-10-06"
+ },
+ "nvidia/Qwen3.8-27B-NVFP4": {
+  "created": "2026-09-04",
+  "downloads_30d": 590703,
+  "downloads_all_time": 590703,
+  "as_of": "2026-10-06"
+ },
+ "moonshotai/Kimi-K3": {
+  "created": "2026-06-13",
+  "downloads_30d": 1243137,
+  "downloads_all_time": 5271523,
+  "as_of": "2026-10-06"
+ },
+ "deepseek-ai/DeepSeek-V4.1-Flash": {
+  "created": "2026-09-10",
+  "downloads_30d": 869321,
+  "downloads_all_time": 869321,
+  "as_of": "2026-10-06"
+ },
+ "amd/MiniMax-M3-MXFP4": {
+  "created": "2026-06-12",
+  "downloads_30d": 83735,
+  "downloads_all_time": 609609,
+  "as_of": "2026-10-06"
+ },
+ "RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic": {
+  "created": "2026-04-06",
+  "downloads_30d": 882491,
+  "downloads_all_time": 5630973,
+  "as_of": "2026-10-06"
+ },
+ "mistralai/Mistral-Small-4-119B-2603": {
+  "created": "2026-01-23",
+  "downloads_30d": 67146,
+  "downloads_all_time": 670091,
+  "as_of": "2026-10-06"
+ },
+ "Qwen/Qwen3.8-27B-FP8": {
+  "created": "2026-08-13",
+  "downloads_30d": 4801627,
+  "downloads_all_time": 11437964,
+  "as_of": "2026-10-06"
+ },
+ "Qwen/Qwen3.6-35B-A3B-FP8": {
+  "created": "2026-04-15",
+  "downloads_30d": 5145959,
+  "downloads_all_time": 44802569,
+  "as_of": "2026-10-06"
+ },
+ "cyankiwi/Qwen3.6-27B-AWQ-INT4": {
+  "created": "2026-04-22",
+  "downloads_30d": 903392,
+  "downloads_all_time": 9271261,
+  "as_of": "2026-10-06"
+ },
+ "RedHatAI/Qwen3.8-27B-INT4": {
+  "created": "2026-08-17",
+  "downloads_30d": 571811,
+  "downloads_all_time": 740121,
+  "as_of": "2026-10-06"
+ },
+ "QuantTrio/Qwen3.6-35B-A3B-AWQ": {
+  "created": "2026-04-17",
+  "downloads_30d": 686190,
+  "downloads_all_time": 4538080,
+  "as_of": "2026-10-06"
+ },
+ "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4": {
+  "created": "2026-03-03",
+  "downloads_30d": 224399,
+  "downloads_all_time": 5005491,
+  "as_of": "2026-10-06"
+ },
+ "google/gemma-4-12B-it-qat-w4a16-ct": {
+  "created": "2026-06-05",
+  "downloads_30d": 831262,
+  "downloads_all_time": 6199967,
+  "as_of": "2026-10-06"
+ },
+ "RedHatAI/Qwen3.5-9B-quantized.w8a8": {
+  "created": "2026-04-16",
+  "downloads_30d": 55054,
+  "downloads_all_time": 240567,
+  "as_of": "2026-10-06"
+ }
+}

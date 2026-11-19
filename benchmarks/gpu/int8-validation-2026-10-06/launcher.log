@@ -1,0 +1,9 @@
+19:23 created hesubezaqg62er (NVIDIA GeForce RTX 4090)
+ssh on pod hesubezaqg62er ready after 30s: ssh reachable at 213.192.2.112:40193
+19:23 ssh ready at 213.192.2.112:40193 after 37 s
+NVIDIA GeForce RTX 4090, 610.43.02, 49140 MiB
+19:23 job started
+19:54 job done
+terminating hesubezaqg62er
+pods left: [('k9slfciopzp2vb', 'glyd-bench-qsc-a-fixed-20261006-1444', 'RUNNING')]
+31 min

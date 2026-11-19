@@ -1,0 +1,20 @@
+NVIDIA A100-SXM4-40GB (sm_80): Kimi-K3 on the dynamic engine, 4 layers, weights 12.680 GiB (layout mma), KV 0.000 GiB (1024 positions), 13.37 of 39.49 GiB in use
+   0 token     1: reference 50462 (9.3750), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00093
+   1 token    11: reference 54691 (9.0625), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00016
+   2 token    48: reference 128672 (7.7188), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00017
+   3 token    85: reference 41005 (8.4375), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00068
+   4 token   122: reference 119004 (7.9062), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00018
+   5 token   159: reference 68132 (7.4062), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00005
+   6 token   196: reference  3025 (8.8750), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00004
+   7 token   233: reference 17175 (7.5000), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00013
+   8 token   270: reference 163735 (8.1250), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00008
+   9 token 163735: reference 91511 (8.3125), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00029
+  10 token 91511: reference  9792 (8.3750), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00008
+  11 token  9792: reference 140236 (8.8750), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00026
+  12 token 140236: reference 154935 (7.7500), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00012
+  13 token 154935: reference 95822 (8.6250), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00004
+  14 token 95822: reference 86874 (8.4375), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00003
+  15 token 86874: reference 42364 (7.6562), engine     0 (-inf), largest difference 0.0000; closest expert choice 0.00009
+decode: 0 of 16 steps choose the reference's token; the largest logit difference 0.0000
+steps differing past 0.3: 0 (median closest choice NaN); the others 16 (0.00013)
+prompt of 16 in chunks of 64: reference 42364 engine 0, largest logit difference 0.0000

@@ -1,0 +1,29 @@
+mistralai/Mistral-Small-4-119B-2603: 42741 tensors; the slice: 2365 tensors of layers [0]..[1] and 3 outside the layers, 8.10 GiB (BF16 2.00, F8_E4M3 6.10)
+NOTE: first_k_dense_replace is 0: layers 0.. are mixture-of-experts layers (routed experts in the slice: 6.00 GiB)
+consolidated-00001-of-00003.safetensors: 2093 tensors, 4.00 GiB so far, 60 s
+Traceback (most recent call last):
+  File "/root/f8w/src/gpu/fp8/make_slice.py", line 261, in <module>
+    main()
+  File "/root/f8w/src/gpu/fp8/make_slice.py", line 226, in main
+    written += write_shard(os.path.join(a.out, fn), a.repo, items)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/f8w/src/gpu/fp8/make_slice.py", line 166, in write_shard
+    for n in ex.map(one, jobs):
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 619, in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 317, in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/f8w/src/gpu/fp8/make_slice.py", line 161, in one
+    os.pwrite(fd, get(url, (s, e)), at)
+TypeError: a bytes-like object is required, not 'NoneType'
+exit 1

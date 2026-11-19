@@ -1,0 +1,31 @@
+== before (1792468020.301)
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 16376 MiB, 2467 MiB, 13477 MiB
+1102013, /home/surya-koritala/glyd-scratch/qwen-build/venv/bin/python, 2226 MiB
+== after bench swift (1792468030.999)
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 16376 MiB, 2467 MiB, 13477 MiB
+1102013, /home/surya-koritala/glyd-scratch/qwen-build/venv/bin/python, 2226 MiB
+== serving swift, idle (1792468032.977)
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 16376 MiB, 9474 MiB, 6470 MiB
+1102013, /home/surya-koritala/glyd-scratch/qwen-build/venv/bin/python, 2226 MiB
+1108974, /home/surya-koritala/glyd-scratch/gly236/target/release/glyd-engine, 7002 MiB
+== serving swift, after the reply (1792468035.659)
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 16376 MiB, 9474 MiB, 6470 MiB
+1102013, /home/surya-koritala/glyd-scratch/qwen-build/venv/bin/python, 2226 MiB
+1108974, /home/surya-koritala/glyd-scratch/gly236/target/release/glyd-engine, 7002 MiB
+== after bench kestrel (1792468044.600)
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 16376 MiB, 2467 MiB, 13477 MiB
+1102013, /home/surya-koritala/glyd-scratch/qwen-build/venv/bin/python, 2226 MiB
+== serving kestrel, idle (1792468046.996)
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 16376 MiB, 10530 MiB, 5414 MiB
+1102013, /home/surya-koritala/glyd-scratch/qwen-build/venv/bin/python, 2226 MiB
+1110013, /home/surya-koritala/glyd-scratch/gly236/target/release/glyd-engine, 8058 MiB
+== serving kestrel, after the reply (1792468050.046)
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 16376 MiB, 10530 MiB, 5414 MiB
+1102013, /home/surya-koritala/glyd-scratch/qwen-build/venv/bin/python, 2226 MiB
+1110013, /home/surya-koritala/glyd-scratch/gly236/target/release/glyd-engine, 8058 MiB
+== after bench penguin (1792468050.678)
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 16376 MiB, 2467 MiB, 13477 MiB
+1102013, /home/surya-koritala/glyd-scratch/qwen-build/venv/bin/python, 2226 MiB
+== at the end (1792468174.732)
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 16376 MiB, 2467 MiB, 13477 MiB
+1102013, /home/surya-koritala/glyd-scratch/qwen-build/venv/bin/python, 2226 MiB

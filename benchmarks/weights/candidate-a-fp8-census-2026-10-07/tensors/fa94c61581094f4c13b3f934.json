@@ -1,0 +1,67 @@
+{
+  "name": "model.visual.blocks.16.mlp.linear_fc1.weight",
+  "group": "vision",
+  "shape": [
+    4304,
+    1152
+  ],
+  "file": "model-00001-of-00018.safetensors",
+  "fraction_bits": 3,
+  "values": 4958208,
+  "zeros": 0,
+  "specials": 0,
+  "geometries": [
+    {
+      "block": [
+        128,
+        128
+      ],
+      "blocks": 306,
+      "blocks_inexact": 279,
+      "inexact": 744,
+      "underflow": 131,
+      "max_block_inexact": 8,
+      "min_scale_exponent": -12,
+      "max_scale_exponent": -11
+    },
+    {
+      "block": [
+        1,
+        128
+      ],
+      "blocks": 38736,
+      "blocks_inexact": 362,
+      "inexact": 368,
+      "underflow": 69,
+      "max_block_inexact": 2,
+      "min_scale_exponent": -14,
+      "max_scale_exponent": -11
+    },
+    {
+      "block": [
+        1,
+        32
+      ],
+      "blocks": 154944,
+      "blocks_inexact": 326,
+      "inexact": 326,
+      "underflow": 60,
+      "max_block_inexact": 1,
+      "min_scale_exponent": -15,
+      "max_scale_exponent": -11
+    },
+    {
+      "block": [
+        1,
+        0
+      ],
+      "blocks": 4304,
+      "blocks_inexact": 457,
+      "inexact": 493,
+      "underflow": 91,
+      "max_block_inexact": 3,
+      "min_scale_exponent": -14,
+      "max_scale_exponent": -11
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+13:59:27 start /home/ubuntu/w/out/ds-score2-r1.txt
+14:04:05 end /home/ubuntu/w/out/ds-score2-r1.txt exit 0
+14:04:05 start /home/ubuntu/w/out/ds-score2-r2.txt
+14:08:06 end /home/ubuntu/w/out/ds-score2-r2.txt exit 0
+14:08:06 start /home/ubuntu/w/out/ds-score4.txt
+14:11:30 end /home/ubuntu/w/out/ds-score4.txt exit 0
+14:11:30 start /home/ubuntu/w/out/ds-score2-coded.txt
+14:15:33 end /home/ubuntu/w/out/ds-score2-coded.txt exit 0
+14:15:33 start /home/ubuntu/w/out/ds-paris2.txt
+14:19:28 end /home/ubuntu/w/out/ds-paris2.txt exit 0
+14:19:28 start /home/ubuntu/w/out/ds-paris4.txt
+14:22:45 end /home/ubuntu/w/out/ds-paris4.txt exit 0
+14:22:45 start /home/ubuntu/w/out/ds-run.txt
+14:26:02 end /home/ubuntu/w/out/ds-run.txt exit 0
+14:29:19 start /home/ubuntu/w/out/lt-check-old.txt
+14:30:51 end /home/ubuntu/w/out/lt-check-old.txt exit 0
+14:30:51 start /home/ubuntu/w/out/lt-check-new.txt
+14:32:25 end /home/ubuntu/w/out/lt-check-new.txt exit 0
+14:32:25 start /home/ubuntu/w/out/lt-run.txt
+14:33:57 end /home/ubuntu/w/out/lt-run.txt exit 0
+14:35:31 start /home/ubuntu/w/out/su-run-dyn1.txt
+14:36:16 end /home/ubuntu/w/out/su-run-dyn1.txt exit 0
+14:36:16 start /home/ubuntu/w/out/su-cache-dyn1.txt
+14:37:20 end /home/ubuntu/w/out/su-cache-dyn1.txt exit 0
+14:37:20 start /home/ubuntu/w/out/su-run-dyn0.txt
+14:38:05 end /home/ubuntu/w/out/su-run-dyn0.txt exit 0
+14:38:05 start /home/ubuntu/w/out/su-cache-dyn0.txt
+14:39:08 end /home/ubuntu/w/out/su-cache-dyn0.txt exit 0
+14:41:12 start /home/ubuntu/w/out/glm-run.txt
+14:43:44 end /home/ubuntu/w/out/glm-run.txt exit 0

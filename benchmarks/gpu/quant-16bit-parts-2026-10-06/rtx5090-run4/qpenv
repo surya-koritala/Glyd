@@ -1,0 +1,6 @@
+END=2700
+# vLLM's own CUTLASS NVFP4 GEMM, stock's and Glyd's alike: FlashInfer's NVFP4 and FP8 GEMMs compile on first use with nvcc, and the pod's
+# pip CUDA toolkit has no cublasLt.h (an earlier run on this GPU: "Ninja build failed")
+export VLLM_DISABLED_KERNELS=FlashInferCuteDslNvFp4LinearKernel,FlashInferCutlassNvFp4LinearKernel,FlashInferB12xNvFp4LinearKernel,FlashInferFP8ScaledMMLinearKernel
+QP_MODELS="nvidia/Gemma-4-31B-IT-NVFP4|--steps stock,glyd --fallback-layout mma
+google/gemma-4-12B-it-qat-w4a16-ct"

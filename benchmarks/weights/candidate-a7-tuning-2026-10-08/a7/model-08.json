@@ -1,0 +1,3062 @@
+{
+  "case": "model-08",
+  "shape": [
+    5120,
+    10240
+  ],
+  "unpack_bytes_mismatch": 0,
+  "weights_changed_by_e3m3": 1219248,
+  "packed_bytes": 45875200,
+  "exps_bytes": 409600,
+  "scale_exponents": [
+    -11,
+    -5
+  ],
+  "products": [
+    {
+      "tokens": 1,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 0,
+      "scale_mismatch_reciprocal_reference": 1,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016540823550518188,
+          "max_vs_reference": 0.01594829559326172,
+          "reference_max": 4.747890472412109,
+          "nrms_vs_bf16_activations": 0.02629974709407642,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06625279784202576,
+            0.066048002243042,
+            0.06307839751243591,
+            0.06307839751243591,
+            0.06306880116462707
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016540823550518188,
+          "max_vs_reference": 0.01594829559326172,
+          "reference_max": 4.747890472412109,
+          "nrms_vs_bf16_activations": 0.02629974709407642,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.08724480271339416,
+            0.08704000115394592,
+            0.08702719807624817,
+            0.08683519959449768,
+            0.0869376003742218
+          ],
+          "replay_bit_exact": true
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016525568252104396,
+          "max_vs_reference": 0.01241922378540039,
+          "reference_max": 4.876655578613281,
+          "nrms_vs_bf16_activations": 0.0016525568252104396,
+          "workspace_bytes": 86016,
+          "ms": [
+            0.0549888014793396,
+            0.05437440276145935,
+            0.054364800453186035,
+            0.05437440276145935,
+            0.054476797580718994
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016540823550518188,
+          "max_vs_reference": 0.01594829559326172,
+          "reference_max": 4.747890472412109,
+          "nrms_vs_bf16_activations": 0.02629974709407642,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.060313600301742556,
+            0.05989760160446167,
+            0.05990399718284607,
+            0.05990399718284607,
+            0.05990399718284607
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016540823550518188,
+          "max_vs_reference": 0.01594829559326172,
+          "reference_max": 4.747890472412109,
+          "nrms_vs_bf16_activations": 0.02629974709407642,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.22364161014556885,
+            0.22353920936584473,
+            0.22323200702667237,
+            0.2239487886428833,
+            0.22364161014556885
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016540823550518188,
+          "max_vs_reference": 0.01594829559326172,
+          "reference_max": 4.747890472412109,
+          "nrms_vs_bf16_activations": 0.02629974709407642,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.3969023942947388,
+            0.39587841033935545,
+            0.39485440254211424,
+            0.39485440254211424,
+            0.39628798961639405
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016540823550518188,
+          "max_vs_reference": 0.01594829559326172,
+          "reference_max": 4.747890472412109,
+          "nrms_vs_bf16_activations": 0.02629974709407642,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09185280203819275,
+            0.09175040125846863,
+            0.09152640104293823,
+            0.09163200259208679,
+            0.09164800047874451
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.0626688003540039,
+        0.061440002918243405,
+        0.06142079830169678,
+        0.061337602138519284,
+        0.06135680079460144
+      ],
+      "quantize_ms": [
+        0.002844800055027008,
+        0.0025599999353289604,
+        0.002639999985694885,
+        0.0025599999353289604,
+        0.0025599999353289604
+      ]
+    },
+    {
+      "tokens": 1,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 0,
+      "scale_mismatch_reciprocal_reference": 1,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0017054798363793358,
+          "max_vs_reference": 0.013103008270263672,
+          "reference_max": 4.9770002365112305,
+          "nrms_vs_bf16_activations": 0.02697186016227915,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0017054798363793358,
+          "max_vs_reference": 0.013103008270263672,
+          "reference_max": 4.9770002365112305,
+          "nrms_vs_bf16_activations": 0.02697186016227915,
+          "workspace_bytes": 8388608
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016627540113736663,
+          "max_vs_reference": 0.013321876525878906,
+          "reference_max": 5.001386642456055,
+          "nrms_vs_bf16_activations": 0.0016627540113736663,
+          "workspace_bytes": 86016
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0017054798363793358,
+          "max_vs_reference": 0.013103008270263672,
+          "reference_max": 4.9770002365112305,
+          "nrms_vs_bf16_activations": 0.02697186016227915,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0017054798363793358,
+          "max_vs_reference": 0.013103008270263672,
+          "reference_max": 4.9770002365112305,
+          "nrms_vs_bf16_activations": 0.02697186016227915,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0017054798363793358,
+          "max_vs_reference": 0.013103008270263672,
+          "reference_max": 4.9770002365112305,
+          "nrms_vs_bf16_activations": 0.02697186016227915,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0017054798363793358,
+          "max_vs_reference": 0.013103008270263672,
+          "reference_max": 4.9770002365112305,
+          "nrms_vs_bf16_activations": 0.02697186016227915,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 2,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 244,
+      "scale_mismatch_reciprocal_reference": 0,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016771228661799462,
+          "max_vs_reference": 0.01551675796508789,
+          "reference_max": 4.797677516937256,
+          "nrms_vs_bf16_activations": 0.02675119291558171,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06338559985160827,
+            0.06307839751243591,
+            0.06307839751243591,
+            0.06297600269317627,
+            0.06297600269317627
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016771228661799462,
+          "max_vs_reference": 0.01551675796508789,
+          "reference_max": 4.797677516937256,
+          "nrms_vs_bf16_activations": 0.02675119291558171,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.08704000115394592,
+            0.08704000115394592,
+            0.0869376003742218,
+            0.08683519959449768,
+            0.08683519959449768
+          ],
+          "replay_bit_exact": true
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016866164076334812,
+          "max_vs_reference": 0.01555776596069336,
+          "reference_max": 4.832398414611816,
+          "nrms_vs_bf16_activations": 0.0016866164076334812,
+          "workspace_bytes": 172032,
+          "ms": [
+            0.0549888014793396,
+            0.05457599759101868,
+            0.054579198360443115,
+            0.05437440276145935,
+            0.05457280278205871
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016771228661799462,
+          "max_vs_reference": 0.01551675796508789,
+          "reference_max": 4.797677516937256,
+          "nrms_vs_bf16_activations": 0.02675119291558171,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.0609279990196228,
+            0.06072319746017456,
+            0.06000639796257019,
+            0.060211199522018435,
+            0.06000639796257019
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016771228661799462,
+          "max_vs_reference": 0.01551675796508789,
+          "reference_max": 4.797677516937256,
+          "nrms_vs_bf16_activations": 0.02675119291558171,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.2238464117050171,
+            0.22374401092529297,
+            0.22374401092529297,
+            0.22323200702667237,
+            0.22425599098205568
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016771228661799462,
+          "max_vs_reference": 0.01551675796508789,
+          "reference_max": 4.797677516937256,
+          "nrms_vs_bf16_activations": 0.02675119291558171,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.3960832118988037,
+            0.3955552101135254,
+            0.39536640644073484,
+            0.3955712080001831,
+            0.39597439765930176
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016771228661799462,
+          "max_vs_reference": 0.01551675796508789,
+          "reference_max": 4.797677516937256,
+          "nrms_vs_bf16_activations": 0.02675119291558171,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09193919897079468,
+            0.09175040125846863,
+            0.09164800047874451,
+            0.09164800047874451,
+            0.09154559969902039
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.06277120113372803,
+        0.06164479851722717,
+        0.06154239773750305,
+        0.06162559986114502,
+        0.06154239773750305
+      ],
+      "quantize_ms": [
+        0.002860799990594387,
+        0.002662399969995022,
+        0.0025599999353289604,
+        0.0025599999353289604,
+        0.0025599999353289604
+      ]
+    },
+    {
+      "tokens": 2,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 258,
+      "scale_mismatch_reciprocal_reference": 0,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.00167353593449151,
+          "max_vs_reference": 0.015004158020019531,
+          "reference_max": 17.136089324951172,
+          "nrms_vs_bf16_activations": 0.026298352237053898,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.00167353593449151,
+          "max_vs_reference": 0.015004158020019531,
+          "reference_max": 17.136089324951172,
+          "nrms_vs_bf16_activations": 0.026298352237053898,
+          "workspace_bytes": 8388608
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016818779164160247,
+          "max_vs_reference": 0.037487030029296875,
+          "reference_max": 17.337512969970703,
+          "nrms_vs_bf16_activations": 0.0016818779164160247,
+          "workspace_bytes": 172032
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.00167353593449151,
+          "max_vs_reference": 0.015004158020019531,
+          "reference_max": 17.136089324951172,
+          "nrms_vs_bf16_activations": 0.026298352237053898,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.00167353593449151,
+          "max_vs_reference": 0.015004158020019531,
+          "reference_max": 17.136089324951172,
+          "nrms_vs_bf16_activations": 0.026298352237053898,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.00167353593449151,
+          "max_vs_reference": 0.015004158020019531,
+          "reference_max": 17.136089324951172,
+          "nrms_vs_bf16_activations": 0.026298352237053898,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.00167353593449151,
+          "max_vs_reference": 0.015004158020019531,
+          "reference_max": 17.136089324951172,
+          "nrms_vs_bf16_activations": 0.026298352237053898,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 8,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 0,
+      "scale_mismatch_reciprocal_reference": 4,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016623742905066536,
+          "max_vs_reference": 0.026090621948242188,
+          "reference_max": 21.598909378051758,
+          "nrms_vs_bf16_activations": 0.026476011354360007,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06328319907188415,
+            0.06307839751243591,
+            0.06328319907188415,
+            0.06307839751243591,
+            0.06297600269317627
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016623742905066536,
+          "max_vs_reference": 0.026090621948242188,
+          "reference_max": 21.598909378051758,
+          "nrms_vs_bf16_activations": 0.026476011354360007,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.08744959831237793,
+            0.08683519959449768,
+            0.08683519959449768,
+            0.0868287980556488,
+            0.08692160248756409
+          ],
+          "replay_bit_exact": true
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016614717153298829,
+          "max_vs_reference": 0.04718780517578125,
+          "reference_max": 21.95281219482422,
+          "nrms_vs_bf16_activations": 0.0016614717153298829,
+          "workspace_bytes": 688128,
+          "ms": [
+            0.05539839863777161,
+            0.05529599785804749,
+            0.05529599785804749,
+            0.055174398422241214,
+            0.05509120225906372
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016623742905066536,
+          "max_vs_reference": 0.026090621948242188,
+          "reference_max": 21.598909378051758,
+          "nrms_vs_bf16_activations": 0.026476011354360007,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.060108798742294314,
+            0.06000639796257019,
+            0.06000639796257019,
+            0.05990399718284607,
+            0.05999360084533691
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016623742905066536,
+          "max_vs_reference": 0.026090621948242188,
+          "reference_max": 21.598909378051758,
+          "nrms_vs_bf16_activations": 0.026476011354360007,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.22446079254150392,
+            0.22364161014556885,
+            0.2234368085861206,
+            0.22353920936584473,
+            0.22404160499572753
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016623742905066536,
+          "max_vs_reference": 0.026090621948242188,
+          "reference_max": 21.598909378051758,
+          "nrms_vs_bf16_activations": 0.026476011354360007,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.39679999351501466,
+            0.39638400077819824,
+            0.39669759273529054,
+            0.3967839956283569,
+            0.39598081111907957
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016623742905066536,
+          "max_vs_reference": 0.026090621948242188,
+          "reference_max": 21.598909378051758,
+          "nrms_vs_bf16_activations": 0.026476011354360007,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09195200204849244,
+            0.09174079895019531,
+            0.09185280203819275,
+            0.09185280203819275,
+            0.09185280203819275
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.05857279896736145,
+        0.05816320180892944,
+        0.05826560258865356,
+        0.05816320180892944,
+        0.05806080102920532
+      ],
+      "quantize_ms": [
+        0.0028672000393271447,
+        0.002662399969995022,
+        0.002662399969995022,
+        0.0025599999353289604,
+        0.0025599999353289604
+      ]
+    },
+    {
+      "tokens": 8,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 0,
+      "scale_mismatch_reciprocal_reference": 3,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001673395512613896,
+          "max_vs_reference": 0.06675338745117188,
+          "reference_max": 32.31675338745117,
+          "nrms_vs_bf16_activations": 0.025637713691202938,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001673395512613896,
+          "max_vs_reference": 0.06675338745117188,
+          "reference_max": 32.31675338745117,
+          "nrms_vs_bf16_activations": 0.025637713691202938,
+          "workspace_bytes": 8388608
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016325491871557953,
+          "max_vs_reference": 0.044403076171875,
+          "reference_max": 32.718441009521484,
+          "nrms_vs_bf16_activations": 0.0016325491871557953,
+          "workspace_bytes": 688128
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001673395512613896,
+          "max_vs_reference": 0.06675338745117188,
+          "reference_max": 32.31675338745117,
+          "nrms_vs_bf16_activations": 0.025637713691202938,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001673395512613896,
+          "max_vs_reference": 0.06675338745117188,
+          "reference_max": 32.31675338745117,
+          "nrms_vs_bf16_activations": 0.025637713691202938,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001673395512613896,
+          "max_vs_reference": 0.06675338745117188,
+          "reference_max": 32.31675338745117,
+          "nrms_vs_bf16_activations": 0.025637713691202938,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001673395512613896,
+          "max_vs_reference": 0.06675338745117188,
+          "reference_max": 32.31675338745117,
+          "nrms_vs_bf16_activations": 0.025637713691202938,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 16,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 169,
+      "scale_mismatch_reciprocal_reference": 9,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016639621627454672,
+          "max_vs_reference": 0.03601837158203125,
+          "reference_max": 27.520153045654297,
+          "nrms_vs_bf16_activations": 0.026591770136746743,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06368319988250733,
+            0.06338559985160827,
+            0.06328319907188415,
+            0.06338559985160827,
+            0.06328319907188415
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016639621627454672,
+          "max_vs_reference": 0.03601837158203125,
+          "reference_max": 27.520153045654297,
+          "nrms_vs_bf16_activations": 0.026591770136746743,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.08724480271339416,
+            0.08704000115394592,
+            0.0869376003742218,
+            0.08714240193367004,
+            0.0869376003742218
+          ],
+          "replay_bit_exact": true
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016630109470328522,
+          "max_vs_reference": 0.0614776611328125,
+          "reference_max": 27.88030433654785,
+          "nrms_vs_bf16_activations": 0.0016630109470328522,
+          "workspace_bytes": 1376256,
+          "ms": [
+            0.056201601028442384,
+            0.05591040253639221,
+            0.05570560097694397,
+            0.05580800175666809,
+            0.05591040253639221
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016639621627454672,
+          "max_vs_reference": 0.03601837158203125,
+          "reference_max": 27.520153045654297,
+          "nrms_vs_bf16_activations": 0.026591770136746743,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06041600108146668,
+            0.060211199522018435,
+            0.059987199306488034,
+            0.06000639796257019,
+            0.060108798742294314
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016639621627454672,
+          "max_vs_reference": 0.03601837158203125,
+          "reference_max": 27.520153045654297,
+          "nrms_vs_bf16_activations": 0.026591770136746743,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.2248703956604004,
+            0.22527680397033692,
+            0.22456319332122804,
+            0.22476799488067628,
+            0.2243583917617798
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016639621627454672,
+          "max_vs_reference": 0.03601837158203125,
+          "reference_max": 27.520153045654297,
+          "nrms_vs_bf16_activations": 0.026591770136746743,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.3975104093551636,
+            0.39669759273529054,
+            0.3974143981933594,
+            0.39832639694213867,
+            0.39823040962219236
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016639621627454672,
+          "max_vs_reference": 0.03601837158203125,
+          "reference_max": 27.520153045654297,
+          "nrms_vs_bf16_activations": 0.026591770136746743,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09226239919662475,
+            0.09195520281791687,
+            0.09185280203819275,
+            0.09194880127906799,
+            0.09175040125846863
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.05939199924468994,
+        0.05826560258865356,
+        0.05836799740791321,
+        0.05816320180892944,
+        0.05845119953155518
+      ],
+      "quantize_ms": [
+        0.0028575999662280084,
+        0.0027488000690937043,
+        0.002659199945628643,
+        0.002662399969995022,
+        0.0026528000831604003
+      ]
+    },
+    {
+      "tokens": 16,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 318,
+      "scale_mismatch_reciprocal_reference": 9,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602998946210993,
+          "max_vs_reference": 0.055267333984375,
+          "reference_max": 22.486282348632812,
+          "nrms_vs_bf16_activations": 0.026307385363886136,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602998946210993,
+          "max_vs_reference": 0.055267333984375,
+          "reference_max": 22.486282348632812,
+          "nrms_vs_bf16_activations": 0.026307385363886136,
+          "workspace_bytes": 8388608
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016606185419375213,
+          "max_vs_reference": 0.0587158203125,
+          "reference_max": 22.566959381103516,
+          "nrms_vs_bf16_activations": 0.0016606185419375213,
+          "workspace_bytes": 1376256
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602998946210993,
+          "max_vs_reference": 0.055267333984375,
+          "reference_max": 22.486282348632812,
+          "nrms_vs_bf16_activations": 0.026307385363886136,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602998946210993,
+          "max_vs_reference": 0.055267333984375,
+          "reference_max": 22.486282348632812,
+          "nrms_vs_bf16_activations": 0.026307385363886136,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602998946210993,
+          "max_vs_reference": 0.055267333984375,
+          "reference_max": 22.486282348632812,
+          "nrms_vs_bf16_activations": 0.026307385363886136,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602998946210993,
+          "max_vs_reference": 0.055267333984375,
+          "reference_max": 22.486282348632812,
+          "nrms_vs_bf16_activations": 0.026307385363886136,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 17,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 0,
+      "scale_mismatch_reciprocal_reference": 9,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016636947607163533,
+          "max_vs_reference": 0.062389373779296875,
+          "reference_max": 28.834365844726562,
+          "nrms_vs_bf16_activations": 0.026523622552407436,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06399999856948853,
+            0.06348800063133239,
+            0.06359040141105651,
+            0.06348800063133239,
+            0.06348800063133239
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016636947607163533,
+          "max_vs_reference": 0.062389373779296875,
+          "reference_max": 28.834365844726562,
+          "nrms_vs_bf16_activations": 0.026523622552407436,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.08763520121574402,
+            0.08724480271339416,
+            0.08734719753265381,
+            0.08704000115394592,
+            0.08733760118484497
+          ],
+          "replay_bit_exact": true
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016634733413646821,
+          "max_vs_reference": 0.053096771240234375,
+          "reference_max": 29.30167579650879,
+          "nrms_vs_bf16_activations": 0.0016634733413646821,
+          "workspace_bytes": 905216,
+          "ms": [
+            0.057036799192428586,
+            0.05724160075187683,
+            0.05713919997215271,
+            0.057036799192428586,
+            0.05702400207519531
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016636947607163533,
+          "max_vs_reference": 0.062389373779296875,
+          "reference_max": 28.834365844726562,
+          "nrms_vs_bf16_activations": 0.026523622552407436,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06062080264091492,
+            0.060515201091766356,
+            0.060502398014068606,
+            0.06041600108146668,
+            0.06041600108146668
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016636947607163533,
+          "max_vs_reference": 0.062389373779296875,
+          "reference_max": 28.834365844726562,
+          "nrms_vs_bf16_activations": 0.026523622552407436,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.22548480033874513,
+            0.22548480033874513,
+            0.22444798946380615,
+            0.22517759799957277,
+            0.22466559410095216
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016636947607163533,
+          "max_vs_reference": 0.062389373779296875,
+          "reference_max": 28.834365844726562,
+          "nrms_vs_bf16_activations": 0.026523622552407436,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.3975167989730835,
+            0.3974143981933594,
+            0.39730238914489746,
+            0.397107195854187,
+            0.39731199741363527
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016636947607163533,
+          "max_vs_reference": 0.062389373779296875,
+          "reference_max": 28.834365844726562,
+          "nrms_vs_bf16_activations": 0.026523622552407436,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09226239919662475,
+            0.09205759763717651,
+            0.09205759763717651,
+            0.09205759763717651,
+            0.09204480051994324
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.05857279896736145,
+        0.05836799740791321,
+        0.05847039818763733,
+        0.05847039818763733,
+        0.05836799740791321
+      ],
+      "quantize_ms": [
+        0.002764800004661083,
+        0.0027583999559283256,
+        0.0025599999353289604,
+        0.0025599999353289604,
+        0.002662399969995022
+      ]
+    },
+    {
+      "tokens": 17,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 341,
+      "scale_mismatch_reciprocal_reference": 7,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001655428396220467,
+          "max_vs_reference": 0.023387908935546875,
+          "reference_max": 25.641464233398438,
+          "nrms_vs_bf16_activations": 0.026441040248930157,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001655428396220467,
+          "max_vs_reference": 0.023387908935546875,
+          "reference_max": 25.641464233398438,
+          "nrms_vs_bf16_activations": 0.026441040248930157,
+          "workspace_bytes": 8388608
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016508025246675525,
+          "max_vs_reference": 0.028764724731445312,
+          "reference_max": 25.148502349853516,
+          "nrms_vs_bf16_activations": 0.0016508025246675525,
+          "workspace_bytes": 905216
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001655428396220467,
+          "max_vs_reference": 0.023387908935546875,
+          "reference_max": 25.641464233398438,
+          "nrms_vs_bf16_activations": 0.026441040248930157,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001655428396220467,
+          "max_vs_reference": 0.023387908935546875,
+          "reference_max": 25.641464233398438,
+          "nrms_vs_bf16_activations": 0.026441040248930157,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001655428396220467,
+          "max_vs_reference": 0.023387908935546875,
+          "reference_max": 25.641464233398438,
+          "nrms_vs_bf16_activations": 0.026441040248930157,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001655428396220467,
+          "max_vs_reference": 0.023387908935546875,
+          "reference_max": 25.641464233398438,
+          "nrms_vs_bf16_activations": 0.026441040248930157,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 32,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 575,
+      "scale_mismatch_reciprocal_reference": 18,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016665165541115878,
+          "max_vs_reference": 0.0616302490234375,
+          "reference_max": 30.90517234802246,
+          "nrms_vs_bf16_activations": 0.026430313055298225,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06399999856948853,
+            0.06399999856948853,
+            0.06347200274467468,
+            0.06369280219078063,
+            0.06379520297050476
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016665165541115878,
+          "max_vs_reference": 0.0616302490234375,
+          "reference_max": 30.90517234802246,
+          "nrms_vs_bf16_activations": 0.026430313055298225,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.0877568006515503,
+            0.0877568006515503,
+            0.08774080276489257,
+            0.08755199909210205,
+            0.08724160194396972
+          ],
+          "replay_bit_exact": true
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016529438295606166,
+          "max_vs_reference": 0.06139373779296875,
+          "reference_max": 30.475358963012695,
+          "nrms_vs_bf16_activations": 0.0016529438295606166,
+          "workspace_bytes": 1703936,
+          "ms": [
+            0.05867519974708557,
+            0.05857279896736145,
+            0.05836799740791321,
+            0.05826560258865356,
+            0.05847039818763733
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016665165541115878,
+          "max_vs_reference": 0.0616302490234375,
+          "reference_max": 30.90517234802246,
+          "nrms_vs_bf16_activations": 0.026430313055298225,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06082559823989868,
+            0.06072319746017456,
+            0.06070719957351685,
+            0.0605184018611908,
+            0.06062080264091492
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016665165541115878,
+          "max_vs_reference": 0.0616302490234375,
+          "reference_max": 30.90517234802246,
+          "nrms_vs_bf16_activations": 0.026430313055298225,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.22608959674835205,
+            0.22620160579681398,
+            0.2263040065765381,
+            0.22599680423736573,
+            0.22670719623565674
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016665165541115878,
+          "max_vs_reference": 0.0616302490234375,
+          "reference_max": 30.90517234802246,
+          "nrms_vs_bf16_activations": 0.026430313055298225,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.39864320755004884,
+            0.3985408067703247,
+            0.4016128063201904,
+            0.39914560317993164,
+            0.3992543935775757
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016665165541115878,
+          "max_vs_reference": 0.0616302490234375,
+          "reference_max": 30.90517234802246,
+          "nrms_vs_bf16_activations": 0.026430313055298225,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09267200231552124,
+            0.092467200756073,
+            0.092467200756073,
+            0.09236479997634887,
+            0.092467200756073
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.05917760133743286,
+        0.05867519974708557,
+        0.05836799740791321,
+        0.05836799740791321,
+        0.05857279896736145
+      ],
+      "quantize_ms": [
+        0.0028543999418616296,
+        0.002662399969995022,
+        0.0025599999353289604,
+        0.0026464000344276427,
+        0.002662399969995022
+      ]
+    },
+    {
+      "tokens": 32,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 398,
+      "scale_mismatch_reciprocal_reference": 15,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016700872361293242,
+          "max_vs_reference": 0.063507080078125,
+          "reference_max": 25.427684783935547,
+          "nrms_vs_bf16_activations": 0.02628958893884345,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016700872361293242,
+          "max_vs_reference": 0.063507080078125,
+          "reference_max": 25.427684783935547,
+          "nrms_vs_bf16_activations": 0.02628958893884345,
+          "workspace_bytes": 8388608
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016588415717683884,
+          "max_vs_reference": 0.059787750244140625,
+          "reference_max": 25.695425033569336,
+          "nrms_vs_bf16_activations": 0.0016588415717683884,
+          "workspace_bytes": 1703936
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016700872361293242,
+          "max_vs_reference": 0.063507080078125,
+          "reference_max": 25.427684783935547,
+          "nrms_vs_bf16_activations": 0.02628958893884345,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016700872361293242,
+          "max_vs_reference": 0.063507080078125,
+          "reference_max": 25.427684783935547,
+          "nrms_vs_bf16_activations": 0.02628958893884345,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016700872361293242,
+          "max_vs_reference": 0.063507080078125,
+          "reference_max": 25.427684783935547,
+          "nrms_vs_bf16_activations": 0.02628958893884345,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016700872361293242,
+          "max_vs_reference": 0.063507080078125,
+          "reference_max": 25.427684783935547,
+          "nrms_vs_bf16_activations": 0.02628958893884345,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 33,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 508,
+      "scale_mismatch_reciprocal_reference": 13,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016641755698164813,
+          "max_vs_reference": 0.045253753662109375,
+          "reference_max": 26.51715087890625,
+          "nrms_vs_bf16_activations": 0.026495584608957075,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06430720090866089,
+            0.06399999856948853,
+            0.06399999856948853,
+            0.06369280219078063,
+            0.06389759778976441
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016641755698164813,
+          "max_vs_reference": 0.045253753662109375,
+          "reference_max": 26.51715087890625,
+          "nrms_vs_bf16_activations": 0.026495584608957075,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.08806399703025818,
+            0.08796160221099854,
+            0.08755199909210205,
+            0.08765119910240174,
+            0.08765439987182617
+          ],
+          "replay_bit_exact": true
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016561524037214486,
+          "max_vs_reference": 0.05903434753417969,
+          "reference_max": 26.96670913696289,
+          "nrms_vs_bf16_activations": 0.0016561524037214486,
+          "workspace_bytes": 1757184,
+          "ms": [
+            0.07219200134277344,
+            0.07219200134277344,
+            0.07208960056304932,
+            0.0719871997833252,
+            0.07197120189666747
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016641755698164813,
+          "max_vs_reference": 0.045253753662109375,
+          "reference_max": 26.51715087890625,
+          "nrms_vs_bf16_activations": 0.026495584608957075,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06101120114326477,
+            0.0609279990196228,
+            0.06082559823989868,
+            0.06113280057907104,
+            0.06072319746017456
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016641755698164813,
+          "max_vs_reference": 0.045253753662109375,
+          "reference_max": 26.51715087890625,
+          "nrms_vs_bf16_activations": 0.026495584608957075,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.24932799339294434,
+            0.2481152057647705,
+            0.24893438816070557,
+            0.24872961044311523,
+            0.2638848066329956
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016641755698164813,
+          "max_vs_reference": 0.045253753662109375,
+          "reference_max": 26.51715087890625,
+          "nrms_vs_bf16_activations": 0.026495584608957075,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.4005887985229492,
+            0.4001760005950928,
+            0.4007904052734375,
+            0.399564790725708,
+            0.4001791954040527
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016641755698164813,
+          "max_vs_reference": 0.045253753662109375,
+          "reference_max": 26.51715087890625,
+          "nrms_vs_bf16_activations": 0.026495584608957075,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09287679791450501,
+            0.09287679791450501,
+            0.09267200231552124,
+            0.09256960153579712,
+            0.09256960153579712
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.06123520135879516,
+        0.0609279990196228,
+        0.06113280057907104,
+        0.0609279990196228,
+        0.06103039979934692
+      ],
+      "quantize_ms": [
+        0.0028672000393271447,
+        0.002662399969995022,
+        0.002643200010061264,
+        0.0025599999353289604,
+        0.002662399969995022
+      ]
+    },
+    {
+      "tokens": 33,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 0,
+      "scale_mismatch_reciprocal_reference": 13,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016743718614740562,
+          "max_vs_reference": 0.05571937561035156,
+          "reference_max": 20.29148292541504,
+          "nrms_vs_bf16_activations": 0.026432881769013882,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016743718614740562,
+          "max_vs_reference": 0.05571937561035156,
+          "reference_max": 20.29148292541504,
+          "nrms_vs_bf16_activations": 0.026432881769013882,
+          "workspace_bytes": 8388608
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016554444721351973,
+          "max_vs_reference": 0.052646636962890625,
+          "reference_max": 20.57235336303711,
+          "nrms_vs_bf16_activations": 0.0016554444721351973,
+          "workspace_bytes": 1757184
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016743718614740562,
+          "max_vs_reference": 0.05571937561035156,
+          "reference_max": 20.29148292541504,
+          "nrms_vs_bf16_activations": 0.026432881769013882,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016743718614740562,
+          "max_vs_reference": 0.05571937561035156,
+          "reference_max": 20.29148292541504,
+          "nrms_vs_bf16_activations": 0.026432881769013882,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016743718614740562,
+          "max_vs_reference": 0.05571937561035156,
+          "reference_max": 20.29148292541504,
+          "nrms_vs_bf16_activations": 0.026432881769013882,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016743718614740562,
+          "max_vs_reference": 0.05571937561035156,
+          "reference_max": 20.29148292541504,
+          "nrms_vs_bf16_activations": 0.026432881769013882,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 64,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 642,
+      "scale_mismatch_reciprocal_reference": 21,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660966393531496,
+          "max_vs_reference": 0.0723114013671875,
+          "reference_max": 34.32231140136719,
+          "nrms_vs_bf16_activations": 0.026441111769839553,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06501759886741638,
+            0.06490560173988343,
+            0.06492159962654113,
+            0.06461120247840882,
+            0.06481919884681701
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660966393531496,
+          "max_vs_reference": 0.0723114013671875,
+          "reference_max": 34.32231140136719,
+          "nrms_vs_bf16_activations": 0.026441111769839553,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.08857600092887878,
+            0.08857600092887878,
+            0.08826879858970642,
+            0.08837119936943054,
+            0.0883520007133484
+          ],
+          "replay_bit_exact": true
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001659199276909057,
+          "max_vs_reference": 0.10882568359375,
+          "reference_max": 34.64117431640625,
+          "nrms_vs_bf16_activations": 0.001659199276909057,
+          "workspace_bytes": 3407872,
+          "ms": [
+            0.07352319955825806,
+            0.07331839799880982,
+            0.07342079877853394,
+            0.07301120162010193,
+            0.0737280011177063
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660966393531496,
+          "max_vs_reference": 0.0723114013671875,
+          "reference_max": 34.32231140136719,
+          "nrms_vs_bf16_activations": 0.026441111769839553,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.06174719929695129,
+            0.06164479851722717,
+            0.061440002918243405,
+            0.06154239773750305,
+            0.06164479851722717
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660966393531496,
+          "max_vs_reference": 0.0723114013671875,
+          "reference_max": 34.32231140136719,
+          "nrms_vs_bf16_activations": 0.026441111769839553,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.24984641075134278,
+            0.24780800342559814,
+            0.24832000732421874,
+            0.24883201122283935,
+            0.2481152057647705
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660966393531496,
+          "max_vs_reference": 0.0723114013671875,
+          "reference_max": 34.32231140136719,
+          "nrms_vs_bf16_activations": 0.026441111769839553,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.42639360427856443,
+            0.42627201080322263,
+            0.42690558433532716,
+            0.42629117965698243,
+            0.4260863780975342
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660966393531496,
+          "max_vs_reference": 0.0723114013671875,
+          "reference_max": 34.32231140136719,
+          "nrms_vs_bf16_activations": 0.026441111769839553,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09861119985580444,
+            0.09338880181312562,
+            0.0933791995048523,
+            0.09318400025367737,
+            0.09337279796600342
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.061337602138519284,
+        0.06113280057907104,
+        0.06103039979934692,
+        0.06101120114326477,
+        0.06082559823989868
+      ],
+      "quantize_ms": [
+        0.0028672000393271447,
+        0.002764800004661083,
+        0.002764800004661083,
+        0.002662399969995022,
+        0.002662399969995022
+      ]
+    },
+    {
+      "tokens": 64,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 763,
+      "scale_mismatch_reciprocal_reference": 31,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602959109537681,
+          "max_vs_reference": 0.06108856201171875,
+          "reference_max": 30.156322479248047,
+          "nrms_vs_bf16_activations": 0.02654228091900045,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602959109537681,
+          "max_vs_reference": 0.06108856201171875,
+          "reference_max": 30.156322479248047,
+          "nrms_vs_bf16_activations": 0.02654228091900045,
+          "workspace_bytes": 8388608
+        },
+        "3": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001656854186321092,
+          "max_vs_reference": 0.05998039245605469,
+          "reference_max": 30.394073486328125,
+          "nrms_vs_bf16_activations": 0.001656854186321092,
+          "workspace_bytes": 3407872
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602959109537681,
+          "max_vs_reference": 0.06108856201171875,
+          "reference_max": 30.156322479248047,
+          "nrms_vs_bf16_activations": 0.02654228091900045,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602959109537681,
+          "max_vs_reference": 0.06108856201171875,
+          "reference_max": 30.156322479248047,
+          "nrms_vs_bf16_activations": 0.02654228091900045,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602959109537681,
+          "max_vs_reference": 0.06108856201171875,
+          "reference_max": 30.156322479248047,
+          "nrms_vs_bf16_activations": 0.02654228091900045,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016602959109537681,
+          "max_vs_reference": 0.06108856201171875,
+          "reference_max": 30.156322479248047,
+          "nrms_vs_bf16_activations": 0.02654228091900045,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 65,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 283,
+      "scale_mismatch_reciprocal_reference": 34,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016577533759539185,
+          "max_vs_reference": 0.047847747802734375,
+          "reference_max": 38.517696380615234,
+          "nrms_vs_bf16_activations": 0.02639561756526986,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.10803200006484985,
+            0.10762239694595337,
+            0.10803200006484985,
+            0.10782719850540161,
+            0.10782719850540161
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016577533759539185,
+          "max_vs_reference": 0.047847747802734375,
+          "reference_max": 38.517696380615234,
+          "nrms_vs_bf16_activations": 0.02639561756526986,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.0889855980873108,
+            0.08878080248832702,
+            0.08888319730758668,
+            0.08847360014915466,
+            0.08857600092887878
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016577533759539185,
+          "max_vs_reference": 0.047847747802734375,
+          "reference_max": 38.517696380615234,
+          "nrms_vs_bf16_activations": 0.02639561756526986,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.10076160430908203,
+            0.10086400508880615,
+            0.10045440196990967,
+            0.11888320446014404,
+            0.10065920352935791
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016577533759539185,
+          "max_vs_reference": 0.047847747802734375,
+          "reference_max": 38.517696380615234,
+          "nrms_vs_bf16_activations": 0.02639561756526986,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.24780800342559814,
+            0.24770560264587402,
+            0.2470911979675293,
+            0.24780800342559814,
+            0.2471935987472534
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016577533759539185,
+          "max_vs_reference": 0.047847747802734375,
+          "reference_max": 38.517696380615234,
+          "nrms_vs_bf16_activations": 0.02639561756526986,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.42629117965698243,
+            0.4246528148651123,
+            0.42588157653808595,
+            0.4246528148651123,
+            0.42576961517333983
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016577533759539185,
+          "max_vs_reference": 0.047847747802734375,
+          "reference_max": 38.517696380615234,
+          "nrms_vs_bf16_activations": 0.02639561756526986,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09378560185432434,
+            0.0936959981918335,
+            0.09349120259284974,
+            0.09338880181312562,
+            0.09338880181312562
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.0609279990196228,
+        0.0609279990196228,
+        0.06062080264091492,
+        0.06062080264091492,
+        0.06051200032234192
+      ],
+      "quantize_ms": [
+        0.002969600073993206,
+        0.002969600073993206,
+        0.002864000014960766,
+        0.002764800004661083,
+        0.0028672000393271447
+      ]
+    },
+    {
+      "tokens": 65,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 319,
+      "scale_mismatch_reciprocal_reference": 39,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016673359021459925,
+          "max_vs_reference": 0.05113029479980469,
+          "reference_max": 32.24067687988281,
+          "nrms_vs_bf16_activations": 0.026583882052914183,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016673359021459925,
+          "max_vs_reference": 0.05113029479980469,
+          "reference_max": 32.24067687988281,
+          "nrms_vs_bf16_activations": 0.026583882052914183,
+          "workspace_bytes": 8388608
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016673359021459925,
+          "max_vs_reference": 0.05113029479980469,
+          "reference_max": 32.24067687988281,
+          "nrms_vs_bf16_activations": 0.026583882052914183,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016673359021459925,
+          "max_vs_reference": 0.05113029479980469,
+          "reference_max": 32.24067687988281,
+          "nrms_vs_bf16_activations": 0.026583882052914183,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016673359021459925,
+          "max_vs_reference": 0.05113029479980469,
+          "reference_max": 32.24067687988281,
+          "nrms_vs_bf16_activations": 0.026583882052914183,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016673359021459925,
+          "max_vs_reference": 0.05113029479980469,
+          "reference_max": 32.24067687988281,
+          "nrms_vs_bf16_activations": 0.026583882052914183,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 127,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 680,
+      "scale_mismatch_reciprocal_reference": 53,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666830166420039,
+          "max_vs_reference": 0.0643463134765625,
+          "reference_max": 30.92435646057129,
+          "nrms_vs_bf16_activations": 0.026480422475602765,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.10854400396347046,
+            0.10844160318374634,
+            0.10813440084457397,
+            0.10813440084457397,
+            0.10833920240402221
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666830166420039,
+          "max_vs_reference": 0.0643463134765625,
+          "reference_max": 30.92435646057129,
+          "nrms_vs_bf16_activations": 0.026480422475602765,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09000319838523865,
+            0.0899071991443634,
+            0.08960000276565552,
+            0.0894976019859314,
+            0.0992255985736847
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666830166420039,
+          "max_vs_reference": 0.0643463134765625,
+          "reference_max": 30.92435646057129,
+          "nrms_vs_bf16_activations": 0.026480422475602765,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.1013759970664978,
+            0.10127359628677368,
+            0.1013759970664978,
+            0.10127359628677368,
+            0.10117119550704956
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666830166420039,
+          "max_vs_reference": 0.0643463134765625,
+          "reference_max": 30.92435646057129,
+          "nrms_vs_bf16_activations": 0.026480422475602765,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.2752511978149414,
+            0.27473599910736085,
+            0.2751487970352173,
+            0.27494399547576903,
+            0.2753535985946655
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666830166420039,
+          "max_vs_reference": 0.0643463134765625,
+          "reference_max": 30.92435646057129,
+          "nrms_vs_bf16_activations": 0.026480422475602765,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.45608959197998045,
+            0.4554751873016357,
+            0.45465598106384275,
+            0.45537281036376953,
+            0.45465598106384275
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666830166420039,
+          "max_vs_reference": 0.0643463134765625,
+          "reference_max": 30.92435646057129,
+          "nrms_vs_bf16_activations": 0.026480422475602765,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09482240080833435,
+            0.09472000002861022,
+            0.09441279768943786,
+            0.09441279768943786,
+            0.09451519846916198
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.07147520184516906,
+        0.07137280106544494,
+        0.0711679995059967,
+        0.0710591971874237,
+        0.07096319794654846
+      ],
+      "quantize_ms": [
+        0.0030719999223947523,
+        0.002969600073993206,
+        0.0028672000393271447,
+        0.0028672000393271447,
+        0.0028672000393271447
+      ]
+    },
+    {
+      "tokens": 127,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 386,
+      "scale_mismatch_reciprocal_reference": 65,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016683570843857981,
+          "max_vs_reference": 0.11745071411132812,
+          "reference_max": 38.13254928588867,
+          "nrms_vs_bf16_activations": 0.026553744154644742,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016683570843857981,
+          "max_vs_reference": 0.11745071411132812,
+          "reference_max": 38.13254928588867,
+          "nrms_vs_bf16_activations": 0.026553744154644742,
+          "workspace_bytes": 8388608
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016683570843857981,
+          "max_vs_reference": 0.11745071411132812,
+          "reference_max": 38.13254928588867,
+          "nrms_vs_bf16_activations": 0.026553744154644742,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016683570843857981,
+          "max_vs_reference": 0.11745071411132812,
+          "reference_max": 38.13254928588867,
+          "nrms_vs_bf16_activations": 0.026553744154644742,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016683570843857981,
+          "max_vs_reference": 0.11745071411132812,
+          "reference_max": 38.13254928588867,
+          "nrms_vs_bf16_activations": 0.026553744154644742,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016683570843857981,
+          "max_vs_reference": 0.11745071411132812,
+          "reference_max": 38.13254928588867,
+          "nrms_vs_bf16_activations": 0.026553744154644742,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 128,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 728,
+      "scale_mismatch_reciprocal_reference": 57,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001664759028408045,
+          "max_vs_reference": 0.08824539184570312,
+          "reference_max": 37.5882453918457,
+          "nrms_vs_bf16_activations": 0.026465029087027952,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.10864640474319458,
+            0.10823680162429809,
+            0.10792959928512573,
+            0.10803200006484985,
+            0.10792959928512573
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001664759028408045,
+          "max_vs_reference": 0.08824539184570312,
+          "reference_max": 37.5882453918457,
+          "nrms_vs_bf16_activations": 0.026465029087027952,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.0899071991443634,
+            0.09000959992408752,
+            0.09000959992408752,
+            0.08960000276565552,
+            0.08989440202713013
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001664759028408045,
+          "max_vs_reference": 0.08824539184570312,
+          "reference_max": 37.5882453918457,
+          "nrms_vs_bf16_activations": 0.026465029087027952,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.10167039632797241,
+            0.10167360305786133,
+            0.10147839784622192,
+            0.1013759970664978,
+            0.10147839784622192
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001664759028408045,
+          "max_vs_reference": 0.08824539184570312,
+          "reference_max": 37.5882453918457,
+          "nrms_vs_bf16_activations": 0.026465029087027952,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.2766848087310791,
+            0.2773888111114502,
+            0.27688961029052733,
+            0.27688961029052733,
+            0.2763776063919067
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001664759028408045,
+          "max_vs_reference": 0.08824539184570312,
+          "reference_max": 37.5882453918457,
+          "nrms_vs_bf16_activations": 0.026465029087027952,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.45598721504211426,
+            0.4562943935394287,
+            0.4567039966583252,
+            0.45772480964660645,
+            0.456601619720459
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001664759028408045,
+          "max_vs_reference": 0.08824539184570312,
+          "reference_max": 37.5882453918457,
+          "nrms_vs_bf16_activations": 0.026465029087027952,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.09512959718704224,
+            0.09512959718704224,
+            0.09492480158805847,
+            0.09492480158805847,
+            0.09482240080833435
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.07157440185546875,
+        0.0711679995059967,
+        0.07106559872627258,
+        0.07096319794654846,
+        0.07106559872627258
+      ],
+      "quantize_ms": [
+        0.0030719999223947523,
+        0.002864000014960766,
+        0.002764800004661083,
+        0.0028672000393271447,
+        0.0028672000393271447
+      ]
+    },
+    {
+      "tokens": 128,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 528,
+      "scale_mismatch_reciprocal_reference": 45,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001667280180182209,
+          "max_vs_reference": 0.059467315673828125,
+          "reference_max": 32.525325775146484,
+          "nrms_vs_bf16_activations": 0.02646741578801535,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001667280180182209,
+          "max_vs_reference": 0.059467315673828125,
+          "reference_max": 32.525325775146484,
+          "nrms_vs_bf16_activations": 0.02646741578801535,
+          "workspace_bytes": 8388608
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001667280180182209,
+          "max_vs_reference": 0.059467315673828125,
+          "reference_max": 32.525325775146484,
+          "nrms_vs_bf16_activations": 0.02646741578801535,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001667280180182209,
+          "max_vs_reference": 0.059467315673828125,
+          "reference_max": 32.525325775146484,
+          "nrms_vs_bf16_activations": 0.02646741578801535,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001667280180182209,
+          "max_vs_reference": 0.059467315673828125,
+          "reference_max": 32.525325775146484,
+          "nrms_vs_bf16_activations": 0.02646741578801535,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001667280180182209,
+          "max_vs_reference": 0.059467315673828125,
+          "reference_max": 32.525325775146484,
+          "nrms_vs_bf16_activations": 0.02646741578801535,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 129,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 337,
+      "scale_mismatch_reciprocal_reference": 73,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016687568121403016,
+          "max_vs_reference": 0.12584686279296875,
+          "reference_max": 42.87584686279297,
+          "nrms_vs_bf16_activations": 0.026514201588756867,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.15247360467910767,
+            0.1525760054588318,
+            0.1525760054588318,
+            0.15226880311965943,
+            0.1523519992828369
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016687568121403016,
+          "max_vs_reference": 0.12584686279296875,
+          "reference_max": 42.87584686279297,
+          "nrms_vs_bf16_activations": 0.026514201588756867,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.15523840188980104,
+            0.15513600111007692,
+            0.15482879877090455,
+            0.15482879877090455,
+            0.1550271987915039
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016687568121403016,
+          "max_vs_reference": 0.12584686279296875,
+          "reference_max": 42.87584686279297,
+          "nrms_vs_bf16_activations": 0.026514201588756867,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.14315520524978637,
+            0.14315520524978637,
+            0.14325439929962158,
+            0.14295040369033812,
+            0.14305280447006224
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016687568121403016,
+          "max_vs_reference": 0.12584686279296875,
+          "reference_max": 42.87584686279297,
+          "nrms_vs_bf16_activations": 0.026514201588756867,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.4789247989654541,
+            0.47769598960876464,
+            0.4784031867980957,
+            0.4784128189086914,
+            0.4789247989654541
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016687568121403016,
+          "max_vs_reference": 0.12584686279296875,
+          "reference_max": 42.87584686279297,
+          "nrms_vs_bf16_activations": 0.026514201588756867,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.4586400032043457,
+            0.4587520122528076,
+            0.4589536190032959,
+            0.4583424091339111,
+            0.45885438919067384
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016687568121403016,
+          "max_vs_reference": 0.12584686279296875,
+          "reference_max": 42.87584686279297,
+          "nrms_vs_bf16_activations": 0.026514201588756867,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.17244160175323486,
+            0.1721343994140625,
+            0.17223680019378662,
+            0.17192959785461426,
+            0.17203199863433838
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.07228800058364868,
+        0.07208960056304932,
+        0.07188159823417664,
+        0.07167999744415283,
+        0.07178239822387696
+      ],
+      "quantize_ms": [
+        0.003174399957060814,
+        0.002969600073993206,
+        0.0030592000111937523,
+        0.002969600073993206,
+        0.0028672000393271447
+      ]
+    },
+    {
+      "tokens": 129,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 1180,
+      "scale_mismatch_reciprocal_reference": 45,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016712647148357164,
+          "max_vs_reference": 0.12102890014648438,
+          "reference_max": 39.199771881103516,
+          "nrms_vs_bf16_activations": 0.026333837694406413,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016712647148357164,
+          "max_vs_reference": 0.12102890014648438,
+          "reference_max": 39.199771881103516,
+          "nrms_vs_bf16_activations": 0.026333837694406413,
+          "workspace_bytes": 8388608
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016712647148357164,
+          "max_vs_reference": 0.12102890014648438,
+          "reference_max": 39.199771881103516,
+          "nrms_vs_bf16_activations": 0.026333837694406413,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016712647148357164,
+          "max_vs_reference": 0.12102890014648438,
+          "reference_max": 39.199771881103516,
+          "nrms_vs_bf16_activations": 0.026333837694406413,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016712647148357164,
+          "max_vs_reference": 0.12102890014648438,
+          "reference_max": 39.199771881103516,
+          "nrms_vs_bf16_activations": 0.026333837694406413,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016712647148357164,
+          "max_vs_reference": 0.12102890014648438,
+          "reference_max": 39.199771881103516,
+          "nrms_vs_bf16_activations": 0.026333837694406413,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 256,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 1314,
+      "scale_mismatch_reciprocal_reference": 120,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001662769597328495,
+          "max_vs_reference": 0.06326675415039062,
+          "reference_max": 33.28912353515625,
+          "nrms_vs_bf16_activations": 0.026512635081908896,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.19896320104599,
+            0.19865599870681763,
+            0.20746240615844727,
+            0.19865599870681763,
+            0.19886080026626587
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001662769597328495,
+          "max_vs_reference": 0.06326675415039062,
+          "reference_max": 33.28912353515625,
+          "nrms_vs_bf16_activations": 0.026512635081908896,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.15943679809570313,
+            0.15902719497680665,
+            0.159334397315979,
+            0.15892479419708253,
+            0.15902719497680665
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001662769597328495,
+          "max_vs_reference": 0.06326675415039062,
+          "reference_max": 33.28912353515625,
+          "nrms_vs_bf16_activations": 0.026512635081908896,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.186572802066803,
+            0.1861631989479065,
+            0.1861631989479065,
+            0.186572802066803,
+            0.1861631989479065
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001662769597328495,
+          "max_vs_reference": 0.06326675415039062,
+          "reference_max": 33.28912353515625,
+          "nrms_vs_bf16_activations": 0.026512635081908896,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.531660795211792,
+            0.5309408187866211,
+            0.5315584182739258,
+            0.5305215835571289,
+            0.530841588973999
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001662769597328495,
+          "max_vs_reference": 0.06326675415039062,
+          "reference_max": 33.28912353515625,
+          "nrms_vs_bf16_activations": 0.026512635081908896,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.4927360057830811,
+            0.49254398345947265,
+            0.4926464080810547,
+            0.4926464080810547,
+            0.49285120964050294
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001662769597328495,
+          "max_vs_reference": 0.06326675415039062,
+          "reference_max": 33.28912353515625,
+          "nrms_vs_bf16_activations": 0.026512635081908896,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.1652735948562622,
+            0.16547839641571044,
+            0.16537599563598632,
+            0.1652735948562622,
+            0.16517119407653807
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.11192320585250855,
+        0.1117184042930603,
+        0.1117184042930603,
+        0.11223039627075196,
+        0.11182080507278443
+      ],
+      "quantize_ms": [
+        0.003868800029158592,
+        0.003686400130391121,
+        0.0035840000957250593,
+        0.0035840000957250593,
+        0.0035840000957250593
+      ]
+    },
+    {
+      "tokens": 256,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 2430,
+      "scale_mismatch_reciprocal_reference": 103,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016637954819608823,
+          "max_vs_reference": 0.06655502319335938,
+          "reference_max": 43.43344497680664,
+          "nrms_vs_bf16_activations": 0.026487510657172617,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016637954819608823,
+          "max_vs_reference": 0.06655502319335938,
+          "reference_max": 43.43344497680664,
+          "nrms_vs_bf16_activations": 0.026487510657172617,
+          "workspace_bytes": 8388608
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016637954819608823,
+          "max_vs_reference": 0.06655502319335938,
+          "reference_max": 43.43344497680664,
+          "nrms_vs_bf16_activations": 0.026487510657172617,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016637954819608823,
+          "max_vs_reference": 0.06655502319335938,
+          "reference_max": 43.43344497680664,
+          "nrms_vs_bf16_activations": 0.026487510657172617,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016637954819608823,
+          "max_vs_reference": 0.06655502319335938,
+          "reference_max": 43.43344497680664,
+          "nrms_vs_bf16_activations": 0.026487510657172617,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016637954819608823,
+          "max_vs_reference": 0.06655502319335938,
+          "reference_max": 43.43344497680664,
+          "nrms_vs_bf16_activations": 0.026487510657172617,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 512,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 5144,
+      "scale_mismatch_reciprocal_reference": 225,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666224347600872,
+          "max_vs_reference": 0.11112594604492188,
+          "reference_max": 42.63887405395508,
+          "nrms_vs_bf16_activations": 0.02651904322743058,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.35338239669799804,
+            0.35297279357910155,
+            0.35297279357910155,
+            0.3527679920196533,
+            0.35297279357910155
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666224347600872,
+          "max_vs_reference": 0.11112594604492188,
+          "reference_max": 42.63887405395508,
+          "nrms_vs_bf16_activations": 0.02651904322743058,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.2716671943664551,
+            0.27156479358673097,
+            0.27156479358673097,
+            0.2715456008911133,
+            0.27146239280700685
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666224347600872,
+          "max_vs_reference": 0.11112594604492188,
+          "reference_max": 42.63887405395508,
+          "nrms_vs_bf16_activations": 0.02651904322743058,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.32767999172210693,
+            0.32737278938293457,
+            0.32716801166534426,
+            0.32727038860321045,
+            0.32727038860321045
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666224347600872,
+          "max_vs_reference": 0.11112594604492188,
+          "reference_max": 42.63887405395508,
+          "nrms_vs_bf16_activations": 0.02651904322743058,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.9753600120544433,
+            0.9760767936706543,
+            0.9749504089355469,
+            0.9760767936706543,
+            0.9753600120544433
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666224347600872,
+          "max_vs_reference": 0.11112594604492188,
+          "reference_max": 42.63887405395508,
+          "nrms_vs_bf16_activations": 0.02651904322743058,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.9654272079467774,
+            0.9649151802062989,
+            0.9651200294494628,
+            0.9645024299621582,
+            0.9641983985900879
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001666224347600872,
+          "max_vs_reference": 0.11112594604492188,
+          "reference_max": 42.63887405395508,
+          "nrms_vs_bf16_activations": 0.02651904322743058,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.3101696014404297,
+            0.3101696014404297,
+            0.30986239910125735,
+            0.30986239910125735,
+            0.3096575975418091
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.19804160594940184,
+        0.20899839401245118,
+        0.19404799938201905,
+        0.19814399480819703,
+        0.19998719692230224
+      ],
+      "quantize_ms": [
+        0.006246399879455566,
+        0.006143999844789505,
+        0.006041600182652473,
+        0.006041600182652473,
+        0.006035200133919716
+      ]
+    },
+    {
+      "tokens": 512,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 4663,
+      "scale_mismatch_reciprocal_reference": 252,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016650383822503431,
+          "max_vs_reference": 0.09827804565429688,
+          "reference_max": 38.95592498779297,
+          "nrms_vs_bf16_activations": 0.02643774555976673,
+          "workspace_bytes": 8388608
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016650383822503431,
+          "max_vs_reference": 0.09827804565429688,
+          "reference_max": 38.95592498779297,
+          "nrms_vs_bf16_activations": 0.02643774555976673,
+          "workspace_bytes": 8388608
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016650383822503431,
+          "max_vs_reference": 0.09827804565429688,
+          "reference_max": 38.95592498779297,
+          "nrms_vs_bf16_activations": 0.02643774555976673,
+          "workspace_bytes": 8388608
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016650383822503431,
+          "max_vs_reference": 0.09827804565429688,
+          "reference_max": 38.95592498779297,
+          "nrms_vs_bf16_activations": 0.02643774555976673,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016650383822503431,
+          "max_vs_reference": 0.09827804565429688,
+          "reference_max": 38.95592498779297,
+          "nrms_vs_bf16_activations": 0.02643774555976673,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016650383822503431,
+          "max_vs_reference": 0.09827804565429688,
+          "reference_max": 38.95592498779297,
+          "nrms_vs_bf16_activations": 0.02643774555976673,
+          "workspace_bytes": 8388608
+        }
+      }
+    },
+    {
+      "tokens": 1024,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 7428,
+      "scale_mismatch_reciprocal_reference": 457,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660142211894254,
+          "max_vs_reference": 0.12771987915039062,
+          "reference_max": 40.339988708496094,
+          "nrms_vs_bf16_activations": 0.02652449333329445,
+          "workspace_bytes": 0,
+          "ms": [
+            0.6846464157104493,
+            0.684441614151001,
+            0.6845439910888672,
+            0.6841248035430908,
+            0.6837247848510742
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660142211894254,
+          "max_vs_reference": 0.12771987915039062,
+          "reference_max": 40.339988708496094,
+          "nrms_vs_bf16_activations": 0.02652449333329445,
+          "workspace_bytes": 0,
+          "ms": [
+            0.5095327854156494,
+            0.5087232112884521,
+            0.5088255882263184,
+            0.5089280128479003,
+            0.5084159851074219
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660142211894254,
+          "max_vs_reference": 0.12771987915039062,
+          "reference_max": 40.339988708496094,
+          "nrms_vs_bf16_activations": 0.02652449333329445,
+          "workspace_bytes": 0,
+          "ms": [
+            0.6383456230163574,
+            0.6379519939422608,
+            0.6385663986206055,
+            0.638156795501709,
+            0.6380383968353271
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660142211894254,
+          "max_vs_reference": 0.12771987915039062,
+          "reference_max": 40.339988708496094,
+          "nrms_vs_bf16_activations": 0.02652449333329445,
+          "workspace_bytes": 16777216,
+          "ms": [
+            1.944166374206543,
+            1.9461088180541992,
+            1.9458047866821289,
+            1.945587158203125,
+            1.9467071533203124
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660142211894254,
+          "max_vs_reference": 0.12771987915039062,
+          "reference_max": 40.339988708496094,
+          "nrms_vs_bf16_activations": 0.02652449333329445,
+          "workspace_bytes": 16777216,
+          "ms": [
+            1.924710464477539,
+            1.925529670715332,
+            1.923276710510254,
+            1.925119972229004,
+            1.9233600616455078
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016660142211894254,
+          "max_vs_reference": 0.12771987915039062,
+          "reference_max": 40.339988708496094,
+          "nrms_vs_bf16_activations": 0.02652449333329445,
+          "workspace_bytes": 0,
+          "ms": [
+            0.6007711887359619,
+            0.6006720066070557,
+            0.6016960144042969,
+            0.6005760192871094,
+            0.6003712177276611
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.32020480632781984,
+        0.32071681022644044,
+        0.31979520320892335,
+        0.3205120086669922,
+        0.3201024055480957
+      ],
+      "quantize_ms": [
+        0.010956799983978272,
+        0.010751999914646149,
+        0.010633599758148194,
+        0.010649599879980088,
+        0.010649599879980088
+      ]
+    },
+    {
+      "tokens": 1024,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 7482,
+      "scale_mismatch_reciprocal_reference": 455,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016661021612855876,
+          "max_vs_reference": 0.11664199829101562,
+          "reference_max": 42.576656341552734,
+          "nrms_vs_bf16_activations": 0.026464972891332445,
+          "workspace_bytes": 0
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016661021612855876,
+          "max_vs_reference": 0.11664199829101562,
+          "reference_max": 42.576656341552734,
+          "nrms_vs_bf16_activations": 0.026464972891332445,
+          "workspace_bytes": 0
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016661021612855876,
+          "max_vs_reference": 0.11664199829101562,
+          "reference_max": 42.576656341552734,
+          "nrms_vs_bf16_activations": 0.026464972891332445,
+          "workspace_bytes": 0
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016661021612855876,
+          "max_vs_reference": 0.11664199829101562,
+          "reference_max": 42.576656341552734,
+          "nrms_vs_bf16_activations": 0.026464972891332445,
+          "workspace_bytes": 16777216
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016661021612855876,
+          "max_vs_reference": 0.11664199829101562,
+          "reference_max": 42.576656341552734,
+          "nrms_vs_bf16_activations": 0.026464972891332445,
+          "workspace_bytes": 16777216
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016661021612855876,
+          "max_vs_reference": 0.11664199829101562,
+          "reference_max": 42.576656341552734,
+          "nrms_vs_bf16_activations": 0.026464972891332445,
+          "workspace_bytes": 0
+        }
+      }
+    },
+    {
+      "tokens": 2048,
+      "bias": false,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 15607,
+      "scale_mismatch_reciprocal_reference": 927,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016667930636958016,
+          "max_vs_reference": 0.12354660034179688,
+          "reference_max": 49.34778594970703,
+          "nrms_vs_bf16_activations": 0.02646295750212798,
+          "workspace_bytes": 0,
+          "ms": [
+            1.3598655700683593,
+            1.3588479995727538,
+            1.358950424194336,
+            1.358950424194336,
+            1.3592576026916503
+          ],
+          "replay_bit_exact": true
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016667930636958016,
+          "max_vs_reference": 0.12354660034179688,
+          "reference_max": 49.34778594970703,
+          "nrms_vs_bf16_activations": 0.02646295750212798,
+          "workspace_bytes": 0,
+          "ms": [
+            1.0201087951660157,
+            1.0199040412902831,
+            1.0200063705444335,
+            1.0193920135498047,
+            1.0199999809265137
+          ],
+          "replay_bit_exact": true
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016667930636958016,
+          "max_vs_reference": 0.12354660034179688,
+          "reference_max": 49.34778594970703,
+          "nrms_vs_bf16_activations": 0.02646295750212798,
+          "workspace_bytes": 0,
+          "ms": [
+            1.2619775772094726,
+            1.2616703987121582,
+            1.261567974090576,
+            1.2617728233337402,
+            1.2618751525878906
+          ],
+          "replay_bit_exact": true
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016667930636958016,
+          "max_vs_reference": 0.12354660034179688,
+          "reference_max": 49.34778594970703,
+          "nrms_vs_bf16_activations": 0.02646295750212798,
+          "workspace_bytes": 0,
+          "ms": [
+            3.8675457000732423,
+            3.865087890625,
+            3.86693115234375,
+            3.864883041381836,
+            3.865395355224609
+          ],
+          "replay_bit_exact": true
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016667930636958016,
+          "max_vs_reference": 0.12354660034179688,
+          "reference_max": 49.34778594970703,
+          "nrms_vs_bf16_activations": 0.02646295750212798,
+          "workspace_bytes": 0,
+          "ms": [
+            3.8207489013671876,
+            3.823001480102539,
+            3.8231040954589846,
+            3.8367233276367188,
+            3.820646286010742
+          ],
+          "replay_bit_exact": true
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.0016667930636958016,
+          "max_vs_reference": 0.12354660034179688,
+          "reference_max": 49.34778594970703,
+          "nrms_vs_bf16_activations": 0.02646295750212798,
+          "workspace_bytes": 0,
+          "ms": [
+            1.188864040374756,
+            1.188864040374756,
+            1.1896832466125489,
+            1.1902976036071777,
+            1.188435173034668
+          ],
+          "replay_bit_exact": true
+        }
+      },
+      "fp8_ms": [
+        0.6323200225830078,
+        0.6325247764587403,
+        0.633139181137085,
+        0.6345727920532227,
+        0.6657951831817627
+      ],
+      "quantize_ms": [
+        0.02088959962129593,
+        0.02088959962129593,
+        0.020684799551963805,
+        0.020479999482631683,
+        0.020576000213623047
+      ]
+    },
+    {
+      "tokens": 2048,
+      "bias": true,
+      "quantize_bytes_mismatch": 0,
+      "scale_mismatch": 0,
+      "quantize_bytes_mismatch_reciprocal_reference": 21286,
+      "scale_mismatch_reciprocal_reference": 888,
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001665020523855643,
+          "max_vs_reference": 0.1183929443359375,
+          "reference_max": 42.77798843383789,
+          "nrms_vs_bf16_activations": 0.02646540837738788,
+          "workspace_bytes": 0
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001665020523855643,
+          "max_vs_reference": 0.1183929443359375,
+          "reference_max": 42.77798843383789,
+          "nrms_vs_bf16_activations": 0.02646540837738788,
+          "workspace_bytes": 0
+        },
+        "4": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001665020523855643,
+          "max_vs_reference": 0.1183929443359375,
+          "reference_max": 42.77798843383789,
+          "nrms_vs_bf16_activations": 0.02646540837738788,
+          "workspace_bytes": 0
+        },
+        "5": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001665020523855643,
+          "max_vs_reference": 0.1183929443359375,
+          "reference_max": 42.77798843383789,
+          "nrms_vs_bf16_activations": 0.02646540837738788,
+          "workspace_bytes": 0
+        },
+        "6": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001665020523855643,
+          "max_vs_reference": 0.1183929443359375,
+          "reference_max": 42.77798843383789,
+          "nrms_vs_bf16_activations": 0.02646540837738788,
+          "workspace_bytes": 0
+        },
+        "7": {
+          "repeat_bit_exact": true,
+          "nrms_vs_reference": 0.001665020523855643,
+          "max_vs_reference": 0.1183929443359375,
+          "reference_max": 42.77798843383789,
+          "nrms_vs_bf16_activations": 0.02646540837738788,
+          "workspace_bytes": 0
+        }
+      }
+    }
+  ],
+  "complete": true,
+  "rotation": {
+    "a7_copies": 5,
+    "fp8_copies": 4
+  }
+}

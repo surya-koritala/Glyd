@@ -1,0 +1,29 @@
+Linux 6.8.0-134-generic #134~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue Jun 30 14:05:04 UTC  x86_64 GNU/Linux
+Mon Oct  5 16:56:14 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.173.02             Driver Version: 580.173.02     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4090        On  |   00000000:81:00.0 Off |                  Off |
+|  0%   35C    P8             11W /  450W |       1MiB /  24564MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz]
+NVIDIA GeForce RTX 4090, 8.9, 580.173.02, 24564 MiB, 3105 MHz
+Model name:                              AMD EPYC 7443 24-Core Processor
+48
+               total        used        free      shared  buff/cache   available
+Mem:             251          26          36           0         192         225
+overlay         150G   18M  150G   1% /
+Mon Oct  5 16:56:15 UTC 2026

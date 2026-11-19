@@ -1,0 +1,37 @@
+NVIDIA A100-SXM4-40GB (sm_80): DeepSeek-V4 on the dynamic engine, 3 layers, weights 2.784 GiB (layout mma), KV 0.001 GiB (2048 positions), 3.30 of 39.49 GiB in use
+without a graph: 5.124 ms a step; the stages 5.118 ms:
+    1.168 ms  22.8%  mixture of experts
+    0.717 ms  14.0%  head
+    0.717 ms  14.0%  hyper-connections
+    0.389 ms   7.6%  attention: o low rank
+    0.339 ms   6.6%  attention: attention
+    0.295 ms   5.8%  attention: o
+    0.289 ms   5.7%  attention: q up
+    0.271 ms   5.3%  activations to FP8
+    0.181 ms   3.5%  attention: compressor
+    0.093 ms   1.8%  attention: q norm, rotary
+    0.091 ms   1.8%  norms
+    0.090 ms   1.8%  attention: kv norm, rotary, cache
+    0.088 ms   1.7%  indexer: compressor
+    0.085 ms   1.7%  start
+    0.078 ms   1.5%  attention: q down
+    0.073 ms   1.4%  attention: kv
+    0.072 ms   1.4%  indexer: picks
+    0.059 ms   1.2%  indexer: q
+    0.023 ms   0.4%  indexer: weights
+kernels: 80 launches a step, 1.054 ms of kernel time a step; the most:
+    0.148 ms    6.0 a step  v4_hc_fin
+    0.088 ms    9.0 a step  v4_fp8
+    0.076 ms    3.0 a step  v4_attn_scores
+    0.076 ms    3.0 a step  v4_attn_out
+    0.071 ms    7.0 a step  v4_hc_proj
+    0.057 ms    6.0 a step  v4_moe_act
+    0.057 ms    3.0 a step  v4_lin32_1
+    0.054 ms    6.0 a step  v4_hc_post
+    0.035 ms    3.0 a step  moe_logits
+    0.033 ms    3.0 a step  v4_attn_soft
+    0.033 ms    3.0 a step  v4_comp_pool
+    0.031 ms    3.0 a step  v4_ogather
+    0.031 ms    1.0 a step  argmax_bf16
+    0.030 ms    3.0 a step  rmsnorm
+with a graph: 2.707 ms a step (32 steps after 256 tokens)

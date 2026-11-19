@@ -1,0 +1,27 @@
+  stock-eager: ERROR exit 1 in 288 s
+FAIL: stock-eager did not run (exit 1); the log's end:
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+[rank0]:     return _inner(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9308, in fp8_blockscale_gemm_sm90
+[rank0]:     runner = get_fp8_blockscale_gemm_runner_sm90()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9093, in get_fp8_blockscale_gemm_runner_sm90
+[rank0]:     module = gen_fp8_blockscale_gemm_sm90_module().build_and_load()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 320, in build_and_load
+[rank0]:     self.build()
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 427, in build
+[rank0]:     run_ninja(self.build_dir, self.ninja_path, verbose)
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 382, in run_ninja
+[rank0]:     raise RuntimeError(msg) from e
+[rank0]: RuntimeError: Ninja build failed. Ninja output:
+[rank0]: ninja: Entering directory `/root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90'
+[rank0]: [1/1] c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: FAILED: [code=1] /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so 
+[rank0]: c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: /usr/bin/ld: cannot find -lnvrtc: No such file or directory
+[rank0]: collect2: error: ld returned 1 exit status
+[rank0]: ninja: build stopped: subcommand failed.
+
+[rank0]:[W1005 18:12:12.970904791 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

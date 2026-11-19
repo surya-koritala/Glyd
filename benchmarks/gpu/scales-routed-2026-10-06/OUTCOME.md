@@ -1,0 +1,1 @@
+The35-minute cap ended this run during dependency downloads. No library build, GPU exactness check, or timing comparison ran. Pod67xoobdn3cbfxd was deleted; the launcher verified only the FP4 pod remained. The ledger estimates2177seconds at$0.74/hour=$0.447494; the scale track total is$4.948694 of$5. No rerun was launched. Sourceef7d99f1 and the immutable inputs remain recorded.

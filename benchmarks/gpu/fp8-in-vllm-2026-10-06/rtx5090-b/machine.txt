@@ -1,0 +1,29 @@
+Linux 6.14.0-35-generic #35~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue Oct 14 13:55:17 UTC 2 x86_64 GNU/Linux
+Tue Oct  6 10:28:31 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 5090        On  |   00000000:00:0F.0 Off |                  N/A |
+|  0%   34C    P8             17W /  575W |       1MiB /  32607MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA GeForce RTX 5090, 12.0, 580.126.20, 32607 MiB, 3090 MHz, 14001 MHz, 575.00 W
+CPU(s):                                  120
+Model name:                              AMD EPYC 7543 32-Core Processor
+               total        used        free      shared  buff/cache   available
+Mem:             944         139         326           0         490         805
+overlay         150G   20M  150G   1% /
+Tue Oct  6 10:28:32 UTC 2026

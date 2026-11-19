@@ -1,0 +1,3 @@
+Fetching 9 files:   0%|          | 0/9 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 9 files:  11%|█         | 1/9 [00:00<00:00,  8.39it/s]Fetching 9 files:  56%|█████▌    | 5/9 [00:00<00:00, 25.60it/s]Fetching 9 files:  89%|████████▉ | 8/9 [00:17<00:02,  2.70s/it]Fetching 9 files: 100%|██████████| 9/9 [02:51<00:00, 30.79s/it]Fetching 9 files: 100%|██████████| 9/9 [02:51<00:00, 19.06s/it]
+/root/hf/hub/models--google--gemma-4-26B-A4B-it/snapshots/4d7ae4984b7db7de8f8457170b3f1a419ee76d52

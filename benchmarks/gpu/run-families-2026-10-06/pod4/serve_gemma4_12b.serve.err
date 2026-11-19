@@ -1,0 +1,13 @@
+glyd serve: the engine serves up to 8 users at once and vLLM more (GLYD_ENGINE=1 runs the engine); using vLLM.
+gemma-4-12B-it: 16.6 GB on the GPU with Glyd, instead of 23.9 GB, which does not fit the 25.2 GB your GPU has free.
+gemma-4-12B-it is downloaded already.
+Settings: 124,928-token context (the most that fits), compiled mode (CUDA graphs), 92% of GPU memory (23.2 GB), tool calls (gemma4), thinking shown apart (gemma4).
+Loading gemma-4-12B-it with Glyd: 16.6 GB instead of 23.9 GB...
+Ready in 2m24s. (The server's log: /root/.local/state/glyd/logs/serve-20261006-112059.log)
+
+Serving google/gemma-4-12B-it with Glyd (124,928-token window).
+  OpenAI API   http://localhost:8101/v1   (model name: google/gemma-4-12B-it)
+  Chat page    http://localhost:8101
+  Log          /root/.local/state/glyd/logs/serve-20261006-112059.log
+Press Ctrl-C to stop.
+Stopping the server (a few seconds)...

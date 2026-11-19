@@ -1,0 +1,16 @@
+COMMIT: OK
+SOURCE.json: OK
+evaluation.json: OK
+evaluation.sha256: OK
+glyd-engine: OK
+glyd-lossy-quality: OK
+libglyd_gpu_cuda13.so: OK
+models.json: OK
+pod-image.txt: OK
+quality-requirements.txt: OK
+quality_compare.py: OK
+quality_env.py: OK
+quality_env.sh: OK
+quality_job.sh: OK
+quality_reference.py: OK
+evaluation.json: OK

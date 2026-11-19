@@ -1,0 +1,28 @@
+[package]
+name = "glyd-engine"
+version = "0.32.1"
+edition = "2021"
+description = "Glyd's own inference engine: Qwen3 on CUDA from Glyd-packed weights, every matrix compressed, the lossless KV cache, a chat and an OpenAI-compatible API"
+license = "BUSL-1.1"
+publish = false
+build = "build.rs"
+
+# `dev` (the default): the checks, the proofs and the tuning variables of a development build, and the names engine.cu has. The release build (release.yml, `cargo build --release
+# --no-default-features`) compiles none of them in: its binary has no command, flag or variable that only a development build has and names none of them, and its kernels and the
+# library's functions are under neutral names or ids (build.rs runs gpu/gen_names.py, which needs python3). check_wheel.py reads the binary, the machine code in it and these sources for it.
+[features]
+default = ["dev"]
+dev = []
+
+[dependencies]
+glyd-gpu = { path = "../glyd-gpu" }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+minijinja = { version = "2.24.0", features = ["builtins", "json", "loop_controls", "multi_template", "preserve_order"] }
+minijinja-contrib = { version = "2.24.0", features = ["pycompat"] }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+sha2 = "0.11"
+ureq = "3"
+
+[[bin]]
+name = "glyd-engine"
+path = "src/main.rs"

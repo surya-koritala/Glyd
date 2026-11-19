@@ -1,0 +1,144 @@
+{
+ "model": "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
+ "args": {
+  "model": "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
+  "out": "/root/results/Qwen_Qwen3.5-35B-A3B-GPTQ-Int4",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "layout": "auto",
+  "steps": "stock-eager,glyd-exact,stock,glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "exact": {
+  "equal": false,
+  "diffs": {
+   "tokens": "[0][5]: 337 != 19",
+   "logprobs": "[0][0][0][0]: 303 != 440",
+   "long_ids": null,
+   "long_logprobs": "[0][0][1]: -1.674990177154541 != -1.674360752105713",
+   "image_tokens": null,
+   "image_logprobs": "[0][0][1]: -0.008255760185420513 != -0.0074653225019574165"
+  },
+  "image": true,
+  "image_error": null,
+  "verified": 243,
+  "packed": 243,
+  "stock_self_diffs": {
+   "tokens": "[0][5]: 337 != 19",
+   "logprobs": "[0][0][0][0]: 303 != 440",
+   "long_ids": null,
+   "long_logprobs": "[0][0][1]: -1.674990177154541 != -1.674360752105713",
+   "image_tokens": null,
+   "image_logprobs": "[0][0][1]: -0.008255760185420513 != -0.008680704049766064"
+  }
+ },
+ "glyd": {
+  "weights_gib": 19.83,
+  "kv_tokens": 486253,
+  "kv_gib": 16.74,
+  "concurrency": 59.36,
+  "tps": {
+   "1": {
+    "median": 145.3,
+    "runs": [
+     145.37,
+     145.22
+    ]
+   },
+   "32": {
+    "median": 1393.75,
+    "runs": [
+     1394.5,
+     1393.01
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantAutoGPTQConfig",
+  "glyd_key": {
+   "layout": "mma",
+   "exact": false,
+   "verify": false,
+   "fraction": 1.0,
+   "kv": "off",
+   "glyd": "0.29.0",
+   "packs": "b8db674cf9b73768"
+  },
+  "start_s": 297.7
+ },
+ "inventory": {
+  "packed_count": 244,
+  "packed_bf16_bytes": 4443041792,
+  "packed_pack_bytes": 3003776535,
+  "saved_bytes": 1439265257,
+  "gpu_tensor_bytes": 21220671767,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.0030273913871496916,
+  "left_16bit_top": {
+   "VocabParallelEmbedding / UnquantizedEmbeddingMethod / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 1017118720,
+    "example": "language_model.model.embed_tokens.weight"
+   },
+   "RoutedExperts / AutoGPTQMoEMethod / w13_scales / bfloat16": {
+    "tensors": 40,
+    "bytes": 335544320,
+    "example": "language_model.model.layers.0.mlp.experts.routed_experts.w13_scales"
+   },
+   "ColumnParallelLinear / GlydLinearMethod / weight / bfloat16": {
+    "tensors": 27,
+    "bytes": 267743232,
+    "example": "visual.blocks.0.mlp.linear_fc1.weight"
+   },
+   "RoutedExperts / AutoGPTQMoEMethod / w2_scales / bfloat16": {
+    "tensors": 40,
+    "bytes": 167772160,
+    "example": "language_model.model.layers.0.mlp.experts.routed_experts.w2_scales"
+   },
+   "Embedding / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 5308416,
+    "example": "visual.pos_embed.weight"
+   },
+   "Conv3dLayer / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 3538944,
+    "example": "visual.patch_embed.proj.weight"
+   }
+  }
+ },
+ "stock": {
+  "weights_gib": 21.12,
+  "kv_tokens": 453485,
+  "kv_gib": 15.62,
+  "concurrency": 55.36,
+  "tps": {
+   "1": {
+    "median": 117.2,
+    "runs": [
+     117.34,
+     117.06
+    ]
+   },
+   "32": {
+    "median": 1320.59,
+    "runs": [
+     1325.02,
+     1316.16
+    ]
+   }
+  },
+  "quantization": "auto_gptq",
+  "quant_config": "AutoGPTQConfig",
+  "start_s": 278.1,
+  "error": null,
+  "log_tail": null
+ },
+ "fused_agreement": 0.6016
+}

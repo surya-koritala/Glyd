@@ -1,0 +1,32 @@
+== expected minutes (the whole job: 25 at most): env and downloads 2, build 2 beside bf16's serve (5), check 1, Glyd's serve with the KV cache 7 (an A100: 9), then (an H100: without it 5), bf16 again 4 (an A100: 5), sweep 1 (an A100: 3), prof 4 where it fits, dense 0
+== 00:26:23 (+0 s) machine
+WARNING: 58 GB free in ~, 200 wanted (the model, the venv and the caches)
+NVIDIA L4 (compute 8.9, sm_89, 23034 MiB, class a100, top clock 2040 MHz), x86_64 host, 16 CPUs; tree moe-a100 7820a5ea (gpu: the tiled MoE kernel's epilogues shrunk and its empty m-tiles skipped, an A100's MoE dispatch per product, the tile of 256 as a variant) on private/main ddaefb8a; parts check serve sweep prof dense; model ibm-granite/granite-3.1-3b-a800m-instruct, serve /home/ubuntu/tiny-qwen3moe; rates 1 inf
+   machine
+== 00:26:24 (+1 s) uv, the venv, the downloads
+vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA L4
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+   env: 5 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA L4)
+== 00:26:29 (+6 s) build: the library for sm_89 (bf16's serve beside it)
+   thermal preflight: ok: 10 s of load: the last 10 s 78 C at most, SM clock 1166 MHz, 63 W, thermal slowdown in 0 of them, power cap in 8
+   build: sm_89 in 11 s (library: C API 14 | GPU code 3089)
+   serve bf16: exit 0 in 75 s
+   serve bf16: no results (bf16: the server did not start (serve-bf16.txt))
+== 00:27:54 (+91 s) check: the experts' products of ibm-granite/granite-3.1-3b-a800m-instruct's layer 0 with the built-in settings against an fp32 product, three processes of 120, 90 and 90 s at most
+   check: exit 0 in 13 s, 162 checks ()
+   check: the wgmma workspace's test passed (  (no H100, or GLYD_GPU_MOE_WG set: the library's sizes not asked))
+== 00:28:08 (+105 s) serve: /home/ubuntu/tiny-qwen3moe, Glyd with the built-in settings, and with the lossless KV cache (bf16's ran beside the build)
+   serve glyd-picked+kv: exit 0 in 36 s
+   serve glyd-picked+kv: no results (kv+glyd: the server did not start (serve-kv+glyd.txt))
+   serve bf16-2: exit 0 in 15 s
+   serve bf16-2: no results (bf16: the server did not start (serve-bf16.txt))
+   serve: no saturated pass with an nvidia-smi csv
+== 00:28:59 (+156 s) sweep: the layer by tokens a step, vLLM's bf16 layer beside it: the built-in settings, the other kernels, each wgmma tile
+   sweep: exit 0 in 29 s
+== 00:29:28 (+185 s) prof: Nsight Compute on ibm-granite/granite-3.1-3b-a800m-instruct's layer 0, kernels mma_gemm_big_kernel at 2048 tokens
+   prof: ncu in 19 s, 1 reports
+== 00:29:47 (+204 s) dense: the dense products of a step, each route of the library against cuBLAS (Qwen3-30B-A3B's qkv, o and router shapes)
+   dense: exit 0 in 6 s
+== 00:29:53 (+210 s) done in 210 s
+   done
+HOLD4DONE

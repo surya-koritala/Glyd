@@ -1,0 +1,6 @@
+pyenv: rc=0 62 s (job minute 1)
+selftest: rc=0 0 s (job minute 1)
+prep: rc=0 27 s (job minute 1)
+download: rc=0 147 s (job minute 3)
+trace: rc=0 760 s (job minute 16)
+analyze: rc=0 4 s (job minute 16)

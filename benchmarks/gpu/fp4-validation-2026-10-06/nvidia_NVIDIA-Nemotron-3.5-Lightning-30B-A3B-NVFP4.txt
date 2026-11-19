@@ -1,0 +1,5 @@
+stock: ok (231 s) weights 17.82 GiB, KV 525,926 tokens, tok/s {"1": 348.02, "32": 2847.26}
+glyd: FAILED to start: TypeError: unhashable type: 'list' (39 s)
+glyd-b: FAILED to start: TypeError: unhashable type: 'list' (43 s)
+stock-b: ok (69 s) weights 17.82 GiB, KV 569,344 tokens, tok/s {"1": 354.13, "32": 2855.0}
+glyd-exact: FAILED to start: TypeError: unhashable type: 'list' (40 s)

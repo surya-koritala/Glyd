@@ -1,0 +1,4 @@
+==PROF== Connected to process 3090 (/usr/bin/python3.12)
+==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM
+ok torch.Size([1, 4096]) 6.731830596923828
+==PROF== Disconnected from process 3090

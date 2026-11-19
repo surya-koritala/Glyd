@@ -1,0 +1,18 @@
+{
+  "pod_id": "vsm1vaglwqh1br",
+  "pod_name": "glyd-bench-qa-screen-20261007",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "gpu_count": 1,
+  "hourly_gpu_usd": 1.59,
+  "guard_accounted_seconds": 5295,
+  "estimated_gpu_usd": 2.338625,
+  "guard_time_rule": "maximum observed uptime plus 120 seconds for provisioning and polling",
+  "launcher_elapsed_minutes_floor": 87,
+  "maximum_minutes": 150,
+  "maximum_total_usd": 4.25,
+  "workload_started_utc": "2026-10-07T12:58:36Z",
+  "workload_completed_utc": "2026-10-07T14:24:39Z",
+  "deleted_utc_minute": "2026-10-07T14:25Z",
+  "attempts": 1,
+  "billing_scope": "Conservative GPU estimate; storage and other fees are not an invoiced total."
+}

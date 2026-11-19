@@ -1,0 +1,5 @@
+loaded in 2.5 s: NVIDIA H100 80GB HBM3 (sm_90): weights 10.37 GiB (67.9% of bf16's 15.26), cache 4096 tokens (0.43 GiB), workspaces 1109 MiB, 12.47 of 79.18 GiB in use
+8 prompts of up to 31 tokens, 64 new tokens each
+3 long_prompts of up to 3500 tokens, 64 new tokens each
+KV cache: nothing lost
+/home/ubuntu/results/engine-h100/tokens-mma-blas.json

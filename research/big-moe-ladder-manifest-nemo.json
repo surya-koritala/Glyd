@@ -1,0 +1,1267 @@
+{
+ "id": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+ "sha": "2dc98e2afe4face0e4ce40972a915c45368bd34a",
+ "total_bytes": 1457520640,
+ "samples": [
+  {
+   "ix": 0,
+   "model": "nemo",
+   "group": "embed_head",
+   "tensor": "backbone.embeddings.weight",
+   "kind": "backbone.embeddings.weight",
+   "layer": null,
+   "dtype": "BF16",
+   "shape": [
+    131072,
+    4096
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 251746704,
+   "end": 318855568,
+   "row_start": 30720,
+   "rows": 8192,
+   "sha256": "663687481f7e89e5110c6203cf5f499a48894004b00d6c7285c52cec843ef317",
+   "bytes": 67108864
+  },
+  {
+   "ix": 1,
+   "model": "nemo",
+   "group": "embed_head",
+   "tensor": "backbone.embeddings.weight",
+   "kind": "backbone.embeddings.weight",
+   "layer": null,
+   "dtype": "BF16",
+   "shape": [
+    131072,
+    4096
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 755063184,
+   "end": 822172048,
+   "row_start": 92160,
+   "rows": 8192,
+   "sha256": "a6a44dae4934270c0560b6a099077d5293927f47b054f5ea37fc08c146c212b4",
+   "bytes": 67108864
+  },
+  {
+   "ix": 2,
+   "model": "nemo",
+   "group": "embed_head",
+   "tensor": "lm_head.weight",
+   "kind": "lm_head.weight",
+   "layer": null,
+   "dtype": "BF16",
+   "shape": [
+    131072,
+    4096
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 1219589864,
+   "end": 1286698728,
+   "row_start": 30720,
+   "rows": 8192,
+   "sha256": "1eb195611ccdc27dcad70956819051fd4dd687421fb40ea76c916308703427be",
+   "bytes": 67108864
+  },
+  {
+   "ix": 3,
+   "model": "nemo",
+   "group": "embed_head",
+   "tensor": "lm_head.weight",
+   "kind": "lm_head.weight",
+   "layer": null,
+   "dtype": "BF16",
+   "shape": [
+    131072,
+    4096
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 1722906344,
+   "end": 1790015208,
+   "row_start": 92160,
+   "rows": 8192,
+   "sha256": "59aede23a8bc70fd85410e7665c18e29459c42e89f24291eacab87aa7257404d",
+   "bytes": 67108864
+  },
+  {
+   "ix": 4,
+   "model": "nemo",
+   "group": "mamba",
+   "tensor": "backbone.layers.0.mixer.in_proj.weight",
+   "kind": "mixer.in_proj.weight",
+   "layer": 0,
+   "dtype": "BF16",
+   "shape": [
+    18560,
+    4096
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 1115876496,
+   "end": 1182985360,
+   "row_start": 5120,
+   "rows": 8192,
+   "sha256": "e6fa940dbbc50ec705bdcab48b3ae61e1a3c36645dd73e5c543fd46237418c8f",
+   "bytes": 67108864
+  },
+  {
+   "ix": 5,
+   "model": "nemo",
+   "group": "mamba",
+   "tensor": "backbone.layers.44.mixer.in_proj.weight",
+   "kind": "mixer.in_proj.weight",
+   "layer": 44,
+   "dtype": "BF16",
+   "shape": [
+    18560,
+    4096
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 1009996240,
+   "end": 1077105104,
+   "row_start": 5120,
+   "rows": 8192,
+   "sha256": "9f2f475a44c0c08edf6c65c3041aa8c5ea692102de8a8a4173f0ab23c92b27ea",
+   "bytes": 67108864
+  },
+  {
+   "ix": 6,
+   "model": "nemo",
+   "group": "mamba",
+   "tensor": "backbone.layers.86.mixer.in_proj.weight",
+   "kind": "mixer.in_proj.weight",
+   "layer": 86,
+   "dtype": "BF16",
+   "shape": [
+    18560,
+    4096
+   ],
+   "shard": "model-00048-of-00050.safetensors",
+   "begin": 42056696,
+   "end": 109165560,
+   "row_start": 5120,
+   "rows": 8192,
+   "sha256": "8f7a5d0f238e9ee3323bacc253fa49bfb951c3ba089a55bb2dc2501ad4368ac8",
+   "bytes": 67108864
+  },
+  {
+   "ix": 7,
+   "model": "nemo",
+   "group": "mamba",
+   "tensor": "backbone.layers.0.mixer.out_proj.weight",
+   "kind": "mixer.out_proj.weight",
+   "layer": 0,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    8192
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 1225993360,
+   "end": 1293102224,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "b3ceb79112f2b96df7420a17a6265dfd8421aa48d89abe8e5edf341753c48f84",
+   "bytes": 67108864
+  },
+  {
+   "ix": 8,
+   "model": "nemo",
+   "group": "mamba",
+   "tensor": "backbone.layers.44.mixer.out_proj.weight",
+   "kind": "mixer.out_proj.weight",
+   "layer": 44,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    8192
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 1120113104,
+   "end": 1187221968,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "18aafb2e470f24fcc2e512912fa0d6d9efacf816b4f4416f68d273e27b471b61",
+   "bytes": 67108864
+  },
+  {
+   "ix": 9,
+   "model": "nemo",
+   "group": "mamba",
+   "tensor": "backbone.layers.86.mixer.out_proj.weight",
+   "kind": "mixer.out_proj.weight",
+   "layer": 86,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    8192
+   ],
+   "shard": "model-00048-of-00050.safetensors",
+   "begin": 152173560,
+   "end": 219282424,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "d43f5076e90d8a9cce580d8cd01068ccdcbcf3b39ee2e9abc51b13b3181b0a9e",
+   "bytes": 67108864
+  },
+  {
+   "ix": 10,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.1.mixer.experts.331.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 4144712848,
+   "end": 4150217872,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "453b38020e4e9e2f87ebdd742708662993b733e63d03fdd41c5bc3ee865e0b48",
+   "bytes": 5505024
+  },
+  {
+   "ix": 11,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.1.mixer.experts.154.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 1975733392,
+   "end": 1981238416,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "ad9f682fcb64ee9694e45e23d3dfbfeac815d4e8ab5b23c15bc45c2d3b5b7e7a",
+   "bytes": 5505024
+  },
+  {
+   "ix": 12,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.1.mixer.experts.404.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00002-of-00050.safetensors",
+   "begin": 743291736,
+   "end": 748796760,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "ec3d763719ab112e31c89bee362894ecece299d1389bf64d560666fa9c7e1688",
+   "bytes": 5505024
+  },
+  {
+   "ix": 13,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.1.mixer.experts.49.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 4381428880,
+   "end": 4386933904,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "c8664dc6c09add7a5ddb3f74aa4111409e0f251693fcca9995de2a8227e082d2",
+   "bytes": 5505024
+  },
+  {
+   "ix": 14,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.45.mixer.experts.74.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 45,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 4688425424,
+   "end": 4693930448,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "4144c24ed048097ed7681e30389068583bf356b40b0c35da8b626bed26fdd662",
+   "bytes": 5505024
+  },
+  {
+   "ix": 15,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.45.mixer.experts.96.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 45,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 4952666576,
+   "end": 4958171600,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "381ad5ca591c152e7c3159dc6e467ca38597f81fe7e84b6e327206e4f74208ac",
+   "bytes": 5505024
+  },
+  {
+   "ix": 16,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.45.mixer.experts.374.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 45,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00026-of-00050.safetensors",
+   "begin": 308394568,
+   "end": 313899592,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "647593c10035ea3140af889992232b054b245d8265ed1241fb391bb94eb54168",
+   "bytes": 5505024
+  },
+  {
+   "ix": 17,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.45.mixer.experts.59.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 45,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 4501254608,
+   "end": 4506759632,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "614b64feaeb4d42ecb5c54fa1d95f1584b324303adc19b14c155c38ea458f8d7",
+   "bytes": 5505024
+  },
+  {
+   "ix": 18,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.87.mixer.experts.219.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00048-of-00050.safetensors",
+   "begin": 1694628856,
+   "end": 1700133880,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "9dd39ce616b1297c5271c40de9d3f1ffc842ed237844e1722da980ec220500da",
+   "bytes": 5505024
+  },
+  {
+   "ix": 19,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.87.mixer.experts.38.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00048-of-00050.safetensors",
+   "begin": 3654417400,
+   "end": 3659922424,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "6ddeba70fda12d57f09e6a6b78d55fe5f7ad4824988d6a38671ac086e221f3e9",
+   "bytes": 5505024
+  },
+  {
+   "ix": 20,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.87.mixer.experts.88.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00048-of-00050.safetensors",
+   "begin": 4854512632,
+   "end": 4860017656,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "71fd68934cd9e3b88a27430ae8f95c418cfd7f6c52400468724126167a5b7c09",
+   "bytes": 5505024
+  },
+  {
+   "ix": 21,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.87.mixer.experts.444.down_proj.weight",
+   "kind": "mixer.experts.N.down_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    2688
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 110188264,
+   "end": 115693288,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "fbca40b08c3cce638c16c196b70eed7de72739c1459be2eb2dbc235e1e22360e",
+   "bytes": 5505024
+  },
+  {
+   "ix": 22,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.1.mixer.experts.428.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00002-of-00050.safetensors",
+   "begin": 1013037912,
+   "end": 1018542936,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "d787b3f75dad696eae17348837d45ef21332b480b2cab83d538929d48278f4bb",
+   "bytes": 5505024
+  },
+  {
+   "ix": 23,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.1.mixer.experts.71.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 4662185104,
+   "end": 4667690128,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "6c7fae3a669c795c2b6725aea7217d0c0d01868b12eca9dcc6ad6412fc66721a",
+   "bytes": 5505024
+  },
+  {
+   "ix": 24,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.1.mixer.experts.246.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 3104263312,
+   "end": 3109768336,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "482468689ef2d3318c11cff355b6e7d65c1a1fe208220ed19d5f3c7791c0a7ca",
+   "bytes": 5505024
+  },
+  {
+   "ix": 25,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.1.mixer.experts.92.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00001-of-00050.safetensors",
+   "begin": 4915416208,
+   "end": 4920921232,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "d4775ca262c98b3da01db52b3cd32278938fd914750931d771df85c82f0f46ec",
+   "bytes": 5505024
+  },
+  {
+   "ix": 26,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.45.mixer.experts.434.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 45,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00026-of-00050.safetensors",
+   "begin": 974502472,
+   "end": 980007496,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "e486d652c035bea89c62ac48c673f28e39a765656ff52ad75256e57c436dea39",
+   "bytes": 5505024
+  },
+  {
+   "ix": 27,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.45.mixer.experts.60.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 45,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 4528779728,
+   "end": 4534284752,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "0452c0380f2d97fb585aacb0d2d0b84859e3cc5c687de2e3ea4ff302458c1fbd",
+   "bytes": 5505024
+  },
+  {
+   "ix": 28,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.45.mixer.experts.126.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 45,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 1534046672,
+   "end": 1539551696,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "e02c51be3adbe18163c916a026fc2d498f8d8afede5def2a417882fe3b385123",
+   "bytes": 5505024
+  },
+  {
+   "ix": 29,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.45.mixer.experts.228.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 45,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 2778182096,
+   "end": 2783687120,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "3b9e8df579036f5a2be491075a0a98ef5cbf93dfb6705ac645056af10dd2052f",
+   "bytes": 5505024
+  },
+  {
+   "ix": 30,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.87.mixer.experts.63.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00048-of-00050.safetensors",
+   "begin": 4562746360,
+   "end": 4568251384,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "11e0ff80c521eb0a22dc278d73a4a5ca3e9ea12b3cd952c1a7cd13c197c30cca",
+   "bytes": 5505024
+  },
+  {
+   "ix": 31,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.87.mixer.experts.406.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00048-of-00050.safetensors",
+   "begin": 3990223864,
+   "end": 3995728888,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "6a3217fdc92bcb21feba455d20354240cd3baf57c7dbf70baa6b395cc4da7290",
+   "bytes": 5505024
+  },
+  {
+   "ix": 32,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.87.mixer.experts.50.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00048-of-00050.safetensors",
+   "begin": 4408605688,
+   "end": 4414110712,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "0cbda73103e77595e71e26dcaa6fea849dc96edf5ec7c0061da27e206912e94d",
+   "bytes": 5505024
+  },
+  {
+   "ix": 33,
+   "model": "nemo",
+   "group": "routed_experts",
+   "tensor": "backbone.layers.87.mixer.experts.226.up_proj.weight",
+   "kind": "mixer.experts.N.up_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    2688,
+    1024
+   ],
+   "shard": "model-00048-of-00050.safetensors",
+   "begin": 1788214264,
+   "end": 1793719288,
+   "row_start": 0,
+   "rows": 2688,
+   "sha256": "e0d52dbd7e7ae42a02c2cbe253cf856b4ab9b1ac587c84241b780fdc540e56aa",
+   "bytes": 5505024
+  },
+  {
+   "ix": 34,
+   "model": "nemo",
+   "group": "latent_proj",
+   "tensor": "backbone.layers.1.mixer.fc1_latent_proj.weight",
+   "kind": "mixer.fcN_latent_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    1024,
+    4096
+   ],
+   "shard": "model-00002-of-00050.safetensors",
+   "begin": 1932376920,
+   "end": 1940765528,
+   "row_start": 0,
+   "rows": 1024,
+   "sha256": "240609fa37f054ce6d80dbd3342047f3261eb976048fd317cf7df761183e22e2",
+   "bytes": 8388608
+  },
+  {
+   "ix": 35,
+   "model": "nemo",
+   "group": "latent_proj",
+   "tensor": "backbone.layers.43.mixer.fc2_latent_proj.weight",
+   "kind": "mixer.fcN_latent_proj.weight",
+   "layer": 43,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    1024
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 867286736,
+   "end": 875675344,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "9a8572809e639add03c9d6c44f04be4e15ab701ccfb2b55a63e8b534f8e428b7",
+   "bytes": 8388608
+  },
+  {
+   "ix": 36,
+   "model": "nemo",
+   "group": "latent_proj",
+   "tensor": "backbone.layers.87.mixer.fc2_latent_proj.weight",
+   "kind": "mixer.fcN_latent_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    1024
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 867260136,
+   "end": 875648744,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "055a36f4a56583f3d9fc9e56aa3c561a789e0b729aea0d919660c969c270300f",
+   "bytes": 8388608
+  },
+  {
+   "ix": 37,
+   "model": "nemo",
+   "group": "router",
+   "tensor": "backbone.layers.1.mixer.gate.weight",
+   "kind": "mixer.gate.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    512,
+    4096
+   ],
+   "shard": "model-00002-of-00050.safetensors",
+   "begin": 1949154136,
+   "end": 1953348440,
+   "row_start": 0,
+   "rows": 512,
+   "sha256": "5aed2660f094707243846d0108b982f59e8c2e4cf5f8011078f37a132cb94e3d",
+   "bytes": 4194304
+  },
+  {
+   "ix": 38,
+   "model": "nemo",
+   "group": "router",
+   "tensor": "backbone.layers.43.mixer.gate.weight",
+   "kind": "mixer.gate.weight",
+   "layer": 43,
+   "dtype": "BF16",
+   "shape": [
+    512,
+    4096
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 875675344,
+   "end": 879869648,
+   "row_start": 0,
+   "rows": 512,
+   "sha256": "79176bb9edc20a126183f3558ea9f0dc168777ef36f1f90aee838f6fbaa70069",
+   "bytes": 4194304
+  },
+  {
+   "ix": 39,
+   "model": "nemo",
+   "group": "router",
+   "tensor": "backbone.layers.87.mixer.gate.weight",
+   "kind": "mixer.gate.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    512,
+    4096
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 875648744,
+   "end": 879843048,
+   "row_start": 0,
+   "rows": 512,
+   "sha256": "ea7b155f3c833b9780203f1f536d88049d131d1317ec3254b2485c43f31da808",
+   "bytes": 4194304
+  },
+  {
+   "ix": 40,
+   "model": "nemo",
+   "group": "shared_expert",
+   "tensor": "backbone.layers.1.mixer.shared_experts.down_proj.weight",
+   "kind": "mixer.shared_experts.down_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    5376
+   ],
+   "shard": "model-00002-of-00050.safetensors",
+   "begin": 1953348440,
+   "end": 1997388632,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "7e31e54bf524fc64eb66fabff49648e2b9b808b87eadf19718beaafe8d4c6ee0",
+   "bytes": 44040192
+  },
+  {
+   "ix": 41,
+   "model": "nemo",
+   "group": "shared_expert",
+   "tensor": "backbone.layers.43.mixer.shared_experts.down_proj.weight",
+   "kind": "mixer.shared_experts.down_proj.weight",
+   "layer": 43,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    5376
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 879869648,
+   "end": 923909840,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "34f7027f3b3e6a618da6ed8a413ecc51104c1550fdefa808e265b8b179946407",
+   "bytes": 44040192
+  },
+  {
+   "ix": 42,
+   "model": "nemo",
+   "group": "shared_expert",
+   "tensor": "backbone.layers.87.mixer.shared_experts.down_proj.weight",
+   "kind": "mixer.shared_experts.down_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    5376
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 879843048,
+   "end": 923883240,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "6e659fc7697583e56ed853a7beea95942ec7f377604c7ca4df0089d163cf0d50",
+   "bytes": 44040192
+  },
+  {
+   "ix": 43,
+   "model": "nemo",
+   "group": "shared_expert",
+   "tensor": "backbone.layers.1.mixer.shared_experts.up_proj.weight",
+   "kind": "mixer.shared_experts.up_proj.weight",
+   "layer": 1,
+   "dtype": "BF16",
+   "shape": [
+    5376,
+    4096
+   ],
+   "shard": "model-00002-of-00050.safetensors",
+   "begin": 1997388632,
+   "end": 2041428824,
+   "row_start": 0,
+   "rows": 5376,
+   "sha256": "97112c502cf7e5e85b69b0f420185dae64e5b73fb0f3d4c2dd6ac3bfee2ea67b",
+   "bytes": 44040192
+  },
+  {
+   "ix": 44,
+   "model": "nemo",
+   "group": "shared_expert",
+   "tensor": "backbone.layers.43.mixer.shared_experts.up_proj.weight",
+   "kind": "mixer.shared_experts.up_proj.weight",
+   "layer": 43,
+   "dtype": "BF16",
+   "shape": [
+    5376,
+    4096
+   ],
+   "shard": "model-00025-of-00050.safetensors",
+   "begin": 923909840,
+   "end": 967950032,
+   "row_start": 0,
+   "rows": 5376,
+   "sha256": "a6a92f652952ef7237d6eff8e6028a24af93b8ec073aeaa49a99ce9a363f90f9",
+   "bytes": 44040192
+  },
+  {
+   "ix": 45,
+   "model": "nemo",
+   "group": "shared_expert",
+   "tensor": "backbone.layers.87.mixer.shared_experts.up_proj.weight",
+   "kind": "mixer.shared_experts.up_proj.weight",
+   "layer": 87,
+   "dtype": "BF16",
+   "shape": [
+    5376,
+    4096
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 923883240,
+   "end": 967923432,
+   "row_start": 0,
+   "rows": 5376,
+   "sha256": "37fda5135f6c18cd6cf5627dd6159a00fc9ac8d72772811ad47d8205273fe97a",
+   "bytes": 44040192
+  },
+  {
+   "ix": 46,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.7.mixer.k_proj.weight",
+   "kind": "mixer.k_proj.weight",
+   "layer": 7,
+   "dtype": "BF16",
+   "shape": [
+    256,
+    4096
+   ],
+   "shard": "model-00004-of-00050.safetensors",
+   "begin": 4198476344,
+   "end": 4200573496,
+   "row_start": 0,
+   "rows": 256,
+   "sha256": "d482df83795e64f46c69b2e73c8937d482f448a50956a6bb39ed5a4c362c767b",
+   "bytes": 2097152
+  },
+  {
+   "ix": 47,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.47.mixer.k_proj.weight",
+   "kind": "mixer.k_proj.weight",
+   "layer": 47,
+   "dtype": "BF16",
+   "shape": [
+    256,
+    4096
+   ],
+   "shard": "model-00026-of-00050.safetensors",
+   "begin": 2156113224,
+   "end": 2158210376,
+   "row_start": 0,
+   "rows": 256,
+   "sha256": "8e91697a138015fccbc88092bbbd80f0522f3429ba03b181da308dc81596dd9d",
+   "bytes": 2097152
+  },
+  {
+   "ix": 48,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.78.mixer.k_proj.weight",
+   "kind": "mixer.k_proj.weight",
+   "layer": 78,
+   "dtype": "BF16",
+   "shape": [
+    256,
+    4096
+   ],
+   "shard": "model-00043-of-00050.safetensors",
+   "begin": 1187229032,
+   "end": 1189326184,
+   "row_start": 0,
+   "rows": 256,
+   "sha256": "3ce8bed952a7643e1d8def5e35c49aa4e4239efdd4cf855c0d3e554af2d00d49",
+   "bytes": 2097152
+  },
+  {
+   "ix": 49,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.7.mixer.o_proj.weight",
+   "kind": "mixer.o_proj.weight",
+   "layer": 7,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    4096
+   ],
+   "shard": "model-00004-of-00050.safetensors",
+   "begin": 4200573496,
+   "end": 4234127928,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "0959230043a96a98055bf1463f39a9c0ad3e81d37ab05d2e31919ad8b764ecbd",
+   "bytes": 33554432
+  },
+  {
+   "ix": 50,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.47.mixer.o_proj.weight",
+   "kind": "mixer.o_proj.weight",
+   "layer": 47,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    4096
+   ],
+   "shard": "model-00026-of-00050.safetensors",
+   "begin": 2158210376,
+   "end": 2191764808,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "845c1b649b8135e5ee284dc3e15cc297fcb74f1e3c10a7d299f267b76f8dbc1c",
+   "bytes": 33554432
+  },
+  {
+   "ix": 51,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.78.mixer.o_proj.weight",
+   "kind": "mixer.o_proj.weight",
+   "layer": 78,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    4096
+   ],
+   "shard": "model-00043-of-00050.safetensors",
+   "begin": 1189326184,
+   "end": 1222880616,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "0d1022bb19791f89d740dd36a22a97969d33518929d757edd62d47ff917dfe50",
+   "bytes": 33554432
+  },
+  {
+   "ix": 52,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.7.mixer.q_proj.weight",
+   "kind": "mixer.q_proj.weight",
+   "layer": 7,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    4096
+   ],
+   "shard": "model-00004-of-00050.safetensors",
+   "begin": 4234127928,
+   "end": 4267682360,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "46c2e2ae0501fa59c7e6b05facf9e1b8b167bc03ddf8e70dbec88b6c22ab06a8",
+   "bytes": 33554432
+  },
+  {
+   "ix": 53,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.47.mixer.q_proj.weight",
+   "kind": "mixer.q_proj.weight",
+   "layer": 47,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    4096
+   ],
+   "shard": "model-00026-of-00050.safetensors",
+   "begin": 2191764808,
+   "end": 2225319240,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "d2d74cb2bdcee1c30bb3875f1e3359530ef9defce119ecfdc1722e466af876de",
+   "bytes": 33554432
+  },
+  {
+   "ix": 54,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.78.mixer.q_proj.weight",
+   "kind": "mixer.q_proj.weight",
+   "layer": 78,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    4096
+   ],
+   "shard": "model-00043-of-00050.safetensors",
+   "begin": 1222880616,
+   "end": 1256435048,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "8a73c0f3dfa27f7d9ac90c8112215827ff481da2a450a2fb7a8e77ca1613a311",
+   "bytes": 33554432
+  },
+  {
+   "ix": 55,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.7.mixer.v_proj.weight",
+   "kind": "mixer.v_proj.weight",
+   "layer": 7,
+   "dtype": "BF16",
+   "shape": [
+    256,
+    4096
+   ],
+   "shard": "model-00004-of-00050.safetensors",
+   "begin": 4267682360,
+   "end": 4269779512,
+   "row_start": 0,
+   "rows": 256,
+   "sha256": "dd108143d3a7739c9940fa7a772b8b938abaa1292f755e59e7b4a4ead18fb6f8",
+   "bytes": 2097152
+  },
+  {
+   "ix": 56,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.47.mixer.v_proj.weight",
+   "kind": "mixer.v_proj.weight",
+   "layer": 47,
+   "dtype": "BF16",
+   "shape": [
+    256,
+    4096
+   ],
+   "shard": "model-00026-of-00050.safetensors",
+   "begin": 2225319240,
+   "end": 2227416392,
+   "row_start": 0,
+   "rows": 256,
+   "sha256": "8cba412d044c6755726247a0fe2d3635c04c534558f0a59e062f76631171d86b",
+   "bytes": 2097152
+  },
+  {
+   "ix": 57,
+   "model": "nemo",
+   "group": "attn",
+   "tensor": "backbone.layers.78.mixer.v_proj.weight",
+   "kind": "mixer.v_proj.weight",
+   "layer": 78,
+   "dtype": "BF16",
+   "shape": [
+    256,
+    4096
+   ],
+   "shard": "model-00043-of-00050.safetensors",
+   "begin": 1256435048,
+   "end": 1258532200,
+   "row_start": 0,
+   "rows": 256,
+   "sha256": "6f90df9986a6121b536ff54d709eab0b5a5e0168f33b6bb5a9067d481e9ce6e3",
+   "bytes": 2097152
+  },
+  {
+   "ix": 58,
+   "model": "nemo",
+   "group": "mtp_other",
+   "tensor": "mtp.layers.0.eh_proj.weight",
+   "kind": "eh_proj.weight",
+   "layer": 0,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    8192
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 2041673448,
+   "end": 2108782312,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "c09ec009ddb7ed805f18de4c599fcd84147f66faa1cb48ff45b54939942f9472",
+   "bytes": 67108864
+  },
+  {
+   "ix": 59,
+   "model": "nemo",
+   "group": "mtp_other",
+   "tensor": "mtp.layers.0.mixer.k_proj.weight",
+   "kind": "mixer.k_proj.weight",
+   "layer": 0,
+   "dtype": "BF16",
+   "shape": [
+    256,
+    4096
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 2108798696,
+   "end": 2110895848,
+   "row_start": 0,
+   "rows": 256,
+   "sha256": "8f494a474ace2ce1829a5a95501fc28054f0d64117248cef24ac0068ea76a3f1",
+   "bytes": 2097152
+  },
+  {
+   "ix": 60,
+   "model": "nemo",
+   "group": "mtp_other",
+   "tensor": "mtp.layers.0.mixer.o_proj.weight",
+   "kind": "mixer.o_proj.weight",
+   "layer": 0,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    4096
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 2110895848,
+   "end": 2144450280,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "cbb7f8c12677af4c442747229901a6bd4147e3efda17c9110040d032149d916c",
+   "bytes": 33554432
+  },
+  {
+   "ix": 61,
+   "model": "nemo",
+   "group": "mtp_other",
+   "tensor": "mtp.layers.0.mixer.q_proj.weight",
+   "kind": "mixer.q_proj.weight",
+   "layer": 0,
+   "dtype": "BF16",
+   "shape": [
+    4096,
+    4096
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 2144450280,
+   "end": 2178004712,
+   "row_start": 0,
+   "rows": 4096,
+   "sha256": "1b806c60ce074dc6e176387ace7577a7d58073227e0c620c7f9e66f39b4b792c",
+   "bytes": 33554432
+  },
+  {
+   "ix": 62,
+   "model": "nemo",
+   "group": "mtp_other",
+   "tensor": "mtp.layers.0.mixer.v_proj.weight",
+   "kind": "mixer.v_proj.weight",
+   "layer": 0,
+   "dtype": "BF16",
+   "shape": [
+    256,
+    4096
+   ],
+   "shard": "model-00049-of-00050.safetensors",
+   "begin": 2178004712,
+   "end": 2180101864,
+   "row_start": 0,
+   "rows": 256,
+   "sha256": "d19da9fe263e4b62d34a9ee955ec58b12d2b5a897a502b2abd1207296cfda0c2",
+   "bytes": 2097152
+  }
+ ]
+}

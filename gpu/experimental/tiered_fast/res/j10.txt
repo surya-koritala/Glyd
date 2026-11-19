@@ -1,0 +1,104 @@
+=== j10_c1_m1.txt
+packs/c1: 1024x4096, M=1, 58 SMs, 1 weight copies
+v1       10.7608 bits a weight, unpack ok (0 differ)
+v2       10.7878 bits a weight, unpack ok (0 differ)
+12-bit   12.0389 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 9 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         256.4     517.0   2.019   ok, = v1 bit for bit
+12-bit         158.3     320.0   2.017   ok, = v1 bit for bit
+v2 lib         233.8     471.8   2.020   ok, = v1 bit for bit
+o40u1w4        202.7     409.5   2.019   ok, = v1 bit for bit
+o296u1w8b0s     190.4     384.6   2.022   ok, = v1 bit for bit
+o552u1w2b8s     236.9     477.2   2.013   ok, = v1 bit for bit
+o552u1w4b4s     189.1     377.7   2.005   ok, = v1 bit for bit
+o552u1w1b16s     348.9     700.0   2.004   ok, = v1 bit for bit
+o520u1w2b8s     234.7     470.3   2.009   ok, = v1 bit for bit
+o568u3w4b4s     183.1     368.6   2.017   ok, = v1 bit for bit
+o552u1w3b5s     213.2     430.7   2.019   ok, = v1 bit for bit
+=== j10_c1_m8.txt
+packs/c1: 1024x4096, M=8, 58 SMs, 1 weight copies
+v1       10.7608 bits a weight, unpack ok (0 differ)
+v2       10.7878 bits a weight, unpack ok (0 differ)
+12-bit   12.0389 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 7 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         273.1     543.6   1.991   ok, = v1 bit for bit
+12-bit         174.2     346.8   1.990   ok, = v1 bit for bit
+v2 lib         249.6     498.4   1.988   ok, = v1 bit for bit
+o40u1w4        232.1     459.8   1.976   ok, differs from v1's
+o296u1w8b0s     211.1     418.1   1.976   ok, differs from v1's
+o552u1w2b8s     289.1     570.7   1.974   ok, = v1 bit for bit
+o552u1w4b4s     217.9     425.4   1.952   ok, differs from v1's
+o552u1w1b16s     452.4     880.1   1.945   ok, differs from v1's
+o520u1w2b8s     289.6     563.6   1.945   ok, = v1 bit for bit
+o568u3w4b4s     211.2     417.3   1.976   ok, differs from v1's
+o552u1w3b5s     252.9     504.7   1.990   ok, differs from v1's
+=== j10_c2_m1.txt
+packs/c2: 2048x4096, M=1, 58 SMs, 1 weight copies
+v1       10.7609 bits a weight, unpack ok (0 differ)
+v2       10.7883 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 9 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         211.4     367.4   1.736   ok, = v1 bit for bit
+12-bit         111.2     193.9   1.736   ok, = v1 bit for bit
+v2 lib         190.9     331.6   1.736   ok, = v1 bit for bit
+o40u1w4        159.6     278.0   1.743   ok, = v1 bit for bit
+o296u1w8b0s     158.7     275.4   1.736   ok, = v1 bit for bit
+o552u1w2b8s     166.5     289.2   1.735   ok, = v1 bit for bit
+o552u1w4b4s     148.6     257.7   1.734   ok, = v1 bit for bit
+o552u1w1b16s     239.8     415.9   1.728   ok, = v1 bit for bit
+o520u1w2b8s     164.2     284.7   1.737   ok, = v1 bit for bit
+o568u3w4b4s     146.9     254.6   1.736   ok, = v1 bit for bit
+o552u1w3b5s     157.0     272.9   1.732   ok, = v1 bit for bit
+=== j10_c2_m8.txt
+packs/c2: 2048x4096, M=8, 58 SMs, 1 weight copies
+v1       10.7609 bits a weight, unpack ok (0 differ)
+v2       10.7883 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 7 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         222.5     382.9   1.721   ok, = v1 bit for bit
+12-bit         122.9     211.8   1.722   ok, = v1 bit for bit
+v2 lib         202.3     348.6   1.723   ok, = v1 bit for bit
+o40u1w4        177.7     305.8   1.719   ok, differs from v1's
+o296u1w8b0s     172.3     296.5   1.721   ok, differs from v1's
+o552u1w2b8s     198.3     341.3   1.714   ok, = v1 bit for bit
+o552u1w4b4s     169.5     288.8   1.706   ok, differs from v1's
+o552u1w1b16s     297.1     506.2   1.705   ok, differs from v1's
+o520u1w2b8s     197.5     337.1   1.704   ok, = v1 bit for bit
+o568u3w4b4s     166.4     286.2   1.720   ok, differs from v1's
+o552u1w3b5s     183.8     316.1   1.724   ok, differs from v1's
+=== j10_done.txt
+done
+=== j10_o10_m1.txt
+packs/o10: 4096x4096, M=1, 58 SMs, 1 weight copies
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 9 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         189.8     298.1   1.570   ok, = v1 bit for bit
+12-bit          84.4     132.7   1.571   ok, = v1 bit for bit
+v2 lib         167.2     262.8   1.572   ok, = v1 bit for bit
+o40u1w4        142.5     223.8   1.571   ok, = v1 bit for bit
+o296u1w8b0s     144.0     226.4   1.572   ok, = v1 bit for bit
+o552u1w2b8s     129.8     204.0   1.571   ok, = v1 bit for bit
+o552u1w4b4s     137.3     215.4   1.568   ok, = v1 bit for bit
+o552u1w1b16s     167.1     260.1   1.556   ok, differs from v1's
+o520u1w2b8s     129.0     200.8   1.556   ok, = v1 bit for bit
+o568u3w4b4s     131.1     205.5   1.565   ok, = v1 bit for bit
+o552u1w3b5s     145.6     228.5   1.570   ok, differs from v1's
+=== j10_o10_m8.txt
+packs/o10: 4096x4096, M=8, 58 SMs, 1 weight copies
+v1       10.7625 bits a weight, unpack ok (0 differ)
+v2       10.7898 bits a weight, unpack ok (0 differ)
+12-bit   12.0392 bits a weight, unpack ok (0 differ)
+variant      ns/step  clk/step     GHz   (median of 7 rounds, interleaved; clk = ns a step an SM x the SM clock measured around each timing)
+v1 lib         196.7     306.7   1.562   ok, = v1 bit for bit
+12-bit          90.8     142.1   1.570   ok, = v1 bit for bit
+v2 lib         173.5     272.4   1.570   ok, = v1 bit for bit
+o40u1w4        154.7     240.5   1.555   ok, differs from v1's
+o296u1w8b0s     153.2     238.3   1.549   ok, differs from v1's
+o552u1w2b8s     152.9     235.3   1.539   ok, differs from v1's
+o552u1w4b4s     155.0     233.9   1.512   ok, differs from v1's
+o552u1w1b16s     202.7     312.3   1.540   ok, differs from v1's
+o520u1w2b8s     150.9     232.4   1.543   ok, differs from v1's
+o568u3w4b4s     145.2     224.5   1.548   ok, differs from v1's
+o552u1w3b5s     166.5     258.8   1.554   ok, differs from v1's

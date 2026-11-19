@@ -1,0 +1,12 @@
+Existing automatic-reload authorization: the named approved compact-matrix batch may start at a balance-only stop; the separately approved daily cap applies.
+02:04 created njxd9fryk7h2lk (NVIDIA GeForce RTX 4090)
+Verified hourly GPU quote: 0.74
+ssh on pod njxd9fryk7h2lk ready after 6s: ssh reachable at 81.27.69.177:24228
+02:04 ssh ready at 81.27.69.177:24228 after 14 s
+NVIDIA GeForce RTX 4090, 595.91.07, 24564 MiB
+02:07 job started
+02:18 job done
+terminating njxd9fryk7h2lk
+pods left: []
+14 min
+launcher exit 0

@@ -1,0 +1,111 @@
+# sm_89: f8_linear_kernel<NTL, KIND, 0, 0> of commit 851cf2e8 (nvcc 13.0.2 -O3, cuobjdump -sass); KIND 8, 9, 12: W8A8 block, tensor, channel (development builds only). Static counts: every path of the step loop once (the plain patches', the literals' and the unstaged variable parts' too), not instructions executed
+NTL=1 KIND=0  instructions  3408  step loop  2703  MMAs   8 (HMMA.16816)  IMAD 597, LOP3 487, SHF 379, IADD3 167, PRMT 159, ISETP 147, BRA 120, LEA 103, SEL 85, BSYNC 57
+NTL=1 KIND=12 instructions  3424  step loop  2669  MMAs   4 (QMMA.16832)  IMAD 609, LOP3 467, SHF 396, IADD3 178, ISETP 141, PRMT 127, BRA 121, LEA 99, SEL 85, BSYNC 58
+NTL=1 KIND=1  instructions  3400  step loop  2695  MMAs   8 (HMMA.16816)  IMAD 598, LOP3 487, SHF 378, IADD3 167, PRMT 159, ISETP 147, BRA 120, LEA 101, SEL 85, BSYNC 57
+NTL=1 KIND=2  instructions  3536  step loop  2807  MMAs   8 (HMMA.16816)  IMAD 631, LOP3 484, SHF 383, IADD3 187, PRMT 159, ISETP 155, BRA 120, LEA 101, SEL 85, BSYNC 57
+NTL=1 KIND=3  instructions  3504  step loop  2772  MMAs   8 (HMMA.16816)  IMAD 619, LOP3 484, SHF 383, IADD3 178, PRMT 159, ISETP 151, BRA 120, LEA 101, SEL 85, BSYNC 57
+NTL=1 KIND=4  instructions  3416  step loop  2702  MMAs   8 (HMMA.16816)  IMAD 595, LOP3 487, SHF 378, IADD3 167, PRMT 159, ISETP 147, BRA 120, LEA 101, SEL 85, BSYNC 57
+NTL=1 KIND=8  instructions  3392  step loop  2643  MMAs   4 (QMMA.16832)  IMAD 601, LOP3 467, SHF 394, IADD3 175, ISETP 141, PRMT 127, BRA 121, LEA 101, SEL 85, BSYNC 58
+NTL=1 KIND=9  instructions  3416  step loop  2660  MMAs   4 (QMMA.16832)  IMAD 608, LOP3 467, SHF 396, IADD3 178, ISETP 141, PRMT 127, BRA 121, LEA 99, SEL 85, BSYNC 58
+NTL=2 KIND=0  instructions  3536  step loop  2826  MMAs  16 (HMMA.16816)  IMAD 618, LOP3 506, SHF 387, IADD3 170, PRMT 159, ISETP 158, BRA 124, LEA 112, SEL 85, BSYNC 61
+NTL=2 KIND=12 instructions  3576  step loop  2821  MMAs   8 (QMMA.16832)  IMAD 643, LOP3 498, SHF 407, IADD3 181, ISETP 152, BRA 128, PRMT 127, LEA 108, SEL 85, LDS 63
+NTL=2 KIND=1  instructions  3520  step loop  2791  MMAs  16 (HMMA.16816)  IMAD 594, LOP3 506, SHF 383, IADD3 168, PRMT 159, ISETP 158, BRA 124, LEA 109, SEL 85, BSYNC 61
+NTL=2 KIND=2  instructions  3656  step loop  2932  MMAs  16 (HMMA.16816)  IMAD 634, LOP3 499, SHF 391, IADD3 195, ISETP 166, PRMT 159, BRA 124, LEA 105, SEL 85, BSYNC 61
+NTL=2 KIND=3  instructions  3616  step loop  2897  MMAs  16 (HMMA.16816)  IMAD 622, LOP3 499, SHF 391, IADD3 186, ISETP 162, PRMT 159, BRA 124, LEA 105, SEL 85, BSYNC 61
+NTL=2 KIND=4  instructions  3536  step loop  2818  MMAs  16 (HMMA.16816)  IMAD 612, LOP3 506, SHF 386, IADD3 171, PRMT 159, ISETP 158, BRA 124, LEA 109, SEL 85, BSYNC 61
+NTL=2 KIND=8  instructions  3576  step loop  2814  MMAs   8 (QMMA.16832)  IMAD 645, LOP3 498, SHF 408, IADD3 188, ISETP 152, BRA 128, PRMT 127, LEA 110, SEL 85, LDS 63
+NTL=2 KIND=9  instructions  3568  step loop  2814  MMAs   8 (QMMA.16832)  IMAD 639, LOP3 498, SHF 407, IADD3 182, ISETP 152, BRA 128, PRMT 127, LEA 107, SEL 85, LDS 63
+NTL=4 KIND=0  instructions  3824  step loop  3096  MMAs  32 (HMMA.16816)  IMAD 642, LOP3 546, SHF 403, ISETP 180, IADD3 178, PRMT 159, BRA 140, LEA 128, SEL 85, BSYNC 69
+NTL=4 KIND=12 instructions  3864  step loop  3103  MMAs  16 (QMMA.16832)  IMAD 690, LOP3 554, SHF 423, IADD3 189, ISETP 174, BRA 144, PRMT 127, LEA 124, SEL 85, LDS 75
+NTL=4 KIND=1  instructions  3800  step loop  3054  MMAs  32 (HMMA.16816)  IMAD 626, LOP3 546, SHF 399, ISETP 180, IADD3 176, PRMT 159, BRA 140, LEA 125, SEL 85, BSYNC 69
+NTL=4 KIND=2  instructions  3984  step loop  3241  MMAs  32 (HMMA.16816)  IMAD 671, LOP3 531, SHF 407, IADD3 211, ISETP 188, PRMT 159, BRA 140, LEA 113, SEL 85, BSYNC 69
+NTL=4 KIND=3  instructions  3944  step loop  3206  MMAs  32 (HMMA.16816)  IMAD 659, LOP3 531, SHF 407, IADD3 202, ISETP 184, PRMT 159, BRA 140, LEA 113, SEL 85, BSYNC 69
+NTL=4 KIND=4  instructions  3816  step loop  3077  MMAs  32 (HMMA.16816)  IMAD 635, LOP3 546, SHF 402, ISETP 180, IADD3 179, PRMT 159, BRA 140, LEA 125, SEL 85, BSYNC 69
+NTL=4 KIND=8  instructions  3864  step loop  3090  MMAs  16 (QMMA.16832)  IMAD 688, LOP3 554, SHF 424, IADD3 204, ISETP 174, BRA 144, PRMT 127, LEA 126, SEL 85, LDS 75
+NTL=4 KIND=9  instructions  3856  step loop  3097  MMAs  16 (QMMA.16832)  IMAD 687, LOP3 554, SHF 423, IADD3 190, ISETP 174, BRA 144, PRMT 127, LEA 123, SEL 85, LDS 75
+NTL=8 KIND=0  instructions  4392  step loop  3660  MMAs  64 (HMMA.16816)  IMAD 685, LOP3 626, SHF 435, ISETP 243, IADD3 194, BRA 172, LEA 160, PRMT 159, HFMA2 128, BSYNC 85
+NTL=8 KIND=12 instructions  4472  step loop  3690  MMAs  32 (QMMA.16832)  IMAD 786, LOP3 666, SHF 455, ISETP 231, IADD3 205, BRA 176, LEA 156, PRMT 127, LDS 99, BSYNC 86
+NTL=8 KIND=1  instructions  4352  step loop  3596  MMAs  64 (HMMA.16816)  IMAD 670, LOP3 626, SHF 431, ISETP 243, IADD3 192, BRA 172, PRMT 159, LEA 157, HFMA2 128, BSYNC 85
+NTL=8 KIND=2  instructions  4624  step loop  3875  MMAs  64 (HMMA.16816)  IMAD 723, LOP3 603, SHF 440, ISETP 251, IADD3 236, BRA 172, PRMT 159, LEA 136, HFMA2 128, FFMA 128
+NTL=8 KIND=3  instructions  4584  step loop  3840  MMAs  64 (HMMA.16816)  IMAD 711, LOP3 603, SHF 440, ISETP 247, IADD3 227, BRA 172, PRMT 159, LEA 136, HFMA2 128, FFMA 128
+NTL=8 KIND=4  instructions  4384  step loop  3620  MMAs  64 (HMMA.16816)  IMAD 684, LOP3 626, SHF 434, ISETP 243, IADD3 195, BRA 172, PRMT 159, LEA 157, HFMA2 128, BSYNC 85
+NTL=8 KIND=8  instructions  4456  step loop  3674  MMAs  32 (QMMA.16832)  IMAD 787, LOP3 666, SHF 456, IADD3 236, ISETP 231, BRA 176, LEA 158, PRMT 127, LDS 99, BSYNC 86
+NTL=8 KIND=9  instructions  4464  step loop  3682  MMAs  32 (QMMA.16832)  IMAD 781, LOP3 666, SHF 455, ISETP 231, IADD3 206, BRA 176, LEA 155, PRMT 127, LDS 99, BSYNC 86
+# ptxas (-Xptxas -v): registers and spills of the f8 kernels
+_ZN3f8c16f8_linear_kernelILi8ELi4ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 170 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi4ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 118 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi4ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi4ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi4ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 170 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi4ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 206 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi4ELi1ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 218 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi4ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 120 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi4ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 139 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi4ELi1ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 148 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi4ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 103 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi4ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi12ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 168 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi12ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi12ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi12ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi3ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 226 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi3ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 132 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi3ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi3ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 105 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi3ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 226 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi3ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 254 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi3ELi1ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 255 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi3ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 130 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi3ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 152 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi3ELi1ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 202 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi3ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 102 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi3ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 106 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi2ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 230 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi2ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 136 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi2ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi2ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 105 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi2ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 230 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi2ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 255 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi2ELi1ELi1EEEvNS_5F8LinE	    24 bytes stack frame, 36 bytes spill stores, 80 bytes spill loads	Used 255 registers, used 1 barriers, 24 bytes cumulative stack size, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi2ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 134 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi2ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 156 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi2ELi1ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 203 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi2ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 102 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi2ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 106 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi1ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 170 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi1ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 118 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi1ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi1ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi1ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 170 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi1ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 204 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi1ELi1ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 216 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi1ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 120 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi1ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 139 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi1ELi1ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 148 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi1ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 103 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi1ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi9ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 164 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi9ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi9ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi9ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi0ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 168 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi0ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 118 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi0ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi0ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi0ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 168 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi0ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 202 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi0ELi1ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 214 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi0ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 119 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi0ELi1ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 136 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 80 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi0ELi1ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 158 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 192 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi0ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 103 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi0ELi0ELi1EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 72 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi8ELi8ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 164 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi4ELi8ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi2ELi8ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c16f8_linear_kernelILi1ELi8ELi0ELi0EEEvNS_5F8LinE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 96 registers, used 1 barriers, 128 bytes smem, 488 bytes cmem[0], 48 bytes cmem[2]
+_ZN3f8c12f8_xq_kernelEPKtliiiPhPf	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 25 registers, used 0 barriers, 400 bytes cmem[0]
+_ZN3f8c16f8_unpack_kernelENS_4F8UnE	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 48 registers, used 1 barriers, 10368 bytes smem, 432 bytes cmem[0]
+_ZN3f8c14f8_pack_kernelENS_4F8PkEPKjPhPjl	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 58 registers, used 1 barriers, 10368 bytes smem, 416 bytes cmem[0]
+_ZN3f8c14f8_scan_kernelEPjlPm	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 44 registers, used 1 barriers, 128 bytes smem, 376 bytes cmem[0]
+_ZN3f8c14f8_head_kernelENS_4F8PkEPj	    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads	Used 90 registers, used 1 barriers, 640 bytes smem, 392 bytes cmem[0]

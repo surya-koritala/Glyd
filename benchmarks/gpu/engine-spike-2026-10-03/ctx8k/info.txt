@@ -1,0 +1,4 @@
+NVIDIA L4 (sm_89): weights 10.37 GiB (68.0% of bf16's 15.26), cache 84064 tokens (8.86 GiB), workspaces 356 MiB, 19.79 of 22.04 GiB in use
+start 2.4 s
+weights 10.374 GiB for 15.256 GiB of bf16 (68.0%); cache 84064 tokens in 8.857 GiB (110.5 KiB a token); workspaces and activations 0.348 GiB; in use 19.791 of 22.036 GiB
+bits a weight: qkv 10.80, o 10.76, gate_up 10.93, down 10.85, embed 10.86, lm_head 10.77

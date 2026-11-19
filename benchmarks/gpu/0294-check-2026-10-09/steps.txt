@@ -1,0 +1,18 @@
+/usr/local/cuda
+/usr/local/cuda-12
+/usr/local/cuda-12.8
+Cuda compilation tools, release 12.8, V12.8.93
+Build cuda_12.8.r12.8/compiler.35583870_0
+rustup: rc=0 7 s
+hfvenv: rc=0 5 s
+download: rc=0
+lib: rc=0 267 s
+build: rc=0 108 s
+int5-check: rc=0 7 s
+int6-check: rc=0 6 s
+bench-i5: rc=0 165 s
+bench-i6: rc=0 136 s
+run-swift: rc=0 161 s
+run-kestrel: rc=0 137 s
+run-lossy: rc=0 134 s
+tag-wren: rc=1 0 s

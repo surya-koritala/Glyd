@@ -1,0 +1,33 @@
+glyd v0.28.0
+- glyd
+glyd 0.28.0 glyd-gpu 0.28.0
+total 87336
+-rwxr-xr-x 2 root root    49880 Oct  5 22:35 __init__.abi3.so
+-rw-r--r-- 2 root root       52 Oct  5 22:35 __main__.py
+-rwxr-xr-x 2 root root    70392 Oct  5 22:35 _cli.abi3.so
+-rwxr-xr-x 2 root root   709976 Oct  5 22:35 _lib.abi3.so
+-rw-r--r-- 2 root root     7405 Oct  5 22:35 _trace.py
+-rwxr-xr-x 2 root root   199576 Oct  5 22:35 chat.abi3.so
+-rw-r--r-- 2 root root    21073 Oct  5 22:35 chat.html
+-rwxr-xr-x 2 root root    87352 Oct  5 22:35 engine.abi3.so
+-rwxr-xr-x 2 root root   186872 Oct  5 22:35 fit.abi3.so
+-rwxr-xr-x 2 root root   347256 Oct  5 22:35 format.abi3.so
+-rwxr-xr-x 2 root root  8443344 Oct  5 22:35 glyd-engine
+-rw-r--r-- 2 root root     5075 Oct  5 22:35 glyd_gpu.h
+-rwxr-xr-x 2 root root   322552 Oct  5 22:35 hf.abi3.so
+-rwxr-xr-x 2 root root   577944 Oct  5 22:35 kernels.abi3.so
+-rwxr-xr-x 2 root root   566328 Oct  5 22:35 kvcal.abi3.so
+-rw-r--r-- 2 root root    67238 Oct  5 22:35 kvcorpus.bin
+-rw-r--r-- 2 root root 39021040 Oct  5 22:35 libglyd_gpu_cuda12.so
+-rw-r--r-- 2 root root 34818576 Oct  5 22:35 libglyd_gpu_cuda13.so
+-rwxr-xr-x 2 root root    23392 Oct  5 22:35 measured.abi3.so
+-rwxr-xr-x 2 root root   658968 Oct  5 22:35 model.abi3.so
+-rwxr-xr-x 2 root root   315288 Oct  5 22:35 moe.abi3.so
+-rwxr-xr-x 2 root root    92512 Oct  5 22:35 page.abi3.so
+-rwxr-xr-x 2 root root   481112 Oct  5 22:35 preflight.abi3.so
+-rwxr-xr-x 2 root root   582360 Oct  5 22:35 run.abi3.so
+-rwxr-xr-x 2 root root    87224 Oct  5 22:35 vllm_admit.abi3.so
+-rwxr-xr-x 2 root root    74936 Oct  5 22:35 vllm_entry.abi3.so
+-rwxr-xr-x 2 root root   578296 Oct  5 22:35 vllm_kv.abi3.so
+-rwxr-xr-x 2 root root   756728 Oct  5 22:35 vllm_plugin.abi3.so
+-rwxr-xr-x 2 root root   215640 Oct  5 22:35 vllm_sched.abi3.so

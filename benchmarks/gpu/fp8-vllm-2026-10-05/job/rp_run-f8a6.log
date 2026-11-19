@@ -1,0 +1,8 @@
+19:32 created 2a5trs1inf594s (NVIDIA GeForce RTX 4090)
+ssh on pod 2a5trs1inf594s ready after 34s: ssh reachable at 47.47.180.58:14152
+19:32 ssh ready at 47.47.180.58:14152 after 44 s
+NVIDIA GeForce RTX 4090, 580.159.04, 24564 MiB
+19:34 job started
+terminating 2a5trs1inf594s
+pods left: [('87n1u0xag7uguo', 'glyd-bench-f8f-a2', 'RUNNING')]
+31 min

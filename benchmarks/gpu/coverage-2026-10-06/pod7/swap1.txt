@@ -1,0 +1,9 @@
+Resolved 1 package in 33ms
+Downloading glyd-gpu (32.9MiB)
+ Downloading glyd-gpu
+Prepared 1 package in 3.42s
+Uninstalled 1 package in 3ms
+Installed 1 package in 6ms
+ - glyd-gpu==0.29.0+r291
+ + glyd-gpu==0.29.0
+glyd-gpu                                 0.29.0

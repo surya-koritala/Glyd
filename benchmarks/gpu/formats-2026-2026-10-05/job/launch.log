@@ -1,0 +1,26 @@
+== trying NVIDIA RTX 4000 Ada Generation
+no pod: {"error":"failed to create pod: graphql error: There are no longer any instances available with the requested specifications. Please refresh and try again.","code":"graphql_error"} 
+pods left: []
+0 min
+== rc 1 (NVIDIA RTX 4000 Ada Generation)
+== trying NVIDIA A40
+no pod: {"error":"failed to create pod: graphql error: There are no longer any instances available with the requested specifications. Please refresh and try again.","code":"graphql_error"} 
+pods left: []
+0 min
+== rc 1 (NVIDIA A40)
+== trying NVIDIA RTX A6000
+no pod: {"error":"failed to create pod: graphql error: There are no longer any instances available with the requested specifications. Please refresh and try again.","code":"graphql_error"} 
+pods left: []
+0 min
+== rc 1 (NVIDIA RTX A6000)
+== trying NVIDIA GeForce RTX 4090
+14:33 created 18m1flsjavpizd (NVIDIA GeForce RTX 4090)
+ssh on pod 18m1flsjavpizd ready after 23s: ssh reachable at 69.145.85.93:17274
+14:33 ssh ready at 69.145.85.93:17274 after 27 s
+NVIDIA GeForce RTX 4090, 570.195.03, 24564 MiB
+14:33 job started
+15:09 job done
+terminating 18m1flsjavpizd
+pods left: []
+36 min
+== rc 0 (NVIDIA GeForce RTX 4090)

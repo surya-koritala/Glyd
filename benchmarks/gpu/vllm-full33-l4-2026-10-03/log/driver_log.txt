@@ -1,0 +1,103 @@
+20:58:40 hold1a: waiting for the lock
+21:08:17 hold1a: exit 0
+21:08:17 hold1b: waiting for the lock
+21:12:07 hold1c: waiting for the lock
+21:14:16 mem: waiting for the lock
+21:18:30 wk: waiting for the lock
+21:20:47 hold1b: exit 0
+21:20:47 queueA done
+21:21:17 hold1d: waiting for the lock
+21:28:18 hold1c: exit 0
+21:28:18 mem hold start; gpu:  temp 63
+21:29:15 hold1e: waiting for the lock
+21:29:30 mem8 base: exit 0
+21:32:14 mem8 src: exit 0
+21:32:14 mem hold end
+21:32:14 mem: exit 0
+21:33:39 wk hold start; gpu:  temp 69
+21:34:40 wk: exit 0
+21:34:42 wk (twice each): waiting for the lock
+21:56:21 cold: waiting for the lock
+22:03:15 hold1d: exit 0
+22:03:56 hold1e: exit 0
+22:03:56 wk hold start; gpu:  temp 53
+22:04:40 hold1f: waiting for the lock
+22:07:15 acct: waiting for the lock
+22:08:11 wk q8 bf16 run 1: exit 0 (GPU used at start 0 MiB; Model loading took 15.27 GiB memory and 195.465817 seconds GPU KV cache size: 22,928 tokens, Maximum concurrency for 2,048 tokens per request: 11.20x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 15.5 GiB for consumed memory (weights + non-torch), 1.18 GiB for peak activation )
+22:10:03 wk q8 bf16 run 2: exit 0 (GPU used at start 0 MiB; Model loading took 15.27 GiB memory and 53.065642 seconds GPU KV cache size: 22,928 tokens, Maximum concurrency for 2,048 tokens per request: 11.20x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 15.5 GiB for consumed memory (weights + non-torch), 1.18 GiB for peak activation )
+22:13:03 wk q8 base run 2: exit 0 (GPU used at start 0 MiB; Model loading took 11.38 GiB memory and 17.620807 seconds GPU KV cache size: 38,224 tokens, Maximum concurrency for 2,048 tokens per request: 18.66x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 12.82 GiB for consumed memory (weights + non-torch), 1.76 GiB for peak activatio )
+22:16:11 wk q8 src run 2: exit 0 (GPU used at start 0 MiB; Model loading took 10.63 GiB memory and 19.397551 seconds GPU KV cache size: 55,904 tokens, Maximum concurrency for 2,048 tokens per request: 27.30x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 10.92 GiB for consumed memory (weights + non-torch), 1.24 GiB for peak activatio )
+22:17:46 wk (twice each): exit 0
+22:18:08 cold: exit 0
+22:18:08 acct: exit 0
+22:18:08 hold1f: exit 0
+22:25:03 acct: waiting for the lock
+22:29:44 acct hold start; gpu used 228 MiB
+22:31:07 acct src: exit 0 (Model loading took 10.63 GiB memory and 49.766708 seconds)
+22:31:47 acct base: exit 0 (Model loading took 11.38 GiB memory and 16.612658 seconds)
+22:31:47 acct hold end
+22:31:47 acct: exit 0
+22:33:17 smoke: waiting for the lock
+22:48:25 scratch: waiting for the lock
+23:02:46 scratch hold start; gpu used 0 MiB
+23:02:57 test_vllm with the buffer made for the call: exit 0 (27 ok; )
+23:07:35 scratch q8 start 1: exit 0 (Model loading took 10.45 GiB memory and 120.736789 seconds MEMPROBE before profile allocated 10.606 reserved 10.666 free 11.132 total 22.036 GiB MEMPROBE after profile allocated 10.615 reserved 10.666 free 10.798 total 22.036 GiB GPU KV cache size: 56,816 tokens, Maximum concurrency for 2,048 tokens per request: 27.74x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 10.73 GiB for consumed memory  init engine (profile, create kv cache, warmup model) took 126.23 s (compilation: 88.95 s) )
+23:08:44 scratch q8 start 2: exit 0 (Model loading took 10.45 GiB memory and 17.837808 seconds MEMPROBE before profile allocated 10.606 reserved 10.666 free 11.132 total 22.036 GiB MEMPROBE after profile allocated 10.615 reserved 10.666 free 10.798 total 22.036 GiB GPU KV cache size: 56,816 tokens, Maximum concurrency for 2,048 tokens per request: 27.74x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 10.73 GiB for consumed memory  init engine (profile, create kv cache, warmup model) took 32.14 s (compilation: 2.27 s) )
+23:08:44 scratch hold end
+23:08:44 scratch: exit 0
+23:10:14 hold1f: waiting for the lock
+23:17:27 hold1f: exit 0
+23:18:57 hold1g: waiting for the lock
+23:26:31 hold1g: exit 0
+23:28:01 wklite: waiting for the lock
+23:29:26 wklite start; gpu used 0 MiB
+23:31:10 wk llama bf16: exit 0 (Model loading took 15.0 GiB memory and 32.012314 seconds GPU KV cache size: 25,232 tokens, Maximum concurrency for 2,048 tokens per request: 12.32x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is  init engine (profile, create kv cache, warmup model) took 44.14 s (compilation: 16.61 s) )
+23:33:11 wk llama base: exit 0 (Model loading took 11.05 GiB memory and 16.793016 seconds GPU KV cache size: 49,264 tokens, Maximum concurrency for 2,048 tokens per request: 24.05x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is  init engine (profile, create kv cache, warmup model) took 76.98 s (compilation: 46.53 s) )
+23:35:16 wk llama src: exit 0 (Model loading took 10.16 GiB memory and 19.066850 seconds GPU KV cache size: 66,096 tokens, Maximum concurrency for 2,048 tokens per request: 32.27x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is  init engine (profile, create kv cache, warmup model) took 77.83 s (compilation: 47.76 s) )
+23:37:45 wk q4 src: exit 0 (Model loading took 5.15 GiB memory and 14.888695 seconds GPU KV cache size: 88,832 tokens, Maximum concurrency for 2,048 tokens per request: 43.38x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.85, 18.73 GiB). Actual usage is init engine (profile, create kv cache, warmup model) took 108.45 s (compilation: 84.24 s) )
+23:37:45 wklite end
+23:37:45 wklite: exit 0
+23:39:15 cv-q8: waiting for the lock
+23:57:40 cv-q8: exit 0
+23:59:10 wkwarm: waiting for the lock
+00:02:10 wkwarm start; gpu used 0 MiB
+00:03:56 wk llama base run 2: exit 0 (Model loading took 11.05 GiB memory and 54.291493 seconds GPU KV cache size: 59,184 tokens, Maximum concurrency for 2,048 tokens per request: 28.90x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is  init engine (profile, create kv cache, warmup model) took 28.05 s (compilation: 1.15 s) )
+00:05:00 wk llama src run 2: exit 0 (Model loading took 10.16 GiB memory and 17.399567 seconds GPU KV cache size: 66,096 tokens, Maximum concurrency for 2,048 tokens per request: 32.27x Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is  init engine (profile, create kv cache, warmup model) took 28.39 s (compilation: 1.12 s) )
+00:05:00 wkwarm end
+00:05:00 wkwarm: exit 0
+00:06:30 tps8: waiting for the lock
+00:26:23 tps8: exit 0
+00:27:53 serve8: waiting for the lock
+00:33:50 serve8: exit 0
+00:35:20 serve8: waiting for the lock
+01:07:00 serve8: exit 0
+01:08:30 dryjob: waiting for the lock
+01:24:26 dryjob: exit 0
+01:25:56 post: waiting for the lock
+01:50:05 post: exit 0
+01:51:35 cv-llama: waiting for the lock
+02:21:41 cv-llama: exit 0
+02:23:11 combo: waiting for the lock
+02:36:55 combo: exit 0
+02:38:25 post2: waiting for the lock
+02:42:14 post2: exit 0
+02:43:44 kvfix: waiting for the lock
+03:02:34 kvfix: exit 0
+03:04:04 kvserve: waiting for the lock
+03:39:41 kvserve: exit 0
+03:41:11 post2: waiting for the lock
+03:52:42 post2: exit 0
+03:54:12 kvbase: waiting for the lock
+04:12:56 kvbase: exit 0
+04:14:26 acct12: waiting for the lock
+04:21:08 acct12 hold start; gpu used 0 MiB
+04:21:29 acct12: exit 0 (Model loading took 11.5 GiB memory and 9.080761 seconds)
+04:21:29 acct12 hold end
+04:21:29 acct12: exit 0
+04:22:59 san: waiting for the lock
+04:37:43 san: exit 0
+04:39:13 cv-q17: waiting for the lock
+05:03:10 cv-q17: exit 0
+05:04:40 cv-q06: waiting for the lock
+05:21:53 cv-q06: exit 0
+05:23:23 myq5 done

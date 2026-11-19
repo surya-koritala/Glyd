@@ -1,0 +1,6 @@
+4.0K	/home/ubuntu/.cache/huggingface/hub/CACHEDIR.TAG
+562G	/home/ubuntu/.cache/huggingface/hub/blobs
+12M	/home/ubuntu/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4-Flash
+360K	/home/ubuntu/.cache/huggingface/hub/models--glyd--nemotron-3-hummingbird
+1.1M	/home/ubuntu/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+8.7M	/home/ubuntu/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash

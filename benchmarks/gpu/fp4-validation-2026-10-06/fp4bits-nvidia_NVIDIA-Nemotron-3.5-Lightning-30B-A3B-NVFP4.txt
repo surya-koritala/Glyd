@@ -1,0 +1,6 @@
+fp4_bits nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4: 20.08 GiB of safetensors; kind | tensors | code GiB | bits a code packed | order-0 | plain patches | option: GiB saved (smaller packs only) | of the checkpoint | kernel bit for bit
+  experts | 5888 | 13.679 | 4.0080 | 3.9355 | 251 of 1795840 | 0.0000 | 0.00% | all
+  shared_experts | 46 | 0.214 | 3.9977 | 3.9310 | 439 of 28014 | 0.0003 | 0.00% | all
+  lm_head | 1 | 0.164 | 4.0082 | 3.9341 | 0 of 21504 | 0.0000 | 0.00% | all
+  all | 5935 | 14.057 | 4.0079 | 3.9354 | 690 of 1845358 | 0.0003 | 0.00% | all
+fp4_bits: all bit for bit (32.4 s)

@@ -1,0 +1,33 @@
+# What the v0.28.0rc1 post-publish acceptance ran against (fetched 2026-10-04, from the published sources)
+
+PyPI glyd==0.28.0rc1 (https://pypi.org/project/glyd/0.28.0rc1/; a pre-release: `pip install glyd` still resolves to 0.27.0, the latest release of glyd there):
+  glyd-0.28.0rc1-py3-none-macosx_11_0_arm64.whl  2064629 bytes  sha256 8583ae7a633c6bf8546dd7589cab6949e0572c580de966c0814ee01133c6b7cf  uploaded 2026-10-04T22:47:58.109672Z
+  glyd-0.28.0rc1-py3-none-manylinux_2_28_aarch64.whl  2222299 bytes  sha256 cbc563972a258654b3b6b546a791d50be43d01ad60e47703778063d169f270ab  uploaded 2026-10-04T22:48:00.034099Z
+  glyd-0.28.0rc1-py3-none-manylinux_2_28_x86_64.whl  2348559 bytes  sha256 79bd94073c819e86d216c950ca728ec480c99259f941ed0e9868077d81cc32b3  uploaded 2026-10-04T22:48:02.205139Z
+  requires_dist: glyd-gpu[gpu]==0.28.0rc1; extra == "gpu"; glyd-gpu[vllm]==0.28.0rc1; extra == "vllm"
+
+PyPI glyd-gpu==0.28.0rc1 (https://pypi.org/project/glyd-gpu/0.28.0rc1/; a pre-release: `pip install glyd-gpu` still resolves to 0.27.0):
+  glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_aarch64.whl  30046755 bytes  sha256 fafc9dcf57589d388c14e5d2a6ab237161b516a484acc806114a8fc7f04e5092  uploaded 2026-10-04T22:44:23.040040Z
+  glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_x86_64.whl  30298237 bytes  sha256 89ce40b146b1927e01d1a7f9a6078635c633d055ad21ddb6a448e76f92307bbe  uploaded 2026-10-04T22:44:26.073420Z
+  requires_dist: torch>=2.5; extra == "gpu"; transformers<6,>=5.17; extra == "gpu"; accelerate>=1.1; extra == "gpu"; safetensors>=0.8; extra == "gpu"; huggingface_hub<2,>=1.5; extra == "gpu"; vllm<0.31,>=0.30; extra == "vllm"; safetensors>=0.8; extra == "vllm"; huggingface_hub<2,>=1.5; extra == "vllm"
+
+install.sh:
+  https://raw.githubusercontent.com/surya-koritala/Glyd/release-0.28.0/scripts/install.sh  sha256 97d26dde3f46c7418f550fbb8f14dc77fbfae325eb0f019dbdd1962671e09e5e 19718 bytes (the file of tag v0.28.0rc1 too, byte for byte)
+  https://getglyd.com/install.sh                                                  sha256 51ee191eb31572946bcc00fe7bfdf57452f62a88c27e970acfbc0c66aaaf38e0 19715 bytes (v0.27.0's script: the site is not changed for a pre-release; the compare with the release branch's fails until the final release, as expected)
+  pins: GLYD_VERSION="${GLYD_VERSION:-0.28.0rc1}"; UV_VERSION=0.12.21; the packages' list is v0.27.0's 199 (the script differs from v0.27.0's in the default version alone)
+
+GitHub release v0.28.0rc1 (published 2026-10-04T22:44:58Z, pre-release: True; tag v0.28.0rc1 -> 04a9f00e0969f1c5d66057079a9ba5ad0c63b33a, the head of branch release-0.28.0); the Rust glyd the runs put first on PATH is the linux-x86_64 tarball's:
+  glyd-0.28.0rc1-py3-none-macosx_11_0_arm64.whl        2064629 bytes  sha256 8583ae7a633c6bf8546dd7589cab6949e0572c580de966c0814ee01133c6b7cf
+  glyd-0.28.0rc1-py3-none-manylinux_2_28_aarch64.whl   2222299 bytes  sha256 cbc563972a258654b3b6b546a791d50be43d01ad60e47703778063d169f270ab
+  glyd-0.28.0rc1-py3-none-manylinux_2_28_x86_64.whl    2348559 bytes  sha256 79bd94073c819e86d216c950ca728ec480c99259f941ed0e9868077d81cc32b3
+  glyd-v0.28.0rc1-linux-aarch64.tar.gz                35876859 bytes  sha256 e552526f98c343ee6cae6aefb29bf26f3949acc6754fa0943c2898cfa559339a
+  glyd-v0.28.0rc1-linux-x86_64.tar.gz                 37064898 bytes  sha256 4062204908093749a570b78df4c457bc0b6b76e0e5c0ceb9446a76f177c99684
+  glyd-v0.28.0rc1-macos-arm64.tar.gz                  34181588 bytes  sha256 ecef79c92b7a8c38ae44ec83bd403e17852d5a1c2e02dcd2ac196f4727eea726
+  (and a .sha256 file for each tarball; the linux-x86_64 one checked on the box: OK)
+  `glyd --version` of the linux-x86_64 tarball: glyd 0.28.0-rc.1, SIMD: AVX2
+
+Private repository: tag v0.28.0rc1 -> be9f929247cf7f708b1b88dc93e13d6788a1b3f3 (release-0.28.0-gpu, "v0.28.0rc1: versions for a pre-release"), the commit the glyd-gpu wheels were built from.
+
+The script the runs used: gpu/vllm/acceptance.sh of branch acceptance-028 (e85067437ff00d37eadc868df9bd76fdc3a5e892) = private main 11c0661f + scripts/acceptance-028.patch; gpu/vllm/README.md and
+scripts/install_constraints.py are private main's (the same bytes as release-0.28.0-gpu be9f9292's: that branch differs from main in scripts/install.sh's default version alone, under gpu/vllm and scripts);
+the checkout's scripts/install.sh, which the cli flow runs, is the release branch's (sha256 97d26dde...).

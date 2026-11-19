@@ -1,0 +1,25 @@
+/root/tsw/m/experts-Qwen3.5-35B-A3B.safetensors: NVIDIA H100 80GB HBM3, layout mma12, 12.13 bits a weight (gate+up), 12.13 (down), an expert 3.18 + 1.59 MB packed, copy rate 2957 GB/s (read + write), env GLYD_GPU_LIB=/root/tsw/lib/libglyd_gpu_cuda13.so
+INFO 10-06 04:35:22 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 10-06 04:35:22 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-06 04:35:22 [fused_moe.py:1154] Using configuration from /root/tsw/venv/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/configs/E=256,N=512,device_name=NVIDIA_H100_80GB_HBM3.json for MoE layer.
+T=    1        bf16: vLLM's layer     30.7 us (the weights' bf16 bytes   1642 GB/s)
+T=    1          env: checked, 8 experts hit; gate+up 1.8e-03, down 2.9e-03 (against fp32)
+T=    1          env: hits    8.0  route     3.4  gate+up     18.1 (  1405 GB/s)  down     13.6 (   937 GB/s)  all     34.8 ( 1096 GB/s, 0.74 of the copy rate)  unpack     67.0  = 1.14x bf16  us a layer
+T=    8        bf16: vLLM's layer    145.2 us (the weights' bf16 bytes   2523 GB/s)
+T=    8          env: checked, 60 experts hit; gate+up 2.8e-03, down 2.6e-03 (against fp32)
+T=    8          env: hits   58.2  route     4.4  gate+up     86.8 (  2133 GB/s)  down     56.9 (  1628 GB/s)  all    147.6 ( 1881 GB/s, 1.27 of the copy rate)  unpack    317.0  = 1.02x bf16  us a layer
+T=   16        bf16: vLLM's layer    239.7 us (the weights' bf16 bytes   2688 GB/s)
+T=   16          env: checked, 103 experts hit; gate+up 2.7e-03, down 3.3e-03 (against fp32)
+T=   16          env: hits  102.4  route     4.8  gate+up    144.5 (  2254 GB/s)  down     89.5 (  1819 GB/s)  all    238.9 ( 2044 GB/s, 1.38 of the copy rate)  unpack    539.4  = 1.00x bf16  us a layer
+T=   32        bf16: vLLM's layer    353.6 us (the weights' bf16 bytes   2900 GB/s)
+T=   32          env: checked, 163 experts hit; gate+up 2.3e-03, down 2.2e-03 (against fp32)
+T=   32          env: hits  163.0  route     6.5  gate+up    333.0 (  1556 GB/s)  down    142.2 (  1822 GB/s)  all    495.2 ( 1570 GB/s, 1.06 of the copy rate)  unpack    839.3  = 1.40x bf16  us a layer
+T=   64        bf16: vLLM's layer    485.7 us (the weights' bf16 bytes   2894 GB/s)
+T=   64          env: checked, 227 experts hit; gate+up 2.2e-03, down 2.3e-03 (against fp32)
+T=   64          env: hits  223.4  route     6.4  gate+up    435.0 (  1633 GB/s)  down    191.5 (  1854 GB/s)  all    661.3 ( 1611 GB/s, 1.09 of the copy rate)  unpack   1108.5  = 1.36x bf16  us a layer
+T=  256        bf16: vLLM's layer    570.4 us (the weights' bf16 bytes   2824 GB/s)
+T=  256          env: checked, 256 experts hit; gate+up 1.4e-03, down 1.7e-03 (against fp32)
+T=  256          env: hits  256.0  route    10.5  gate+up    543.2 (  1498 GB/s)  down    235.9 (  1725 GB/s)  all    870.3 ( 1403 GB/s, 0.95 of the copy rate)  unpack   1256.6  = 1.53x bf16  us a layer
+T= 1024        bf16: vLLM's layer    632.9 us (the weights' bf16 bytes   2545 GB/s)
+T= 1024          env: checked, 256 experts hit; gate+up 3.5e-03, down 8.9e-04 (against fp32)
+T= 1024          env: hits  256.0  route    23.7  gate+up    645.7 (  1260 GB/s)  down    337.8 (  1205 GB/s)  all   1018.6 ( 1198 GB/s, 0.81 of the copy rate)  unpack   1254.1  = 1.61x bf16  us a layer

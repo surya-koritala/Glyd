@@ -1,0 +1,102 @@
+{
+ "model": "google/gemma-4-12B-it-qat-w4a16-ct",
+ "args": {
+  "model": "google/gemma-4-12B-it-qat-w4a16-ct",
+  "out": "/root/results/google_gemma-4-12B-it-qat-w4a16-ct-glyd",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "layout": "auto",
+  "steps": "glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,8,32,64",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "glyd": {
+  "weights_gib": 7.63,
+  "kv_tokens": 35682,
+  "kv_gib": 11.46,
+  "concurrency": 4.36,
+  "tps": {
+   "1": {
+    "median": 97.7,
+    "runs": [
+     97.71,
+     97.68
+    ]
+   },
+   "8": {
+    "median": 560.93,
+    "runs": [
+     560.77,
+     561.1
+    ]
+   },
+   "32": {
+    "median": 1146.17,
+    "runs": [
+     1146.02,
+     1146.32
+    ]
+   },
+   "64": {
+    "median": 1000.65,
+    "runs": [
+     1001.05,
+     1000.25
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantCompressedTensorsConfig",
+  "glyd_key": {
+   "layout": "mma",
+   "exact": false,
+   "verify": false,
+   "fraction": 1.0,
+   "kv": "off",
+   "glyd": "0.29.0",
+   "packs": "f06ad768e9bf1f28"
+  },
+  "start_s": 223.2
+ },
+ "inventory": {
+  "packed_count": 3,
+  "packed_bf16_bytes": 2066350080,
+  "packed_pack_bytes": 1352638905,
+  "saved_bytes": 713711175,
+  "gpu_tensor_bytes": 7948579099,
+  "products_checked": 1,
+  "products_worst_rel_error": 0.002528965473175049,
+  "left_16bit_top": {
+   "MergedColumnParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16": {
+    "tensors": 48,
+    "bytes": 353894400,
+    "example": "language_model.model.layers.0.mlp.gate_up_proj.weight_scale"
+   },
+   "RowParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16": {
+    "tensors": 48,
+    "bytes": 176947200,
+    "example": "language_model.model.layers.0.mlp.down_proj.weight_scale"
+   },
+   "ReplicatedLinear / UnquantizedLinearMethod / weight / bfloat16": {
+    "tensors": 2,
+    "bytes": 34406400,
+    "example": "embed_vision.embedding_projection.weight"
+   },
+   "QKVParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16": {
+    "tensors": 8,
+    "bytes": 17694720,
+    "example": "language_model.model.layers.5.self_attn.qkv_proj.weight_scale"
+   },
+   "Gemma4UnifiedVisionEmbedder / NoneType / pos_embedding / bfloat16": {
+    "tensors": 1,
+    "bytes": 17203200,
+    "example": "vision_embedder.pos_embedding"
+   }
+  }
+ }
+}

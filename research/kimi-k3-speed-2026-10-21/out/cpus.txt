@@ -1,0 +1,3 @@
+240
+model name	: AMD EPYC 7J13 64-Core Processor
+avx2

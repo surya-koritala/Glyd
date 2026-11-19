@@ -1,0 +1,14 @@
+  glyd op: ok
+  glyd traced: ok
+  glyd keep: ok
+  glyd traced-keep: ok
+  glyd sync: ok
+  glyd contig: ok
+  glyd clone: ok
+INFO: diag[op]: the four prompts the same bits as stock; the sweep, the first position that differs by prompt length: 16: -, 24: -, 32: -, 48: -, 64: -, 128: -, 256: -, 512: -, 1024: -, 1860: -
+INFO: diag[traced]: the four prompts differ from stock: prompt 3, position 1766, prompt_logprobs: largest |difference| 0.0657; the sweep, the first position that differs by prompt length: 16: -, 24: -, 32: -, 48: 45, 64: 45, 128: 34, 256: 41, 512: 10, 1024: 10, 1860: 24
+INFO: diag[keep]: the four prompts the same bits as stock; the sweep, the first position that differs by prompt length: 16: -, 24: -, 32: -, 48: -, 64: -, 128: -, 256: -, 512: -, 1024: -, 1860: -
+INFO: diag[traced-keep]: the four prompts differ from stock: prompt 3, position 1766, prompt_logprobs: largest |difference| 0.0657; the sweep, the first position that differs by prompt length: 16: -, 24: -, 32: -, 48: 45, 64: 45, 128: 34, 256: 41, 512: 10, 1024: 10, 1860: 24
+INFO: diag[sync]: the four prompts the same bits as stock; the sweep, the first position that differs by prompt length: 16: -, 24: -, 32: -, 48: -, 64: -, 128: -, 256: -, 512: -, 1024: -, 1860: -
+INFO: diag[contig]: the four prompts the same bits as stock; the sweep, the first position that differs by prompt length: 16: -, 24: -, 32: -, 48: -, 64: -, 128: -, 256: -, 512: -, 1024: -, 1860: -
+INFO: diag[clone]: the four prompts the same bits as stock; the sweep, the first position that differs by prompt length: 16: -, 24: -, 32: -, 48: -, 64: -, 128: -, 256: -, 512: -, 1024: -, 1860: -

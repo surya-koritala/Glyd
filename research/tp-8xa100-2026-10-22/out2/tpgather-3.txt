@@ -1,0 +1,6 @@
+4 GPUs [0, 1, 2, 3]: a gather's time, launched one after another / in a graph (GPU 0's)
+    1 rows x   896 a GPU (     1.8 KB a GPU):    14.5 us /    12.9 us
+    1 rows x  4608 a GPU (     9.2 KB a GPU):    18.4 us /    17.8 us
+   16 rows x   768 a GPU (    24.6 KB a GPU):    25.6 us /    23.6 us
+   64 rows x  4608 a GPU (   589.8 KB a GPU):   103.0 us /   100.0 us
+ 1024 rows x  4608 a GPU (  9437.2 KB a GPU):   502.7 us /   491.0 us

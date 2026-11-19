@@ -1,0 +1,52 @@
+{
+ "model": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+ "max_model_len": 262144,
+ "tool_call": {
+  "ok": true,
+  "seconds": 0.5,
+  "error": null,
+  "finish": "tool_calls",
+  "message": {
+   "role": "assistant",
+   "content": null,
+   "refusal": null,
+   "annotations": null,
+   "audio": null,
+   "function_call": null,
+   "tool_calls": [
+    {
+     "id": "chatcmpl-tool-ac6504e2e97adb35",
+     "type": "function",
+     "function": {
+      "name": "get_weather",
+      "arguments": "{\"city\": \"Paris\"}"
+     }
+    }
+   ],
+   "reasoning": "The user is asking for the current weather in Paris. I need to use the get_weather tool with the city parameter \"Paris\". Let me call that function."
+  }
+ },
+ "tool_result_turn": {
+  "ok": true,
+  "seconds": 1.1,
+  "error": null,
+  "content": "\nThe current weather in Paris is sunny with a temperature of 21\u00b0C. It's a nice day!"
+ },
+ "thinking": {
+  "ok": true,
+  "seconds": 1.1,
+  "error": null,
+  "reasoning_chars": 88,
+  "content": "\nTo find \\(17 \\times 23\\):\n\n1. Multiply 17 by 20: \\(17 \\times 20 = 340\\).\n2. Multiply 17 by 3: \\(17 \\times 3 = 51\\).\n3. Add the two results: \\(340 + 51 = 391\\).\n\nSo, \\(17 \\times 23 = 391\\).",
+  "finish": "stop"
+ },
+ "long_prompt": {
+  "ok": true,
+  "target_tokens": 200000,
+  "prompt_tokens": 198899,
+  "seconds": 22.4,
+  "error": null,
+  "content": "fox"
+ },
+ "ok": true
+}

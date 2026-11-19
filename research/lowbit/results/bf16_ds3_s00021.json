@@ -1,0 +1,39 @@
+{
+ "dense_mlp": {
+  "tensors": 1,
+  "small_bytes": 4067371520,
+  "big_n": 1835008,
+  "sums": {
+   "H_word": 19285734.37705349,
+   "H_exp": 4740785.649327656,
+   "exc12": 271.9999999999127,
+   "fast3_bits": 20561064.0,
+   "fast3_esc": 46997.0,
+   "tier3_bits": 19699866.0,
+   "tier3_raw": 18119.0
+  }
+ },
+ "other": {
+  "tensors": 0,
+  "small_bytes": 28672,
+  "big_n": 0,
+  "sums": {}
+ },
+ "attention": {
+  "tensors": 0,
+  "small_bytes": 187155168,
+  "big_n": 0,
+  "sums": {}
+ },
+ "shared_experts": {
+  "tensors": 0,
+  "small_bytes": 44050944,
+  "big_n": 0,
+  "sums": {}
+ },
+ "_meta": {
+  "file": "model-00021-of-000163.safetensors",
+  "seconds": 0.010830879211425781,
+  "min_elements": 1000000
+ }
+}

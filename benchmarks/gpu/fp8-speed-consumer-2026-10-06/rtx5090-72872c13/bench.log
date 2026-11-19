@@ -1,0 +1,396 @@
+# NVIDIA GeForce RTX 5090 (sm_120), 35 shapes, tokens [1, 8, 32, 64], samples: yes
+INFO 10-06 10:46:32 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 10-06 10:46:32 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-06 10:46:32 [deep_gemm.py:192] deep_gemm not found in site-packages, trying vendored vllm.third_party.deep_gemm
+INFO 10-06 10:46:32 [deep_gemm.py:219] DeepGEMM PDL enabled on vllm.third_party.deep_gemm.
+INFO 10-06 10:46:32 [deep_gemm.py:136] DeepGEMM E8M0 enabled on current platform.
+# vLLM: {'has_deep_gemm': True, 'deep_gemm_supported': True, 'deep_gemm_e8m0': True, 'flashinfer_blockscale': False, 'cutlass_block': True}
+INFO 10-06 10:46:33 [__init__.py:726] Selected DeepGemmFp8BlockScaledMMKernel for bench
+numerics Qwen3.6-35B-A3B-FP8        qkv              9216 x 2048   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 6.68e-03 rms 3.70e-02 | ours: max 4.31e-04 rms 1.67e-03
+numerics Qwen3.6-35B-A3B-FP8        qkv              9216 x 2048   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 6.86e-03 rms 3.76e-02 | ours: max 5.15e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        qkv              9216 x 2048   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 7.61e-03 rms 3.74e-02 | ours: max 5.06e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        qkv              9216 x 2048   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 7.44e-03 rms 3.74e-02 | ours: max 4.89e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        o                2048 x 4096   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.01e-03 rms 3.68e-02 | ours: max 2.11e-04 rms 1.61e-03
+numerics Qwen3.6-35B-A3B-FP8        o                2048 x 4096   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.91e-03 rms 3.74e-02 | ours: max 2.97e-04 rms 1.65e-03
+numerics Qwen3.6-35B-A3B-FP8        o                2048 x 4096   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 5.03e-03 rms 3.79e-02 | ours: max 3.67e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        o                2048 x 4096   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.42e-03 rms 3.77e-02 | ours: max 3.30e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     12288 x 2048   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 6.08e-03 rms 3.71e-02 | ours: max 3.85e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     12288 x 2048   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 7.25e-03 rms 3.79e-02 | ours: max 4.90e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     12288 x 2048   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 6.75e-03 rms 3.75e-02 | ours: max 5.01e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     12288 x 2048   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 7.28e-03 rms 3.76e-02 | ours: max 6.44e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            qkv             14336 x 5120   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.70e-03 rms 3.74e-02 | ours: max 2.54e-04 rms 1.65e-03
+numerics Qwen3.8-27B-FP8            qkv             14336 x 5120   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.06e-03 rms 3.74e-02 | ours: max 3.50e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            qkv             14336 x 5120   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.30e-03 rms 3.75e-02 | ours: max 4.47e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            qkv             14336 x 5120   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.52e-03 rms 3.77e-02 | ours: max 3.60e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            o                5120 x 6144   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 2.84e-03 rms 3.72e-02 | ours: max 2.61e-04 rms 1.67e-03
+numerics Qwen3.8-27B-FP8            o                5120 x 6144   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.68e-03 rms 3.80e-02 | ours: max 2.58e-04 rms 1.67e-03
+numerics Qwen3.8-27B-FP8            o                5120 x 6144   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.99e-03 rms 3.76e-02 | ours: max 3.36e-04 rms 1.65e-03
+numerics Qwen3.8-27B-FP8            o                5120 x 6144   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.15e-03 rms 3.75e-02 | ours: max 3.06e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            gdn_in_qkvz     16384 x 5120   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.38e-03 rms 3.71e-02 | ours: max 2.59e-04 rms 1.65e-03
+numerics Qwen3.8-27B-FP8            gdn_in_qkvz     16384 x 5120   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.95e-03 rms 3.75e-02 | ours: max 3.46e-04 rms 1.65e-03
+numerics Qwen3.8-27B-FP8            gdn_in_qkvz     16384 x 5120   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.17e-03 rms 3.76e-02 | ours: max 3.06e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            gdn_in_qkvz     16384 x 5120   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.82e-03 rms 3.76e-02 | ours: max 3.23e-04 rms 1.66e-03
+INFO 10-06 10:46:53 [__init__.py:758] Selected CutlassFP8ScaledMMLinearKernel for bench
+numerics gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding      8192 x 2816   M=1   vLLM (CutlassFP8ScaledMMLinearKernel): max 2.74e-03 rms 2.60e-02 | ours: max 2.80e-04 rms 1.66e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding      8192 x 2816   M=8   vLLM (CutlassFP8ScaledMMLinearKernel): max 3.65e-03 rms 2.65e-02 | ours: max 5.24e-04 rms 1.66e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding      8192 x 2816   M=32  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.95e-03 rms 2.64e-02 | ours: max 3.75e-04 rms 1.67e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding      8192 x 2816   M=64  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.73e-03 rms 2.65e-02 | ours: max 4.21e-04 rms 1.66e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic qk_global        9216 x 2816   M=1   vLLM (CutlassFP8ScaledMMLinearKernel): max 2.97e-03 rms 2.69e-02 | ours: max 2.69e-04 rms 1.66e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic qk_global        9216 x 2816   M=8   vLLM (CutlassFP8ScaledMMLinearKernel): max 3.76e-03 rms 2.64e-02 | ours: max 3.93e-04 rms 1.64e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic qk_global        9216 x 2816   M=32  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.74e-03 rms 2.65e-02 | ours: max 4.01e-04 rms 1.66e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic qk_global        9216 x 2816   M=64  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.69e-03 rms 2.65e-02 | ours: max 4.88e-04 rms 1.66e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic o_sliding        2816 x 4096   M=1   vLLM (CutlassFP8ScaledMMLinearKernel): max 2.77e-03 rms 2.58e-02 | ours: max 2.43e-04 rms 1.66e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic o_sliding        2816 x 4096   M=8   vLLM (CutlassFP8ScaledMMLinearKernel): max 2.79e-03 rms 2.69e-02 | ours: max 2.91e-04 rms 1.66e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic o_sliding        2816 x 4096   M=32  vLLM (CutlassFP8ScaledMMLinearKernel): max 2.85e-03 rms 2.66e-02 | ours: max 3.17e-04 rms 1.67e-03
+numerics gemma-4-26B-A4B-it-FP8-dynamic o_sliding        2816 x 4096   M=64  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.24e-03 rms 2.64e-02 | ours: max 3.24e-04 rms 1.65e-03
+INFO 10-06 10:46:54 [__init__.py:758] Selected FlashInferFP8ScaledMMLinearKernel for bench
+Skipping cuDNN in bmm_fp8 auto candidates on SM12x: override_shape unavailable (cuDNN backend < 9.23.1); policy=ALL per-shape build is unbounded at serving time.
+numerics Mistral-Small-4-119B-2603  qkv_a            1344 x 4096   M=1   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 2.48e-04 rms 1.65e-03
+numerics Mistral-Small-4-119B-2603  qkv_a            1344 x 4096   M=8   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 3.38e-04 rms 1.68e-03
+numerics Mistral-Small-4-119B-2603  qkv_a            1344 x 4096   M=32  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 3.75e-04 rms 1.67e-03
+numerics Mistral-Small-4-119B-2603  qkv_a            1344 x 4096   M=64  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 3.66e-04 rms 1.66e-03
+numerics Mistral-Small-4-119B-2603  q_b              4096 x 1024   M=1   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 6.45e-04 rms 1.66e-03
+numerics Mistral-Small-4-119B-2603  q_b              4096 x 1024   M=8   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 7.04e-04 rms 1.68e-03
+numerics Mistral-Small-4-119B-2603  q_b              4096 x 1024   M=32  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 8.58e-04 rms 1.65e-03
+numerics Mistral-Small-4-119B-2603  q_b              4096 x 1024   M=64  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 9.24e-04 rms 1.66e-03
+numerics Mistral-Small-4-119B-2603  kv_b             6144 x 256    M=1   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 1.25e-03 rms 1.68e-03
+numerics Mistral-Small-4-119B-2603  kv_b             6144 x 256    M=8   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 1.26e-03 rms 1.66e-03
+numerics Mistral-Small-4-119B-2603  kv_b             6144 x 256    M=32  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 1.34e-03 rms 1.65e-03
+numerics Mistral-Small-4-119B-2603  kv_b             6144 x 256    M=64  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 1.57e-03 rms 1.66e-03
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=1   vllm     14.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     20.4  unpack      nan  route     25.3  ratio 1.386 
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=8   vllm     16.3 us (DeepGemmFp8BlockScaledMMKernel)  ours     22.1  unpack      nan  route     24.8  ratio 1.351 
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=32  vllm     17.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     33.0  unpack      nan  route     30.3  ratio 1.928 
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=64  vllm     17.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     46.3  unpack      nan  route     26.8  ratio 2.704 
+   (0.4 s, 11 copies)
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=1   vllm      8.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     13.3  unpack      nan  route     15.2  ratio 1.516 
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=8   vllm     10.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     16.9  unpack      nan  route     16.7  ratio 1.617 
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=32  vllm     11.6 us (DeepGemmFp8BlockScaledMMKernel)  ours     26.2  unpack      nan  route     17.7  ratio 2.258 
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=64  vllm     12.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     40.6  unpack      nan  route     18.8  ratio 3.170 
+   (0.6 s, 24 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=1   vllm     18.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     23.8  unpack      nan  route     29.5  ratio 1.284 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=8   vllm     20.2 us (DeepGemmFp8BlockScaledMMKernel)  ours     24.9  unpack      nan  route     30.5  ratio 1.230 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=32  vllm     21.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     41.5  unpack      nan  route     34.5  ratio 1.975 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=64  vllm     21.3 us (DeepGemmFp8BlockScaledMMKernel)  ours     57.7  unpack      nan  route     33.1  ratio 2.713 
+   (0.3 s, 8 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=1   vllm     13.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     18.6  unpack      nan  route     23.3  ratio 1.377 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=8   vllm     15.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     19.8  unpack      nan  route     22.9  ratio 1.310 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=32  vllm     15.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     30.7  unpack      nan  route     27.9  ratio 1.949 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=64  vllm     15.9 us (DeepGemmFp8BlockScaledMMKernel)  ours     43.7  unpack      nan  route     24.9  ratio 2.753 
+   (1.8 s, 12 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=1   vllm      8.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     12.9  unpack      nan  route     15.2  ratio 1.489 
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=8   vllm     10.4 us (DeepGemmFp8BlockScaledMMKernel)  ours     15.2  unpack      nan  route     16.0  ratio 1.455 
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=32  vllm     11.2 us (DeepGemmFp8BlockScaledMMKernel)  ours     22.6  unpack      nan  route     17.9  ratio 2.013 
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=64  vllm     12.2 us (DeepGemmFp8BlockScaledMMKernel)  ours     34.1  unpack      nan  route     18.1  ratio 2.804 
+   (3.9 s, 24 copies)
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=1   vllm      5.7 us (DeepGemmFp8BlockScaledMMKernel)  ours      6.4  unpack      nan  route      8.9  ratio 1.124 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=8   vllm      6.8 us (DeepGemmFp8BlockScaledMMKernel)  ours      8.5  unpack      nan  route     10.0  ratio 1.250 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=32  vllm      8.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     17.8  unpack      nan  route     11.9  ratio 2.031 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=64  vllm      8.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     30.5  unpack      nan  route     11.9  ratio 3.497 
+   (4.0 s, 64 copies)
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=1   vllm      3.6 us (DeepGemmFp8BlockScaledMMKernel)  ours      4.8  unpack      nan  route      6.2  ratio 1.317 
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=8   vllm      5.0 us (DeepGemmFp8BlockScaledMMKernel)  ours      5.6  unpack      nan  route      7.7  ratio 1.129 
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=32  vllm      5.9 us (DeepGemmFp8BlockScaledMMKernel)  ours      9.1  unpack      nan  route      8.6  ratio 1.557 
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=64  vllm      5.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     14.0  unpack      nan  route      8.5  ratio 2.403 
+   (3.9 s, 64 copies)
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=1   vllm      9.4 us (DeepGemmFp8BlockScaledMMKernel)  ours     13.1  unpack      nan  route     16.3  ratio 1.394 
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=8   vllm     11.3 us (DeepGemmFp8BlockScaledMMKernel)  ours     15.4  unpack      nan  route     17.1  ratio 1.358 
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=32  vllm     12.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     25.1  unpack      nan  route     19.9  ratio 2.094 
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=64  vllm     13.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     37.6  unpack      nan  route     19.3  ratio 2.873 
+   (1.6 s, 22 copies)
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=1   vllm      6.3 us (DeepGemmFp8BlockScaledMMKernel)  ours      8.5  unpack      nan  route     11.5  ratio 1.353 
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=8   vllm      7.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     10.7  unpack      nan  route     12.7  ratio 1.382 
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=32  vllm      9.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     21.4  unpack      nan  route     14.1  ratio 2.356 
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=64  vllm      9.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     34.5  unpack      nan  route     14.4  ratio 3.636 
+   (2.0 s, 48 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=1   vllm     11.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     16.5  unpack      nan  route     19.1  ratio 1.488 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=8   vllm     12.6 us (DeepGemmFp8BlockScaledMMKernel)  ours     18.2  unpack      nan  route     19.7  ratio 1.441 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=32  vllm     13.4 us (DeepGemmFp8BlockScaledMMKernel)  ours     26.4  unpack      nan  route     23.3  ratio 1.969 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=64  vllm     13.3 us (DeepGemmFp8BlockScaledMMKernel)  ours     37.8  unpack      nan  route     22.0  ratio 2.837 
+   (1.4 s, 16 copies)
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=1   vllm      5.2 us (DeepGemmFp8BlockScaledMMKernel)  ours      5.3  unpack      nan  route      7.9  ratio 1.017 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=8   vllm      6.3 us (DeepGemmFp8BlockScaledMMKernel)  ours      7.5  unpack      nan  route      8.9  ratio 1.190 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=32  vllm      8.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     16.7  unpack      nan  route     10.8  ratio 2.069 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=64  vllm      8.2 us (DeepGemmFp8BlockScaledMMKernel)  ours     29.1  unpack      nan  route     10.9  ratio 3.572 
+   (2.0 s, 64 copies)
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=1   vllm      3.2 us (DeepGemmFp8BlockScaledMMKernel)  ours      4.9  unpack      nan  route      5.8  ratio 1.551 
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=8   vllm      4.3 us (DeepGemmFp8BlockScaledMMKernel)  ours      6.0  unpack      nan  route      6.9  ratio 1.386 
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=32  vllm      4.9 us (DeepGemmFp8BlockScaledMMKernel)  ours     11.0  unpack      nan  route      7.4  ratio 2.255 
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=64  vllm      4.9 us (DeepGemmFp8BlockScaledMMKernel)  ours     17.9  unpack      nan  route      7.5  ratio 3.637 
+   (4.4 s, 64 copies)
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=1   vllm     49.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     51.9  unpack      nan  route     83.6  ratio 1.044 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=8   vllm     51.2 us (DeepGemmFp8BlockScaledMMKernel)  ours     52.7  unpack      nan  route     81.5  ratio 1.030 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=32  vllm     52.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     93.1  unpack      nan  route     89.7  ratio 1.790 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=64  vllm     52.6 us (DeepGemmFp8BlockScaledMMKernel)  ours    127.8  unpack      nan  route     89.6  ratio 2.428 
+   (0.3 s, 3 copies)
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=1   vllm     23.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     25.8  unpack      nan  route     34.2  ratio 1.122 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=8   vllm     25.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     27.7  unpack      nan  route     35.1  ratio 1.103 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=32  vllm     26.3 us (DeepGemmFp8BlockScaledMMKernel)  ours     46.9  unpack      nan  route     38.8  ratio 1.781 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=64  vllm     28.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     65.9  unpack      nan  route     40.0  ratio 2.299 
+   (0.3 s, 7 copies)
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=1   vllm     56.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     57.5  unpack      nan  route    106.6  ratio 1.025 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=8   vllm     57.4 us (DeepGemmFp8BlockScaledMMKernel)  ours     59.0  unpack      nan  route    104.4  ratio 1.029 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=32  vllm     58.6 us (DeepGemmFp8BlockScaledMMKernel)  ours    105.1  unpack      nan  route    112.9  ratio 1.793 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=64  vllm     59.3 us (DeepGemmFp8BlockScaledMMKernel)  ours    145.1  unpack      nan  route    112.8  ratio 2.449 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=1   vllm     35.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     39.2  unpack      nan  route     53.8  ratio 1.094 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=8   vllm     37.4 us (DeepGemmFp8BlockScaledMMKernel)  ours     40.6  unpack      nan  route     57.4  ratio 1.084 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=32  vllm     38.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     69.0  unpack      nan  route     60.9  ratio 1.778 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=64  vllm     41.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     95.3  unpack      nan  route     61.3  ratio 2.326 
+   (3.1 s, 4 copies)
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=1   vllm     22.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     26.2  unpack      nan  route     34.8  ratio 1.145 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=8   vllm     24.6 us (DeepGemmFp8BlockScaledMMKernel)  ours     28.0  unpack      nan  route     37.1  ratio 1.137 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=32  vllm     25.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     46.6  unpack      nan  route     40.7  ratio 1.811 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=64  vllm     27.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     65.2  unpack      nan  route     42.3  ratio 2.347 
+   (1.3 s, 7 copies)
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=1   vllm    113.6 us (DeepGemmFp8BlockScaledMMKernel)  ours    110.6  unpack      nan  route    296.4  ratio 0.973 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=8   vllm    115.8 us (DeepGemmFp8BlockScaledMMKernel)  ours    111.8  unpack      nan  route    298.8  ratio 0.966 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=32  vllm    118.1 us (DeepGemmFp8BlockScaledMMKernel)  ours    207.8  unpack      nan  route    304.3  ratio 1.759 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=64  vllm    119.8 us (DeepGemmFp8BlockScaledMMKernel)  ours    286.2  unpack      nan  route    305.7  ratio 2.390 
+   (1.6 s, 2 copies)
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=1   vllm     58.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     58.9  unpack      nan  route    117.3  ratio 1.014 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=8   vllm     60.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     60.8  unpack      nan  route    128.2  ratio 1.012 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=32  vllm     61.5 us (DeepGemmFp8BlockScaledMMKernel)  ours    109.6  unpack      nan  route    135.7  ratio 1.781 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=64  vllm     64.5 us (DeepGemmFp8BlockScaledMMKernel)  ours    149.5  unpack      nan  route    132.6  ratio 2.317 
+   (3.6 s, 3 copies)
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=1   vllm     18.6 us (CutlassFP8ScaledMMLinearKernel)  ours     23.3  unpack      nan  route     29.2  ratio 1.255 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=8   vllm     19.0 us (CutlassFP8ScaledMMLinearKernel)  ours     25.9  unpack      nan  route     28.0  ratio 1.363 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=32  vllm     18.9 us (CutlassFP8ScaledMMLinearKernel)  ours     38.8  unpack      nan  route     28.0  ratio 2.053 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=64  vllm     20.0 us (CutlassFP8ScaledMMLinearKernel)  ours     55.3  unpack      nan  route     30.7  ratio 2.762 
+   (0.4 s, 9 copies)
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=1   vllm     20.2 us (CutlassFP8ScaledMMLinearKernel)  ours     23.9  unpack      nan  route     32.2  ratio 1.179 
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=8   vllm     20.9 us (CutlassFP8ScaledMMLinearKernel)  ours     25.4  unpack      nan  route     30.5  ratio 1.217 
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=32  vllm     20.9 us (CutlassFP8ScaledMMLinearKernel)  ours     41.5  unpack      nan  route     30.5  ratio 1.982 
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=64  vllm     21.8 us (CutlassFP8ScaledMMLinearKernel)  ours     58.6  unpack      nan  route     33.3  ratio 2.689 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=1   vllm     12.4 us (CutlassFP8ScaledMMLinearKernel)  ours     15.8  unpack      nan  route     20.4  ratio 1.274 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=8   vllm     13.1 us (CutlassFP8ScaledMMLinearKernel)  ours     18.5  unpack      nan  route     21.0  ratio 1.410 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=32  vllm     12.8 us (CutlassFP8ScaledMMLinearKernel)  ours     31.1  unpack      nan  route     21.1  ratio 2.421 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=64  vllm     17.3 us (CutlassFP8ScaledMMLinearKernel)  ours     48.7  unpack      nan  route     26.9  ratio 2.813 
+   (0.5 s, 18 copies)
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=1   vllm     20.5 us (CutlassFP8ScaledMMLinearKernel)  ours     22.9  unpack      nan  route     34.2  ratio 1.115 
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=8   vllm     21.9 us (CutlassFP8ScaledMMLinearKernel)  ours     25.6  unpack      nan  route     35.6  ratio 1.167 
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=32  vllm     21.7 us (CutlassFP8ScaledMMLinearKernel)  ours     41.0  unpack      nan  route     35.7  ratio 1.891 
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=64  vllm     30.3 us (CutlassFP8ScaledMMLinearKernel)  ours     59.2  unpack      nan  route     47.2  ratio 1.954 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=1   vllm     12.0 us (CutlassFP8ScaledMMLinearKernel)  ours     16.3  unpack      nan  route     18.9  ratio 1.351 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=8   vllm     12.6 us (CutlassFP8ScaledMMLinearKernel)  ours     18.6  unpack      nan  route     18.9  ratio 1.476 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=32  vllm     12.5 us (CutlassFP8ScaledMMLinearKernel)  ours     28.3  unpack      nan  route     19.0  ratio 2.258 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=64  vllm     13.8 us (CutlassFP8ScaledMMLinearKernel)  ours     41.7  unpack      nan  route     23.2  ratio 3.010 
+   (0.4 s, 17 copies)
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=1   vllm      8.8 us (CutlassFP8ScaledMMLinearKernel)  ours     12.3  unpack      nan  route     14.2  ratio 1.407 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=8   vllm      9.2 us (CutlassFP8ScaledMMLinearKernel)  ours     14.8  unpack      nan  route     14.4  ratio 1.612 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=32  vllm      8.9 us (CutlassFP8ScaledMMLinearKernel)  ours     21.9  unpack      nan  route     14.5  ratio 2.451 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=64  vllm     11.5 us (CutlassFP8ScaledMMLinearKernel)  ours     33.6  unpack      nan  route     17.6  ratio 2.932 
+   (0.7 s, 34 copies)
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=1   vllm      8.7 us (CutlassFP8ScaledMMLinearKernel)  ours      8.7  unpack      nan  route     12.8  ratio 1.003 
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=8   vllm      9.2 us (CutlassFP8ScaledMMLinearKernel)  ours     12.2  unpack      nan  route     13.2  ratio 1.321 
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=32  vllm      9.2 us (CutlassFP8ScaledMMLinearKernel)  ours     23.0  unpack      nan  route     13.3  ratio 2.506 
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=64  vllm     13.1 us (CutlassFP8ScaledMMLinearKernel)  ours     37.9  unpack      nan  route     17.3  ratio 2.896 
+   (1.0 s, 51 copies)
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=1   vllm      5.7 us (CutlassFP8ScaledMMLinearKernel)  ours      6.3  unpack      nan  route      8.4  ratio 1.108 
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=8   vllm      5.8 us (CutlassFP8ScaledMMLinearKernel)  ours      7.8  unpack      nan  route      8.5  ratio 1.347 
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=32  vllm      5.7 us (CutlassFP8ScaledMMLinearKernel)  ours     14.8  unpack      nan  route      8.6  ratio 2.599 
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=64  vllm      6.9 us (CutlassFP8ScaledMMLinearKernel)  ours     24.3  unpack      nan  route      9.8  ratio 3.541 
+   (0.8 s, 64 copies)
+Traceback (most recent call last):
+
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+RuntimeError: Ninja build failed. Ninja output:
+/usr/bin/ld: cannot find -lcublas: No such file or directory
+/usr/bin/ld: cannot find -lcublasLt: No such file or directory
+collect2: error: ld returned 1 exit status
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     12.4  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     17.0  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     23.9  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     38.5  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+   (0.9 s, 37 copies)
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      8.0  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      9.4  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     18.6  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     29.0  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+   (0.5 s, 48 copies)
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      4.9  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      6.0  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     11.0  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     18.1  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+   (0.4 s, 64 copies)
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     18.1  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     20.2  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     33.4  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     49.0  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+   (0.3 s, 12 copies)
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     12.6  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     14.8  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     22.2  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     33.6  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+   (0.3 s, 24 copies)
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      5.9  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      7.1  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     12.5  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     20.1  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      4.8  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      5.9  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     10.9  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     17.9  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Traceback (most recent call last):
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+ninja: build stopped: subcommand failed.
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     12.9  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     16.5  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     25.6  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     39.9  unpack      nan  route      nan  ratio nan vllm_us: RuntimeError: Ninja build failed. Ninja output:
+gate: 2 of 108 at most vLLM's time; worst 3.637
+ours at most the route's time: 56 of 108
+bench exit 0

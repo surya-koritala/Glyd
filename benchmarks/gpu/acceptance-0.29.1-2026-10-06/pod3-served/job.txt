@@ -1,0 +1,4 @@
+18:09:01 (+0 min) served installer matches v0.29.1 byte for byte
+18:09:01 (+0 min) acceptance: --flow glyd --host --served --install-url https://raw.githubusercontent.com/surya-koritala/Glyd/v0.29.1/scripts/install.sh --model Qwen/Qwen3.5-9B --webui uvx
+18:32:46 (+23 min) acceptance: exit 0, 55 ok, 0 failed
+18:32:46 (+23 min) ending

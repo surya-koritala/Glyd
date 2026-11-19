@@ -1,0 +1,60 @@
+{
+  "costs": {
+    "schema": "glyd-costs/1",
+    "source": "glyd-engine costs glyd/Qwen3.5-9B-penguin (glyd-engine 0.32.1 at 3f634598): the packed files' safetensors headers, basis file; docs/cost-profile.md",
+    "repo": "glyd/Qwen3.5-9B-penguin",
+    "revision": "5985564d007e847509609c23d7647a8688867889",
+    "level": "penguin",
+    "layout": "mma",
+    "bits_per_weight": 11.371,
+    "layers": {
+      "full_attention": 8,
+      "linear_attention": 24
+    },
+    "resident_bytes": 12718590789,
+    "resident_bytes_per_layer": [
+      294416094,
+      293970104,
+      293951330,
+      282394438,
+      293882070,
+      294036116,
+      294336731,
+      282484693,
+      294212884,
+      294213385,
+      294443830,
+      282695890,
+      294625720,
+      294668004,
+      294897058,
+      283096036,
+      294917754,
+      294892740,
+      295058201,
+      282981506,
+      294292559,
+      294144651,
+      294064503,
+      282230598,
+      293700686,
+      293583028,
+      293432401,
+      282398248,
+      293509133,
+      293292395,
+      293700254,
+      282971534
+    ],
+    "non_layer_bytes": {
+      "embeddings": 2034237440,
+      "head": 1362850583,
+      "head_tied": false,
+      "final_norm": 8192
+    },
+    "active_bytes_per_token": 10684361541,
+    "kv_bytes_per_token": 32768,
+    "state_bytes_per_session": 51511296,
+    "bf16_bytes": 17907606528
+  }
+}

@@ -1,0 +1,61 @@
+Tue Oct  6 04:30:55 UTC 2026
+NVIDIA H100 80GB HBM3, 81559 MiB, 580.126.09, 1980 MHz, 700.00 W
+x86_64
+208
+               total        used        free      shared  buff/cache   available
+Mem:            2015         116         604           8        1319        1899
+overlay         300G   88M  300G   1% /
+glyd 0.29.0 | glyd-gpu 0.29.0 | vllm 0.30.0 | torch 2.13.0 | transformers 5.18.0 
+
+## Qwen3.5-35B-A3B
+
+- vLLM bf16: started try 3: --max-model-len 4096 --max-num-seqs 128; Model loading took 65.53 GiB; GPU KV cache size: 85,606 tokens; Maximum concurrency for 4,096 tokens per request: 20.90x; log's highest prefix cache hit rate 0.0%; nvidia-smi: after start: 73743 MiB / idle after warm-up: 74949 MiB
+- Glyd: started try 1:  --max-num-seqs 760; Model loading took 53.21 GiB; GPU KV cache size: 794,656 tokens; Maximum concurrency for 262,144 tokens per request: 3.03x; nvidia-smi: after start: 73907 MiB
+
+| Users | Server | req/s | out tok/s | TTFT p50 ms | TTFT p99 ms | TPOT p50 ms | TPOT p99 ms | Prefix hit % | Peak MiB | SM MHz | Glyd against bf16 |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| 1 | bf16 | 0.77 | 196.5 | 106.8 | 113.4 | 4.7 | 4.7 | 0.0 | 74,949 | 1,980 |  |
+| 1 | Glyd | - | - | - | - | - | - | - | - | - | |
+| 2 | bf16 | 1.16 | 298.2 | 196.8 | 780.6 | 5.4 | 5.5 | 0.0 | 74,949 | 1,980 |  |
+| 2 | Glyd | - | - | - | - | - | - | - | - | - | |
+| 4 | bf16 | 2.02 | 516.7 | 227.9 | 236.7 | 6.9 | 7.0 | 0.0 | 74,949 | 1,980 |  |
+| 4 | Glyd | - | - | - | - | - | - | - | - | - | |
+| 8 | bf16 | 3.02 | 773.5 | 280.7 | 305.2 | 9.3 | 9.5 | 0.0 | 74,949 | 1,980 |  |
+| 8 | Glyd | - | - | - | - | - | - | - | - | - | |
+| 16 | bf16 | 4.71 | 1,205.9 | 378.9 | 440.2 | 11.8 | 12.2 | 0.0 | 74,949 | 1,980 |  |
+| 16 | Glyd | - | - | - | - | - | - | - | - | - | |
+| 32 | bf16 | 6.84 | 1,751.7 | 424.2 | 708.7 | 16.6 | 17.3 | 0.0 | 74,949 | 1,980 |  |
+| 32 | Glyd | - | - | - | - | - | - | - | - | - | |
+| 64 | bf16 | 6.52 | 1,668.3 | 1,018.6 | 6,837.8 | 24.1 | 42.4 | 0.0 | 74,949 | 1,980 |  |
+| 64 | Glyd | - | - | - | - | - | - | - | - | - | |
+| 128 | bf16 | 6.84 | 1,751.7 | 12,341.5 | 13,757.6 | 24.2 | 39.0 | 0.0 | 74,949 | 1,980 |  |
+| 128 | Glyd | - | - | - | - | - | - | - | - | - | |
+| 256 | bf16 | 6.74 | 1,724.2 | 31,658.6 | 33,056.2 | 24.6 | 42.4 | 0.0 | 74,949 | 1,980 |  |
+| 256 | Glyd | - | - | - | - | - | - | - | - | - | |
+
+## Qwen3.8-27B
+
+- vLLM bf16: started try 1: --max-num-seqs 256; Model loading took 51.1 GiB; GPU KV cache size: 287,512 tokens; Maximum concurrency for 262,144 tokens per request: 1.10x; log's highest prefix cache hit rate 0.0%; nvidia-smi: after start: 73027 MiB / idle after warm-up: 76107 MiB
+- Glyd: started try 1:  --max-num-seqs 595; Model loading took 39.52 GiB; GPU KV cache size: 464,325 tokens; Maximum concurrency for 262,144 tokens per request: 1.77x; log's highest prefix cache hit rate 0.0%; nvidia-smi: after start: 73271 MiB / idle after warm-up: 76807 MiB
+
+| Users | Server | req/s | out tok/s | TTFT p50 ms | TTFT p99 ms | TPOT p50 ms | TPOT p99 ms | Prefix hit % | Peak MiB | SM MHz | Glyd against bf16 |
+| ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| 1 | bf16 | 0.19 | 48.7 | 163.8 | 176.1 | 20.0 | 20.0 | 0.0 | 76,107 | 1,980 |  |
+| 1 | Glyd | 0.22 | 55.4 | 193.5 | 207.4 | 17.4 | 17.4 | 0.0 | 76,807 | 1,980 | slower: TTFT p50 ms +18%, TTFT p99 ms +18% |
+| 2 | bf16 | 0.36 | 92.8 | 252.2 | 283.0 | 20.6 | 20.6 | 0.0 | 76,107 | 1,980 |  |
+| 2 | Glyd | 0.41 | 105.3 | 286.7 | 314.6 | 18.0 | 18.0 | 0.0 | 76,807 | 1,980 | slower: TTFT p50 ms +14%, TTFT p99 ms +11% |
+| 4 | bf16 | 0.70 | 178.8 | 409.0 | 454.2 | 20.8 | 20.9 | 0.0 | 76,107 | 1,980 |  |
+| 4 | Glyd | 0.77 | 198.2 | 465.8 | 512.7 | 18.4 | 18.5 | 0.0 | 76,807 | 1,980 | slower: TTFT p50 ms +14%, TTFT p99 ms +13% |
+| 8 | bf16 | 1.29 | 329.9 | 690.2 | 713.4 | 21.6 | 21.9 | 0.0 | 76,107 | 1,980 |  |
+| 8 | Glyd | 1.38 | 354.5 | 816.6 | 845.3 | 19.4 | 19.7 | 0.0 | 76,807 | 1,980 | slower: TTFT p50 ms +18%, TTFT p99 ms +18% |
+| 16 | bf16 | 2.23 | 570.0 | 1,346.3 | 1,434.8 | 22.9 | 24.1 | 0.0 | 76,107 | 1,980 |  |
+| 16 | Glyd | 2.31 | 590.8 | 1,497.0 | 1,575.4 | 21.3 | 22.6 | 0.0 | 76,807 | 1,980 | slower: TTFT p50 ms +11%, TTFT p99 ms +10% |
+| 32 | bf16 | 3.53 | 902.8 | 2,152.5 | 2,730.8 | 26.9 | 31.2 | 0.0 | 76,107 | 1,980 |  |
+| 32 | Glyd | 3.59 | 919.8 | 2,456.7 | 2,957.6 | 25.1 | 30.0 | 0.0 | 76,807 | 1,980 | slower: TTFT p50 ms +14%, TTFT p99 ms +8% |
+| 64 | bf16 | 4.96 | 1,269.8 | 2,872.9 | 5,399.5 | 39.0 | 45.7 | 0.0 | 76,645 | 1,980 |  |
+| 64 | Glyd | 4.91 | 1,256.2 | 3,077.7 | 5,785.5 | 38.7 | 45.7 | 0.0 | 77,345 | 1,980 | slower: req/s -1% (tie), out tok/s -1% (tie), TTFT p50 ms +7%, TTFT p99 ms +7%, TPOT p99 ms +0% (tie) |
+| 128 | bf16 | 4.89 | 1,252.6 | 14,081.1 | 18,842.3 | 49.2 | 54.6 | 0.0 | 78,261 | 1,980 |  |
+| 128 | Glyd | 5.27 | 1,348.6 | 3,358.2 | 24,510.4 | 73.3 | 85.2 | 0.0 | 77,891 | 1,980 | slower: TTFT p99 ms +30%, TPOT p50 ms +49%, TPOT p99 ms +56% |
+| 256 | bf16 | 4.99 | 1,277.6 | 33,536.0 | 46,114.5 | 51.0 | 57.4 | 0.0 | 77,733 | 1,980 |  |
+| 256 | Glyd | 5.54 | 1,417.5 | 25,001.7 | 43,045.3 | 74.1 | 82.3 | 0.0 | 78,963 | 1,965 | slower: TPOT p50 ms +45%, TPOT p99 ms +43% |
+

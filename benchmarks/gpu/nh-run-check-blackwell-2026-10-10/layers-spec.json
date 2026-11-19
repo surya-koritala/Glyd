@@ -1,0 +1,264 @@
+{
+ "chunk": 333,
+ "level": 4,
+ "cases": [
+  {
+   "name": "m0_prefill",
+   "layer": 0,
+   "mode": "prefill",
+   "calls": [
+    333
+   ]
+  },
+  {
+   "name": "m0_chunks",
+   "layer": 0,
+   "mode": "prefill",
+   "calls": [
+    100,
+    128,
+    5,
+    100
+   ]
+  },
+  {
+   "name": "m0_recurrent",
+   "layer": 0,
+   "mode": "prefill",
+   "calls": [
+    333
+   ],
+   "recurrent": true
+  },
+  {
+   "name": "m0_steps",
+   "layer": 0,
+   "mode": "decode",
+   "tokens": 64
+  },
+  {
+   "name": "m0_graph",
+   "layer": 0,
+   "mode": "decode",
+   "tokens": 64,
+   "graph": true
+  },
+  {
+   "name": "m0_mixed",
+   "layer": 0,
+   "mode": "mixed",
+   "prefill": 200,
+   "tokens": 333,
+   "graph": true
+  },
+  {
+   "name": "e1_prefill",
+   "layer": 1,
+   "mode": "prefill",
+   "calls": [
+    333
+   ]
+  },
+  {
+   "name": "e1_chunks",
+   "layer": 1,
+   "mode": "prefill",
+   "calls": [
+    100,
+    128,
+    5,
+    100
+   ]
+  },
+  {
+   "name": "e1_steps",
+   "layer": 1,
+   "mode": "decode",
+   "tokens": 64
+  },
+  {
+   "name": "e1_graph",
+   "layer": 1,
+   "mode": "decode",
+   "tokens": 64,
+   "graph": true
+  },
+  {
+   "name": "e1_mixed",
+   "layer": 1,
+   "mode": "mixed",
+   "prefill": 200,
+   "tokens": 333,
+   "graph": true
+  },
+  {
+   "name": "a7_prefill",
+   "layer": 7,
+   "mode": "prefill",
+   "calls": [
+    333
+   ]
+  },
+  {
+   "name": "a7_chunks",
+   "layer": 7,
+   "mode": "prefill",
+   "calls": [
+    100,
+    128,
+    5,
+    100
+   ]
+  },
+  {
+   "name": "a7_steps",
+   "layer": 7,
+   "mode": "decode",
+   "tokens": 64
+  },
+  {
+   "name": "a7_graph",
+   "layer": 7,
+   "mode": "decode",
+   "tokens": 64,
+   "graph": true
+  },
+  {
+   "name": "a7_mixed",
+   "layer": 7,
+   "mode": "mixed",
+   "prefill": 200,
+   "tokens": 333,
+   "graph": true
+  },
+  {
+   "name": "a36_prefill",
+   "layer": 36,
+   "mode": "prefill",
+   "calls": [
+    333
+   ]
+  },
+  {
+   "name": "a36_chunks",
+   "layer": 36,
+   "mode": "prefill",
+   "calls": [
+    100,
+    128,
+    5,
+    100
+   ]
+  },
+  {
+   "name": "a36_steps",
+   "layer": 36,
+   "mode": "decode",
+   "tokens": 64
+  },
+  {
+   "name": "a36_graph",
+   "layer": 36,
+   "mode": "decode",
+   "tokens": 64,
+   "graph": true
+  },
+  {
+   "name": "a36_mixed",
+   "layer": 36,
+   "mode": "mixed",
+   "prefill": 200,
+   "tokens": 333,
+   "graph": true
+  },
+  {
+   "name": "e37_prefill",
+   "layer": 37,
+   "mode": "prefill",
+   "calls": [
+    333
+   ]
+  },
+  {
+   "name": "e37_chunks",
+   "layer": 37,
+   "mode": "prefill",
+   "calls": [
+    100,
+    128,
+    5,
+    100
+   ]
+  },
+  {
+   "name": "e37_steps",
+   "layer": 37,
+   "mode": "decode",
+   "tokens": 64
+  },
+  {
+   "name": "e37_graph",
+   "layer": 37,
+   "mode": "decode",
+   "tokens": 64,
+   "graph": true
+  },
+  {
+   "name": "e37_mixed",
+   "layer": 37,
+   "mode": "mixed",
+   "prefill": 200,
+   "tokens": 333,
+   "graph": true
+  },
+  {
+   "name": "m40_prefill",
+   "layer": 40,
+   "mode": "prefill",
+   "calls": [
+    333
+   ]
+  },
+  {
+   "name": "m40_chunks",
+   "layer": 40,
+   "mode": "prefill",
+   "calls": [
+    100,
+    128,
+    5,
+    100
+   ]
+  },
+  {
+   "name": "m40_recurrent",
+   "layer": 40,
+   "mode": "prefill",
+   "calls": [
+    333
+   ],
+   "recurrent": true
+  },
+  {
+   "name": "m40_steps",
+   "layer": 40,
+   "mode": "decode",
+   "tokens": 64
+  },
+  {
+   "name": "m40_graph",
+   "layer": 40,
+   "mode": "decode",
+   "tokens": 64,
+   "graph": true
+  },
+  {
+   "name": "m40_mixed",
+   "layer": 40,
+   "mode": "mixed",
+   "prefill": 200,
+   "tokens": 333,
+   "graph": true
+  }
+ ]
+}

@@ -1,0 +1,1 @@
+b800b5dc0a2f0c1b70be0f7b618879ea438be220 fp8: exact refuses what is not measured against stock (MXFP8, ModelOpt FP8 experts, block-scaled W8A8 kernels, told by the kernel's class); experts_form only where pack keeps its shape; check_fp8_vllm serve mode and output digests; the job's stock at vLLM's defaults

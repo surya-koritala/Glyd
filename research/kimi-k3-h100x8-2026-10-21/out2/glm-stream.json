@@ -1,0 +1,108 @@
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":"The","reasoning":"The"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" user","reasoning":" user"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" is","reasoning":" is"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" asking","reasoning":" asking"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" a","reasoning":" a"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" simple","reasoning":" simple"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" factual","reasoning":" factual"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" question","reasoning":" question"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":":","reasoning":":"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" What","reasoning":" What"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" is","reasoning":" is"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" the","reasoning":" the"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" capital","reasoning":" capital"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" of","reasoning":" of"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" France","reasoning":" France"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":"?","reasoning":"?"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" They","reasoning":" They"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" want","reasoning":" want"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" the","reasoning":" the"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" answer","reasoning":" answer"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" in","reasoning":" in"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" one","reasoning":" one"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" sentence","reasoning":" sentence"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":".","reasoning":"."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":"\n\nThis","reasoning":"\n\nThis"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" is","reasoning":" is"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" straightforward","reasoning":" straightforward"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":".","reasoning":"."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" The","reasoning":" The"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" capital","reasoning":" capital"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" of","reasoning":" of"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" France","reasoning":" France"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" is","reasoning":" is"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" Paris","reasoning":" Paris"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":".","reasoning":"."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" I","reasoning":" I"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" should","reasoning":" should"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" answer","reasoning":" answer"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" in","reasoning":" in"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" one","reasoning":" one"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" sentence","reasoning":" sentence"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" as","reasoning":" as"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":" requested","reasoning":" requested"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"reasoning_content":".","reasoning":"."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"content":"The"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"content":" capital"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"content":" of"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"content":" France"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"content":" is"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"content":" Paris"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{"content":"."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1792623221,"model":"zai-org/GLM-5.3-Flash","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
+data: [DONE]
+

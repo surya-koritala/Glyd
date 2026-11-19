@@ -1,78 +1,231 @@
 name: CI
 
+# The tests that need no GPU, on every push to main and every pull request (and by hand: gh workflow run ci.yml --ref BRANCH):
+# the version files, glyd_gpu's tests as Python sources and as the compiled wheel it ships (the same tests: Cython changes what a
+# module is), the vLLM plugin's with vLLM installed, the Rust crate, and the engine's (its tests as a development build and as the release build, the strings
+# of the release build's sources, the Rust glyd's hand-off). The wheels' own build, with the CUDA libraries and the engine, and their
+# publishing are release.yml's. This repository is private: a run is billed, so a newer push to a pull request stops its older run.
+# A run on main or by hand always runs to the end, each in its own group: release.yml needs CI's success on a release's exact commit.
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
-  # by hand on a tag (gh workflow run ci.yml --ref vX.Y.Z): release.yml publishes a tag only once CI succeeded on its commit
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 env:
-  CARGO_TERM_COLOR: always
-  # Portable baseline: GitHub runners are not the reference machine, so
-  # target-cpu=native would mean something different on every run. x86-64-v3
-  # gives AVX2 without AVX-512.
-  #
-  # This job validates CORRECTNESS ONLY. It must never be used to evaluate the
-  # docs/history/GOAL.md gates. Those are machine-specific and are measured locally with
-  # `-C target-cpu=native` per docs/history/GOAL.md section 1. The two builds differ
-  # measurably: enabling AVX-512 codegen moves single-core compression by about
-  # -6% and decompression by about +7% on Zen 4, because LLVM auto-vectorises
-  # the decoder's literal wildcopy to 512-bit stores.
-  RUSTFLAGS: "-C target-cpu=x86-64-v3"
+  # the build tools the wheels are made with (release.yml has the same)
+  BUILD_TOOLS: "build==1.6.1 wheel==0.48.0 setuptools==84.0.0 Cython==3.3.0"
 
 jobs:
-  test:
-    name: Build & Test
-    runs-on: ubuntu-latest
+  versions:
+    name: Versions agree
+    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC; unset: GitHub's)
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-
-      # One version in Cargo's spelling (0.26.0-rc.2) and Python's (0.26.0rc2), in every file that has it; for
-      # a release (0.26.0) the docs and the CHANGELOG heading name it too. scripts/bump_version.py sets them.
-      - name: Versions agree (crate, store, GPU crate, Cargo.lock, Python package)
-        run: |
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pc-job
+      # One version in Cargo's spelling (0.27.0-rc.1) and Python's (0.27.0rc1), in every file that has it
+      - run: |
+          bash -n gpu/vllm/acceptance.sh
           python3 scripts/bump_version.py --check
           python3 scripts/bump_version.py --selftest
+          python3 tools/report/report.py --selftest
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Corpus cache
-        uses: actions/cache@v4
+  sources:
+    name: glyd_gpu's sources (Python ${{ matrix.python }}, PyTorch CPU)
+    runs-on: ubuntu-latest  # (GitHub's: these tests want a machine without a GPU or driver, and setup-python's Pythons only load from GitHub's tool folder)
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          path: corpus
-          key: corpus-${{ hashFiles('scripts/download_corpus.sh') }}
-
-      - name: Download Corpus
-        run: bash scripts/download_corpus.sh
-
-      - name: Run Test Suite (correctness only, not gate measurement)
-        run: cargo test --release --all-targets --workspace
-
-      - name: Run Regression Floor Tests
-        run: cargo test --release --test regression_floors -- --nocapture
-
-      - name: Build Binaries
+          persist-credentials: false
+      # the public package, whose `glyd` command test_onboard.py tests (its own branch of this repository)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: glyd-shim
+          path: public
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install PyTorch (CPU), transformers and the rest of glyd-gpu[gpu]
         run: |
-          cargo build --release --bin glyd
-          cargo build --release --example bench
-      - name: C ABI
+          python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu "torch>=2.5"
+          python -m pip install --quiet "transformers>=5.17,<6" "accelerate>=1.1" "safetensors>=0.8" "huggingface_hub>=1.5,<2"
+      - name: Tests
+        working-directory: glyd-gpu-py/tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/glyd-gpu-py:${{ github.workspace }}/public/bindings/python
         run: |
-          cargo build --release --lib
-          cc -O2 -o target/c_abi tests/test_c_abi.c -Ltarget/release -lglyd -Wl,-rpath,$PWD/target/release
-          ./target/c_abi
-      - name: CLI round trip and corruption
-        run: |
-          head -c 3000000 corpus/dickens > /tmp/sample.bin
-          scripts/verify_roundtrip.sh /tmp/sample.bin
+          python test_gpu.py
+          python test_onboard.py
+          python ../../tools/autotune/test_tables.py  # (the route tables: gpu/route_tables.h against its record, compiled by g++)
 
-  # glyd.gpu and the `glyd` command's GPU half are the glyd-gpu package's (its own repository tests it, with vLLM and the GPU): here,
-  # that they find it where it is asked for, and say so clearly where it is missing.
+  compiled:
+    # The wheel as it ships: every module compiled, the stable ABI of CPython 3.10 (one wheel for every CPython from 3.10 on). Built by 3.10,
+    # installed in 3.14 and tested there: the binary of one version run by another.
+    name: "The compiled wheel (built by CPython 3.10, tested on 3.14; no CUDA libraries)"
+    runs-on: ubuntu-latest  # (GitHub's: these tests want a machine without a GPU or driver, and setup-python's Pythons only load from GitHub's tool folder)
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: glyd-shim
+          path: public
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: |
+            3.10
+            3.14
+      - name: Build the wheel (the libraries are release.yml's)
+        run: |
+          read -ra tools <<< "$BUILD_TOOLS"
+          python3.10 -m pip install --quiet "${tools[@]}"
+          PATH="$(dirname "$(command -v python3.10)"):$PATH" GLYD_GPU_NO_LIBS=1 GLYD_GPU_BUILD_ARGS=--no-isolation bash glyd-gpu-py/build.sh
+      - name: What the wheel holds (check_wheel.py)
+        run: |
+          python3.10 glyd-gpu-py/check_wheel.py glyd-gpu-py/dist/*.whl --no-libs --source glyd-gpu-py/glyd_gpu --header glyd-gpu-py/include/glyd_gpu.h --license gpu/LICENSE
+      - name: "Room on the runner's disk for the install tests (glyd install wants 8 GB free in /tmp; a fresh runner has 9 to 14, so the tests failed on the thin days)"
+        if: runner.environment == 'github-hosted'
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup 2> /dev/null || true
+          df -h / | tail -1
+      - name: "Install it in CPython 3.14 with PyTorch (CPU) and test it (not the sources: nothing of the checkout is on the path)"
+        working-directory: glyd-gpu-py/tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/public/bindings/python
+        run: |
+          python3.14 -m venv /tmp/t
+          /tmp/t/bin/python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu "torch>=2.5"
+          /tmp/t/bin/python -m pip install --quiet "transformers>=5.17,<6" "accelerate>=1.1" "safetensors>=0.8" "huggingface_hub>=1.5,<2"
+          /tmp/t/bin/python -m pip install --quiet ../dist/*.whl
+          (cd / && /tmp/t/bin/python -I "$GITHUB_WORKSPACE/glyd-gpu-py/check_install.py" "$(grep -m1 '^version = ' "$GITHUB_WORKSPACE/glyd-gpu-py/pyproject.toml" | cut -d'"' -f2)" --no-libs)
+          /tmp/t/bin/python test_gpu.py
+          /tmp/t/bin/python test_onboard.py
+
+  vllm-plugin:
+    # The plugin's logic and the packers' CPU-checkable parts, with vLLM installed (a CUDA wheel of it imports without a GPU).
+    # GLYD_REQUIRE_VLLM=1: a run without vLLM fails instead of skipping its tests as if they had passed.
+    name: vLLM plugin (vLLM installed, no GPU)
+    runs-on: ubuntu-latest  # (GitHub's: these tests want a machine without a GPU or driver, and setup-python's Pythons only load from GitHub's tool folder)
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: glyd-shim
+          path: public
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Free disk space (vLLM and its CUDA wheels take 9 GB of the runner's 14; install.sh's tests ask for 8 free)
+        if: runner.environment == 'github-hosted'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Install vLLM (the minor release the plugin is tested with)
+        run: |
+          python -m pip install --quiet --no-cache-dir "vllm>=0.30,<0.31"
+          python -c "import vllm; print('vllm', vllm.__version__)"
+      - name: Plugin tests and the GPU-free tests of glyd_gpu
+        working-directory: glyd-gpu-py/tests
+        env:
+          GLYD_REQUIRE_VLLM: "1"
+          PYTHONPATH: ${{ github.workspace }}/glyd-gpu-py:${{ github.workspace }}/public/bindings/python
+        run: |
+          python test_vllm.py
+          python test_vllm_fp8.py  # (the FP8 path: a development build's opt-in; test_off checks it is off by default)
+          python test_vllm_quant.py  # (a quantized checkpoint's 16-bit parts: the claim, vLLM's own config with Glyd's in front, which layers are packed)
+          python test_fp8ref.py
+          python test_gpu.py
+          python test_onboard.py  # (glyd run, serve, doctor; with vLLM installed, its parser names are checked against vLLM's registries)
+
+  rust:
+    name: The Rust glyd-gpu crate
+    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC; unset: GitHub's)
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pc-job
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - run: cargo test --release --all-targets -p glyd-gpu
+
+  engine:
+    # glyd-engine (glyd-engine/) as a development build (the default features) and as the release build (--no-default-features): its host-side tests, with no nvcc (the crate
+    # is built without its kernels; the release build runs gpu/gen_names.py for its kernels' names, with python3); the Rust sources the release build compiles are read for a method
+    # word, a tuning variable or a development command (check_wheel.py --engine-source: release.yml checks the program itself, with its machine code); and the Rust glyd's hand-off of
+    # glyd run and glyd serve to the engine or the Python tool.
+    name: The Rust engine (tests, the release build's strings, the Rust glyd's hand-off)
+    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC; unset: GitHub's)
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pc-job
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - name: The engine's tests (the development build, the release build)
+        run: |
+          cargo test --release -p glyd-engine
+          cargo test --release -p glyd-engine --no-default-features
+      - name: The release build's sources say no method word and name no tuning variable or development command
+        run: python3 glyd-gpu-py/check_wheel.py --engine-source glyd-engine --summary
+      - name: The Rust glyd's hand-off (the engine, the Python tool, GLYD_ENGINE=0)
+        run: cargo test --release -p glyd --test cli_python_tool
+
+  engine-kernels:
+    # the engine's CUDA kernels as a development build has them (kernels/engine.cu, and Qwen3.5's in kernels/qwen35.cu) compiled by nvcc 13 for every architecture a build takes,
+    # with no GPU: a kernel that does not compile never reaches one. ptxas's registers and spills of Qwen3.5's kernels on sm_89 are in the log.
+    name: The engine's kernels compile (nvcc 13, no GPU)
+    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (its own container on either)
+    timeout-minutes: 40
+    container: nvidia/cuda:13.0.3-devel-rockylinux8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: nvcc for sm_80, 86, 89, 90a, 100 and 120
+        run: |
+          set -e
+          dnf install -y -q --disablerepo="cuda*" --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils
+          source /opt/rh/gcc-toolset-13/enable
+          cd glyd-engine/kernels
+          nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_89 -Xptxas -v -o /tmp/engine_89.cubin engine.cu > /tmp/ptxas.txt 2>&1 || { cat /tmp/ptxas.txt; exit 1; }
+          grep -A3 -E "entry function '(rmsnorm1p|rmsnorm1p_add|q35_prep|attn256|attn256_split|attn256_merge|conv_silu|gdn_recurrent|gdn_chunk|gated_norm|small_linear)'" /tmp/ptxas.txt || true
+          for a in 80 86 90a 100 120; do nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_$a -o /tmp/engine_$a.cubin engine.cu; done
+      - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)
+        if: always() && runner.environment == 'self-hosted'
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE"
+
   gpu-shim:
     name: glyd.gpu shim (glyd-gpu missing, and a stand-in)
     runs-on: ubuntu-latest

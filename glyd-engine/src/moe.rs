@@ -1,0 +1,1469 @@
+//! A mixture-of-experts layer on the GPU (Linear GLY-101), the block Nemotron 3 Super, GLM-5.3-Flash, Gemma-4-26B-A4B and Qwen3.6-35B-A3B share: the router (kernels/moe.cu), the pairs of a token's k experts sorted by expert
+//! (the library's `moe_way`), the experts' two products over E experts' packs stacked as one matrix (the library's `moe`: one grouped launch each, at 1 token and at a prompt's thousands), the activation between them,
+//! the weighted sum, and a shared expert. Every step is a launch on the stream and none reads a result on the host, so a decode step's layers capture into the CUDA graph.
+//!
+//! What differs between the models is data: `Router` (softmax or sigmoid scores, a selection bias, renormalizing, a scale, a per-expert scale, logits in bf16 or fp32), `Act` (SwiGLU with a clamp or without, GELU,
+//! relu squared without a gate), the shared expert (a gate or none) and the widths (Nemotron 3's router reads the model's width, its experts a latent). The experts are held in a block layout (`ExpertStack`: Int6, Int5
+//! and Int4; the layout's tag is the pack's, and `block_step_bytes` is the one place the step size of a layout is, with the library's dispatch of the grouped products by that tag, `glyd_gpu_mma_moe`: a new block
+//! layout, GLY-134's Int3, goes in both); `Lib::moe` takes the tiered and 12-bit layouts' stacks as well (the lossless levels), which no type here holds yet.
+//!
+//! A relu squared layer's second matrix may be held in a row layout instead (`moe_rows::Down::Rows`): its second product then reads only the rows of the neurons that are not zero, whatever the count of tokens
+//! (src/moe_rows.rs, kernels/moe_rows.cu); the first product, the activation, the router and the weighted sum's rounding are the same.
+//!
+//! The arithmetic is fp32 with the roundings of vLLM's fused MoE: the router in fp32 (the logits of a bf16 gate rounded to bf16, as its Linear does), the first product stored in bf16 when the activation is not fused
+//! into it (a clamp, relu squared) and the activation rounded once, each pair's down sums times its weight added in fp32 and rounded once.
+
+use crate::dev::{Buf, Dev, Kernel};
+use crate::ffi::{err, Lib, Pack, Result, Stream, Words};
+use crate::launch;
+use crate::moe_rows::{Down, RowsKern};
+use crate::offload::CPU_TOKENS;
+use crate::weights::PackBuf;
+use glyd_gpu::pack::{Tiered, FP4R_TAG, FP4_TAG, INT4_STEP_BYTES, INT4_TAG, INT5_STEP_BYTES, INT5_TAG, INT6_STEP_BYTES, INT6_TAG};
+
+// The kernels' names, as kern.rs has them: kernels/moe.cu's in a development build, neutral ones in a release build.
+#[cfg(feature = "dev")]
+macro_rules! kname {
+    ($n:literal) => {
+        $n
+    };
+}
+#[cfg(not(feature = "dev"))]
+include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
+
+/// Experts a router takes (moe_select8, 16 and 32: 256, 512 and 1,024), and choices a token has.
+pub const MAX_EXPERTS: usize = 1024;
+pub const MAX_TOPK: usize = 32;
+
+// moe_select's flags and moe_act's modes (kernels/moe.cu defines the same: a test holds them equal).
+const FLAG_SIGMOID: i32 = 1;
+const FLAG_RENORM: i32 = 2;
+const FLAG_BF16: i32 = 4;
+const FLAG_SQRTSP: i32 = 8;
+const ACT_SILU: i32 = 0;
+const ACT_GELU: i32 = 1;
+const ACT_RELU2: i32 = 2;
+const ACT_SITU: i32 = 3;
+
+/// How a router scores the experts of a token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scoring {
+    /// softmax over all the experts (Qwen3.5 and 3.6 MoE, Gemma 4)
+    Softmax,
+    /// sigmoid of each expert's logit (DeepSeek's noaux_tc: GLM-5.x, Nemotron 3)
+    Sigmoid,
+    /// sqrt(softplus) of each expert's logit (DeepSeek-V4's noaux_tc)
+    SqrtSoftplus,
+}
+
+/// What turns a token's router logits into its k experts and their weights (`moe_select`): the k largest scores (the bias added to a sigmoid's, to pick and not to weigh), the chosen scores divided by their
+/// sum, times the per-expert scale of the chosen experts where there is one, times `scale`. Equal scores: the smaller expert first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Router {
+    pub scoring: Scoring,
+    pub top_k: usize,
+    /// the chosen scores divided by their sum (norm_topk_prob; Gemma 4 always)
+    pub renorm: bool,
+    /// routed_scaling_factor: 2.5 for GLM-5.x, 5.0 for Nemotron 3, else 1
+    pub scale: f32,
+    /// the logits rounded to bf16 before the scores (the gate is a bf16 Linear: Qwen3.5 and 3.6, Gemma 4); else fp32 (GLM-5.x, Nemotron 3 compute the router in fp32)
+    pub bf16_logits: bool,
+}
+
+impl Router {
+    /// Qwen3.5 and 3.6 MoE (8 of 256), Gemma 4 (8 of 128; with its per-expert scale in `MoeWeights::escale`): softmax, the k largest, renormalized.
+    pub const fn softmax(top_k: usize) -> Router {
+        Router { scoring: Scoring::Softmax, top_k, renorm: true, scale: 1.0, bf16_logits: true }
+    }
+
+    /// DeepSeek's noaux_tc as GLM-5.3-Flash (8 of 288, `scale` 2.5) and Nemotron 3 Super (22 of 512, `scale` 5.0) run it: sigmoid scores in fp32, the selection bias in `MoeWeights::bias`, renormalized, times `scale`.
+    pub const fn sigmoid(top_k: usize, scale: f32) -> Router {
+        Router { scoring: Scoring::Sigmoid, top_k, renorm: true, scale, bf16_logits: false }
+    }
+
+    /// moe_select's flags.
+    pub fn flags(&self) -> i32 {
+        (match self.scoring {
+            Scoring::Sigmoid => FLAG_SIGMOID,
+            Scoring::SqrtSoftplus => FLAG_SQRTSP,
+            Scoring::Softmax => 0,
+        }) | (if self.renorm { FLAG_RENORM } else { 0 }) | (if self.bf16_logits { FLAG_BF16 } else { 0 })
+    }
+}
+
+/// The activation between an expert's two products.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Act {
+    /// silu(gate) up, the gate rows then the up rows of the first matrix; `limit`: the gate at most it and the up within it of zero (GLM-5.x: 10)
+    SwiGlu { limit: Option<f32> },
+    /// gelu_tanh(gate) up (Gemma 4)
+    GeGlu,
+    /// relu(x) squared, the first matrix without a gate (Nemotron 3)
+    Relu2,
+    /// situ: beta tanh(gate / beta) sigmoid(gate) x linear tanh(up / linear) (Kimi-K3: 4 and 25)
+    Situ { beta: f32, linear: f32 },
+}
+
+impl Act {
+    /// Whether the first matrix holds a gate and an up (twice the intermediate size in rows).
+    pub fn gated(&self) -> bool {
+        !matches!(self, Act::Relu2)
+    }
+
+    /// moe_act's mode and its two numbers (the clamp; situ's two caps).
+    fn kernel(&self) -> (i32, f32, f32) {
+        match *self {
+            Act::SwiGlu { limit } => (ACT_SILU, limit.unwrap_or(f32::INFINITY), 0.0),
+            Act::GeGlu => (ACT_GELU, f32::INFINITY, 0.0),
+            Act::Relu2 => (ACT_RELU2, f32::INFINITY, 0.0),
+            Act::Situ { beta, linear } => (ACT_SITU, beta, linear),
+        }
+    }
+}
+
+/// A layer's shape: E experts of a hidden size (the width the experts work in; the router reads `router_hidden`, the same but for Nemotron 3, whose experts work on a latent a quarter as wide) and an intermediate size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoeCfg {
+    pub experts: usize,
+    pub router_hidden: usize,
+    pub hidden: usize,
+    pub inter: usize,
+    pub router: Router,
+    pub act: Act,
+}
+
+impl MoeCfg {
+    /// Rows of an expert's first matrix: gate and up, or up alone.
+    pub fn up_rows(&self) -> usize {
+        if self.act.gated() {
+            2 * self.inter
+        } else {
+            self.inter
+        }
+    }
+
+    /// The library's activation of the first product: 1 (SiLU) or 2 (GELU) where the product applies it as its sums are written (no clamp; the intermediate size a multiple of 64), else 0 and `moe_act` applies it.
+    pub fn fused(&self) -> i64 {
+        match self.act {
+            Act::SwiGlu { limit: None } if self.inter.is_multiple_of(64) => 1,
+            Act::GeGlu if self.inter.is_multiple_of(64) => 2,
+            _ => 0,
+        }
+    }
+
+    /// Whether the layer's shapes are ones the kernels and the library's products take (the block layouts: rows a multiple of 64, columns of 32): why not, else Ok.
+    pub fn check(&self) -> Result<()> {
+        let (e, k) = (self.experts, self.router.top_k);
+        if e == 0 || e > MAX_EXPERTS {
+            return err(format!("{e} experts: the router takes 1 to {MAX_EXPERTS}"));
+        }
+        if k == 0 || k > e.min(MAX_TOPK) {
+            return err(format!("{k} experts a token of {e}: 1 to {} are taken", e.min(MAX_TOPK)));
+        }
+        if !self.router_hidden.is_multiple_of(8) || self.router_hidden == 0 {
+            return err(format!("a router over {} values: not divisible by 8", self.router_hidden));
+        }
+        if !self.hidden.is_multiple_of(64) || !self.inter.is_multiple_of(32) || !self.up_rows().is_multiple_of(64) {
+            return err(format!("experts of hidden size {} and intermediate size {}: the products take rows divisible by 64 ({} and {}) and columns divisible by 32", self.hidden, self.inter, self.hidden, self.up_rows()));
+        }
+        if let Act::SwiGlu { limit: Some(l) } = self.act {
+            if l.is_nan() || l <= 0.0 {
+                return err(format!("a SwiGLU clamp of {l}"));
+            }
+        }
+        if let Act::Situ { beta, linear } = self.act {
+            if !(beta > 0.0 && linear > 0.0) {
+                return err(format!("situ's caps {beta} and {linear}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A block layout's bytes a step of 1,024 weights (64 rows by 16 columns) takes, by the tag in the top byte of its first word: the one table a new block layout (GLY-134's Int3) is added to, its scales being
+/// 128 bytes a pair of steps as Int6's, Int5's and Int4's are (the FP4 layouts differ: `scale_bytes`).
+pub fn block_step_bytes(tag: u32) -> Option<u64> {
+    match tag {
+        INT6_TAG => Some(INT6_STEP_BYTES as u64),
+        INT5_TAG => Some(INT5_STEP_BYTES as u64),
+        INT4_TAG | FP4_TAG | FP4R_TAG => Some(INT4_STEP_BYTES as u64),
+        _ => None,
+    }
+}
+
+/// A block layout's scale bytes for a matrix of `steps` steps of `ks` a row block: two bytes a run, one in the exact FP4 layout, and in the one with packed scales 2 bits a run and a byte a row.
+pub fn scale_bytes(tag: u32, steps: u64, ks: u64) -> u64 {
+    match tag {
+        FP4_TAG => steps / 2 * 64,
+        FP4R_TAG => steps / ks * (64 + ks * 8),
+        _ => steps / 2 * 128,
+    }
+}
+
+/// An expert's bytes in a block layout of `tag`: its codes and its scales (a matrix of whole row blocks of 64 rows, columns a multiple of 32).
+pub fn expert_strides(tag: u32, rows: usize, cols: usize) -> Result<(u64, u64)> {
+    let Some(step) = block_step_bytes(tag) else { return err(format!("a layout of tag {tag}: experts are held end to end in the block layouts (Int6, Int5, Int4) alone")) };
+    if rows == 0 || !rows.is_multiple_of(64) || cols == 0 || !cols.is_multiple_of(32) {
+        return err(format!("an expert of {rows} x {cols}: rows divisible by 64 and columns divisible by 32 are wanted"));
+    }
+    let steps = (rows / 64 * (cols / 16)) as u64;
+    Ok((steps * step, scale_bytes(tag, steps, (cols / 16) as u64)))
+}
+
+/// E experts' packs end to end on the host: the codes and the scales as the library's grouped products read them (E packs of [rows, cols] are the pack of the E rows stacked).
+pub struct Joined {
+    pub tag: u32,
+    pub tiers: [u32; 3],
+    pub experts: usize,
+    pub rows: usize,
+    pub cols: usize,
+    pub data: Vec<u8>,
+    pub scales: Vec<u8>,
+}
+
+impl Joined {
+    /// The packs of the experts, one each, joined: all in one layout, of one shape.
+    pub fn of(packs: &[&Tiered]) -> Result<Joined> {
+        let Some(p0) = packs.first() else { return err("no experts") };
+        let tag = p0.tiers[0] >> 24;
+        let (data_bytes, scale_bytes) = expert_strides(tag, p0.rows, p0.cols)?;
+        let (mut data, mut scales) = (Vec::with_capacity(packs.len() * data_bytes as usize), Vec::with_capacity(packs.len() * scale_bytes as usize));
+        for (i, p) in packs.iter().enumerate() {
+            if p.tiers != p0.tiers || (p.rows, p.cols) != (p0.rows, p0.cols) || p.data.len() as u64 != data_bytes || p.blocks.len() as u64 != scale_bytes {
+                return err(format!("expert {i}: a pack of {} x {} (words {:x?}, {} + {} bytes), where expert 0's is {} x {} ({:x?}, {data_bytes} + {scale_bytes})", p.rows, p.cols, p.tiers, p.data.len(), p.blocks.len(), p0.rows, p0.cols, p0.tiers));
+            }
+            data.extend_from_slice(&p.data);
+            scales.extend_from_slice(&p.blocks);
+        }
+        Ok(Joined { tag, tiers: p0.tiers, experts: packs.len(), rows: p0.rows, cols: p0.cols, data, scales })
+    }
+
+    /// The pack of the stacked matrix [experts rows, cols] split back into `experts` experts (it is the same bytes).
+    pub fn stacked(p: &Tiered, experts: usize) -> Result<Joined> {
+        if experts == 0 || !p.rows.is_multiple_of(experts) {
+            return err(format!("{} rows are not {experts} experts'", p.rows));
+        }
+        let rows = p.rows / experts;
+        let tag = p.tiers[0] >> 24;
+        let (data_bytes, scale_bytes) = expert_strides(tag, rows, p.cols)?;
+        if p.data.len() as u64 != data_bytes * experts as u64 || p.blocks.len() as u64 != scale_bytes * experts as u64 {
+            return err(format!("a pack of {} + {} bytes, where {experts} experts of {rows} x {} take {} + {}", p.data.len(), p.blocks.len(), p.cols, data_bytes * experts as u64, scale_bytes * experts as u64));
+        }
+        Ok(Joined { tag, tiers: p.tiers, experts, rows, cols: p.cols, data: p.data.clone(), scales: p.blocks.clone() })
+    }
+}
+
+/// E experts' matrices [rows, cols] in one block layout, end to end in device memory: `pack` is the one matrix [E rows, cols] the library's grouped products take, and an expert's own pack (`expert`) is the
+/// bytes at `e * data_stride` and `e * scale_stride`, for a single-expert product or a cache's slot. The scales' base (`block_base` of the tiered layout) is not read in these layouts: none is held.
+pub struct ExpertStack {
+    pub pack: Pack,
+    pub experts: usize,
+    /// The experts the buffers have room for: `experts`, or fewer in a stack made by `pooled`.
+    pub slots: usize,
+    pub rows: usize,
+    pub cols: usize,
+    pub tag: u32,
+    pub data_stride: u64,
+    pub scale_stride: u64,
+    pub bytes: usize,
+    /// An expert's whole rows where the stack holds this GPU's slice of each expert's (src/dynamic/tp.rs: a product is gathered after it); 0: whole experts.
+    pub tp_rows: usize,
+    _bufs: Keep,
+}
+
+/// What an `ExpertStack`'s pack reads: its codes and scales (a block layout), or a lossless pack's buffers.
+#[allow(dead_code)]
+enum Keep {
+    Bufs([Buf; 2]),
+    Pack(crate::weights::PackBuf),
+    None,
+}
+
+impl ExpertStack {
+    /// The experts of a lossless level (the tiered layout, or the 12-bit one where it is smaller): the stacked matrix [experts rows, cols] packed as one, which the library's grouped products take
+    /// as they take a block layout's stack. Its experts are not at fixed strides (the codes' lengths are the weights'), so no expert's own pack is taken of it (`expert`; a cache's places are in block layouts).
+    pub fn lossless(p: crate::weights::PackBuf, experts: usize) -> Result<ExpertStack> {
+        let (rows_all, cols) = (p.pack.rows as usize, p.pack.cols as usize);
+        if experts == 0 || !rows_all.is_multiple_of(experts) {
+            return err(format!("{rows_all} rows are not {experts} experts'"));
+        }
+        let tag = match p.pack.words {
+            Words::Tiered { tiers, .. } => tiers[0] >> 24,
+            Words::Twelve { .. } => 0,
+        };
+        Ok(ExpertStack { pack: p.pack, experts, slots: experts, rows: rows_all / experts, cols, tag, data_stride: 0, scale_stride: 0, bytes: p.bytes, tp_rows: 0, _bufs: Keep::Pack(p) })
+    }
+
+    /// No experts' buffers, the shape alone: a layer whose experts are held in another format (`MoeLayer::f8`).
+    pub fn shape_only(experts: usize, rows: usize, cols: usize) -> ExpertStack {
+        let pack = Pack { data: 0, words: Words::Tiered { blocks: 0, block_base: 0, tiers: [0; 3] }, rows: (experts * rows) as i64, cols: cols as i64 };
+        ExpertStack { pack, experts, slots: experts, rows, cols, tag: 0, data_stride: 0, scale_stride: 0, bytes: 0, tp_rows: 0, _bufs: Keep::None }
+    }
+
+    /// The experts of `j` copied to the GPU.
+    pub fn upload(j: &Joined) -> Result<ExpertStack> {
+        let (data, scales) = (Buf::new(j.data.len())?, Buf::new(j.scales.len())?);
+        data.write(0, &j.data)?;
+        scales.write(0, &j.scales)?;
+        ExpertStack::from_buffers(j.tag, j.tiers, j.experts, j.rows, j.cols, data, scales)
+    }
+
+    /// The stack of experts whose codes and scales are in device memory already (`experts` strides each: `expert_strides`).
+    pub fn from_buffers(tag: u32, tiers: [u32; 3], experts: usize, rows: usize, cols: usize, data: Buf, scales: Buf) -> Result<ExpertStack> {
+        let (data_stride, scale_stride) = expert_strides(tag, rows, cols)?;
+        if tiers[0] >> 24 != tag || data.bytes as u64 != data_stride * experts as u64 || scales.bytes as u64 != scale_stride * experts as u64 {
+            return err(format!("{experts} experts of {rows} x {cols} in the layout of tag {tag} take {} + {} bytes: {} + {} are given", data_stride * experts as u64, scale_stride * experts as u64, data.bytes, scales.bytes));
+        }
+        let pack = Pack { data: data.ptr, words: Words::Tiered { blocks: scales.ptr, block_base: 0, tiers }, rows: (experts * rows) as i64, cols: cols as i64 };
+        let bytes = data.bytes + scales.bytes;
+        Ok(ExpertStack { pack, experts, slots: experts, rows, cols, tag, data_stride, scale_stride, bytes, tp_rows: 0, _bufs: Keep::Bufs([data, scales]) })
+    }
+
+    /// Room for `slots` experts' matrices [rows, cols] in a block layout, standing for a layer's `experts` (zeroed): the pack the library's grouped products read has `experts` experts' rows, and a plan made of
+    /// ids below `slots` (the expert cache's: the place each chosen expert is in, `MoeLayer::experts_via`) never reaches past the room.
+    pub fn pooled(tag: u32, tiers: [u32; 3], experts: usize, slots: usize, rows: usize, cols: usize) -> Result<ExpertStack> {
+        let (data_stride, scale_stride) = expert_strides(tag, rows, cols)?;
+        if slots == 0 || slots > experts || tiers[0] >> 24 != tag {
+            return err(format!("room for {slots} experts standing for {experts}, in the layout of tag {tag} (words {tiers:x?})"));
+        }
+        let (data, scales) = (Buf::zeroed(slots * data_stride as usize)?, Buf::zeroed(slots * scale_stride as usize)?);
+        let pack = Pack { data: data.ptr, words: Words::Tiered { blocks: scales.ptr, block_base: 0, tiers }, rows: (experts * rows) as i64, cols: cols as i64 };
+        let bytes = data.bytes + scales.bytes;
+        Ok(ExpertStack { pack, experts, slots, rows, cols, tag, data_stride, scale_stride, bytes, tp_rows: 0, _bufs: Keep::Bufs([data, scales]) })
+    }
+
+    /// An expert's whole rows: `tp_rows` where the stack holds slices of them, else its own.
+    pub fn whole_rows(&self) -> usize {
+        if self.tp_rows > 0 { self.tp_rows } else { self.rows }
+    }
+
+    /// The addresses of the codes and of the scales (of the first expert's, or of the first place).
+    pub fn buffers(&self) -> [u64; 2] {
+        let Words::Tiered { blocks, .. } = self.pack.words else { unreachable!("an ExpertStack holds a block layout") };
+        [self.pack.data, blocks]
+    }
+
+    /// Expert `e`'s own pack [rows, cols].
+    pub fn expert(&self, e: usize) -> Pack {
+        assert!(self.data_stride > 0, "a lossless stack's experts are not at fixed strides");
+        let Words::Tiered { blocks, block_base, tiers } = self.pack.words else { unreachable!("an ExpertStack holds a block layout") };
+        Pack { data: self.pack.data + e as u64 * self.data_stride, words: Words::Tiered { blocks: blocks + e as u64 * self.scale_stride, block_base, tiers }, rows: self.rows as i64, cols: self.cols as i64 }
+    }
+}
+
+/// The shared expert: a dense gated (or relu squared, per the layer's `Act`) MLP every token goes through, added to the routed experts' sum: `up` [up rows, in] (gate rows then up rows), `down` [out, inter], and
+/// the gate where there is one (Qwen3.5 and 3.6: sigmoid(x . gate) scales its output), [in] bf16.
+pub struct Shared {
+    pub inter: usize,
+    pub up: PackBuf,
+    pub down: PackBuf,
+    pub gate: Option<Buf>,
+}
+
+/// The router's and the experts' weights.
+pub struct MoeWeights {
+    /// [experts, router_hidden] bf16
+    pub router: Buf,
+    /// [experts] fp32: added to the sigmoid scores to pick the experts (not to weigh them)
+    pub bias: Option<Buf>,
+    /// [experts] fp32: each chosen expert's weight times its entry (Gemma 4's per_expert_scale)
+    pub escale: Option<Buf>,
+    pub up: ExpertStack,
+    pub down: Down,
+}
+
+/// The layer's kernels (kernels/moe.cu) with typed launches. Device addresses are `u64`.
+pub struct MoeKern {
+    logits: Kernel,
+    select: [Kernel; 3],
+    act: Kernel,
+    add: Kernel,
+    add_f32: Kernel,
+    // DeepSeek-V4's (kernels/dsv4.cu): the activation with each pair's weight in it, the routing by token
+    act_w: Kernel,
+    hash: Kernel,
+    // the FP8 experts' sum (each pair's own row): the pairs' rows, the weighted sum
+    inv: Kernel,
+    wsum: Kernel,
+    // Muse Spark's (kernels/muse.cu): the router of fp32 weights, the activation, the pairs' rows, the normed weighted sum
+    mu_router: Kernel,
+    mu_act: Kernel,
+    mu_inv: Kernel,
+    mu_sum: Kernel,
+}
+
+/// The select kernel for `experts` (8, 16 or 32 registers a lane: 256, 512 or 1,024 experts).
+fn select_index(experts: usize) -> Result<usize> {
+    match experts {
+        1..=256 => Ok(0),
+        257..=512 => Ok(1),
+        513..=MAX_EXPERTS => Ok(2),
+        _ => err(format!("{experts} experts: the router takes 1 to {MAX_EXPERTS}")),
+    }
+}
+
+fn aligned(p: u64, what: &str) -> Result<()> {
+    if !p.is_multiple_of(16) {
+        return err(format!("{what}: {p:#x} is not 16-byte aligned"));
+    }
+    Ok(())
+}
+
+impl MoeKern {
+    pub fn load(dev: &Dev) -> Result<MoeKern> {
+        Ok(MoeKern {
+            logits: dev.kernel(kname!("moe_logits"))?,
+            select: [dev.kernel(kname!("moe_select8"))?, dev.kernel(kname!("moe_select16"))?, dev.kernel(kname!("moe_select32"))?],
+            act: dev.kernel(kname!("moe_act"))?,
+            add: dev.kernel(kname!("moe_add"))?,
+            add_f32: dev.kernel(kname!("moe_add_f32"))?,
+            act_w: dev.kernel(kname!("v4_moe_act"))?,
+            hash: dev.kernel(kname!("v4_hash_select"))?,
+            inv: dev.kernel(kname!("moe_inv"))?,
+            wsum: dev.kernel(kname!("moe_wsum"))?,
+            mu_router: dev.kernel(kname!("muse_router"))?,
+            mu_act: dev.kernel(kname!("muse_act"))?,
+            mu_inv: dev.kernel(kname!("muse_inv"))?,
+            mu_sum: dev.kernel(kname!("muse_moe_sum"))?,
+        })
+    }
+
+    /// logits [t, e] (fp32) = x [t, h] W^T for a bf16 W [e, h], the rows of x `xs` elements apart: the router's logits in fp32 (and the shared expert's gate's, with e = 1). h a multiple of 8; x, W and xs 16-byte aligned.
+    ///
+    /// # Safety
+    /// Live device buffers of the sizes the kernel reads and writes (kernels/moe.cu).
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn logits(&self, s: Stream, x: u64, xs: usize, w: u64, logits: u64, t: usize, e: usize, h: usize) -> Result<()> {
+        if !h.is_multiple_of(8) || !xs.is_multiple_of(8) || xs < h {
+            return err(format!("a router over {h} values in rows {xs} apart: both divisible by 8, the rows at least {h} apart"));
+        }
+        aligned(x, "the router's input")?;
+        aligned(w, "the router's weights")?;
+        if t == 0 || e == 0 {
+            return Ok(());
+        }
+        launch!(self.logits, [(e as u32).div_ceil(2), (t as u32).div_ceil(8), 1], [256, 1, 1], s; x, xs as i32, w, logits, t as i32, e as i32, h as i32)
+    }
+
+    /// For each of `t` tokens, its `k` experts into ids [t, k] (int64, as `Lib::moe_way` reads them) and their weights into wts [t, k] (fp32) from logits [t, e] (fp32): see `Router`. `bias` and `escale` (fp32 [e]): 0 for none.
+    ///
+    /// # Safety
+    /// As `logits`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn select(&self, s: Stream, logits: u64, bias: u64, escale: u64, ids: u64, wts: u64, t: usize, e: usize, k: usize, r: &Router) -> Result<()> {
+        let kern = &self.select[select_index(e)?];
+        if k == 0 || k > MAX_TOPK || k > e {
+            return err(format!("{k} experts a token of {e}"));
+        }
+        if t == 0 {
+            return Ok(());
+        }
+        launch!(kern, [(t as u32).div_ceil(4), 1, 1], [128, 1, 1], s; logits, bias, escale, ids, wts, t as i32, e as i32, k as i32, r.flags(), r.scale)
+    }
+
+    /// out [rows, inter] = the activation of gu [rows, 2 inter] (gate then up) or, for relu squared, of gu [rows, inter] (out = gu is fine): see `Act`. inter a multiple of 8.
+    ///
+    /// # Safety
+    /// As `logits`.
+    pub unsafe fn act(&self, s: Stream, gu: u64, out: u64, rows: usize, inter: usize, a: &Act) -> Result<()> {
+        if !inter.is_multiple_of(8) {
+            return err(format!("intermediate size {inter}: not divisible by 8"));
+        }
+        aligned(gu, "the activation's input")?;
+        aligned(out, "the activation's output")?;
+        if rows == 0 {
+            return Ok(());
+        }
+        let (mode, lim, lin) = a.kernel();
+        launch!(self.act, [rows as u32, (inter as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; gu, out, inter as i32, mode, lim, lin)
+    }
+
+    /// y [rows, h] += g sh [rows, h], g = sigmoid(gate[row]) for an fp32 `gate` [rows] (0: g = 1).
+    ///
+    /// # Safety
+    /// As `logits`.
+    /// y [t, h] = each token's rows of `rows` [t k, h] (each pair's own, in the plan's order) times its weights `wts` [t, k], summed in fp32 in its choices' order; `inv` int32 [t k] scratch.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn wsum(&self, s: Stream, rows: u64, plan: u64, inv: u64, wts: u64, y: u64, t: usize, k: usize, e: usize, h: usize) -> Result<()> {
+        let p = t * k;
+        launch!(self.inv, [(p as u32).div_ceil(256), 1, 1], [256, 1, 1], s; plan, inv, p as i32, e as i32)?;
+        launch!(self.wsum, [t as u32, (h as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; rows, inv, wts, y, k as i32, h as i32)
+    }
+
+    /// y [n] bf16 += x [n] fp32 (the host's sums into a block layout's routed sum).
+    ///
+    /// # Safety
+    /// y and x live device buffers of n values.
+    pub unsafe fn add_f32(&self, s: Stream, y: u64, x: u64, n: usize) -> Result<()> {
+        if n == 0 {
+            return Ok(());
+        }
+        launch!(self.add_f32, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; y, x, n as i64)
+    }
+
+    pub unsafe fn add(&self, s: Stream, y: u64, sh: u64, gate: u64, rows: usize, h: usize) -> Result<()> {
+        if !h.is_multiple_of(8) {
+            return err(format!("width {h}: not divisible by 8"));
+        }
+        aligned(y, "the routed sum")?;
+        aligned(sh, "the shared expert's output")?;
+        if rows == 0 {
+            return Ok(());
+        }
+        launch!(self.add, [rows as u32, (h as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; y, sh, gate, h as i32)
+    }
+}
+
+/// A layer: its config, its weights and its shared expert. The buffers its calls work in are the model's (`MoeScratch`, one for all its layers).
+pub struct MoeLayer {
+    pub cfg: MoeCfg,
+    pub w: MoeWeights,
+    pub shared: Option<Shared>,
+    /// The experts in the FP8 format, as an FP8 checkpoint has them (`w.up` and `w.down` their shapes alone): the products `F8Mat::moe`'s, the weighted sum of each pair's own row.
+    pub f8: Option<crate::f8::F8Experts>,
+    /// The shared expert's two matrices in the FP8 format (its gate and up as one, its down), as the release has them; `shared` then holds their shapes alone (`PackBuf::shape_only`).
+    pub shared8: Option<(crate::f8::F8Mat, crate::f8::F8Mat)>,
+}
+
+impl MoeLayer {
+    /// The layer, the weights' shapes held to the config's (and the shared expert's to its intermediate size and the layer's activation).
+    pub fn new(cfg: MoeCfg, w: MoeWeights, shared: Option<Shared>) -> Result<MoeLayer> {
+        cfg.check()?;
+        let (e, hidden, inter, up_rows) = (cfg.experts, cfg.hidden, cfg.inter, cfg.up_rows());
+        let shape = |s: &ExpertStack, what: &str, rows: usize, cols: usize| -> Result<()> {
+            if (s.experts, s.whole_rows(), s.cols) != (e, rows, cols) {
+                return err(format!("the experts' {what}: {} experts of {} x {}, where the layer has {e} of {rows} x {cols}", s.experts, s.whole_rows(), s.cols));
+            }
+            Ok(())
+        };
+        if w.up.tp_rows > 0 && cfg.fused() != 0 {
+            return err("experts sliced across GPUs with the activation in the first product: its gate and up rows are on different GPUs");
+        }
+        shape(&w.up, "first matrix", up_rows, hidden)?;
+        match &w.down {
+            Down::Block(d) => shape(d, "second matrix", hidden, inter)?,
+            rows => rows.check(&cfg)?,
+        }
+        if w.router.bytes < e * cfg.router_hidden * 2 || w.bias.as_ref().is_some_and(|b| b.bytes < e * 4) || w.escale.as_ref().is_some_and(|b| b.bytes < e * 4) {
+            return err("the router's weights, bias or per-expert scale are smaller than the layer's experts take");
+        }
+        if cfg.router.scoring == Scoring::Softmax && w.bias.is_some() {
+            return err("a selection bias with softmax scores: only the sigmoid scores take one");
+        }
+        if let Some(sx) = &shared {
+            let (rows, in_, out) = (if cfg.act.gated() { 2 * sx.inter } else { sx.inter }, sx.up.pack.cols as usize, sx.down.whole_rows());
+            if sx.up.whole_rows() != rows || sx.down.pack.cols as usize != sx.inter || !in_.is_multiple_of(8) || !out.is_multiple_of(8) || !sx.inter.is_multiple_of(8) {
+                return err(format!("the shared expert's matrices {} x {} and {} x {}, where its intermediate size {} wants {rows} x (a width divisible by 8) and (a width divisible by 8) x {}", sx.up.pack.rows, in_, sx.down.pack.rows, sx.down.pack.cols, sx.inter, sx.inter));
+            }
+            if sx.gate.as_ref().is_some_and(|g| g.bytes < in_ * 2) {
+                return err("the shared expert's gate is smaller than its input");
+            }
+        }
+        Ok(MoeLayer { cfg, w, shared, f8: None, shared8: None })
+    }
+
+    /// The shared expert's matrices in the FP8 format (`shared8`): the shapes of `shared`'s, which holds them alone.
+    pub fn with_shared8(mut self, up: crate::f8::F8Mat, down: crate::f8::F8Mat) -> Result<MoeLayer> {
+        let Some(sx) = &self.shared else { return err("FP8 shared expert matrices for a layer without a shared expert") };
+        if (up.whole_n(), up.k, down.whole_n(), down.k) != (sx.up.pack.rows as usize, sx.up.pack.cols as usize, sx.down.pack.rows as usize, sx.down.pack.cols as usize) || sx.up.bytes + sx.down.bytes != 0 {
+            return err("the FP8 shared expert's matrices and the shapes held beside them differ");
+        }
+        self.shared8 = Some((up, down));
+        Ok(self)
+    }
+
+    /// y = x times the shared expert's first (`up`) or second matrix, in whichever format it is held.
+    ///
+    /// # Safety
+    /// As `route`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn shared_lin(&self, lib: &Lib, sc: &MoeScratch, s: Stream, up: bool, x: u64, t: usize, y: u64) -> Result<()> {
+        self.shared_lin_in(lib, (&sc.ws, &sc.done), s, up, x, t, y)
+    }
+
+    /// `shared_lin` with the library's workspace and counters `wd` (the scratch's, or `Beside`'s for the products on its stream).
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn shared_lin_in(&self, lib: &Lib, wd: (&Buf, &Buf), s: Stream, up: bool, x: u64, t: usize, y: u64) -> Result<()> {
+        let (ws, done) = wd;
+        match (&self.shared8, &self.shared) {
+            (Some((u, d)), _) => (if up { u } else { d }).linear(lib, x, t, y, ws.ptr, ws.bytes, done.ptr, s),
+            (None, Some(sx)) => linear_tp(lib, if up { &sx.up } else { &sx.down }, x, t, y, ws, done, s),
+            (None, None) => err("no shared expert"),
+        }
+    }
+
+    /// The layer with its experts in the FP8 format (`f8`): the router and its bias, the shared expert, as `new`'s. The first matrices' rows must hold the second's outputs (the second product's rows go
+    /// where the first's were).
+    pub fn new_f8(cfg: MoeCfg, router: Buf, bias: Option<Buf>, f8: crate::f8::F8Experts, shared: Option<Shared>) -> Result<MoeLayer> {
+        let (e, up_rows) = (cfg.experts, cfg.up_rows());
+        if !cfg.act.gated() || cfg.fused() != 0 || up_rows < cfg.hidden || !cfg.hidden.is_multiple_of(8) {
+            return err("FP8 experts: a gated activation of its own kernel, the first matrices' rows at least the width, a width divisible by 8");
+        }
+        // (a stack of this GPU's slices of each expert's rows: the whole experts' shapes, src/dynamic/tp.rs)
+        let whole = |m: &crate::f8::F8Mat| if m.tp_rows > 0 { e * m.tp_rows } else { m.n };
+        if f8.experts != e || (whole(&f8.up), f8.up.k, whole(&f8.down), f8.down.k) != (e * up_rows, cfg.hidden, e * cfg.hidden, cfg.inter) {
+            return err(format!("FP8 experts of {} x {} and {} x {}, where the layer's {e} take {} x {} and {} x {}", whole(&f8.up), f8.up.k, whole(&f8.down), f8.down.k, e * up_rows, cfg.hidden, e * cfg.hidden, cfg.inter));
+        }
+        let w = MoeWeights { router, bias, escale: None, up: ExpertStack::shape_only(e, up_rows, cfg.hidden), down: Down::Block(ExpertStack::shape_only(e, cfg.hidden, cfg.inter)) };
+        let mut l = MoeLayer::new(cfg, w, shared)?;
+        l.f8 = Some(f8);
+        Ok(l)
+    }
+
+    /// Device bytes of the layer's weights.
+    pub fn weights_bytes(&self) -> usize {
+        self.w.router.bytes + self.w.bias.as_ref().map_or(0, |b| b.bytes) + self.w.escale.as_ref().map_or(0, |b| b.bytes) + self.w.up.bytes + self.w.down.bytes()
+            + self.shared.as_ref().map_or(0, |s| s.up.bytes + s.down.bytes + s.gate.as_ref().map_or(0, |g| g.bytes))
+            + self.f8.as_ref().map_or(0, |f| f.up.bytes + f.down.bytes)
+            + self.shared8.as_ref().map_or(0, |(u, d)| u.bytes + d.bytes)
+    }
+
+    /// Whether the activation of the experts' first product is a kernel's, into a buffer of its own (`MoeScratch::h`); else it is the product's (fused) or in place (relu squared).
+    fn separate_h(&self) -> bool {
+        self.cfg.act.gated() && self.cfg.fused() == 0
+    }
+
+    /// The scratch buffer that holds the experts' intermediate rows [pairs, inter] after `experts`, in the plan's order.
+    pub fn rows<'a>(&self, sc: &'a MoeScratch) -> &'a Buf {
+        if self.separate_h() {
+            &sc.h
+        } else {
+            &sc.a
+        }
+    }
+
+    fn check_tokens(&self, sc: &MoeScratch, t: usize) -> Result<()> {
+        if t > sc.max_tokens {
+            return err(format!("{t} tokens, where the scratch is made for {}", sc.max_tokens));
+        }
+        Ok(())
+    }
+
+    /// The router: the experts and weights of `t` tokens from x [t, router_hidden] (rows `xs` elements apart) into the scratch's `ids` and `wts`.
+    ///
+    /// # Safety
+    /// Live device buffers of the sizes the kernels read and write; the stream is the one the layer's other calls are on.
+    pub unsafe fn route(&self, sc: &MoeScratch, s: Stream, x: u64, xs: usize, t: usize) -> Result<()> {
+        route_with(&self.cfg, &self.w.router, self.w.bias.as_ref(), self.w.escale.as_ref(), sc, s, x, xs, t)
+    }
+
+    /// The experts' sum of `t` tokens into y [t, hidden]: the pairs sorted by expert, the first product (with the activation where the library applies it), the activation, the second product with the weights.
+    /// x [t, hidden] is the experts' input; `route` has made `ids` and `wts`.
+    ///
+    /// # Safety
+    /// As `route`.
+    pub unsafe fn experts(&self, lib: &Lib, sc: &MoeScratch, s: Stream, x: u64, t: usize, y: u64) -> Result<()> {
+        self.experts_via(lib, sc, s, x, t, y, None, 1)
+    }
+
+    /// `experts` for a layer whose stacks are `ExpertStack::pooled` (the expert cache's): the plan is made of `way` (int64 [t k] on the device) in place of the router's ids, each pair's place in the stacks, or -1 for a pair
+    /// computed in another of the `calls` calls that share the layer's pairs between them (a prompt that chooses more experts than the stacks hold); the weighted sum is of every pair the router chose, so the last of
+    /// the calls writes the layer's sum. Each pair's rows are the same whatever the order of the plan, and the kernels are the ones `experts` runs (the experts, tokens and choices they are asked for are the layer's).
+    /// A second matrix in a row layout (`RowStack::pooled`) is read by the sparse product at the places of `way`, and the parts of the earlier calls' pairs stay in its scratch (`MoeScratch::part`) for the last call's sum.
+    ///
+    /// # Safety
+    /// As `route`; `way` is a live device buffer of `t k` int64 whose ids are below the places the stacks have.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn experts_via(&self, lib: &Lib, sc: &MoeScratch, s: Stream, x: u64, t: usize, y: u64, way: Option<u64>, calls: usize) -> Result<()> {
+        self.experts_products(lib, sc, s, x, t, y, way, calls)?;
+        self.experts_sum(sc, s, t, y, 0, 0)
+    }
+
+    /// `experts_via` up to the second product: the plan, the first product, the activation, and the second (a block layout's, which writes y, its weighted sum; a row layout's parts, which `experts_sum` adds up). A
+    /// pair whose place in `way` is -1 is in no part of this call: the experts the host computes are, for the cache, pairs with no place.
+    ///
+    /// # Safety
+    /// As `experts_via`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn experts_products(&self, lib: &Lib, sc: &MoeScratch, s: Stream, x: u64, t: usize, y: u64, way: Option<u64>, calls: usize) -> Result<()> {
+        self.check_tokens(sc, t)?;
+        if t == 0 {
+            return Ok(());
+        }
+        let (c, e, k, tt) = (&self.cfg, self.cfg.experts as i64, self.cfg.router.top_k as i64, t as i64);
+        let pairs = t * c.router.top_k;
+        if let Some(f) = &self.f8 {
+            // (in parts of up to 64 tokens: the plan, the first product of each pair's token, the activation, the second product of each pair's own row into `a`, free after the activation, the weighted sum)
+            let (kk, ee) = (c.router.top_k, c.experts);
+            for t0 in (0..t).step_by(crate::f8::MOE_TOKENS) {
+                let (tn, ids) = ((t - t0).min(crate::f8::MOE_TOKENS), way.unwrap_or(sc.ids.ptr) + (t0 * kk * 8) as u64);
+                lib.moe_way(ids, (tn * kk) as i64, e, sc.plan.ptr, s)?;
+                f.up.moe(lib, ee, x + (t0 * c.hidden * 2) as u64, sc.plan.ptr, tn, kk, true, sc.a.ptr, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
+                sc.k.act(s, sc.a.ptr, sc.h.ptr, tn * kk, c.inter, &c.act)?;
+                f.down.moe(lib, ee, sc.h.ptr, sc.plan.ptr, tn, kk, false, sc.a.ptr, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
+                sc.k.wsum(s, sc.a.ptr, sc.plan.ptr, sc.inv.ptr, sc.wts.ptr + (t0 * kk * 4) as u64, y + (t0 * c.hidden * 2) as u64, tn, kk, ee, c.hidden)?;
+            }
+            return Ok(());
+        }
+        // (calls that share a layer's pairs keep the sums of the earlier ones in the workspace, where a first product with K split over blocks would write its parts; the sparse second product keeps them in its own)
+        if calls > 1 && matches!(self.w.down, Down::Block(_)) && lib.moe_workspace(self.w.up.pack.is_twelve(), e, self.w.up.rows as i64, c.hidden as i64, tt, k, c.fused(), false)? > 0 {
+            return err(format!("{t} tokens of {} choices: the first product needs a workspace, which the sums of a layer's earlier calls are kept in", c.router.top_k));
+        }
+        lib.moe_way(way.unwrap_or(sc.ids.ptr), pairs as i64, e, sc.plan.ptr, s)?;
+        moe_tp(lib, &self.w.up, e, x, tt, k, true, sc.plan.ptr, c.fused(), 0, 0, sc.a.ptr, pairs, sc, s)?;
+        let rows = if c.fused() != 0 {
+            sc.a.ptr
+        } else if self.separate_h() {
+            sc.k.act(s, sc.a.ptr, sc.h.ptr, pairs, c.inter, &c.act)?;
+            sc.h.ptr
+        } else {
+            sc.k.act(s, sc.a.ptr, sc.a.ptr, pairs, c.inter, &c.act)?;
+            sc.a.ptr
+        };
+        match &self.w.down {
+            // (the sum's pairs by their places where the store gives them in one call: a pair the host computes or leaves out, -1, is left out of it; over
+            // several calls, the waves, by the router's choices: each call sums the rows of the earlier ones too)
+            Down::Block(d) => moe_tp(lib, d, e, rows, tt, k, false, sc.plan.ptr, 0, sc.wts.ptr, if calls > 1 { sc.ids.ptr } else { way.unwrap_or(sc.ids.ptr) }, y, t, sc, s),
+            Down::Rows(_) if self.w.up.tp_rows > 0 => err("experts sliced across GPUs with a second matrix in a row layout"),
+            Down::Rows(r) => sc.rk.down(s, c, r, rows, sc.plan.ptr, way.unwrap_or(sc.ids.ptr), sc.part.ptr, sc.part.bytes, t),
+        }
+    }
+
+    /// The routed sum of a row layout's parts into y [t, hidden]: the sum is of the pairs whose id in `ids` (int64 [t, k] on the device; 0: the router's) is an expert, and `extra` (fp32 [t, hidden] on the device; 0:
+    /// none) is added before the one rounding. A block layout's `experts_products` wrote y already: `extra`, where given, is added to it (a second rounding).
+    ///
+    /// # Safety
+    /// As `experts_via`.
+    pub unsafe fn experts_sum(&self, sc: &MoeScratch, s: Stream, t: usize, y: u64, ids: u64, extra: u64) -> Result<()> {
+        self.check_tokens(sc, t)?;
+        match &self.w.down {
+            Down::Block(_) if extra != 0 => sc.k.add_f32(s, y, extra, t * self.cfg.hidden),
+            Down::Block(_) => Ok(()),
+            Down::Rows(_) => sc.rk.sum(s, &self.cfg, if ids == 0 { sc.ids.ptr } else { ids }, sc.wts.ptr, sc.part.ptr, sc.part.bytes, y, t, extra),
+        }
+    }
+
+    /// Expert `e`'s first product alone, for `t` tokens of x [t, hidden]: y [t, up rows] (bf16), by the expert's own pack at its offset in the stack (`ExpertStack::expert`) and the library's dense products: what a
+    /// slot of a cache of single experts would run, and what the stack's strides are checked by.
+    ///
+    /// # Safety
+    /// As `route`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn expert_up(&self, lib: &Lib, sc: &MoeScratch, s: Stream, e: usize, x: u64, t: usize, y: u64) -> Result<()> {
+        self.check_tokens(sc, t)?;
+        if e >= self.cfg.experts {
+            return err(format!("expert {e} of {}", self.cfg.experts));
+        }
+        lib.linear(&self.w.up.expert(e), x, t as i64, y, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)
+    }
+
+    /// The shared expert's output for x [t, in] added into y [t, out] (the layer's output width): its MLP (the layer's activation), times sigmoid(x . gate) where it has a gate. Nothing where the layer has none.
+    ///
+    /// # Safety
+    /// As `route`.
+    pub unsafe fn add_shared(&self, lib: &Lib, sc: &MoeScratch, s: Stream, x: u64, t: usize, y: u64) -> Result<()> {
+        self.shared_mlp(lib, sc, s, x, t)?;
+        self.shared_add(sc, s, t, y)
+    }
+
+    /// Muse Spark's experts as transformers computes them, for `t` tokens, in the latent: the router reads h [t, router_hidden] by its fp32 weights `router` (times `mult`; sigmoid scores, `bias` to pick,
+    /// renormalized, times the layer's scale), the experts read x [t, hidden] (the latent, normed); each pair's activation silu(gate) up (each rounded), its second product unweighted, normed (input-scaled with
+    /// `post_w`, eps), times its weight, added in the order of the experts' ids into y [t, hidden]. `inv`: int32 [t k] (the pairs' rows).
+    ///
+    /// # Safety
+    /// As `route`; `router`, `bias`, `post_w` and `inv` live device buffers of those sizes.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn forward_muse(&self, lib: &Lib, sc: &MoeScratch, s: Stream, h: u64, x: u64, t: usize, y: u64, router: u64, mult: f32, post_w: u64, eps: f32, inv: u64) -> Result<()> {
+        self.check_tokens(sc, t)?;
+        if t == 0 {
+            return Ok(());
+        }
+        let (c, e, k) = (&self.cfg, self.cfg.experts, self.cfg.router.top_k);
+        let Down::Block(down) = &self.w.down else { return err("Muse Spark's experts' second matrix in a row layout") };
+        launch!(sc.k.mu_router, [t as u32, (e as u32).div_ceil(8), 1], [256, 1, 1], s; h, router, sc.logits.ptr, e as i32, c.router_hidden as i32, mult)?;
+        sc.k.select(s, sc.logits.ptr, self.w.bias.as_ref().map_or(0, |b| b.ptr), 0, sc.ids.ptr, sc.wts.ptr, t, e, k, &c.router)?;
+        let (ei, tt, ki, pairs) = (e as i64, t as i64, k as i64, t * k);
+        lib.moe_way(sc.ids.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
+        moe_tp(lib, &self.w.up, ei, x, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+        launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
+        // (the second product unweighted, the pairs' rows in the plan's order: into `a`, free after the activation)
+        moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+        launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
+        launch!(sc.k.mu_sum, [t as u32, 1, 1], [256, 1, 1], s; sc.a.ptr, inv, sc.ids.ptr, sc.wts.ptr, post_w, y, k as i32, c.hidden as i32, eps)
+    }
+
+    /// DeepSeek-V4's layer as its release computes it, for `t` tokens: the router reads h [t, hidden] (sqrt-softplus scores and the bias; or, where `hash` is given (tid2eid int64 [vocab, k] and the tokens
+    /// int32 [t] on the device), the token's own experts); the experts and the shared expert read hq (h as the release's products quantize it). Each pair's activation is weighed before its second product and
+    /// rounded to FP8 where `fp8` (kernels/dsv4.cu's v4_moe_act), the second product then summing a token's pairs with weights of one (`ones`, fp32 [t k]); y [t, hidden] = that sum + the shared expert's output.
+    ///
+    /// # Safety
+    /// As `route`; `ones` and `hash`'s buffers live device buffers of those sizes.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn forward_release(&self, lib: &Lib, sc: &MoeScratch, s: Stream, h: u64, hq: u64, t: usize, y: u64, hash: Option<(u64, u64)>, ones: u64, fp8: bool) -> Result<()> {
+        self.check_tokens(sc, t)?;
+        if t == 0 {
+            return Ok(());
+        }
+        let (c, e, k) = (&self.cfg, self.cfg.experts, self.cfg.router.top_k);
+        let Act::SwiGlu { limit } = c.act else { return err("the release's experts are SwiGLU") };
+        let Down::Block(down) = &self.w.down else { return err("the release's experts' second matrix in a row layout") };
+        let lim = limit.unwrap_or(f32::INFINITY);
+        crate::tmark!(s, "moe: start");
+        // (a decode step's shared expert on the scratch's second stream, beside the routed experts: it reads hq alone, and its output is added at the end)
+        let beside = self.shared.as_ref().zip(sc.beside.as_ref()).filter(|_| t <= BESIDE_TOKENS);
+        if let Some((sx, b)) = beside {
+            let s2 = b.side.stream;
+            b.fork.record(s)?;
+            b.fork.wait(s2)?;
+            self.shared_lin_in(lib, (&b.ws, &b.done), s2, true, hq, t, sc.sg.ptr)?;
+            launch!(sc.k.act_w, [t as u32, (sx.inter as u32 / 128).div_ceil(4), 1], [128, 1, 1], s2; sc.sg.ptr, sc.sh.ptr, 0u64, 0u64, 0i32, sx.inter as i32, lim, fp8 as i32)?;
+            self.shared_lin_in(lib, (&b.ws, &b.done), s2, false, sc.sh.ptr, t, sc.so.ptr)?;
+            b.join.record(s2)?;
+        }
+        sc.k.logits(s, h, c.hidden, self.w.router.ptr, sc.logits.ptr, t, e, c.hidden)?;
+        match hash {
+            Some((table, tok)) => launch!(sc.k.hash, [(t as u32).div_ceil(128), 1, 1], [128, 1, 1], s; sc.logits.ptr, table, tok, sc.ids.ptr, sc.wts.ptr, t as i32, e as i32, k as i32, c.router.scale)?,
+            None => sc.k.select(s, sc.logits.ptr, self.w.bias.as_ref().map_or(0, |b| b.ptr), 0, sc.ids.ptr, sc.wts.ptr, t, e, k, &c.router)?,
+        }
+        crate::tmark!(s, "moe: router");
+        let (ei, tt, ki, pairs) = (e as i64, t as i64, k as i64, t * k);
+        lib.moe_way(sc.ids.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
+        crate::tmark!(s, "moe: plan");
+        moe_tp(lib, &self.w.up, ei, hq, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+        crate::tmark!(s, "moe: up");
+        launch!(sc.k.act_w, [pairs as u32, (c.inter as u32 / 128).div_ceil(4), 1], [128, 1, 1], s; sc.a.ptr, sc.h.ptr, sc.plan.ptr, sc.wts.ptr, e as i32, c.inter as i32, lim, fp8 as i32)?;
+        crate::tmark!(s, "moe: act");
+        moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, ones, sc.ids.ptr, y, t, sc, s)?;
+        crate::tmark!(s, "moe: down");
+        if let Some((_, b)) = beside {
+            b.join.wait(s)?;
+            crate::tmark!(s, "moe: shared joined");
+            sc.k.add(s, y, sc.so.ptr, 0, t, c.hidden)?;
+            crate::tmark!(s, "moe: add");
+            return Ok(());
+        }
+        let Some(sx) = &self.shared else { return Ok(()) };
+        self.shared_lin(lib, sc, s, true, hq, t, sc.sg.ptr)?;
+        crate::tmark!(s, "moe: shared up");
+        launch!(sc.k.act_w, [t as u32, (sx.inter as u32 / 128).div_ceil(4), 1], [128, 1, 1], s; sc.sg.ptr, sc.sh.ptr, 0u64, 0u64, 0i32, sx.inter as i32, lim, fp8 as i32)?;
+        crate::tmark!(s, "moe: shared act");
+        self.shared_lin(lib, sc, s, false, sc.sh.ptr, t, sc.so.ptr)?;
+        crate::tmark!(s, "moe: shared down");
+        sc.k.add(s, y, sc.so.ptr, 0, t, c.hidden)?;
+        crate::tmark!(s, "moe: add");
+        Ok(())
+    }
+
+
+    /// `shared_mlp` after its first product, given: gu [t, 2 inter] its gate's and up's values (a product the shared expert's first matrix was packed into
+    /// with others: Kimi-K3's latent projection's), the activation and the second product into the scratch's `so`. A shared expert of a gated activation
+    /// and no gate of its own.
+    ///
+    /// # Safety
+    /// As `route`; gu a live device buffer of that size.
+    pub unsafe fn shared_from(&self, lib: &Lib, sc: &MoeScratch, s: Stream, gu: u64, t: usize) -> Result<()> {
+        self.check_tokens(sc, t)?;
+        let Some(sx) = self.shared.as_ref().filter(|_| t > 0) else { return Ok(()) };
+        if !self.cfg.act.gated() || sx.gate.is_some() || self.shared8.is_some() {
+            return err("a shared expert's first product given apart: one of a gated activation, no gate of its own, packed");
+        }
+        sc.k.act(s, gu, sc.sh.ptr, t, sx.inter, &self.cfg.act)?;
+        linear_tp(lib, &sx.down, sc.sh.ptr, t, sc.so.ptr, &sc.ws, &sc.done, s)
+    }
+
+    /// The shared expert's output for x [t, in] into the scratch (`so`, and its gate's logits where it has one): `add_shared` up to the add, which does not depend on the routed experts and can be queued before them.
+    ///
+    /// # Safety
+    /// As `route`.
+    pub unsafe fn shared_mlp(&self, lib: &Lib, sc: &MoeScratch, s: Stream, x: u64, t: usize) -> Result<()> {
+        let (Some(_), Some(sx)) = (&self.shared8, &self.shared) else { return shared_mlp_with(&self.cfg, self.shared.as_ref(), lib, sc, s, x, t) };
+        // (shared_mlp_with's steps, the products the FP8 format's)
+        self.check_tokens(sc, t)?;
+        if t == 0 {
+            return Ok(());
+        }
+        let c = &self.cfg;
+        self.shared_lin(lib, sc, s, true, x, t, sc.sg.ptr)?;
+        let h = if c.act.gated() {
+            sc.k.act(s, sc.sg.ptr, sc.sh.ptr, t, sx.inter, &c.act)?;
+            sc.sh.ptr
+        } else {
+            sc.k.act(s, sc.sg.ptr, sc.sg.ptr, t, sx.inter, &c.act)?;
+            sc.sg.ptr
+        };
+        self.shared_lin(lib, sc, s, false, h, t, sc.so.ptr)?;
+        if let Some(g) = &sx.gate {
+            let inp = sx.up.pack.cols as usize;
+            sc.k.logits(s, x, inp, g.ptr, sc.gate.ptr, t, 1, inp)?;
+        }
+        Ok(())
+    }
+
+    /// y [t, out] += the shared expert's output (`shared_mlp`'s), times its gate where it has one.
+    ///
+    /// # Safety
+    /// As `route`.
+    pub unsafe fn shared_add(&self, sc: &MoeScratch, s: Stream, t: usize, y: u64) -> Result<()> {
+        shared_add_with(self.shared.as_ref(), sc, s, t, y)
+    }
+
+    /// The whole layer for `t` tokens whose x [t, hidden] is the router's, the experts' and the shared expert's input alike (Qwen3.5 and 3.6, GLM-5.x): y [t, hidden] = the routed experts' sum + the shared expert.
+    /// (Nemotron 3 puts a projection between the routed sum (in its latent width) and the shared expert's add; Gemma 4 a norm on each of its two branches, the experts' and the dense MLP, before their sum. They call
+    /// `route` and `experts` themselves: Nemotron `add_shared` after its projection, Gemma 4 its dense MLP in its own path, where `add_shared`'s add of the two un-normed outputs would be wrong.)
+    ///
+    /// # Safety
+    /// As `route`.
+    pub unsafe fn forward(&self, lib: &Lib, sc: &MoeScratch, s: Stream, x: u64, t: usize, y: u64) -> Result<()> {
+        if self.cfg.router_hidden != self.cfg.hidden {
+            return err("a layer whose router and experts read different widths: its router, experts and shared expert are three calls");
+        }
+        self.route(sc, s, x, self.cfg.hidden, t)?;
+        self.experts(lib, sc, s, x, t, y)?;
+        self.add_shared(lib, sc, s, x, t, y)
+    }
+}
+
+/// y [t, rows] = x [t, cols] by a pack, its slices gathered across the GPUs where it is this GPU's slice of the rows (src/dynamic/tp.rs).
+///
+/// # Safety
+/// As `MoeLayer::route`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn linear_tp(lib: &Lib, p: &PackBuf, x: u64, t: usize, y: u64, ws: &Buf, done: &Buf, s: Stream) -> Result<()> {
+    if p.tp_rows == 0 {
+        return lib.linear(&p.pack, x, t as i64, y, ws.ptr, ws.bytes, done.ptr, s);
+    }
+    let c = crate::dynamic::tp::comm().ok_or_else(|| crate::ffi::Error("a matrix sliced across GPUs, on a thread of no group of them".into()))?;
+    let sl = p.pack.rows as usize;
+    let tmp = c.temp(s, t * sl * 2)?;
+    lib.linear(&p.pack, x, t as i64, tmp, ws.ptr, ws.bytes, done.ptr, s)?;
+    c.gather(s, tmp, t, sl, y, p.tp_rows)
+}
+
+/// The library's grouped product (`Lib::moe`) by a stack that may hold this GPU's slice of each expert's rows: into this GPU's room, then every GPU's
+/// slices gathered into y, `rows` rows of an expert's whole rows (the pairs' of a first product, or a weighted second's tokens').
+///
+/// # Safety
+/// As `MoeLayer::route`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn moe_tp(lib: &Lib, st: &ExpertStack, e: i64, x: u64, t: i64, k: i64, first: bool, plan: u64, act: i64, wts: u64, ids: u64, y: u64, rows: usize, sc: &MoeScratch, s: Stream) -> Result<()> {
+    if st.tp_rows == 0 {
+        return lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, y, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s);
+    }
+    let c = crate::dynamic::tp::comm().ok_or_else(|| crate::ffi::Error("experts sliced across GPUs, on a thread of no group of them".into()))?;
+    let tmp = c.temp(s, rows * st.rows * 2)?;
+    lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, tmp, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
+    c.gather(s, tmp, rows, st.rows, y, st.tp_rows)
+}
+
+/// `MoeLayer::route` for a layer whose router is given apart from its experts (the Hummingbird layer's, src/moe_hb.rs): the router `router` [experts, router_hidden] bf16 and its selection bias and per-expert scale where there are
+/// any, the experts and weights of `t` tokens from x [t, router_hidden] (rows `xs` elements apart) into the scratch's `ids` and `wts`.
+///
+/// # Safety
+/// As `MoeLayer::route`.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn route_with(c: &MoeCfg, router: &Buf, bias: Option<&Buf>, escale: Option<&Buf>, sc: &MoeScratch, s: Stream, x: u64, xs: usize, t: usize) -> Result<()> {
+    if t > sc.max_tokens {
+        return err(format!("{t} tokens, where the scratch is made for {}", sc.max_tokens));
+    }
+    sc.k.logits(s, x, xs, router.ptr, sc.logits.ptr, t, c.experts, c.router_hidden)?;
+    sc.k.select(s, sc.logits.ptr, bias.map_or(0, |b| b.ptr), escale.map_or(0, |b| b.ptr), sc.ids.ptr, sc.wts.ptr, t, c.experts, c.router.top_k, &c.router)
+}
+
+/// `route_with`'s choices from logits a caller has put in the scratch's `logits` (t rows): the experts and their weights into `ids` and `wts`.
+///
+/// # Safety
+/// As `route_with`.
+pub unsafe fn select_with(c: &MoeCfg, bias: Option<&Buf>, sc: &MoeScratch, s: Stream, t: usize) -> Result<()> {
+    if t > sc.max_tokens {
+        return err(format!("{t} tokens, where the scratch is made for {}", sc.max_tokens));
+    }
+    sc.k.select(s, sc.logits.ptr, bias.map_or(0, |b| b.ptr), 0, sc.ids.ptr, sc.wts.ptr, t, c.experts, c.router.top_k, &c.router)
+}
+
+/// `MoeLayer::add_shared` for a layer whose shared expert is given apart from its experts: the shared expert's output for x [t, in] added into y [t, out], nothing where it has none.
+///
+/// # Safety
+/// As `MoeLayer::route`.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn add_shared_with(c: &MoeCfg, shared: Option<&Shared>, lib: &Lib, sc: &MoeScratch, s: Stream, x: u64, t: usize, y: u64) -> Result<()> {
+    shared_mlp_with(c, shared, lib, sc, s, x, t)?;
+    shared_add_with(shared, sc, s, t, y)
+}
+
+/// `MoeLayer::shared_mlp` for a shared expert given apart from its experts: its output for x [t, in] into the scratch (`so`, and its gate's logits where it has one).
+///
+/// # Safety
+/// As `MoeLayer::route`.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn shared_mlp_with(c: &MoeCfg, shared: Option<&Shared>, lib: &Lib, sc: &MoeScratch, s: Stream, x: u64, t: usize) -> Result<()> {
+    if t > sc.max_tokens {
+        return err(format!("{t} tokens, where the scratch is made for {}", sc.max_tokens));
+    }
+    let Some(sx) = shared else { return Ok(()) };
+    if t == 0 {
+        return Ok(());
+    }
+    let inp = sx.up.pack.cols as usize;
+    linear_tp(lib, &sx.up, x, t, sc.sg.ptr, &sc.ws, &sc.done, s)?;
+    let h = if c.act.gated() {
+        sc.k.act(s, sc.sg.ptr, sc.sh.ptr, t, sx.inter, &c.act)?;
+        sc.sh.ptr
+    } else {
+        sc.k.act(s, sc.sg.ptr, sc.sg.ptr, t, sx.inter, &c.act)?;
+        sc.sg.ptr
+    };
+    linear_tp(lib, &sx.down, h, t, sc.so.ptr, &sc.ws, &sc.done, s)?;
+    if let Some(g) = &sx.gate {
+        sc.k.logits(s, x, inp, g.ptr, sc.gate.ptr, t, 1, inp)?;
+    }
+    Ok(())
+}
+
+/// `MoeLayer::shared_add` for a shared expert given apart from its experts: y [t, out] += its output (`shared_mlp_with`'s), times its gate where it has one.
+///
+/// # Safety
+/// As `MoeLayer::route`.
+pub unsafe fn shared_add_with(shared: Option<&Shared>, sc: &MoeScratch, s: Stream, t: usize, y: u64) -> Result<()> {
+    if t > sc.max_tokens {
+        return err(format!("{t} tokens, where the scratch is made for {}", sc.max_tokens));
+    }
+    let Some(sx) = shared else { return Ok(()) };
+    if t == 0 {
+        return Ok(());
+    }
+    sc.k.add(s, y, sc.so.ptr, sx.gate.as_ref().map_or(0, |_| sc.gate.ptr), t, sx.down.whole_rows())
+}
+
+/// The buffers the layers' calls work in, for up to `max_tokens` tokens a call: one set for all the layers of a model (a layer's calls follow each other on the stream), sized by the largest of them, with the kernels
+/// and the library's workspace and counters. The stages' results stay in it until the next call: a check or a profile reads them.
+pub struct MoeScratch {
+    k: MoeKern,
+    pub max_tokens: usize,
+    /// logits [tokens, experts] fp32
+    pub logits: Buf,
+    /// the chosen experts [tokens, k] int64 and their weights [tokens, k] fp32
+    pub ids: Buf,
+    pub wts: Buf,
+    /// the plan of `Lib::moe_way`, int32 [2 + 2 experts + pairs]
+    pub plan: Buf,
+    /// the ids a plan is made of where they are not the router's (`MoeLayer::experts_via`), int64 [tokens, k]
+    pub way: Buf,
+    /// the first product's rows in the plan's order: [pairs, inter] where the activation is fused into it or is relu squared (applied in place), else [pairs, 2 inter]
+    pub a: Buf,
+    /// the activation's rows [pairs, inter] where it is a kernel's and not in place (`MoeLayer::rows` says which of the two holds the intermediate rows)
+    pub h: Buf,
+    /// each pair's row in the plan's order, int32 [pairs] (the FP8 experts' sum)
+    pub inv: Buf,
+    ws: Buf,
+    done: Buf,
+    // the sparse second product (`moe_rows`): its kernels and the partial sums of its blocks
+    rk: RowsKern,
+    pub part: Buf,
+    /// fp32 [tokens, hidden] for up to `CPU_TOKENS` tokens: the sums that the host made of the pairs of experts it computed (the expert cache's), added to the routed sum
+    pub cpu: Buf,
+    // the shared expert: its first product, its activation, its second product, its gate's logits
+    pub(crate) sg: Buf,
+    sh: Buf,
+    so: Buf,
+    gate: Buf,
+    /// the shared expert's products beside the routed experts' (`forward_release`'s calls of up to `BESIDE_TOKENS` tokens), where the layers have one
+    beside: Option<Beside>,
+}
+
+/// Tokens a call has at most for `forward_release` to run its shared expert beside its routed experts (a decode step's, or a draft's few): past them the GPU is full anyway.
+pub const BESIDE_TOKENS: usize = 64;
+
+/// A second stream for the shared expert's products, the events that fork it from the engine's stream and join it back, and its own workspace and counters for the
+/// library (the routed experts' products use the scratch's at the same time). Fork and join are graph edges in a capture.
+struct Beside {
+    side: crate::dev::Side,
+    fork: crate::dev::Ev,
+    join: crate::dev::Ev,
+    ws: Buf,
+    done: Buf,
+}
+
+/// What a layer asks of the scratch: its config and its shared expert's intermediate size, input and output widths.
+#[derive(Clone, Copy, Debug)]
+pub struct Shape {
+    pub cfg: MoeCfg,
+    pub twelve: bool,
+    pub shared: Option<(usize, usize, usize)>,
+    /// a single expert's first product runs (`MoeLayer::expert_up`)
+    pub expert_rows: usize,
+    /// the second matrix is in a row layout (`Down::Rows`): the sparse product, not the library's
+    pub sparse: bool,
+    /// the GPUs the experts' and shared expert's rows are sliced across (src/dynamic/tp.rs; 1: none): the products' rows are theirs over this
+    pub slice: usize,
+}
+
+/// The scratch's buffers in bytes, and the library's calls whose workspace it must hold (asked for every count of tokens): the largest of what the layers ask, not their sum.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Sizes {
+    pub logits: usize,
+    pub pairs: usize,
+    pub plan: usize,
+    pub a: usize,
+    pub h: usize,
+    pub sg: usize,
+    pub sh: usize,
+    pub so: usize,
+    /// the sparse second product's partial sums (`RowsKern::part_bytes`)
+    pub part: usize,
+    /// the sums that the host makes of the pairs of experts it computes, fp32 for up to `CPU_TOKENS` tokens (src/offload.rs)
+    pub cpu: usize,
+    pub units: usize,
+    /// (twelve, experts, rows, cols, k, act, weighted) of the grouped products; (twelve, rows, cols) of the dense ones
+    pub grouped: Vec<[i64; 7]>,
+    pub dense: Vec<[i64; 3]>,
+}
+
+impl Sizes {
+    pub fn of(shapes: &[Shape], max_tokens: usize) -> Sizes {
+        let mut z = Sizes { sg: 16, sh: 16, so: 16, h: 16, units: 1 << 18, ..Sizes::default() }; // (the counters of the dense products too: 1 << 18, as the engine's)
+        for sh in shapes {
+            let (c, fused) = (&sh.cfg, sh.cfg.fused());
+            let pairs = max_tokens * c.router.top_k;
+            z.logits = z.logits.max(max_tokens * c.experts * 4);
+            z.pairs = z.pairs.max(pairs);
+            z.plan = z.plan.max((2 + 2 * c.experts + pairs) * 4);
+            z.a = z.a.max(pairs * (if fused != 0 { c.inter } else { c.up_rows() }) * 2);
+            if c.act.gated() && fused == 0 {
+                z.h = z.h.max(pairs * c.inter * 2);
+            }
+            if sh.sparse {
+                z.part = z.part.max(RowsKern::part_bytes(pairs, c.hidden));
+            }
+            z.cpu = z.cpu.max(max_tokens.min(CPU_TOKENS) * c.hidden * 4);
+            // (the second product is the library's unless it is sparse)
+            let sl = sh.slice.max(1);
+            for (rows, cols, act, weighted) in [(c.up_rows() / sl, c.hidden, fused, 0), (c.hidden / sl, c.inter, 0, 1)].into_iter().take(if sh.sparse { 1 } else { 2 }) {
+                let key = [sh.twelve as i64, c.experts as i64, rows as i64, cols as i64, c.router.top_k as i64, act, weighted];
+                if !z.grouped.contains(&key) {
+                    z.grouped.push(key);
+                }
+                z.units = z.units.max((if act != 0 { rows / 128 } else { rows / 64 }) * c.experts.min(pairs));
+            }
+            let mut dense = vec![[sh.twelve as i64, sh.expert_rows as i64, c.hidden as i64]];
+            if let Some((inter, inp, out)) = sh.shared {
+                let rows = if c.act.gated() { 2 * inter } else { inter };
+                // (whole and sliced both: the shared expert's matrices are sliced where they are big enough, the experts' stacks where theirs are)
+                for sl in [1, sl] {
+                    dense.extend([[sh.twelve as i64, (rows / sl) as i64, inp as i64], [sh.twelve as i64, (out / sl) as i64, inter as i64]]);
+                }
+                (z.sg, z.sh, z.so) = (z.sg.max(max_tokens * rows * 2), z.sh.max(max_tokens * inter * 2), z.so.max(max_tokens * out * 2));
+            }
+            for d in dense {
+                if !z.dense.contains(&d) {
+                    z.dense.push(d);
+                }
+            }
+        }
+        z
+    }
+}
+
+impl MoeScratch {
+    /// The scratch for `layers` and calls of up to `max_tokens` tokens: the library's workspace asked for every count of tokens up to it (it is not monotonic in it), for each distinct shape of the layers' products.
+    pub fn new(dev: &Dev, lib: &Lib, layers: &[&MoeLayer], max_tokens: usize) -> Result<MoeScratch> {
+        if layers.is_empty() || max_tokens == 0 {
+            return err("a scratch for no layer or no tokens");
+        }
+        let shapes: Vec<Shape> = layers
+            .iter()
+            .map(|l| Shape { cfg: l.cfg, twelve: l.w.up.pack.is_twelve(), shared: l.shared.as_ref().map(|x| (x.inter, x.up.pack.cols as usize, x.down.whole_rows())), expert_rows: l.w.up.rows, sparse: matches!(l.w.down, Down::Rows(_)), slice: if l.w.up.tp_rows > 0 { l.w.up.tp_rows / l.w.up.rows } else { l.shared.as_ref().filter(|x| x.up.tp_rows > 0).map_or(1, |x| x.up.tp_rows / x.up.pack.rows as usize) } })
+            .collect();
+        let (mut f8, mut beside) = (0, 0);
+        for l in layers {
+            if let Some(f) = &l.f8 {
+                f8 = f8.max(f.up.moe_workspace(lib, f.experts, max_tokens, l.cfg.router.top_k)?).max(f.down.moe_workspace(lib, f.experts, max_tokens, l.cfg.router.top_k)?);
+            }
+            if let Some((u, d)) = &l.shared8 {
+                for m in 1..=max_tokens.min(64) {
+                    f8 = f8.max(u.workspace(lib, m)?).max(d.workspace(lib, m)?);
+                }
+            }
+            // (the release's layers, `forward_release`'s: their shared expert's products at up to BESIDE_TOKENS tokens)
+            if let (Some(sx), Act::SwiGlu { limit: Some(_) }, Down::Block(_)) = (&l.shared, l.cfg.act, &l.w.down) {
+                for m in 1..=max_tokens.min(BESIDE_TOKENS) {
+                    beside = beside.max(match &l.shared8 {
+                        Some((u, d)) => u.workspace(lib, m)?.max(d.workspace(lib, m)?),
+                        None => lib.linear_workspace(sx.up.pack.is_twelve(), sx.up.pack.rows, sx.up.pack.cols, m as i64)?.max(lib.linear_workspace(sx.down.pack.is_twelve(), sx.down.pack.rows, sx.down.pack.cols, m as i64)?),
+                    });
+                }
+            }
+        }
+        let mut sc = MoeScratch::sized(dev, lib, &shapes, max_tokens, f8)?;
+        // (a development build's GLYD_MOE_BESIDE=0: the shared expert after the routed ones, on the engine's stream)
+        if layers.iter().any(|l| l.shared.is_some() && matches!((l.cfg.act, &l.w.down), (Act::SwiGlu { limit: Some(_) }, Down::Block(_)))) && crate::tune!("GLYD_MOE_BESIDE").as_deref() != Some("0") {
+            sc.beside = Some(Beside { side: crate::dev::Side::new()?, fork: crate::dev::Ev::new()?, join: crate::dev::Ev::new()?, ws: Buf::zeroed(beside.max(16))?, done: Buf::zeroed(4 << 18)? });
+        }
+        Ok(sc)
+    }
+
+    /// The scratch for layers of the given shapes (what `new` makes of its layers': a layer whose weights are held apart from a `MoeLayer`, the Hummingbird layer, asks for its own).
+    pub fn for_shapes(dev: &Dev, lib: &Lib, shapes: &[Shape], max_tokens: usize) -> Result<MoeScratch> {
+        MoeScratch::sized(dev, lib, shapes, max_tokens, 0)
+    }
+
+    /// `for_shapes` with at least `ws` bytes of workspace (the FP8 experts' products').
+    fn sized(dev: &Dev, lib: &Lib, shapes: &[Shape], max_tokens: usize, ws: usize) -> Result<MoeScratch> {
+        if shapes.is_empty() || max_tokens == 0 {
+            return err("a scratch for no layer or no tokens");
+        }
+        let z = Sizes::of(shapes, max_tokens);
+        let mut need = ws;
+        for t in 1..=max_tokens as i64 {
+            for g in &z.grouped {
+                need = need.max(lib.moe_workspace(g[0] != 0, g[1], g[2], g[3], t, g[4], g[5], g[6] != 0)?);
+            }
+            // (in either layout: the shared expert's matrices may be in another than the experts' stacks, the 12-bit one on an HBM GPU)
+            for d in &z.dense {
+                need = need.max(lib.linear_workspace(false, d[1], d[2], t)?).max(lib.linear_workspace(true, d[1], d[2], t)?);
+            }
+        }
+        Ok(MoeScratch {
+            k: MoeKern::load(dev)?,
+            max_tokens,
+            logits: Buf::new(z.logits)?,
+            ids: Buf::new(z.pairs * 8)?,
+            wts: Buf::new(z.pairs * 4)?,
+            plan: Buf::new(z.plan)?,
+            way: Buf::new(z.pairs * 8)?,
+            a: Buf::new(z.a)?,
+            h: Buf::new(z.h)?,
+            inv: Buf::new(z.pairs * 4)?,
+            ws: Buf::zeroed(need.max(16))?,
+            done: Buf::zeroed(z.units * 4)?,
+            rk: RowsKern::load(dev)?,
+            part: Buf::new(z.part.max(16))?,
+            cpu: Buf::new(z.cpu.max(16))?,
+            sg: Buf::new(z.sg)?,
+            sh: Buf::new(z.sh)?,
+            so: Buf::new(z.so)?,
+            gate: Buf::new(max_tokens * 4)?,
+            beside: None,
+        })
+    }
+
+    /// A scratch for the router and the expert cache's calls alone (a codebook block's, whose products have buffers of their own): the logits, the choices and their ids for calls of up to `max_tokens` tokens, the host's
+    /// sums for `CPU_TOKENS` of them; nothing for the library's products.
+    pub fn routing(dev: &Dev, experts: usize, top_k: usize, hidden: usize, max_tokens: usize) -> Result<MoeScratch> {
+        if max_tokens == 0 {
+            return err("a scratch for no tokens");
+        }
+        let pairs = max_tokens * top_k;
+        Ok(MoeScratch {
+            k: MoeKern::load(dev)?,
+            max_tokens,
+            logits: Buf::new(max_tokens * experts * 4)?,
+            ids: Buf::new(pairs * 8)?,
+            wts: Buf::new(pairs * 4)?,
+            plan: Buf::new((2 + 2 * experts + pairs) * 4)?,
+            way: Buf::new(pairs * 8)?,
+            a: Buf::new(16)?,
+            h: Buf::new(16)?,
+            inv: Buf::new(pairs * 4)?,
+            ws: Buf::zeroed(16)?,
+            done: Buf::zeroed(16)?,
+            rk: RowsKern::load(dev)?,
+            part: Buf::new(16)?,
+            cpu: Buf::new(max_tokens.min(CPU_TOKENS) * hidden * 4)?,
+            sg: Buf::new(16)?,
+            sh: Buf::new(16)?,
+            so: Buf::new(16)?,
+            gate: Buf::new(max_tokens * 4)?,
+            beside: None,
+        })
+    }
+
+    /// Device bytes of the scratch.
+    pub fn bytes(&self) -> usize {
+        [&self.logits, &self.ids, &self.wts, &self.plan, &self.way, &self.a, &self.h, &self.ws, &self.done, &self.part, &self.cpu, &self.sg, &self.sh, &self.so, &self.gate].iter().map(|b| b.bytes).sum::<usize>() + self.beside.as_ref().map_or(0, |b| b.ws.bytes + b.done.bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glyd_gpu::pack::{pack_int4, pack_int5, pack_int6};
+
+    const SRC: &str = include_str!("../kernels/moe.cu");
+    const LIBRARY: &str = include_str!("../../gpu/glyd_gpu.cu");
+
+    /// The four models' layers: their configs pass `check`, and the activation is fused into the first product where the library applies it.
+    #[test]
+    fn the_four_models_layers() {
+        // Qwen3.6-35B-A3B: 8 of 256, hidden 2048, intermediate 512, softmax
+        let qwen = MoeCfg { experts: 256, router_hidden: 2048, hidden: 2048, inter: 512, router: Router::softmax(8), act: Act::SwiGlu { limit: None } };
+        // Gemma-4-26B-A4B: 8 of 128, hidden 2816, intermediate 704, GELU
+        let gemma = MoeCfg { experts: 128, router_hidden: 2816, hidden: 2816, inter: 704, router: Router::softmax(8), act: Act::GeGlu };
+        // GLM-5.3-Flash: 8 of 288, hidden 4096, intermediate 2048, sigmoid x 2.5, SwiGLU clamped at 10
+        let glm = MoeCfg { experts: 288, router_hidden: 4096, hidden: 4096, inter: 2048, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(10.0) } };
+        // Nemotron 3 Super: 22 of 512, the router over 4096, the experts over a latent of 1024, intermediate 2688, sigmoid x 5, relu squared without a gate
+        let nemo = MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 };
+        for c in [qwen, gemma, glm, nemo] {
+            c.check().unwrap();
+        }
+        assert_eq!((qwen.fused(), gemma.fused(), glm.fused(), nemo.fused()), (1, 2, 0, 0));
+        assert_eq!((qwen.up_rows(), gemma.up_rows(), glm.up_rows(), nemo.up_rows()), (1024, 1408, 4096, 2688));
+        assert_eq!(qwen.router.flags(), FLAG_RENORM | FLAG_BF16);
+        assert_eq!(glm.router.flags(), FLAG_SIGMOID | FLAG_RENORM);
+        // an intermediate size that is not a multiple of 64 cannot be fused (the gate's half must be rows of 64): the activation is a kernel's
+        assert_eq!(MoeCfg { inter: 480, ..qwen }.fused(), 0);
+    }
+
+    #[test]
+    fn shapes_the_products_do_not_take_are_refused() {
+        let ok = MoeCfg { experts: 128, router_hidden: 512, hidden: 512, inter: 256, router: Router::softmax(8), act: Act::SwiGlu { limit: None } };
+        ok.check().unwrap();
+        let bad = |c: MoeCfg, why: &str| {
+            let e = c.check().unwrap_err().to_string();
+            assert!(e.contains(why), "{e} does not say {why:?}");
+        };
+        bad(MoeCfg { experts: 0, ..ok }, "0 experts");
+        bad(MoeCfg { experts: 2000, ..ok }, "2000 experts");
+        bad(MoeCfg { router: Router::softmax(0), ..ok }, "0 experts a token");
+        bad(MoeCfg { router: Router::softmax(33), ..ok }, "33 experts a token");
+        bad(MoeCfg { experts: 4, router: Router::softmax(5), ..ok }, "5 experts a token of 4");
+        bad(MoeCfg { router_hidden: 100, ..ok }, "divisible by 8");
+        bad(MoeCfg { hidden: 500, ..ok }, "divisible by 64");
+        bad(MoeCfg { inter: 100, ..ok }, "columns divisible by 32");
+        // relu squared has no gate: its rows are the intermediate size, which must itself be a multiple of 64
+        bad(MoeCfg { inter: 96, act: Act::Relu2, ..ok }, "divisible by 64");
+        bad(MoeCfg { act: Act::SwiGlu { limit: Some(0.0) }, ..ok }, "clamp");
+        MoeCfg { inter: 96, ..ok }.check().unwrap(); // (gated: 192 rows)
+    }
+
+    /// The select kernel by the number of experts (256, 512, 1,024 a lane's 8, 16, 32 registers a step).
+    #[test]
+    fn the_select_kernel_by_experts() {
+        for (e, i) in [(1, 0), (128, 0), (256, 0), (257, 1), (288, 1), (512, 1), (513, 2), (1024, 2)] {
+            assert_eq!(select_index(e).unwrap(), i, "{e} experts");
+        }
+        assert!(select_index(0).is_err() && select_index(1025).is_err());
+    }
+
+    fn weights_of(n: usize, seed: u64) -> Vec<u16> {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let v = ((x >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.06;
+                ((v.to_bits().wrapping_add(0x7fff + ((v.to_bits() >> 16) & 1))) >> 16) as u16
+            })
+            .collect()
+    }
+
+    /// E packs of [rows, cols] end to end are the pack of the E matrices stacked, byte for byte, in the three block layouts (the library's grouped products and a cache of single experts read the same bytes); and an
+    /// expert's strides are the bytes of its own pack.
+    #[test]
+    fn experts_end_to_end_are_the_stacked_pack() {
+        let (e, rows, cols) = (3usize, 128usize, 96usize);
+        let w = weights_of(e * rows * cols, 7);
+        type Pack = fn(&[u16], usize, usize) -> Option<Tiered>;
+        for (tag, pack) in [(INT6_TAG, pack_int6 as Pack), (INT5_TAG, pack_int5 as Pack), (INT4_TAG, pack_int4 as Pack)] {
+            let each: Vec<Tiered> = (0..e).map(|i| pack(&w[i * rows * cols..(i + 1) * rows * cols], rows, cols).unwrap()).collect();
+            let stacked = pack(&w, e * rows, cols).unwrap();
+            let j = Joined::of(&each.iter().collect::<Vec<_>>()).unwrap();
+            assert_eq!((j.tag, j.experts, j.rows, j.cols), (tag, e, rows, cols));
+            assert_eq!(j.data, stacked.data, "tag {tag}: the codes");
+            assert_eq!(j.scales, stacked.blocks, "tag {tag}: the scales");
+            let (db, sb) = expert_strides(tag, rows, cols).unwrap();
+            assert_eq!((db as usize, sb as usize), (each[0].data.len(), each[0].blocks.len()));
+            let s = Joined::stacked(&stacked, e).unwrap();
+            assert_eq!((s.data, s.scales, s.rows), (j.data, j.scales, rows));
+        }
+    }
+
+    #[test]
+    fn packs_that_are_not_one_layout_and_shape_are_refused() {
+        let (rows, cols) = (64usize, 64usize);
+        let w = weights_of(2 * rows * cols, 3);
+        let a = pack_int5(&w[..rows * cols], rows, cols).unwrap();
+        let b = pack_int6(&w[rows * cols..], rows, cols).unwrap();
+        assert!(Joined::of(&[&a, &b]).is_err(), "Int5 and Int6 packs together");
+        let four = pack_int4(&w[..rows * cols], rows, cols).unwrap();
+        assert!(Joined::of(&[&four, &a]).is_err() && Joined::of(&[&four, &four]).is_ok(), "Int4 packs alone");
+        let c = pack_int5(&w[..32 * 64 * 2], 64, 64).unwrap();
+        let d = pack_int5(&w[..64 * 32], 64, 32).unwrap();
+        assert!(Joined::of(&[&c, &d]).is_err(), "two shapes");
+        assert!(Joined::of(&[]).is_err());
+        assert!(Joined::stacked(&a, 3).is_err() && Joined::stacked(&a, 2).is_err(), "a pack that is not 3 or 2 experts' of that shape");
+        // the tiered layout holds its steps in blocks of any length: its experts are not at strides
+        assert!(expert_strides(2, 64, 64).is_err());
+        assert!(expert_strides(INT5_TAG, 100, 64).is_err() && expert_strides(INT5_TAG, 64, 48).is_err());
+        assert!(expert_strides(INT4_TAG, 100, 64).is_err() && expert_strides(INT4_TAG, 64, 48).is_err() && expert_strides(glyd_gpu::pack::INT3_TAG, 64, 64).is_err(), "the three-bit layout is not held yet");
+    }
+
+    /// The library's grouped products take the layouts this table holds: `glyd_gpu_mma_moe` (the products) and `glyd_gpu_mma_moe_unpack` (the experts back to bf16) each dispatch on every tag `block_step_bytes` knows
+    /// (a tag the table took and the library did not would be an error on the GPU alone), and on no block layout it does not (the library's three-bit layout is not in the grouped products yet).
+    #[test]
+    fn the_librarys_grouped_products_take_the_layouts_of_the_table() {
+        let body = |head: &str| -> &str {
+            let at = LIBRARY.find(head).unwrap_or_else(|| panic!("no {head} in the library"));
+            &LIBRARY[at..at + LIBRARY[at..].find("\n}\n").expect("the function's end")]
+        };
+        for head in ["GLYD_GPU_INTERNAL int glyd_gpu_mma_moe(", "GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_unpack("] {
+            let f = body(head);
+            for (tag, bits) in [(INT6_TAG, 6), (INT5_TAG, 5), (INT4_TAG, 4), (glyd_gpu::pack::INT3_TAG, 3)] {
+                let held = block_step_bytes(tag).is_some();
+                assert_eq!(f.contains(&format!("int{bits}_words(tiers, K, data, blocks, bad)")), held, "{head} and the {bits}-bit layout");
+                assert_eq!(f.contains(&format!("Int{bits}{{data, blocks}}")), held, "{head} and the {bits}-bit layout");
+            }
+            assert!(block_step_bytes(FP4_TAG).is_some() && f.contains("fp4_words(tiers, K, data, blocks, bad)") && f.contains("Fp4{data, blocks}"), "{head} and the FP4 layout");
+            assert!(block_step_bytes(FP4R_TAG).is_some() && f.contains("fp4r_words(tiers, K, data, blocks, bad)") && f.contains("fp4r_fmt(data, blocks, K)"), "{head} and the FP4 layout with packed scales");
+        }
+    }
+
+    /// Room for fewer experts than a layer has (the expert cache's places) is asked for what the stacks hold: places for 1 to all of the layer's experts, in the layout the words name, of a shape the layouts take.
+    #[test]
+    fn places_are_refused_what_they_cannot_hold() {
+        let words = [INT5_TAG << 24, 0, 0];
+        let why = |r: Result<ExpertStack>| r.err().expect("refused").to_string();
+        assert!(why(ExpertStack::pooled(INT5_TAG, words, 8, 0, 128, 96)).contains("room for 0 experts standing for 8"));
+        assert!(why(ExpertStack::pooled(INT5_TAG, words, 8, 9, 128, 96)).contains("room for 9 experts standing for 8"));
+        assert!(why(ExpertStack::pooled(INT6_TAG, words, 8, 4, 128, 96)).contains("layout of tag"));
+        assert!(why(ExpertStack::pooled(INT5_TAG, words, 8, 4, 100, 96)).contains("divisible by 64"));
+        assert!(why(ExpertStack::pooled(2, words, 8, 4, 128, 96)).contains("block layouts"));
+    }
+
+    /// What the Rust side names in the kernels' source is there: each kernel, and the flags and modes it passes (a name a kernel lost, or a constant that moved, would show on the GPU alone).
+    #[test]
+    fn kernels_and_constants_are_in_the_source() {
+        for name in ["moe_logits", "moe_select8", "moe_select16", "moe_select32", "moe_act", "moe_add"] {
+            assert!(SRC.contains(&format!("extern \"C\" __global__ void {name}(")) || SRC.contains(&format!(") {name}(")), "no kernel {name} in kernels/moe.cu");
+        }
+        let define = |n: &str| -> Option<i32> { SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok()) };
+        for (n, v) in [("MOE_SIGMOID", FLAG_SIGMOID), ("MOE_RENORM", FLAG_RENORM), ("MOE_BF16", FLAG_BF16), ("MOE_SILU", ACT_SILU), ("MOE_GELU", ACT_GELU), ("MOE_RELU2", ACT_RELU2), ("MOE_SITU", ACT_SITU)] {
+            assert_eq!(define(n), Some(v), "{n}");
+        }
+        // the select kernels' registers a lane hold the experts they are chosen for
+        assert!(SRC.contains("moe_select_t<8>") && SRC.contains("moe_select_t<16>") && SRC.contains("moe_select_t<32>"));
+    }
+
+    /// The scratch is the largest layer's, not the layers' sum: forty layers of a model take what one takes; and the sizes of the four models' layers at a prompt chunk are what their shapes give.
+    #[test]
+    fn the_scratch_is_the_largest_layers_not_the_sum() {
+        let glm = Shape { cfg: MoeCfg { experts: 288, router_hidden: 4096, hidden: 4096, inter: 2048, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(10.0) } }, twelve: false, shared: Some((2048, 4096, 4096)), expert_rows: 4096, sparse: false, slice: 1 };
+        let nemo = Shape { cfg: MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 }, twelve: false, shared: Some((5376, 4096, 4096)), expert_rows: 2688, sparse: false, slice: 1 };
+        let one = Sizes::of(&[glm], 2048);
+        assert_eq!(Sizes::of(&[glm; 42], 2048), one, "42 layers of one shape");
+        // GLM-5.3-Flash at 2,048 tokens: 16,384 pairs; the clamp is a kernel's: the first product's rows are 4,096 wide and the activation's 2,048
+        assert_eq!((one.pairs, one.a, one.h, one.plan), (16384, 16384 * 4096 * 2, 16384 * 2048 * 2, (2 + 2 * 288 + 16384) * 4));
+        assert_eq!((one.sg, one.sh, one.so), (2048 * 4096 * 2, 2048 * 2048 * 2, 2048 * 4096 * 2));
+        assert_eq!(one.grouped, vec![[0, 288, 4096, 4096, 8, 0, 0], [0, 288, 4096, 2048, 8, 0, 1]]);
+        // Nemotron 3: relu squared in place (no buffer of its own for the activation), the shared expert reading and writing the model's width
+        let n = Sizes::of(&[nemo], 2048);
+        assert_eq!((n.a, n.h), (2048 * 22 * 2688 * 2, 16), "{n:?}");
+        assert_eq!(n.so, 2048 * 4096 * 2);
+        // the two together: the maxima of each, and both layers' products asked for
+        let both = Sizes::of(&[glm, nemo], 2048);
+        assert_eq!((both.a, both.h, both.pairs, both.logits), (one.a.max(n.a), one.h, one.pairs.max(n.pairs), one.logits.max(n.logits)));
+        assert_eq!(both.grouped.len(), 4);
+        // the counters: a unit a row block of the first product (128 rows with a fused activation), by the experts a pair can hit
+        assert_eq!(both.units, 1 << 18); // (the dense products' floor: the grouped ones need 42 * 512 and 64 * 288)
+    }
+
+    #[test]
+    fn the_activation_kernels_modes() {
+        assert_eq!(Act::SwiGlu { limit: None }.kernel(), (ACT_SILU, f32::INFINITY, 0.0));
+        assert_eq!(Act::SwiGlu { limit: Some(10.0) }.kernel(), (ACT_SILU, 10.0, 0.0));
+        assert_eq!(Act::Situ { beta: 4.0, linear: 25.0 }.kernel(), (ACT_SITU, 4.0, 25.0));
+        assert_eq!(Act::GeGlu.kernel().0, ACT_GELU);
+        assert_eq!(Act::Relu2.kernel().0, ACT_RELU2);
+        assert!(Act::GeGlu.gated() && !Act::Relu2.gated());
+    }
+}

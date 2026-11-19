@@ -1,0 +1,3 @@
+loaded in 304 s: stage 0: NVIDIA H100 80GB HBM3 (sm_90): DeepSeek-V4 on the dynamic engine, 0..22 of 43 layers, weights 73.971 GiB (layout mma), KV 0.016 GiB (4096 positions), 74.98 of 79.18 GiB in use; stage 1: NVIDIA H100 80GB HBM3 (sm_90): DeepSeek-V4 on the dynamic engine, 22..43 of 43 layers, weights 70.797 GiB (layout mma), KV 0.015 GiB (4096 positions), 71.81 of 79.18 GiB in use
+The capital of France is Paris. It is one of the most famous cities in the world. Paris is known for its beautiful architecture, art, and culture. The city is home to
+prompt of 6 tokens in 27 ms; 31 tokens at 13.31 ms each (75.2 a second)

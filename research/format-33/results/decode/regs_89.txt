@@ -1,0 +1,14 @@
+ptxas info    : Compiling entry function 'k_dec_rans' for 'sm_89'
+ptxas info    : Used 48 registers, used 1 barriers, 16384 bytes smem, 416 bytes cmem[0]
+ptxas info    : Compiling entry function 'k_hot_t4b' for 'sm_89'
+ptxas info    : Used 48 registers, used 1 barriers, 5248 bytes smem, 416 bytes cmem[0]
+ptxas info    : Compiling entry function 'k_hot_t4a' for 'sm_89'
+ptxas info    : Used 48 registers, used 1 barriers, 5248 bytes smem, 416 bytes cmem[0]
+ptxas info    : Compiling entry function 'k_hot_tiered' for 'sm_89'
+ptxas info    : Used 48 registers, used 1 barriers, 5248 bytes smem, 408 bytes cmem[0]
+ptxas info    : Compiling entry function 'k_dec_t4b' for 'sm_89'
+ptxas info    : Used 56 registers, used 1 barriers, 5248 bytes smem, 416 bytes cmem[0]
+ptxas info    : Compiling entry function 'k_dec_t4a' for 'sm_89'
+ptxas info    : Used 56 registers, used 1 barriers, 5248 bytes smem, 416 bytes cmem[0]
+ptxas info    : Compiling entry function 'k_dec_tiered' for 'sm_89'
+ptxas info    : Used 48 registers, used 1 barriers, 8 bytes cumulative stack size, 5248 bytes smem, 408 bytes cmem[0]

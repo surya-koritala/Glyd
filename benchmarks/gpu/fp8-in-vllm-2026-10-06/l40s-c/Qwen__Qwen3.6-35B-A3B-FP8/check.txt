@@ -1,0 +1,17 @@
+  stock-graph: ok in 166 s; weights 34.25 GiB, KV 113943 tokens, concurrency (8192, 13.91)
+  glyd-graph: ok in 218 s; weights 30.15 GiB, KV 268101 tokens, concurrency (8192, 32.73)
+  glyd-graph-poison: ok in 90 s; weights 30.15 GiB, KV 265867 tokens, concurrency (8192, 32.45)
+GPU NVIDIA L40S
+PASS: packed[graph]: 200 layers packed (40 of them experts' layers): 26.32 GiB held for 31.31 GiB of weights as vLLM's kernels are fed them (15.9% less, 6.725 bits a value), scratches 0.77 GiB; methods {'UnquantizedLinearMethod': 250, 'UnquantizedEmbeddingMethod': 2, 'Fp8LinearMethod': 160, 'GlydFp8MoEMethod': 40, 'Fp8KVCacheMethod': 10}; f8_linear for few tokens: 0 Linears
+INFO: glyd[graph]: weights 30.15 GiB, KV cache 268101 tokens (7.25 GiB), concurrency (8192, 32.73)
+PASS: exact[graph]: tokens, token log probabilities and the top 20 prompt log probabilities of 4 prompts (38569 values) bit for bit stock vLLM's
+PASS: kernel[graph]: the FP8 kernel lines vLLM logs are the same in both (3: Marlin kernel can achieve better performance for small size_n with experimental use_atomic_add feature. You can consider set environment variable VLLM_MARLIN_USE_ATOMIC_ADD to 1 if possible.; Selected MarlinFP8ScaledMMLinearKernel for Fp8LinearMethod; Using TRITON Fp8 MoE backend out of potential ba)
+PASS: weights[graph]: vLLM logs 34.25 GiB stock, 30.15 GiB Glyd (-4.10 GiB, 12.0% less); expected 30.03 (stock less the packs' saving 4.99, plus the scratches 0.77)
+INFO: KV cache[graph]: stock 113943 tokens (3.09 GiB, concurrency (8192, 13.91)), Glyd 268101 tokens (7.25 GiB, concurrency (8192, 32.73))
+INFO: memory[graph]: torch's peak during the exact check's generate (prompt log probabilities included): stock 38.91 GiB, 0.89 over its start; Glyd 38.97 GiB, 0.89 over its start
+PASS: exact-bench[graph][users1]: the greedy tokens of the first batch (1 requests of 1024 tokens, 256 out each) the same in both
+FAIL: exact-bench[graph][users32]: the greedy tokens of the first batch (32 requests of 1024 tokens, 256 out each) differ in both
+INFO: speed[graph] (output tokens a second, Glyd / stock): users1 84.8 / 133.3 = 0.64, users8 238.3 / -, users32 430.5 / 734.7 = 0.59
+PASS: verify[graph]: 240 packs decoded back at load bit for bit the bytes they were made from (31.31 GiB; every Linear and every expert packed)
+PASS: poison[graph]: Glyd with the Linears' scratch overwritten after every product and the experts buffer e4m3 NaN before every call: tokens and log probabilities bit for bit stock's
+FAIL: 1 failed; /root/results/Qwen__Qwen3.6-35B-A3B-FP8/check_fp8_vllm.json

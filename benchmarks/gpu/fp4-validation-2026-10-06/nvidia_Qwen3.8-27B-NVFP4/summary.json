@@ -1,0 +1,177 @@
+{
+ "model": "nvidia/Qwen3.8-27B-NVFP4",
+ "args": {
+  "model": "nvidia/Qwen3.8-27B-NVFP4",
+  "out": "/root/results/nvidia_Qwen3.8-27B-NVFP4",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "max_num_seqs": 64,
+  "layout": "auto",
+  "scales": true,
+  "codes": true,
+  "codes_exact_all": true,
+  "steps": "stock-eager,glyd-exact,stock,glyd,glyd-b,stock-b",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 3,
+  "no_image": false,
+  "language_model_only": false,
+  "max_batched_tokens": null,
+  "fallback_layout": null
+ },
+ "exact": {
+  "reference": "stock-eager",
+  "equal": true,
+  "diffs": {
+   "tokens": null,
+   "logprobs": null,
+   "long_ids": null,
+   "long_logprobs": null,
+   "image_tokens": null,
+   "image_logprobs": null
+  },
+  "image": true,
+  "image_error": null,
+  "verified": 111,
+  "packed": 111,
+  "codes": {
+   "layers": 128,
+   "pack_bytes": 8585762804,
+   "code_bytes": 8556380160,
+   "scratch_bytes": 89128960,
+   "saved_bytes": -118511604,
+   "verified": 128,
+   "verified_bytes": 8556380160
+  },
+  "codes_forced": true
+ },
+ "glyd": {
+  "weights_gib": 18.45,
+  "kv_tokens": 64572,
+  "kv_gib": 6.45,
+  "concurrency": 7.88,
+  "tps": {
+   "1": {
+    "median": 50.48,
+    "runs": [
+     50.67,
+     50.6,
+     50.57,
+     50.39,
+     50.21,
+     50.32
+    ]
+   },
+   "32": {
+    "median": 1087.37,
+    "runs": [
+     1090.2,
+     1087.83,
+     1088.49,
+     1086.9,
+     1079.41,
+     1082.13
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantModelOptMixedPrecisionConfig",
+  "glyd_key": {
+   "layout": "mma",
+   "exact": false,
+   "verify": false,
+   "fraction": 1.0,
+   "kv": "off",
+   "scales": true,
+   "codes": true,
+   "glyd": "0.29.1",
+   "packs": "f83343e6b21267a2"
+  },
+  "start_s": 192.0
+ },
+ "inventory": {
+  "opts": {
+   "layout": "mma",
+   "exact": false,
+   "verify": false,
+   "fraction": 1.0,
+   "kv": "off"
+  },
+  "packed_count": 111,
+  "verified_count": 0,
+  "packed_bf16_bytes": 3454590976,
+  "packed_pack_bytes": 2327894061,
+  "saved_bytes": 1126696915,
+  "gpu_tensor_bytes": 19021738269,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.003324429504573345,
+  "left_16bit_top": {
+   "Embedding / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 5308416,
+    "example": "visual.pos_embed.weight"
+   },
+   "Conv3dLayer / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 3538944,
+    "example": "visual.patch_embed.proj.weight"
+   }
+  },
+  "scales": {
+   "layers": 128,
+   "pack_bytes": 561984156,
+   "scale_bytes": 1069547520,
+   "scratch_bytes": 11141120,
+   "saved_bytes": 496422244,
+   "verified": 128,
+   "verified_bytes": 1069547520
+  },
+  "codes": {
+   "layers": 0,
+   "pack_bytes": 0,
+   "code_bytes": 0,
+   "scratch_bytes": 0,
+   "saved_bytes": 0,
+   "verified": 0,
+   "verified_bytes": 0
+  }
+ },
+ "stock": {
+  "weights_gib": 19.92,
+  "kv_tokens": 54934,
+  "kv_gib": 5.5,
+  "concurrency": 6.71,
+  "tps": {
+   "1": {
+    "median": 56.45,
+    "runs": [
+     56.76,
+     56.7,
+     56.42,
+     56.48,
+     56.32,
+     56.34
+    ]
+   },
+   "32": {
+    "median": 702.28,
+    "runs": [
+     702.9,
+     702.28,
+     701.39,
+     702.82,
+     702.29,
+     701.7
+    ]
+   }
+  },
+  "quantization": "modelopt_mixed",
+  "quant_config": "ModelOptMixedPrecisionConfig",
+  "start_s": 167.2,
+  "error": null,
+  "log_tail": null
+ },
+ "fused_agreement": 0.6562
+}

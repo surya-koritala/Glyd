@@ -1,0 +1,6 @@
+END=4200
+# vLLM's own CUTLASS NVFP4 GEMM for stock and Glyd alike (as quant-16bit-parts' RTX 5090 job): FlashInfer's NVFP4 GEMMs compile on first use, and
+# their first build failed on the run before (records/qbm-5090-run4)
+export VLLM_DISABLED_KERNELS=FlashInferCuteDslNvFp4LinearKernel,FlashInferCutlassNvFp4LinearKernel,FlashInferB12xNvFp4LinearKernel,FlashInferFP8ScaledMMLinearKernel
+QP_MODELS="nvidia/Qwen3.6-35B-A3B-NVFP4|--max-num-seqs 64
+nvidia/Qwen3.8-27B-NVFP4|--max-num-seqs 64 --steps stock-eager,glyd-exact"

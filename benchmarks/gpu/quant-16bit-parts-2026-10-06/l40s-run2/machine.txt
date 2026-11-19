@@ -1,0 +1,8 @@
+Linux 6.8.0-110-generic #110-Ubuntu SMP PREEMPT_DYNAMIC Thu Mar 19 15:09:20 UTC 2026 x86_64 GNU/Linux
+name, compute_cap, driver_version, memory.total [MiB]
+NVIDIA L40S, 8.9, 580.126.09, 46068 MiB
+128
+               total        used        free      shared  buff/cache   available
+Mem:            1511         213         359          61        1018        1298
+overlay         220G   18M  220G   1% /
+Tue Oct  6 11:45:41 UTC 2026

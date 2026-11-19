@@ -1,0 +1,31 @@
+/usr/local/cuda
+/usr/local/cuda-12
+/usr/local/cuda-12.8
+Cuda compilation tools, release 12.8, V12.8.93
+Build cuda_12.8.r12.8/compiler.35583870_0
+rustup: rc=0 7 s
+hfvenv: rc=0 5 s
+download-q06: rc=0
+download-m08: rc=0
+download-m9: rc=0
+lib: rc=0 242 s
+build: rc=0 87 s
+int4-check: rc=0 7 s
+int3-check: rc=0 9 s
+int5-check: rc=0 6 s
+int6-check: rc=0 5 s
+pack-q06-i4: rc=0 25 s
+verify-q06-i4: rc=0 2 s
+pack-q06-i3: rc=0 32 s
+verify-q06-i3: rc=0 1 s
+run-wren-hub: rc=0 55 s
+run-wren-dir: rc=0 45 s
+tag-hummingbird: rc=1 0 s
+generate-i4: rc=0 23 s
+generate-i3: rc=0 31 s
+preflight-wren: rc=0 0 s
+bench-i4: rc=0
+bench-i5: rc=0
+bench-i3: rc=0
+test-gpu: rc=0 14 s
+test-engine: rc=0 30 s

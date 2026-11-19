@@ -1,0 +1,7 @@
+stress: 300 requests (131530 tokens of prompts, Natural, seed 21) at 4 users at a time on a cache of 2048 tokens (128 blocks of 16)
+184.1 s: 300 requests with every token, 0 ended with an error in words, 15 sent back to wait at least once (most often 1 times)
+scheduler: prompt tokens 138619, found in the cache 4176, sent back for room 15, steps taken back for a block the cache could not store exactly 0 (0 blocks named lost), blocks kept in the second extra memory 0, ended for it 0
+every write compared with a bf16 copy at the step that wrote it: values checked 24889761792, differing 0, values in blocks the cache had named lost (taken back, not compared) 0
+KV cache: 1521357 entries past a block's own room in 19259 blocks, 989 blocks took units of the first extra memory (used at most 37 of 14098 at once), 0 blocks kept in the second (used at most 0 of 256 units), 0 blocks lost
+extra memory in use now that nothing is held: first 0 of 14098, second 0 of 256
+stress: all as it should be

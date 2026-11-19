@@ -1,0 +1,142 @@
+{
+  "status": "completed",
+  "exit_code": 0,
+  "pod_id": "1synxtqtjgcr15",
+  "pod_deleted": true,
+  "source": {
+    "build_commit": "55f1dfa4cf6a388bcbde8847592134d2f05a6466",
+    "build_tree": "fe842aacfc45c0e10232ecd6192aa07ae31b8de4",
+    "branch_head": "23e0132ac988954b2312e9afc1de84ca8a2ed3cc",
+    "branch_tree": "fe842aacfc45c0e10232ecd6192aa07ae31b8de4"
+  },
+  "bundle_sha256": "3fdd19a94afc118b3fe0d7df113413b4d7c713ea1b393ca244cb9a856fa70073",
+  "model": "Qwen/Qwen3.8-27B",
+  "model_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "scored_tokens_per_arm": 2048,
+  "control": {
+    "scored_tokens": 2048,
+    "top1_agreement": 0.9873046875,
+    "mean_abs_logprob_difference": 0.024136068435962176,
+    "max_abs_logprob_difference": 0.6908826587249146,
+    "mean_nll_delta": -0.0008458258935216055,
+    "perplexity_ratio": 0.9991545317163671,
+    "nll_delta_window_bootstrap_95": [
+      -0.002323310733924247,
+      0.0007976214792461652
+    ],
+    "window_nll_deltas": [
+      -0.0003152883897953228,
+      -0.003082905159993216,
+      -0.003057958127428231,
+      -0.0004904441647740618,
+      -0.0024520016219603496,
+      -0.002749513370990849,
+      0.0019408271561890747,
+      0.003440676530580112
+    ],
+    "scope": "eight-window likelihood screen, not task accuracy",
+    "control_pass": true,
+    "control_bounds": {
+      "top1_agreement_min": 0.95,
+      "mean_abs_logprob_max": 0.05,
+      "absolute_window_nll_delta_max": 0.1
+    }
+  },
+  "candidates": {
+    "3": {
+      "sample_saving_percent": 51.9175,
+      "sample_bits_per_weight": 7.69319273,
+      "mean_nll": 1.934755219,
+      "perplexity": 6.922349388,
+      "perplexity_change_percent": -0.12123327620876534,
+      "perplexity_change_window_bootstrap_95_percent": [
+        -0.5486755853150295,
+        0.3103335647010111
+      ],
+      "top1_agreement": 0.95703125,
+      "comparison": {
+        "scored_tokens": 2048,
+        "top1_agreement": 0.95703125,
+        "mean_abs_logprob_difference": 0.08210519286279297,
+        "max_abs_logprob_difference": 4.199625682000001,
+        "mean_nll_delta": -0.0012130682319335942,
+        "perplexity_ratio": 0.9987876672379123,
+        "nll_delta_window_bootstrap_95": [
+          -0.005501863384277344,
+          0.0030985302402343757
+        ],
+        "window_nll_deltas": [
+          0.001856335714843738,
+          0.007834270460937497,
+          -0.0010951554531249811,
+          -0.012015901250000006,
+          -0.0029182848359375017,
+          -0.0029421900546875088,
+          0.006743378902343747,
+          -0.0071669993398437385
+        ],
+        "scope": "eight-window likelihood screen, not task accuracy"
+      }
+    },
+    "2": {
+      "sample_saving_percent": 58.1665,
+      "sample_bits_per_weight": 6.6933642,
+      "mean_nll": 1.948705855,
+      "perplexity": 7.019597324,
+      "perplexity_change_percent": 1.281903637201398,
+      "perplexity_change_window_bootstrap_95_percent": [
+        0.5230785027870886,
+        2.1230243453932993
+      ],
+      "top1_agreement": 0.93212890625,
+      "comparison": {
+        "scored_tokens": 2048,
+        "top1_agreement": 0.93212890625,
+        "mean_abs_logprob_difference": 0.14285800726220704,
+        "max_abs_logprob_difference": 4.676484096000001,
+        "mean_nll_delta": 0.012737568017089846,
+        "perplexity_ratio": 1.012819036372014,
+        "nll_delta_window_bootstrap_95": [
+          0.005217151992187506,
+          0.021008021549804686
+        ],
+        "window_nll_deltas": [
+          0.02400697988281248,
+          0.031674682875,
+          0.01985034434375001,
+          0.0016578075390625087,
+          0.015149549000000007,
+          -0.0038426654335937355,
+          0.006387220656249999,
+          0.007016625273437497
+        ],
+        "scope": "eight-window likelihood screen, not task accuracy"
+      }
+    }
+  },
+  "ledger": [
+    {
+      "pod_id": "sd6ffjpdphxacv",
+      "name": "glyd-bench-lossy27-q1-20261006",
+      "gpu_hourly_rate_usd": 1.59,
+      "guard_seconds": 122.0,
+      "gpu_cost_estimate_usd": 0.05388333333333334
+    },
+    {
+      "pod_id": "1synxtqtjgcr15",
+      "name": "glyd-bench-lossy27-q2-20261006",
+      "gpu_hourly_rate_usd": 1.59,
+      "guard_seconds": 688.0,
+      "gpu_cost_estimate_usd": 0.3038666666666667
+    }
+  ],
+  "combined_gpu_cost_estimate_usd": 0.35775,
+  "daily_guard_estimate_usd": 60.58,
+  "limitations": [
+    "Storage reduction is measured on 51 windows from 23 tensors, not the whole checkpoint.",
+    "Quality is an eight-window language-likelihood screen, not task accuracy.",
+    "Rounded values run through the existing lossless GPU storage, not the experimental GPU format.",
+    "348 vision/MTP tensors are excluded from the language forward pass.",
+    "No FP8/NVFP4 quality comparison, native-format VRAM or inference-speed result."
+  ]
+}

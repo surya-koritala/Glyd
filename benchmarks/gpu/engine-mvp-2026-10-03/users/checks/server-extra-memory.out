@@ -1,0 +1,8 @@
+     a short request 'The capital of France is': 200, '{"id":"cmpl-2","object":"text_completion","created":1791090245,"model":"/opt/dlami/nvme/engine/qwen3'
+ok   a short request is served whole -- 200
+     a request of 40 made-up words (try 1): 400, '{"error":{"message":"the lossless KV cache cannot hold this request, even alone: its keys and values'
+ok   a request the cache cannot hold ends with an error in words -- 400: {"error":{"message":"the lossless KV cache cannot hold this request, even alone: its keys and values need more of the cache's extra memory than there is: send a shorter text, or make the cache larger","type":"invalid_req
+ok   the same, asked as a stream, says so too -- 400: '{"error":{"message":"the lossless KV cache cannot hold this request, even alone: its keys and values need more of the cache\'s extra memory than there is: send a'
+ok   the short request after the failures gets the text it got before them
+ok   the counts say what happened -- ended_for_loss 2, taken_back 3, lost_blocks 6, running 0, waiting 0
+ok

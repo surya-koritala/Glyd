@@ -1,0 +1,8 @@
+install: 59 s
+engine8b up in 4 s, GPU memory used 15572 MiB
+glydvllm8b up in 0 s, GPU memory used 1 MiB
+glyd_q35_9b up in 145 s, GPU memory used 21168 MiB
+vllm8b_b up in 133 s, GPU memory used 22452 MiB
+glydvllm8b_b up in 49 s, GPU memory used 22582 MiB
+glydc8b up in 163 s, GPU memory used 22350 MiB
+glydc_q35 up in 221 s, GPU memory used 20862 MiB

@@ -1,0 +1,2 @@
+glyd 0.28.0-rc.1
+SIMD: AVX2

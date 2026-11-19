@@ -1,0 +1,32 @@
+{
+ "url": "http://127.0.0.1:8000",
+ "model": "nemotron",
+ "each": [
+  {
+   "ttft_ms": 243.7,
+   "decode_tok_s": 99.49,
+   "completion_tokens": 256,
+   "prompt_tokens": 1050,
+   "chunks": 256
+  },
+  {
+   "ttft_ms": 243.1,
+   "decode_tok_s": 99.49,
+   "completion_tokens": 256,
+   "prompt_tokens": 1050,
+   "chunks": 256
+  },
+  {
+   "ttft_ms": 243.3,
+   "decode_tok_s": 99.51,
+   "completion_tokens": 256,
+   "prompt_tokens": 1050,
+   "chunks": 256
+  }
+ ],
+ "ttft_ms_median": 243.3,
+ "decode_tok_s_median": 99.49,
+ "rounds": 3,
+ "prompt_tokens": 1024,
+ "new": 256
+}

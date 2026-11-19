@@ -1,0 +1,43 @@
+{
+ "save": "/root/w/save/Qwen3.8-27B",
+ "verified": 402,
+ "hashed": 450,
+ "unhashed": 0,
+ "load_s": 124.0,
+ "gpu_bytes": 36537701376,
+ "gpu_peak_bytes": 42627055104,
+ "prompt": "In one sentence: what does a lossless compressor guarantee?",
+ "answer": "A lossless compressor guarantees that the original data can be perfectly reconstructed from the compressed data without any loss of information.",
+ "gen_s": 4.2,
+ "save_bytes": 37015751129,
+ "same_tensors_bf16_bytes": 53791996928,
+ "packs": 305,
+ "packed_tensors": 401,
+ "as_is_tensors": 450,
+ "as_is_bytes": 2595273728,
+ "source_bytes": 55563006776,
+ "source_tensors": 1199,
+ "source_groups": {
+  "lm_head.weight": 1,
+  "model.language_model": 850,
+  "model.visual": 333,
+  "mtp.fc": 1,
+  "mtp.layers": 11,
+  "mtp.norm": 1,
+  "mtp.pre_fc_norm_embedding": 1,
+  "mtp.pre_fc_norm_hidden": 1
+ },
+ "save_groups": {
+  "lm_head.weight": 1,
+  "model.embed_tokens": 1,
+  "model.layers": 848,
+  "model.norm": 1
+ },
+ "save_vs_same_bf16": 0.3119,
+ "format": "glyd-v4",
+ "glyd": "0.29.0",
+ "source": {
+  "repo": "Qwen/Qwen3.8-27B",
+  "revision": null
+ }
+}

@@ -1,0 +1,8 @@
+glyd serve: the flags after -- are vLLM's; using vLLM.
+Qwen3.8-27B: 40.3 GB on the GPU with Glyd, instead of 55.6 GB, which does not fit the 47.7 GB your GPU has free.
+Qwen3.8-27B is downloaded already.
+Settings: 16,384-token context (the most that fits), compiled mode (CUDA graphs), 92% of GPU memory (43.9 GB).
+Loading Qwen3.8-27B with Glyd: 40.3 GB instead of 55.6 GB...
+glyd: the server stopped while starting: RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}.
+  Report it at https://github.com/surya-koritala/Glyd/issues with the log if it persists
+  The server's log: /root/results/Qwen3.8-27B/glyd/state-try2/glyd/logs/serve-20261006-043600.log

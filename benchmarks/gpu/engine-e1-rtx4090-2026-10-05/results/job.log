@@ -1,0 +1,122 @@
+Mon Oct  5 22:35:44 UTC 2026
+NVIDIA GeForce RTX 4090, 24564 MiB, 595.91.07
+| NVIDIA-SMI 595.91.07              Driver Version: 595.91.07      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+Linux 4ede95d50030 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 21:05:19 UTC  x86_64 x86_64 x86_64 GNU/Linux
+PRETTY_NAME="Ubuntu 24.04.3 LTS"
+Python 3.12.3
+gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
+48
+               total        used        free      shared  buff/cache   available
+Mem:             503          14         268           0         223         489
+overlay         150G   52M  150G   1% /
+total 33480
+-rw-r--r-- 1 root root 34282675 Oct  5 22:35 glyd_gpu-0.28.0-cp310-abi3-manylinux_2_28_x86_64.whl
+22:35:46 (0 min) install (at most 1500 s)
+22:36:47 (1 min) install: exit 0 after 61 s
+22:36:47 (1 min) ok   install.sh from the branch, as curl | sh: exit 0
+22:36:47 (1 min) ok   install.sh: no traceback in its output
+22:36:47 (1 min) ok   the tool's glyd-gpu has the engine's program, executable
+22:36:47 (1 min) ok   the engine in the tool is the one in CI's wheel (sha256 3cdd0a507395eff6fb965020d0ed14ea61c01d9bb513cdb114b6ba45ad080ac3)
+22:36:47 (1 min) engine_version (at most 20 s)
+22:36:47 (1 min) engine_version: exit 0 after 0 s
+22:36:47 (1 min) ok   glyd-engine --version
+22:36:47 (1 min) engine_doctor (at most 120 s)
+22:36:48 (1 min) engine_doctor: exit 0 after 1 s
+22:36:48 (1 min) glyd_doctor (at most 300 s)
+22:36:49 (1 min) glyd_doctor: exit 0 after 1 s
+22:36:49 (1 min) ok   glyd doctor lists the engine, found in the tool's package
+22:36:49 (1 min) run8b (at most 1800 s)
+22:39:12 (3 min) run8b: exit 0 after 143 s
+22:39:12 (3 min) ok   glyd run Qwen/Qwen3-8B --prompt: exit 0
+22:39:12 (3 min) ok   glyd run: one line says glyd-engine runs it
+22:39:12 (3 min) ok   glyd run: that line is glyd-engine's
+22:39:12 (3 min) ok   glyd run: an answer on stdout
+22:39:17 (3 min) ok   glyd run: the GPU is let go
+22:39:21 (3 min) ok   glyd serve: /v1/models answers
+22:39:21 (3 min) ok   glyd serve: one line says glyd-engine runs it
+22:39:21 (3 min) ok   glyd serve: that line is glyd-engine's
+22:39:21 (3 min) ok   a chat completion over the API has an answer
+22:39:21 (3 min) ok   the chat page is served at /
+22:39:21 (3 min) serve_smoke (at most 600 s)
+22:39:25 (3 min) serve_smoke: exit 1 after 4 s
+22:39:25 (3 min) FAIL the API's own check (serve_smoke.py): exit 0 -- 2 lines FAIL
+22:39:26 (3 min) ok   glyd serve stops on SIGTERM
+22:39:30 (3 min) ok   glyd serve: the GPU is let go
+22:39:30 (3 min) fallback (at most 900 s)
+22:40:59 (5 min) fallback: exit 0 after 89 s
+22:40:59 (5 min) ok   glyd run of a model the engine does not run: exit 0
+22:40:59 (5 min) ok   glyd run: one line says why vLLM runs it
+22:40:59 (5 min) ok   glyd run: that line is the engine's reason
+22:40:59 (5 min) ok   glyd run via vLLM: an answer on stdout
+22:41:03 (5 min) ok   glyd run via vLLM: the GPU is let go
+22:41:03 (5 min) run8b_warm (at most 300 s)
+22:41:07 (5 min) run8b_warm: exit 0 after 4 s
+22:41:07 (5 min) ok   glyd run Qwen/Qwen3-8B again (warm): exit 0 and an answer
+22:41:07 (5 min) rust_version (at most 20 s)
+22:41:07 (5 min) rust_version: exit 0 after 0 s
+22:41:07 (5 min) ok   the Rust glyd runs here
+22:41:07 (5 min) rust_via_tool (at most 300 s)
+22:41:10 (5 min) rust_via_tool: exit 0 after 3 s
+22:41:10 (5 min) ok   Rust glyd -> Python tool -> engine: exit 0 and an answer
+22:41:10 (5 min) ok   Rust glyd -> Python tool -> engine: one line, glyd-engine's
+22:41:10 (5 min) rust_direct (at most 300 s)
+22:41:14 (5 min) rust_direct: exit 0 after 4 s
+22:41:14 (5 min) ok   Rust glyd starts the engine itself (GLYD_ENGINE=program): exit 0 and an answer
+22:41:14 (5 min) ok   Rust glyd starts the engine itself: one line, glyd-engine's
+22:41:14 (5 min) rust_unsupported (at most 45 s)
+22:41:49 (6 min) rust_unsupported: exit 0 after 35 s
+22:41:49 (6 min) ok   Rust glyd, an unsupported model: one line, then the Python tool goes on with vLLM
+22:41:49 (6 min) rust_off (at most 45 s)
+22:42:59 (7 min) rust_off: exit 124 after 70 s
+22:42:59 (7 min) ok   Rust glyd, GLYD_ENGINE=0: one line, then vLLM
+22:42:59 (7 min) py_off (at most 45 s)
+22:43:43 (7 min) py_off: exit 0 after 44 s
+22:43:43 (7 min) ok   Python tool, GLYD_ENGINE=0: one line, then vLLM
+22:43:46 (8 min) ok   no traceback in any step's output
+22:43:46 (8 min) ok   no out-of-memory in any step's output
+22:43:50 (8 min) ok   the GPU is idle at the end
+E1 user flow on NVIDIA GeForce RTX 4090, 24564 MiB, 595.91.07
+passed 35, failed 1
+FAIL the API's own check (serve_smoke.py): exit 0
+ok   install.sh from the branch, as curl | sh: exit 0
+ok   install.sh: no traceback in its output
+ok   the tool's glyd-gpu has the engine's program, executable
+ok   the engine in the tool is the one in CI's wheel (sha256 3cdd0a507395eff6fb965020d0ed14ea61c01d9bb513cdb114b6ba45ad080ac3)
+ok   glyd-engine --version
+ok   glyd doctor lists the engine, found in the tool's package
+ok   glyd run Qwen/Qwen3-8B --prompt: exit 0
+ok   glyd run: one line says glyd-engine runs it
+ok   glyd run: that line is glyd-engine's
+ok   glyd run: an answer on stdout
+ok   glyd run: the GPU is let go
+ok   glyd serve: /v1/models answers
+ok   glyd serve: one line says glyd-engine runs it
+ok   glyd serve: that line is glyd-engine's
+ok   a chat completion over the API has an answer
+ok   the chat page is served at /
+ok   glyd serve stops on SIGTERM
+ok   glyd serve: the GPU is let go
+ok   glyd run of a model the engine does not run: exit 0
+ok   glyd run: one line says why vLLM runs it
+ok   glyd run: that line is the engine's reason
+ok   glyd run via vLLM: an answer on stdout
+ok   glyd run via vLLM: the GPU is let go
+ok   glyd run Qwen/Qwen3-8B again (warm): exit 0 and an answer
+ok   the Rust glyd runs here
+ok   Rust glyd -> Python tool -> engine: exit 0 and an answer
+ok   Rust glyd -> Python tool -> engine: one line, glyd-engine's
+ok   Rust glyd starts the engine itself (GLYD_ENGINE=program): exit 0 and an answer
+ok   Rust glyd starts the engine itself: one line, glyd-engine's
+ok   Rust glyd, an unsupported model: one line, then the Python tool goes on with vLLM
+ok   Rust glyd, GLYD_ENGINE=0: one line, then vLLM
+ok   Python tool, GLYD_ENGINE=0: one line, then vLLM
+ok   no traceback in any step's output
+ok   no out-of-memory in any step's output
+ok   the GPU is idle at the end
+--- times
+install: 61 s
+first run of Qwen3-8B from an empty machine, to the answer: 143 s
+glyd serve, to /v1/models answering: 4 s
+second start of Qwen3-8B, to the answer: 4 s
+22:43:50 (8 min) ending

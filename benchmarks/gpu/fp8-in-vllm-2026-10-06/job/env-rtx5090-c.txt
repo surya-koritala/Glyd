@@ -1,0 +1,4 @@
+Q8_END=4800
+Q8_BENCH=0
+Q8_RUN_TIMEOUT=1200
+Q8_MODELS="Qwen/Qwen3.8-27B-FP8|graphq|--util,0.95,--max-num-seqs,32,--stock-may-fail,--stock-brief,--poison|full Qwen/Qwen3.8-27B-FP8|graphq|--util,0.95,--max-num-seqs,32,--language-model-only,--stock-may-fail,--stock-brief|lm RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic|graphq|--util,0.95,--stock-brief"

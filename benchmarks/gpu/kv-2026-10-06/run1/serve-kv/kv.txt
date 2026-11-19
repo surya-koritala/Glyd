@@ -1,0 +1,7 @@
+GPU KV cache size: 177,493 tokens
+Maximum concurrency for 8,192 tokens per request: 21.67x
+Model loading took 12.18 GiB
+Setting attention block size to 704 tokens
+glyd kv: extra memory 46.1 MiB (0.59% of the KV cache's estimated 7.63 GiB) and 81.3 MiB (1.04%)
+glyd kv: extra memory of 0.59% and 1.04% of the KV cache
+glyd: mma layout, the KV cache lossless (tables /root/results/glydcache/kv/kvtab-acf7b9c03bd919a7.npz)

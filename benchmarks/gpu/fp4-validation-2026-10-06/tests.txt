@@ -1,0 +1,51 @@
+test_claims ok
+test_refused ok
+INFO 10-06 21:24:55 [vllm_quant.py:149] glyd: a fp8 checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+INFO 10-06 21:24:55 [vllm_quant.py:149] glyd: a modelopt_fp4 checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+INFO 10-06 21:24:55 [vllm_quant.py:149] glyd: a compressed-tensors checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+INFO 10-06 21:24:55 [vllm_quant.py:149] glyd: a compressed-tensors checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+INFO 10-06 21:24:55 [vllm_quant.py:149] glyd: a compressed-tensors checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+INFO 10-06 21:24:55 [vllm_quant.py:149] glyd: a compressed-tensors checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+INFO 10-06 21:24:55 [vllm_quant.py:149] glyd: a compressed-tensors checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+INFO 10-06 21:24:55 [vllm_quant.py:149] glyd: a auto_gptq checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+test_layers ok
+INFO 10-06 21:24:55 [vllm_quant.py:149] glyd: a stub checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+test_options ok
+test_update_config ok
+test_nvfp4_flag ok
+INFO 10-06 21:24:55 [vllm_plugin.py:1222] glyd: packed once loaded (vLLM builds them without a quantization config): embed_tokens
+INFO 10-06 21:24:55 [vllm_plugin.py:1225] glyd: as vLLM runs them: embed_tokens
+test_after_load ok
+test_fp8_dev_path ok
+test_method_of_the_model ok
+test_modelopt_mixed_file ok
+WARNING 10-06 21:25:14 [vllm_scales.py:93] glyd: the experts' scales stay as vLLM holds them: vLLM's kernel for them picks each token's experts itself
+WARNING 10-06 21:25:14 [vllm_scales.py:93] glyd: the experts' scales stay as vLLM holds them: expert parallel
+test_wrap ok (0.0 s)
+WARNING 10-06 21:25:14 [vllm_scales.py:71] glyd: p's view_scale (torch.float8_e4m3fn (1024, 64)) is not a layout Glyd packs (a contiguous tensor of its own storage): it stays as vLLM holds it
+test_scale_tensors ok (0.2 s)
+test_forms ok (0.0 s)
+WARNING 10-06 21:25:14 [vllm_scales.py:209] glyd: a (StubLinear): no scales to pack: the layer stays as vLLM runs it
+test_linear_without_scales ok (0.0 s)
+INFO 10-06 21:25:14 [vllm_quant.py:144] glyd: the checkpoint's scales held packed (the option scales), decoded before vLLM's own kernels read them
+INFO 10-06 21:25:14 [vllm_quant.py:149] glyd: a stub checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+test_option ok (0.0 s)
+WARNING 10-06 21:25:33 [vllm_codes.py:95] glyd: the experts' codes stay as vLLM holds them: vLLM's kernel for them picks each token's experts itself
+WARNING 10-06 21:25:33 [vllm_codes.py:95] glyd: the experts' codes stay as vLLM holds them: expert parallel
+test_wrap ok (0.0 s)
+WARNING 10-06 21:25:33 [vllm_codes.py:63] glyd: Module's qweight ((512, 4096)) is not a layout Glyd packs (a contiguous tensor of its own storage, whole 32-bit words): it stays as vLLM holds it
+WARNING 10-06 21:25:33 [vllm_codes.py:63] glyd: Module's weight ((4099, 65)) is not a layout Glyd packs (a contiguous tensor of its own storage, whole 32-bit words): it stays as vLLM holds it
+test_code_tensors ok (0.5 s)
+WARNING 10-06 21:25:35 [vllm_codes.py:209] glyd: fp8 (StubFp4Linear): no 4-bit codes to pack: the layer stays as vLLM runs it
+test_fp4_linear ok (1.3 s)
+test_force ok (0.1 s)
+test_fp4_experts ok (1.3 s)
+test_linear ok (1.2 s)
+INFO 10-06 21:25:37 [vllm_codes.py:174] glyd: model.layers.1.mlp.random.qweight: its codes' pack would save under 3% (4.034 bits a code): they stay as vLLM holds them
+INFO 10-06 21:25:38 [vllm_codes.py:174] glyd: model.layers.1.mlp.awq.qweight: its codes' pack would save under 3% (3.972 bits a code): they stay as vLLM holds them
+test_not_smaller ok (1.1 s)
+test_experts ok (0.3 s)
+INFO 10-06 21:25:39 [vllm_quant.py:140] glyd: the checkpoint's 4-bit codes held packed (the option codes), decoded before vLLM's own kernels read them
+INFO 10-06 21:25:39 [vllm_quant.py:144] glyd: the checkpoint's scales held packed (the option scales), decoded before vLLM's own kernels read them
+INFO 10-06 21:25:39 [vllm_quant.py:149] glyd: a stub checkpoint: its quantized layers as vLLM runs them, its 16-bit Linears, embedding and LM head packed where Glyd packs a bf16 model's
+test_option ok (0.0 s)

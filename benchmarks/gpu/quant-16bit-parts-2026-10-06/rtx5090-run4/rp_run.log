@@ -1,0 +1,8 @@
+12:38 created qe832z3zjl64rv (NVIDIA GeForce RTX 5090)
+ssh on pod qe832z3zjl64rv ready after 11s: ssh reachable at 74.2.96.213:17921
+12:38 ssh ready at 74.2.96.213:17921 after 15 s
+NVIDIA GeForce RTX 5090, 595.91.07, 32607 MiB
+12:38 job started
+terminating qe832z3zjl64rv
+pods left: [('6v8zfwqcsi9h4y', 'glyd-bench-limits3', 'RUNNING')]
+18 min

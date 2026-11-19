@@ -1,0 +1,984 @@
+//! Kimi-K3 (src/kimi.rs; the math: research/kimi-k3.md) as a description. No residual stream: the partial sum of the current block of layers is X, the completed
+//! blocks (the embedding first) are Blk's, and every block's input is their depth mix and norm (`Op::KimiMixNorm`, the layer before's add in it). The delta
+//! attention is GLM's operations (q, k, v, the full-rank output gate, the forget gate's first product and beta one product of the layer's input, read where it
+//! leaves them: `View`); the latent attention a block of its own on GLM's kernels (q_a, the gate and kv_a one product; the absorbed query with the key part the
+//! heads share, a dense attention, the sigmoid output gate); the experts a block on the mixture-of-experts core (MXFP4 as released, packed exactly as DeepSeek-V4's
+//! FP4, situ, on the latent, its sum normed before the up projection), the shared experts the core's shared MLP; layer 0's dense MLP with situ. Norms are
+//! KimiRMSNorm's (two roundings). The CPU reference (src/kimi_ref.rs) checks it (`kimicheck`).
+
+use super::{Dyn, Loaded, ModelDesc, Op, Opts, Slot, Stage, View};
+use crate::dev::{Buf, Dev, Kernel};
+use crate::ffi::{err, Error, Result, Stream};
+use crate::glm::GlmKind;
+use crate::kimi::ConfigKimi;
+use crate::launch;
+use crate::model35::Mat;
+use crate::model_glm::{GlmHost, MlaBlock};
+use crate::model_nh::{MoeBlock, NhHost};
+use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
+use crate::offload::{Call, ExpertStore, PinnedPack};
+use crate::moe_rows::Down;
+use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout, PackBuf};
+use glyd_gpu::safetensors::Checkpoint;
+use std::cell::OnceCell;
+use std::path::Path;
+use std::rc::Rc;
+
+// The kernels' names, as kern.rs has them: a development build's are kernels/kimi.cu's, a release build's neutral.
+#[cfg(feature = "dev")]
+macro_rules! kname {
+    ($n:literal) => {
+        $n
+    };
+}
+#[cfg(not(feature = "dev"))]
+include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
+
+/// kernels/kimi.cu's kernels.
+pub struct KernKimi {
+    gate: Kernel,
+    dense_cnt: Kernel,
+    rms2: Kernel,
+    add: Kernel,
+    mix_norm: Kernel,
+    rows: Kernel,
+    /// the expert cache's plan and copies on the GPU (src/dynamic/tp_cache.rs's device path)
+    pub dc_plan: Kernel,
+    pub dc_fill: Kernel,
+}
+
+impl KernKimi {
+    pub fn load(dev: &Dev) -> Result<KernKimi> {
+        Ok(KernKimi {
+            gate: dev.kernel(kname!("kimi_gate"))?,
+            dense_cnt: dev.kernel(kname!("kimi_dense_cnt"))?,
+            rms2: dev.kernel(kname!("kimi_rms2"))?,
+            add: dev.kernel(kname!("kimi_add"))?,
+            mix_norm: dev.kernel(kname!("kimi_mix_norm"))?,
+            rows: dev.kernel(kname!("kimi_rows"))?,
+            dc_plan: dev.kernel(kname!("dc_plan"))?,
+            dc_fill: dev.kernel(kname!("dc_fill"))?,
+        })
+    }
+
+    /// o [n, w] *= sigmoid(g) (g's rows gs apart).
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes, on stream `s`.
+    pub unsafe fn gate(&self, s: Stream, o: u64, g: u64, gs: usize, w: usize, n: usize) -> Result<()> {
+        launch!(self.gate, [((n * w) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; o, g, gs as i32, w as i32, n as i32)
+    }
+
+    /// cnt [n] = pos + 1.
+    ///
+    /// # Safety
+    /// As `gate`.
+    pub unsafe fn dense_cnt(&self, s: Stream, pos: u64, cnt: u64, n: usize) -> Result<()> {
+        launch!(self.dense_cnt, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; pos, cnt, n as i32)
+    }
+
+    /// y = KimiRMSNorm(x) (rows xs and ys apart, k values).
+    ///
+    /// # Safety
+    /// As `gate`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn rms2(&self, s: Stream, x: u64, xs: usize, w: u64, y: u64, ys: usize, k: usize, eps: f32, n: u32) -> Result<()> {
+        launch!(self.rms2, [n, 1, 1], [512, 1, 1], s; x, xs as i32, w, y, ys as i32, k as i32, eps)
+    }
+
+    /// dst [n, w] (rows ds apart) = n rows of w values of src (rows ss apart).
+    ///
+    /// # Safety
+    /// As `gate`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn rows(&self, s: Stream, src: u64, ss: usize, dst: u64, ds: usize, w: usize, n: usize) -> Result<()> {
+        launch!(self.rows, [((n * w) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; src, ss as i64, dst, ds as i64, w as i32, n as i32)
+    }
+
+    /// x = bf16(x + a), e values.
+    ///
+    /// # Safety
+    /// As `gate`.
+    pub unsafe fn add(&self, s: Stream, x: u64, a: u64, e: usize) -> Result<()> {
+        launch!(self.add, [(e as u32).div_ceil(256), 1, 1], [256, 1, 1], s; x, a, e as i64)
+    }
+
+    /// A half-layer's start: x [n, d] = bf16(x + o) where o is given (0: none); the depth mix of the `nb` blocks at blk (a row's blocks side by side, rows
+    /// `rs` values apart) and x; x made the block at `push` (blk's place for it; 0: none) and then zeros; y (rows ys apart) = KimiRMSNorm of the mix by w.
+    ///
+    /// # Safety
+    /// As `gate`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn mix_norm(&self, s: Stream, blk: u64, rs: usize, nb: usize, x: u64, o: u64, wn: u64, wp: u64, push: u64, w: u64, y: u64, ys: usize, d: usize, eps: f32, n: u32) -> Result<()> {
+        if nb + 1 > 16 || d > 8192 || d % 8 != 0 || rs % 8 != 0 || ys % 8 != 0 {
+            return err(format!("a depth mix of {} sources over {d} values (rows {rs} and {ys} apart): the kernel takes 16 sources and up to 8,192 values, in 8s", nb + 1));
+        }
+        launch!(self.mix_norm, [n, 1, 1], [512, 1, 1], s; blk, rs as i64, nb as i32, x, o, wn, wp, push, w, y, ys as i32, d as i32, eps)
+    }
+}
+
+fn io<T>(r: std::io::Result<T>) -> Result<T> {
+    r.map_err(|e| Error(e.to_string()))
+}
+
+/// A tensor's bf16 words (an fp32 one rounded: none of the matrices is).
+pub(crate) fn words(ck: &Checkpoint, name: &str) -> Result<(Vec<u16>, Vec<u64>)> {
+    let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
+    let (dtype, shape) = (t.dtype.clone(), t.shape.clone());
+    let b = io(ck.read(name))?;
+    let w = match dtype.as_str() {
+        "BF16" => b.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect(),
+        d => return err(format!("{name}: {d}, where a bf16 matrix is read")),
+    };
+    Ok((w, shape))
+}
+
+/// An fp32 vector (A_log, dt_bias, the router's bias), from fp32 or widened exactly from bf16.
+fn f32s(ck: &Checkpoint, name: &str) -> Result<Buf> {
+    let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
+    let b = io(ck.read(name))?;
+    match t.dtype.as_str() {
+        "F32" => upload_bytes(&b),
+        "BF16" => upload_bytes(&b.chunks(2).flat_map(|c| ((u16::from_le_bytes([c[0], c[1]]) as u32) << 16).to_le_bytes()).collect::<Vec<u8>>()),
+        d => err(format!("{name}: {d}, where fp32 or bf16 is read")),
+    }
+}
+
+/// The latent attention's scratch for a chunk's rows (one for all the layers) and the kernels.
+struct MlaScratch {
+    qr: Buf,
+    q: Buf,
+    qa: Buf,
+    olat: Buf,
+    part: Buf,
+    cnt: Buf,
+    ov: Buf,
+    g: Buf,
+}
+
+/// What the latent attention layers share: the kernels, the scratch (made on the first run).
+pub struct MlaShared {
+    k: KernKimi,
+    scratch: OnceCell<MlaScratch>,
+}
+
+/// A latent attention layer: q's two products and norm, k and v's down product and norm, kv_b_proj as the bf16 it is (the absorbed form's), the output gate and o;
+/// its cache a row a position [c (kv_rank, normed) | the key part every head shares (rope, not rotated)].
+struct KimiMla {
+    /// q_a, the output gate and kv_a: one product of the layer's input (a row's q_rank values, its gate's heads x v, then kv_rank + rope; zeros after, to
+    /// a multiple of a GPU's slice)
+    qg: Mat,
+    q_norm: Buf,
+    q_b: Mat,
+    kv_norm: Buf,
+    wkv: Buf,
+    o: Mat,
+    d: crate::kimi::KimiMla,
+    eps: f32,
+    lat: OnceCell<Buf>,
+    shared: Rc<MlaShared>,
+}
+
+impl KimiMla {
+    fn scratch<'a>(&'a self, e: &dyn GlmHost) -> Result<&'a MlaScratch> {
+        if self.shared.scratch.get().is_none() {
+            let (ch, d) = (e.chunk(), &self.d);
+            let (ks, nh) = (d.kv_rank + d.rope, d.heads);
+            let sc = MlaScratch {
+                qr: Buf::new(ch * d.q_rank * 2)?,
+                q: Buf::new(ch * nh * (d.nope + d.rope) * 2)?,
+                qa: Buf::new(ch * nh * ks * 4)?,
+                olat: Buf::new(ch * nh * d.kv_rank * 4)?,
+                part: Buf::new(crate::model_glm::HC_FEW as usize * nh * 8 * (d.kv_rank + 2) * 4)?,
+                cnt: Buf::new(ch * 4)?,
+                ov: Buf::new(ch * nh * d.v * 2)?,
+                g: Buf::new(ch * self.qg.whole_rows() * 2)?,
+            };
+            let _ = self.shared.scratch.set(sc);
+        }
+        self.shared.scratch.get().ok_or_else(|| Error("the latent attention's scratch is not made".into()))
+    }
+}
+
+impl MlaBlock for KimiMla {
+    /// q = q_b(norm(q_a h)); [c | kr] = kv_a h, c normed into the cache with kr after it at the rows' positions; the absorbed queries [Wk^T q_nope | q_rope]; the dense
+    /// attention over the cache's rows (scores over kv_rank + rope, values the latent's kv_rank); the values expanded through kv_b_proj, gated by sigmoid(g h); o.
+    unsafe fn forward(&self, e: &dyn GlmHost, h: u64, n: usize, pos: u64, _start: usize, out: u64) -> Result<()> {
+        let sc = self.scratch(e)?;
+        let d = &self.d;
+        let (nh, ks, qw) = (d.heads, d.kv_rank + d.rope, d.nope + d.rope);
+        if self.lat.get().is_none() {
+            let _ = self.lat.set(Buf::zeroed(e.ctx() * ks * 2)?);
+        }
+        let lat = self.lat.get().ok_or_else(|| Error("no latent cache".into()))?;
+        let (s, k, kg) = (e.stream(), &self.shared.k, e.kg());
+        let nr = n as u32;
+        // (q_a, the gate and kv_a in one product, each read where it left them: rows `row` apart)
+        let (row, kv) = (self.qg.whole_rows(), sc.g.ptr + ((d.q_rank + nh * d.v) * 2) as u64);
+        e.lin(&self.qg, h, n, sc.g.ptr)?;
+        e.mark("MLA: q_a, gate and kv_a product");
+        k.rms2(s, sc.g.ptr, row, self.q_norm.ptr, sc.qr.ptr, d.q_rank, d.q_rank, self.eps, nr)?;
+        e.mark("MLA: q norm");
+        e.lin(&self.q_b, sc.qr.ptr, n, sc.q.ptr)?;
+        e.mark("MLA: q_b product");
+        kg.rms2(s, kv, row as i32, self.kv_norm.ptr, lat.ptr, ks as i32, pos, d.kv_rank as i32, self.eps, nr)?;
+        kg.scatter(s, kv + (d.kv_rank * 2) as u64, row as i32, lat.ptr + (d.kv_rank * 2) as u64, ks as i32, pos, d.rope as i32, nr)?;
+        e.mark("MLA: kv norm, cache");
+        kg.absorb_with(s, sc.q.ptr, (nh * qw) as i32, qw as i32, self.wkv.ptr, sc.qa.ptr, n as i32, nh as i32, d.nope as i32, d.v as i32, d.kv_rank as i32, ks as i32)?;
+        e.mark("MLA: absorb");
+        k.dense_cnt(s, pos, sc.cnt.ptr, n)?;
+        kg.mla_attn_with(s, sc.qa.ptr, lat.ptr, 0, sc.cnt.ptr, sc.olat.ptr, sc.part.ptr, e.ctx() as i32, nh as i32, d.kv_rank as i32, ks as i32, 1.0 / (qw as f32).sqrt(), nr)?;
+        e.mark("MLA: attention");
+        kg.expand_v(s, sc.olat.ptr, self.wkv.ptr, sc.ov.ptr, n as i32, nh as i32, d.nope as i32, d.v as i32, d.kv_rank as i32)?;
+        e.mark("MLA: v");
+        k.gate(s, sc.ov.ptr, sc.g.ptr + (d.q_rank * 2) as u64, row, nh * d.v, n)?;
+        e.mark("MLA: gate");
+        e.lin(&self.o, sc.ov.ptr, n, out)
+    }
+
+    fn graphable(&self) -> bool {
+        true
+    }
+
+    fn bytes(&self) -> usize {
+        [&self.qg, &self.q_b, &self.o].iter().map(|m| m.bytes()).sum::<usize>() + self.wkv.bytes + self.q_norm.bytes + self.kv_norm.bytes
+    }
+
+    fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
+        [&self.qg, &self.q_b, &self.o].iter().filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None }).collect()
+    }
+}
+
+/// A mixture-of-experts layer: the core's layer (the router over the model's width, the experts on the latent, the shared MLP), the latent's two projections and norm.
+struct KimiMoe {
+    layer: MoeLayer,
+    /// the latent's down projection and the shared experts' gate and up: one product of the layer's input (a row's latent values, then the gate's and
+    /// the up's; zeros after, to a multiple of a GPU's slice); the shared expert's own first matrix a shape alone
+    dg: Mat,
+    up: Mat,
+    norm: Buf,
+    latent: usize,
+    eps: f32,
+    k: Rc<MlaShared>,
+}
+
+impl KimiMoe {
+    /// The fused product of h into Mix, and where the experts read z, where their sum goes and where the shared expert reads its gate and up: one token's
+    /// in place (z at Mix's start, the sum into Xc); a prompt's copied out first (z into Xc, the gate and up into the scratch), the sum into Mix.
+    unsafe fn down(&self, e: &dyn NhHost, sc: &MoeScratch, h: u64, n: usize) -> Result<(u64, u64, u64)> {
+        let (mix, xc, s) = (e.mix().ptr, e.xc().ptr, e.dev().stream);
+        let (row, gw) = (self.dg.whole_rows(), self.layer.shared.as_ref().map_or(0, |x| 2 * x.inter));
+        if e.mix().bytes < n * row * 2 || e.xc().bytes < n * self.latent * 2 {
+            return err(format!("{n} rows of {row} values do not fit the engine's buffers"));
+        }
+        e.lin(&self.dg, h, n, mix)?;
+        let gu = mix + (self.latent * 2) as u64;
+        if n == 1 {
+            return Ok((mix, xc, gu));
+        }
+        let k = &self.k.k;
+        k.rows(s, mix, row, xc, self.latent, self.latent, n)?;
+        k.rows(s, gu, row, sc.sg.ptr, gw, gw, n)?;
+        Ok((xc, mix, sc.sg.ptr))
+    }
+}
+
+impl MoeBlock for KimiMoe {
+    /// The router on h; z, and the shared experts' gate and up, of h (`down`); the experts' weighted sum of z; its norm; up of that into out; the shared
+    /// MLP's rest added.
+    unsafe fn forward(&self, e: &dyn NhHost, h: u64, n: usize, out: u64) -> Result<()> {
+        let (c, s) = (&self.layer.cfg, e.dev().stream);
+        if e.mix().bytes < n * c.router_hidden * 2 || e.xc().bytes < n * c.router_hidden * 2 {
+            return err(format!("{n} rows of {} values do not fit the engine's buffers", c.router_hidden));
+        }
+        if e.moe_scratch().get().is_none() {
+            let _ = e.moe_scratch().set(MoeScratch::new(e.dev(), e.lib(), &[&self.layer], e.chunk())?);
+        }
+        let sc = e.moe_scratch().get().ok_or_else(|| Error("the mixture-of-experts scratch is not made".into()))?;
+        self.layer.route(sc, s, h, c.router_hidden, n)?;
+        e.mark("MoE: router");
+        let (z, y, gu) = self.down(e, sc, h, n)?;
+        e.mark("MoE: latent down and shared gate, up product");
+        self.layer.experts(e.lib(), sc, s, z, n, y)?;
+        e.mark("MoE: experts");
+        self.k.k.rms2(s, y, self.latent, self.norm.ptr, z, self.latent, self.latent, self.eps, n as u32)?;
+        e.mark("MoE: latent norm");
+        e.lin(&self.up, z, n, out)?;
+        e.mark("MoE: latent up product");
+        self.layer.shared_from(e.lib(), sc, s, gu, n)?;
+        self.layer.shared_add(sc, s, n, out)
+    }
+
+    fn graphable(&self) -> bool {
+        true
+    }
+
+    fn bytes(&self) -> usize {
+        self.layer.weights_bytes() + self.dg.bytes() + self.up.bytes() + self.norm.bytes
+    }
+
+    fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
+        [&self.dg, &self.up].iter().filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None }).collect()
+    }
+}
+
+/// A mixture-of-experts layer whose experts are not all on the GPU: the core's layer over `slots` places for them (the expert cache's, src/offload.rs: every expert in
+/// the computer's memory, the ones the router chooses copied into the places), the latent's projections and norm. What it computes is `KimiMoe`'s to the bit; a
+/// decode step is not captured in a graph (the choices are read on the host to place the experts).
+struct KimiMoeCached {
+    moe: KimiMoe,
+    store: Rc<ExpertStore>,
+    index: usize,
+    /// (a decode step's guess of the experts, `Op::KimiEarly`: none where no copies are made for it)
+    guess: Option<Guess>,
+    /// (a development build's GLYD_KIMI_STATS: the stage's first cached layer reports its store every 64 one-token calls; their count and the time of the last report)
+    report: Option<(std::cell::Cell<u32>, std::cell::Cell<std::time::Instant>)>,
+}
+
+/// A decode step's early guess of a cached layer's experts: at most `copies` of the ones not in places copied for it, its choices read back to `ids` (pinned) after
+/// `ev`, and whether one is queued and not yet taken up. A development build's GLYD_KIMI_EARLY of several counts ("0,1,2") takes them in turn, the stage's
+/// layers together, a turn for each of GLYD_KIMI_STATS's reports (`turn`, shared by the stage's layers), to compare them in one run.
+struct Guess {
+    copies: Rc<[usize]>,
+    turn: Rc<std::cell::Cell<usize>>,
+    ids: crate::dev::Pinned,
+    ev: crate::dev::Ev,
+    pending: std::cell::Cell<bool>,
+}
+
+/// Copies a layer makes for its early guess at most: none. On 8x A100 (research/kimi-k3-session3-2026-10-22) the guess's copies were mostly experts the router then
+/// did not choose, and took the PCIe time of its misses: 64 tokens in 14.7 s with no guess, 15.1-15.6 s with one or two copies a layer (Kimi-K3's attention output
+/// weighs too much in its experts' input for the input without it to tell them). A development build's GLYD_KIMI_EARLY sets it, for a better guess.
+const GUESS_COPIES: usize = 0;
+
+impl Guess {
+    fn copies(&self) -> usize {
+        self.copies[self.turn.get() % self.copies.len()]
+    }
+}
+
+impl MoeBlock for KimiMoeCached {
+    fn early_wanted(&self) -> bool {
+        self.guess.as_ref().is_some_and(|g| g.copies() > 0)
+    }
+
+    /// The router on `h`, its choices read back for `forward` to place before the layer's call (`ExpertStore::guess`).
+    unsafe fn early(&self, e: &dyn NhHost, h: u64) -> Result<()> {
+        let Some(g) = &self.guess else { return Ok(()) };
+        let m = &self.moe;
+        let (c, s) = (&m.layer.cfg, e.dev().stream);
+        let Some(sc) = e.moe_scratch().get() else { return Ok(()) };
+        m.layer.route(sc, s, h, c.router_hidden, 1)?;
+        crate::dev::copy_d2h_async(g.ids.ptr, sc.ids.ptr, c.router.top_k * 8, s)?;
+        g.ev.record(s)?;
+        g.pending.set(true);
+        Ok(())
+    }
+
+    /// `KimiMoe::forward`'s launches with the experts' products over the places the router's choices were put in; the shared MLP queued before them.
+    unsafe fn forward(&self, e: &dyn NhHost, h: u64, n: usize, out: u64) -> Result<()> {
+        let m = &self.moe;
+        let (c, s) = (&m.layer.cfg, e.dev().stream);
+        if e.mix().bytes < n * c.router_hidden * 2 || e.xc().bytes < n * c.router_hidden * 2 {
+            return err(format!("{n} rows of {} values do not fit the engine's buffers", c.router_hidden));
+        }
+        if e.moe_scratch().get().is_none() {
+            let _ = e.moe_scratch().set(MoeScratch::new(e.dev(), e.lib(), &[&m.layer], e.chunk())?);
+        }
+        let sc = e.moe_scratch().get().ok_or_else(|| Error("the mixture-of-experts scratch is not made".into()))?;
+        // (the early guess's copies queued: its choices were read back before the attention ran)
+        if let Some(g) = self.guess.as_ref().filter(|g| g.pending.replace(false) && n == 1) {
+            g.ev.wait_host()?;
+            let ids: Vec<u16> = std::slice::from_raw_parts(g.ids.ptr as *const i64, c.router.top_k).iter().map(|&x| x as u16).collect();
+            self.store.guess(self.index, &ids, g.copies())?;
+        }
+        let (z, y, gu) = m.down(e, sc, h, n)?;
+        m.layer.route(sc, s, h, c.router_hidden, n)?;
+        let call = Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: n, pairs: n * c.router.top_k };
+        // (the shared experts queued while the host reads the choices and plans, beside the copies, instead of after them)
+        self.store.run_early(self.index, e.dev(), &call, &mut || m.layer.shared_from(e.lib(), sc, s, gu, n), &mut |stage, _wave, waves, hy| match stage {
+            crate::offload::Stage::Products => {
+                if hy.gpu {
+                    m.layer.experts_products(e.lib(), sc, s, z, n, y, Some(sc.way.ptr), waves)?;
+                } else {
+                    // (every pair the host's: the sum is its sums alone)
+                    crate::dev::memset_async(y, 0, n * c.hidden * 2, s)?;
+                }
+                Ok(())
+            }
+            crate::offload::Stage::Sum => m.layer.experts_sum(sc, s, n, y, hy.ids, hy.extra),
+        })?;
+        m.k.k.rms2(s, y, m.latent, m.norm.ptr, z, m.latent, m.latent, m.eps, n as u32)?;
+        e.lin(&m.up, z, n, out)?;
+        if let Some((c, at)) = self.report.as_ref().filter(|_| n == 1) {
+            c.set(c.get() + 1);
+            if c.get() % 64 == 0 {
+                let early = self.guess.as_ref().map_or(0, Guess::copies);
+                eprintln!("layers from {}: 64 steps in {:.1} ms, {early} early copies a layer; {}", self.index, at.get().elapsed().as_secs_f64() * 1e3, self.store.report()?);
+                at.set(std::time::Instant::now());
+                self.store.reset_stats()?;
+                if let Some(g) = &self.guess {
+                    g.turn.set(g.turn.get() + 1);
+                }
+            }
+        }
+        m.layer.shared_add(sc, s, n, out)
+    }
+
+    fn bytes(&self) -> usize {
+        self.moe.bytes()
+    }
+
+    fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
+        self.moe.pack_shapes()
+    }
+}
+
+/// A mixture-of-experts layer of the expert cache across a group of GPUs (src/dynamic/tp_cache.rs): `KimiMoeCached`'s, the layer's stacks this GPU's slices
+/// of the places, the plan the first GPU's.
+struct KimiMoeTp {
+    moe: KimiMoe,
+    rank: Rc<super::tp_cache::Rank>,
+    index: usize,
+    places: super::tp_cache::Places,
+    report: Option<(std::cell::Cell<u32>, std::cell::Cell<std::time::Instant>)>,
+    /// The device path (`Places::dev`'s table): a decode step's plan and copies on the GPU, its fills and their count; None: every call planned by the
+    /// first GPU's thread.
+    dev: Option<(crate::dev::Buf, crate::dev::Buf)>,
+}
+
+/// The cache's decode steps planned on the GPU (kernels/kimi.cu's dc_plan and dc_fill: no host in a step, so the step is a graph): a development
+/// build's GLYD_KIMI_DEVICE=1.
+pub fn device_path() -> bool {
+    crate::tune!("GLYD_KIMI_DEVICE").as_deref() == Some("1")
+}
+
+impl MoeBlock for KimiMoeTp {
+    unsafe fn forward(&self, e: &dyn NhHost, h: u64, n: usize, out: u64) -> Result<()> {
+        use super::tp_cache::{Call as TpCall, Rank, Stage as TpStage};
+        let m = &self.moe;
+        let (c, s) = (&m.layer.cfg, e.dev().stream);
+        if e.mix().bytes < n * c.router_hidden * 2 || e.xc().bytes < n * c.router_hidden * 2 {
+            return err(format!("{n} rows of {} values do not fit the engine's buffers", c.router_hidden));
+        }
+        if e.moe_scratch().get().is_none() {
+            let _ = e.moe_scratch().set(MoeScratch::new(e.dev(), e.lib(), &[&m.layer], e.chunk())?);
+        }
+        let sc = e.moe_scratch().get().ok_or_else(|| Error("the mixture-of-experts scratch is not made".into()))?;
+        let (z, y, gu) = m.down(e, sc, h, n)?;
+        m.layer.route(sc, s, h, c.router_hidden, n)?;
+        // (a decode step on the device path: the places looked up and the misses copied in by the GPU, the products over them; nothing waits for the host)
+        if let (1, Some((fills, nfill)), Some(t)) = (n, &self.dev, self.places.dev.as_ref()) {
+            let pairs = c.router.top_k;
+            let (po, eo, la, rf, me) = t.at();
+            let k = &m.k.k;
+            crate::launch!(k.dc_plan, [1, 1, 1], [256, 1, 1], s; sc.ids.ptr, pairs as i32, po, eo, la, rf, me, t.experts as i32, t.slots as i32, sc.way.ptr, fills.ptr, nfill.ptr)?;
+            crate::launch!(k.dc_fill, [16, pairs as u32, 1], [256, 1, 1], s; fills.ptr, nfill.ptr, t.reg.ptr)?;
+            m.layer.shared_from(e.lib(), sc, s, gu, n)?;
+            m.layer.experts_products(e.lib(), sc, s, z, n, y, Some(sc.way.ptr), 1)?;
+            m.layer.experts_sum(sc, s, n, y, 0, 0)?;
+            m.k.k.rms2(s, y, m.latent, m.norm.ptr, z, m.latent, m.latent, m.eps, n as u32)?;
+            e.lin(&m.up, z, n, out)?;
+            return m.layer.shared_add(sc, s, n, out);
+        }
+        let call = TpCall { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: n, pairs: n * c.router.top_k };
+        self.rank.run(self.index, &self.places, &call, s, &mut || m.layer.shared_from(e.lib(), sc, s, gu, n), &mut |stage| match stage {
+            TpStage::Products(_, waves, true) => m.layer.experts_products(e.lib(), sc, s, z, n, y, Some(sc.way.ptr), waves),
+            TpStage::Products(..) => Rank::zero(y, n * c.hidden * 2, s),
+            TpStage::Sum(extra) => m.layer.experts_sum(sc, s, n, y, 0, extra),
+        })?;
+        m.k.k.rms2(s, y, m.latent, m.norm.ptr, z, m.latent, m.latent, m.eps, n as u32)?;
+        e.lin(&m.up, z, n, out)?;
+        if let Some((cnt, at)) = self.report.as_ref().filter(|_| n == 1) {
+            cnt.set(cnt.get() + 1);
+            if cnt.get() % 64 == 0 {
+                eprintln!("64 steps in {:.1} ms; {}", at.get().elapsed().as_secs_f64() * 1e3, self.rank.report());
+                at.set(std::time::Instant::now());
+            }
+        }
+        m.layer.shared_add(sc, s, n, out)
+    }
+
+    fn graphable(&self) -> bool {
+        self.dev.is_some()
+    }
+
+    fn bytes(&self) -> usize {
+        self.moe.bytes()
+    }
+
+    fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
+        self.moe.pack_shapes()
+    }
+}
+
+/// A layer's experts packed straight into pinned memory, the expert cache's host tier, from the checkpoint (`f` the layer's name): each expert's three
+/// matrices read with each thread's own buffers, gate and up packed into the two halves of its first matrix's place and down into its second's, checked
+/// there (glyd_gpu::pack's `_into`s); in the layout with packed scales where every expert's scales fit it, else as released. Whether packed, and the
+/// two matrices' strides (codes, scales) and buffers. No copy of the layer is made: a load of Kimi-K3 joined each layer's 15 GB, copied it into pinned
+/// memory and freed it, and spent about half its time in the TLB shootdowns of that.
+fn pack_into_host(ck: &Checkpoint, f: &str, experts: usize, inter: usize, latent: usize, threads: usize, portable: bool) -> Result<(bool, [(u64, u64, crate::dev::Pinned, crate::dev::Pinned); 2])> {
+    use glyd_gpu::pack::{fp4_bytes, pack_fp4_into, pack_fp4r_into};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    for packed in [true, false] {
+        let ((gd, gs), (dd, ds)) = (fp4_bytes(inter, latent, packed), fp4_bytes(latent, inter, packed));
+        let (ud, us) = (2 * gd, 2 * gs);
+        // (portable: pinned for every GPU's copies, where every GPU of a group copies its slices from it)
+        let pin = |b: usize| if portable { crate::dev::Pinned::portable(b) } else { crate::dev::Pinned::new(b) };
+        let bufs = [pin(experts * ud)?, pin(experts * us)?, pin(experts * dd)?, pin(experts * ds)?];
+        let ptrs: Vec<usize> = bufs.iter().map(|b| b.ptr as usize).collect();
+        let (next, bad, failed) = (AtomicUsize::new(0), AtomicBool::new(false), std::sync::Mutex::new(None::<Error>));
+        let pk = if packed { pack_fp4r_into } else { pack_fp4_into };
+        std::thread::scope(|sc| {
+            for _ in 0..threads.min(experts).max(1) {
+                sc.spawn(|| {
+                    let mut raw: [Vec<u8>; 6] = Default::default();
+                    loop {
+                        let x = next.fetch_add(1, Ordering::Relaxed);
+                        if x >= experts || bad.load(Ordering::Relaxed) || failed.lock().map_or(true, |g| g.is_some()) {
+                            break;
+                        }
+                        let read = |w: &str, part: &str, buf: &mut Vec<u8>| -> Result<()> {
+                            let n = format!("{f}.experts.{x}.{w}.{part}");
+                            let (file, t) = ck.get(&n).ok_or_else(|| Error(format!("no tensor {n}")))?;
+                            buf.resize(t.bytes as usize, 0);
+                            io(file.read_into_uncached(t, buf))
+                        };
+                        let r = (|| -> Result<bool> {
+                            for (k, (w, part)) in [("w1", "weight_packed"), ("w1", "weight_scale"), ("w3", "weight_packed"), ("w3", "weight_scale"), ("w2", "weight_packed"), ("w2", "weight_scale")].into_iter().enumerate() {
+                                read(w, part, &mut raw[k])?;
+                            }
+                            // SAFETY: expert x's place in each buffer (x times its stride, its stride long) is written by this item alone, and the buffers live for the scope.
+                            let place = |b: usize, stride: usize| unsafe { std::slice::from_raw_parts_mut((ptrs[b] as *mut u8).add(x * stride), stride) };
+                            let (ud_, us_, dd_, ds_) = (place(0, ud), place(1, us), place(2, dd), place(3, ds));
+                            let (g_d, u_d) = ud_.split_at_mut(gd);
+                            let (g_s, u_s) = us_.split_at_mut(gs);
+                            Ok(pk(&raw[0], &raw[1], inter, latent, g_d, g_s) && pk(&raw[2], &raw[3], inter, latent, u_d, u_s) && pk(&raw[4], &raw[5], latent, inter, dd_, ds_))
+                        })();
+                        match r {
+                            Ok(true) => {}
+                            Ok(false) => bad.store(true, Ordering::Relaxed),
+                            Err(e) => {
+                                if let Ok(mut g) = failed.lock() {
+                                    g.get_or_insert(e);
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(e) = failed.into_inner().ok().flatten() {
+            return Err(e);
+        }
+        if !bad.into_inner() {
+            let [a, b, c, d] = bufs;
+            return Ok((packed, [(ud as u64, us as u64, a, b), (dd as u64, ds as u64, c, d)]));
+        }
+    }
+    err(format!("{f}: experts the FP4 layouts do not hold exactly"))
+}
+
+/// The GPU memory one of the experts takes (a place of the expert cache): its first and second matrices in the larger of the two FP4 layouts a layer may be packed
+/// in (packed scales where its scales allow, else as released: about 4.5% more).
+pub fn expert_bytes(c: &ConfigKimi) -> Result<u64> {
+    let e = &c.experts;
+    let one = |tag: u32| -> Result<u64> {
+        let ((ud, us), (dd, ds)) = (crate::moe::expert_strides(tag, 2 * e.inter, e.latent)?, crate::moe::expert_strides(tag, e.latent, e.inter)?);
+        Ok(ud + us + dd + ds)
+    };
+    Ok(one(glyd_gpu::pack::FP4R_TAG)?.max(one(glyd_gpu::pack::FP4_TAG)?))
+}
+
+pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
+    load_stage(dir, o, Stage::whole(ConfigKimi::load(dir)?.layers))
+}
+
+/// Stage `st` of the model (its layers; the embedding where it is the first, the final mix, norm and head where the last), every expert on the GPU.
+pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
+    load_with_places(dir, o, st, None)
+}
+
+/// Stage `st` with `places` of each mixture-of-experts layer's experts on the GPU (None, or as many as it has: all; fewer: the expert cache, its host tier pinned).
+pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) -> Result<Dyn> {
+    let c = ConfigKimi::load(dir)?;
+    let (kd, md) = (&c.kda, &c.mla);
+    if kd.dim != crate::model_glm::GM_D || c.hidden % 64 != 0 || c.hidden > 8192 || md.kv_rank > 512 || (md.kv_rank + md.rope) % 64 != 0 {
+        return err(format!("delta heads of {}, a width of {}, latents of {} + {}: this engine runs heads of 128, widths of 64s up to 8,192 and latents up to 512 (with the shared part, in 64s)", kd.dim, c.hidden, md.kv_rank, md.rope));
+    }
+    let dev = Dev::new(o.device)?;
+    let ck = io(Checkpoint::open(dir))?;
+    let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
+    let layout = o.layout.unwrap_or(Layout::Tiered);
+    let (h, p) = (c.hidden, c.prefix);
+    let shared = Rc::new(MlaShared { k: KernKimi::load(&dev)?, scratch: OnceCell::new() });
+    let store = ExpertStore::new();
+    // (the host's misses on a crew of 64 threads at most, each kept to a core: a decode step's call of one to three of Kimi-K3's 17 MB experts took 4.2 ms on all
+    // 240 of an 8x A100 box's cores, 0.6 ms on 64 (fp4bench); a development build's GLYD_KIMI_HOST: the mode, copy, cpu, split or auto (the default))
+    // (the experts in the computer's memory: each expert's bytes dropped from the page cache once they are read and packed, so that each layer's 15 GB of
+    // pinned memory comes from what the layers before freed; the download's cache had made each layer wait on reclaim and compaction, most of a 45-minute
+    // load. Not the whole checkpoint dropped first: a box whose disk reads 0.5 GB/s (Lambda's 8x A100, 2026-10-22) then read all of it again from disk)
+    // (every layer across a group of GPUs: this GPU's slice of a big matrix's rows, of each expert's: src/dynamic/tp.rs)
+    let tp = super::tp::comm();
+    let crew = crate::cpu_experts::default_threads().min(64);
+    let guess_copies: Rc<[usize]> = crate::tune!("GLYD_KIMI_EARLY").and_then(|v| v.split(',').map(|x| x.trim().parse().ok()).collect::<Option<Vec<usize>>>()).filter(|v| !v.is_empty()).unwrap_or_else(|| vec![GUESS_COPIES]).into();
+    let (guessing, guess_turn) = (guess_copies.iter().any(|&k| k > 0), Rc::new(std::cell::Cell::new(0usize)));
+    let mode = crate::tune!("GLYD_KIMI_HOST").as_deref().and_then(crate::offload::Mode::parse).unwrap_or(crate::offload::Mode::Auto);
+    store.set_offload(crate::offload::Offload { mode, threads: crew, pin: true, ..Default::default() });
+    // (the expert cache across a group of GPUs: its host tier and plans shared, this GPU's copies and pinned buffers: src/dynamic/tp_cache.rs)
+    let tp_rank = match (&tp, places.filter(|&p| p < c.experts.experts)) {
+        (Some(t), Some(_)) => {
+            let cache = t.shared(super::tp_cache::TpCache::default)?;
+            let slice = expert_bytes(&c)? / t.n as u64;
+            Some(Rc::new(super::tp_cache::Rank::new(cache, t.rank, t.n, o.chunk.max(1), c.experts.top_k, c.experts.latent, store.offload(), slice)?))
+        }
+        _ => None,
+    };
+    // (this GPU's place and the group's size, for the threads that pack the experts)
+    let tpr = tp.as_ref().map(|t| (t.rank, t.n));
+    if let Some((_, n)) = tpr.filter(|&(_, n)| (2 * c.experts.inter) % (64 * n) != 0 || c.experts.latent % (64 * n) != 0) {
+        return err(format!("experts of {} x {} across {n} GPUs: each GPU's rows in 64s are wanted", 2 * c.experts.inter, c.experts.latent));
+    }
+    // a matrix packed lossless (rows not a multiple of 64: held dense, as it is); several stacked as one where `names` has more; sliced where `slice` and
+    // the group of GPUs takes it
+    let pack_as = |names: &[String], slice: bool| -> Result<Mat> {
+        let (mut parts, mut rows, mut cols) = (Vec::new(), 0usize, 0usize);
+        for n in names {
+            let name = format!("{n}.weight");
+            let (f, t) = ck.get(&name).ok_or_else(|| Error(format!("no tensor {name}")))?;
+            if t.shape.len() != 2 || t.dtype != "BF16" || (cols != 0 && t.shape[1] as usize != cols) {
+                return err(format!("{name}: {} {:?}, not a bf16 matrix of {cols} columns", t.dtype, t.shape));
+            }
+            parts.push((f, t, rows));
+            rows += t.shape[0] as usize;
+            cols = t.shape[1] as usize;
+        }
+        // (a fused product's rows, several tensors', padded with zero rows to a multiple of 512: 64 a GPU in groups of up to 8, one layout for every
+        // group; its parts are read at their own columns, the padding never)
+        if names.len() > 1 {
+            rows = rows.div_ceil(512) * 512;
+        }
+        let sliced = tp.as_ref().filter(|t| slice && rows % 64 == 0 && cols % 16 == 0 && t.slices(rows, cols));
+        let (r0, rn) = sliced.map_or((0, rows), |t| t.rows(rows));
+        // (rows r0..r0 + rn of the matrices stacked, each read as those bytes alone: a GPU of a group reads its slice, not the whole)
+        let mut w = Vec::with_capacity(rn * cols);
+        for (f, t, at) in parts {
+            let (a, b) = (r0.max(at), (r0 + rn).min(at + t.shape[0] as usize));
+            if a >= b {
+                continue;
+            }
+            let sub = glyd_gpu::safetensors::TensorInfo { offset: t.offset + ((a - at) * cols * 2) as u64, bytes: ((b - a) * cols * 2) as u64, ..t.clone() };
+            let bytes = io(f.read(&sub))?;
+            w.extend(bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])));
+        }
+        w.resize(rn * cols, 0);
+        if rows % 64 != 0 || cols % 16 != 0 {
+            return Ok(Mat::Dense(upload_bytes(as_bytes(&w))?, rows, cols));
+        }
+        let mut pk = upload_packed(pack_words(&w, rn, cols, layout, &names[0])?)?;
+        if sliced.is_some() {
+            pk.tp_rows = rows;
+        }
+        Ok(Mat::Packed(pk))
+    };
+    let pack = |names: &[String]| pack_as(names, true);
+    let one = |n: String| pack(&[n]);
+    let small = |n: &str| -> Result<Buf> { upload_bytes(&io(ck.read(n))?) };
+    let mut l_ = Loaded::default();
+    let (mut states, mut layers) = (Vec::new(), Vec::new());
+    let put = |v: &mut Vec<Buf>, b: Buf| {
+        v.push(b);
+        v.len() - 1
+    };
+    let put_m = |v: &mut Vec<Mat>, m: Mat| {
+        v.push(m);
+        v.len() - 1
+    };
+    let (qd, nh) = (kd.heads * kd.dim, kd.heads);
+    // (Mix holds the delta attention's fused product, Proj a prompt's forget-gate values copied out of it)
+    let (mut mix_w, mut proj_w) = (3 * qd, kd.dim);
+    let e = &c.experts;
+    for l in 0..c.layers {
+        // (the blocks completed before layer l: the embedding at 0, then one each res_block layers)
+        let before = l.div_ceil(c.res_block);
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            layers.push(Vec::new());
+            continue;
+        }
+        crate::status::STATUS.beat();
+        let q = format!("{p}layers.{l}");
+        let a = format!("{q}.self_attn");
+        let (in_n, post_n) = (put(&mut l_.small, small(&format!("{q}.input_layernorm.weight"))?), put(&mut l_.small, small(&format!("{q}.post_attention_layernorm.weight"))?));
+        let res = |sm: &mut Vec<Buf>, n: &str| -> Result<(usize, usize)> { Ok((put(sm, small(&format!("{q}.{n}_res_norm.weight"))?), put(sm, small(&format!("{q}.{n}_res_proj.weight"))?))) };
+        let (an, ap) = res(&mut l_.small, "self_attention")?;
+        let (mn, mp) = res(&mut l_.small, "mlp")?;
+        // (the layer before's output added here where that layer is this stage's: its add is this mix's; a block's first layer makes X a block)
+        let mut ops = vec![Op::KimiMixNorm { add: l > st.layers.0, nb: before, w_n: an, w_p: ap, push: (l % c.res_block == 0).then_some(before), w: in_n, eps: c.eps }];
+        if c.moe[l] && guessing && places.is_some_and(|p| p < e.experts) {
+            ops.push(Op::KimiEarly { block: l_.moe.len(), nb: before + usize::from(l % c.res_block == 0), w_n: mn, w_p: mp, w: post_n, eps: c.eps });
+        }
+        match c.kinds[l] {
+            GlmKind::Kda => {
+                let m0 = l_.mats.len();
+                // (q, k, v, the output gate, the forget gate's first product and beta: one product of the layer's input, three fewer a layer; the gates read
+                // where it leaves them, a prompt's copied out first: KimiParts)
+                let fa = ck.get(&format!("{a}.f_a_proj.weight")).map(|(_, t)| t.shape[0] as usize).ok_or_else(|| Error(format!("no tensor {a}.f_a_proj.weight")))?;
+                let names = ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj"].map(|x| format!("{a}.{x}"));
+                let fused = pack(&names)?;
+                let row = fused.whole_rows();
+                (mix_w, proj_w) = (mix_w.max(row), proj_w.max(fa));
+                l_.mats.push(fused);
+                l_.mats.push(one(format!("{a}.o_proj"))?);
+                l_.mats.push(one(format!("{a}.f_b_proj"))?);
+                // (small: the three convolutions' weights as one, A_log, dt_bias (fp32), the gated norm's weight; the convolutions' and the norm's bf16 or fp32 as
+                // released (Kimi-K3's are fp32: their values, not bf16 ones), read by the kernels as they are)
+                let mut conv = Vec::new();
+                let dtype = |n: &str| ck.get(n).map(|(_, t)| t.dtype.clone()).ok_or_else(|| Error(format!("no tensor {n}")));
+                let cw32 = dtype(&format!("{a}.q_conv1d.weight"))? == "F32";
+                for x in ["q", "k", "v"] {
+                    let n = format!("{a}.{x}_conv1d.weight");
+                    if (dtype(&n)? == "F32") != cw32 {
+                        return err(format!("{n}: {} where the queries' convolution is {}", dtype(&n)?, if cw32 { "F32" } else { "bf16" }));
+                    }
+                    conv.extend(io(ck.read(&n))?);
+                }
+                let nw32 = dtype(&format!("{a}.o_norm.weight"))? == "F32";
+                let s0 = l_.small.len();
+                l_.small.extend([upload_bytes(&conv)?, f32s(&ck, &format!("{a}.A_log"))?, f32s(&ck, &format!("{a}.dt_bias"))?, small(&format!("{a}.o_norm.weight"))?]);
+                let (cv, ssm) = (states.len(), states.len() + 1);
+                states.push(3 * 3 * qd * 2);
+                states.push(nh * kd.dim * kd.dim * 4);
+                ops.extend([
+                    Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "delta attention: q, k, v and gates product" },
+                    Op::KdaConv { w: s0, state: cv, c: 3 * qd, row, w32: cw32 },
+                    Op::KimiParts { row, parts: [(3 * qd, qd, Slot::Iq), (4 * qd, fa, Slot::Proj), (4 * qd + fa, nh, Slot::Ba)] },
+                    Op::LinearAt { w: m0 + 2, x: View::at(Slot::Proj, 4 * qd), y: Slot::Qo, name: "delta attention: forget gate product" },
+                    Op::KdaDelta { a_log: s0 + 1, dt_bias: s0 + 2, state: ssm, heads: nh, bound: kd.bound, ba: View::at(Slot::Ba, 4 * qd + fa) },
+                    Op::KdaOut { w: s0 + 3, heads: nh, w32: nw32, iq: View::at(Slot::Iq, 3 * qd) },
+                    Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "delta attention: o product" },
+                ]);
+            }
+            GlmKind::Mla => {
+                let (wkv, _) = words(&ck, &format!("{a}.kv_b_proj.weight"))?;
+                let b = KimiMla {
+                    qg: pack(&[format!("{a}.q_a_proj"), format!("{a}.g_proj"), format!("{a}.kv_a_proj_with_mqa")])?,
+                    q_norm: small(&format!("{a}.q_a_layernorm.weight"))?,
+                    q_b: one(format!("{a}.q_b_proj"))?,
+                    kv_norm: small(&format!("{a}.kv_a_layernorm.weight"))?,
+                    wkv: upload_bytes(as_bytes(&wkv))?,
+                    o: one(format!("{a}.o_proj"))?,
+                    d: md.clone(),
+                    eps: 1e-6,
+                    lat: OnceCell::new(),
+                    shared: shared.clone(),
+                };
+                ops.push(Op::Mla { block: l_.mla.len() });
+                l_.mla.push(Box::new(b));
+            }
+        }
+        ops.push(Op::KimiMixNorm { add: true, nb: before + usize::from(l % c.res_block == 0), w_n: mn, w_p: mp, push: None, w: post_n, eps: c.eps });
+        if c.moe[l] {
+            let f = format!("{q}.block_sparse_moe");
+            let cfg = MoeCfg {
+                experts: e.experts,
+                router_hidden: h,
+                hidden: e.latent,
+                inter: e.inter,
+                router: Router { renorm: e.renorm, ..Router::sigmoid(e.top_k, e.scale) },
+                act: Act::Situ { beta: c.situ.0, linear: c.situ.1 },
+            };
+            // the experts as released, packed exactly in the smallest FP4 layout that holds them all (DeepSeek-V4's: packed scales, else as released): gate and up stacked as the first matrix;
+            // all on the GPU, or places for `p` of them and every expert in the computer's memory, packed there straight from the checkpoint (pack_into_host)
+            let slots = places.filter(|&p| p < e.experts);
+            let mut tp_places = None;
+            let (up, down) = match slots {
+                Some(p) if tp_rank.is_some() => {
+                    let (rank, n) = tpr.ok_or_else(|| Error("a group of GPUs without its place".into()))?;
+                    let cache = &tp_rank.as_ref().expect("a group's cache").cache_ref();
+                    // (the layers' host tiers packed by the GPUs' threads in turn, each the layers of its number, and shared)
+                    let host = if l % n == rank {
+                        let (packed, packs) = pack_into_host(&ck, &f, e.experts, e.inter, e.latent, threads, true)?;
+                        let [(ud, us, a, b), (dd, ds, c2, d2)] = packs;
+                        use super::tp_cache::HostBuf;
+                        let h = std::sync::Arc::new(super::tp_cache::HostLayer { mats: [[HostBuf(a), HostBuf(b)], [HostBuf(c2), HostBuf(d2)]], stride: [[ud, us], [dd, ds]], packed, inter: e.inter, latent: e.latent, act: c.situ });
+                        cache.put_host(l, h.clone())?;
+                        h
+                    } else {
+                        cache.host(l)?
+                    };
+                    let tag = if host.packed { glyd_gpu::pack::FP4R_TAG } else { glyd_gpu::pack::FP4_TAG };
+                    let mut up = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, 2 * e.inter / n, e.latent)?;
+                    let mut down = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, e.latent / n, e.inter)?;
+                    let slice = [[up.data_stride, up.scale_stride], [down.data_stride, down.scale_stride]];
+                    if (0..2).any(|m| (0..2).any(|k| slice[m][k] * n as u64 != host.stride[m][k])) {
+                        return err(format!("{f}: experts of {:?} bytes in the computer's memory, where {n} GPUs' places hold {slice:?}", host.stride));
+                    }
+                    (up.tp_rows, down.tp_rows) = (2 * e.inter, e.latent);
+                    let mut pl = super::tp_cache::Places::new([up.buffers(), down.buffers()], slice, e.experts, p)?;
+                    // (the device path places a step's experts at once: a layer of fewer places than a token's choices is the host's, in waves)
+                    if device_path() && p >= e.top_k {
+                        pl.attach_device(&host, rank)?;
+                    }
+                    tp_places = Some(pl);
+                    (up, down)
+                }
+                None => {
+                    let fp4 = |x: usize, packed_scales: bool| -> Result<Option<(glyd_gpu::pack::Tiered, glyd_gpu::pack::Tiered)>> {
+                        let raw = |w: &str| -> Result<(Vec<u8>, Vec<u8>)> {
+                            let b = format!("{f}.experts.{x}.{w}");
+                            Ok((io(ck.read(&format!("{b}.weight_packed")))?, io(ck.read(&format!("{b}.weight_scale")))?))
+                        };
+                        let pk = if packed_scales { glyd_gpu::pack::pack_fp4r_checked } else { glyd_gpu::pack::pack_fp4_checked };
+                        let ((mut uq, mut ue), (gq, ge), (dq, de)) = (raw("w1")?, raw("w3")?, raw("w2")?);
+                        uq.extend(gq);
+                        ue.extend(ge);
+                        // (a group of GPUs: this GPU's rows of each, codes half a byte a value and a scale a run of 32)
+                        let rows_of = |q: &[u8], sc: &[u8], rows: usize, cols: usize| -> (Vec<u8>, Vec<u8>, usize) {
+                            match tpr {
+                                Some((rank, n)) => {
+                                    let (r0, rn) = (rank * rows / n, rows / n);
+                                    (q[r0 * cols / 2..(r0 + rn) * cols / 2].to_vec(), sc[r0 * cols / 32..(r0 + rn) * cols / 32].to_vec(), rn)
+                                }
+                                None => (q.to_vec(), sc.to_vec(), rows),
+                            }
+                        };
+                        let (uq, ue, ur) = rows_of(&uq, &ue, 2 * e.inter, e.latent);
+                        let (dq, de, dr) = rows_of(&dq, &de, e.latent, e.inter);
+                        Ok(pk(&uq, &ue, ur, e.latent).zip(pk(&dq, &de, dr, e.inter)))
+                    };
+                    let (mut ups, mut downs) = (Vec::with_capacity(e.experts), Vec::with_capacity(e.experts));
+                    for packed_scales in [true, false] {
+                        (ups.clear(), downs.clear());
+                        let mut all = true;
+                        crate::weights::ordered(e.experts, threads, 2 * threads, &|x| fp4(x, packed_scales), |_, pr| {
+                            match pr {
+                                Some((u, d)) => (ups.push(u), downs.push(d)),
+                                None => (all = false, ()),
+                            };
+                            Ok(())
+                        })?;
+                        if all {
+                            break;
+                        }
+                    }
+                    if ups.len() != e.experts {
+                        return err(format!("{f}: experts the FP4 layouts do not hold exactly"));
+                    }
+                    let (ju, jd) = (Joined::of(&ups.iter().collect::<Vec<_>>())?, Joined::of(&downs.iter().collect::<Vec<_>>())?);
+                    drop((ups, downs));
+                    let (mut su, mut sd) = (ExpertStack::upload(&ju)?, ExpertStack::upload(&jd)?);
+                    if let Some((_, n)) = tpr {
+                        (su.tp_rows, sd.tp_rows) = (su.rows * n, sd.rows * n);
+                    }
+                    (su, sd)
+                }
+                Some(p) => {
+                    let (packed, packs) = pack_into_host(&ck, &f, e.experts, e.inter, e.latent, threads, false)?;
+                    let tag = if packed { glyd_gpu::pack::FP4R_TAG } else { glyd_gpu::pack::FP4_TAG };
+                    let up = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, 2 * e.inter, e.latent)?;
+                    let down = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, e.latent, e.inter)?;
+                    let [(ud, us, a, b), (dd, ds, c2, d2)] = packs;
+                    if [ud, us, dd, ds] != [up.data_stride, up.scale_stride, down.data_stride, down.scale_stride] {
+                        return err(format!("{f}: experts of {ud} + {us} and {dd} + {ds} bytes, where the places hold {} + {} and {} + {}", up.data_stride, up.scale_stride, down.data_stride, down.scale_stride));
+                    }
+                    let host = vec![PinnedPack { data: a, scales: b, stride: [ud, us], dev: up.buffers() }, PinnedPack { data: c2, scales: d2, stride: [dd, ds], dev: down.buffers() }];
+                    // (the host computes the misses it is better at from the host tier's bytes as they are: src/cpu_fp4.rs)
+                    let half = crate::offload::HostHalf::Fp4 { inter: e.inter, latent: e.latent, packed, act: c.situ };
+                    store.add_layer_pinned(l, e.experts, p, host, Some(half))?;
+                    (up, down)
+                }
+            };
+            // (the latent's down projection and the shared experts' gate and up, one product of the layer's input: one fewer a layer, and one gather
+            // fewer across GPUs; the shared expert's first matrix a shape there, never multiplied by)
+            let dg = pack(&[format!("{f}.routed_expert_down_proj"), format!("{f}.shared_experts.gate_proj"), format!("{f}.shared_experts.up_proj")])?;
+            mix_w = mix_w.max(dg.whole_rows());
+            let Mat::Packed(sd) = one(format!("{f}.shared_experts.down_proj"))? else { return err(format!("{f}.shared_experts.down_proj: not packed")) };
+            let si = e.shared * e.inter;
+            let w = MoeWeights { router: small(&format!("{f}.gate.weight"))?, bias: Some(f32s(&ck, &format!("{f}.gate.e_score_correction_bias"))?), escale: None, up, down: Down::Block(down) };
+            let layer = MoeLayer::new(cfg, w, Some(Shared { inter: si, up: PackBuf::shape_only(2 * si, h)?, down: sd, gate: None }))?;
+            let b = KimiMoe {
+                layer,
+                dg,
+                up: one(format!("{f}.routed_expert_up_proj"))?,
+                norm: small(&format!("{f}.routed_expert_norm.weight"))?,
+                latent: e.latent,
+                eps: c.eps,
+                k: shared.clone(),
+            };
+            ops.push(Op::Moe { block: l_.moe.len() });
+            match slots {
+                None => l_.moe.push(Box::new(b)),
+                Some(_) if tp_places.is_some() => {
+                    let report = (crate::tune!("GLYD_KIMI_STATS").is_some() && tpr.is_some_and(|r| r.0 == 0) && !l_.moe.iter().any(|b| b.resident().is_none())).then(|| (std::cell::Cell::new(0), std::cell::Cell::new(std::time::Instant::now())));
+                    let dev = if tp_places.as_ref().is_some_and(|pl| pl.dev.is_some()) { Some((crate::dev::Buf::new(e.top_k * 8)?, crate::dev::Buf::zeroed(4)?)) } else { None };
+                    l_.moe.push(Box::new(KimiMoeTp { moe: b, rank: tp_rank.clone().expect("a group's cache"), index: l, places: tp_places.take().expect("the places"), report, dev }))
+                }
+                Some(_) => {
+                    let report = (crate::tune!("GLYD_KIMI_STATS").is_some() && !l_.moe.iter().any(|b| b.resident().is_none())).then(|| (std::cell::Cell::new(0), std::cell::Cell::new(std::time::Instant::now())));
+                    let guess = guessing.then(|| -> Result<Guess> { Ok(Guess { copies: guess_copies.clone(), turn: guess_turn.clone(), ids: crate::dev::Pinned::new(e.top_k * 8)?, ev: crate::dev::Ev::new()?, pending: Default::default() }) }).transpose()?;
+                    l_.moe.push(Box::new(KimiMoeCached { moe: b, store: store.clone(), index: l, guess, report }))
+                }
+            }
+        } else {
+            let gu = put_m(&mut l_.mats, pack(&[format!("{q}.mlp.gate_proj"), format!("{q}.mlp.up_proj")])?);
+            let down = put_m(&mut l_.mats, one(format!("{q}.mlp.down_proj"))?);
+            ops.extend([
+                Op::Linear { w: gu, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
+                Op::Situ { inter: c.inter, beta: c.situ.0, linear: c.situ.1 },
+                Op::Linear { w: down, x: Slot::M, y: Slot::O, name: "MLP: down product" },
+            ]);
+        }
+        // (added by the next layer's mix, or the head's, where that is this stage's; X whole at a stage's end)
+        if l + 1 == st.layers.1 && !st.last {
+            ops.push(Op::KimiAdd { x: Slot::O });
+        }
+        layers.push(ops);
+    }
+    if st.last {
+        // the final depth mix of every block and the last partial sum, the norm into H (the head reads it)
+        let (on, opj, norm) = (put(&mut l_.small, small(&format!("{p}output_attn_res_norm.weight"))?), put(&mut l_.small, small(&format!("{p}output_attn_res_proj.weight"))?), put(&mut l_.small, small(&format!("{p}norm.weight"))?));
+        let all = c.layers.div_ceil(c.res_block);
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::KimiMixNorm { add: st.layers.1 > st.layers.0, nb: all, w_n: on, w_p: opj, push: None, w: norm, eps: c.eps });
+    }
+    // (a stage without the embedding or the head keeps their places, empty, so that their indices hold)
+    let empty = || -> Result<Mat> { Ok(Mat::Dense(Buf::new(2)?, 0, 0)) };
+    let em = l_.mats.len();
+    // (the embedding whole on every GPU: a token's row is read from it)
+    l_.mats.push(if st.first { pack_as(&[format!("{p}embed_tokens")], false)? } else { empty()? });
+    let lm = l_.mats.len();
+    l_.mats.push(if st.last { one("language_model.lm_head".to_string())? } else { empty()? });
+    let blocks = c.layers.div_ceil(c.res_block);
+    let mut widths = [0usize; super::SLOTS];
+    let gu = 2 * c.inter;
+    for (s, wd) in [(Slot::X, h), (Slot::H, h), (Slot::O, h), (Slot::Blk, blocks * h), (Slot::Mix, mix_w.max(h)), (Slot::Xc, (3 * qd).max(h)), (Slot::Proj, proj_w), (Slot::Qo, qd), (Slot::Iq, qd), (Slot::Ba, nh.max(8)), (Slot::Core, qd), (Slot::Att, qd), (Slot::Gu, gu), (Slot::M, c.inter)] {
+        widths[s as usize] = wd;
+    }
+    let d = ModelDesc {
+        family: "Kimi-K3",
+        hidden: h,
+        vocab: c.vocab,
+        eps: c.eps,
+        max_pos: c.max_pos,
+        widths,
+        mats: Vec::new(),
+        small: Vec::new(),
+        ropes: Vec::new(),
+        rings: Vec::new(),
+        // (the embedding into X, the partial sum: KimiPush makes it the first block)
+        first: Op::Nop,
+        layers,
+        states,
+        final_norm: None,
+        decoded: false,
+        skinny: false,
+        embed: em,
+        lm,
+        softcap: 0.0,
+        eos: c.eos.clone(),
+        post: None,
+        v4: None,
+        hc: (0.0, 0),
+        logit_mult: 0.0,
+    };
+    Dyn::from_parts(dev, d, l_, Vec::new(), layout, st, o)
+}

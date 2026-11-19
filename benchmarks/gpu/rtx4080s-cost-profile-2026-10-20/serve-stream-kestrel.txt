@@ -1,0 +1,518 @@
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"doing","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" same","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" thing","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" over","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" and","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" over","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"ighthouse","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" keeper","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" climbed","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" the","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" stairs","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" again","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":".","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" The","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":" l","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":"length"}]}
+
+data: {"id":"cmpl-4","object":"text_completion","created":1792468047,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7","choices":[],"usage":{"prompt_tokens":1027,"completion_tokens":256,"total_tokens":1283}}
+
+data: [DONE]
+

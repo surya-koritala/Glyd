@@ -1,0 +1,2 @@
+/home/acc/hf/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a
+19329302904 bytes on disk

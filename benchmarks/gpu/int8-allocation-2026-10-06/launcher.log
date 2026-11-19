@@ -1,0 +1,11 @@
+Scoped automatic-reload authorization: this consumer batch may start at the balance-only stop; daily caps unchanged.
+21:05 created s2w3y6s9b8ampz (NVIDIA GeForce RTX 4090)
+Verified hourly GPU quote: 0.74
+ssh on pod s2w3y6s9b8ampz ready after 17s: ssh reachable at 213.173.102.238:18744
+21:05 ssh ready at 213.173.102.238:18744 after 24 s
+NVIDIA GeForce RTX 4090, 580.159.04, 24564 MiB
+21:05 job started
+21:34 job done
+terminating s2w3y6s9b8ampz
+pods left: [('nv1e8pz64eec5u', 'glyd-bench-qf4-validate-20261006-1717', 'RUNNING')]
+29 min

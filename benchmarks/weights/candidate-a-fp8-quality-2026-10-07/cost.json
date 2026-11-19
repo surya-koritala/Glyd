@@ -1,0 +1,14 @@
+{
+  "pod_id": "8f71520ll89mi2",
+  "name": "glyd-bench-ca-match-20261006",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "gpu_hourly_usd": 1.59,
+  "guard_accounted_seconds": 2017.0,
+  "guard_gpu_estimate_usd": 0.8908416666666668,
+  "scope": "Conservative guard GPU estimate from retained pod uptime plus guard allowance; not an invoice; excludes storage.",
+  "storage_gb": 150,
+  "maximum_minutes": 75,
+  "approved_total_cap_usd": 2.1,
+  "retry_count": 0,
+  "ledger_row": "8f71520ll89mi2\tglyd-bench-ca-match-20261006\t1.59\t2017.0"
+}

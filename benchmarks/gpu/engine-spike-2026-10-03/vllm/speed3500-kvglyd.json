@@ -1,0 +1,1 @@
+{"model": "Qwen/Qwen3-8B", "mode": "kvglyd", "prompt_tokens": 3500, "new_tokens": 128, "load_s": 50.3, "decode_ms": [48.007, 48.237, 48.195], "decode_ms_median": 48.195, "decode_tokens_per_s": 20.75, "prefill_ms": [1191.6, 1175.5, 1190.0], "prefill_ms_median": 1190.0}

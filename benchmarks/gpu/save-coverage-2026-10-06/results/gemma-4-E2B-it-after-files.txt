@@ -1,0 +1,13 @@
+total 6719380
+drwxr-xr-x 2 root root       4096 Oct  6 05:12 .
+drwxr-xr-x 8 root root        120 Oct  6 05:12 ..
+-rw-r--r-- 1 root root      18569 Oct  6 05:12 chat_template.jinja
+-rw-r--r-- 1 root root       4954 Oct  6 05:12 config.json
+-rw-r--r-- 1 root root        208 Oct  6 05:12 generation_config.json
+-rw-r--r-- 1 root root     398947 Oct  6 05:12 glyd.json
+-rw------- 1 root root 6194012643 Oct  6 05:12 model-00001-of-00002.safetensors
+-rw------- 1 root root  653710732 Oct  6 05:12 model-00002-of-00002.safetensors
+-rw-r--r-- 1 root root     296413 Oct  6 05:12 model.safetensors.index.json
+-rw-r--r-- 1 root root       1689 Oct  6 05:12 processor_config.json
+-rw-r--r-- 1 root root   32169626 Oct  6 05:12 tokenizer.json
+-rw-r--r-- 1 root root       3082 Oct  6 05:12 tokenizer_config.json

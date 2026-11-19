@@ -1,0 +1,22 @@
+  stock-s0: ok; equals the reference run's outputs (--x-bits): YES
+  glyd-s0: ok; equals the reference run's outputs (--x-bits): YES
+PASS: seed 0: Glyd equals stock
+  glyd-s0-poison: ok; equals the reference run's outputs (--x-bits): YES
+PASS: Glyd with its scratch overwritten after every product: the same bits
+  glyd-s0-again: ok; equals the reference run's outputs (--x-bits): YES
+PASS: Glyd twice on seed 0 (two fresh compiles): the same bits
+  stock-s1: ok; equals the reference run's outputs (--x-bits): YES
+  glyd-s1: ok; equals the reference run's outputs (--x-bits): YES
+PASS: seed 1: Glyd equals stock
+  stock-s2: ok; equals the reference run's outputs (--x-bits): YES
+  glyd-s2: ok; equals the reference run's outputs (--x-bits): YES
+PASS: seed 2: Glyd equals stock
+  stock-s3: ok; equals the reference run's outputs (--x-bits): YES
+  glyd-s3: ok; equals the reference run's outputs (--x-bits): YES
+PASS: seed 3: Glyd equals stock
+  stock-s4: ok; equals the reference run's outputs (--x-bits): YES
+  glyd-s4: ok; equals the reference run's outputs (--x-bits): YES
+PASS: seed 4: Glyd equals stock
+INFO: outcomes by run (one letter a distinct output): stock-s0=A, glyd-s0=A, glyd-s0-poison=A, glyd-s0-again=A, stock-s1=A, glyd-s1=A, stock-s2=A, glyd-s2=A, stock-s3=A, glyd-s3=A, stock-s4=A, glyd-s4=A
+INFO: equal to the reference run's outputs (--x-bits): stock-s0, glyd-s0, glyd-s0-poison, glyd-s0-again, stock-s1, glyd-s1, stock-s2, glyd-s2, stock-s3, glyd-s3, stock-s4, glyd-s4
+INFO: stock gave 1 distinct output(s) over 5 runs; Glyd 1 over 7

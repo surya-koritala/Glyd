@@ -1,0 +1,1 @@
+NVIDIA RTX 6000 Ada Generation, 595.91.07, 49140 MiB, 10001 MHz

@@ -1,0 +1,67 @@
+{
+  "name": "model.language_model.layers.2.mlp.down_proj.weight",
+  "group": "mlp",
+  "shape": [
+    5120,
+    17408
+  ],
+  "file": "model-00001-of-00018.safetensors",
+  "fraction_bits": 3,
+  "values": 89128960,
+  "zeros": 0,
+  "specials": 0,
+  "geometries": [
+    {
+      "block": [
+        128,
+        128
+      ],
+      "blocks": 5440,
+      "blocks_inexact": 4522,
+      "inexact": 11761,
+      "underflow": 2182,
+      "max_block_inexact": 43,
+      "min_scale_exponent": -13,
+      "max_scale_exponent": -8
+    },
+    {
+      "block": [
+        1,
+        128
+      ],
+      "blocks": 696320,
+      "blocks_inexact": 6964,
+      "inexact": 6999,
+      "underflow": 1321,
+      "max_block_inexact": 2,
+      "min_scale_exponent": -14,
+      "max_scale_exponent": -8
+    },
+    {
+      "block": [
+        1,
+        32
+      ],
+      "blocks": 2785280,
+      "blocks_inexact": 5162,
+      "inexact": 5165,
+      "underflow": 997,
+      "max_block_inexact": 2,
+      "min_scale_exponent": -15,
+      "max_scale_exponent": -8
+    },
+    {
+      "block": [
+        1,
+        0
+      ],
+      "blocks": 5120,
+      "blocks_inexact": 4113,
+      "inexact": 8948,
+      "underflow": 1676,
+      "max_block_inexact": 15,
+      "min_scale_exponent": -13,
+      "max_scale_exponent": -8
+    }
+  ]
+}

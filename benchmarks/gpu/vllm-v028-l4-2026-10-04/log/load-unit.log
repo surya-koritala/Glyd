@@ -1,0 +1,2 @@
+16:52:49 load 1.97 1.53 1.40 GPU 53, 2040 MHz, 29.12 W, 0 MiB | 0.8% nv-hostengine 0.1% systemd 0.0% containerd 
+16:53:09 load 1.70 1.49 1.39 GPU 52, 2040 MHz, 28.79 W, 1762 MiB | 154% python 147% python 139% python 

@@ -1,0 +1,96 @@
+tokens against vLLM+Glyd's (an L4's, 8,192 tokens a step; 8 short prompts of 64 tokens one at a time, 3 long ones of 1,030, 2,100 and 3,500 tokens)
+plugin's tables, tiered, cuBLAS (earlier run)  short: 6/8 identical, 457/512 positions; long: 2/3 identical, first differences [7, None, None]
+engine's own tables, tiered, cuBLAS            short: 6/8 identical, 457/512 positions; long: 0/3 identical, first differences [7, 35, 13]
+12-bit layout, cuBLAS                          short: 6/8 identical, 457/512 positions; long: 1/3 identical, first differences [7, None, 13]
+tiered, the engine's own products              short: 6/8 identical, 457/512 positions; long: 1/3 identical, first differences [7, None, 13]
+12-bit, the engine's own products              short: 6/8 identical, 457/512 positions; long: 1/3 identical, first differences [7, None, 13]
+
+teacher-forced top-1 over 1,535 positions against vLLM+Glyd's
+plugin's tables, tiered, cuBLAS (earlier run)  top-1 1512/1535 = 98.50%, mean |logprob difference| 0.0329, position 1500: -6.252
+engine's own tables, tiered, cuBLAS            top-1 1514/1535 = 98.63%, mean |logprob difference| 0.0307, position 1500: -2.579
+12-bit layout, cuBLAS                          top-1 1515/1535 = 98.70%, mean |logprob difference| 0.0335, position 1500: -5.504
+tiered, the engine's own products              top-1 1515/1535 = 98.70%, mean |logprob difference| 0.0335, position 1500: -5.504
+
+prefill and decode by the way a long prompt is multiplied (the last of 5 timed runs; the L4 hot, 72 W cap)
+  tiered, cuBLAS                                     1024 tokens: prefill 411.9 ms, decode 46.07 ms (21.70/s); 3500 tokens: prefill 1167.8 ms, decode 47.10 ms (21.23/s)
+  tiered, the engine's own products                  1024 tokens: prefill 398.0 ms, decode 46.60 ms (21.46/s); 3500 tokens: prefill 1150.4 ms, decode 47.23 ms (21.17/s)
+  tiered, the library's routes (2,048 tokens a step) 1024 tokens: prefill 410.9 ms, decode 46.56 ms (21.48/s); 3500 tokens: prefill 1468.2 ms, decode 47.58 ms (21.02/s)
+  tiered, own, no fused SiLU                         1024 tokens: prefill 410.6 ms, decode 46.85 ms (21.34/s); 3500 tokens: prefill 1219.1 ms, decode 48.07 ms (20.80/s)
+  tiered, own from 512 rows                          512 tokens: prefill 254.4 ms, decode 47.30 ms (21.14/s); 768 tokens: prefill 331.9 ms, decode 46.71 ms (21.41/s); 1024 tokens: prefill 402.7 ms, decode 46.58 ms (21.47/s)
+  tiered, library routes                             512 tokens: prefill 225.1 ms, decode 47.05 ms (21.26/s); 768 tokens: prefill 320.0 ms, decode 46.73 ms (21.40/s)
+  12-bit, cuBLAS                                     1024 tokens: prefill 329.0 ms, decode 46.59 ms (21.46/s); 3500 tokens: prefill 1196.5 ms, decode 47.80 ms (20.92/s)
+  12-bit, own                                        1024 tokens: prefill 335.1 ms, decode 46.60 ms (21.46/s); 3500 tokens: prefill 1179.1 ms, decode 47.80 ms (20.92/s)
+
+  12-bit (batch B)                                   1024 tokens: prefill 323.3 ms, decode 46.55 ms (21.48/s); 3500 tokens: prefill 1149.8 ms, decode 47.71 ms (20.96/s)
+  tiered, the default step (batch B)                 1024 tokens: prefill 406.3 ms, decode 46.05 ms (21.72/s); 3500 tokens: prefill 1185.1 ms, decode 47.05 ms (21.26/s)
+
+vLLM+Glyd (glyd@1) and the build before the embedding change, alternated, 3 rounds, prefill ms (1,024 / 3,500 tokens)
+  round 1: vLLM+Glyd 430.0 / 1194.0; engine own 397.4 / 1202.5; engine blas 416.6 / 1212.8
+  round 2: vLLM+Glyd 409.3 / 1151.2; engine own 383.2 / 1129.4; engine blas 397.3 / 1141.6
+  round 3: vLLM+Glyd 412.3 / 1176.5; engine own 391.5 / 1165.4; engine blas 414.4 / 1197.5
+  median of rounds: vLLM+Glyd 412.3 / 1176.5; engine own 391.5 / 1165.4; engine blas 414.4 / 1197.5
+  engine own / vLLM+Glyd: 0.950 (1,024 tokens), 0.991 (3,500)
+  engine blas / vLLM+Glyd: 1.005 (1,024 tokens), 1.018 (3,500)
+vLLM+Glyd (glyd@1) and the final build, alternated, 3 rounds, prefill ms (1,024 / 3,500 tokens)
+  round 1: vLLM+Glyd 408.0 / 1144.9; engine own 389.1 / 1127.3; engine blas 406.5 / 1160.4
+  round 2: vLLM+Glyd 412.9 / 1159.9; engine own 394.9 / 1151.2; engine blas 420.7 / 1183.8
+  round 3: vLLM+Glyd 437.0 / 1187.7; engine own 394.2 / 1156.4; engine blas 421.3 / 1193.3
+  median of rounds: vLLM+Glyd 412.9 / 1159.9; engine own 394.2 / 1151.2; engine blas 420.7 / 1183.8
+  engine own / vLLM+Glyd: 0.955 (1,024 tokens), 0.992 (3,500)
+  engine blas / vLLM+Glyd: 1.019 (1,024 tokens), 1.021 (3,500)
+
+A100: name, memory.total [MiB], driver_version, clocks.max.sm [MHz], power.limit [W]
+  tiered, cuBLAS                                 short: 6/8 identical, 466/512 positions; long: 2/3 identical, first differences [None, None, 13]
+  12-bit, cuBLAS                                 short: 6/8 identical, 466/512 positions; long: 2/3 identical, first differences [None, None, 13]
+  12-bit, the engine's own products              short: 6/8 identical, 466/512 positions; long: 2/3 identical, first differences [None, None, 13]
+  tiered, cuBLAS                                 top-1 1515/1535 = 98.70%, mean |logprob difference| 0.0335, position 1500: -5.504
+  12-bit, cuBLAS                                 top-1 1515/1535 = 98.70%, mean |logprob difference| 0.0335, position 1500: -5.504
+  12-bit, the engine's own products              top-1 1515/1535 = 98.70%, mean |logprob difference| 0.0335, position 1500: -5.504
+  vLLM bf16, one user, 1 x 1,024: 75.3 tokens a second (a100-vllm-kv-step-2026-10-02, 1 x 1,024, vLLM bf16 with its own cache)
+  tiered: decode 15.40 ms a token (65.0 tokens a second, 0.86x vLLM bf16); weights 10.37 GiB
+    prefill ms (1,024 / 3,500 tokens): blas 180.6 / 606.5; own 180.3 / 606.4; lib 180.8 / 623.2
+  12-bit: decode 10.78 ms a token (92.8 tokens a second, 1.23x vLLM bf16); weights 11.48 GiB
+    prefill ms (1,024 / 3,500 tokens): blas 104.4 / 277.7; own 101.0 / 285.0; lib 105.3 / 346.3
+  pack-default: Packed in 23s
+  pack-mma: (16.1 s); (10.4 s)
+  kvcal: (1 s); (10 s); (13 s)
+  first-use: Packed in 3s; Tables made in 2s.; Ready in 29s:
+  first-use-again: Ready in 1s:
+
+H100: name, memory.total [MiB], driver_version, clocks.max.sm [MHz], power.limit [W]
+  tiered, cuBLAS                                 short: 7/8 identical, 479/512 positions; long: 2/3 identical, first differences [7, None, None]
+  12-bit, cuBLAS                                 short: 7/8 identical, 479/512 positions; long: 2/3 identical, first differences [7, None, None]
+  12-bit, the engine's own products              short: 7/8 identical, 479/512 positions; long: 2/3 identical, first differences [7, None, None]
+  tiered, cuBLAS                                 top-1 1513/1535 = 98.57%, mean |logprob difference| 0.0296, position 1500: -1.313
+  12-bit, cuBLAS                                 top-1 1513/1535 = 98.57%, mean |logprob difference| 0.0296, position 1500: -1.313
+  12-bit, the engine's own products              top-1 1513/1535 = 98.57%, mean |logprob difference| 0.0296, position 1500: -1.313
+  vLLM bf16, one user, 1 x 1,024: 152.8 tokens a second (h100-vllm-kv-2026-10-02, 1 x 1,024, vLLM bf16 with its own cache)
+  tiered: decode 9.96 ms a token (100.4 tokens a second, 0.66x vLLM bf16); weights 10.37 GiB
+    prefill ms (1,024 / 3,500 tokens): blas 41.5 / 117.3; own 57.3 / 173.4; lib 111.2 / 392.6
+  12-bit: decode 6.15 ms a token (162.6 tokens a second, 1.06x vLLM bf16); weights 11.48 GiB
+    prefill ms (1,024 / 3,500 tokens): blas 36.7 / 115.2; own 36.2 / 170.9; lib 36.4 / 239.1
+  pack-default: Packed in 13s
+  pack-mma: (10.1 s); (5.9 s)
+  kvcal: (1 s); (4 s); (6 s)
+  first-use: Packed in 2s; Tables made in 1s.; Ready in 13s:
+  first-use-again: Ready in 0s:
+
+the final build, cuBLAS and the engine's own products alternated (prefill ms, the last of 5 runs; the embedding's ms in the profile run)
+  round 1 blas  1024 tokens 390.5, 3500 tokens 1115.7; embedding ['6.949', '14.612']
+  round 1 own   1024 tokens 378.5, 3500 tokens 1113.8; embedding ['6.667', '14.948']
+  round 2 blas  1024 tokens 397.3, 3500 tokens 1128.6; embedding ['6.922', '14.839']
+  round 2 own   1024 tokens 383.4, 3500 tokens 1127.3; embedding ['6.668', '14.701']
+  round 3 blas  1024 tokens 402.0, 3500 tokens 1139.2; embedding ['7.029', '14.927']
+  round 3 own   1024 tokens 389.7, 3500 tokens 1131.9; embedding ['6.836', '15.050']
+  blas  median of rounds: 1024 tokens 397.3, 3500 tokens 1128.6
+  own   median of rounds: 1024 tokens 383.4, 3500 tokens 1127.3
+
+the kernels built by nvcc 13.0 and by 12.8 (own products; prefill ms)
+  round 1 CUDA 13.0: 1024 tokens 385.2, 3500 tokens 1130.2
+  round 1 CUDA 12.8: 1024 tokens 389.6, 3500 tokens 1121.3
+  round 2 CUDA 13.0: 1024 tokens 384.7, 3500 tokens 1124.7
+  round 2 CUDA 12.8: 1024 tokens 388.4, 3500 tokens 1142.0
+
+the 8B through the glyd program from empty caches: real ['2m28.476s', '0m3.182s']; ready after ['2m27s', '2s']
+  the server under mixed traffic, own products: cold replies: ['Autumn arrives with a gentle breeze, pai', 'Changelog', '14', 'The v0.26.0 release of Glyd introduces a', 'Glyd vLLM setup and benchmarking', 'Glyd vLLM Plugin'] | 94 rounds in 107 s: {'ok': 80, 'refused': 13, 'left': 11}; /health 200; GPU memory 12294 -> 12294 MiB | all ok
+  the server under mixed traffic, cuBLAS: cold replies: ['Autumn arrives with a gentle breeze, pai', 'Changelog', '14', 'The v0.26.0 release of Glyd introduces a', 'Glyd vLLM setup and performance', 'Glyd vLLM Plugin'] | 93 rounds in 108 s: {'ok': 79, 'refused': 13, 'left': 11}; /health 200; GPU memory 12304 -> 12310 MiB | all ok

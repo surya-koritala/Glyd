@@ -1,0 +1,4 @@
+stock-eager: ok (113 s) weights 17.82 GiB, KV 615,219 tokens
+glyd-exact: ok (34 s) weights 17.74 GiB, KV 620,953 tokens
+stock: ok (99 s) weights 17.82 GiB, KV 512,000 tokens, tok/s {"1": 313.29, "32": 2809.72}
+EXACT FAIL: Glyd exact eager against stock eager, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 690 tokens (no image: ValueError: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 is not a multimodal model); 12 of 12 packs verified bit for bit; differs at {"tokens": "[0][24]: 2081 != 1424", "logprobs": "[0][23][0][1]: -9.298280929215252e-06 != -1.156323378381785e-05", "long_logprobs": "[47][0][1]: -0.39482223987579346 != -0.39481422305107117"}; stock eager against itself: {"tokens": "[0][24]: 2081 != 1424", "logprobs": "[0][23][0][1]: -9.298280929215252e-06 != -1.156323378381785e-05", "long_ids": null, "long_logprobs": "[47][0][1]: -0.39482223987579346 != -0.39481422305107117", "image_tokens": null, "image_logprobs": null}

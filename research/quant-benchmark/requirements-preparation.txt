@@ -1,0 +1,7 @@
+-c ../lossy-2026/quality-requirements.txt
+numpy==2.1.2
+datasets==5.1.0
+scipy==1.18.1
+evaluate==0.4.6
+pyarrow==25.0.1
+https://github.com/EleutherAI/lm-evaluation-harness/archive/d6de81643928d653435c431bae19945d41d32520.zip

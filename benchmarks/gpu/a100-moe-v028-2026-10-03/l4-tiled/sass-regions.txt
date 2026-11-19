@@ -1,0 +1,24 @@
+sass0.csv static 19712 HMMA 286 477 LDGSTS 17949 18443
+  consumer main loop       static    517  executed   71.50 M (34.0%)  samples  39.5%  [math 36%, wait 32%, barrier 15%, selected 8%]
+  epilogue and rare code   static  17432  executed   14.63 M ( 7.0%)  samples  29.1%  [no_inst 55%, wait 22%, short_sb 7%, selected 7%]
+  producers                static   1763  executed  124.13 M (59.0%)  samples  31.4%  [long_sb 35%, barrier 18%, wait 17%, selected 16%]
+sass-real-0.csv static 18024 HMMA 326 565 LDGSTS 16456 16867
+  consumer main loop       static    605  executed   80.05 M (38.9%)  samples  49.3%  [wait 31%, barrier 27%, math 20%, selected 8%]
+  epilogue and rare code   static  15851  executed   10.90 M ( 5.3%)  samples  10.4%  [wait 29%, no_inst 29%, selected 15%, long_sb 10%]
+  producers                static   1568  executed  114.73 M (55.8%)  samples  40.2%  [long_sb 41%, barrier 20%, wait 15%, selected 13%]
+sass128-0.csv static 19864 HMMA 355 594 LDGSTS 18200 18604
+  consumer main loop       static    634  executed   12.01 M (37.3%)  samples  34.6%  [wait 37%, math 27%, barrier 13%, selected 9%]
+  epilogue and rare code   static  17566  executed    2.71 M ( 8.4%)  samples  31.2%  [no_inst 54%, wait 22%, short_sb 8%, selected 7%]
+  producers                static   1664  executed   17.47 M (54.3%)  samples  34.2%  [barrier 29%, wait 23%, long_sb 15%, selected 15%]
+sass-e6-0.csv static 18024 HMMA 326 565 LDGSTS 16456 16867
+  consumer main loop       static    605  executed   12.02 M (39.6%)  samples  48.7%  [wait 37%, math 27%, barrier 13%, short_sb 9%]
+  epilogue and rare code   static  15851  executed    1.87 M ( 6.2%)  samples  12.6%  [wait 30%, no_inst 30%, selected 15%, long_sb 10%]
+  producers                static   1568  executed   16.50 M (54.3%)  samples  38.7%  [barrier 37%, long_sb 19%, wait 16%, selected 14%]
+sass128-1.csv static 19864 HMMA 355 594 LDGSTS 18200 18604
+  consumer main loop       static    634  executed    6.65 M (35.5%)  samples  42.5%  [wait 37%, math 26%, barrier 13%, selected 9%]
+  epilogue and rare code   static  17566  executed    3.79 M (20.2%)  samples  31.4%  [long_sb 43%, wait 30%, selected 11%, no_inst 8%]
+  producers                static   1664  executed    8.31 M (44.3%)  samples  26.1%  [barrier 31%, long_sb 20%, wait 17%, selected 15%]
+sass-e6-1.csv static 18024 HMMA 326 565 LDGSTS 16456 16867
+  consumer main loop       static    605  executed    6.55 M (39.8%)  samples  51.4%  [wait 37%, math 25%, barrier 13%, short_sb 9%]
+  epilogue and rare code   static  15851  executed    1.59 M ( 9.7%)  samples  17.1%  [long_sb 34%, no_inst 21%, wait 21%, selected 11%]
+  producers                static   1568  executed    8.32 M (50.5%)  samples  31.5%  [barrier 31%, long_sb 20%, wait 17%, selected 15%]

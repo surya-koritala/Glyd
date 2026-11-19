@@ -1,0 +1,49 @@
+name: CPU pack
+# A Hugging Face bf16 checkpoint planned (huggingface/plan.py: the model transformers builds, glyd's rules) and, with
+# mode=pack, downloaded, packed on the CPU by glyd-gpu pack --plan, and verified (.github/actions/cpu-pack). No secrets.
+on:
+  pull_request:
+    paths:
+      - 'huggingface/plan.py'
+      - 'glyd-gpu/src/save.rs'
+      - 'glyd-gpu/src/bin/glyd-gpu.rs'
+      - '.github/actions/cpu-pack/**'
+      - '.github/workflows/cpu-pack.yml'
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "A Hugging Face repo id"
+        type: string
+        default: "Qwen/Qwen3.5-9B"
+      revision:
+        description: "Its commit"
+        type: string
+        default: "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+      mode:
+        description: "plan: the plan only (no weights downloaded); pack: download, pack and verify"
+        type: choice
+        options: [plan, pack]
+        default: plan
+permissions:
+  contents: read
+concurrency:
+  group: cpu-pack-${{ github.ref }}-${{ inputs.model }}
+  cancel-in-progress: true
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cpu-pack
+        with:
+          model: ${{ inputs.model || 'Qwen/Qwen3.5-9B' }}
+          revision: ${{ inputs.revision || 'c202236235762e1c871ad0ccb60c8ee5ba337b9a' }}
+          mode: ${{ inputs.mode || 'plan' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpu-pack
+          path: out/
+          retention-days: 14

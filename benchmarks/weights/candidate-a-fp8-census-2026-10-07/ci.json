@@ -1,0 +1,26 @@
+{
+  "workflow": ".github/workflows/lossy27-study.yml",
+  "run_id": 37710987725,
+  "event": "workflow_dispatch",
+  "input": "fp8_census=true",
+  "head_sha": "62569a68e781b5e195cdca8ede5835e3e24bf682",
+  "jobs": {
+    "reference": [
+      "2026-10-08T01:03:38Z",
+      "2026-10-08T01:07:02Z",
+      "success"
+    ],
+    "fp8-census": [
+      "2026-10-08T01:07:04Z",
+      "2026-10-08T01:29:57Z",
+      "success"
+    ]
+  },
+  "artifact": {
+    "id": 11523095574,
+    "name": "candidate-a-fp8-census",
+    "bytes": 331114,
+    "digest": "sha256:bbde4208d922b06e7da13262ca6e6a2c926ef5342d376f218a574a0196360b90"
+  },
+  "supersedes_run": 37707411784
+}

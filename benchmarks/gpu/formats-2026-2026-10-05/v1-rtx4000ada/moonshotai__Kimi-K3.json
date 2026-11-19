@@ -1,0 +1,1439 @@
+{
+ "repo": "moonshotai/Kimi-K3",
+ "tensors": 497220,
+ "kinds": [
+  {
+   "class": "fp4",
+   "kind": "language_model.model.layers.N.block_sparse_moe.experts.N.w1.weight_packed",
+   "bytes": 453790138368,
+   "tensors": 82432,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_packed",
+     "bytes": 5505024,
+     "native_bits": 4,
+     "floor_bits": 3.7594610323911932,
+     "split_bits": 3.813608459127234,
+     "zstd_bytes": 2097152,
+     "zstd19": 1979564,
+     "glyd_max": 5194210
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.experts.0.w1.weight_packed",
+     "bytes": 5505024,
+     "native_bits": 4,
+     "floor_bits": 3.7581197630531102,
+     "split_bits": 3.8121116083036215,
+     "zstd_bytes": 2097152,
+     "zstd19": 1978663,
+     "glyd_max": 5191493
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.experts.99.w1.weight_packed",
+     "bytes": 5505024,
+     "native_bits": 4,
+     "floor_bits": 3.7782111257218913,
+     "split_bits": 3.8320458287129546,
+     "zstd_bytes": 2097152,
+     "zstd19": 1989109,
+     "glyd_max": 5219224
+    }
+   ]
+  },
+  {
+   "class": "fp4",
+   "kind": "language_model.model.layers.N.block_sparse_moe.experts.N.w2.weight_packed",
+   "bytes": 453790138368,
+   "tensors": 82432,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.experts.0.w2.weight_packed",
+     "bytes": 5505024,
+     "native_bits": 4,
+     "floor_bits": 3.757772223263574,
+     "split_bits": 3.8096139313789954,
+     "zstd_bytes": 2097152,
+     "zstd19": 1979206,
+     "glyd_max": 5190723
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.experts.0.w2.weight_packed",
+     "bytes": 5505024,
+     "native_bits": 4,
+     "floor_bits": 3.758970005166681,
+     "split_bits": 3.812484430704479,
+     "zstd_bytes": 2097152,
+     "zstd19": 1979477,
+     "glyd_max": 5192304
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.experts.99.w2.weight_packed",
+     "bytes": 5505024,
+     "native_bits": 4,
+     "floor_bits": 3.7485331922036336,
+     "split_bits": 3.803991347086422,
+     "zstd_bytes": 2097152,
+     "zstd19": 1975071,
+     "glyd_max": 5182056
+    }
+   ]
+  },
+  {
+   "class": "fp4",
+   "kind": "language_model.model.layers.N.block_sparse_moe.experts.N.w3.weight_packed",
+   "bytes": 453790138368,
+   "tensors": 82432,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight_packed",
+     "bytes": 5505024,
+     "native_bits": 4,
+     "floor_bits": 3.7584244155008504,
+     "split_bits": 3.812702356980557,
+     "zstd_bytes": 2097152,
+     "zstd19": 1979014,
+     "glyd_max": 5192412
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.experts.0.w3.weight_packed",
+     "bytes": 5505024,
+     "native_bits": 4,
+     "floor_bits": 3.758270450578165,
+     "split_bits": 3.8121000796777524,
+     "zstd_bytes": 2097152,
+     "zstd19": 1978726,
+     "glyd_max": 5191615
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.experts.99.w3.weight_packed",
+     "bytes": 5505024,
+     "native_bits": 4,
+     "floor_bits": 3.7607179599240017,
+     "split_bits": 3.8148128910398382,
+     "zstd_bytes": 2097152,
+     "zstd19": 1980852,
+     "glyd_max": 5195761
+    }
+   ]
+  },
+  {
+   "class": "scale",
+   "kind": "language_model.model.layers.N.block_sparse_moe.experts.N.w1.weight_scale",
+   "bytes": 28361883648,
+   "tensors": 82432,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_scale",
+     "bytes": 344064,
+     "native_bits": 8,
+     "floor_bits": 0.742994775368299,
+     "split_bits": 0.742994775368299,
+     "zstd_bytes": 344064,
+     "zstd19": 36389,
+     "glyd_max": 57621
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.experts.0.w1.weight_scale",
+     "bytes": 344064,
+     "native_bits": 8,
+     "floor_bits": 0.6853601487136796,
+     "split_bits": 0.6853601487136796,
+     "zstd_bytes": 344064,
+     "zstd19": 35854,
+     "glyd_max": 57680
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.experts.99.w1.weight_scale",
+     "bytes": 344064,
+     "native_bits": 8,
+     "floor_bits": 0.8854340252119572,
+     "split_bits": 0.8854340252119572,
+     "zstd_bytes": 344064,
+     "zstd19": 42683,
+     "glyd_max": 63107
+    }
+   ]
+  },
+  {
+   "class": "scale",
+   "kind": "language_model.model.layers.N.block_sparse_moe.experts.N.w2.weight_scale",
+   "bytes": 28361883648,
+   "tensors": 82432,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.experts.0.w2.weight_scale",
+     "bytes": 344064,
+     "native_bits": 8,
+     "floor_bits": 0.6891629235740054,
+     "split_bits": 0.6891629235740054,
+     "zstd_bytes": 344064,
+     "zstd19": 35797,
+     "glyd_max": 58253
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.experts.0.w2.weight_scale",
+     "bytes": 344064,
+     "native_bits": 8,
+     "floor_bits": 0.7011174241434368,
+     "split_bits": 0.7011174241434368,
+     "zstd_bytes": 344064,
+     "zstd19": 36415,
+     "glyd_max": 58531
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.experts.99.w2.weight_scale",
+     "bytes": 344064,
+     "native_bits": 8,
+     "floor_bits": 0.5383811048660079,
+     "split_bits": 0.5383811048660079,
+     "zstd_bytes": 344064,
+     "zstd19": 29133,
+     "glyd_max": 48253
+    }
+   ]
+  },
+  {
+   "class": "scale",
+   "kind": "language_model.model.layers.N.block_sparse_moe.experts.N.w3.weight_scale",
+   "bytes": 28361883648,
+   "tensors": 82432,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight_scale",
+     "bytes": 344064,
+     "native_bits": 8,
+     "floor_bits": 0.7381072390528407,
+     "split_bits": 0.7381072390528407,
+     "zstd_bytes": 344064,
+     "zstd19": 37357,
+     "glyd_max": 57361
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.experts.0.w3.weight_scale",
+     "bytes": 344064,
+     "native_bits": 8,
+     "floor_bits": 0.6801427343987636,
+     "split_bits": 0.6801427343987636,
+     "zstd_bytes": 344064,
+     "zstd19": 35454,
+     "glyd_max": 57336
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.experts.99.w3.weight_scale",
+     "bytes": 344064,
+     "native_bits": 8,
+     "floor_bits": 0.6951784578424038,
+     "split_bits": 0.6951784578424038,
+     "zstd_bytes": 344064,
+     "zstd19": 36047,
+     "glyd_max": 57418
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.g_proj.weight",
+   "bytes": 16382951424,
+   "tensors": 93,
+   "samples": [
+    {
+     "name": "language_model.model.layers.0.self_attn.g_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.7519202911288,
+     "floor_bits": 10.7519202911288,
+     "mma": 0.6869780525328621,
+     "mma12": 0.7523804921952505,
+     "zstd_bytes": 2097152,
+     "zstd19": 1634471,
+     "glyd_max": 6613910
+    },
+    {
+     "name": "language_model.model.layers.50.self_attn.g_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.58240921356813,
+     "floor_bits": 10.58240921356813,
+     "mma": 0.672312993851919,
+     "mma12": 0.7521164909241691,
+     "zstd_bytes": 2097152,
+     "zstd19": 1644059,
+     "glyd_max": 6564835
+    },
+    {
+     "name": "language_model.model.layers.92.self_attn.g_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.628838905381077,
+     "floor_bits": 10.628838905381077,
+     "mma": 0.675629630921379,
+     "mma12": 0.7522971743629092,
+     "zstd_bytes": 2097152,
+     "zstd19": 1644461,
+     "glyd_max": 6579691
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.o_proj.weight",
+   "bytes": 16382951424,
+   "tensors": 93,
+   "samples": [
+    {
+     "name": "language_model.model.layers.0.self_attn.o_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.617209586152445,
+     "floor_bits": 10.617209586152445,
+     "mma": 0.6768585083976625,
+     "mma12": 0.7521460396902901,
+     "zstd_bytes": 2097152,
+     "zstd19": 1625740,
+     "glyd_max": 6583144
+    },
+    {
+     "name": "language_model.model.layers.50.self_attn.o_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.557429303006835,
+     "floor_bits": 10.557429303006835,
+     "mma": 0.6709223247709728,
+     "mma12": 0.7520859733460441,
+     "zstd_bytes": 2097152,
+     "zstd19": 1642757,
+     "glyd_max": 6567306
+    },
+    {
+     "name": "language_model.model.layers.92.self_attn.o_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.63206566908234,
+     "floor_bits": 10.63206566908234,
+     "mma": 0.6773964109874907,
+     "mma12": 0.752579583062066,
+     "zstd_bytes": 2097152,
+     "zstd19": 1628940,
+     "glyd_max": 6567393
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.k_proj.weight",
+   "bytes": 12155092992,
+   "tensors": 69,
+   "samples": [
+    {
+     "name": "language_model.model.layers.0.self_attn.k_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.730769140955601,
+     "floor_bits": 10.730769140955601,
+     "mma": 0.683160388280475,
+     "mma12": 0.7523940555633061,
+     "zstd_bytes": 2097152,
+     "zstd19": 1639598,
+     "glyd_max": 6616370
+    },
+    {
+     "name": "language_model.model.layers.5.self_attn.k_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.642464131310408,
+     "floor_bits": 10.642464131310408,
+     "mma": 0.676334956335643,
+     "mma12": 0.7524211822994171,
+     "zstd_bytes": 2097152,
+     "zstd19": 1633040,
+     "glyd_max": 6607703
+    },
+    {
+     "name": "language_model.model.layers.90.self_attn.k_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.578159322167068,
+     "floor_bits": 10.578159322167068,
+     "mma": 0.670470192318871,
+     "mma12": 0.752364022391183,
+     "zstd_bytes": 2097152,
+     "zstd19": 1626156,
+     "glyd_max": 6574935
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.q_proj.weight",
+   "bytes": 12155092992,
+   "tensors": 69,
+   "samples": [
+    {
+     "name": "language_model.model.layers.0.self_attn.q_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.811671903219572,
+     "floor_bits": 10.811671903219572,
+     "mma": 0.690654784914047,
+     "mma12": 0.752488030327691,
+     "zstd_bytes": 2097152,
+     "zstd19": 1629273,
+     "glyd_max": 6637588
+    },
+    {
+     "name": "language_model.model.layers.5.self_attn.q_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.64764386320376,
+     "floor_bits": 10.64764386320376,
+     "mma": 0.6763388315836588,
+     "mma12": 0.752212403312562,
+     "zstd_bytes": 2097152,
+     "zstd19": 1622303,
+     "glyd_max": 6597595
+    },
+    {
+     "name": "language_model.model.layers.90.self_attn.q_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.591389746045733,
+     "floor_bits": 10.591389746045733,
+     "mma": 0.6724840799967448,
+     "mma12": 0.7533047388470362,
+     "zstd_bytes": 2097152,
+     "zstd19": 1643771,
+     "glyd_max": 6572316
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.v_proj.weight",
+   "bytes": 12155092992,
+   "tensors": 69,
+   "samples": [
+    {
+     "name": "language_model.model.layers.0.self_attn.v_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.560983200397242,
+     "floor_bits": 10.560983200397242,
+     "mma": 0.6701487283858042,
+     "mma12": 0.7522845798068576,
+     "zstd_bytes": 2097152,
+     "zstd19": 1644877,
+     "glyd_max": 6570573
+    },
+    {
+     "name": "language_model.model.layers.5.self_attn.v_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.557182499281097,
+     "floor_bits": 10.557182499281097,
+     "mma": 0.6695693788074312,
+     "mma12": 0.7522017463805184,
+     "zstd_bytes": 2097152,
+     "zstd19": 1645352,
+     "glyd_max": 6569537
+    },
+    {
+     "name": "language_model.model.layers.90.self_attn.v_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.58425477064928,
+     "floor_bits": 10.58425477064928,
+     "mma": 0.6707872360471695,
+     "mma12": 0.7523548186771454,
+     "zstd_bytes": 2097152,
+     "zstd19": 1622464,
+     "glyd_max": 6571401
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.block_sparse_moe.shared_experts.down_proj.weight",
+   "bytes": 8103395328,
+   "tensors": 92,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.shared_experts.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.544885373257125,
+     "floor_bits": 10.544885373257125,
+     "mma": 0.6733387841118706,
+     "mma12": 0.7521077716161334,
+     "zstd_bytes": 2097152,
+     "zstd19": 1637729,
+     "glyd_max": 6547234
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.shared_experts.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.547608398926897,
+     "floor_bits": 10.547608398926897,
+     "mma": 0.6738940647670201,
+     "mma12": 0.7520995367140997,
+     "zstd_bytes": 2097152,
+     "zstd19": 1640210,
+     "glyd_max": 6553654
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.shared_experts.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.74515797321532,
+     "floor_bits": 10.74515797321532,
+     "mma": 0.6849353124224951,
+     "mma12": 0.7554884411039806,
+     "zstd_bytes": 2097152,
+     "zstd19": 1640919,
+     "glyd_max": 6611337
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.block_sparse_moe.shared_experts.gate_proj.weight",
+   "bytes": 8103395328,
+   "tensors": 92,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.shared_experts.gate_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.554951091964085,
+     "floor_bits": 10.554951091964085,
+     "mma": 0.6703255063011533,
+     "mma12": 0.7521174597361732,
+     "zstd_bytes": 2097152,
+     "zstd19": 1618319,
+     "glyd_max": 6536633
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.shared_experts.gate_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.548795549468078,
+     "floor_bits": 10.548795549468078,
+     "mma": 0.6728694855220734,
+     "mma12": 0.7520975990900918,
+     "zstd_bytes": 2097152,
+     "zstd19": 1641482,
+     "glyd_max": 6560361
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.shared_experts.gate_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.698992978547198,
+     "floor_bits": 10.698992978547198,
+     "mma": 0.6811646658276754,
+     "mma12": 0.7525713481600322,
+     "zstd_bytes": 2097152,
+     "zstd19": 1641620,
+     "glyd_max": 6609819
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.block_sparse_moe.shared_experts.up_proj.weight",
+   "bytes": 8103395328,
+   "tensors": 92,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.shared_experts.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.556256958054133,
+     "floor_bits": 10.556256958054133,
+     "mma": 0.670050303141276,
+     "mma12": 0.7521237570141989,
+     "zstd_bytes": 2097152,
+     "zstd19": 1617549,
+     "glyd_max": 6537811
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.shared_experts.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.548256919574536,
+     "floor_bits": 10.548256919574536,
+     "mma": 0.6730063907683842,
+     "mma12": 0.752091301812066,
+     "zstd_bytes": 2097152,
+     "zstd19": 1619567,
+     "glyd_max": 6559104
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.shared_experts.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.691860239648673,
+     "floor_bits": 10.691860239648673,
+     "mma": 0.6840815771193731,
+     "mma12": 0.7577070205930679,
+     "zstd_bytes": 2097152,
+     "zstd19": 1638501,
+     "glyd_max": 6601144
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.block_sparse_moe.routed_expert_down_proj.weight",
+   "bytes": 4726980608,
+   "tensors": 92,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.routed_expert_down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.546492095085679,
+     "floor_bits": 10.546492095085679,
+     "mma": 0.6693090105813647,
+     "mma12": 0.7520845201280382,
+     "zstd_bytes": 2097152,
+     "zstd19": 1625288,
+     "glyd_max": 6568050
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.routed_expert_down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.543849669596543,
+     "floor_bits": 10.543849669596543,
+     "mma": 0.6691450088743179,
+     "mma12": 0.7520762852260044,
+     "zstd_bytes": 2097152,
+     "zstd19": 1620152,
+     "glyd_max": 6567313
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.routed_expert_down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.548457253101212,
+     "floor_bits": 10.548457253101212,
+     "mma": 0.668532477484809,
+     "mma12": 0.7522148253425719,
+     "zstd_bytes": 2097152,
+     "zstd19": 1620124,
+     "glyd_max": 6568196
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.block_sparse_moe.routed_expert_up_proj.weight",
+   "bytes": 4726980608,
+   "tensors": 92,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.routed_expert_up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.542855849280489,
+     "floor_bits": 10.542855849280489,
+     "mma": 0.6706469212959424,
+     "mma12": 0.7520831979650807,
+     "zstd_bytes": 2097152,
+     "zstd19": 1640925,
+     "glyd_max": 6563463
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.routed_expert_up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.542639609260132,
+     "floor_bits": 10.542639609260132,
+     "mma": 0.6691749109913925,
+     "mma12": 0.7520736425590142,
+     "zstd_bytes": 2097152,
+     "zstd19": 1642209,
+     "glyd_max": 6567255
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.routed_expert_up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.555660122094341,
+     "floor_bits": 10.555660122094341,
+     "mma": 0.6687514273387812,
+     "mma12": 0.7523177831840142,
+     "zstd_bytes": 2097152,
+     "zstd19": 1615883,
+     "glyd_max": 6570470
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.lm_head.weight",
+   "bytes": 2348810240,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "language_model.lm_head.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.5655933290066,
+     "floor_bits": 10.5655933290066,
+     "mma": 0.6708533574664404,
+     "mma12": 0.7524163382393974,
+     "zstd_bytes": 2097152,
+     "zstd19": 1615340,
+     "glyd_max": 6572092
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.embed_tokens.weight",
+   "bytes": 2348810240,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "language_model.model.embed_tokens.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.573836588725097,
+     "floor_bits": 10.573836588725097,
+     "mma": 0.6700471545022632,
+     "mma12": 0.7521668691483755,
+     "zstd_bytes": 2097152,
+     "zstd19": 1633128,
+     "glyd_max": 6529044
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.q_b_proj.weight",
+   "bytes": 1358954496,
+   "tensors": 24,
+   "samples": [
+    {
+     "name": "language_model.model.layers.11.self_attn.q_b_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.601495024415284,
+     "floor_bits": 10.601495024415284,
+     "mma": 0.6726579254748775,
+     "mma12": 0.7524061016007966,
+     "zstd_bytes": 2097152,
+     "zstd19": 1640536,
+     "glyd_max": 6565302
+    },
+    {
+     "name": "language_model.model.layers.55.self_attn.q_b_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.565704020797689,
+     "floor_bits": 10.565704020797689,
+     "mma": 0.6697872087067249,
+     "mma12": 0.7523027008655024,
+     "zstd_bytes": 2097152,
+     "zstd19": 1618538,
+     "glyd_max": 6563155
+    },
+    {
+     "name": "language_model.model.layers.92.self_attn.q_b_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.603085495348967,
+     "floor_bits": 10.603085495348967,
+     "mma": 0.6761149088541667,
+     "mma12": 0.7522648830039829,
+     "zstd_bytes": 2097152,
+     "zstd19": 1610515,
+     "glyd_max": 6549294
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.block_sparse_moe.gate.weight",
+   "bytes": 1181745152,
+   "tensors": 92,
+   "samples": [
+    {
+     "name": "language_model.model.layers.1.block_sparse_moe.gate.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.602897876256927,
+     "floor_bits": 10.602897876256927,
+     "mma": 0.6728205778160874,
+     "mma12": 0.7522349454918686,
+     "zstd_bytes": 2097152,
+     "zstd19": 1626400,
+     "glyd_max": 6543714
+    },
+    {
+     "name": "language_model.model.layers.51.block_sparse_moe.gate.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.565379375569286,
+     "floor_bits": 10.565379375569286,
+     "mma": 0.6723530827736368,
+     "mma12": 0.7522361911073023,
+     "zstd_bytes": 2097152,
+     "zstd19": 1633357,
+     "glyd_max": 6529456
+    },
+    {
+     "name": "language_model.model.layers.92.block_sparse_moe.gate.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.592317486045705,
+     "floor_bits": 10.592317486045705,
+     "mma": 0.6747344659299267,
+     "mma12": 0.7522648402622768,
+     "zstd_bytes": 2097152,
+     "zstd19": 1639668,
+     "glyd_max": 6557180
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.kv_b_proj.weight",
+   "bytes": 603979776,
+   "tensors": 24,
+   "samples": [
+    {
+     "name": "language_model.model.layers.11.self_attn.kv_b_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.616014070247758,
+     "floor_bits": 10.616014070247758,
+     "mma": 0.6749014457066854,
+     "mma12": 0.7524644533793131,
+     "zstd_bytes": 2097152,
+     "zstd19": 1622957,
+     "glyd_max": 6573843
+    },
+    {
+     "name": "language_model.model.layers.55.self_attn.kv_b_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.635083186800449,
+     "floor_bits": 10.635083186800449,
+     "mma": 0.6757554610570272,
+     "mma12": 0.7523290316263834,
+     "zstd_bytes": 2097152,
+     "zstd19": 1617642,
+     "glyd_max": 6583833
+    },
+    {
+     "name": "language_model.model.layers.92.self_attn.kv_b_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.717000965583328,
+     "floor_bits": 10.717000965583328,
+     "mma": 0.6826987266540527,
+     "mma12": 0.7526373863220215,
+     "zstd_bytes": 2097152,
+     "zstd19": 1641195,
+     "glyd_max": 6593149
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.q_a_proj.weight",
+   "bytes": 528482304,
+   "tensors": 24,
+   "samples": [
+    {
+     "name": "language_model.model.layers.11.self_attn.q_a_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.552172772765145,
+     "floor_bits": 10.552172772765145,
+     "mma": 0.6691252844674247,
+     "mma12": 0.7521255129859561,
+     "zstd_bytes": 2097152,
+     "zstd19": 1635142,
+     "glyd_max": 6534633
+    },
+    {
+     "name": "language_model.model.layers.55.self_attn.q_a_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.545154346420357,
+     "floor_bits": 10.545154346420357,
+     "mma": 0.6693143844604492,
+     "mma12": 0.7523224240257627,
+     "zstd_bytes": 2097152,
+     "zstd19": 1643580,
+     "glyd_max": 6568443
+    },
+    {
+     "name": "language_model.model.layers.92.self_attn.q_a_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.568946948603255,
+     "floor_bits": 10.568946948603255,
+     "mma": 0.6711020696730841,
+     "mma12": 0.7524088904971168,
+     "zstd_bytes": 2097152,
+     "zstd19": 1643907,
+     "glyd_max": 6570441
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.mlp.down_proj.weight",
+   "bytes": 484442112,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "language_model.model.layers.0.mlp.down_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 11.312562477865681,
+     "floor_bits": 11.312562477865681,
+     "mma": 0.768984014337713,
+     "mma12": 0.7543042996229031,
+     "zstd_bytes": 2097152,
+     "zstd19": 1726810,
+     "glyd_max": 6904169
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.mlp.gate_proj.weight",
+   "bytes": 484442112,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "language_model.model.layers.0.mlp.gate_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 11.30756270716807,
+     "floor_bits": 11.30756270716807,
+     "mma": 0.7661974467928447,
+     "mma12": 0.7539572337317089,
+     "zstd_bytes": 2097152,
+     "zstd19": 1653062,
+     "glyd_max": 6857586
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.mlp.up_proj.weight",
+   "bytes": 484442112,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "language_model.model.layers.0.mlp.up_proj.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 11.329947682315757,
+     "floor_bits": 11.329947682315757,
+     "mma": 0.7717304835243831,
+     "mma12": 0.7542662847609747,
+     "zstd_bytes": 2097152,
+     "zstd19": 1650299,
+     "glyd_max": 6873272
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "vision_tower.encoder.blocks.N.wqkv.weight",
+   "bytes": 254803968,
+   "tensors": 27,
+   "samples": [
+    {
+     "name": "vision_tower.encoder.blocks.0.wqkv.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.733853104991072,
+     "floor_bits": 10.733853104991072,
+     "mma": 0.6869596905178494,
+     "mma12": 0.7526690165201823,
+     "zstd_bytes": 2097152,
+     "zstd19": 1638559,
+     "glyd_max": 6589365
+    },
+    {
+     "name": "vision_tower.encoder.blocks.20.wqkv.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.571140950352584,
+     "floor_bits": 10.571140950352584,
+     "mma": 0.6702390246921115,
+     "mma12": 0.7522977193196615,
+     "zstd_bytes": 2097152,
+     "zstd19": 1613411,
+     "glyd_max": 6561509
+    },
+    {
+     "name": "vision_tower.encoder.blocks.9.wqkv.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.57071486803864,
+     "floor_bits": 10.57071486803864,
+     "mma": 0.6696800655788846,
+     "mma12": 0.7523519727918837,
+     "zstd_bytes": 2097152,
+     "zstd19": 1643065,
+     "glyd_max": 6569388
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "vision_tower.encoder.blocks.N.mlp.fc0.weight",
+   "bytes": 226492416,
+   "tensors": 27,
+   "samples": [
+    {
+     "name": "vision_tower.encoder.blocks.0.mlp.fc0.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 11.349916155081182,
+     "floor_bits": 11.349916155081182,
+     "mma": 0.7642049789428711,
+     "mma12": 0.7558064460754395,
+     "zstd_bytes": 2097152,
+     "zstd19": 1706153,
+     "glyd_max": 6879296
+    },
+    {
+     "name": "vision_tower.encoder.blocks.20.mlp.fc0.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.564879787747863,
+     "floor_bits": 10.564879787747863,
+     "mma": 0.6697304248809814,
+     "mma12": 0.7524018287658691,
+     "zstd_bytes": 2097152,
+     "zstd19": 1643961,
+     "glyd_max": 6570881
+    },
+    {
+     "name": "vision_tower.encoder.blocks.9.mlp.fc0.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.58894309235125,
+     "floor_bits": 10.58894309235125,
+     "mma": 0.6711599826812744,
+     "mma12": 0.7523598670959473,
+     "zstd_bytes": 2097152,
+     "zstd19": 1645436,
+     "glyd_max": 6578247
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "vision_tower.encoder.blocks.N.mlp.fc1.weight",
+   "bytes": 226492416,
+   "tensors": 27,
+   "samples": [
+    {
+     "name": "vision_tower.encoder.blocks.0.mlp.fc1.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 11.275995960920945,
+     "floor_bits": 11.275995960920945,
+     "mma": 0.7495235204696655,
+     "mma12": 0.7541718482971191,
+     "zstd_bytes": 2097152,
+     "zstd19": 1715564,
+     "glyd_max": 6856845
+    },
+    {
+     "name": "vision_tower.encoder.blocks.20.mlp.fc1.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.571801428042608,
+     "floor_bits": 10.571801428042608,
+     "mma": 0.6698697805404663,
+     "mma12": 0.7523617744445801,
+     "zstd_bytes": 2097152,
+     "zstd19": 1623883,
+     "glyd_max": 6572265
+    },
+    {
+     "name": "vision_tower.encoder.blocks.9.mlp.fc1.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.585716612192618,
+     "floor_bits": 10.585716612192618,
+     "mma": 0.6711264848709106,
+     "mma12": 0.7523846626281738,
+     "zstd_bytes": 2097152,
+     "zstd19": 1645974,
+     "glyd_max": 6577934
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.f_b_proj.weight",
+   "bytes": 217055232,
+   "tensors": 69,
+   "samples": [
+    {
+     "name": "language_model.model.layers.0.self_attn.f_b_proj.weight",
+     "bytes": 3145728,
+     "native_bits": 16,
+     "split_bits": 11.636149267524956,
+     "floor_bits": 11.636149267524956,
+     "mma": 0.8503500620524088,
+     "mma12": 0.7653617858886719,
+     "zstd_bytes": 2097152,
+     "zstd19": 1735202,
+     "glyd_max": 2625386
+    },
+    {
+     "name": "language_model.model.layers.5.self_attn.f_b_proj.weight",
+     "bytes": 3145728,
+     "native_bits": 16,
+     "split_bits": 11.236087468380372,
+     "floor_bits": 11.236087468380372,
+     "mma": 0.7528006235758463,
+     "mma12": 0.7621065775553385,
+     "zstd_bytes": 2097152,
+     "zstd19": 1691450,
+     "glyd_max": 2564829
+    },
+    {
+     "name": "language_model.model.layers.90.self_attn.f_b_proj.weight",
+     "bytes": 3145728,
+     "native_bits": 16,
+     "split_bits": 10.733835207715515,
+     "floor_bits": 10.733835207715515,
+     "mma": 0.6845305760701498,
+     "mma12": 0.759070078531901,
+     "zstd_bytes": 2097152,
+     "zstd19": 1654441,
+     "glyd_max": 2481001
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "language_model.model.layers.N.self_attn.kv_a_proj_with_mqa.weight",
+   "bytes": 198180864,
+   "tensors": 24,
+   "samples": [
+    {
+     "name": "language_model.model.layers.11.self_attn.kv_a_proj_with_mqa.weight",
+     "bytes": 8257536,
+     "native_bits": 16,
+     "split_bits": 10.565936505281229,
+     "floor_bits": 10.565936505281229,
+     "mma": 0.6712344941638765,
+     "mma12": 0.7523120698474702,
+     "zstd_bytes": 2097152,
+     "zstd19": 1642310,
+     "glyd_max": 6462461
+    },
+    {
+     "name": "language_model.model.layers.55.self_attn.kv_a_proj_with_mqa.weight",
+     "bytes": 8257536,
+     "native_bits": 16,
+     "split_bits": 10.569232525946212,
+     "floor_bits": 10.569232525946212,
+     "mma": 0.6699860587952629,
+     "mma12": 0.7523546975756449,
+     "zstd_bytes": 2097152,
+     "zstd19": 1641155,
+     "glyd_max": 6460892
+    },
+    {
+     "name": "language_model.model.layers.92.self_attn.kv_a_proj_with_mqa.weight",
+     "bytes": 8257536,
+     "native_bits": 16,
+     "split_bits": 10.60686593259536,
+     "floor_bits": 10.60686593259536,
+     "mma": 0.6733314877464658,
+     "mma12": 0.7523779490637401,
+     "zstd_bytes": 2097152,
+     "zstd19": 1644395,
+     "glyd_max": 6464017
+    }
+   ]
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.f_a_proj.weight",
+   "bytes": 126615552,
+   "tensors": 69,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.b_proj.weight",
+   "bytes": 94961664,
+   "tensors": 69,
+   "samples": []
+  },
+  {
+   "class": "bf16",
+   "kind": "mm_projector.proj.N.weight",
+   "bytes": 92274688,
+   "tensors": 2,
+   "samples": [
+    {
+     "name": "mm_projector.proj.0.weight",
+     "bytes": 8388608,
+     "native_bits": 16,
+     "split_bits": 10.657083468793234,
+     "floor_bits": 10.657083468793234,
+     "mma": 0.6777112185955048,
+     "mma12": 0.7521592378616333,
+     "zstd_bytes": 2097152,
+     "zstd19": 1644906,
+     "glyd_max": 6576304
+    }
+   ]
+  },
+  {
+   "class": "bf16",
+   "kind": "vision_tower.encoder.blocks.N.wo.weight",
+   "bytes": 84934656,
+   "tensors": 27,
+   "samples": [
+    {
+     "name": "vision_tower.encoder.blocks.0.wo.weight",
+     "bytes": 3145728,
+     "native_bits": 16,
+     "split_bits": 10.66395998771991,
+     "floor_bits": 10.66395998771991,
+     "mma": 0.6779197057088217,
+     "mma12": 0.7523918151855469,
+     "zstd_bytes": 2097152,
+     "zstd19": 1650537,
+     "glyd_max": 2472705
+    },
+    {
+     "name": "vision_tower.encoder.blocks.20.wo.weight",
+     "bytes": 3145728,
+     "native_bits": 16,
+     "split_bits": 10.55917946881026,
+     "floor_bits": 10.55917946881026,
+     "mma": 0.6703189214070638,
+     "mma12": 0.7521222432454427,
+     "zstd_bytes": 2097152,
+     "zstd19": 1644135,
+     "glyd_max": 2463723
+    },
+    {
+     "name": "vision_tower.encoder.blocks.9.wo.weight",
+     "bytes": 3145728,
+     "native_bits": 16,
+     "split_bits": 10.556854454169432,
+     "floor_bits": 10.556854454169432,
+     "mma": 0.6702756881713867,
+     "mma12": 0.7521171569824219,
+     "zstd_bytes": 2097152,
+     "zstd19": 1643991,
+     "glyd_max": 2463394
+    }
+   ]
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.k_conv1d.weight",
+   "bytes": 13565952,
+   "tensors": 69,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.q_conv1d.weight",
+   "bytes": 13565952,
+   "tensors": 69,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.v_conv1d.weight",
+   "bytes": 13565952,
+   "tensors": 69,
+   "samples": []
+  },
+  {
+   "class": "bf16",
+   "kind": "vision_tower.patch_embed.pos_emb.weight",
+   "bytes": 8388608,
+   "tensors": 1,
+   "samples": [
+    {
+     "name": "vision_tower.patch_embed.pos_emb.weight",
+     "bytes": 131072,
+     "native_bits": 16,
+     "split_bits": 10.603197166343554,
+     "floor_bits": 10.603197166343554,
+     "mma": 0.677276611328125,
+     "mma12": 0.752471923828125,
+     "zstd_bytes": 131072,
+     "zstd19": 102511,
+     "glyd_max": 102451
+    }
+   ]
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.dt_bias",
+   "bytes": 3391488,
+   "tensors": 69,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.input_layernorm.weight",
+   "bytes": 1333248,
+   "tensors": 93,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.mlp_res_norm.weight",
+   "bytes": 1333248,
+   "tensors": 93,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.mlp_res_proj.weight",
+   "bytes": 1333248,
+   "tensors": 93,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.post_attention_layernorm.weight",
+   "bytes": 1333248,
+   "tensors": 93,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attention_res_norm.weight",
+   "bytes": 1333248,
+   "tensors": 93,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attention_res_proj.weight",
+   "bytes": 1333248,
+   "tensors": 93,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "vision_tower.patch_embed.proj.weight",
+   "bytes": 1204224,
+   "tensors": 1,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.block_sparse_moe.routed_expert_norm.weight",
+   "bytes": 659456,
+   "tensors": 92,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.block_sparse_moe.gate.e_score_correction_bias",
+   "bytes": 329728,
+   "tensors": 92,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.q_a_layernorm.weight",
+   "bytes": 73728,
+   "tensors": 24,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "vision_tower.encoder.blocks.N.norm0.weight",
+   "bytes": 55296,
+   "tensors": 27,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "vision_tower.encoder.blocks.N.norm1.weight",
+   "bytes": 55296,
+   "tensors": 27,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.A_log",
+   "bytes": 35328,
+   "tensors": 69,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.o_norm.weight",
+   "bytes": 35328,
+   "tensors": 69,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.layers.N.self_attn.kv_a_layernorm.weight",
+   "bytes": 24576,
+   "tensors": 24,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.norm.weight",
+   "bytes": 14336,
+   "tensors": 1,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.output_attn_res_norm.weight",
+   "bytes": 14336,
+   "tensors": 1,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "language_model.model.output_attn_res_proj.weight",
+   "bytes": 14336,
+   "tensors": 1,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "mm_projector.post_norm.weight",
+   "bytes": 14336,
+   "tensors": 1,
+   "samples": []
+  },
+  {
+   "class": "other",
+   "kind": "vision_tower.encoder.final_layernorm.weight",
+   "bytes": 2048,
+   "tensors": 1,
+   "samples": []
+  }
+ ],
+ "download_s": 36,
+ "sampled_bytes": 1643659264,
+ "seconds": 137
+}

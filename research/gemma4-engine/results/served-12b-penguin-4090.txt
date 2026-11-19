@@ -1,0 +1,46 @@
+# Gemma 4 12B-it at penguin (lossless), served on one RTX 4090 (Runpod, 2026-10-16): glyd 0.32 dev 1f458e54 + the gemma_plan fix (cde258aa)
+
+13:14:46 gpu NVIDIA GeForce RTX 4090, 24564 MiB, 580.159.04
+13:14:58 arch 89
+13:15:17 dl-done
+13:23:31 build-done
+13:23:31 pack
+glyd-v7: 329 packs checked, 337 tensors hashed, 23.81 GB of bf16 read, 3 shards (18.2 s)
+23G	m/12b
+16G	p12
+
+13:29:01 rebuild-done
+13:29:01 run
+p12: about 14.9 GiB on the GPU at the penguin level (about 10.8 bits per weight, lossless: every weight is the original's), in place of 22.2 GiB of bf16.
+Drafting with /root/p12/draft (8 tokens a round; --no-draft runs without it).
+Ready in 21s: p12 on the NVIDIA GeForce RTX 4090, 15.0 GiB of weights, 32768 tokens of context, one user at a time.
+Bald Eagle
+Peregrine Falcon
+Great Horned Owl
+13:29:23 serve
+p12: about 14.9 GiB on the GPU at the penguin level (about 10.8 bits per weight, lossless: every weight is the original's), in place of 22.2 GiB of bf16.
+Drafting with /root/p12/draft (8 tokens a round; --no-draft runs without it).
+Ready in 20s: p12 on the NVIDIA GeForce RTX 4090, 15.0 GiB of weights, 32768 tokens of context, one user at a time.
+/root/p12 is served at http://127.0.0.1:8080: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it.
+13:29:44 memory: 17556 MiB, 24564 MiB
+---- paste from here ----
+```
+compare.py compare-v1, 2026-10-16 13:39 UTC
+Server:  http://127.0.0.1:8080, model gemma
+Note:    glyd 0.32 dev (1f458e54 + gemma_plan penguin fix), gemma-4-12B penguin + draft, NVIDIA GeForce RTX 4090
+GPU:     NVIDIA GeForce RTX 4090, 24564 MiB
+Driver:  580.159.04
+PCIe:    now gen 4 x16, max gen 4 x16
+CPU:     AMD EPYC 7282 16-Core Processor
+RAM:     504 GiB
+OS:      Ubuntu 22.04.5 LTS, kernel 6.8.0-124-generic
+| Test | Prompt tokens | First token (s) | Prompt read (tokens/s) | Writing (tokens/s) | Tokens written |
+|---|--:|--:|--:|--:|--:|
+| Chat (short prompt) | 34 | 0.02 | 1407 | 89.8 | 512 |
+| ~4K prompt | 3839 | 0.71 | 5408 | 97.5 | 191 |
+| ~30K prompt | 28374 | 7.63 | 3717 | 64.3 | 208 |
+GSM8K     72 / 75   (0 hit the 3,072 cap, mean 257 tokens an answer)
+MMLU-Pro  67 / 75   (0 hit the 3,072 cap, mean 729 tokens an answer)
+```
+---- to here ----
+13:39:19 ALL-DONE

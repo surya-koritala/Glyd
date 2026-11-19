@@ -1,0 +1,611 @@
+{
+ "order": "seq",
+ "gpu": "NVIDIA L4",
+ "rows": [
+  {
+   "B": 1,
+   "L": 1024,
+   "copies": 62,
+   "max_abs_difference_to_fa2": 0.00098,
+   "max_abs_output": 0.23828,
+   "inputs_finite": true,
+   "kv_decode_us": 18.02,
+   "kv_decode_range_us": [
+    17.97,
+    18.02
+   ],
+   "kv_decode_eager_us": 18.97,
+   "kv_decode_eager_range_us": [
+    18.94,
+    19.12
+   ],
+   "fa2_decode_us": 26.65,
+   "fa2_decode_range_us": [
+    26.62,
+    26.7
+   ],
+   "fa2_decode_eager_us": 102.17,
+   "fa2_decode_eager_range_us": [
+    101.81,
+    102.35
+   ],
+   "kv_write_us": 3.56,
+   "kv_write_range_us": [
+    3.53,
+    3.71
+   ],
+   "kv_write_eager_us": 12.75,
+   "kv_write_eager_range_us": [
+    12.31,
+    13.03
+   ],
+   "vllm_write_us": 1.84,
+   "vllm_write_range_us": [
+    1.82,
+    1.84
+   ],
+   "vllm_write_eager_us": 18.53,
+   "vllm_write_eager_range_us": [
+    18.1,
+    18.71
+   ],
+   "kv_write_cold_us": 8.19,
+   "vllm_write_cold_us": 6.14,
+   "step_ms_write_extra_cold_36_layers": 0.074,
+   "decode_ratio_fa2_over_kv_eager": 5.386,
+   "decode_ratio_fa2_over_kv": 1.479,
+   "step_ms_saved_36_layers": 0.311,
+   "step_ms_write_extra_36_layers": 0.062
+  },
+  {
+   "B": 1,
+   "L": 2048,
+   "copies": 31,
+   "max_abs_difference_to_fa2": 0.00098,
+   "max_abs_output": 2.10938,
+   "inputs_finite": true,
+   "kv_decode_us": 30.38,
+   "kv_decode_range_us": [
+    30.36,
+    30.39
+   ],
+   "kv_decode_eager_us": 31.56,
+   "kv_decode_eager_range_us": [
+    31.51,
+    31.61
+   ],
+   "fa2_decode_us": 44.54,
+   "fa2_decode_range_us": [
+    44.54,
+    44.6
+   ],
+   "fa2_decode_eager_us": 105.01,
+   "fa2_decode_eager_range_us": [
+    104.58,
+    105.47
+   ],
+   "kv_write_us": 3.48,
+   "kv_write_range_us": [
+    3.48,
+    3.56
+   ],
+   "kv_write_eager_us": 12.85,
+   "kv_write_eager_range_us": [
+    12.24,
+    12.98
+   ],
+   "vllm_write_us": 1.84,
+   "vllm_write_range_us": [
+    1.82,
+    1.87
+   ],
+   "vllm_write_eager_us": 18.43,
+   "vllm_write_eager_range_us": [
+    18.2,
+    18.61
+   ],
+   "kv_write_cold_us": 8.19,
+   "vllm_write_cold_us": 5.3,
+   "step_ms_write_extra_cold_36_layers": 0.104,
+   "decode_ratio_fa2_over_kv_eager": 3.327,
+   "decode_ratio_fa2_over_kv": 1.466,
+   "step_ms_saved_36_layers": 0.51,
+   "step_ms_write_extra_36_layers": 0.059
+  },
+  {
+   "B": 1,
+   "L": 4096,
+   "copies": 16,
+   "max_abs_difference_to_fa2": 0.00049,
+   "max_abs_output": 0.46875,
+   "inputs_finite": true,
+   "kv_decode_us": 54.32,
+   "kv_decode_range_us": [
+    54.22,
+    54.4
+   ],
+   "kv_decode_eager_us": 55.48,
+   "kv_decode_eager_range_us": [
+    55.37,
+    55.52
+   ],
+   "fa2_decode_us": 75.34,
+   "fa2_decode_range_us": [
+    75.32,
+    75.37
+   ],
+   "fa2_decode_eager_us": 105.37,
+   "fa2_decode_eager_range_us": [
+    105.19,
+    105.6
+   ],
+   "kv_write_us": 2.61,
+   "kv_write_range_us": [
+    2.61,
+    2.64
+   ],
+   "kv_write_eager_us": 12.36,
+   "kv_write_eager_range_us": [
+    12.32,
+    13.13
+   ],
+   "vllm_write_us": 1.84,
+   "vllm_write_range_us": [
+    1.82,
+    1.87
+   ],
+   "vllm_write_eager_us": 18.61,
+   "vllm_write_eager_range_us": [
+    17.64,
+    18.82
+   ],
+   "kv_write_cold_us": 6.14,
+   "vllm_write_cold_us": 5.95,
+   "step_ms_write_extra_cold_36_layers": 0.007,
+   "decode_ratio_fa2_over_kv_eager": 1.899,
+   "decode_ratio_fa2_over_kv": 1.387,
+   "step_ms_saved_36_layers": 0.757,
+   "step_ms_write_extra_36_layers": 0.028
+  },
+  {
+   "B": 1,
+   "L": 8192,
+   "copies": 8,
+   "max_abs_difference_to_fa2": 0.00049,
+   "max_abs_output": 149.0,
+   "inputs_finite": true,
+   "kv_decode_us": 103.5,
+   "kv_decode_range_us": [
+    103.37,
+    103.52
+   ],
+   "kv_decode_eager_us": 104.68,
+   "kv_decode_eager_range_us": [
+    104.6,
+    104.7
+   ],
+   "fa2_decode_us": 141.36,
+   "fa2_decode_range_us": [
+    141.34,
+    141.41
+   ],
+   "fa2_decode_eager_us": 146.12,
+   "fa2_decode_eager_range_us": [
+    145.74,
+    146.18
+   ],
+   "kv_write_us": 4.58,
+   "kv_write_range_us": [
+    3.79,
+    4.81
+   ],
+   "kv_write_eager_us": 12.77,
+   "kv_write_eager_range_us": [
+    12.24,
+    12.95
+   ],
+   "vllm_write_us": 1.97,
+   "vllm_write_range_us": [
+    1.95,
+    2.0
+   ],
+   "vllm_write_eager_us": 18.58,
+   "vllm_write_eager_range_us": [
+    18.07,
+    18.82
+   ],
+   "kv_write_cold_us": 9.22,
+   "vllm_write_cold_us": 6.14,
+   "step_ms_write_extra_cold_36_layers": 0.111,
+   "decode_ratio_fa2_over_kv_eager": 1.396,
+   "decode_ratio_fa2_over_kv": 1.366,
+   "step_ms_saved_36_layers": 1.363,
+   "step_ms_write_extra_36_layers": 0.094
+  },
+  {
+   "B": 2,
+   "L": 1024,
+   "copies": 31,
+   "max_abs_difference_to_fa2": 0.00098,
+   "max_abs_output": 2.10938,
+   "inputs_finite": true,
+   "kv_decode_us": 30.49,
+   "kv_decode_range_us": [
+    30.48,
+    30.52
+   ],
+   "kv_decode_eager_us": 31.46,
+   "kv_decode_eager_range_us": [
+    31.39,
+    31.51
+   ],
+   "fa2_decode_us": 46.77,
+   "fa2_decode_range_us": [
+    46.75,
+    46.82
+   ],
+   "fa2_decode_eager_us": 109.98,
+   "fa2_decode_eager_range_us": [
+    109.82,
+    110.41
+   ],
+   "kv_write_us": 3.5,
+   "kv_write_range_us": [
+    3.46,
+    3.86
+   ],
+   "kv_write_eager_us": 12.83,
+   "kv_write_eager_range_us": [
+    12.19,
+    13.21
+   ],
+   "vllm_write_us": 1.84,
+   "vllm_write_range_us": [
+    1.82,
+    1.87
+   ],
+   "vllm_write_eager_us": 18.34,
+   "vllm_write_eager_range_us": [
+    17.62,
+    18.82
+   ],
+   "kv_write_cold_us": 8.19,
+   "vllm_write_cold_us": 6.14,
+   "step_ms_write_extra_cold_36_layers": 0.074,
+   "decode_ratio_fa2_over_kv_eager": 3.496,
+   "decode_ratio_fa2_over_kv": 1.534,
+   "step_ms_saved_36_layers": 0.586,
+   "step_ms_write_extra_36_layers": 0.06
+  },
+  {
+   "B": 4,
+   "L": 1024,
+   "copies": 16,
+   "max_abs_difference_to_fa2": 0.00098,
+   "max_abs_output": 0.94922,
+   "inputs_finite": true,
+   "kv_decode_us": 54.04,
+   "kv_decode_range_us": [
+    53.96,
+    54.06
+   ],
+   "kv_decode_eager_us": 55.17,
+   "kv_decode_eager_range_us": [
+    55.14,
+    55.22
+   ],
+   "fa2_decode_us": 76.88,
+   "fa2_decode_range_us": [
+    76.82,
+    77.0
+   ],
+   "fa2_decode_eager_us": 111.56,
+   "fa2_decode_eager_range_us": [
+    111.0,
+    112.0
+   ],
+   "kv_write_us": 4.1,
+   "kv_write_range_us": [
+    3.71,
+    4.66
+   ],
+   "kv_write_eager_us": 12.72,
+   "kv_write_eager_range_us": [
+    12.29,
+    13.0
+   ],
+   "vllm_write_us": 1.87,
+   "vllm_write_range_us": [
+    1.84,
+    1.89
+   ],
+   "vllm_write_eager_us": 18.07,
+   "vllm_write_eager_range_us": [
+    17.69,
+    18.66
+   ],
+   "kv_write_cold_us": 9.22,
+   "vllm_write_cold_us": 5.31,
+   "step_ms_write_extra_cold_36_layers": 0.141,
+   "decode_ratio_fa2_over_kv_eager": 2.022,
+   "decode_ratio_fa2_over_kv": 1.423,
+   "step_ms_saved_36_layers": 0.822,
+   "step_ms_write_extra_36_layers": 0.08
+  },
+  {
+   "B": 8,
+   "L": 1024,
+   "copies": 8,
+   "max_abs_difference_to_fa2": 0.00195,
+   "max_abs_output": 24.75,
+   "inputs_finite": true,
+   "kv_decode_us": 102.4,
+   "kv_decode_range_us": [
+    102.35,
+    102.47
+   ],
+   "kv_decode_eager_us": 103.6,
+   "kv_decode_eager_range_us": [
+    103.53,
+    103.63
+   ],
+   "fa2_decode_us": 142.28,
+   "fa2_decode_range_us": [
+    142.23,
+    142.41
+   ],
+   "fa2_decode_eager_us": 149.15,
+   "fa2_decode_eager_range_us": [
+    149.05,
+    149.3
+   ],
+   "kv_write_us": 4.76,
+   "kv_write_range_us": [
+    4.66,
+    4.92
+   ],
+   "kv_write_eager_us": 12.7,
+   "kv_write_eager_range_us": [
+    12.08,
+    12.91
+   ],
+   "vllm_write_us": 1.97,
+   "vllm_write_range_us": [
+    1.97,
+    2.02
+   ],
+   "vllm_write_eager_us": 18.25,
+   "vllm_write_eager_range_us": [
+    17.43,
+    18.84
+   ],
+   "kv_write_cold_us": 10.24,
+   "vllm_write_cold_us": 6.24,
+   "step_ms_write_extra_cold_36_layers": 0.144,
+   "decode_ratio_fa2_over_kv_eager": 1.44,
+   "decode_ratio_fa2_over_kv": 1.389,
+   "step_ms_saved_36_layers": 1.436,
+   "step_ms_write_extra_36_layers": 0.1
+  },
+  {
+   "B": 16,
+   "L": 1024,
+   "copies": 4,
+   "max_abs_difference_to_fa2": 0.00195,
+   "max_abs_output": 89.5,
+   "inputs_finite": true,
+   "kv_decode_us": 198.22,
+   "kv_decode_range_us": [
+    197.99,
+    198.22
+   ],
+   "kv_decode_eager_us": 199.78,
+   "kv_decode_eager_range_us": [
+    199.55,
+    199.93
+   ],
+   "fa2_decode_us": 296.57,
+   "fa2_decode_range_us": [
+    295.26,
+    296.99
+   ],
+   "fa2_decode_eager_us": 303.84,
+   "fa2_decode_eager_range_us": [
+    303.77,
+    305.05
+   ],
+   "kv_write_us": 5.2,
+   "kv_write_range_us": [
+    4.97,
+    5.4
+   ],
+   "kv_write_eager_us": 12.24,
+   "kv_write_eager_range_us": [
+    12.16,
+    12.98
+   ],
+   "vllm_write_us": 2.02,
+   "vllm_write_range_us": [
+    2.0,
+    2.05
+   ],
+   "vllm_write_eager_us": 18.46,
+   "vllm_write_eager_range_us": [
+    17.79,
+    18.51
+   ],
+   "kv_write_cold_us": 12.29,
+   "vllm_write_cold_us": 6.14,
+   "step_ms_write_extra_cold_36_layers": 0.221,
+   "decode_ratio_fa2_over_kv_eager": 1.521,
+   "decode_ratio_fa2_over_kv": 1.496,
+   "step_ms_saved_36_layers": 3.541,
+   "step_ms_write_extra_36_layers": 0.114
+  },
+  {
+   "B": 32,
+   "L": 1024,
+   "copies": 2,
+   "max_abs_difference_to_fa2": 0.00195,
+   "max_abs_output": 95.0,
+   "inputs_finite": true,
+   "kv_decode_us": 390.35,
+   "kv_decode_range_us": [
+    390.04,
+    390.63
+   ],
+   "kv_decode_eager_us": 391.83,
+   "kv_decode_eager_range_us": [
+    391.81,
+    391.86
+   ],
+   "fa2_decode_us": 546.76,
+   "fa2_decode_range_us": [
+    546.2,
+    548.66
+   ],
+   "fa2_decode_eager_us": 554.72,
+   "fa2_decode_eager_range_us": [
+    554.19,
+    555.7
+   ],
+   "kv_write_us": 7.76,
+   "kv_write_range_us": [
+    6.91,
+    8.52
+   ],
+   "kv_write_eager_us": 12.85,
+   "kv_write_eager_range_us": [
+    12.16,
+    13.18
+   ],
+   "vllm_write_us": 2.2,
+   "vllm_write_range_us": [
+    2.2,
+    2.25
+   ],
+   "vllm_write_eager_us": 18.41,
+   "vllm_write_eager_range_us": [
+    17.58,
+    19.07
+   ],
+   "kv_write_cold_us": 20.48,
+   "vllm_write_cold_us": 7.17,
+   "step_ms_write_extra_cold_36_layers": 0.479,
+   "decode_ratio_fa2_over_kv_eager": 1.416,
+   "decode_ratio_fa2_over_kv": 1.401,
+   "step_ms_saved_36_layers": 5.631,
+   "step_ms_write_extra_36_layers": 0.2
+  },
+  {
+   "B": 4,
+   "L": 8192,
+   "copies": 2,
+   "max_abs_difference_to_fa2": 0.00098,
+   "max_abs_output": 30.625,
+   "inputs_finite": true,
+   "kv_decode_us": 392.81,
+   "kv_decode_range_us": [
+    392.45,
+    393.16
+   ],
+   "kv_decode_eager_us": 394.37,
+   "kv_decode_eager_range_us": [
+    394.26,
+    394.42
+   ],
+   "fa2_decode_us": 548.35,
+   "fa2_decode_range_us": [
+    547.25,
+    548.86
+   ],
+   "fa2_decode_eager_us": 556.19,
+   "fa2_decode_eager_range_us": [
+    555.87,
+    556.52
+   ],
+   "kv_write_us": 5.43,
+   "kv_write_range_us": [
+    5.22,
+    5.48
+   ],
+   "kv_write_eager_us": 12.28,
+   "kv_write_eager_range_us": [
+    12.09,
+    13.52
+   ],
+   "vllm_write_us": 2.15,
+   "vllm_write_range_us": [
+    2.12,
+    2.2
+   ],
+   "vllm_write_eager_us": 18.71,
+   "vllm_write_eager_range_us": [
+    17.61,
+    19.43
+   ],
+   "kv_write_cold_us": 10.24,
+   "vllm_write_cold_us": 5.12,
+   "step_ms_write_extra_cold_36_layers": 0.184,
+   "decode_ratio_fa2_over_kv_eager": 1.41,
+   "decode_ratio_fa2_over_kv": 1.396,
+   "step_ms_saved_36_layers": 5.599,
+   "step_ms_write_extra_36_layers": 0.118
+  },
+  {
+   "B": 8,
+   "L": 4096,
+   "copies": 2,
+   "max_abs_difference_to_fa2": 0.00049,
+   "max_abs_output": 5.4375,
+   "inputs_finite": true,
+   "kv_decode_us": 392.91,
+   "kv_decode_range_us": [
+    392.55,
+    393.04
+   ],
+   "kv_decode_eager_us": 394.39,
+   "kv_decode_eager_range_us": [
+    394.32,
+    394.68
+   ],
+   "fa2_decode_us": 548.58,
+   "fa2_decode_range_us": [
+    547.4,
+    549.04
+   ],
+   "fa2_decode_eager_us": 556.36,
+   "fa2_decode_eager_range_us": [
+    556.21,
+    556.67
+   ],
+   "kv_write_us": 5.4,
+   "kv_write_range_us": [
+    5.15,
+    5.45
+   ],
+   "kv_write_eager_us": 13.31,
+   "kv_write_eager_range_us": [
+    12.19,
+    13.62
+   ],
+   "vllm_write_us": 2.18,
+   "vllm_write_range_us": [
+    2.12,
+    2.2
+   ],
+   "vllm_write_eager_us": 18.94,
+   "vllm_write_eager_range_us": [
+    18.84,
+    19.79
+   ],
+   "kv_write_cold_us": 11.26,
+   "vllm_write_cold_us": 6.14,
+   "step_ms_write_extra_cold_36_layers": 0.184,
+   "decode_ratio_fa2_over_kv_eager": 1.411,
+   "decode_ratio_fa2_over_kv": 1.396,
+   "step_ms_saved_36_layers": 5.604,
+   "step_ms_write_extra_36_layers": 0.116
+  }
+ ]
+}

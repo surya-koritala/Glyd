@@ -1,0 +1,23 @@
+[package]
+name = "glyd-lossy-study"
+version = "0.1.0"
+edition = "2021"
+license = "BUSL-1.1"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "glyd-lossy-study"
+path = "src/main.rs"
+
+[[bin]]
+name = "glyd-lossy-inventory"
+path = "src/bin/inventory.rs"
+
+[[bin]]
+name = "glyd-fp8-census"
+path = "src/bin/fp8_census.rs"

@@ -1,0 +1,36 @@
+google/gemma-4-12B-it gate_up: [30720, 3840] torch.bfloat16 from 2 tensor(s)
+Qwen/Qwen3.5-27B gate_up: [34816, 5120] torch.bfloat16 from 2 tensor(s)
+Qwen/Qwen3.5-9B gate_up: [24576, 4096] torch.bfloat16 from 2 tensor(s)
+google/gemma-4-31B-it gate_up: [43008, 5376] torch.bfloat16 from 2 tensor(s)
+google/gemma-4-12B-it down: [3840, 15360] torch.bfloat16 from 1 tensor(s)
+Qwen/Qwen3.5-27B down: [5120, 17408] torch.bfloat16 from 1 tensor(s)
+Qwen/Qwen3.5-9B down: [4096, 12288] torch.bfloat16 from 1 tensor(s)
+google/gemma-4-31B-it down: [5376, 21504] torch.bfloat16 from 1 tensor(s)
+google/gemma-4-12B-it qkv: [8192, 3840] torch.bfloat16 from 3 tensor(s)
+google/gemma-4-12B-it o: [3840, 4096] torch.bfloat16 from 1 tensor(s)
+google/gemma-4-31B-it qkv: [16384, 5376] torch.bfloat16 from 3 tensor(s)
+google/gemma-4-12B-it qk_global: [8704, 3840] torch.bfloat16 from 2 tensor(s)
+Qwen/Qwen3.5-9B qkv: [10240, 4096] torch.bfloat16 from 3 tensor(s)
+Qwen/Qwen3.5-27B qkv: [14336, 5120] torch.bfloat16 from 3 tensor(s)
+google/gemma-4-31B-it o: [5376, 8192] torch.bfloat16 from 1 tensor(s)
+google/gemma-4-12B-it o_global: [3840, 8192] torch.bfloat16 from 1 tensor(s)
+Qwen/Qwen3.5-9B lm_head: [248320, 4096] torch.bfloat16 from 1 tensor(s)
+Qwen/Qwen3.5-9B o: [4096, 4096] torch.bfloat16 from 1 tensor(s)
+Qwen/Qwen3.5-27B o: [5120, 6144] torch.bfloat16 from 1 tensor(s)
+Qwen/Qwen3.5-35B-A3B w13: [256, 1024, 2048] torch.bfloat16 from 1 tensor(s)
+Qwen/Qwen3.5-9B gdn_in: [12288, 4096] torch.bfloat16 from 2 tensor(s)
+Qwen/Qwen3.5-27B gdn_in: [16384, 5120] torch.bfloat16 from 2 tensor(s)
+google/gemma-4-31B-it qk_global: [18432, 5376] torch.bfloat16 from 2 tensor(s)
+Qwen/Qwen3.5-9B gdn_out: [4096, 4096] torch.bfloat16 from 1 tensor(s)
+Qwen/Qwen3.5-27B gdn_out: [5120, 6144] torch.bfloat16 from 1 tensor(s)
+google/gemma-4-31B-it o_global: [5376, 16384] torch.bfloat16 from 1 tensor(s)
+Qwen/Qwen3.5-35B-A3B w2: [256, 2048, 512] torch.bfloat16 from 1 tensor(s)
+total 6917916
+drwxr-xr-x 2 root root       4096 Oct  6 04:30 .
+drwxr-xr-x 9 root root        119 Oct  6 04:31 ..
+-rw------- 1 root root  975176176 Oct  6 04:30 Qwen3.5-27B.safetensors
+-rw------- 1 root root  553648624 Oct  6 04:30 Qwen3.5-9B.safetensors
+-rw------- 1 root root 1610612912 Oct  6 04:30 experts-Qwen3.5-35B-A3B.safetensors
+-rw------- 1 root root  578028024 Oct  6 04:30 gemma-4-12B-it.safetensors
+-rw------- 1 root root 1332216312 Oct  6 04:30 gemma-4-31B-it.safetensors
+-rw------- 1 root root 2034237528 Oct  6 04:30 head-Qwen3.5-9B.safetensors

@@ -1,0 +1,64 @@
+---
+license: {{ license }}
+base_model:
+- {{ base }}
+base_model_relation: quantized
+pipeline_tag: text-generation
+library_name: glyd
+tags: [glyd, {{ level }}, compressed, consumer-gpu]
+---
+
+# {{ title }} · Glyd {{ level | title }}
+
+[{{ base }}](https://huggingface.co/{{ base }}) packed at Glyd's {{ level }} level, running with Glyd's own engine{% if draft %}, with Google's draft model, which makes it write faster without changing the output{% endif %}.
+
+**Run it:** `glyd run {{ repo }}` (Glyd {{ glyd }} or newer, Linux + NVIDIA)
+
+> [!Note]
+> These files are in Glyd's own format and run only with the Glyd engine. For Transformers, vLLM or llama.cpp, use
+> [the original weights](https://huggingface.co/{{ base }}).
+
+## What this is
+
+{{ machines[0].about[:1] | upper }}{{ machines[0].about[1:] }}
+
+You can check it: `glyd verify {{ repo }}` decodes every tensor and compares its sha256 with the one recorded from
+the original files when it was packed.
+
+```
+on disk     {{ disk }}{% if draft %} (+{{ draft_disk }} draft model in draft/){% endif %}
+
+```
+
+## Numbers
+
+{% for m in machines %}
+{{ m.gpu }} (driver {{ m.driver }}), {{ m.cpu }}, {{ m.ram }} RAM, Glyd {{ m.glyd }}, {{ m.when }}. Greedy, thinking off.
+Served (`glyd serve`, OpenAI API){% if draft %}, with the draft model{% endif %}:
+
+```
+{% for r in m.rows %}
+{{ r }}
+{% endfor %}
+GPU memory in use: {{ m.memory }}
+{% for e in m.evals %}
+{{ e }}
+{% endfor %}
+```
+
+{% endfor %}
+## Known limits
+
+- Linux + NVIDIA RTX 30 series or newer. No Windows, Mac or AMD yet.
+- Text only, no image or audio input yet.
+- One request at a time; others wait.
+{% if draft %}
+- When sampling, a seed gives different (equally likely) text with the draft model on than off. Greedy output is the same.
+{% endif %}
+
+## Base model
+
+[{{ base }}](https://huggingface.co/{{ base }}), {{ license }}.
+{% if draft %}
+Draft model (in draft/, unchanged): [{{ draft }}](https://huggingface.co/{{ draft }}).
+{% endif %}

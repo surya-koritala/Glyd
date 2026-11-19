@@ -1,0 +1,59 @@
+18:14:27 lock held
+== the 8B's first run through the glyd program, empty Hub cache and empty glyd cache
+glyd run: that is the local chat's command, in Glyd's Python tool, which is not installed here. On Linux with an NVIDIA GPU: curl -LsSf https://getglyd.com/install.sh | sh (a file named run is compressed as ./run)
+
+real	0m0.003s
+user	0m0.001s
+sys	0m0.001s
+== the second run
+glyd run: that is the local chat's command, in Glyd's Python tool, which is not installed here. On Linux with an NVIDIA GPU: curl -LsSf https://getglyd.com/install.sh | sh (a file named run is compressed as ./run)
+
+real	0m0.002s
+user	0m0.001s
+sys	0m0.001s
+4.0K	/opt/dlami/nvme/hf-t4
+du: cannot access '/opt/dlami/nvme/glyd-cache-t4': No such file or directory
+18:14:27 == vLLM+Glyd and the engine alternated
+round 1 vllm {"model": "Qwen/Qwen3-8B", "mode": "glyd1", "load_s": 58.4, "prompts": {"1024": {"prefill_ms": [410.2, 445.9, 415.1, 437.8, 422.0, 430.0, 432.6], "prefill_ms_median": 430.0}, "3500": {"prefill_ms": [1188.5, 1190.5, 1196.0, 1199.2, 1195.6, 1193.6, 1194.0], "prefill_ms_median": 1194.0}}}
+2040 MHz, 52.93 W, 80
+round 1 engine blas
+prefill ms of the 7 timed runs: 403.9, 441.9, 409.9, 423.3, 416.6, 412.2, 427.4
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":416.6,"decode_ms_mean":46.354,"decode_ms_p50":46.282,"decode_ms_p99":46.785,"decode_tokens_per_s":21.57,"load_s":2.38,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1208.3, 1214.5, 1208.5, 1212.8, 1215.8, 1211.3, 1213.3
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1212.8,"decode_ms_mean":47.890,"decode_ms_p50":47.916,"decode_ms_p99":48.171,"decode_tokens_per_s":20.88,"load_s":2.38,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 64.70 W, 80
+round 1 engine own
+prefill ms of the 7 timed runs: 412.7, 395.9, 396.1, 412.4, 390.0, 409.4, 397.4
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":397.4,"decode_ms_mean":46.256,"decode_ms_p50":46.242,"decode_ms_p99":46.338,"decode_tokens_per_s":21.62,"load_s":2.20,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1173.0, 1176.2, 1197.5, 1203.6, 1204.4, 1203.2, 1202.5
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1202.5,"decode_ms_mean":47.601,"decode_ms_p50":47.493,"decode_ms_p99":47.861,"decode_tokens_per_s":21.01,"load_s":2.20,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 64.48 W, 79
+round 2 vllm {"model": "Qwen/Qwen3-8B", "mode": "glyd1", "load_s": 52.3, "prompts": {"1024": {"prefill_ms": [399.1, 428.8, 402.0, 418.2, 409.3, 407.0, 420.1], "prefill_ms_median": 409.3}, "3500": {"prefill_ms": [1137.3, 1138.5, 1133.4, 1151.2, 1153.3, 1158.7, 1153.5], "prefill_ms_median": 1151.2}}}
+2040 MHz, 50.71 W, 67
+round 2 engine blas
+prefill ms of the 7 timed runs: 388.2, 419.5, 393.8, 397.3, 403.2, 388.5, 405.8
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":397.3,"decode_ms_mean":45.863,"decode_ms_p50":45.756,"decode_ms_p99":46.066,"decode_tokens_per_s":21.80,"load_s":2.32,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1163.3, 1161.6, 1139.2, 1140.2, 1141.6, 1162.5, 1137.1
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1141.6,"decode_ms_mean":46.928,"decode_ms_p50":46.858,"decode_ms_p99":47.049,"decode_tokens_per_s":21.31,"load_s":2.32,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 59.92 W, 65
+round 2 engine own
+prefill ms of the 7 timed runs: 389.0, 383.2, 375.1, 388.7, 377.6, 380.6, 388.1
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":383.2,"decode_ms_mean":45.736,"decode_ms_p50":45.730,"decode_ms_p99":45.798,"decode_tokens_per_s":21.86,"load_s":2.21,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1125.7, 1129.4, 1129.1, 1129.6, 1120.5, 1133.0, 1131.6
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1129.4,"decode_ms_mean":46.965,"decode_ms_p50":46.854,"decode_ms_p99":47.143,"decode_tokens_per_s":21.29,"load_s":2.21,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 63.42 W, 65
+round 3 vllm {"model": "Qwen/Qwen3-8B", "mode": "glyd1", "load_s": 51.3, "prompts": {"1024": {"prefill_ms": [396.8, 425.1, 400.0, 413.7, 412.3, 407.2, 420.5], "prefill_ms_median": 412.3}, "3500": {"prefill_ms": [1144.4, 1171.2, 1175.2, 1181.2, 1179.0, 1176.5, 1177.0], "prefill_ms_median": 1176.5}}}
+2040 MHz, 51.86 W, 72
+round 3 engine blas
+prefill ms of the 7 timed runs: 394.6, 430.3, 395.4, 414.4, 418.8, 410.7, 415.7
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":414.4,"decode_ms_mean":45.954,"decode_ms_p50":45.809,"decode_ms_p99":46.169,"decode_tokens_per_s":21.76,"load_s":2.33,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1197.5, 1195.3, 1196.7, 1196.7, 1197.5, 1198.7, 1202.0
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1197.5,"decode_ms_mean":47.348,"decode_ms_p50":47.169,"decode_ms_p99":47.627,"decode_tokens_per_s":21.12,"load_s":2.33,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2040 MHz, 57.82 W, 72
+round 3 engine own
+prefill ms of the 7 timed runs: 396.5, 391.4, 387.0, 409.3, 380.8, 391.5, 392.7
+{"prompt_tokens":1024,"new_tokens":8,"prefill_ms":391.5,"decode_ms_mean":45.912,"decode_ms_p50":45.818,"decode_ms_p99":46.005,"decode_tokens_per_s":21.78,"load_s":2.18,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 7 timed runs: 1166.5, 1166.5, 1165.4, 1168.7, 1147.8, 1142.9, 1147.0
+{"prompt_tokens":3500,"new_tokens":8,"prefill_ms":1165.4,"decode_ms_mean":47.123,"decode_ms_p50":47.088,"decode_ms_p99":47.259,"decode_tokens_per_s":21.22,"load_s":2.18,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+2025 MHz, 60.54 W, 72
+18:19:52 done

@@ -1,0 +1,22 @@
+We need to compute 17 * 23. Then provide the answer. This is a simple multiplication.
+
+We can compute directly: 17 * 23 = 17 * (20 + 3) = 17*20 + 17*3 = 340 + 51 = 391.
+
+Alternatively, 23*17 = (20+3)*(17) = 20*17 + 3*17 = 340 + 51 = 391.
+
+Thus answer is 391. Ensure we only give the number. The user says: "What is 17 times 23? Give the number."
+
+We need to provide the answer only, presumably in the final channel. Since they ask to "Give the number." I will answer simply "391". However, we need to consider whether any extra formatting is needed. The prompt says "Give the number." So a direct numeric answer.
+
+We can also include some explanation but the instruction says "Give the number." It may not require explanation. However, we could give it within a short answer. But the instruction "Give the number." implies the answer should be just the number.
+
+Thus final answer: 391.
+
+Will place inside \boxed{}? The problem didn't ask to put inside \boxed{}. The user says "What is 17 times 23? Give the number." The question is straightforward. Possibly the platform expects a direct answer. However, we are told "final answer within \boxed{}." The system messages: "The final answer must be placed within \boxed{}."
+
+We must follow that. Yes, we need to wrap the final answer in \boxed{}.
+
+Thus final answer: \boxed{391}.
+</think>
+
+\boxed{391}

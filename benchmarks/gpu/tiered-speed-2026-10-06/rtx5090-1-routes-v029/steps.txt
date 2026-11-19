@@ -1,0 +1,13 @@
+04:17:37 (+44 s) env
+04:19:46 (+173 s) build: real	2m5.057s; C API 15 | GPU code 1120
+04:20:05 (+192 s) sass: 55 kernels
+04:20:11 (+198 s) self-test exit 0 (every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too))
+04:20:19 (+206 s) check_step exit 0 (all ok: 6878 checks {'fp32': 302, 'flags': 6000, 'rerun': 500, 'nw': 76}, 3 s)
+04:20:35 (+222 s) layouts Qwen3.5-9B exit 0
+04:20:51 (+238 s) layouts Qwen3.5-27B exit 0
+04:21:08 (+255 s) layouts gemma-4-12B-it exit 0
+04:21:25 (+272 s) layouts gemma-4-31B-it exit 0
+04:21:35 (+282 s) layouts lm_head exit 0
+04:22:06 (+313 s) moe_layer mma exit 0
+04:22:32 (+339 s) moe_layer mma12 exit 0
+04:22:32 (+339 s) summary exit 0

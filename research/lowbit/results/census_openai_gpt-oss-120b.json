@@ -1,0 +1,63 @@
+{
+ "repo": "openai/gpt-oss-120b",
+ "files": 15,
+ "total_bytes": 65248815744,
+ "kinds": [
+  {
+   "role": "attention",
+   "payload": "bf16",
+   "tensors": 360,
+   "elements": 955908864,
+   "bytes": 1911817728
+  },
+  {
+   "role": "embed",
+   "payload": "bf16",
+   "tensors": 1,
+   "elements": 579133440,
+   "bytes": 1158266880
+  },
+  {
+   "role": "lm_head",
+   "payload": "bf16",
+   "tensors": 1,
+   "elements": 579133440,
+   "bytes": 1158266880
+  },
+  {
+   "role": "other",
+   "payload": "bf16",
+   "tensors": 37,
+   "elements": 106560,
+   "bytes": 213120
+  },
+  {
+   "role": "routed_experts",
+   "payload": "bf16",
+   "tensors": 72,
+   "elements": 39813120,
+   "bytes": 79626240
+  },
+  {
+   "role": "routed_experts",
+   "payload": "fp4_packed",
+   "tensors": 72,
+   "elements": 57330892800,
+   "bytes": 57330892800
+  },
+  {
+   "role": "routed_experts",
+   "payload": "scale",
+   "tensors": 72,
+   "elements": 3583180800,
+   "bytes": 3583180800
+  },
+  {
+   "role": "router",
+   "payload": "bf16",
+   "tensors": 72,
+   "elements": 13275648,
+   "bytes": 26551296
+  }
+ ]
+}

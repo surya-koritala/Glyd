@@ -1,0 +1,128 @@
+{
+  "size_gb": 7.32,
+  "gpus": [
+    {
+      "name": "NVIDIA RTX A6000",
+      "tok_s": 89.2,
+      "first_token_ms": 212.3,
+      "mem_gib_4k": 7.905,
+      "fits_32k": true
+    },
+    {
+      "name": "NVIDIA L40S",
+      "tok_s": 94.93,
+      "first_token_ms": 129.3,
+      "mem_gib_4k": 8.094,
+      "fits_32k": true
+    },
+    {
+      "name": "NVIDIA GeForce RTX 4090",
+      "tok_s": 121.95,
+      "first_token_ms": 141.4,
+      "mem_gib_4k": 8.001,
+      "fits_32k": true
+    },
+    {
+      "name": "NVIDIA RTX 2000 Ada Generation",
+      "tok_s": 30.42,
+      "first_token_ms": 516.8,
+      "mem_gib_4k": 7.702,
+      "fits_32k": true
+    }
+  ],
+  "kl_bf16": 0.014711258563239035,
+  "kl_fp8_ref": null,
+  "date": "2026-10-10",
+  "versions": {
+    "glyd": "0.29.4",
+    "commit": "860b8f1a"
+  },
+  "evals": [
+    {
+      "dataset": "openai/gsm8k",
+      "task_id": "gsm8k",
+      "value": 0.957544,
+      "n": 1319,
+      "shards": 2,
+      "harness": {
+        "inspect_ai": "0.3.278",
+        "inspect_evals": "0.24.0"
+      },
+      "notes": "10-shot, numeric match, non-thinking",
+      "date": "2026-10-09"
+    }
+  ],
+  "evals_bf16": [
+    {
+      "dataset": "openai/gsm8k",
+      "task_id": "gsm8k",
+      "value": 0.954511,
+      "n": 1319,
+      "shards": 1,
+      "harness": {
+        "inspect_ai": "0.3.278",
+        "inspect_evals": "0.24.0"
+      },
+      "notes": "10-shot, numeric match, non-thinking",
+      "date": "2026-10-09"
+    }
+  ],
+  "costs": {
+    "schema": "glyd-costs/1",
+    "source": "glyd-engine costs glyd/Qwen3.5-9B-kestrel (glyd-engine 0.32.1 at 3f634598): the packed files' safetensors headers, basis file; docs/cost-profile.md",
+    "repo": "glyd/Qwen3.5-9B-kestrel",
+    "revision": "4d7e583a7cce212734140927824f91ad9ad11cf7",
+    "level": "kestrel",
+    "layout": "i6",
+    "bits_per_weight": 6.543,
+    "layers": {
+      "full_attention": 8,
+      "linear_attention": 24
+    },
+    "resident_bytes": 7318652008,
+    "resident_bytes_per_layer": [
+      178668244,
+      178668244,
+      178668244,
+      171230224,
+      178668244,
+      178668244,
+      178668244,
+      171230224,
+      178668244,
+      178668244,
+      178668244,
+      171230224,
+      178668244,
+      178668244,
+      178668244,
+      171230224,
+      178668244,
+      178668244,
+      178668244,
+      171230224,
+      178668244,
+      178668244,
+      178668244,
+      171230224,
+      178668244,
+      178668244,
+      178668244,
+      171230224,
+      178668244,
+      178668244,
+      178668244,
+      171230224
+    ],
+    "non_layer_bytes": {
+      "embeddings": 830382084,
+      "head": 830382084,
+      "head_tied": false,
+      "final_norm": 8192
+    },
+    "active_bytes_per_token": 6488273268,
+    "kv_bytes_per_token": 32768,
+    "state_bytes_per_session": 51511296,
+    "bf16_bytes": 17907606528
+  }
+}

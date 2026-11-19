@@ -1,0 +1,17 @@
+== 18:42:59 glyd: vllm serve Qwen/Qwen3-8B --quantization glyd (the GPU at 55 C)
+glyd: mma layout, the KV cache lossless (tables /home/ubuntu/p28/gc-v028-q8/kv/kvtab-9055d4f0344aaded.npz)
+glyd: the embedding and the LM head packed too
+Model loading took 10.47 GiB memory and 28.297178 seconds
+GPU KV cache size: 79,600 tokens, Maximum concurrency for 4,096 tokens per request: 19.43x
+20228 MiB, 23034 MiB
+== 18:44:14 glyd: rate 1, 64 prompts
+   exit 0
+== 18:45:42 glyd: rate inf, 256 prompts
+   exit 0
+glyd: weights 10.47 GiB, KV cache 79,600 tokens, max concurrency 19.43x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): glyd 0.0%
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | glyd | 0.82 | 209.4 | 593 / 976 | 85.3 / 104.7 | 64 | 1215 MHz, 75 C |
+| inf | glyd | 1.31 | 336.5 | 83147 / 173696 | 178.4 / 276.6 | 256 | 1020 MHz, 83 C |

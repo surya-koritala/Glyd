@@ -1,0 +1,21 @@
+NVIDIA GeForce RTX 4090 (sm_89): Qwen3.5's kernels against the CPU
+ok   norm (1 + w): 20480 values, 20463 equal (99.92%), at most 1 bf16 places apart, largest difference 6.02e-3 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   norm (1 + w) with the residual: the norm: 20480 values, 20476 equal (99.98%), at most 1 bf16 places apart, largest difference 2.21e-3 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   norm (1 + w) with the residual: the sum: 20480 values, bit for bit
+ok   query norm and rotary (64 of 256 dims): 28672 values, 28671 equal (100.00%), at most 1 bf16 places apart, largest difference 2.76e-3 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   key norm and rotary into the cache: 48128 values, 48128 equal (100.00%), at most 0 bf16 places apart, largest difference 0.00e0 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   values into the cache: 48128 values, bit for bit
+ok   attention, head 256, a prompt's rows, times sigmoid(gate) (against the largest output): 28672 values, largest difference 6.49e-3 of the largest value (bound 1e-2)
+ok   attention, a decode step: the same bits as that row of the prompt's: 4096 values, bit for bit
+FAIL causal convolution and SiLU: 227328 values, 172031 equal (75.68%), at most 3 bf16 places apart, largest difference 6.17e-3 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+ok   causal convolution: the state after: 18432 values, bit for bit
+FAIL gated delta rule, token by token: outputs (150 tokens): 76800 values, 55206 equal (71.88%), at most 15552 bf16 places apart, largest difference 1.00e0 of the largest value (bound 2 places, or 7.8e-3 of the largest)
+ok   gated delta rule, token by token: the state after: 65536 values, largest difference 1.12e-7 of the largest value (bound 1e-4)
+FAIL gated delta rule in chunks of 64 (normed q, k in bf16): outputs (150 tokens: two chunks and 22): 76800 values, 71531 equal (93.14%), at most 30612 bf16 places apart, largest difference 6.34e-1 of the largest value (bound 2 places, or 7.8e-3 of the largest)
+ok   gated delta rule in chunks: the state after: 65536 values, largest difference 1.25e-5 of the largest value (bound 1e-4)
+FAIL gated delta rule: chunks against token by token (q, k in fp32), outputs: 76800 values, largest difference 1.05e0 of the largest value (bound 2e-2)
+FAIL gated delta rule, a decode step: outputs: 512 values, 0 equal (0.00%), at most 15483 bf16 places apart, largest difference 1.00e0 of the largest value (bound 2 places, or 7.8e-3 of the largest)
+FAIL gated delta rule, a decode step: the state after: 65536 values, largest difference 7.36e-1 of the largest value (bound 1e-5)
+ok   gated norm: 36864 values, 27226 equal (73.86%), at most 1 bf16 places apart, largest difference 6.29e-3 of the largest value (bound 2 places, or 7.8e-3 of the largest)
+ok   the small product (b and a of the 0.8B): 352 values, 352 equal (100.00%), at most 0 bf16 places apart, largest difference 0.00e0 of the largest value (bound 1 places, or 3.9e-3 of the largest)
+FAILED: causal convolution and SiLU; gated delta rule, token by token: outputs (150 tokens); gated delta rule in chunks of 64 (normed q, k in bf16): outputs (150 tokens: two chunks and 22); gated delta rule: chunks against token by token (q, k in fp32), outputs; gated delta rule, a decode step: outputs; gated delta rule, a decode step: the state after

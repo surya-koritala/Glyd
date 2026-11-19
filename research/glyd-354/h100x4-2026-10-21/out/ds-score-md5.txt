@@ -1,0 +1,4 @@
+6c0308b4299c6c36f2315a088362cff7  /home/ubuntu/w/out/ds-score2-coded.lp
+df50d614560a9a78adb1f7512cecac11  /home/ubuntu/w/out/ds-score2-r1.lp
+df50d614560a9a78adb1f7512cecac11  /home/ubuntu/w/out/ds-score2-r2.lp
+df50d614560a9a78adb1f7512cecac11  /home/ubuntu/w/out/ds-score4.lp

@@ -1,0 +1,3 @@
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 1325.02it/s]
+/root/w/hf/hub/models--nvidia--Gemma-4-31B-IT-NVFP4/snapshots/4135a98a9b728a548947683219633b25682223ac
+exit 0 after 0 s; 512K

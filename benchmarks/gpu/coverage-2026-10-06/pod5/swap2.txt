@@ -1,0 +1,6 @@
+Resolved 1 package in 3ms
+Prepared 1 package in 117ms
+Uninstalled 1 package in 2ms
+Installed 1 package in 5ms
+ - glyd-gpu==0.29.0
+ + glyd-gpu==0.29.0+r291 (from file:///root/wheels/glyd_gpu-0.29.0+r291-cp310-abi3-manylinux_2_28_x86_64.whl)

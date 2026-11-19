@@ -1,0 +1,172 @@
+B: C API 16
+# NVIDIA GeForce RTX 5090 (sm_120), 35 shapes, tokens [1, 8, 32, 64], samples: yes
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=1   vllm      nan us ()  ours     21.8 (GLYD_F8_LIN_MIN=2: 21.8) (GLYD_F8_LIN_MIN=4: 20.5)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=8   vllm      nan us ()  ours     23.5 (GLYD_F8_LIN_MIN=2: 23.6) (GLYD_F8_LIN_MIN=4: 21.4)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=32  vllm      nan us ()  ours     31.9 (GLYD_F8_LIN_MIN=2: 31.9) (GLYD_F8_LIN_MIN=4: 26.5)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=64  vllm      nan us ()  ours     44.7 (GLYD_F8_LIN_MIN=2: 44.7) (GLYD_F8_LIN_MIN=4: 34.7)  unpack      nan  route      nan  ratio nan 
+   (0.7 s, 11 copies)
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=1   vllm      nan us ()  ours     14.9 (GLYD_F8_LIN_MIN=2: 14.2) (GLYD_F8_LIN_MIN=4: 15.5)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=8   vllm      nan us ()  ours     18.6 (GLYD_F8_LIN_MIN=2: 16.5) (GLYD_F8_LIN_MIN=4: 16.7)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=32  vllm      nan us ()  ours     34.0 (GLYD_F8_LIN_MIN=2: 26.2) (GLYD_F8_LIN_MIN=4: 22.7)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=64  vllm      nan us ()  ours     55.8 (GLYD_F8_LIN_MIN=2: 40.3) (GLYD_F8_LIN_MIN=4: 32.2)  unpack      nan  route      nan  ratio nan 
+   (0.8 s, 24 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=1   vllm      nan us ()  ours     25.3 (GLYD_F8_LIN_MIN=2: 25.4) (GLYD_F8_LIN_MIN=4: 25.3)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=8   vllm      nan us ()  ours     26.6 (GLYD_F8_LIN_MIN=2: 26.5) (GLYD_F8_LIN_MIN=4: 26.5)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=32  vllm      nan us ()  ours     33.6 (GLYD_F8_LIN_MIN=2: 33.6) (GLYD_F8_LIN_MIN=4: 33.6)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=64  vllm      nan us ()  ours     45.4 (GLYD_F8_LIN_MIN=2: 45.4) (GLYD_F8_LIN_MIN=4: 45.4)  unpack      nan  route      nan  ratio nan 
+   (0.3 s, 8 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=1   vllm      nan us ()  ours     20.1 (GLYD_F8_LIN_MIN=2: 20.1) (GLYD_F8_LIN_MIN=4: 20.3)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=8   vllm      nan us ()  ours     21.5 (GLYD_F8_LIN_MIN=2: 21.5) (GLYD_F8_LIN_MIN=4: 21.2)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=32  vllm      nan us ()  ours     28.9 (GLYD_F8_LIN_MIN=2: 28.9) (GLYD_F8_LIN_MIN=4: 26.3)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=64  vllm      nan us ()  ours     40.5 (GLYD_F8_LIN_MIN=2: 40.5) (GLYD_F8_LIN_MIN=4: 34.5)  unpack      nan  route      nan  ratio nan 
+   (0.4 s, 12 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=1   vllm      nan us ()  ours     14.5 (GLYD_F8_LIN_MIN=2: 13.8) (GLYD_F8_LIN_MIN=4: 15.2)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=8   vllm      nan us ()  ours     16.9 (GLYD_F8_LIN_MIN=2: 15.2) (GLYD_F8_LIN_MIN=4: 16.0)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=32  vllm      nan us ()  ours     26.4 (GLYD_F8_LIN_MIN=2: 21.1) (GLYD_F8_LIN_MIN=4: 20.1)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=64  vllm      nan us ()  ours     40.6 (GLYD_F8_LIN_MIN=2: 29.7) (GLYD_F8_LIN_MIN=4: 27.0)  unpack      nan  route      nan  ratio nan 
+   (0.7 s, 24 copies)
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=1   vllm      nan us ()  ours      8.2 (GLYD_F8_LIN_MIN=2: 9.8) (GLYD_F8_LIN_MIN=4: 14.2)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=8   vllm      nan us ()  ours     10.4 (GLYD_F8_LIN_MIN=2: 11.1) (GLYD_F8_LIN_MIN=4: 14.9)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=32  vllm      nan us ()  ours     19.5 (GLYD_F8_LIN_MIN=2: 16.6) (GLYD_F8_LIN_MIN=4: 19.0)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=64  vllm      nan us ()  ours     32.2 (GLYD_F8_LIN_MIN=2: 24.5) (GLYD_F8_LIN_MIN=4: 26.0)  unpack      nan  route      nan  ratio nan 
+   (1.4 s, 64 copies)
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=1   vllm      nan us ()  ours      6.0 (GLYD_F8_LIN_MIN=2: 8.5) (GLYD_F8_LIN_MIN=4: 12.0)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=8   vllm      nan us ()  ours      6.8 (GLYD_F8_LIN_MIN=2: 9.7) (GLYD_F8_LIN_MIN=4: 12.1)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=32  vllm      nan us ()  ours     10.1 (GLYD_F8_LIN_MIN=2: 14.7) (GLYD_F8_LIN_MIN=4: 13.6)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=64  vllm      nan us ()  ours     15.1 (GLYD_F8_LIN_MIN=2: 22.3) (GLYD_F8_LIN_MIN=4: 17.2)  unpack      nan  route      nan  ratio nan 
+   (1.0 s, 64 copies)
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=1   vllm      nan us ()  ours     14.8 (GLYD_F8_LIN_MIN=2: 14.1) (GLYD_F8_LIN_MIN=4: 15.5)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=8   vllm      nan us ()  ours     17.1 (GLYD_F8_LIN_MIN=2: 15.5) (GLYD_F8_LIN_MIN=4: 16.3)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=32  vllm      nan us ()  ours     26.4 (GLYD_F8_LIN_MIN=2: 21.2) (GLYD_F8_LIN_MIN=4: 20.4)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=64  vllm      nan us ()  ours     40.1 (GLYD_F8_LIN_MIN=2: 29.9) (GLYD_F8_LIN_MIN=4: 27.4)  unpack      nan  route      nan  ratio nan 
+   (0.6 s, 22 copies)
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=1   vllm      nan us ()  ours     10.1 (GLYD_F8_LIN_MIN=2: 10.6) (GLYD_F8_LIN_MIN=4: 14.4)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=8   vllm      nan us ()  ours     12.4 (GLYD_F8_LIN_MIN=2: 11.8) (GLYD_F8_LIN_MIN=4: 15.2)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=32  vllm      nan us ()  ours     21.9 (GLYD_F8_LIN_MIN=2: 17.3) (GLYD_F8_LIN_MIN=4: 19.3)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=64  vllm      nan us ()  ours     35.4 (GLYD_F8_LIN_MIN=2: 25.4) (GLYD_F8_LIN_MIN=4: 26.3)  unpack      nan  route      nan  ratio nan 
+   (1.1 s, 48 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=1   vllm      nan us ()  ours     18.0 (GLYD_F8_LIN_MIN=2: 17.9) (GLYD_F8_LIN_MIN=4: 19.4)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=8   vllm      nan us ()  ours     19.6 (GLYD_F8_LIN_MIN=2: 19.6) (GLYD_F8_LIN_MIN=4: 20.4)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=32  vllm      nan us ()  ours     27.5 (GLYD_F8_LIN_MIN=2: 27.5) (GLYD_F8_LIN_MIN=4: 25.5)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=64  vllm      nan us ()  ours     39.5 (GLYD_F8_LIN_MIN=2: 39.4) (GLYD_F8_LIN_MIN=4: 33.7)  unpack      nan  route      nan  ratio nan 
+   (0.5 s, 16 copies)
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=1   vllm      nan us ()  ours      6.5 (GLYD_F8_LIN_MIN=2: 8.6) (GLYD_F8_LIN_MIN=4: 13.0)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=8   vllm      nan us ()  ours      8.8 (GLYD_F8_LIN_MIN=2: 9.9) (GLYD_F8_LIN_MIN=4: 13.8)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=32  vllm      nan us ()  ours     18.0 (GLYD_F8_LIN_MIN=2: 15.4) (GLYD_F8_LIN_MIN=4: 18.0)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=64  vllm      nan us ()  ours     30.5 (GLYD_F8_LIN_MIN=2: 23.5) (GLYD_F8_LIN_MIN=4: 24.9)  unpack      nan  route      nan  ratio nan 
+   (1.3 s, 64 copies)
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=1   vllm      nan us ()  ours      6.1 (GLYD_F8_LIN_MIN=2: 7.4) (GLYD_F8_LIN_MIN=4: 12.2)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=8   vllm      nan us ()  ours      7.2 (GLYD_F8_LIN_MIN=2: 7.4) (GLYD_F8_LIN_MIN=4: 12.3)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=32  vllm      nan us ()  ours     12.0 (GLYD_F8_LIN_MIN=2: 8.3) (GLYD_F8_LIN_MIN=4: 14.1)  unpack      nan  route      nan  ratio nan 
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=64  vllm      nan us ()  ours     18.9 (GLYD_F8_LIN_MIN=2: 10.4) (GLYD_F8_LIN_MIN=4: 18.2)  unpack      nan  route      nan  ratio nan 
+   (0.9 s, 64 copies)
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=1   vllm      nan us ()  ours     52.7 (GLYD_F8_LIN_MIN=2: 52.7) (GLYD_F8_LIN_MIN=4: 52.7)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=8   vllm      nan us ()  ours     53.7 (GLYD_F8_LIN_MIN=2: 53.7) (GLYD_F8_LIN_MIN=4: 53.7)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=32  vllm      nan us ()  ours     63.6 (GLYD_F8_LIN_MIN=2: 63.8) (GLYD_F8_LIN_MIN=4: 63.8)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=64  vllm      nan us ()  ours     84.4 (GLYD_F8_LIN_MIN=2: 84.6) (GLYD_F8_LIN_MIN=4: 84.6)  unpack      nan  route      nan  ratio nan 
+   (0.4 s, 3 copies)
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=1   vllm      nan us ()  ours     27.3 (GLYD_F8_LIN_MIN=2: 27.3) (GLYD_F8_LIN_MIN=4: 27.3)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=8   vllm      nan us ()  ours     29.0 (GLYD_F8_LIN_MIN=2: 29.0) (GLYD_F8_LIN_MIN=4: 29.0)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=32  vllm      nan us ()  ours     38.6 (GLYD_F8_LIN_MIN=2: 38.6) (GLYD_F8_LIN_MIN=4: 38.6)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=64  vllm      nan us ()  ours     54.2 (GLYD_F8_LIN_MIN=2: 54.2) (GLYD_F8_LIN_MIN=4: 54.2)  unpack      nan  route      nan  ratio nan 
+   (0.3 s, 7 copies)
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=1   vllm      nan us ()  ours     59.0 (GLYD_F8_LIN_MIN=2: 58.9) (GLYD_F8_LIN_MIN=4: 59.2)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=8   vllm      nan us ()  ours     60.1 (GLYD_F8_LIN_MIN=2: 60.0) (GLYD_F8_LIN_MIN=4: 60.0)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=32  vllm      nan us ()  ours     71.4 (GLYD_F8_LIN_MIN=2: 71.5) (GLYD_F8_LIN_MIN=4: 71.6)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=64  vllm      nan us ()  ours     94.5 (GLYD_F8_LIN_MIN=2: 94.6) (GLYD_F8_LIN_MIN=4: 95.5)  unpack      nan  route      nan  ratio nan 
+   (0.3 s, 3 copies)
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=1   vllm      nan us ()  ours     41.2 (GLYD_F8_LIN_MIN=2: 41.0) (GLYD_F8_LIN_MIN=4: 41.0)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=8   vllm      nan us ()  ours     42.5 (GLYD_F8_LIN_MIN=2: 42.4) (GLYD_F8_LIN_MIN=4: 42.4)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=32  vllm      nan us ()  ours     52.2 (GLYD_F8_LIN_MIN=2: 52.2) (GLYD_F8_LIN_MIN=4: 52.1)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=64  vllm      nan us ()  ours     69.4 (GLYD_F8_LIN_MIN=2: 69.3) (GLYD_F8_LIN_MIN=4: 69.4)  unpack      nan  route      nan  ratio nan 
+   (0.3 s, 4 copies)
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=1   vllm      nan us ()  ours     28.0 (GLYD_F8_LIN_MIN=2: 27.9) (GLYD_F8_LIN_MIN=4: 27.9)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=8   vllm      nan us ()  ours     29.5 (GLYD_F8_LIN_MIN=2: 29.5) (GLYD_F8_LIN_MIN=4: 29.5)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=32  vllm      nan us ()  ours     37.8 (GLYD_F8_LIN_MIN=2: 37.9) (GLYD_F8_LIN_MIN=4: 37.8)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=64  vllm      nan us ()  ours     53.0 (GLYD_F8_LIN_MIN=2: 53.0) (GLYD_F8_LIN_MIN=4: 53.0)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=1   vllm      nan us ()  ours    111.5 (GLYD_F8_LIN_MIN=2: 111.6) (GLYD_F8_LIN_MIN=4: 111.6)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=8   vllm      nan us ()  ours    113.4 (GLYD_F8_LIN_MIN=2: 113.4) (GLYD_F8_LIN_MIN=4: 113.6)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=32  vllm      nan us ()  ours    137.5 (GLYD_F8_LIN_MIN=2: 139.4) (GLYD_F8_LIN_MIN=4: 140.1)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=64  vllm      nan us ()  ours    185.3 (GLYD_F8_LIN_MIN=2: 185.7) (GLYD_F8_LIN_MIN=4: 185.8)  unpack      nan  route      nan  ratio nan 
+   (0.4 s, 2 copies)
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=1   vllm      nan us ()  ours     60.9 (GLYD_F8_LIN_MIN=2: 60.9) (GLYD_F8_LIN_MIN=4: 60.9)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=8   vllm      nan us ()  ours     62.8 (GLYD_F8_LIN_MIN=2: 62.7) (GLYD_F8_LIN_MIN=4: 62.8)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=32  vllm      nan us ()  ours     78.1 (GLYD_F8_LIN_MIN=2: 77.5) (GLYD_F8_LIN_MIN=4: 77.6)  unpack      nan  route      nan  ratio nan 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=64  vllm      nan us ()  ours    104.5 (GLYD_F8_LIN_MIN=2: 104.2) (GLYD_F8_LIN_MIN=4: 104.4)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=1   vllm      nan us ()  ours     24.4 (GLYD_F8_LIN_MIN=2: 24.5) (GLYD_F8_LIN_MIN=4: 24.4)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=8   vllm      nan us ()  ours     27.0 (GLYD_F8_LIN_MIN=2: 26.9) (GLYD_F8_LIN_MIN=4: 26.9)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=32  vllm      nan us ()  ours     40.4 (GLYD_F8_LIN_MIN=2: 40.3) (GLYD_F8_LIN_MIN=4: 40.3)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=64  vllm      nan us ()  ours     61.1 (GLYD_F8_LIN_MIN=2: 61.0) (GLYD_F8_LIN_MIN=4: 60.7)  unpack      nan  route      nan  ratio nan 
+   (0.5 s, 9 copies)
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=1   vllm      nan us ()  ours     25.5 (GLYD_F8_LIN_MIN=2: 25.5) (GLYD_F8_LIN_MIN=4: 25.5)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=8   vllm      nan us ()  ours     27.1 (GLYD_F8_LIN_MIN=2: 27.1) (GLYD_F8_LIN_MIN=4: 27.1)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=32  vllm      nan us ()  ours     35.4 (GLYD_F8_LIN_MIN=2: 35.4) (GLYD_F8_LIN_MIN=4: 35.3)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=64  vllm      nan us ()  ours     49.5 (GLYD_F8_LIN_MIN=2: 49.5) (GLYD_F8_LIN_MIN=4: 49.5)  unpack      nan  route      nan  ratio nan 
+   (0.4 s, 8 copies)
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=1   vllm      nan us ()  ours     17.4 (GLYD_F8_LIN_MIN=2: 17.4) (GLYD_F8_LIN_MIN=4: 18.6)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=8   vllm      nan us ()  ours     20.0 (GLYD_F8_LIN_MIN=2: 20.0) (GLYD_F8_LIN_MIN=4: 20.1)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=32  vllm      nan us ()  ours     31.2 (GLYD_F8_LIN_MIN=2: 31.2) (GLYD_F8_LIN_MIN=4: 27.0)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=64  vllm      nan us ()  ours     48.9 (GLYD_F8_LIN_MIN=2: 48.9) (GLYD_F8_LIN_MIN=4: 37.7)  unpack      nan  route      nan  ratio nan 
+   (0.7 s, 18 copies)
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=1   vllm      nan us ()  ours     24.6 (GLYD_F8_LIN_MIN=2: 24.5) (GLYD_F8_LIN_MIN=4: 24.6)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=8   vllm      nan us ()  ours     27.2 (GLYD_F8_LIN_MIN=2: 27.1) (GLYD_F8_LIN_MIN=4: 27.2)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=32  vllm      nan us ()  ours     39.7 (GLYD_F8_LIN_MIN=2: 39.7) (GLYD_F8_LIN_MIN=4: 39.8)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=64  vllm      nan us ()  ours     59.4 (GLYD_F8_LIN_MIN=2: 59.3) (GLYD_F8_LIN_MIN=4: 59.3)  unpack      nan  route      nan  ratio nan 
+   (0.4 s, 9 copies)
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=1   vllm      nan us ()  ours     17.9 (GLYD_F8_LIN_MIN=2: 17.9) (GLYD_F8_LIN_MIN=4: 20.4)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=8   vllm      nan us ()  ours     20.3 (GLYD_F8_LIN_MIN=2: 20.3) (GLYD_F8_LIN_MIN=4: 22.1)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=32  vllm      nan us ()  ours     30.0 (GLYD_F8_LIN_MIN=2: 30.0) (GLYD_F8_LIN_MIN=4: 30.7)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=64  vllm      nan us ()  ours     44.8 (GLYD_F8_LIN_MIN=2: 44.9) (GLYD_F8_LIN_MIN=4: 44.1)  unpack      nan  route      nan  ratio nan 
+   (0.6 s, 17 copies)
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=1   vllm      nan us ()  ours     13.9 (GLYD_F8_LIN_MIN=2: 12.9) (GLYD_F8_LIN_MIN=4: 16.8)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=8   vllm      nan us ()  ours     16.5 (GLYD_F8_LIN_MIN=2: 14.9) (GLYD_F8_LIN_MIN=4: 18.0)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=32  vllm      nan us ()  ours     27.9 (GLYD_F8_LIN_MIN=2: 22.7) (GLYD_F8_LIN_MIN=4: 24.1)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=64  vllm      nan us ()  ours     44.1 (GLYD_F8_LIN_MIN=2: 34.2) (GLYD_F8_LIN_MIN=4: 34.1)  unpack      nan  route      nan  ratio nan 
+   (1.0 s, 34 copies)
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=1   vllm      nan us ()  ours     10.3 (GLYD_F8_LIN_MIN=2: 10.4) (GLYD_F8_LIN_MIN=4: 16.0)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=8   vllm      nan us ()  ours     14.0 (GLYD_F8_LIN_MIN=2: 12.6) (GLYD_F8_LIN_MIN=4: 17.6)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=32  vllm      nan us ()  ours     28.9 (GLYD_F8_LIN_MIN=2: 21.7) (GLYD_F8_LIN_MIN=4: 25.3)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=64  vllm      nan us ()  ours     49.8 (GLYD_F8_LIN_MIN=2: 34.7) (GLYD_F8_LIN_MIN=4: 37.2)  unpack      nan  route      nan  ratio nan 
+   (1.5 s, 51 copies)
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=1   vllm      nan us ()  ours      7.8 (GLYD_F8_LIN_MIN=2: 9.5) (GLYD_F8_LIN_MIN=4: 14.4)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=8   vllm      nan us ()  ours      9.5 (GLYD_F8_LIN_MIN=2: 10.7) (GLYD_F8_LIN_MIN=4: 15.6)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=32  vllm      nan us ()  ours     16.4 (GLYD_F8_LIN_MIN=2: 15.8) (GLYD_F8_LIN_MIN=4: 21.2)  unpack      nan  route      nan  ratio nan 
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=64  vllm      nan us ()  ours     25.9 (GLYD_F8_LIN_MIN=2: 23.4) (GLYD_F8_LIN_MIN=4: 30.3)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=1   vllm      nan us ()  ours     13.9 (GLYD_F8_LIN_MIN=2: 11.4) (GLYD_F8_LIN_MIN=4: 14.1)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=8   vllm      nan us ()  ours     18.8 (GLYD_F8_LIN_MIN=2: 13.6) (GLYD_F8_LIN_MIN=4: 15.3)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=32  vllm      nan us ()  ours     38.4 (GLYD_F8_LIN_MIN=2: 23.2) (GLYD_F8_LIN_MIN=4: 21.5)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=64  vllm      nan us ()  ours     65.3 (GLYD_F8_LIN_MIN=2: 37.0) (GLYD_F8_LIN_MIN=4: 31.0)  unpack      nan  route      nan  ratio nan 
+   (1.3 s, 37 copies)
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=1   vllm      nan us ()  ours      9.4 (GLYD_F8_LIN_MIN=2: 9.8) (GLYD_F8_LIN_MIN=4: 13.9)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=8   vllm      nan us ()  ours     10.8 (GLYD_F8_LIN_MIN=2: 10.7) (GLYD_F8_LIN_MIN=4: 15.0)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=32  vllm      nan us ()  ours     16.3 (GLYD_F8_LIN_MIN=2: 14.2) (GLYD_F8_LIN_MIN=4: 20.6)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=64  vllm      nan us ()  ours     24.2 (GLYD_F8_LIN_MIN=2: 19.8) (GLYD_F8_LIN_MIN=4: 29.6)  unpack      nan  route      nan  ratio nan 
+   (1.0 s, 48 copies)
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=1   vllm      nan us ()  ours      6.0 (GLYD_F8_LIN_MIN=2: 7.2) (GLYD_F8_LIN_MIN=4: 11.8)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=8   vllm      nan us ()  ours      7.2 (GLYD_F8_LIN_MIN=2: 7.3) (GLYD_F8_LIN_MIN=4: 11.9)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=32  vllm      nan us ()  ours     12.0 (GLYD_F8_LIN_MIN=2: 8.3) (GLYD_F8_LIN_MIN=4: 13.8)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=64  vllm      nan us ()  ours     19.1 (GLYD_F8_LIN_MIN=2: 10.4) (GLYD_F8_LIN_MIN=4: 18.0)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=1   vllm      nan us ()  ours     19.4 (GLYD_F8_LIN_MIN=2: 19.4) (GLYD_F8_LIN_MIN=4: 19.4)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=8   vllm      nan us ()  ours     21.7 (GLYD_F8_LIN_MIN=2: 21.7) (GLYD_F8_LIN_MIN=4: 20.9)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=32  vllm      nan us ()  ours     31.4 (GLYD_F8_LIN_MIN=2: 31.4) (GLYD_F8_LIN_MIN=4: 27.9)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=64  vllm      nan us ()  ours     46.6 (GLYD_F8_LIN_MIN=2: 46.6) (GLYD_F8_LIN_MIN=4: 38.5)  unpack      nan  route      nan  ratio nan 
+   (0.5 s, 12 copies)
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=1   vllm      nan us ()  ours     14.0 (GLYD_F8_LIN_MIN=2: 13.3) (GLYD_F8_LIN_MIN=4: 14.4)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=8   vllm      nan us ()  ours     16.4 (GLYD_F8_LIN_MIN=2: 14.8) (GLYD_F8_LIN_MIN=4: 15.2)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=32  vllm      nan us ()  ours     26.1 (GLYD_F8_LIN_MIN=2: 20.5) (GLYD_F8_LIN_MIN=4: 19.3)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=64  vllm      nan us ()  ours     40.3 (GLYD_F8_LIN_MIN=2: 29.3) (GLYD_F8_LIN_MIN=4: 26.3)  unpack      nan  route      nan  ratio nan 
+   (0.6 s, 24 copies)
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=1   vllm      nan us ()  ours      7.3 (GLYD_F8_LIN_MIN=2: 9.1) (GLYD_F8_LIN_MIN=4: 13.5)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=8   vllm      nan us ()  ours      8.6 (GLYD_F8_LIN_MIN=2: 9.9) (GLYD_F8_LIN_MIN=4: 14.6)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=32  vllm      nan us ()  ours     14.1 (GLYD_F8_LIN_MIN=2: 13.5) (GLYD_F8_LIN_MIN=4: 20.2)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=64  vllm      nan us ()  ours     21.6 (GLYD_F8_LIN_MIN=2: 18.9) (GLYD_F8_LIN_MIN=4: 29.3)  unpack      nan  route      nan  ratio nan 
+   (1.2 s, 64 copies)
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=1   vllm      nan us ()  ours      5.9 (GLYD_F8_LIN_MIN=2: 7.2) (GLYD_F8_LIN_MIN=4: 11.8)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=8   vllm      nan us ()  ours      7.0 (GLYD_F8_LIN_MIN=2: 7.2) (GLYD_F8_LIN_MIN=4: 11.8)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=32  vllm      nan us ()  ours     11.8 (GLYD_F8_LIN_MIN=2: 8.2) (GLYD_F8_LIN_MIN=4: 13.7)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=64  vllm      nan us ()  ours     18.7 (GLYD_F8_LIN_MIN=2: 10.3) (GLYD_F8_LIN_MIN=4: 17.9)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=1   vllm      nan us ()  ours     14.3 (GLYD_F8_LIN_MIN=2: 13.6) (GLYD_F8_LIN_MIN=4: 14.6)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=8   vllm      nan us ()  ours     18.1 (GLYD_F8_LIN_MIN=2: 16.0) (GLYD_F8_LIN_MIN=4: 15.9)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=32  vllm      nan us ()  ours     33.5 (GLYD_F8_LIN_MIN=2: 25.7) (GLYD_F8_LIN_MIN=4: 22.0)  unpack      nan  route      nan  ratio nan 
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=64  vllm      nan us ()  ours     55.4 (GLYD_F8_LIN_MIN=2: 40.0) (GLYD_F8_LIN_MIN=4: 31.6)  unpack      nan  route      nan  ratio nan 
+bench B exit 0

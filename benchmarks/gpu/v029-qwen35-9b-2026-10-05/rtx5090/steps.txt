@@ -1,0 +1,14 @@
+install 0 44
+run8b_default 0 163
+run8b_engine 0 36
+api_check 1 9
+speed_engine8b 0 9
+speed_glydvllm8b 1 0
+run_q35_9b 0 238
+speed_glyd_q35_9b 0 37
+off_q35_08b 0 87
+speed_glydvllm8b_b 0 93
+speed_glydc8b 0 9
+speed_glydc_q35 0 10
+speed_vllm8b_c 0 11
+speed_vllm_q35_c 0 11

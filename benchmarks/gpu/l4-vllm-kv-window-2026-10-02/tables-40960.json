@@ -1,0 +1,115 @@
+{
+ "model": "Qwen/Qwen3-8B",
+ "positions": 40960,
+ "tokens": 81918,
+ "seconds": 215.8,
+ "layers": 36,
+ "heads": 8,
+ "channels": 128,
+ "held_out_rate": {
+  "k": 0.0001556037793368373,
+  "v": 0.00018902187592688947
+ },
+ "per_kind": {
+  "chat": {
+   "k": 0.0001357686394416805,
+   "v": 0.00016586447104754008,
+   "values": 29638656
+  },
+  "code": {
+   "k": 0.00012456252147133884,
+   "v": 0.0001515215127478406,
+   "values": 125190144
+  },
+  "docs": {
+   "k": 0.00011553407176121517,
+   "v": 0.00015222450085277504,
+   "values": 523542528
+  },
+  "prose": {
+   "k": 0.0001556037793368373,
+   "v": 0.00018902187592688947,
+   "values": 1629536256
+  },
+  "table": {
+   "k": 0.00013006281086745143,
+   "v": 0.00016541802772311977,
+   "values": 711917568
+  }
+ },
+ "by_depth": [
+  {
+   "extra_entries_max": 131,
+   "extra_entries_mean": 0.224,
+   "extra_entries_p999": 13,
+   "from": 0,
+   "pages": 18180
+  },
+  {
+   "extra_entries_max": 16,
+   "extra_entries_mean": 0.125,
+   "extra_entries_p999": 10,
+   "from": 4096,
+   "pages": 17784
+  },
+  {
+   "extra_entries_max": 18,
+   "extra_entries_mean": 0.157,
+   "extra_entries_p999": 12,
+   "from": 8192,
+   "pages": 17856
+  },
+  {
+   "extra_entries_max": 19,
+   "extra_entries_mean": 0.176,
+   "extra_entries_p999": 12,
+   "from": 12288,
+   "pages": 17856
+  },
+  {
+   "extra_entries_max": 37,
+   "extra_entries_mean": 0.374,
+   "extra_entries_p999": 26,
+   "from": 16384,
+   "pages": 17856
+  },
+  {
+   "extra_entries_max": 29,
+   "extra_entries_mean": 0.325,
+   "extra_entries_p999": 20,
+   "from": 20480,
+   "pages": 17820
+  },
+  {
+   "extra_entries_max": 16,
+   "extra_entries_mean": 0.253,
+   "extra_entries_p999": 12,
+   "from": 24576,
+   "pages": 17820
+  },
+  {
+   "extra_entries_max": 32,
+   "extra_entries_mean": 0.621,
+   "extra_entries_p999": 17,
+   "from": 28672,
+   "pages": 17820
+  },
+  {
+   "extra_entries_max": 32,
+   "extra_entries_mean": 0.771,
+   "extra_entries_p999": 19,
+   "from": 32768,
+   "pages": 17856
+  },
+  {
+   "extra_entries_max": 29,
+   "extra_entries_mean": 0.648,
+   "extra_entries_p999": 15,
+   "from": 36864,
+   "pages": 17784
+  }
+ ],
+ "refused": false,
+ "file_bytes": 3884654,
+ "sweep_seconds": 94.6
+}

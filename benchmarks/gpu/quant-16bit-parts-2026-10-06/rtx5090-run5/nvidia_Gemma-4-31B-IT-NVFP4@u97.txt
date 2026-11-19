@@ -1,0 +1,2 @@
+glyd: ok (224 s) weights 25.25 GiB, KV 7,044 tokens, tok/s {"1": 42.01, "32": 310.89}
+PACKED: 122 layers (122 verified bit for bit as packed), 18.62 GiB bf16 held in 12.54 GiB (6.08 GiB saved); products of 4 against F.linear: worst relative error 3.19e-03; largest 16-bit left: ReplicatedLinear / UnquantizedLinearMethod / weight / bfloat16 1.03 GiB; Gemma4VisionPatchEmbedder / NoneType / position_embedding_table / bfloat16 0.04 GiB

@@ -1,0 +1,4 @@
+PASS compute-sanitizer --tool memcheck over the kernels (the quick checks): ========= ERROR SUMMARY: 0 errors
+PASS compute-sanitizer --tool initcheck over the kernels (the quick checks): ========= ERROR SUMMARY: 0 errors
+PASS compute-sanitizer --tool racecheck over the kernels (the quick checks): ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+PASS compute-sanitizer --tool synccheck over the kernels (the quick checks): ========= ERROR SUMMARY: 0 errors

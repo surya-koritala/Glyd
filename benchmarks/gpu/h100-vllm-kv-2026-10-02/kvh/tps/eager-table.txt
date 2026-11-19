@@ -1,0 +1,9 @@
+KV cache: stock 398,320 tokens, kv 518,288 (1.301x); decode tokens a second (128 new tokens, eager, bf16 weights, util 0.9; one run each)
+| Batch x tokens | Stock | KV | KV / stock |
+| :--- | ---: | ---: | ---: |
+| stock 4 x 8192, kv 4 x 8192 | 252.7 (15.8 ms a step; 1980, 42) | 301.5 (13.3 ms a step; 1980, 43) | 1.193 |
+| stock 32 x 1024, kv 32 x 1024 | 1947.6 (16.4 ms a step; 1980, 43) | 2338.6 (13.7 ms a step; 1980, 44) | 1.201 |
+| stock 1 x 8192, kv 1 x 8192 | 63.4 (15.8 ms a step; 1980, 41) | 76.5 (13.1 ms a step; 1980, 42) | 1.208 |
+| stock 1 x 1024, kv 1 x 1024 | 64.0 (15.6 ms a step; 1980, 39) | 76.7 (13.0 ms a step; 1980, 40) | 1.198 |
+| stock 32 x 8192, kv 32 x 8192 | 1606.8 (19.9 ms a step; 1980, 51) | 1928.5 (16.6 ms a step; 1980, 51) | 1.200 |
+| stock 48 x 8192, kv 63 x 8192 | 1855.4 (25.9 ms a step; 1980, 52) | 2507.1 (25.1 ms a step; 1980, 51) | 1.351 |

@@ -1,0 +1,1086 @@
+{
+  "case": "model-02",
+  "shape": [
+    1152,
+    4304
+  ],
+  "unpack_bit_exact": true,
+  "weight_buffer_bytes": 4332687,
+  "host_symbol_bytes": 12,
+  "compact_weight_allocator_delta": 4333056,
+  "memory_before": {
+    "allocated": 0,
+    "reserved": 0,
+    "peak_allocated": 0,
+    "peak_reserved": 0,
+    "device_free": 24773394432,
+    "device_total": 25252724736
+  },
+  "memory_weights": {
+    "allocated": 4333056,
+    "reserved": 23068672,
+    "peak_allocated": 4333056,
+    "peak_reserved": 23068672,
+    "device_free": 24750325760,
+    "device_total": 25252724736
+  },
+  "products": [
+    {
+      "tokens": 1,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": true,
+      "reference_max": 4.116220474243164,
+      "max_abs_error": 0.008779525756835938,
+      "normalized_rms_error": 0.0016349344942503093,
+      "base_max_abs_error": 0.008779525756835938,
+      "base_normalized_rms_error": 0.0016349344942503093,
+      "base_reference_bit_exact": true,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 43264,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 4333056,
+        "reserved": 23068672,
+        "peak_allocated": 4333056,
+        "peak_reserved": 23068672,
+        "device_free": 24750325760,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 4388352,
+        "reserved": 25165824,
+        "peak_allocated": 4389376,
+        "peak_reserved": 25165824,
+        "device_free": 24727257088,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.012694400548934937,
+        0.012492799758911132,
+        0.012390399724245072,
+        0.012390399724245072,
+        0.01228799968957901
+      ],
+      "expanded_ms": [
+        0.010627199709415436,
+        0.010543999820947647,
+        0.010444799810647965,
+        0.010422399640083313,
+        0.010342399775981902
+      ],
+      "bf16_ms": [
+        0.010342399775981902,
+        0.010137599706649781,
+        0.010137599706649781,
+        0.010035199671983719,
+        0.010121600329875946
+      ],
+      "unpack_ms": [
+        0.011852800101041793,
+        0.011856000125408172,
+        0.011673600226640702,
+        0.011673600226640702,
+        0.01165440008044243
+      ]
+    },
+    {
+      "tokens": 1,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": true,
+      "reference_max": 4.507157325744629,
+      "max_abs_error": 0.007754325866699219,
+      "normalized_rms_error": 0.0016508689803253018,
+      "base_max_abs_error": 0.007754325866699219,
+      "base_normalized_rms_error": 0.0016508689803253018,
+      "base_reference_bit_exact": true,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 43264,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21430272,
+        "reserved": 67108864,
+        "peak_allocated": 21431296,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.012697599828243256,
+        0.012691199779510498,
+        0.012595200538635254,
+        0.012489599734544754,
+        0.012492799758911132
+      ],
+      "expanded_ms": [
+        0.01085439994931221,
+        0.010751999914646149,
+        0.010547199845314026,
+        0.010649599879980088,
+        0.010547199845314026
+      ],
+      "bf16_ms": [
+        0.010547199845314026,
+        0.010444799810647965,
+        0.010444799810647965,
+        0.010342399775981902,
+        0.010444799810647965
+      ],
+      "unpack_ms": [
+        0.011980800330638886,
+        0.011673600226640702,
+        0.01185920014977455,
+        0.011776000261306763,
+        0.011673600226640702
+      ]
+    },
+    {
+      "tokens": 2,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": true,
+      "reference_max": 4.771589756011963,
+      "max_abs_error": 0.012461662292480469,
+      "normalized_rms_error": 0.0016413676989228496,
+      "base_max_abs_error": 0.012461662292480469,
+      "base_normalized_rms_error": 0.0016413676989228496,
+      "base_reference_bit_exact": true,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 86528,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21481984,
+        "reserved": 67108864,
+        "peak_allocated": 21483008,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.012694400548934937,
+        0.012390399724245072,
+        0.01228799968957901,
+        0.012390399724245072,
+        0.012390399724245072
+      ],
+      "expanded_ms": [
+        0.01085439994931221,
+        0.010547199845314026,
+        0.010547199845314026,
+        0.010547199845314026,
+        0.010547199845314026
+      ],
+      "bf16_ms": [
+        0.008191999793052674,
+        0.008089599758386612,
+        0.007974400371313094,
+        0.007987199723720551,
+        0.007987199723720551
+      ],
+      "unpack_ms": [
+        0.011878400295972823,
+        0.011766400188207626,
+        0.011673600226640702,
+        0.011875200271606445,
+        0.01157120019197464
+      ]
+    },
+    {
+      "tokens": 2,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": true,
+      "reference_max": 8.306118965148926,
+      "max_abs_error": 0.007650852203369141,
+      "normalized_rms_error": 0.001607525711379598,
+      "base_max_abs_error": 0.007650852203369141,
+      "base_normalized_rms_error": 0.001607525711379598,
+      "base_reference_bit_exact": true,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 86528,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21484544,
+        "reserved": 67108864,
+        "peak_allocated": 21485568,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.012800000607967377,
+        0.012697599828243256,
+        0.012492799758911132,
+        0.012595200538635254,
+        0.012492799758911132
+      ],
+      "expanded_ms": [
+        0.01085439994931221,
+        0.010649599879980088,
+        0.01064639985561371,
+        0.010649599879980088,
+        0.010639999806880952
+      ],
+      "bf16_ms": [
+        0.008396799862384795,
+        0.008191999793052674,
+        0.008089599758386612,
+        0.008089599758386612,
+        0.008089599758386612
+      ],
+      "unpack_ms": [
+        0.011878400295972823,
+        0.011878400295972823,
+        0.011673600226640702,
+        0.011664000153541566,
+        0.011673600226640702
+      ]
+    },
+    {
+      "tokens": 8,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 7.183112144470215,
+      "max_abs_error": 0.015270709991455078,
+      "normalized_rms_error": 0.0016744291326115652,
+      "base_max_abs_error": 0.015270709991455078,
+      "base_normalized_rms_error": 0.0016744291326115652,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.00048828125,
+      "workspace_bytes": 346112,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21807104,
+        "reserved": 67108864,
+        "peak_allocated": 21808128,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.013414399325847625,
+        0.013209599256515502,
+        0.013209599256515502,
+        0.013209599256515502,
+        0.013107199966907502
+      ],
+      "expanded_ms": [
+        0.012800000607967377,
+        0.012492799758911132,
+        0.012492799758911132,
+        0.012390399724245072,
+        0.012390399724245072
+      ],
+      "bf16_ms": [
+        0.008908800035715102,
+        0.008787199854850769,
+        0.008703999966382981,
+        0.008703999966382981,
+        0.008793599903583527
+      ],
+      "unpack_ms": [
+        0.011878400295972823,
+        0.011776000261306763,
+        0.011776000261306763,
+        0.011673600226640702,
+        0.01157120019197464
+      ]
+    },
+    {
+      "tokens": 8,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 6.89054012298584,
+      "max_abs_error": 0.015540122985839844,
+      "normalized_rms_error": 0.0016713878453404212,
+      "base_max_abs_error": 0.015540122985839844,
+      "base_normalized_rms_error": 0.0016713878453404212,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 346112,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21809664,
+        "reserved": 67108864,
+        "peak_allocated": 21810688,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.013510400056838989,
+        0.013312000036239623,
+        0.013209599256515502,
+        0.013209599256515502,
+        0.013206399977207184
+      ],
+      "expanded_ms": [
+        0.0130048006772995,
+        0.012595200538635254,
+        0.012595200538635254,
+        0.012595200538635254,
+        0.012595200538635254
+      ],
+      "bf16_ms": [
+        0.009113600105047226,
+        0.008902399986982345,
+        0.008806400001049042,
+        0.008905600011348724,
+        0.008703999966382981
+      ],
+      "unpack_ms": [
+        0.012083200365304947,
+        0.011776000261306763,
+        0.011673600226640702,
+        0.011673600226640702,
+        0.011673600226640702
+      ]
+    },
+    {
+      "tokens": 16,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 7.574794769287109,
+      "max_abs_error": 0.013625621795654297,
+      "normalized_rms_error": 0.0016564953881351673,
+      "base_max_abs_error": 0.013625621795654297,
+      "base_normalized_rms_error": 0.0016564953881351673,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 3.0517578125e-05,
+      "workspace_bytes": 692224,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22240256,
+        "reserved": 67108864,
+        "peak_allocated": 22241280,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.014745600521564484,
+        0.01443839967250824,
+        0.014521600306034088,
+        0.01454080045223236,
+        0.01443839967250824
+      ],
+      "expanded_ms": [
+        0.01669120043516159,
+        0.01658879965543747,
+        0.01669120043516159,
+        0.01648640036582947,
+        0.01658879965543747
+      ],
+      "bf16_ms": [
+        0.01966080069541931,
+        0.01945600062608719,
+        0.01945600062608719,
+        0.01945600062608719,
+        0.01935359984636307
+      ],
+      "unpack_ms": [
+        0.011964800208806992,
+        0.011776000261306763,
+        0.011660800129175187,
+        0.011673600226640702,
+        0.01157120019197464
+      ]
+    },
+    {
+      "tokens": 16,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": true,
+      "reference_max": 7.639248371124268,
+      "max_abs_error": 0.014248371124267578,
+      "normalized_rms_error": 0.0016371675604831331,
+      "base_max_abs_error": 0.014248371124267578,
+      "base_normalized_rms_error": 0.0016371675604831331,
+      "base_reference_bit_exact": true,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 692224,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22242816,
+        "reserved": 67108864,
+        "peak_allocated": 22243840,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.014841599762439728,
+        0.014620800316333771,
+        0.01443839967250824,
+        0.01443839967250824,
+        0.01454080045223236
+      ],
+      "expanded_ms": [
+        0.016896000504493712,
+        0.01669120043516159,
+        0.01658879965543747,
+        0.016675199568271636,
+        0.01679359972476959
+      ],
+      "bf16_ms": [
+        0.01966080069541931,
+        0.01945600062608719,
+        0.01955839991569519,
+        0.01935359984636307,
+        0.01935359984636307
+      ],
+      "unpack_ms": [
+        0.012083200365304947,
+        0.012902399897575379,
+        0.011776000261306763,
+        0.011776000261306763,
+        0.011660800129175187
+      ]
+    },
+    {
+      "tokens": 17,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 9.12586784362793,
+      "max_abs_error": 0.014007568359375,
+      "normalized_rms_error": 0.0016760472712458647,
+      "base_max_abs_error": 0.014007568359375,
+      "base_normalized_rms_error": 0.0016760472712458647,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 635392,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22194176,
+        "reserved": 67108864,
+        "peak_allocated": 22195200,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.015667200088500977,
+        0.015462400019168853,
+        0.015462400019168853,
+        0.015462400019168853,
+        0.015360000729560851
+      ],
+      "expanded_ms": [
+        0.01515520066022873,
+        0.015039999783039094,
+        0.014950400590896607,
+        0.014950400590896607,
+        0.014847999811172486
+      ],
+      "bf16_ms": [
+        0.008703999966382981,
+        0.008499199897050858,
+        0.008396799862384795,
+        0.008499199897050858,
+        0.008396799862384795
+      ],
+      "unpack_ms": [
+        0.011980800330638886,
+        0.01157120019197464,
+        0.011872000247240066,
+        0.011776000261306763,
+        0.011673600226640702
+      ]
+    },
+    {
+      "tokens": 17,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 7.85402250289917,
+      "max_abs_error": 0.015044212341308594,
+      "normalized_rms_error": 0.0016759528761665227,
+      "base_max_abs_error": 0.015044212341308594,
+      "base_normalized_rms_error": 0.0016759528761665227,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 635392,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22196736,
+        "reserved": 67108864,
+        "peak_allocated": 22197760,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.015872000157833098,
+        0.01565759927034378,
+        0.015462400019168853,
+        0.015667200088500977,
+        0.015462400019168853
+      ],
+      "expanded_ms": [
+        0.015360000729560851,
+        0.015052799880504609,
+        0.015043200552463531,
+        0.015033599734306336,
+        0.014950400590896607
+      ],
+      "bf16_ms": [
+        0.011776000261306763,
+        0.01157120019197464,
+        0.011459200084209442,
+        0.01157120019197464,
+        0.011564800143241882
+      ],
+      "unpack_ms": [
+        0.011961600184440613,
+        0.011776000261306763,
+        0.011776000261306763,
+        0.011673600226640702,
+        0.011673600226640702
+      ]
+    },
+    {
+      "tokens": 32,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 8.533013343811035,
+      "max_abs_error": 0.029486656188964844,
+      "normalized_rms_error": 0.0016637576472151821,
+      "base_max_abs_error": 0.029486656188964844,
+      "base_normalized_rms_error": 0.0016637576472151821,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 1196032,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22918656,
+        "reserved": 67108864,
+        "peak_allocated": 22919680,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.017395199835300447,
+        0.017203199863433837,
+        0.017100800573825837,
+        0.017100800573825837,
+        0.017100800573825837
+      ],
+      "expanded_ms": [
+        0.01679359972476959,
+        0.01658879965543747,
+        0.01669120043516159,
+        0.01679359972476959,
+        0.01658879965543747
+      ],
+      "bf16_ms": [
+        0.009830400347709656,
+        0.00982080027461052,
+        0.009625600278377533,
+        0.009523200243711472,
+        0.009625600278377533
+      ],
+      "unpack_ms": [
+        0.030704000592231752,
+        0.011878400295972823,
+        0.011673600226640702,
+        0.01157120019197464,
+        0.01175680011510849
+      ]
+    },
+    {
+      "tokens": 32,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 9.787742614746094,
+      "max_abs_error": 0.02475738525390625,
+      "normalized_rms_error": 0.001665639220817818,
+      "base_max_abs_error": 0.02475738525390625,
+      "base_normalized_rms_error": 0.001665639220817818,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 1196032,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22921216,
+        "reserved": 67108864,
+        "peak_allocated": 22922240,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.017407999932765962,
+        0.01730560064315796,
+        0.017203199863433837,
+        0.017203199863433837,
+        0.017203199863433837
+      ],
+      "expanded_ms": [
+        0.016896000504493712,
+        0.01669120043516159,
+        0.01669120043516159,
+        0.01669120043516159,
+        0.01658879965543747
+      ],
+      "bf16_ms": [
+        0.010035199671983719,
+        0.009932799637317658,
+        0.009830400347709656,
+        0.009830400347709656,
+        0.009830400347709656
+      ],
+      "unpack_ms": [
+        0.011974400281906128,
+        0.011673600226640702,
+        0.011776000261306763,
+        0.011776000261306763,
+        0.01157120019197464
+      ]
+    },
+    {
+      "tokens": 33,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 6.514514446258545,
+      "max_abs_error": 0.014851570129394531,
+      "normalized_rms_error": 0.0016651188624480465,
+      "base_max_abs_error": 0.014851570129394531,
+      "base_normalized_rms_error": 0.0016651188624480465,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 1233408,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22966784,
+        "reserved": 67108864,
+        "peak_allocated": 22967808,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.02263039946556091,
+        0.02242559939622879,
+        0.02232320010662079,
+        0.02232320010662079,
+        0.02221439927816391
+      ],
+      "expanded_ms": [
+        0.022015999257564544,
+        0.022015999257564544,
+        0.02190079987049103,
+        0.02170879989862442,
+        0.02181120067834854
+      ],
+      "bf16_ms": [
+        0.01085439994931221,
+        0.010547199845314026,
+        0.010649599879980088,
+        0.010649599879980088,
+        0.010547199845314026
+      ],
+      "unpack_ms": [
+        0.012083200365304947,
+        0.011878400295972823,
+        0.011763200163841248,
+        0.011670400202274323,
+        0.011673600226640702
+      ]
+    },
+    {
+      "tokens": 33,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 8.151693344116211,
+      "max_abs_error": 0.026693344116210938,
+      "normalized_rms_error": 0.0016619932472632403,
+      "base_max_abs_error": 0.026693344116210938,
+      "base_normalized_rms_error": 0.0016619932472632403,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 1233408,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22969344,
+        "reserved": 67108864,
+        "peak_allocated": 22970368,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.022835199534893037,
+        0.022614400088787078,
+        0.02242559939622879,
+        0.022419199347496033,
+        0.02252800017595291
+      ],
+      "expanded_ms": [
+        0.022313599288463593,
+        0.02222079932689667,
+        0.022015999257564544,
+        0.02222079932689667,
+        0.022099199891090392
+      ],
+      "bf16_ms": [
+        0.010342399775981902,
+        0.010137599706649781,
+        0.010137599706649781,
+        0.010137599706649781,
+        0.010239999741315842
+      ],
+      "unpack_ms": [
+        0.011878400295972823,
+        0.011776000261306763,
+        0.011776000261306763,
+        0.011673600226640702,
+        0.011673600226640702
+      ]
+    },
+    {
+      "tokens": 64,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 10.692286491394043,
+      "max_abs_error": 0.015506267547607422,
+      "normalized_rms_error": 0.0016646109793435019,
+      "base_max_abs_error": 0.015506267547607422,
+      "base_normalized_rms_error": 0.0016646109793435019,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 2392064,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 24463872,
+        "reserved": 67108864,
+        "peak_allocated": 24464896,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.026931199431419372,
+        0.026713600754737853,
+        0.026624000072479247,
+        0.026624000072479247,
+        0.026624000072479247
+      ],
+      "expanded_ms": [
+        0.026214399933815004,
+        0.026111999154090883,
+        0.026099199056625368,
+        0.02590720057487488,
+        0.026009601354599
+      ],
+      "bf16_ms": [
+        0.013203200697898865,
+        0.012800000607967377,
+        0.012902399897575379,
+        0.012800000607967377,
+        0.012800000607967377
+      ],
+      "unpack_ms": [
+        0.011980800330638886,
+        0.011673600226640702,
+        0.011673600226640702,
+        0.011772800236940384,
+        0.01157120019197464
+      ]
+    },
+    {
+      "tokens": 64,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 8.067008972167969,
+      "max_abs_error": 0.015539169311523438,
+      "normalized_rms_error": 0.001657240127877189,
+      "base_max_abs_error": 0.015539169311523438,
+      "base_normalized_rms_error": 0.001657240127877189,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 2392064,
+      "counter_bytes": 72,
+      "memory_compact_start": {
+        "allocated": 21372416,
+        "reserved": 65011712,
+        "peak_allocated": 21372416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 24466432,
+        "reserved": 67108864,
+        "peak_allocated": 24467456,
+        "peak_reserved": 67108864,
+        "device_free": 24668536832,
+        "device_total": 25252724736
+      },
+      "compact_ms": [
+        0.027136000990867614,
+        0.027033600211143493,
+        0.02682879865169525,
+        0.02682879865169525,
+        0.026931199431419372
+      ],
+      "expanded_ms": [
+        0.026316800713539125,
+        0.026214399933815004,
+        0.026111999154090883,
+        0.026214399933815004,
+        0.026111999154090883
+      ],
+      "bf16_ms": [
+        0.015462400019168853,
+        0.015360000729560851,
+        0.01525759994983673,
+        0.01525759994983673,
+        0.015238399803638458
+      ],
+      "unpack_ms": [
+        0.011872000247240066,
+        0.011772800236940384,
+        0.011776000261306763,
+        0.011673600226640702,
+        0.011673600226640702
+      ]
+    },
+    {
+      "tokens": 65,
+      "bias": false,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 65,
+      "bias": true,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 127,
+      "bias": false,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 127,
+      "bias": true,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 128,
+      "bias": false,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 128,
+      "bias": true,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 129,
+      "bias": false,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 129,
+      "bias": true,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 256,
+      "bias": false,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 256,
+      "bias": true,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 512,
+      "bias": false,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 512,
+      "bias": true,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 1024,
+      "bias": false,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 1024,
+      "bias": true,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 2048,
+      "bias": false,
+      "status": "expected-refusal"
+    },
+    {
+      "tokens": 2048,
+      "bias": true,
+      "status": "expected-refusal"
+    }
+  ],
+  "complete": true
+}

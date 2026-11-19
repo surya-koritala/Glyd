@@ -1,0 +1,68 @@
+{
+ "spec": {
+  "kv_heavy": true,
+  "mode": "exhaust",
+  "model": "Qwen/Qwen3-4B",
+  "kv": true,
+  "seqs": 8,
+  "n": 1,
+  "len": 900
+ },
+ "blocks": 6851,
+ "rows": [],
+ "raised": null,
+ "heavy": {
+  "text": 0,
+  "ids": 0,
+  "worst": 96273
+ },
+ "async_scheduling": true,
+ "flood": {
+  "requests": 1,
+  "finished": 1,
+  "failed": 0,
+  "refused": 0,
+  "ordinary_failed": 0,
+  "messages": [],
+  "wall_seconds": 2.68,
+  "prompt_tokens": 1008,
+  "prompt_tokens_per_second": 375.5
+ },
+ "during_same_as_alone": 0,
+ "latency": {
+  "ordinary_alone": [
+   2.405,
+   2.405,
+   2.405,
+   2.405,
+   2.405,
+   2.405,
+   2.405,
+   2.405
+  ],
+  "ordinary_flood": [
+   2.383,
+   2.383,
+   2.383,
+   2.383,
+   2.383,
+   2.383,
+   2.383,
+   2.685
+  ],
+  "heavy": [
+   0.416
+  ]
+ },
+ "tokens": [],
+ "logprobs": [],
+ "post_failed": 0,
+ "heavy_after": "n/a",
+ "scheduler": {
+  "held": 0,
+  "preempted": 0,
+  "refused": 0,
+  "failed": 0
+ },
+ "failed_by_scheduler": 0
+}

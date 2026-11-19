@@ -1,0 +1,42 @@
+samples 76922.0 instr executed 21507641.0
+  stall_wait                23.2%
+  stall_selected            15.9%
+  stall_not_selected        14.2%
+  stall_math                11.9%
+  stall_short_sb             7.7%
+  stall_barrier              7.7%
+  stall_branch_resolving     5.7%
+  stall_long_sb              4.8%
+  stall_no_inst              3.7%
+  stall_imc                  1.6%
+0x73881b3aa090   5.7% @P0   BRA 0x73881b3ab040                                     barrier:98 wait:1 not_selected:0
+0x73881b3a9890   2.3%       BAR.SYNC.DEFER_BLOCKING 0x0                            long_sb:99 wait:0
+0x73881b3b1ec0   1.1%       PRMT R76, R37, 0x9180, RZ                              long_sb:92 not_selected:2 math:2
+0x73881b3a8400   1.1%       IMAD.MOV.U32 R1, RZ, RZ, c[0x0][0x28]                  imc:93 no_inst:6 not_selected:0
+0x73881b3b33f0   1.1%       ERRBAR                                                 membar:98 wait:0 selected:0
+0x73881b3b3440   1.0% @P1   BRA 0x73881b3b34f0                                     barrier:97 wait:1 selected:0
+0x73881b3b3510   1.0%       BSSY B1, 0x73881b3b4380                                barrier:99 wait:0 not_selected:0
+0x73881b3aa050   0.7%       ISETP.GE.AND P0, PT, R30, R3, PT                       branch_resolving:69 wait:9 not_selected:7
+0x73881b3aa040   0.6%       DEPBAR.LE SB0, 0x0                                     long_sb:84 no_inst:6 branch_resolving:5
+0x73881b3aa3c0   0.5%       ISETP.GE.AND P0, PT, R27, RZ, PT                       short_sb:82 not_selected:7 math:5
+0x73881b3b2690   0.5%       HFMA2.BF16_V2 R18, R28, 1.84467440737095516160e+19, 1. short_sb:91 selected:3 not_selected:3
+0x73881b3b2460   0.5%       HFMA2.BF16_V2 R42, R28, 1.84467440737095516160e+19, 1. short_sb:93 not_selected:2 selected:2
+0x73881b3b3630   0.5%       BSSY B2, 0x73881b3b3800                                membar:98 wait:1 selected:0
+0x73881b3b28c0   0.5%       HFMA2.BF16_V2 R20, R28, 1.84467440737095516160e+19, 1. short_sb:91 wait:2 selected:2
+0x73881b3b21a0   0.4%       HFMA2.BF16_V2 R22, R28, 1.84467440737095516160e+19, 1. short_sb:92 wait:2 not_selected:2
+0x73881b3a8420   0.4%       ULDC UR4, c[0x0][0x1d4]                                imc:96 no_inst:1 not_selected:1
+0x73881b3aa0c0   0.4%       SHF.R.S32.HI R29, RZ, 0x5, R28                         short_sb:60 not_selected:18 math:17
+0x73881b3b0710   0.4%       SHF.R.U32.HI R66, RZ, 0x1, R47                         branch_resolving:51 wait:30 math:7
+0x73881b3ac470   0.4%       SEL R60, R37, RZ, P4                                   short_sb:79 not_selected:6 math:6
+0x73881b3af4c0   0.4%       SHF.R.U32.HI R65, RZ, 0x1, R52                         branch_resolving:52 wait:27 selected:7
+0x73881b3ac530   0.4%       SEL R36, R79, RZ, P0                                   short_sb:74 not_selected:9 math:9
+0x73881b3ab550   0.4%       LDS.64 R58, [R31+0x18]                                 branch_resolving:82 wait:11 selected:3
+0x73881b3abf30   0.4%       SEL R36, R36, RZ, P3                                   short_sb:70 math:13 not_selected:11
+0x73881b3abf60   0.4%       SEL R37, R37, RZ, P2                                   short_sb:78 not_selected:8 math:7
+0x73881b3ac4a0   0.4%       SEL R37, R37, RZ, P3                                   short_sb:78 not_selected:6 wait:5
+0x73881b3abfc0   0.4%       SEL R61, R61, RZ, P0                                   short_sb:80 math:7 not_selected:6
+0x73881b3ae270   0.4%       SHF.R.U32.HI R35, RZ, 0x1, R56                         branch_resolving:54 wait:23 selected:7
+0x73881b3abee0   0.4%       SEL R36, R79, RZ, P4                                   short_sb:82 wait:5 math:5
+0x73881b3abf90   0.3%       SEL R60, R60, RZ, P1                                   short_sb:79 math:6 not_selected:5
+0x73881b3ac4d0   0.3%       SEL R38, R38, RZ, P2                                   short_sb:75 not_selected:8 math:5
+mix: IMAD:22.6 LOP3:17.4 SHF:13.9 PRMT:11.5 LEA:4.6 ISETP:3.9 IADD3:3.9 BRA:3.6 BSYNC:2.5 LDS:2.0 BSSY:2.0 SEL:1.9 LD:1.8 HFMA2:1.2 SHFL:0.8 UIADD3:0.8 IMNMX:0.7 POPC:0.7

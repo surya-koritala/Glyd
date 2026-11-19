@@ -1,0 +1,208 @@
+==PROF== Connected to process 3895 (/home/ubuntu/dc/glyd-engine)
+NVIDIA A100-SXM4-80GB (sm_80): GLM-5.3-Flash on the dynamic engine, 4 layers, weights 5.283 GiB (layout mma12), KV 0.000 GiB (2048 positions), 5.91 of 79.25 GiB in use
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+==PROF== Profiling "f8h_lin1_kernel": 0%....50%....100% - 1 pass
+without a graph: 14.234 ms a step; the stages 13.846 ms:
+    4.926 ms  35.6%  mixture of experts
+    2.578 ms  18.6%  hyper-connections
+    1.641 ms  11.9%  linear attention: gates
+    0.799 ms   5.8%  head
+    0.688 ms   5.0%  mla indexer products and key groups
+    0.568 ms   4.1%  linear attention: qkv product
+    0.406 ms   2.9%  linear attention: o product
+    0.342 ms   2.5%  mla query (q_a, q_b)
+    0.325 ms   2.4%  linear attention: delta rule
+    0.316 ms   2.3%  linear attention: gated norm
+    0.205 ms   1.5%  mla attention
+    0.193 ms   1.4%  mla latent (kv_a)
+    0.170 ms   1.2%  mla values
+    0.170 ms   1.2%  mla absorb
+    0.162 ms   1.2%  latent attention
+    0.139 ms   1.0%  linear attention: convolution
+    0.105 ms   0.8%  mla select
+    0.104 ms   0.7%  mla indexer scores
+    0.008 ms   0.1%  mla start
+kernels: 80 launches a step, 5.528 ms of kernel time a step; the most:
+    0.671 ms    8.0 a step  glm_hc_fin
+    0.668 ms    8.0 a step  glm_hc_proj
+    0.507 ms    8.0 a step  glm_hc_post
+    0.376 ms    4.0 a step  moe_wsum
+    0.317 ms    4.0 a step  moe_select8
+    0.315 ms    4.0 a step  small_linear
+    0.312 ms    4.0 a step  moe_logits
+    0.282 ms    4.0 a step  moe_add
+    0.281 ms    8.0 a step  moe_act
+    0.238 ms    3.0 a step  glm_kda_rec
+    0.235 ms    3.0 a step  glm_kda_out
+    0.158 ms    2.0 a step  glm_rms2
+    0.143 ms    1.0 a step  glm_expand_v
+    0.130 ms    1.0 a step  glm_absorb
+with a graph: 9.599 ms a step (1 steps after 1 tokens)
+==PROF== Disconnected from process 3895
+[3895] glyd-engine@127.0.0.1
+  void f8h_lin1_kernel<1, 2>(F8Lin) (27, 8, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte       118.80
+    gpu__time_duration.sum                                           us       176.67
+    launch__registers_per_thread                        register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        22.49
+    smsp__inst_executed.sum                                        inst     50093504
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        60.17
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<1, 2>(F8Lin) (27, 8, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte        59.46
+    gpu__time_duration.sum                                           us        94.66
+    launch__registers_per_thread                        register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        22.56
+    smsp__inst_executed.sum                                        inst     25474752
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        58.33
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<0, 2>(F8Lin) (216, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte        14.87
+    gpu__time_duration.sum                                           us        33.15
+    launch__registers_per_thread                        register/thread           95
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        22.93
+    smsp__inst_executed.sum                                        inst      6581520
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        50.97
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<0, 2>(F8Lin) (216, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte         7.45
+    gpu__time_duration.sum                                           us        24.64
+    launch__registers_per_thread                        register/thread           95
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        23.09
+    smsp__inst_executed.sum                                        inst      3504952
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        45.49
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<1, 2>(F8Lin) (27, 8, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte       118.80
+    gpu__time_duration.sum                                           us       175.26
+    launch__registers_per_thread                        register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        22.40
+    smsp__inst_executed.sum                                        inst     50093504
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        60.77
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<1, 2>(F8Lin) (27, 8, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte        59.48
+    gpu__time_duration.sum                                           us        95.33
+    launch__registers_per_thread                        register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        22.49
+    smsp__inst_executed.sum                                        inst     25474752
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        58.50
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<0, 2>(F8Lin) (216, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte        14.87
+    gpu__time_duration.sum                                           us        32.96
+    launch__registers_per_thread                        register/thread           95
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        22.90
+    smsp__inst_executed.sum                                        inst      6581520
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        51.91
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<0, 2>(F8Lin) (216, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte         7.45
+    gpu__time_duration.sum                                           us        24.48
+    launch__registers_per_thread                        register/thread           95
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        23.08
+    smsp__inst_executed.sum                                        inst      3504952
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        46.47
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<1, 2>(F8Lin) (27, 8, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte       118.80
+    gpu__time_duration.sum                                           us       176.70
+    launch__registers_per_thread                        register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        22.40
+    smsp__inst_executed.sum                                        inst     50093504
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        60.56
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<1, 2>(F8Lin) (27, 8, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte        59.47
+    gpu__time_duration.sum                                           us        94.56
+    launch__registers_per_thread                        register/thread          114
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        22.51
+    smsp__inst_executed.sum                                        inst     25474752
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        58.26
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<0, 2>(F8Lin) (216, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte        14.87
+    gpu__time_duration.sum                                           us        33.12
+    launch__registers_per_thread                        register/thread           95
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        22.89
+    smsp__inst_executed.sum                                        inst      6581520
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        51.94
+    --------------------------------------------------- --------------- ------------
+
+  void f8h_lin1_kernel<0, 2>(F8Lin) (216, 1, 1)x(256, 1, 1), Context 1, Stream 13, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    --------------------------------------------------- --------------- ------------
+    Metric Name                                             Metric Unit Metric Value
+    --------------------------------------------------- --------------- ------------
+    dram__bytes_read.sum                                          Mbyte         7.45
+    gpu__time_duration.sum                                           us        24.22
+    launch__registers_per_thread                        register/thread           95
+    sm__warps_active.avg.pct_of_peak_sustained_active                 %        23.05
+    smsp__inst_executed.sum                                        inst      3504952
+    smsp__issue_active.avg.pct_of_peak_sustained_active               %        46.61
+    --------------------------------------------------- --------------- ------------
+

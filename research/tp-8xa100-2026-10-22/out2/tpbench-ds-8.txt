@@ -1,0 +1,2 @@
+8 GPUs, every layer sliced across them; GPU 0: NVIDIA A100-SXM4-80GB (sm_80): DeepSeek-V4 on the dynamic engine, 43 layers, weights 20.104 GiB (layout mma), KV 0.031 GiB (4096 positions), 21.24 of 79.25 GiB in use
+across GPUs [0, 1, 2, 3, 4, 5, 6, 7]: 17.17 ms a step (58.3 tokens/s) over 256 steps

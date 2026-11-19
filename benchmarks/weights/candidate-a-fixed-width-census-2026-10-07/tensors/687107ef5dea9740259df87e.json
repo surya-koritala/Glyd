@@ -1,0 +1,183 @@
+{
+  "name": "model.visual.merger.linear_fc2.weight",
+  "group": "vision",
+  "shape": [
+    5120,
+    4608
+  ],
+  "file": "model-00001-of-00018.safetensors",
+  "fraction_bits": 3,
+  "values": 23592960,
+  "zeros": 0,
+  "specials": 0,
+  "geometries": [
+    {
+      "format": "e4m3fn",
+      "block": [
+        128,
+        128
+      ],
+      "blocks": 1440,
+      "blocks_inexact": 1321,
+      "inexact": 3973,
+      "underflow": 720,
+      "max_block_inexact": 22,
+      "min_scale_exponent": -13,
+      "max_scale_exponent": -9
+    },
+    {
+      "format": "e4m3fn",
+      "block": [
+        1,
+        128
+      ],
+      "blocks": 184320,
+      "blocks_inexact": 1685,
+      "inexact": 1693,
+      "underflow": 297,
+      "max_block_inexact": 2,
+      "min_scale_exponent": -14,
+      "max_scale_exponent": -9
+    },
+    {
+      "format": "e4m3fn",
+      "block": [
+        1,
+        32
+      ],
+      "blocks": 737280,
+      "blocks_inexact": 1286,
+      "inexact": 1288,
+      "underflow": 222,
+      "max_block_inexact": 2,
+      "min_scale_exponent": -15,
+      "max_scale_exponent": -9
+    },
+    {
+      "format": "e4m3fn",
+      "block": [
+        1,
+        0
+      ],
+      "blocks": 5120,
+      "blocks_inexact": 1584,
+      "inexact": 1915,
+      "underflow": 326,
+      "max_block_inexact": 4,
+      "min_scale_exponent": -13,
+      "max_scale_exponent": -9
+    },
+    {
+      "format": "e3m3",
+      "block": [
+        128,
+        128
+      ],
+      "blocks": 1440,
+      "blocks_inexact": 1440,
+      "inexact": 1002101,
+      "underflow": 187496,
+      "max_block_inexact": 2799,
+      "min_scale_exponent": -9,
+      "max_scale_exponent": -6
+    },
+    {
+      "format": "e3m3",
+      "block": [
+        1,
+        128
+      ],
+      "blocks": 184320,
+      "blocks_inexact": 163325,
+      "inexact": 432610,
+      "underflow": 80662,
+      "max_block_inexact": 14,
+      "min_scale_exponent": -10,
+      "max_scale_exponent": -6
+    },
+    {
+      "format": "e3m3",
+      "block": [
+        1,
+        32
+      ],
+      "blocks": 737280,
+      "blocks_inexact": 261441,
+      "inexact": 327066,
+      "underflow": 61006,
+      "max_block_inexact": 9,
+      "min_scale_exponent": -11,
+      "max_scale_exponent": -6
+    },
+    {
+      "format": "e3m3",
+      "block": [
+        1,
+        0
+      ],
+      "blocks": 5120,
+      "blocks_inexact": 5120,
+      "inexact": 513213,
+      "underflow": 95886,
+      "max_block_inexact": 246,
+      "min_scale_exponent": -9,
+      "max_scale_exponent": -6
+    },
+    {
+      "format": "e2m3",
+      "block": [
+        128,
+        128
+      ],
+      "blocks": 1440,
+      "blocks_inexact": 1440,
+      "inexact": 12535586,
+      "underflow": 2967178,
+      "max_block_inexact": 14464,
+      "min_scale_exponent": -7,
+      "max_scale_exponent": -4
+    },
+    {
+      "format": "e2m3",
+      "block": [
+        1,
+        128
+      ],
+      "blocks": 184320,
+      "blocks_inexact": 184320,
+      "inexact": 6591089,
+      "underflow": 1289573,
+      "max_block_inexact": 80,
+      "min_scale_exponent": -8,
+      "max_scale_exponent": -4
+    },
+    {
+      "format": "e2m3",
+      "block": [
+        1,
+        32
+      ],
+      "blocks": 737280,
+      "blocks_inexact": 735967,
+      "inexact": 5075094,
+      "underflow": 977115,
+      "max_block_inexact": 23,
+      "min_scale_exponent": -9,
+      "max_scale_exponent": -4
+    },
+    {
+      "format": "e2m3",
+      "block": [
+        1,
+        0
+      ],
+      "blocks": 5120,
+      "blocks_inexact": 5120,
+      "inexact": 7735702,
+      "underflow": 1530281,
+      "max_block_inexact": 2771,
+      "min_scale_exponent": -7,
+      "max_scale_exponent": -4
+    }
+  ]
+}

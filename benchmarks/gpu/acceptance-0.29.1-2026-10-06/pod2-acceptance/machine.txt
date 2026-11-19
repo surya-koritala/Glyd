@@ -1,0 +1,8 @@
+Tue Oct  6 16:07:03 UTC 2026
+NVIDIA GeForce RTX 4090, 24564 MiB, 580.159.04
+x86_64
+PRETTY_NAME="Ubuntu 24.04.3 LTS"
+64
+               total        used        free      shared  buff/cache   available
+Mem:             503          26         237           0         245         477
+overlay         200G   17M  200G   1% /

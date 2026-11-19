@@ -1,0 +1,4 @@
+glyd serve: the engine serves up to 8 users at once and vLLM more (GLYD_ENGINE=1 runs the engine); using vLLM.
+glyd: Qwen3.5-9B needs about 16.3 GB of GPU memory with Glyd (14.3 GB of weights and room for a 4,096-token chat); your GPU has 15.7 GB free.
+  Close what holds GPU memory now: python (9.5 GB)
+  Or try Qwen/Qwen3.5-4B, which needs about 11.0 GB: glyd serve Qwen/Qwen3.5-4B

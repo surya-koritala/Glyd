@@ -1,0 +1,30 @@
+Linux 6.8.0-138-generic #138~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug  7 13:43:15 UTC  x86_64 GNU/Linux
+Tue Oct  6 12:12:12 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 610.57.04              KMD Version: 610.57.04     CUDA UMD Version: 13.3     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 5090        On  |   00000000:81:00.0 Off |                  N/A |
+|  0%   34C    P8             10W /  575W |       2MiB /  32607MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA GeForce RTX 5090, 12.0, 610.57.04, 32607 MiB, 3090 MHz, 14001 MHz, 575.00 W
+CPU(s):                                  256
+Model name:                              AMD EPYC 9554 64-Core Processor
+CPU(s) scaling MHz:                      81%
+               total        used        free      shared  buff/cache   available
+Mem:             503          95         217           1         196         407
+overlay         150G   20M  150G   1% /
+Tue Oct  6 12:12:13 UTC 2026

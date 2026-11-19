@@ -1,0 +1,1 @@
+7a6501f53945182f95f6626e573fe24ef699f5c4 fp8: exact on a per-tensor or per-channel checkpoint under torch.compile only with vLLM's quantization op on and its norm and activation quantization fusions off (they differ on gemma-4-26B-A4B-it-FP8-dynamic otherwise)

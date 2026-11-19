@@ -1,0 +1,35 @@
+Loading weights:   0%|          | 0/1184 [00:00<?, ?it/s]Loading weights:   0%|          | 1/1184 [00:00<07:05,  2.78it/s]Loading weights:   2%|▏         | 27/1184 [00:00<00:15, 75.83it/s]Loading weights:   4%|▍         | 46/1184 [00:00<00:10, 106.47it/s]Loading weights:   6%|▌         | 68/1184 [00:00<00:08, 135.21it/s]Loading weights:   8%|▊         | 94/1184 [00:00<00:06, 158.99it/s]Loading weights:  10%|█         | 120/1184 [00:00<00:05, 182.34it/s]Loading weights:  12%|█▏        | 146/1184 [00:01<00:05, 197.21it/s]Loading weights:  14%|█▍        | 169/1184 [00:01<00:04, 204.49it/s]Loading weights:  16%|█▌        | 191/1184 [00:01<00:04, 202.74it/s]Loading weights:  18%|█▊        | 213/1184 [00:01<00:04, 194.92it/s]Loading weights:  20%|██        | 238/1184 [00:01<00:04, 209.70it/s]Loading weights:  22%|██▏       | 260/1184 [00:01<00:04, 192.99it/s]Loading weights:  25%|██▍       | 291/1184 [00:01<00:03, 223.30it/s]Loading weights:  27%|██▋       | 315/1184 [00:01<00:04, 199.89it/s]Loading weights:  28%|██▊       | 336/1184 [00:01<00:04, 198.43it/s]Loading weights:  30%|███       | 357/1184 [00:02<00:04, 198.17it/s]Loading weights:  32%|███▏      | 378/1184 [00:02<00:04, 176.48it/s]Loading weights:  34%|███▎      | 397/1184 [00:02<00:04, 174.55it/s]Loading weights:  35%|███▌      | 415/1184 [00:02<00:04, 155.52it/s]Loading weights:  37%|███▋      | 434/1184 [00:02<00:04, 162.53it/s]Loading weights:  38%|███▊      | 451/1184 [00:02<00:04, 159.14it/s]Loading weights:  40%|███▉      | 468/1184 [00:02<00:04, 150.86it/s]Loading weights:  41%|████      | 487/1184 [00:02<00:04, 159.40it/s]Loading weights:  43%|████▎     | 504/1184 [00:03<00:04, 156.45it/s]Loading weights:  44%|████▍     | 520/1184 [00:03<00:04, 146.43it/s]Loading weights:  46%|████▌     | 540/1184 [00:03<00:04, 158.52it/s]Loading weights:  47%|████▋     | 557/1184 [00:03<00:04, 155.51it/s]Loading weights:  48%|████▊     | 573/1184 [00:03<00:04, 145.16it/s]Loading weights:  50%|█████     | 593/1184 [00:03<00:03, 157.54it/s]Loading weights:  52%|█████▏    | 610/1184 [00:03<00:03, 154.70it/s]Loading weights:  53%|█████▎    | 626/1184 [00:03<00:03, 144.60it/s]Loading weights:  55%|█████▍    | 646/1184 [00:03<00:03, 156.42it/s]Loading weights:  56%|█████▌    | 663/1184 [00:04<00:03, 153.90it/s]Loading weights:  57%|█████▋    | 679/1184 [00:04<00:03, 143.75it/s]Loading weights:  59%|█████▉    | 697/1184 [00:04<00:03, 151.57it/s]Loading weights:  60%|██████    | 716/1184 [00:04<00:03, 140.39it/s]Loading weights:  62%|██████▏   | 735/1184 [00:04<00:02, 149.92it/s]Loading weights:  64%|██████▍   | 755/1184 [00:04<00:02, 158.20it/s]Loading weights:  65%|██████▌   | 772/1184 [00:04<00:02, 148.65it/s]Loading weights:  67%|██████▋   | 788/1184 [00:04<00:02, 147.48it/s]Loading weights:  68%|██████▊   | 807/1184 [00:05<00:02, 157.84it/s]Loading weights:  70%|██████▉   | 824/1184 [00:05<00:02, 141.21it/s]Loading weights:  71%|███████   | 841/1184 [00:05<00:02, 145.13it/s]Loading weights:  82%|████████▏ | 976/1184 [00:05<00:00, 460.17it/s]Loading weights: 100%|██████████| 1184/1184 [00:05<00:00, 216.53it/s]
+[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+[transformers] `chunk_gated_delta_rule` is falling back to its reference PyTorch implementation because `flash-linear-attention` is not installed. This is correct but much slower; install `flash-linear-attention` for the optimized kernel.
+{"id": "wikitext-test-offset-0", "tokens": 512}
+{"id": "wikitext-test-offset-9553", "tokens": 512}
+{"id": "wikitext-test-offset-19107", "tokens": 512}
+{"id": "wikitext-test-offset-28661", "tokens": 512}
+{"id": "wikitext-test-offset-38215", "tokens": 512}
+{"id": "wikitext-test-offset-47769", "tokens": 512}
+{"id": "wikitext-test-offset-57323", "tokens": 512}
+{"id": "wikitext-test-offset-66876", "tokens": 512}
+{"id": "wikitext-test-offset-76430", "tokens": 512}
+{"id": "wikitext-test-offset-85984", "tokens": 512}
+{"id": "wikitext-test-offset-95538", "tokens": 512}
+{"id": "wikitext-test-offset-105092", "tokens": 512}
+{"id": "wikitext-test-offset-114646", "tokens": 512}
+{"id": "wikitext-test-offset-124199", "tokens": 512}
+{"id": "wikitext-test-offset-133753", "tokens": 512}
+{"id": "wikitext-test-offset-143307", "tokens": 512}
+{"id": "wikitext-test-offset-152861", "tokens": 512}
+{"id": "wikitext-test-offset-162415", "tokens": 512}
+{"id": "wikitext-test-offset-171969", "tokens": 512}
+{"id": "wikitext-test-offset-181522", "tokens": 512}
+{"id": "wikitext-test-offset-191076", "tokens": 512}
+{"id": "wikitext-test-offset-200630", "tokens": 512}
+{"id": "wikitext-test-offset-210184", "tokens": 512}
+{"id": "wikitext-test-offset-219738", "tokens": 512}
+{"id": "wikitext-test-offset-229292", "tokens": 512}
+{"id": "wikitext-test-offset-238845", "tokens": 512}
+{"id": "wikitext-test-offset-248399", "tokens": 512}
+{"id": "wikitext-test-offset-257953", "tokens": 512}
+{"id": "wikitext-test-offset-267507", "tokens": 512}
+{"id": "wikitext-test-offset-277061", "tokens": 512}
+{"id": "wikitext-test-offset-286615", "tokens": 512}
+{"id": "wikitext-test-offset-296169", "tokens": 512}

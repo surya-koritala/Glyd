@@ -1,0 +1,23 @@
+{
+  "scored_tokens": 2048,
+  "top1_agreement": 0.95703125,
+  "mean_abs_logprob_difference": 0.08210519286279297,
+  "max_abs_logprob_difference": 4.199625682000001,
+  "mean_nll_delta": -0.0012130682319335942,
+  "perplexity_ratio": 0.9987876672379123,
+  "nll_delta_window_bootstrap_95": [
+    -0.005501863384277344,
+    0.0030985302402343757
+  ],
+  "window_nll_deltas": [
+    0.001856335714843738,
+    0.007834270460937497,
+    -0.0010951554531249811,
+    -0.012015901250000006,
+    -0.0029182848359375017,
+    -0.0029421900546875088,
+    0.006743378902343747,
+    -0.0071669993398437385
+  ],
+  "scope": "eight-window likelihood screen, not task accuracy"
+}

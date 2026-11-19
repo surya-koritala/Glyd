@@ -1,0 +1,1 @@
+{"chunks": 11, "nll_per_chunk": [7.2698, 0.147, 0.0574, 0.0955, 0.4135, 0.2381, 0.0628, 0.2321, 0.1211, 0.1146, 0.145], "seconds": 115, "cmd": ["/home/surya-koritala/glyd-scratch/qwen-users/bin/glyd-engine", "qwenserve", "/home/surya-koritala/glyd-scratch/qwen/slim", "/home/surya-koritala/glyd-scratch/qwen/packed/precise_x", "--precise"]}

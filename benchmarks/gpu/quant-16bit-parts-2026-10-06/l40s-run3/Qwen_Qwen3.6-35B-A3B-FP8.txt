@@ -1,0 +1,7 @@
+stock-eager: ok (225 s) weights 34.25 GiB, KV 103,570 tokens
+glyd-exact: ok (113 s) weights 33.72 GiB, KV 118,198 tokens
+stock: ok (280 s) weights 34.25 GiB, KV 89,526 tokens, tok/s {"1": 130.65, "32": 952.7}
+glyd: ok (290 s) weights 33.39 GiB, KV 114,102 tokens, tok/s {"1": 137.62, "32": 990.36}
+EXACT PASS: Glyd exact eager against stock eager, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 707 tokens, one image chat; 111 of 111 packs verified bit for bit
+PACKED: 112 layers (112 verified bit for bit as packed), 2.72 GiB bf16 held in 1.83 GiB (0.89 GiB saved); products of 4 against F.linear: worst relative error 3.19e-03; largest 16-bit left: Embedding / NoneType / weight / bfloat16 0.00 GiB; Conv3dLayer / NoneType / weight / bfloat16 0.00 GiB
+STOCK -> GLYD: weights 34.25 -> 33.39 GiB; KV tokens 89526 -> 114102; 1 user 130.65 -> 137.62 tok/s (1.053x); 32 users 952.7 -> 990.36 tok/s (1.040x); greedy agreement 0.9434

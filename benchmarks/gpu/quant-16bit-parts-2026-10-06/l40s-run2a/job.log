@@ -1,0 +1,15 @@
+Linux 6.8.0-139-generic #139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026 x86_64 GNU/Linux
+name, compute_cap, driver_version, memory.total [MiB]
+NVIDIA L40S, 8.9, 595.91.07, 46068 MiB
+128
+               total        used        free      shared  buff/cache   available
+Mem:            1511         109         727           1         672        1401
+overlay         220G   18M  220G   1% /
+Tue Oct  6 11:23:50 UTC 2026
+11:23:50 (+0 s) downloads (background): 5 checkpoints
+11:23:50 (+0 s) vLLM 0.30.0, nvcc, the library (sm_89)
+11:27:00 (+190 s) environment: vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA L40S
+11:28:26 (+276 s) plugin tests: 51 ok; 0 failed; 0 tracebacks
+11:28:26 (+276 s) nvidia/Gemma-4-31B-IT-NVFP4: quant_parts.py --steps stock,glyd (at most 4404 s; exit 0 after 21 s; 512K)
+11:42:43 (+1133 s) nvidia/Gemma-4-31B-IT-NVFP4: exit 0 | stock: ok (400 s) weights 31.18 GiB, KV 13,941 tokens, tok/s {"1": 21.79, "32": 230.88}|glyd: ok (456 s) weights 25.25 GiB, KV 28,121 tokens, tok/s {"1": 26.07, "32": 421.65}|PACKED: 122 layers, 18.62 GiB bf16 held in 12.54 GiB (6.08 GiB saved); products of 4 against F.linear: worst relative error 3.19e-03; largest 16-bit left: ReplicatedLinear / UnquantizedLinearMethod / weight / bfloat16 1.03 GiB; Gemma4VisionPatchEmbedder / NoneType / position_embedding_table / bfloat16 0.04 GiB|STOCK -> GLYD: weights 31.18 -> 25.25 GiB; KV tokens 13941 -> 28121; 1 user 21.79 -> 26.07 tok/s (1.196x); 32 users 230.88 -> 421.65 tok/s (1.826x); greedy agreement 0.6445|
+11:42:43 (+1133 s) Qwen/Qwen3.8-27B-FP8: quant_parts.py --steps stock,glyd --max-num-seqs 64 (at most 3547 s; exit 0 after 15 s; 9.9M)

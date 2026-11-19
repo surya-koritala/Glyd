@@ -1,0 +1,24 @@
+DeepSeek-V4-Flash on 4x H100, and against vLLM (GLY-329)
+2026-10-18 12:36-13:16 Eastern, Lambda gpu_4x_h100_sxm5 (4x H100 80GB HBM3, us-southeast-1), ~40 min, ~$11. Engine: private main a2b2106b
+(the large FP8 matrices in the library's lossless FP8 format). Split in 4 stages (cuts 11, 22, 33): stage 0 47.8 GiB of weights. Load 93-96 s.
+
+Ours (greedy, raw text):
+  "The capital of France is" -> " Paris. It is one of the most famous cities in the world. Paris is known for its beautiful landmarks like the E"
+  "Question: What is 17 multiplied by 23? Answer:" -> " 391. Explanation: 17 multiplied by 23 equals 391. This is a simple multiplication problem.<end> ..."
+  decode 26.4-27.3 ms a token (37.9 tok/s) at short context, 38.3 ms at 3.1K; the 3,138-token needle: "The secret code is 7341." (prompt 5.7 s)
+  score, 517 tokens of research/dsv4/score-text.txt: mean log-probability -0.8048, perplexity 2.2363 (8x A100 run: -0.7984, 2.222)
+
+vLLM 0.32.0, TP=4 (the release's own arithmetic: FP8 activations, its FP8/FP4 kernels; VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER=0, because
+FlashInfer's prebuilt FP8 kernels were missing (flashinfer-cubin), and ninja installed for its compiles):
+  "The capital of France is" -> " Paris. It is one of the most famous cities in the world. Paris is known for its art, culture, and"
+  "Question: What is 17 multiplied by 23? Answer:" -> " 391. Explanation: 17 multiplied by 23 equals 391. This is a simple multiplication problem."
+  score, the same 517 token ids (identical tokenization): mean log-probability -0.8064, perplexity 2.2398
+
+Per token, ours against vLLM's log-probability: |difference| median 0.0054, mean 0.0572, 90th percentile 0.179, 99th 0.575, largest 1.11;
+89 tokens past 0.1, 6 past 0.5; signed mean +0.0016 (ours a hair higher). The greedy texts agree for the first 14 words and part at a
+near tie ("its" -> "beautiful" / "art"). The tail is where an expert choice or an FP8 rounding falls the other way (both quantize the
+activations to FP8 as the release does; the kernels' sums differ). Weights exact (the release's FP8 and FP4, decoded bit for bit).
+
+Speed gap: ~10 GB of weights a token over 4 H100s at 3.35 TB/s is ~3 ms; decode is ~26 ms (~11%): the four stages run in turn with
+their hand-overs through the host, and the attention's and the indexer's small kernels a layer. Next: the stages' hand-overs (device
+copies where trusted), fewer launches in the attention, MTP drafting.

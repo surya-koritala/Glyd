@@ -1,0 +1,431 @@
+Nemotron 3 Super's Mamba-2 and attention layers on NVIDIA A100-SXM4-80GB, tree 
+--- steps
+rustup: rc=0 8 s (job minute 0)
+pyenv: rc=0 18 s (job minute 0)
+engine: rc=0 95 s (job minute 1)
+versions: rc=0 4 s (job minute 1)
+selftest: rc=0 7 s (job minute 1)
+fetch: rc=0 102 s (job minute 3)
+real-vs-transformers: rc=0 26 s (job minute 4)
+lib: rc=0 312 s (job minute 5)
+kernels-small-gen: rc=0 2 s (job minute 5)
+kernels-small-run: rc=0 1 s (job minute 5)
+kernels-small-check: rc=0 6 s (job minute 5)
+kernels-real-gen: rc=0 3 s (job minute 5)
+kernels-real-run: rc=0 1 s (job minute 5)
+kernels-real-check: rc=0 28 s (job minute 6)
+kernels-act-gen: rc=0 3 s (job minute 6)
+kernels-act-run: rc=0 1 s (job minute 6)
+kernels-act-check: rc=0 27 s (job minute 6)
+layers-gen: rc=0 2 s (job minute 6)
+layers-run: rc=0 4 s (job minute 6)
+layers-check: rc=0 7 s (job minute 6)
+layers-check-dtmin: rc=1 7 s (job minute 6)
+toy-run: rc=0 3 s (job minute 6)
+toy-check: rc=0 3 s (job minute 6)
+--- selftest
+ok   chunked scan against the recurrence (dt_min 0.0), outputs: 39424 values, largest difference 2.604e-04 of the largest value (bound 0.008), mean 4.463e-07 of the mean, 99.94% equal, at most 2 places apart
+ok   chunked scan against the recurrence (dt_min 0.0), final state: 65536 values, largest difference 1.399e-06 of the largest value (bound 1e-05), mean 1.866e-06 of the mean
+ok   chunked scan against transformers' mamba2_chunk_scan (dt_min 0.0), outputs: 39424 values, largest difference 2.604e-04 of the largest value (bound 0.008), mean 4.063e-07 of the mean, 99.95% equal, at most 2 places apart
+ok   chunked scan against transformers' mamba2_chunk_scan (dt_min 0.0), final state: 65536 values, largest difference 1.492e-07 of the largest value (bound 1e-05), mean 1.188e-07 of the mean
+ok   chunked scan against the recurrence (dt_min 0.001), outputs: 39424 values, largest difference 2.604e-04 of the largest value (bound 0.008), mean 4.463e-07 of the mean, 99.94% equal, at most 2 places apart
+ok   chunked scan against the recurrence (dt_min 0.001), final state: 65536 values, largest difference 1.399e-06 of the largest value (bound 1e-05), mean 1.866e-06 of the mean
+ok   chunked scan against transformers' mamba2_chunk_scan (dt_min 0.001), outputs: 39424 values, largest difference 2.604e-04 of the largest value (bound 0.008), mean 4.063e-07 of the mean, 99.95% equal, at most 2 places apart
+ok   chunked scan against transformers' mamba2_chunk_scan (dt_min 0.001), final state: 65536 values, largest difference 1.492e-07 of the largest value (bound 1e-05), mean 1.188e-07 of the mean
+ok   recurrent step 0 against transformers' mamba2_selective_state_update: 512 values, largest difference 0.000e+00 of the largest value (bound 0.008), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok   recurrent steps' state against transformers': 65536 values, largest difference 7.567e-08 of the largest value (bound 1e-05), mean 3.355e-08 of the mean
+ok   gated norm against transformers' Zamba2RMSNormGated: 2560 values, largest difference 0.000e+00 of the largest value (bound 0.01), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok   a Mamba-2 layer against transformers' NemotronHMamba2Mixer (tiny, bf16 weights in ours, fp32 in its): 3840 values, largest difference 1.648e-02 of the largest value (bound 0.04), mean 8.602e-03 of the mean
+selftest: ok
+--- the reference against transformers' modules on the real layers
+ok   layer 0 (Mamba-2) against transformers' NemotronHMamba2Mixer, dt limit 0.001: 262144 values, largest difference 4.279e-03 of the largest value (bound 0.05), mean 4.274e-03 of the mean
+ok   layer 0 (Mamba-2) against transformers' NemotronHMamba2Mixer, dt limit 0.0: 262144 values, largest difference 6.932e-03 of the largest value (bound 1), mean 6.305e-03 of the mean
+ok   layer 2 (Mamba-2) against transformers' NemotronHMamba2Mixer, dt limit 0.001: 262144 values, largest difference 5.597e-03 of the largest value (bound 0.05), mean 3.984e-03 of the mean
+ok   layer 2 (Mamba-2) against transformers' NemotronHMamba2Mixer, dt limit 0.0: 262144 values, largest difference 5.144e-03 of the largest value (bound 1), mean 4.904e-03 of the mean
+ok   layer 7 (attention) against transformers' NemotronHAttention: 262144 values, largest difference 2.990e-03 of the largest value (bound 0.05), mean 2.876e-03 of the mean
+ok   layer 36 (attention) against transformers' NemotronHAttention: 262144 values, largest difference 2.474e-03 of the largest value (bound 0.05), mean 4.312e-03 of the mean
+ok   layer 40 (Mamba-2) against transformers' NemotronHMamba2Mixer, dt limit 0.001: 262144 values, largest difference 4.265e-03 of the largest value (bound 0.05), mean 4.883e-03 of the mean
+ok   layer 40 (Mamba-2) against transformers' NemotronHMamba2Mixer, dt limit 0.0: 262144 values, largest difference 4.265e-03 of the largest value (bound 1), mean 4.902e-03 of the mean
+real: ok
+--- kernels, small
+/root/results/kernels-small-run.log:mamba case chunked: 2 calls, 0.7 ms
+/root/results/kernels-small-run.log:mamba case recurrent: 2 calls, 0.3 ms
+/root/results/kernels-small-run.log:mamba case steps: 300 calls, 2.6 ms
+/root/results/kernels-small-run.log:mamba case mixed: 151 calls, 1.6 ms
+/root/results/kernels-small-run.log:attention done
+/root/results/kernels-small-check.log:ok   chunked: convolution: 460800 values, largest difference 7.911e-04 of the largest value (bound 0.02), mean 3.715e-08 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-small-check.log:ok   chunked: the convolution's state is the last three inputs
+/root/results/kernels-small-check.log:ok   chunked: scan outputs: 307200 values, largest difference 4.650e-05 of the largest value (bound 0.008), mean 2.721e-07 of the mean, 99.95% equal, at most 6 places apart
+/root/results/kernels-small-check.log:ok   chunked: scan final state: 131072 values, largest difference 3.218e-07 of the largest value (bound 0.0001), mean 3.161e-07 of the mean
+/root/results/kernels-small-check.log:ok   chunked: gated norm: 307200 values, largest difference 2.778e-04 of the largest value (bound 0.01), mean 8.447e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-small-check.log:ok   recurrent: convolution: 460800 values, largest difference 7.911e-04 of the largest value (bound 0.02), mean 3.715e-08 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-small-check.log:ok   recurrent: the convolution's state is the last three inputs
+/root/results/kernels-small-check.log:ok   recurrent: scan outputs: 307200 values, largest difference 4.650e-05 of the largest value (bound 0.008), mean 6.808e-08 of the mean, 99.99% equal, at most 1 places apart
+/root/results/kernels-small-check.log:ok   recurrent: scan final state: 131072 values, largest difference 1.207e-07 of the largest value (bound 0.0001), mean 1.345e-07 of the mean
+/root/results/kernels-small-check.log:ok   recurrent: gated norm: 307200 values, largest difference 2.778e-04 of the largest value (bound 0.01), mean 8.447e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-small-check.log:ok   steps: convolution: 460800 values, largest difference 7.911e-04 of the largest value (bound 0.02), mean 3.715e-08 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-small-check.log:ok   steps: the convolution's state is the last three inputs
+/root/results/kernels-small-check.log:ok   steps: scan outputs: 307200 values, largest difference 4.650e-05 of the largest value (bound 0.008), mean 6.808e-08 of the mean, 99.99% equal, at most 1 places apart
+/root/results/kernels-small-check.log:ok   steps: scan final state: 131072 values, largest difference 1.207e-07 of the largest value (bound 0.0001), mean 1.345e-07 of the mean
+/root/results/kernels-small-check.log:ok   steps: gated norm: 307200 values, largest difference 2.778e-04 of the largest value (bound 0.01), mean 8.447e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-small-check.log:ok   mixed: convolution: 460800 values, largest difference 7.911e-04 of the largest value (bound 0.02), mean 3.715e-08 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-small-check.log:ok   mixed: the convolution's state is the last three inputs
+/root/results/kernels-small-check.log:ok   mixed: scan outputs: 307200 values, largest difference 4.650e-05 of the largest value (bound 0.008), mean 1.876e-07 of the mean, 99.96% equal, at most 6 places apart
+/root/results/kernels-small-check.log:ok   mixed: scan final state: 131072 values, largest difference 1.207e-07 of the largest value (bound 0.0001), mean 1.345e-07 of the mean
+/root/results/kernels-small-check.log:ok   mixed: gated norm: 307200 values, largest difference 2.778e-04 of the largest value (bound 0.01), mean 8.447e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-small-check.log:ok   recurrent against chunked (whole scan outputs): 307200 values, largest difference 4.650e-05 of the largest value (bound 0.01), mean 2.668e-07 of the mean, 99.95% equal, at most 6 places apart
+/root/results/kernels-small-check.log:ok   steps against chunked (whole scan outputs): 307200 values, largest difference 4.650e-05 of the largest value (bound 0.01), mean 2.668e-07 of the mean, 99.95% equal, at most 6 places apart
+/root/results/kernels-small-check.log:ok   mixed against chunked (whole scan outputs): 307200 values, largest difference 4.650e-05 of the largest value (bound 0.01), mean 1.290e-07 of the mean, 99.98% equal, at most 3 places apart
+/root/results/kernels-small-check.log:ok   attention: keys and values in the cache: 102400 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+/root/results/kernels-small-check.log:ok   attention: decode steps: 819200 values, largest difference 2.427e-03 of the largest value (bound 0.02), mean 5.344e-04 of the mean, 78.37% equal, at most 30067 places apart
+/root/results/kernels-small-check.log:ok   attention: the prompt kernel: 819200 values, largest difference 2.427e-03 of the largest value (bound 0.02), mean 1.837e-04 of the mean, 92.06% equal, at most 29755 places apart
+/root/results/kernels-small-check.log:kernels: ok
+--- kernels, real
+/root/results/kernels-real-run.log:mamba case chunked: 2 calls, 1.8 ms
+/root/results/kernels-real-run.log:mamba case recurrent: 2 calls, 2.5 ms
+/root/results/kernels-real-run.log:mamba case steps: 700 calls, 9.5 ms
+/root/results/kernels-real-run.log:mamba case mixed: 368 calls, 5.8 ms
+/root/results/kernels-real-run.log:attention done
+/root/results/kernels-real-check.log:ok   chunked: convolution: 7168000 values, largest difference 7.310e-04 of the largest value (bound 0.02), mean 1.172e-08 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-real-check.log:ok   chunked: the convolution's state is the last three inputs
+/root/results/kernels-real-check.log:ok   chunked: scan outputs: 5734400 values, largest difference 2.907e-04 of the largest value (bound 0.008), mean 4.379e-07 of the mean, 99.95% equal, at most 218 places apart
+/root/results/kernels-real-check.log:ok   chunked: scan final state: 1048576 values, largest difference 2.537e-06 of the largest value (bound 0.0001), mean 1.092e-06 of the mean
+/root/results/kernels-real-check.log:ok   chunked: gated norm: 5734400 values, largest difference 7.143e-04 of the largest value (bound 0.01), mean 3.807e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-real-check.log:ok   recurrent: convolution: 7168000 values, largest difference 7.310e-04 of the largest value (bound 0.02), mean 1.172e-08 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-real-check.log:ok   recurrent: the convolution's state is the last three inputs
+/root/results/kernels-real-check.log:ok   recurrent: scan outputs: 5734400 values, largest difference 1.453e-04 of the largest value (bound 0.008), mean 5.665e-08 of the mean, 99.99% equal, at most 32 places apart
+/root/results/kernels-real-check.log:ok   recurrent: scan final state: 1048576 values, largest difference 1.780e-07 of the largest value (bound 0.0001), mean 9.378e-08 of the mean
+/root/results/kernels-real-check.log:ok   recurrent: gated norm: 5734400 values, largest difference 7.143e-04 of the largest value (bound 0.01), mean 3.860e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-real-check.log:ok   steps: convolution: 7168000 values, largest difference 7.310e-04 of the largest value (bound 0.02), mean 1.172e-08 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-real-check.log:ok   steps: the convolution's state is the last three inputs
+/root/results/kernels-real-check.log:ok   steps: scan outputs: 5734400 values, largest difference 1.453e-04 of the largest value (bound 0.008), mean 5.665e-08 of the mean, 99.99% equal, at most 32 places apart
+/root/results/kernels-real-check.log:ok   steps: scan final state: 1048576 values, largest difference 1.780e-07 of the largest value (bound 0.0001), mean 9.378e-08 of the mean
+/root/results/kernels-real-check.log:ok   steps: gated norm: 5734400 values, largest difference 7.143e-04 of the largest value (bound 0.01), mean 3.860e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-real-check.log:ok   mixed: convolution: 7168000 values, largest difference 7.310e-04 of the largest value (bound 0.02), mean 1.172e-08 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-real-check.log:ok   mixed: the convolution's state is the last three inputs
+/root/results/kernels-real-check.log:ok   mixed: scan outputs: 5734400 values, largest difference 1.453e-04 of the largest value (bound 0.008), mean 2.195e-07 of the mean, 99.98% equal, at most 218 places apart
+/root/results/kernels-real-check.log:ok   mixed: scan final state: 1048576 values, largest difference 1.780e-07 of the largest value (bound 0.0001), mean 9.378e-08 of the mean
+/root/results/kernels-real-check.log:ok   mixed: gated norm: 5734400 values, largest difference 7.143e-04 of the largest value (bound 0.01), mean 3.891e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-real-check.log:ok   recurrent against chunked (whole scan outputs): 5734400 values, largest difference 2.907e-04 of the largest value (bound 0.01), mean 4.366e-07 of the mean, 99.95% equal, at most 212 places apart
+/root/results/kernels-real-check.log:ok   steps against chunked (whole scan outputs): 5734400 values, largest difference 2.907e-04 of the largest value (bound 0.01), mean 4.366e-07 of the mean, 99.95% equal, at most 212 places apart
+/root/results/kernels-real-check.log:ok   mixed against chunked (whole scan outputs): 5734400 values, largest difference 2.907e-04 of the largest value (bound 0.01), mean 2.470e-07 of the mean, 99.97% equal, at most 112 places apart
+/root/results/kernels-real-check.log:ok   attention: keys and values in the cache: 512000 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+/root/results/kernels-real-check.log:ok   attention: decode steps: 4096000 values, largest difference 2.183e-03 of the largest value (bound 0.02), mean 8.379e-04 of the mean, 69.74% equal, at most 29964 places apart
+/root/results/kernels-real-check.log:ok   attention: the prompt kernel: 4096000 values, largest difference 2.183e-03 of the largest value (bound 0.02), mean 4.854e-04 of the mean, 80.37% equal, at most 29899 places apart
+/root/results/kernels-real-check.log:kernels: ok
+--- kernels, act
+/root/results/kernels-act-run.log:mamba case chunked: 2 calls, 1.9 ms
+/root/results/kernels-act-run.log:mamba case recurrent: 2 calls, 2.6 ms
+/root/results/kernels-act-run.log:mamba case steps: 700 calls, 9.4 ms
+/root/results/kernels-act-run.log:mamba case mixed: 368 calls, 5.9 ms
+/root/results/kernels-act-run.log:attention done
+/root/results/kernels-act-check.log:ok   chunked: convolution: 7168000 values, largest difference 7.476e-05 of the largest value (bound 0.02), mean 4.812e-09 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-act-check.log:ok   chunked: the convolution's state is the last three inputs
+/root/results/kernels-act-check.log:ok   chunked: scan outputs: 5734400 values, largest difference 3.189e-04 of the largest value (bound 0.008), mean 3.971e-07 of the mean, 99.99% equal, at most 26056 places apart
+/root/results/kernels-act-check.log:ok   chunked: scan final state: 1048576 values, largest difference 3.501e-07 of the largest value (bound 0.0001), mean 3.286e-07 of the mean
+/root/results/kernels-act-check.log:ok   chunked: gated norm: 5734400 values, largest difference 1.978e-04 of the largest value (bound 0.01), mean 4.012e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-act-check.log:ok   recurrent: convolution: 7168000 values, largest difference 7.476e-05 of the largest value (bound 0.02), mean 4.812e-09 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-act-check.log:ok   recurrent: the convolution's state is the last three inputs
+/root/results/kernels-act-check.log:ok   recurrent: scan outputs: 5734400 values, largest difference 1.276e-03 of the largest value (bound 0.008), mean 5.418e-07 of the mean, 99.99% equal, at most 12800 places apart
+/root/results/kernels-act-check.log:ok   recurrent: scan final state: 1048576 values, largest difference 1.532e-07 of the largest value (bound 0.0001), mean 2.780e-07 of the mean
+/root/results/kernels-act-check.log:ok   recurrent: gated norm: 5734400 values, largest difference 1.978e-04 of the largest value (bound 0.01), mean 3.935e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-act-check.log:ok   steps: convolution: 7168000 values, largest difference 7.476e-05 of the largest value (bound 0.02), mean 4.812e-09 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-act-check.log:ok   steps: the convolution's state is the last three inputs
+/root/results/kernels-act-check.log:ok   steps: scan outputs: 5734400 values, largest difference 1.276e-03 of the largest value (bound 0.008), mean 5.418e-07 of the mean, 99.99% equal, at most 12800 places apart
+/root/results/kernels-act-check.log:ok   steps: scan final state: 1048576 values, largest difference 1.532e-07 of the largest value (bound 0.0001), mean 2.780e-07 of the mean
+/root/results/kernels-act-check.log:ok   steps: gated norm: 5734400 values, largest difference 1.978e-04 of the largest value (bound 0.01), mean 3.935e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-act-check.log:ok   mixed: convolution: 7168000 values, largest difference 7.476e-05 of the largest value (bound 0.02), mean 4.812e-09 of the mean, 100.00% equal, at most 1 places apart
+/root/results/kernels-act-check.log:ok   mixed: the convolution's state is the last three inputs
+/root/results/kernels-act-check.log:ok   mixed: scan outputs: 5734400 values, largest difference 1.276e-03 of the largest value (bound 0.008), mean 7.033e-07 of the mean, 99.99% equal, at most 26056 places apart
+/root/results/kernels-act-check.log:ok   mixed: scan final state: 1048576 values, largest difference 1.532e-07 of the largest value (bound 0.0001), mean 2.620e-07 of the mean
+/root/results/kernels-act-check.log:ok   mixed: gated norm: 5734400 values, largest difference 1.978e-04 of the largest value (bound 0.01), mean 3.935e-08 of the mean, 100.00% equal, at most 2 places apart
+/root/results/kernels-act-check.log:ok   recurrent against chunked (whole scan outputs): 5734400 values, largest difference 1.276e-03 of the largest value (bound 0.01), mean 8.040e-07 of the mean, 99.99% equal, at most 25768 places apart
+/root/results/kernels-act-check.log:ok   steps against chunked (whole scan outputs): 5734400 values, largest difference 1.276e-03 of the largest value (bound 0.01), mean 8.040e-07 of the mean, 99.99% equal, at most 25768 places apart
+/root/results/kernels-act-check.log:ok   mixed against chunked (whole scan outputs): 5734400 values, largest difference 1.276e-03 of the largest value (bound 0.01), mean 4.719e-07 of the mean, 99.99% equal, at most 128 places apart
+/root/results/kernels-act-check.log:ok   attention: keys and values in the cache: 512000 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+/root/results/kernels-act-check.log:ok   attention: decode steps: 4096000 values, largest difference 1.667e-03 of the largest value (bound 0.02), mean 7.535e-04 of the mean, 74.06% equal, at most 28565 places apart
+/root/results/kernels-act-check.log:ok   attention: the prompt kernel: 4096000 values, largest difference 3.333e-03 of the largest value (bound 0.02), mean 4.384e-04 of the mean, 82.89% equal, at most 28589 places apart
+/root/results/kernels-act-check.log:kernels: ok
+--- layers: the verdicts (FAIL lines first), then every line
+layers: ok
+--- layers: time in the layer by case (the engine's own, with the products)
+case m0_prefill: layer 0 (Mamba), 1 calls, 1024 rows: 158.0 ms in the layer (158.005 ms a call), 269.7 ms with the dumps
+case m0_chunks: layer 0 (Mamba), 4 calls, 1024 rows: 10.2 ms in the layer (2.561 ms a call), 122.6 ms with the dumps
+case m0_recurrent: layer 0 (Mamba), 1 calls, 1024 rows: 5.5 ms in the layer (5.535 ms a call), 115.0 ms with the dumps
+case m0_steps: layer 0 (Mamba), 64 calls, 64 rows: 15.5 ms in the layer (0.242 ms a call), 27.2 ms with the dumps
+case m0_graph: layer 0 (Mamba), 64 calls, 64 rows: 15.3 ms in the layer (0.239 ms a call), 22.1 ms with the dumps
+case m0_mixed: layer 0 (Mamba), 825 calls, 1024 rows: 195.6 ms in the layer (0.237 ms a call), 351.6 ms with the dumps
+case m2_prefill: layer 2 (Mamba), 1 calls, 1024 rows: 3.6 ms in the layer (3.642 ms a call), 64.8 ms with the dumps
+case m2_chunks: layer 2 (Mamba), 4 calls, 1024 rows: 14.5 ms in the layer (3.616 ms a call), 88.2 ms with the dumps
+case m2_recurrent: layer 2 (Mamba), 1 calls, 1024 rows: 4.7 ms in the layer (4.706 ms a call), 103.3 ms with the dumps
+case m2_steps: layer 2 (Mamba), 64 calls, 64 rows: 16.0 ms in the layer (0.250 ms a call), 23.3 ms with the dumps
+case m2_graph: layer 2 (Mamba), 64 calls, 64 rows: 15.7 ms in the layer (0.245 ms a call), 22.4 ms with the dumps
+case m2_mixed: layer 2 (Mamba), 825 calls, 1024 rows: 204.2 ms in the layer (0.248 ms a call), 341.0 ms with the dumps
+case a7_prefill: layer 7 (Attention), 1 calls, 1024 rows: 0.8 ms in the layer (0.790 ms a call), 26.0 ms with the dumps
+case a7_chunks: layer 7 (Attention), 4 calls, 1024 rows: 1.1 ms in the layer (0.275 ms a call), 13.0 ms with the dumps
+case a7_steps: layer 7 (Attention), 64 calls, 64 rows: 5.9 ms in the layer (0.092 ms a call), 9.7 ms with the dumps
+case a7_graph: layer 7 (Attention), 64 calls, 64 rows: 5.6 ms in the layer (0.088 ms a call), 9.5 ms with the dumps
+case a7_mixed: layer 7 (Attention), 825 calls, 1024 rows: 74.6 ms in the layer (0.090 ms a call), 128.0 ms with the dumps
+case a36_prefill: layer 36 (Attention), 1 calls, 1024 rows: 0.7 ms in the layer (0.675 ms a call), 11.3 ms with the dumps
+case a36_chunks: layer 36 (Attention), 4 calls, 1024 rows: 1.1 ms in the layer (0.267 ms a call), 13.1 ms with the dumps
+case a36_steps: layer 36 (Attention), 64 calls, 64 rows: 5.8 ms in the layer (0.090 ms a call), 9.8 ms with the dumps
+case a36_graph: layer 36 (Attention), 64 calls, 64 rows: 5.5 ms in the layer (0.087 ms a call), 9.7 ms with the dumps
+case a36_mixed: layer 36 (Attention), 825 calls, 1024 rows: 73.2 ms in the layer (0.089 ms a call), 122.9 ms with the dumps
+case m40_prefill: layer 40 (Mamba), 1 calls, 1024 rows: 3.3 ms in the layer (3.258 ms a call), 55.1 ms with the dumps
+case m40_chunks: layer 40 (Mamba), 4 calls, 1024 rows: 4.3 ms in the layer (1.071 ms a call), 76.8 ms with the dumps
+case m40_recurrent: layer 40 (Mamba), 1 calls, 1024 rows: 4.3 ms in the layer (4.321 ms a call), 109.7 ms with the dumps
+case m40_steps: layer 40 (Mamba), 64 calls, 64 rows: 10.1 ms in the layer (0.158 ms a call), 16.7 ms with the dumps
+case m40_graph: layer 40 (Mamba), 64 calls, 64 rows: 9.9 ms in the layer (0.155 ms a call), 16.5 ms with the dumps
+case m40_mixed: layer 40 (Mamba), 825 calls, 1024 rows: 127.8 ms in the layer (0.155 ms a call), 266.1 ms with the dumps
+--- layers with transformers' dt limit (--dt-min 0.001): the layer from its input
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.403e-02 of the largest value (bound 0.1), mean 2.450e-02 of the mean, 9.39% equal, at most 30640 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.403e-02 of the largest value (bound 0.1), mean 2.450e-02 of the mean, 9.23% equal, at most 30640 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.403e-02 of the largest value (bound 0.1), mean 2.450e-02 of the mean, 9.39% equal, at most 30640 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 7.092e-03 of the largest value (bound 0.1), mean 3.778e-03 of the mean, 38.28% equal, at most 29393 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 7.092e-03 of the largest value (bound 0.1), mean 3.778e-03 of the mean, 38.28% equal, at most 29393 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.403e-02 of the largest value (bound 0.1), mean 2.450e-02 of the mean, 9.22% equal, at most 30641 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 5.724e-02 of the largest value (bound 0.1), mean 1.276e-02 of the mean, 18.91% equal, at most 31826 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 5.724e-02 of the largest value (bound 0.1), mean 1.276e-02 of the mean, 18.77% equal, at most 31826 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 5.724e-02 of the largest value (bound 0.1), mean 1.276e-02 of the mean, 18.91% equal, at most 31826 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 6.494e-03 of the largest value (bound 0.1), mean 3.305e-03 of the mean, 43.50% equal, at most 30800 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 6.494e-03 of the largest value (bound 0.1), mean 3.305e-03 of the mean, 43.50% equal, at most 30800 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 5.724e-02 of the largest value (bound 0.1), mean 1.274e-02 of the mean, 18.81% equal, at most 31826 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 7.576e-03 of the largest value (bound 0.1), mean 2.409e-03 of the mean, 49.26% equal, at most 29270 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 7.576e-03 of the largest value (bound 0.1), mean 2.408e-03 of the mean, 49.28% equal, at most 29297 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 1.894e-03 of the largest value (bound 0.1), mean 7.992e-04 of the mean, 71.95% equal, at most 28881 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 1.894e-03 of the largest value (bound 0.1), mean 7.992e-04 of the mean, 71.95% equal, at most 28881 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 7.576e-03 of the largest value (bound 0.1), mean 2.437e-03 of the mean, 48.92% equal, at most 29297 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.739e-03 of the largest value (bound 0.1), mean 4.557e-03 of the mean, 33.10% equal, at most 30393 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.739e-03 of the largest value (bound 0.1), mean 4.560e-03 of the mean, 33.11% equal, at most 30401 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 2.370e-03 of the largest value (bound 0.1), mean 1.244e-03 of the mean, 65.10% equal, at most 29860 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 2.370e-03 of the largest value (bound 0.1), mean 1.244e-03 of the mean, 65.10% equal, at most 29860 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.739e-03 of the largest value (bound 0.1), mean 4.528e-03 of the mean, 33.28% equal, at most 30392 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.292e-03 of the largest value (bound 0.1), mean 1.221e-03 of the mean, 67.48% equal, at most 30840 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.292e-03 of the largest value (bound 0.1), mean 1.333e-03 of the mean, 65.52% equal, at most 30840 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.292e-03 of the largest value (bound 0.1), mean 1.222e-03 of the mean, 67.47% equal, at most 30840 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 3.012e-03 of the largest value (bound 0.1), mean 1.803e-03 of the mean, 57.41% equal, at most 30560 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 3.012e-03 of the largest value (bound 0.1), mean 1.803e-03 of the mean, 57.41% equal, at most 30560 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.292e-03 of the largest value (bound 0.1), mean 1.682e-03 of the mean, 59.04% equal, at most 30834 places apart
+layers: FAILED
+--- layers: all
+-- m0_prefill: layer 0 (Mamba-2), 1 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 1.055e-03 of the largest value (bound 0.02), mean 2.295e-07 of the mean, 99.99% equal, at most 28888 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 1.524e-03 of the largest value (bound 0.02), mean 1.042e-06 of the mean, 99.97% equal, at most 623 places apart
+ok     out_proj output: 4194304 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     final SSM state: 1048576 values, largest difference 3.511e-07 of the largest value (bound 0.002), mean 5.190e-07 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 3.165e-03 of the largest value (bound 0.1), mean 1.208e-05 of the mean, 99.26% equal, at most 28100 places apart
+-- m0_chunks: layer 0 (Mamba-2), 4 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 1.055e-03 of the largest value (bound 0.02), mean 5.936e-07 of the mean, 99.96% equal, at most 28889 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 1.524e-03 of the largest value (bound 0.02), mean 1.136e-06 of the mean, 99.97% equal, at most 11689 places apart
+ok     out_proj output: 4194304 values, largest difference 3.165e-03 of the largest value (bound 0.02), mean 1.765e-04 of the mean, 95.10% equal, at most 28601 places apart
+ok     final SSM state: 1048576 values, largest difference 2.194e-07 of the largest value (bound 0.002), mean 3.378e-07 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 3.165e-03 of the largest value (bound 0.1), mean 1.897e-04 of the mean, 94.31% equal, at most 28690 places apart
+-- m0_recurrent: layer 0 (Mamba-2), 1 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 1.055e-03 of the largest value (bound 0.02), mean 2.295e-07 of the mean, 99.99% equal, at most 28888 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 3.811e-04 of the largest value (bound 0.02), mean 2.563e-07 of the mean, 99.99% equal, at most 54 places apart
+ok     out_proj output: 4194304 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     final SSM state: 1048576 values, largest difference 4.388e-08 of the largest value (bound 0.002), mean 2.888e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 3.165e-03 of the largest value (bound 0.1), mean 1.577e-05 of the mean, 99.09% equal, at most 28645 places apart
+-- m0_steps: layer 0 (Mamba-2), 64 calls, 64 rows
+ok     in_proj output: 1187840 values, largest difference 2.392e-03 of the largest value (bound 0.02), mean 6.332e-06 of the mean, 99.72% equal, at most 28893 places apart
+ok     convolution: 655360 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 524288 values, largest difference 5.787e-05 of the largest value (bound 0.02), mean 2.649e-08 of the mean, 100.00% equal, at most 5 places apart
+ok     out_proj output: 262144 values, largest difference 7.092e-03 of the largest value (bound 0.02), mean 1.232e-03 of the mean, 67.58% equal, at most 28906 places apart
+ok     final SSM state: 1048576 values, largest difference 4.738e-08 of the largest value (bound 0.002), mean 3.048e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 262144 values, largest difference 7.092e-03 of the largest value (bound 0.1), mean 1.270e-03 of the mean, 66.52% equal, at most 28906 places apart
+-- m0_graph: layer 0 (Mamba-2), 64 calls, 64 rows
+ok     in_proj output: 1187840 values, largest difference 2.392e-03 of the largest value (bound 0.02), mean 6.332e-06 of the mean, 99.72% equal, at most 28893 places apart
+ok     convolution: 655360 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 524288 values, largest difference 5.787e-05 of the largest value (bound 0.02), mean 2.649e-08 of the mean, 100.00% equal, at most 5 places apart
+ok     out_proj output: 262144 values, largest difference 7.092e-03 of the largest value (bound 0.02), mean 1.232e-03 of the mean, 67.58% equal, at most 28906 places apart
+ok     final SSM state: 1048576 values, largest difference 4.738e-08 of the largest value (bound 0.002), mean 3.048e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 262144 values, largest difference 7.092e-03 of the largest value (bound 0.1), mean 1.270e-03 of the mean, 66.52% equal, at most 28906 places apart
+-- m0_mixed: layer 0 (Mamba-2), 825 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 1.055e-03 of the largest value (bound 0.02), mean 4.598e-06 of the mean, 99.80% equal, at most 28892 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 3.811e-04 of the largest value (bound 0.02), mean 4.620e-07 of the mean, 99.99% equal, at most 24194 places apart
+ok     out_proj output: 4194304 values, largest difference 6.329e-03 of the largest value (bound 0.02), mean 7.880e-04 of the mean, 78.23% equal, at most 28647 places apart
+ok     final SSM state: 1048576 values, largest difference 4.388e-08 of the largest value (bound 0.002), mean 3.069e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 6.329e-03 of the largest value (bound 0.1), mean 8.327e-04 of the mean, 76.38% equal, at most 28736 places apart
+-- m2_prefill: layer 2 (Mamba-2), 1 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 3.592e-04 of the largest value (bound 0.02), mean 4.129e-07 of the mean, 99.98% equal, at most 242 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 1.000e-03 of the largest value (bound 0.02), mean 1.679e-06 of the mean, 99.94% equal, at most 25384 places apart
+ok     out_proj output: 4194304 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     final SSM state: 1048576 values, largest difference 3.670e-06 of the largest value (bound 0.002), mean 2.082e-06 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 1.168e-03 of the largest value (bound 0.1), mean 1.204e-05 of the mean, 99.39% equal, at most 29440 places apart
+-- m2_chunks: layer 2 (Mamba-2), 4 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 7.184e-04 of the largest value (bound 0.02), mean 8.342e-07 of the mean, 99.95% equal, at most 27150 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 1.000e-03 of the largest value (bound 0.02), mean 1.763e-06 of the mean, 99.94% equal, at most 25196 places apart
+ok     out_proj output: 4194304 values, largest difference 2.336e-03 of the largest value (bound 0.02), mean 1.684e-04 of the mean, 95.34% equal, at most 29756 places apart
+ok     final SSM state: 1048576 values, largest difference 3.823e-06 of the largest value (bound 0.002), mean 2.066e-06 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 2.336e-03 of the largest value (bound 0.1), mean 1.861e-04 of the mean, 94.60% equal, at most 30135 places apart
+-- m2_recurrent: layer 2 (Mamba-2), 1 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 3.592e-04 of the largest value (bound 0.02), mean 4.129e-07 of the mean, 99.98% equal, at most 242 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 6.250e-05 of the largest value (bound 0.02), mean 1.068e-07 of the mean, 99.99% equal, at most 175 places apart
+ok     out_proj output: 4194304 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     final SSM state: 1048576 values, largest difference 7.646e-08 of the largest value (bound 0.002), mean 3.365e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 1.168e-03 of the largest value (bound 0.1), mean 1.964e-05 of the mean, 99.04% equal, at most 29613 places apart
+-- m2_steps: layer 2 (Mamba-2), 64 calls, 64 rows
+ok     in_proj output: 1187840 values, largest difference 1.592e-03 of the largest value (bound 0.02), mean 4.989e-06 of the mean, 99.72% equal, at most 27597 places apart
+ok     convolution: 655360 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 524288 values, largest difference 6.565e-05 of the largest value (bound 0.02), mean 1.339e-07 of the mean, 99.99% equal, at most 11 places apart
+ok     out_proj output: 262144 values, largest difference 6.494e-03 of the largest value (bound 0.02), mean 1.491e-03 of the mean, 63.67% equal, at most 30058 places apart
+ok     final SSM state: 1048576 values, largest difference 8.453e-08 of the largest value (bound 0.002), mean 3.436e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 262144 values, largest difference 6.494e-03 of the largest value (bound 0.1), mean 1.499e-03 of the mean, 63.37% equal, at most 30058 places apart
+-- m2_graph: layer 2 (Mamba-2), 64 calls, 64 rows
+ok     in_proj output: 1187840 values, largest difference 1.592e-03 of the largest value (bound 0.02), mean 4.989e-06 of the mean, 99.72% equal, at most 27597 places apart
+ok     convolution: 655360 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 524288 values, largest difference 6.565e-05 of the largest value (bound 0.02), mean 1.339e-07 of the mean, 99.99% equal, at most 11 places apart
+ok     out_proj output: 262144 values, largest difference 6.494e-03 of the largest value (bound 0.02), mean 1.491e-03 of the mean, 63.67% equal, at most 30058 places apart
+ok     final SSM state: 1048576 values, largest difference 8.453e-08 of the largest value (bound 0.002), mean 3.436e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 262144 values, largest difference 6.494e-03 of the largest value (bound 0.1), mean 1.499e-03 of the mean, 63.37% equal, at most 30058 places apart
+-- m2_mixed: layer 2 (Mamba-2), 825 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 1.437e-03 of the largest value (bound 0.02), mean 4.980e-06 of the mean, 99.73% equal, at most 27727 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 6.250e-05 of the largest value (bound 0.02), mean 1.345e-07 of the mean, 99.98% equal, at most 256 places apart
+ok     out_proj output: 4194304 values, largest difference 2.336e-03 of the largest value (bound 0.02), mean 6.495e-04 of the mean, 78.66% equal, at most 29893 places apart
+ok     final SSM state: 1048576 values, largest difference 1.147e-07 of the largest value (bound 0.002), mean 5.283e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 2.336e-03 of the largest value (bound 0.1), mean 6.870e-04 of the mean, 77.35% equal, at most 30070 places apart
+-- a7_prefill: layer 7 (attention), 1 calls, 1024 rows
+ok     qkv products: 4718592 values, largest difference 4.608e-03 of the largest value (bound 0.02), mean 2.518e-04 of the mean, 95.42% equal, at most 30264 places apart
+ok     attention: 4194304 values, largest difference 8.333e-04 of the largest value (bound 0.02), mean 4.381e-04 of the mean, 82.91% equal, at most 28482 places apart
+ok     o product: 4194304 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     keys and values in the cache: 524288 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 7.576e-03 of the largest value (bound 0.1), mean 2.409e-03 of the mean, 49.26% equal, at most 29270 places apart
+-- a7_chunks: layer 7 (attention), 4 calls, 1024 rows
+ok     qkv products: 4718592 values, largest difference 4.608e-03 of the largest value (bound 0.02), mean 2.527e-04 of the mean, 95.36% equal, at most 30264 places apart
+ok     attention: 4194304 values, largest difference 3.333e-03 of the largest value (bound 0.02), mean 4.383e-04 of the mean, 82.91% equal, at most 28585 places apart
+ok     o product: 4194304 values, largest difference 9.470e-04 of the largest value (bound 0.02), mean 1.460e-06 of the mean, 99.94% equal, at most 25939 places apart
+ok     keys and values in the cache: 524288 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 7.576e-03 of the largest value (bound 0.1), mean 2.408e-03 of the mean, 49.28% equal, at most 29297 places apart
+-- a7_steps: layer 7 (attention), 64 calls, 64 rows
+ok     qkv products: 294912 values, largest difference 1.152e-03 of the largest value (bound 0.02), mean 2.332e-06 of the mean, 99.82% equal, at most 92 places apart
+ok     attention: 262144 values, largest difference 1.667e-03 of the largest value (bound 0.02), mean 3.199e-04 of the mean, 86.44% equal, at most 28565 places apart
+ok     o product: 262144 values, largest difference 9.470e-04 of the largest value (bound 0.02), mean 2.612e-06 of the mean, 99.84% equal, at most 361 places apart
+ok     keys and values in the cache: 32768 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 1.894e-03 of the largest value (bound 0.1), mean 7.992e-04 of the mean, 71.95% equal, at most 28881 places apart
+-- a7_graph: layer 7 (attention), 64 calls, 64 rows
+ok     qkv products: 294912 values, largest difference 1.152e-03 of the largest value (bound 0.02), mean 2.332e-06 of the mean, 99.82% equal, at most 92 places apart
+ok     attention: 262144 values, largest difference 1.667e-03 of the largest value (bound 0.02), mean 3.199e-04 of the mean, 86.44% equal, at most 28565 places apart
+ok     o product: 262144 values, largest difference 9.470e-04 of the largest value (bound 0.02), mean 2.612e-06 of the mean, 99.84% equal, at most 361 places apart
+ok     keys and values in the cache: 32768 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 1.894e-03 of the largest value (bound 0.1), mean 7.992e-04 of the mean, 71.95% equal, at most 28881 places apart
+-- a7_mixed: layer 7 (attention), 825 calls, 1024 rows
+ok     qkv products: 4718592 values, largest difference 4.608e-03 of the largest value (bound 0.02), mean 2.568e-04 of the mean, 95.11% equal, at most 30265 places apart
+ok     attention: 4194304 values, largest difference 3.333e-03 of the largest value (bound 0.02), mean 6.189e-04 of the mean, 77.32% equal, at most 28585 places apart
+ok     o product: 4194304 values, largest difference 9.470e-04 of the largest value (bound 0.02), mean 5.463e-06 of the mean, 99.73% equal, at most 25813 places apart
+ok     keys and values in the cache: 524288 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 7.576e-03 of the largest value (bound 0.1), mean 2.437e-03 of the mean, 48.92% equal, at most 29297 places apart
+-- a36_prefill: layer 36 (attention), 1 calls, 1024 rows
+ok     qkv products: 4718592 values, largest difference 5.587e-03 of the largest value (bound 0.02), mean 1.782e-04 of the mean, 95.46% equal, at most 30246 places apart
+ok     attention: 4194304 values, largest difference 1.359e-03 of the largest value (bound 0.02), mean 5.063e-04 of the mean, 80.76% equal, at most 29461 places apart
+ok     o product: 4194304 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     keys and values in the cache: 524288 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.739e-03 of the largest value (bound 0.1), mean 4.557e-03 of the mean, 33.10% equal, at most 30393 places apart
+-- a36_chunks: layer 36 (attention), 4 calls, 1024 rows
+ok     qkv products: 4718592 values, largest difference 5.587e-03 of the largest value (bound 0.02), mean 1.790e-04 of the mean, 95.41% equal, at most 30246 places apart
+ok     attention: 4194304 values, largest difference 1.359e-03 of the largest value (bound 0.02), mean 5.078e-04 of the mean, 80.72% equal, at most 29348 places apart
+ok     o product: 4194304 values, largest difference 1.185e-03 of the largest value (bound 0.02), mean 1.253e-06 of the mean, 99.94% equal, at most 268 places apart
+ok     keys and values in the cache: 524288 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.739e-03 of the largest value (bound 0.1), mean 4.560e-03 of the mean, 33.11% equal, at most 30401 places apart
+-- a36_steps: layer 36 (attention), 64 calls, 64 rows
+ok     qkv products: 294912 values, largest difference 3.378e-03 of the largest value (bound 0.02), mean 2.585e-06 of the mean, 99.83% equal, at most 124 places apart
+ok     attention: 262144 values, largest difference 1.359e-03 of the largest value (bound 0.02), mean 3.189e-04 of the mean, 85.90% equal, at most 29318 places apart
+ok     o product: 262144 values, largest difference 5.924e-04 of the largest value (bound 0.02), mean 1.967e-06 of the mean, 99.86% equal, at most 81 places apart
+ok     keys and values in the cache: 32768 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 2.370e-03 of the largest value (bound 0.1), mean 1.244e-03 of the mean, 65.10% equal, at most 29860 places apart
+-- a36_graph: layer 36 (attention), 64 calls, 64 rows
+ok     qkv products: 294912 values, largest difference 3.378e-03 of the largest value (bound 0.02), mean 2.585e-06 of the mean, 99.83% equal, at most 124 places apart
+ok     attention: 262144 values, largest difference 1.359e-03 of the largest value (bound 0.02), mean 3.189e-04 of the mean, 85.90% equal, at most 29318 places apart
+ok     o product: 262144 values, largest difference 5.924e-04 of the largest value (bound 0.02), mean 1.967e-06 of the mean, 99.86% equal, at most 81 places apart
+ok     keys and values in the cache: 32768 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 262144 values, largest difference 2.370e-03 of the largest value (bound 0.1), mean 1.244e-03 of the mean, 65.10% equal, at most 29860 places apart
+-- a36_mixed: layer 36 (attention), 825 calls, 1024 rows
+ok     qkv products: 4718592 values, largest difference 5.587e-03 of the largest value (bound 0.02), mean 1.825e-04 of the mean, 95.23% equal, at most 30246 places apart
+ok     attention: 4194304 values, largest difference 1.359e-03 of the largest value (bound 0.02), mean 7.164e-04 of the mean, 74.38% equal, at most 29348 places apart
+ok     o product: 4194304 values, largest difference 1.185e-03 of the largest value (bound 0.02), mean 4.523e-06 of the mean, 99.74% equal, at most 26805 places apart
+ok     keys and values in the cache: 524288 values, largest difference 0.000e+00 of the largest value (bound 0), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.739e-03 of the largest value (bound 0.1), mean 4.528e-03 of the mean, 33.28% equal, at most 30392 places apart
+-- m40_prefill: layer 40 (Mamba-2), 1 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 1.786e-03 of the largest value (bound 0.02), mean 4.645e-07 of the mean, 99.97% equal, at most 29178 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 2.671e-04 of the largest value (bound 0.02), mean 4.195e-07 of the mean, 99.95% equal, at most 13070 places apart
+ok     out_proj output: 4194304 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     final SSM state: 1048576 values, largest difference 5.506e-06 of the largest value (bound 0.002), mean 8.433e-07 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 2.146e-03 of the largest value (bound 0.1), mean 6.826e-05 of the mean, 97.34% equal, at most 30462 places apart
+-- m40_chunks: layer 40 (Mamba-2), 4 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 3.571e-03 of the largest value (bound 0.02), mean 8.998e-07 of the mean, 99.94% equal, at most 29190 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 8.013e-04 of the largest value (bound 0.02), mean 3.811e-07 of the mean, 99.95% equal, at most 26934 places apart
+ok     out_proj output: 4194304 values, largest difference 2.146e-03 of the largest value (bound 0.02), mean 2.390e-04 of the mean, 93.91% equal, at most 30438 places apart
+ok     final SSM state: 1048576 values, largest difference 5.506e-06 of the largest value (bound 0.002), mean 5.694e-07 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 2.146e-03 of the largest value (bound 0.1), mean 3.141e-04 of the mean, 91.18% equal, at most 30706 places apart
+-- m40_recurrent: layer 40 (Mamba-2), 1 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 1.786e-03 of the largest value (bound 0.02), mean 4.645e-07 of the mean, 99.97% equal, at most 29178 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 5.342e-04 of the largest value (bound 0.02), mean 2.194e-07 of the mean, 99.98% equal, at most 100 places apart
+ok     out_proj output: 4194304 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     final SSM state: 1048576 values, largest difference 9.660e-08 of the largest value (bound 0.002), mean 5.223e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 2.146e-03 of the largest value (bound 0.1), mean 6.976e-05 of the mean, 97.29% equal, at most 30462 places apart
+-- m40_steps: layer 40 (Mamba-2), 64 calls, 64 rows
+ok     in_proj output: 1187840 values, largest difference 3.846e-03 of the largest value (bound 0.02), mean 6.020e-06 of the mean, 99.66% equal, at most 27568 places apart
+ok     convolution: 655360 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 524288 values, largest difference 5.342e-04 of the largest value (bound 0.02), mean 4.099e-07 of the mean, 99.99% equal, at most 7 places apart
+ok     out_proj output: 262144 values, largest difference 3.012e-03 of the largest value (bound 0.02), mean 1.538e-03 of the mean, 62.60% equal, at most 30546 places apart
+ok     final SSM state: 1048576 values, largest difference 1.201e-07 of the largest value (bound 0.002), mean 4.791e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 262144 values, largest difference 3.012e-03 of the largest value (bound 0.1), mean 1.639e-03 of the mean, 60.67% equal, at most 30560 places apart
+-- m40_graph: layer 40 (Mamba-2), 64 calls, 64 rows
+ok     in_proj output: 1187840 values, largest difference 3.846e-03 of the largest value (bound 0.02), mean 6.020e-06 of the mean, 99.66% equal, at most 27568 places apart
+ok     convolution: 655360 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 524288 values, largest difference 5.342e-04 of the largest value (bound 0.02), mean 4.099e-07 of the mean, 99.99% equal, at most 7 places apart
+ok     out_proj output: 262144 values, largest difference 3.012e-03 of the largest value (bound 0.02), mean 1.538e-03 of the mean, 62.60% equal, at most 30546 places apart
+ok     final SSM state: 1048576 values, largest difference 1.201e-07 of the largest value (bound 0.002), mean 4.791e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 262144 values, largest difference 3.012e-03 of the largest value (bound 0.1), mean 1.639e-03 of the mean, 60.67% equal, at most 30560 places apart
+-- m40_mixed: layer 40 (Mamba-2), 825 calls, 1024 rows
+ok     in_proj output: 19005440 values, largest difference 3.571e-03 of the largest value (bound 0.02), mean 4.982e-06 of the mean, 99.72% equal, at most 29192 places apart
+ok     convolution: 10485760 values, largest difference 0.000e+00 of the largest value (bound 0.02), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok     scan and gated norm: 8388608 values, largest difference 2.671e-04 of the largest value (bound 0.02), mean 1.767e-07 of the mean, 99.98% equal, at most 203 places apart
+ok     out_proj output: 4194304 values, largest difference 4.274e-03 of the largest value (bound 0.02), mean 1.057e-03 of the mean, 73.30% equal, at most 30664 places apart
+ok     final SSM state: 1048576 values, largest difference 1.932e-07 of the largest value (bound 0.002), mean 5.821e-08 of the mean
+ok     the convolution's state is the last three inputs
+ok     the layer from its input, reference alone: 4194304 values, largest difference 4.292e-03 of the largest value (bound 0.1), mean 1.195e-03 of the mean, 69.31% equal, at most 30851 places apart
+ok   m0_graph against m0_steps (a CUDA graph's replays against the same steps launched one by one: the same bits where the products are deterministic): 262144 values, largest difference 0.000e+00 of the largest value (bound 0.002), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok   m2_graph against m2_steps (a CUDA graph's replays against the same steps launched one by one: the same bits where the products are deterministic): 262144 values, largest difference 0.000e+00 of the largest value (bound 0.002), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok   a7_graph against a7_steps (a CUDA graph's replays against the same steps launched one by one: the same bits where the products are deterministic): 262144 values, largest difference 0.000e+00 of the largest value (bound 0.002), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok   a36_graph against a36_steps (a CUDA graph's replays against the same steps launched one by one: the same bits where the products are deterministic): 262144 values, largest difference 0.000e+00 of the largest value (bound 0.002), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+ok   m40_graph against m40_steps (a CUDA graph's replays against the same steps launched one by one: the same bits where the products are deterministic): 262144 values, largest difference 0.000e+00 of the largest value (bound 0.002), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+layers: ok
+--- toy model
+/root/results/toy-run.log:graph: NVIDIA A100-SXM4-80GB (sm_80): weights 0.594 GiB (layout Twelve), states 0.012 GiB, KV cache 112 positions 0.000 GiB, workspaces 0.214 GiB, 1.24 of 79.25 GiB in use
+/root/results/toy-run.log:graph: prefill of 40 tokens 9.2 ms, 56 steps 0.85 ms each
+/root/results/toy-run.log:eager: NVIDIA A100-SXM4-80GB (sm_80): weights 0.594 GiB (layout Twelve), states 0.012 GiB, KV cache 112 positions 0.000 GiB, workspaces 0.212 GiB, 1.24 of 79.25 GiB in use
+/root/results/toy-run.log:eager: prefill of 40 tokens 9.3 ms, 56 steps 1.03 ms each
+/root/results/toy-check.log:ok   toy model, graph decode: logits of the prefill's last token and of 56 steps: 116736 values, largest difference 2.192e-02 of the largest value (bound 0.05), mean 1.515e-02 of the mean, 14.88% equal, at most 31763 places apart
+/root/results/toy-check.log:     top-1 token the same as the reference's at 98.2% of the 57 positions
+/root/results/toy-check.log:ok   toy model, eager decode: logits of the prefill's last token and of 56 steps: 116736 values, largest difference 2.192e-02 of the largest value (bound 0.05), mean 1.515e-02 of the mean, 14.88% equal, at most 31763 places apart
+/root/results/toy-check.log:     top-1 token the same as the reference's at 98.2% of the 57 positions
+/root/results/toy-check.log:ok   toy model: the decode graph's logits against the eager steps': 116736 values, largest difference 0.000e+00 of the largest value (bound 0.001), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+/root/results/toy-check.log:toy: ok

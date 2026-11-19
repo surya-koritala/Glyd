@@ -1,0 +1,3 @@
+serve_gemma4_12b up in 149 s, GPU memory used 22416 MiB
+serve_minicpm5_2b up in 53 s, GPU memory used 22594 MiB
+serve_q35_9b up in 103 s, GPU memory used 20880 MiB

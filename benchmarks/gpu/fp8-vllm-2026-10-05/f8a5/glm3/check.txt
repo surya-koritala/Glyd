@@ -1,0 +1,16 @@
+  stock-eager: ok in 64 s; weights 3.58 GiB, KV 5001216 tokens
+  glyd-eager: ok in 33 s; weights 3.67 GiB, KV 4968448 tokens
+  stock-compile: ok in 22 s; weights 3.58 GiB, KV 5001216 tokens
+  glyd-compile: ok in 22 s; weights 3.67 GiB, KV 4968448 tokens
+GPU NVIDIA GeForce RTX 4090
+PASS: exact[eager]: tokens, token log probabilities and the top 20 prompt log probabilities of 4 prompts (34824 values) bit for bit stock vLLM's
+PASS: kernel[eager]: the FP8 kernel lines vLLM logs are the same in both (1: Selected MarlinFP8ScaledMMLinearKernel for Fp8LinearMethod)
+PASS: packed[eager]: 6 Linears packed (432 MiB held for 432 MiB of weights as vLLM's kernel is fed them), scratch 96 MiB; methods {'UnquantizedEmbeddingMethod': 2, 'UnquantizedLinearMethod': 21, 'Fp8LinearMethod': 6}; sample weights [['language_model.model.layers.0.mlp.gate_up_proj.weight', [256, 98304], 'torch.int32'], ['language_model.model.layers.0.mlp.down_proj.weight', [768, 16384], 'torch.int32']]
+PASS: weights[eager]: vLLM logs 3.58 GiB stock, 3.67 GiB Glyd: +0.09 GiB, the scratch 0.09 GiB (the identity codec holds the weights whole)
+INFO: KV cache[eager]: stock 5001216 tokens (14.82 GiB), Glyd 4968448 tokens (14.72 GiB)
+PASS: exact[compile]: tokens, token log probabilities and the top 20 prompt log probabilities of 4 prompts (34824 values) bit for bit stock vLLM's
+PASS: kernel[compile]: the FP8 kernel lines vLLM logs are the same in both (1: Selected MarlinFP8ScaledMMLinearKernel for Fp8LinearMethod)
+PASS: packed[compile]: 6 Linears packed (432 MiB held for 432 MiB of weights as vLLM's kernel is fed them), scratch 96 MiB; methods {'UnquantizedEmbeddingMethod': 2, 'UnquantizedLinearMethod': 21, 'Fp8LinearMethod': 6}; sample weights [['language_model.model.layers.0.mlp.gate_up_proj.weight', [256, 98304], 'torch.int32'], ['language_model.model.layers.0.mlp.down_proj.weight', [768, 16384], 'torch.int32']]
+PASS: weights[compile]: vLLM logs 3.58 GiB stock, 3.67 GiB Glyd: +0.09 GiB, the scratch 0.09 GiB (the identity codec holds the weights whole)
+INFO: KV cache[compile]: stock 5001216 tokens (14.82 GiB), Glyd 4968448 tokens (14.72 GiB)
+PASS: 0 failed; /root/results/glm3/check_fp8_vllm.json

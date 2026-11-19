@@ -1,0 +1,19 @@
+Photosynthesis is the process by which green plants, algae and some bacteria turn light into chemical energy. Inside the chloroplasts of a leaf, the pigment chlorophyll absorbs mostly red and blue light and reflects green, which is why most leaves look green to us. The energy of the absorbed light is used to split water molecules, releasing oxygen as a by-product, and to make two energy carriers, ATP and NADPH. In a second stage, often called the Calvin cycle, the plant uses these carriers to fix carbon dioxide from the air into sugars. The overall reaction can be summarized as six molecules of carbon dioxide and six molecules of water, with the help of light, becoming one molecule of glucose and six molecules of oxygen.
+
+The rate of photosynthesis depends on several factors. More light usually means faster photosynthesis, up to the point where the plant's machinery is saturated. Temperature matters as well, because the enzymes of the Calvin cycle work best within a certain range, and the amount of carbon dioxide in the air can also limit the rate. Farmers who grow vegetables in greenhouses sometimes add extra carbon dioxide to the air to make their plants grow faster.
+
+Photosynthesis is the foundation of almost every food chain on Earth. Animals that eat plants obtain the energy that the plants captured from sunlight, and the animals that eat those animals obtain it in turn. The oxygen in the atmosphere, which most living things need to breathe, was produced over billions of years by photosynthetic organisms. Even the coal, oil and natural gas that people burn for energy today are the remains of plants and other organisms that captured sunlight millions of years ago.
+
+When in the Course of human events, it becomes necessary for one people to dissolve the political bands which have connected them with another, and to assume among the powers of the earth, the separate and equal station to which the Laws of Nature and of Nature's God entitle them, a decent respect to the opinions of mankind requires that they should declare the causes which impel them to the separation. We hold these truths to be self-evident, that all men are created equal, that they are endowed by their Creator with certain unalienable Rights, that among these are Life, Liberty and the pursuit of Happiness.
+
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+    if n < 2:
+        return n
+    a, b = 0, 1
+    for _ in range(n - 1):
+        a, b = b, a + b
+    return b
+
+for i in range(10):
+    print(i, fibonacci(i))

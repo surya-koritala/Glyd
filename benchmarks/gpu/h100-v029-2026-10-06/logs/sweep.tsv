@@ -1,0 +1,9 @@
+model	server	started	secs	weights_gib	kv_tokens	smi_mib	answer	glyd_lines	error
+Qwen/Qwen3.8-27B	glyd	up	131	39.48	312259	73371	{"ok": true, "how": "chat", "paris": true, "text": "The capital of France is Paris."} 	glyd: mma12 layout glyd: the embedding and the LM head packed too 	
+Qwen/Qwen3.8-27B	bf16	up	71	51.1	193234	73193	{"ok": true, "how": "chat", "paris": true, "text": "The capital of France is Paris."} 		
+Qwen/Qwen3.6-35B-A3B	glyd	up	105	53.2	504978	73833	{"ok": true, "how": "chat", "paris": true, "text": "The capital of France is Paris."} 	glyd: mma12 layout glyd: the embedding and the LM head packed too 	
+Qwen/Qwen3.6-35B-A3B	bf16	up	76	65.53	147456	74055	{"ok": true, "how": "chat", "paris": true, "text": "The capital of France is Paris."} 		
+google/gemma-4-31B-it	glyd	no	95						(EngineCore pid=6964) transformers.integrations.heterogeneity.configuration_utils.AmbiguousGlobalPerLayerAttributeError: 'num_key_value_heads' is a per-layer attribute and may vary across layers. Access it via the individual layer configs instead (e.g. config.per_layer_config[i].num_key_value_heads). To read the global config value from config.num_key_value_heads anyway, set `allow_global_per_laye
+google/gemma-4-31B-it	bf16	up	109	58.99	14339	73911	{"ok": true, "how": "chat", "paris": true, "text": "The capital of France is Paris."} 		
+google/gemma-4-26B-A4B-it	glyd	no	89						(EngineCore pid=8985) transformers.integrations.heterogeneity.configuration_utils.AmbiguousGlobalPerLayerAttributeError: 'num_key_value_heads' is a per-layer attribute and may vary across layers. Access it via the individual layer configs instead (e.g. config.per_layer_config[i].num_key_value_heads). To read the global config value from config.num_key_value_heads anyway, set `allow_global_per_laye
+google/gemma-4-26B-A4B-it	bf16	up	108	48.54	107660	74737	{"ok": true, "how": "chat", "paris": true, "text": "The capital of France is Paris."} 		

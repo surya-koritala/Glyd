@@ -1,0 +1,18 @@
+name: A clean job on the PC
+description: >-
+  On the self-hosted runner (the owner's PC, label glyd-pc), this job's own home, tool cache, cache and temp folder, which the runner removes
+  when the job ends: GitHub's machines start every job clean, and a job here must not see another's Pythons, packages or files in the PC's home.
+runs:
+  using: composite
+  steps:
+    - if: runner.environment == 'self-hosted'
+      shell: bash
+      run: |
+        for d in home toolcache cache tmp; do mkdir -p "$RUNNER_TEMP/job-$d"; done
+        {
+          echo "HOME=$RUNNER_TEMP/job-home"
+          echo "RUNNER_TOOL_CACHE=$RUNNER_TEMP/job-toolcache"
+          echo "AGENT_TOOLSDIRECTORY=$RUNNER_TEMP/job-toolcache"
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/job-cache"
+          echo "TMPDIR=$RUNNER_TEMP/job-tmp"
+        } >> "$GITHUB_ENV"

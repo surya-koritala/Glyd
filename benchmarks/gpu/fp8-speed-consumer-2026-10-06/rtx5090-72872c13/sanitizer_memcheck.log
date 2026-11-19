@@ -1,0 +1,6 @@
+========= COMPUTE-SANITIZER
+check_f8 on GPU NVIDIA GeForce RTX 5090
+case_lin_quick ok (3.1 s)
+ALL PASSED (pack and unpack bit for bit; f8_linear within bf16's rounding of the exact products)
+========= ERROR SUMMARY: 0 errors
+memcheck exit 0

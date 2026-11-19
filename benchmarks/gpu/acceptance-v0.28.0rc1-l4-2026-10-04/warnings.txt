@@ -1,0 +1,20 @@
+16gb-card: 4 server logs checked + 0 of cases that stop a server on purpose. Tracebacks in the checked: 0; in the others: 0; allocator OOM warnings in all: 0; 'warning:' lines in the install logs: 0
+       8 x WARNING Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=no   (checked logs)
+       8 x WARNING Inductor compilation was disabled by user settings, optimizations settings that are only active duri   (checked logs)
+       4 x WARNING Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'te   (checked logs)
+       4 x WARNING [shutdown] Process manager: force killing remaining processes count=N   (checked logs)
+       4 x WARNING [shutdown] Process manager: force killing remaining process EngineCore pid N   (checked logs)
+16gb-card-served-script: 4 server logs checked + 0 of cases that stop a server on purpose. Tracebacks in the checked: 0; in the others: 0; allocator OOM warnings in all: 0; 'warning:' lines in the install logs: 0
+       8 x WARNING Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=no   (checked logs)
+       8 x WARNING Inductor compilation was disabled by user settings, optimizations settings that are only active duri   (checked logs)
+       4 x WARNING Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'te   (checked logs)
+       4 x WARNING [shutdown] Process manager: force killing remaining processes count=N   (checked logs)
+       4 x WARNING [shutdown] Process manager: force killing remaining process EngineCore pid N   (checked logs)
+24gb: 4 server logs checked + 3 of cases that stop a server on purpose. Tracebacks in the checked: 0; in the others: 1; allocator OOM warnings in all: 0; 'warning:' lines in the install logs: 0
+       8 x WARNING Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=no   (checked logs)
+       8 x WARNING Inductor compilation was disabled by user settings, optimizations settings that are only active duri   (checked logs)
+       4 x WARNING Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'te   (checked logs)
+       4 x WARNING [shutdown] Process manager: force killing remaining processes count=N   (checked logs)
+       4 x WARNING [shutdown] Process manager: force killing remaining process EngineCore pid N   (checked logs)
+       3 x WARNING Using custom scheduler class glyd_gpu.vllm_sched.make. This scheduler interface is not public and co   (checked logs)
+cli: 0 server logs checked + 0 of cases that stop a server on purpose. Tracebacks in the checked: 0; in the others: 0; allocator OOM warnings in all: 0; 'warning:' lines in the install logs: 0

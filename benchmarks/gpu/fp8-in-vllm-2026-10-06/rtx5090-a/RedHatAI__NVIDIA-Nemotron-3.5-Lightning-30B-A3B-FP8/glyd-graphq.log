@@ -1,0 +1,123 @@
+INFO 10-06 10:26:45 [api_utils.py:286] non-default args: {'dtype': 'bfloat16', 'max_model_len': 8192, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.95, 'max_num_seqs': 64, 'disable_log_stats': True, 'quantization': 'glyd', 'compilation_config': {'mode': None, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['+quant_fp8'], 'ir_enable_torch_wrap': None, 'splitting_ops': None, 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': None, 'compile_ranges_endpoints': None, 'inductor_compile_config': {'deterministic': True, 'combo_kernels': True, 'benchmark_combo_kernel': False, 'enable_auto_functionalized_v2': False}, 'inductor_passes': {}, 'cudagraph_mode': None, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': None, 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': None, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False}, 'max_cudagraph_capture_size': None, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': None, 'static_all_moe_layers': []}, 'additional_config': {'glyd': {'exact': True}}, 'model': '/root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8'}
+WARNING 10-06 10:26:45 [arg_utils.py:1812] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 10-06 10:26:45 [model.py:692] Resolved architecture: NemotronHForCausalLM
+INFO 10-06 10:26:45 [model.py:2030] Using max model len 8192
+INFO 10-06 10:26:46 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=8192.
+INFO 10-06 10:26:46 [config.py:676] Updating mamba_ssm_cache_dtype to 'float32' for NemotronH model
+INFO 10-06 10:26:46 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-06 10:26:49 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='/root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8', speculative_config=None, tokenizer='/root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=glyd, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['+quant_fp8', 'none'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::qwen4_exp_ple_short_conv', 'vllm::qwen4_exp_qsa_with_output', 'vllm::linear_attention', 'vllm::qwen_gdn_attention_core', 'vllm::qwen_gdn_attention_core_fused_norm_packed', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::hpc_rope_norm_forward', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'deterministic': True, 'combo_kernels': True, 'benchmark_combo_kernel': False, 'enable_auto_functionalized_v2': False}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 128, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+INFO 10-06 10:26:49 [parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///root/q8w/tmp/vllm_dist_95d1577281a645a6ad9b7151887e8438 backend=nccl
+INFO 10-06 10:26:49 [parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank 0, EPLB rank N/A
+INFO 10-06 10:26:49 [gpu_worker.py:441] Using V2 Model Runner
+INFO 10-06 10:26:50 [model_runner.py:396] Loading model from scratch...
+INFO 10-06 10:26:50 [vllm_fp8.py:253] glyd: an FP8 checkpoint (ct-fp8): its Linears held packed (codec f8), vLLM's own products
+INFO 10-06 10:26:50 [__init__.py:758] Selected FlashInferFP8ScaledMMLinearKernel for CompressedTensorsW8A8Fp8
+INFO 10-06 10:26:50 [deep_gemm.py:192] deep_gemm not found in site-packages, trying vendored vllm.third_party.deep_gemm
+INFO 10-06 10:26:50 [deep_gemm.py:219] DeepGEMM PDL enabled on vllm.third_party.deep_gemm.
+INFO 10-06 10:26:50 [deep_gemm.py:136] DeepGEMM E8M0 enabled on current platform.
+INFO 10-06 10:26:52 [fp8.py:438] Using FLASHINFER_CUTLASS Fp8 MoE backend out of potential backends: ['AITER', 'FLASHINFER_TRTLLM', 'FLASHINFER_CUTLASS', 'DEEPGEMM', 'VLLM_CUTLASS', 'TRITON', 'MARLIN', 'HUMMING', 'BATCHED_DEEPGEMM', 'BATCHED_VLLM_CUTLASS', 'BATCHED_TRITON', 'XPU', 'CPU', 'HPC'].
+INFO 10-06 10:26:52 [vllm_fp8.py:257] glyd: an FP8 checkpoint (ct-fp8): its experts held packed (codec f8), the routed ones decoded before vLLM's own kernel runs them
+INFO 10-06 10:26:52 [cuda.py:538] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 10-06 10:26:52 [flash_attn.py:1116] Using FlashAttention version 2
+INFO 10-06 10:26:52 [weight_utils.py:895] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 30.08 GiB. Available RAM: 65.73 GiB.
+INFO 10-06 10:26:52 [weight_utils.py:918] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/2 [00:00<?, ?it/s]
+WARNING 10-06 10:26:52 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:52 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:53 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:53 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:53 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:53 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:54 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:54 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:54 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:54 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:55 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:55 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:55 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:55 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:55 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+Loading safetensors checkpoint shards:  50% Completed | 1/2 [00:03<00:03,  3.57s/it]
+WARNING 10-06 10:26:56 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:57 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:57 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:57 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:57 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:57 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:58 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:58 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+WARNING 10-06 10:26:58 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:06<00:00,  3.14s/it]
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:06<00:00,  3.21s/it]
+
+INFO 10-06 10:26:59 [default_loader.py:430] Loading weights took 6.82 seconds
+INFO 10-06 10:26:59 [vllm_fp8.py:526] glyd memlog model.layers.0.mixer.in_proj: 27697152 weight bytes, 23298416 packed, allocated 32423169536 -> 32423170048 (processed) -> 32446668288 (packed; scratch 27697152)
+INFO 10-06 10:26:59 [vllm_fp8.py:526] glyd memlog model.layers.0.mixer.out_proj: 11010048 weight bytes, 9380044 packed, allocated 32446667776 -> 32446668288 (processed) -> 32445531648 (packed; scratch 27697152)
+INFO 10-06 10:26:59 [vllm_fp8.py:526] glyd memlog model.layers.1.mixer.shared_experts.up_proj: 9977856 weight bytes, 8545632 packed, allocated 32445531136 -> 32445531648 (processed) -> 32444100096 (packed; scratch 27697152)
+INFO 10-06 10:26:59 [vllm_fp8.py:526] glyd memlog model.layers.1.mixer.shared_experts.down_proj: 9977856 weight bytes, 8379484 packed, allocated 32444099584 -> 32444100096 (processed) -> 32441486848 (packed; scratch 27697152)
+INFO 10-06 10:26:59 [fp8_utils.py:1491] Found input_scales that are not equal for fp8 MoE layer. Using the maximum across experts for each layer.
+INFO 10-06 10:26:59 [flashinfer_utils.py:329] Padding intermediate size from 1856 to 1920 for up/down projection weights.
+[rank0]:[W1006 10:26:59.358058021 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 660602880 bytes (free: 498794496, total: 33668726784).
+[rank0]:[W1006 10:26:59.358176709 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 660602880 bytes (free: 498794496, total: 33668726784).
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/root/q8w/src/gpu/fp8/check_fp8_vllm.py", line 456, in <module>
+[rank0]:     main()
+[rank0]:   File "/root/q8w/src/gpu/fp8/check_fp8_vllm.py", line 347, in main
+[rank0]:     res = child(json.loads(args[1]))
+[rank0]:           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/src/gpu/fp8/check_fp8_vllm.py", line 128, in child
+[rank0]:     llm = LLM(**kw)
+[rank0]:           ^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 343, in __init__
+[rank0]:     self.llm_engine = LLMEngine.from_engine_args(
+[rank0]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 184, in from_engine_args
+[rank0]:     return cls(
+[rank0]:            ^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 109, in __init__
+[rank0]:     self.engine_core = EngineCoreClient.make_client(
+[rank0]:                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 129, in make_client
+[rank0]:     return InprocClient(vllm_config, executor_class, log_stats)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 354, in __init__
+[rank0]:     self.engine_core = EngineCore(
+[rank0]:                        ^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 134, in __init__
+[rank0]:     self.model_executor = executor_class(vllm_config)
+[rank0]:                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 110, in __init__
+[rank0]:     self._init_executor()
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 74, in _init_executor
+[rank0]:     self.driver_worker.load_model()
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 507, in load_model
+[rank0]:     self.model_runner.load_model(load_dummy_weights=load_dummy_weights)
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 400, in load_model
+[rank0]:     self.model = model_loader.load_model(
+[rank0]:                  ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/model_loader/base_loader.py", line 91, in load_model
+[rank0]:     process_weights_after_loading(model, model_config, target_device)
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/model_loader/utils.py", line 134, in process_weights_after_loading
+[rank0]:     quant_method.process_weights_after_loading(module)
+[rank0]:   File "/root/q8w/src/glyd-gpu-py/glyd_gpu/vllm_fp8.py", line 564, in process_weights_after_loading
+[rank0]:     super().process_weights_after_loading(layer)
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors_moe/compressed_tensors_moe_w8a8_fp8.py", line 297, in process_weights_after_loading
+[rank0]:     w13, w2, w13_scale, w2_scale = convert_to_fp8_moe_kernel_format(
+[rank0]:                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/oracle/fp8.py", line 559, in convert_to_fp8_moe_kernel_format
+[rank0]:     w13, w2, w13_scale, w2_scale = prepare_fp8_moe_layer_for_fi(
+[rank0]:                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/flashinfer_utils.py", line 500, in prepare_fp8_moe_layer_for_fi
+[rank0]:     w13, w2, new_intermediate = align_moe_weights_for_fi(
+[rank0]:                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/flashinfer_utils.py", line 339, in align_moe_weights_for_fi
+[rank0]:     padded_w13 = w13.new_zeros((num_experts, padded_gate_up_dim, hidden_size))
+[rank0]:                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 630.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 475.69 MiB is free. Including non-PyTorch memory, this process has 30.88 GiB memory in use. Of the allocated memory 30.21 GiB is allocated by PyTorch, and 35.39 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+[rank0]:[W1006 10:27:01.014385149 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

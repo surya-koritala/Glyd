@@ -1,0 +1,11 @@
+  stock-graphq: ok in 295 s; weights 25.8 GiB, KV 7867 tokens, concurrency (4096, 1.92)
+  glyd-graphq: ok in 316 s; weights 22.94 GiB, KV 21567 tokens, concurrency (4096, 5.27)
+GPU NVIDIA GeForce RTX 5090
+PASS: packed[graphq]: 150 layers packed (30 of them experts' layers): 19.15 GiB held for 22.82 GiB of weights as vLLM's kernels are fed them (16.1% less, 6.715 bits a value), scratches 0.74 GiB; methods {'UnquantizedLinearMethod': 221, 'UnquantizedEmbeddingMethod': 2, 'CompressedTensorsLinearMethod': 120, 'CompressedTensorsKVCacheMethod': 30, 'GlydCompressedTensorsW8A8Fp8MoEMethod': 30}; f8_linear for few tokens: 0 Linears
+INFO: glyd[graphq]: weights 22.94 GiB, KV cache 21567 tokens (4.54 GiB), concurrency (4096, 5.27)
+PASS: exact[graphq]: tokens, token log probabilities and the top 20 prompt log probabilities of 4 prompts (38671 values) bit for bit stock vLLM's
+PASS: kernel[graphq]: the FP8 kernel lines vLLM logs are the same in both (5: DeepGEMM E8M0 enabled on current platform.; DeepGEMM PDL enabled on vllm.third_party.deep_gemm.; Selected CutlassFP8ScaledMMLinearKernel for CompressedTensorsW8A8Fp8; Using TRITON Fp8 MoE backend out of potential backends: ['AITER', 'FLASHINFER_TRTLLM', 'FLASHINFER_CUTLASS', 'DEEPGEMM', 'VLLM_CUTLAS)
+PASS: weights[graphq]: vLLM logs 25.8 GiB stock, 22.94 GiB Glyd (-2.86 GiB, 11.1% less); expected 22.87 (stock less the packs' saving 3.67, plus the scratches 0.74)
+INFO: KV cache[graphq]: stock 7867 tokens (1.66 GiB, concurrency (4096, 1.92)), Glyd 21567 tokens (4.54 GiB, concurrency (4096, 5.27))
+INFO: speed[graphq] (output tokens a second, Glyd / stock): users1 124.5 / 202.7 = 0.61, users8 529.1 / -, users32 625.7 / 736.1 = 0.85
+PASS: 0 failed; /root/results/RedHatAI__gemma-4-26B-A4B-it-FP8-dynamic/check_fp8_vllm.json

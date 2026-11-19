@@ -1,0 +1,7 @@
+11:09 created i0sww8zbs92ajn (NVIDIA GeForce RTX 5090)
+ssh on pod i0sww8zbs92ajn ready after 16s: ssh reachable at 74.2.96.213:14424
+11:09 ssh ready at 74.2.96.213:14424 after 19 s
+NVIDIA GeForce RTX 5090, 595.91.07, 32607 MiB
+11:09 job started
+Terminated: 15
+terminating i0sww8zbs92ajn

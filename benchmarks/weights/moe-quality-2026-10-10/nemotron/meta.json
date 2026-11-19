@@ -1,0 +1,49 @@
+{
+ "repo": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+ "rev": "2dc98e2afe4face0e4ce40972a915c45368bd34a",
+ "seq": 2048,
+ "topk": 128,
+ "domains": [
+  "wiki",
+  "code",
+  "chat",
+  "math",
+  "multi",
+  "reason"
+ ],
+ "held_sequences": 24,
+ "held_tokens": 49152,
+ "positions": 49128,
+ "moe_layers": 40,
+ "experts": 512,
+ "expert_weights": 5505024,
+ "top_k": 22,
+ "count_seqs": 12,
+ "gptq_seqs": 24,
+ "gptq_min_tok": 2048,
+ "order": [
+  "ref",
+  "mix13",
+  "int4",
+  "hlm3",
+  "int3",
+  "cold50",
+  "hlm3g"
+ ],
+ "hot": {
+  "13": {
+   "k": 67,
+   "calib": 0.2365525525025647,
+   "held": 0.23422541762843277
+  },
+  "50": {
+   "k": 256,
+   "calib": 0.65961158829506,
+   "held": 0.6585321599786932
+  }
+ },
+ "ref": "bf16",
+ "ref_bpw": 16.0,
+ "kept": "the Mamba-2 and attention layers, the latent projections, the shared experts, the routers, embedding and head",
+ "control": false
+}

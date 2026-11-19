@@ -1,0 +1,276 @@
+A: C API 16
+# NVIDIA GeForce RTX 5090 (sm_120), 35 shapes, tokens [1, 8, 32, 64], samples: yes
+INFO 10-06 05:55:41 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 10-06 05:55:41 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-06 05:55:41 [deep_gemm.py:192] deep_gemm not found in site-packages, trying vendored vllm.third_party.deep_gemm
+INFO 10-06 05:55:41 [deep_gemm.py:219] DeepGEMM PDL enabled on vllm.third_party.deep_gemm.
+INFO 10-06 05:55:41 [deep_gemm.py:136] DeepGEMM E8M0 enabled on current platform.
+# vLLM: {'has_deep_gemm': True, 'deep_gemm_supported': True, 'deep_gemm_e8m0': True, 'flashinfer_blockscale': False, 'cutlass_block': True}
+INFO 10-06 05:55:42 [__init__.py:726] Selected DeepGemmFp8BlockScaledMMKernel for bench
+numerics Qwen3.6-35B-A3B-FP8        qkv              9216 x 2048   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 6.68e-03 rms 3.70e-02 | ours: max nan rms nan
+numerics Qwen3.6-35B-A3B-FP8        qkv              9216 x 2048   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 6.86e-03 rms 3.76e-02 | ours: max 5.15e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        qkv              9216 x 2048   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 7.61e-03 rms 3.74e-02 | ours: max nan rms nan
+numerics Qwen3.6-35B-A3B-FP8        qkv              9216 x 2048   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 7.44e-03 rms 3.74e-02 | ours: max nan rms nan
+numerics Qwen3.6-35B-A3B-FP8        o                2048 x 4096   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.01e-03 rms 3.68e-02 | ours: max 2.11e-04 rms 1.61e-03
+numerics Qwen3.6-35B-A3B-FP8        o                2048 x 4096   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.91e-03 rms 3.74e-02 | ours: max 2.97e-04 rms 1.65e-03
+numerics Qwen3.6-35B-A3B-FP8        o                2048 x 4096   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 5.03e-03 rms 3.79e-02 | ours: max 3.67e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        o                2048 x 4096   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.42e-03 rms 3.77e-02 | ours: max 3.30e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     12288 x 2048   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 6.08e-03 rms 3.71e-02 | ours: max 3.85e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     12288 x 2048   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 7.25e-03 rms 3.79e-02 | ours: max 4.90e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     12288 x 2048   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 6.75e-03 rms 3.75e-02 | ours: max 5.01e-04 rms 1.66e-03
+numerics Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     12288 x 2048   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 7.28e-03 rms 3.76e-02 | ours: max 6.44e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            qkv             14336 x 5120   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.70e-03 rms 3.74e-02 | ours: max 2.54e-04 rms 1.65e-03
+numerics Qwen3.8-27B-FP8            qkv             14336 x 5120   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.06e-03 rms 3.74e-02 | ours: max 3.50e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            qkv             14336 x 5120   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.30e-03 rms 3.75e-02 | ours: max 4.47e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            qkv             14336 x 5120   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.52e-03 rms 3.77e-02 | ours: max 3.60e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            o                5120 x 6144   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 2.84e-03 rms 3.72e-02 | ours: max 2.61e-04 rms 1.67e-03
+numerics Qwen3.8-27B-FP8            o                5120 x 6144   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.68e-03 rms 3.80e-02 | ours: max 2.58e-04 rms 1.67e-03
+numerics Qwen3.8-27B-FP8            o                5120 x 6144   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.99e-03 rms 3.76e-02 | ours: max 3.36e-04 rms 1.65e-03
+numerics Qwen3.8-27B-FP8            o                5120 x 6144   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.15e-03 rms 3.75e-02 | ours: max 3.06e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            gdn_in_qkvz     16384 x 5120   M=1   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.38e-03 rms 3.71e-02 | ours: max 2.59e-04 rms 1.65e-03
+numerics Qwen3.8-27B-FP8            gdn_in_qkvz     16384 x 5120   M=8   vLLM (DeepGemmFp8BlockScaledMMKernel): max 3.95e-03 rms 3.75e-02 | ours: max 3.46e-04 rms 1.65e-03
+numerics Qwen3.8-27B-FP8            gdn_in_qkvz     16384 x 5120   M=32  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.17e-03 rms 3.76e-02 | ours: max 3.06e-04 rms 1.66e-03
+numerics Qwen3.8-27B-FP8            gdn_in_qkvz     16384 x 5120   M=64  vLLM (DeepGemmFp8BlockScaledMMKernel): max 4.82e-03 rms 3.76e-02 | ours: max 3.23e-04 rms 1.66e-03
+INFO 10-06 05:56:38 [__init__.py:758] Selected CutlassFP8ScaledMMLinearKernel for bench
+numerics gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding      8192 x 2816   M=1   vLLM (CutlassFP8ScaledMMLinearKernel): max 2.74e-03 rms 2.60e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding      8192 x 2816   M=8   vLLM (CutlassFP8ScaledMMLinearKernel): max 3.65e-03 rms 2.65e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding      8192 x 2816   M=32  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.95e-03 rms 2.64e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding      8192 x 2816   M=64  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.73e-03 rms 2.65e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic qk_global        9216 x 2816   M=1   vLLM (CutlassFP8ScaledMMLinearKernel): max 2.97e-03 rms 2.69e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic qk_global        9216 x 2816   M=8   vLLM (CutlassFP8ScaledMMLinearKernel): max 3.76e-03 rms 2.64e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic qk_global        9216 x 2816   M=32  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.74e-03 rms 2.65e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic qk_global        9216 x 2816   M=64  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.69e-03 rms 2.65e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic o_sliding        2816 x 4096   M=1   vLLM (CutlassFP8ScaledMMLinearKernel): max 2.77e-03 rms 2.58e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic o_sliding        2816 x 4096   M=8   vLLM (CutlassFP8ScaledMMLinearKernel): max 2.79e-03 rms 2.69e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic o_sliding        2816 x 4096   M=32  vLLM (CutlassFP8ScaledMMLinearKernel): max 2.85e-03 rms 2.66e-02 | ours: max nan rms nan
+numerics gemma-4-26B-A4B-it-FP8-dynamic o_sliding        2816 x 4096   M=64  vLLM (CutlassFP8ScaledMMLinearKernel): max 3.24e-03 rms 2.64e-02 | ours: max nan rms nan
+INFO 10-06 05:56:40 [__init__.py:758] Selected FlashInferFP8ScaledMMLinearKernel for bench
+Skipping cuDNN in bmm_fp8 auto candidates on SM12x: override_shape unavailable (cuDNN backend < 9.23.1); policy=ALL per-shape build is unbounded at serving time.
+numerics Mistral-Small-4-119B-2603  qkv_a            1344 x 4096   M=1   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max nan rms nan
+numerics Mistral-Small-4-119B-2603  qkv_a            1344 x 4096   M=8   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 3.38e-04 rms 1.68e-03
+numerics Mistral-Small-4-119B-2603  qkv_a            1344 x 4096   M=32  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max nan rms nan
+numerics Mistral-Small-4-119B-2603  qkv_a            1344 x 4096   M=64  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max nan rms nan
+numerics Mistral-Small-4-119B-2603  q_b              4096 x 1024   M=1   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 6.45e-04 rms 1.66e-03
+numerics Mistral-Small-4-119B-2603  q_b              4096 x 1024   M=8   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 7.04e-04 rms 1.68e-03
+numerics Mistral-Small-4-119B-2603  q_b              4096 x 1024   M=32  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 8.58e-04 rms 1.65e-03
+numerics Mistral-Small-4-119B-2603  q_b              4096 x 1024   M=64  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 9.24e-04 rms 1.66e-03
+numerics Mistral-Small-4-119B-2603  kv_b             6144 x 256    M=1   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 1.25e-03 rms 1.68e-03
+numerics Mistral-Small-4-119B-2603  kv_b             6144 x 256    M=8   vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 1.26e-03 rms 1.66e-03
+numerics Mistral-Small-4-119B-2603  kv_b             6144 x 256    M=32  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 1.34e-03 rms 1.65e-03
+numerics Mistral-Small-4-119B-2603  kv_b             6144 x 256    M=64  vLLM (FlashInferFP8ScaledMMLinearKernel): max nan rms nan | ours: max 1.57e-03 rms 1.66e-03
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=1   vllm     14.9 us (DeepGemmFp8BlockScaledMMKernel)  ours     19.3  unpack     15.6  route     26.3  ratio 1.291 
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=8   vllm     16.6 us (DeepGemmFp8BlockScaledMMKernel)  ours     20.8  unpack     15.6  route     25.7  ratio 1.249 
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=32  vllm     18.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     35.1  unpack     15.6  route     32.1  ratio 1.938 
+Qwen3.6-35B-A3B-FP8        qkv             tp1   9216 x 2048   M=64  vllm     17.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     85.6  unpack     15.6  route     27.9  ratio 4.880 
+   (0.6 s, 11 copies)
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=1   vllm      8.9 us (DeepGemmFp8BlockScaledMMKernel)  ours     12.0  unpack      8.8  route     15.6  ratio 1.345 
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=8   vllm     10.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     13.5  unpack      8.8  route     17.3  ratio 1.246 
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=32  vllm     11.9 us (DeepGemmFp8BlockScaledMMKernel)  ours     23.7  unpack      8.8  route     18.8  ratio 1.992 
+Qwen3.6-35B-A3B-FP8        o               tp1   2048 x 4096   M=64  vllm     12.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     51.9  unpack      8.8  route     18.9  ratio 4.054 
+   (0.8 s, 24 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=1   vllm     18.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     28.3  unpack     21.5  route     30.3  ratio 1.510 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=8   vllm     20.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     30.2  unpack     21.5  route     31.5  ratio 1.470 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=32  vllm     21.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     54.5  unpack     21.5  route     35.8  ratio 2.516 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp1  12288 x 2048   M=64  vllm     21.8 us (DeepGemmFp8BlockScaledMMKernel)  ours    117.8  unpack     21.5  route     34.7  ratio 5.395 
+   (0.5 s, 8 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=1   vllm     13.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     17.5  unpack     14.2  route     24.1  ratio 1.283 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=8   vllm     15.4 us (DeepGemmFp8BlockScaledMMKernel)  ours     20.1  unpack     14.2  route     23.8  ratio 1.302 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=32  vllm     16.6 us (DeepGemmFp8BlockScaledMMKernel)  ours     36.7  unpack     14.2  route     29.4  ratio 2.207 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkv      tp1   8192 x 2048   M=64  vllm     16.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     84.8  unpack     14.2  route     25.9  ratio 5.275 
+   (2.6 s, 12 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=1   vllm      9.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     11.9  unpack      8.8  route     15.7  ratio 1.313 
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=8   vllm     10.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     13.3  unpack      8.8  route     16.6  ratio 1.222 
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=32  vllm     11.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     22.9  unpack      8.8  route     18.9  ratio 1.959 
+Qwen3.6-35B-A3B-FP8        gdn_in_z        tp1   4096 x 2048   M=64  vllm     12.3 us (DeepGemmFp8BlockScaledMMKernel)  ours     50.7  unpack      8.8  route     18.6  ratio 4.112 
+   (8.2 s, 24 copies)
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=1   vllm      5.7 us (DeepGemmFp8BlockScaledMMKernel)  ours      5.6  unpack      3.8  route      8.9  ratio 0.993 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=8   vllm      7.2 us (DeepGemmFp8BlockScaledMMKernel)  ours      7.0  unpack      3.8  route     10.3  ratio 0.972 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=32  vllm      8.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     14.3  unpack      3.8  route     12.0  ratio 1.639 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp1   1024 x 2048   M=64  vllm      9.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     23.9  unpack      3.8  route     12.3  ratio 2.660 
+   (7.6 s, 64 copies)
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=1   vllm      3.8 us (DeepGemmFp8BlockScaledMMKernel)  ours      4.6  unpack      2.7  route      6.5  ratio 1.218 
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=8   vllm      5.3 us (DeepGemmFp8BlockScaledMMKernel)  ours      5.7  unpack      2.7  route      8.0  ratio 1.084 
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=32  vllm      6.2 us (DeepGemmFp8BlockScaledMMKernel)  ours     12.5  unpack      2.7  route      9.0  ratio 2.008 
+Qwen3.6-35B-A3B-FP8        expert_down     tp1   2048 x 512    M=64  vllm      6.2 us (DeepGemmFp8BlockScaledMMKernel)  ours     21.7  unpack      2.7  route      8.9  ratio 3.517 
+   (8.9 s, 64 copies)
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=1   vllm      9.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     12.5  unpack      9.5  route     17.0  ratio 1.318 
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=8   vllm     11.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     13.8  unpack      9.5  route     17.9  ratio 1.174 
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=32  vllm     12.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     23.5  unpack      9.5  route     20.0  ratio 1.884 
+Qwen3.6-35B-A3B-FP8        qkv             tp2   4608 x 2048   M=64  vllm     13.4 us (DeepGemmFp8BlockScaledMMKernel)  ours     51.7  unpack      9.5  route     20.0  ratio 3.870 
+   (3.0 s, 22 copies)
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=1   vllm      6.5 us (DeepGemmFp8BlockScaledMMKernel)  ours      7.5  unpack      5.5  route     11.5  ratio 1.159 
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=8   vllm      8.2 us (DeepGemmFp8BlockScaledMMKernel)  ours      9.0  unpack      5.5  route     13.0  ratio 1.096 
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=32  vllm      9.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     16.3  unpack      5.5  route     14.5  ratio 1.715 
+Qwen3.6-35B-A3B-FP8        o               tp2   2048 x 2048   M=64  vllm     10.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     34.0  unpack      5.5  route     14.9  ratio 3.404 
+   (3.5 s, 48 copies)
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=1   vllm     11.3 us (DeepGemmFp8BlockScaledMMKernel)  ours     17.1  unpack     11.4  route     19.6  ratio 1.514 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=8   vllm     13.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     18.8  unpack     11.4  route     20.4  ratio 1.443 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=32  vllm     14.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     33.4  unpack     11.4  route     24.4  ratio 2.360 
+Qwen3.6-35B-A3B-FP8        gdn_in_qkvz     tp2   6144 x 2048   M=64  vllm     13.6 us (DeepGemmFp8BlockScaledMMKernel)  ours     68.4  unpack     11.4  route     22.9  ratio 5.023 
+   (2.8 s, 16 copies)
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=1   vllm      5.1 us (DeepGemmFp8BlockScaledMMKernel)  ours      4.7  unpack      2.7  route      8.1  ratio 0.917 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=8   vllm      6.6 us (DeepGemmFp8BlockScaledMMKernel)  ours      6.0  unpack      2.7  route      9.4  ratio 0.921 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=32  vllm      8.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     13.3  unpack      2.7  route     11.0  ratio 1.650 
+Qwen3.6-35B-A3B-FP8        expert_gate_up  tp2    512 x 2048   M=64  vllm      8.4 us (DeepGemmFp8BlockScaledMMKernel)  ours     23.0  unpack      2.7  route     11.2  ratio 2.745 
+   (3.6 s, 64 copies)
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=1   vllm      3.3 us (DeepGemmFp8BlockScaledMMKernel)  ours      4.7  unpack      2.6  route      5.9  ratio 1.416 
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=8   vllm      4.6 us (DeepGemmFp8BlockScaledMMKernel)  ours      6.0  unpack      2.7  route      7.3  ratio 1.296 
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=32  vllm      5.3 us (DeepGemmFp8BlockScaledMMKernel)  ours     14.0  unpack      2.6  route      7.9  ratio 2.667 
+Qwen3.6-35B-A3B-FP8        expert_down     tp2   2048 x 256    M=64  vllm      5.3 us (DeepGemmFp8BlockScaledMMKernel)  ours     24.7  unpack      2.6  route      7.9  ratio 4.678 
+   (8.6 s, 64 copies)
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=1   vllm     49.9 us (DeepGemmFp8BlockScaledMMKernel)  ours     60.5  unpack     86.2  route     90.5  ratio 1.212 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=8   vllm     51.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     64.2  unpack     86.3  route     84.0  ratio 1.247 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=32  vllm     52.5 us (DeepGemmFp8BlockScaledMMKernel)  ours    120.2  unpack     86.4  route     91.7  ratio 2.289 
+Qwen3.8-27B-FP8            qkv             tp1  14336 x 5120   M=64  vllm     52.6 us (DeepGemmFp8BlockScaledMMKernel)  ours    300.5  unpack     86.3  route     92.4  ratio 5.710 
+   (0.5 s, 3 copies)
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=1   vllm     23.2 us (DeepGemmFp8BlockScaledMMKernel)  ours     26.3  unpack     26.9  route     35.3  ratio 1.134 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=8   vllm     25.4 us (DeepGemmFp8BlockScaledMMKernel)  ours     28.3  unpack     26.8  route     36.0  ratio 1.114 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=32  vllm     26.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     47.3  unpack     26.7  route     38.8  ratio 1.765 
+Qwen3.8-27B-FP8            o               tp1   5120 x 6144   M=64  vllm     29.0 us (DeepGemmFp8BlockScaledMMKernel)  ours    121.5  unpack     26.8  route     41.1  ratio 4.191 
+   (0.5 s, 7 copies)
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=1   vllm     56.7 us (DeepGemmFp8BlockScaledMMKernel)  ours     79.8  unpack    102.2  route    107.5  ratio 1.408 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=8   vllm     58.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     84.4  unpack    102.4  route    105.4  ratio 1.453 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=32  vllm     59.3 us (DeepGemmFp8BlockScaledMMKernel)  ours    147.8  unpack    102.4  route    112.5  ratio 2.493 
+Qwen3.8-27B-FP8            gdn_in_qkvz     tp1  16384 x 5120   M=64  vllm     59.4 us (DeepGemmFp8BlockScaledMMKernel)  ours    404.6  unpack    102.4  route    113.3  ratio 6.808 
+   (0.6 s, 3 copies)
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=1   vllm     35.9 us (DeepGemmFp8BlockScaledMMKernel)  ours     49.4  unpack     63.7  route     55.4  ratio 1.376 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=8   vllm     37.9 us (DeepGemmFp8BlockScaledMMKernel)  ours     52.7  unpack     63.8  route     58.9  ratio 1.391 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=32  vllm     39.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     97.8  unpack     63.7  route     61.3  ratio 2.501 
+Qwen3.8-27B-FP8            gdn_in_qkv      tp1  10240 x 5120   M=64  vllm     41.8 us (DeepGemmFp8BlockScaledMMKernel)  ours    222.0  unpack     63.6  route     63.8  ratio 5.313 
+   (6.5 s, 4 copies)
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=1   vllm     23.2 us (DeepGemmFp8BlockScaledMMKernel)  ours     32.4  unpack     27.0  route     36.3  ratio 1.401 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=8   vllm     25.0 us (DeepGemmFp8BlockScaledMMKernel)  ours     34.8  unpack     26.7  route     39.1  ratio 1.394 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=32  vllm     26.1 us (DeepGemmFp8BlockScaledMMKernel)  ours     63.9  unpack     26.6  route     42.1  ratio 2.447 
+Qwen3.8-27B-FP8            gdn_in_z        tp1   6144 x 5120   M=64  vllm     28.0 us (DeepGemmFp8BlockScaledMMKernel)  ours    142.0  unpack     26.6  route     43.3  ratio 5.067 
+   (2.8 s, 7 copies)
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=1   vllm    114.0 us (DeepGemmFp8BlockScaledMMKernel)  ours    150.5  unpack    218.8  route    296.7  ratio 1.320 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=8   vllm    116.7 us (DeepGemmFp8BlockScaledMMKernel)  ours    164.4  unpack    218.8  route    299.5  ratio 1.409 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=32  vllm    119.1 us (DeepGemmFp8BlockScaledMMKernel)  ours    320.3  unpack    218.5  route    305.6  ratio 2.690 
+Qwen3.8-27B-FP8            gate_up         tp1  34816 x 5120   M=64  vllm    120.8 us (DeepGemmFp8BlockScaledMMKernel)  ours    862.1  unpack    218.7  route    306.9  ratio 7.137 
+   (3.2 s, 2 copies)
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=1   vllm     58.8 us (DeepGemmFp8BlockScaledMMKernel)  ours     60.1  unpack    108.5  route    117.9  ratio 1.023 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=8   vllm     60.5 us (DeepGemmFp8BlockScaledMMKernel)  ours     64.2  unpack    109.0  route    128.5  ratio 1.060 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=32  vllm     61.7 us (DeepGemmFp8BlockScaledMMKernel)  ours    135.0  unpack    109.1  route    135.4  ratio 2.187 
+Qwen3.8-27B-FP8            down            tp1   5120 x 17408  M=64  vllm     63.3 us (DeepGemmFp8BlockScaledMMKernel)  ours    411.7  unpack    108.9  route    131.5  ratio 6.502 
+   (8.2 s, 3 copies)
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=1   vllm     18.9 us (CutlassFP8ScaledMMLinearKernel)  ours     22.5 (tensor kind)  unpack     19.3  route     30.3  ratio 1.187 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=8   vllm     19.4 us (CutlassFP8ScaledMMLinearKernel)  ours     25.3 (tensor kind)  unpack     19.4  route     28.8  ratio 1.303 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=32  vllm     19.4 us (CutlassFP8ScaledMMLinearKernel)  ours     47.2 (tensor kind)  unpack     19.4  route     28.7  ratio 2.431 
+gemma-4-26B-A4B-it-FP8-dynamic qkv_sliding     tp1   8192 x 2816   M=64  vllm     20.3 us (CutlassFP8ScaledMMLinearKernel)  ours    107.5 (tensor kind)  unpack     19.4  route     31.8  ratio 5.290 
+   (0.5 s, 9 copies)
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=1   vllm     20.7 us (CutlassFP8ScaledMMLinearKernel)  ours     23.6 (tensor kind)  unpack     21.8  route     33.2  ratio 1.137 
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=8   vllm     21.3 us (CutlassFP8ScaledMMLinearKernel)  ours     25.5 (tensor kind)  unpack     21.7  route     31.5  ratio 1.199 
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=32  vllm     21.3 us (CutlassFP8ScaledMMLinearKernel)  ours     43.7 (tensor kind)  unpack     21.8  route     31.6  ratio 2.054 
+gemma-4-26B-A4B-it-FP8-dynamic qk_global       tp1   9216 x 2816   M=64  vllm     22.3 us (CutlassFP8ScaledMMLinearKernel)  ours    106.6 (tensor kind)  unpack     21.7  route     34.4  ratio 4.788 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=1   vllm     12.6 us (CutlassFP8ScaledMMLinearKernel)  ours     15.9 (tensor kind)  unpack     10.7  route     21.1  ratio 1.254 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=8   vllm     13.4 us (CutlassFP8ScaledMMLinearKernel)  ours     17.9 (tensor kind)  unpack     10.7  route     21.7  ratio 1.335 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=32  vllm     13.1 us (CutlassFP8ScaledMMLinearKernel)  ours     32.3 (tensor kind)  unpack     10.7  route     21.7  ratio 2.467 
+gemma-4-26B-A4B-it-FP8-dynamic o_sliding       tp1   2816 x 4096   M=64  vllm     18.0 us (CutlassFP8ScaledMMLinearKernel)  ours     67.2 (tensor kind)  unpack     10.7  route     27.8  ratio 3.730 
+   (0.7 s, 18 copies)
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=1   vllm     21.0 us (CutlassFP8ScaledMMLinearKernel)  ours     26.2 (tensor kind)  unpack     19.4  route     35.3  ratio 1.245 
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=8   vllm     22.4 us (CutlassFP8ScaledMMLinearKernel)  ours     28.6 (tensor kind)  unpack     19.4  route     36.7  ratio 1.280 
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=32  vllm     22.1 us (CutlassFP8ScaledMMLinearKernel)  ours     52.4 (tensor kind)  unpack     19.4  route     36.8  ratio 2.371 
+gemma-4-26B-A4B-it-FP8-dynamic o_global        tp1   2816 x 8192   M=64  vllm     31.5 us (CutlassFP8ScaledMMLinearKernel)  ours    115.7 (tensor kind)  unpack     19.4  route     48.6  ratio 3.668 
+   (0.6 s, 9 copies)
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=1   vllm     12.3 us (CutlassFP8ScaledMMLinearKernel)  ours     16.4 (tensor kind)  unpack     10.9  route     19.4  ratio 1.331 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=8   vllm     12.9 us (CutlassFP8ScaledMMLinearKernel)  ours     18.9 (tensor kind)  unpack     10.9  route     19.5  ratio 1.466 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=32  vllm     12.8 us (CutlassFP8ScaledMMLinearKernel)  ours     36.8 (tensor kind)  unpack     10.9  route     19.6  ratio 2.875 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_gate_up     tp1   4224 x 2816   M=64  vllm     14.4 us (CutlassFP8ScaledMMLinearKernel)  ours     75.6 (tensor kind)  unpack     10.9  route     23.9  ratio 5.264 
+   (0.7 s, 17 copies)
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=1   vllm      8.9 us (CutlassFP8ScaledMMLinearKernel)  ours     10.9 (tensor kind)  unpack      7.1  route     14.4  ratio 1.218 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=8   vllm      9.5 us (CutlassFP8ScaledMMLinearKernel)  ours     12.8 (tensor kind)  unpack      7.0  route     14.8  ratio 1.357 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=32  vllm      9.3 us (CutlassFP8ScaledMMLinearKernel)  ours     24.2 (tensor kind)  unpack      7.1  route     14.9  ratio 2.609 
+gemma-4-26B-A4B-it-FP8-dynamic mlp_down        tp1   2816 x 2112   M=64  vllm     12.0 us (CutlassFP8ScaledMMLinearKernel)  ours     52.1 (tensor kind)  unpack      7.0  route     18.2  ratio 4.354 
+   (1.0 s, 34 copies)
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=1   vllm      9.0 us (CutlassFP8ScaledMMLinearKernel)  ours      7.7 (tensor kind)  unpack      4.9  route     13.2  ratio 0.853 
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=8   vllm      9.5 us (CutlassFP8ScaledMMLinearKernel)  ours     10.5 (tensor kind)  unpack      4.9  route     13.6  ratio 1.104 
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=32  vllm      9.5 us (CutlassFP8ScaledMMLinearKernel)  ours     23.2 (tensor kind)  unpack      4.9  route     13.7  ratio 2.442 
+gemma-4-26B-A4B-it-FP8-dynamic expert_gate_up  tp1   1408 x 2816   M=64  vllm     13.6 us (CutlassFP8ScaledMMLinearKernel)  ours     47.8 (tensor kind)  unpack      4.9  route     17.9  ratio 3.505 
+   (1.4 s, 51 copies)
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=1   vllm      5.9 us (CutlassFP8ScaledMMLinearKernel)  ours      5.8 (tensor kind)  unpack      3.8  route      8.6  ratio 0.990 
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=8   vllm      6.0 us (CutlassFP8ScaledMMLinearKernel)  ours      7.8 (tensor kind)  unpack      3.8  route      8.7  ratio 1.297 
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=32  vllm      5.9 us (CutlassFP8ScaledMMLinearKernel)  ours     18.3 (tensor kind)  unpack      3.8  route      8.7  ratio 3.111 
+gemma-4-26B-A4B-it-FP8-dynamic expert_down     tp1   2816 x 704    M=64  vllm      7.1 us (CutlassFP8ScaledMMLinearKernel)  ours     32.5 (tensor kind)  unpack      3.8  route     10.1  ratio 4.570 
+   (1.3 s, 64 copies)
+Traceback (most recent call last):
+FileNotFoundError: [Errno 2] No such file or directory: 'ninja'
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     10.4  unpack      6.0  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     12.1  unpack      6.0  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     22.3  unpack      6.0  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  qkv_a           tp1   1344 x 4096   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     48.0  unpack      6.0  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+   (0.7 s, 37 copies)
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      7.3  unpack      5.3  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      8.5  unpack      5.3  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     15.3  unpack      5.3  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  q_b             tp1   4096 x 1024   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     32.8  unpack      5.3  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+   (0.7 s, 48 copies)
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      4.6  unpack      3.1  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      5.9  unpack      3.1  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     13.9  unpack      3.1  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  kv_b            tp1   6144 x 256    M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     24.7  unpack      3.1  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+   (0.7 s, 64 copies)
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     18.9  unpack     13.7  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     21.6  unpack     13.7  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     38.2  unpack     13.7  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  o               tp1   4096 x 4096   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     89.6  unpack     13.7  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+   (0.4 s, 12 copies)
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     11.5  unpack      8.4  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     12.9  unpack      8.4  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     22.4  unpack      8.4  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  expert_down     tp1   4096 x 2048   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     50.1  unpack      8.4  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+   (0.5 s, 24 copies)
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      5.3  unpack      3.7  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      6.5  unpack      3.7  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     13.3  unpack      3.7  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  q_b             tp2   2048 x 1024   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     22.8  unpack      3.7  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      4.5  unpack      2.6  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours      5.9  unpack      2.6  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     13.8  unpack      2.6  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  kv_b            tp2   3072 x 256    M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     24.7  unpack      2.6  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+   (0.6 s, 64 copies)
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Traceback (most recent call last):
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=1   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     11.6  unpack      8.5  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=8   vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     13.1  unpack      8.5  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     22.9  unpack      8.5  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     51.0  unpack      8.5  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+gate: 6 of 108 at most vLLM's time; worst 7.137
+ours at most the route's time: 55 of 108
+bench A exit 0

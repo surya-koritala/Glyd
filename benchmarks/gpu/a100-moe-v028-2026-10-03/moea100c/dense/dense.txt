@@ -1,0 +1,90 @@
+5120x2048: 13 matrices walked, layout mma12, 12.05 bits a weight
+5120x2048 M=   1        bf16: cuBLAS    21.0 us (   997 GB/s)
+5120x2048 M=   1    default:    24.8 us (   634 GB/s) = 1.18x bf16
+5120x2048 M=   1       gemm:    24.8 us (   634 GB/s) = 1.18x bf16
+5120x2048 M=   1     decode:    56.8 us (   277 GB/s) = 2.70x bf16
+5120x2048 M=   8        bf16: cuBLAS    21.1 us (   993 GB/s)
+5120x2048 M=   8    default:    26.3 us (   598 GB/s) = 1.25x bf16
+5120x2048 M=   8       gemm:    26.2 us (   600 GB/s) = 1.24x bf16
+5120x2048 M=   8     decode:    57.1 us (   275 GB/s) = 2.71x bf16
+5120x2048 M=  16        bf16: cuBLAS    21.3 us (   986 GB/s)
+5120x2048 M=  16    default:    28.4 us (   555 GB/s) = 1.33x bf16
+5120x2048 M=  16       gemm:    28.3 us (   556 GB/s) = 1.33x bf16
+5120x2048 M=  16     decode:    58.3 us (   270 GB/s) = 2.74x bf16
+5120x2048 M=  32        bf16: cuBLAS    21.3 us (   986 GB/s)
+5120x2048 M=  32    default:    28.2 us (   558 GB/s) = 1.33x bf16
+5120x2048 M=  32       gemm:    38.8 us (   405 GB/s) = 1.83x bf16
+5120x2048 M=  32     decode:    59.1 us (   266 GB/s) = 2.78x bf16
+5120x2048 M=  64        bf16: cuBLAS    21.6 us (   972 GB/s)
+5120x2048 M=  64    default:    32.9 us (   478 GB/s) = 1.53x bf16
+5120x2048 M=  64       gemm:    57.3 us (   275 GB/s) = 2.65x bf16
+5120x2048 M=  64     decode:    61.8 us (   255 GB/s) = 2.86x bf16
+5120x2048 M= 128        bf16: cuBLAS    26.1 us (   804 GB/s)
+5120x2048 M= 128    default:    49.5 us (   318 GB/s) = 1.90x bf16
+5120x2048 M= 128     decode:    68.1 us (   231 GB/s) = 2.61x bf16
+5120x2048 M= 232        bf16: cuBLAS    39.7 us (   528 GB/s)
+5120x2048 M= 232    default:    82.4 us (   191 GB/s) = 2.08x bf16
+5120x2048 M= 232     decode:    82.7 us (   190 GB/s) = 2.08x bf16
+5120x2048 M= 512        bf16: cuBLAS    72.1 us (   291 GB/s)
+5120x2048 M= 512    default:   148.0 us (   106 GB/s) = 2.05x bf16
+5120x2048 M= 512     decode:   115.2 us (   136 GB/s) = 1.60x bf16
+2048x4096: 16 matrices walked, layout mma12, 12.05 bits a weight
+2048x4096 M=   1        bf16: cuBLAS    20.6 us (   814 GB/s)
+2048x4096 M=   1    default:    19.6 us (   643 GB/s) = 0.95x bf16
+2048x4096 M=   1       gemm:    19.7 us (   638 GB/s) = 0.96x bf16
+2048x4096 M=   1     decode:    39.5 us (   319 GB/s) = 1.92x bf16
+2048x4096 M=   8        bf16: cuBLAS    18.5 us (   907 GB/s)
+2048x4096 M=   8    default:    21.2 us (   594 GB/s) = 1.15x bf16
+2048x4096 M=   8       gemm:    21.1 us (   596 GB/s) = 1.14x bf16
+2048x4096 M=   8     decode:    37.6 us (   334 GB/s) = 2.03x bf16
+2048x4096 M=  16        bf16: cuBLAS    18.9 us (   889 GB/s)
+2048x4096 M=  16    default:    23.6 us (   534 GB/s) = 1.25x bf16
+2048x4096 M=  16       gemm:    23.5 us (   536 GB/s) = 1.24x bf16
+2048x4096 M=  16     decode:    38.3 us (   328 GB/s) = 2.03x bf16
+2048x4096 M=  32        bf16: cuBLAS    19.3 us (   868 GB/s)
+2048x4096 M=  32    default:    21.3 us (   590 GB/s) = 1.10x bf16
+2048x4096 M=  32       gemm:    29.4 us (   427 GB/s) = 1.52x bf16
+2048x4096 M=  32     decode:    38.9 us (   323 GB/s) = 2.01x bf16
+2048x4096 M=  64        bf16: cuBLAS    19.8 us (   846 GB/s)
+2048x4096 M=  64    default:    26.6 us (   474 GB/s) = 1.34x bf16
+2048x4096 M=  64       gemm:    43.8 us (   287 GB/s) = 2.21x bf16
+2048x4096 M=  64     decode:    40.4 us (   312 GB/s) = 2.04x bf16
+2048x4096 M= 128        bf16: cuBLAS    24.0 us (   699 GB/s)
+2048x4096 M= 128    default:    41.2 us (   306 GB/s) = 1.71x bf16
+2048x4096 M= 128     decode:    47.7 us (   264 GB/s) = 1.99x bf16
+2048x4096 M= 232        bf16: cuBLAS    29.4 us (   571 GB/s)
+2048x4096 M= 232    default:    40.6 us (   310 GB/s) = 1.38x bf16
+2048x4096 M= 232     decode:    56.1 us (   224 GB/s) = 1.91x bf16
+2048x4096 M= 512        bf16: cuBLAS    54.4 us (   308 GB/s)
+2048x4096 M= 512    default:    66.8 us (   189 GB/s) = 1.23x bf16
+2048x4096 M= 512     decode:    80.8 us (   156 GB/s) = 1.49x bf16
+128x2048: 512 matrices walked, layout mma12, 12.05 bits a weight
+128x2048 M=   1        bf16: cuBLAS     3.9 us (   136 GB/s)
+128x2048 M=   1    default:     8.7 us (    45 GB/s) = 2.25x bf16
+128x2048 M=   1       gemm:     8.7 us (    45 GB/s) = 2.25x bf16
+128x2048 M=   1     decode:     6.9 us (    57 GB/s) = 1.79x bf16
+128x2048 M=   8        bf16: cuBLAS     6.7 us (    78 GB/s)
+128x2048 M=   8    default:     9.5 us (    41 GB/s) = 1.42x bf16
+128x2048 M=   8       gemm:     9.5 us (    41 GB/s) = 1.42x bf16
+128x2048 M=   8     decode:     9.8 us (    40 GB/s) = 1.45x bf16
+128x2048 M=  16        bf16: cuBLAS     7.0 us (    75 GB/s)
+128x2048 M=  16    default:    10.8 us (    36 GB/s) = 1.54x bf16
+128x2048 M=  16       gemm:    10.8 us (    36 GB/s) = 1.55x bf16
+128x2048 M=  16     decode:    10.0 us (    39 GB/s) = 1.44x bf16
+128x2048 M=  32        bf16: cuBLAS     7.1 us (    74 GB/s)
+128x2048 M=  32    default:    14.1 us (    28 GB/s) = 1.98x bf16
+128x2048 M=  32       gemm:    14.9 us (    26 GB/s) = 2.10x bf16
+128x2048 M=  32     decode:    10.3 us (    38 GB/s) = 1.44x bf16
+128x2048 M=  64        bf16: cuBLAS     7.5 us (    70 GB/s)
+128x2048 M=  64    default:    17.4 us (    23 GB/s) = 2.31x bf16
+128x2048 M=  64       gemm:    23.4 us (    17 GB/s) = 3.10x bf16
+128x2048 M=  64     decode:    10.7 us (    37 GB/s) = 1.43x bf16
+128x2048 M= 128        bf16: cuBLAS     6.7 us (    78 GB/s)
+128x2048 M= 128    default:    26.5 us (    15 GB/s) = 3.93x bf16
+128x2048 M= 128     decode:     9.9 us (    40 GB/s) = 1.47x bf16
+128x2048 M= 232        bf16: cuBLAS     7.4 us (    71 GB/s)
+128x2048 M= 232    default:    18.1 us (    22 GB/s) = 2.46x bf16
+128x2048 M= 232     decode:    10.5 us (    37 GB/s) = 1.43x bf16
+128x2048 M= 512        bf16: cuBLAS     8.7 us (    60 GB/s)
+128x2048 M= 512    default:    19.0 us (    21 GB/s) = 2.19x bf16
+128x2048 M= 512     decode:    11.9 us (    33 GB/s) = 1.37x bf16

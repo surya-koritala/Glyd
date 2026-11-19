@@ -1,0 +1,67 @@
+{
+  "name": "model.language_model.layers.27.self_attn.v_proj.weight",
+  "group": "full_attention",
+  "shape": [
+    1024,
+    5120
+  ],
+  "file": "model-00008-of-00018.safetensors",
+  "fraction_bits": 3,
+  "values": 5242880,
+  "zeros": 0,
+  "specials": 0,
+  "geometries": [
+    {
+      "block": [
+        128,
+        128
+      ],
+      "blocks": 320,
+      "blocks_inexact": 293,
+      "inexact": 957,
+      "underflow": 199,
+      "max_block_inexact": 14,
+      "min_scale_exponent": -12,
+      "max_scale_exponent": -10
+    },
+    {
+      "block": [
+        1,
+        128
+      ],
+      "blocks": 40960,
+      "blocks_inexact": 451,
+      "inexact": 453,
+      "underflow": 102,
+      "max_block_inexact": 2,
+      "min_scale_exponent": -14,
+      "max_scale_exponent": -10
+    },
+    {
+      "block": [
+        1,
+        32
+      ],
+      "blocks": 163840,
+      "blocks_inexact": 376,
+      "inexact": 376,
+      "underflow": 83,
+      "max_block_inexact": 1,
+      "min_scale_exponent": -15,
+      "max_scale_exponent": -10
+    },
+    {
+      "block": [
+        1,
+        0
+      ],
+      "blocks": 1024,
+      "blocks_inexact": 503,
+      "inexact": 744,
+      "underflow": 167,
+      "max_block_inexact": 7,
+      "min_scale_exponent": -13,
+      "max_scale_exponent": -10
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+a build from scratch (cargo build --release, kernels for sm_80 86 89 90a, 5,495,528 bytes), the model packed again; the final proofs outputs compared:
+tokens, logprobs, long tokens, long logprobs equal to the final proofs: True
+scores equal: True
+bench, 1,024 tokens in, 256 out:
+{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":431.2,"decode_ms_mean":45.564,"decode_ms_p50":45.589,"decode_ms_p99":45.940,"decode_tokens_per_s":21.95,"load_s":2.42,"weights_gib":10.365,"cache_tokens":4096,"graph":true}

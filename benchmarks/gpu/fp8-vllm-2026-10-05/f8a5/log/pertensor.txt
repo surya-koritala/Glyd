@@ -1,0 +1,3 @@
+model-00001-of-00002.safetensors: 79 tensors
+model-00002-of-00002.safetensors: 2 tensors
+/root/f8w/slice-qwen4pt: 25 weights requantized to one scale a tensor

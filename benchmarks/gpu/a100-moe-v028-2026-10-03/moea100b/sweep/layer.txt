@@ -1,0 +1,144 @@
+Qwen/Qwen3-30B-A3B layer 0: NVIDIA A100-SXM4-40GB, layout mma12, 12.05 bits a weight (gate+up), 12.05 (down), an expert 4.74 + 2.37 MB packed, copy rate 1360 GB/s (read + write), env GLYD_GPU_LIB=/home/ubuntu/m28w/lib/new/libglyd_gpu_cuda13.so
+INFO 10-03 22:14:17 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 10-03 22:14:17 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+WARNING 10-03 22:14:17 [fused_moe.py:1167] Using default MoE config. Performance might be sub-optimal! Config file not found at /home/ubuntu/m28w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/configs/E=128,N=768,device_name=NVIDIA_A100-SXM4-40GB.json
+T=   16        bf16: vLLM's layer    617.4 us (the weights' bf16 bytes   1279 GB/s)
+T=   16          new: hits   83.7  route     6.9  gate+up    301.1 (  1316 GB/s)  down    185.3 (  1070 GB/s)  all    493.2 ( 1206 GB/s, 1.77 of the copy rate)  unpack   1174.1  = 0.80x bf16  us a layer
+T=   16       rows17: hits   83.7  route     5.5  gate+up    292.3 (  1356 GB/s)  down    167.5 (  1184 GB/s)  all    463.6 ( 1283 GB/s, 1.89 of the copy rate)  unpack   1173.7  = 0.75x bf16  us a layer
+T=   16       rows33: hits   83.7  route     5.5  gate+up    292.4 (  1356 GB/s)  down    167.2 (  1186 GB/s)  all    463.5 ( 1283 GB/s, 1.89 of the copy rate)  unpack   1173.2  = 0.75x bf16  us a layer
+T=   16       rows65: hits   83.7  route     5.4  gate+up    292.5 (  1355 GB/s)  down    167.2 (  1186 GB/s)  all    463.1 ( 1284 GB/s, 1.89 of the copy rate)  unpack   1174.0  = 0.75x bf16  us a layer
+T=   16        big24: hits   83.7  route     5.5  gate+up    292.5 (  1355 GB/s)  down    167.1 (  1187 GB/s)  all    463.2 ( 1284 GB/s, 1.89 of the copy rate)  unpack   1172.9  = 0.75x bf16  us a layer
+T=   16        big96: hits   83.7  route     5.5  gate+up    292.5 (  1355 GB/s)  down    167.3 (  1185 GB/s)  all    463.5 ( 1283 GB/s, 1.89 of the copy rate)  unpack   1173.2  = 0.75x bf16  us a layer
+T=   16          na1: hits   83.7  route     5.5  gate+up    292.3 (  1356 GB/s)  down    167.1 (  1187 GB/s)  all    463.4 ( 1283 GB/s, 1.89 of the copy rate)  unpack   1174.4  = 0.75x bf16  us a layer
+T=   16          pb1: hits   83.7  route     5.4  gate+up    292.4 (  1356 GB/s)  down    167.2 (  1186 GB/s)  all    463.3 ( 1284 GB/s, 1.89 of the copy rate)  unpack   1173.8  = 0.75x bf16  us a layer
+T=   16          pf4: hits   83.7  route     5.5  gate+up    301.1 (  1317 GB/s)  down    180.7 (  1097 GB/s)  all    486.7 ( 1222 GB/s, 1.80 of the copy rate)  unpack   1172.5  = 0.79x bf16  us a layer
+T=   24        bf16: vLLM's layer    694.0 us (the weights' bf16 bytes   1403 GB/s)
+T=   24          new: hits  103.2  route     7.2  gate+up    450.6 (  1085 GB/s)  down    326.1 (   750 GB/s)  all    783.7 (  936 GB/s, 1.38 of the copy rate)  unpack   1436.4  = 1.13x bf16  us a layer
+T=   24       rows17: hits  103.2  route     7.2  gate+up    450.6 (  1085 GB/s)  down    227.0 (  1077 GB/s)  all    684.5 ( 1071 GB/s, 1.58 of the copy rate)  unpack   1436.6  = 0.99x bf16  us a layer
+T=   24       rows33: hits  103.2  route     7.3  gate+up    450.5 (  1085 GB/s)  down    326.2 (   749 GB/s)  all    784.0 (  935 GB/s, 1.38 of the copy rate)  unpack   1437.0  = 1.13x bf16  us a layer
+T=   24       rows65: hits  103.2  route     7.2  gate+up    450.6 (  1085 GB/s)  down    326.1 (   750 GB/s)  all    783.9 (  935 GB/s, 1.38 of the copy rate)  unpack   1436.7  = 1.13x bf16  us a layer
+T=   24        big24: hits  103.2  route     7.2  gate+up    450.8 (  1084 GB/s)  down    326.1 (   750 GB/s)  all    783.8 (  936 GB/s, 1.38 of the copy rate)  unpack   1436.4  = 1.13x bf16  us a layer
+T=   24        big96: hits  103.2  route     7.1  gate+up    450.7 (  1084 GB/s)  down    326.1 (   750 GB/s)  all    783.8 (  936 GB/s, 1.38 of the copy rate)  unpack   1436.9  = 1.13x bf16  us a layer
+T=   24          na1: hits  103.2  route     7.2  gate+up    434.9 (  1124 GB/s)  down    316.9 (   771 GB/s)  all    758.9 (  966 GB/s, 1.42 of the copy rate)  unpack   1437.7  = 1.09x bf16  us a layer
+T=   24          pb1: hits  103.2  route     7.2  gate+up    450.7 (  1084 GB/s)  down    326.2 (   749 GB/s)  all    784.0 (  935 GB/s, 1.38 of the copy rate)  unpack   1436.0  = 1.13x bf16  us a layer
+T=   24          pf4: hits  103.2  route     7.2  gate+up    414.0 (  1181 GB/s)  down    332.1 (   736 GB/s)  all    753.0 (  974 GB/s, 1.43 of the copy rate)  unpack   1438.2  = 1.08x bf16  us a layer
+T=   32        bf16: vLLM's layer    761.7 us (the weights' bf16 bytes   1405 GB/s)
+T=   32          new: hits  113.4  route     8.2  gate+up    490.7 (  1095 GB/s)  down    358.8 (   749 GB/s)  all    857.3 (  940 GB/s, 1.38 of the copy rate)  unpack   1571.6  = 1.13x bf16  us a layer
+T=   32       rows17: hits  113.4  route     8.2  gate+up    490.9 (  1095 GB/s)  down    265.0 (  1014 GB/s)  all    763.4 ( 1056 GB/s, 1.55 of the copy rate)  unpack   1571.0  = 1.00x bf16  us a layer
+T=   32       rows33: hits  113.4  route     8.2  gate+up    490.8 (  1095 GB/s)  down    358.8 (   749 GB/s)  all    857.7 (  940 GB/s, 1.38 of the copy rate)  unpack   1571.9  = 1.13x bf16  us a layer
+T=   32       rows65: hits  113.4  route     8.2  gate+up    490.9 (  1095 GB/s)  down    359.1 (   748 GB/s)  all    857.5 (  940 GB/s, 1.38 of the copy rate)  unpack   1572.6  = 1.13x bf16  us a layer
+T=   32        big24: hits  113.4  route     8.2  gate+up    490.8 (  1095 GB/s)  down    358.8 (   749 GB/s)  all    857.7 (  940 GB/s, 1.38 of the copy rate)  unpack   1571.8  = 1.13x bf16  us a layer
+T=   32        big96: hits  113.4  route     8.2  gate+up    490.8 (  1095 GB/s)  down    359.1 (   748 GB/s)  all    857.6 (  940 GB/s, 1.38 of the copy rate)  unpack   1571.7  = 1.13x bf16  us a layer
+T=   32          na1: hits  113.4  route     8.2  gate+up    475.1 (  1131 GB/s)  down    348.7 (   771 GB/s)  all    831.9 (  969 GB/s, 1.42 of the copy rate)  unpack   1571.6  = 1.09x bf16  us a layer
+T=   32          pb1: hits  113.4  route     8.2  gate+up    490.9 (  1095 GB/s)  down    359.0 (   749 GB/s)  all    857.3 (  940 GB/s, 1.38 of the copy rate)  unpack   1571.1  = 1.13x bf16  us a layer
+T=   32          pf4: hits  113.4  route     8.2  gate+up    454.4 (  1183 GB/s)  down    362.5 (   741 GB/s)  all    825.9 (  976 GB/s, 1.44 of the copy rate)  unpack   1571.1  = 1.08x bf16  us a layer
+T=   48        bf16: vLLM's layer    829.5 us (the weights' bf16 bytes   1396 GB/s)
+T=   48          new: hits  122.7  route    10.8  gate+up    651.8 (   892 GB/s)  down    531.4 (   547 GB/s)  all   1194.0 (  730 GB/s, 1.07 of the copy rate)  unpack   1696.8  = 1.44x bf16  us a layer
+T=   48       rows17: hits  122.7  route    10.9  gate+up    651.9 (   892 GB/s)  down    304.4 (   955 GB/s)  all    967.3 (  901 GB/s, 1.33 of the copy rate)  unpack   1697.4  = 1.17x bf16  us a layer
+T=   48       rows33: hits  122.7  route    10.8  gate+up    651.9 (   891 GB/s)  down    304.4 (   955 GB/s)  all    967.0 (  902 GB/s, 1.33 of the copy rate)  unpack   1697.0  = 1.17x bf16  us a layer
+T=   48       rows65: hits  122.7  route    10.8  gate+up    651.5 (   892 GB/s)  down    531.5 (   547 GB/s)  all   1194.1 (  730 GB/s, 1.07 of the copy rate)  unpack   1697.2  = 1.44x bf16  us a layer
+T=   48        big24: hits  122.7  route    10.9  gate+up    651.8 (   892 GB/s)  down    531.6 (   547 GB/s)  all   1194.2 (  730 GB/s, 1.07 of the copy rate)  unpack   1697.1  = 1.44x bf16  us a layer
+T=   48        big96: hits  122.7  route    10.9  gate+up    651.7 (   892 GB/s)  down    531.5 (   547 GB/s)  all   1194.3 (  730 GB/s, 1.07 of the copy rate)  unpack   1695.7  = 1.44x bf16  us a layer
+T=   48          na1: hits  122.7  route    10.9  gate+up    589.1 (   987 GB/s)  down    490.6 (   592 GB/s)  all   1090.3 (  800 GB/s, 1.18 of the copy rate)  unpack   1697.5  = 1.31x bf16  us a layer
+T=   48          pb1: hits  122.7  route    10.9  gate+up    651.8 (   892 GB/s)  down    531.8 (   547 GB/s)  all   1194.1 (  730 GB/s, 1.07 of the copy rate)  unpack   1698.3  = 1.44x bf16  us a layer
+T=   48          pf4: hits  122.7  route    10.8  gate+up    602.1 (   965 GB/s)  down    555.6 (   523 GB/s)  all   1168.5 (  746 GB/s, 1.10 of the copy rate)  unpack   1696.9  = 1.41x bf16  us a layer
+T=   64        bf16: vLLM's layer    854.3 us (the weights' bf16 bytes   1390 GB/s)
+T=   64          new: hits  125.8  route     7.6  gate+up    665.2 (   896 GB/s)  down    549.3 (   543 GB/s)  all   1222.2 (  732 GB/s, 1.08 of the copy rate)  unpack   1740.2  = 1.43x bf16  us a layer
+T=   64       rows17: hits  125.8  route     7.6  gate+up    665.1 (   896 GB/s)  down    309.0 (   965 GB/s)  all    982.0 (  911 GB/s, 1.34 of the copy rate)  unpack   1740.5  = 1.15x bf16  us a layer
+T=   64       rows33: hits  125.8  route     7.7  gate+up    664.9 (   897 GB/s)  down    309.3 (   964 GB/s)  all    981.7 (  911 GB/s, 1.34 of the copy rate)  unpack   1741.1  = 1.15x bf16  us a layer
+T=   64       rows65: hits  125.8  route     7.6  gate+up    665.0 (   897 GB/s)  down    549.2 (   543 GB/s)  all   1222.2 (  732 GB/s, 1.08 of the copy rate)  unpack   1740.8  = 1.43x bf16  us a layer
+T=   64        big24: hits  125.8  route     7.7  gate+up    664.9 (   897 GB/s)  down    549.3 (   543 GB/s)  all   1221.9 (  732 GB/s, 1.08 of the copy rate)  unpack   1739.7  = 1.43x bf16  us a layer
+T=   64        big96: hits  125.8  route     7.7  gate+up    665.3 (   896 GB/s)  down    549.6 (   542 GB/s)  all   1222.1 (  732 GB/s, 1.08 of the copy rate)  unpack   1741.3  = 1.43x bf16  us a layer
+T=   64          na1: hits  125.8  route     7.7  gate+up    601.0 (   992 GB/s)  down    507.1 (   588 GB/s)  all   1116.2 (  801 GB/s, 1.18 of the copy rate)  unpack   1740.9  = 1.31x bf16  us a layer
+T=   64          pb1: hits  125.8  route     7.7  gate+up    665.2 (   896 GB/s)  down    549.3 (   543 GB/s)  all   1221.9 (  732 GB/s, 1.08 of the copy rate)  unpack   1741.7  = 1.43x bf16  us a layer
+T=   64          pf4: hits  125.8  route     7.7  gate+up    618.3 (   964 GB/s)  down    574.6 (   519 GB/s)  all   1200.6 (  745 GB/s, 1.10 of the copy rate)  unpack   1741.0  = 1.41x bf16  us a layer
+T=  128        bf16: vLLM's layer    918.9 us (the weights' bf16 bytes   1313 GB/s)
+T=  128          new: hits  127.8  route    10.2  gate+up    692.9 (   874 GB/s)  down    583.3 (   519 GB/s)  all   1285.2 (  707 GB/s, 1.04 of the copy rate)  unpack   1765.1  = 1.40x bf16  us a layer
+T=  128       rows17: hits  127.8  route    10.2  gate+up    692.4 (   875 GB/s)  down    319.5 (   948 GB/s)  all   1021.7 (  889 GB/s, 1.31 of the copy rate)  unpack   1764.9  = 1.11x bf16  us a layer
+T=  128       rows33: hits  127.8  route    10.2  gate+up    692.1 (   875 GB/s)  down    319.2 (   949 GB/s)  all   1022.0 (  889 GB/s, 1.31 of the copy rate)  unpack   1764.4  = 1.11x bf16  us a layer
+T=  128       rows65: hits  127.8  route    10.2  gate+up    691.8 (   876 GB/s)  down    319.2 (   949 GB/s)  all   1021.5 (  889 GB/s, 1.31 of the copy rate)  unpack   1765.7  = 1.11x bf16  us a layer
+T=  128        big24: hits  127.8  route    10.2  gate+up    691.9 (   875 GB/s)  down    583.1 (   519 GB/s)  all   1285.8 (  707 GB/s, 1.04 of the copy rate)  unpack   1764.3  = 1.40x bf16  us a layer
+T=  128        big96: hits  127.8  route    10.2  gate+up    692.5 (   875 GB/s)  down    583.1 (   519 GB/s)  all   1285.5 (  707 GB/s, 1.04 of the copy rate)  unpack   1765.1  = 1.40x bf16  us a layer
+T=  128          na1: hits  127.8  route    10.2  gate+up    618.6 (   979 GB/s)  down    538.9 (   562 GB/s)  all   1167.9 (  778 GB/s, 1.14 of the copy rate)  unpack   1764.4  = 1.27x bf16  us a layer
+T=  128          pb1: hits  127.8  route    10.2  gate+up    692.2 (   875 GB/s)  down    583.2 (   519 GB/s)  all   1285.5 (  707 GB/s, 1.04 of the copy rate)  unpack   1764.9  = 1.40x bf16  us a layer
+T=  128          pf4: hits  127.8  route    10.1  gate+up    663.3 (   913 GB/s)  down    610.2 (   496 GB/s)  all   1283.6 (  708 GB/s, 1.04 of the copy rate)  unpack   1765.5  = 1.40x bf16  us a layer
+T=  232        bf16: vLLM's layer    946.4 us (the weights' bf16 bytes   1276 GB/s)
+T=  232          new: hits  128.0  route    12.5  gate+up    706.6 (   858 GB/s)  down    620.1 (   489 GB/s)  all   1340.6 (  679 GB/s, 1.00 of the copy rate)  unpack   1767.3  = 1.42x bf16  us a layer
+T=  232       rows17: hits  128.0  route    12.5  gate+up    706.9 (   858 GB/s)  down    333.7 (   909 GB/s)  all   1053.1 (  864 GB/s, 1.27 of the copy rate)  unpack   1768.8  = 1.11x bf16  us a layer
+T=  232       rows33: hits  128.0  route    12.5  gate+up    706.7 (   858 GB/s)  down    333.4 (   910 GB/s)  all   1052.8 (  864 GB/s, 1.27 of the copy rate)  unpack   1767.4  = 1.11x bf16  us a layer
+T=  232       rows65: hits  128.0  route    12.5  gate+up    706.8 (   858 GB/s)  down    333.5 (   909 GB/s)  all   1053.1 (  864 GB/s, 1.27 of the copy rate)  unpack   1767.2  = 1.11x bf16  us a layer
+T=  232        big24: hits  128.0  route    12.5  gate+up    706.7 (   858 GB/s)  down    620.2 (   489 GB/s)  all   1339.9 (  679 GB/s, 1.00 of the copy rate)  unpack   1767.3  = 1.42x bf16  us a layer
+T=  232        big96: hits  128.0  route    12.5  gate+up    707.2 (   858 GB/s)  down    620.3 (   489 GB/s)  all   1339.8 (  679 GB/s, 1.00 of the copy rate)  unpack   1766.0  = 1.42x bf16  us a layer
+T=  232          na1: hits  128.0  route    12.5  gate+up    637.6 (   951 GB/s)  down    584.4 (   519 GB/s)  all   1235.5 (  736 GB/s, 1.08 of the copy rate)  unpack   1767.5  = 1.31x bf16  us a layer
+T=  232          pb1: hits  128.0  route    12.5  gate+up    706.7 (   858 GB/s)  down    620.4 (   489 GB/s)  all   1339.6 (  679 GB/s, 1.00 of the copy rate)  unpack   1767.5  = 1.42x bf16  us a layer
+T=  232          pf4: hits  128.0  route    12.5  gate+up    699.0 (   868 GB/s)  down    649.6 (   467 GB/s)  all   1360.9 (  669 GB/s, 0.98 of the copy rate)  unpack   1767.3  = 1.44x bf16  us a layer
+T=  384        bf16: vLLM's layer    976.3 us (the weights' bf16 bytes   1237 GB/s)
+T=  384          new: hits  128.0  route    15.8  gate+up    729.7 (   831 GB/s)  down    679.8 (   446 GB/s)  all   1426.2 (  638 GB/s, 0.94 of the copy rate)  unpack   1767.4  = 1.46x bf16  us a layer
+T=  384       rows17: hits  128.0  route    15.8  gate+up    729.8 (   831 GB/s)  down    355.0 (   854 GB/s)  all   1100.7 (  827 GB/s, 1.22 of the copy rate)  unpack   1766.4  = 1.13x bf16  us a layer
+T=  384       rows33: hits  128.0  route    15.8  gate+up    729.8 (   831 GB/s)  down    354.9 (   855 GB/s)  all   1100.7 (  827 GB/s, 1.22 of the copy rate)  unpack   1767.5  = 1.13x bf16  us a layer
+T=  384       rows65: hits  128.0  route    15.8  gate+up    729.7 (   831 GB/s)  down    354.9 (   855 GB/s)  all   1100.8 (  826 GB/s, 1.22 of the copy rate)  unpack   1767.5  = 1.13x bf16  us a layer
+T=  384        big24: hits  128.0  route    15.8  gate+up   1017.7 (   596 GB/s)  down    576.1 (   526 GB/s)  all   1622.4 (  561 GB/s, 0.82 of the copy rate)  unpack   1766.7  = 1.66x bf16  us a layer
+T=  384        big96: hits  128.0  route    15.8  gate+up    730.0 (   831 GB/s)  down    679.2 (   447 GB/s)  all   1425.7 (  638 GB/s, 0.94 of the copy rate)  unpack   1767.9  = 1.46x bf16  us a layer
+T=  384          na1: hits  128.0  route    15.8  gate+up    671.9 (   903 GB/s)  down    658.1 (   461 GB/s)  all   1347.2 (  675 GB/s, 0.99 of the copy rate)  unpack   1767.3  = 1.38x bf16  us a layer
+T=  384          pb1: hits  128.0  route    15.8  gate+up    729.9 (   831 GB/s)  down    679.8 (   446 GB/s)  all   1426.4 (  638 GB/s, 0.94 of the copy rate)  unpack   1766.2  = 1.46x bf16  us a layer
+T=  384          pf4: hits  128.0  route    15.7  gate+up    732.7 (   828 GB/s)  down    711.3 (   426 GB/s)  all   1460.5 (  623 GB/s, 0.92 of the copy rate)  unpack   1768.0  = 1.50x bf16  us a layer
+T=  512        bf16: vLLM's layer    996.6 us (the weights' bf16 bytes   1212 GB/s)
+T=  512          new: hits  128.0  route    18.6  gate+up    749.7 (   809 GB/s)  down    731.1 (   415 GB/s)  all   1501.1 (  606 GB/s, 0.89 of the copy rate)  unpack   1768.1  = 1.51x bf16  us a layer
+T=  512       rows17: hits  128.0  route    18.7  gate+up    749.9 (   809 GB/s)  down    374.4 (   810 GB/s)  all   1144.1 (  795 GB/s, 1.17 of the copy rate)  unpack   1767.7  = 1.15x bf16  us a layer
+T=  512       rows33: hits  128.0  route    18.7  gate+up    750.0 (   809 GB/s)  down    374.4 (   810 GB/s)  all   1143.8 (  795 GB/s, 1.17 of the copy rate)  unpack   1767.9  = 1.15x bf16  us a layer
+T=  512       rows65: hits  128.0  route    18.7  gate+up    750.0 (   809 GB/s)  down    374.4 (   810 GB/s)  all   1143.4 (  796 GB/s, 1.17 of the copy rate)  unpack   1766.9  = 1.15x bf16  us a layer
+T=  512        big24: hits  128.0  route    18.6  gate+up   1165.7 (   520 GB/s)  down    609.6 (   498 GB/s)  all   1813.3 (  502 GB/s, 0.74 of the copy rate)  unpack   1766.9  = 1.82x bf16  us a layer
+T=  512        big96: hits  128.0  route    18.7  gate+up    750.2 (   808 GB/s)  down    730.9 (   415 GB/s)  all   1501.0 (  606 GB/s, 0.89 of the copy rate)  unpack   1767.3  = 1.51x bf16  us a layer
+T=  512          na1: hits  128.0  route    18.7  gate+up    710.0 (   854 GB/s)  down    721.2 (   421 GB/s)  all   1451.4 (  627 GB/s, 0.92 of the copy rate)  unpack   1767.9  = 1.46x bf16  us a layer
+T=  512          pb1: hits  128.0  route    18.7  gate+up    749.7 (   809 GB/s)  down    730.9 (   415 GB/s)  all   1500.8 (  606 GB/s, 0.89 of the copy rate)  unpack   1767.5  = 1.51x bf16  us a layer
+T=  512          pf4: hits  128.0  route    18.7  gate+up    755.6 (   803 GB/s)  down    769.6 (   394 GB/s)  all   1544.6 (  589 GB/s, 0.87 of the copy rate)  unpack   1767.3  = 1.55x bf16  us a layer
+T=  768        bf16: vLLM's layer   1157.0 us (the weights' bf16 bytes   1044 GB/s)
+T=  768          new: hits  128.0  route    24.3  gate+up   1423.3 (   426 GB/s)  down    677.4 (   448 GB/s)  all   2134.7 (  426 GB/s, 0.63 of the copy rate)  unpack   1767.7  = 1.84x bf16  us a layer
+T=  768       rows17: hits  128.0  route    24.4  gate+up   1425.6 (   425 GB/s)  down    677.5 (   448 GB/s)  all   2134.1 (  426 GB/s, 0.63 of the copy rate)  unpack   1768.2  = 1.84x bf16  us a layer
+T=  768       rows33: hits  128.0  route    24.3  gate+up   1426.5 (   425 GB/s)  down    677.1 (   448 GB/s)  all   2133.2 (  426 GB/s, 0.63 of the copy rate)  unpack   1767.2  = 1.84x bf16  us a layer
+T=  768       rows65: hits  128.0  route    24.4  gate+up   1425.4 (   425 GB/s)  down    677.1 (   448 GB/s)  all   2132.8 (  427 GB/s, 0.63 of the copy rate)  unpack   1769.0  = 1.84x bf16  us a layer
+T=  768        big24: hits  128.0  route    24.3  gate+up   1426.2 (   425 GB/s)  down    677.4 (   448 GB/s)  all   2132.8 (  427 GB/s, 0.63 of the copy rate)  unpack   1768.0  = 1.84x bf16  us a layer
+T=  768        big96: hits  128.0  route    24.4  gate+up    796.8 (   761 GB/s)  down    835.2 (   363 GB/s)  all   1658.1 (  549 GB/s, 0.81 of the copy rate)  unpack   1767.1  = 1.43x bf16  us a layer
+T=  768          na1: hits  128.0  route    24.4  gate+up   1426.0 (   425 GB/s)  down    677.9 (   447 GB/s)  all   2132.4 (  427 GB/s, 0.63 of the copy rate)  unpack   1767.0  = 1.84x bf16  us a layer
+T=  768          pb1: hits  128.0  route    24.3  gate+up   1425.7 (   425 GB/s)  down    677.3 (   448 GB/s)  all   2133.6 (  426 GB/s, 0.63 of the copy rate)  unpack   1766.4  = 1.84x bf16  us a layer
+T=  768          pf4: hits  128.0  route    24.3  gate+up   1425.8 (   425 GB/s)  down    677.5 (   448 GB/s)  all   2134.2 (  426 GB/s, 0.63 of the copy rate)  unpack   1767.5  = 1.84x bf16  us a layer
+T= 1152        bf16: vLLM's layer   1213.6 us (the weights' bf16 bytes    995 GB/s)
+T= 1152          new: hits  128.0  route    34.3  gate+up   1646.7 (   368 GB/s)  down    753.1 (   403 GB/s)  all   2440.4 (  373 GB/s, 0.55 of the copy rate)  unpack   1767.3  = 2.01x bf16  us a layer
+T= 1152       rows17: hits  128.0  route    34.3  gate+up   1647.4 (   368 GB/s)  down    753.0 (   403 GB/s)  all   2440.6 (  373 GB/s, 0.55 of the copy rate)  unpack   1767.8  = 2.01x bf16  us a layer
+T= 1152       rows33: hits  128.0  route    34.3  gate+up   1647.4 (   368 GB/s)  down    752.6 (   403 GB/s)  all   2440.3 (  373 GB/s, 0.55 of the copy rate)  unpack   1766.8  = 2.01x bf16  us a layer
+T= 1152       rows65: hits  128.0  route    34.3  gate+up   1647.9 (   368 GB/s)  down    752.8 (   403 GB/s)  all   2441.0 (  373 GB/s, 0.55 of the copy rate)  unpack   1766.7  = 2.01x bf16  us a layer
+T= 1152        big24: hits  128.0  route    34.3  gate+up   1646.1 (   368 GB/s)  down    752.9 (   403 GB/s)  all   2440.0 (  373 GB/s, 0.55 of the copy rate)  unpack   1767.0  = 2.01x bf16  us a layer
+T= 1152        big96: hits  128.0  route    34.3  gate+up   1352.4 (   448 GB/s)  down   1315.2 (   231 GB/s)  all   2703.8 (  336 GB/s, 0.49 of the copy rate)  unpack   1767.1  = 2.23x bf16  us a layer
+T= 1152          na1: hits  128.0  route    34.3  gate+up   1647.3 (   368 GB/s)  down    752.7 (   403 GB/s)  all   2440.5 (  373 GB/s, 0.55 of the copy rate)  unpack   1767.5  = 2.01x bf16  us a layer
+T= 1152          pb1: hits  128.0  route    34.2  gate+up   1647.8 (   368 GB/s)  down    752.9 (   403 GB/s)  all   2440.2 (  373 GB/s, 0.55 of the copy rate)  unpack   1766.9  = 2.01x bf16  us a layer
+T= 1152          pf4: hits  128.0  route    34.2  gate+up   1647.4 (   368 GB/s)  down    752.9 (   403 GB/s)  all   2440.2 (  373 GB/s, 0.55 of the copy rate)  unpack   1767.0  = 2.01x bf16  us a layer
+T= 2048        bf16: vLLM's layer   1539.9 us (the weights' bf16 bytes    784 GB/s)
+T= 2048          new: hits  128.0  route    53.7  gate+up   1692.6 (   358 GB/s)  down   1059.4 (   286 GB/s)  all   2815.1 (  323 GB/s, 0.48 of the copy rate)  unpack   1767.3  = 1.83x bf16  us a layer
+T= 2048       rows17: hits  128.0  route    53.8  gate+up   1694.1 (   358 GB/s)  down   1059.3 (   286 GB/s)  all   2817.3 (  323 GB/s, 0.47 of the copy rate)  unpack   1766.0  = 1.83x bf16  us a layer
+T= 2048       rows33: hits  128.0  route    53.8  gate+up   1693.6 (   358 GB/s)  down   1059.1 (   286 GB/s)  all   2815.3 (  323 GB/s, 0.48 of the copy rate)  unpack   1766.9  = 1.83x bf16  us a layer
+T= 2048       rows65: hits  128.0  route    53.8  gate+up   1693.0 (   358 GB/s)  down   1059.2 (   286 GB/s)  all   2816.5 (  323 GB/s, 0.48 of the copy rate)  unpack   1768.4  = 1.83x bf16  us a layer
+T= 2048        big24: hits  128.0  route    53.7  gate+up   1695.3 (   358 GB/s)  down   1059.4 (   286 GB/s)  all   2816.5 (  323 GB/s, 0.48 of the copy rate)  unpack   1767.5  = 1.83x bf16  us a layer
+T= 2048        big96: hits  128.0  route    53.8  gate+up   1692.4 (   358 GB/s)  down   1059.4 (   286 GB/s)  all   2816.8 (  323 GB/s, 0.47 of the copy rate)  unpack   1768.6  = 1.83x bf16  us a layer
+T= 2048          na1: hits  128.0  route    53.8  gate+up   1693.0 (   358 GB/s)  down   1059.5 (   286 GB/s)  all   2816.3 (  323 GB/s, 0.48 of the copy rate)  unpack   1766.7  = 1.83x bf16  us a layer
+T= 2048          pb1: hits  128.0  route    53.8  gate+up   1693.3 (   358 GB/s)  down   1059.5 (   286 GB/s)  all   2816.0 (  323 GB/s, 0.48 of the copy rate)  unpack   1766.7  = 1.83x bf16  us a layer
+T= 2048          pf4: hits  128.0  route    53.8  gate+up   1694.5 (   358 GB/s)  down   1059.8 (   286 GB/s)  all   2814.7 (  323 GB/s, 0.48 of the copy rate)  unpack   1767.4  = 1.83x bf16  us a layer
+T= 4096        bf16: vLLM's layer   2482.3 us (the weights' bf16 bytes    487 GB/s)
+T= 4096          new: hits  128.0  route   101.1  gate+up   2897.5 (   209 GB/s)  down   1855.3 (   163 GB/s)  all   4865.2 (  187 GB/s, 0.27 of the copy rate)  unpack   1767.7  = 1.96x bf16  us a layer
+T= 4096       rows17: hits  128.0  route    99.9  gate+up   2897.1 (   209 GB/s)  down   1855.7 (   163 GB/s)  all   4866.5 (  187 GB/s, 0.27 of the copy rate)  unpack   1766.9  = 1.96x bf16  us a layer
+T= 4096       rows33: hits  128.0  route   100.0  gate+up   2896.1 (   209 GB/s)  down   1855.7 (   163 GB/s)  all   4865.4 (  187 GB/s, 0.27 of the copy rate)  unpack   1766.7  = 1.96x bf16  us a layer
+T= 4096       rows65: hits  128.0  route    99.9  gate+up   2898.1 (   209 GB/s)  down   1855.5 (   163 GB/s)  all   4868.4 (  187 GB/s, 0.27 of the copy rate)  unpack   1767.3  = 1.96x bf16  us a layer
+T= 4096        big24: hits  128.0  route   100.1  gate+up   2897.3 (   209 GB/s)  down   1855.7 (   163 GB/s)  all   4867.4 (  187 GB/s, 0.27 of the copy rate)  unpack   1767.9  = 1.96x bf16  us a layer
+T= 4096        big96: hits  128.0  route   100.0  gate+up   2896.9 (   209 GB/s)  down   1855.2 (   163 GB/s)  all   4867.2 (  187 GB/s, 0.27 of the copy rate)  unpack   1767.5  = 1.96x bf16  us a layer
+T= 4096          na1: hits  128.0  route   100.0  gate+up   2898.6 (   209 GB/s)  down   1855.4 (   163 GB/s)  all   4867.1 (  187 GB/s, 0.27 of the copy rate)  unpack   1767.6  = 1.96x bf16  us a layer
+T= 4096          pb1: hits  128.0  route    99.9  gate+up   2897.2 (   209 GB/s)  down   1855.2 (   163 GB/s)  all   4866.5 (  187 GB/s, 0.27 of the copy rate)  unpack   1768.1  = 1.96x bf16  us a layer
+T= 4096          pf4: hits  128.0  route   100.1  gate+up   2897.2 (   209 GB/s)  down   1855.7 (   163 GB/s)  all   4867.4 (  187 GB/s, 0.27 of the copy rate)  unpack   1767.2  = 1.96x bf16  us a layer
+T= 8192        bf16: vLLM's layer   4449.5 us (the weights' bf16 bytes    271 GB/s)
+T= 8192          new: hits  128.0  route   195.7  gate+up   5327.0 (   114 GB/s)  down   3437.0 (    88 GB/s)  all   8983.2 (  101 GB/s, 0.15 of the copy rate)  unpack   1768.1  = 2.02x bf16  us a layer
+T= 8192       rows17: hits  128.0  route   193.7  gate+up   5330.6 (   114 GB/s)  down   3437.5 (    88 GB/s)  all   8982.6 (  101 GB/s, 0.15 of the copy rate)  unpack   1768.4  = 2.02x bf16  us a layer
+T= 8192       rows33: hits  128.0  route   193.6  gate+up   5331.9 (   114 GB/s)  down   3437.1 (    88 GB/s)  all   8982.4 (  101 GB/s, 0.15 of the copy rate)  unpack   1766.6  = 2.02x bf16  us a layer
+T= 8192       rows65: hits  128.0  route   193.6  gate+up   5331.7 (   114 GB/s)  down   3437.0 (    88 GB/s)  all   8980.4 (  101 GB/s, 0.15 of the copy rate)  unpack   1766.0  = 2.02x bf16  us a layer
+T= 8192        big24: hits  128.0  route   193.7  gate+up   5328.4 (   114 GB/s)  down   3437.2 (    88 GB/s)  all   8982.7 (  101 GB/s, 0.15 of the copy rate)  unpack   1766.4  = 2.02x bf16  us a layer
+T= 8192        big96: hits  128.0  route   193.7  gate+up   5330.7 (   114 GB/s)  down   3437.5 (    88 GB/s)  all   8983.7 (  101 GB/s, 0.15 of the copy rate)  unpack   1766.8  = 2.02x bf16  us a layer
+T= 8192          na1: hits  128.0  route   193.7  gate+up   5329.2 (   114 GB/s)  down   3437.1 (    88 GB/s)  all   8984.2 (  101 GB/s, 0.15 of the copy rate)  unpack   1767.0  = 2.02x bf16  us a layer
+T= 8192          pb1: hits  128.0  route   193.8  gate+up   5334.2 (   114 GB/s)  down   3436.9 (    88 GB/s)  all   8984.6 (  101 GB/s, 0.15 of the copy rate)  unpack   1767.4  = 2.02x bf16  us a layer
+T= 8192          pf4: hits  128.0  route   193.7  gate+up   5330.0 (   114 GB/s)  down   3437.1 (    88 GB/s)  all   8982.6 (  101 GB/s, 0.15 of the copy rate)  unpack   1767.5  = 2.02x bf16  us a layer

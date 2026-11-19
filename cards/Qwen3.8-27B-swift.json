@@ -1,0 +1,63 @@
+{
+  "size_gb": 18.653791054,
+  "gpus": [
+    {
+      "name": "NVIDIA GeForce RTX 4090",
+      "tok_s": 47.66,
+      "first_token_ms": 467.5,
+      "mem_gib_4k": 19.413,
+      "fits_32k": true
+    },
+    {
+      "name": "NVIDIA RTX A6000",
+      "tok_s": 29.82,
+      "first_token_ms": 738.7,
+      "mem_gib_4k": 19.319,
+      "fits_32k": true
+    },
+    {
+      "name": "NVIDIA L40S",
+      "tok_s": 35.84,
+      "first_token_ms": 422.5,
+      "mem_gib_4k": 19.494,
+      "fits_32k": true
+    }
+  ],
+  "kl_bf16": 0.013930189495021679,
+  "kl_fp8_ref": 0.00465,
+  "date": "2026-10-09",
+  "versions": {
+    "glyd": "0.29.4",
+    "commit": "b2172dd5"
+  },
+  "evals_bf16": [
+    {
+      "dataset": "openai/gsm8k",
+      "task_id": "gsm8k",
+      "value": 0.966641,
+      "n": 1319,
+      "shards": 1,
+      "harness": {
+        "inspect_ai": "0.3.278",
+        "inspect_evals": "0.24.0"
+      },
+      "notes": "10-shot, numeric match, non-thinking",
+      "date": "2026-10-09"
+    }
+  ],
+  "evals": [
+    {
+      "dataset": "openai/gsm8k",
+      "task_id": "gsm8k",
+      "value": 0.971948,
+      "n": 1319,
+      "shards": 3,
+      "harness": {
+        "inspect_ai": "0.3.278",
+        "inspect_evals": "0.24.0"
+      },
+      "notes": "10-shot, numeric match, non-thinking",
+      "date": "2026-10-09"
+    }
+  ]
+}

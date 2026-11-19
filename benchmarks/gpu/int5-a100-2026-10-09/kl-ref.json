@@ -1,0 +1,8 @@
+{
+ "windows": 256,
+ "length": 1024,
+ "skip": 32,
+ "positions": 253952,
+ "dataset_tokens": 297193,
+ "seconds": 160.7
+}

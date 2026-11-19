@@ -1,0 +1,19 @@
+glyd run: glyd-engine is not installed here; using vLLM.
+gemma-4-12B-it: 16.6 GB on the GPU with Glyd, instead of 23.9 GB, which does not fit the 25.3 GB your GPU has free.
+Downloading gemma-4-12B-it: 10% (2.8 GB of 24.0 GB)
+Downloading gemma-4-12B-it: 20% (5.8 GB of 24.0 GB)
+Downloading gemma-4-12B-it: 30% (7.2 GB of 24.0 GB)
+Downloading gemma-4-12B-it: 40% (10.2 GB of 24.0 GB)
+Downloading gemma-4-12B-it: 50% (12.4 GB of 24.0 GB)
+Downloading gemma-4-12B-it: 60% (14.5 GB of 24.0 GB)
+Downloading gemma-4-12B-it: 70% (17.0 GB of 24.0 GB)
+Downloading gemma-4-12B-it: 80% (19.4 GB of 24.0 GB)
+Downloading gemma-4-12B-it: 90% (22.5 GB of 24.0 GB)
+Downloading gemma-4-12B-it: 100% (24.0 GB of 24.0 GB)
+Downloaded gemma-4-12B-it (24.0 GB).
+Settings: 186,368-token context (the most that fits), compiled mode (CUDA graphs), 92% of GPU memory (23.2 GB), tool calls (gemma4), thinking shown apart (gemma4).
+KV cache: vLLM's (GLYD_KV=auto for Glyd's lossless cache on supported GPUs)
+Loading gemma-4-12B-it with Glyd: 16.6 GB instead of 23.9 GB...
+glyd: the server stopped while starting: RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}.
+  Report it at https://github.com/surya-koritala/Glyd/issues with the log if it persists
+  The server's log: /root/.local/state/glyd/logs/run-20261006-044326.log

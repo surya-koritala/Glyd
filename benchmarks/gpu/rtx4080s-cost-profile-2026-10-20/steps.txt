@@ -1,0 +1,32 @@
+[2026-10-19T23:47:00-04:00] tiers (512 MiB, 10 passes; the disk under /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d)
+[2026-10-19T23:47:03-04:00] tiers done: {"vram_read":697.08,"vram_copy":312.14,"link_h2d_pinned":26.89,"link_d2h_pinned":27.13,"link_h2d_pageable":21.56,"vram_product":628.14,"ram_read":74.50,"ram_read_1_thread":51.87,"ssd_read_16":6.78,"ssd_read_1":3.99}
+[2026-10-19T23:47:03-04:00] swift: /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d
+[2026-10-19T23:47:03-04:00] costs swift: resident 6200345704, active 5497106292, predicted ["vram",111.41]
+[2026-10-19T23:47:05-04:00] costs --load swift: {"basis":"measured (the engine's own counters at load)","weights_bytes":6200345608,"kv_bytes":134217728,"kv_bytes_per_token":32768,"state_bytes":51511296,"working_bytes":601399076,"engine_bytes":6987473708,"context_tokens":4096}
+[2026-10-19T23:47:10-04:00] bench swift: {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":216.9,"prefill_ms_all":[216.8,217.0,217.0,216.9,216.9],"decode_ms_mean":9.356,"decode_ms_p50":9.355,"decode_ms_p99":9.365,"decode_tokens_per_s":106.89,"load_s":1.68,"weights_gib":5.775,"checkpoint_gib":16.678,"states_gib":0.048,"kv_gib":0.125,"gpu_mem_used_gib":9.236,"layout":"i5","graph":true}
+[2026-10-19T23:47:12-04:00] serve swift ready after 1.9 s
+[2026-10-19T23:47:15-04:00] served swift: {"level":"swift","prompt_tokens":1027,"tokens_streamed":257,"first_token_s":0.240,"decode_s":2.389,"decode_tokens_per_s":107.16,"prefill_tokens_per_s_with_http":4279.2,"how":"/v1/completions streamed, timed by the client between the first and the last token event; the first token includes the prompt and the HTTP round trip"}
+[2026-10-19T23:47:15-04:00] kestrel: /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-kestrel/snapshots/4d7e583a7cce212734140927824f91ad9ad11cf7
+[2026-10-19T23:47:15-04:00] costs kestrel: resident 7318652008, active 6488273268, predicted ["vram",94.76]
+[2026-10-19T23:47:18-04:00] costs --load kestrel: {"basis":"measured (the engine's own counters at load)","weights_bytes":7318651912,"kv_bytes":134217728,"kv_bytes_per_token":32768,"state_bytes":51511296,"working_bytes":601399076,"engine_bytes":8105780012,"context_tokens":4096}
+[2026-10-19T23:47:24-04:00] bench kestrel: {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":218.4,"prefill_ms_all":[218.0,218.4,218.4,218.4,218.4],"decode_ms_mean":10.794,"decode_ms_p50":10.794,"decode_ms_p99":10.803,"decode_tokens_per_s":92.64,"load_s":2.01,"weights_gib":6.817,"checkpoint_gib":16.678,"states_gib":0.048,"kv_gib":0.125,"gpu_mem_used_gib":10.267,"layout":"i6","graph":true}
+[2026-10-19T23:47:26-04:00] serve kestrel ready after 2.3 s
+[2026-10-19T23:47:30-04:00] served kestrel: {"level":"kestrel","prompt_tokens":1027,"tokens_streamed":257,"first_token_s":0.240,"decode_s":2.756,"decode_tokens_per_s":92.89,"prefill_tokens_per_s_with_http":4279.2,"how":"/v1/completions streamed, timed by the client between the first and the last token event; the first token includes the prompt and the HTTP round trip"}
+[2026-10-19T23:47:30-04:00] penguin: /home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-penguin/snapshots/5985564d007e847509609c23d7647a8688867889
+[2026-10-19T23:47:30-04:00] costs penguin: resident 12718590789, active 10684361541, predicted ["vram",58.03]
+[2026-10-19T23:47:30-04:00] costs --load penguin: 
+[2026-10-19T23:47:30-04:00] bench penguin: 
+[2026-10-19T23:47:30-04:00] serve penguin did not come up: 
+[2026-10-19T23:47:30-04:00] Nemotron: glyd/nemotron-3-hummingbird by the Hub's headers
+[2026-10-19T23:47:37-04:00] costs nemotron: resident 48681614344, experts 42108272640, active 7944380116 ()
+[2026-10-19T23:47:42-04:00] predict nemotron 4090A-copy: ["experts_ram_copy",41.08,41.08,{"vram":8286224084,"link":399864104,"ram":0,"ssd":0}]
+[2026-10-19T23:47:48-04:00] predict nemotron 4090B-copy: ["experts_ram_copy",25.65,25.65,{"vram":8286224084,"link":399864104,"ram":0,"ssd":0}]
+[2026-10-19T23:47:53-04:00] predict nemotron 4090B-cpu: ["experts_ram_cpu",52.88,89.39,{"vram":7785036948,"link":0,"ram":501187135,"ssd":0}]
+[2026-10-19T23:47:58-04:00] predict nemotron 4090B-cpu-kernel: ["experts_ram_cpu",43.91,66.44,{"vram":7785036948,"link":0,"ram":501187135,"ssd":0}]
+[2026-10-19T23:48:05-04:00] predict nemotron 4090B-16g-copy: ["experts_ram_copy",15.89,15.89,{"vram":8286224084,"link":711070557,"ram":0,"ssd":0}]
+[2026-10-19T23:48:10-04:00] predict nemotron 4090B-16g-cpu: ["experts_ram_cpu",38.91,54.66,{"vram":7466593136,"link":0,"ram":819630947,"ssd":0}]
+[2026-10-19T23:48:15-04:00] predict nemotron 4090B-16g-cpu-kernel: ["experts_ram_cpu",31.23,40.63,{"vram":7466593136,"link":0,"ram":819630947,"ssd":0}]
+[2026-10-19T23:48:21-04:00] predict nemotron 4090C-ssd-cpu: ["experts_ssd_cpu",15.90,16.14,{"vram":7785036948,"link":0,"ram":110755185,"ssd":390431949}]
+[2026-10-19T23:48:26-04:00] predict nemotron 4090C-16g-ssd-cpu: ["experts_ssd_cpu",12.99,13.49,{"vram":7466593136,"link":0,"ram":339225248,"ssd":480405698}]
+[2026-10-19T23:49:34-04:00] predict nemotron wren: 4090E ["estimated",70412699362,12.58,12.58]; 5090D [58.15,58.15]
+[2026-10-19T23:49:34-04:00] done

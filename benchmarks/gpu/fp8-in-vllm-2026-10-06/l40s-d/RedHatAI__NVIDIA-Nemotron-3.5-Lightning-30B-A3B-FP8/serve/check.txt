@@ -1,0 +1,3 @@
+  stock-serve: ok in 212 s; weights 30.2 GiB, KV 686080 tokens, concurrency (8192, 83.75)
+GPU NVIDIA L40S
+PASS: 0 failed; /root/results/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8/serve/check_fp8_vllm.json

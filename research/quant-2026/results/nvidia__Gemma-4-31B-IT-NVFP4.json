@@ -1,0 +1,744 @@
+{
+ "repo": "nvidia/Gemma-4-31B-IT-NVFP4",
+ "quant_method": "modelopt",
+ "census": {
+  "bf16:bf16:attn": {
+   "tensors": 230,
+   "bytes": 16955473920
+  },
+  "bf16:bf16:embed": {
+   "tensors": 1,
+   "bytes": 2818572288
+  },
+  "bf16:bf16:vision": {
+   "tensors": 192,
+   "bytes": 1151225856
+  },
+  "nvfp4:codes:mlp": {
+   "tensors": 180,
+   "bytes": 10404495360
+  },
+  "nvfp4:scales:mlp": {
+   "tensors": 180,
+   "bytes": 1300561920
+  },
+  "other:other:attn": {
+   "tensors": 180,
+   "bytes": 716800
+  },
+  "other:other:mlp": {
+   "tensors": 360,
+   "bytes": 1440
+  },
+  "other:other:other": {
+   "tensors": 241,
+   "bytes": 1946232
+  },
+  "other:other:vision": {
+   "tensors": 164,
+   "bytes": 261216
+  }
+ },
+ "samples": [
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.38.mlp.up_proj.weight",
+   "rows": [
+    13696,
+    18304
+   ],
+   "expert": null,
+   "shape": [
+    21504,
+    2688
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.9716094187612043,
+    "huffman": 3.9974707547949735,
+    "contexts": {
+     "left": 3.9703355732419534,
+     "above": 3.9715092988771623,
+     "scale": 3.9467663476584773,
+     "block max (side info counted)": 3.97160985554254
+    },
+    "ceiling": 3.9467663476584773,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    4608,
+    5376
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.616550378580204,
+    "contexts": {
+     "left": 3.6119003159192395,
+     "above": 3.6164140040427264
+    },
+    "ceiling": 3.6119003159192395,
+    "fixed": 4.124007936507937,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 11.7
+  },
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.11.mlp.gate_proj.weight",
+   "rows": [
+    8448,
+    13056
+   ],
+   "expert": null,
+   "shape": [
+    21504,
+    2688
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.969120825786188,
+    "huffman": 3.994092628438637,
+    "contexts": {
+     "left": 3.9680014738953804,
+     "above": 3.968795943492509,
+     "scale": 3.9462766656523227,
+     "block max (side info counted)": 3.9691212625675236
+    },
+    "ceiling": 3.9462766656523227,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    4608,
+    5376
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.5028681069139775,
+    "contexts": {
+     "left": 3.501452308911434,
+     "above": 3.5026900602679003
+    },
+    "ceiling": 3.501452308911434,
+    "fixed": 4.085865162037037,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 11.9
+  },
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.49.mlp.down_proj.weight",
+   "rows": [
+    3968,
+    5120
+   ],
+   "expert": null,
+   "shape": [
+    5376,
+    10752
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.9685561875733235,
+    "huffman": 3.9934957998770253,
+    "contexts": {
+     "left": 3.967458440172367,
+     "above": 3.968529433589461,
+     "scale": 3.9464414979072377,
+     "block max (side info counted)": 3.968556624354659
+    },
+    "ceiling": 3.9464414979072377,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    1152,
+    21504
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.583790601598742,
+    "contexts": {
+     "left": 3.5793758356985284,
+     "above": 3.5836980771347546
+    },
+    "ceiling": 3.5793758356985284,
+    "fixed": 4.066845444775133,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 11.8
+  },
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.40.mlp.down_proj.weight",
+   "rows": [
+    2432,
+    3584
+   ],
+   "expert": null,
+   "shape": [
+    5376,
+    10752
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.9729120044078847,
+    "huffman": 3.999922373938182,
+    "contexts": {
+     "left": 3.9712225167955304,
+     "above": 3.972694955986929,
+     "scale": 3.9480908050955925,
+     "block max (side info counted)": 3.9729124411892203
+    },
+    "ceiling": 3.9480908050955925,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    1152,
+    21504
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.7468931704454724,
+    "contexts": {
+     "left": 3.716946418110917,
+     "above": 3.7467241588526696
+    },
+    "ceiling": 3.716946418110917,
+    "fixed": 4.176680307539683,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 11.9
+  },
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.46.mlp.up_proj.weight",
+   "rows": [
+    11648,
+    16256
+   ],
+   "expert": null,
+   "shape": [
+    21504,
+    2688
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.968571798814306,
+    "huffman": 3.993951464456225,
+    "contexts": {
+     "left": 3.9674698943358595,
+     "above": 3.9685526513341642,
+     "scale": 3.9474744134180386,
+     "block max (side info counted)": 3.9685722355956417
+    },
+    "ceiling": 3.9474744134180386,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    4608,
+    5376
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.5921468245918806,
+    "contexts": {
+     "left": 3.583793991384229,
+     "above": 3.592034064357
+    },
+    "ceiling": 3.583793991384229,
+    "fixed": 4.079985119047619,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 11.6
+  },
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.55.mlp.gate_proj.weight",
+   "rows": [
+    7040,
+    11648
+   ],
+   "expert": null,
+   "shape": [
+    21504,
+    2688
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.9682523353553307,
+    "huffman": 3.9934440895363137,
+    "contexts": {
+     "left": 3.9671298941682696,
+     "above": 3.9680248131299365,
+     "scale": 3.9490043949480365,
+     "block max (side info counted)": 3.9682527721366663
+    },
+    "ceiling": 3.9490043949480365,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    4608,
+    5376
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.695102957504298,
+    "contexts": {
+     "left": 3.6612052737603693,
+     "above": 3.694977967370098
+    },
+    "ceiling": 3.6612052737603693,
+    "fixed": 4.089771412037037,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 11.7
+  },
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.49.mlp.up_proj.weight",
+   "rows": [
+    4480,
+    9088
+   ],
+   "expert": null,
+   "shape": [
+    21504,
+    2688
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.9685045698969788,
+    "huffman": 3.9936811255399514,
+    "contexts": {
+     "left": 3.9674092477799436,
+     "above": 3.9684825099325103,
+     "scale": 3.9469785724534003,
+     "block max (side info counted)": 3.9685050066783143
+    },
+    "ceiling": 3.9469785724534003,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    4608,
+    5376
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.544159641551954,
+    "contexts": {
+     "left": 3.539627999779818,
+     "above": 3.54405673789488
+    },
+    "ceiling": 3.539627999779818,
+    "fixed": 4.082243096891534,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 4.1
+  },
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.30.mlp.gate_proj.weight",
+   "rows": [
+    4480,
+    9088
+   ],
+   "expert": null,
+   "shape": [
+    21504,
+    2688
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.970272016133123,
+    "huffman": 3.9957737594685225,
+    "contexts": {
+     "left": 3.9690157356557942,
+     "above": 3.970233900008065,
+     "scale": 3.9519687192529296,
+     "block max (side info counted)": 3.9702724529144584
+    },
+    "ceiling": 3.9519687192529296,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    4608,
+    5376
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.815189288271802,
+    "contexts": {
+     "left": 3.7557409189134607,
+     "above": 3.8149395859522515
+    },
+    "ceiling": 3.7557409189134607,
+    "fixed": 4.106760499338624,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 3.9
+  },
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.16.mlp.gate_proj.weight",
+   "rows": [
+    8192,
+    12800
+   ],
+   "expert": null,
+   "shape": [
+    21504,
+    2688
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.969884316028523,
+    "huffman": 3.995231265113467,
+    "contexts": {
+     "left": 3.96863500570134,
+     "above": 3.9697091174332684,
+     "scale": 3.945460949113296,
+     "block max (side info counted)": 3.9698847528098584
+    },
+    "ceiling": 3.945460949113296,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    4608,
+    5376
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.6139914573909016,
+    "contexts": {
+     "left": 3.610025424088714,
+     "above": 3.613883921905752
+    },
+    "ceiling": 3.610025424088714,
+    "fixed": 4.102900752314815,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 4.0
+  },
+  {
+   "format": "nvfp4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.52.mlp.down_proj.weight",
+   "rows": [
+    1152,
+    2304
+   ],
+   "expert": null,
+   "shape": [
+    5376,
+    10752
+   ],
+   "dtype": "U8",
+   "codes": {
+    "n": 24772608,
+    "H0": 3.9690417527003703,
+    "huffman": 3.993883445780113,
+    "contexts": {
+     "left": 3.9679192058390336,
+     "above": 3.9690126615170214,
+     "scale": 3.950051939971666,
+     "block max (side info counted)": 3.969042189481706
+    },
+    "ceiling": 3.950051939971666,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    1152,
+    21504
+   ],
+   "scales": {
+    "n": 1548288,
+    "width": 8,
+    "raw_low_bits": 0,
+    "H0": 3.6857372330687617,
+    "contexts": {
+     "left": 3.6298435540918392,
+     "above": 3.685699790509965
+    },
+    "ceiling": 3.6298435540918392,
+    "fixed": 4.078316178902117,
+    "fixed_name": "4-bit window a row + escape"
+   },
+   "scale_block": [
+    1,
+    16
+   ],
+   "scale_dtype": "F8_E4M3",
+   "seconds": 4.1
+  },
+  {
+   "format": "bf16",
+   "category": "attn",
+   "tensor": "model.language_model.layers.27.self_attn.q_proj.weight",
+   "rows": [
+    768,
+    1920
+   ],
+   "expert": null,
+   "shape": [
+    8192,
+    5376
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 6193152,
+    "H0": 10.563879491073344,
+    "ceiling": 10.563879491073344,
+    "H_exp": 2.6315574068492182,
+    "fixed": 10.729046211040838,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.2
+  },
+  {
+   "format": "bf16",
+   "category": "attn",
+   "tensor": "model.language_model.layers.52.self_attn.v_proj.weight",
+   "rows": [
+    256,
+    1408
+   ],
+   "expert": null,
+   "shape": [
+    4096,
+    5376
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 6193152,
+    "H0": 10.504720964511494,
+    "ceiling": 10.504720964511494,
+    "H_exp": 2.582116536923113,
+    "fixed": 10.688458800946595,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.2
+  },
+  {
+   "format": "bf16",
+   "category": "embed",
+   "tensor": "model.language_model.embed_tokens.weight",
+   "rows": [
+    123648,
+    124800
+   ],
+   "expert": null,
+   "shape": [
+    262144,
+    5376
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 6193152,
+    "H0": 10.482948466618923,
+    "ceiling": 10.482948466618923,
+    "H_exp": 2.5606486694786987,
+    "fixed": 10.65389126570767,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.3
+  },
+  {
+   "format": "bf16",
+   "category": "vision",
+   "tensor": "model.vision_tower.encoder.layers.3.mlp.up_proj.linear.weight",
+   "rows": [
+    0,
+    4224
+   ],
+   "expert": null,
+   "shape": [
+    4304,
+    1152
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 4866048,
+    "H0": 10.50247247742794,
+    "ceiling": 10.50247247742794,
+    "H_exp": 2.576406111931316,
+    "fixed": 10.677727798821548,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.2
+  }
+ ],
+ "projection": {
+  "stored": 32633255032,
+  "fixed": {
+   "bytes": 25067177146.333336,
+   "saved": 0.23185176833409382,
+   "parts": {
+    "bf16:bf16": {
+     "bytes": 20925272064,
+     "ratio": 0.6687285001377621,
+     "unsampled_bytes": 0
+    },
+    "nvfp4:codes": {
+     "bytes": 10404495360,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    },
+    "nvfp4:scales": {
+     "bytes": 1300561920,
+     "ratio": 0.5124171988673942,
+     "unsampled_bytes": 0
+    },
+    "other:other": {
+     "bytes": 2925688,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    }
+   }
+  },
+  "H0": {
+   "bytes": 24685965572.024216,
+   "saved": 0.2435334584975576,
+   "parts": {
+    "bf16:bf16": {
+     "bytes": 20925272064,
+     "ratio": 0.6578520162624156,
+     "unsampled_bytes": 0
+    },
+    "nvfp4:codes": {
+     "bytes": 10404495360,
+     "ratio": 0.9924181306364308,
+     "unsampled_bytes": 0
+    },
+    "nvfp4:scales": {
+     "bytes": 1300561920,
+     "ratio": 0.4549553707489749,
+     "unsampled_bytes": 0
+    },
+    "other:other": {
+     "bytes": 2925688,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    }
+   }
+  },
+  "ceiling": {
+   "bytes": 24625848847.519043,
+   "saved": 0.24537565059412358,
+   "parts": {
+    "bf16:bf16": {
+     "bytes": 20925272064,
+     "ratio": 0.6578520162624156,
+     "unsampled_bytes": 0
+    },
+    "nvfp4:codes": {
+     "bytes": 10404495360,
+     "ratio": 0.986962857636775,
+     "unsampled_bytes": 0
+    },
+    "nvfp4:scales": {
+     "bytes": 1300561920,
+     "ratio": 0.45237390050823184,
+     "unsampled_bytes": 0
+    },
+    "other:other": {
+     "bytes": 2925688,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    }
+   }
+  }
+ },
+ "seconds": 16,
+ "f16_bytes": {},
+ "fp8ref": "glyd-gpu-py/glyd_gpu/fp8ref.py layout 2 (fp8-lossless@42e6999f, blob aafce648, the same file on private main since #15)"
+}

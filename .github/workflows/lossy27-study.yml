@@ -1,0 +1,112 @@
+name: Lossy 27B reference study
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_inventory:
+        description: Encode and verify every pinned Candidate A tensor
+        type: boolean
+        default: false
+      fp8_census:
+        description: Count Candidate A matrix values that are exact e4m3fn values under power-of-two block scales
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - 'research/lossy-2026/rust/**'
+      - 'research/lossy-2026/sample.py'
+      - 'research/lossy-2026/inventory.py'
+      - 'research/lossy-2026/fp8_census.py'
+      - 'research/lossy-2026/test_inventory.py'
+      - 'research/lossy-2026/models.json'
+      - '.github/workflows/lossy27-study.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - name: Exact-after-rounding and corruption checks
+        run: |
+          cargo test --release --manifest-path research/lossy-2026/rust/Cargo.toml -- --nocapture
+          python3 research/lossy-2026/test_inventory.py
+      - name: Build reference analyzer
+        run: cargo build --release --manifest-path research/lossy-2026/rust/Cargo.toml
+      - name: Pinned 2026 tensor inventory and sample study
+        run: python3 research/lossy-2026/sample.py --binary research/lossy-2026/rust/target/release/glyd-lossy-study --out /tmp/lossy27-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lossy27-reference-study
+          path: /tmp/lossy27-results/*.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  full-inventory:
+    if: github.event_name == 'workflow_dispatch' && inputs.full_inventory
+    needs: reference
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - name: Build bounded-memory encoder
+        run: cargo build --release --manifest-path research/lossy-2026/rust/Cargo.toml --bin glyd-lossy-inventory
+      - name: Complete pinned tensor inventory
+        run: |
+          mkdir -p /tmp/candidate-a-inventory
+          git rev-parse HEAD > /tmp/candidate-a-inventory/COMMIT
+          python3 research/lossy-2026/inventory.py --binary research/lossy-2026/rust/target/release/glyd-lossy-inventory --out /tmp/candidate-a-inventory
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-a-full-inventory
+          path: |
+            /tmp/candidate-a-inventory/*.json
+            /tmp/candidate-a-inventory/COMMIT
+            /tmp/candidate-a-inventory/tensors/*.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  fp8-census:
+    if: github.event_name == 'workflow_dispatch' && inputs.fp8_census
+    needs: reference
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - name: Build census
+        run: cargo build --release --manifest-path research/lossy-2026/rust/Cargo.toml --bin glyd-fp8-census
+      - name: Exact FP8 fit of every pinned Candidate A matrix
+        run: |
+          mkdir -p /tmp/candidate-a-fp8-census
+          git rev-parse HEAD > /tmp/candidate-a-fp8-census/COMMIT
+          python3 research/lossy-2026/fp8_census.py --binary research/lossy-2026/rust/target/release/glyd-fp8-census --out /tmp/candidate-a-fp8-census
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-a-fp8-census
+          path: |
+            /tmp/candidate-a-fp8-census/*.json
+            /tmp/candidate-a-fp8-census/COMMIT
+            /tmp/candidate-a-fp8-census/tensors/*.json
+          if-no-files-found: ignore
+          retention-days: 14

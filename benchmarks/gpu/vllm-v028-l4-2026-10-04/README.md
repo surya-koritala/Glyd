@@ -1,19 +1,19 @@
 # vLLM on an L4: v0.28.0 against v0.27.0, three models (2026-10-04)
 
-`vllm serve --quantization glyd` on one NVIDIA L4: glyd-gpu 0.27.0 from PyPI (v0.27.0) against the glyd-gpu wheel built from the release's tree (v0.28.0), the same vLLM 0.30.0 for both, in one session, alternated. The embedding and the output layer (the LM head) are packed in v0.28.0 and are vLLM's bf16 tensors in v0.27.0; the smallest layout (`mma`, the L4's default) is faster at 1 to 16 tokens a step in v0.28.0. Nothing was set by hand: every option at its default (`kv` auto, which is lossless on an L4).
-This is the release's code; [vllm-full33-l4-2026-10-03](../vllm-full33-l4-2026-10-03) is the whole-model packing as of an earlier day, before the smallest layout's later changes.
+`vllm serve --quantization glyd` on one NVIDIA L4: glyd-gpu 0.27.0 from PyPI (v0.27.0) against the glyd-gpu wheel built on the box from private main 11c0661f (v0.28.0), the same vLLM 0.30.0 for both, in one session, alternated. The embedding and the LM head (the output layer) are packed in v0.28.0 and are vLLM's bf16 tensors in v0.27.0; the smallest layout (`mma`, the L4's default) is faster at 1 to 16 tokens a step in v0.28.0. Nothing was set by hand: every option at its default (`kv` auto, which is lossless on an L4).
+The v0.28.0 side's tree is private main 11c0661f (the release's code; its version string is still 0.27.0, which the release's version bump changes), so this record is of the code the release ships. Its earlier record, [vllm-full33-l4-2026-10-03](../vllm-full33-l4-2026-10-03), is the whole-model packing as of its day (before the smallest layout's later changes).
 
 ## Setup
 
-- **Machine:** AWS g6.4xlarge, NVIDIA L4 (23,034 MiB, sm_89, 72 W cap, 2,040 MHz at most), driver 595.91.07, AMD EPYC 7R13 (16 CPUs), Linux 7.0 (`log/machine.txt`).
-- **Software:** vLLM 0.30.0 from PyPI, torch 2.13.0+cu130, transformers 5.18.0; one environment for both sides. Each side is a directory put first on `PYTHONPATH`: v0.27.0 is `glyd_gpu-0.27.0-cp310-abi3-manylinux_2_28_x86_64.whl` from PyPI (sha256 1158aad78cfffda69f51bea985042cad7a31527271c3ea6af4e732e54485ad7d), v0.28.0 the wheel built from the release's tree (sha256 526779afde59fe38352907a3a441a412516ddf8ef1e686f216399b6e2fbf28ec; its version string is 0.27.0 until the release's version bump). `log/side-v027.txt` and `log/side-v028.txt` give each side's module path, version and plugin entry point.
+- **Machine:** the AWS dev machine (g6.4xlarge), NVIDIA L4 (23,034 MiB, sm_89, 72 W cap, 2,040 MHz at most), driver 595.91.07, AMD EPYC 7R13 (16 CPUs), Linux 7.0 (`log/machine.txt`).
+- **Software:** vLLM 0.30.0 from PyPI, torch 2.13.0+cu130, transformers 5.18.0; one environment for both sides. Each side is a directory put first on `PYTHONPATH` (`pip install --target`): v0.27.0 is `glyd_gpu-0.27.0-cp310-abi3-manylinux_2_28_x86_64.whl` from PyPI (sha256 1158aad78cfffda69f51bea985042cad7a31527271c3ea6af4e732e54485ad7d), v0.28.0 the wheel built from the tree (sha256 526779afde59fe38352907a3a441a412516ddf8ef1e686f216399b6e2fbf28ec: the release library for every architecture, neutral names, stripped; the release gate, `check_wheel.py`, on the library and on the wheel: 0 lines, `log/build.log`). The environment's own glyd-gpu 0.27.0rc1 is shadowed: `log/side-v027.txt` and `log/side-v028.txt` give each side's module path, version and plugin entry point. The libraries are the wheels' own (no development library in any measurement but the layout-alone run's).
 - **Models:** Qwen/Qwen3-8B, NousResearch/Meta-Llama-3.1-8B and Qwen/Qwen3-4B (tied embedding), bf16 checkpoints from the Hugging Face Hub.
 - **Weights and KV cache:** `vllm serve` as a user runs it (the engine in a process of its own, compiled, CUDA graphs), `--max-model-len 4096`, `--gpu-memory-utilization 0.9`, `kv` off (vLLM's own KV cache); each side's first start on an empty compile cache, then later starts on it.
 - **One user:** `tps_ab.py`: a vLLM of its own for each of 3 rounds of each side, the order alternating, one request of a random 1,024-token prompt decoded for 256 tokens (the time of the run less the time of a run of one token, over the new tokens; the median of 3 requests), vLLM's default mode, `kv` off, 0.9 of the GPU, a context of 1,344 tokens.
-- **Serving:** `vllm bench serve`, the random dataset, 1,024 tokens in and 256 out (`--ignore-eos`): 64 prompts at 1 request a second, then 256 at once; `kv` auto as users get it (lossless on an L4), `--max-model-len 4096`, 0.9 of the GPU; a seed of its own for each pass (round 1: 10 and 11, round 2: 20 and 21), the same prompts for both sides in a round; the prefix cache is vLLM's default and each server's highest hit rate, from its log, is printed in each summary. Round 1 starts each side's server twice (the first on an empty compile cache and with the KV cache's tables made at that first start, the second measured); round 2 starts each side's server once on round 1's caches. The order of the two sides alternates between rounds, and the GPU is let down to 55 C (at most 300 s) before each measured start.
-- Every run was one at a time on the machine.
+- **Serving:** `bench_serve.sh`, `vllm bench serve`, the random dataset, 1,024 tokens in and 256 out (`--ignore-eos`): 64 prompts at 1 request a second, then 256 at once; `kv` auto as users get it (lossless on an L4), `--max-model-len 4096`, 0.9 of the GPU; a seed of its own for each pass (round 1: 10 and 11, round 2: 20 and 21), the same prompts for both sides in a round; the prefix cache is vLLM's default and each server's highest hit rate, from its log, is printed in each summary. Round 1 starts each side's server twice (the first on an empty compile cache and an empty directory of KV tables, which `kv` auto makes at a first start: the cold start's lines are in `kv-glyd-cold.txt`), the second measured; round 2 starts the servers of round 1's caches once. The order of the two sides alternates between rounds, and the GPU is let down to 55 C (at most 300 s) before each measured start.
+- **The box was shared:** another job's holds of the box's lock (`flock ~/.glyd-box.lock`) ran between ours, never during one. `log/load-*.log` samples the machine every 20 s of each hold of ours: the load, the GPU's temperature, clock, power and memory, and the three busiest processes.
 
-## Weights and KV cache (`weights_kv/`, kv off)
+## Weights and KV cache (`wk-*`, kv off)
 
 Qwen3-8B: first start / later start, KV cache tokens: bf16 19,760 / 27,024; v0.27.0 38,912 / 54,464; v0.28.0 60,736 / 60,736.
 Llama-3.1-8B: first start / later start, KV cache tokens: bf16 26,112 / 32,592; v0.27.0 50,032 / 64,368; v0.28.0 70,112 / 70,112.
@@ -36,7 +36,7 @@ Qwen3-4B: first start / later start, KV cache tokens: bf16 73,968 / 83,408; v0.2
 | Llama-3.1-8B, tokens a second (rounds) | 21.92 (22.00, 21.92, 21.77) | **23.01** (23.10, 23.01, 22.94) | **1.050x** (each round 1.050, 1.050, 1.054) |
 | Qwen3-4B, tokens a second (rounds) | 37.54 (37.75, 37.54, 37.42) | **39.62** (39.74, 39.62, 39.44) | **1.055x** (each round 1.053, 1.055, 1.054) |
 
-**The smallest layout's faster steps alone** (`one_user/Qwen3-8B/layout_alone/`: the same protocol, v0.27.0 against a build of the release's tree with the embedding and the LM head left as vLLM runs them): 21.19 against 22.07 tokens a second, **1.042x** (each round 1.041, 1.043, 1.036); with the embedding and the LM head packed too, the table above.
+**The smallest layout's faster steps alone** (`one_user/Qwen3-8B/layout_alone/`: the same alternating protocol, v0.27.0 against this tree's sources and development library with the embedding and the LM head left as vLLM runs them, a development build's setting): 21.19 against 22.07 tokens a second, **1.042x** (each round 1.041, 1.043, 1.036); with the embedding and the LM head packed too, the table above.
 
 ## Serving (`serve/`, `vllm bench serve`, kv auto)
 
@@ -95,7 +95,7 @@ Prefix cache hit rate in the servers' logs, the highest of any run: 0.4%.
 
 ## Checks
 
-- The plugin's tests with the GPU (`test_vllm.py`): 27 ok from the built wheel (exit 0) and 27 ok from the sources (exit 0).
+- The plugin's tests with the GPU (`test_vllm.py`): 27 ok from the built wheel (exit 0) and 27 ok from the sources with the development library (exit 0).
 - `check_vllm.py --quick` on Qwen3-8B, the built wheel: 18 passed, 0 failed (the embedding and the LM head packed in both layouts, every lookup the checkpoint's row bit for bit, every pack decoded to its weights bit for bit, each product within 1e-2 of `F.linear`, top-1 agreement with bf16 on its continuation, `exact` bf16 eager's tokens, logprobs and prompt logprobs bit for bit).
 - `check_vllm.py --quick` on Llama-3.1-8B, the built wheel: 18 passed, 0 failed.
 - `check_vllm.py --quick` on Qwen3-4B, the built wheel: 18 passed, 0 failed.
@@ -103,5 +103,6 @@ Prefix cache hit rate in the servers' logs, the highest of any run: 0.4%.
 
 ## Files
 
-- `log/`: `machine.txt`, `side-v027.txt`, `side-v028.txt`. `weights_kv/weights_kv_lines.txt`: vLLM's own weights, KV cache and compile lines of every start.
-- `one_user/`: each model's `tps_ab.txt` and rounds' JSON; `layout_alone/` beside Qwen3-8B's. `serve/MODEL/SIDE-roundN/`: each pass's `vllm bench serve` output and result JSON, the server's weights and KV lines, nvidia-smi's GPU clock and temperature each second and the summary. `check_vllm/`: each model's report and the KV check's result (`kv_quick.txt`); `checks.txt`: the plugin's tests' results.
+- `log/`: `machine.txt`, `side-v027.txt` and `side-v028.txt`, `build.log` (the library, the wheel and the gate), `driver.log` (every stage's line), `unit-src.log` and `unit-wheel.log` (the plugin's tests), `load-*.log` (the sampler of each hold), `smoke-*`.
+- `weights_kv/`: each start's log (`wk-MODEL-SIDE-N.log`) and `weights_kv_lines.txt`. `one_user/`: each model's `tps_ab.txt` and rounds' JSON and logs; `layout_alone/` beside Qwen3-8B's. `serve/MODEL/SIDE-roundN/`: each pass's `vllm bench serve` output and result JSON, the server's weights and KV lines (`kv-glyd*.txt`, the cold start's apart), both servers' logs, nvidia-smi's GPU clock and temperature each second (`smi-*.csv`) and the summary. `check_vllm/`: each model's report and log.
+- The scripts: `gpu/vllm/tps_ab.py`, `bench_serve.sh`, `bench_summary.py`, `check_vllm.py`, `tests/test_vllm.py`.

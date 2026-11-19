@@ -1,0 +1,4 @@
+install: 61 s
+first run of Qwen3-8B from an empty machine, to the answer: 143 s
+glyd serve, to /v1/models answering: 4 s
+second start of Qwen3-8B, to the answer: 4 s

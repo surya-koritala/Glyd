@@ -1,0 +1,123 @@
+{
+ "model": "Qwen/Qwen3.8-27B-FP8",
+ "args": {
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "out": "/root/results/Qwen_Qwen3.8-27B-FP8",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "max_num_seqs": 64,
+  "layout": "auto",
+  "steps": "stock-eager,glyd-exact,stock,glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "exact": {
+  "equal": true,
+  "diffs": {
+   "tokens": null,
+   "logprobs": null,
+   "long_ids": null,
+   "long_logprobs": null,
+   "image_tokens": null,
+   "image_logprobs": null
+  },
+  "image": true,
+  "image_error": null,
+  "verified": 111,
+  "packed": 111
+ },
+ "glyd": {
+  "weights_gib": 27.13,
+  "kv_tokens": 103604,
+  "kv_gib": 10.33,
+  "concurrency": 12.65,
+  "tps": {
+   "1": {
+    "median": 25.62,
+    "runs": [
+     25.62,
+     25.62
+    ]
+   },
+   "32": {
+    "median": 395.8,
+    "runs": [
+     396.1,
+     395.51
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantFp8Config",
+  "glyd_key": {
+   "layout": "mma",
+   "exact": false,
+   "verify": true,
+   "fraction": 1.0,
+   "kv": "off",
+   "glyd": "0.29.0",
+   "packs": "b3bf9367fcd68d2c"
+  },
+  "start_s": 240.1
+ },
+ "inventory": {
+  "packed_count": 112,
+  "verified_count": 112,
+  "packed_bf16_bytes": 5997387776,
+  "packed_pack_bytes": 4035149744,
+  "saved_bytes": 1962238032,
+  "gpu_tensor_bytes": 28939177104,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.003324429504573345,
+  "left_16bit_top": {
+   "MergedColumnParallelLinear / Fp8LinearMethod / weight_scale_inv / bfloat16": {
+    "tensors": 64,
+    "bytes": 178257920,
+    "example": "language_model.model.layers.0.mlp.gate_up_proj.weight_scale_inv"
+   },
+   "Embedding / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 5308416,
+    "example": "visual.pos_embed.weight"
+   },
+   "Conv3dLayer / NoneType / weight / bfloat16": {
+    "tensors": 1,
+    "bytes": 3538944,
+    "example": "visual.patch_embed.proj.weight"
+   }
+  }
+ },
+ "stock": {
+  "weights_gib": 28.9,
+  "kv_tokens": 86256,
+  "kv_gib": 8.57,
+  "concurrency": 10.53,
+  "tps": {
+   "1": {
+    "median": 24.97,
+    "runs": [
+     24.98,
+     24.96
+    ]
+   },
+   "32": {
+    "median": 389.46,
+    "runs": [
+     389.77,
+     389.16
+    ]
+   }
+  },
+  "quantization": "fp8",
+  "quant_config": "Fp8Config",
+  "start_s": 232.0,
+  "error": null,
+  "log_tail": null
+ },
+ "fused_agreement": 0.7324
+}

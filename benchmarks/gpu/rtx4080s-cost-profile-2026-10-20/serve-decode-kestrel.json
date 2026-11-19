@@ -1,0 +1,1 @@
+{"level":"kestrel","prompt_tokens":1027,"tokens_streamed":257,"first_token_s":0.240,"decode_s":2.756,"decode_tokens_per_s":92.89,"prefill_tokens_per_s_with_http":4279.2,"how":"/v1/completions streamed, timed by the client between the first and the last token event; the first token includes the prompt and the HTTP round trip"}

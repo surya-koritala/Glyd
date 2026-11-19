@@ -1,0 +1,117 @@
+name: CPU pack
+description: A Hugging Face bf16 checkpoint planned (huggingface/plan.py) and, with mode pack, downloaded, packed on the CPU by glyd-gpu pack --plan into ./packed (or, with prebuilt, the pack a pod made, downloaded), verified, and listed into ./out (plan, glyd.json, index, files' and tensors' sha256)
+inputs:
+  model:
+    description: A Hugging Face repo id
+    required: true
+  revision:
+    description: Its commit
+    required: true
+  mode:
+    description: "plan or pack"
+    required: true
+  layout:
+    description: "The level: penguin (lossless), kestrel (6-bit) or swift (5-bit)"
+    required: false
+    default: penguin
+  prebuilt:
+    description: "mode pack: a release tag of this repository whose assets are the files of a saved directory of this model and level (a calibrated one, packed on a pod by tools/cards/calibrated_pack_job.sh), downloaded into ./packed in place of the model's download and pack; its glyd.json must name this model, revision and level. Verified as a pack made here is"
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Inputs
+      shell: bash
+      env:
+        M: ${{ inputs.model }}
+        R: ${{ inputs.revision }}
+        L: ${{ inputs.layout }}
+      run: |
+        printf 'MODEL=%s\nREVISION=%s\nLAYOUT=%s\nHF_HUB_DISABLE_TELEMETRY=1\n' "$M" "$R" "$L" >> "$GITHUB_ENV"
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: "3.12"
+    - name: The runner
+      shell: bash
+      run: |
+        nproc; free -g; df -h /
+    - name: PyTorch (CPU), transformers, safetensors, huggingface_hub
+      shell: bash
+      run: |
+        python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0"
+        python -m pip install --quiet "transformers==5.18.0" "safetensors>=0.8" "huggingface_hub>=1.5,<2" "accelerate>=1.1"
+    - name: Plan (headers only)
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.workspace }}/glyd-gpu-py
+      run: |
+        mkdir -p out
+        python huggingface/plan.py "$MODEL" out/plan.json --revision "$REVISION" $([ "${LAYOUT:-penguin}" = penguin ] || echo --lossy)  # (a lossy level packs the embedding too)
+    - name: Room for the weights
+      shell: bash
+      if: inputs.mode == 'pack'
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go /opt/hostedtoolcache/node /opt/hostedtoolcache/Ruby /opt/hostedtoolcache/PyPy \
+          /usr/local/share/boost /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/node_modules /opt/az /opt/microsoft /opt/google
+        sudo docker image prune --all --force > /dev/null 2>&1 || true
+        df -h / /mnt 2>/dev/null || df -h /
+        # the model's cache on the second disk where it has room for it (the save stays on /)
+        if [ -d /mnt ] && [ "$(df --output=avail -B1G /mnt | tail -1)" -ge 25 ]; then sudo mkdir -p /mnt/hf && sudo chown "$USER" /mnt/hf && echo "HF_HUB_CACHE=/mnt/hf" >> "$GITHUB_ENV"; fi
+    - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      if: inputs.mode == 'pack'
+      with:
+        toolchain: '1.98.1'
+    - name: Download, pack on the CPU, verify
+      shell: bash
+      if: inputs.mode == 'pack'
+      env:
+        PYTHONPATH: ${{ github.workspace }}/glyd-gpu-py
+        PREBUILT: ${{ inputs.prebuilt }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        cargo build --release --manifest-path glyd-gpu/Cargo.toml --bin glyd-gpu
+        B=target/release/glyd-gpu  # (a workspace member: the root's target)
+        peak() { python -c 'import resource, subprocess, sys, time; t = time.time(); r = subprocess.run(sys.argv[1:]); print(f"peak resident {resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1e6:.2f} GB, {time.time() - t:.0f} s", file=sys.stderr); sys.exit(r.returncode)' "$@"; }
+        if [ -n "$PREBUILT" ]; then
+          # (a pod's pack: its files, and its glyd.json for this model, revision and level, or it would be published as another's)
+          gh release download "$PREBUILT" --repo "$GITHUB_REPOSITORY" --dir packed
+          python -c 'import json, os, sys; m = json.load(open("packed/glyd.json")); got = (m["source"]["repo"], m["source"]["revision"], m.get("level", "penguin")); want = (os.environ["MODEL"], os.environ["REVISION"], os.environ["LAYOUT"]); sys.exit(0 if got == want else f"the prebuilt directory is {got}, where this publish is {want}")'
+        else
+          hf download "$MODEL" --revision "$REVISION" --include "*.safetensors" --include "*.json" --include "*.txt" --include "*.model" --include "*.jinja" > /dev/null
+          C=${HF_HUB_CACHE:-$HOME/.cache/huggingface/hub}
+          du -sh "$C"
+          # (a pinned revision's download writes no refs/main, which glyd-gpu reads for a repo id: the pinned commit there)
+          mkdir -p "$C/models--${MODEL/\//--}/refs" && printf '%s' "$REVISION" > "$C/models--${MODEL/\//--}/refs/main"
+          python -c 'import json, sys; from pathlib import Path; m = json.load(open(sys.argv[1]))["puts"]; snap = next(Path(sys.argv[2]).glob("models--*/snapshots/*")); n = len(list(snap.glob("*.safetensors"))); print(n, "safetensors files in", snap); sys.exit(0 if n else 1)' out/plan.json "$C"
+          python huggingface/plan.py "$MODEL" out/plan-local.json --revision "$REVISION" $([ "${LAYOUT:-penguin}" = penguin ] || echo --lossy)
+          cmp <(python -c 'import json,sys;print(json.dumps(json.load(open(sys.argv[1]))["puts"]))' out/plan.json) <(python -c 'import json,sys;print(json.dumps(json.load(open(sys.argv[1]))["puts"]))' out/plan-local.json)
+          # (penguin is the default layout: no flag)
+          LAYOUT_ARGS=(); [ "$LAYOUT" = penguin ] || LAYOUT_ARGS=(--layout "$LAYOUT")
+          peak $B pack "$MODEL" packed --plan out/plan.json --shard-bytes 1000000000 "${LAYOUT_ARGS[@]}" | tee out/pack.txt
+          rm -rf "$C"/models--*/blobs  # (the source no longer needed: room to verify)
+        fi
+        df -h /
+        peak $B verify packed --device cpu | tee out/verify.txt
+        cp packed/glyd.json out/
+        [ -f packed/model.safetensors.index.json ] && cp packed/model.safetensors.index.json out/
+        python - <<'PY'
+        import hashlib, json
+        from pathlib import Path
+        rows = []
+        for f in sorted(Path("packed").glob("*.safetensors")):
+            data = f.read_bytes()
+            n = int.from_bytes(data[:8], "little")
+            head = json.loads(data[8:8 + n])
+            for k, v in head.items():
+                if k == "__metadata__":
+                    continue
+                a, b = v["data_offsets"]
+                rows.append({"file": f.name, "name": k, "dtype": v["dtype"], "shape": v["shape"], "sha256": hashlib.sha256(data[8 + n + a:8 + n + b]).hexdigest()})
+        Path("out/tensors.json").write_text(json.dumps(rows, indent=0) + "\n")
+        files = [{"file": f.name, "bytes": f.stat().st_size, "sha256": hashlib.sha256(f.read_bytes()).hexdigest()} for f in sorted(Path("packed").glob("*.safetensors"))]
+        files += [{"file": f.name, "bytes": f.stat().st_size, "sha256": hashlib.sha256(f.read_bytes()).hexdigest()} for f in sorted(Path("packed").iterdir()) if f.suffix != ".safetensors"]
+        Path("out/files.json").write_text(json.dumps(files, indent=0) + "\n")
+        print(len(rows), "tensors in", len({r["file"] for r in rows}), "shards")
+        PY

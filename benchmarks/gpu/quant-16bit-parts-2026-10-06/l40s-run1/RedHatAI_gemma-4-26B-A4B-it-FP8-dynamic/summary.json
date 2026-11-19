@@ -1,0 +1,116 @@
+{
+ "model": "RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic",
+ "args": {
+  "model": "RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic",
+  "out": "/root/results/RedHatAI_gemma-4-26B-A4B-it-FP8-dynamic",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "layout": "auto",
+  "steps": "stock-eager,glyd-exact,stock,glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "exact": {
+  "equal": true,
+  "diffs": {
+   "tokens": null,
+   "logprobs": null,
+   "long_ids": null,
+   "long_logprobs": null,
+   "image_tokens": null,
+   "image_logprobs": null
+  },
+  "image": true,
+  "image_error": null,
+  "verified": 136,
+  "packed": 136
+ },
+ "glyd": {
+  "weights_gib": 25.19,
+  "kv_tokens": 58592,
+  "kv_gib": 12.32,
+  "concurrency": 7.15,
+  "tps": {
+   "1": {
+    "median": 120.38,
+    "runs": [
+     120.48,
+     120.28
+    ]
+   },
+   "32": {
+    "median": 1059.25,
+    "runs": [
+     1063.96,
+     1054.53
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantCompressedTensorsConfig",
+  "glyd_key": {
+   "layout": "mma",
+   "exact": false,
+   "verify": false,
+   "fraction": 1.0,
+   "kv": "off",
+   "glyd": "0.29.0",
+   "packs": "4569f438219a4337"
+  },
+  "start_s": 295.6
+ },
+ "inventory": {
+  "packed_count": 138,
+  "packed_bf16_bytes": 2037280768,
+  "packed_pack_bytes": 1368061174,
+  "saved_bytes": 669219594,
+  "gpu_tensor_bytes": 26943381568,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.0036000122781842947,
+  "left_16bit_top": {
+   "ReplicatedLinear / GlydLinearMethod / weight / bfloat16": {
+    "tensors": 54,
+    "bytes": 535486464,
+    "example": "vision_tower.encoder.layers.0.mlp.gate_proj.linear.weight"
+   },
+   "Gemma4VisionPatchEmbedder / NoneType / position_embedding_table / bfloat16": {
+    "tensors": 1,
+    "bytes": 47185920,
+    "example": "vision_tower.patch_embedder.position_embedding_table"
+   }
+  }
+ },
+ "stock": {
+  "weights_gib": 25.8,
+  "kv_tokens": 55378,
+  "kv_gib": 11.64,
+  "concurrency": 6.76,
+  "tps": {
+   "1": {
+    "median": 111.15,
+    "runs": [
+     111.16,
+     111.14
+    ]
+   },
+   "32": {
+    "median": 1045.14,
+    "runs": [
+     1061.8,
+     1028.47
+    ]
+   }
+  },
+  "quantization": "compressed-tensors",
+  "quant_config": "CompressedTensorsConfig",
+  "start_s": 285.4,
+  "error": null,
+  "log_tail": null
+ },
+ "fused_agreement": 0.5117
+}

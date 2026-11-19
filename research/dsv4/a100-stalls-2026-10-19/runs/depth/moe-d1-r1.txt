@@ -1,0 +1,47 @@
+NVIDIA A100-SXM4-40GB (sm_80), /home/ubuntu/stall/libglyd_gpu_cuda13.so: the mixture-of-experts layer on the GPU against the CPU
+---- speed: the layer at the four models' real shapes, packs of arbitrary bytes, the step as a CUDA graph of several layers on different tokens (so that the weights are read from memory, not found in the cache)
+dsv4 int5 (43 layers; 256 experts, 6 a token; router over 4096, experts over 4096, intermediate 2048, SwiGlu { limit: Some(10.0) }): weights 4.45 GB a layer, scratch 0.40 GB for all
+  T=1         207.3 us a layer =     4824 tokens/s through it; 43 layers:  112.2 tokens/s; the experts' packs 6 x 17.30 MB read at 496 GB/s
+  T=2         324.4 us a layer =     6166 tokens/s through it; 43 layers:  143.4 tokens/s; the experts' packs 12 x 17.30 MB read at 627 GB/s
+  T=4         522.5 us a layer =     7656 tokens/s through it; 43 layers:  178.0 tokens/s; the experts' packs 23 x 17.30 MB read at 760 GB/s
+  T=8         788.1 us a layer =    10151 tokens/s through it; 43 layers:  236.1 tokens/s; the experts' packs 44 x 17.30 MB read at 963 GB/s
+  T=16       1361.8 us a layer =    11749 tokens/s through it; 43 layers:  273.2 tokens/s; the experts' packs 80 x 17.30 MB read at 1019 GB/s
+  T=64       4719.1 us a layer =    13562 tokens/s through it; 43 layers:  315.4 tokens/s; the experts' packs 199 x 17.30 MB read at 730 GB/s
+  T=512      6165.5 us a layer =    83043 tokens/s through it; 43 layers: 1931.2 tokens/s; the experts' packs 256 x 17.30 MB read at 718 GB/s
+  T=2048     9446.4 us a layer =   216802 tokens/s through it; 43 layers: 5041.9 tokens/s; the experts' packs 256 x 17.30 MB read at 469 GB/s
+dsv4 int6 (43 layers; 256 experts, 6 a token; router over 4096, experts over 4096, intermediate 2048, SwiGlu { limit: Some(10.0) }): weights 5.26 GB a layer, scratch 0.40 GB for all
+  T=1         195.6 us a layer =     5113 tokens/s through it; 43 layers:  118.9 tokens/s; the experts' packs 6 x 20.45 MB read at 621 GB/s
+  T=2         308.7 us a layer =     6478 tokens/s through it; 43 layers:  150.7 tokens/s; the experts' packs 12 x 20.45 MB read at 778 GB/s
+  T=4         486.7 us a layer =     8218 tokens/s through it; 43 layers:  191.1 tokens/s; the experts' packs 23 x 20.45 MB read at 964 GB/s
+  T=8         829.4 us a layer =     9646 tokens/s through it; 43 layers:  224.3 tokens/s; the experts' packs 44 x 20.45 MB read at 1081 GB/s
+  T=16       1462.7 us a layer =    10939 tokens/s through it; 43 layers:  254.4 tokens/s; the experts' packs 80 x 20.45 MB read at 1121 GB/s
+  T=64       4950.1 us a layer =    12929 tokens/s through it; 43 layers:  300.7 tokens/s; the experts' packs 199 x 20.45 MB read at 822 GB/s
+  T=512      6397.6 us a layer =    80030 tokens/s through it; 43 layers: 1861.2 tokens/s; the experts' packs 256 x 20.45 MB read at 818 GB/s
+  T=2048     9857.0 us a layer =   207771 tokens/s through it; 43 layers: 4831.9 tokens/s; the experts' packs 256 x 20.45 MB read at 531 GB/s
+dsv4 int4 (43 layers; 256 experts, 6 a token; router over 4096, experts over 4096, intermediate 2048, SwiGlu { limit: Some(10.0) }): weights 3.64 GB a layer, scratch 0.40 GB for all
+  T=1         166.0 us a layer =     6024 tokens/s through it; 43 layers:  140.1 tokens/s; the experts' packs 6 x 14.16 MB read at 507 GB/s
+  T=2         258.8 us a layer =     7729 tokens/s through it; 43 layers:  179.8 tokens/s; the experts' packs 12 x 14.16 MB read at 643 GB/s
+  T=4         419.1 us a layer =     9543 tokens/s through it; 43 layers:  221.9 tokens/s; the experts' packs 23 x 14.16 MB read at 775 GB/s
+  T=8         696.1 us a layer =    11493 tokens/s through it; 43 layers:  267.3 tokens/s; the experts' packs 44 x 14.16 MB read at 892 GB/s
+  T=16       1164.6 us a layer =    13739 tokens/s through it; 43 layers:  319.5 tokens/s; the experts' packs 80 x 14.16 MB read at 975 GB/s
+  T=64       4438.1 us a layer =    14420 tokens/s through it; 43 layers:  335.4 tokens/s; the experts' packs 199 x 14.16 MB read at 635 GB/s
+  T=512      5744.3 us a layer =    89132 tokens/s through it; 43 layers: 2072.8 tokens/s; the experts' packs 256 x 14.16 MB read at 631 GB/s
+  T=2048     9312.8 us a layer =   219913 tokens/s through it; 43 layers: 5114.3 tokens/s; the experts' packs 256 x 14.16 MB read at 389 GB/s
+dsv4 fp4 (exact) (43 layers; 256 experts, 6 a token; router over 4096, experts over 4096, intermediate 2048, SwiGlu { limit: Some(10.0) }): weights 3.44 GB a layer, scratch 0.40 GB for all
+  T=1         166.2 us a layer =     6017 tokens/s through it; 43 layers:  139.9 tokens/s; the experts' packs 6 x 13.37 MB read at 478 GB/s
+  T=2         260.0 us a layer =     7691 tokens/s through it; 43 layers:  178.9 tokens/s; the experts' packs 12 x 13.37 MB read at 604 GB/s
+  T=4         408.1 us a layer =     9801 tokens/s through it; 43 layers:  227.9 tokens/s; the experts' packs 23 x 13.37 MB read at 752 GB/s
+  T=8         689.5 us a layer =    11602 tokens/s through it; 43 layers:  269.8 tokens/s; the experts' packs 44 x 13.37 MB read at 850 GB/s
+  T=16       1196.1 us a layer =    13377 tokens/s through it; 43 layers:  311.1 tokens/s; the experts' packs 80 x 13.37 MB read at 896 GB/s
+  T=64       4312.3 us a layer =    14841 tokens/s through it; 43 layers:  345.1 tokens/s; the experts' packs 199 x 13.37 MB read at 617 GB/s
+  T=512      5733.4 us a layer =    89302 tokens/s through it; 43 layers: 2076.8 tokens/s; the experts' packs 256 x 13.37 MB read at 597 GB/s
+  T=2048     9210.9 us a layer =   222346 tokens/s through it; 43 layers: 5170.8 tokens/s; the experts' packs 256 x 13.37 MB read at 372 GB/s
+dsv4 fp4 (exact, packed scales) (43 layers; 256 experts, 6 a token; router over 4096, experts over 4096, intermediate 2048, SwiGlu { limit: Some(10.0) }): weights 3.29 GB a layer, scratch 0.40 GB for all
+  T=1         174.5 us a layer =     5730 tokens/s through it; 43 layers:  133.2 tokens/s; the experts' packs 6 x 12.79 MB read at 435 GB/s
+  T=2         275.3 us a layer =     7264 tokens/s through it; 43 layers:  168.9 tokens/s; the experts' packs 12 x 12.79 MB read at 546 GB/s
+  T=4         430.8 us a layer =     9285 tokens/s through it; 43 layers:  215.9 tokens/s; the experts' packs 23 x 12.79 MB read at 681 GB/s
+  T=8         758.7 us a layer =    10544 tokens/s through it; 43 layers:  245.2 tokens/s; the experts' packs 44 x 12.79 MB read at 739 GB/s
+  T=16       1293.6 us a layer =    12368 tokens/s through it; 43 layers:  287.6 tokens/s; the experts' packs 80 x 12.79 MB read at 793 GB/s
+  T=64       4772.4 us a layer =    13411 tokens/s through it; 43 layers:  311.9 tokens/s; the experts' packs 199 x 12.79 MB read at 533 GB/s
+  T=512      6674.8 us a layer =    76707 tokens/s through it; 43 layers: 1783.9 tokens/s; the experts' packs 256 x 12.79 MB read at 490 GB/s
+  T=2048     9956.4 us a layer =   205698 tokens/s through it; 43 layers: 4783.7 tokens/s; the experts' packs 256 x 12.79 MB read at 329 GB/s

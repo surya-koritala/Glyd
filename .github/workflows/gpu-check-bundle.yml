@@ -1,0 +1,69 @@
+name: GPU check bundle
+# The bundle an approved pod runs to check a CPU save against the GPU's (huggingface/pod_gpu_check.sh): this commit's
+# glyd_gpu sources, its CUDA library (gpu/build_lib.sh, as release.yml builds it), gpu_check.py and the job, with SHA256SUMS.
+on:
+  pull_request:
+    paths:
+      - 'huggingface/gpu_check.py'
+      - 'huggingface/pod_gpu_check.sh'
+      - '.github/workflows/gpu-check-bundle.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gpu-check-bundle-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lib:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container: nvidia/cuda:13.0.3-devel-rockylinux8
+    env:
+      GLYD_GPU_NVCC_THREADS: "2"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build the CUDA library
+        run: |
+          set -e
+          dnf install -y -q --disablerepo="cuda*" --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils
+          source /opt/rh/gcc-toolset-13/enable
+          time bash gpu/build_lib.sh lib
+          ls -la lib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-check-lib
+          path: lib/libglyd_gpu_cuda13.so
+          retention-days: 14
+  bundle:
+    needs: lib
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpu-check-lib
+          path: /tmp/lib
+      - name: Assemble
+        run: |
+          set -euo pipefail
+          B=/tmp/gpu-check
+          mkdir -p $B/python
+          cp -r glyd-gpu-py/glyd_gpu $B/python/
+          find $B/python -name __pycache__ -prune -exec rm -rf {} +
+          cp /tmp/lib/libglyd_gpu_cuda13.so huggingface/gpu_check.py huggingface/pod_gpu_check.sh $B/
+          printf '%s\n' "$GITHUB_SHA" > $B/COMMIT
+          cd $B && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum -c --quiet SHA256SUMS
+          tar -cf /tmp/gpu-check.tar . && cd /tmp && sha256sum gpu-check.tar > gpu-check.tar.sha256 && cat gpu-check.tar.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-check
+          path: |
+            /tmp/gpu-check.tar
+            /tmp/gpu-check.tar.sha256
+          compression-level: 0
+          retention-days: 14

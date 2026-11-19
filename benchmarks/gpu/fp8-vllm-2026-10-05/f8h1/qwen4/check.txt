@@ -1,0 +1,110 @@
+  stock-eager: ERROR exit 1 in 271 s
+FAIL: stock-eager did not run (exit 1); the log's end:
+[rank0]:           detected during instantiation of "void tensorrt_llm::kernels::fp8_blockscale_gemm::Fp8Gemm<ElementA, LayoutA, ElementB, LayoutB, ElementD, LayoutD, ElementAccumulator, ElementCompute, ElementScalar, TILE_M, TILE_N, TILE_K, ScaleTypeA, ScaleTypeB, ScaleGranMA, ScaleGranKA, ScaleGranNB, ScaleGranKB, NUM_OF_STAGES>::run(ElementA *, ElementB *, ElementD *, ElementScalar *, const ElementScalar *, int, const int64_t *, int, int, int, cudaStream_t, int, int) [with ElementA=__nv_fp8_e4m3, LayoutA=tensorrt_llm::kernels::fp8_blockscale_gemm::Layout::RowMajor, ElementB=__nv_fp8_e4m3, LayoutB=tensorrt_llm::kernels::fp8_blockscale_gemm::Layout::ColMajor, ElementD=__nv_bfloat16, LayoutD=tensorrt_llm::kernels::fp8_blockscale_gemm::Layout::RowMajor, ElementAccumulator=float, ElementCompute=float, ElementScalar=float, TILE_M=64, TILE_N=16, TILE_K=128, ScaleTypeA=tensorrt_llm::kernels::fp8_blockscale_gemm::ScaleType::PerSubChannel, ScaleTypeB=tensorrt_llm::kernels::fp8_blockscale_gemm::ScaleType::PerBlock, ScaleGranMA=1, ScaleGranKA=128, ScaleGranNB=128, ScaleGranKB=128, NUM_OF_STAGES=0]" at line 1323
+
+[rank0]: /root/f8w/venv/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm_kernel.cuh(387): warning #1444-D: function "cuda::device::experimental::__4::cp_async_bulk_tensor_2d_global_to_shared" was declared deprecated ("Use cuda::ptx::cp_async_bulk_tensor instead")
+[rank0]:                 cde::cp_async_bulk_tensor_2d_global_to_shared(
+[rank0]:                      ^
+[rank0]: /root/f8w/venv/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/barrier(124): note #3287-D: because of a "deprecated" attribute
+[rank0]:   __attribute__((deprecated("Use cuda::ptx::cp_async_bulk_tensor instead"))) inline __attribute__((device)) void
+[rank0]:                  ^
+[rank0]:           detected during instantiation of "void tensorrt_llm::kernels::fp8_blockscale_gemm::Fp8Gemm<ElementA, LayoutA, ElementB, LayoutB, ElementD, LayoutD, ElementAccumulator, ElementCompute, ElementScalar, TILE_M, TILE_N, TILE_K, ScaleTypeA, ScaleTypeB, ScaleGranMA, ScaleGranKA, ScaleGranNB, ScaleGranKB, NUM_OF_STAGES>::run(ElementA *, ElementB *, ElementD *, ElementScalar *, const ElementScalar *, int, const int64_t *, int, int, int, cudaStream_t, int, int) [with ElementA=__nv_fp8_e4m3, LayoutA=tensorrt_llm::kernels::fp8_blockscale_gemm::Layout::RowMajor, ElementB=__nv_fp8_e4m3, LayoutB=tensorrt_llm::kernels::fp8_blockscale_gemm::Layout::ColMajor, ElementD=__nv_bfloat16, LayoutD=tensorrt_llm::kernels::fp8_blockscale_gemm::Layout::RowMajor, ElementAccumulator=float, ElementCompute=float, ElementScalar=float, TILE_M=64, TILE_N=16, TILE_K=128, ScaleTypeA=tensorrt_llm::kernels::fp8_blockscale_gemm::ScaleType::PerSubChannel, ScaleTypeB=tensorrt_llm::kernels::fp8_blockscale_gemm::ScaleType::PerBlock, ScaleGranMA=1, ScaleGranKA=128, ScaleGranNB=128, ScaleGranKB=128, NUM_OF_STAGES=0]" at line 1323
+
+[rank0]: /root/f8w/venv/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_tma_utils.cuh: In function ‘CUresult (* tensorrt_llm::kernels::fp8_blockscale_gemm::get_cuTensorMapEncodeTiled())(CUtensorMap*, CUtensorMapDataType, cuuint32_t, void*, const cuuint64_t*, const cuuint64_t*, const cuuint32_t*, const cuuint32_t*, CUtensorMapInterleave, CUtensorMapSwizzle, CUtensorMapL2promotion, CUtensorMapFloatOOBfill)’:
+[rank0]: /root/f8w/venv/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_tma_utils.cuh:68:24: warning: ‘cudaError_t cudaGetDriverEntryPoint(const char*, void**, long long unsigned int, cudaDriverEntryPointQueryResult*)’ is deprecated [-Wdeprecated-declarations]
+[rank0]:    68 |   cudaGetDriverEntryPoint("cuTensorMapEncodeTiled", &cuTensorMapEncodeTiled_ptr, cudaEnableDefault,
+[rank0]:       |   ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~              
+[rank0]: /root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/include/cuda_runtime_api.h:13101:46: note: declared here
+[rank0]: 13101 | extern __CUDA_DEPRECATED __host__ cudaError_t CUDARTAPI cudaGetDriverEntryPoint(const char *symbol, void **funcPtr, unsigned long long flags, enum cudaDriverEntryPointQueryResult *driverStatus = NULL);
+[rank0]:       |                                              ^~~~~~~~~~~~~~~~~~~~~~~
+[rank0]: [9/9] c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: FAILED: [code=1] /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so 
+[rank0]: c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: /usr/bin/ld: cannot find -lnvrtc: No such file or directory
+[rank0]: collect2: error: ld returned 1 exit status
+[rank0]: ninja: build stopped: subcommand failed.
+
+[rank0]:[W1005 18:03:33.936207616 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+  glyd-eager: ERROR exit 1 in 41 s
+FAIL: glyd-eager did not run (exit 1); the log's end:
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+[rank0]:     return _inner(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9308, in fp8_blockscale_gemm_sm90
+[rank0]:     runner = get_fp8_blockscale_gemm_runner_sm90()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9093, in get_fp8_blockscale_gemm_runner_sm90
+[rank0]:     module = gen_fp8_blockscale_gemm_sm90_module().build_and_load()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 320, in build_and_load
+[rank0]:     self.build()
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 427, in build
+[rank0]:     run_ninja(self.build_dir, self.ninja_path, verbose)
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 382, in run_ninja
+[rank0]:     raise RuntimeError(msg) from e
+[rank0]: RuntimeError: Ninja build failed. Ninja output:
+[rank0]: ninja: Entering directory `/root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90'
+[rank0]: [1/1] c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: FAILED: [code=1] /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so 
+[rank0]: c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: /usr/bin/ld: cannot find -lnvrtc: No such file or directory
+[rank0]: collect2: error: ld returned 1 exit status
+[rank0]: ninja: build stopped: subcommand failed.
+
+[rank0]:[W1005 18:04:13.540791336 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+  stock-graph: ERROR exit 1 in 47 s
+FAIL: stock-graph did not run (exit 1); the log's end:
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+[rank0]:     return _inner(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9308, in fp8_blockscale_gemm_sm90
+[rank0]:     runner = get_fp8_blockscale_gemm_runner_sm90()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9093, in get_fp8_blockscale_gemm_runner_sm90
+[rank0]:     module = gen_fp8_blockscale_gemm_sm90_module().build_and_load()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 320, in build_and_load
+[rank0]:     self.build()
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 427, in build
+[rank0]:     run_ninja(self.build_dir, self.ninja_path, verbose)
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 382, in run_ninja
+[rank0]:     raise RuntimeError(msg) from e
+[rank0]: RuntimeError: Ninja build failed. Ninja output:
+[rank0]: ninja: Entering directory `/root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90'
+[rank0]: [1/1] c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: FAILED: [code=1] /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so 
+[rank0]: c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: /usr/bin/ld: cannot find -lnvrtc: No such file or directory
+[rank0]: collect2: error: ld returned 1 exit status
+[rank0]: ninja: build stopped: subcommand failed.
+
+[rank0]:[W1005 18:05:00.170092504 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+  glyd-graph: ERROR exit 1 in 46 s
+FAIL: glyd-graph did not run (exit 1); the log's end:
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+[rank0]:     return _inner(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9308, in fp8_blockscale_gemm_sm90
+[rank0]:     runner = get_fp8_blockscale_gemm_runner_sm90()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9093, in get_fp8_blockscale_gemm_runner_sm90
+[rank0]:     module = gen_fp8_blockscale_gemm_sm90_module().build_and_load()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 320, in build_and_load
+[rank0]:     self.build()
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 427, in build
+[rank0]:     run_ninja(self.build_dir, self.ninja_path, verbose)
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 382, in run_ninja
+[rank0]:     raise RuntimeError(msg) from e
+[rank0]: RuntimeError: Ninja build failed. Ninja output:
+[rank0]: ninja: Entering directory `/root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90'
+[rank0]: [1/1] c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: FAILED: [code=1] /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so 
+[rank0]: c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: /usr/bin/ld: cannot find -lnvrtc: No such file or directory
+[rank0]: collect2: error: ld returned 1 exit status
+[rank0]: ninja: build stopped: subcommand failed.
+
+[rank0]:[W1005 18:05:46.834462294 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+GPU ?
+FAIL: 4 failed; /root/results/qwen4/check_fp8_vllm.json

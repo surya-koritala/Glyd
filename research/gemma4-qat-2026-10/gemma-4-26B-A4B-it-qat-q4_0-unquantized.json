@@ -1,0 +1,591 @@
+[
+ {
+  "label": "model.language_model.embed_tokens.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21856,
+   "fp32": 672
+  },
+  "code_entropy_bits": 3.7519,
+  "bits_per_value": 4.2767,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.1603,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.0.experts.down_proj",
+  "shape": [
+   256,
+   704
+  ],
+  "groups": 5632,
+  "exact_groups": 2231,
+  "kinds": {
+   "zero": 0,
+   "fp16": 2173,
+   "fp32": 58
+  },
+  "code_entropy_bits": 3.4271,
+  "bits_per_value": 11.234,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.7968,
+  "seconds": 0.2
+ },
+ {
+  "label": "model.language_model.layers.15.experts.down_proj",
+  "shape": [
+   256,
+   704
+  ],
+  "groups": 5632,
+  "exact_groups": 2565,
+  "kinds": {
+   "zero": 0,
+   "fp16": 2496,
+   "fp32": 69
+  },
+  "code_entropy_bits": 3.4183,
+  "bits_per_value": 10.515,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.7908,
+  "seconds": 0.2
+ },
+ {
+  "label": "model.language_model.layers.29.experts.down_proj",
+  "shape": [
+   256,
+   704
+  ],
+  "groups": 5632,
+  "exact_groups": 2085,
+  "kinds": {
+   "zero": 0,
+   "fp16": 2046,
+   "fp32": 39
+  },
+  "code_entropy_bits": 3.4335,
+  "bits_per_value": 11.5476,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.7946,
+  "seconds": 0.2
+ },
+ {
+  "label": "model.language_model.layers.0.experts.gate_up_proj",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 8962,
+  "kinds": {
+   "zero": 0,
+   "fp16": 8772,
+   "fp32": 190
+  },
+  "code_entropy_bits": 3.4258,
+  "bits_per_value": 11.2107,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.7867,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.15.experts.gate_up_proj",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 8821,
+  "kinds": {
+   "zero": 0,
+   "fp16": 8584,
+   "fp32": 237
+  },
+  "code_entropy_bits": 3.4284,
+  "bits_per_value": 11.2884,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.9568,
+  "seconds": 0.9
+ },
+ {
+  "label": "model.language_model.layers.29.experts.gate_up_proj",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 8328,
+  "kinds": {
+   "zero": 0,
+   "fp16": 8116,
+   "fp32": 212
+  },
+  "code_entropy_bits": 3.4342,
+  "bits_per_value": 11.5542,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.7931,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.0.mlp.down_proj.weight",
+  "shape": [
+   256,
+   2112
+  ],
+  "groups": 16896,
+  "exact_groups": 10151,
+  "kinds": {
+   "zero": 0,
+   "fp16": 9892,
+   "fp32": 259
+  },
+  "code_entropy_bits": 3.38,
+  "bits_per_value": 8.7361,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.7154,
+  "seconds": 0.6
+ },
+ {
+  "label": "model.language_model.layers.15.mlp.down_proj.weight",
+  "shape": [
+   256,
+   2112
+  ],
+  "groups": 16896,
+  "exact_groups": 8465,
+  "kinds": {
+   "zero": 0,
+   "fp16": 8198,
+   "fp32": 267
+  },
+  "code_entropy_bits": 3.3943,
+  "bits_per_value": 9.9529,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.8193,
+  "seconds": 0.6
+ },
+ {
+  "label": "model.language_model.layers.29.mlp.down_proj.weight",
+  "shape": [
+   256,
+   2112
+  ],
+  "groups": 16896,
+  "exact_groups": 9940,
+  "kinds": {
+   "zero": 0,
+   "fp16": 9698,
+   "fp32": 242
+  },
+  "code_entropy_bits": 3.3748,
+  "bits_per_value": 8.8838,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.817,
+  "seconds": 0.6
+ },
+ {
+  "label": "model.language_model.layers.0.mlp.gate_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 10609,
+  "kinds": {
+   "zero": 0,
+   "fp16": 10344,
+   "fp32": 265
+  },
+  "code_entropy_bits": 3.4008,
+  "bits_per_value": 10.3179,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.9056,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.15.mlp.gate_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 11743,
+  "kinds": {
+   "zero": 0,
+   "fp16": 11406,
+   "fp32": 337
+  },
+  "code_entropy_bits": 3.3901,
+  "bits_per_value": 9.7049,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.9653,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.29.mlp.gate_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 9318,
+  "kinds": {
+   "zero": 0,
+   "fp16": 9048,
+   "fp32": 270
+  },
+  "code_entropy_bits": 3.4248,
+  "bits_per_value": 11.0213,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.998,
+  "seconds": 0.9
+ },
+ {
+  "label": "model.language_model.layers.0.mlp.up_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 10443,
+  "kinds": {
+   "zero": 0,
+   "fp16": 10182,
+   "fp32": 261
+  },
+  "code_entropy_bits": 3.4109,
+  "bits_per_value": 10.4116,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.9078,
+  "seconds": 0.9
+ },
+ {
+  "label": "model.language_model.layers.15.mlp.up_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 11709,
+  "kinds": {
+   "zero": 0,
+   "fp16": 11409,
+   "fp32": 300
+  },
+  "code_entropy_bits": 3.3828,
+  "bits_per_value": 9.7186,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.7843,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.29.mlp.up_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 9462,
+  "kinds": {
+   "zero": 0,
+   "fp16": 9216,
+   "fp32": 246
+  },
+  "code_entropy_bits": 3.4228,
+  "bits_per_value": 10.9428,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.9206,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.0.router.proj.weight",
+  "shape": [
+   128,
+   2816
+  ],
+  "groups": 11264,
+  "exact_groups": 5777,
+  "kinds": {
+   "zero": 0,
+   "fp16": 5645,
+   "fp32": 132
+  },
+  "code_entropy_bits": 3.501,
+  "bits_per_value": 9.8622,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.7961,
+  "seconds": 0.4
+ },
+ {
+  "label": "model.language_model.layers.15.router.proj.weight",
+  "shape": [
+   128,
+   2816
+  ],
+  "groups": 11264,
+  "exact_groups": 7690,
+  "kinds": {
+   "zero": 0,
+   "fp16": 7505,
+   "fp32": 185
+  },
+  "code_entropy_bits": 3.3228,
+  "bits_per_value": 7.7051,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.7221,
+  "seconds": 0.4
+ },
+ {
+  "label": "model.language_model.layers.29.router.proj.weight",
+  "shape": [
+   128,
+   2816
+  ],
+  "groups": 11264,
+  "exact_groups": 6298,
+  "kinds": {
+   "zero": 0,
+   "fp16": 6153,
+   "fp32": 145
+  },
+  "code_entropy_bits": 3.3481,
+  "bits_per_value": 9.2223,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.8039,
+  "seconds": 0.4
+ },
+ {
+  "label": "model.language_model.layers.0.self_attn.k_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21822,
+   "fp32": 706
+  },
+  "code_entropy_bits": 3.794,
+  "bits_per_value": 4.3196,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.2691,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.15.self_attn.k_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21854,
+   "fp32": 674
+  },
+  "code_entropy_bits": 3.7752,
+  "bits_per_value": 4.3,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.5052,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.29.self_attn.k_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21796,
+   "fp32": 732
+  },
+  "code_entropy_bits": 3.7684,
+  "bits_per_value": 4.2945,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.1886,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.0.self_attn.o_proj.weight",
+  "shape": [
+   256,
+   4096
+  ],
+  "groups": 32768,
+  "exact_groups": 32768,
+  "kinds": {
+   "zero": 0,
+   "fp16": 31848,
+   "fp32": 920
+  },
+  "code_entropy_bits": 3.8023,
+  "bits_per_value": 4.326,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.3571,
+  "seconds": 1.2
+ },
+ {
+  "label": "model.language_model.layers.15.self_attn.o_proj.weight",
+  "shape": [
+   256,
+   4096
+  ],
+  "groups": 32768,
+  "exact_groups": 32768,
+  "kinds": {
+   "zero": 0,
+   "fp16": 31798,
+   "fp32": 970
+  },
+  "code_entropy_bits": 3.7953,
+  "bits_per_value": 4.3198,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.3002,
+  "seconds": 1.2
+ },
+ {
+  "label": "model.language_model.layers.29.self_attn.o_proj.weight",
+  "shape": [
+   256,
+   8192
+  ],
+  "groups": 65536,
+  "exact_groups": 65536,
+  "kinds": {
+   "zero": 0,
+   "fp16": 63605,
+   "fp32": 1931
+  },
+  "code_entropy_bits": 3.7391,
+  "bits_per_value": 4.2634,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.2571,
+  "seconds": 2.4
+ },
+ {
+  "label": "model.language_model.layers.0.self_attn.q_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21768,
+   "fp32": 760
+  },
+  "code_entropy_bits": 3.8067,
+  "bits_per_value": 4.3334,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.2527,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.15.self_attn.q_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21868,
+   "fp32": 660
+  },
+  "code_entropy_bits": 3.7689,
+  "bits_per_value": 4.2934,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.4816,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.29.self_attn.q_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21838,
+   "fp32": 690
+  },
+  "code_entropy_bits": 3.7819,
+  "bits_per_value": 4.307,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.222,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.0.self_attn.v_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21885,
+   "fp32": 643
+  },
+  "code_entropy_bits": 3.7873,
+  "bits_per_value": 4.3114,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.2259,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.14.self_attn.v_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21892,
+   "fp32": 636
+  },
+  "code_entropy_bits": 3.7676,
+  "bits_per_value": 4.2916,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 9.162,
+  "seconds": 0.8
+ },
+ {
+  "label": "model.language_model.layers.28.self_attn.v_proj.weight",
+  "shape": [
+   256,
+   2816
+  ],
+  "groups": 22528,
+  "exact_groups": 22528,
+  "kinds": {
+   "zero": 0,
+   "fp16": 21953,
+   "fp32": 575
+  },
+  "code_entropy_bits": 3.6811,
+  "bits_per_value": 4.2037,
+  "bit_exact_roundtrip": true,
+  "plugin_order0_of_bf16_codes": 8.9003,
+  "seconds": 0.8
+ }
+]

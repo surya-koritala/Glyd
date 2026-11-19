@@ -1,0 +1,4 @@
+Installed 2 packages in 12ms
+Unpacking to: /root/w/unp/glyd_gpu-0.29.0...OK
+Repacking wheel as /root/wheels/glyd_gpu-0.29.0+r291-cp310-abi3-manylinux_2_28_x86_64.whl...OK
+glyd_gpu-0.29.0+r291-cp310-abi3-manylinux_2_28_x86_64.whl

@@ -1,0 +1,94 @@
+{
+  "object": "glyd.tiers",
+  "schema": "glyd-costs/1",
+  "device": {
+    "ordinal": 0,
+    "name": "NVIDIA GeForce RTX 4080 SUPER",
+    "compute_capability": "8.9",
+    "cuda": "13.2",
+    "driver": "595.91.07",
+    "total_bytes": 16717119488,
+    "free_bytes": 13865648128
+  },
+  "host": {
+    "cpu": "AMD Ryzen 9 7950X3D 16-Core Processor",
+    "threads": 32,
+    "ram_total_bytes": 65442029568,
+    "ram_available_bytes": 55755112448
+  },
+  "directory": "/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d",
+  "buffer_bytes": 536870912,
+  "observed_at": 1792468023.239,
+  "rates": {
+    "vram_read": {
+      "gbs": 697.08,
+      "bytes": 5368709120,
+      "seconds": 0.0077,
+      "samples": 10,
+      "how": "a kernel that reads the buffer and sums it (the ceiling a memory-bound decode step has)"
+    },
+    "vram_copy": {
+      "gbs": 312.14,
+      "bytes": 5368709120,
+      "seconds": 0.0172,
+      "samples": 10,
+      "how": "cuMemcpyDtoD of the buffer: bytes copied a second (read and written both)"
+    },
+    "link_h2d_pinned": {
+      "gbs": 26.89,
+      "bytes": 5368709120,
+      "seconds": 0.1996,
+      "samples": 10,
+      "how": "cuMemcpyHtoD from pinned host memory (what the expert cache's copies use)"
+    },
+    "link_d2h_pinned": {
+      "gbs": 27.13,
+      "bytes": 5368709120,
+      "seconds": 0.1979,
+      "samples": 10,
+      "how": "cuMemcpyDtoH into pinned host memory"
+    },
+    "link_h2d_pageable": {
+      "gbs": 21.56,
+      "bytes": 5368709120,
+      "seconds": 0.2490,
+      "samples": 10,
+      "how": "cuMemcpyHtoD from pageable memory (the driver stages it)"
+    },
+    "vram_product": {
+      "gbs": 628.14,
+      "bytes": 5973934840,
+      "seconds": 0.0095,
+      "samples": 10,
+      "how": "the engine's product at one row over 19 packs of the directory's first layers, back to back (what a decode step reads weights at)"
+    },
+    "ram_read": {
+      "gbs": 74.50,
+      "bytes": 5368709120,
+      "seconds": 0.0721,
+      "samples": 10,
+      "how": "32 thread(s) summing a buffer of u64"
+    },
+    "ram_read_1_thread": {
+      "gbs": 51.87,
+      "bytes": 5368709120,
+      "seconds": 0.1035,
+      "samples": 10,
+      "how": "1 thread(s) summing a buffer of u64"
+    },
+    "ssd_read_16": {
+      "gbs": 6.78,
+      "bytes": 5368709120,
+      "seconds": 0.7923,
+      "samples": 10,
+      "how": "random 2 MiB spans of the directory's safetensors files, 16 at a time, direct reads (src/disk.rs, the SSD tier's reader)"
+    },
+    "ssd_read_1": {
+      "gbs": 3.99,
+      "bytes": 67108864,
+      "seconds": 0.0168,
+      "samples": 1,
+      "how": "random 2 MiB spans of the directory's safetensors files, 1 at a time, direct reads (src/disk.rs, the SSD tier's reader)"
+    }
+  }
+}

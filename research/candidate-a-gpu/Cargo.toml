@@ -1,0 +1,12 @@
+[package]
+name = "glyd-candidate-a-gpu"
+version = "0.1.0"
+edition = "2021"
+license = "BUSL-1.1"
+publish = false
+
+[workspace]
+
+[dependencies]
+glyd-gpu = { path = "../../glyd-gpu" }
+glyd-lossy-study = { path = "../lossy-2026/rust" }

@@ -1,0 +1,223 @@
+INFO 10-05 18:06:01 [api_utils.py:286] non-default args: {'dtype': 'bfloat16', 'max_model_len': 4096, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.85, 'max_num_seqs': 64, 'disable_log_stats': True, 'language_model_only': True, 'compilation_config': {'mode': None, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': [], 'ir_enable_torch_wrap': None, 'splitting_ops': None, 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': None, 'compile_ranges_endpoints': None, 'inductor_compile_config': {'deterministic': True, 'combo_kernels': True, 'benchmark_combo_kernel': False, 'enable_auto_functionalized_v2': False}, 'inductor_passes': {}, 'cudagraph_mode': None, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': None, 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': None, 'pass_config': {}, 'max_cudagraph_capture_size': None, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': None, 'static_all_moe_layers': []}, 'model': '/root/f8w/slice-qwen4'}
+WARNING 10-05 18:06:01 [arg_utils.py:1812] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 10-05 18:06:15 [model.py:692] Resolved architecture: Qwen3_5ForConditionalGeneration
+INFO 10-05 18:06:15 [model.py:2030] Using max model len 4096
+WARNING 10-05 18:06:15 [model.py:994] Model does not support mm_device_do_normalize, forcing mm_device_do_normalize = False.
+INFO 10-05 18:06:17 [registry.py:146] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+INFO 10-05 18:06:17 [model.py:900] Disabled mm_prefix attention mode because multimodal inputs are configuration-disabled. Attention backends without mm_prefix support may now be selected.
+INFO 10-05 18:06:17 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=16384.
+INFO 10-05 18:06:17 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 10-05 18:06:17 [compilation.py:336] Enabled custom fusions: norm_quant, act_quant
+INFO 10-05 18:06:20 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='/root/f8w/slice-qwen4', speculative_config=None, tokenizer='/root/f8w/slice-qwen4', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=fp8, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/root/f8w/slice-qwen4, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['+quant_fp8', 'none', '+quant_fp8'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::qwen4_exp_ple_short_conv', 'vllm::qwen4_exp_qsa_with_output', 'vllm::linear_attention', 'vllm::qwen_gdn_attention_core', 'vllm::qwen_gdn_attention_core_fused_norm_packed', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::hpc_rope_norm_forward', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [16384], 'inductor_compile_config': {'deterministic': True, 'combo_kernels': True, 'benchmark_combo_kernel': False, 'enable_auto_functionalized_v2': False}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 128, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+INFO 10-05 18:06:20 [parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///root/f8w/tmp/vllm_dist_481f22ce8df2492582c08bbd9d7c5fe0 backend=nccl
+INFO 10-05 18:06:20 [parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank N/A, EPLB rank N/A
+INFO 10-05 18:06:20 [gpu_worker.py:441] Using V2 Model Runner
+INFO 10-05 18:06:21 [model_runner.py:396] Loading model from scratch...
+INFO 10-05 18:06:21 [cuda.py:597] Using backend AttentionBackendEnum.FLASH_ATTN for vit attention
+INFO 10-05 18:06:21 [mm_encoder_attention.py:372] Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.
+INFO 10-05 18:06:23 [__init__.py:726] Selected FlashInferFp8DeepGEMMDynamicBlockScaledKernel for Fp8LinearMethod
+INFO 10-05 18:06:23 [deep_gemm.py:192] deep_gemm not found in site-packages, trying vendored vllm.third_party.deep_gemm
+INFO 10-05 18:06:23 [deep_gemm.py:219] DeepGEMM PDL enabled on vllm.third_party.deep_gemm.
+INFO 10-05 18:06:23 [deep_gemm.py:136] DeepGEMM E8M0 enabled on current platform.
+INFO 10-05 18:06:23 [qwen_gdn_linear_attn.py:176] Using FlashInfer GDN prefill kernel (requested=auto, head_k_dim=128).
+WARNING 10-05 18:06:23 [qwen_gdn_linear_attn.py:183] FlashInfer GDN prefill is JIT-compiled; first run may take a while. Set --gdn-prefill-backend triton to skip JIT.
+INFO 10-05 18:06:23 [qwen_gdn_linear_attn.py:528] GDN decode kernel: cuda
+INFO 10-05 18:06:23 [cuda.py:538] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 10-05 18:06:23 [flash_attn.py:1116] Using FlashAttention version 3
+INFO 10-05 18:06:23 [weight_utils.py:895] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 6.16 GiB. Available RAM: 186.65 GiB.
+INFO 10-05 18:06:23 [weight_utils.py:918] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/2 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:  50% Completed | 1/2 [00:00<00:00,  1.55it/s]
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:01<00:00,  1.90it/s]
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:01<00:00,  1.84it/s]
+
+INFO 10-05 18:06:25 [default_loader.py:430] Loading weights took 1.12 seconds
+INFO 10-05 18:06:27 [model_runner.py:428] Model loading took 6.29 GiB memory and 6.454887 seconds
+INFO 10-05 18:06:27 [topk_topp_sampler.py:62] FlashInfer top-p/top-k sampling disabled via VLLM_USE_FLASHINFER_SAMPLER=0.
+INFO 10-05 18:06:27 [interface.py:933] Setting attention block size to 784 tokens to ensure that attention page size is >= mamba page size.
+INFO 10-05 18:06:27 [interface.py:957] Padding mamba page size by 0.13% to ensure that mamba page size and attention page size are exactly equal.
+INFO 10-05 18:06:27 [utils.py:320] Using LBNHC KV cache layout.
+INFO 10-05 18:06:28 [backends.py:1094] Using cache directory: /root/results/qwen4/cache-again/torch_compile_cache/3f4163bca7/rank_0_0/backbone for vLLM's torch.compile
+INFO 10-05 18:06:28 [backends.py:1155] Dynamo bytecode transform time: 0.67 s
+INFO 10-05 18:06:31 [backends.py:393] Compiling a graph for compile range (1, 16384) takes 1.98 s
+INFO 10-05 18:06:32 [backends.py:920] collected artifacts: 5 entries, 4 artifacts, 4389631 bytes total
+INFO 10-05 18:06:32 [decorators.py:719] saved AOT compiled function to /root/results/qwen4/cache-again/torch_compile_cache/torch_aot_compile/166f0b011e47f57adbcf3315c3e5bea7b6d3051c246352a2eb30900675d3e079/rank_0_0/model
+INFO 10-05 18:06:32 [monitor.py:53] torch.compile took 3.88 s in total
+INFO 10-05 18:06:51 [monitor.py:81] Initial profiling/warmup run took 19.37 s
+Capturing CUDA graphs (PIECEWISE):   0%|          | 0/19 [00:00<?, ?it/s]Capturing CUDA graphs (PIECEWISE):   5%|▌         | 1/19 [00:11<03:29, 11.63s/it]Capturing CUDA graphs (PIECEWISE):  26%|██▋       | 5/19 [00:11<00:24,  1.76s/it]Capturing CUDA graphs (PIECEWISE):  47%|████▋     | 9/19 [00:20<00:19,  1.96s/it]Capturing CUDA graphs (PIECEWISE):  68%|██████▊   | 13/19 [00:28<00:12,  2.02s/it]Capturing CUDA graphs (PIECEWISE):  68%|██████▊   | 13/19 [00:28<00:13,  2.21s/it]
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 370, in run_ninja
+[rank0]:     subprocess.run(
+[rank0]:   File "/usr/lib/python3.12/subprocess.py", line 571, in run
+[rank0]:     raise CalledProcessError(retcode, process.args,
+[rank0]: subprocess.CalledProcessError: Command '['ninja', '-v', '-C', '/root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90', '-f', '/root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/build.ninja']' returned non-zero exit status 1.
+
+[rank0]: The above exception was the direct cause of the following exception:
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/root/f8w/src/gpu/fp8/check_fp8_vllm.py", line 358, in <module>
+[rank0]:     main()
+[rank0]:   File "/root/f8w/src/gpu/fp8/check_fp8_vllm.py", line 282, in main
+[rank0]:     res = child(json.loads(args[1]))
+[rank0]:           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/src/gpu/fp8/check_fp8_vllm.py", line 116, in child
+[rank0]:     llm = LLM(**kw)
+[rank0]:           ^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 343, in __init__
+[rank0]:     self.llm_engine = LLMEngine.from_engine_args(
+[rank0]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 184, in from_engine_args
+[rank0]:     return cls(
+[rank0]:            ^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 109, in __init__
+[rank0]:     self.engine_core = EngineCoreClient.make_client(
+[rank0]:                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 129, in make_client
+[rank0]:     return InprocClient(vllm_config, executor_class, log_stats)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 354, in __init__
+[rank0]:     self.engine_core = EngineCore(
+[rank0]:                        ^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 145, in __init__
+[rank0]:     kv_cache_config = self._initialize_kv_caches(vllm_config)
+[rank0]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 308, in _initialize_kv_caches
+[rank0]:     available_gpu_memory = self.model_executor.determine_available_memory()
+[rank0]:                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 149, in determine_available_memory
+[rank0]:     return self.collective_rpc("determine_available_memory")
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 103, in collective_rpc
+[rank0]:     result = run_method(self.driver_worker, method, args, kwargs)
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/serial_utils.py", line 510, in run_method
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 585, in determine_available_memory
+[rank0]:     cudagraph_memory_estimate = self.model_runner.profile_cudagraph_memory()
+[rank0]:                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 985, in profile_cudagraph_memory
+[rank0]:     return _profile_cudagraph_memory(self)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/cudagraph_utils.py", line 921, in profile_cudagraph_memory
+[rank0]:     measured = int(runner.capture_model(profile_only=True))
+[rank0]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 1028, in capture_model
+[rank0]:     self.cudagraph_manager.capture(
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/cudagraph_utils.py", line 747, in capture
+[rank0]:     super().capture(create_forward_fn, progress_bar_desc)
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/cudagraph_utils.py", line 439, in capture
+[rank0]:     forward_fn(CUDAGraphMode.NONE)
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/v1/worker/gpu/cudagraph_utils.py", line 736, in forward_fn
+[rank0]:     model_output = model(**model_inputs)
+[rank0]:                    ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_5.py", line 591, in forward
+[rank0]:     hidden_states = self.language_model.model(
+[rank0]:                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/compilation/decorators.py", line 522, in __call__
+[rank0]:     return self.aot_compiled_fn(self, *args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_dynamo/aot_compile.py", line 244, in __call__
+[rank0]:     return self.fn(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_next.py", line 688, in forward
+[rank0]:     def forward(
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/compilation/caching.py", line 225, in __call__
+[rank0]:     return self.optimized_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "<string>", line 22, in execution_fn
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/compilation/cuda_graph.py", line 256, in __call__
+[rank0]:     return self.runnable(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/compilation/piecewise_backend.py", line 380, in __call__
+[rank0]:     return range_entry.runnable(*args)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_inductor/standalone_compile.py", line 321, in __call__
+[rank0]:     return self.inner_fn(*args)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_dynamo/aot_compile_types.py", line 221, in __call__
+[rank0]:     return self.compiled_fn(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 1446, in _fn
+[rank0]:     return fn(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_functorch/aot_autograd.py", line 1277, in forward
+[rank0]:     return compiled_fn(full_args)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 1141, in runtime_wrapper
+[rank0]:     result = _codegen_runtime_wrapper(
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/subclass_codegen.py:codegen(runtime_wrapper_orchestration)", line 8, in _runtime_wrapper
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 2548, in __call__
+[rank0]:     return self.compiled_fn(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_inductor/output_code.py", line 763, in __call__
+[rank0]:     return self.current_callable(inputs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/results/qwen4/cache-again/torch_compile_cache/torch_aot_compile/166f0b011e47f57adbcf3315c3e5bea7b6d3051c246352a2eb30900675d3e079/inductor_cache/mg/cmgwrp6vpksrgml7nnbpmefxawixzo7fnwujrjbl2s2gktpu5zve.py", line 379, in call
+[rank0]:     buf3 = torch.ops.vllm.dynamic_flashinfer_deepgemm_blockscale_gemm.default(buf2, arg4_1, arg5_1, 128, True)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_ops.py", line 875, in __call__
+[rank0]:     return self._op(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/scaled_mm/flashinfer.py", line 311, in _dynamic_flashinfer_deepgemm_blockscale_gemm_impl
+[rank0]:     return torch.cond(
+[rank0]:            ^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/torch/_higher_order_ops/cond.py", line 210, in cond
+[rank0]:     return true_fn(*operands)
+[rank0]:            ^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/scaled_mm/flashinfer.py", line 270, in run_flashinfer_deepgemm_swapAB
+[rank0]:     return flashinfer_fp8_blockscale_gemm(
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/vllm/utils/flashinfer.py", line 206, in wrapper
+[rank0]:     return impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+[rank0]:     return _inner(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9308, in fp8_blockscale_gemm_sm90
+[rank0]:     runner = get_fp8_blockscale_gemm_runner_sm90()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 9093, in get_fp8_blockscale_gemm_runner_sm90
+[rank0]:     module = gen_fp8_blockscale_gemm_sm90_module().build_and_load()
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 320, in build_and_load
+[rank0]:     self.build()
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/core.py", line 427, in build
+[rank0]:     run_ninja(self.build_dir, self.ninja_path, verbose)
+[rank0]:   File "/root/f8w/venv/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 382, in run_ninja
+[rank0]:     raise RuntimeError(msg) from e
+[rank0]: RuntimeError: Ninja build failed. Ninja output:
+[rank0]: ninja: Entering directory `/root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90'
+[rank0]: [1/1] c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: FAILED: [code=1] /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so 
+[rank0]: c++ /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/csrc_fp8_blockscale_gemm_sm90_binding.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_envUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_logger.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_stringUtils.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_tllmException.o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/common_memoryUtils.cuda.o -shared -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64 -L/root/f8w/venv/lib/python3.12/site-packages/nvidia/cu13/lib64/stubs -lcudart -lcuda -lnvrtc -lcuda -o /root/.cache/flashinfer/0.6.18.post1/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_90.so
+[rank0]: /usr/bin/ld: cannot find -lnvrtc: No such file or directory
+[rank0]: collect2: error: ld returned 1 exit status
+[rank0]: ninja: build stopped: subcommand failed.
+
+[rank0]:[W1005 18:07:23.507767160 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

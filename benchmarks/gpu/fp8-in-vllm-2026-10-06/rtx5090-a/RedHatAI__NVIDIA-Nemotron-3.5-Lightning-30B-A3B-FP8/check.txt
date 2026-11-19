@@ -1,0 +1,31 @@
+  stock-graphq: ERROR exit 1 in 53 s
+INFO: stock-graphq did not start: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 630.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 517.69 MiB is free. Including non-PyTorch memory, this process has 30.84 GiB memory in use. Of the allocated memory 30.20 GiB is allocated by PyTorch, and 10.85 MiB is reserved 
+  glyd-graphq: ERROR exit 1 in 33 s
+FAIL: glyd-graphq did not run (exit 1); the log's end:
+[rank0]:     self.model = model_loader.load_model(
+[rank0]:                  ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/model_loader/base_loader.py", line 91, in load_model
+[rank0]:     process_weights_after_loading(model, model_config, target_device)
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/model_loader/utils.py", line 134, in process_weights_after_loading
+[rank0]:     quant_method.process_weights_after_loading(module)
+[rank0]:   File "/root/q8w/src/glyd-gpu-py/glyd_gpu/vllm_fp8.py", line 564, in process_weights_after_loading
+[rank0]:     super().process_weights_after_loading(layer)
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors_moe/compressed_tensors_moe_w8a8_fp8.py", line 297, in process_weights_after_loading
+[rank0]:     w13, w2, w13_scale, w2_scale = convert_to_fp8_moe_kernel_format(
+[rank0]:                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/oracle/fp8.py", line 559, in convert_to_fp8_moe_kernel_format
+[rank0]:     w13, w2, w13_scale, w2_scale = prepare_fp8_moe_layer_for_fi(
+[rank0]:                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/flashinfer_utils.py", line 500, in prepare_fp8_moe_layer_for_fi
+[rank0]:     w13, w2, new_intermediate = align_moe_weights_for_fi(
+[rank0]:                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/flashinfer_utils.py", line 339, in align_moe_weights_for_fi
+[rank0]:     padded_w13 = w13.new_zeros((num_experts, padded_gate_up_dim, hidden_size))
+[rank0]:                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 630.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 475.69 MiB is free. Including non-PyTorch memory, this process has 30.88 GiB memory in use. Of the allocated memory 30.21 GiB is allocated by PyTorch, and 35.39 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+[rank0]:[W1006 10:27:01.014385149 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+GPU ?
+FAIL: 1 failed; /root/results/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8/check_fp8_vllm.json

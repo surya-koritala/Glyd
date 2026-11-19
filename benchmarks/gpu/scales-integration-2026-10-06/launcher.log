@@ -1,0 +1,9 @@
+18:45 created k9slfciopzp2vb (NVIDIA GeForce RTX 5090)
+ssh on pod k9slfciopzp2vb ready after 33s: ssh reachable at 149.36.1.87:39651
+18:45 ssh ready at 149.36.1.87:39651 after 39 s
+NVIDIA GeForce RTX 5090, 580.126.20, 32607 MiB
+18:45 job started
+20:05 job done
+terminating k9slfciopzp2vb
+pods left: []
+81 min

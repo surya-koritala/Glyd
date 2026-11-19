@@ -1,0 +1,5 @@
+MiniMaxAI/MiniMax-M3-MXFP8: 45838 tensors; the slice: 57 tensors of layers [0]..[2] and 3 outside the layers, 5.54 GiB (BF16 4.58, F8_E4M3 0.93, U8 0.03)
+model-00001-of-00002.safetensors: 1 tensors, 2.29 GiB so far, 63 s
+model-00002-of-00002.safetensors: 56 tensors, 5.54 GiB so far, 122 s
+/root/f8w/slice-minimax3: 57 tensors, 5.54 GiB, 9 small files, ends checked against the source: ok, 185 s
+exit 0

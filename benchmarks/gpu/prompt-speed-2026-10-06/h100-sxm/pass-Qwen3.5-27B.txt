@@ -1,0 +1,43 @@
+NVIDIA H100 80GB HBM3 (132 SMs, route code 7090); Qwen3.5-27B: 256 products, 24.33 G weights a pass
+mma12: 12.03 bits a weight over the pass
+M=  128 mma12      bf16:     18.56 ms
+M=  128 mma12      glyd:     20.75 ms = 1.118x bf16, err 3.3e-03
+M=  128 mma12    decode:     61.85 ms = 3.333x bf16, bf16's bits
+M=  128 mma12   ahead:0:     61.76 ms = 3.328x bf16, bf16's bits
+M=  128 mma12   ahead:2:    370.23 ms = 19.952x bf16, bf16's bits
+M=  128 mma12   ahead:4:    246.32 ms = 13.274x bf16, bf16's bits
+M=  128 mma12   glinear:     21.18 ms = 1.142x bf16, err 3.3e-03
+M=  512 mma12      bf16:     36.76 ms
+M=  512 mma12      glyd:     48.10 ms = 1.308x bf16, err 3.0e-03
+M=  512 mma12    decode:     76.06 ms = 2.069x bf16, bf16's bits
+M=  512 mma12   ahead:0:     75.72 ms = 2.060x bf16, bf16's bits
+M=  512 mma12   ahead:2:    455.45 ms = 12.389x bf16, bf16's bits
+M=  512 mma12   ahead:4:    317.83 ms = 8.645x bf16, bf16's bits
+M=  512 mma12   glinear:     48.14 ms = 1.309x bf16, err 3.0e-03
+M= 1024 mma12      bf16:     70.02 ms
+M= 1024 mma12      glyd:     87.66 ms = 1.252x bf16, err 3.3e-03
+M= 1024 mma12    decode:    112.51 ms = 1.607x bf16, bf16's bits
+M= 1024 mma12   ahead:0:    108.94 ms = 1.556x bf16, bf16's bits
+M= 1024 mma12   ahead:2:    635.32 ms = 9.074x bf16, bf16's bits
+M= 1024 mma12   ahead:4:    355.52 ms = 5.078x bf16, bf16's bits
+M= 1024 mma12   glinear:     87.43 ms = 1.249x bf16, err 3.3e-03
+M= 2048 mma12      bf16:    144.28 ms
+M= 2048 mma12      glyd:    181.25 ms = 1.256x bf16, err 3.2e-03
+M= 2048 mma12    decode:    178.46 ms = 1.237x bf16, bf16's bits
+M= 2048 mma12   ahead:0:    182.34 ms = 1.264x bf16, bf16's bits
+M= 2048 mma12   ahead:2:    631.85 ms = 4.379x bf16, bf16's bits
+M= 2048 mma12   ahead:4:    412.07 ms = 2.856x bf16, bf16's bits
+M= 2048 mma12   glinear:    164.29 ms = 1.139x bf16, err 3.2e-03
+M= 4096 mma12      bf16:    286.30 ms
+M= 4096 mma12      glyd:    327.25 ms = 1.143x bf16, err 3.1e-03
+M= 4096 mma12    decode:    326.20 ms = 1.139x bf16, bf16's bits
+M= 4096 mma12   ahead:0:    321.88 ms = 1.124x bf16, bf16's bits
+M= 4096 mma12   ahead:2:    615.92 ms = 2.151x bf16, bf16's bits
+M= 4096 mma12   ahead:4:    510.19 ms = 1.782x bf16, bf16's bits
+M= 4096 mma12   glinear:    311.95 ms = 1.090x bf16, err 3.1e-03
+M= 8192 mma12      bf16:    571.17 ms
+M= 8192 mma12      glyd:    607.83 ms = 1.064x bf16, err 2.9e-03
+M= 8192 mma12    decode:    611.83 ms = 1.071x bf16, bf16's bits
+M= 8192 mma12   ahead:0:    604.92 ms = 1.059x bf16, bf16's bits
+M= 8192 mma12   ahead:2:    874.01 ms = 1.530x bf16, bf16's bits
+M= 8192 mma12   ahead:4:    746.57 ms = 1.307x bf16, bf16's bits

@@ -6,6 +6,37 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- On Linux with an NVIDIA GPU, install.sh installs the Rust `glyd`, Glyd's engine and its GPU library in one folder: about 100 MB, no
+  Python, no PyTorch. `GLYD_WITH_VLLM=1` installs the Python tool with vLLM as before (about 8 GB), for the bf16 models the engine does not
+  run; a machine that already has the Python tool keeps it.
+- `glyd run` and `glyd serve` run DeepSeek-V4-Flash, GLM-5.3-Flash, Muse Spark and Nemotron 3.5 Lightning on Glyd's engine at penguin:
+  the release's weights exactly (an FP8 or FP4 release as it is, a bf16 one lossless). The layers are split over the machine's GPUs by
+  their free memory (`--split CUTS --devices GPUS` chooses); where the GPUs do not hold the model, `run` says how much it needs and stops.
+  `glyd preflight` and `glyd fetch` know these models too.
+- `glyd run` and `glyd serve` run Kimi-K3 (2.8T parameters, MXFP4 experts) at penguin, the release's weights exactly. Where the GPUs
+  don't hold its 1.45 TB of experts, they stay in the computer's memory and each GPU keeps as many as fit, the ones the router asks for
+  (8x A100 80 GB: 318 to 430 of a layer's 896). `run` says how many, and refuses with the numbers where the memory is short. On 8x A100
+  80 GB: ready in 35 minutes, about 4 tokens a second. The experts the GPUs don't hold are computed on the host's cores beside the copies
+  of the others. On A100, H100 and B200 its bf16 matrices are held in Glyd's 12-bit lossless layout, the faster one there (one H100: 22% a
+  step). `--context` takes any length the memory holds. Its reasoning comes back apart, and its tool calls as OpenAI tool calls,
+  `tool_choice` `required` or a named function too.
+- Downloads add connections while that makes them faster (8 to start, up to 64): a datacenter link gives a connection a few MB/s.
+- Models with FP4 experts load faster: the packs are checked code by code, with no matrix of values made.
+- An FP8 release whose weights do not fit the GPUs as they are is held in Glyd's lossless FP8 coding (the same values, about 7 bits in 8):
+  GLM-5.3-Flash fits four 80 GB GPUs.
+- `glyd serve` of DeepSeek-V4-Flash and GLM-5.3-Flash takes `tools`: the model's tool calls come back as OpenAI tool calls, whole or
+  streamed, with `tool_choice` `required` or a named function.
+- Nemotron 3 Super at hummingbird runs on the same engine as the other models, its expert cache in the computer's memory included, with
+  the same outputs.
+- `glyd-engine costs MODEL[:level]` prints the model's cost profile at the level from its packed files: each layer's resident bytes by component, the bytes a
+  decoded token reads, the KV and state bytes per token, with `--predict` the decode speed over this machine's memory tiers (`glyd-engine rates` measures them).
+  `glyd serve` gives the same as `costs` in `/v1/glyd/info`, with the allocation measured; `glyd-engine preflight MODEL:level --costs` prints it where `glyd run` asks. docs/cost-profile.md.
+- `glyd run google/gemma-4-12B-it` (or `google/gemma-4-31B-it`, or their penguin repos) on a GPU without room for penguin names the wren repo and the memory
+  it takes, where it fits (`glyd run glyd/gemma-4-12B-wren fits: ...`), and stops there; it handed the model to vLLM, whose bf16 needs more memory still, and
+  which printed a second estimate and suggested a model Glyd does not run.
+
 ## v0.32.1 — 2026-10-17
 
 - `glyd fetch MODEL` downloads a model (or `MODEL:LEVEL`'s pre-packed repo) without running it; the pip-installed `glyd` sent it to
@@ -20,7 +51,7 @@ every earlier format.
 
 ## v0.32.0 — 2026-10-17
 
-- Gemma 4 12B and 31B at `:penguin`, lossless: `glyd run glyd/gemma-4-12B-penguin` downloads `glyd/gemma-4-12B-penguin` (16.1 GB, plus
+- Gemma 4 12B and 31B at penguin, lossless: `glyd run glyd/gemma-4-12B-penguin` downloads `glyd/gemma-4-12B-penguin` (16.1 GB, plus
   Google's 0.88 GB draft model); the 31B is `glyd/gemma-4-31B-penguin` (41.3 GB + 0.97 GB). Every weight is Google's bf16 weight, bit for
   bit (`glyd verify` checks it), at about 10.8 bits per weight: the 12B takes 15.0 GiB on the GPU in place of 22.2 GiB and runs on a 24 GB
   card, the 31B 38.4 GiB in place of 57.2 GiB and runs on a 48 GB card. Measured, one user, greedy, with the draft model (without it):
@@ -28,8 +59,9 @@ every earlier format.
   - RTX A6000 48 GB, 31B: 34.3 in chat (13.3); a 24K-token prompt read in 35.5 s. H100 PCIe, 31B: 61.8 (30.0); 23.0 s.
   - GSM8K 72/75 and MMLU-Pro 67/75, both sizes. KLD against transformers' float32 run (wikitext-2, 32 x 512), 12B: 0.170, where
     transformers' own bf16 runs are at 0.132 and 0.143.
-- `glyd run google/gemma-4-12B-it` (and 31B), with no level, runs penguin on Glyd's engine where the GPU has room and downloads the penguin
-  repo; before, the engine's check said it runs Qwen3 models only and handed Gemma 4 to vLLM.
+- `glyd run google/gemma-4-12B-it` (and 31B), with no level, runs lossless (penguin) on Glyd's engine where the GPU has room: the engine's
+  check before the download now takes Gemma 4 the way `run` and `serve` do (it said "runs Qwen3 models so far" and handed the model to vLLM).
+  12B takes about 17.5 GiB at 4096 tokens of context with its draft model, 31B about 42.1 GiB.
 - `glyd serve`: a request that fails has its reason in the server's log, not only in the reply to the client.
 
 ## v0.31.1 — 2026-10-16
@@ -46,57 +78,61 @@ every earlier format.
 ## v0.31.0 — 2026-10-15
 
 - Gemma 4 31B and 12B at `:wren`: `glyd run glyd/gemma-4-31B-wren` downloads
-  `glyd/gemma-4-31B-wren` (17.4 GB, plus Google's 1.0 GB draft model); the 12B is `glyd/gemma-4-12B-wren` (6.8 GB + 0.85 GB). They are
-  made from Google's QAT checkpoints and keep those weights bit for bit, at 4.5 bits per weight. Wren on other models stays a preview.
-- Drafting with Google's Gemma 4 draft models: the small model guesses up to 8 tokens and the big one checks them in one pass. Greedy
-  output is the same token for token as without it; sampled output keeps the model's probabilities. `--no-draft` turns it off.
-  Measured, one user, greedy:
-  - RTX 4090, 31B: 46 tokens a second plain, 78-80 with the draft model on chat prompts (up to 176 on predictable text); a 30K-token
-    prompt read in 20 s; 21.8 of 24.6 GB in use at 32K context. GSM8K 72/75, MMLU-Pro 70/75.
-  - RTX 4080 SUPER, 12B: 82.5 plain, 109 with the draft model on chat prompts (232 on predictable text); a 30K-token prompt in 12.9 s.
-    GSM8K 72/75, MMLU-Pro 66/75.
-- `glyd verify MODEL` checks every tensor of a Glyd model against the sha256 recorded when it was made, and says whether the weights
-  are the source's bit for bit (penguin, and wren made from a QAT checkpoint).
+  `glyd/gemma-4-31B-wren` (17.4 GB + its 1.0 GB draft model); 12B is `glyd/gemma-4-12B-wren` (6.8 GB + 0.85 GB). Packed from Google's QAT
+  checkpoints, which are 4-bit codes times a scale per 32 weights: wren keeps them bit for bit (4.5 bits a weight; the pack refuses a matrix
+  it cannot give back exactly). Release builds now run wren on a QAT checkpoint; wren on other checkpoints stays a development build's.
+- Drafting with Google's Gemma 4 draft models (the `-assistant` repos, shipped in each repo's draft/): the draft model proposes up to 8
+  tokens a round and the model checks them in one pass; greedy output is the same token for token, sampled output keeps the model's
+  distribution. `--no-draft` runs without it. Measured, one user, greedy: RTX 4090, 31B: 46 tokens a second plain, 78 with the draft model
+  on chat prompts (up to 176 on predictable text), a 30K-token prompt read in 20 s; RTX 4080 SUPER, 12B: 82.5 plain, 109 served on chat
+  prompts (232 on the engine test), 30K-token prompt 12.9 s. GSM8K 72/75 (both), MMLU-Pro 70/75 (31B), 66/75 (12B); KLD 0.018 against
+  Google's QAT weights in transformers (31B, wikitext-2 32 x 512).
+- Long prompts on Gemma 4 run on tensor cores (attention for both the 256- and the 512-wide heads): 31B's 30K-token prompt 34 s → 20 s.
+- `glyd verify MODEL`: decodes every packed tensor on the CPU and checks every tensor against the sha256 recorded when it was packed; says
+  whether the level holds the source's weights bit for bit (penguin; wren of a QAT checkpoint). glyd/gemma-4-12B-wren: 7 s on 16 cores.
 
 ## v0.30.0 — 2026-10-10
 
-- Download and run: `glyd run MODEL:swift` (or `:kestrel`) downloads a ready-made checkpoint from Hugging Face and starts from it, instead of
-  fitting the weights on your computer first. Ready now: Qwen3.8-27B, Qwen3.6-27B and Qwen3.5-27B, 9B, 4B, 2B and 0.8B, each at swift and
-  kestrel (`glyd/NAME-LEVEL`), each with a card of what was measured: size, speed on an RTX 4090, an RTX A6000 and an L40S (and a 16 GB card
-  for the 9B), and how close it stays to bf16; the 9B and Qwen3.8-27B cards also have GSM8K beside bf16. Other models are fitted once and
-  kept.
-- Nemotron 3 Super (120B) at `:hummingbird`, about 3 bits per weight for its experts: `glyd run nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16:hummingbird`
-  downloads `glyd/nemotron-3-hummingbird` (48.7 GB). When the GPU cannot hold the whole model, Glyd keeps the most-used parts on the GPU
-  and the rest in the computer's memory, and the CPU does the work for the parts that are not on the GPU; on a computer with less memory
-  than the model, the rest is read from the SSD as needed (`--host-memory GIB` sets how much memory it may use). One user, measured:
-  - RTX 4090: 43.6 tokens a second; held to a 16 GB card's memory: 35.4; RTX 3090: 37.0.
-  - With 20 GiB of the computer's memory for it (a 32 GB PC) and a fast NVMe SSD: 17.7 on the RTX 4090, 13.1 held to 16 GB.
-  - GSM8K 97.0% (300 questions), MMLU-Pro 76.6% (222), not thinking.
-- `glyd serve`: tool calls from Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 (which write them as XML) now come back as `tool_calls`, streamed
-  or not, as vLLM returns them; before, they came back as plain text.
-- Sampling (temperature above 0) on the levels picks the next token on the GPU instead of copying every score to the CPU at each step.
-- The levels are penguin (lossless, the default), kestrel, swift and hummingbird; `:sparrow` is no longer a level.
+- Download and run: `glyd run MODEL:swift` (or `:kestrel`) downloads the pre-packed checkpoint `glyd/NAME-LEVEL` from Hugging Face where
+  one exists and starts from it; other models are packed once into the cache (glyd-engine/src/cli.rs `pre_packed`, store.rs). Published:
+  Qwen3.8-27B, Qwen3.6-27B and Qwen3.5-27B/9B/4B/2B/0.8B at kestrel and swift, each card with its measured size, speed (RTX 4090, RTX A6000,
+  L40S; a 16 GB card for the 9B) and KL against bf16; the 9B and Qwen3.8-27B cards also GSM8K beside bf16 (Inspect AI through `glyd serve`;
+  `.eval_results/glyd.yaml`).
+- Nemotron 3 Super at `:hummingbird` (release builds now run Nemotron-H models): the routed experts as codebook neuron rows at 3 and 2 bits
+  (2.99 bits a weight, from a calibration), every other matrix six-bit, 48.7 GB as `glyd/nemotron-3-hummingbird`. Where the GPU cannot hold
+  it, an expert cache keeps the most-asked-for experts on the GPU and the rest in the computer's memory, and the CPU computes the experts that
+  are not on the GPU from where they are held (src/offload.rs, src/cpu_hb.rs); where the computer's memory cannot hold them either, the rest
+  stay in the packed directory and are read as needed (`--host-memory GIB`, default what the computer has free; src/disk.rs). Measured
+  (decode, one user, 255 greedy tokens): RTX 4090 43.6 tokens a second; a 16 GB card's budget 35.4; RTX 3090 37.0; with 20 GiB of RAM for the
+  experts (a 32 GB PC) 17.7 and 13.1; llama.cpp with Unsloth's UD-Q2_K_XL (54.7 GB) on the same RTX 4090: 17.4. GSM8K 97.0% (300 questions),
+  MMLU-Pro 76.6% (222), non-thinking (benchmarks/gpu/nh-hb-*-2026-10-10, benchmarks/cards/2026-10-10).
+- Tool calls in the XML format (Qwen3.5, 3.6, 3.8 and Nemotron 3's templates; vLLM's qwen3_coder parser) come back as `tool_calls`, whole and
+  streamed, with `tool_choice` (src/tools.rs). Before, `glyd serve MODEL:swift` returned them as plain text.
+- Sampled decode on the engine's levels: the 64 largest logits are found on the GPU and the draw is made from them (penalties, top-k, top-p),
+  in place of copying every logit to the host at each step (its speed on a GPU is still to be measured).
+- Levels: Glyd's levels are penguin, kestrel, swift, wren and hummingbird; a release build runs penguin, kestrel, swift and hummingbird (wren
+  is a development build's), and `:sparrow` is no level.
 
 ## v0.29.4 — 2026-10-09
 
-- Levels: `glyd run MODEL:LEVEL` sets how many bits the weights keep on the GPU. `:penguin` is lossless, the default; `:kestrel` is about
-  6.5 bits per weight (v0.29.3's `--lossy`, which still works); `:swift` is new, about 5.5 bits per weight. Kestrel and swift are not
-  lossless and run on Glyd's engine only (Qwen3.5, Qwen3.6 and Qwen3.8 dense models); a level that is not built yet is refused with
-  the list of those that are. Qwen/Qwen3.8-27B, a prompt of 1,024 tokens and 256 more, one user, one A100 80GB:
-  - `:swift`: 17.4 GiB of weights, 47.5 tokens a second, 19.5 GiB of GPU memory in use.
-  - `:kestrel`: 20.5 GiB of weights, 46.3 tokens a second, 22.6 GiB in use.
-- `:kestrel` (and `--lossy`) is closer to bf16: with Qwen/Qwen3.8-27B the next token's distribution differs from bf16's by a KL
-  divergence of 0.00477 on 253,952 positions of WikiText-2 (v0.29.3: 0.00513; Qwen/Qwen3.8-27B-FP8: 0.00465); `:swift` 0.01393.
-- Starting at a lossy level takes longer, as the weights are fitted more closely while they load: on the A100, 127 s for kestrel and
-  157 s for swift (v0.29.3: about 50 s).
-- `glyd --help` and the READMEs show the levels.
+- Levels: `glyd run MODEL:LEVEL` (glyd-engine/src/cli.rs `level()`, glyd_gpu/engine.py `level_of`). `:penguin` lossless (default);
+  `:kestrel` = Int6 (v0.29.3's `--lossy`, still accepted); `:swift` = Int5, new: five-bit block codes, runs of 32 of a row, one bf16
+  scale, 5.53 bits per weight (gpu/glyd_gpu.cu `Int5`, glyd-gpu `pack_int5`/`unpack_int5`, `--layout i5`). Kestrel and swift run on the
+  engine only; sparrow, wren and hummingbird are refused as not built. Qwen/Qwen3.8-27B, 1,024 + 256 tokens, one user, A100-SXM4-80GB:
+  swift 17.351 GiB, 47.53 tok/s, 19.50 GiB in use; kestrel 20.479 GiB, 46.34 tok/s (benchmarks/gpu/0294-check-2026-10-09).
+- Best-fit scales for Int6 and Int5: the first of 16 scales (0.70 to 1.0 of the run's largest magnitude over the code range) with the
+  least squared error, pruned exactly. KL vs bf16 on 253,952 WikiText-2 positions: kestrel 0.00477 (v0.29.3: 0.00513; FP8 0.00465),
+  swift 0.01393 (benchmarks/gpu/int5-a100-2026-10-09). Packing at load is slower: A100 127 s (kestrel) and 157 s (swift), against 49 s
+  and 51 s with the single scale; pre-packed checkpoints (0.30.0) remove it.
+- READMEs and help: the levels.
 
 ## v0.29.3 — 2026-10-09
 
-- `glyd run MODEL --lossy` keeps about 6.5 bits per weight (6.8 in v0.29.2), still not lossless, and is closer to bf16: with
-  Qwen/Qwen3.8-27B, the next token's distribution differs from bf16's by a KL divergence of 0.00513 on 253,952 positions of WikiText-2,
-  against 0.00831 for v0.29.2 and 0.00465 for Qwen/Qwen3.8-27B-FP8. It is faster too. Qwen/Qwen3.8-27B, a prompt of 1,024 tokens and
-  256 more, one user:
+- `glyd run MODEL --lossy` stores each run of 32 weights of a row as six-bit codes with one bf16 scale: about 6.5 bits per weight (6.8 in
+  v0.29.2), still not lossless, and closer to bf16. With Qwen/Qwen3.8-27B, the next token's distribution differs from bf16's by a KL
+  divergence of 0.00513 on 253,952 positions of WikiText-2, against 0.00831 for v0.29.2's weights and 0.00465 for Qwen/Qwen3.8-27B-FP8
+  ([benchmarks/gpu/int6-l40-2026-10-09](benchmarks/gpu/int6-l40-2026-10-09/README.md)). It is faster too, and a decode step's small
+  products in these models now spread over the whole GPU. Qwen/Qwen3.8-27B, a prompt of 1,024 tokens and 256 more, one user:
   - one L40: 31.3 tokens a second (v0.29.2: 25.8) with 20.5 GiB of weights, first token 481 ms; vLLM 0.30.0 with the FP8 checkpoint
     25.4 tokens a second with 28.0 GiB, first token 504 ms (measured on another L40).
   - one A100 80GB: 45.0 tokens a second (v0.29.2: 18.5), first token 438 ms; vLLM 0.30.0 with the FP8 checkpoint 47.5 tokens a second,
@@ -111,9 +147,9 @@ every earlier format.
   `--lossy` says why and stops, and nothing runs on vLLM. Measured on one L40 with Qwen/Qwen3.8-27B, a prompt of 1,024 tokens and 256 more:
   21.2 GiB of weights and 25.8 tokens a second, against 28.0 GiB and 25.4 tokens a second for vLLM 0.30.0 with Qwen/Qwen3.8-27B-FP8
   (first token 526 ms against 504 ms); started in 67 s with the checkpoint on disk; 32,768 tokens of context. The same values scored a
-  78.68% mean on 13,243 questions of six suites (ARC-Challenge, HellaSwag, WinoGrande, PIQA, BoolQ, MMLU) against 78.54% for bf16 and
-  78.55% for the FP8 checkpoint, a statistically inconclusive difference.
-- glyd-gpu 0.29.2 loads and saves these weights (`glyd-v6` checkpoints).
+  78.68% mean on 13,243 questions of six suites against 78.54% for bf16 and 78.55% for the FP8 checkpoint, a statistically inconclusive
+  difference ([benchmarks/weights/candidate-a7-quality-2026-10-08](benchmarks/weights/candidate-a7-quality-2026-10-08/README.md)).
+- glyd_gpu loads and saves these weights (`glyd-v6` checkpoints; `glyd-gpu pack --layout a`).
 
 ## v0.29.1 — 2026-10-06
 
@@ -179,7 +215,6 @@ every earlier format.
     LICENSE files. Their tags, wheels and crates are unchanged.
   - `LICENSE` is the one license file: `COPYING` (the GPL's text) and `glyd-store/LICENSE` are gone, and the release
     tarballs, the wheels and the crates carry `LICENSE` alone. Code in `third_party/` keeps its own license.
-- Model files: `glyd --max`, and the levels above it, code the tensors of safetensors and GGUF files by their element types (bf16, f16, fp8, ggml's quantised blocks) and read them back at 335-666 MB/s a core. On 22 files cut from 2026 models (3.9 GB: BF16, FP8, Q8_0, Q4_K_M and F16 files of Qwen3.8, Gemma 4, GLM-5.3-Flash, MiniMax-M3, Mistral Small 4 and gpt-oss) the set is 31.8% smaller, where v0.28.0's `--max` gives 24.2%, zstd -19 24.8% and xz -9 26.7%; per file 1.2 to 15.7 points ahead of zstd -19 (19 of 22 by 3 or more; the others: an FP8 checkpoint, whose floor is 19.4%, and two Q8_0 files whose tokenizer metadata, 6 and 9% of these cut-down files, takes more bytes than zstd's) and ahead of xz -9 on every file, writing at 115-286 MB/s a core. Streams and files of every earlier release read as before; v0.28.0 refuses the new streams (`GLYDWGT1`) as an unknown block header. Table and logs: [benchmarks/weights/model-files-2026-10-05](benchmarks/weights/model-files-2026-10-05).
 
 ## v0.28.0 — 2026-10-04
 
@@ -393,8 +428,8 @@ every earlier format.
   | A10 | Qwen3-8B | 1.31x | 1.31x, unchanged (its logs show no hits; not measured again) | 0.0% / 0.0% | |
 
   - The L4's saturated pass served nothing from the cache (its Glyd server's hit rate rose only in the pass at 1
-    request a second), so its 1.33x stands. At 1 request a second its first token is 68% sooner than bf16's (739 ms
-    against 2,323), not 85% sooner, and its requests a second 1.18x, not 1.15x.
+    request a second), so its 1.33x stands. At 1 request a second its first token is 68% sooner than bf16's (2,323 ms
+    against 739), not 85% sooner, and its requests a second 1.18x, not 1.15x.
   - The Qwen3-8B run on the A100 and the run on the H100 have hit rates just above the summary's 1% line (1.3% and 1.1%),
     the same on both sides; on the L4 a run with one repeated prompt of 328 (hit rates 1.1% to 1.2%) and one with none
     (0.0%) gave saturated rows within 1.4%.
@@ -435,7 +470,7 @@ every earlier format.
   `glyd`, found on PATH). The two commands were run from nothing, in a container with no CUDA toolkit and no compiler,
   as a user that is not root (the chat page, the API, the thinking apart, a conversation longer than the window, Open
   WebUI by uvx and by Docker with and without host networking), at a 24 GB, a 16 GB and an 8 GB card's memory, and CI
-  runs `install.sh` from each release's tag ([gpu/vllm/README.md](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/vllm/README.md#local-chat-like-ollama),
+  runs `install.sh` from each release's tag ([gpu/vllm/README.md](gpu/vllm/README.md#local-chat-like-ollama),
   [benchmarks/gpu/l4-onboarding-2026-10-01](benchmarks/gpu/l4-onboarding-2026-10-01)).
 - `glyd run`, `glyd serve` and `scripts/install.sh`, from the review of v0.26.0rc3:
   - A server with an API key now starts (`glyd serve -- --api-key KEY`).
@@ -487,7 +522,7 @@ every earlier format.
     `GLYD_EXACT` and `GLYD_VERIFY`; another key, or a flag not true or false, is refused. `layout` is `auto` by
     default, which picks the layout for the GPU. `verify` also checks a save's other tensors by their sha256, and a
     save packed again in the other layout against the save. A change of layout, mode or checkpoint never loads
-    another's compiled graph ([gpu/vllm/README.md](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/vllm/README.md)).
+    another's compiled graph ([gpu/vllm/README.md](gpu/vllm/README.md)).
   - The plugin ran on an L4, an A10, an A100 SXM4 40 GB, a GH200, an H100 SXM and two RTX A6000s (the checks and
     benches below). Any GPU from Ampere loads it. An H100 PCIe, an H200, an A100 80 GB, an A800 and Blackwell were not
     run: they take the library's settings for their class, not measured through vLLM.
@@ -1042,8 +1077,8 @@ every earlier format.
   Qwen3.5-style linear-attention layers and checkpoints that load only with their vision tower. Qwen3.8 27B, the
   highest-scoring open model that fits one GPU, uses 41,071 MiB with Glyd against bf16's 51,771 (under a 48 GB card's
   49,140), perplexity 15.1941 against 15.1946, MMLU answers as bf16's on 99.67% of 300
-  ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md#popular-models)).
-- On Hopper, batched steps from the 12-bit layout (`mma12`) are faster ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md)): the same result every
+  ([gpu/](gpu/README.md#popular-models)).
+- On Hopper, batched steps from the 12-bit layout (`mma12`) are faster ([gpu/](gpu/README.md)): the same result every
   run. On an H100 SXM, Qwen3-32B's MLP matrices at 32 and 64 tokens take 83 and 92 us against cuBLAS's 90-96 (the
   kernel before 105-140); at 128 tokens 121-124 against 98-99. Small matrices still cost more than cuBLAS's, so end to
   end 32 and 64 sequences take 37.71 and 43.04 ms of GPU time a step against bf16's 32.44 and 35.50 (Qwen3-32B, 25%
@@ -1052,7 +1087,7 @@ every earlier format.
   Qwen3-32B on an H100 takes 24.50 / 26.75 / 33.46 / 37.35 ms of GPU time a token at 1 / 8 / 32 / 64 sequences against
   bf16's 27.90 / 29.78 / 31.44 / 33.52.
 - The layouts measured on an RTX 4080 SUPER, an A10, an A100 and an H100
-  ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md#which-layout-on-which-gpu)); `best_layout()` and `e2e.py --format auto` take the faster for
+  ([gpu/](gpu/README.md#which-layout-on-which-gpu)); `best_layout()` and `e2e.py --format auto` take the faster for
   the GPU (`mma` on Ada and wherever only it fits). Batched steps on GDDR Ampere and Ada take a new path.
 - Side by side with DFloat11 and ZipServ ([README](README.md#related-work)).
 
@@ -1064,18 +1099,18 @@ every earlier format.
   than cuBLAS's (Qwen3-32B's MLP at one token: 75-79 us against 86-90); MMLU 78.1% (bf16 78.3%). On an RTX 4080 SUPER,
   where memory is the limit, `mma` stays the faster at 1-32 sequences and `mma12` leads at 64 (2,455.9 tokens/s
   against 2,244.7; bf16 2,160.0). `pack_mma12`; `mma_gemm`, `mma_gemm_big` and `mma_unpack` take either layout;
-  `e2e.py --format mma12` ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md)).
+  `e2e.py --format mma12` ([gpu/](gpu/README.md)).
 
 ## v0.18.0 — 2026-09-26
 
-- The KV cache compressed in GPU memory ([gpu/kv.py](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/kv.py)), bit for bit: `GlydKVCache(config)` for a Hugging
+- The KV cache compressed in GPU memory ([gpu/kv.py](gpu/kv.py)), bit for bit: `GlydKVCache(config)` for a Hugging
   Face model; with `fused=True` a step of one new token a sequence runs `attn_decode`, attention straight from the
   compressed cache. Qwen2.5-7B-Instruct on an RTX 4080 SUPER: **the cache 31% smaller** (16K tokens: 651 MB for 947),
   peak memory below the plain cache's, a step as fast (21.7 ms against 21.6 at 16K; 19.2 against 18.3 at 1K); decoded,
   the cache is the plain one's bit for bit (the same tokens); through `attn_decode`, 256 tokens fed one at a time give
   perplexity 2.4778 against 2.4809 (16K).
 - Larger models on rented GPUs, bf16 and Glyd in the same runs, MMLU on 1,000 questions
-  ([gpu/README.md](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md#larger-models)): **Qwen3-32B on one 48 GB RTX A6000** (44.45 GB; bf16 65.52 GB across
+  ([gpu/README.md](gpu/README.md#larger-models)): **Qwen3-32B on one 48 GB RTX A6000** (44.45 GB; bf16 65.52 GB across
   two) at 1.24-1.28x bf16's tokens/s for 1-8 sequences, MMLU 78.0% (bf16 78.5%); **Qwen2.5-72B on three** (97.80 GB;
   bf16 145.41 GB across four) at 1.40-1.42x, MMLU 81.8% (81.9%); on an H100 SXM Qwen3-32B in 44.45 GB with MMLU 78.2%
   as bf16's, a token taking more GPU time than bf16's (40.6 ms against 28.2).
@@ -1086,7 +1121,7 @@ every earlier format.
 
 ## v0.17.0 — 2026-09-26
 
-- Model weights on the GPU ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md)): the `mma` layout is smaller: **10.80 bits a weight over
+- Model weights on the GPU ([gpu/](gpu/README.md)): the `mma` layout is smaller: **10.80 bits a weight over
   Qwen2.5-7B's matrices, 32.5% under bf16** (was 11.25), every tensor bit for bit. Qwen2.5-7B-Instruct on an RTX 4080
   SUPER: 10.61 GB where bf16 takes 15.25 (was 11.05); **1.25-1.32x bf16's tokens/s at 1 to 32 sequences** (one: 55.7,
   bf16 43.4; 32: 1,518.9, bf16 1,153.7), 1.13x at 48, 1.04x at 64; prompts of 16 to 128 tokens 19-29 ms (bf16 24-29),
@@ -1100,7 +1135,7 @@ every earlier format.
 
 ## v0.16.0 — 2026-09-25
 
-- Model weights on the GPU, several tokens at once ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md)): a new layout, `mma` (`pack_mma`), for
+- Model weights on the GPU, several tokens at once ([gpu/](gpu/README.md)): a new layout, `mma` (`pack_mma`), for
   batches of tokens and prompts. Qwen2.5-7B-Instruct on an RTX 4080 SUPER, in 11.05 GB where bf16 takes 15.25:
   **1.23-1.33x bf16's tokens/s at 1 to 48 sequences at once** (one: 55.2 tokens/s, bf16 43.3; 32: 1,528.6, bf16
   1,149.0; the batched product it replaces ran 0.72-0.90x); prompts of up to 128 tokens faster than bf16 (128: 27 ms,
@@ -1112,7 +1147,7 @@ every earlier format.
 
 ## v0.15.0 — 2026-09-25
 
-- Model weights on the GPU ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md), Python and CUDA beside the library): a bf16 model's weights held
+- Model weights on the GPU ([gpu/](gpu/README.md), Python and CUDA beside the library): a bf16 model's weights held
   compressed in GPU memory and rebuilt there bit for bit, in two formats: dense (10.9 bits a weight) and fast (11.25).
   Qwen2.5-7B-Instruct on an RTX 4080 SUPER (16 GB): **55.1 tokens/s in 11.05 GB** (fast) and **52.0 in 10.60 GB**
   (dense), against bf16's 43.2 in 15.25 GB; the fast format's 128 tokens as bf16's. Prompts of up to 64 tokens take

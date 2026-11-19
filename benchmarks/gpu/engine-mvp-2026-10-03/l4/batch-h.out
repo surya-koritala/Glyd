@@ -1,0 +1,21 @@
+19:01:52 lock held
+9728152 /home/ubuntu/engine/target-dev10/release/glyd-engine
+== the download bar on a terminal
+ok   a bar is drawn and rewritten -- 21
+ok   it fills: the last frame is at 100% -- <ESC>[KDownloading Qwen3-0.6B [################] 100% 1.5/1.5 GB 20 MB/s
+ok   with a rate and a time left in between -- ['\x1b[KDownloading Qwen3-0.6B [##              ]  17% 0.3/1.5 GB 224 MB/s 5s left']
+ok   the line that ends it -- 5 GB 23 MB/s 0s left<CR><ESC>[KDownloading Qwen3-0.6B [################] 100% 1.5/1.5 GB finishing...<CR><ESC>[KDownloading Qwen3-0.6B [################] 100% 1.5/1.5 GB 20 MB/s<CR><ESC>[KDownloaded Qwen3-0.6B (1.5 GB).<CR>
+
+ok   no line is wider than the terminal (80 columns) -- 77
+ok   nothing after the last line but the shell's -- 100% 1.5/1.5 GB 20 MB/s<CR><ESC>[KDownloaded Qwen3-0.6B (1.5 GB).<CR>
+
+all ok
+== check and score, own products
+/home/ubuntu/engine-out/batch_h/eng-own-gemm.json
+1535 positions scored in 0.6 s
+== a short bench, own products
+prefill ms of the 5 timed runs: 380.2, 377.2, 370.2, 382.8, 374.8
+{"prompt_tokens":1024,"new_tokens":16,"prefill_ms":377.2,"decode_ms_mean":45.761,"decode_ms_p50":45.696,"decode_ms_p99":45.965,"decode_tokens_per_s":21.85,"load_s":2.21,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+prefill ms of the 5 timed runs: 1109.4, 1111.1, 1110.4, 1105.3, 1112.5
+{"prompt_tokens":3500,"new_tokens":16,"prefill_ms":1110.4,"decode_ms_mean":46.894,"decode_ms_p50":46.872,"decode_ms_p99":47.134,"decode_tokens_per_s":21.32,"load_s":2.21,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+19:03:01 done

@@ -1,0 +1,3390 @@
+{
+  "case": "model-00",
+  "shape": [
+    1024,
+    5120
+  ],
+  "unpack_bit_exact": true,
+  "weight_buffer_bytes": 4420951,
+  "host_symbol_bytes": 12,
+  "compact_weight_allocator_delta": 4421632,
+  "memory_before": {
+    "allocated": 0,
+    "reserved": 0,
+    "peak_allocated": 0,
+    "peak_reserved": 0,
+    "device_free": 24773394432,
+    "device_total": 25252724736
+  },
+  "memory_weights": {
+    "allocated": 4421632,
+    "reserved": 23068672,
+    "peak_allocated": 4421632,
+    "peak_reserved": 23068672,
+    "device_free": 24750325760,
+    "device_total": 25252724736
+  },
+  "products": [
+    {
+      "tokens": 1,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 3.751121759414673,
+      "max_abs_error": 0.007739543914794922,
+      "normalized_rms_error": 0.001631345399220442,
+      "base_max_abs_error": 0.007739543914794922,
+      "base_normalized_rms_error": 0.0016313452939976188,
+      "base_reference_bit_exact": true,
+      "max_difference_from_expanded_product": 0.001953125,
+      "workspace_bytes": 45056,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 4421632,
+        "reserved": 23068672,
+        "peak_allocated": 4421632,
+        "peak_reserved": 23068672,
+        "device_free": 24750325760,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 4480000,
+        "reserved": 23068672,
+        "peak_allocated": 4481024,
+        "peak_reserved": 23068672,
+        "device_free": 24750325760,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.011753739222236301,
+        0.011709217144095379,
+        0.011664695065954456,
+        0.011664695065954456,
+        0.01173008654428565
+      ],
+      "expanded_ms": [
+        0.011511172713904545,
+        0.011508965286715278,
+        0.011475862100206572,
+        0.0114405514865086,
+        0.011405240872810626
+      ],
+      "bf16_ms": [
+        0.013209599256515502,
+        0.013051199913024902,
+        0.01295360028743744,
+        0.013055999577045441,
+        0.013055999577045441
+      ],
+      "unpack_ms": [
+        0.016651130240896473,
+        0.016628869201826012,
+        0.016562087380367775,
+        0.016562087380367775,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.012603076604696421,
+        0.011684102889819022,
+        0.01165784627963335,
+        0.011681640759492531,
+        0.011999179155398637
+      ],
+      "fp8_normalized_rms_error": 0.039764785742762015,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 1,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": true,
+      "reference_max": 4.100967884063721,
+      "max_abs_error": 0.009850502014160156,
+      "normalized_rms_error": 0.0016259408591887475,
+      "base_max_abs_error": 0.009850502014160156,
+      "base_normalized_rms_error": 0.0016259408591887475,
+      "base_reference_bit_exact": true,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 45056,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21521408,
+        "reserved": 65011712,
+        "peak_allocated": 21522432,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.011931826239046843,
+        0.01188730416090592,
+        0.011798261300377224,
+        0.011776000261306763,
+        0.011820522339447685
+      ],
+      "expanded_ms": [
+        0.011617103527332175,
+        0.011617103527332175,
+        0.011581792913634202,
+        0.011546482299936229,
+        0.011581792913634202
+      ],
+      "bf16_ms": [
+        0.013465599715709686,
+        0.013363200426101684,
+        0.013414399325847625,
+        0.013363200426101684,
+        0.013361600041389466
+      ],
+      "unpack_ms": [
+        0.016628869201826012,
+        0.016673391279966934,
+        0.016517565302226856,
+        0.016562087380367775,
+        0.016539826341297314
+      ],
+      "fp8_ms": [
+        0.012655589825067764,
+        0.01184164102260883,
+        0.01184164102260883,
+        0.011842461732717661,
+        0.01181456446647644
+      ],
+      "fp8_normalized_rms_error": 0.040924824937629764,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 2,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": true,
+      "reference_max": 3.88289213180542,
+      "max_abs_error": 0.007785797119140625,
+      "normalized_rms_error": 0.0016960355561170246,
+      "base_max_abs_error": 0.007785797119140625,
+      "base_normalized_rms_error": 0.0016960355561170246,
+      "base_reference_bit_exact": true,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 90112,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21576704,
+        "reserved": 65011712,
+        "peak_allocated": 21577728,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.01186504312183546,
+        0.011776000261306763,
+        0.011753739222236301,
+        0.011776000261306763,
+        0.011776000261306763
+      ],
+      "expanded_ms": [
+        0.011546482299936229,
+        0.0114405514865086,
+        0.011405240872810626,
+        0.011405240872810626,
+        0.011511172713904545
+      ],
+      "bf16_ms": [
+        0.014591999351978302,
+        0.01443839967250824,
+        0.01454080045223236,
+        0.01454080045223236,
+        0.01454080045223236
+      ],
+      "unpack_ms": [
+        0.01660660816275555,
+        0.01660660816275555,
+        0.016562087380367775,
+        0.016539826341297314,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.012626871848717714,
+        0.011815384412423158,
+        0.011815384412423158,
+        0.011762871956213927,
+        0.011815384412423158
+      ],
+      "fp8_normalized_rms_error": 0.03887577124679061,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 2,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 3.7678728103637695,
+      "max_abs_error": 0.007811784744262695,
+      "normalized_rms_error": 0.0016493453081305382,
+      "base_max_abs_error": 0.007811784744262695,
+      "base_normalized_rms_error": 0.0016493453081305382,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 90112,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21578752,
+        "reserved": 65011712,
+        "peak_allocated": 21579776,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.011909565199976381,
+        0.01186504312183546,
+        0.01186504312183546,
+        0.011798261300377224,
+        0.011820522339447685
+      ],
+      "expanded_ms": [
+        0.011652414141030147,
+        0.011546482299936229,
+        0.011581792913634202,
+        0.011581792913634202,
+        0.011511172713904545
+      ],
+      "bf16_ms": [
+        0.014643199741840363,
+        0.0144896000623703,
+        0.0144896000623703,
+        0.0144896000623703,
+        0.0144896000623703
+      ],
+      "unpack_ms": [
+        0.016584348419438236,
+        0.01660660816275555,
+        0.016584348419438236,
+        0.016539826341297314,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.012709743701494657,
+        0.011920410089003734,
+        0.016383178723164093,
+        0.011920410089003734,
+        0.011892512822762514
+      ],
+      "fp8_normalized_rms_error": 0.03850297521538897,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 8,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 4.4025349617004395,
+      "max_abs_error": 0.013092517852783203,
+      "normalized_rms_error": 0.0016547032525944922,
+      "base_max_abs_error": 0.013092517852783203,
+      "base_normalized_rms_error": 0.0016547032525944922,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 3.814697265625e-06,
+      "workspace_bytes": 360448,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21920768,
+        "reserved": 65011712,
+        "peak_allocated": 21921792,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.012621913267218548,
+        0.012577391189077625,
+        0.012555130150007166,
+        0.012575999550197435,
+        0.012599652228148087
+      ],
+      "expanded_ms": [
+        0.013488551665996683,
+        0.013488551665996683,
+        0.013382620852569053,
+        0.013451034652775732,
+        0.013382620852569053
+      ],
+      "bf16_ms": [
+        0.014745600521564484,
+        0.014591999351978302,
+        0.014591999351978302,
+        0.014591999351978302,
+        0.014591999351978302
+      ],
+      "unpack_ms": [
+        0.016651130240896473,
+        0.01665043442145638,
+        0.01660660816275555,
+        0.016539826341297314,
+        0.01660660816275555
+      ],
+      "fp8_ms": [
+        0.011946666699189406,
+        0.011237743573311048,
+        0.011211486963125376,
+        0.011186051063048534,
+        0.011211486963125376
+      ],
+      "fp8_normalized_rms_error": 0.040308159453944246,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 8,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.571869373321533,
+      "max_abs_error": 0.012328624725341797,
+      "normalized_rms_error": 0.001653940404034877,
+      "base_max_abs_error": 0.012328624725341797,
+      "base_normalized_rms_error": 0.0016539405060617756,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.00390625,
+      "workspace_bytes": 360448,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 21922816,
+        "reserved": 65011712,
+        "peak_allocated": 21923840,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.012710956127747246,
+        0.01266643534535947,
+        0.01266643534535947,
+        0.01266643534535947,
+        0.012644174306289009
+      ],
+      "expanded_ms": [
+        0.013559172893392629,
+        0.013488551665996683,
+        0.013523862279694656,
+        0.013488551665996683,
+        0.013523862279694656
+      ],
+      "bf16_ms": [
+        0.014745600521564484,
+        0.014694400131702423,
+        0.014643199741840363,
+        0.014643199741840363,
+        0.014643199741840363
+      ],
+      "unpack_ms": [
+        0.016673391279966934,
+        0.016584348419438236,
+        0.01655999992204749,
+        0.01660660816275555,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.01202789713174869,
+        0.011290256029520279,
+        0.01126400018349672,
+        0.01126400018349672,
+        0.01126400018349672
+      ],
+      "fp8_normalized_rms_error": 0.03955464021338921,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 16,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 4.873565196990967,
+      "max_abs_error": 0.01244974136352539,
+      "normalized_rms_error": 0.0016564378728230501,
+      "base_max_abs_error": 0.01244974136352539,
+      "base_normalized_rms_error": 0.0016564378728230501,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 5.960464477539063e-08,
+      "workspace_bytes": 720896,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22379520,
+        "reserved": 65011712,
+        "peak_allocated": 22380544,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.014068869145020195,
+        0.014002087323561958,
+        0.013957565245421036,
+        0.013935304206350575,
+        0.013977738826171211
+      ],
+      "expanded_ms": [
+        0.01719393093010475,
+        0.017160827743596042,
+        0.017160827743596042,
+        0.017160827743596042,
+        0.017160827743596042
+      ],
+      "bf16_ms": [
+        0.014847999811172486,
+        0.014793600142002105,
+        0.014745600521564484,
+        0.014847999811172486,
+        0.014745600521564484
+      ],
+      "unpack_ms": [
+        0.016628869201826012,
+        0.016604522000188412,
+        0.01660660816275555,
+        0.016584348419438236,
+        0.01658226096111795
+      ],
+      "fp8_ms": [
+        0.011946666699189406,
+        0.011132717896730471,
+        0.011158974506916145,
+        0.011158974506916145,
+        0.011158974506916145
+      ],
+      "fp8_normalized_rms_error": 0.039956737562500136,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 16,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 4.359749794006348,
+      "max_abs_error": 0.015250205993652344,
+      "normalized_rms_error": 0.0016659858059540492,
+      "base_max_abs_error": 0.015250205993652344,
+      "base_normalized_rms_error": 0.0016659858059540492,
+      "base_reference_bit_exact": true,
+      "max_difference_from_expanded_product": 0.0078125,
+      "workspace_bytes": 720896,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22381568,
+        "reserved": 65011712,
+        "peak_allocated": 22382592,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.0141801743403725,
+        0.014135652262231579,
+        0.014091130184090656,
+        0.014113391223161117,
+        0.014091130184090656
+      ],
+      "expanded_ms": [
+        0.01733737978441962,
+        0.017302069170721645,
+        0.01733737978441962,
+        0.01726565484342904,
+        0.017302069170721645
+      ],
+      "bf16_ms": [
+        0.015052799880504609,
+        0.014899200201034546,
+        0.014899200201034546,
+        0.014899200201034546,
+        0.014899200201034546
+      ],
+      "unpack_ms": [
+        0.016562087380367775,
+        0.016673391279966934,
+        0.016584348419438236,
+        0.016562087380367775,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.011972923309375078,
+        0.011211486963125376,
+        0.011212307673234206,
+        0.011211486963125376,
+        0.011185231117101816
+      ],
+      "fp8_normalized_rms_error": 0.03973357205950116,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 17,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 4.491057395935059,
+      "max_abs_error": 0.01373147964477539,
+      "normalized_rms_error": 0.0016499777474938788,
+      "base_max_abs_error": 0.01373147964477539,
+      "base_normalized_rms_error": 0.0016499777474938788,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 626688,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22297600,
+        "reserved": 65011712,
+        "peak_allocated": 22298624,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.013579130172729492,
+        0.013579130172729492,
+        0.01353460809458857,
+        0.013556869133659031,
+        0.013556869133659031
+      ],
+      "expanded_ms": [
+        0.014371310842448267,
+        0.014300689615052322,
+        0.014300689615052322,
+        0.014265379001354349,
+        0.014265379001354349
+      ],
+      "bf16_ms": [
+        0.015001599490642548,
+        0.014950400590896607,
+        0.014899200201034546,
+        0.014847999811172486,
+        0.014847999811172486
+      ],
+      "unpack_ms": [
+        0.016673391279966934,
+        0.016562087380367775,
+        0.016584348419438236,
+        0.01660660816275555,
+        0.01660660816275555
+      ],
+      "fp8_ms": [
+        0.011867897632794503,
+        0.011132717896730471,
+        0.0111064612865448,
+        0.0111064612865448,
+        0.0111064612865448
+      ],
+      "fp8_normalized_rms_error": 0.04016252510487947,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 17,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 4.8638529777526855,
+      "max_abs_error": 0.014983654022216797,
+      "normalized_rms_error": 0.0016627051397034341,
+      "base_max_abs_error": 0.014983654022216797,
+      "base_normalized_rms_error": 0.0016627051397034341,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 626688,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 22299648,
+        "reserved": 65011712,
+        "peak_allocated": 22300672,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.013690435368081798,
+        0.013668174329011337,
+        0.013645913289940876,
+        0.013645913289940876,
+        0.013666782690131146
+      ],
+      "expanded_ms": [
+        0.014441931042177924,
+        0.014371310842448267,
+        0.014371310842448267,
+        0.014371310842448267,
+        0.014371310842448267
+      ],
+      "bf16_ms": [
+        0.014796799421310425,
+        0.014643199741840363,
+        0.014643199741840363,
+        0.014643199741840363,
+        0.014643199741840363
+      ],
+      "unpack_ms": [
+        0.016651130240896473,
+        0.016628869201826012,
+        0.016628869201826012,
+        0.01660660816275555,
+        0.016628869201826012
+      ],
+      "fp8_ms": [
+        0.01202543576558431,
+        0.01126400018349672,
+        0.011211486963125376,
+        0.011211486963125376,
+        0.011211486963125376
+      ],
+      "fp8_normalized_rms_error": 0.039741327465606005,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 32,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.22100830078125,
+      "max_abs_error": 0.013536453247070312,
+      "normalized_rms_error": 0.0016629644609388993,
+      "base_max_abs_error": 0.013536453247070312,
+      "base_normalized_rms_error": 0.0016629644609388993,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 1179648,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 23034880,
+        "reserved": 65011712,
+        "peak_allocated": 23035904,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.014870261368544205,
+        0.014825739290403284,
+        0.014825739290403284,
+        0.014823651832082996,
+        0.014781217212262361
+      ],
+      "expanded_ms": [
+        0.015642482658912396,
+        0.015607172045214423,
+        0.015536551845484766,
+        0.015607172045214423,
+        0.015606069359286079
+      ],
+      "bf16_ms": [
+        0.01510400027036667,
+        0.015001599490642548,
+        0.014950400590896607,
+        0.015052799880504609,
+        0.015001599490642548
+      ],
+      "unpack_ms": [
+        0.016651130240896473,
+        0.01660660816275555,
+        0.016584348419438236,
+        0.016628869201826012,
+        0.01660660816275555
+      ],
+      "fp8_ms": [
+        0.011972923309375078,
+        0.011185231117101816,
+        0.011185231117101816,
+        0.011211486963125376,
+        0.011211486963125376
+      ],
+      "fp8_normalized_rms_error": 0.040058210034847476,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 32,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 4.536783218383789,
+      "max_abs_error": 0.014242172241210938,
+      "normalized_rms_error": 0.0016593058228716196,
+      "base_max_abs_error": 0.014242172241210938,
+      "base_normalized_rms_error": 0.0016593058228716196,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 1179648,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 23036928,
+        "reserved": 65011712,
+        "peak_allocated": 23037952,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.015003826307213825,
+        0.014959304229072903,
+        0.014937043190002441,
+        0.014937043190002441,
+        0.014937043190002441
+      ],
+      "expanded_ms": [
+        0.01581903469973597,
+        0.016136827140018857,
+        0.015713103886308342,
+        0.015713103886308342,
+        0.015713103886308342
+      ],
+      "bf16_ms": [
+        0.01525759994983673,
+        0.01520639955997467,
+        0.01515520066022873,
+        0.01515520066022873,
+        0.015204800665378571
+      ],
+      "unpack_ms": [
+        0.016695652319037396,
+        0.016673391279966934,
+        0.01667130382164665,
+        0.016628869201826012,
+        0.01660660816275555
+      ],
+      "fp8_ms": [
+        0.012051692375769982,
+        0.011316512639705952,
+        0.011290256029520279,
+        0.011290256029520279,
+        0.011290256029520279
+      ],
+      "fp8_normalized_rms_error": 0.03977117058157484,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 33,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.06171989440918,
+      "max_abs_error": 0.01538228988647461,
+      "normalized_rms_error": 0.0016581294912476653,
+      "base_max_abs_error": 0.01538228988647461,
+      "base_normalized_rms_error": 0.0016581294912476653,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 1216512,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 23084032,
+        "reserved": 65011712,
+        "peak_allocated": 23085056,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.018543304308601048,
+        0.01845426144807235,
+        0.018409043550491333,
+        0.018387478330860966,
+        0.01843200040900189
+      ],
+      "expanded_ms": [
+        0.018676965401090425,
+        0.01864386221458172,
+        0.018608551600883746,
+        0.018573240987185775,
+        0.01864386221458172
+      ],
+      "bf16_ms": [
+        0.015974399447441102,
+        0.015820799767971037,
+        0.015820799767971037,
+        0.015769599378108977,
+        0.015872000157833098
+      ],
+      "unpack_ms": [
+        0.016717913358107857,
+        0.016628869201826012,
+        0.01660660816275555,
+        0.01660660816275555,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.011894153478818063,
+        0.011158974506916145,
+        0.0111064612865448,
+        0.011158974506916145,
+        0.0111064612865448
+      ],
+      "fp8_normalized_rms_error": 0.040204004658246584,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 33,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.178021430969238,
+      "max_abs_error": 0.014595985412597656,
+      "normalized_rms_error": 0.001665651681069941,
+      "base_max_abs_error": 0.014595985412597656,
+      "base_normalized_rms_error": 0.001665651681069941,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 1216512,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 23086080,
+        "reserved": 65011712,
+        "peak_allocated": 23087104,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.018676869247270668,
+        0.018632348464882893,
+        0.01858782638674197,
+        0.018832695225010746,
+        0.01858782638674197
+      ],
+      "expanded_ms": [
+        0.018855723841436977,
+        0.018855723841436977,
+        0.018820413227739006,
+        0.018819309514144372,
+        0.018749794055675638
+      ],
+      "bf16_ms": [
+        0.016281600296497344,
+        0.016225600242614747,
+        0.016128000617027283,
+        0.016179199516773223,
+        0.016076800227165223
+      ],
+      "unpack_ms": [
+        0.016673391279966934,
+        0.016584348419438236,
+        0.016651130240896473,
+        0.016584348419438236,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.011999179155398637,
+        0.011237743573311048,
+        0.011211486963125376,
+        0.011236922863202218,
+        0.011185231117101816
+      ],
+      "fp8_normalized_rms_error": 0.03957442357211599,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 64,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.065719127655029,
+      "max_abs_error": 0.015446186065673828,
+      "normalized_rms_error": 0.001660294362907493,
+      "base_max_abs_error": 0.015446186065673828,
+      "base_normalized_rms_error": 0.001660294362907493,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 2359296,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 24607744,
+        "reserved": 65011712,
+        "peak_allocated": 24608768,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.023039999215499214,
+        0.023039999215499214,
+        0.023017738176428753,
+        0.02299547713735829,
+        0.02297321609828783
+      ],
+      "expanded_ms": [
+        0.023410758067821634,
+        0.023622619694676893,
+        0.023304828282060295,
+        0.023336827754974365,
+        0.023304828282060295
+      ],
+      "bf16_ms": [
+        0.016128000617027283,
+        0.016076800227165223,
+        0.016075199842453,
+        0.015974399447441102,
+        0.015974399447441102
+      ],
+      "unpack_ms": [
+        0.016673391279966934,
+        0.016762434140495632,
+        0.016584348419438236,
+        0.016539826341297314,
+        0.016628869201826012
+      ],
+      "fp8_ms": [
+        0.011946666699189406,
+        0.0111064612865448,
+        0.011132717896730471,
+        0.011132717896730471,
+        0.0111064612865448
+      ],
+      "fp8_normalized_rms_error": 0.04032233906804228,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 64,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.310553550720215,
+      "max_abs_error": 0.014804840087890625,
+      "normalized_rms_error": 0.0016619395767140071,
+      "base_max_abs_error": 0.014804840087890625,
+      "base_normalized_rms_error": 0.0016619395767140071,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 2359296,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 24609792,
+        "reserved": 65011712,
+        "peak_allocated": 24610816,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.023173565449921982,
+        0.02321599877398947,
+        0.02315130441085152,
+        0.023173565449921982,
+        0.023172868334728737
+      ],
+      "expanded_ms": [
+        0.023587311136311497,
+        0.023516689908915554,
+        0.02348137929521758,
+        0.02344606868151961,
+        0.02344606868151961
+      ],
+      "bf16_ms": [
+        0.016123199462890626,
+        0.015974399447441102,
+        0.015974399447441102,
+        0.016128000617027283,
+        0.015974399447441102
+      ],
+      "unpack_ms": [
+        0.016628869201826012,
+        0.016584348419438236,
+        0.016562087380367775,
+        0.01660660816275555,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.01202625647569314,
+        0.011211486963125376,
+        0.011211486963125376,
+        0.011211486963125376,
+        0.011186051063048534
+      ],
+      "fp8_normalized_rms_error": 0.03984801540804906,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded"
+    },
+    {
+      "tokens": 65,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 4.949163913726807,
+      "max_abs_error": 0.015391349792480469,
+      "normalized_rms_error": 0.00167274601756477,
+      "base_max_abs_error": 0.015391349792480469,
+      "base_normalized_rms_error": 0.00167274601756477,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 8388608,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 30649344,
+        "reserved": 65011712,
+        "peak_allocated": 30650368,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.034660173499065895,
+        0.03463791245999544,
+        0.03452660985614942,
+        0.03461565142092497,
+        0.03452660985614942
+      ],
+      "expanded_ms": [
+        0.03456882772774532,
+        0.03453241545578529,
+        0.0344628958866514,
+        0.0344628958866514,
+        0.03442758527295343
+      ],
+      "bf16_ms": [
+        0.016382400691509248,
+        0.01669120043516159,
+        0.016281600296497344,
+        0.016332800686359405,
+        0.016281600296497344
+      ],
+      "unpack_ms": [
+        0.01660660816275555,
+        0.016582956780558048,
+        0.016584348419438236,
+        0.016539826341297314,
+        0.016562087380367775
+      ],
+      "fp8_ms": [
+        0.012471795082092285,
+        0.011710358735842582,
+        0.011684102889819022,
+        0.011736615346028255,
+        0.011710358735842582
+      ],
+      "fp8_normalized_rms_error": 0.040094600484197156,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015391349792480469,
+          "normalized_rms_error": 0.00167274601756477,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.03463791245999544,
+            0.034593390381854515,
+            0.03454886830371359,
+            0.03457112934278405,
+            0.03452660985614942
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015391349792480469,
+          "normalized_rms_error": 0.00167274601756477,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.033591651398202645,
+            0.03334678255993387,
+            0.03332452152086341,
+            0.03339130463807479,
+            0.03336904359900433
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 65,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.3755083084106445,
+      "max_abs_error": 0.015296459197998047,
+      "normalized_rms_error": 0.0016754452465025831,
+      "base_max_abs_error": 0.015296459197998047,
+      "base_normalized_rms_error": 0.0016754452465025831,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 8388608,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 30651392,
+        "reserved": 65011712,
+        "peak_allocated": 30652416,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.03508173901101817,
+        0.03499269485473633,
+        0.03503860857175744,
+        0.03503860857175744,
+        0.034994086493616516
+      ],
+      "expanded_ms": [
+        0.03502786159515381,
+        0.03492192975405989,
+        0.03492192975405989,
+        0.034851308526663946,
+        0.03491972232687062
+      ],
+      "bf16_ms": [
+        0.021299199759960176,
+        0.021294400095939636,
+        0.021299199759960176,
+        0.021247999370098115,
+        0.021247999370098115
+      ],
+      "unpack_ms": [
+        0.016562087380367775,
+        0.01655999992204749,
+        0.016517565302226856,
+        0.016539826341297314,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.0125751793384552,
+        0.01184164102260883,
+        0.01184164102260883,
+        0.011815384412423158,
+        0.01181702583264082
+      ],
+      "fp8_normalized_rms_error": 0.03978328089054681,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015296459197998047,
+          "normalized_rms_error": 0.0016754452465025831,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.03503860857175744,
+            0.03497182545454606,
+            0.03497182545454606,
+            0.034994086493616516,
+            0.034949564415475594
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015296459197998047,
+          "normalized_rms_error": 0.0016754452465025831,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.03388104231461235,
+            0.03392556439275327,
+            0.03374678155650263,
+            0.03374747867169588,
+            0.033702956593554954
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 127,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.0613322257995605,
+      "max_abs_error": 0.01510477066040039,
+      "normalized_rms_error": 0.0016621628357301633,
+      "base_max_abs_error": 0.01510477066040039,
+      "base_normalized_rms_error": 0.0016621628357301633,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 8388608,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 31572992,
+        "reserved": 65011712,
+        "peak_allocated": 31574016,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.035394782605378525,
+        0.03530573844909668,
+        0.0353502605272376,
+        0.03537252156630806,
+        0.03541704364444898
+      ],
+      "expanded_ms": [
+        0.03523972527734164,
+        0.03527503589103962,
+        0.0351691040499457,
+        0.03520441466364367,
+        0.03509848282254975
+      ],
+      "bf16_ms": [
+        0.01643519997596741,
+        0.016383999586105348,
+        0.016332800686359405,
+        0.016332800686359405,
+        0.016281600296497344
+      ],
+      "unpack_ms": [
+        0.016717913358107857,
+        0.016584348419438236,
+        0.016562087380367775,
+        0.016628869201826012,
+        0.016539826341297314
+      ],
+      "fp8_ms": [
+        0.013915897944034675,
+        0.01310194914157574,
+        0.013075692531390067,
+        0.01310194914157574,
+        0.012996922700833052
+      ],
+      "fp8_normalized_rms_error": 0.04000634350735088,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.01510477066040039,
+          "normalized_rms_error": 0.0016621628357301633,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.03528347741002622,
+            0.03532799948816714,
+            0.03528347741002622,
+            0.03526121637095576,
+            0.03526121637095576
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.01510477066040039,
+          "normalized_rms_error": 0.0016621628357301633,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.03421495530916297,
+            0.034326260504515274,
+            0.03417043582252834,
+            0.03412591374438742,
+            0.0344591296237448
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 127,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 4.897511005401611,
+      "max_abs_error": 0.015526771545410156,
+      "normalized_rms_error": 0.001659370054319167,
+      "base_max_abs_error": 0.015526771545410156,
+      "base_normalized_rms_error": 0.001659370054319167,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 8388608,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 31575040,
+        "reserved": 65011712,
+        "peak_allocated": 31576064,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.03584000079528145,
+        0.03588452287342237,
+        0.035928347836370056,
+        0.03586226183435191,
+        0.03581773975621099
+      ],
+      "expanded_ms": [
+        0.03576938037214608,
+        0.03566344853105216,
+        0.03569875914475013,
+        0.03566013944560084,
+        0.03569875914475013
+      ],
+      "bf16_ms": [
+        0.03978239893913269,
+        0.03973119854927063,
+        0.039628800749778745,
+        0.03967519998550415,
+        0.039577600359916684
+      ],
+      "unpack_ms": [
+        0.016628869201826012,
+        0.01660660816275555,
+        0.016562087380367775,
+        0.016539826341297314,
+        0.01660660816275555
+      ],
+      "fp8_ms": [
+        0.013994666246267466,
+        0.01315446083362286,
+        0.01310194914157574,
+        0.01315446083362286,
+        0.01310194914157574
+      ],
+      "fp8_normalized_rms_error": 0.03968462783576212,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015526771545410156,
+          "normalized_rms_error": 0.001659370054319167,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.035951303399127464,
+            0.03584000079528145,
+            0.03586226183435191,
+            0.03581773975621099,
+            0.03588452287342237
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015526771545410156,
+          "normalized_rms_error": 0.001659370054319167,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.034326260504515274,
+            0.03443756569986758,
+            0.03421495530916297,
+            0.03439304362172666,
+            0.03434852154358574
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 128,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.528873920440674,
+      "max_abs_error": 0.014796257019042969,
+      "normalized_rms_error": 0.0016653842329192171,
+      "base_max_abs_error": 0.014796257019042969,
+      "base_normalized_rms_error": 0.0016653842329192171,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 8388608,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 31554560,
+        "reserved": 65011712,
+        "peak_allocated": 31555584,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.03541704364444898,
+        0.03532799948816714,
+        0.03532799948816714,
+        0.03530573844909668,
+        0.0353502605272376
+      ],
+      "expanded_ms": [
+        0.03531034650473759,
+        0.03527503589103962,
+        0.03523972527734164,
+        0.03523972527734164,
+        0.03523972527734164
+      ],
+      "bf16_ms": [
+        0.016383999586105348,
+        0.016383999586105348,
+        0.016383999586105348,
+        0.016332800686359405,
+        0.016332800686359405
+      ],
+      "unpack_ms": [
+        0.016651130240896473,
+        0.016584348419438236,
+        0.016673391279966934,
+        0.01660660816275555,
+        0.016584348419438236
+      ],
+      "fp8_ms": [
+        0.013889641333849002,
+        0.013023179311018724,
+        0.012996922700833052,
+        0.013049435921204396,
+        0.012996922700833052
+      ],
+      "fp8_normalized_rms_error": 0.04000841707668387,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.014796257019042969,
+          "normalized_rms_error": 0.0016653842329192171,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.03537112992742787,
+            0.03530573844909668,
+            0.03530573844909668,
+            0.03530573844909668,
+            0.03526121637095576
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.014796257019042969,
+          "normalized_rms_error": 0.0016653842329192171,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.034259477387303894,
+            0.034103652705316956,
+            0.034326260504515274,
+            0.03423721634823343,
+            0.034303999465444816
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 128,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.197802543640137,
+      "max_abs_error": 0.015552997589111328,
+      "normalized_rms_error": 0.0016631718698630485,
+      "base_max_abs_error": 0.015552997589111328,
+      "base_normalized_rms_error": 0.0016631718698630485,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 8388608,
+      "counter_bytes": 64,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 31556608,
+        "reserved": 65011712,
+        "peak_allocated": 31557632,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.03590678132098654,
+        0.03583860915640126,
+        0.03586226183435191,
+        0.03581773975621099,
+        0.03588382575822913
+      ],
+      "expanded_ms": [
+        0.03580469098584405,
+        0.03576938037214608,
+        0.03566344853105216,
+        0.03572965490406957,
+        0.03573406975844811
+      ],
+      "bf16_ms": [
+        0.03988479971885681,
+        0.03973119854927063,
+        0.039628800749778745,
+        0.039680001139640805,
+        0.039680001139640805
+      ],
+      "unpack_ms": [
+        0.016628869201826012,
+        0.01660660816275555,
+        0.016584348419438236,
+        0.016584348419438236,
+        0.016562087380367775
+      ],
+      "fp8_ms": [
+        0.013942154554220347,
+        0.013099487011249248,
+        0.013075692531390067,
+        0.01310194914157574,
+        0.01310030772135808
+      ],
+      "fp8_normalized_rms_error": 0.03971060873013871,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015552997589111328,
+          "normalized_rms_error": 0.0016631718698630485,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 8388608,
+          "ms": [
+            0.03584000079528145,
+            0.03584000079528145,
+            0.035929042360057,
+            0.03586226183435191,
+            0.03584000079528145
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015552997589111328,
+          "normalized_rms_error": 0.0016631718698630485,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.03452660985614942,
+            0.03461565142092497,
+            0.03430191330287768,
+            0.03434852154358574,
+            0.03428173842637435
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 129,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.254794597625732,
+      "max_abs_error": 0.0155487060546875,
+      "normalized_rms_error": 0.0016620218734537272,
+      "base_max_abs_error": 0.0155487060546875,
+      "base_normalized_rms_error": 0.0016620218734537272,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 16777216,
+      "counter_bytes": 128,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 40086528,
+        "reserved": 65011712,
+        "peak_allocated": 40087552,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.03434852154358574,
+        0.03439304362172666,
+        0.03457112934278405,
+        0.034660173499065895,
+        0.03439304362172666
+      ],
+      "expanded_ms": [
+        0.034498206500349377,
+        0.034286344873494114,
+        0.03425103425979614,
+        0.03439006928739877,
+        0.0341804130324002
+      ],
+      "bf16_ms": [
+        0.01966080069541931,
+        0.01955839991569519,
+        0.019556799530982973,
+        0.01940159946680069,
+        0.01945600062608719
+      ],
+      "unpack_ms": [
+        0.016740174397178318,
+        0.016673391279966934,
+        0.016717913358107857,
+        0.016671999641086743,
+        0.016651130240896473
+      ],
+      "fp8_ms": [
+        0.01570133368174235,
+        0.014965333999731602,
+        0.014913641489469089,
+        0.01493989809965476,
+        0.014938256679437099
+      ],
+      "fp8_normalized_rms_error": 0.039797672300637,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.0155487060546875,
+          "normalized_rms_error": 0.0016620218734537272,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.038511304751686425,
+            0.038511304751686425,
+            0.03857808786889781,
+            0.03857808786889781,
+            0.038511304751686425
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.0155487060546875,
+          "normalized_rms_error": 0.0016620218734537272,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.03421495530916297,
+            0.03421495530916297,
+            0.03417043582252834,
+            0.034324868865635086,
+            0.03412591374438742
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 129,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.098546028137207,
+      "max_abs_error": 0.015572071075439453,
+      "normalized_rms_error": 0.0016659558586786926,
+      "base_max_abs_error": 0.015572071075439453,
+      "base_normalized_rms_error": 0.0016659558586786926,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 16777216,
+      "counter_bytes": 128,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 40088576,
+        "reserved": 65011712,
+        "peak_allocated": 40089600,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.03463791245999544,
+        0.03445982673893804,
+        0.03439304362172666,
+        0.03441530466079712,
+        0.03468243453813636
+      ],
+      "expanded_ms": [
+        0.0341451044740348,
+        0.03421572364609817,
+        0.03410979386033683,
+        0.0344628958866514,
+        0.03400386201924291
+      ],
+      "bf16_ms": [
+        0.039577600359916684,
+        0.039526399970054624,
+        0.0394239991903305,
+        0.03932160139083862,
+        0.0394239991903305
+      ],
+      "unpack_ms": [
+        0.016806956218636555,
+        0.016740174397178318,
+        0.016717913358107857,
+        0.016717913358107857,
+        0.016695652319037396
+      ],
+      "fp8_ms": [
+        0.015806358594160814,
+        0.01499240979170188,
+        0.014966153181516208,
+        0.015018666401887551,
+        0.01493989809965476
+      ],
+      "fp8_normalized_rms_error": 0.03982083186452217,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015572071075439453,
+          "normalized_rms_error": 0.0016659558586786926,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.03853356579075689,
+            0.03855582682982735,
+            0.03839999955633412,
+            0.03826643591341765,
+            0.038377738517263664
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015572071075439453,
+          "normalized_rms_error": 0.0016659558586786926,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.034504348817078964,
+            0.034303999465444816,
+            0.034259477387303894,
+            0.03428173842637435,
+            0.034259477387303894
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 256,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.680822849273682,
+      "max_abs_error": 0.01557159423828125,
+      "normalized_rms_error": 0.0016564755362842693,
+      "base_max_abs_error": 0.01557159423828125,
+      "base_normalized_rms_error": 0.0016564755362842693,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 16777216,
+      "counter_bytes": 128,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 41647104,
+        "reserved": 65011712,
+        "peak_allocated": 41648128,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.036351999510889466,
+        0.036351999510889466,
+        0.036285216393678085,
+        0.03624069690704346,
+        0.036285216393678085
+      ],
+      "expanded_ms": [
+        0.03605186117106471,
+        0.03612248239846065,
+        0.03605186117106471,
+        0.0361931036258566,
+        0.03618979454040527
+      ],
+      "bf16_ms": [
+        0.023449599742889404,
+        0.023347200453281404,
+        0.023296000063419343,
+        0.02324160039424896,
+        0.023347200453281404
+      ],
+      "unpack_ms": [
+        0.016762434140495632,
+        0.016740174397178318,
+        0.016784695179566093,
+        0.016806956218636555,
+        0.016762434140495632
+      ],
+      "fp8_ms": [
+        0.01732923128666022,
+        0.017276718066288874,
+        0.017276718066288874,
+        0.017250461456103202,
+        0.017250461456103202
+      ],
+      "fp8_normalized_rms_error": 0.04006919478763926,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.01557159423828125,
+          "normalized_rms_error": 0.0016564755362842693,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.039067825545435364,
+            0.03884521774623705,
+            0.03902330346729444,
+            0.03897878138915352,
+            0.03920139177985813
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.01557159423828125,
+          "normalized_rms_error": 0.0016564755362842693,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.036351999510889466,
+            0.03630747743274854,
+            0.03637426054995993,
+            0.03617391378983208,
+            0.036351999510889466
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 256,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.975756645202637,
+      "max_abs_error": 0.01559591293334961,
+      "normalized_rms_error": 0.0016622112275277742,
+      "base_max_abs_error": 0.01559591293334961,
+      "base_normalized_rms_error": 0.0016622112275277742,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 16777216,
+      "counter_bytes": 128,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 41649152,
+        "reserved": 65011712,
+        "peak_allocated": 41650176,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.03644104366717131,
+        0.03626295535460762,
+        0.03632973847181901,
+        0.03615165275076161,
+        0.03630747743274854
+      ],
+      "expanded_ms": [
+        0.03608717178476268,
+        0.03580469098584405,
+        0.03591061871627282,
+        0.03598123994366876,
+        0.03584000159954202
+      ],
+      "bf16_ms": [
+        0.03681280016899109,
+        0.03676159977912903,
+        0.03665919899940491,
+        0.03665919899940491,
+        0.03665919899940491
+      ],
+      "unpack_ms": [
+        0.016740174397178318,
+        0.016651130240896473,
+        0.016740174397178318,
+        0.016695652319037396,
+        0.016671999641086743
+      ],
+      "fp8_ms": [
+        0.01740799958889301,
+        0.017355487896845892,
+        0.01732923128666022,
+        0.01732923128666022,
+        0.01732923128666022
+      ],
+      "fp8_normalized_rms_error": 0.039759772278266624,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.01559591293334961,
+          "normalized_rms_error": 0.0016622112275277742,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.03882295670716659,
+            0.03891200086344843,
+            0.03884521774623705,
+            0.039001042428223984,
+            0.03886747878530751
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.01559591293334961,
+          "normalized_rms_error": 0.0016622112275277742,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.03624069690704346,
+            0.036196174828902535,
+            0.03626295535460762,
+            0.03632973847181901,
+            0.03626295535460762
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 512,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.982804775238037,
+      "max_abs_error": 0.015619277954101562,
+      "normalized_rms_error": 0.0016613753956133653,
+      "base_max_abs_error": 0.015619277954101562,
+      "base_normalized_rms_error": 0.0016613753956133653,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 16777216,
+      "counter_bytes": 256,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 44530688,
+        "reserved": 81788928,
+        "peak_allocated": 44531712,
+        "peak_reserved": 81788928,
+        "device_free": 24653856768,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.05013147644374682,
+        0.05004243228746497,
+        0.049908871236054794,
+        0.04999791539233664,
+        0.04995339331419572
+      ],
+      "expanded_ms": [
+        0.05014068915926177,
+        0.04999944670446988,
+        0.049716965905551254,
+        0.0499641360907719,
+        0.05014068915926177
+      ],
+      "bf16_ms": [
+        0.04157440066337585,
+        0.04152320027351379,
+        0.04157440066337585,
+        0.04162560105323791,
+        0.04142079949378967
+      ],
+      "unpack_ms": [
+        0.016829217257707016,
+        0.016806956218636555,
+        0.016717913358107857,
+        0.016673391279966934,
+        0.016717913358107857
+      ],
+      "fp8_ms": [
+        0.0228955898529444,
+        0.02281682002238738,
+        0.02281682002238738,
+        0.02279056341220171,
+        0.02281682002238738
+      ],
+      "fp8_normalized_rms_error": 0.04000913746817674,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015619277954101562,
+          "normalized_rms_error": 0.0016613753956133653,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.05335930637691332,
+            0.053225740142490555,
+            0.0533147842987724,
+            0.05315895702527917,
+            0.05318121806434963
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015619277954101562,
+          "normalized_rms_error": 0.0016613753956133653,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.050109215404676354,
+            0.0500201764314071,
+            0.049908871236054794,
+            0.05004104324009107,
+            0.049908871236054794
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 512,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 6.242630958557129,
+      "max_abs_error": 0.015591621398925781,
+      "normalized_rms_error": 0.0016626928634699805,
+      "base_max_abs_error": 0.015591621398925781,
+      "base_normalized_rms_error": 0.0016626928634699805,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 16777216,
+      "counter_bytes": 256,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 44532736,
+        "reserved": 81788928,
+        "peak_allocated": 44533760,
+        "peak_reserved": 81788928,
+        "device_free": 24653856768,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.050086954365605896,
+        0.050109215404676354,
+        0.050153737482817276,
+        0.049975654353266175,
+        0.04999791539233664
+      ],
+      "expanded_ms": [
+        0.04989131154685185,
+        0.049858208360343145,
+        0.0499641360907719,
+        0.0499641360907719,
+        0.04992882958773909
+      ],
+      "bf16_ms": [
+        0.04177919924259186,
+        0.04177919924259186,
+        0.04167680144309997,
+        0.04177919924259186,
+        0.04167680144309997
+      ],
+      "unpack_ms": [
+        0.016784695179566093,
+        0.016740174397178318,
+        0.016673391279966934,
+        0.016628869201826012,
+        0.016740174397178318
+      ],
+      "fp8_ms": [
+        0.023000614765362862,
+        0.02292184646313007,
+        0.0228955898529444,
+        0.0228955898529444,
+        0.02292184646313007
+      ],
+      "fp8_normalized_rms_error": 0.03978431328305474,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015591621398925781,
+          "normalized_rms_error": 0.0016626928634699805,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.05355965054553488,
+            0.0533147842987724,
+            0.05309217390806779,
+            0.05327026222063148,
+            0.05335930637691332
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015591621398925781,
+          "normalized_rms_error": 0.0016626928634699805,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.050153737482817276,
+            0.05006469332653543,
+            0.05024278163909912,
+            0.05004243228746497,
+            0.050109215404676354
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 1024,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.82910680770874,
+      "max_abs_error": 0.015625953674316406,
+      "normalized_rms_error": 0.001660294757460085,
+      "base_max_abs_error": 0.015625953674316406,
+      "base_normalized_rms_error": 0.001660294757460085,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 16777216,
+      "counter_bytes": 512,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 50822144,
+        "reserved": 85983232,
+        "peak_allocated": 52918272,
+        "peak_reserved": 85983232,
+        "device_free": 24649662464,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.08383443562880806,
+        0.08374539147252621,
+        0.08376765251159668,
+        0.08376765251159668,
+        0.0837008693943853
+      ],
+      "expanded_ms": [
+        0.08396799811001482,
+        0.08379144504152496,
+        0.08375282945304081,
+        0.08372082381412901,
+        0.08375613442782698
+      ],
+      "bf16_ms": [
+        0.07946239709854126,
+        0.07946239709854126,
+        0.07951359748840332,
+        0.07946239709854126,
+        0.07951359748840332
+      ],
+      "unpack_ms": [
+        0.016628869201826012,
+        0.01660660816275555,
+        0.016673391279966934,
+        0.016584348419438236,
+        0.016539826341297314
+      ],
+      "fp8_ms": [
+        0.03644389678270389,
+        0.036417640172518216,
+        0.03644389678270389,
+        0.036443077600919284,
+        0.036417640172518216
+      ],
+      "fp8_normalized_rms_error": 0.04000233622559053,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015625953674316406,
+          "normalized_rms_error": 0.001660294757460085,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.08899896041206691,
+            0.08906573834626572,
+            0.088954438333926,
+            0.088954438333926,
+            0.08890991625578507
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015625953674316406,
+          "normalized_rms_error": 0.001660294757460085,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.0837008693943853,
+            0.08363408627717392,
+            0.0837008693943853,
+            0.08365634731624437,
+            0.08372313043345576
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 1024,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 5.948943138122559,
+      "max_abs_error": 0.015597343444824219,
+      "normalized_rms_error": 0.001659783124080447,
+      "base_max_abs_error": 0.015597343444824219,
+      "base_normalized_rms_error": 0.001659783124080447,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 16777216,
+      "counter_bytes": 512,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 50824192,
+        "reserved": 85983232,
+        "peak_allocated": 52918272,
+        "peak_reserved": 85983232,
+        "device_free": 24649662464,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.08383304139842158,
+        0.08396800186323083,
+        0.08385669666787852,
+        0.08385530243749204,
+        0.08381148006605066
+      ],
+      "expanded_ms": [
+        0.08382455233869882,
+        0.08357958958066743,
+        0.08365021080806337,
+        0.08365021080806337,
+        0.08372082381412901
+      ],
+      "bf16_ms": [
+        0.08084480166435241,
+        0.08084480166435241,
+        0.08084480166435241,
+        0.08094239830970765,
+        0.0809984028339386
+      ],
+      "unpack_ms": [
+        0.016584348419438236,
+        0.016584348419438236,
+        0.016562087380367775,
+        0.016495304263156395,
+        0.016517565302226856
+      ],
+      "fp8_ms": [
+        0.03639138356233255,
+        0.03636512695214687,
+        0.03636512695214687,
+        0.036310975368206315,
+        0.03636512695214687
+      ],
+      "fp8_normalized_rms_error": 0.03975409838234899,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015597343444824219,
+          "normalized_rms_error": 0.001659783124080447,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.08919930458068848,
+            0.08935512667116911,
+            0.0893092155456543,
+            0.08917703835860542,
+            0.08924382665882939
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015597343444824219,
+          "normalized_rms_error": 0.001659783124080447,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 16777216,
+          "ms": [
+            0.08352278108182161,
+            0.08336695899134097,
+            0.08334469795227051,
+            0.08334469795227051,
+            0.08332243691320004
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 2048,
+      "bias": false,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 6.542240619659424,
+      "max_abs_error": 0.015603065490722656,
+      "normalized_rms_error": 0.0016620178029369736,
+      "base_max_abs_error": 0.015603065490722656,
+      "base_normalized_rms_error": 0.0016620178029369736,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 0,
+      "counter_bytes": 1024,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 46628864,
+        "reserved": 127926272,
+        "peak_allocated": 84375552,
+        "peak_reserved": 127926272,
+        "device_free": 24607719424,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.1495485202125881,
+        0.14950399813444717,
+        0.14950399813444717,
+        0.1494817422783893,
+        0.1494817422783893
+      ],
+      "expanded_ms": [
+        0.1396524166238719,
+        0.13954647656144767,
+        0.1395806937382139,
+        0.13946814372621733,
+        0.13958179539647594
+      ],
+      "bf16_ms": [
+        0.14847999811172485,
+        0.1473536014556885,
+        0.14750239849090577,
+        0.14755840301513673,
+        0.1478656053543091
+      ],
+      "unpack_ms": [
+        0.015782956195914227,
+        0.01573843541352645,
+        0.015782956195914227,
+        0.01569391333538553,
+        0.01571617437445599
+      ],
+      "fp8_ms": [
+        0.06729517838893792,
+        0.06763651432135166,
+        0.06753148788060898,
+        0.06758400110098031,
+        0.06763651432135166
+      ],
+      "fp8_normalized_rms_error": 0.04005743398729619,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015603065490722656,
+          "normalized_rms_error": 0.0016620178029369736,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 0,
+          "ms": [
+            0.1583415632662566,
+            0.15829704118811566,
+            0.15825251910997473,
+            0.15834086874256964,
+            0.1582747853320578
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.015603065490722656,
+          "normalized_rms_error": 0.0016620178029369736,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 0,
+          "ms": [
+            0.1492591318876847,
+            0.145897740903108,
+            0.13993182389632516,
+            0.13997634597446607,
+            0.13993182389632516
+          ]
+        }
+      }
+    },
+    {
+      "tokens": 2048,
+      "bias": true,
+      "status": "pass",
+      "reference_pass": true,
+      "repeat_bit_exact": true,
+      "integer_or_reference_bit_exact": false,
+      "reference_max": 6.498527526855469,
+      "max_abs_error": 0.01562976837158203,
+      "normalized_rms_error": 0.0016616480054150334,
+      "base_max_abs_error": 0.01562976837158203,
+      "base_normalized_rms_error": 0.0016616480054150334,
+      "base_reference_bit_exact": false,
+      "max_difference_from_expanded_product": 0.0,
+      "workspace_bytes": 0,
+      "counter_bytes": 1024,
+      "memory_compact_start": {
+        "allocated": 21460992,
+        "reserved": 65011712,
+        "peak_allocated": 21460992,
+        "peak_reserved": 65011712,
+        "device_free": 24670633984,
+        "device_total": 25252724736
+      },
+      "memory_compact_peak": {
+        "allocated": 46630912,
+        "reserved": 127926272,
+        "peak_allocated": 84375552,
+        "peak_reserved": 127926272,
+        "device_free": 24607719424,
+        "device_total": 25252724736
+      },
+      "rotation": {
+        "compact": {
+          "copies": 46,
+          "bytes": 203363746
+        },
+        "expanded": {
+          "copies": 29,
+          "bytes": 204229339
+        },
+        "bf16": {
+          "copies": 20,
+          "bytes": 209715200
+        }
+      },
+      "compact_ms": [
+        0.14024347844331161,
+        0.14022121222122855,
+        0.14015443428702976,
+        0.14015443428702976,
+        0.14019895636517068
+      ],
+      "expanded_ms": [
+        0.1396524166238719,
+        0.13958179539647594,
+        0.13968771901623955,
+        0.13961709778884362,
+        0.13954647656144767
+      ],
+      "bf16_ms": [
+        0.150271999835968,
+        0.15047359466552734,
+        0.15016959905624389,
+        0.1500159978866577,
+        0.15047680139541625
+      ],
+      "unpack_ms": [
+        0.015805217234984688,
+        0.01573843541352645,
+        0.015760695156843765,
+        0.01569391333538553,
+        0.015782956195914227
+      ],
+      "fp8_ms": [
+        0.06787281769972581,
+        0.06774154076209435,
+        0.06782031059265137,
+        0.06795158753028283,
+        0.06782031059265137
+      ],
+      "fp8_normalized_rms_error": 0.03980884934912051,
+      "fp8_rotation": {
+        "copies": 39,
+        "bytes": 204472320
+      },
+      "fp8_scaling": "per-tensor e4m3 weights and activations, cuBLASLt fast accumulation; activation quantization excluded",
+      "variants": {
+        "1": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.01562976837158203,
+          "normalized_rms_error": 0.0016616480054150334,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 0,
+          "ms": [
+            0.14881321658258853,
+            0.14888069940649945,
+            0.14888069940649945,
+            0.14881391110627548,
+            0.14883617732835852
+          ]
+        },
+        "2": {
+          "repeat_bit_exact": true,
+          "reference_pass": true,
+          "max_abs_error": 0.01562976837158203,
+          "normalized_rms_error": 0.0016616480054150334,
+          "integer_or_reference_bit_exact": false,
+          "bit_equal_to_default": true,
+          "workspace_bytes": 0,
+          "ms": [
+            0.14068869922472083,
+            0.1406664330026378,
+            0.1406441771465799,
+            0.14062191092449686,
+            0.1406212164008099
+          ]
+        }
+      }
+    }
+  ],
+  "complete": true
+}

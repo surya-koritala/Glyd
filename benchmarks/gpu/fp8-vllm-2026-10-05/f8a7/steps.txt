@@ -1,0 +1,6 @@
+20:05:15 (+36 s) env: 36 s
+20:06:04 (+85 s) tests: exit 0 (43 ok; 0 tracebacks)
+20:08:01 (+202 s) mistral2: no slice (TypeError: a bytes-like object is required, not 'NoneType' exit 1 )
+20:23:47 (+1148 s) qwen4 (seeds): exit 0: PASS: seed 0: Glyd equals stock|PASS: Glyd with its scratch overwritten after every product: the same bits|PASS: Glyd twice on seed 0 (two fresh compiles): the same bits|PASS: seed 1: Glyd equals stock|PASS: seed 2: Glyd equals stock|PASS: seed 3: Glyd equals stock|PASS: seed 4: Glyd equals stock|INFO: outcomes by run (one letter a distinct output): stock-s0=A, glyd-s0=A, glyd-s0-poison=A, glyd-s0-again=A|INFO: equal to the reference run's outputs (--x-bits): stock-s0, glyd-s0, glyd-s0-poison, glyd-s0-again, stock|
+20:24:48 (+1209 s) bf16 smoke: exit 0 ([rank0]:[W1005 20:24:47.138931030 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group)
+20:24:48 (+1209 s) done

@@ -1,0 +1,10 @@
+  GPU           NVIDIA L4 (compute capability 8.9), 21.8 GiB free of 22.0 GiB; the driver runs CUDA 13.2
+  layout        mma (10.8 bits a weight), the default here: Ada: mma, the smallest layout, is as fast as mma12 (measured); --layout mma12 for the other
+-- run Qwen/Qwen3-0.6B 
+Qwen3-0.6B: 0.8 GiB on the GPU with Glyd, instead of 1.1 GiB; layout mma: Ada: mma, the smallest layout, is as fast as mma12 (measured).
+Ready in 5s: Qwen3-0.6B on the NVIDIA L4, 0.8 GiB of weights, 8192 tokens of context.
+Hello!
+-- run Qwen/Qwen3-0.6B --layout mma12
+Qwen3-0.6B: 0.9 GiB on the GPU with Glyd, instead of 1.1 GiB; layout mma12: as asked.
+Ready in 6s: Qwen3-0.6B on the NVIDIA L4, 0.8 GiB of weights, 8192 tokens of context.
+Hello!

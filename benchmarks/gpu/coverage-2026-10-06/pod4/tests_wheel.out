@@ -1,0 +1,72 @@
+test_version_rule ok
+test_options ok
+test_fraction ok
+INFO 10-06 11:41:11 [test_vllm.py:161] glyd: the embedding stays as vLLM runs it (its hidden size 100 is not a multiple of 64)
+INFO 10-06 11:41:11 [test_vllm.py:163] glyd: the embedding stays as vLLM runs it (ScaledEmbedding is an embedding of its own kind, not a plain lookup)
+test_quant_method ok
+test_table_plan ok
+WARNING 10-06 11:41:12 [layerwise.py:210] Allocating 0.3 MB of device memory to buffers to load ['Module', 'Module'] layers. This extra memory usage can be avoided by ordering weights by their parent layer when reloading.
+INFO 10-06 11:41:12 [layerwise.py:363] glyd: model.embed_tokens holds the same table as the embedding or LM head packed before it: one pack
+test_embedding_ops ok
+test_scratch_rule ok
+test_saved ok
+test_pieces ok
+test_refusals ok
+test_linear_bytes_2026 ok
+test_draft ok
+test_moe_route ok
+test_moe_activations ok
+test_padded_rows ok
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: visual.pos_embed stays as vLLM runs it (its 1024 rows are too few to gain from packing)
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: packed once loaded (vLLM builds them without a quantization config): language_model.model.embed_tokens and language_model.lm_head (one pack); 2 Linears
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: as vLLM runs them: language_model.model.embed_tokens, language_model.lm_head
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: visual.pos_embed stays as vLLM runs it (its 1024 rows are too few to gain from packing)
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: packed once loaded (vLLM builds them without a quantization config): language_model.model.embed_tokens and language_model.lm_head (one pack); 2 Linears
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: as vLLM runs them: language_model.model.embed_tokens, language_model.lm_head
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: language_model.model.embed_tokens, language_model.lm_head stay as vLLM runs them (the model gathers its rows from the bf16 table itself)
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: visual.pos_embed stays as vLLM runs it (its 1024 rows are too few to gain from packing)
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: packed once loaded (vLLM builds them without a quantization config): 2 Linears
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: as vLLM runs them: language_model.model.embed_tokens, language_model.lm_head
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: as vLLM runs them: language_model.model.embed_tokens, language_model.lm_head
+INFO 10-06 11:41:13 [test_vllm.py:835] glyd: as vLLM runs them: language_model.model.embed_tokens, language_model.lm_head
+INFO 10-06 11:41:13 [test_vllm.py:891] glyd: packed once loaded (vLLM builds them without a quantization config): model.embed_tokens and lm_head (one pack); 1 Linears
+test_after_load ok
+test_ple_plain ok
+test_moe_unsupported ok
+test_trim_and_drop ok
+test_no_nvcc ok
+test_kv_page ok
+test_kv_backend ok
+test_kv_fa3_schedule ok
+test_kv_refusals ok
+INFO 10-06 11:41:13 [test_vllm.py:1306] glyd: the KV cache stays vLLM's (kv auto): --max-model-len 65,536: the KV cache's tables cover up to 40,960 positions
+WARNING 10-06 11:41:13 [test_vllm.py:1309] glyd: the KV cache stays vLLM's (kv auto): its tables for m could not be had (RuntimeError: no room on the GPU); kv lossless asks for them and says why they are not there
+WARNING 10-06 11:41:13 [test_vllm.py:1321] glyd: the KV cache stays vLLM's (kv auto): its tables for m could not be had (ValueError: too many outside); kv lossless asks for them and says why they are not there
+test_kv_auto ok
+INFO 10-06 11:41:13 [test_vllm.py:1349] glyd kv: extra memory of 1.05% and 8.29% of the KV cache
+INFO 10-06 11:41:13 [test_vllm.py:1349] glyd kv: extra memory of 1.05% and 8.29% of the KV cache
+INFO 10-06 11:41:13 [test_vllm.py:1349] glyd kv: extra memory of 1.05% and 8.29% of the KV cache
+INFO 10-06 11:41:13 [test_vllm.py:1349] glyd kv: extra memory of 1.05% and 49.74% of the KV cache
+INFO 10-06 11:41:13 [test_vllm.py:1349] glyd kv: 1 tokens of this model's vocabulary need the lossless cache's second extra memory
+INFO 10-06 11:41:13 [test_vllm.py:1349] glyd kv: extra memory of 1.05% and 49.74% of the KV cache
+INFO 10-06 11:41:13 [test_vllm.py:1349] glyd kv: 1 tokens of this model's vocabulary need the lossless cache's second extra memory
+test_kv_refused_tables ok
+WARNING 10-06 11:41:13 [test_vllm.py:1547] glyd kv: the lossless cache's second extra memory was full: 2 requests preempted (1 blocks lost), they run again one after another as the requests that hold it finish
+ERROR 10-06 11:41:13 [test_vllm.py:1564] glyd kv: 1 requests ended with an error: they exhausted the lossless cache's second extra memory and are the only ones that hold any of it (or have done so 6 times)
+WARNING 10-06 11:41:13 [test_vllm.py:1575] glyd kv: the lossless cache's second extra memory was full: 1 requests preempted (1 blocks lost), they run again one after another as the requests that hold it finish
+WARNING 10-06 11:41:13 [test_vllm.py:1584] glyd kv: the lossless cache's second extra memory was full: 2 requests preempted (0 blocks lost, more than are tracked: every running request), they run again one after another as the requests that hold it finish
+test_kv_lost_pages ok
+WARNING 10-06 11:41:13 [test_vllm.py:1613] glyd kv: the lossless cache's second extra memory was full: 1 requests preempted (1 blocks lost), they run again one after another as the requests that hold it finish
+WARNING 10-06 11:41:13 [test_vllm.py:1623] glyd kv: the lossless cache's second extra memory was full: 1 requests preempted (1 blocks lost), they run again one after another as the requests that hold it finish
+test_kv_hybrid_blocks ok
+test_kv_release_early ok
+test_kvcal_leaf_shape ok
+ERROR 10-06 11:41:14 [test_vllm.py:1739] glyd kv: request never ended with an error: its 320 tokens are predicted to need 200 of the lossless cache's second extra memory, which holds 100
+test_kv_admission ok
+WARNING 10-06 11:41:14 [test_vllm.py:1784] glyd kv: the tables /tmp/tmpat30edt2/t.npz were made by an earlier version: requests are not held back for room before they run, only preempted where the cache runs out; make new tables (python -m glyd_gpu kvcal MODEL)
+WARNING 10-06 11:41:14 [test_vllm.py:1836] glyd kv: this process cannot read the KV tables /tmp/tmpat30edt2/none.npz (FileNotFoundError: [Errno 2] No such file or directory: '/tmp/tmpat30edt2/none.npz'): a prompt that could never fit the cache is ended by the engine with an error finish, not refused with a 400
+test_kv_predict ok
+test_kv_warmup_skip ok
+test_kv_staging_groups ok
+test_kvcal ok
+test_kvcal_steps ok

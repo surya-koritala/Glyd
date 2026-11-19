@@ -1,0 +1,1 @@
+{"model": "Qwen/Qwen3-8B", "mode": "glyd1", "prompt_tokens": 1024, "new_tokens": 256, "load_s": 51.1, "decode_ms": [47.323, 47.378, 47.694, 48.004, 47.597], "decode_ms_median": 47.597, "decode_tokens_per_s": 21.01, "prefill_ms": [428.6, 426.7, 432.0, 439.3, 433.6], "prefill_ms_median": 432.0}

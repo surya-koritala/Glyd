@@ -1,0 +1,7 @@
+/root/w/save/Qwen3.5-4B: 202 tensors decode to glyd.json's sha256, 226 saved as they are match theirs
+[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+[transformers] `chunk_gated_delta_rule` is falling back to its reference PyTorch implementation because `flash-linear-attention` is not installed. This is correct but much slower; install `flash-linear-attention` for the optimized kernel.
+[transformers] `causal_conv1d_update` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+[transformers] `fused_recurrent_gated_delta_rule` is falling back to its reference PyTorch implementation because `flash-linear-attention` is not installed. This is correct but much slower; install `flash-linear-attention` for the optimized kernel.
+answer: A lossless compressor guarantees that the original data can be perfectly reconstructed from the compressed data without any loss of information.
+{"save_bytes": 6081671181, "same_tensors_bf16_bytes": 8411502592, "source_bytes": 9319828096, "save_vs_same_bf16": 0.277, "gpu_bytes": 6832286720}

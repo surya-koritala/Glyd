@@ -20,6 +20,9 @@
 #   GLYD_VERSION      the release to install (default below; a pre-release is named here, e.g. 0.26.0rc3, and only that one is taken)
 #   GLYD_SPEC         the package to install instead, as uv takes it: a wheel with its extra ("/path/glyd-...whl[vllm]"), for another
 #                     build (the list below still applies to it: a build that needs other versions says GLYD_CONSTRAINTS=none)
+#   GLYD_WITH_VLLM    1: on Linux with an NVIDIA GPU, install Glyd's Python tool with vLLM and PyTorch (about 8 GB), which also runs the bf16
+#                     models Glyd's engine does not; without it the install is the engine alone (Rust, about 100 MB, no Python)
+#   GLYD_ENGINE_TARBALL  a local glyd-engine-vX.Y.Z-PLATFORM.tar.gz to install in place of the release's (a build of one's own, the release's tests)
 #   GLYD_CONSTRAINTS  none: resolve the packages fresh, where one of the versions listed below has been withdrawn from PyPI
 set -eu
 
@@ -109,7 +112,59 @@ install_cli() {
     *) say "$bin is not on your PATH. Add this line to your shell's startup file (~/.zshrc for zsh, ~/.bashrc for bash) and open a new terminal:  export PATH=\"$bin:\$PATH\"" ;;
   esac
   check_first "$bin" --version
-  say "Next: glyd --help, or glyd FILE -o FILE.glyd. glyd run needs Linux with an NVIDIA GPU (Ampere or newer); run this installer on that machine for it."
+  [ -n "${engine_follows:-}" ] || say "Next: glyd --help, or glyd FILE -o FILE.glyd. glyd run needs Linux with an NVIDIA GPU (Ampere or newer); run this installer on that machine for it."
+}
+
+# Whether Glyd's Python tool is installed here (uv's tool list): it is then updated as before, keeping vLLM; uv tool uninstall glyd and this script
+# again give the engine-only install.
+python_tool_here() {
+  for c in "$(command -v uv 2>/dev/null || true)" "${XDG_BIN_HOME:-$HOME/.local/bin}/uv" "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+    if [ -n "$c" ] && [ -x "$c" ] && "$c" tool list 2>/dev/null | grep -q '^glyd '; then return 0; fi
+  done
+  return 1
+}
+
+# The NVIDIA driver against DRIVER_MIN: a warning, the install goes on.
+driver_check() {
+  driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n 1 | tr -d ' ' || true)
+  major=${driver%%.*}
+  case "$major" in
+    '' | *[!0-9]*) ;;
+    *) if [ "$major" -lt "$DRIVER_MIN" ]; then
+         warn "your NVIDIA driver ($driver) is older than $DRIVER_MIN, which Glyd's GPU code needs (CUDA 13). Before you run a model, update it (Ubuntu: sudo apt install nvidia-driver-$DRIVER_MIN, then reboot)."
+       fi ;;
+  esac
+}
+
+# Glyd's engine (glyd-engine, Rust) and its GPU library, beside the compression program in $cli: `glyd run`, `serve`, `fetch` and `verify` of a model the
+# engine runs go to it (the compression program finds it beside itself), with no Python. The release's tarball, checked against its sha256.
+install_engine() {
+  case "$arch" in
+    x86_64) eplat=linux-x86_64 ;;
+    aarch64 | arm64) eplat=linux-aarch64 ;;
+    *) die "there is no prebuilt engine for $arch." ;;
+  esac
+  ename=glyd-engine-v$GLYD_VERSION-$eplat
+  if [ -n "${GLYD_ENGINE_TARBALL:-}" ]; then
+    say "Installing Glyd's engine from $GLYD_ENGINE_TARBALL (GLYD_ENGINE_TARBALL)"
+    cp "$GLYD_ENGINE_TARBALL" "$tmp/$ename.tar.gz" || die "could not read $GLYD_ENGINE_TARBALL."
+  else
+    eurl=$REPO/releases/download/v$GLYD_VERSION
+    say "Installing Glyd's engine and its GPU library, $GLYD_VERSION for $eplat (the release's tarball, checked against its sha256)"
+    fetch "$eurl/$ename.tar.gz" "$tmp/$ename.tar.gz" || die "could not download $eurl/$ename.tar.gz: check the network, and that release $GLYD_VERSION has it ($REPO/releases)."
+    fetch "$eurl/$ename.tar.gz.sha256" "$tmp/$ename.sha256" || die "could not download the engine's checksum ($eurl/$ename.tar.gz.sha256)."
+    got=$(sha256_of "$tmp/$ename.tar.gz") || die "there is no sha256sum or shasum here to check the download with."
+    want=$(cut -d ' ' -f 1 "$tmp/$ename.sha256")
+    [ -n "$want" ] && [ "$got" = "$want" ] || die "the engine's download is not the file the release lists (its sha256 is $got, the release says ${want:-nothing}). Run this again; if it happens again, tell the Glyd team."
+  fi
+  mkdir -p "$tmp/e"
+  tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/glyd-engine" "$ename/libglyd_gpu_cuda13.so" "$ename/LICENSE" \
+    || die "the engine's tarball is not laid out as this installer expects ($ename/glyd-engine, ...): run this again, or take it from $REPO/releases."
+  cp "$tmp/e/$ename/glyd-engine" "$tmp/e/$ename/libglyd_gpu_cuda13.so" "$cli"/ && cp "$tmp/e/$ename/LICENSE" "$cli/LICENSE-engine" || die "could not write to $cli."
+  chmod +x "$cli/glyd-engine"
+  "$cli/glyd-engine" --version >/dev/null 2>&1 || die "Glyd's engine does not start on this machine ($cli/glyd-engine --version): it needs Linux with glibc 2.28 or newer."
+  ln -sf "$cli/glyd-engine" "$bin/glyd-engine"
+  say "$("$cli/glyd-engine" --version | head -n 1) is installed in $cli beside glyd (no Python: GLYD_WITH_VLLM=1 in front of sh adds vLLM for the models the engine does not run)"
 }
 
 main() {
@@ -144,6 +199,19 @@ main() {
     say "No NVIDIA GPU answered here (nvidia-smi): glyd run (the local chat) needs Linux with an NVIDIA GPU. The compression commands work without one."
     say "If this machine has an NVIDIA GPU, install its driver first (Ubuntu: sudo apt install nvidia-driver-$DRIVER_MIN, then reboot) and run this again."
     install_cli
+    return 0
+  elif { [ "$arch" = x86_64 ] || [ "$arch" = aarch64 ]; } && [ "${GLYD_WITH_VLLM:-}" != 1 ] && ! python_tool_here; then
+    say "Installing Glyd on Linux with an NVIDIA GPU: the compression program and Glyd's engine (Rust, no Python; GLYD_WITH_VLLM=1 in front of sh adds vLLM and PyTorch, about 8 GB)"
+    engine_follows=1
+    install_cli
+    install_engine
+    driver_check
+    say "Checking this machine (glyd doctor)"
+    if "$bin/glyd" doctor; then
+      say "Next: glyd run Qwen/Qwen3.5-9B:swift (glyd fetch MODEL:LEVEL downloads without running)"
+    else
+      say "Fix the lines marked NO above, then run: glyd doctor"
+    fi
     return 0
   elif [ "$arch" = x86_64 ] || [ "$arch" = aarch64 ]; then
     spec="glyd[vllm]==$GLYD_VERSION"

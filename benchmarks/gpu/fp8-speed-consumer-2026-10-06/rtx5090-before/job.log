@@ -1,0 +1,75 @@
+== 05:45:00 (+0 s) machine
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA GeForce RTX 5090, 12.0, 595.91.07, 32607 MiB, 3090 MHz, 14001 MHz, 575.00 W
+A: f4a34f71
+B: a6c4240f
+patching file gpu/fp8/check_f8.py
+patching file gpu/glyd_gpu.cu
+C: f4a34f71 + a8_sm120.patch
+== 05:45:01 (+1 s) uv; vLLM 0.30.0 (background); nvcc
+(no cuobjdump wheel)
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+== 05:45:03 (+3 s) samples (background)
+== 05:45:03 (+3 s) libraries A, C, B (sm_120 SASS of the f8 kernels from each)
+cuobjdump: none
+build A exit 0
+real	2m42.728s
+user	13m23.392s
+sys	0m12.209s
+build C exit 0
+real	2m41.568s
+user	13m17.866s
+sys	0m11.915s
+build B exit 0
+real	3m33.632s
+user	18m3.112s
+sys	0m16.281s
+== 05:54:01 (+541 s) wait for vLLM
+ + z3-solver==4.15.4.0
+vllm exit 0
+vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | flashinfer 0.6.18.post1 | b12x - | NVIDIA GeForce RTX 5090 (12, 0)
+== 05:54:18 (+558 s) wait for the samples
+zai-org/GLM-5.3-Flash: 10 samples, 96 MB, 4 s
+Qwen/Qwen3.8-27B-FP8: 10 samples, 122 MB, 3 s
+MiniMaxAI/MiniMax-M3-MXFP8: 10 samples, 126 MB, 3 s
+mistralai/Mistral-Small-4-119B-2603: 10 samples, 105 MB, 2 s
+deepseek-ai/DeepSeek-V4.1-Flash: 10 samples, 122 MB, 4 s
+Qwen/Qwen3.6-35B-A3B-FP8: 5 samples, 50 MB, 3 s
+RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic: 5 samples, 58 MB, 1 s
+fetch exit 0
+== 05:54:18 (+558 s) check A
+check A exit 1
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/f8w/srcA/gpu/fp8/../../glyd-gpu-py/glyd_gpu/kernels.py", line 864, in f8_linear
+    _ext.f8_linear(p.core, p.heads, p.var, N, K, code | (16 if keep else 0), scale, scale.stride(0) if scale.dim() == 2 else 1, x, out)
+  File "/root/f8w/srcA/gpu/fp8/../../glyd-gpu-py/glyd_gpu/_lib.py", line 1002, in f8_linear
+    _fail("f8_linear", r)
+  File "/root/f8w/srcA/gpu/fp8/../../glyd-gpu-py/glyd_gpu/_lib.py", line 175, in _fail
+    raise RuntimeError(f"{name}: {_error_string(r).decode()}")
+RuntimeError: f8_linear: invalid argument
+case_linear FAILED: RuntimeError('f8_linear: invalid argument')
+bandwidth: 7168 x 18432 e4m3 on NVIDIA GeForce RTX 5090: unpack 161.1 us = 820 GB/s of e4m3 written (1506 GB/s with the packed bytes read; runs of 200: 161.1, 161.1, 161.1, 161.1, 161.1 us); pack 0.3 ms best of 4 (0.4 ms median, the size query's wait and the allocations in); 6.686 bits a value, 0 plain patches
+2 FAILED
+check A exit 1
+== 05:55:20 (+620 s) bench A (route, numerics)
+bench A exit 0
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=32  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     22.9  unpack      8.5  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+Mistral-Small-4-119B-2603  expert_gate_up  tp2   2048 x 4096   M=64  vllm      nan us (FlashInferFP8ScaledMMLinearKernel)  ours     51.0  unpack      8.5  route      nan  ratio nan vllm_us: FileNotFoundError: [Errno 2] No such file or directory: 'ninja' route: FileNotFoundError: [Errno 2] No such fil
+   (0.5 s, 24 copies)
+gate: 6 of 108 at most vLLM's time; worst 7.137
+ours at most the route's time: 55 of 108
+bench A exit 0
+== 05:58:11 (+791 s) bench A in L2
+bench A L2 exit 0
+   (0.1 s, 2 copies)
+gate: 5 of 82 at most vLLM's time; worst 7.366
+bench A L2 exit 0
+== 05:58:49 (+829 s) check C
+check C exit 1
+  File "/root/f8w/srcC/gpu/fp8/../../glyd-gpu-py/glyd_gpu/_lib.py", line 175, in _fail
+    raise RuntimeError(f"{name}: {_error_string(r).decode()}")
+RuntimeError: f8_linear: invalid argument
+case_linear FAILED: RuntimeError('f8_linear: invalid argument')
+2 FAILED
+check C exit 1
+== 05:59:51 (+891 s) bench C (numerics)

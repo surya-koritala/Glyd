@@ -1,0 +1,18 @@
+== 19:17:49 kv+glyd: vllm serve Qwen/Qwen3-30B-A3B --quantization glyd (the GPU at 35 C)
+glyd: the lossless KV cache takes tables of /home/ubuntu/hf/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39 for 4,096 positions, made once on vLLM itself (first start: about 1-2 minutes on an L4, then kept in /home/ubuntu/.cache/glyd/kv); its log: kvtab-e64248bacb6a7da1.log
+glyd: the KV cache's tables for /home/ubuntu/hf/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39 made in 78 s: /home/ubuntu/.cache/glyd/kv/kvtab-e64248bacb6a7da1.npz
+glyd: mma12 layout, the KV cache lossless (tables /home/ubuntu/.cache/glyd/kv/kvtab-e64248bacb6a7da1.npz)
+Model loading took 45.41 GiB memory and 26.754738 seconds
+GPU KV cache size: 331,008 tokens, Maximum concurrency for 4,096 tokens per request: 80.81x
+73179 MiB, 81559 MiB
+== 19:21:05 kv+glyd: rate 1, 64 prompts
+   exit 0
+== 19:22:24 kv+glyd: rate inf, 256 prompts
+   exit 0
+kv+glyd: weights 45.41 GiB, KV cache 331,008 tokens, max concurrency 80.81x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): kv+glyd 0.4%
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | kv+glyd | 0.97 | 249.6 | 60 / 94 | 6.3 / 8.5 | 64 | 1980 MHz, 47 C |
+| inf | kv+glyd | 17.10 | 4378.4 | 3437 / 6309 | 43.7 / 53.0 | 256 | 1980 MHz, 57 C |

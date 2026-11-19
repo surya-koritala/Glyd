@@ -1,0 +1,14 @@
+04:54:32 (+40 s) env
+04:56:03 (+131 s) build: real	1m26.908s; C API 15 | GPU code 1120
+04:56:16 (+144 s) sass: 55 kernels
+04:56:21 (+149 s) self-test exit 0 (every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too))
+04:56:26 (+154 s) check_step exit 0 (all ok: 6878 checks {'fp32': 302, 'flags': 6000, 'rerun': 500, 'nw': 76}, 2 s)
+04:59:23 (+331 s) check_capi exit 0 (  the route SPLIT: the queue's front a pack whole: 1)
+04:59:37 (+345 s) layouts Qwen3.5-9B exit 0
+04:59:52 (+360 s) layouts Qwen3.5-27B exit 0
+05:00:08 (+376 s) layouts gemma-4-12B-it exit 0
+05:00:23 (+391 s) layouts gemma-4-31B-it exit 0
+05:00:33 (+401 s) layouts lm_head exit 0
+05:00:58 (+426 s) moe_layer mma exit 0
+05:01:20 (+448 s) moe_layer mma12 exit 0
+05:23:49 (+1797 s) check_vllm exit 1 (check_vllm: 3 failed (18 checks))

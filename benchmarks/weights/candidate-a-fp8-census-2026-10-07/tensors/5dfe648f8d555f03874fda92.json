@@ -1,0 +1,67 @@
+{
+  "name": "mtp.fc.weight",
+  "group": "mtp",
+  "shape": [
+    5120,
+    10240
+  ],
+  "file": "model-00018-of-00018.safetensors",
+  "fraction_bits": 3,
+  "values": 52428800,
+  "zeros": 0,
+  "specials": 0,
+  "geometries": [
+    {
+      "block": [
+        128,
+        128
+      ],
+      "blocks": 3200,
+      "blocks_inexact": 2834,
+      "inexact": 10261,
+      "underflow": 1912,
+      "max_block_inexact": 89,
+      "min_scale_exponent": -13,
+      "max_scale_exponent": -8
+    },
+    {
+      "block": [
+        1,
+        128
+      ],
+      "blocks": 409600,
+      "blocks_inexact": 4862,
+      "inexact": 4997,
+      "underflow": 927,
+      "max_block_inexact": 3,
+      "min_scale_exponent": -15,
+      "max_scale_exponent": -8
+    },
+    {
+      "block": [
+        1,
+        32
+      ],
+      "blocks": 1638400,
+      "blocks_inexact": 3394,
+      "inexact": 3404,
+      "underflow": 630,
+      "max_block_inexact": 2,
+      "min_scale_exponent": -16,
+      "max_scale_exponent": -8
+    },
+    {
+      "block": [
+        1,
+        0
+      ],
+      "blocks": 5120,
+      "blocks_inexact": 5116,
+      "inexact": 82521,
+      "underflow": 15354,
+      "max_block_inexact": 33,
+      "min_scale_exponent": -12,
+      "max_scale_exponent": -8
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+{"id":"chatcmpl-10","object":"chat.completion","created":1792451405,"model":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d","choices":[{"index":0,"message":{"role":"assistant","content":"The three primary colors in traditional color theory"},"logprobs":null,"finish_reason":"length"}],"usage":{"prompt_tokens":17,"completion_tokens":8,"total_tokens":25}}
+HTTP 200

@@ -1,0 +1,243 @@
+Nemotron 3 Super at wren (i4) on NVIDIA RTX PRO 6000 Blackwell Server Edition, tree f3eeced7
+--- steps
+venv: rc=0 4 s (job minute 0)
+pyenv: rc=0 3 s (job minute 0)
+rustup: rc=0 11 s (job minute 0)
+engine: rc=0 128 s (job minute 2)
+lib: rc=0 322 s (job minute 5)
+versions: rc=0 2 s (job minute 5)
+moecheck: rc=0 12 s (job minute 5)
+download: rc=0 523 s (job minute 8)
+pack: rc=0 704 s (job minute 20)
+verify: rc=0 182 s (job minute 23)
+generate: rc=0 31 s (job minute 24)
+ids: rc=0 1 s (job minute 24)
+logits-run: rc=0 56 s (job minute 25)
+logits-check: rc=0 87 s (job minute 26)
+decode: rc=0 60 s (job minute 27)
+layers-gen: rc=0 1 s (job minute 27)
+layers-run: rc=0 3 s (job minute 27)
+layers-check: rc=0 5 s (job minute 27)
+run-prompt: rc=0 43 s (job minute 28)
+run-chat: rc=0 36 s (job minute 28)
+serve-chat: rc=0 2 s (job minute 29)
+speed: rc=0 12 s (job minute 29)
+--- moecheck (the grouped products over Int6, Int5 and Int4 experts against the CPU reference)
+ok   relu2-22of512 int5 T=1: logits 8.8e-8, experts 1/1 tokens equal, weights 0.0e0, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=3: logits 1.1e-7, experts 3/3 tokens equal, weights 2.3e-7, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=16: logits 8.3e-8, experts 16/16 tokens equal, weights 2.3e-7, plan exact, intermediate rows 6.2e-6, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=40: logits 8.9e-8, experts 40/40 tokens equal, weights 2.4e-7, plan exact, intermediate rows 2.3e-3, routed sum 4.1e-3, with the shared expert (384) 3.8e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=128: logits 7.8e-8, experts 128/128 tokens equal, weights 3.2e-7, plan exact, intermediate rows 2.8e-4, routed sum 3.8e-3, with the shared expert (384) 3.7e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5 T=1600: logits 7.0e-8, experts 1600/1600 tokens equal, weights 4.3e-7, plan exact, intermediate rows 5.3e-3, routed sum 3.7e-3, with the shared expert (384) 3.4e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int5: single experts [0, 257, 511] by their own packs at offsets: the first product 1.9e-5 from the CPU's (bound 1e-2)
+ok   relu2-22of512 int5: the decode step as a CUDA graph, replayed twice: the eager step's bits
+ok   relu2-22of512 int6 T=1: logits 1.1e-7, experts 1/1 tokens equal, weights 2.3e-7, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=3: logits 1.0e-7, experts 3/3 tokens equal, weights 2.2e-7, plan exact, intermediate rows 5.9e-13, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=16: logits 8.4e-8, experts 16/16 tokens equal, weights 2.3e-7, plan exact, intermediate rows 1.7e-13, routed sum 2.3e-6, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=40: logits 8.7e-8, experts 40/40 tokens equal, weights 2.3e-7, plan exact, intermediate rows 3.2e-4, routed sum 2.6e-4, with the shared expert (384) 2.1e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=128: logits 8.3e-8, experts 128/128 tokens equal, weights 2.9e-7, plan exact, intermediate rows 4.8e-6, routed sum 2.1e-3, with the shared expert (384) 1.9e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6 T=1600: logits 7.1e-8, experts 1600/1600 tokens equal, weights 4.7e-7, plan exact, intermediate rows 2.5e-3, routed sum 3.6e-3, with the shared expert (384) 3.2e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int6: single experts [0, 257, 511] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   relu2-22of512 int6: the decode step as a CUDA graph, replayed twice: the eager step's bits
+ok   relu2-22of512 int4 T=1: logits 7.7e-8, experts 1/1 tokens equal, weights 1.7e-7, plan exact, intermediate rows 2.1e-6, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int4 T=3: logits 1.1e-7, experts 3/3 tokens equal, weights 2.3e-7, plan exact, intermediate rows 0.0e0, routed sum 0.0e0, with the shared expert (384) 0.0e0 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int4 T=16: logits 8.5e-8, experts 16/16 tokens equal, weights 2.4e-7, plan exact, intermediate rows 3.7e-4, routed sum 1.2e-3, with the shared expert (384) 1.2e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int4 T=40: logits 7.9e-8, experts 40/40 tokens equal, weights 2.4e-7, plan exact, intermediate rows 1.4e-4, routed sum 3.0e-4, with the shared expert (384) 2.7e-4 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int4 T=128: logits 8.3e-8, experts 128/128 tokens equal, weights 3.5e-7, plan exact, intermediate rows 2.0e-4, routed sum 2.3e-3, with the shared expert (384) 4.1e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int4 T=1600: logits 7.4e-8, experts 1600/1600 tokens equal, weights 3.9e-7, plan exact, intermediate rows 8.5e-4, routed sum 3.8e-3, with the shared expert (384) 3.3e-3 (bounds 2e-5, -, 1e-5, exact, 1.5e-2, 1e-2, 1e-2)
+ok   relu2-22of512 int4: single experts [0, 257, 511] by their own packs at offsets: the first product 0.0e0 from the CPU's (bound 1e-2)
+ok   relu2-22of512 int4: the decode step as a CUDA graph, replayed twice: the eager step's bits
+all of the mixture-of-experts layer's stages within their bounds
+--- the pack (and the layouts of its packs)
+glyd-v7: 41234 packs checked, 409 tensors hashed, 241.34 GB of bf16 read, 14 shards (703.2 s)
+70493890767	/root/v/packed
+chat_template.jinja
+config.json
+generation_config.json
+glyd.json
+model-00001-of-00014.safetensors
+model-00002-of-00014.safetensors
+model-00003-of-00014.safetensors
+model-00004-of-00014.safetensors
+model-00005-of-00014.safetensors
+model-00006-of-00014.safetensors
+model-00007-of-00014.safetensors
+model-00008-of-00014.safetensors
+model-00009-of-00014.safetensors
+model-00010-of-00014.safetensors
+model-00011-of-00014.safetensors
+model-00012-of-00014.safetensors
+model-00013-of-00014.safetensors
+model-00014-of-00014.safetensors
+model.safetensors.index.json
+special_tokens_map.json
+tokenizer.json
+tokenizer_config.json
+glyd-v7 i4 wren 41218 packs {'i6': 258, 'i4': 40960} 409 tensors saved as they are
+--- verify (every pack decoded by the GPU library against glyd.json)
+/root/v/packed: 41234 tensors decode to glyd.json's sha256, 409 saved as they are match theirs
+--- generate: greedy steps, the decode graph
+loaded in 28.5 s: NVIDIA RTX PRO 6000 Blackwell Server Edition (sm_120): weights 65.184 GiB (layout Int4), states 0.159 GiB, KV cache 4096 positions 0.031 GiB, workspaces 0.772 GiB, 67.15 of 94.97 GiB in use
+5 prompt tokens, 128 generated in 1.27 s
+        "Mount Fuji is near Tokyo.",
+        "
+5 prompt tokens, 128 generated in 1.27 s
+--- the whole model against the bf16 checkpoint (top-1, KL)
+/root/results/logits-run.log:graph: NVIDIA RTX PRO 6000 Blackwell Server Edition (sm_120): weights 65.184 GiB (layout Int4), states 0.159 GiB, KV cache 176 positions 0.001 GiB, workspaces 0.488 GiB, 66.41 of 94.97 GiB in use
+/root/results/logits-run.log:graph: prefill of 64 tokens 46.4 ms, 96 steps 9.92 ms each
+/root/results/logits-run.log:eager: NVIDIA RTX PRO 6000 Blackwell Server Edition (sm_120): weights 65.184 GiB (layout Int4), states 0.159 GiB, KV cache 176 positions 0.001 GiB, workspaces 0.484 GiB, 66.38 of 94.97 GiB in use
+/root/results/logits-run.log:eager: prefill of 64 tokens 47.0 ms, 96 steps 10.13 ms each
+/root/results/logits-check.log:ok   the whole model, graph decode: top-1 token the bf16 model's at 100.0% of 97 positions (at least 85%), KL 0.0012 nats on average (at most 0.1; the 90th position 0.0014, the worst 0.0181), the logits differ by 2.857e-02 of the largest at the median position, 1.942e-01 at the worst
+/root/results/logits-check.log:ok   the whole model, eager decode: top-1 token the bf16 model's at 100.0% of 97 positions (at least 85%), KL 0.0012 nats on average (at most 0.1; the 90th position 0.0014, the worst 0.0181), the logits differ by 2.857e-02 of the largest at the median position, 1.942e-01 at the worst
+/root/results/logits-check.log:  position 63: the engine's five largest logits' tokens [10789, 1010, 1267, 1032, 6421] (70.50), the reference's [10789, 1010, 1267, 1032, 6421] (69.50)
+/root/results/logits-check.log:  position 64: the engine's five largest logits' tokens [1044, 1520, 2880, 6422, 1046] (60.25), the reference's [1044, 1520, 6422, 6421, 2880] (64.50)
+/root/results/logits-check.log:  position 65: the engine's five largest logits' tokens [1494, 6421, 1321, 2157, 1032] (51.00), the reference's [1494, 6421, 1321, 1032, 2157] (56.75)
+/root/results/logits-check.log:ok   the whole model: the decode graph's logits against the eager steps': 12713984 values, largest difference 0.000e+00 of the largest value (bound 0.001), mean 0.000e+00 of the mean, 100.00% equal, at most 0 places apart
+/root/results/logits-check.log:full: ok
+--- layers of the packed directory against the reference on the weights the packs hold: the verdicts (FAIL lines first)
+layers: ok
+--- layers: time in the layer by case
+case m0_prefill: layer 0 (Mamba), 1 calls, 333 rows: 0.8 ms in the layer (0.844 ms a call), 8.9 ms with the dumps
+case m0_chunks: layer 0 (Mamba), 4 calls, 333 rows: 1.2 ms in the layer (0.309 ms a call), 9.5 ms with the dumps
+case m0_recurrent: layer 0 (Mamba), 1 calls, 333 rows: 0.9 ms in the layer (0.861 ms a call), 7.6 ms with the dumps
+case m0_steps: layer 0 (Mamba), 64 calls, 64 rows: 3.7 ms in the layer (0.058 ms a call), 9.0 ms with the dumps
+case m0_graph: layer 0 (Mamba), 64 calls, 64 rows: 4.1 ms in the layer (0.065 ms a call), 8.7 ms with the dumps
+case m0_mixed: layer 0 (Mamba), 134 calls, 333 rows: 7.9 ms in the layer (0.059 ms a call), 21.2 ms with the dumps
+case e1_prefill: layer 1 (Moe), 1 calls, 333 rows: 4.1 ms in the layer (4.091 ms a call), 6.5 ms with the dumps
+case e1_chunks: layer 1 (Moe), 4 calls, 333 rows: 4.9 ms in the layer (1.228 ms a call), 7.0 ms with the dumps
+case e1_steps: layer 1 (Moe), 64 calls, 64 rows: 9.0 ms in the layer (0.140 ms a call), 13.2 ms with the dumps
+case e1_graph: layer 1 (Moe), 64 calls, 64 rows: 8.8 ms in the layer (0.138 ms a call), 12.6 ms with the dumps
+case e1_mixed: layer 1 (Moe), 134 calls, 333 rows: 19.7 ms in the layer (0.147 ms a call), 28.4 ms with the dumps
+case a7_prefill: layer 7 (Attention), 1 calls, 333 rows: 0.2 ms in the layer (0.195 ms a call), 1.9 ms with the dumps
+case a7_chunks: layer 7 (Attention), 4 calls, 333 rows: 0.3 ms in the layer (0.076 ms a call), 2.7 ms with the dumps
+case a7_steps: layer 7 (Attention), 64 calls, 64 rows: 2.9 ms in the layer (0.045 ms a call), 5.6 ms with the dumps
+case a7_graph: layer 7 (Attention), 64 calls, 64 rows: 2.9 ms in the layer (0.045 ms a call), 5.4 ms with the dumps
+case a7_mixed: layer 7 (Attention), 134 calls, 333 rows: 5.9 ms in the layer (0.044 ms a call), 12.0 ms with the dumps
+case a36_prefill: layer 36 (Attention), 1 calls, 333 rows: 0.2 ms in the layer (0.196 ms a call), 1.9 ms with the dumps
+case a36_chunks: layer 36 (Attention), 4 calls, 333 rows: 0.3 ms in the layer (0.076 ms a call), 2.7 ms with the dumps
+case a36_steps: layer 36 (Attention), 64 calls, 64 rows: 2.8 ms in the layer (0.045 ms a call), 5.4 ms with the dumps
+case a36_graph: layer 36 (Attention), 64 calls, 64 rows: 2.8 ms in the layer (0.044 ms a call), 5.3 ms with the dumps
+case a36_mixed: layer 36 (Attention), 134 calls, 333 rows: 5.9 ms in the layer (0.044 ms a call), 12.0 ms with the dumps
+case e37_prefill: layer 37 (Moe), 1 calls, 333 rows: 1.9 ms in the layer (1.856 ms a call), 3.3 ms with the dumps
+case e37_chunks: layer 37 (Moe), 4 calls, 333 rows: 4.1 ms in the layer (1.033 ms a call), 6.1 ms with the dumps
+case e37_steps: layer 37 (Moe), 64 calls, 64 rows: 8.8 ms in the layer (0.138 ms a call), 12.9 ms with the dumps
+case e37_graph: layer 37 (Moe), 64 calls, 64 rows: 8.6 ms in the layer (0.135 ms a call), 12.8 ms with the dumps
+case e37_mixed: layer 37 (Moe), 134 calls, 333 rows: 19.2 ms in the layer (0.143 ms a call), 27.9 ms with the dumps
+case m40_prefill: layer 40 (Mamba), 1 calls, 333 rows: 0.8 ms in the layer (0.772 ms a call), 8.3 ms with the dumps
+case m40_chunks: layer 40 (Mamba), 4 calls, 333 rows: 1.2 ms in the layer (0.299 ms a call), 9.2 ms with the dumps
+case m40_recurrent: layer 40 (Mamba), 1 calls, 333 rows: 0.8 ms in the layer (0.816 ms a call), 7.6 ms with the dumps
+case m40_steps: layer 40 (Mamba), 64 calls, 64 rows: 3.8 ms in the layer (0.059 ms a call), 8.9 ms with the dumps
+case m40_graph: layer 40 (Mamba), 64 calls, 64 rows: 3.6 ms in the layer (0.057 ms a call), 8.1 ms with the dumps
+case m40_mixed: layer 40 (Mamba), 134 calls, 333 rows: 8.0 ms in the layer (0.059 ms a call), 31.5 ms with the dumps
+--- run: one answer
+packed: about 65.6 GiB on the GPU at the wren level (about 4.7 bits per weight, not lossless), in place of 224.8 GiB of bf16.
+Ready in 42s: packed on the NVIDIA RTX PRO 6000 Blackwell Server Edition, 65.2 GiB of weights, 32768 tokens of context, one user at a time.
+The capital of France is Paris.
+--- run: a chat of three prompts
+packed: about 65.6 GiB on the GPU at the wren level (about 4.7 bits per weight, not lossless), in place of 224.8 GiB of bf16.
+Ready in 29s: packed on the NVIDIA RTX PRO 6000 Blackwell Server Edition, 65.2 GiB of weights, 32768 tokens of context, one user at a time.
+Chat here. /bye leaves, /clear starts again, /think turns thinking on or off.
+> The capital of France is Paris.
+(7 tokens, 39.8 tokens/s)
+> ```python
+def fibonacci(n):
+    """
+    Return the n-th Fibonacci number using an iterative approach.
+    
+    The Fibonacci sequence is defined as:
+        F(0) = 0, F(1) = 1, and F(n) = F(n-1) + F(n-2) for n >= 2.
+    
+    Args:
+        n (int): The index of the Fibonacci number to compute (must be non-negative).
+        
+    Returns:
+        int: The n-th Fibonacci number.
+        
+    Raises:
+        ValueError: If n is negative.
+    """
+    if n < 0:
+        raise ValueError("Input must be a non-negative integer.")
+    if n == 0:
+        return 0
+    if n == 1:
+        return 1
+    
+    a, b = 0, 1
+    for _ in range(2, n + 1):
+        a, b = b, a + b
+    return b
+```
+(216 tokens, 52.7 tokens/s)
+> The sky appears blue due to Rayleigh scattering, where shorter wavelengths of light (blue and violet) are scattered more efficiently by molecules in Earth's atmosphere than longer wavelengths. Although violet light is scattered even more, our eyes are more sensitive to blue and the sun emits more blue light than violet, making the sky appear blue to us.
+(67 tokens, 49.2 tokens/s)
+> --- serve: three completions
+Q: What is the capital of France? Answer in one short sentence. 
+A: The capital of France is Paris. 
+(8 tokens in 0.1 s)
+
+Q: Write a Python function that returns the n-th Fibonacci number. 
+A: Here's a clean, efficient Python function to return the *n*-th Fibonacci number using an iterative approach (which avoids the exponential time complexity of naive recursion and stack overflow issues for large *n*):
+
+```python
+def fibonacci(n):
+    """
+    Returns the n-th Fibonacci number.
+    
+    The Fibonacci sequence is defined as:
+    F(0) = 0, F(1) = 1, and F(n) = F(n-1) + F(n-2) for n >= 2.
+    
+    Args:
+        n (int): The index of the Fibonacci number to compute (must be non-negative).
+        
+    Returns:
+        int: The n-th Fibonacci number.
+        
+    Raises:
+        ValueError: If n is negative.
+        TypeError: If n is not an integer.
+    """
+    if not isinstance(n, int):
+        raise TypeError("Input must be an integer.")
+    if 
+(200 tokens in 2.0 s)
+
+Q: Explain in two sentences why the sky is blue. 
+A: The sky appears blue because molecules in Earth's atmosphere scatter shorter wavelengths of light — particularly blue — more effectively than longer wavelengths, a phenomenon known as Rayleigh scattering. Our eyes perceive this scattered blue light as the dominant color of the sky during daylight. 
+(51 tokens in 0.5 s)
+
+--- serve: one user (speed1.py); GPU memory used and total
+{
+ "url": "http://127.0.0.1:8000",
+ "model": "nemotron",
+ "each": [
+  {
+   "ttft_ms": 243.7,
+   "decode_tok_s": 99.49,
+   "completion_tokens": 256,
+   "prompt_tokens": 1050,
+   "chunks": 256
+  },
+  {
+   "ttft_ms": 243.1,
+   "decode_tok_s": 99.49,
+   "completion_tokens": 256,
+   "prompt_tokens": 1050,
+   "chunks": 256
+  },
+  {
+   "ttft_ms": 243.3,
+   "decode_tok_s": 99.51,
+   "completion_tokens": 256,
+   "prompt_tokens": 1050,
+   "chunks": 256
+  }
+ ],
+ "ttft_ms_median": 243.3,
+ "decode_tok_s_median": 99.49,
+ "rounds": 3,
+ "prompt_tokens": 1024,
+ "new": 256
+}68991 MiB, 97887 MiB
+--- GPU memory used at most in the job (MiB)
+68991

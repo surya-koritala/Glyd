@@ -1,0 +1,905 @@
+NVIDIA H100 80GB HBM3, compute 9.0 (sm_90a), top SM clock 1980 MHz
+vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | NVIDIA H100 80GB HBM3 (9, 0)
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0; cuobjdump: /root/tsw/venv/lib/python3.12/site-packages/nvidia/cu13/bin/cuobjdump
+3ed531a9
+median SM clock under load: 1980 MHz
+
+######## steps
+04:23:24 (+41 s) env
+04:25:35 (+172 s) build: real	2m6.530s; C API 15 | GPU code 7090
+04:25:51 (+188 s) sass: 55 kernels
+04:25:56 (+193 s) self-test exit 0 (every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too))
+04:26:02 (+199 s) check_step exit 0 (all ok: 6878 checks {'fp32': 302, 'flags': 6000, 'rerun': 500, 'nw': 76}, 2 s)
+04:26:11 (+208 s) layouts Qwen3.5-9B exit 0
+04:26:21 (+218 s) layouts Qwen3.5-27B exit 0
+04:26:30 (+227 s) layouts gemma-4-12B-it exit 0
+04:26:40 (+237 s) layouts gemma-4-31B-it exit 0
+04:26:49 (+246 s) layouts lm_head exit 0
+04:27:16 (+273 s) moe_layer mma exit 0
+04:27:38 (+295 s) moe_layer mma12 exit 0
+
+######## Qwen3.5-9B: GPU time of a step's products, us (each layout by its route on this GPU), and tiered over 12-bit
+matrix             O x K   bits t/12  flag% |    1: mma / mma12 / bf16 = t/12 |    8: mma / mma12 / bf16 = t/12 |   16: mma / mma12 / bf16 = t/12 |   32: mma / mma12 / bf16 = t/12 |   64: mma / mma12 / bf16 = t/12
+gate_up     24576x4096   10.76/12.04   0.00 |   73.9 /   63.6 /   75.2 = 1.16 |   78.4 /   66.2 /   75.2 = 1.18 |   88.0 /   69.8 /   76.0 = 1.26 |  143.2 /   67.3 /   76.7 = 2.13 |  180.3 /   71.2 /   77.9 = 2.53
+down         4096x12288  10.78/12.04   0.00 |   41.3 /   36.4 /   39.7 = 1.13 |   44.9 /   37.9 /   40.8 = 1.18 |   53.2 /   40.1 /   41.5 = 1.33 |   73.6 /   37.9 /   42.0 = 1.94 |   92.4 /   40.0 /   42.9 = 2.31
+qkv         10240x4096   10.80/12.03   0.05 |   36.1 /   31.4 /   32.1 = 1.15 |   39.5 /   33.0 /   32.5 = 1.20 |   46.0 /   34.9 /   32.5 = 1.32 |   68.5 /   32.5 /   33.1 = 2.11 |   87.3 /   34.6 /   33.0 = 2.52
+o            4096x4096   10.73/12.04   0.00 |   17.2 /   18.5 /   16.6 = 0.93 |   19.5 /   19.2 /   16.8 = 1.01 |   24.0 /   20.9 /   17.0 = 1.15 |   35.8 /   16.9 /   15.1 = 2.12 |   47.1 /   18.8 /   15.4 = 2.51
+gdn_in      12288x4096   10.75/12.04   0.00 |   41.2 /   37.5 /   38.1 = 1.10 |   44.1 /   39.0 /   38.3 = 1.13 |   50.8 /   41.2 /   38.7 = 1.23 |   80.7 /   38.0 /   41.5 = 2.13 |  100.6 /   39.9 /   39.5 = 2.52
+gdn_out      4096x4096   10.81/12.04   0.01 |   17.4 /   18.6 /   16.8 = 0.94 |   19.4 /   19.2 /   16.8 = 1.01 |   24.2 /   20.6 /   17.0 = 1.17 |   35.4 /   16.6 /   15.2 = 2.13 |   47.3 /   18.3 /   15.4 = 2.58
+lm_head    248320x4096   10.72/12.03   0.27 |  926.8 /  638.2 /  719.6 = 1.45 |  939.5 /  641.6 /  724.0 = 1.46 | 1024.7 /  647.8 /  728.2 = 1.58 | 1324.5 /  657.8 /  729.9 = 2.01 | 1629.4 /  679.6 /  738.5 = 2.40
+a step          (layers)                    |   6447 /   5584 /   6105 = 1.15 |   6882 /   5789 /   6152 = 1.19 |   7905 /   6096 /   6222 = 1.30 |  11883 /   5731 /   6275 = 2.07 |  14981 /   6063 /   6310 = 2.47
+
+prompts, a pass through the layers' products, ms: tiered by its route (default) and by each, 12-bit by its route, bf16
+    128 tokens: mma   14.87 (big     nan, decode   14.86) | mma12    6.74 (big     nan, decode   17.03) | bf16    5.67 | tiered's best / 12-bit's route  nan
+    512 tokens: mma   18.57 (big     nan, decode   18.58) | mma12   13.08 (big     nan, decode   20.79) | bf16    9.55 | tiered's best / 12-bit's route  nan
+   1024 tokens: mma   27.08 (big     nan, decode   27.11) | mma12   22.99 (big     nan, decode   29.42) | bf16   18.26 | tiered's best / 12-bit's route  nan
+   2048 tokens: mma   44.62 (big     nan, decode   44.61) | mma12   46.99 (big     nan, decode   46.96) | bf16   36.09 | tiered's best / 12-bit's route  nan
+
+memory or instructions: clk a step of 1,024 weights at 1980 MHz (from memory; from the L2 cache where it fits), the packs' read rate GB/s, bf16's at 1 token
+  gate_up    mma 1:  197; mma 16:  234; mma 64:  479; mma12 1:  169; mma12 16:  186; mma12 64:  189; GB/s 1 token: mma  1832, mma12  2381, bf16  2676
+  down       mma 1:  220; mma 16:  283; mma 64:  492; mma12 1:  194; mma12 16:  213; mma12 64:  213; GB/s 1 token: mma  1643, mma12  2079, bf16  2537
+  qkv        mma 1:  230; mma 16:  293; mma 64:  557; mma12 1:  200; mma12 16:  223; mma12 64:  221; GB/s 1 token: mma  1570, mma12  2008, bf16  2612
+  o          mma 1:  275/ 258; mma 16:  384/ 367; mma 64:  751/ 740; mma12 1:  295/ 239; mma12 16:  333/ 282; mma12 64:  300/ 297; GB/s 1 token: mma  1306, mma12  1363, bf16  2020
+  gdn_in     mma 1:  219; mma 16:  270; mma 64:  535; mma12 1:  199; mma12 16:  219; mma12 64:  212; GB/s 1 token: mma  1640, mma12  2021, bf16  2640
+  gdn_out    mma 1:  278/ 259; mma 16:  385/ 367; mma 64:  755/ 742; mma12 1:  297/ 240; mma12 16:  329/ 273; mma12 64:  293/ 291; GB/s 1 token: mma  1303, mma12  1357, bf16  1994
+  lm_head    mma 1:  244; mma 16:  270; mma 64:  429; mma12 1:  168; mma12 16:  170; mma12 64:  179; GB/s 1 token: mma  1471, mma12  2398, bf16  2827
+
+######## Qwen3.5-27B: GPU time of a step's products, us (each layout by its route on this GPU), and tiered over 12-bit
+matrix             O x K   bits t/12  flag% |    1: mma / mma12 / bf16 = t/12 |    8: mma / mma12 / bf16 = t/12 |   16: mma / mma12 / bf16 = t/12 |   32: mma / mma12 / bf16 = t/12 |   64: mma / mma12 / bf16 = t/12
+gate_up     34816x5120   10.78/12.04   0.00 |  119.6 /  122.5 /  129.5 = 0.98 |  127.0 /  108.4 /  130.2 = 1.17 |  140.7 /  112.2 /  131.1 = 1.25 |  227.5 /  112.7 /  132.0 = 2.02 |  279.2 /  117.5 /  141.2 = 2.38
+down         5120x17408  10.79/12.04   0.00 |   65.9 /   57.8 /   68.5 = 1.14 |   71.0 /   59.3 /   69.3 = 1.20 |   78.8 /   62.0 /   69.5 = 1.27 |  116.5 /   61.9 /   71.2 = 1.88 |  142.4 /   64.8 /   74.5 = 2.20
+qkv         14336x5120   10.74/12.03   0.03 |   55.6 /   48.6 /   54.3 = 1.15 |   59.7 /   50.6 /   54.8 = 1.18 |   67.1 /   53.3 /   55.6 = 1.26 |  103.6 /   51.5 /   56.8 = 2.01 |  129.5 /   54.5 /   55.8 = 2.38
+o            5120x6144   10.72/12.04   0.00 |   28.9 /   29.1 /   25.0 = 0.99 |   31.8 /   30.1 /   25.1 = 1.06 |   38.1 /   32.3 /   25.3 = 1.18 |   52.9 /   27.0 /   25.8 = 1.96 |   68.5 /   29.1 /   26.0 = 2.36
+gdn_in      16384x5120   10.74/12.04   0.00 |   62.7 /   53.6 /   61.5 = 1.17 |   66.4 /   55.7 /   61.8 = 1.19 |   75.6 /   58.4 /   62.0 = 1.29 |  115.3 /   57.8 /   62.9 = 2.00 |  142.2 /   60.6 /   64.8 = 2.35
+gdn_out      5120x6144   10.77/12.04   0.00 |   29.0 /   28.4 /   24.9 = 1.02 |   31.9 /   29.5 /   25.2 = 1.08 |   38.3 /   31.7 /   25.4 = 1.21 |   52.7 /   26.9 /   25.8 = 1.96 |   68.3 /   28.7 /   26.1 = 2.38
+a step          (layers)                    |  17629 /  16721 /  18090 = 1.05 |  18854 /  16115 /  18219 = 1.17 |  21199 /  16849 /  18324 = 1.26 |  32586 /  16491 /  18578 = 1.98 |  40256 /  17296 /  19472 = 2.33
+
+prompts, a pass through the layers' products, ms: tiered by its route (default) and by each, 12-bit by its route, bf16
+    128 tokens: mma   51.94 (big     nan, decode   51.88) | mma12   21.44 (big     nan, decode   62.47) | bf16   19.59 | tiered's best / 12-bit's route  nan
+    512 tokens: mma   64.86 (big     nan, decode   64.89) | mma12   45.67 (big     nan, decode   75.77) | bf16   33.39 | tiered's best / 12-bit's route  nan
+   1024 tokens: mma   95.96 (big     nan, decode   96.05) | mma12   80.72 (big     nan, decode  107.21) | bf16   64.82 | tiered's best / 12-bit's route  nan
+   2048 tokens: mma  157.23 (big     nan, decode  157.66) | mma12  168.13 (big     nan, decode  168.15) | bf16  126.17 | tiered's best / 12-bit's route  nan
+
+memory or instructions: clk a step of 1,024 weights at 1980 MHz (from memory; from the L2 cache where it fits), the packs' read rate GB/s, bf16's at 1 token
+  gate_up    mma 1:  180; mma 16:  211; mma 64:  419; mma12 1:  184; mma12 16:  168; mma12 64:  176; GB/s 1 token: mma  2009, mma12  2189, bf16  2754
+  down       mma 1:  198; mma 16:  236; mma 64:  428; mma12 1:  174; mma12 16:  186; mma12 64:  195; GB/s 1 token: mma  1823, mma12  2320, bf16  2601
+  qkv        mma 1:  203; mma 16:  245; mma 64:  472; mma12 1:  177; mma12 16:  194; mma12 64:  199; GB/s 1 token: mma  1772, mma12  2274, bf16  2705
+  o          mma 1:  246; mma 16:  324; mma 64:  583; mma12 1:  248; mma12 16:  274; mma12 64:  248; GB/s 1 token: mma  1459, mma12  1624, bf16  2514
+  gdn_in     mma 1:  200; mma 16:  241; mma 64:  454; mma12 1:  171; mma12 16:  186; mma12 64:  193; GB/s 1 token: mma  1796, mma12  2355, bf16  2727
+  gdn_out    mma 1:  247; mma 16:  326; mma 64:  581; mma12 1:  242; mma12 16:  270; mma12 64:  244; GB/s 1 token: mma  1458, mma12  1667, bf16  2524
+
+######## gemma-4-12B-it: GPU time of a step's products, us (each layout by its route on this GPU), and tiered over 12-bit
+matrix             O x K   bits t/12  flag% |    1: mma / mma12 / bf16 = t/12 |    8: mma / mma12 / bf16 = t/12 |   16: mma / mma12 / bf16 = t/12 |   32: mma / mma12 / bf16 = t/12 |   64: mma / mma12 / bf16 = t/12
+gate_up     30720x3840   10.98/12.04   0.00 |   85.4 /   75.0 /   88.0 = 1.14 |   90.9 /   78.2 /   88.6 = 1.16 |  101.8 /   80.8 /   88.6 = 1.26 |  162.9 /   79.4 /   89.2 = 2.05 |  201.7 /   84.0 /   90.1 = 2.40
+down         3840x15360  10.94/12.04   0.00 |   47.4 /   41.3 /   46.1 = 1.15 |   53.0 /   43.5 /   46.7 = 1.22 |   61.4 /   46.2 /   47.1 = 1.33 |   84.1 /   44.2 /   47.7 = 1.90 |  103.5 /   46.8 /   49.9 = 2.21
+qkv          8192x3840   11.07/12.05   3.09 |   46.3 /   26.1 /   24.7 = 1.78 |   48.9 /   27.5 /   24.9 = 1.78 |   55.5 /   29.3 /   25.2 = 1.90 |   65.6 /   28.0 /   25.5 = 2.34 |   81.6 /   29.9 /   25.9 = 2.73
+o            3840x4096   11.01/12.05   0.10 |   17.7 /   17.6 /   14.1 = 1.01 |   20.0 /   18.7 /   14.0 = 1.07 |   24.5 /   20.4 /   17.5 = 1.20 |   34.1 /   17.2 /   14.3 = 1.98 |   45.5 /   18.9 /   14.5 = 2.41
+qk_global    8704x3840   10.75/12.04   0.00 |   30.3 /   26.9 /   25.9 = 1.13 |   33.0 /   29.2 /   26.1 = 1.13 |   38.8 /   31.4 /   26.1 = 1.24 |   55.0 /   28.3 /   26.7 = 1.95 |   71.5 /   30.8 /   27.8 = 2.32
+o_global     3840x8192   10.79/12.04   0.00 |   29.1 /   25.9 /   27.0 = 1.13 |   32.8 /   27.6 /   27.3 = 1.19 |   40.1 /   29.8 /   27.8 = 1.35 |   53.7 /   27.3 /   28.3 = 1.97 |   68.5 /   29.5 /   29.5 = 2.32
+a step          (layers)                    |   9412 /   7752 /   8410 = 1.21 |  10189 /   8140 /   8476 = 1.25 |  11664 /   8573 /   8652 = 1.36 |  16710 /   8190 /   8605 = 2.04 |  20856 /   8712 /   8795 = 2.39
+
+prompts, a pass through the layers' products, ms: tiered by its route (default) and by each, 12-bit by its route, bf16
+    128 tokens: mma   23.81 (big     nan, decode   23.82) | mma12   10.78 (big     nan, decode   28.03) | bf16    9.23 | tiered's best / 12-bit's route  nan
+    512 tokens: mma   30.07 (big     nan, decode   30.03) | mma12   21.49 (big     nan, decode   34.39) | bf16   15.51 | tiered's best / 12-bit's route  nan
+   1024 tokens: mma   43.60 (big     nan, decode   43.59) | mma12   37.80 (big     nan, decode   48.04) | bf16   29.41 | tiered's best / 12-bit's route  nan
+   2048 tokens: mma   71.78 (big     nan, decode   71.85) | mma12   76.28 (big     nan, decode   76.29) | bf16   57.84 | tiered's best / 12-bit's route  nan
+
+memory or instructions: clk a step of 1,024 weights at 1980 MHz (from memory; from the L2 cache where it fits), the packs' read rate GB/s, bf16's at 1 token
+  gate_up    mma 1:  194; mma 16:  231; mma 64:  458; mma12 1:  170; mma12 16:  183; mma12 64:  191; GB/s 1 token: mma  1896, mma12  2368, bf16  2681
+  down       mma 1:  215; mma 16:  278; mma 64:  470; mma12 1:  188; mma12 16:  210; mma12 64:  212; GB/s 1 token: mma  1700, mma12  2148, bf16  2558
+  qkv        mma 1:  394; mma 16:  472; mma 64:  694; mma12 1:  222; mma12 16:  249; mma12 64:  254; GB/s 1 token: mma   941, mma12  1819, bf16  2551
+  o          mma 1:  302/ 282; mma 16:  417/ 397; mma 64:  774/ 763; mma12 1:  300/ 243; mma12 16:  347/ 297; mma12 64:  322/ 322; GB/s 1 token: mma  1220, mma12  1345, bf16  2238
+  qk_global  mma 1:  243; mma 16:  311; mma 64:  573; mma12 1:  216; mma12 16:  252; mma12 64:  247; GB/s 1 token: mma  1483, mma12  1868, bf16  2582
+  o_global   mma 1:  248; mma 16:  342; mma 64:  583; mma12 1:  220; mma12 16:  253; mma12 64:  251; GB/s 1 token: mma  1458, mma12  1831, bf16  2329
+
+######## gemma-4-31B-it: GPU time of a step's products, us (each layout by its route on this GPU), and tiered over 12-bit
+matrix             O x K   bits t/12  flag% |    1: mma / mma12 / bf16 = t/12 |    8: mma / mma12 / bf16 = t/12 |   16: mma / mma12 / bf16 = t/12 |   32: mma / mma12 / bf16 = t/12 |   64: mma / mma12 / bf16 = t/12
+gate_up     43008x5376   10.74/12.03   0.00 |  151.4 /  156.0 /  169.2 = 0.97 |  159.4 /  138.8 /  170.4 = 1.15 |  176.0 /  143.8 /  171.6 = 1.22 |  287.2 /  145.3 /  171.7 = 1.98 |  347.3 /  148.4 /  169.2 = 2.34
+down         5376x21504  10.86/12.04   0.00 |   82.4 /   71.4 /   86.1 = 1.15 |   88.3 /   72.6 /   87.0 = 1.22 |   99.5 /   75.2 /   87.3 = 1.32 |  148.2 /   76.6 /   89.5 = 1.93 |  179.6 /   80.0 /   93.8 = 2.24
+qkv         16384x5376   10.71/12.03   0.00 |   65.7 /   56.9 /   64.7 = 1.15 |   69.8 /   59.3 /   65.3 = 1.18 |   79.0 /   61.5 /   65.9 = 1.28 |  122.1 /   63.1 /   66.6 = 1.94 |  150.4 /   64.2 /   74.0 = 2.34
+o            5376x8192   10.81/12.04   0.00 |   37.6 /   33.9 /   36.9 = 1.11 |   41.4 /   35.3 /   37.5 = 1.17 |   48.7 /   36.2 /   38.1 = 1.35 |   70.3 /   35.0 /   39.3 = 2.01 |   88.8 /   36.4 /   42.2 = 2.44
+qk_global   18432x5376   10.71/12.03   0.00 |   71.6 /   62.8 /   73.9 = 1.14 |   75.8 /   64.3 /   74.3 = 1.18 |   84.6 /   67.5 /   74.8 = 1.25 |  134.7 /   66.5 /   78.6 = 2.02 |  167.6 /   69.9 /   75.1 = 2.40
+o_global     5376x16384  10.80/12.04   0.00 |   65.7 /   57.5 /   67.6 = 1.14 |   70.2 /   58.6 /   68.8 = 1.20 |   80.0 /   61.0 /   68.8 = 1.31 |  123.4 /   61.4 /   70.5 = 2.01 |  150.8 /   64.0 /   73.8 = 2.35
+a step          (layers)                    |  20566 /  19386 /  21813 = 1.06 |  21880 /  18644 /  22014 = 1.17 |  24564 /  19308 /  22166 = 1.27 |  38320 /  19495 /  22461 = 1.97 |  46760 /  20076 /  23079 = 2.33
+
+prompts, a pass through the layers' products, ms: tiered by its route (default) and by each, 12-bit by its route, bf16
+    128 tokens: mma   60.97 (big     nan, decode   61.00) | mma12   24.73 (big     nan, decode   72.66) | bf16   23.13 | tiered's best / 12-bit's route  nan
+    512 tokens: mma   76.99 (big     nan, decode   76.95) | mma12   52.39 (big     nan, decode   89.11) | bf16   40.25 | tiered's best / 12-bit's route  nan
+   1024 tokens: mma  114.69 (big     nan, decode  114.77) | mma12   93.87 (big     nan, decode  127.14) | bf16   78.21 | tiered's best / 12-bit's route  nan
+   2048 tokens: mma  190.82 (big     nan, decode  192.17) | mma12  202.70 (big     nan, decode  203.05) | bf16  154.35 | tiered's best / 12-bit's route  nan
+
+memory or instructions: clk a step of 1,024 weights at 1980 MHz (from memory; from the L2 cache where it fits), the packs' read rate GB/s, bf16's at 1 token
+  gate_up    mma 1:  175; mma 16:  204; mma 64:  402; mma12 1:  181; mma12 16:  166; mma12 64:  172; GB/s 1 token: mma  2050, mma12  2229, bf16  2732
+  down       mma 1:  191; mma 16:  230; mma 64:  416; mma12 1:  165; mma12 16:  174; mma12 64:  185; GB/s 1 token: mma  1904, mma12  2438, bf16  2686
+  qkv        mma 1:  200; mma 16:  240; mma 64:  457; mma12 1:  173; mma12 16:  187; mma12 64:  195; GB/s 1 token: mma  1795, mma12  2328, bf16  2725
+  o          mma 1:  228; mma 16:  296; mma 64:  540; mma12 1:  206; mma12 16:  220; mma12 64:  221; GB/s 1 token: mma  1583, mma12  1956, bf16  2387
+  qk_global  mma 1:  193; mma 16:  228; mma 64:  453; mma12 1:  170; mma12 16:  182; mma12 64:  189; GB/s 1 token: mma  1854, mma12  2374, bf16  2680
+  o_global   mma 1:  200; mma 16:  243; mma 64:  458; mma12 1:  175; mma12 16:  185; mma12 64:  195; GB/s 1 token: mma  1810, mma12  2304, bf16  2606
+
+######## experts (Qwen3.5-35B-A3B layer 3, 256 experts, top 8), mma: a layer's products, us (route + gate/up + down), bf16 = vLLM's fused_experts
+  T=    1: all     39.7  gate+up     20.6  down     16.1  bf16     30.7
+  T=    8: all    184.2  gate+up    105.0  down     75.4  bf16    145.0
+  T=   16: all    295.0  gate+up    169.3  down    122.0  bf16    240.2
+  T=   32: all    598.6  gate+up    396.7  down    199.0  bf16    353.6
+  T=   64: all    989.0  gate+up    673.0  down    330.9  bf16    485.8
+  T=  256: all   1139.0  gate+up    775.8  down    378.3  bf16    570.1
+  T= 1024: all   1320.3  gate+up    865.8  down    434.6  bf16    633.3
+
+######## experts (Qwen3.5-35B-A3B layer 3, 256 experts, top 8), mma12: a layer's products, us (route + gate/up + down), bf16 = vLLM's fused_experts
+  T=    1: all     34.8  gate+up     18.0  down     13.5  bf16     30.6
+  T=    8: all    147.6  gate+up     86.8  down     56.5  bf16    145.4
+  T=   16: all    238.7  gate+up    144.7  down     89.5  bf16    239.7
+  T=   32: all    492.9  gate+up    331.1  down    140.1  bf16    353.6
+  T=   64: all    656.6  gate+up    424.9  down    188.0  bf16    486.1
+  T=  256: all    870.7  gate+up    544.3  down    236.9  bf16    570.4
+  T= 1024: all   1018.0  gate+up    645.3  down    340.4  bf16    633.9
+
+######## SASS (sass.txt): each kernel's whole count and its loops
+  ######## _Z11step_kernelILb0EEv6TieredlllPK13__nv_bfloat16S3_PS1_PfPi
+  whole kernel: 4464 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00bb0-0x0adb0: 2593 instructions
+  loop 0x01530-0x07070: 1461 instructions
+  loop 0x02060-0x0b3e0: 2361 instructions
+  loop 0x02c80-0x0bb40: 2285 instructions
+  loop 0x02f40-0x05d60: 739 instructions
+  loop 0x038e0-0x0c160: 2185 instructions
+  loop 0x04410-0x0c850: 2117 instructions
+  loop 0x04fa0-0x0ce20: 2025 instructions
+  loop 0x05aa0-0x0d4f0: 1958 instructions
+  loop 0x064b0-0x0d560: 1804 instructions
+  loop 0x06dc0-0x0d5d0: 1666 instructions
+  loop 0x08000-0x08810: 130 instructions
+  ######## _Z11step_kernelILb1EEv6TieredlllPK13__nv_bfloat16S3_PS1_PfPi
+  whole kernel: 4304 instructions
+  loop 0x000c0-0x00220: 23 instructions
+  loop 0x00ab0-0x0a3c0: 2450 instructions
+  loop 0x01310-0x06980: 1384 instructions
+  loop 0x01dd0-0x0aa20: 2246 instructions
+  loop 0x029f0-0x0b180: 2170 instructions
+  loop 0x02cb0-0x058f0: 709 instructions
+  loop 0x035a0-0x0b7d0: 2084 instructions
+  loop 0x040b0-0x0bea0: 2016 instructions
+  loop 0x04b70-0x0c490: 1939 instructions
+  loop 0x05670-0x0cb60: 1872 instructions
+  loop 0x05f50-0x0cbd0: 1737 instructions
+  loop 0x06710-0x0cc40: 1620 instructions
+  loop 0x07760-0x07f70: 130 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi1ELb0ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2416 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00970-0x088e0: 2040 instructions
+  loop 0x014b0-0x04690: 799 instructions
+  loop 0x020c0-0x02b30: 168 instructions
+  loop 0x02f40-0x089d0: 1450 instructions
+  loop 0x035e0-0x08a20: 1349 instructions
+  loop 0x03ac0-0x03d60: 43 instructions
+  loop 0x03e10-0x08b40: 1236 instructions
+  loop 0x043f0-0x090f0: 1233 instructions
+  loop 0x046c0-0x05090: 158 instructions
+  loop 0x05cd0-0x064e0: 130 instructions
+  loop 0x06850-0x06d00: 76 instructions
+  loop 0x072f0-0x07b50: 135 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi4ELb0ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3104 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00970-0x0b3f0: 2729 instructions
+  loop 0x01e40-0x058a0: 935 instructions
+  loop 0x031a0-0x03bc0: 163 instructions
+  loop 0x03fd0-0x0b4e0: 1874 instructions
+  loop 0x04660-0x0b530: 1774 instructions
+  loop 0x04b40-0x04de0: 43 instructions
+  loop 0x04e90-0x0b650: 1661 instructions
+  loop 0x05480-0x0bc20: 1659 instructions
+  loop 0x058d0-0x07aa0: 542 instructions
+  loop 0x086e0-0x08ef0: 130 instructions
+  loop 0x09260-0x09710: 76 instructions
+  loop 0x09d00-0x0a560: 135 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi2ELb0ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2640 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00970-0x096f0: 2265 instructions
+  loop 0x017f0-0x04ca0: 844 instructions
+  loop 0x02680-0x030a0: 163 instructions
+  loop 0x034b0-0x097e0: 1588 instructions
+  loop 0x03b50-0x09830: 1487 instructions
+  loop 0x04030-0x042d0: 43 instructions
+  loop 0x04380-0x09950: 1374 instructions
+  loop 0x04980-0x09f10: 1370 instructions
+  loop 0x04cd0-0x05ea0: 286 instructions
+  loop 0x06ae0-0x072f0: 130 instructions
+  loop 0x07660-0x07b10: 76 instructions
+  loop 0x08100-0x08960: 135 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi1ELb0ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2576 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00950-0x092a0: 2198 instructions
+  loop 0x01100-0x01430: 52 instructions
+  loop 0x01e00-0x05080: 809 instructions
+  loop 0x02ac0-0x03520: 167 instructions
+  loop 0x03910-0x09390: 1449 instructions
+  loop 0x03fb0-0x093e0: 1348 instructions
+  loop 0x044a0-0x04740: 43 instructions
+  loop 0x047e0-0x09500: 1235 instructions
+  loop 0x04de0-0x09ac0: 1231 instructions
+  loop 0x050c0-0x05a70: 156 instructions
+  loop 0x06690-0x06ea0: 130 instructions
+  loop 0x07210-0x076c0: 76 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi4ELb0ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3264 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00950-0x0bdd0: 2889 instructions
+  loop 0x01100-0x01430: 52 instructions
+  loop 0x02790-0x062b0: 947 instructions
+  loop 0x03bb0-0x045c0: 162 instructions
+  loop 0x049b0-0x0bec0: 1874 instructions
+  loop 0x05050-0x0bf10: 1773 instructions
+  loop 0x05540-0x057e0: 43 instructions
+  loop 0x05880-0x0c030: 1660 instructions
+  loop 0x05e90-0x0c610: 1657 instructions
+  loop 0x062f0-0x084a0: 540 instructions
+  loop 0x090e0-0x098f0: 130 instructions
+  loop 0x09c60-0x0a110: 76 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi2ELb0ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2800 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00950-0x0a0f0: 2427 instructions
+  loop 0x01100-0x01430: 52 instructions
+  loop 0x02150-0x056b0: 855 instructions
+  loop 0x030b0-0x03ac0: 162 instructions
+  loop 0x03eb0-0x0a1e0: 1588 instructions
+  loop 0x04540-0x0a230: 1488 instructions
+  loop 0x04a30-0x04cd0: 43 instructions
+  loop 0x04d70-0x0a350: 1375 instructions
+  loop 0x05390-0x0a920: 1370 instructions
+  loop 0x056f0-0x068a0: 284 instructions
+  loop 0x074e0-0x07cf0: 130 instructions
+  loop 0x08060-0x08510: 76 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi1ELb1ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2416 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00970-0x088e0: 2040 instructions
+  loop 0x014b0-0x04690: 799 instructions
+  loop 0x020c0-0x02b30: 168 instructions
+  loop 0x02f40-0x089d0: 1450 instructions
+  loop 0x035e0-0x08a20: 1349 instructions
+  loop 0x03ac0-0x03d60: 43 instructions
+  loop 0x03e10-0x08b40: 1236 instructions
+  loop 0x043f0-0x090f0: 1233 instructions
+  loop 0x046c0-0x05090: 158 instructions
+  loop 0x05cd0-0x064e0: 130 instructions
+  loop 0x06850-0x06d00: 76 instructions
+  loop 0x072f0-0x07b50: 135 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi4ELb1ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3104 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00970-0x0b3f0: 2729 instructions
+  loop 0x01e40-0x058a0: 935 instructions
+  loop 0x031a0-0x03bc0: 163 instructions
+  loop 0x03fd0-0x0b4e0: 1874 instructions
+  loop 0x04660-0x0b530: 1774 instructions
+  loop 0x04b40-0x04de0: 43 instructions
+  loop 0x04e90-0x0b650: 1661 instructions
+  loop 0x05480-0x0bc20: 1659 instructions
+  loop 0x058d0-0x07aa0: 542 instructions
+  loop 0x086e0-0x08ef0: 130 instructions
+  loop 0x09260-0x09710: 76 instructions
+  loop 0x09d00-0x0a560: 135 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi2ELb1ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2640 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00970-0x096f0: 2265 instructions
+  loop 0x017f0-0x04ca0: 844 instructions
+  loop 0x02680-0x030a0: 163 instructions
+  loop 0x034b0-0x097e0: 1588 instructions
+  loop 0x03b50-0x09830: 1487 instructions
+  loop 0x04030-0x042d0: 43 instructions
+  loop 0x04380-0x09950: 1374 instructions
+  loop 0x04980-0x09f10: 1370 instructions
+  loop 0x04cd0-0x05ea0: 286 instructions
+  loop 0x06ae0-0x072f0: 130 instructions
+  loop 0x07660-0x07b10: 76 instructions
+  loop 0x08100-0x08960: 135 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi1ELb1ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2576 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00950-0x092a0: 2198 instructions
+  loop 0x01100-0x01430: 52 instructions
+  loop 0x01e00-0x05080: 809 instructions
+  loop 0x02ac0-0x03520: 167 instructions
+  loop 0x03910-0x09390: 1449 instructions
+  loop 0x03fb0-0x093e0: 1348 instructions
+  loop 0x044a0-0x04740: 43 instructions
+  loop 0x047e0-0x09500: 1235 instructions
+  loop 0x04de0-0x09ac0: 1231 instructions
+  loop 0x050c0-0x05a70: 156 instructions
+  loop 0x06690-0x06ea0: 130 instructions
+  loop 0x07210-0x076c0: 76 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi4ELb1ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3264 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00950-0x0bdd0: 2889 instructions
+  loop 0x01100-0x01430: 52 instructions
+  loop 0x02790-0x062b0: 947 instructions
+  loop 0x03bb0-0x045c0: 162 instructions
+  loop 0x049b0-0x0bec0: 1874 instructions
+  loop 0x05050-0x0bf10: 1773 instructions
+  loop 0x05540-0x057e0: 43 instructions
+  loop 0x05880-0x0c030: 1660 instructions
+  loop 0x05e90-0x0c610: 1657 instructions
+  loop 0x062f0-0x084a0: 540 instructions
+  loop 0x090e0-0x098f0: 130 instructions
+  loop 0x09c60-0x0a110: 76 instructions
+  ######## _Z15mma_gemm_kernelI6TieredLi2ELb1ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2800 instructions
+  loop 0x000d0-0x00230: 23 instructions
+  loop 0x00950-0x0a0f0: 2427 instructions
+  loop 0x01100-0x01430: 52 instructions
+  loop 0x02150-0x056b0: 855 instructions
+  loop 0x030b0-0x03ac0: 162 instructions
+  loop 0x03eb0-0x0a1e0: 1588 instructions
+  loop 0x04540-0x0a230: 1488 instructions
+  loop 0x04a30-0x04cd0: 43 instructions
+  loop 0x04d70-0x0a350: 1375 instructions
+  loop 0x05390-0x0a920: 1370 instructions
+  loop 0x056f0-0x068a0: 284 instructions
+  loop 0x074e0-0x07cf0: 130 instructions
+  loop 0x08060-0x08510: 76 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi1ELb0ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2680 instructions
+  loop 0x00880-0x09ee0: 2407 instructions
+  loop 0x01280-0x02bb0: 404 instructions
+  loop 0x02160-0x029c0: 135 instructions
+  loop 0x03090-0x05b60: 686 instructions
+  loop 0x03ea0-0x04700: 135 instructions
+  loop 0x04bb0-0x05150: 91 instructions
+  loop 0x05870-0x0a150: 1167 instructions
+  loop 0x05bb0-0x06580: 158 instructions
+  loop 0x07250-0x07a60: 130 instructions
+  loop 0x07de0-0x08290: 76 instructions
+  loop 0x08890-0x090f0: 135 instructions
+  loop 0x09640-0x09e80: 133 instructions
+  loop 0x09b30-0x09cc0: 26 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi4ELb0ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3704 instructions
+  loop 0x00800-0x0df10: 3442 instructions
+  loop 0x01c00-0x03e30: 548 instructions
+  loop 0x03260-0x03ac0: 135 instructions
+  loop 0x04fb0-0x08380: 830 instructions
+  loop 0x06480-0x06ce0: 135 instructions
+  loop 0x071a0-0x07730: 90 instructions
+  loop 0x07e50-0x0e180: 1588 instructions
+  loop 0x083d0-0x0a5a0: 542 instructions
+  loop 0x0b1f0-0x0ba00: 130 instructions
+  loop 0x0bd80-0x0c230: 76 instructions
+  loop 0x0c830-0x0d090: 135 instructions
+  loop 0x0d5b0-0x0dec0: 146 instructions
+  loop 0x0d980-0x0dd00: 57 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi2ELb0ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2952 instructions
+  loop 0x00800-0x0b020: 2691 instructions
+  loop 0x01490-0x030d0: 453 instructions
+  loop 0x02610-0x02e60: 134 instructions
+  loop 0x037a0-0x06580: 735 instructions
+  loop 0x04810-0x05060: 134 instructions
+  loop 0x05520-0x05ab0: 90 instructions
+  loop 0x061d0-0x0b290: 1293 instructions
+  loop 0x065d0-0x077a0: 286 instructions
+  loop 0x083f0-0x08c00: 130 instructions
+  loop 0x08f80-0x09430: 76 instructions
+  loop 0x09a30-0x0a290: 135 instructions
+  loop 0x0a790-0x0afd0: 133 instructions
+  loop 0x0ac80-0x0ae10: 26 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi1ELb0ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3248 instructions
+  loop 0x00810-0x0c250: 2981 instructions
+  loop 0x011b0-0x01490: 47 instructions
+  loop 0x01eb0-0x02020: 24 instructions
+  loop 0x02350-0x03d40: 416 instructions
+  loop 0x03310-0x03b50: 133 instructions
+  loop 0x04130-0x04460: 52 instructions
+  loop 0x04ed0-0x05040: 24 instructions
+  loop 0x053b0-0x07f50: 699 instructions
+  loop 0x06360-0x06ba0: 133 instructions
+  loop 0x06fd0-0x07570: 91 instructions
+  loop 0x07c60-0x0c4b0: 1158 instructions
+  loop 0x07fa0-0x08950: 156 instructions
+  loop 0x09620-0x09e30: 130 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi4ELb0ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 4264 instructions
+  loop 0x00820-0x101f0: 3998 instructions
+  loop 0x01050-0x01330: 47 instructions
+  loop 0x02550-0x026c0: 24 instructions
+  loop 0x02cf0-0x04f90: 555 instructions
+  loop 0x043e0-0x04c20: 133 instructions
+  loop 0x05330-0x05610: 47 instructions
+  loop 0x06850-0x069c0: 24 instructions
+  loop 0x070f0-0x0a640: 854 instructions
+  loop 0x08810-0x09050: 133 instructions
+  loop 0x094a0-0x09a40: 91 instructions
+  loop 0x0a110-0x10430: 1587 instructions
+  loop 0x0a690-0x0c840: 540 instructions
+  loop 0x0d4d0-0x0dce0: 130 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi2ELb0ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3560 instructions
+  loop 0x00830-0x0d620: 3296 instructions
+  loop 0x01330-0x01660: 52 instructions
+  loop 0x02240-0x023b0: 24 instructions
+  loop 0x027e0-0x04440: 455 instructions
+  loop 0x039a0-0x041d0: 132 instructions
+  loop 0x047e0-0x04b10: 52 instructions
+  loop 0x056f0-0x05860: 24 instructions
+  loop 0x05d10-0x08ba0: 746 instructions
+  loop 0x06f00-0x07730: 132 instructions
+  loop 0x07b90-0x08120: 90 instructions
+  loop 0x087f0-0x0d860: 1288 instructions
+  loop 0x08bf0-0x09da0: 284 instructions
+  loop 0x0a9f0-0x0b200: 130 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi1ELb1ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 2816 instructions
+  loop 0x00810-0x0a760: 2550 instructions
+  loop 0x01170-0x03530: 573 instructions
+  loop 0x02b00-0x03340: 133 instructions
+  loop 0x03a10-0x06460: 678 instructions
+  loop 0x047d0-0x05010: 133 instructions
+  loop 0x054c0-0x05a60: 91 instructions
+  loop 0x06170-0x0a9d0: 1159 instructions
+  loop 0x064b0-0x06e60: 156 instructions
+  loop 0x07b30-0x08340: 130 instructions
+  loop 0x086c0-0x08b70: 76 instructions
+  loop 0x09170-0x099d0: 135 instructions
+  loop 0x09ed0-0x0a710: 133 instructions
+  loop 0x0a3c0-0x0a550: 26 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi4ELb1ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3880 instructions
+  loop 0x00890-0x0e9f0: 3607 instructions
+  loop 0x01d00-0x04950: 710 instructions
+  loop 0x03da0-0x045e0: 133 instructions
+  loop 0x05ac0-0x08da0: 815 instructions
+  loop 0x06ed0-0x07710: 133 instructions
+  loop 0x07be0-0x08170: 90 instructions
+  loop 0x08870-0x0ec50: 1599 instructions
+  loop 0x08df0-0x0afa0: 540 instructions
+  loop 0x0bc70-0x0c480: 130 instructions
+  loop 0x0c800-0x0ccb0: 76 instructions
+  loop 0x0d2b0-0x0db10: 135 instructions
+  loop 0x0e080-0x0e990: 146 instructions
+  loop 0x0e450-0x0e7d0: 57 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi2ELb1ELb0EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3096 instructions
+  loop 0x00820-0x0b8e0: 2829 instructions
+  loop 0x014c0-0x03af0: 612 instructions
+  loop 0x03050-0x03880: 132 instructions
+  loop 0x041a0-0x06e60: 717 instructions
+  loop 0x05120-0x05950: 132 instructions
+  loop 0x05e20-0x063b0: 90 instructions
+  loop 0x06ab0-0x0bb40: 1290 instructions
+  loop 0x06eb0-0x08060: 284 instructions
+  loop 0x08cb0-0x094c0: 130 instructions
+  loop 0x09840-0x09cf0: 76 instructions
+  loop 0x0a2f0-0x0ab50: 135 instructions
+  loop 0x0b050-0x0b890: 133 instructions
+  loop 0x0b540-0x0b6d0: 26 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi1ELb1ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3416 instructions
+  loop 0x00810-0x0cd40: 3156 instructions
+  loop 0x011b0-0x01490: 47 instructions
+  loop 0x01eb0-0x02020: 24 instructions
+  loop 0x02350-0x04830: 591 instructions
+  loop 0x03e00-0x04640: 133 instructions
+  loop 0x04c20-0x04f50: 52 instructions
+  loop 0x059c0-0x05b30: 24 instructions
+  loop 0x05ea0-0x08a40: 699 instructions
+  loop 0x06e50-0x07690: 133 instructions
+  loop 0x07ac0-0x08060: 91 instructions
+  loop 0x08750-0x0cfa0: 1158 instructions
+  loop 0x08a90-0x09440: 156 instructions
+  loop 0x0a110-0x0a920: 130 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi4ELb1ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 4432 instructions
+  loop 0x00820-0x10ce0: 4173 instructions
+  loop 0x01050-0x01330: 47 instructions
+  loop 0x02550-0x026c0: 24 instructions
+  loop 0x02cf0-0x05a80: 730 instructions
+  loop 0x04ed0-0x05710: 133 instructions
+  loop 0x05e20-0x06100: 47 instructions
+  loop 0x07340-0x074b0: 24 instructions
+  loop 0x07be0-0x0b130: 854 instructions
+  loop 0x09300-0x09b40: 133 instructions
+  loop 0x09f90-0x0a530: 91 instructions
+  loop 0x0ac00-0x10f20: 1587 instructions
+  loop 0x0b180-0x0d330: 540 instructions
+  loop 0x0dfc0-0x0e7d0: 130 instructions
+  ######## _Z15mma_gemm_kernelI3NibLi2ELb1ELb1EEvT_lllPK13__nv_bfloat16S4_PS2_PfPii
+  whole kernel: 3744 instructions
+  loop 0x00830-0x0e170: 3477 instructions
+  loop 0x01340-0x01670: 52 instructions
+  loop 0x02260-0x023d0: 24 instructions
+  loop 0x02800-0x04f70: 632 instructions
+  loop 0x044d0-0x04d00: 132 instructions
+  loop 0x05310-0x05640: 52 instructions
+  loop 0x06230-0x063a0: 24 instructions
+  loop 0x06850-0x096f0: 747 instructions
+  loop 0x07a50-0x08280: 132 instructions
+  loop 0x086e0-0x08c70: 90 instructions
+  loop 0x09340-0x0e3b0: 1288 instructions
+  loop 0x09740-0x0a8f0: 284 instructions
+  loop 0x0b540-0x0bd50: 130 instructions
+  ######## _Z16mma12_mid_kernelILi64ELi2EEv3NiblllPK13__nv_bfloat16S3_PS1_PfPi
+  whole kernel: 2736 instructions
+  loop 0x00f90-0x08070: 1807 instructions
+  loop 0x010f0-0x02970: 393 instructions
+  loop 0x01210-0x0a160: 2294 instructions
+  loop 0x015d0-0x01d70: 123 instructions
+  loop 0x03b10-0x04610: 177 instructions
+  loop 0x08670-0x0a120: 428 instructions
+  loop 0x08d80-0x0a4e0: 375 instructions
+  loop 0x08f00-0x0a520: 355 instructions
+  loop 0x08f30-0x09480: 86 instructions
+  loop 0x09580-0x09780: 33 instructions
+  loop 0x098f0-0x099c0: 14 instructions
+  loop 0x09b10-0x09d10: 33 instructions
+  loop 0x09e10-0x09ee0: 14 instructions
+  ######## _Z16mma12_mid_kernelILi64ELi4EEv3NiblllPK13__nv_bfloat16S3_PS1_PfPi
+  whole kernel: 3616 instructions
+  loop 0x00c80-0x09eb0: 2340 instructions
+  loop 0x00e60-0x02860: 417 instructions
+  loop 0x00fd0-0x0d4d0: 3153 instructions
+  loop 0x01400-0x01ba0: 123 instructions
+  loop 0x03a90-0x045f0: 183 instructions
+  loop 0x0a7e0-0x0d490: 716 instructions
+  loop 0x0b3a0-0x0db70: 638 instructions
+  loop 0x0b540-0x0dbb0: 616 instructions
+  loop 0x0b570-0x0bb20: 92 instructions
+  loop 0x0bc20-0x0be30: 34 instructions
+  loop 0x0bfb0-0x0c080: 14 instructions
+  loop 0x0c200-0x0c400: 33 instructions
+  loop 0x0c5a0-0x0c670: 14 instructions
+  ######## _Z16mma12_mid_kernelILi32ELi2EEv3NiblllPK13__nv_bfloat16S3_PS1_PfPi
+  whole kernel: 2488 instructions
+  loop 0x00b50-0x07010: 1613 instructions
+  loop 0x00c50-0x024e0: 394 instructions
+  loop 0x00db0-0x091a0: 2112 instructions
+  loop 0x011c0-0x01950: 122 instructions
+  loop 0x03760-0x047f0: 266 instructions
+  loop 0x075d0-0x09160: 442 instructions
+  loop 0x07d00-0x09520: 387 instructions
+  loop 0x07eb0-0x09560: 364 instructions
+  loop 0x07ee0-0x084b0: 94 instructions
+  loop 0x085c0-0x087c0: 33 instructions
+  loop 0x08940-0x08a10: 14 instructions
+  loop 0x08b60-0x08d60: 33 instructions
+  loop 0x08e50-0x08f20: 14 instructions
+  ######## _Z16mma12_mid_kernelILi32ELi4EEv3NiblllPK13__nv_bfloat16S3_PS1_PfPi
+  whole kernel: 2848 instructions
+  loop 0x00b60-0x06ff0: 1610 instructions
+  loop 0x00c40-0x02480: 389 instructions
+  loop 0x00da0-0x0a530: 2426 instructions
+  loop 0x011c0-0x01920: 119 instructions
+  loop 0x03700-0x047f0: 272 instructions
+  loop 0x07850-0x0a4f0: 715 instructions
+  loop 0x083e0-0x0abd0: 640 instructions
+  loop 0x08580-0x0ac10: 618 instructions
+  loop 0x085b0-0x08b60: 92 instructions
+  loop 0x08c50-0x08e60: 34 instructions
+  loop 0x09020-0x090f0: 14 instructions
+  loop 0x09240-0x09440: 33 instructions
+  loop 0x095e0-0x096b0: 14 instructions
+  ######## _Z16mma12_mid_kernelILi16ELi2EEv3NiblllPK13__nv_bfloat16S3_PS1_PfPi
+  whole kernel: 2000 instructions
+  loop 0x00bb0-0x04e10: 1063 instructions
+  loop 0x00c70-0x023f0: 377 instructions
+  loop 0x00dd0-0x07330: 1623 instructions
+  loop 0x011e0-0x01970: 122 instructions
+  loop 0x03430-0x04280: 230 instructions
+  loop 0x05470-0x072f0: 489 instructions
+  loop 0x05ba0-0x076b0: 434 instructions
+  loop 0x05e10-0x076f0: 399 instructions
+  loop 0x06420-0x065e0: 29 instructions
+  loop 0x069a0-0x06a70: 14 instructions
+  loop 0x06c30-0x06e40: 34 instructions
+  loop 0x06f60-0x07030: 14 instructions
+  loop 0x07310-0x07320: 2 instructions
+  ######## _Z16mma12_mid_kernelILi16ELi4EEv3NiblllPK13__nv_bfloat16S3_PS1_PfPi
+  whole kernel: 2288 instructions
+  loop 0x00e30-0x04e20: 1024 instructions
+  loop 0x00ef0-0x02520: 356 instructions
+  loop 0x01030-0x081e0: 1820 instructions
+  loop 0x013f0-0x01b70: 121 instructions
+  loop 0x03580-0x043e0: 231 instructions
+  loop 0x05670-0x081a0: 692 instructions
+  loop 0x06210-0x08880: 616 instructions
+  loop 0x06340-0x088c0: 601 instructions
+  loop 0x06900-0x06b10: 34 instructions
+  loop 0x06c90-0x06d60: 14 instructions
+  loop 0x06ef0-0x070f0: 33 instructions
+  loop 0x07290-0x07360: 14 instructions
+  loop 0x074b0-0x076b0: 33 instructions
+  ######## _Z16mma12_tma_kernelILi16ELi2EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi
+  whole kernel: 2768 instructions
+  loop 0x00c20-0x0a250: 2404 instructions
+  loop 0x00d80-0x082b0: 1876 instructions
+  loop 0x00e10-0x03d70: 759 instructions
+  loop 0x00f60-0x0a290: 2356 instructions
+  loop 0x01380-0x01ae0: 119 instructions
+  loop 0x02150-0x0a300: 2076 instructions
+  loop 0x02190-0x0a370: 2079 instructions
+  loop 0x02280-0x0a3e0: 2071 instructions
+  loop 0x02720-0x0a420: 2001 instructions
+  loop 0x02af0-0x03250: 119 instructions
+  loop 0x03d10-0x0a470: 1655 instructions
+  loop 0x03ef0-0x0a4b0: 1629 instructions
+  loop 0x04310-0x04a70: 119 instructions
+  ######## _Z16mma12_tma_kernelILi32ELi2EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi
+  whole kernel: 3288 instructions
+  loop 0x00c30-0x0c2d0: 2923 instructions
+  loop 0x00dd0-0x0a350: 2393 instructions
+  loop 0x00e60-0x03dd0: 760 instructions
+  loop 0x00fb0-0x0c310: 2871 instructions
+  loop 0x013e0-0x01b40: 119 instructions
+  loop 0x021b0-0x0c380: 2590 instructions
+  loop 0x021f0-0x0c3f0: 2593 instructions
+  loop 0x022e0-0x0c460: 2585 instructions
+  loop 0x02780-0x0c4a0: 2515 instructions
+  loop 0x02b50-0x032b0: 119 instructions
+  loop 0x03d70-0x0c4f0: 2169 instructions
+  loop 0x03f50-0x0c530: 2143 instructions
+  loop 0x04360-0x04ac0: 119 instructions
+  ######## _Z16mma12_tma_kernelILi64ELi2EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi
+  whole kernel: 3800 instructions
+  loop 0x00c40-0x0e280: 3429 instructions
+  loop 0x00e60-0x0c2f0: 2890 instructions
+  loop 0x00ef0-0x03e50: 759 instructions
+  loop 0x01040-0x0e2c0: 3369 instructions
+  loop 0x01460-0x01bc0: 119 instructions
+  loop 0x02230-0x0e330: 3089 instructions
+  loop 0x02270-0x0e3a0: 3092 instructions
+  loop 0x02360-0x0e410: 3084 instructions
+  loop 0x02800-0x0e450: 3014 instructions
+  loop 0x02bd0-0x03330: 119 instructions
+  loop 0x03df0-0x0e4a0: 2668 instructions
+  loop 0x03fd0-0x0e4e0: 2642 instructions
+  loop 0x043f0-0x04b70: 121 instructions
+  ######## _Z16mma12_tma_kernelILi96ELi2EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi
+  whole kernel: 4272 instructions
+  loop 0x00cc0-0x10040: 3897 instructions
+  loop 0x00f40-0x0dfb0: 3336 instructions
+  loop 0x00fd0-0x03ec0: 752 instructions
+  loop 0x01120-0x10080: 3831 instructions
+  loop 0x01510-0x01c90: 121 instructions
+  loop 0x022f0-0x100f0: 3553 instructions
+  loop 0x02330-0x10160: 3556 instructions
+  loop 0x02420-0x101d0: 3548 instructions
+  loop 0x028c0-0x10210: 3478 instructions
+  loop 0x02c60-0x033e0: 121 instructions
+  loop 0x03e60-0x10260: 3137 instructions
+  loop 0x04040-0x102a0: 3111 instructions
+  loop 0x04430-0x04bc0: 122 instructions
+  ######## _Z16mma12_tma_kernelILi128ELi2EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi
+  whole kernel: 4840 instructions
+  loop 0x00c00-0x123b0: 4476 instructions
+  loop 0x00f00-0x10400: 3921 instructions
+  loop 0x00f90-0x03de0: 742 instructions
+  loop 0x010c0-0x123f0: 4404 instructions
+  loop 0x014a0-0x01c00: 119 instructions
+  loop 0x02260-0x12460: 4129 instructions
+  loop 0x022a0-0x124d0: 4132 instructions
+  loop 0x02390-0x12540: 4124 instructions
+  loop 0x02810-0x12580: 4056 instructions
+  loop 0x02ba0-0x03300: 119 instructions
+  loop 0x03d80-0x125d0: 3718 instructions
+  loop 0x03f40-0x12610: 3694 instructions
+  loop 0x04330-0x04ab0: 121 instructions
+  ######## _Z16mma12_tma_kernelILi112ELi2EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi
+  whole kernel: 4576 instructions
+  loop 0x00ca0-0x11350: 4204 instructions
+  loop 0x00f60-0x0f2e0: 3641 instructions
+  loop 0x00ff0-0x03ea0: 748 instructions
+  loop 0x01120-0x11390: 4136 instructions
+  loop 0x01510-0x01c90: 121 instructions
+  loop 0x022f0-0x11400: 3858 instructions
+  loop 0x02330-0x11470: 3861 instructions
+  loop 0x02420-0x114e0: 3853 instructions
+  loop 0x028a0-0x11520: 3785 instructions
+  loop 0x02c40-0x033c0: 121 instructions
+  loop 0x03e40-0x11570: 3444 instructions
+  loop 0x04000-0x115b0: 3420 instructions
+  loop 0x043f0-0x04b80: 122 instructions
+  ######## _Z19mma_gemm_big_kernelI6TieredLi4ELi4ELi3ELi2ELb1EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 19440 instructions
+  loop 0x002b0-0x00410: 23 instructions
+  loop 0x00bb0-0x48d00: 18454 instructions
+  loop 0x014e0-0x02520: 261 instructions
+  loop 0x3ff90-0x404d0: 85 instructions
+  loop 0x418b0-0x48c40: 1850 instructions
+  loop 0x43a00-0x48d90: 1338 instructions
+  loop 0x43e10-0x49060: 1318 instructions
+  loop 0x43e60-0x490f0: 1322 instructions
+  loop 0x43ed0-0x447c0: 144 instructions
+  loop 0x44200-0x494c0: 1325 instructions
+  loop 0x44a30-0x49920: 1264 instructions
+  loop 0x44bd0-0x49a50: 1257 instructions
+  loop 0x44c30-0x49af0: 1261 instructions
+  ######## _Z19mma_gemm_big_kernelI6TieredLi8ELi4ELi2ELi2ELb1EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 20800 instructions
+  loop 0x00480-0x005e0: 23 instructions
+  loop 0x00e30-0x4e1d0: 19771 instructions
+  loop 0x014f0-0x02730: 293 instructions
+  loop 0x43660-0x43c00: 91 instructions
+  loop 0x45b30-0x4e0d0: 2139 instructions
+  loop 0x48de0-0x4e270: 1354 instructions
+  loop 0x49200-0x4e540: 1333 instructions
+  loop 0x49240-0x4e5e0: 1339 instructions
+  loop 0x49290-0x49ba0: 146 instructions
+  loop 0x495d0-0x4e990: 1341 instructions
+  loop 0x49e10-0x4edf0: 1279 instructions
+  loop 0x49fb0-0x4ef30: 1273 instructions
+  loop 0x4a010-0x4efd0: 1277 instructions
+  ######## _Z19mma_gemm_big_kernelI6TieredLi8ELi4ELi3ELi2ELb1EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 20856 instructions
+  loop 0x00480-0x005e0: 23 instructions
+  loop 0x00e30-0x4e520: 19824 instructions
+  loop 0x014f0-0x027a0: 300 instructions
+  loop 0x438d0-0x43e70: 91 instructions
+  loop 0x45df0-0x4e420: 2148 instructions
+  loop 0x49170-0x4e5c0: 1350 instructions
+  loop 0x49590-0x4e890: 1329 instructions
+  loop 0x495d0-0x4e930: 1335 instructions
+  loop 0x49620-0x49f30: 146 instructions
+  loop 0x49960-0x4ece0: 1337 instructions
+  loop 0x4a1a0-0x4f140: 1275 instructions
+  loop 0x4a340-0x4f280: 1269 instructions
+  loop 0x4a3a0-0x4f320: 1273 instructions
+  ######## _Z19mma_gemm_big_kernelI6TieredLi4ELi4ELi3ELi2ELb0EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 4088 instructions
+  loop 0x000b0-0x00210: 23 instructions
+  loop 0x00b10-0x01860: 214 instructions
+  loop 0x07400-0x0d310: 1522 instructions
+  loop 0x08360-0x0d3b0: 1286 instructions
+  loop 0x08760-0x0d670: 1266 instructions
+  loop 0x087a0-0x0d700: 1271 instructions
+  loop 0x08820-0x090e0: 141 instructions
+  loop 0x08b60-0x0daa0: 1269 instructions
+  loop 0x09360-0x0def0: 1210 instructions
+  loop 0x09500-0x0e010: 1202 instructions
+  loop 0x09560-0x0e0a0: 1205 instructions
+  loop 0x09b80-0x0e110: 1114 instructions
+  loop 0x09fd0-0x0a270: 43 instructions
+  ######## _Z19mma_gemm_big_kernelI6TieredLi4ELi4ELi2ELi1ELb0EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 2920 instructions
+  loop 0x000b0-0x00210: 23 instructions
+  loop 0x00b10-0x017d0: 205 instructions
+  loop 0x07550-0x0ade0: 906 instructions
+  loop 0x08b40-0x09380: 133 instructions
+  loop 0x09750-0x0aeb0: 375 instructions
+  loop 0x09dc0-0x0af00: 277 instructions
+  loop 0x0a210-0x0a4b0: 43 instructions
+  loop 0x0a550-0x0b000: 172 instructions
+  loop 0x0ab50-0x0b590: 165 instructions
+  loop 0x0b5a0-0x0b5a0: 1 instructions
+  ######## _Z19mma_gemm_big_kernelI3NibLi4ELi4ELi3ELi2ELb1EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 18048 instructions
+  loop 0x00920-0x45c40: 17715 instructions
+  loop 0x01270-0x02290: 259 instructions
+  loop 0x3f1f0-0x3f6f0: 81 instructions
+  loop 0x408b0-0x45b80: 1326 instructions
+  loop 0x42b70-0x433a0: 132 instructions
+  loop 0x43520-0x45cb0: 634 instructions
+  loop 0x43630-0x43800: 30 instructions
+  loop 0x43c30-0x45f40: 562 instructions
+  loop 0x44740-0x44f70: 132 instructions
+  loop 0x450f0-0x45fb0: 237 instructions
+  loop 0x45200-0x453d0: 30 instructions
+  loop 0x457e0-0x46220: 165 instructions
+  loop 0x46700-0x46700: 1 instructions
+  ######## _Z19mma_gemm_big_kernelI3NibLi8ELi4ELi2ELi2ELb1EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 19408 instructions
+  loop 0x00b70-0x4b190: 19043 instructions
+  loop 0x01200-0x02410: 290 instructions
+  loop 0x429a0-0x42ed0: 84 instructions
+  loop 0x44890-0x4b090: 1665 instructions
+  loop 0x48080-0x488c0: 133 instructions
+  loop 0x48a40-0x4b200: 637 instructions
+  loop 0x48b30-0x48d10: 31 instructions
+  loop 0x49140-0x4b490: 566 instructions
+  loop 0x49c30-0x4a470: 133 instructions
+  loop 0x4a5f0-0x4b500: 242 instructions
+  loop 0x4a6e0-0x4a8c0: 31 instructions
+  loop 0x4acd0-0x4b770: 171 instructions
+  loop 0x4bc50-0x4bc50: 1 instructions
+  ######## _Z19mma_gemm_big_kernelI3NibLi8ELi4ELi3ELi2ELb1EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 19440 instructions
+  loop 0x00b70-0x4b340: 19070 instructions
+  loop 0x01200-0x02490: 298 instructions
+  loop 0x42a60-0x42f90: 84 instructions
+  loop 0x44950-0x4b240: 1680 instructions
+  loop 0x48230-0x48a70: 133 instructions
+  loop 0x48bf0-0x4b3b0: 637 instructions
+  loop 0x48ce0-0x48ec0: 31 instructions
+  loop 0x492f0-0x4b640: 566 instructions
+  loop 0x49de0-0x4a620: 133 instructions
+  loop 0x4a7a0-0x4b6b0: 242 instructions
+  loop 0x4a8b0-0x4aa90: 31 instructions
+  loop 0x4aea0-0x4b920: 169 instructions
+  loop 0x4be00-0x4be00: 1 instructions
+  ######## _Z19mma_gemm_big_kernelI3NibLi4ELi4ELi3ELi2ELb0EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 2984 instructions
+  loop 0x008e0-0x01630: 214 instructions
+  loop 0x06df0-0x0b390: 1115 instructions
+  loop 0x08380-0x08bb0: 132 instructions
+  loop 0x08d30-0x0b410: 623 instructions
+  loop 0x08e30-0x09000: 30 instructions
+  loop 0x09430-0x0b6a0: 552 instructions
+  loop 0x09f50-0x0a7b0: 135 instructions
+  loop 0x0a930-0x0b710: 223 instructions
+  loop 0x0aa30-0x0ac00: 30 instructions
+  loop 0x0b010-0x0b980: 152 instructions
+  loop 0x0b990-0x0b990: 1 instructions
+  ######## _Z19mma_gemm_big_kernelI3NibLi4ELi4ELi2ELi1ELb0EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 2704 instructions
+  loop 0x008e0-0x015a0: 205 instructions
+  loop 0x070b0-0x0a4f0: 837 instructions
+  loop 0x088d0-0x09100: 132 instructions
+  loop 0x092a0-0x0a570: 302 instructions
+  loop 0x095c0-0x09b50: 90 instructions
+  loop 0x0a240-0x0a7f0: 92 instructions
+  loop 0x0a800-0x0a800: 1 instructions
+  ######## _Z19mma_gemm_big_kernelI3NibLi8ELi4ELi2ELi2ELb0EEvT_llllPK13__nv_bfloat16S4_PS2_Pf8MoePairs
+  whole kernel: 3272 instructions
+  loop 0x007a0-0x01a10: 296 instructions
+  loop 0x07810-0x0c580: 1240 instructions
+  loop 0x09530-0x09d70: 133 instructions
+  loop 0x09ef0-0x0c600: 626 instructions
+  loop 0x09fe0-0x0a1c0: 31 instructions
+  loop 0x0a5f0-0x0c890: 555 instructions
+  loop 0x0b110-0x0b940: 132 instructions
+  loop 0x0bac0-0x0c900: 229 instructions
+  loop 0x0bbf0-0x0bdc0: 30 instructions
+  loop 0x0c1d0-0x0cb70: 155 instructions
+  loop 0x0cb80-0x0cb80: 1 instructions
+  ######## _Z17mma_unpack_kernelI6TieredLb1ELb0EEvT_lllPtPKi
+  whole kernel: 1080 instructions
+  loop 0x00160-0x002c0: 23 instructions
+  loop 0x00f60-0x016d0: 120 instructions
+  loop 0x01ae0-0x03710: 452 instructions
+  loop 0x02310-0x023e0: 14 instructions
+  loop 0x02440-0x026f0: 44 instructions
+  loop 0x02790-0x037f0: 263 instructions
+  loop 0x02df0-0x03d80: 250 instructions
+  loop 0x042d0-0x042d0: 1 instructions
+  ######## _Z17mma_unpack_kernelI6TieredLb0ELb0EEvT_lllPtPKi
+  whole kernel: 1048 instructions
+  loop 0x000c0-0x00220: 23 instructions
+  loop 0x00f00-0x01670: 120 instructions
+  loop 0x01a40-0x034d0: 426 instructions
+  loop 0x02150-0x02220: 14 instructions
+  loop 0x02280-0x02530: 44 instructions
+  loop 0x025d0-0x035b0: 255 instructions
+  loop 0x02b90-0x03b40: 252 instructions
+  loop 0x04080-0x04080: 1 instructions
+  ######## _Z17mma_unpack_kernelI6TieredLb0ELb1EEvT_lllPtPKi
+  whole kernel: 1152 instructions
+  loop 0x000c0-0x00220: 23 instructions
+  loop 0x004e0-0x039b0: 846 instructions
+  loop 0x00f70-0x01810: 139 instructions
+  loop 0x01bf0-0x03aa0: 492 instructions
+  loop 0x02310-0x03af0: 383 instructions
+  loop 0x02770-0x02a10: 43 instructions
+  loop 0x02ab0-0x03c10: 279 instructions
+  loop 0x03120-0x041c0: 267 instructions
+  loop 0x04740-0x04740: 1 instructions
+  ######## _Z17mma_unpack_kernelI3NibLb1ELb0EEvT_lllPtPKi
+  whole kernel: 552 instructions
+  loop 0x00920-0x00bb0: 42 instructions
+  loop 0x00c20-0x01460: 133 instructions
+  loop 0x02190-0x02190: 1 instructions
+  ######## _Z17mma_unpack_kernelI3NibLb0ELb0EEvT_lllPtPKi
+  whole kernel: 536 instructions
+  loop 0x008a0-0x00b30: 42 instructions
+  loop 0x00b80-0x013c0: 133 instructions
+  loop 0x02090-0x02090: 1 instructions
+  ######## _Z17mma_unpack_kernelI3NibLb0ELb1EEvT_lllPtPKi
+  whole kernel: 608 instructions
+  loop 0x00310-0x01fe0: 462 instructions
+  loop 0x01000-0x01840: 133 instructions
+  loop 0x02530-0x02530: 1 instructions

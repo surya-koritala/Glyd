@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/root/w/before/glyd_gpu/format.py", line 203, in read_manifest
+    raise ValueError(f"{path}: format {m.get('format')!r}; this glyd reads {' and '.join(FORMATS)}")
+ValueError: /root/w/save-after/glyd.json: format 'glyd-v5'; this glyd reads glyd-v1 and glyd-v2 and glyd-v3 and glyd-v4

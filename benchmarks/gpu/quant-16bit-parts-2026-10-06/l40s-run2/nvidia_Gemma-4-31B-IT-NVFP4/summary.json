@@ -1,0 +1,71 @@
+{
+ "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+ "args": {
+  "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+  "out": "/root/results/nvidia_Gemma-4-31B-IT-NVFP4",
+  "util": 0.9,
+  "mml": 8192,
+  "dtype": "auto",
+  "max_num_seqs": null,
+  "layout": "auto",
+  "steps": "glyd",
+  "prompt": 512,
+  "new": 256,
+  "users": "1,32",
+  "reps": 2,
+  "no_image": false,
+  "fallback_layout": null
+ },
+ "glyd": {
+  "weights_gib": 25.25,
+  "kv_tokens": 28104,
+  "kv_gib": 11.81,
+  "concurrency": 3.43,
+  "tps": {
+   "1": {
+    "median": 26.09,
+    "runs": [
+     26.09,
+     26.08
+    ]
+   },
+   "32": {
+    "median": 421.96,
+    "runs": [
+     422.7,
+     421.21
+    ]
+   }
+  },
+  "quantization": "glyd",
+  "quant_config": "GlydQuantModelOptNvFp4Config",
+  "glyd_key": {
+   "layout": "auto",
+   "verify": true,
+   "kv": "off"
+  },
+  "start_s": 273.2
+ },
+ "inventory": {
+  "packed_count": 122,
+  "verified_count": 122,
+  "packed_bf16_bytes": 19994247168,
+  "packed_pack_bytes": 13463557369,
+  "saved_bytes": 6530689799,
+  "gpu_tensor_bytes": 26725420963,
+  "products_checked": 4,
+  "products_worst_rel_error": 0.003194817341864109,
+  "left_16bit_top": {
+   "ReplicatedLinear / UnquantizedLinearMethod / weight / bfloat16": {
+    "tensors": 190,
+    "bytes": 1102270464,
+    "example": "vision_tower.encoder.layers.0.self_attn.q_proj.linear.weight"
+   },
+   "Gemma4VisionPatchEmbedder / NoneType / position_embedding_table / bfloat16": {
+    "tensors": 1,
+    "bytes": 47185920,
+    "example": "vision_tower.patch_embedder.position_embedding_table"
+   }
+  }
+ }
+}

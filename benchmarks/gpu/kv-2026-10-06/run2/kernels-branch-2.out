@@ -1,0 +1,97 @@
+PASS format: every bit pattern of every window of 8 values of exponent >> 1 (base 0 to 120: every exponent), K and V, back bit for bit
+PASS format: every 16-bit pattern as an exception (NaN, infinity, denormals, zeros), ~2% of 5,242,880 values, K and V, back bit for bit, in the pages' own arenas of 1,023 entries (most entries a page was given 644, 98,689 entries)
+PASS format: every 16-bit pattern as an exception (NaN, infinity, denormals, zeros), ~2% of 5,242,880 values, K and V, back bit for bit, in arenas of 15 entries and 6,000 chunks of the escape pool (most entries a page was given 644, 98,689 entries, 1524 chunks taken at most, 160 pages took one)
+PASS after the first write: the escape pool's books agree with the pages' (1524 chunks taken by its bitmap, 1524 by its owners, 1524 named by the directories, status 1524; each owned by its page)
+PASS recycling and rewrites: 24 sequences in 176 steps of mixed sizes (128 rewrites, padding slots) into pages of a previous owner's random bytes, every token the last value written (most entries a page was given 15, overflow 0)
+PASS recycling and rewrites with 3 KV heads: 4 sequences in 62 steps (23 rewrites): every token the last value written (most entries a page was given 4, overflow 0)
+PASS recycling and rewrites with 16 KV heads: 4 sequences in 52 steps (16 rewrites): every token the last value written (most entries a page was given 14, overflow 0)
+PASS recycling and rewrites with 32 KV heads: 4 sequences in 51 steps (16 rewrites): every token the last value written (most entries a page was given 34, overflow 0)
+PASS recycling with the pool (8 heads): the escape pool's books agree with the pages' (426 chunks taken by its bitmap, 426 by its owners, 426 named by the directories, status 426; each owned by its page)
+PASS recycling and rewrites through the escape pool (8 KV heads, arenas of 15 entries, exceptions in 0.4% of the values): 12 sequences in 95 steps (51 rewrites): every token the last value written (most entries a page was given 240, 269 pages took a chunk, 429 chunks taken at most, overflow 0)
+PASS recycling with the pool (3 heads): the escape pool's books agree with the pages' (180 chunks taken by its bitmap, 180 by its owners, 180 named by the directories, status 180; each owned by its page)
+PASS recycling and rewrites through the escape pool (3 KV heads, arenas of 3 entries, exceptions in 0.4% of the values): 12 sequences in 71 steps (40 rewrites): every token the last value written (most entries a page was given 81, 224 pages took a chunk, 182 chunks taken at most, overflow 0)
+PASS recycling with the pool (16 heads): the escape pool's books agree with the pages' (845 chunks taken by its bitmap, 845 by its owners, 845 named by the directories, status 845; each owned by its page)
+PASS recycling and rewrites through the escape pool (16 KV heads, arenas of 15 entries, exceptions in 0.4% of the values): 12 sequences in 117 steps (70 rewrites): every token the last value written (most entries a page was given 586, 322 pages took a chunk, 849 chunks taken at most, overflow 0)
+PASS recycling with the pool (8 heads): the escape pool's books agree with the pages' (16 chunks taken by its bitmap, 16 by its owners, 16 named by the directories, status 16; each owned by its page)
+PASS recycling with the raw pool (8 heads): the raw pool's books agree with the pages' (208 slabs taken by its bitmap, 208 by its owners, 208 named by the raw pages, status 208; each owned by its page)
+PASS recycling and rewrites through raw pages (8 KV heads, exceptions in 3% of the values, 20 chunks and 400 slabs): 12 sequences in 95 steps (51 rewrites): every token the last value written (273 pages made raw, 208 slabs taken at the end, 286 pages took a chunk, none void)
+PASS recycling with the pool (3 heads): the escape pool's books agree with the pages' (19 chunks taken by its bitmap, 19 by its owners, 19 named by the directories, status 19; each owned by its page)
+PASS recycling with the raw pool (3 heads): the raw pool's books agree with the pages' (173 slabs taken by its bitmap, 173 by its owners, 173 named by the raw pages, status 173; each owned by its page)
+PASS recycling and rewrites through raw pages (3 KV heads, exceptions in 3% of the values, 20 chunks and 400 slabs): 12 sequences in 71 steps (40 rewrites): every token the last value written (220 pages made raw, 173 slabs taken at the end, 235 pages took a chunk, none void)
+PASS decode steps, the pages' own arenas of 63 entries (8 KV heads, exceptions in 0.04% of the values): 12 sequences a token a step in 739 steps (744 rewrites of one token), padding slots, pages of a previous owner's bytes: every token the last value written, with the decode step's path and without (the same 3,615 entries, overflow 0)
+PASS decode steps (8 heads, lean): the escape pool's books agree with the pages' (485 chunks taken by its bitmap, 485 by its owners, 485 named by the directories, status 485; each owned by its page)
+PASS decode steps (8 heads, general): the escape pool's books agree with the pages' (485 chunks taken by its bitmap, 485 by its owners, 485 named by the directories, status 485; each owned by its page)
+PASS decode steps, the escape pool (8 KV heads, exceptions in 0.4% of the values): 12 sequences a token a step in 739 steps (744 rewrites of one token), padding slots, pages of a previous owner's bytes: every token the last value written, with the decode step's path and without (the same 32,325 entries, overflow 0)
+PASS decode steps (3 heads, lean): the escape pool's books agree with the pages' (246 chunks taken by its bitmap, 246 by its owners, 246 named by the directories, status 246; each owned by its page)
+PASS decode steps (3 heads, general): the escape pool's books agree with the pages' (246 chunks taken by its bitmap, 246 by its owners, 246 named by the directories, status 246; each owned by its page)
+PASS decode steps, the escape pool, 3 heads (3 KV heads, exceptions in 0.4% of the values): 12 sequences a token a step in 794 steps (840 rewrites of one token), padding slots, pages of a previous owner's bytes: every token the last value written, with the decode step's path and without (the same 12,668 entries, overflow 0)
+PASS decode steps (16 heads, lean): the escape pool's books agree with the pages' (1217 chunks taken by its bitmap, 1217 by its owners, 1217 named by the directories, status 1217; each owned by its page)
+PASS decode steps (16 heads, general): the escape pool's books agree with the pages' (1217 chunks taken by its bitmap, 1217 by its owners, 1217 named by the directories, status 1217; each owned by its page)
+PASS decode steps, the escape pool, 16 heads (16 KV heads, exceptions in 0.4% of the values): 12 sequences a token a step in 779 steps (1025 rewrites of one token), padding slots, pages of a previous owner's bytes: every token the last value written, with the decode step's path and without (the same 86,566 entries, overflow 0)
+PASS decode steps, raw pages (8 KV heads, exceptions in 3% of the values): 12 sequences a token a step in 739 steps (744 rewrites of one token), padding slots, pages of a previous owner's bytes: every token the last value written, with the decode step's path and without (218 and 219 pages made raw, none void)
+PASS an arena that is full and no pools: the pages that overflow are void (16 of 16), counted and named in the status's ring (blocks [0, 1, 2, 3, 4, 5] ...), none raw, 14,526 entries found no place
+PASS heavy pages: the escape pool's books agree with the pages' (1138 chunks taken by its bitmap, 1138 by its owners, 1138 named by the directories, status 1138; each owned by its page)
+PASS the escape pool: 120 pages of ~650 exceptions each (arenas of 15) take 1138 chunks (120 pages took one, 73,918 entries) and read back bit for bit; none dropped
+PASS the same pages written again with light values: the escape pool's books agree with the pages' (0 chunks taken by its bitmap, 0 by its owners, 0 named by the directories, status 0; each owned by its page)
+PASS the escape pool: the same pages written again from their first token with ordinary values give their chunks back (1138 taken before, 0 after) and read back bit for bit
+PASS gather: 120 pages (about 650 exceptions each, in chunks of the escape pool) decoded into shuffled blocks of a paged bf16 cache, the keys and values where vLLM's FlashAttention reads them, bit for bit; the blocks that are not named untouched
+PASS a pool that ran out: the escape pool's books agree with the pages' (64 chunks taken by its bitmap, 64 by its owners, 64 named by the directories, status 64; each owned by its page)
+PASS the escape pool: 64 chunks for 120 pages that need ten each run out: 65,172 entries found no place, 120 pages void and named in the ring, 64 chunks taken at most, none lost
+PASS before the stale directories are written over: the escape pool's books agree with the pages' (1138 chunks taken by its bitmap, 1138 by its owners, 1138 named by the directories, status 1138; each owned by its page)
+PASS the escape pool: directories of recycled pages that name chunks of other pages (3058 words) free none of them: the first half still reads back bit for bit and 1138 of 1138 chunks are taken
+PASS raw pages: 48 pages of random 16-bit patterns (every value an exception: 1,423,362 found no place) are made raw (48), take a slab each (48), and read back bit for bit, K and V; none void
+PASS raw pages: the raw pool's books agree with the pages' (48 slabs taken by its bitmap, 48 by its owners, 48 named by the raw pages, status 48; each owned by its page)
+PASS raw pages: the escape pool's books agree with the pages' (0 chunks taken by its bitmap, 0 by its owners, 0 named by the directories, status 0; each owned by its page)
+PASS gather: 48 raw pages decoded into shuffled blocks of a paged bf16 cache, bit for bit
+PASS raw pages written again with ordinary values: the raw pool's books agree with the pages' (0 slabs taken by its bitmap, 0 by its owners, 0 named by the raw pages, status 0; each owned by its page)
+PASS raw pages: the same pages written again from their first token with ordinary values give their slabs back (48 taken before, 0 after), are no longer raw, and read back bit for bit
+PASS raw pages: 24 pages written a token at a time, 40 heavy tokens among them: 18 of the 18 pages that hold one are made raw (by the token, with the tokens before it in the page decoded), every token written so far read back bit for bit after each step; none void
+PASS pages made raw by a later token: the raw pool's books agree with the pages' (18 slabs taken by its bitmap, 18 by its owners, 18 named by the raw pages, status 18; each owned by its page)
+PASS pages made raw by a later token: the escape pool's books agree with the pages' (0 chunks taken by its bitmap, 0 by its owners, 0 named by the directories, status 0; each owned by its page)
+PASS raw pages: token 5 of every page written again (inside the raw ones): the page reads back bit for bit, none made raw again
+PASS the pages written again from their first token: the raw pool's books agree with the pages' (0 slabs taken by its bitmap, 0 by its owners, 0 named by the raw pages, status 0; each owned by its page)
+PASS raw pages: every page written again from its first token with ordinary values: no slab is taken, bit for bit
+PASS raw pool too small: 20 raw pages for 8 slabs: 8 are raw and read back bit for bit, 12 are void and named in the ring, 8 slabs taken
+PASS a raw pool that ran out: the raw pool's books agree with the pages' (8 slabs taken by its bitmap, 8 by its owners, 8 named by the raw pages, status 8; each owned by its page)
+PASS raw pages: 120 pages of ~650 exceptions for 64 chunks: the escape pool ran dry (65,171 entries found no place, 64 chunks taken at most), 120 pages were made raw instead and every page reads back bit for bit; none void
+PASS pages that ran the chunks out: the escape pool's books agree with the pages' (0 chunks taken by its bitmap, 0 by its owners, 0 named by the directories, status 0; each owned by its page)
+PASS pages that ran the chunks out: the raw pool's books agree with the pages' (120 slabs taken by its bitmap, 120 by its owners, 120 named by the raw pages, status 120; each owned by its page)
+PASS void pages: a block whose pages are void in 3 layers is named in the ring once (24 void pages, 8 blocks named), and once again after its next life (16 named, 40 void pages)
+PASS raw pages: a block with a raw page in 3 layers is named in the raw ring once (24 raw pages, 8 blocks named, none in the void ring), and once again after its next life (16 named, 40 raw pages)
+PASS rings of other sizes (status words 16 + 2 x ring): 20 blocks made void and raw in rings of 6 places (wrapping: the head counts every block, the places hold some, the other ring's are untouched) and of 5,000 (all named once): void ring of 6: head 20, 6 places hold a block; raw ring of 6: head 20, 6 places hold a block; void ring of 5000: head 20, 20 places hold a block; raw ring of 5000: head 20, 20 places hold a block
+PASS released blocks: 6 of 8 blocks cleared in 3 layers give back 18 of 24 slabs (books: 6 taken by the bitmap, 6 by the status), their counts are zero and their bits cleared, the 2 others stay raw and read back as written, and the cleared blocks written again read back bit for bit
+PASS before the stale raw directories are written over: the raw pool's books agree with the pages' (12 slabs taken by its bitmap, 12 by its owners, 12 named by the raw pages, status 12; each owned by its page)
+PASS raw pages: directories of recycled pages that name slabs of other pages (384 words) free none of them: the first half still reads back bit for bit and 12 of 12 slabs are taken
+PASS decode attention: 10 sequences of 1 to 2,049 tokens (the last page partly written, the bytes past it a previous owner's), 1 to 8 query heads a KV head: within 0.0052 of an fp32 reference (at most 0.012 of the output's largest)
+PASS decode attention with 2 and 16 KV heads (4 query heads each): within 0.0044 of an fp32 reference
+PASS decode attention over pages whose exceptions (0.4% of the values) run past the header's arena into the escape pool's chunks, 8 and 2 KV heads: within 0.0040 of an fp32 reference
+PASS decode attention over pages with heavy tokens (4% of the tokens: every value far from its window), the pages that hold one raw (a raw pool of slabs), 8 and 2 KV heads: within 0.0050 of an fp32 reference
+PASS decode attention with the plan's CTA count a sequence (the most splits) fixed at 1, 2, 3, 7 and 64 (a sequence of 1 to 4,097 tokens has at most one CTA for 16 pages): within 0.0028 of an fp32 reference
+PASS decode attention's plan is a sequence's own: 8 sequences of 1 to 4,100 tokens, each alone, in a batch of 8 and in a batch padded to 13 with rows of no tokens, at 5 values of splits: the same bits (40 sequences' outputs compared)
+PASS decode attention: rows of no tokens (their pages 2^30, nowhere) give zeros
+PASS decode attention at 3 values of the plan's least pages a CTA (16, 8, 4), 3 of its least CTAs a sequence (1, 4, 16) and 6 of splits (1 to 300): a sequence's bits its own, alone, in a batch of 8 and in a batch padded with 5 rows of no tokens (288 outputs compared)
+PASS decode attention: the last CTA's merge of the partials gives the bits of the merge by a kernel of its own, at those plans
+PASS decode attention: each warp loading its next page ahead (GLYD_KV_PIPE=1) or not (the default) gives the same bits, at those plans
+PASS decode attention with 8 and 4 pages a CTA at the least: within 0.0027 of an fp32 reference
+PASS decode attention with 16 CTAs a sequence at the least (4 pages a CTA at the fewest): within 0.0027 of an fp32 reference
+PASS decode attention's CTAs a sequence are the plan's (at least 16 pages a CTA, at most the splits, and with a floor of 1, 4 and 16 at least that many as far as 4 pages each), counted from the partials written, at 3 values of splits; the automatic floor on this GPU (128 SMs, 8 KV heads; 16 on a GPU of 100 SMs or more for a batch of few sequences, else 1): 1 rows 16, 2 rows 16, 3 rows 16, 4 rows 16, 8 rows 1
+PASS decode attention in a CUDA graph (splits 17, 8 rows), replayed on four steps' lengths, block tables and queries written into its tensors (rows shuffled, shorter, the last three of no tokens): the bits of a call of the same arguments
+PASS the write kernel in a CUDA graph, replayed on three steps' tokens and slots (the last tokens padding, slot -1): every token written reads back bit for bit
+PASS the staging put (5 shapes: 1-2,048 tokens, 1-8 heads, rows of a fused projection's output, slots -1 and past the cache skipped): the staging cache is the bits torch's index_copy leaves
+PASS head size 256: every 16-bit pattern as an exception, ~2% of 5,242,880 values, K and V, back bit for bit, in arenas of 1,023 entries (98,225 entries)
+PASS head size 256: every 16-bit pattern as an exception, ~2% of 5,242,880 values, K and V, back bit for bit, in arenas of 15 entries and 6,000 chunks of the escape pool (98,225 entries)
+PASS head size 256, after the first write: the escape pool's books agree with the pages' (1514 chunks taken by its bitmap, 1514 by its owners, 1514 named by the directories, status 1514; each owned by its page)
+PASS head size 256: pages with heavy tokens raw (90 pages made raw), back bit for bit
+PASS head size 256: the raw pool's books agree with the pages' (90 slabs taken by its bitmap, 90 by its owners, 90 named by the raw pages, status 90; each owned by its page)
+PASS head size 256: 160 pages (raw ones among them) decoded into shuffled blocks of the staging cache [blocks, 16, 4, 512], a head's keys and then its values whole: bit for bit, the other blocks untouched
+PASS head size 256: the staging put (4 shapes, slots -1 and past the cache skipped): the bits torch's index_copy leaves
+PASS head size 256: decode attention, 10 sequences of 1 to 2,049 tokens, 4 KV heads, 1 to 8 query heads a KV head: within 0.0044 of an fp32 reference
+PASS head size 256: decode attention with 1, 2 and 16 KV heads: within 0.0041 of an fp32 reference
+PASS head size 256: decode attention over pages whose exceptions (0.4% of the values) run into the escape pool's chunks: within 0.0001 of an fp32 reference
+PASS head size 256: decode attention over pages with heavy tokens (raw pages): within 0.0038 of an fp32 reference
+PASS head size 256: decode attention with the most splits fixed at 1, 2, 3, 7 and 64: within 0.0040 of an fp32 reference
+PASS head size 256: decode attention's bits a sequence's own, alone, in a batch of 8 and in a batch padded with 5 rows of no tokens (zeros), at 2 floors and 5 values of splits (80 outputs compared)
+PASS head size 256: the merge in the kernel or by a kernel of its own, and the next page loaded ahead or not, give the same bits
+PASS head size 256: decode attention in a CUDA graph (splits 17, 8 rows), replayed on four steps' lengths, block tables and queries: the bits of a call of the same arguments
+PASS torch's synchronization errors raise at copy to the host, .item(), blocking copy from pageable memory, torch.unique (4 of 4) and at none of the plan's sort, where, cumsum, scatter and a non-blocking copy
+check_vllm --kv: all passed (96 checks)

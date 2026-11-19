@@ -1,0 +1,6 @@
+--gpu-memory-utilization 0.92
+--max-model-len 124928
+--reasoning-parser gemma4
+--tool-call-parser gemma4
+GPU KV cache size: 147,784 tokens
+Model loading took 15.67 GiB

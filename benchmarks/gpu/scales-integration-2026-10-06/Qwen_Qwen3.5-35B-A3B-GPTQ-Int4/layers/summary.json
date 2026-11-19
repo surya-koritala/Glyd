@@ -1,0 +1,172 @@
+{
+ "model": "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
+ "args": {
+  "model": "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
+  "out": "/root/results/Qwen_Qwen3.5-35B-A3B-GPTQ-Int4/layers",
+  "cap": "/root/w/cap/Qwen_Qwen3.5-35B-A3B-GPTQ-Int4.pt",
+  "e2e": "bi",
+  "util": 0.85,
+  "mml": 4096,
+  "dtype": "bfloat16",
+  "max_num_seqs": 64,
+  "no_image": false
+ },
+ "moe": {
+  "calls": 200,
+  "differ": 96,
+  "not_told": 0,
+  "blocks": 40,
+  "examples": [
+   {
+    "name": "language_model.model.layers.2.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 41,
+     "of": 227328,
+     "max_abs": 6.103515625e-05
+    }
+   },
+   {
+    "name": "language_model.model.layers.3.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 2,
+     "of": 227328,
+     "max_abs": 7.62939453125e-06
+    }
+   },
+   {
+    "name": "language_model.model.layers.5.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 47,
+     "of": 227328,
+     "max_abs": 0.0001220703125
+    }
+   },
+   {
+    "name": "language_model.model.layers.6.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 10,
+     "of": 227328,
+     "max_abs": 3.0517578125e-05
+    }
+   },
+   {
+    "name": "language_model.model.layers.8.mlp",
+    "kind": "moe",
+    "phase": "prompts",
+    "call": 0,
+    "rows": 111,
+    "self_same": false,
+    "self_diff": {
+     "elements": 31,
+     "of": 227328,
+     "max_abs": 0.0001220703125
+    }
+   }
+  ],
+  "not_told_examples": []
+ },
+ "units": {
+  "linear": 410,
+  "embedding": 1,
+  "logits": 1,
+  "moe": 40
+ },
+ "layers": {
+  "calls": 1471,
+  "equal": 1471,
+  "layers": 382,
+  "packed_layers": 271,
+  "packed_calls": 915,
+  "packed_equal": 915,
+  "stock_self_same": 1471,
+  "glyd_repeat": 1471,
+  "errors": [],
+  "not_equal": [],
+  "packed_not_called": [],
+  "pass": true
+ },
+ "weights": {
+  "packed": 271,
+  "packed_equal": 271,
+  "other": 837,
+  "other_equal": 837,
+  "differ": [],
+  "stock_only": [],
+  "glyd_only": [],
+  "verified": 271,
+  "pass": true
+ },
+ "e2e": [
+  {
+   "mode": "bi",
+   "kernels": {
+    "stock": [
+     "[transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend=\"torchvision\"` instead of `use_fast=True`, or `backend=\"pil\"` instead of `use_fast=False`.",
+     "Initializing a V1 LLM engine (v0.30.0) with config: model='Qwen/Qwen3.5-35B-A3B-GPTQ-Int4', speculative_config=None, tokenizer='Qwen/Qwen3.5-35B-A3B-GPTQ-Int4', skip_tokenizer_init=False, tokenizer_mode=auto, revision=main, tokenizer_revision=main, trust_remote_code=False, dtype=torch.bfloat16, max_",
+     "[W1006 19:29:48.885650911 Context.cpp:597] Warning: torch.backends.cuda.preferred_blas_library is an experimental feature. If you see any error or unexpected behavior when this flag is set please file an issue on GitHub. (function operator())",
+     "world_size=1 rank=0 local_rank=0 distributed_init_method=file:///root/w/tmp/vllm_dist_adc20e3b88c6479f80d8105a6c066e24 backend=nccl",
+     "Using backend AttentionBackendEnum.FLASH_ATTN for vit attention",
+     "Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.",
+     "Using FlashInfer GDN prefill kernel (requested=auto, head_k_dim=128).",
+     "GDN decode kernel: cuda",
+     "Using 'HUMMING' WNA16 MoE backend.",
+     "Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'TRITON_ATTN', 'FLEX_ATTENTION'].",
+     "Using HummingIndexedExperts",
+     "Warming up Qwen GDN Triton kernels for model_type=qwen3_5_moe_text."
+    ],
+    "glyd": [
+     "[transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend=\"torchvision\"` instead of `use_fast=True`, or `backend=\"pil\"` instead of `use_fast=False`.",
+     "Initializing a V1 LLM engine (v0.30.0) with config: model='Qwen/Qwen3.5-35B-A3B-GPTQ-Int4', speculative_config=None, tokenizer='Qwen/Qwen3.5-35B-A3B-GPTQ-Int4', skip_tokenizer_init=False, tokenizer_mode=auto, revision=main, tokenizer_revision=main, trust_remote_code=False, dtype=torch.bfloat16, max_",
+     "[W1006 19:35:32.010326756 Context.cpp:597] Warning: torch.backends.cuda.preferred_blas_library is an experimental feature. If you see any error or unexpected behavior when this flag is set please file an issue on GitHub. (function operator())",
+     "world_size=1 rank=0 local_rank=0 distributed_init_method=file:///root/w/tmp/vllm_dist_377f1d7011e243058cc49d9796d920ed backend=nccl",
+     "Using backend AttentionBackendEnum.FLASH_ATTN for vit attention",
+     "Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.",
+     "Using FlashInfer GDN prefill kernel (requested=auto, head_k_dim=128).",
+     "GDN decode kernel: cuda",
+     "Using 'HUMMING' WNA16 MoE backend.",
+     "Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'TRITON_ATTN', 'FLEX_ATTENTION'].",
+     "Using HummingIndexedExperts",
+     "Warming up Qwen GDN Triton kernels for model_type=qwen3_5_moe_text."
+    ]
+   },
+   "stock_self": {
+    "tokens": null,
+    "logprobs": null,
+    "long_ids": null,
+    "long_logprobs": null,
+    "image_tokens": null,
+    "image_logprobs": null
+   },
+   "stock_deterministic": true,
+   "glyd": {
+    "tokens": null,
+    "logprobs": null,
+    "long_ids": null,
+    "long_logprobs": null,
+    "image_tokens": null,
+    "image_logprobs": null
+   },
+   "equal": true
+  }
+ ]
+}

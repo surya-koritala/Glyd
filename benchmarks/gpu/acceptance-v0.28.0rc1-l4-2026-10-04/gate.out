@@ -1,0 +1,17 @@
+Cuda compilation tools, release 13.4, V13.4.92
+Build cuda_13.4.r13.4/compiler.38855100_0
+/home/ubuntu/harden-tools/cuobjdump/nvidia/cu13/bin/cuobjdump
+/usr/bin/c++filt
+/usr/bin/readelf
+/usr/bin/nm
+sha256 ok  glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_aarch64.whl 30046755 bytes fafc9dcf57589d388c14e5d2a6ab237161b516a484acc806114a8fc7f04e5092 (PyPI's)
+sha256 ok  glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_x86_64.whl 30298237 bytes 89ce40b146b1927e01d1a7f9a6078635c633d055ad21ddb6a448e76f92307bbe (PyPI's)
+== python3 glyd-gpu-py/check_wheel.py glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_x86_64.whl --version 0.28.0rc1 --platform manylinux_2_28_x86_64 --source glyd-gpu-py/glyd_gpu --header glyd-gpu-py/include/glyd_gpu.h --license gpu/LICENSE --summary
+ok   glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_x86_64.whl
+  0 lines: 
+== x86_64: exit 0
+== python3 glyd-gpu-py/check_wheel.py glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_aarch64.whl --version 0.28.0rc1 --platform manylinux_2_28_aarch64 --source glyd-gpu-py/glyd_gpu --header glyd-gpu-py/include/glyd_gpu.h --license gpu/LICENSE --summary
+ok   glyd_gpu-0.28.0rc1-cp310-abi3-manylinux_2_28_aarch64.whl
+  0 lines: 
+== aarch64: exit 0
+GATE DONE: x86_64=0 aarch64=0

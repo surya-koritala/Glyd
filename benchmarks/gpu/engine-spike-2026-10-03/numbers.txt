@@ -1,0 +1,169 @@
+
+== tokens: the engine against vLLM 0.30 (Qwen3-8B, 8 prompts of up to 31 tokens and 3 long ones, 64 greedy tokens each)
+engine against vLLM glyd1, batch: 6 of 8 prompts equal in every token; first token equal 8 of 8; 461 of 512 tokens equal from the start of their prompt (466 at the same position); tokens equal from the start [20, 64, 64, 64, 64, 64, 57, 64]; logprob difference over those: mean 0.0103, largest 0.1315
+engine against vLLM glyd1, single: 6 of 8 prompts equal in every token; first token equal 8 of 8; 455 of 512 tokens equal from the start of their prompt (457 at the same position); tokens equal from the start [20, 64, 64, 64, 64, 64, 64, 51]; logprob difference over those: mean 0.0105, largest 0.1023
+engine against vLLM glyd1, long prompts [1030, 2100, 3500]: 1 of 3 prompts equal in every token; first token equal 3 of 3; 109 of 192 tokens equal from the start of their prompt (134 at the same position); tokens equal from the start [7, 64, 38]; logprob difference over those: mean 0.0219, largest 0.1049
+engine against vLLM kvglyd, batch: 5 of 8 prompts equal in every token; first token equal 8 of 8; 441 of 512 tokens equal from the start of their prompt (445 at the same position); tokens equal from the start [20, 64, 64, 64, 64, 44, 57, 64]; logprob difference over those: mean 0.0096, largest 0.1104
+engine against vLLM kvglyd, single: 5 of 8 prompts equal in every token; first token equal 8 of 8; 443 of 512 tokens equal from the start of their prompt (445 at the same position); tokens equal from the start [20, 64, 64, 64, 52, 64, 64, 51]; logprob difference over those: mean 0.0104, largest 0.1910
+engine against vLLM kvglyd, long prompts [1030, 2100, 3500]: 1 of 3 prompts equal in every token; first token equal 3 of 3; 84 of 192 tokens equal from the start of their prompt (93 at the same position); tokens equal from the start [7, 64, 13]; logprob difference over those: mean 0.0230, largest 0.1000
+engine against vLLM bf16, batch: 5 of 8 prompts equal in every token; first token equal 8 of 8; 436 of 512 tokens equal from the start of their prompt (438 at the same position); tokens equal from the start [20, 64, 64, 64, 52, 64, 64, 44]; logprob difference over those: mean 0.0091, largest 0.0971
+engine against vLLM bf16, single: 6 of 8 prompts equal in every token; first token equal 7 of 8; 435 of 512 tokens equal from the start of their prompt (436 at the same position); tokens equal from the start [0, 64, 64, 64, 64, 64, 64, 51]; logprob difference over those: mean 0.0097, largest 0.0999
+engine against vLLM bf16, long prompts [1030, 2100, 3500]: 1 of 3 prompts equal in every token; first token equal 3 of 3; 109 of 192 tokens equal from the start of their prompt (122 at the same position); tokens equal from the start [7, 64, 38]; logprob difference over those: mean 0.0218, largest 0.0859
+engine against vLLM glyd1, batch: prompt 0: parts at token 20 (264 at -0.950, 279 at -0.884); prompt 1: same; prompt 2: same; prompt 3: same; prompt 4: same; prompt 5: same; prompt 6: parts at token 57 (10163 at -0.633, 6310 at -0.694); prompt 7: same
+engine against vLLM glyd1, single: prompt 0: parts at token 20 (264 at -0.950, 279 at -0.900); prompt 1: same; prompt 2: same; prompt 3: same; prompt 4: same; prompt 5: same; prompt 6: same; prompt 7: parts at token 51 (4113 at -0.576, 803 at -0.693)
+vLLM glyd1 batch against its one at a time: prompt 0: parts at token 54 (323 at -0.733, 13 at -0.791); prompt 1: same; prompt 2: same; prompt 3: same; prompt 4: same; prompt 5: same; prompt 6: parts at token 57 (6310 at -0.694, 10163 at -0.633); prompt 7: parts at token 51 (4113 at -0.576, 803 at -0.693)
+vLLM glyd1 batch against its one at a time: 5 of 8 prompts equal in every token; first token equal 8 of 8; 482 of 512 tokens equal from the start of their prompt (484 at the same position); tokens equal from the start [54, 64, 64, 64, 64, 64, 57, 51]; logprob difference over those: mean 0.0105, largest 0.1890
+vLLM kvglyd batch against its one at a time: 4 of 8 prompts equal in every token; first token equal 8 of 8; 460 of 512 tokens equal from the start of their prompt (462 at the same position); tokens equal from the start [64, 64, 64, 64, 52, 44, 57, 51]; logprob difference over those: mean 0.0103, largest 0.1136
+vLLM bf16 batch against its one at a time: 5 of 8 prompts equal in every token; first token equal 7 of 8; 416 of 512 tokens equal from the start of their prompt (419 at the same position); tokens equal from the start [0, 64, 64, 64, 52, 64, 64, 44]; logprob difference over those: mean 0.0096, largest 0.1054
+
+== long prompts: the engine, vLLM at 8,192 tokens a step and vLLM at 1,024 (the engine's step)
+vLLM glyd1 at 1,024 against vLLM glyd1 at 8,192 (long): 2 of 3 prompts equal in every token; first token equal 3 of 3; 166 of 192 tokens equal from the start of their prompt (179 at the same position); tokens equal from the start [64, 64, 38]; logprob difference over those: mean 0.0171, largest 0.1334
+engine against vLLM glyd1 at 1,024 (long): 1 of 3 prompts equal in every token; first token equal 3 of 3; 121 of 192 tokens equal from the start of their prompt (123 at the same position); tokens equal from the start [7, 64, 50]; logprob difference over those: mean 0.0263, largest 0.0897
+vLLM glyd1 at 1,024 against vLLM glyd1 at 8,192 (batch): 6 of 8 prompts equal in every token; first token equal 8 of 8; 465 of 512 tokens equal from the start of their prompt (466 at the same position); tokens equal from the start [30, 64, 64, 64, 64, 64, 64, 51]; logprob difference over those: mean 0.0090, largest 0.1106
+vLLM glyd1 at 1,024 against vLLM glyd1 at 8,192 (single): 8 of 8 prompts equal in every token; first token equal 8 of 8; 512 of 512 tokens equal from the start of their prompt (512 at the same position); tokens equal from the start [64, 64, 64, 64, 64, 64, 64, 64]; logprob difference over those: mean 0.0103, largest 0.1176
+engine against vLLM glyd1 at 8,192, long: prompt 0: parts at token 7 (537 at -2.626, 1787 at -2.612); prompt 1: same; prompt 2: parts at token 38 (19 at -2.079, 23 at -1.971)
+engine against vLLM glyd1 at 1,024, long: prompt 0: parts at token 7 (537 at -2.626, 1787 at -2.602); prompt 1: same; prompt 2: parts at token 50 (198 at -1.341, 4734 at -1.246)
+vLLM glyd1 at 1,024 against at 8,192, long: prompt 0: same; prompt 1: same; prompt 2: parts at token 38 (19 at -2.079, 23 at -1.971)
+
+== teacher-forced scores over the first 1,536 tokens of a text (1,535 positions)
+engine against vLLM glyd1 (8,192 a step): top-1 equal at 1510 of 1535 (98.37%); |logprob difference| mean 0.0331, median 0.0134, 99th pct 0.1322, largest 5.7771; 1 position(s) over 1.0: 1500 (-6.75 against -0.97); without them: mean 0.0293, top-1 equal at 1509 of 1534 (98.37%)
+engine against vLLM kvglyd (8,192 a step): top-1 equal at 1513 of 1535 (98.57%); |logprob difference| mean 0.0347, median 0.0150, 99th pct 0.1419, largest 5.6143; 1 position(s) over 1.0: 1500 (-6.75 against -1.14); without them: mean 0.0311, top-1 equal at 1512 of 1534 (98.57%)
+engine against vLLM bf16 (8,192 a step): top-1 equal at 1512 of 1535 (98.50%); |logprob difference| mean 0.0333, median 0.0135, 99th pct 0.1326, largest 5.4379; 1 position(s) over 1.0: 1500 (-6.75 against -1.31); without them: mean 0.0298, top-1 equal at 1511 of 1534 (98.50%)
+vLLM glyd1 at 1024 a step against vLLM glyd1 at 8,192: top-1 equal at 1514 of 1535 (98.63%); |logprob difference| mean 0.0301, median 0.0101, 99th pct 0.1660, largest 3.0441; 1 position(s) over 1.0: 1500 (-4.02 against -0.97); without them: mean 0.0282, top-1 equal at 1513 of 1534 (98.63%)
+engine against vLLM glyd1 at 1024 a step: top-1 equal at 1510 of 1535 (98.37%); |logprob difference| mean 0.0322, median 0.0136, 99th pct 0.1557, largest 2.7330; 1 position(s) over 1.0: 1500 (-6.75 against -4.02); without them: mean 0.0305, top-1 equal at 1509 of 1534 (98.37%)
+vLLM glyd1 at 512 a step against vLLM glyd1 at 8,192: top-1 equal at 1514 of 1535 (98.63%); |logprob difference| mean 0.0283, median 0.0089, 99th pct 0.1299, largest 2.3140; 1 position(s) over 1.0: 1500 (-3.29 against -0.97); without them: mean 0.0268, top-1 equal at 1513 of 1534 (98.63%)
+engine against vLLM glyd1 at 512 a step: top-1 equal at 1506 of 1535 (98.11%); |logprob difference| mean 0.0316, median 0.0131, 99th pct 0.1308, largest 3.4631; 1 position(s) over 1.0: 1500 (-6.75 against -3.29); without them: mean 0.0294, top-1 equal at 1505 of 1534 (98.11%)
+vLLM glyd1 at 256 a step against vLLM glyd1 at 8,192: top-1 equal at 1520 of 1535 (99.02%); |logprob difference| mean 0.0273, median 0.0087, 99th pct 0.1327, largest 1.6048; 1 position(s) over 1.0: 1500 (-2.58 against -0.97); without them: mean 0.0263, top-1 equal at 1519 of 1534 (99.02%)
+engine against vLLM glyd1 at 256 a step: top-1 equal at 1519 of 1535 (98.96%); |logprob difference| mean 0.0330, median 0.0142, 99th pct 0.1301, largest 4.1723; 1 position(s) over 1.0: 1500 (-6.75 against -2.58); without them: mean 0.0303, top-1 equal at 1518 of 1534 (98.96%)
+vLLM bf16 at 512 a step against vLLM bf16 at 8,192: top-1 equal at 1515 of 1535 (98.70%); |logprob difference| mean 0.0275, median 0.0097, 99th pct 0.1381, largest 1.0613; 1 position(s) over 1.0: 1500 (-0.25 against -1.31); without them: mean 0.0268, top-1 equal at 1515 of 1534 (98.76%)
+engine against vLLM bf16 at 512 a step: top-1 equal at 1508 of 1535 (98.24%); |logprob difference| mean 0.0344, median 0.0148, 99th pct 0.1381, largest 6.4992; 1 position(s) over 1.0: 1500 (-6.75 against -0.25); without them: mean 0.0302, top-1 equal at 1508 of 1534 (98.31%)
+vLLM bf16 at 256 a step against vLLM bf16 at 8,192: top-1 equal at 1513 of 1535 (98.57%); |logprob difference| mean 0.0315, median 0.0103, 99th pct 0.1371, largest 4.9387; 1 position(s) over 1.0: 1500 (-6.25 against -1.31); without them: mean 0.0283, top-1 equal at 1512 of 1534 (98.57%)
+engine against vLLM bf16 at 256 a step: top-1 equal at 1520 of 1535 (99.02%); |logprob difference| mean 0.0308, median 0.0155, 99th pct 0.1403, largest 0.6875
+vLLM glyd1 against vLLM bf16 (the weights' own difference): top-1 equal at 1517 of 1535 (98.83%); |logprob difference| mean 0.0260, median 0.0090, 99th pct 0.1260, largest 0.3392
+
+== speed: one user, decode ms per token (1,024-token prompt, 256 new tokens unless said)
+engine graph x5: decode ms/token 46.514, 46.799, 46.807, 46.939, 46.725; median 46.799 (21.37 tokens/s); prefill ms 452.5, 451.6, 452.1, 454.3, 454.7; p99 47.86, 47.91, 48.88, 49.52, 48.25
+engine eager: decode ms/token 46.941; median 46.941 (21.30 tokens/s); prefill ms 455.5; p99 48.25
+engine 128/256: decode ms/token 46.392; median 46.392 (21.56 tokens/s); prefill ms 88.9; p99 48.48
+engine 3500/128: decode ms/token 47.367; median 47.367 (21.11 tokens/s); prefill ms 2043.4; p99 48.06
+vLLM glyd1: decode ms/token [47.154, 47.219, 47.296, 47.358, 47.414] median 47.296 (21.14 tokens/s); prefill ms median 420.1; LLM() construction 51.6 s
+vLLM glyd1 (3,500-token prompt, 128 new): decode ms/token median 48.585 (20.58 tokens/s); prefill ms median 1135.5
+vLLM kvglyd: decode ms/token [46.818, 46.856, 47.006, 47.098, 47.201] median 47.006 (21.27 tokens/s); prefill ms median 414.0; LLM() construction 52.6 s
+vLLM kvglyd (3,500-token prompt, 128 new): decode ms/token median 48.195 (20.75 tokens/s); prefill ms median 1190.0
+vLLM bf16: decode ms/token [60.443, 60.41, 60.434, 60.423, 60.454] median 60.434 (16.55 tokens/s); prefill ms median 335.2; LLM() construction 34.6 s
+engine / vLLM glyd1: 1.011x the tokens a second
+engine / vLLM kvglyd: 1.004x the tokens a second
+engine / vLLM bf16: 1.291x the tokens a second
+vLLM glyd1 again after the engine's runs: decode ms/token [47.323, 47.378, 47.694, 48.004, 47.597] median 47.597 (21.01 tokens/s); prefill ms median 432.0
+vLLM kvglyd again after the engine's runs: decode ms/token [47.071, 47.376, 47.462, 47.678, 47.691] median 47.462 (21.07 tokens/s); prefill ms median 429.1
+-- the engine and vLLM glyd1 alternating in one hold of the box (rounds of vLLM, then the engine, 1,024 in, 256 out)
+round 0: engine decode ms/token 47.137, 47.237, 46.935 (median 47.137)
+round 1: engine decode ms/token 47.071, 47.063, 47.340 (median 47.071); vLLM glyd1 before it 47.462, 47.480, 47.614 (median 47.48)
+round 2: engine decode ms/token 45.661, 45.724, 45.795 (median 45.724); vLLM glyd1 before it 46.980, 46.978, 46.935 (median 46.978)
+round 3: engine decode ms/token 46.494, 46.692, 46.847 (median 46.692); vLLM glyd1 before it 47.813, 47.521, 47.548 (median 47.548)
+over the rounds: engine median 46.692 ms/token, vLLM glyd1 median 47.480; the engine is 1.018x the tokens a second (rounds: 1.009, 1.027, 1.018)
+binary of final, alternating with the other: decode ms/token 46.874, 46.624, 46.756, 46.867 (median 46.811)
+binary of final2, alternating with the other: decode ms/token 46.753, 46.650, 46.703, 46.818 (median 46.728)
+
+== memory and start
+
+NVIDIA L4 (sm_89): weights 10.37 GiB (68.0% of bf16's 15.26), cache 84080 tokens (8.86 GiB), workspaces 356 MiB, 19.79 of 22.04 GiB in use
+start 2.4 s
+weights 10.374 GiB for 15.256 GiB of bf16 (68.0%); cache 84080 tokens in 8.857 GiB (110.5 KiB a token); workspaces and activations 0.348 GiB; in use 19.789 of 22.036 GiB
+bits a weight: qkv 10.80, o 10.76, gate_up 10.93, down 10.85, embed 10.86, lm_head 10.77
+
+    0.13 s  device, library and kernels
+    2.33 s  weights uploaded
+    2.33 s  product workspaces
+    2.33 s  attention workspace
+    2.33 s  KV cache
+    2.38 s  decode graph
+loaded in 2.4 s: NVIDIA L4 (sm_89): weights 10.37 GiB (67.9% of bf16's 15.26), cache 4096 tokens (0.43 GiB), workspaces 355 MiB, 11.41 of 22.04 GiB in use
+The capital of France is Paris
+5 prompt tokens, 1 generated in 0.05 s
+
+real	0m3.088s
+user	0m1.196s
+sys	0m2.145s
+start from a shell: real	0m3.088s
+-- bandwidth
+NVIDIA L4: 258.9 GB/s streaming read
+-- profile
+loaded in 2.4 s: NVIDIA L4 (sm_89): weights 10.37 GiB (67.9% of bf16's 15.26), cache 4096 tokens (0.43 GiB), workspaces 355 MiB, 11.41 of 22.04 GiB in use
+KV cache: nothing lost
+one decode step's GPU time by kind of work (eager, 20 steps' mean):
+   20.787 ms  44.4%    36 launches  gate and up product
+   10.718 ms  22.9%    36 launches  down product
+    5.490 ms  11.7%    36 launches  qkv product
+    3.895 ms   8.3%    36 launches  o product
+    3.486 ms   7.4%     1 launches  LM head product
+    1.009 ms   2.2%    36 launches  attention over the cache
+    0.334 ms   0.7%    36 launches  norm (input, with the residual)
+    0.329 ms   0.7%    36 launches  norm (after attention, with the residual)
+    0.322 ms   0.7%    36 launches  KV write
+    0.206 ms   0.4%    36 launches  SiLU product
+    0.205 ms   0.4%    36 launches  query/key norm and rotary
+    0.027 ms   0.1%     1 launches  argmax
+    0.016 ms   0.0%     1 launches  embedding row
+    0.009 ms   0.0%     1 launches  final norm
+   46.833 ms 100.0%     0 launches  total
+qkv product: 1.223 GB of weights in 5.490 ms = 223 GB/s
+o product: 0.812 GB of weights in 3.895 ms = 209 GB/s
+gate_up product: 4.951 GB of weights in 20.787 ms = 238 GB/s
+down product: 2.457 GB of weights in 10.718 ms = 229 GB/s
+lm_head product: 0.838 GB of weights in 3.486 ms = 240 GB/s
+the products together: 10.28 GB in 44.38 ms = 232 GB/s of the step's 46.83 ms
+engine, three runs starting with the GPU at 61 C (clock.out): decode ms/token 45.607, 45.669, 45.721 (median 45.669); prefill ms 435.9, 436.7, 438.3
+repacked model run again: score: same bytes
+repacked model run again: tokens, logprobs, long tokens and long logprobs equal to the final proofs': True
+-- clock.csv, the GPU while the engine decodes (33 one-second samples at the 72 W cap): SM clock 1215 to 1305 MHz (median 1230; max 2,040), power 71.9 to 72.2 W (limit 72), 64 to 69 C
+-- sizes
+5103656 /home/ubuntu/engine-out/final2/glyd-engine
+5495528 /home/ubuntu/engine/target-dev4/release/glyd-engine (a build from scratch with the kernels for sm_80, 86, 89 and 90a)
+28506672 /home/ubuntu/v027/venv/lib/python3.12/site-packages/glyd_gpu/libglyd_gpu_cuda13.so
+	linux-vdso.so.1 
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 
+	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 
+	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 
+	/lib64/ld-linux-x86-64.so.2
+
+== vLLM's KV cache, tokens (0.9 of the GPU, max_model_len 4,096)
+bf16-1024-warm.log: bf16 at 1024 a step: 27504 tokens (1719 blocks)
+bf16-1024.log: bf16 at 1024 a step: 11424 tokens (714 blocks)
+bf16-8192.log: bf16 at 8192 a step: 22928 tokens (1433 blocks)
+glyd1-1024-warm.log: glyd1 at 1024 a step: 55168 tokens (3448 blocks)
+glyd1-1024.log: glyd1 at 1024 a step: 39040 tokens (2440 blocks)
+glyd1-8192.log: glyd1 at 8192 a step: 50368 tokens (3148 blocks)
+kvglyd-1024-warm.log: kvglyd at 1024 a step: 72176 tokens (4511 blocks)
+kvglyd-1024.log: kvglyd at 1024 a step: 50784 tokens (3174 blocks)
+kvglyd-8192.log: kvglyd at 8192 a step: 65568 tokens (4098 blocks)
+
+== other sizes of Qwen3 (the L4's, 4,096-token tables)
+engine 0.6b against vLLM glyd1 0.6b, batch: 4 of 8 prompts equal in every token; first token equal 8 of 8; 387 of 512 tokens equal from the start of their prompt (408 at the same position); tokens equal from the start [64, 40, 64, 52, 64, 64, 24, 15]; logprob difference over those: mean 0.0135, largest 0.1392
+engine 0.6b against vLLM glyd1 0.6b, single: 5 of 8 prompts equal in every token; first token equal 8 of 8; 427 of 512 tokens equal from the start of their prompt (441 at the same position); tokens equal from the start [64, 40, 64, 52, 64, 15, 64, 64]; logprob difference over those: mean 0.0137, largest 0.1035
+engine 0.6b against vLLM glyd1 0.6b, long prompts [1030, 2100, 3500]: 1 of 3 prompts equal in every token; first token equal 3 of 3; 87 of 192 tokens equal from the start of their prompt (91 at the same position); tokens equal from the start [64, 2, 21]; logprob difference over those: mean 0.0208, largest 0.1178
+vLLM glyd1 0.6b batch against its one at a time: 5 of 8 prompts equal in every token; first token equal 8 of 8; 374 of 512 tokens equal from the start of their prompt (381 at the same position); tokens equal from the start [64, 64, 64, 64, 64, 15, 24, 15]; logprob difference over those: mean 0.0104, largest 0.1123
+engine 0.6b against vLLM glyd1 0.6b: top-1 equal at 1501 of 1535 (97.79%); |logprob difference| mean 0.0343, median 0.0210, 99th pct 0.1664, largest 0.4652
+engine 0.6b bench 1024/128: decode 5.161 ms/token (193.76 tokens/s), prefill 69.6 ms, load 0.58 s, weights 0.751 GiB, cache 4096 tokens
+  loaded in 0.6 s: NVIDIA L4 (sm_89): weights 0.75 GiB (67.6% of bf16's 1.11), cache 4096 tokens (0.34 GiB), workspaces 172 MiB, 1.51 of 22.04 GiB in use
+engine 1.7b against vLLM glyd1 1.7b, batch: 5 of 8 prompts equal in every token; first token equal 7 of 8; 393 of 512 tokens equal from the start of their prompt (395 at the same position); tokens equal from the start [13, 64, 64, 64, 0, 64, 64, 60]; logprob difference over those: mean 0.0106, largest 0.1475
+engine 1.7b against vLLM glyd1 1.7b, single: 7 of 8 prompts equal in every token; first token equal 8 of 8; 490 of 512 tokens equal from the start of their prompt (490 at the same position); tokens equal from the start [64, 64, 64, 64, 64, 64, 64, 42]; logprob difference over those: mean 0.0084, largest 0.0789
+engine 1.7b against vLLM glyd1 1.7b, long prompts [1030, 2100, 3500]: 0 of 3 prompts equal in every token; first token equal 3 of 3; 91 of 192 tokens equal from the start of their prompt (96 at the same position); tokens equal from the start [15, 19, 57]; logprob difference over those: mean 0.0220, largest 0.0993
+vLLM glyd1 1.7b batch against its one at a time: 5 of 8 prompts equal in every token; first token equal 7 of 8; 375 of 512 tokens equal from the start of their prompt (377 at the same position); tokens equal from the start [13, 64, 64, 64, 0, 64, 64, 42]; logprob difference over those: mean 0.0080, largest 0.0972
+engine 1.7b against vLLM glyd1 1.7b: top-1 equal at 1516 of 1535 (98.76%); |logprob difference| mean 0.0342, median 0.0179, 99th pct 0.1672, largest 0.3051
+engine 1.7b bench 1024/128: decode 11.978 ms/token (83.48 tokens/s), prefill 133.0 ms, load 0.88 s, weights 2.157 GiB, cache 4096 tokens
+  loaded in 0.9 s: NVIDIA L4 (sm_89): weights 2.16 GiB (67.3% of bf16's 3.20), cache 4096 tokens (0.34 GiB), workspaces 216 MiB, 2.96 of 22.04 GiB in use
+engine 4b against vLLM glyd1 4b, batch: 6 of 8 prompts equal in every token; first token equal 8 of 8; 429 of 512 tokens equal from the start of their prompt (431 at the same position); tokens equal from the start [64, 64, 64, 24, 64, 21, 64, 64]; logprob difference over those: mean 0.0096, largest 0.1315
+engine 4b against vLLM glyd1 4b, single: 6 of 8 prompts equal in every token; first token equal 8 of 8; 422 of 512 tokens equal from the start of their prompt (424 at the same position); tokens equal from the start [64, 64, 64, 24, 64, 64, 14, 64]; logprob difference over those: mean 0.0095, largest 0.1143
+engine 4b against vLLM glyd1 4b, long prompts [1030, 2100, 3500]: 3 of 3 prompts equal in every token; first token equal 3 of 3; 192 of 192 tokens equal from the start of their prompt (192 at the same position); tokens equal from the start [64, 64, 64]; logprob difference over those: mean 0.0179, largest 0.1021
+vLLM glyd1 4b batch against its one at a time: 6 of 8 prompts equal in every token; first token equal 8 of 8; 419 of 512 tokens equal from the start of their prompt (421 at the same position); tokens equal from the start [64, 64, 64, 64, 64, 21, 14, 64]; logprob difference over those: mean 0.0083, largest 0.1477
+engine 4b against vLLM glyd1 4b: top-1 equal at 1514 of 1535 (98.63%); |logprob difference| mean 0.0298, median 0.0146, 99th pct 0.1527, largest 0.2944
+engine 4b bench 1024/128: decode 26.008 ms/token (38.45 tokens/s), prefill 270.6 ms, load 1.47 s, weights 5.08 GiB, cache 4096 tokens
+  loaded in 1.5 s: NVIDIA L4 (sm_89): weights 5.08 GiB (67.8% of bf16's 7.49), cache 4096 tokens (0.43 GiB), workspaces 410 MiB, 6.18 of 22.04 GiB in use
+
+== an 8,192-position context (Qwen3-8B)
+engine 7500/128 at 8,192 positions: decode 48.875 ms/token (20.46 tokens/s), prefill 6180.9 ms, cache 8192 tokens
+NVIDIA L4 (sm_89): weights 10.37 GiB (68.0% of bf16's 15.26), cache 84064 tokens (8.86 GiB), workspaces 356 MiB, 19.79 of 22.04 GiB in use
+start 2.4 s
+weights 10.374 GiB for 15.256 GiB of bf16 (68.0%); cache 84064 tokens in 8.857 GiB (110.5 KiB a token); workspaces and activations 0.348 GiB; in use 19.791 of 22.036 GiB
+bits a weight: qkv 10.80, o 10.76, gate_up 10.93, down 10.85, embed 10.86, lm_head 10.77

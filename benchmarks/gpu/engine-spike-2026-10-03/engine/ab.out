@@ -1,0 +1,12 @@
+15:37:16 lock held
+final {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":456.1,"decode_ms_mean":46.874,"decode_ms_p50":46.551,"decode_ms_p99":48.878,"decode_tokens_per_s":21.33,"load_s":2.50,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+final2 {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":457.6,"decode_ms_mean":46.753,"decode_ms_p50":46.416,"decode_ms_p99":48.432,"decode_tokens_per_s":21.39,"load_s":2.40,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+final {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":455.2,"decode_ms_mean":46.624,"decode_ms_p50":46.412,"decode_ms_p99":48.010,"decode_tokens_per_s":21.45,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+final2 {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":452.3,"decode_ms_mean":46.650,"decode_ms_p50":46.220,"decode_ms_p99":48.248,"decode_tokens_per_s":21.44,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+final {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":455.8,"decode_ms_mean":46.756,"decode_ms_p50":46.365,"decode_ms_p99":48.316,"decode_tokens_per_s":21.39,"load_s":2.39,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+final2 {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":457.9,"decode_ms_mean":46.703,"decode_ms_p50":46.493,"decode_ms_p99":48.186,"decode_tokens_per_s":21.41,"load_s":2.40,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+final {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":454.3,"decode_ms_mean":46.867,"decode_ms_p50":46.480,"decode_ms_p99":48.770,"decode_tokens_per_s":21.34,"load_s":2.37,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+final2 {"prompt_tokens":1024,"new_tokens":256,"prefill_ms":454.3,"decode_ms_mean":46.818,"decode_ms_p50":46.474,"decode_ms_p99":48.466,"decode_tokens_per_s":21.36,"load_s":2.38,"weights_gib":10.365,"cache_tokens":4096,"graph":true}
+clocks.current.sm [MHz], clocks.current.memory [MHz], power.draw [W], temperature.gpu
+2025 MHz, 6251 MHz, 61.16 W, 81
+15:39:18 done

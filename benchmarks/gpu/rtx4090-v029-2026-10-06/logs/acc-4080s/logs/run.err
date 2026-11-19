@@ -1,0 +1,4 @@
+glyd run: Qwen3.5-9B is a Qwen3_5ForConditionalGeneration model, and this engine runs Qwen3 models so far; using vLLM.
+glyd: Qwen3.5-9B needs about 16.3 GB of GPU memory with Glyd (14.3 GB of weights and room for a 4,096-token chat); your GPU has 15.7 GB free.
+  Close what holds GPU memory now: python (9.5 GB)
+  Or try Qwen/Qwen3.5-4B, which needs about 11.0 GB: glyd run Qwen/Qwen3.5-4B

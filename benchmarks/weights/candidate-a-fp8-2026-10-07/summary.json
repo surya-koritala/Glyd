@@ -1,0 +1,160 @@
+{
+  "scope": "Text-decoder step of Qwen3.8-27B (each language-model matrix shape times its count, 64 layers), matrix products only, ms; bias-free medians; weights read from device memory. compact_bf16 and fp8_lower_bound are from the exact matrices of this run.",
+  "text_decoder_step_ms": {
+    "1": {
+      "compact_bf16": 24.294,
+      "fp8_lower_bound": 27.104,
+      "fp8_variant_1": 50.983,
+      "fp8_variant_2": 52.979,
+      "fp8_variant_3": 116.602,
+      "fp8_variant_best": 50.983,
+      "activation_quantize": 0.967
+    },
+    "2": {
+      "compact_bf16": 24.309,
+      "fp8_lower_bound": 27.122,
+      "fp8_variant_1": 50.841,
+      "fp8_variant_2": 52.979,
+      "fp8_variant_3": 116.624,
+      "fp8_variant_best": 50.841,
+      "activation_quantize": 0.991
+    },
+    "8": {
+      "compact_bf16": 24.718,
+      "fp8_lower_bound": 27.242,
+      "fp8_variant_1": 50.891,
+      "fp8_variant_2": 52.981,
+      "fp8_variant_3": 116.581,
+      "fp8_variant_best": 50.891,
+      "activation_quantize": 0.994
+    },
+    "16": {
+      "compact_bf16": 25.401,
+      "fp8_lower_bound": 27.256,
+      "fp8_variant_1": 51.004,
+      "fp8_variant_2": 53.106,
+      "fp8_variant_3": 116.716,
+      "fp8_variant_best": 51.004,
+      "activation_quantize": 0.986
+    },
+    "17": {
+      "compact_bf16": 32.891,
+      "fp8_lower_bound": 27.271,
+      "fp8_variant_1": 51.252,
+      "fp8_variant_2": 53.186,
+      "fp8_variant_3": 116.767,
+      "fp8_variant_best": 51.252,
+      "activation_quantize": 0.99
+    },
+    "32": {
+      "compact_bf16": 33.652,
+      "fp8_lower_bound": 27.515,
+      "fp8_variant_1": 51.344,
+      "fp8_variant_2": 53.725,
+      "fp8_variant_3": 116.898,
+      "fp8_variant_best": 51.344,
+      "activation_quantize": 0.98
+    },
+    "33": {
+      "compact_bf16": 41.162,
+      "fp8_lower_bound": 29.748,
+      "fp8_variant_1": 51.468,
+      "fp8_variant_2": 53.422,
+      "fp8_variant_3": 116.978,
+      "fp8_variant_best": 51.468,
+      "activation_quantize": 1.004
+    },
+    "64": {
+      "compact_bf16": 50.003,
+      "fp8_lower_bound": 29.747,
+      "fp8_variant_1": 51.944,
+      "fp8_variant_2": 53.937,
+      "fp8_variant_3": 117.593,
+      "fp8_variant_best": 51.944,
+      "activation_quantize": 1.021
+    },
+    "65": {
+      "compact_bf16": 49.66,
+      "fp8_lower_bound": 31.164,
+      "fp8_variant_1": 95.025,
+      "fp8_variant_2": 53.815,
+      "fp8_variant_3": 117.564,
+      "fp8_variant_best": 53.686,
+      "activation_quantize": 1.034
+    },
+    "127": {
+      "compact_bf16": 50.753,
+      "fp8_lower_bound": 33.818,
+      "fp8_variant_1": 95.771,
+      "fp8_variant_2": 54.626,
+      "fp8_variant_3": 117.998,
+      "fp8_variant_best": 54.476,
+      "activation_quantize": 1.076
+    },
+    "128": {
+      "compact_bf16": 50.777,
+      "fp8_lower_bound": 33.871,
+      "fp8_variant_1": 95.72,
+      "fp8_variant_2": 54.678,
+      "fp8_variant_3": 118.033,
+      "fp8_variant_best": 54.527,
+      "activation_quantize": 1.081
+    },
+    "129": {
+      "compact_bf16": 86.733,
+      "fp8_lower_bound": 39.044,
+      "fp8_variant_1": 139.604,
+      "fp8_variant_2": 98.689,
+      "fp8_variant_3": 118.003,
+      "fp8_variant_best": 98.689,
+      "activation_quantize": 1.076
+    },
+    "256": {
+      "compact_bf16": 89.044,
+      "fp8_lower_bound": 51.006,
+      "fp8_variant_1": 181.485,
+      "fp8_variant_2": 98.571,
+      "fp8_variant_3": 117.643,
+      "fp8_variant_best": 98.571,
+      "activation_quantize": 1.276
+    },
+    "512": {
+      "compact_bf16": 170.38,
+      "fp8_lower_bound": 86.779,
+      "fp8_variant_1": 357.313,
+      "fp8_variant_2": 181.904,
+      "fp8_variant_3": 217.232,
+      "fp8_variant_best": 181.904,
+      "activation_quantize": 1.981
+    },
+    "1024": {
+      "compact_bf16": 326.347,
+      "fp8_lower_bound": 159.019,
+      "fp8_variant_1": 687.572,
+      "fp8_variant_2": 358.02,
+      "fp8_variant_3": 418.24,
+      "fp8_variant_best": 358.02,
+      "activation_quantize": 3.334
+    },
+    "2048": {
+      "compact_bf16": 650.584,
+      "fp8_lower_bound": 293.703,
+      "fp8_variant_1": 1357.55,
+      "fp8_variant_2": 699.643,
+      "fp8_variant_3": 824.097,
+      "fp8_variant_best": 699.643,
+      "activation_quantize": 10.419
+    }
+  },
+  "checks": {
+    "unpack_bytes_mismatch": 0,
+    "weights_rounded_by_e4m3": 133132,
+    "weights": 487948288,
+    "scale_smallest_cover": true,
+    "repeat_and_replay_bit_exact": true,
+    "worst_nrms_vs_exact": 0.029417346101929264,
+    "worst_nrms_vs_fp8_reference": 0.013144492920585156,
+    "quantize_bytes_mismatch": 495581,
+    "quantize_scale_mismatch": 61927
+  }
+}

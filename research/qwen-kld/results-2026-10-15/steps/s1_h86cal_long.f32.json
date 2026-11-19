@@ -1,0 +1,1 @@
+{"chunks": 11, "nll_per_chunk": [6.8579, 0.1331, 0.0615, 0.1152, 0.4484, 0.307, 0.086, 0.2501, 0.1422, 0.0911, 0.1229], "seconds": 105, "cmd": ["/home/surya-koritala/glyd-scratch/qwen-users/bin/glyd-engine", "qwenserve", "/home/surya-koritala/glyd-scratch/qwen/slim", "/home/surya-koritala/glyd-scratch/qwen-users/packs/h86cal", "--precise"], "decode_tok_s": 144.2}

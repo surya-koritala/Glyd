@@ -1,0 +1,4 @@
+glyd install: /work/home-foreign/.local/bin/glyd is not Glyd's Python tool (it is the compression program, a pip install of glyd, or a program of your own). The tool would replace it, and this installer does not replace a program it did not make.
+  To keep it, put the tool in another folder, which this installer then puts first on your PATH:
+      curl -LsSf https://getglyd.com/install.sh | UV_TOOL_BIN_DIR=$HOME/.glyd/bin sh
+  Or remove /work/home-foreign/.local/bin/glyd, and run this again.

@@ -1,0 +1,1 @@
+/home/ubuntu/w/ds3: a random DeepSeek-V4 model, 684 tensors, 3853 MB

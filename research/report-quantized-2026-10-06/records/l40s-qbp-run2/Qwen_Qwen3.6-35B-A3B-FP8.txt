@@ -1,0 +1,4 @@
+stock: ok (283 s) weights 34.25 GiB, KV 89,526 tokens, tok/s {"1": 133.7, "32": 965.58}
+glyd: ok (253 s) weights 33.76 GiB, KV 103,570 tokens, tok/s {"1": 140.24, "32": 970.71}
+PACKED: 84 layers (84 verified bit for bit as packed), 1.52 GiB bf16 held in 1.02 GiB (0.50 GiB saved); products of 4 against F.linear: worst relative error 3.19e-03; largest 16-bit left: VocabParallelEmbedding / UnquantizedEmbeddingMethod / weight / bfloat16 0.95 GiB; ColumnParallelLinear / GlydLinearMethod / weight / bfloat16 0.25 GiB; Embedding / NoneType / weight / bfloat16 0.00 GiB
+STOCK -> GLYD: weights 34.25 -> 33.76 GiB; KV tokens 89526 -> 103570; 1 user 133.7 -> 140.24 tok/s (1.049x); 32 users 965.58 -> 970.71 tok/s (1.005x); greedy agreement 0.8145

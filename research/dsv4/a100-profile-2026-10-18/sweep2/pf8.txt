@@ -1,0 +1,21 @@
+== pf 8
+dsv4 int5
+  T=1         198.6 us us, read at 518 GB/s
+  T=4         487.4 us us, read at 815 GB/s
+  T=64       4703.5 us us, read at 732 GB/s
+dsv4 int6
+  T=1         216.0 us us, read at 562 GB/s
+  T=4         509.6 us us, read at 921 GB/s
+  T=64       4453.4 us us, read at 914 GB/s
+dsv4 int4
+  T=1         176.9 us us, read at 475 GB/s
+  T=4         423.8 us us, read at 767 GB/s
+  T=64       3990.7 us us, read at 706 GB/s
+dsv4 fp4 (exact)
+  T=1         215.0 us us, read at 370 GB/s
+  T=4         541.9 us us, read at 566 GB/s
+  T=64       5216.9 us us, read at 510 GB/s
+dsv4 fp4 (exact, packed scales)
+  T=1         234.9 us us, read at 323 GB/s
+  T=4         589.2 us us, read at 498 GB/s
+  T=64       6298.6 us us, read at 404 GB/s

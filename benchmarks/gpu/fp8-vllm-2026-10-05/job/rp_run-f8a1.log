@@ -1,0 +1,9 @@
+16:34 created ura5eu8b3tk2bi (NVIDIA GeForce RTX 4090)
+ssh on pod ura5eu8b3tk2bi ready after 39s: ssh reachable at 213.173.110.169:25978
+16:34 ssh ready at 213.173.110.169:25978 after 44 s
+NVIDIA GeForce RTX 4090, 580.173.02, 24564 MiB
+16:34 job started
+16:49 job done
+terminating ura5eu8b3tk2bi
+pods left: []
+15 min

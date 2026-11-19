@@ -1,0 +1,15 @@
+glyd serve: the engine serves up to 8 users at once and vLLM more (GLYD_ENGINE=1 runs the engine); using vLLM.
+Qwen3.5-9B: 14.3 GB on the GPU with Glyd, instead of 19.3 GB; your GPU has 25.3 GB free.
+Qwen3.5-9B is downloaded already.
+Settings: 245,760-token context (the most that fits), eager mode, 92% of GPU memory (23.2 GB).
+Loading Qwen3.5-9B with Glyd: 14.3 GB instead of 19.3 GB...
+vLLM has room for 212,256 tokens of context here, not 245,760: starting again with 211,968.
+Loading Qwen3.5-9B with Glyd: 14.3 GB instead of 19.3 GB...
+Ready in 2m24s. (The server's log: /root/.local/state/glyd/logs/serve-20261006-014225.log)
+
+Serving Qwen/Qwen3.5-9B with Glyd (211,968-token window).
+  OpenAI API   http://localhost:8003/v1   (model name: Qwen/Qwen3.5-9B)
+  Chat page    http://localhost:8003
+  Log          /root/.local/state/glyd/logs/serve-20261006-014225.log
+Press Ctrl-C to stop.
+Stopping the server (a few seconds)...

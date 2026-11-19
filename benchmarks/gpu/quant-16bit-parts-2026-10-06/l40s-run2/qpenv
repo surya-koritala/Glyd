@@ -1,0 +1,6 @@
+END=5400
+QP_MODELS="Qwen/Qwen3.8-27B-FP8|--steps stock,glyd --max-num-seqs 64
+Qwen/Qwen3.6-35B-A3B-FP8|--steps stock,glyd --max-num-seqs 64
+nvidia/Qwen3.6-35B-A3B-NVFP4|--max-num-seqs 64
+Qwen/Qwen3.5-35B-A3B-GPTQ-Int4|--steps stock-eager,glyd-exact
+nvidia/Gemma-4-31B-IT-NVFP4|--steps glyd"

@@ -1,0 +1,4 @@
+glyd kvcal: 20 documents as 2 sequences of 40,960 tokens, 36 layers (33 s to load)
+glyd kvcal: pass 1 of 3, the exponents of each kind of text (44 s)
+glyd kvcal: pass 2 of 3, what each kind of text left out leaves outside the windows (45 s)
+glyd kvcal: /home/ubuntu/kvp/final/cal/q38-drift-40960-from-16384.npz: 40,960 positions; outside 12 bits, worst kind left out: K 0.0644%, V 0.0186%; 151,936 tokens swept (94 s): 0 need the second reserve (0 made from text) (217 s)

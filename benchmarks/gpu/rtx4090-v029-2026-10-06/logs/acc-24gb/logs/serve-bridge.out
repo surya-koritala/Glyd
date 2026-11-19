@@ -1,0 +1,24 @@
+glyd serve: the engine serves up to 8 users at once and vLLM more (GLYD_ENGINE=1 runs the engine); using vLLM.
+Qwen3-8B: 11.4 GB on the GPU with Glyd, instead of 16.4 GB; your GPU has 25.3 GB free.
+Downloading Qwen3-8B: 10% (2.0 GB of 16.4 GB)
+Downloading Qwen3-8B: 20% (3.5 GB of 16.4 GB)
+Downloading Qwen3-8B: 30% (5.4 GB of 16.4 GB)
+Downloading Qwen3-8B: 40% (6.8 GB of 16.4 GB)
+Downloading Qwen3-8B: 50% (8.3 GB of 16.4 GB)
+Downloading Qwen3-8B: 60% (10.4 GB of 16.4 GB)
+Downloading Qwen3-8B: 70% (11.9 GB of 16.4 GB)
+Downloading Qwen3-8B: 80% (13.1 GB of 16.4 GB)
+Downloading Qwen3-8B: 90% (15.3 GB of 16.4 GB)
+Downloading Qwen3-8B: 100% (16.4 GB of 16.4 GB)
+Downloaded Qwen3-8B (16.4 GB).
+Settings: 40,960-token context (the model's own limit), compiled mode (CUDA graphs), 92% of GPU memory (23.2 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit).
+Note: listening on 0.0.0.0: anyone who can reach this computer's network address can send the model prompts, and the traffic is plain HTTP, not encrypted (use a VPN or an SSH tunnel, or add  -- --ssl-keyfile FILE --ssl-certfile FILE ). The API key guards /v1 only. The chat page, /health, /metrics, /version, /tokenize, /detokenize and the API's /docs stay open without a key.
+Loading Qwen3-8B with Glyd: 11.4 GB instead of 16.4 GB...
+Ready in 1m32s. (The server's log: /home/acc/w-24gb/home/.local/state/glyd/logs/serve-20261006-051252.log)
+
+Serving Qwen/Qwen3-8B with Glyd (40,960-token window).
+  OpenAI API   http://localhost:8000/v1   (model name: Qwen/Qwen3-8B)   (asks for the API key)
+  Chat page    http://localhost:8000
+  Log          /home/acc/w-24gb/home/.local/state/glyd/logs/serve-20261006-051252.log
+Press Ctrl-C to stop.
+Stopping the server (a few seconds)...

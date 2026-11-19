@@ -1,0 +1,11 @@
+stock-eager: ok (145 s) weights 20.37 GiB, KV 113,459 tokens
+glyd-exact: ok (146 s) weights 19.83 GiB, KV 123,699 tokens
+stock: ok (219 s) weights 20.37 GiB, KV 106,086 tokens, tok/s {"1": 244.62, "32": 2681.37}
+glyd: ok (213 s) weights 19.84 GiB, KV 115,916 tokens, tok/s {"1": 246.14, "32": 2675.68}
+glyd-b: ok (158 s) weights 19.84 GiB, KV 115,916 tokens, tok/s {"1": 245.95, "32": 2666.51}
+stock-b: ok (156 s) weights 20.37 GiB, KV 106,086 tokens, tok/s {"1": 244.36, "32": 2684.25}
+glyd-16: ok (161 s) weights 19.84 GiB, KV 115,916 tokens, tok/s {"1": 247.84, "32": 2660.35}
+EXACT FAIL: Glyd exact eager against stock eager, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 707 tokens, one image chat; 111 of 111 packs verified bit for bit; differs at {"tokens": "[1][58]: 1324 != 2397", "logprobs": "[0][0][0][1]: -0.4757227897644043 != -0.4457135796546936", "long_logprobs": "[9][0][1]: -0.374550461769104 != -0.3680817186832428", "image_logprobs": "[0][0][1]: -0.0020399729255586863 != -0.003168208058923483"}; the reference against itself: {"tokens": "[0][39]: 852 != 6187", "logprobs": "[0][0][0][1]: -0.4757227897644043 != -0.4773396849632263", "long_ids": null, "long_logprobs": "[0][0][1]: -2.497007369995117 != -2.178431272506714", "image_tokens": null, "image_logprobs": "[0][0][1]: -0.0020399729255586863 != -0.0030553110409528017"}
+PACKED: 111 layers (0 verified bit for bit as packed), 1.77 GiB bf16 held in 1.19 GiB (0.58 GiB saved); products of 4 against F.linear: worst relative error 3.19e-03; largest 16-bit left: Embedding / NoneType / weight / bfloat16 0.00 GiB; Conv3dLayer / NoneType / weight / bfloat16 0.00 GiB
+GLYD WITHOUT -> WITH THE SCALES: weights 19.84 -> 19.84 GiB; KV tokens 115916 -> 115916; 1 user 247.84 -> 246.04 tok/s (0.993x); 32 users 2660.35 -> 2671.1 tok/s (1.004x); greedy agreement 0.6445
+STOCK -> GLYD: weights 20.37 -> 19.84 GiB; KV tokens 106086 -> 115916; 1 user 244.48 -> 246.04 tok/s (1.006x); 32 users 2682.81 -> 2671.1 tok/s (0.996x); greedy agreement 0.5859

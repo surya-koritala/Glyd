@@ -1,0 +1,704 @@
+{
+ "repo": "google/gemma-4-12B-it-qat-w4a16-ct",
+ "quant_method": "compressed-tensors",
+ "census": {
+  "bf16:bf16:embed": {
+   "tensors": 1,
+   "bytes": 2013265920
+  },
+  "bf16:bf16:lm_head": {
+   "tensors": 1,
+   "bytes": 2013265920
+  },
+  "bf16:bf16:vision": {
+   "tensors": 4,
+   "bytes": 104693760
+  },
+  "int4:codes:attn": {
+   "tensors": 184,
+   "bytes": 1203240960
+  },
+  "int4:codes:mlp": {
+   "tensors": 144,
+   "bytes": 4246732800
+  },
+  "int4:scales:attn": {
+   "tensors": 184,
+   "bytes": 150405120
+  },
+  "int4:scales:mlp": {
+   "tensors": 144,
+   "bytes": 530841600
+  },
+  "other:other:attn": {
+   "tensors": 328,
+   "bytes": 428928
+  },
+  "other:other:mlp": {
+   "tensors": 144,
+   "bytes": 2304
+  },
+  "other:other:other": {
+   "tensors": 193,
+   "bytes": 1113696
+  },
+  "other:other:vision": {
+   "tensors": 7,
+   "bytes": 66048
+  }
+ },
+ "samples": [
+  {
+   "format": "int4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.38.mlp.up_proj.weight_packed",
+   "rows": [
+    6784,
+    13312
+   ],
+   "expert": null,
+   "shape": [
+    15360,
+    480
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 25067520,
+    "H0": 3.7915333509459686,
+    "huffman": 3.8257340175653596,
+    "contexts": {
+     "left": 3.790758001388173,
+     "above": 3.791403481591351,
+     "scale": 3.7821358101359057,
+     "block max (side info counted)": 3.8027420637878344
+    },
+    "ceiling": 3.7821358101359057,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    6528,
+    3840
+   ],
+   "scales": {
+    "n": 783360,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 7.952116651535661,
+    "contexts": {
+     "left": 7.942306938359053,
+     "above": 7.952140882001977
+    },
+    "ceiling": 7.942306938359053,
+    "fixed": 9.00454963235294,
+    "fixed_name": "2-bit index into the tensor's commonest + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 10.6
+  },
+  {
+   "format": "int4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.11.mlp.gate_proj.weight_packed",
+   "rows": [
+    4224,
+    10752
+   ],
+   "expert": null,
+   "shape": [
+    15360,
+    480
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 25067520,
+    "H0": 3.7919935916923535,
+    "huffman": 3.8260633281632965,
+    "contexts": {
+     "left": 3.7911486982216362,
+     "above": 3.7915836320181016,
+     "scale": 3.785786073967724,
+     "block max (side info counted)": 3.8032762560863103
+    },
+    "ceiling": 3.785786073967724,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    6528,
+    3840
+   ],
+   "scales": {
+    "n": 783360,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 8.208026049334759,
+    "contexts": {
+     "left": 8.03810613334612,
+     "above": 8.207840469326237
+    },
+    "ceiling": 8.03810613334612,
+    "fixed": 9.075677849264705,
+    "fixed_name": "2-bit window a row + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 10.9
+  },
+  {
+   "format": "int4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.6.mlp.down_proj.weight_packed",
+   "rows": [
+    1920,
+    3456
+   ],
+   "expert": null,
+   "shape": [
+    3840,
+    1920
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 23592960,
+    "H0": 3.779690416966652,
+    "huffman": 3.812199910481771,
+    "contexts": {
+     "left": 3.7786551956223193,
+     "above": 3.77955644998319,
+     "scale": 3.7704928053139226,
+     "block max (side info counted)": 3.7909109511833314
+    },
+    "ceiling": 3.7704928053139226,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    1536,
+    15360
+   ],
+   "scales": {
+    "n": 737280,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 7.953311230938869,
+    "contexts": {
+     "left": 7.922650683692411,
+     "above": 7.952972474704189
+    },
+    "ceiling": 7.922650683692411,
+    "fixed": 9.02392578125,
+    "fixed_name": "2-bit window a row + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 10.8
+  },
+  {
+   "format": "int4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.40.mlp.down_proj.weight_packed",
+   "rows": [
+    1152,
+    2688
+   ],
+   "expert": null,
+   "shape": [
+    3840,
+    1920
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 23592960,
+    "H0": 3.7892107021005472,
+    "huffman": 3.822975073920356,
+    "contexts": {
+     "left": 3.788371675249421,
+     "above": 3.789113464253085,
+     "scale": 3.781697960969919,
+     "block max (side info counted)": 3.8004651078580256
+    },
+    "ceiling": 3.781697960969919,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    1536,
+    15360
+   ],
+   "scales": {
+    "n": 737280,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 7.936203708025111,
+    "contexts": {
+     "left": 7.891124642449229,
+     "above": 7.936279906174411
+    },
+    "ceiling": 7.891124642449229,
+    "fixed": 9.02308349609375,
+    "fixed_name": "2-bit window a row + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 10.8
+  },
+  {
+   "format": "int4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.46.mlp.up_proj.weight_packed",
+   "rows": [
+    5760,
+    12288
+   ],
+   "expert": null,
+   "shape": [
+    15360,
+    480
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 25067520,
+    "H0": 3.8014257690301285,
+    "huffman": 3.8376996208639707,
+    "contexts": {
+     "left": 3.80070720406783,
+     "above": 3.801391026722366,
+     "scale": 3.793165537826899,
+     "block max (side info counted)": 3.812710104282715
+    },
+    "ceiling": 3.793165537826899,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    6528,
+    3840
+   ],
+   "scales": {
+    "n": 783360,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 7.859722072466255,
+    "contexts": {
+     "left": 7.851574456321626,
+     "above": 7.859760347824276
+    },
+    "ceiling": 7.851574456321626,
+    "fixed": 9.002872242647058,
+    "fixed_name": "2-bit index into the tensor's commonest + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 10.8
+  },
+  {
+   "format": "int4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.25.mlp.up_proj.weight_packed",
+   "rows": [
+    8192,
+    14720
+   ],
+   "expert": null,
+   "shape": [
+    15360,
+    480
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 25067520,
+    "H0": 3.759307017256841,
+    "huffman": 3.78931804981107,
+    "contexts": {
+     "left": 3.7582088733600254,
+     "above": 3.759125315746813,
+     "scale": 3.7467999143838004,
+     "block max (side info counted)": 3.770531682255516
+    },
+    "ceiling": 3.7467999143838004,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    6528,
+    3840
+   ],
+   "scales": {
+    "n": 783360,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 7.933032731479631,
+    "contexts": {
+     "left": 7.9228233793650436,
+     "above": 7.933063065682649
+    },
+    "ceiling": 7.9228233793650436,
+    "fixed": 9.007238051470589,
+    "fixed_name": "2-bit index into the tensor's commonest + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 10.8
+  },
+  {
+   "format": "int4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.2.mlp.down_proj.weight_packed",
+   "rows": [
+    1152,
+    2688
+   ],
+   "expert": null,
+   "shape": [
+    3840,
+    1920
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 23592960,
+    "H0": 3.7382290788887182,
+    "huffman": 3.767378404405382,
+    "contexts": {
+     "left": 3.736549607945373,
+     "above": 3.738043741255471,
+     "scale": 3.722240949864831,
+     "block max (side info counted)": 3.7493365453405314
+    },
+    "ceiling": 3.722240949864831,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    1536,
+    15360
+   ],
+   "scales": {
+    "n": 737280,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 7.9797745057447464,
+    "contexts": {
+     "left": 7.949869780031681,
+     "above": 7.979834517293338
+    },
+    "ceiling": 7.949869780031681,
+    "fixed": 9.0397705078125,
+    "fixed_name": "2-bit window a row + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 3.4
+  },
+  {
+   "format": "int4",
+   "category": "mlp",
+   "tensor": "model.language_model.layers.2.mlp.gate_proj.weight_packed",
+   "rows": [
+    1536,
+    8064
+   ],
+   "expert": null,
+   "shape": [
+    15360,
+    480
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 25067520,
+    "H0": 3.6940742816231094,
+    "huffman": 3.723906593073427,
+    "contexts": {
+     "left": 3.6923101606418913,
+     "above": 3.6917846070681173,
+     "scale": 3.674653554767001,
+     "block max (side info counted)": 3.7050010011546606
+    },
+    "ceiling": 3.674653554767001,
+    "fixed": 3.9697074940002044,
+    "fixed_name": "tiers 2x3-bit"
+   },
+   "codes_shape": [
+    6528,
+    3840
+   ],
+   "scales": {
+    "n": 783360,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 8.227277993716168,
+    "contexts": {
+     "left": 8.174426307829831,
+     "above": 8.227300620798914
+    },
+    "ceiling": 8.174426307829831,
+    "fixed": 9.030101102941178,
+    "fixed_name": "2-bit index into the tensor's commonest + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 3.2
+  },
+  {
+   "format": "int4",
+   "category": "attn",
+   "tensor": "model.language_model.layers.46.self_attn.k_proj.weight_packed",
+   "rows": [
+    0,
+    2048
+   ],
+   "expert": null,
+   "shape": [
+    2048,
+    480
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 7864320,
+    "H0": 3.776041833922072,
+    "huffman": 3.8077916463216144,
+    "contexts": {
+     "left": 3.7747741543364293,
+     "above": 3.775081995753659,
+     "scale": 3.7646038617759516,
+     "block max (side info counted)": 3.7870292470037867
+    },
+    "ceiling": 3.7646038617759516,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    2048,
+    3840
+   ],
+   "scales": {
+    "n": 245760,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 8.52310039593709,
+    "contexts": {
+     "left": 8.195549553633304,
+     "above": 8.367476598314862
+    },
+    "ceiling": 8.195549553633304,
+    "fixed": 9.08291015625,
+    "fixed_name": "2-bit window a row + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 2.3
+  },
+  {
+   "format": "int4",
+   "category": "attn",
+   "tensor": "model.language_model.layers.23.self_attn.q_proj.weight_packed",
+   "rows": [
+    1024,
+    7552
+   ],
+   "expert": null,
+   "shape": [
+    8192,
+    480
+   ],
+   "dtype": "I32",
+   "codes": {
+    "n": 25067520,
+    "H0": 3.774513247549038,
+    "huffman": 3.8057852152905434,
+    "contexts": {
+     "left": 3.7736131144020777,
+     "above": 3.773829459676327,
+     "scale": 3.7690195909480404,
+     "block max (side info counted)": 3.785872144566325
+    },
+    "ceiling": 3.7690195909480404,
+    "fixed": 4.0,
+    "fixed_name": "as stored"
+   },
+   "codes_shape": [
+    6528,
+    3840
+   ],
+   "scales": {
+    "n": 783360,
+    "width": 16,
+    "raw_low_bits": 7,
+    "H0": 8.40998464655037,
+    "contexts": {
+     "left": 7.9887654267677295,
+     "above": 8.07053551247922
+    },
+    "ceiling": 7.9887654267677295,
+    "fixed": 9.077975643382352,
+    "fixed_name": "2-bit window a row + escape, 7 low bits raw"
+   },
+   "scale_block": [
+    1,
+    32
+   ],
+   "scale_dtype": "BF16",
+   "seconds": 3.4
+  },
+  {
+   "format": "bf16",
+   "category": "lm_head",
+   "tensor": "lm_head.weight",
+   "rows": [
+    81280,
+    82816
+   ],
+   "expert": null,
+   "shape": [
+    262144,
+    3840
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 5898240,
+    "H0": 9.201227348284574,
+    "ceiling": 9.201227348284574,
+    "H_exp": 2.269682587838865,
+    "fixed": 10.406396145290799,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.2
+  },
+  {
+   "format": "bf16",
+   "category": "embed",
+   "tensor": "model.language_model.embed_tokens.weight",
+   "rows": [
+    191232,
+    192768
+   ],
+   "expert": null,
+   "shape": [
+    262144,
+    3840
+   ],
+   "dtype": "BF16",
+   "bf16": {
+    "n": 5898240,
+    "H0": 9.204233515185381,
+    "ceiling": 9.204233515185381,
+    "H_exp": 2.2732680628863626,
+    "fixed": 10.409072536892362,
+    "fixed_name": "tiers 3x2-bit over the exponent"
+   },
+   "seconds": 1.2
+  }
+ ],
+ "projection": {
+  "stored": 10264057056,
+  "fixed": {
+   "bytes": 8519570052.257922,
+   "saved": 0.16996076641276203,
+   "parts": {
+    "bf16:bf16": {
+     "bytes": 4131225600,
+     "ratio": 0.6504833963182238,
+     "unsampled_bytes": 104693760
+    },
+    "int4:codes": {
+     "bytes": 5449973760,
+     "ratio": 0.9992457192627724,
+     "unsampled_bytes": 0
+    },
+    "int4:scales": {
+     "bytes": 681246720,
+     "ratio": 0.5648503779052231,
+     "unsampled_bytes": 0
+    },
+    "other:other": {
+     "bytes": 1610976,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    }
+   }
+  },
+  "H0": {
+   "bytes": 7858862399.241387,
+   "saved": 0.23433176994594185,
+   "parts": {
+    "bf16:bf16": {
+     "bytes": 4131225600,
+     "ratio": 0.5751706519834361,
+     "unsampled_bytes": 104693760
+    },
+    "int4:codes": {
+     "bytes": 5449973760,
+     "ratio": 0.9424115193557264,
+     "unsampled_bytes": 0
+    },
+    "int4:scales": {
+     "bytes": 681246720,
+     "ratio": 0.506385777223682,
+     "unsampled_bytes": 0
+    },
+    "other:other": {
+     "bytes": 1610976,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    }
+   }
+  },
+  "ceiling": {
+   "bytes": 7839800058.75029,
+   "saved": 0.23618896348910845,
+   "parts": {
+    "bf16:bf16": {
+     "bytes": 4131225600,
+     "ratio": 0.5751706519834361,
+     "unsampled_bytes": 104693760
+    },
+    "int4:codes": {
+     "bytes": 5449973760,
+     "ratio": 0.9398744073189116,
+     "unsampled_bytes": 0
+    },
+    "int4:scales": {
+     "bytes": 681246720,
+     "ratio": 0.4987011215613755,
+     "unsampled_bytes": 0
+    },
+    "other:other": {
+     "bytes": 1610976,
+     "ratio": 1.0,
+     "unsampled_bytes": 0
+    }
+   }
+  }
+ },
+ "seconds": 14,
+ "f16_bytes": {},
+ "fp8ref": "glyd-gpu-py/glyd_gpu/fp8ref.py layout 2 (fp8-lossless@42e6999f, blob aafce648, the same file on private main since #15)"
+}

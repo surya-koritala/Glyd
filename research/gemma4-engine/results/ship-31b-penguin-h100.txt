@@ -1,0 +1,47 @@
+# Gemma 4 31B-it at penguin through glyd-engine ship on one H100 80 GB PCIe (Lambda, 2026-10-16, branch gemma-penguin-run at 07ca45c1 + the driver floor lowered to 12.8 for Lambda's 570 driver), instance 37 min (~$2)
+
+23:23:21 gpu NVIDIA H100 PCIe, 570.148.08, 81559 MiB
+23:27:43 vllm-pip-ok
+23:30:43 build-done
+23:30:43 ship
+23:49:32 ship rc=0
+23:49:32 nodraft
+23:50:57 vllm
+23:52:16 ALL-DONE
+
+== ship fetch (0 s)
+== ship pack (344 s)
+glyd-v7: 411 packs checked, 421 tensors hashed, 61.39 GB of bf16 read, 8 shards (61.6 s)
+== ship draft (405 s)
+== ship verify (405 s)
+/home/ubuntu/s31/repo: 411 packed tensors decode to their sha256, 421 kept as they are match theirs (36 s, 26 threads)
+level penguin: every weight is google/gemma-4-31B-it's, bit for bit
+== ship measure (441 s)
+
+## measured (s31/measured/h100-pcie.txt)
+gpu=NVIDIA H100 PCIe, 81559 MiB, 570.148.08
+cpu=Intel(R) Xeon(R) Platinum 8480+
+ram=221 GiB
+when=2026-10-16
+glyd=0.31.1
+about=about 38.4 GiB on the GPU at the penguin level (about 10.8 bits per weight, lossless: every weight is the original's), in place of 57.2 GiB of bf16.
+ready=Ready in 26s: repo on the NVIDIA H100 PCIe, 38.4 GiB of weights, 32768 tokens of context, one user at a time.
+row=Chat (short prompt)|33|0.07|61.8|512
+row=4K prompt|3217|1.93|44.8|256
+row=30K prompt|23922|23.00|34.1|256
+memory=44611 MiB, 81559 MiB
+eval=GSM8K|72|75
+eval=MMLU-Pro|67|75
+
+## without the draft model (--no-draft), qwenbench
+| Test | Prompt tokens | Reading the prompt (s) | Writing (tokens/s) | Tokens written |
+|---|--:|--:|--:|--:|
+| Chat (short prompt) | 33 | 0.1 | 30.0 | 512 |
+| 4K prompt | 3217 | 1.9 | 28.5 | 256 |
+| 30K prompt | 23922 | 23.0 | 24.1 | 256 |
+
+## vLLM 0.30.0 serving google/gemma-4-31B-it in bf16 on the same card
+RuntimeError: The NVIDIA driver on your system is too old (found version 12080). Please update your GPU driver by downloading and installing a new version from the URL: http://www.nvidia.com/Download/index.aspx Alternatively, go to: https://pytorch.org to install a PyTorch version that has been compiled with your version of the CUDA driver.
+(vLLM 0.30's PyTorch is built for CUDA 13.0; Lambda's driver is 12.8. The bf16 ceiling of this card: 2.0 TB/s / 61.4 GB = 32.6 tok/s.)
+
+Evals: the server answering is /home/ubuntu/s31/repo (Inspect logs); GSM8K wrong 3 (14d7cea6, d53b30e6, e7e2ab25), MMLU-Pro wrong 8 (84, 86, 126, 128, 133, 141, 177, 193). The 12B's totals are the same (72, 67) on partly different questions.

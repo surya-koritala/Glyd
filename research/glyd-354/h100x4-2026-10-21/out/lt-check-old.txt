@@ -1,0 +1,4 @@
+loaded in 90.1 s: NVIDIA H100 80GB HBM3 (sm_90): weights 39.611 GiB (layout mma), states 0.046 GiB, KV cache 4096 positions 0.023 GiB, workspaces 0.609 GiB, 41.02 of 79.19 GiB in use
+3 prompts of up to 98 tokens, 64 new tokens each
+1 long_prompts of up to 1501 tokens, 64 new tokens each
+/home/ubuntu/w/out/lt-old.json; a decode step 5.066 ms over 190

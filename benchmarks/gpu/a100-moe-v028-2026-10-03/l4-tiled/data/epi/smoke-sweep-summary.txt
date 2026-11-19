@@ -1,0 +1,50 @@
+ibm-granite/granite-3.1-3b-a800m-instruct's layer 0 on NVIDIA L4 (tree moe-a100 7820a5ea (gpu: the tiled MoE kernel's epilogues shrunk and its empty m-tiles skipped, an A100's MoE dispatch per product, the tile of 256 as a variant) on private/main ddaefb8a): GPU time a layer under CUDA graphs, us (new: the built-in settings (the rows kernel from 17 tokens, the tiled GEMM from 84 pairs an expert for the gate and up and 48 for the down, in tiles of 128 tokens, empty m-tiles skipped, the decode kernels' too); old: the settings of the job before this one (the rows kernel off, the tiled GEMM from 48 for both, every m-tile multiplied); the built-in epilogue slimming is in every column; tm256: tiles of 256 tokens (eight consumer warps, 2 stages); nb3: the same with 3 stages; noskip: every m-tile multiplied in the tiled kernel; guN, dnN: the tiled GEMM from N pairs an expert for the gate and up, for the down)
+ibm-granite/granite-3.1-3b-a800m-instruct layer 0: NVIDIA L4, layout mma12, 12.55 bits a weight (gate+up), 12.54 (down), an expert 2.47 + 1.23 MB packed, copy rate 231 GB/s (read + write), env GLYD_GPU_LIB=/home/ubuntu/m28w/lib/new/libglyd_gpu_cuda13.so
+
+| Tokens a step | bf16 (vLLM's layer) | v027 | new | best variant | best / bf16 | the plugin's decoded route* / bf16 |
+| ---: | ---: | ---: | ---: | :--- | ---: | ---: |
+| 16 | 751 us | - | 606 us | new 606 us | 0.81x | 2.91x |
+| 64 | 791 us | - | 692 us | new 692 us | 0.87x | 2.85x |
+| 232 | 892 us | - | 783 us | nb3 781 us | 0.88x | 2.65x |
+| 1,152 | 1,620 us | - | 1,706 us | nb3 1,606 us | 0.99x | 1.93x |
+| 2,048 | 2,635 us | - | 2,965 us | nb3 2,902 us | 1.10x | 1.57x |
+
+*route + the experts decoded + vLLM's own layer on them (the decoded route's GPU time, vLLM's kernels taken as the bf16 layer's).
+
+Each variant, us a layer (all = route, gate+up, down with the sum), against new:
+| Tokens | new | dn192 | dn96 | gu112 | gu64 | nb3 | noskip | old | tm256 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 606 | 606 (1.00) | 607 (1.00) | 607 (1.00) | 606 (1.00) | 609 (1.01) | 607 (1.00) | 606 (1.00) | 606 (1.00) |
+| 64 | 692 | 694 (1.00) | 695 (1.00) | 700 (1.01) | 699 (1.01) | 696 (1.01) | 695 (1.00) | 709 (1.02) | 694 (1.00) |
+| 232 | 783 | 789 (1.01) | 788 (1.01) | 785 (1.00) | 784 (1.00) | 781 (1.00) | 787 (1.01) | 851 (1.09) | 782 (1.00) |
+| 1,152 | 1,706 | 1,713 (1.00) | 1,707 (1.00) | 1,746 (1.02) | 1,683 (0.99) | 1,606 (0.94) | 1,732 (1.01) | 1,624 (0.95) | 1,615 (0.95) |
+| 2,048 | 2,965 | 2,959 (1.00) | 2,978 (1.00) | 2,983 (1.01) | 2,990 (1.01) | 2,902 (0.98) | 3,042 (1.03) | 3,046 (1.03) | 2,947 (0.99) |
+
+gate+up and down alone (us), by variant:
+gate_up_us:
+| Tokens | new | dn192 | dn96 | gu112 | gu64 | nb3 | noskip | old | tm256 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 398 | 403 | 402 | 401 | 401 | 402 | 402 | 401 | 401 |
+| 64 | 428 | 435 | 436 | 438 | 436 | 441 | 434 | 435 | 439 |
+| 232 | 461 | 462 | 463 | 465 | 462 | 464 | 464 | 464 | 459 |
+| 1,152 | 875 | 865 | 876 | 921 | 881 | 777 | 911 | 911 | 853 |
+| 2,048 | 1,510 | 1,556 | 1,534 | 1,545 | 1,549 | 1,438 | 1,604 | 1,616 | 1,438 |
+
+down_us:
+| Tokens | new | dn192 | dn96 | gu112 | gu64 | nb3 | noskip | old | tm256 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 78 | 82 | 81 | 80 | 81 | 83 | 81 | 80 | 81 |
+| 64 | 174 | 180 | 185 | 184 | 185 | 190 | 190 | 246 | 183 |
+| 232 | 301 | 308 | 307 | 307 | 304 | 302 | 303 | 377 | 301 |
+| 1,152 | 744 | 759 | 763 | 777 | 766 | 820 | 770 | 749 | 771 |
+| 2,048 | 1,366 | 1,385 | 1,379 | 1,385 | 1,405 | 1,409 | 1,407 | 1,453 | 1,403 |
+
+route_us:
+| Tokens | new | dn192 | dn96 | gu112 | gu64 | nb3 | noskip | old | tm256 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 3 | 5 | 5 | 4 | 5 | 5 | 5 | 4 | 4 |
+| 64 | 5 | 6 | 7 | 7 | 6 | 7 | 6 | 6 | 7 |
+| 232 | 10 | 11 | 11 | 11 | 11 | 11 | 11 | 11 | 10 |
+| 1,152 | 44 | 28 | 28 | 28 | 28 | 30 | 28 | 31 | 30 |
+| 2,048 | 56 | 49 | 49 | 44 | 48 | 49 | 47 | 46 | 48 |
+

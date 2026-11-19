@@ -1,0 +1,4 @@
+Fetching 16 files:   0%|          | 0/16 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 16 files:  12%|█▎        | 2/16 [00:00<00:00, 17.53it/s]Fetching 16 files:  50%|█████     | 8/16 [00:00<00:00, 39.48it/s]Fetching 16 files:  81%|████████▏ | 13/16 [00:00<00:00, 40.37it/s]Fetching 16 files: 100%|██████████| 16/16 [00:13<00:00,  1.19it/s]
+/root/w/hf/hub/models--nvidia--Qwen3.8-27B-NVFP4/snapshots/482ca0f3832238542f8f5295dde86b5f22711d80
+exit 0 after 15 s; 11M

@@ -1,0 +1,16 @@
+{
+ "mode": "kv",
+ "eager": false,
+ "cudagraph_mode": "FULL_AND_PIECEWISE",
+ "rows": 8,
+ "tokens": 1024,
+ "layers": 36,
+ "steps": 8,
+ "kernels_a_step": 420.2,
+ "kernels_a_step_a_layer_by_kind": {
+  "plugin write": 1.0,
+  "plugin attention": 1.0,
+  "plugin combine": 1.0
+ },
+ "attention_launches_a_layer": 3.0
+}

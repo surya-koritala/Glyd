@@ -1,0 +1,40 @@
+[   10.741598] audit: type=1400 audit(1792646757.792:2): apparmor="STATUS" operation="profile_load" profile="unconfined" name="lsb_release" pid=1019 comm="apparmor_parser"
+[   10.742126] audit: type=1400 audit(1792646757.792:3): apparmor="STATUS" operation="profile_load" profile="unconfined" name="/usr/bin/man" pid=1022 comm="apparmor_parser"
+[   10.742132] audit: type=1400 audit(1792646757.792:4): apparmor="STATUS" operation="profile_load" profile="unconfined" name="man_filter" pid=1022 comm="apparmor_parser"
+[   10.742137] audit: type=1400 audit(1792646757.792:5): apparmor="STATUS" operation="profile_load" profile="unconfined" name="man_groff" pid=1022 comm="apparmor_parser"
+[   10.743005] audit: type=1400 audit(1792646757.793:6): apparmor="STATUS" operation="profile_load" profile="unconfined" name="nvidia_modprobe" pid=1020 comm="apparmor_parser"
+[   10.743011] audit: type=1400 audit(1792646757.793:7): apparmor="STATUS" operation="profile_load" profile="unconfined" name="nvidia_modprobe//kmod" pid=1020 comm="apparmor_parser"
+[   10.743079] audit: type=1400 audit(1792646757.793:8): apparmor="STATUS" operation="profile_load" profile="unconfined" name="/usr/sbin/chronyd" pid=1025 comm="apparmor_parser"
+[   10.743369] audit: type=1400 audit(1792646757.794:9): apparmor="STATUS" operation="profile_load" profile="unconfined" name="/usr/lib/snapd/snap-confine" pid=1024 comm="apparmor_parser"
+[   10.743374] audit: type=1400 audit(1792646757.794:10): apparmor="STATUS" operation="profile_load" profile="unconfined" name="/usr/lib/snapd/snap-confine//mount-namespace-capture-helper" pid=1024 comm="apparmor_parser"
+[   10.744065] audit: type=1400 audit(1792646757.794:11): apparmor="STATUS" operation="profile_load" profile="unconfined" name="tcpdump" pid=1023 comm="apparmor_parser"
+[   10.806526] RPC: Registered named UNIX socket transport module.
+[   10.806530] RPC: Registered udp transport module.
+[   10.806532] RPC: Registered tcp transport module.
+[   10.806534] RPC: Registered tcp-with-tls transport module.
+[   10.806537] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[   11.473372] mlx5_core 0000:05:00.0 eno1: Link up
+[   25.720876] EXT4-fs (vda1): resizing filesystem from 13078779 to 134189307 blocks
+[   26.289417] EXT4-fs (vda1): resized filesystem to 134189307
+[   28.619324] ACPI Warning: \_SB.PCI0.S15.S00._DSM: Argument #4 type mismatch - Found [Buffer], ACPI requires [Package] (20230628/nsarguments-61)
+[   28.658898] evm: overlay not supported
+[   28.829776] kauditd_printk_skb: 29 callbacks suppressed
+[   28.829780] audit: type=1400 audit(1792646775.880:41): apparmor="STATUS" operation="profile_load" profile="unconfined" name="docker-default" pid=1709 comm="apparmor_parser"
+[   28.856810] Initializing XFRM netlink socket
+[   29.081759] bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.
+[   30.468687] loop6: detected capacity change from 0 to 8
+[  124.443176] overlayfs: fs on '/home/ubuntu/.local/share/containers/storage/overlay/compat173213028/lower1' does not support file handles, falling back to xino=off.
+[  124.475234] overlayfs: fs on '/home/ubuntu/.local/share/containers/storage/overlay/metacopy-check1081612772/l1' does not support file handles, falling back to xino=off.
+[  124.481107] overlayfs: fs on '/home/ubuntu/.local/share/containers/storage/overlay/opaque-bug-check1034433071/l2' does not support file handles, falling back to xino=off.
+[  334.686855] loop6: detected capacity change from 0 to 235904
+[  335.304673] audit: type=1400 audit(1792647082.970:42): apparmor="STATUS" operation="profile_replace" info="same as current profile, skipping" profile="unconfined" name="/snap/snapd/24718/usr/lib/snapd/snap-confine" pid=5617 comm="apparmor_parser"
+[  335.304684] audit: type=1400 audit(1792647082.970:43): apparmor="STATUS" operation="profile_replace" info="same as current profile, skipping" profile="unconfined" name="/snap/snapd/24718/usr/lib/snapd/snap-confine//mount-namespace-capture-helper" pid=5617 comm="apparmor_parser"
+[  335.399213] audit: type=1400 audit(1792647083.065:44): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="snap.lxd.hook.install" pid=5625 comm="apparmor_parser"
+[  335.412939] audit: type=1400 audit(1792647083.079:45): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="snap.lxd.buginfo" pid=5621 comm="apparmor_parser"
+[  335.413052] audit: type=1400 audit(1792647083.079:46): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="snap.lxd.activate" pid=5619 comm="apparmor_parser"
+[  335.418180] audit: type=1400 audit(1792647083.084:47): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="snap.lxd.lxc-to-lxd" pid=5628 comm="apparmor_parser"
+[  335.418249] audit: type=1400 audit(1792647083.084:48): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="snap.lxd.lxc" pid=5627 comm="apparmor_parser"
+[  335.418526] audit: type=1400 audit(1792647083.084:49): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="snap.lxd.migrate" pid=5630 comm="apparmor_parser"
+[  335.418532] audit: type=1400 audit(1792647083.084:50): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="snap.lxd.lxd" pid=5629 comm="apparmor_parser"
+[  335.419269] audit: type=1400 audit(1792647083.085:51): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="snap.lxd.check-kernel" pid=5622 comm="apparmor_parser"
+[  337.590528] loop7: detected capacity change from 0 to 125464

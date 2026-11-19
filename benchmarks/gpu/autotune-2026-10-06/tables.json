@@ -1,0 +1,6342 @@
+{
+ "record": "autotune-2026-10-06",
+ "gain": 1.03,
+ "worst": 1.01,
+ "bins": [
+  0,
+  4000000,
+  12000000,
+  24000000,
+  40000000,
+  64000000,
+  128000000,
+  384000000,
+  4611686018427387904
+ ],
+ "gpus": [
+  {
+   "name": "NVIDIA GeForce RTX 5090",
+   "code": 1120,
+   "cc": "12.0",
+   "points": [
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 55.6269105185162,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 56.002910028804436,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 61.267927289009094,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 70.9253811023452,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 89.00232802737843,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 75.5728000944311,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 80.22312494841489,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 114.16319906711578,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 128.6619638854807,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 88.88828998262233,
+     "best": "big/0",
+     "best_us": 88.95447227087888,
+     "ship": "big/0",
+     "ship_us": 88.95447227087888,
+     "gain": 0.9992559981913555,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 298.54196201671255,
+     "best": "big/0",
+     "best_us": 299.05920245430684,
+     "ship": "big/0",
+     "ship_us": 299.05920245430684,
+     "gain": 0.9982704413261674,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 557.567991993644,
+     "best": "big/0",
+     "best_us": 557.7450167049061,
+     "ship": "big/0",
+     "ship_us": 557.7450167049061,
+     "gain": 0.999682606377538,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1090.923064405268,
+     "best": "decode",
+     "best_us": 1048.3581217852507,
+     "ship": "decode",
+     "ship_us": 1048.3581217852507,
+     "gain": 1.0406015289389214,
+     "shipped": false,
+     "why": "a matrix over 1.01x today's"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 166.28654436631638,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 166.0654517737302,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 173.0007285421545,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 186.94981932640076,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 222.01600128954107,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 193.97527250376615,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 202.6676373048262,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 279.8836339603771,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 315.5520016496832,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 265.0036378340288,
+     "best": "big/0",
+     "best_us": 265.30036059292877,
+     "ship": "big/0",
+     "ship_us": 265.30036059292877,
+     "gain": 0.9988815591571876,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 850.7723591544411,
+     "best": "big/0",
+     "best_us": 850.7985418493098,
+     "ship": "big/0",
+     "ship_us": 850.7985418493098,
+     "gain": 0.9999692257407826,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1674.9760020862927,
+     "best": "big/0",
+     "best_us": 1676.0174144398084,
+     "ship": "big/0",
+     "ship_us": 1676.0174144398084,
+     "gain": 0.9993786387035462,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 3167.6421598954635,
+     "best": "big/0",
+     "best_us": 3195.4763585870915,
+     "ship": "big/0",
+     "ship_us": 3195.4763585870915,
+     "gain": 0.9912894994147492,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 238.16495672577904,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 238.25999917018981,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 246.273520446959,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 260.93466650872006,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 299.0510445975122,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 268.07047692792753,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 274.8710461670444,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 363.8020920611563,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 411.2129438491095,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 366.5834305187066,
+     "best": "big/0",
+     "best_us": 366.22781058152515,
+     "ship": "big/0",
+     "ship_us": 366.22781058152515,
+     "gain": 1.0009710347682683,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1250.4485944906871,
+     "best": "big/0",
+     "best_us": 1252.480943997701,
+     "ship": "big/0",
+     "ship_us": 1252.480943997701,
+     "gain": 0.998377340975323,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 2423.136763629459,
+     "best": "big/0",
+     "best_us": 2425.5318343639374,
+     "ship": "big/0",
+     "ship_us": 2425.5318343639374,
+     "gain": 0.999012558524054,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 4892.119424683708,
+     "best": "big/0",
+     "best_us": 4920.938866479056,
+     "ship": "big/0",
+     "ship_us": 4920.938866479056,
+     "gain": 0.9941435074530872,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 776.5285402536392,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 777.8112068772316,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 788.5893339912096,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 811.9925220807394,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 872.8815967837969,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 855.4810682932535,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 868.9311941464742,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1156.7519863446553,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1327.236807346344,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1308.3551784356434,
+     "best": "big/0",
+     "best_us": 1308.5519919792812,
+     "ship": "big/0",
+     "ship_us": 1308.5519919792812,
+     "gain": 0.99984959440294,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 4377.816522121429,
+     "best": "big/0",
+     "best_us": 4380.772280693054,
+     "ship": "big/0",
+     "ship_us": 4380.772280693054,
+     "gain": 0.9993252882409224,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 8400.689431031546,
+     "best": "big/0",
+     "best_us": 8409.708364804586,
+     "ship": "big/0",
+     "ship_us": 8409.708364804586,
+     "gain": 0.9989275568923667,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 16334.59001382192,
+     "best": "big/0",
+     "best_us": 16454.746675491333,
+     "ship": "big/0",
+     "ship_us": 16454.746675491333,
+     "gain": 0.9926977507439613,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 354.73600029945374,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 354.2240113019943,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 356.4639985561371,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 361.87200248241425,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 374.6879994869232,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 375.791996717453,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 382.655993103981,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 529.7120064496994,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 609.7919940948486,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 561.8080198764801,
+     "best": "big/0",
+     "best_us": 563.3600056171417,
+     "ship": "big/0",
+     "ship_us": 563.3600056171417,
+     "gain": 0.9972451261623347,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1968.2080149650574,
+     "best": "big/0",
+     "best_us": 1968.0160284042358,
+     "ship": "big/0",
+     "ship_us": 1968.0160284042358,
+     "gain": 1.0000975533522343,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 3768.447995185852,
+     "best": "big/0",
+     "best_us": 3827.072024345398,
+     "ship": "big/0",
+     "ship_us": 3827.072024345398,
+     "gain": 0.9846817544099988,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 7714.063882827759,
+     "best": "big/0",
+     "best_us": 7732.624053955078,
+     "ship": "big/0",
+     "ship_us": 7732.624053955078,
+     "gain": 0.9975997577280605,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 1,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 981.5359711647034,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 8,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1002.6880502700806,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 16,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1058.8159561157227,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 32,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 907.1999788284302,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 64,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1316.3520097732544,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 62.728728760372505,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 62.28159964084625,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 62.44552704420957,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 65.5323635448109,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 72.97774458473378,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 77.29760164564306,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 81.88596313649958,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 108.03796405142003,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 116.3032734935934,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 87.64509152282368,
+     "best": "big/0",
+     "best_us": 87.54807277159257,
+     "ship": "big/0",
+     "ship_us": 87.54807277159257,
+     "gain": 1.001108176892531,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 291.7777386578647,
+     "best": "big/0",
+     "best_us": 291.9168017127297,
+     "ship": "big/0",
+     "ship_us": 291.9168017127297,
+     "gain": 0.9995236209288089,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 542.5912694497542,
+     "best": "big/0",
+     "best_us": 542.4592007290233,
+     "ship": "big/0",
+     "ship_us": 542.4592007290233,
+     "gain": 1.0002434629563908,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1061.36071248488,
+     "best": "big/0",
+     "best_us": 1063.048005104065,
+     "ship": "big/0",
+     "ship_us": 1063.048005104065,
+     "gain": 0.9984127785282662,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 171.06909101659602,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 171.09818079254842,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 171.70618068088186,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 175.8167256008495,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 185.42545491998845,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 201.02108879522842,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 206.83636719530278,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 249.7978156263178,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 265.7774578441273,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 245.25381760163742,
+     "best": "big/0",
+     "best_us": 245.21600658243352,
+     "ship": "big/0",
+     "ship_us": 245.21600658243352,
+     "gain": 1.0001541947433648,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 828.168738972057,
+     "best": "big/0",
+     "best_us": 827.5723565708507,
+     "ship": "big/0",
+     "ship_us": 827.5723565708507,
+     "gain": 1.0007206407952984,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1635.91853055087,
+     "best": "big/0",
+     "best_us": 1636.4567496559837,
+     "ship": "big/0",
+     "ship_us": 1636.4567496559837,
+     "gain": 0.9996711070395066,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 3076.331615447998,
+     "best": "big/0",
+     "best_us": 3086.8247205560856,
+     "ship": "big/0",
+     "ship_us": 3086.8247205560856,
+     "gain": 0.996600679967926,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 251.52914438928877,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 251.37009276520638,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 252.23466612043836,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 256.8617161540758,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 268.8918106612705,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 277.5798092285792,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 284.3794281638804,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 330.8897130191326,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 349.4100866927987,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 346.890286143337,
+     "best": "big/0",
+     "best_us": 347.04476009522165,
+     "ship": "big/0",
+     "ship_us": 347.04476009522165,
+     "gain": 0.9995548875256256,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1220.6840004239764,
+     "best": "big/0",
+     "best_us": 1221.636407432102,
+     "ship": "big/0",
+     "ship_us": 1221.636407432102,
+     "gain": 0.9992203842302575,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 2367.7573175657362,
+     "best": "big/0",
+     "best_us": 2370.661375068483,
+     "ship": "big/0",
+     "ship_us": 2370.661375068483,
+     "gain": 0.9987750011312085,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 4737.433311485109,
+     "best": "big/0",
+     "best_us": 4764.250610555921,
+     "ship": "big/0",
+     "ship_us": 4764.250610555921,
+     "gain": 0.9943711401303292,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 833.3685293793678,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 833.9258645971616,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 837.5002682209015,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 850.730145474275,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 879.6394576629003,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 906.5904085834821,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 919.4346606731415,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1036.592001716296,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1106.5802618861198,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1217.855999370416,
+     "best": "big/0",
+     "best_us": 1218.1178564826648,
+     "ship": "big/0",
+     "ship_us": 1218.1178564826648,
+     "gain": 0.9997850313819345,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 4263.550931215286,
+     "best": "big/0",
+     "best_us": 4269.155166546504,
+     "ship": "big/0",
+     "ship_us": 4269.155166546504,
+     "gain": 0.9986872729819865,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 8170.611766974132,
+     "best": "big/0",
+     "best_us": 8177.967000007629,
+     "ship": "big/0",
+     "ship_us": 8177.967000007629,
+     "gain": 0.9991006037278591,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 15798.442761103312,
+     "best": "big/0",
+     "best_us": 15892.43945280711,
+     "ship": "big/0",
+     "ship_us": 15892.43945280711,
+     "gain": 0.9940854459768167,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 383.90399515628815,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 384.75199043750763,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 386.31999492645264,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 388.11200857162476,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 395.4879939556122,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 400.7039964199066,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 404.4959992170334,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 435.2000057697296,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 480.3680032491684,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 527.7120172977448,
+     "best": "big/0",
+     "best_us": 526.960015296936,
+     "ship": "big/0",
+     "ship_us": 526.960015296936,
+     "gain": 1.0014270570422406,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 1910.368025302887,
+     "best": "big/0",
+     "best_us": 1913.2000207901,
+     "ship": "big/0",
+     "ship_us": 1913.2000207901,
+     "gain": 0.9985197598492375,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 3652.5280475616455,
+     "best": "big/0",
+     "best_us": 3673.248052597046,
+     "ship": "big/0",
+     "ship_us": 3673.248052597046,
+     "gain": 0.9943592143142223,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      4
+     ],
+     "today_us": 7406.128168106079,
+     "best": "big/0",
+     "best_us": 7446.352005004883,
+     "ship": "big/0",
+     "ship_us": 7446.352005004883,
+     "gain": 0.9945981821874968,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 1,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 922.9919910430908,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 8,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 929.6000003814697,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 16,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 935.6480240821838,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 32,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 942.080020904541,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 64,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1065.1040077209473,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    }
+   ],
+   "table": []
+  },
+  {
+   "name": "NVIDIA H100 80GB HBM3",
+   "code": 7090,
+   "cc": "9.0",
+   "points": [
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 52.385455279639274,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 52.22933220140862,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 54.202180581562445,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 58.79054568482168,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 72.7323627833164,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 100.7866667527141,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 105.24606388626677,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 131.66860739390054,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 139.84484835104507,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 113.42957548119804,
+     "best": "decode",
+     "best_us": 113.70715002218881,
+     "ship": "decode",
+     "ship_us": 113.70715002218881,
+     "gain": 0.9975588646717766,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 143.48436034086978,
+     "best": "decode",
+     "best_us": 143.69963199803323,
+     "ship": "decode",
+     "ship_us": 143.69963199803323,
+     "gain": 0.9985019331353167,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 205.16824315894735,
+     "best": "decode",
+     "best_us": 205.59854579694343,
+     "ship": "decode",
+     "ship_us": 205.59854579694343,
+     "gain": 0.9979070735333845,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 2,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 330.42861385778946,
+     "best": "decode",
+     "best_us": 331.120974186695,
+     "ship": "decode",
+     "ship_us": 331.120974186695,
+     "gain": 0.9979090411575222,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 163.59999775886536,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 163.24800004561743,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 168.28266779581705,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 178.44799906015396,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 210.9546661376953,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 271.68000241120654,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 279.9466699361801,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 342.7786628405253,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 358.4160010019938,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 363.6106699705124,
+     "best": "decode",
+     "best_us": 363.22133739789325,
+     "ship": "decode",
+     "ship_us": 363.22133739789325,
+     "gain": 1.0010718879441618,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 457.0400019486745,
+     "best": "decode",
+     "best_us": 456.25065763791406,
+     "ship": "decode",
+     "ship_us": 456.25065763791406,
+     "gain": 1.001730067228499,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 648.2506593068441,
+     "best": "decode",
+     "best_us": 648.687998453776,
+     "ship": "decode",
+     "ship_us": 648.687998453776,
+     "gain": 0.9993258097144169,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 3,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 1052.0639816919963,
+     "best": "decode",
+     "best_us": 1052.8159936269124,
+     "ship": "decode",
+     "ship_us": 1052.8159936269124,
+     "gain": 0.9992857138004473,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 203.57707167665163,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 204.2079987625281,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 211.51253233353296,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 222.87199844916663,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 260.1093302170436,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 366.04534089565277,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 377.2362654407819,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 457.0063943664233,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 472.75093247493106,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 544.634665052096,
+     "best": "decode",
+     "best_us": 543.7013367811838,
+     "ship": "decode",
+     "ship_us": 543.7013367811838,
+     "gain": 1.001716619415427,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 666.4592042565346,
+     "best": "decode",
+     "best_us": 667.017075419426,
+     "ship": "decode",
+     "ship_us": 667.017075419426,
+     "gain": 0.9991636328612118,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 965.6362473964691,
+     "best": "decode",
+     "best_us": 965.6789163748423,
+     "ship": "decode",
+     "ship_us": 965.6789163748423,
+     "gain": 0.9999558145283597,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 4,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 1588.42777411143,
+     "best": "decode",
+     "best_us": 1588.6250674724579,
+     "ship": "decode",
+     "ship_us": 1588.6250674724579,
+     "gain": 0.9998758087323009,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 628.9866715669632,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 628.2986675699552,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 641.3600121935209,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 670.5119907855988,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 754.3626725673676,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1148.15999319156,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1169.7333231568336,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1404.650663336118,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1444.5119897524517,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 1825.456018249194,
+     "best": "decode",
+     "best_us": 1825.9253303209941,
+     "ship": "decode",
+     "ship_us": 1825.9253303209941,
+     "gain": 0.9997429730208531,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 2289.7759675979614,
+     "best": "decode",
+     "best_us": 2287.3706767956414,
+     "ship": "decode",
+     "ship_us": 2287.3706767956414,
+     "gain": 1.0010515526961679,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 3343.375951051712,
+     "best": "decode",
+     "best_us": 3344.8586960633597,
+     "ship": "decode",
+     "ship_us": 3344.8586960633597,
+     "gain": 0.999556709222607,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 5,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 5552.330652872722,
+     "best": "decode",
+     "best_us": 5564.037322998047,
+     "ship": "decode",
+     "ship_us": 5564.037322998047,
+     "gain": 0.997896011574736,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 271.0079997777939,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 272.8000059723854,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 276.6079977154732,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 286.3679975271225,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 316.76799058914185,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 509.45600867271423,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 514.720007777214,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 615.2320206165314,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 626.448005437851,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 831.7600190639496,
+     "best": "decode",
+     "best_us": 831.3919901847839,
+     "ship": "decode",
+     "ship_us": 831.3919901847839,
+     "gain": 1.0004426658946808,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 1068.448007106781,
+     "best": "decode",
+     "best_us": 1069.5360004901886,
+     "ship": "decode",
+     "ship_us": 1069.5360004901886,
+     "gain": 0.9989827426258593,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 1626.9279718399048,
+     "best": "decode",
+     "best_us": 1629.3919682502747,
+     "ship": "decode",
+     "ship_us": 1629.3919682502747,
+     "gain": 0.9984877816643372,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 6,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 2670.1759099960327,
+     "best": "decode",
+     "best_us": 2691.7920112609863,
+     "ship": "decode",
+     "ship_us": 2691.7920112609863,
+     "gain": 0.991969624259778,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 1,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 926.7839789390564,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 8,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 939.520001411438,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 16,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1024.7199535369873,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 32,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1324.463963508606,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma",
+     "bin": 7,
+     "M": 64,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 1629.423975944519,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 54.73357597083756,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 54.98715094996221,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 55.17575720494443,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 57.09236487746239,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 61.91539391875267,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 50.82812058654699,
+     "best": "gemm",
+     "best_us": 80.4179407881968,
+     "ship": "gemm",
+     "ship_us": 80.4179407881968,
+     "gain": 0.6320495164184456,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 50.78448389064182,
+     "best": "gemm",
+     "best_us": 83.9648474798058,
+     "ship": "gemm",
+     "ship_us": 83.9648474798058,
+     "gain": 0.6048302999997218,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 55.57454546744173,
+     "best": "gemm",
+     "best_us": 108.40266852667838,
+     "ship": "gemm",
+     "ship_us": 108.40266852667838,
+     "gain": 0.5126676881922384,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 56.02424117651853,
+     "best": "gemm",
+     "best_us": 115.86690919868875,
+     "ship": "gemm",
+     "ship_us": 115.86690919868875,
+     "gain": 0.48352235822954487,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 70.69745321165432,
+     "best": "decode",
+     "best_us": 129.01721465768236,
+     "ship": "decode",
+     "ship_us": 129.01721465768236,
+     "gain": 0.5479691481422369,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 132.50448216091502,
+     "best": "decode",
+     "best_us": 159.24290635369042,
+     "ship": "decode",
+     "ship_us": 159.24290635369042,
+     "gain": 0.832090327883194,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 177.7544260928125,
+     "best": "decode",
+     "best_us": 218.54788155266732,
+     "ship": "decode",
+     "ship_us": 218.54788155266732,
+     "gain": 0.8133431668610154,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 2,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-9B/gdn_out",
+      "Qwen3.5-9B/o",
+      "gemma-4-12B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 343.56509374849725,
+     "best": "decode",
+     "best_us": 343.3910228989341,
+     "ship": "decode",
+     "ship_us": 343.3910228989341,
+     "gain": 1.0005069172982264,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 136.37333363294601,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 137.6533309618632,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 139.02933398882547,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 143.90933513641357,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 154.42133446534476,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 136.56000047922134,
+     "best": "gemm",
+     "best_us": 201.63200050592422,
+     "ship": "gemm",
+     "ship_us": 201.63200050592422,
+     "gain": 0.6772734493362774,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 137.4453331033389,
+     "best": "gemm",
+     "best_us": 208.27733476956683,
+     "ship": "gemm",
+     "ship_us": 208.27733476956683,
+     "gain": 0.6599149794931128,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 147.23733315865198,
+     "best": "gemm",
+     "best_us": 259.2800011237462,
+     "ship": "gemm",
+     "ship_us": 259.2800011237462,
+     "gain": 0.5678699958365868,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 147.96800166368484,
+     "best": "gemm",
+     "best_us": 275.9946584701538,
+     "ship": "gemm",
+     "ship_us": 275.9946584701538,
+     "gain": 0.5361263239074106,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 183.37066719929376,
+     "best": "decode",
+     "best_us": 430.29333651065826,
+     "ship": "decode",
+     "ship_us": 430.29333651065826,
+     "gain": 0.426152700123795,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 363.4080042441686,
+     "best": "decode",
+     "best_us": 523.7439970175425,
+     "ship": "decode",
+     "ship_us": 523.7439970175425,
+     "gain": 0.6938657174375146,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 600.9973287582397,
+     "best": "decode",
+     "best_us": 720.8373347918192,
+     "ship": "decode",
+     "ship_us": 720.8373347918192,
+     "gain": 0.8337488913942148,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 3,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/gdn_out",
+      "Qwen3.5-27B/o",
+      "gemma-4-12B-it/o_global",
+      "gemma-4-12B-it/qk_global",
+      "gemma-4-12B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 1128.9173364639282,
+     "best": "decode",
+     "best_us": 1131.0293475786846,
+     "ship": "decode",
+     "ship_us": 1131.0293475786846,
+     "gain": 0.9981326646215877,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 180.50026620427766,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 181.39040072758993,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 182.72160391012827,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 188.62346733609834,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 198.6064006884893,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 187.65599777301153,
+     "best": "gemm",
+     "best_us": 261.4858662088712,
+     "ship": "gemm",
+     "ship_us": 261.4858662088712,
+     "gain": 0.7176525465552872,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 187.64052987098694,
+     "best": "gemm",
+     "best_us": 271.5178693334262,
+     "ship": "gemm",
+     "ship_us": 271.5178693334262,
+     "gain": 0.6910798553761588,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 196.76213090618452,
+     "best": "gemm",
+     "best_us": 328.26026181379956,
+     "ship": "gemm",
+     "ship_us": 328.26026181379956,
+     "gain": 0.59940892576816,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 197.69439920783043,
+     "best": "gemm",
+     "best_us": 352.0634676019351,
+     "ship": "gemm",
+     "ship_us": 352.0634676019351,
+     "gain": 0.5615305687761846,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 243.85333259900412,
+     "best": "decode",
+     "best_us": 632.6005304853121,
+     "ship": "decode",
+     "ship_us": 632.6005304853121,
+     "gain": 0.3854775973898207,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 495.39893219868344,
+     "best": "decode",
+     "best_us": 757.5845271348953,
+     "ship": "decode",
+     "ship_us": 757.5845271348953,
+     "gain": 0.6539190208546496,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 823.6042628685633,
+     "best": "decode",
+     "best_us": 1064.516286055247,
+     "ship": "decode",
+     "ship_us": 1064.516286055247,
+     "gain": 0.7736887388736665,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 4,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-9B/down",
+      "Qwen3.5-9B/gdn_in",
+      "Qwen3.5-9B/qkv",
+      "gemma-4-12B-it/down",
+      "gemma-4-31B-it/o"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 1688.1728291511536,
+     "best": "decode",
+     "best_us": 1687.0688021183014,
+     "ship": "decode",
+     "ship_us": 1687.0688021183014,
+     "gain": 1.0006544054584294,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 547.162669400374,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 549.6799995501837,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 552.7946725487709,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 564.928005139033,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 589.5360012849172,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 583.9839925368627,
+     "best": "gemm",
+     "best_us": 800.8959963917732,
+     "ship": "gemm",
+     "ship_us": 800.8959963917732,
+     "gain": 0.7291633310290592,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 585.4346714913845,
+     "best": "gemm",
+     "best_us": 828.3519968390465,
+     "ship": "gemm",
+     "ship_us": 828.3519968390465,
+     "gain": 0.7067462548836444,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 609.5146710673968,
+     "best": "gemm",
+     "best_us": 988.4906709194183,
+     "ship": "gemm",
+     "ship_us": 988.4906709194183,
+     "gain": 0.6166114552203845,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 613.3226677775383,
+     "best": "gemm",
+     "best_us": 1041.279988984267,
+     "ship": "gemm",
+     "ship_us": 1041.279988984267,
+     "gain": 0.5890084072160203,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 758.7039917707443,
+     "best": "decode",
+     "best_us": 2152.4906853834786,
+     "ship": "decode",
+     "ship_us": 2152.4906853834786,
+     "gain": 0.35247724736870434,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 1586.9760016600292,
+     "best": "decode",
+     "best_us": 2632.6719919840493,
+     "ship": "decode",
+     "ship_us": 2632.6719919840493,
+     "gain": 0.6028005032499485,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 2826.3253271579742,
+     "best": "decode",
+     "best_us": 3688.3787314097085,
+     "ship": "decode",
+     "ship_us": 3688.3787314097085,
+     "gain": 0.7662785014698708,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 5,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/down",
+      "Qwen3.5-27B/gdn_in",
+      "Qwen3.5-27B/qkv",
+      "Qwen3.5-9B/gate_up",
+      "gemma-4-12B-it/gate_up",
+      "gemma-4-31B-it/down",
+      "gemma-4-31B-it/o_global",
+      "gemma-4-31B-it/qk_global",
+      "gemma-4-31B-it/qkv"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 5888.005256652832,
+     "best": "decode",
+     "best_us": 5891.0026748975115,
+     "ship": "decode",
+     "ship_us": 5891.0026748975115,
+     "gain": 0.9994911870847637,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 1,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 278.54400873184204,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 2,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 241.43999814987183,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 4,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 242.2880008816719,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 8,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 247.13600426912308,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 16,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 256.0479938983917,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 24,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 257.6160058379173,
+     "best": "gemm",
+     "best_us": 341.7759984731674,
+     "ship": "gemm",
+     "ship_us": 341.7759984731674,
+     "gain": 0.7537568670379953,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 32,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 258.0159977078438,
+     "best": "gemm",
+     "best_us": 351.1039912700653,
+     "ship": "gemm",
+     "ship_us": 351.1039912700653,
+     "gain": 0.7348705914008842,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 48,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 265.7279968261719,
+     "best": "gemm",
+     "best_us": 410.43199598789215,
+     "ship": "gemm",
+     "ship_us": 410.43199598789215,
+     "gain": 0.6474348964597071,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 64,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 265.9519985318184,
+     "best": "gemm",
+     "best_us": 428.20799350738525,
+     "ship": "gemm",
+     "ship_us": 428.20799350738525,
+     "gain": 0.6210813496344307,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 128,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 330.52800595760345,
+     "best": "decode",
+     "best_us": 1002.8319954872131,
+     "ship": "decode",
+     "ship_us": 1002.8319954872131,
+     "gain": 0.3295945955503949,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 512,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 702.2559940814972,
+     "best": "decode",
+     "best_us": 1242.6719665527344,
+     "ship": "decode",
+     "ship_us": 1242.6719665527344,
+     "gain": 0.5651177567235287,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 1024,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 1311.0399842262268,
+     "best": "decode",
+     "best_us": 1808.4800243377686,
+     "ship": "decode",
+     "ship_us": 1808.4800243377686,
+     "gain": 0.724940262863177,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 6,
+     "M": 2048,
+     "matrices": [
+      "Qwen3.5-27B/gate_up",
+      "gemma-4-31B-it/gate_up"
+     ],
+     "ways": [
+      0
+     ],
+     "today_us": 2842.079997062683,
+     "best": "decode",
+     "best_us": 2847.4559783935547,
+     "ship": "decode",
+     "ship_us": 2847.4559783935547,
+     "gain": 0.99811200546324,
+     "shipped": false,
+     "why": "under 1.03x"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 1,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 638.1760239601135,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 8,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 641.5839791297913,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 16,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      1
+     ],
+     "today_us": 647.8080153465271,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 32,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 657.7919721603394,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    },
+    {
+     "layout": "mma12",
+     "bin": 7,
+     "M": 64,
+     "matrices": [
+      "head-Qwen3.5-9B/lm_head"
+     ],
+     "ways": [
+      3
+     ],
+     "today_us": 679.5679926872253,
+     "best": null,
+     "best_us": null,
+     "ship": null,
+     "ship_us": null,
+     "gain": null,
+     "shipped": false,
+     "why": "no other route measured here"
+    }
+   ],
+   "table": []
+  }
+ ]
+}

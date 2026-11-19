@@ -1,0 +1,18 @@
+run-2026-families (with coverage-2026, on private main) on NVIDIA GeForce RTX 4090
+passed 6, failed 1
+FAIL glyd serve nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16: answers /v1/models
+ok   install.sh (glyd 0.29.0, glyd-gpu from the branch's wheel): exit 0
+ok   the installed glyd_gpu is the branch's (PARSERS, kv_fit, 0.29.0+r291)
+ok   glyd doctor: exit 0
+ok   glyd run nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 --prompt: exit 0, an answer, no thinking or tool marks in it
+ok   glyd run nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16: one start (the chosen context fit vLLM's first try)
+ok   no traceback in the user commands' output
+--- numbers
+nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 glyd run: glyd run: NVIDIA-Nemotron-3-Nano-4B-BF16 is a NemotronHForCausalLM model, and this engine runs Qwen3 models so far; using vLLM.  | --gpu-memory-utilization 0.71;--max-model-len 262144;--reasoning-parser nemotron_v3;--tool-call-parser qwen3_coder;GPU KV cache size: 646,497 tokens;Maximum concurrency for 262,144 tokens per request: 2.47x;Model loading took 5.24 GiB;
+--- times
+--- versions
+glyd                                     0.29.0
+glyd-gpu                                 0.29.0+r291
+torch                                    2.13.0
+transformers                             5.18.0
+vllm                                     0.30.0

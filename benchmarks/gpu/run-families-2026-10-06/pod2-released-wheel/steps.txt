@@ -1,0 +1,6 @@
+install 0 26
+doctor 0 0
+run_gemma4_12b 1 79
+run_nemotron3_4b 1 33
+run_minicpm5_2b 0 85
+api_minicpm5_2b 0 17

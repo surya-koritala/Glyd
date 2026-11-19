@@ -1,0 +1,29 @@
+Sat Oct 10 14:48:12 EDT 2026
+GPU 0: NVIDIA GeForce RTX 3090 (UUID: GPU-f3b091cd-80be-373d-073d-15b81b6b4f9a)
+Sat Oct 10 18:48:12 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 610.43.02              KMD Version: 610.43.02     CUDA UMD Version: 13.3     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3090        On  |   00000000:01:00.0 Off |                  N/A |
+| 30%   31C    P8             37W /  350W |       1MiB /  24576MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+Cuda compilation tools, release 12.8, V12.8.93
+Build cuda_12.8.r12.8/compiler.35583870_0
+arch sm_86; a pod of 1 GPUs, the job uses GPU 0; 32 CPUs of 32; 116 GiB of memory (host or control group)
+               total        used        free      shared  buff/cache   available
+Mem:            1007          48         673           0         292         958
+Swap:              0           0           0
+overlay         150G  463M  150G   1% /

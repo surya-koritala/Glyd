@@ -1,0 +1,96 @@
+# Gemma 4 31B-it at penguin through glyd-engine ship on one RTX A6000 48 GB (Runpod secure, $0.59/h, 2026-10-17), two pods (pod clocks in UTC)
+
+## pod 1 (q6i805wwb2iy3g, 49140 MiB, 18 min, ~$0.18): main at 885249b0
+ship passed verify; the 4K row and every request without the draft model failed (the server sent the reason to the client only; the
+bench wrote a row of zeros). Its rows, for the record:
+ready=Ready in 24s: repo on the NVIDIA RTX A6000, 38.4 GiB of weights, 32768 tokens of context, one user at a time.
+row=Chat (short prompt)|33|0.09|42.7|512
+row=4K prompt|0|2.72|0.0|0
+row=30K prompt|23922|32.80|16.9|256
+memory=44359 MiB, 49140 MiB
+
+## pod 2 (60meictrq6qa1q, 46068 MiB, 27 min, ~$0.26): gemma-a6000 at 8c04d32a (the reason logged), then the workspace fix rebuilt on the pod
+Cause: "linear: invalid argument (1)": EngineG4 sized the products' workspace at 1 row and a chunk (512) alone; on sm_86 a row count
+between them (a prompt's last chunk, a drafted round's 9 rows) takes more, and the library refuses the call. Fix: every row count
+1..=chunk, as model.rs and model_nh.rs do.
+
+05:22:30 gpu NVIDIA RTX A6000, 580.159.04, 46068 MiB sm_86 cpus 96
+05:22:33 pip-done
+05:30:07 build-done
+05:30:07 pack
+05:36:51 pack rc=0
+/root/s31/repo: 411 packed tensors decode to their sha256, 421 kept as they are match theirs (53 s, 10 threads)
+level penguin: every weight is google/gemma-4-31B-it's, bit for bit
+05:36:51 == draft
+glyd-engine: http://127.0.0.1:8091: linear: invalid argument (1)
+glyd: a request failed: linear: invalid argument (1)
+05:37:47 draft rc=1
+05:37:47 == nodraft
+glyd-engine: http://127.0.0.1:8091/v1/chat/completions: http status: 400
+glyd: a request failed: linear: invalid argument (1)
+05:38:03 nodraft rc=1
+05:38:03 == fa0-nodraft
+glyd-engine: http://127.0.0.1:8091/v1/chat/completions: http status: 400
+glyd: a request failed: linear: invalid argument (1)
+05:38:18 fa0-nodraft rc=1
+05:38:18 == blocking-nodraft
+glyd-engine: http://127.0.0.1:8091/v1/chat/completions: http status: 400
+glyd: a request failed: linear: invalid argument (1)
+05:38:33 blocking-nodraft rc=1
+05:38:33 measure
+05:39:21 measure rc=1
+glyd-engine: http://127.0.0.1:8090: linear: invalid argument (1)
+05:39:21 ALL-DONE
+
+### after the fix
+05:40:27 == draft2
+1K: read in 0.8 s, then 22.5 tokens/s
+2K: read in 1.6 s, then 20.6 tokens/s
+3K: read in 2.4 s, then 22.0 tokens/s
+4K: read in 3.3 s, then 22.1 tokens/s
+8K: read in 7.1 s, then 21.4 tokens/s
+report: draft2.md
+| Test | Prompt tokens | Reading the prompt (s) | Writing (tokens/s) | Tokens written |
+|---|--:|--:|--:|--:|
+| Chat (short prompt) | 33 | 0.1 | 37.5 | 512 |
+| 1K prompt | 828 | 0.8 | 22.5 | 256 |
+| 2K prompt | 1624 | 1.6 | 20.6 | 256 |
+| 3K prompt | 2422 | 2.4 | 22.0 | 256 |
+| 4K prompt | 3217 | 3.3 | 22.1 | 256 |
+| 8K prompt | 6402 | 7.1 | 21.4 | 256 |
+05:42:25 draft2 rc=0
+05:42:25 == nodraft2
+2K: read in 1.6 s, then 12.7 tokens/s
+3K: read in 2.5 s, then 12.7 tokens/s
+4K: read in 3.3 s, then 12.7 tokens/s
+8K: read in 7.1 s, then 12.5 tokens/s
+30K: read in 35.8 s, then 11.8 tokens/s
+report: nodraft2.md
+| Test | Prompt tokens | Reading the prompt (s) | Writing (tokens/s) | Tokens written |
+|---|--:|--:|--:|--:|
+| Chat (short prompt) | 33 | 0.1 | 13.3 | 512 |
+| 1K prompt | 828 | 0.9 | 12.8 | 256 |
+| 2K prompt | 1624 | 1.6 | 12.7 | 256 |
+| 3K prompt | 2422 | 2.5 | 12.7 | 256 |
+| 4K prompt | 3217 | 3.3 | 12.7 | 256 |
+| 8K prompt | 6402 | 7.1 | 12.5 | 256 |
+| 30K prompt | 23922 | 35.8 | 11.8 | 256 |
+05:46:12 nodraft2 rc=0
+05:46:12 measure
+05:48:06 measure rc=0
+memory=43807 MiB, 46068 MiB
+== ship card (113 s)
+card: /root/s31/repo/README.md
+== ship done (113 s): /root/s31/repo
+gpu=NVIDIA RTX A6000, 46068 MiB, 580.159.04
+cpu=Intel(R) Xeon(R) Gold 6342 CPU @ 2.80GHz
+ram=504 GiB
+when=2026-10-17
+glyd=0.31.1
+about=about 38.4 GiB on the GPU at the penguin level (about 10.8 bits per weight, lossless: every weight is the original's), in place of 57.2 GiB of bf16.
+ready=Ready in 26s: repo on the NVIDIA RTX A6000, 38.4 GiB of weights, 25488 tokens of context, one user at a time.
+row=Chat (short prompt)|33|0.09|34.3|512
+row=4K prompt|3217|3.25|21.2|256
+row=30K prompt|23922|35.53|15.0|256
+memory=43807 MiB, 46068 MiB
+05:48:06 ALL-DONE

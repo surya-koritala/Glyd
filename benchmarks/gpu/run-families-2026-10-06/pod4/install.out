@@ -1,0 +1,22 @@
+==> Installing glyd[vllm]==0.29.0 and Python 3.12 (PyTorch and vLLM: several GB, a few minutes)
+==> /root/.local/bin is not on your PATH: adding it, which edits your shell's startup file (uv tool update-shell says which)
+==> Open a new terminal (or run: export PATH="/root/.local/bin:$PATH") so that glyd is found.
+==> Checking this machine (glyd doctor)
+ ok  Glyd             0.29.0, Python 3.12 (/root/.local/share/uv/tools/glyd/bin/python)
+ ok  GPU              NVIDIA GeForce RTX 4090: 25.2 GB, 25.2 GB free, compute capability 8.9
+ ok  Driver           580.159.04, runs CUDA 13.0
+ ok  PyTorch          2.13.0, built for CUDA 13.0
+ ok  vLLM             0.30.0
+ ok  Glyd GPU library libglyd_gpu_cuda13.so
+ --  Glyd engine      /root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/glyd_gpu/glyd-engine is here, and glyd run uses vLLM on this computer: NVIDIA GeForce RTX 4090 is not a GPU the engine is measured at least as fast as vLLM on; glyd serve uses vLLM (GLYD_ENGINE=1: the engine)
+ ok  C compiler       /usr/bin/gcc, and Python.h (vLLM builds its Triton launchers with them)
+ ok  CUDA compiler    found
+ ok  Disk             152.5 GB free for models, in /root/.cache/huggingface/hub
+
+Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+  Qwen/Qwen3.5-4B    6.8 GB on the GPU (bf16 9.3 GB): fits, a 262,144-token context
+  Qwen/Qwen3.5-9B   13.9 GB on the GPU (bf16 19.3 GB): fits, a 183,296-token context
+  Qwen/Qwen3.5-27B  38.6 GB on the GPU (bf16 55.6 GB): does not fit; it needs 40.8 GB free
+
+Ready: glyd run Qwen/Qwen3.5-9B
+==> Next: glyd run Qwen/Qwen3-8B

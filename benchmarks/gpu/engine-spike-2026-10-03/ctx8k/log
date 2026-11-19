@@ -1,0 +1,4 @@
+/home/ubuntu/engine-models/kv-tables-qwen3-8b-8192.safetensors: 36 layers, 8 heads, 128 channels, positions 8192, model Qwen/Qwen3-8B
+15:24:36 tables: /home/ubuntu/engine-models/kv-tables-qwen3-8b-8192.safetensors: 36 layers, 8 heads, 128 channels, positions 8192, model Qwen/Qwen3-8B
+15:33:05 bench exit 0: {"prompt_tokens":7500,"new_tokens":128,"prefill_ms":6180.9,"decode_ms_mean":48.875,"decode_ms_p50":48.881,"decode_ms_p99":49.240,"decode_tokens_per_s":20.46,"load_s":2.46,"weights_gib":10.366,"cache_tokens":8192,"graph":true}
+15:39:21 done

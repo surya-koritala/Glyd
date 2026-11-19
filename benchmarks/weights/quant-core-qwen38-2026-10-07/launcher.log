@@ -1,0 +1,11 @@
+Existing automatic-reload authorization: the named approved quality batch may start at a balance-only stop; the separately approved daily cap applies.
+12:58 created vsm1vaglwqh1br (NVIDIA A100-SXM4-80GB)
+Verified hourly GPU quote: 1.59
+ssh on pod vsm1vaglwqh1br ready after 11s: ssh reachable at 216.81.245.83:22815
+12:58 ssh ready at 216.81.245.83:22815 after 15 s
+NVIDIA A100-SXM4-80GB, 580.159.04, 81920 MiB
+12:58 job started
+14:25 job done
+terminating vsm1vaglwqh1br
+pods left: []
+87 min
