@@ -33,6 +33,9 @@ pub struct Device {
     pub bandwidth: f64,
     /// The CUDA version the driver supports (13000 for 13.0); 0 where none.
     pub driver: i32,
+    /// The GPU shares the computer's memory (Apple Silicon, DGX Spark, Jetson, Strix Halo): its memory is not a tier apart
+    /// from RAM, so experts are never "moved to RAM" and the computer's free memory is not counted twice.
+    pub unified: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -53,8 +56,16 @@ const BANDWIDTH: &[(&str, f64)] = &[
     ("4080", 717.0), ("4070 Ti SUPER", 672.0), ("4070 Ti", 504.0), ("4070 SUPER", 504.0), ("4070", 504.0), ("4060 Ti", 288.0), ("4060", 272.0), ("3090 Ti", 1008.0),
     ("3090", 936.0), ("3080 Ti", 912.0), ("3080", 760.0), ("3070", 448.0), ("3060", 360.0), ("MI355X", 8000.0), ("MI325X", 6000.0), ("MI300X", 5300.0),
     ("7900 XTX", 960.0), ("7900 XT", 800.0), ("9070 XT", 640.0), ("M4 Max", 546.0), ("M4 Pro", 273.0), ("M3 Ultra", 819.0), ("M3 Max", 400.0), ("M2 Ultra", 800.0),
-    ("M2 Max", 400.0), ("M1 Max", 400.0),
+    ("M2 Max", 400.0), ("M1 Max", 400.0), ("GB10", 273.0), ("Thor", 273.0), ("Orin", 204.8), ("8060S", 256.0),
 ];
+
+/// GPUs that share the computer's memory, by the words their names hold.
+const UNIFIED: &[&str] = &["GB10", "Thor", "Orin", "Jetson", "Radeon 8060S", "Radeon 8050S", "Radeon 890M", "Radeon 880M"];
+
+/// Whether a GPU shares the computer's memory: every Apple GPU, and the integrated ones named in UNIFIED.
+pub fn is_unified(name: &str, vendor: Vendor) -> bool {
+    vendor == Vendor::Apple || UNIFIED.iter().any(|w| name.contains(w))
+}
 
 /// A GPU's memory bandwidth from its name, None where the planner does not know it (`glyd-engine rates` measures it).
 pub fn bandwidth_of(name: &str) -> Option<f64> {
@@ -63,7 +74,7 @@ pub fn bandwidth_of(name: &str) -> Option<f64> {
 
 fn gpu(name: &str, vendor: Vendor, cc: (i32, i32), total_gib: f64, free_gib: f64, driver: i32) -> Device {
     let gib = |g: f64| (g * GIB) as u64;
-    Device { name: name.into(), vendor, cc, total: gib(total_gib), free: gib(free_gib), bandwidth: bandwidth_of(name).unwrap_or(300.0), driver }
+    Device { name: name.into(), vendor, cc, total: gib(total_gib), free: gib(free_gib), bandwidth: bandwidth_of(name).unwrap_or(300.0), driver, unified: is_unified(name, vendor) }
 }
 
 impl Machine {
@@ -82,14 +93,17 @@ impl Machine {
             "8xh100" => ((0..8).map(|_| gpu("NVIDIA H100 80GB HBM3", nv, (9, 0), 80.0, 79.0, 13000)).collect(), 1800.0, 300.0, 192),
             "rx7900xtx" => (vec![gpu("AMD Radeon RX 7900 XTX", Vendor::Amd, (11, 0), 24.0, 23.0, 0)], 56.0, 70.0, 16),
             "m4max-64g" => (vec![gpu("Apple M4 Max", Vendor::Apple, (0, 0), 48.0, 44.0, 0)], 12.0, 546.0, 16),
+            "dgx-spark" => (vec![gpu("NVIDIA GB10", nv, (12, 1), 119.0, 112.0, 13000)], 112.0, 273.0, 20),
+            "strix-halo-128g" => (vec![gpu("AMD Radeon 8060S", Vendor::Amd, (11, 5), 96.0, 92.0, 0)], 28.0, 256.0, 16),
             _ => return None,
         };
         Some(Machine { name: name.into(), devices, ram_free: (ram_gib * GIB) as u64, ram_bandwidth: ram_bw, cores })
     }
 
-    pub const PRESETS: [&'static str; 11] = ["rtx4060-laptop", "rtx4080s", "rtx4090", "2x3090", "l4", "a6000", "a100-80g", "h100", "8xh100", "rx7900xtx", "m4max-64g"];
+    pub const PRESETS: [&'static str; 13] =
+        ["rtx4060-laptop", "rtx4080s", "rtx4090", "2x3090", "l4", "a6000", "a100-80g", "h100", "8xh100", "rx7900xtx", "m4max-64g", "dgx-spark", "strix-halo-128g"];
 
-    /// A machine described in JSON: {"name", "ram_free_gib", "ram_bandwidth", "cores", "gpus": [{"name", "vendor", "cc": [8, 9], "total_gib", "free_gib", "bandwidth", "driver"}]}.
+    /// A machine described in JSON: {"name", "ram_free_gib", "ram_bandwidth", "cores", "gpus": [{"name", "vendor", "cc": [8, 9], "total_gib", "free_gib", "bandwidth", "driver", "unified"}]}.
     pub fn from_json(text: &str) -> Result<Machine, String> {
         let v = json::parse(text)?;
         let gpus = v.get("gpus").and_then(Value::as_array).ok_or("no \"gpus\" array")?;
@@ -107,6 +121,9 @@ impl Machine {
             if let Some(b) = num(g, "bandwidth") {
                 d.bandwidth = b;
             }
+            if let Some(u) = g.get("unified").and_then(Value::as_bool) {
+                d.unified = u;
+            }
             devices.push(d);
         }
         Ok(Machine {
@@ -122,7 +139,11 @@ impl Machine {
     pub fn probe() -> Machine {
         let vendor = if cfg!(glyd_hip) { Vendor::Amd } else { Vendor::Nvidia };
         let devices = crate::dev::Dev::probe_all()
-            .map(|gs| gs.into_iter().map(|g| Device { bandwidth: bandwidth_of(&g.name).unwrap_or(300.0), name: g.name, vendor, cc: g.cc, total: g.total, free: g.free, driver: g.driver }).collect())
+            .map(|gs| {
+                gs.into_iter()
+                    .map(|g| Device { bandwidth: bandwidth_of(&g.name).unwrap_or(300.0), unified: is_unified(&g.name, vendor), name: g.name, vendor, cc: g.cc, total: g.total, free: g.free, driver: g.driver })
+                    .collect()
+            })
             .unwrap_or_default();
         let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
         Machine { name: "this computer".into(), devices, ram_free: crate::offload::host_memory().unwrap_or(8 << 30), ram_bandwidth: 50.0, cores }
@@ -440,8 +461,9 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
                 continue;
             }
         }
-        // a mixture of experts: the experts in the computer's memory, the rest and a cache of experts on the GPU
-        if sh.is_moe() && d0.vendor != Vendor::Apple {
+        // a mixture of experts: the experts in the computer's memory, the rest and a cache of experts on the GPU (not where the GPU
+        // already uses the computer's memory: there RAM is the same memory, counted once)
+        if sh.is_moe() && !d0.unified {
             let ram = (m.ram_free as f64 - 4.0 * GIB) * 0.9;
             let min_cache = 0.05 * experts;
             if experts > ram {
@@ -650,6 +672,21 @@ mod tests {
         assert_eq!(chosen(&plan(&q9, &Machine::preset("rtx4090").unwrap(), Ask::default())).context, TARGET_CTX);
         let none = Machine { name: "cpu".into(), devices: vec![], ram_free: 64 << 30, ram_bandwidth: 80.0, cores: 16 };
         assert!(plan(&q9, &none, Ask::default()).chosen.is_none());
+    }
+
+    #[test]
+    fn unified_memory_is_counted_once() {
+        // the 180B MoE on machines whose GPU shares the computer's memory: never "experts in RAM" (the same memory, counted twice)
+        let qx = Shape::from_config(&fixture("qwen4x_config.json")).unwrap();
+        for name in ["dgx-spark", "strix-halo-128g", "m4max-64g"] {
+            let m = Machine::preset(name).unwrap();
+            assert!(m.devices.iter().all(|d| d.unified), "{name}");
+            let p = plan(&qx, &m, Ask::default());
+            assert!(!p.options.iter().any(|o| matches!(o.placement, Some(Placement::ExpertsInRam { .. }))), "{name}: {p:?}");
+        }
+        assert!(!Machine::preset("rtx4080s").unwrap().devices[0].unified);
+        let m = Machine::from_json(r#"{"gpus": [{"name": "Some APU", "vendor": "amd", "total_gib": 64, "unified": true}]}"#).unwrap();
+        assert!(m.devices[0].unified);
     }
 
     #[test]
