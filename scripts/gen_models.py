@@ -170,7 +170,7 @@ def main():
         + ". Any other kind is refused with exit 3 and the reason."
     )
     o.append("- `wren` runs in a development build, which is what `cargo build --release -p glyd-engine` makes. A release build leaves it out, except for a quantization-aware checkpoint, where it is exact.")
-    o.append("- A level a family does not list is refused: `glyd-engine run Qwen/Qwen3-8B:swift` stops and says Qwen3 runs at penguin.")
+    o.append("- A level a family does not list is refused: `glyd-engine run zai-org/GLM-5.3-Flash:swift` stops and says GLM-5.3-Flash runs at penguin.")
     o.append(f"- The context is at most {n(max_ctx)} tokens (the KV tables' largest tier), and never more than the model's own limit.")
     o.append("- `glyd-engine supports MODEL` answers for one model: exit 0 where the engine runs its kind, 3 where it does not.")
     o.append("")

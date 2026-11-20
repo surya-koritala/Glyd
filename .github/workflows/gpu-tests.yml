@@ -1,6 +1,6 @@
 name: GPU tests (reusable)
 
-# The engine and the GPU library built for the runner's GPU, the kernel checks that need no model, and a small model end to end.
+# The engine and the GPU library built for the runner's GPU, the kernel checks that need no model, a small model end to end, and every family's logits against its stored reference.
 # Called by gpu.yml (the self-hosted GPU machine) and gpu-cloud.yml (an ephemeral cloud GPU instance).
 on:
   workflow_call:
@@ -67,6 +67,11 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 42
           "$E" kvtest "${{ inputs.model }}"
+      - name: Logits of every model family against the stored references (glyd-engine/tests/logits, src/logits.rs)
+        run: |
+          # (each family's smallest model that has its layer kinds: Qwen3-0.6B and Qwen3.5-0.8B from the Hub cache, the rest random models of their layouts made here; a fixture's bound is the
+          # reference's KL, or the same bits as the engine's own recorded output on this GPU generation)
+          "$E" logitscheck --fixtures glyd-engine/tests/logits
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

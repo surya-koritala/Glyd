@@ -15,15 +15,15 @@ curl -s http://127.0.0.1:8000/v1/models
 ```
 
 The server runs one model, so a tool that asks for another model name gets a 404 from `/v1/models/ID`. Use the id the list
-shows. Context is 8,192 tokens at penguin on Qwen3 unless you start the server with `--context N`; an agent that sends many
-tool definitions needs more.
+shows. The context is the family's default from the [Models](models.md) page unless you start the server with `--context N`; an
+agent that sends many tool definitions needs more.
 
 ## What has been tried
 
 | Tool | Status |
 | :--- | :--- |
 | OpenAI Python SDK | Checked by `tests/clients/openai_check.py`, which runs chat, streaming, tools, `response_format`, the Responses API, fill in the middle and errors through the official SDK: `pip install openai`, then `python3 tests/clients/openai_check.py http://127.0.0.1:8000`. |
-| Open WebUI | Recorded against the earlier Python server (v0.26.0, the acceptance runs of October 2026, [benchmarks/gpu/l4-onboarding-2026-10-01](https://github.com/surya-koritala/Glyd/tree/main/benchmarks/gpu/l4-onboarding-2026-10-01)). Not recorded against `glyd-engine serve`. |
+| Open WebUI | Recorded against the earlier Python server (v0.26.0, October 2026, [benchmarks/gpu/l4-onboarding-2026-10-01](https://github.com/surya-koritala/Glyd/tree/main/benchmarks/gpu/l4-onboarding-2026-10-01)). Not recorded against `glyd-engine serve`. |
 | Continue, Cline, LibreChat | Not tried. Add an OpenAI-compatible provider with the settings above. |
 | Claude Code and the Anthropic SDK | Condor's server runs `ANTHROPIC_BASE_URL=http://127.0.0.1:8080 claude` ([condor/docs/CLIENTS.md](https://github.com/surya-koritala/Glyd/blob/main/condor/docs/CLIENTS.md)). `glyd-engine serve` has the same `/v1/messages` endpoint, and no Claude Code session against it is recorded. |
 

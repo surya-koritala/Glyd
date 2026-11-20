@@ -83,6 +83,26 @@ Every error is OpenAI's: `{"error": {"message", "type", "param", "code"}}` with 
 `context_length_exceeded` (a prompt, or a prompt and its length, past the context). `stream_options.include_usage` puts `"usage": null` in every chunk of a stream and the usage in a
 last chunk with no choices, as OpenAI's does.
 
+## Connecting tools
+
+The default address is `http://127.0.0.1:8000` (`--port N` for another; if 8000 is busy and no port was asked for, the server takes the next free one up to 8020 and says which at its start).
+`glyd connect` finds the server that runs here (8000 to 8020, then Ollama's 11434, or `--port N`) and prints the lines each tool needs, with its real port and model; it changes nothing, and never prints a key (it says `$GLYD_API_KEY`).
+
+| tool | what it is given | `glyd connect` |
+| :--- | :--- | :--- |
+| OpenAI SDKs, LangChain `ChatOpenAI`, aider | `OPENAI_BASE_URL=http://127.0.0.1:8000/v1`, `OPENAI_API_KEY` (any, or the server's key) | `openai` |
+| Claude Code, Anthropic SDKs, LangChain `ChatAnthropic` | `ANTHROPIC_BASE_URL=http://127.0.0.1:8000`, `ANTHROPIC_API_KEY` | `anthropic` |
+| `ollama` libraries, LangChain `ChatOllama`, programs with an Ollama setting | `OLLAMA_HOST=http://127.0.0.1:8000` (`--ollama-port 11434` for the programs that look at Ollama's own port) | `ollama` |
+| Open WebUI (container) | its Ollama and OpenAI connections set to the server (below) | `open-webui` |
+| Continue | `~/.continue/config.yaml`: a chat model through the OpenAI API, autocomplete through Ollama's | `continue` |
+
+A container on Linux reaches a server on this computer's own address only from the host's network: `docker run --network=host -e PORT=3000 -e OLLAMA_BASE_URL=http://127.0.0.1:8000 -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 ... ghcr.io/open-webui/open-webui:main`.
+Docker Desktop (macOS, Windows) and Podman reach it as `host.docker.internal` and `host.containers.internal`; the Host check answers those two names (it still refuses every other name and every other site's Origin), and
+the address stays this computer's own. A server on another interface (`--host 0.0.0.0`) turns the Host and Origin checks off: give it a key.
+
+The clients are checked in `tests/clients/`: `run.sh URL [KEY]` runs the OpenAI, Anthropic, Ollama, LangChain and Open Responses checks (the HTTP tests of the Open Responses compliance suite, with every response and stream event checked against the specification's schema in `tests/clients/openresponses/`), each with the newest release of its library, against a running server; `openwebui_check.py`
+checks an Open WebUI container. Claude Code and Open WebUI were run against Qwen3-8B on an RTX 4080 SUPER for v0.34.0 (the numbers are in the pull request).
+
 ## /v1/responses
 
 The request is read as the chat request it is the same as and run as any chat request is, so its refusals, its grammar and its tools are the chat path's. Read: `input` (a string, or a list

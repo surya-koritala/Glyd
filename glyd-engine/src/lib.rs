@@ -31,6 +31,7 @@ pub mod ceiling;
 pub mod chat;
 pub mod choice;
 pub mod cli;
+pub mod connect;
 pub mod constrain;
 pub mod conv;
 pub mod costs;
@@ -82,6 +83,8 @@ pub mod kvcal;
 #[cfg(feature = "dev")]
 pub mod kvtest;
 pub mod levels;
+#[cfg(feature = "dev")]
+pub mod logits;
 pub mod machine;
 pub mod mapped;
 pub mod mla_glm;

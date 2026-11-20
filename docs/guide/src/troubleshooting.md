@@ -20,7 +20,7 @@ Start with `glyd-engine doctor`. It prints one line for each thing a run needs a
 | `driver  too old: the driver here runs CUDA 12.x ...` | The engine's kernels need CUDA 13 (driver 580 or newer). | Update the driver. On Ubuntu: `sudo apt install nvidia-driver-580` (or `sudo ubuntu-drivers install`) and reboot; elsewhere the installer at nvidia.com/drivers. A CUDA 12 build is ROADMAP P6. |
 | `GPU library  not found` | `libglyd_gpu_cuda13.so` is not beside `glyd-engine` or on the loader's path. | Build it: `bash gpu/build_lib.sh target/release`, or set `GLYD_GPU_LIB=/path/to/libglyd_gpu_cuda13.so`. |
 | `cuBLAS  not found` | Not an error. Long prompts use the engine's own products, a little slower. | Optional: install the CUDA 13 cuBLAS, or set `GLYD_CUBLAS` to it. |
-| `cache`, `models`: a low "free" figure | The packed copy and the downloads need disk: the download is the model's bf16 size on the Hub, and the packed copy is another 12.4 GB for Qwen3-8B. | Free space, or move them: `GLYD_CACHE=/big/drive` for packed models, `HF_HOME=/big/drive` for downloads. |
+| `cache`, `models`: a low "free" figure | The packed copy and the downloads need disk: the download is the model's size on the Hub, and the packed copy is extra. | Free space, or move them: `GLYD_CACHE=/big/drive` for packed models, `HF_HOME=/big/drive` for downloads. |
 | `Hub token  none` | Fine for public models. | For a gated model, accept its licence on the model's page, then `glyd-engine login` (a token from huggingface.co/settings/tokens), or set `HF_TOKEN`. |
 | `Hub  ...: <error>` | The Hub is not reachable: no network, a proxy, or IPv6 that fails. | Check the network. `GLYD_IPV4=1` forces IPv4. `HF_ENDPOINT` names a mirror. A model already downloaded runs with `HF_HUB_OFFLINE=1`. |
 
@@ -31,7 +31,7 @@ These are exit 3 unless noted. The message says what to do; the usual ones:
 | Message starts | What it means | What to do |
 | :--- | :--- | :--- |
 | `X is a ...ForCausalLM model, and this engine runs Qwen3 models so far` | The model's kind is not one of the [Models](models.md) families. | Pick a listed family, or run it with another engine. |
-| `X (Qwen3) runs at the penguin level in this engine, not swift` | The family does not run that level. | Use the level the message offers, or see [Models](models.md). |
+| `GLM-5.3-Flash (GLM-5.3-Flash) runs at the penguin level in this engine, not swift` | The family does not run that level. | Use the level the message offers, or see [Models](models.md). |
 | `it needs ... GiB of GPU memory` | The model does not fit at the level and context asked. | A lower level, a smaller `--context`, another GPU, or for a mixture of experts more of the computer's memory (`--host-memory`). `glyd-engine fit MODEL` shows each level's size first. |
 | `no GPU was found: the engine's CPU backend is not built yet` | No usable GPU. | See [Install](install.md). |
 | `AMD GPUs run in development builds only (GLYD_HIP=1)` | AMD is a development build. | `GLYD_HIP=1 cargo build --release -p glyd-engine`. |

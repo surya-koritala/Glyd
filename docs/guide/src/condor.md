@@ -28,18 +28,16 @@ powershell -ExecutionPolicy Bypass -File setup.ps1
 
 ## Modes
 
-| Mode | Experts, bits | Download | KL vs bf16 | Writing, short prompt | RAM |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| precise (default) | about 2.9 | 82 GB | 0.15 | 91 tokens/s | 64 GB |
-| best | about 3.4 | 90 GB | 0.12 | 79 tokens/s | 64 GB |
-| fast | about 2.0 | 66 GB | 0.39 | 113 tokens/s | 32 GB |
+| Mode | Download | RAM | For |
+| :--- | :--- | :--- | :--- |
+| precise (default) | 82 GB | 64 GB | Code: long programs come out right more often. |
+| best | 90 GB | 64 GB | The closest to the original. |
+| fast | 66 GB | 32 GB | Quicker, and the mode for 32 GB of RAM. Weaker on long code. |
 
-RTX 4080 SUPER 16 GB, Ryzen 9 7950X3D, 64 GB RAM, Ubuntu 26.04; Condor v0.2.4 build of 2026-10-21; greedy, thinking off, the
-median of three runs. Logs: [condor/results/v0.2.4](https://github.com/surya-koritala/Glyd/tree/main/condor/results/v0.2.4).
-Switch with `tools/download.sh --best` (or `--fast`), then `tools/serve.sh --best`.
-
-On other cards, fast mode, short prompt: RTX 5090 175 tokens/s, RTX 4090 116, RTX 3090 72 (rented machines, right after
-install). The CPU matters nearly as much as the GPU, because the experts that miss the GPU's cache run on it.
+Switch with `tools/download.sh --best` (or `--fast`), then `tools/serve.sh --best`. The speed and quality of each mode, with
+the machine and logs, are in [condor/README.md](https://github.com/surya-koritala/Glyd/blob/main/condor/README.md) and
+[condor/results](https://github.com/surya-koritala/Glyd/tree/main/condor/results). The CPU matters nearly as much as the GPU,
+because the experts that miss the GPU's cache run on it.
 
 ## Using it
 
