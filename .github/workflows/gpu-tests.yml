@@ -15,7 +15,7 @@ on:
         default: "89"
       model:
         type: string
-        default: Qwen/Qwen3-0.6B
+        default: google/gemma-4-12B-it:wren
 
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
     container:
       image: nvidia/cuda:13.0.3-devel-ubuntu24.04
       # (a named volume keeps the Hub cache, cargo's registry and the build between runs on a persistent machine)
-      options: --gpus all -v glyd-ci-cache:/cache
+      options: --gpus all -v glyd-ci-cache:/cache --memory=28g --memory-swap=28g
     env:
       HF_HOME: /cache/hf
       CARGO_HOME: /cache/cargo
@@ -66,10 +66,13 @@ jobs:
           out=$("$E" run "${{ inputs.model }}" --prompt "What is 17 + 25? Answer with the number only." --no-think)
           echo "$out"
           echo "$out" | grep -q 42
-          "$E" kvtest "${{ inputs.model }}"
+      - name: The lossless KV cache (a random Qwen3 dense model made here: kvtest reads the dense engine's cache)
+        run: |
+          "$E" logitsmodel qwen3 /tmp/qwen3-standin
+          "$E" kvtest /tmp/qwen3-standin
       - name: Logits of every model family against the stored references (glyd-engine/tests/logits, src/logits.rs)
         run: |
-          # (each family's smallest model that has its layer kinds: Qwen3-0.6B and Qwen3.5-0.8B from the Hub cache, the rest random models of their layouts made here; a fixture's bound is the
+          # (a random model of each family's layout with its layer kinds, made here: only models released in the last six months are used, and those are larger than a 16 GB card holds; a fixture's bound is the
           # reference's KL, or the same bits as the engine's own recorded output on this GPU generation)
           "$E" logitscheck --fixtures glyd-engine/tests/logits
       - name: The workspace back to the runner's user

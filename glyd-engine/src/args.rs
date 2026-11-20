@@ -8,6 +8,7 @@ use crate::weights::Layout;
 #[cfg(feature = "dev")]
 const SWITCHES: &[&str] = &[
     "no-graph",
+    "no-draft",
     "compare",
     "bar",
     "cpu-ref",
@@ -75,7 +76,7 @@ const SWITCHES: &[&str] = &[
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] =
-    &["no-think", "help", "quiet", "chat", "version", "lossy", "precise", "predict", "load", "no-gpu", "costs", "json", "all", "compare", "bar"];
+    &["no-think", "help", "quiet", "chat", "version", "lossy", "precise", "predict", "load", "no-gpu", "costs", "json", "all", "compare", "bar", "no-draft"];
 
 #[derive(Clone)]
 pub struct Args {

@@ -455,7 +455,8 @@ pub fn drive(run: &mut dyn Run, prompt: &[u32], decode: &[u32], long: &[u32]) ->
 
 /// Where a case's weights are from.
 pub enum Weights {
-    /// A Hub repo, read from the cache (`glyd-engine fetch ID` puts it there).
+    /// A Hub repo, read from the cache or downloaded into it (a recent release that fits a 16 GB card: none of the cases is one yet, as the models released in the last six months are all larger).
+    #[allow(dead_code)]
     Hub(&'static str),
     /// A small model of the family's layout made at random (a fixed seed) by this program.
     Random(fn(&Path) -> Result<()>),
@@ -661,8 +662,24 @@ fn qwen4x_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 /// The random tiny Qwen3.8-Flash-Next of tools/qwen4x_ref.py (8 layers: three Gated DeltaNet and one indexed attention, twice; a layer with per-layer embeddings; 16 experts; hyper-connections): its tensors'
 /// names, types and shapes from tests/fixtures/qwen4x_tiny_manifest.json (what that tool wrote), their values at random from a fixed seed by the tool's rules for each kind of tensor.
 pub fn qwen4x_random(out: &Path) -> Result<()> {
-    let m: Value = serde_json::from_str(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json")).map_err(|e| Error(e.to_string()))?;
-    let mut r = 0x2026_1120_0000_0005u64;
+    manifest_random(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json"), out, 0x2026_1120_0000_0005, false, "Qwen3.8-Flash-Next of the tiny shape")
+}
+
+/// A small Qwen3 dense model of Qwen3-0.6B's layout (4 layers, 16 query and 8 key-value heads of 128, a vocabulary of 4096): the architecture of the dense engine, not a release (none of the Qwen3 dense releases is recent).
+pub fn qwen3_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/qwen3_tiny_manifest.json"), out, 0x2026_1120_0000_0006, true, "Qwen3 dense")
+}
+
+/// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
+pub fn qwen35_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/qwen35_tiny_manifest.json"), out, 0x2026_1120_0000_0007, false, "Qwen3.5-family")
+}
+
+/// A random model of a manifest's tensors (names, types and shapes from a real checkpoint's header, cut down), their values from a fixed seed by the rules of tools/qwen4x_ref.py for each kind of tensor.
+/// `dense_norms`: the norms' weights are the scales themselves (0.5 to 1.5) and not the (1 + w) of the other families (-0.5 to 0.5).
+fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, what: &str) -> Result<()> {
+    let m: Value = serde_json::from_str(manifest).map_err(|e| Error(e.to_string()))?;
+    let mut r = seed;
     let mut u01 = move || {
         r ^= r << 13;
         r ^= r >> 7;
@@ -706,6 +723,7 @@ pub fn qwen4x_random(out: &Path) -> Result<()> {
         }
         v
     };
+    let tied = !m["tensors"].as_array().is_some_and(|t| t.iter().any(|e| e[0] == "lm_head.weight"));
     let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
     for e in m["tensors"].as_array().ok_or_else(|| Error("manifest".into()))? {
         let name = e[0].as_str().unwrap_or_default().to_string();
@@ -721,7 +739,7 @@ pub fn qwen4x_random(out: &Path) -> Result<()> {
             || name.ends_with("layernorm.weight")
             || ["hc_norm", "norm_key", "norm_query", "norm_conv"].iter().any(|k| name.contains(k))
         {
-            let plus = if name.contains(".linear_attn.norm.") { 1.0 } else { 0.0 };
+            let plus = if name.contains(".linear_attn.norm.") || dense_norms { 1.0 } else { 0.0 };
             (0..n).map(|_| (u01() - 0.5 + plus) as f32).collect()
         } else if name.ends_with("A_log") {
             (0..n).map(|_| (u01() * 15.0 + 1.0).ln() as f32).collect()
@@ -734,7 +752,9 @@ pub fn qwen4x_random(out: &Path) -> Result<()> {
         } else if name.contains("shared_expert.") {
             grid(shape[0] as usize, shape[1] as usize, &mut u01, &mut gauss)
         } else if name.contains("ngram_embedding") || name.contains("embed_tokens") {
-            (0..n).map(|_| gauss(&mut u01) as f32).collect()
+            // (an embedding that is the head too, as Qwen3.5's tied one is, is as wide as a head's rows: else its logits are tens apart and the softmax a point)
+            let std = if tied && name.contains("embed_tokens") { 1.0 / (cols as f64).sqrt() } else { 1.0 };
+            (0..n).map(|_| (gauss(&mut u01) * std) as f32).collect()
         } else if shape.len() == 2 {
             let s = 1.0 / (cols as f64).sqrt();
             (0..n).map(|_| (gauss(&mut u01) * s) as f32).collect()
@@ -745,14 +765,16 @@ pub fn qwen4x_random(out: &Path) -> Result<()> {
     }
     io(std::fs::create_dir_all(out))?;
     io(std::fs::write(out.join("config.json"), m["config"].as_str().unwrap_or_default()))?;
+    if dense_norms {
+        // (the dense engine's pack carries the tokenizer: a word-level one over the vocabulary's ids, which no check reads)
+        let vocab: serde_json::Map<String, Value> = (0..4096).map(|i| (format!("t{i}"), json!(i))).collect();
+        let tok = json!({"version": "1.0", "truncation": null, "padding": null, "added_tokens": [], "normalizer": null, "pre_tokenizer": {"type": "Whitespace"}, "post_processor": null, "decoder": null,
+            "model": {"type": "WordLevel", "vocab": vocab, "unk_token": "t0"}});
+        io(std::fs::write(out.join("tokenizer.json"), tok.to_string()))?;
+    }
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
-    println!(
-        "{}: a random Qwen3.8-Flash-Next of the tiny shape, {} tensors, {:.0} MB",
-        out.display(),
-        tensors.len(),
-        tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6
-    );
+    println!("{}: a random {what}, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
     Ok(())
 }
 
@@ -767,17 +789,24 @@ fn qwen3_engine(model: &Path, level: &str) -> Result<Box<dyn Run>> {
     Ok(Box::new(Dense(crate::model::Engine::new(&p.dir, &o)?)))
 }
 
-/// Every case: a family's smallest model that has its layer kinds (a real checkpoint where one fits a 16 GB card, else a random one of the family's layout).
+/// Every case: a model of the family's layout with its layer kinds, at random (a fixed seed) and small: only models released in the last six months are tested, and those that are recent are larger than a 16 GB card holds.
 pub fn cases() -> Vec<Case> {
     vec![
-        Case { id: "qwen3", family: "Qwen3 (dense)", weights: Weights::Hub("Qwen/Qwen3-0.6B"), engine: qwen3_engine, cpu: None, vocab: 0 },
+        Case {
+            id: "qwen3",
+            family: "Qwen3 dense (the dense engine's architecture; no recent release uses it)",
+            weights: Weights::Random(qwen3_random),
+            engine: qwen3_engine,
+            cpu: None,
+            vocab: 4096,
+        },
         Case {
             id: "qwen35",
-            family: "Qwen3.5 (gated delta net + attention)",
-            weights: Weights::Hub("Qwen/Qwen3.5-0.8B"),
+            family: "Qwen3.5 family (Gated DeltaNet and gated attention: Qwen3.8-27B's layout)",
+            weights: Weights::Random(qwen35_random),
             engine: qwen35_engine,
             cpu: None,
-            vocab: 0,
+            vocab: 4096,
         },
         Case {
             id: "muse",
@@ -1011,6 +1040,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         println!("OFF: {}", failed.join(", "));
         drop(scratch); // (the process exits next: the private directory is removed first)
         std::process::exit(1);
+    }
+}
+
+/// `logitsmodel CASE DIR`: the case's random model made in DIR (a model to run the other checks on: `kvtest DIR`, `run DIR`).
+pub fn make_model(a: &crate::args::Args) -> Result<()> {
+    let c = find_case(a.need(1, "CASE")?)?;
+    match c.weights {
+        Weights::Random(make) => make(Path::new(a.need(2, "DIR")?)),
+        Weights::Hub(id) => err(format!("{}: a real model ({id}), not a random one", c.id)),
     }
 }
 

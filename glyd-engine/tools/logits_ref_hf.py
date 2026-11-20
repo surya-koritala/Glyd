@@ -1,6 +1,6 @@
 """Reference logits of a Hub model from transformers, as a glyd-logits/1 fixture (glyd-engine/src/logits.rs reads it; tests/logits/CASE.json.gz).
 
-    python logits_ref_hf.py CASE MODEL_ID OUT.json.gz [--bound penguin=kl:MEAN:MAX:TOP1 ...] [--device cuda|cpu] [--date YYYY-MM-DD] [--note TEXT]
+    python logits_ref_hf.py CASE MODEL_ID_OR_DIR OUT.json.gz [--bound penguin=kl:MEAN:MAX:TOP1 ...] [--device cuda|cpu] [--date YYYY-MM-DD] [--note TEXT] [--vocab N --label TEXT]
 
 The tokens are a fixed text's first 190 (the prompt: 24, then 12 decode steps fed the text's next tokens, then a long prompt of 150 that crosses the engine's chunk of 64), the model in bf16 as
 the release has it, one forward over each (a step's logits are the full pass's logits at that position: the same tokens, teacher forced). Each row is the last position's 64 largest logits,
@@ -47,7 +47,7 @@ def main(argv):
     bounds = []
     i = 0
     while i < len(argv):
-        if argv[i] in ("--bound", "--device", "--date", "--note", "--family"):
+        if argv[i] in ("--bound", "--device", "--date", "--note", "--family", "--vocab", "--label"):
             if argv[i] == "--bound":
                 bounds.append(argv[i + 1])
             else:
@@ -60,9 +60,14 @@ def main(argv):
     import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(model_id)
-    ids = tok(TEXT, add_special_tokens=False)["input_ids"]
-    assert len(ids) >= LONG + 8, len(ids)
+    if "vocab" in opt:
+        # a random model of src/logits.rs (no tokenizer): its fixed tokens, as token_list makes them (a first token 2, then 37 i + 11 modulo the vocabulary)
+        v = int(opt["vocab"])
+        ids = [2 if i == 0 else ((i - 1) * 37 + 11) % v for i in range(LONG)]
+    else:
+        tok = AutoTokenizer.from_pretrained(model_id)
+        ids = tok(TEXT, add_special_tokens=False)["input_ids"]
+    assert len(ids) >= LONG + 8 or "vocab" in opt, len(ids)
     model = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.bfloat16).to(device).eval()
     rev = getattr(model.config, "_commit_hash", None) or ""
 
@@ -85,13 +90,13 @@ def main(argv):
         "format": "glyd-logits/1",
         "case": case,
         "family": opt.get("family", case),
-        "model": model_id,
+        "model": opt.get("label", model_id),
         "provenance": {
             "source": f"transformers {transformers.__version__}, torch {torch.__version__}, {model.dtype} on {dev_name}, the model's own implementation (not the engine's)",
             "revision": rev,
             "recorded": opt.get("date", ""),
             "note": opt.get("note", ""),
-            "tokens": "the first tokens of the text in tools/logits_ref_hf.py: prompt 24, 12 decode steps teacher-forced, a long prompt of 150",
+            "tokens": "the fixed list of src/logits.rs token_list: prompt 24, 12 decode steps teacher-forced, a long prompt of 150" if "vocab" in opt else "the first tokens of the text in tools/logits_ref_hf.py: prompt 24, 12 decode steps teacher-forced, a long prompt of 150",
         },
         "bounds": bl,
         "prompt": ids[:PROMPT],

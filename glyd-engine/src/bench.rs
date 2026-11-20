@@ -1,7 +1,7 @@
 //! `glyd bench`: one benchmark harness (R8). It puts fixed prompts at fixed concurrencies on an OpenAI-compatible server over HTTP and writes the speed as JSON, `glyd-bench/1` (docs/bench.md).
 //!
 //!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full | --loads short:1,4k:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
-//!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P] [--eval gsm8k[:N]]
+//!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P] [--no-draft] [--eval gsm8k[:N]]
 //!       starts `serve MODEL` of this program (or measures the server at --against, whatever program it is: vLLM, llama.cpp, SGLang) and measures each load: per load, one warm-up round and `runs` rounds
 //!       of N simultaneous requests, every prompt different from its first token on (no prefix to share). Time to first token, inter-token latency, decode tokens/s a user and in all, prefill tokens/s,
 //!       each as the runs' mean, standard deviation, median and the runs themselves; the peak GPU memory; and the decode rate as a share of the ceiling (the weights' bytes a token over the memory's
@@ -402,6 +402,10 @@ fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     }
     // (the server's places for requests at once: its default of 4 would make 8 at once 4 and 4 waiting; the most the loads ask for, at most the 8 it takes)
     cmd.args(["--users".to_string(), a.flag("users").map_or(users.to_string(), str::to_string)]);
+    if a.has("no-draft") {
+        // (the draft model's speculative decoding off: the decode rate is then the weights' bytes over the bandwidth, which the ceiling is)
+        cmd.arg("--no-draft");
+    }
     let child = cmd
         .stdout(Stdio::from(out.try_clone().map_err(|e| Error(e.to_string()))?))
         .stderr(Stdio::from(out))

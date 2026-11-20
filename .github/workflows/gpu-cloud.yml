@@ -17,7 +17,7 @@ on:
         default: g6.xlarge
       model:
         type: string
-        default: Qwen/Qwen3-0.6B
+        default: google/gemma-4-12B-it:wren
 
 permissions:
   contents: read

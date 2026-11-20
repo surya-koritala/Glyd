@@ -6,7 +6,7 @@ One harness for the speed of a server, one JSON format for the result, and a gat
 ## Measure
 
 ```bash
-glyd-engine bench Qwen/Qwen3-8B --suite gate --runs 5 --out result.json        # starts `glyd-engine serve` of this program, measures it, stops it
+glyd-engine bench google/gemma-4-12B-it:wren --suite gate --runs 5 --no-draft --out result.json   # starts `glyd-engine serve` of this program, measures it, stops it
 glyd-engine bench --against http://127.0.0.1:8001 --suite bar --out vllm.json   # any OpenAI-compatible server: vLLM, SGLang, llama.cpp
 ```
 
@@ -32,8 +32,9 @@ more than 2,500 MiB are in use, the result says `contention.busy_before: true` a
 ## The ceiling
 
 `pct_of_ceiling` of a load is its decode tokens/s a user over the ceiling: the memory's bandwidth over the weights' bytes a token. The bandwidth is the spec sheet's for the GPU's name (`bench::spec_bandwidth`:
-736 GB/s for an RTX 4080 SUPER; `--bandwidth-gbs` for any other) and the bytes are what the server says it holds (`/v1/glyd/info`, `memory.weights_bytes`) or `--weights-gib` (Qwen3-8B lossless in
-the engine: 10.3 GiB, a ceiling of 66.5 tokens/s on the RTX 4080 SUPER). KV reads are not counted, so a long prompt's share is lower than its ceiling would make it.
+736 GB/s for an RTX 4080 SUPER; `--bandwidth-gbs` for any other) and the bytes are what the server says it holds (`/v1/glyd/info`, `memory.weights_bytes`) or `--weights-gib` (Gemma 4 12B at the wren
+level in the engine: 6.3 GiB, a ceiling of 108.8 tokens/s on the RTX 4080 SUPER). KV reads are not counted, so a long prompt's share is lower than its ceiling would make it. The engine drafts for
+Gemma 4 (speculative decoding, 8 tokens a round), which can pass the ceiling: `--no-draft` starts the server without it, and the gate's results are taken that way.
 
 ## The format: `glyd-bench/1`
 
@@ -70,14 +71,15 @@ Exit 0: within the band. Exit 1: a regression (or failed requests). Exit 2: not 
 
 ### In CI
 
-`.github/workflows/gpu-bench.yml` runs on the self-hosted GPU machine (the repository variable `GPU_RUNNER`): on a merge to main it measures the gate's loads on Qwen3-8B and keeps the result in the runner's volume as
+`.github/workflows/gpu-bench.yml` runs on the self-hosted GPU machine (the repository variable `GPU_RUNNER`): on a merge to main it measures the gate's loads on Gemma 4 12B at the wren level (released 2026-05-23; the model is a recent one, as every model we test or benchmark is) and keeps the result in the runner's volume as
 main's last on that GPU (`/cache/bench/main-GPU.json`, with the last 20 in `history-GPU/`); on a pull request labeled `gpu` it measures the same and runs `bench --compare` against main's last, then the synthetic
-slowdown. A result taken while the GPU was busy is taken again, up to three times a minute apart.
+slowdown. A result taken while the GPU was busy (other jobs of the runner do not wait for it) is taken again, up to 20 times 45 s apart.
 
 ### Where the noise band is
 
-Measured on the RTX 4080 SUPER of glyd-pc, five sessions of the gate's loads (a server started for each): see
-[benchmarks/gpu/rtx4080s-bench-2026-11-20](../benchmarks/gpu/rtx4080s-bench-2026-11-20).
+From the runs of the workflow itself: glyd-pc runs GitHub Actions jobs only (a model is measured in CI, or on a rented GPU, never by hand on it), so main's results keep in `history-GPU/` as the merges come, and
+from the third on the gate's band takes in the spread from one session to another. Until then it is the spread of the runs of the two files with a floor of 0.3%. An earlier measurement of five sessions
+on Qwen3-8B (not a recent model, so not kept in the tree) had decode within 0.03-0.12% from session to session, the prefill of a long prompt and a single request's first token within 0.15-0.4%.
 
 ## The speed bar
 
