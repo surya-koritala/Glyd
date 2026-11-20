@@ -264,13 +264,20 @@ fn py_repr(s: &str, n: usize) -> String {
     o
 }
 
+/// The names a container uses for the computer it runs on (Docker Desktop's, Podman's): a program in a container that is set up to reach the server there sends one as its Host. They name this computer to a program
+/// inside Docker, and resolve nowhere else; the server's address is still its own.
+const CONTAINER_HOSTS: [&str; 2] = ["host.docker.internal", "host.containers.internal"];
+
 /// (status, why) for a request that a server on this computer's own address does not answer, or None: a Host that is not a loopback name is a DNS-rebinding page's (421), an Origin that is not `http://` and
 /// the Host is another page's script (403, a preflight too). A request with no Host or no Origin is not refused for the missing one (curl and the OpenAI libraries send no Origin).
 pub fn refusal(host: &str, origin: &str) -> Option<(u16, String)> {
-    if !host.is_empty() && !LOOPBACK.contains(&hostname(host).as_str()) {
+    if !host.is_empty() && !LOOPBACK.contains(&hostname(host).as_str()) && !CONTAINER_HOSTS.contains(&hostname(host).as_str()) {
         return Some((
             421,
-            format!("this server answers to localhost, 127.0.0.1 and [::1], not to {} (glyd serve --host sets another address)", py_repr(host, 80)),
+            format!(
+                "this server answers to localhost, 127.0.0.1, [::1] and host.docker.internal, not to {} (glyd serve --host sets another address)",
+                py_repr(host, 80)
+            ),
         ));
     }
     if !origin.is_empty() && origin.to_lowercase() != format!("http://{}", host.trim().to_lowercase()) {
@@ -2887,6 +2894,19 @@ pub(crate) mod tests {
             assert_eq!(status("GET", "/v1/models", &[("Host", host)]), 200, "{host}");
             assert_eq!(status("GET", "/health", &[("Host", host)]), 200, "{host}");
         }
+        // the names a container has for this computer (Open WebUI in Docker Desktop reaches the server by one): answered; the Origin is judged as for any Host
+        for host in [
+            "host.docker.internal:8000",
+            "host.containers.internal:8000",
+            "Host.Docker.Internal",
+            "host.docker.internal.evil.example:8000",
+            "xhost.docker.internal:8000",
+        ] {
+            let want = if host.to_ascii_lowercase().contains("evil") || host.starts_with('x') { 421 } else { 200 };
+            assert_eq!(status("GET", "/v1/models", &[("Host", host)]), want, "{host}");
+        }
+        assert_eq!(status("GET", "/v1/models", &[("Host", "host.docker.internal:8000"), ("Origin", "http://host.docker.internal:8000")]), 200);
+        assert_eq!(status("GET", "/v1/models", &[("Host", "host.docker.internal:8000"), ("Origin", "http://evil.example")]), 403);
         // (HTTP/1.0 and a client with no Host: nothing to refuse for it)
         assert_eq!(status("GET", "/v1/models", &[]), 200);
         // the page's own requests: the Origin is `http://` and the Host, in any case
