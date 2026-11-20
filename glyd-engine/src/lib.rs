@@ -52,6 +52,8 @@ pub mod dsv4_ref;
 pub mod dynamic;
 pub mod entry;
 pub mod f8;
+#[cfg(test)]
+mod families;
 pub mod ffi;
 pub mod fit;
 pub mod gguf;

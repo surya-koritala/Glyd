@@ -735,7 +735,7 @@ fn constraint_of(sh: &Shared, v: &Value, api: &Api) -> std::result::Result<Optio
             _ => return None,
         };
         // (Kimi-K3's and Gemma 4's own markup: a forced call is opened by the prompt, and goes without a grammar)
-        let c = sh.chat.as_ref().filter(|c| !c.is_xtml() && !c.is_gemma())?;
+        let c = sh.chat.as_ref().filter(|c| !c.is_xtml() && !c.is_gemma() && !c.is_muse())?;
         crate::constrain::call_grammar(&t.list, named.as_deref(), Format::of(c)).map(Spec::Grammar)
     });
     // (a form the request names is refused where it cannot be held; a forced call is opened by the prompt all the same, and goes without the grammar)
@@ -1115,7 +1115,13 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
             ToolChoice::Named(n) => Some(format!("<|tool_call>call:{n}{{")),
             _ => None,
         });
-        let forced = gemma.unwrap_or_else(|| tools::forced_prefix(&choice, Format::of(c))).filter(|_| !c.is_xtml()).map(|p| {
+        // (Muse's: the message to the function, and for a named one its ATEM block opened)
+        let muse = c.is_muse().then(|| match &choice {
+            ToolChoice::Required => Some(" to=".to_string()),
+            ToolChoice::Named(n) => tools::forced_prefix(&choice, Format::Atem).map(|p| format!(" to={n}<|message|>{p}")),
+            _ => None,
+        });
+        let forced = gemma.or(muse).unwrap_or_else(|| tools::forced_prefix(&choice, Format::of(c))).filter(|_| !c.is_xtml()).map(|p| {
             if standalone && choice == ToolChoice::Required {
                 p.trim_end_matches(tools::FN_OPEN).to_string()
             } else {
@@ -1349,7 +1355,9 @@ fn start_as(sh: &Shared, tx: &Sender<Job>, o: &Value, chat: bool, hide_reasoning
         in_thinking: pr.in_thinking,
         stops: r.stop.clone(),
         include_stop: r.include_stop,
-        skip_special: r.skip_special && reading.is_none() && !matches!(reader_kind, Some(crate::reader::ReaderKind::Gemma { .. })),
+        skip_special: r.skip_special
+            && reading.is_none()
+            && !matches!(reader_kind, Some(crate::reader::ReaderKind::Gemma { .. } | crate::reader::ReaderKind::Muse)),
         hide_reasoning: hide_reasoning || api.hide_reasoning,
         tools: tools_cfg,
         lead: if reading.is_none() { pr.prefix.clone() } else { String::new() },
@@ -1471,7 +1479,9 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                 in_thinking: pr.in_thinking,
                 stops: r.stop.clone(),
                 include_stop: r.include_stop,
-                skip_special: r.skip_special && reading.is_none() && !matches!(reader_kind, Some(crate::reader::ReaderKind::Gemma { .. })),
+                skip_special: r.skip_special
+                    && reading.is_none()
+                    && !matches!(reader_kind, Some(crate::reader::ReaderKind::Gemma { .. } | crate::reader::ReaderKind::Muse)),
                 hide_reasoning: api.hide_reasoning,
                 tools: tools_cfg,
                 lead,
@@ -3960,6 +3970,152 @@ pub(crate) mod tests {
         let (_, body) = call(addr, "/v1/chat/completions", &ask(",\"stream\":true"));
         let (think, content, _, _, _) = put_together(&body);
         assert_eq!((think.trim(), content.trim()), ("Let me look.", "The answer."), "{body}");
+    }
+
+    pub(crate) fn muse_template() -> &'static str {
+        include_str!("../tests/fixtures/chat_muse_atem.jinja")
+    }
+
+    const MUSE_CALL: &str = " to=self<|message|>Need the weather.<|eom|><|start|>assistant to=get_weather<|message|><atem:function_calls>\n<atem:invoke name=\"get_weather\">\n<atem:parameter name=\"city\">Paris</atem:parameter>\n</atem:invoke>\n</atem:function_calls><|eom|>";
+
+    /// Muse (its ATEM protocol): the prompt has the tools and the recipients; a message to `self` is the reasoning, one to a function an ATEM block that is an OpenAI tool call (whole and streamed), a function or a call asked for
+    /// opened in the prompt, and a message to `user` the answer.
+    #[test]
+    fn muse_tool_calls_and_thinking() {
+        let shared = Shared {
+            tok: crate::tok::tests::toy(&["x"]),
+            chat: Some(Chat::from_template(muse_template()).unwrap()),
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        };
+        let prompt = |extra: &str| {
+            let v = json::parse(&chat_body(extra)).unwrap();
+            let api = api_of(&v, true, 100).unwrap();
+            let r = request_of(&v, 4096, &Params::default());
+            chat_text_of(&shared, &v, &api, &r).unwrap()
+        };
+        let (t, thinking, p, _) = prompt("");
+        assert!(t.contains("<atem:function_calls>") && t.contains("\"name\": \"get_weather\"") && t.ends_with("<|start|>assistant"), "{t}");
+        assert!(!thinking && p.is_empty());
+        let (t, _, p, _) = prompt(r#","tool_choice":{"type":"function","function":{"name":"get_weather"}}"#);
+        assert_eq!(p, " to=get_weather<|message|><atem:function_calls>\n<atem:invoke name=\"get_weather\">\n");
+        assert!(t.ends_with(&format!("<|start|>assistant{p}")), "{t}");
+        let (_, _, p, _) = prompt(r#","tool_choice":"required""#);
+        assert_eq!(p, " to=");
+
+        let addr = serve_script_with(MUSE_CALL, muse_template());
+        let (st, body) = call(addr, "/v1/chat/completions", &chat_body(""));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        let c = at(&d, &["choices", "0"]);
+        assert_eq!(
+            (at(c, &["finish_reason"]).as_str(), at(c, &["message", "reasoning_content"]).as_str().map(str::trim)),
+            (Some("tool_calls"), Some("Need the weather.")),
+            "{body}"
+        );
+        assert_eq!(
+            (at(c, &["message", "tool_calls", "0", "function", "name"]).as_str(), at(c, &["message", "tool_calls", "0", "function", "arguments"]).as_str()),
+            (Some("get_weather"), Some("{\"city\": \"Paris\"}")),
+            "{body}"
+        );
+        assert!(!body.contains("atem") && !body.contains("<|"), "{body}");
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        let (think, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((think.trim(), content.trim(), finishes), ("Need the weather.", "", vec!["tool_calls".to_string()]), "{body}");
+        assert_eq!((calls[0].1.as_str(), calls[0].2.as_str()), ("get_weather", "{\"city\": \"Paris\"}"), "{calls:?}");
+        // asked for a function: the model writes the parameters on
+        let addr = serve_script_with("<atem:parameter name=\"city\">Paris</atem:parameter>\n</atem:invoke>\n</atem:function_calls><|eom|>", muse_template());
+        let named = r#","tool_choice":{"type":"function","function":{"name":"get_weather"}}"#;
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(named));
+        let d = json::parse(&body).unwrap();
+        assert_eq!(
+            (
+                at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(),
+                at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()
+            ),
+            (Some("get_weather"), Some("{\"city\": \"Paris\"}")),
+            "{body}"
+        );
+        // the answer to the user
+        let addr = serve_script_with(" to=self<|message|>Easy.<|eom|><|start|>assistant to=user<|message|>It is sunny.<|eot|>", muse_template());
+        let ask = "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":200}";
+        let (_, body) = call(addr, "/v1/chat/completions", ask);
+        let d = json::parse(&body).unwrap();
+        assert_eq!(
+            (
+                at(&d, &["choices", "0", "message", "reasoning_content"]).as_str().map(str::trim),
+                at(&d, &["choices", "0", "message", "content"]).as_str().map(str::trim)
+            ),
+            (Some("Easy."), Some("It is sunny.")),
+            "{body}"
+        );
+    }
+
+    /// Every family's tool call through both APIs, as its own template and markup have it: the OpenAI chat (whole and streamed) and Anthropic's Messages (whole and streamed) each give the call of `get_weather` with
+    /// `{"city": "Paris"}`, and the finish reason or stop reason of a call.
+    #[test]
+    fn every_family_calls_a_tool_through_both_apis() {
+        let weather_anthropic = r#"{"name":"get_weather","description":"Get the weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}"#;
+        // (a template that opens the thinking itself: the model closes it and then calls)
+        let after_thinking = |call: &str| -> &'static str { Box::leak(format!("Need it.\n</think>\n\n{call}").into_boxed_str()) };
+        let families: Vec<(&str, String, &str)> = vec![
+            ("Qwen3 (hermes)", qwen3_template(), CALL),
+            ("Qwen3.5 (XML)", qwen35_template().to_string(), XML_CALL),
+            ("Qwen3.8 (XML)", include_str!("../tests/fixtures/chat_qwen38_tools.jinja").to_string(), after_thinking(XML_CALL)),
+            ("GLM-5.3-Flash", include_str!("../tests/fixtures/chat_glm53_tools.jinja").to_string(), after_thinking("<tool_call>get_weather<arg_key>city</arg_key><arg_value>Paris</arg_value></tool_call>")),
+            ("DeepSeek-V4 (DSML)", crate::chat::DSV4_CHAT.to_string(), "\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"get_weather\">\n<｜DSML｜parameter name=\"city\" string=\"true\">Paris</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>"),
+            ("Gemma 4", gemma_template().to_string(), GEMMA_CALL),
+            ("Muse (ATEM)", muse_template().to_string(), MUSE_CALL),
+        ];
+        let paris = json::parse(r#"{"city":"Paris"}"#).unwrap();
+        for (name, template, reply) in families {
+            let addr = serve_script_with(reply, &template);
+            // OpenAI: whole
+            let (st, body) = call(addr, "/v1/chat/completions", &chat_body(""));
+            assert_eq!(st, 200, "{name}: {body}");
+            let d = json::parse(&body).unwrap();
+            let c = at(&d, &["choices", "0"]);
+            assert_eq!(at(c, &["finish_reason"]).as_str(), Some("tool_calls"), "{name}: {body}");
+            assert_eq!(at(c, &["message", "tool_calls", "0", "function", "name"]).as_str(), Some("get_weather"), "{name}: {body}");
+            assert_eq!(json::parse(at(c, &["message", "tool_calls", "0", "function", "arguments"]).as_str().unwrap()).unwrap(), paris, "{name}: {body}");
+            // OpenAI: streamed
+            let (_, body) = call(addr, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+            let (_, _, calls, finishes, _) = put_together(&body);
+            assert_eq!(finishes, vec!["tool_calls".to_string()], "{name}: {body}");
+            assert_eq!((calls[0].1.as_str(), json::parse(&calls[0].2).unwrap()), ("get_weather", paris.clone()), "{name}: {body}");
+            // Anthropic: whole and streamed
+            let q = |extra: &str| {
+                format!(r#"{{"max_tokens":200,"tools":[{weather_anthropic}],"messages":[{{"role":"user","content":"Weather in Paris?"}}]{extra}}}"#)
+            };
+            let (st, body) = call(addr, "/v1/messages", &q(""));
+            assert_eq!(st, 200, "{name}: {body}");
+            let d = json::parse(&body).unwrap();
+            let tu = d
+                .get("content")
+                .and_then(Value::as_array)
+                .unwrap()
+                .iter()
+                .find(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+                .unwrap_or_else(|| panic!("{name}: {body}"));
+            assert_eq!(
+                (at(tu, &["name"]).as_str(), at(tu, &["input"]), at(&d, &["stop_reason"]).as_str()),
+                (Some("get_weather"), &paris, Some("tool_use")),
+                "{name}: {body}"
+            );
+            let (_, body) = call(addr, "/v1/messages", &q(r#","stream":true"#));
+            let args: String = body
+                .lines()
+                .filter_map(|l| l.strip_prefix("data: "))
+                .filter_map(|d| json::parse(d).ok())
+                .filter_map(|e| e.get("delta").and_then(|d| d.get("partial_json")).and_then(Value::as_str).map(str::to_string))
+                .collect();
+            assert_eq!(json::parse(&args).unwrap(), paris, "{name}: {body}");
+            assert!(body.contains("\"stop_reason\":\"tool_use\""), "{name}: {body}");
+        }
     }
 
     const XML_CALL: &str = "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>";
