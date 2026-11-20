@@ -161,14 +161,26 @@ impl Kern {
                 return i;
             }
         }
+        let fits = |t: &Tile| n.is_multiple_of(t.bn as usize) && k.is_multiple_of(t.bk as usize);
         let want = if m >= 1536 {
-            kname!("gemm3_256x128_s3")
+            // (a long prompt: the big tile, or the smaller one where the big tile's last wave of blocks leaves the multiprocessors more idle: a block a multiprocessor, the work of a wave its tile's rows by columns;
+            // the same sums either way. 128 x 128 for the 4,096-column products of a 2,000-token prompt on 80 multiprocessors: 7 waves of the smaller against 4 of the bigger, 6% of the pass)
+            let (big, small) = (kname!("gemm3_256x128_s3"), kname!("gemm3_128x128_s4"));
+            let cost = |name: &str| {
+                self.plain.iter().find(|t| t.name == name && fits(t)).map(|t| {
+                    let blocks = m.div_ceil(t.bm as usize) * (n / t.bn.max(1) as usize);
+                    blocks.div_ceil(self.sms as usize) as u64 * t.bm as u64 * t.bn as u64
+                })
+            };
+            match (cost(big), cost(small)) {
+                (Some(b), Some(sm)) if sm * 100 < b * 97 => small,
+                _ => big,
+            }
         } else if n >= 16384 {
             kname!("gemm3_128x256_b64_s2")
         } else {
             kname!("gemm3_128x128_b64_s3")
         };
-        let fits = |t: &Tile| n.is_multiple_of(t.bn as usize) && k.is_multiple_of(t.bk as usize);
         self.plain.iter().position(|t| t.name == want && fits(t)).or_else(|| self.plain.iter().position(fits)).unwrap_or(0)
     }
 
@@ -231,7 +243,22 @@ impl Kern {
     pub unsafe fn gemm_silu(&self, s: Stream, x: u64, w: u64, y: u64, m: i32, n: i32, k: i32) -> Result<()> {
         let want = match crate::tune!("GLYD_ENGINE_TILE") {
             Some(t) if self.fused.iter().any(|x| x.name == t) => t,
-            _ => (if m >= 1536 { kname!("gemm3f_256x128_s3") } else { kname!("gemm3f_128x256_b64_s2") }).to_string(),
+            _ if m >= 1536 => {
+                // (a long prompt: of the two tiles of the same size, the one that leaves the multiprocessors less idle in the last wave of blocks: a block a multiprocessor, the same sums either way)
+                let (a, b) = (kname!("gemm3f_256x128_s3"), kname!("gemm3f_128x256_b64_s2"));
+                let waves = |name: &str| {
+                    self.fused
+                        .iter()
+                        .find(|t| t.name == name && (n as u32).is_multiple_of(t.bn) && (k as u32).is_multiple_of(t.bk))
+                        .map(|t| (m as usize).div_ceil(t.bm as usize).saturating_mul(n as usize / t.bn as usize).div_ceil(self.sms as usize))
+                };
+                match (waves(a), waves(b)) {
+                    (Some(wa), Some(wb)) if wb < wa => b,
+                    _ => a,
+                }
+                .to_string()
+            }
+            _ => kname!("gemm3f_128x256_b64_s2").to_string(),
         };
         let fits = |t: &Tile| (n as u32).is_multiple_of(t.bn) && (k as u32).is_multiple_of(t.bk);
         let Some(t) = self.fused.iter().find(|t| t.name == want && fits(t)).or_else(|| self.fused.iter().find(|t| fits(t))) else {
