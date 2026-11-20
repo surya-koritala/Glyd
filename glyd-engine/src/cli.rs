@@ -483,7 +483,7 @@ fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
         ..Opts::default()
     };
     let engine = Engine::new(&p.dir, &o).map_err(|e| engine_refusal(e, &name, &p.fit, &gpu))?;
-    loaded_report(&model, &p.fit, &gpu, engine.w.bytes as u64);
+    loaded_report(&model, &p.fit, &[&gpu], engine.w.bytes as u64);
     let tok = Tok::load(&p.dir).map_err(cannot)?;
     let chat = Chat::load(&p.dir).map_err(cannot)?;
     let mut defaults = sampler::generation_defaults(&p.dir);
@@ -506,8 +506,9 @@ fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
 
 /// What the load took of the GPU against the plan: the weights the engine counts and the memory the GPU lost since the plan was made. A development build
 /// writes it as JSON to `GLYD_PLAN_REPORT` (the GPU check reads it) and says it with `GLYD_ENGINE_VERBOSE`: the numbers the planner is calibrated on.
-fn loaded_report(model: &str, plan: &LoadPlan, gpu: &Gpu, weights: u64) {
-    let used = Dev::probe(gpu.ordinal).map_or(0, |g| gpu.free.saturating_sub(g.free));
+fn loaded_report(model: &str, plan: &LoadPlan, gpus: &[&Gpu], weights: u64) {
+    let used = gpus.iter().map(|gpu| Dev::probe(gpu.ordinal).map_or(0, |g| gpu.free.saturating_sub(g.free))).sum::<u64>();
+    crate::plan::remember_in(&store::cache_root(), model, plan, weights, used);
     if let Some(path) = crate::tune!("GLYD_PLAN_REPORT") {
         let _ = std::fs::write(path, plan.report(model, weights, used));
     }
@@ -1634,7 +1635,7 @@ fn load_lossy(
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     };
-    loaded_report(&model, &plan, &gpu, bytes as u64);
+    loaded_report(&model, &plan, &[&gpu], bytes as u64);
     let tok = Tok::load(&dir).map_err(cannot)?;
     let chat = Chat::load(&dir).map_err(cannot)?;
     let mut defaults = sampler::generation_defaults(&dir);
@@ -2095,6 +2096,8 @@ fn load_dynamic(
             cannot(e.0)
         }
     })?;
+    // (the weights the route holds are not counted apart: 0)
+    loaded_report(model, &plan, &gpus.iter().filter(|g| devices.contains(&g.ordinal)).collect::<Vec<_>>(), 0);
     let tok = Tok::load(&dir).map_err(cannot)?;
     // (DeepSeek-V4's and Kimi-K3's releases have their chat formats in Python alone: ours as templates)
     let own = match family {

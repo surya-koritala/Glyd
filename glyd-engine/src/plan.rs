@@ -1026,6 +1026,44 @@ fn choose(options: &[Candidate], max_ctx: usize) -> Option<Candidate> {
         .cloned()
 }
 
+// ---- the plan that loaded, remembered -----------------------------------------------------------------------------------------------------------------------------------------------------
+
+fn memo_file(root: &std::path::Path, model: &str, level: &str, gpu: &str) -> std::path::PathBuf {
+    let slug: String =
+        format!("{}-{level}-{gpu}", crate::levels::split_tag(model).0).chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' }).collect();
+    root.join("plans").join(format!("{slug}.json"))
+}
+
+/// What loaded, kept in `root` (the cache's `plans/`) by model, level and GPU: the plan and what the load took (`LoadPlan::report`), for `fit` to say
+/// what a model took here before. A failure to write it is not the run's.
+pub fn remember_in(root: &std::path::Path, model: &str, plan: &LoadPlan, weights_loaded: u64, gpu_used: u64) {
+    let file = memo_file(root, model, plan.level, &plan.gpu);
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, plan.report(crate::levels::split_tag(model).0, weights_loaded, gpu_used));
+}
+
+/// The plan that loaded `model` at `level` on `gpu` before (`remember_in`'s), if one did.
+pub fn recall_in(root: &std::path::Path, model: &str, level: &str, gpu: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(&std::fs::read_to_string(memo_file(root, model, level, gpu)).ok()?).ok()
+}
+
+/// A sentence for `fit` on how the plan it made compares with the one that loaded here before.
+fn remembered(root: &std::path::Path, model: &str, c: &Candidate) -> Option<String> {
+    let lp = c.load.as_ref()?;
+    let before = recall_in(root, model, lp.level, lp.gpu.split(", ").next().unwrap_or(""))?;
+    let (plan, loaded) = (before.get("plan")?, before.get("loaded")?);
+    let (ctx, used) = (plan.get("context")?.as_u64()?, loaded.get("gpu_used_bytes")?.as_u64()?);
+    let same = ctx == lp.context as u64 && plan.get("weights_bytes")?.as_u64()? == lp.weights && plan.get("users")?.as_u64()? == lp.users as u64;
+    Some(format!(
+        "loaded here before at {ctx} tokens of context, the GPU lost {} ({}: {} planned now)",
+        gb(used),
+        if same { "the same plan" } else { "a different plan now" },
+        gb(lp.gpu_total() - lp.reserve)
+    ))
+}
+
 // ---- the command ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 fn gb(b: u64) -> String {
@@ -1237,6 +1275,9 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
         }
     } else {
         print!("{}", text(model, &f.shape, &f.machine, p));
+        if let Some(n) = p.chosen.as_ref().and_then(|c| remembered(&crate::store::cache_root(), model, c)) {
+            println!("note: {n}");
+        }
         if f.family.hummingbird_packed_only && p.chosen.as_ref().is_some_and(|c| c.level == "hummingbird") {
             println!("note: the hummingbird level comes as a pre-packed download: glyd/{}-hummingbird", f.name);
         }
@@ -1773,5 +1814,28 @@ mod tests {
             }
         }
         assert!(planned_ok >= 3, "{planned_ok}");
+    }
+
+    /// The plan that loaded is kept by model, level and GPU, and `fit` says what it took here before and whether the plan it makes now is the same.
+    #[test]
+    fn the_plan_that_loaded_is_remembered() {
+        let dir = model_dir("memo", "gemma-4-12B", &fixture("gemma4_12b_config.json"));
+        let model = format!("{}:kestrel", dir.to_str().unwrap());
+        let f = planned(&args(&["fit", &model, "--machine", "rtx4080s"])).unwrap();
+        let c = f.plan.chosen.unwrap();
+        let lp = c.load.clone().unwrap();
+        let root = std::env::temp_dir().join(format!("glyd-plan-memo-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(remembered(&root, &model, &c).is_none(), "nothing loaded yet");
+        remember_in(&root, &model, &lp, lp.weights, lp.gpu_total() - lp.reserve - (200 << 20));
+        let again = recall_in(&root, &model, lp.level, &lp.gpu).unwrap();
+        assert_eq!((again["plan"]["context"].as_u64(), again["schema"].as_str()), (Some(lp.context as u64), Some(SCHEMA)));
+        assert!(remembered(&root, &model, &c).unwrap().contains("the same plan"));
+        // (another context asked for: a different plan)
+        let f = planned(&args(&["fit", &model, "--machine", "rtx4080s", "--context", "8192"])).unwrap();
+        assert!(remembered(&root, &model, f.plan.chosen.as_ref().unwrap()).unwrap().contains("a different plan"));
+        // (another GPU, another level: not the same memory)
+        assert!(recall_in(&root, &model, "swift", &lp.gpu).is_none() && recall_in(&root, &model, lp.level, "NVIDIA L4").is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
