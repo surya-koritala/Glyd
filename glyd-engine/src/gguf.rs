@@ -1428,7 +1428,8 @@ mod tests {
     #[ignore = "needs GLYD_TEST_GGUF_HEADERS"]
     fn real_headers_parse_and_are_described() {
         let dir = PathBuf::from(std::env::var_os("GLYD_TEST_GGUF_HEADERS").expect("set GLYD_TEST_GGUF_HEADERS"));
-        let mut heads: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "head")).collect();
+        let mut heads: Vec<PathBuf> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "head")).collect();
         heads.sort();
         assert!(!heads.is_empty());
         for p in &heads {
