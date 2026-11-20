@@ -1826,15 +1826,31 @@ pub(crate) mod tests {
         pub batches: usize,
         pub steps: Vec<usize>,
         pub most: usize,
+        /// The first token of each prompt as it begins (at position 0), in order.
+        pub begun: Vec<u32>,
         pub rows: Vec<Vec<f32>>,
     }
 
     impl SlotFake {
         pub fn new(slots: usize, window: usize, chunk: usize) -> SlotFake {
-            SlotFake { rooms: vec![Vec::new(); slots], window, chunk, batch: 1, emptied: 0, batches: 0, steps: Vec::new(), most: 0, rows: Vec::new() }
+            SlotFake {
+                rooms: vec![Vec::new(); slots],
+                window,
+                chunk,
+                batch: 1,
+                emptied: 0,
+                batches: 0,
+                steps: Vec::new(),
+                most: 0,
+                rows: Vec::new(),
+                begun: Vec::new(),
+            }
         }
         fn put(&mut self, slot: &[i32], start: usize, tokens: &[u32]) -> u32 {
             assert_eq!(slot.len(), 1, "a slot step's pages are its slot");
+            if start == 0 {
+                self.begun.push(tokens[0]);
+            }
             let room = &mut self.rooms[slot[0] as usize];
             assert_eq!(room.len(), start, "tokens at {start} where the slot holds {}", room.len());
             room.extend_from_slice(tokens);
@@ -1939,44 +1955,33 @@ pub(crate) mod tests {
         }
     }
 
-    /// Admission is first come, first served: with one slot the replies end in the order the requests came, and a later short one does not pass an earlier long one.
+    /// Admission is first come, first served: with one slot each sequence's prompt begins when the one before it has ended, in the order the requests came; a later short one does not pass an earlier
+    /// long one. (The order is the step's, as it sees each prompt begin: the events reach the requests on a thread of their own.)
     #[test]
     fn admission_is_in_the_order_requests_come() {
         let mut s = Sched::new(SlotFake::new(1, 256, 16), 4);
-        let (ends_tx, ends_rx) = channel::<usize>();
-        let rx: Vec<_> = [40usize, 2, 30, 1].iter().map(|&n| add(&mut s, prompt(n as u32, 5), n).0).collect();
-        while !s.idle() {
-            s.tick().unwrap();
-            for (k, r) in rx.iter().enumerate() {
-                while let Ok(ev) = r.try_recv() {
-                    if let Ev::End(_) = ev {
-                        ends_tx.send(k).unwrap();
-                    }
-                }
-            }
+        let lens = [40usize, 2, 30, 1];
+        let prompts: Vec<Vec<u32>> = lens.iter().map(|&n| prompt(n as u32, 5)).collect();
+        let rx: Vec<_> = prompts.iter().zip(lens).map(|(p, n)| add(&mut s, p.clone(), n).0).collect();
+        run(&mut s);
+        let begun: Vec<usize> = s.be.begun.iter().map(|t| prompts.iter().position(|p| p[0] == *t).expect("a prompt")).collect();
+        assert_eq!(begun, vec![0, 1, 2, 3]);
+        for ((p, n), r) in prompts.iter().zip(lens).zip(&rx) {
+            assert_eq!(collect(r), (reference(p, n), Finish::Length));
         }
-        drop(ends_tx);
-        // (the events reach the requests on the scheduler's sending thread: what was not seen in the loop comes after it)
-        let mut order: Vec<usize> = ends_rx.iter().collect();
-        for (k, r) in rx.iter().enumerate() {
-            if r.recv().is_ok_and(|e| matches!(e, Ev::End(_))) || r.try_iter().any(|e| matches!(e, Ev::End(_))) {
-                order.push(k);
-            }
-        }
-        order.dedup();
-        assert_eq!(order, vec![0, 1, 2, 3]);
     }
 
     /// Fairness while decoding: every round with a decode step gives every sequence that is decoding one token, so the replies of sequences that started together never differ by more than a token
-    /// until one ends; a new prompt runs beside them (they wait for it at most a few rounds, never until it is done).
+    /// until one ends; a new prompt runs beside them (they wait for it at most a few rounds, never until it is done). (Counted in the step's rooms, which the rounds fill, not by the events, which reach
+    /// the requests on a thread of their own.)
     #[test]
     fn every_decoding_sequence_gets_a_token_each_step() {
         let mut s = Sched::new(SlotFake::new(4, 4096, 32), 4);
         let rx: Vec<_> = (0..3).map(|k| add(&mut s, prompt(k + 1, 8), 200).0).collect();
-        let mut got = [0usize; 3];
         let mut late: Option<Receiver<Ev>> = None;
-        let mut rounds_waited = 0;
-        let mut longest_wait = 0;
+        let (mut rounds_waited, mut longest_wait) = (0, 0);
+        // (slots 0, 1 and 2 are the three's: the lowest free slot is taken first)
+        let made = |s: &Sched<SlotFake>| -> Vec<usize> { (0..3).map(|k| s.be.rooms[k].len().saturating_sub(8)).collect() };
         for round in 0..400 {
             if s.idle() {
                 break;
@@ -1985,17 +1990,14 @@ pub(crate) mod tests {
                 // a long prompt comes while the three decode: 2,000 tokens, 63 chunks
                 late = Some(add(&mut s, prompt(99, 2000), 4).0);
             }
-            let before = got;
+            let before = made(&s);
             s.tick().unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            for (k, r) in rx.iter().enumerate() {
-                got[k] += r.try_iter().filter(|e| matches!(e, Ev::Token(_))).count();
-            }
-            if got.iter().all(|&g| g > 0) && got.iter().all(|&g| g < 200) {
+            let got = made(&s);
+            if got.iter().all(|&g| g > 0 && g < 199) {
                 let (lo, hi) = (got.iter().min().unwrap(), got.iter().max().unwrap());
                 assert!(hi - lo <= 1, "round {round}: {got:?}");
             }
-            if got == before && got.iter().any(|&g| g > 0 && g < 200) {
+            if got == before && got.iter().any(|&g| g > 0 && g < 199) {
                 rounds_waited += 1;
                 longest_wait = longest_wait.max(rounds_waited);
             } else {
@@ -2004,6 +2006,9 @@ pub(crate) mod tests {
         }
         run(&mut s);
         assert!(longest_wait <= MAX_LONG_SKIPS as usize + 1, "decoding sequences waited {longest_wait} rounds in a row");
+        for (k, r) in rx.iter().enumerate() {
+            assert_eq!(collect(r), (reference(&prompt(k as u32 + 1, 8), 200), Finish::Length));
+        }
         assert_eq!(collect(&late.unwrap()).0, reference(&prompt(99, 2000), 4));
     }
 
