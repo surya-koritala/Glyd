@@ -44,6 +44,12 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
         None => None,
     };
     let seen: Vec<usize> = (0..c.pos.len()).filter(|&j| c.pos[j] <= pos).collect();
+    // an indexer keeps every token while the context fits its choice; past that the reference has no indexer yet
+    if let Some(ix) = &m.indexer {
+        if seen.len() > ix.top_k * ix.block.max(1) {
+            return err(format!("MLA: {} tokens past the indexer's {} (the reference does not select yet)", seen.len(), ix.top_k));
+        }
+    }
     let mut out = Vec::with_capacity(nh * vd);
     for head in 0..nh {
         let rows = |r: usize| &kv_b[(head * (nope + vd) + r) * kr..][..kr];

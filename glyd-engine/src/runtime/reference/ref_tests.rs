@@ -374,3 +374,99 @@ fn depth_mix_against_kimi_ref() {
         assert_close(&super::depth_mix(&s, &wn, &wp), &RefKimi::mix_of(&s, &wn, &wp), BF16_TOL, &format!("depth mix of {n}"));
     }
 }
+
+/// A checkpoint as the reference model's tensor source: bf16 and f32 tensors as f32; an MXFP4 matrix (`.weight_packed`, `.weight_scale`)
+/// decoded where its `.weight` is asked for.
+fn checkpoint_source(ck: &Checkpoint) -> impl Fn(&str) -> Option<(Vec<usize>, Vec<f32>)> + '_ {
+    move |name: &str| {
+        if ck.get(name).is_some() {
+            return Some(tensor(ck, name));
+        }
+        let base = name.strip_suffix(".weight")?;
+        let (_, t) = ck.get(&format!("{base}.weight_packed"))?;
+        let (rows, cols) = (t.shape[0] as usize, t.shape[1] as usize * 2);
+        let w = crate::kimi_ref::mxfp4(&ck.read(&format!("{base}.weight_packed")).ok()?, &ck.read(&format!("{base}.weight_scale")).ok()?, rows, cols).ok()?;
+        Some((vec![rows, cols], w))
+    }
+}
+
+/// A whole model from its config.json through the description builder against the per-family reference's logits. Those references
+/// round to bf16 after nearly every operation; over a few layers the hidden state drifts by about 2% from the f32 kinds', which moves
+/// a router score by about 0.01. Where the reference's closest top-k choice in a step is nearer than `MARGIN`, the two can pick
+/// different experts, and attention carries that position's difference to every later one (Kimi-K3's random model: margins of 0.005
+/// and 0.014 gave 8% and 5%, margins of 0.024 and 0.036 gave 0.4% and 2%). So the prompt is chosen by the reference alone: the first of
+/// a fixed list of three-token prompts whose every step's margin clears `MARGIN`; then every position is bounded by `WHOLE_TOL`. With the
+/// routing clear, the bf16 roundings of 4-8 layers leave 3-5% at the third position (measured: Kimi-K3 5.0e-2, Muse Spark 5.3e-2); a
+/// wrong norm, residual or routing rule is off by tens of percent (a flipped expert choice alone gave 40-60%).
+const WHOLE_TOL: f32 = 8e-2;
+const MARGIN: f32 = 0.02;
+
+/// `theirs` makes a fresh reference: its step gives a token's logits and the step's routing margin.
+fn whole_model(dir: &std::path::Path, theirs: &mut dyn FnMut() -> Box<dyn FnMut(u32) -> (Vec<f32>, f32)>, vocab: usize, tol: f32, what: &str) {
+    use crate::runtime::{describe::describe, reference::model::RefModel};
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{what}: {}", e.0));
+    let ck = Checkpoint::open(dir).unwrap();
+    let src = checkpoint_source(&ck);
+    for c in 0..64u32 {
+        let toks: Vec<u32> = (0..3).map(|i| ((c * 977 + i * 131 + 7) as usize % vocab) as u32).collect();
+        let mut step = theirs();
+        let steps: Vec<(Vec<f32>, f32)> = toks.iter().map(|&t| step(t)).collect();
+        if steps.iter().any(|s| s.1 < MARGIN) {
+            continue;
+        }
+        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{what}: {}", e.0));
+        let ours = m.forward(&toks, 0).unwrap();
+        for (i, (want, _)) in steps.iter().enumerate() {
+            assert_close(&ours[i], want, tol, &format!("{what}: prompt {toks:?}, position {i}"));
+        }
+        return;
+    }
+    panic!("{what}: no prompt of the list routes clear of rounding");
+}
+
+#[test]
+fn kimi_k3_model_described() {
+    use crate::kimi_ref::{random, RefKimi};
+    let dir = std::env::temp_dir().join(format!("glyd-runtime-kimi-model-{}", std::process::id()));
+    random(&dir, 1, true, 8).unwrap();
+    let vocab = RefKimi::load(&dir).unwrap().c.vocab;
+    whole_model(
+        &dir,
+        &mut || {
+            let d2 = dir.clone();
+            let mut r = RefKimi::load(&d2).unwrap();
+            Box::new(move |t| {
+                let l = r.step(t);
+                (l, r.margin.get())
+            })
+        },
+        vocab,
+        WHOLE_TOL,
+        "Kimi-K3",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn muse_spark_model_described() {
+    use crate::muse_ref::{random, RefMuse};
+    let dir = std::env::temp_dir().join(format!("glyd-runtime-muse-model-{}", std::process::id()));
+    random(&dir).unwrap();
+    let vocab = RefMuse::load(&dir).unwrap().c.vocab;
+    whole_model(
+        &dir,
+        &mut || {
+            let d2 = dir.clone();
+            let mut r = RefMuse::load(&d2).unwrap();
+            Box::new(move |t| {
+                let l = r.step(t);
+                (l, r.margin.get())
+            })
+        },
+        vocab,
+        WHOLE_TOL,
+        "Muse Spark",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
