@@ -1,5 +1,5 @@
-# Dependency policy for the main workspace (cargo-deny): licenses compatible with Apache-2.0, no known advisories,
-# crates.io only. Starlings has its own (starlings/deny.toml).
+# Dependency policy for the whole workspace (cargo-deny), Starlings' crates included: licenses compatible with Apache-2.0, no known advisories,
+# crates.io only. starlings/fuzz is a workspace of its own and has its own (starlings/fuzz/deny.toml).
 [graph]
 all-features = true
 # glyd-engine (publish = false) was never in this policy: its dependencies (ureq, rustls) are not checked here. glyd lists it as an optional dependency (the `engine`
@@ -10,11 +10,22 @@ exclude = ["glyd-engine"]
 ignore = []
 
 [licenses]
-allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "0BSD", "MIT-0", "Unlicense"]
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "0BSD", "MIT-0", "Unlicense", "MPL-2.0"]
 confidence-threshold = 0.8
 
 [licenses.private]
 ignore = true
+
+# Reviewed artifact-access dependencies of Starlings; no blanket exception for future packages.
+[[licenses.exceptions]]
+name = "webpki-roots"
+version = "=1.0.10"
+allow = ["CDLA-Permissive-2.0"]
+
+[[licenses.exceptions]]
+name = "winx"
+version = "=0.36.4"
+allow = ["Apache-2.0 WITH LLVM-exception"]
 
 [bans]
 multiple-versions = "allow"

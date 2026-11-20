@@ -19,8 +19,10 @@ on:
 permissions:
   contents: read
 
+# Per pull request: a newer push to a pull request cancels its own older run, never another pull request's (they wait for the one GPU runner). Adding a label other than
+# `gpu` starts a run that does nothing (the job's `if` is false); it gets a group of its own so that it does not cancel the pull request's run that is on the GPU.
 concurrency:
-  group: gpu-bench-${{ github.ref }}
+  group: gpu-bench-${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'gpu') && (github.event.pull_request.number || github.ref) || format('skip-{0}', github.run_id) }}
   cancel-in-progress: true
 
 jobs:
@@ -28,7 +30,8 @@ jobs:
     name: bench (${{ vars.GPU_RUNNER_ARCHS || '89' }})
     if: >-
       vars.GPU_RUNNER != '' && (github.event_name != 'pull_request' ||
-      (contains(github.event.pull_request.labels.*.name, 'gpu') && github.event.pull_request.head.repo.full_name == github.repository))
+      (contains(github.event.pull_request.labels.*.name, 'gpu') && github.event.pull_request.head.repo.full_name == github.repository
+      && (github.event.action != 'labeled' || github.event.label.name == 'gpu')))
     runs-on: ${{ fromJSON(vars.GPU_RUNNER) }}
     timeout-minutes: 90
     defaults:

@@ -46,6 +46,7 @@ mod cpu_simd;
 pub mod deepseek_v4;
 pub mod dev;
 pub mod disk;
+pub mod doctor;
 pub mod draft_loop;
 #[cfg(feature = "dev")]
 pub mod dsv4_ref;
@@ -130,6 +131,7 @@ pub mod qx_trellis;
 pub mod reader;
 #[cfg(feature = "dev")]
 pub mod report;
+pub mod runtime;
 pub mod sampler;
 pub mod sched;
 pub mod server;

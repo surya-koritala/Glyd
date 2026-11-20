@@ -282,13 +282,19 @@ pub struct ModelDesc {
     pub head: Head,                // tied, softcap, scale
     pub mtp: Vec<MtpHead>,         // draft heads, each a small list of blocks plus a projection
     pub vision: Option<VisionDesc>,
-    pub rope: Option<Rope>,        // default for kinds that do not set their own: theta, partial, mrope sections, scaling
+    pub rope: Option<Rope>,        // default for kinds that do not set their own: theta, span and angles, pairing, mrope, scaling
 }
 ```
 
 `Rope` covers the scaling variants the standard families need: linear, dynamic NTK, YaRN, `llama3`, `longrope` (R2's list). The
 description builder (R3a) makes a `ModelDesc` from `config.json` and the safetensors index with no per-family code for the standard
-architectures; families with unusual parts (Kimi-K3's depth mix, DeepSeek-V4's indexer) add a kind, not a pipeline.
+architectures; families with unusual parts (Kimi-K3's depth mix, DeepSeek-V4's indexer) add a kind, not a pipeline. Partial and
+proportional rope are different shapes, not one `partial` number: partial rope (Qwen3.8, 64 of 256) rotates the first 64 dimensions in
+pairs (i, i + 32), while Gemma 4's proportional rope on global layers rotates the whole head in pairs (i, i + 256) with only a quarter of the
+angles non-zero and exponents over the head dim. `Rope` therefore carries the rotated span, the number of angles with a frequency, the
+exponents' denominator and the pairing (`rotate_half` or interleaved, as GLM-5.3's and DeepSeek's latent attention use). A residual
+rule also sets the width of the stream a block runs on: with mHC (`Streams`) the block's `x` is n x hidden a token and the block takes
+its input from the streams and spreads its output back; `Add`, `Gated` and `AddScaled` keep one stream.
 
 ### A backend implements kinds
 
@@ -323,7 +329,11 @@ operations to the graph and the step's `finish` calls `mlx_eval`. The split of `
 
 `Ref` is a `Backend` whose `Tensor` is `Vec<f32>` and whose kinds are written for clarity: one function per kind, the formula from the
 model's reference code, rounding points named where the reference rounds (Kimi-K3's RMSNorm rounds twice: `research/kimi-k3.md` §2.1).
-Today's references (`qwen35_ref.rs`, `kimi_ref.rs`, `dsv4_ref.rs`, `muse_ref.rs`, `moe_ref.rs`) become kinds of it.
+Today's references (`qwen35_ref.rs`, `kimi_ref.rs`, `dsv4_ref.rs`, `muse_ref.rs`, `moe_ref.rs`) do not become kinds of it: they
+are whole-model emulations of vLLM's or transformers' bf16 pipelines (a rounding after nearly every operation), which is what R7's
+random-model logits need until each family moves. `Ref` is f32 with rounding only where a kind names it (norms); each kind is tested
+against the per-family reference with a bf16 tolerance and against transformers in float32, and the old reference goes with its
+family's pipeline (`glyd-engine/src/runtime/reference`).
 
 - Per kind: random weights at small shapes, the backend's kind against `Ref`'s, a tolerance per kind and format written next to the
   kind (bf16 accumulation order differs; lossless formats must match the bf16 kernel bit for bit before the tolerance applies).
