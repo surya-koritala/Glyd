@@ -128,6 +128,7 @@ pub mod status;
 pub mod store;
 #[cfg(feature = "dev")]
 pub mod stress;
+pub mod support;
 pub mod tok;
 pub mod tools;
 pub mod trace;

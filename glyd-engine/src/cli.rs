@@ -398,6 +398,10 @@ fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
     let users = if several { users_of(a)? } else { 1 };
     let t0 = Instant::now();
     let gpu = gpu_pick()?;
+    // (the machine checks of every other path: the CPU architecture, the driver, a MIG slice)
+    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true) {
+        return Err(r);
+    }
     let model = a.need(1, "MODEL")?.to_string();
     let name = short_name(&model);
     let p = prepare(a, &gpu, ui, true)?;
@@ -601,6 +605,13 @@ fn about(
 fn tagged(a: &Args) -> Done<(Args, Option<Layout>)> {
     let (model, layout) = level(a.pos.get(1).map_or("", String::as_str), a.has("lossy")).map(|(m, l)| (m.to_string(), l))?;
     let layout = run_level(&model, layout)?;
+    // the family and the level against the table fit reads (src/support.rs); a glyd-v7 directory or a pre-packed repo is at its own
+    // level, and a config not to be had now is the paths' own to say
+    if v7_layout(&model)?.is_none() && levels::repo_level(&model).is_none() {
+        if let Ok(text) = config_text(&model) {
+            crate::support::check(&text, &model, &short_name(&model), layout.map_or("penguin", level_name))?;
+        }
+    }
     let mut a = a.clone();
     if let Some(m) = a.pos.get_mut(1) {
         *m = model;

@@ -46,6 +46,8 @@ pub struct Machine {
     pub ram_free: u64,
     pub ram_bandwidth: f64,
     pub cores: usize,
+    /// The CPU architecture (`std::env::consts::ARCH`'s words: x86_64, aarch64).
+    pub arch: String,
 }
 
 /// Memory bandwidth (GB/s) of the GPUs the planner knows, by the words their names hold (most specific first).
@@ -159,7 +161,8 @@ impl Machine {
             "strix-halo-128g" => (vec![gpu("AMD Radeon 8060S", Vendor::Amd, (11, 5), 96.0, 92.0, 0)], 28.0, 256.0, 16),
             _ => return None,
         };
-        Some(Machine { name: name.into(), devices, ram_free: (ram_gib * GIB) as u64, ram_bandwidth: ram_bw, cores })
+        let arch = if name == "dgx-spark" { "aarch64" } else { "x86_64" }.into();
+        Some(Machine { name: name.into(), devices, ram_free: (ram_gib * GIB) as u64, ram_bandwidth: ram_bw, cores, arch })
     }
 
     pub const PRESETS: [&'static str; 13] = [
@@ -207,6 +210,7 @@ impl Machine {
             ram_free: (num(&v, "ram_free_gib").unwrap_or(16.0) * GIB) as u64,
             ram_bandwidth: num(&v, "ram_bandwidth").unwrap_or(50.0),
             cores: num(&v, "cores").unwrap_or(8.0) as usize,
+            arch: v.get("arch").and_then(Value::as_str).unwrap_or("x86_64").into(),
         })
     }
 
@@ -230,7 +234,14 @@ impl Machine {
             })
             .unwrap_or_default();
         let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-        Machine { name: "this computer".into(), devices, ram_free: crate::offload::host_memory().unwrap_or(8 << 30), ram_bandwidth: 50.0, cores }
+        Machine {
+            name: "this computer".into(),
+            devices,
+            ram_free: crate::offload::host_memory().unwrap_or(8 << 30),
+            ram_bandwidth: 50.0,
+            cores,
+            arch: std::env::consts::ARCH.into(),
+        }
     }
 }
 
@@ -432,6 +443,11 @@ pub struct Ask {
     pub level: Option<&'static str>,
     pub context: Option<usize>,
     pub users: usize,
+    /// The model's family as `run` treats it (src/support.rs): its levels, where its weights may go, its context. None:
+    /// any level and placement (the planner's own view, as for a model no path runs yet).
+    pub family: Option<&'static crate::support::Support>,
+    /// The checkpoint is quantization-aware (`levels::is_qat`): its wren runs in every build.
+    pub qat: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -546,13 +562,20 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         notes.push(format!("{} is older than Ampere: Turing and Volta support is ROADMAP V5", d0.name));
     }
     let users = ask.users.max(1) as f64;
-    let max_ctx = ask.context.unwrap_or(TARGET_CTX.min(sh.max_ctx));
+    let fam = ask.family;
+    let default_ctx = fam.and_then(|f| f.default_ctx).unwrap_or(TARGET_CTX).min(sh.max_ctx);
+    let max_ctx = ask.context.unwrap_or(default_ctx).min(fam.and_then(|f| f.max_ctx).unwrap_or(usize::MAX));
     let kv_at = |ctx: usize| (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state) * users;
     let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
     let same: Vec<usize> = (0..m.devices.len()).filter(|&i| m.devices[i].vendor == d0.vendor).collect();
     let gain = if sh.mtp { MTP_GAIN } else { 1.0 };
     // (wren on a checkpoint that is not quantization-aware is a development build's: offered only where this build runs it, or asked)
-    let levels: Vec<&'static str> = levels::LEVELS.iter().map(|l| l.name).filter(|n| ask.level.map_or(levels::names_now().contains(n), |a| a == *n)).collect();
+    let levels: Vec<&'static str> = levels::LEVELS
+        .iter()
+        .map(|l| l.name)
+        .filter(|n| ask.level.map_or(levels::names_now().contains(n), |a| a == *n))
+        .filter(|n| fam.is_none_or(|f| f.allows(n, ask.qat)))
+        .collect();
     let mut options = Vec::new();
     for &level in &levels {
         let Some((bits, ebits)) = level_bits(level, sh, d0) else { continue };
@@ -584,9 +607,9 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
             options.push(option(Some(Placement::Gpu(main)), ctx, gain * d0.bandwidth * GB * eff / read, None));
             continue;
         }
-        // a split over the GPUs of the vendor
+        // a split over the GPUs of the vendor (where the family's path splits at this level)
         let total_room: f64 = same.iter().map(|&i| room(&m.devices[i]) as f64).sum();
-        if same.len() > 1 {
+        if same.len() > 1 && fam.is_none_or(|f| f.split_levels.contains(&level)) {
             if let Some(ctx) = ctx_in(total_room, weights) {
                 // (one GPU at a time: each reads its share, in proportion to its room)
                 let t: f64 = same.iter().map(|&i| read * room(&m.devices[i]) as f64 / total_room / (m.devices[i].bandwidth * GB * eff)).sum::<f64>()
@@ -597,7 +620,7 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         }
         // a mixture of experts: the experts in the computer's memory, the rest and a cache of experts on the GPU (not where the GPU
         // already uses the computer's memory: there RAM is the same memory, counted once)
-        if sh.is_moe() && !d0.unified {
+        if sh.is_moe() && !d0.unified && fam.is_none_or(|f| f.experts_in_ram_levels.contains(&level)) {
             let ram = (m.ram_free as f64 - 4.0 * GIB) * 0.9;
             let min_cache = 0.05 * experts;
             if experts > ram {
@@ -715,35 +738,73 @@ pub fn text(model: &str, sh: &Shape, m: &Machine, p: &Plan) -> String {
 }
 
 /// `glyd-engine fit MODEL[:LEVEL] [--machine NAME|FILE] [--context N] [--users N]`: the plan, before anything is downloaded.
-pub fn fit_cmd(a: &crate::args::Args) -> crate::ffi::Result<()> {
-    use crate::ffi::{err, Error};
-    let given = a.need(1, "MODEL")?;
-    let (model, layout) = levels::parse(given, false).map_err(|e| Error(format!("{} ({})", e.what, e.fix)))?;
-    let level = levels::split_tag(given).1.and(Some(layout.map_or("penguin", levels::name_of)));
+/// It runs `run`'s checks from the same table (src/support.rs): the model's family and the levels it runs at, its context
+/// limits, and the machine's GPU, driver and CPU architecture. Exit 0 with a plan `run` would load; 3 where `run` would refuse
+/// (the reason on stderr, after the plan where there is one); 1 where it could not be told.
+pub fn fit_cmd(a: &crate::args::Args) -> i32 {
+    match fit(a) {
+        Ok(()) => 0,
+        Err(r) => {
+            crate::ui::Ui::new().refuse(&r);
+            r.code
+        }
+    }
+}
+
+fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
+    use crate::ui::Refusal;
+    let given = a.need(1, "MODEL").map_err(|e| Refusal::new(e.0, "glyd-engine fit MODEL[:LEVEL]"))?;
+    let (model, layout) = levels::parse(given, a.has("lossy")).map_err(|e| Refusal::new(e.what, e.fix))?;
+    let tagged = levels::split_tag(given).1.is_some() || a.has("lossy");
+    let level = tagged.then(|| layout.map_or("penguin", levels::name_of));
     let machine = match a.flag("machine") {
         None => Machine::probe(),
         Some(n) => match Machine::preset(n) {
             Some(m) => m,
-            None => Machine::from_json(
-                &std::fs::read_to_string(n).map_err(|e| Error(format!("--machine {n}: not a preset ({}) and not a file: {e}", Machine::PRESETS.join(", "))))?,
-            )
-            .map_err(|e| Error(format!("{n}: {e}")))?,
+            None => Machine::from_json(&std::fs::read_to_string(n).map_err(|e| {
+                Refusal::new(format!("--machine {n}: not a preset and not a file: {e}"), format!("The presets: {}", Machine::PRESETS.join(", ")))
+            })?)
+            .map_err(|e| Refusal::new(format!("{n}: {e}"), ""))?,
         },
     };
-    let config = crate::cli::config_text(model).map_err(|r| Error(r.what))?;
-    let mut sh = Shape::from_config(&config).map_err(|e| Error(format!("{model}: {e}")))?;
+    let name = crate::cli::short_name(model);
+    let config = crate::cli::config_text(model)?;
+    // the family as run treats it: a level it does not run at is refused in run's words
+    let fam = match level {
+        Some(l) => crate::support::check(&config, model, &name, l)?,
+        None => crate::support::row(crate::support::family(&config, &name)?),
+    };
+    if fam.levels_now(model).is_empty() {
+        crate::support::check(&config, model, &name, "penguin")?;
+    }
+    let mut sh = Shape::from_config(&config).map_err(|e| Refusal::unsupported(format!("{name}: {e}"), ""))?;
     if let Some(total) = index_total(model) {
         sh = sh.scaled_to(total);
     }
-    let ask = Ask {
-        level,
-        context: a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Error("--context takes a number".into()))?,
-        users: a.num("users", 1usize)?,
-    };
+    let context: Option<usize> = a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Refusal::new("--context takes a number", "--context 8192"))?;
+    if let Some(c) = context {
+        let most = sh.max_ctx.min(fam.max_ctx.unwrap_or(usize::MAX));
+        if c > most {
+            return Err(Refusal::unsupported(
+                format!("{name} takes at most {most} tokens of context here, and {c} were asked for"),
+                format!("Ask for less: --context {most}"),
+            ));
+        }
+    }
+    let ask = Ask { level, context, users: a.num("users", 1usize)?, family: Some(fam), qat: levels::is_qat(model) };
     let p = plan(&sh, &machine, ask);
     print!("{}", text(model, &sh, &machine, &p));
+    if fam.hummingbird_packed_only && p.chosen.as_ref().is_some_and(|c| c.level == "hummingbird") {
+        println!("note: the hummingbird level comes as a pre-packed download: glyd/{name}-hummingbird");
+    }
+    if let Some(r) = crate::support::machine(&machine) {
+        return Err(r);
+    }
     if p.chosen.is_none() {
-        return err("no plan fits");
+        return Err(Refusal::unsupported(
+            format!("{name} does not fit this machine at any level {} runs", fam.name),
+            "A smaller model, more memory, or less context: --context 4096",
+        ));
     }
     Ok(())
 }
@@ -857,7 +918,7 @@ mod tests {
         assert!(chosen(&p).level == "penguin" && matches!(chosen(&p).placement, Some(Placement::Gpu(_) | Placement::Split(_))));
         // the context is the most that fits, to 32,768 (or what is asked); a machine with no GPU has no plan yet
         assert_eq!(chosen(&plan(&q9, &Machine::preset("rtx4090").unwrap(), Ask::default())).context, TARGET_CTX);
-        let none = Machine { name: "cpu".into(), devices: vec![], ram_free: 64 << 30, ram_bandwidth: 80.0, cores: 16 };
+        let none = Machine { name: "cpu".into(), devices: vec![], ram_free: 64 << 30, ram_bandwidth: 80.0, cores: 16, arch: "x86_64".into() };
         assert!(plan(&q9, &none, Ask::default()).chosen.is_none());
     }
 
@@ -874,6 +935,49 @@ mod tests {
         assert!(!Machine::preset("rtx4080s").unwrap().devices[0].unified);
         let m = Machine::from_json(r#"{"gpus": [{"name": "Some APU", "vendor": "amd", "total_gib": 64, "unified": true}]}"#).unwrap();
         assert!(m.devices[0].unified);
+    }
+
+    #[test]
+    fn a_plan_for_a_family_is_one_run_would_load() {
+        // every preset, every model fixture, every level its family runs at: no option outside the family's levels,
+        // placements and context (the table run reads, src/support.rs)
+        let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let mut configs =
+            vec![("Qwen/Qwen3-32B".to_string(), QWEN3_32B.to_string()), ("Qwen/Qwen3.5-9B".to_string(), json::to_compact(&q35.as_object().unwrap()[0].1))];
+        for (f, m) in [
+            ("gemma4_12b_config.json", "google/gemma-4-12B-it"),
+            ("nemotron_h_config.json", "nvidia/Nemotron-H"),
+            ("glm5_next_config.json", "zai-org/GLM-5.3-Flash"),
+        ] {
+            configs.push((m.to_string(), fixture(f)));
+        }
+        let mut checked = 0;
+        for (model, text) in &configs {
+            let row = crate::support::row(crate::support::family(text, model).unwrap());
+            let sh = Shape::from_config(text).unwrap();
+            let qat = levels::is_qat(model);
+            for preset in Machine::PRESETS {
+                let m = Machine::preset(preset).unwrap();
+                for level in std::iter::once(None).chain(row.levels_now(model).into_iter().map(Some)) {
+                    let p = plan(&sh, &m, Ask { level, family: Some(row), qat, ..Default::default() });
+                    for o in &p.options {
+                        assert!(row.allows(o.level, qat), "{model} on {preset}: {} is not a level {} runs at", o.level, row.name);
+                        match &o.placement {
+                            Some(Placement::Split(_)) => assert!(row.split_levels.contains(&o.level), "{model} on {preset}: split at {}", o.level),
+                            Some(Placement::ExpertsInRam { .. }) => {
+                                assert!(row.experts_in_ram_levels.contains(&o.level), "{model} on {preset}: experts in RAM at {}", o.level)
+                            }
+                            _ => {}
+                        }
+                        if let Some(d) = row.default_ctx {
+                            assert!(o.context <= d, "{model} on {preset}: {} tokens where run takes {d}", o.context);
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 100, "{checked}");
     }
 
     #[test]
