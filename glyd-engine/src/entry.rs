@@ -5,13 +5,30 @@ use crate::args::Args;
 use crate::ffi::{err, Result};
 
 #[cfg(feature = "dev")]
-pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5), wren (about 4.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
+pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | connect [TOOL] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5), wren (about 4.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
 #[cfg(not(feature = "dev"))] // (wren runs in a development build only)
-pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
+pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | connect [TOOL] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
 
 /// The commands of the engine that `glyd` takes as its own where the engine is linked (the same words as `glyd-engine`'s): what a model is run, served, fetched, packed-for-this-GPU, checked or costed with.
-pub const COMMANDS: &[&str] =
-    &["run", "serve", "doctor", "login", "supports", "preflight", "fetch", "pull", "ls", "rm", "verify", "prepare", "costs", "rates", "fit", "rangeworker"];
+pub const COMMANDS: &[&str] = &[
+    "run",
+    "serve",
+    "connect",
+    "doctor",
+    "login",
+    "supports",
+    "preflight",
+    "fetch",
+    "pull",
+    "ls",
+    "rm",
+    "verify",
+    "prepare",
+    "costs",
+    "rates",
+    "fit",
+    "rangeworker",
+];
 
 /// glibc's allocator told to keep freed buffers up to 32 MB (its largest such setting) in the heap and not hand freed memory back: a load's threads (one a GPU,
 /// each with its packers) free buffers of a few MB to tens of MB by the thousand, and every unmapping stops every CPU the process runs on to flush its TLB (the
@@ -74,6 +91,8 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("run") => std::process::exit(crate::cli::run(&a)),
         Some("serve") => std::process::exit(crate::cli::serve(&a)),
         Some("doctor") => std::process::exit(crate::cli::doctor(&a)),
+        // what to give a program (Open WebUI, Continue, Claude Code, an SDK) so that it talks to the server that runs here
+        Some("connect") => std::process::exit(crate::connect::connect(&a)),
         Some("login") => std::process::exit(crate::cli::login(&a)),
         Some("supports") => std::process::exit(crate::cli::supports(&a)),
         Some("preflight") => std::process::exit(crate::cli::preflight(&a)),
