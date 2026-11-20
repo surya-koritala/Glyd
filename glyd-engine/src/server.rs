@@ -103,7 +103,7 @@ pub struct Head {
 /// One line of the header block read into `buf` within what is left of `budget` (a line past it is refused where it is, never read to its end); false at the end of the input.
 fn head_line(r: &mut impl BufRead, budget: &mut usize, buf: &mut Vec<u8>) -> std::result::Result<bool, Rejected> {
     buf.clear();
-    let n = r.by_ref().take(*budget as u64 + 1).read_until(b'\n', buf).map_err(|e| (400, e.to_string()))?;
+    let n = r.by_ref().take(*budget as u64 + 1).read_until(b'\n', buf).map_err(|e| read_failure(&e))?;
     if n > *budget {
         return Err((431, format!("the request's header block is over {} KiB", MAX_HEAD >> 10)));
     }
@@ -161,10 +161,51 @@ pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Reje
     Ok(Some(h))
 }
 
+/// How long a client has to send its request line and headers, and then its body, and how long a write may wait on a client that reads nothing: a connection that sends a byte a minute is not let
+/// to hold one of the MAX_CONNECTIONS for ever (the time is of the whole, not of each read).
+pub const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
+pub const BODY_TIMEOUT: Duration = Duration::from_secs(120);
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A read of `s` that waits no longer than `until`: the stream's timeout is what is left of it, and past it the read fails as a timeout does.
+pub fn read_until_deadline(s: &mut TcpStream, until: std::time::Instant, buf: &mut [u8]) -> std::io::Result<usize> {
+    let left = until.saturating_duration_since(std::time::Instant::now());
+    if left.is_zero() {
+        return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the client was too slow"));
+    }
+    s.set_read_timeout(Some(left))?;
+    s.read(buf)
+}
+
+/// A TcpStream whose reads end at a time (`read_until_deadline`), for the BufReader that reads a request.
+struct Deadline {
+    s: TcpStream,
+    until: std::time::Instant,
+}
+
+impl Read for Deadline {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        read_until_deadline(&mut self.s, self.until, buf)
+    }
+}
+
+/// The status a failed read is answered with: 408 where the client was too slow, else 400.
+pub fn read_failure(e: &std::io::Error) -> Rejected {
+    match e.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => (408, "the request was not sent in time".to_string()),
+        _ => (400, e.to_string()),
+    }
+}
+
 fn read_request(s: &mut TcpStream) -> std::result::Result<Option<Req>, Rejected> {
-    let bad = |e: std::io::Error| (400, e.to_string());
-    s.set_read_timeout(Some(Duration::from_secs(30))).ok();
-    let mut r = BufReader::new(s.try_clone().map_err(bad)?);
+    read_request_within(s, HEAD_TIMEOUT, BODY_TIMEOUT)
+}
+
+/// `read_request` with the times given: the head within `head`, the body within `body` of its end.
+fn read_request_within(s: &mut TcpStream, head: Duration, body: Duration) -> std::result::Result<Option<Req>, Rejected> {
+    let bad = |e: std::io::Error| read_failure(&e);
+    s.set_write_timeout(Some(WRITE_TIMEOUT)).ok();
+    let mut r = BufReader::new(Deadline { s: s.try_clone().map_err(bad)?, until: std::time::Instant::now() + head });
     let Some(h) = read_head(&mut r)? else { return Ok(None) };
     if h.len > MAX_BODY {
         return Err((413, format!("the request's body is over {} MiB", MAX_BODY >> 20)));
@@ -172,6 +213,7 @@ fn read_request(s: &mut TcpStream) -> std::result::Result<Option<Req>, Rejected>
     if h.expect {
         s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").ok();
     }
+    r.get_mut().until = std::time::Instant::now() + body;
     let mut body = vec![0u8; h.len];
     r.read_exact(&mut body).map_err(bad)?;
     let preflight = if h.method == "OPTIONS" && !h.origin.is_empty() { h.ask_method.map(|m| (m, h.ask_headers)) } else { None };
@@ -202,6 +244,7 @@ fn status_text(code: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        408 => "Request Timeout",
         413 => "Payload Too Large",
         421 => "Misdirected Request",
         431 => "Request Header Fields Too Large",
@@ -229,6 +272,60 @@ fn respond_with(s: &mut TcpStream, code: u16, ctype: &str, extra: &str, body: &[
 /// The names this server answers to where it is on this computer's own address: the Host of a request must be one of them (the name a page whose DNS points at this computer has is not).
 const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "[::1]"];
 
+/// The names a container uses for the computer it runs on (Docker Desktop's, which its WSL integration and Kubernetes use too, Podman's, Lima's and Minikube's): a program in a container that is set up to reach the
+/// server there sends one as its Host. They name this computer to a program inside the container, and resolve nowhere else; the server's address is still its own.
+const CONTAINER_HOSTS: [&str; 6] = [
+    "host.docker.internal",
+    "gateway.docker.internal",
+    "kubernetes.docker.internal",
+    "host.containers.internal",
+    "host.lima.internal",
+    "host.minikube.internal",
+];
+
+/// What the user let in beyond the program's own (`--allowed-origins`, `--allowed-hosts`; both are empty by default).
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct Access {
+    /// Web pages (`http://localhost:5173`) whose scripts may call the API: they are answered with CORS headers for their own origin, and never with `*`.
+    pub origins: Vec<String>,
+    /// Names a request's Host may be besides the computer's own (a name that DNS gives this computer, a proxy's).
+    pub hosts: Vec<String>,
+}
+
+static ACCESS: std::sync::OnceLock<Access> = std::sync::OnceLock::new();
+
+fn access() -> &'static Access {
+    ACCESS.get_or_init(Access::default)
+}
+
+/// `Access` from the two flags' values (comma-separated lists); the reason where one is not a plain origin or name. An origin is scheme, host and port and nothing else; `*` is refused (the way to let every page in is not offered).
+pub fn parse_access(origins: Option<&str>, hosts: Option<&str>) -> std::result::Result<Access, String> {
+    let list = |v: Option<&str>| v.unwrap_or("").split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect::<Vec<_>>();
+    let mut a = Access::default();
+    for o in list(origins) {
+        let o = o.to_lowercase();
+        let rest = o.strip_prefix("http://").or_else(|| o.strip_prefix("https://"));
+        if rest.is_none_or(|r| r.is_empty() || r.contains(['/', '?', '#', '*', '@', ' '])) {
+            return Err(format!(
+                "--allowed-origins {o}: an origin is a scheme, a host and a port, like http://localhost:5173 (no path, and not *: list each page)"
+            ));
+        }
+        a.origins.push(o);
+    }
+    for h in list(hosts) {
+        if h.contains(['/', '*', '@', ' ', '?', '#']) || h.contains("://") {
+            return Err(format!("--allowed-hosts {h}: a host is a name or an address, like glyd.example.com (a port is not part of it)"));
+        }
+        a.hosts.push(hostname(&h));
+    }
+    Ok(a)
+}
+
+/// Sets what the user let in (once, where the program starts its listeners).
+pub fn set_access(a: Access) {
+    let _ = ACCESS.set(a);
+}
+
 /// The name in a Host header: `localhost:8000` is `localhost`, `[::1]:8000` is `[::1]`.
 fn hostname(host: &str) -> String {
     let h = host.trim().to_lowercase();
@@ -238,6 +335,22 @@ fn hostname(host: &str) -> String {
         }
     }
     h.split(':').next().unwrap_or("").to_string()
+}
+
+/// Whether an address the server is bound to (`--host`) is this computer's own: `localhost`, 127.x.x.x, `::1`. 0.0.0.0 and `::` are every interface, not this computer's own.
+pub fn is_loopback_addr(host: &str) -> bool {
+    let h = host.trim().trim_matches(['[', ']']);
+    h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The reason a server must not start on `host` as it is told: an address that is not this computer's own with no API key, and no `--insecure-no-auth` to say that is meant. None where it may.
+pub fn bind_refusal(host: &str, has_key: bool, insecure_no_auth: bool) -> Option<String> {
+    if is_loopback_addr(host) || has_key || insecure_no_auth {
+        return None;
+    }
+    Some(format!(
+        "{host} is not this computer's own address, and there is no API key: anyone who can reach it could send the model prompts. Set a key (GLYD_API_KEY=KEY in the environment), or give --insecure-no-auth if an open server on {host} is what you mean. Without --host the server listens on 127.0.0.1 only."
+    ))
 }
 
 /// A string as Python's repr writes it (the first `n` characters, in single quotes), as the Python server's refusals did.
@@ -264,26 +377,45 @@ fn py_repr(s: &str, n: usize) -> String {
     o
 }
 
-/// The names a container uses for the computer it runs on (Docker Desktop's, Podman's): a program in a container that is set up to reach the server there sends one as its Host. They name this computer to a program
-/// inside Docker, and resolve nowhere else; the server's address is still its own.
-const CONTAINER_HOSTS: [&str; 2] = ["host.docker.internal", "host.containers.internal"];
+/// (status, why) for a request the server does not answer, or None. On this computer's own address (`local_only`) a Host that is not a loopback or container name (or one the user allowed) is a DNS-rebinding page's (421). On every
+/// address an Origin that is not the server's own (`http(s)://` and the Host) or one the user allowed is another page's script (403, a preflight too). Where the server is open to the network the Host is any name the computer has,
+/// unless the user listed them. A request with no Host or no Origin is not refused for the missing one (curl and the OpenAI libraries send no Origin).
+pub fn refusal(host: &str, origin: &str, local_only: bool) -> Option<(u16, String)> {
+    refusal_with(host, origin, local_only, access())
+}
 
-/// (status, why) for a request that a server on this computer's own address does not answer, or None: a Host that is not a loopback name is a DNS-rebinding page's (421), an Origin that is not `http://` and
-/// the Host is another page's script (403, a preflight too). A request with no Host or no Origin is not refused for the missing one (curl and the OpenAI libraries send no Origin).
-pub fn refusal(host: &str, origin: &str) -> Option<(u16, String)> {
-    if !host.is_empty() && !LOOPBACK.contains(&hostname(host).as_str()) && !CONTAINER_HOSTS.contains(&hostname(host).as_str()) {
+fn refusal_with(host: &str, origin: &str, local_only: bool, allowed: &Access) -> Option<(u16, String)> {
+    let name = hostname(host);
+    let own =
+        LOOPBACK.contains(&name.as_str()) || CONTAINER_HOSTS.contains(&name.as_str()) || name.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_loopback());
+    if !host.is_empty() && !allowed.hosts.contains(&name) && if local_only { !own } else { !allowed.hosts.is_empty() && !own } {
         return Some((
             421,
             format!(
-                "this server answers to localhost, 127.0.0.1, [::1] and host.docker.internal, not to {} (glyd serve --host sets another address)",
+                "this server answers to localhost, 127.0.0.1, [::1] and host.docker.internal{}, not to {} (--allowed-hosts NAME lets another name in)",
+                if allowed.hosts.is_empty() { String::new() } else { format!(" and {}", allowed.hosts.join(", ")) },
                 py_repr(host, 80)
             ),
         ));
     }
-    if !origin.is_empty() && origin.to_lowercase() != format!("http://{}", host.trim().to_lowercase()) {
-        return Some((403, format!("this server answers to its own page, not to a script from {} (to let a web app of your own in: glyd serve MODEL --host 127.0.0.1 turns these checks off for every origin; GLYD_ENGINE=0 glyd serve MODEL --host 127.0.0.1 -- --allowed-origins '[\"http://localhost:5173\"]' keeps vLLM's limit to the origin named)", py_repr(origin, 80))));
+    let o = origin.to_lowercase();
+    if !origin.is_empty() && !allowed.origins.contains(&o) && !same_origin(&o, host, local_only) {
+        return Some((
+            403,
+            format!(
+                "this server answers to its own page, not to a script from {} (--allowed-origins {} lets that page in)",
+                py_repr(origin, 80),
+                py_repr(origin, 80).trim_matches(['\'', '"'])
+            ),
+        ));
     }
     None
+}
+
+/// Whether `origin` (lower case) is the server's own page: `http://` and the Host as the browser sent it; where the server is open to the network, `https://` too (a proxy that ends TLS in front of it).
+fn same_origin(origin: &str, host: &str, local_only: bool) -> bool {
+    let h = host.trim().to_lowercase();
+    !h.is_empty() && (origin == format!("http://{h}") || (!local_only && origin == format!("https://{h}")))
 }
 
 /// The origins this server's own page has (what the CORS answers of a server on this computer's own address allow).
@@ -291,14 +423,19 @@ fn own_origins(port: u16) -> Vec<String> {
     LOOPBACK.iter().map(|h| format!("http://{h}:{port}")).collect()
 }
 
-/// The CORS header lines for an answer to a request from `origin`: none where it sends none; on this computer's own address its own origin where it is one of its own; else, where the checks are off, every origin (as vLLM's
-/// default does).
+/// Whether a script from `origin` is let in with CORS headers: its own page on this computer's own address, or an origin the user listed. Nothing else is, the open server included (there is no `*`).
+fn cors_allowed(local_only: bool, port: u16, origin: &str, allowed: &Access) -> bool {
+    let o = origin.to_lowercase();
+    allowed.origins.contains(&o) || (local_only && own_origins(port).iter().any(|x| *x == o))
+}
+
+/// The CORS header lines for an answer to a request from `origin`: none where it sends none, and none where the origin is not its own page's or one the user listed (CORS is off until `--allowed-origins` says otherwise).
 fn cors_headers(local_only: bool, port: u16, origin: &str) -> String {
-    if origin.is_empty() {
-        String::new()
-    } else if !local_only {
-        "Access-Control-Allow-Origin: *\r\n".to_string()
-    } else if own_origins(port).iter().any(|o| o == origin) {
+    cors_headers_with(local_only, port, origin, access())
+}
+
+fn cors_headers_with(local_only: bool, port: u16, origin: &str, allowed: &Access) -> String {
+    if !origin.is_empty() && cors_allowed(local_only, port, origin, allowed) {
         format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n")
     } else {
         String::new()
@@ -308,7 +445,7 @@ fn cors_headers(local_only: bool, port: u16, origin: &str) -> String {
 /// A CORS preflight's answer as Starlette's CORSMiddleware gives it (vLLM's): 200 `OK` with what is allowed where the origin is, 400 `Disallowed CORS origin` where it is not (a method outside the list too).
 fn preflight(s: &mut TcpStream, local_only: bool, port: u16, origin: &str, method: &str, headers: Option<&str>) {
     const METHODS: [&str; 7] = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
-    let allowed = !local_only || own_origins(port).iter().any(|o| o == origin);
+    let allowed = cors_allowed(local_only, port, origin, access());
     let mut failures = Vec::new();
     if !allowed {
         failures.push("origin");
@@ -318,11 +455,7 @@ fn preflight(s: &mut TcpStream, local_only: bool, port: u16, origin: &str, metho
     }
     let mut extra = format!("Access-Control-Allow-Methods: {}\r\nAccess-Control-Max-Age: 600\r\n", METHODS.join(", "));
     if allowed {
-        extra.push_str(&if local_only {
-            format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n")
-        } else {
-            "Access-Control-Allow-Origin: *\r\n".to_string()
-        });
+        extra.push_str(&format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"));
     }
     if let Some(h) = headers {
         extra.push_str(&format!("Access-Control-Allow-Headers: {h}\r\n"));
@@ -1894,10 +2027,8 @@ fn route(
             return;
         }
     };
-    if local_only {
-        if let Some((code, why)) = refusal(&req.host, &req.origin) {
-            return respond(&mut s, code, "application/json", forbidden_body(&why, code).as_bytes());
-        }
+    if let Some((code, why)) = refusal(&req.host, &req.origin, local_only) {
+        return respond(&mut s, code, "application/json", forbidden_body(&why, code).as_bytes());
     }
     if let Some((method, headers)) = &req.preflight {
         return preflight(&mut s, local_only, port, &req.origin, method, headers.as_deref());
@@ -3030,33 +3161,155 @@ pub(crate) mod tests {
         assert_eq!((st, body.as_str(), head.contains("content-length")), (200, "", true));
     }
 
-    /// An address the user named is theirs: nothing is refused for its Host or Origin, and a script of another origin is answered as vLLM's own CORS (all origins) answers it, preflight included.
+    /// A server that is open to the network (a bound address that is not this computer's own, which it needs a key or `--insecure-no-auth` to start on): the Host is any name the computer has, but CORS is off, there is
+    /// no `*` anywhere: a script of another origin is refused (403, a preflight too), and only the page's own origin (`http(s)://` and the Host) is answered.
     #[test]
-    fn an_address_that_was_chosen_has_no_checks_and_every_origin() {
+    fn an_open_server_has_cors_off() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let addr = listen("127.0.0.1:0", "m", 4096, None, false, tx).unwrap();
-        let (st, head, _) = ask(addr, "GET", "/v1/models", &[("Host", "evil.example"), ("Origin", "http://evil.example")]);
+        let (st, head, _) = ask(addr, "GET", "/v1/models", &[("Host", "192.168.1.5:8000")]);
         assert_eq!(st, 200);
-        assert!(head.contains("access-control-allow-origin: *"), "{head}");
-        assert!(!ask(addr, "GET", "/v1/models", &[("Host", "evil.example")]).1.contains("access-control"));
-        let (st, head, body) = ask(
-            addr,
-            "OPTIONS",
-            "/v1/chat/completions",
-            &[
-                ("Host", "x:1"),
-                ("Origin", "http://localhost:5173"),
-                ("Access-Control-Request-Method", "POST"),
-                ("Access-Control-Request-Headers", "authorization"),
-            ],
-        );
-        assert_eq!((st, body.as_str()), (200, "OK"));
-        assert!(
-            head.contains("access-control-allow-origin: *")
-                && head.contains("access-control-allow-headers: authorization")
-                && head.contains("access-control-allow-methods: delete, get, head, options, patch, post, put"),
-            "{head}"
-        );
+        assert!(!head.contains("access-control"), "{head}");
+        assert_eq!(ask(addr, "GET", "/v1/models", &[("Host", "glyd.example.com"), ("Origin", "http://glyd.example.com")]).0, 200);
+        assert_eq!(ask(addr, "GET", "/v1/models", &[("Host", "glyd.example.com"), ("Origin", "https://glyd.example.com")]).0, 200); // (behind a proxy that ends TLS)
+        for origin in ["http://evil.example", "null", "http://localhost:5173"] {
+            let (st, head, _) = ask(addr, "GET", "/v1/models", &[("Host", "192.168.1.5:8000"), ("Origin", origin)]);
+            assert_eq!(st, 403, "{origin}");
+            assert!(!head.contains("access-control-allow-origin"), "{head}");
+        }
+        let pre = [
+            ("Host", "x:1"),
+            ("Origin", "http://localhost:5173"),
+            ("Access-Control-Request-Method", "POST"),
+            ("Access-Control-Request-Headers", "authorization"),
+        ];
+        assert_eq!(ask(addr, "OPTIONS", "/v1/chat/completions", &pre).0, 403);
+    }
+
+    /// What the user lets in is exactly what they list: a page's origin gets CORS headers for itself (never `*`), a name gets past the Host check, and nothing else changes.
+    #[test]
+    fn what_the_user_lets_in_is_what_they_list() {
+        let allowed = parse_access(Some("http://localhost:5173, HTTPS://App.Example.com"), Some("glyd.example.com, GLYD.lan:8000")).unwrap();
+        assert_eq!(allowed.origins, ["http://localhost:5173", "https://app.example.com"]);
+        assert_eq!(allowed.hosts, ["glyd.example.com", "glyd.lan"]);
+        // on this computer's own address: the listed origin passes the Origin check and is answered for itself; an unlisted one is not
+        assert_eq!(refusal_with("localhost:8000", "http://localhost:5173", true, &allowed), None);
+        assert_eq!(refusal_with("localhost:8000", "https://app.example.com", true, &allowed), None);
+        assert_eq!(refusal_with("localhost:8000", "http://evil.example", true, &allowed).unwrap().0, 403);
+        assert_eq!(cors_headers_with(true, 8000, "http://localhost:5173", &allowed), "Access-Control-Allow-Origin: http://localhost:5173\r\nVary: Origin\r\n");
+        assert_eq!(cors_headers_with(true, 8000, "http://evil.example", &allowed), "");
+        assert_eq!(cors_headers_with(false, 8000, "http://evil.example", &allowed), "");
+        assert_eq!(cors_headers_with(false, 8000, "http://localhost:5173", &allowed), "Access-Control-Allow-Origin: http://localhost:5173\r\nVary: Origin\r\n");
+        // the Host: the listed names join the program's own; a name nobody listed is still 421
+        assert_eq!(refusal_with("glyd.example.com:8000", "", true, &allowed), None);
+        assert_eq!(refusal_with("glyd.lan", "", true, &allowed), None);
+        assert_eq!(refusal_with("evil.example", "", true, &allowed).unwrap().0, 421);
+        // the open server: any Host where none are listed; where some are, those and the computer's own
+        assert_eq!(refusal_with("192.168.1.5:8000", "", false, &Access::default()), None);
+        assert_eq!(refusal_with("glyd.example.com", "", false, &allowed), None);
+        assert_eq!(refusal_with("localhost", "", false, &allowed), None);
+        assert_eq!(refusal_with("192.168.1.5:8000", "", false, &allowed).unwrap().0, 421);
+        // `*`, a path and a bare scheme are not origins
+        for bad in ["*", "http://*", "http://a/b", "localhost:5173", "http://", "ftp://a", "http://a b"] {
+            assert!(parse_access(Some(bad), None).is_err(), "{bad}");
+        }
+        assert!(parse_access(Some("http://localhost:3000,*"), None).is_err());
+        for bad in ["a/b", "*.example.com", "http://a", "u@h"] {
+            assert!(parse_access(None, Some(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(parse_access(None, None).unwrap(), Access::default());
+    }
+
+    /// The defaults themselves: nothing is let in unless it is listed (no origin, no extra name), a server starts on this computer's own address, and an address that is not needs a key or the user's word.
+    #[test]
+    fn the_defaults_let_nothing_in() {
+        assert_eq!(*access(), Access::default());
+        for own in ["127.0.0.1", "localhost", "LOCALHOST", "[::1]", "::1", "127.1.2.3"] {
+            assert!(is_loopback_addr(own), "{own}");
+            assert_eq!(bind_refusal(own, false, false), None, "{own}");
+        }
+        for open in ["0.0.0.0", "::", "[::]", "192.168.1.5", "10.0.0.2", "example.com", "fe80::1", ""] {
+            assert!(!is_loopback_addr(open), "{open}");
+            let why = bind_refusal(open, false, false).unwrap_or_else(|| panic!("{open} was let start with no key"));
+            assert!(why.contains("--insecure-no-auth") && why.contains("GLYD_API_KEY"), "{why}");
+            assert_eq!(bind_refusal(open, true, false), None, "{open} with a key");
+            assert_eq!(bind_refusal(open, false, true), None, "{open} with the user's word");
+        }
+        // the names a container has for this computer and its programs (Open WebUI in Docker Desktop, Kubernetes, WSL's Docker integration) are answered at the default address
+        for host in [
+            "host.docker.internal:3000",
+            "gateway.docker.internal",
+            "kubernetes.docker.internal",
+            "host.containers.internal",
+            "host.lima.internal",
+            "host.minikube.internal",
+        ] {
+            assert_eq!(refusal_with(host, "", true, &Access::default()), None, "{host}");
+        }
+        assert_eq!(refusal_with("127.0.0.2:1", "", true, &Access::default()), None);
+        // no CORS answer to any origin by default, the server's own page aside
+        assert_eq!(cors_headers_with(true, 8000, "http://evil.example", &Access::default()), "");
+        assert_eq!(cors_headers_with(false, 8000, "http://localhost:8000", &Access::default()), "");
+        assert!(cors_headers_with(true, 8000, "http://localhost:8000", &Access::default()).contains("http://localhost:8000"));
+    }
+
+    /// A client that sends its request slowly is let wait for the time that is given the whole of it, not for each read: a request that stops, or goes a byte at a time, is answered 408 and its connection is let go.
+    #[test]
+    fn a_slow_request_is_timed_out_as_a_whole() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        // a head that never ends
+        let mut c = TcpStream::connect(addr).unwrap();
+        let (mut s, _) = l.accept().unwrap();
+        c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n").unwrap();
+        let t = std::time::Instant::now();
+        let r = read_request_within(&mut s, Duration::from_millis(300), Duration::from_secs(5));
+        assert_eq!(r.err().map(|e| e.0), Some(408));
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        // a head that goes a byte every 100 ms: each read is in time, the whole is not
+        let mut c = TcpStream::connect(addr).unwrap();
+        let (mut s, _) = l.accept().unwrap();
+        let drip = std::thread::spawn(move || {
+            for b in b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nX-Slow: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".iter() {
+                if c.write_all(&[*b]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let t = std::time::Instant::now();
+        let r = read_request_within(&mut s, Duration::from_millis(500), Duration::from_secs(5));
+        assert_eq!(r.err().map(|e| e.0), Some(408));
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        drop(s);
+        drip.join().unwrap();
+        // a body that stops short of its Content-Length
+        let mut c = TcpStream::connect(addr).unwrap();
+        let (mut s, _) = l.accept().unwrap();
+        c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n{\"a\"").unwrap();
+        let r = read_request_within(&mut s, Duration::from_secs(5), Duration::from_millis(300));
+        assert_eq!(r.err().map(|e| e.0), Some(408));
+        // a whole request, sent at once, is read
+        let mut c = TcpStream::connect(addr).unwrap();
+        let (mut s, _) = l.accept().unwrap();
+        c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}").unwrap();
+        let r = read_request_within(&mut s, Duration::from_millis(300), Duration::from_millis(300)).unwrap().unwrap();
+        assert_eq!((r.method.as_str(), r.body.as_slice()), ("POST", &b"{}"[..]));
+    }
+
+    /// The server does not hold more than MAX_CONNECTIONS connections that send nothing: the next one is answered 503 and let go, and a connection that has been given up on frees its place.
+    #[test]
+    fn connections_are_capped() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen("127.0.0.1:0", "m", 4096, None, true, tx).unwrap();
+        let idle: Vec<TcpStream> = (0..MAX_CONNECTIONS).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        std::thread::sleep(Duration::from_millis(300)); // (the accepting thread counts each)
+        let mut over = TcpStream::connect(addr).unwrap();
+        over.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut out = String::new();
+        over.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 503 Service Unavailable"), "{out}");
+        drop(idle);
     }
 
     /// The API key as vLLM's middleware checks it: `Authorization: Bearer KEY` (the scheme in any case; the token is what follows the first space), by the digests of both in constant time; for every path of /v1, and

@@ -479,15 +479,24 @@ fn key_of(flag: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Option<St
     flag.map(str::to_string).or_else(|| ["GLYD_API_KEY", "VLLM_API_KEY"].iter().find_map(|k| env(k))).filter(|k| !k.is_empty())
 }
 
-/// The addresses that are this computer's own.
-const LOOPBACK: [&str; 3] = ["127.0.0.1", "localhost", "::1"];
+/// What `--host`, the key and `--insecure-no-auth` allow, and what the user let in (`--allowed-origins`, `--allowed-hosts`): the refusal where the server must not start. Called before the model is loaded, and again where the
+/// server listens (`listen`); it also sets the lists the server's checks read.
+fn access_check(a: &Args) -> std::result::Result<(), Refusal> {
+    let host = a.flag("host").unwrap_or("127.0.0.1");
+    if let Some(why) = server::bind_refusal(host, api_key(a).is_some(), a.has("insecure-no-auth")) {
+        return Err(Refusal::new(why, "GLYD_API_KEY=KEY glyd serve MODEL --host ADDRESS"));
+    }
+    server::set_access(server::parse_access(a.flag("allowed-origins"), a.flag("allowed-hosts")).map_err(|e| Refusal::new(e, ""))?);
+    Ok(())
+}
 
 fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<std::net::SocketAddr> {
+    access_check(a)?;
     let host = a.flag("host").unwrap_or("127.0.0.1").to_string();
     let port: u16 = a.num("port", 8000u16)?;
     let explicit = a.has("port");
-    // the address the program chooses is this computer's own, its own page and programs only: a Host that is not this computer's name and an Origin that is not the page's are refused there; an address the user names is theirs
-    let local_only = !a.has("host");
+    // the checks of the Host and the Origin are on for every address of this computer's own, a loopback one the user names included; an address that is not is open to the network, with the key (or the user's word) it was let start with
+    let local_only = server::is_loopback_addr(&host);
     for p in port..=port.saturating_add(if explicit { 0 } else { 20 }) {
         match server::listen(&format!("{host}:{p}"), name, window, api_key(a), local_only, tx.clone()) {
             Ok(addr) => {
@@ -518,16 +527,17 @@ fn also_on_ollamas_port(a: &Args, host: &str, name: &str, window: usize, local_o
     }
 }
 
-/// What the address and the key leave open, said where the server starts: an address the user chose turns the checks of the program's own off (a loopback one too), and one that is not this computer's own opens the model to the network.
+/// What the address and the key leave open, said where the server starts: an address that is not this computer's own opens the model to the network, and the origins the user let in are named.
 fn access_notes(ui: &RefCell<Ui>, a: &Args) {
     let key = api_key(a).is_some();
-    match a.flag("host") {
-        None => {}
-        Some(h) if LOOPBACK.contains(&h) => ui.borrow_mut().note("listening on the address you chose: the checks that keep another web page's script, and a name that DNS points at this computer, away from the server are off for it (every origin is answered). For this computer's own programs and page, leave --host out."),
-        Some(h) => ui.borrow_mut().note(&format!(
+    if let Some(h) = a.flag("host").filter(|h| !server::is_loopback_addr(h)) {
+        ui.borrow_mut().note(&format!(
             "listening on {h}: anyone who can reach this computer's network address can send the model prompts, and the traffic is plain HTTP, not encrypted (use a VPN or an SSH tunnel). {} The chat page, /health and /stats stay open without a key.",
-            if key { "The API key guards /v1 only." } else { "There is no API key: start it with  GLYD_API_KEY=KEY glyd serve ...  (the key goes in the environment, not on the command line, where ps and a log show it)." }
-        )),
+            if key { "The API key guards /v1 only." } else { "There is NO API key (--insecure-no-auth): set one with  GLYD_API_KEY=KEY glyd serve ...  (the key goes in the environment, not on the command line, where ps and a log show it)." }
+        ));
+    }
+    if let Some(o) = a.flag("allowed-origins").filter(|o| !o.is_empty()) {
+        ui.borrow_mut().note(&format!("scripts of these web pages may call the API: {o}"));
     }
     if a.has("api-key") {
         ui.borrow_mut().note("the API key is on this program's command line, which ps shows: next time set GLYD_API_KEY=KEY in the environment (glyd run and glyd serve move a key given as --api-key there before they start the engine).");
@@ -648,6 +658,10 @@ pub fn serve(a: &Args) -> i32 {
     let ui = RefCell::new(Ui::new());
     let started = crate::monitor::clock();
     status_file(a);
+    // (before the GPU is looked at and the model is read: an address that may not be served is refused first)
+    if let Err(r) = access_check(a) {
+        return fail(&ui, &r);
+    }
     // the level is run's, read before the GPU is looked at; the name served keeps the tag
     let given = a.pos.get(1).cloned().unwrap_or_default();
     let asked = requested(&given, a.has("lossy"));
@@ -739,6 +753,9 @@ fn stdin_is_empty() -> bool {
 pub fn run(a: &Args) -> i32 {
     let ui = RefCell::new(Ui::new());
     status_file(a);
+    if let Err(r) = access_check(a) {
+        return fail(&ui, &r);
+    }
     let (a, layout) = match tagged(a) {
         Ok(x) => x,
         Err(r) => return fail(&ui, &r),
@@ -2454,10 +2471,10 @@ mod tests {
         Args::from(v.iter().map(|s| s.to_string()))
     }
 
-    /// The checks that keep another web page's script, and a name that DNS points at this computer, away from the server are on where the program chose the address (no `--host`) and off where the user named
-    /// one, a loopback one too: `listen` is where that is decided (`the_api_key...`'s neighbours in server.rs test the checks themselves).
+    /// The checks that keep another web page's script, and a name that DNS points at this computer, away from the server are on for every address of this computer's own, the one the program chooses (no `--host`) and a
+    /// loopback one the user names alike; the server listens on 127.0.0.1 unless told another address, and is not told another without a key (or `--insecure-no-auth`).
     #[test]
-    fn the_host_checks_are_on_for_the_programs_own_address_and_off_for_one_the_user_named() {
+    fn the_host_checks_are_on_for_this_computers_own_address_and_a_server_opens_to_the_network_only_with_a_key() {
         let status = |addr: std::net::SocketAddr, host: &str| -> u16 {
             let mut c = std::net::TcpStream::connect(addr).unwrap();
             c.write_all(format!("GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
@@ -2467,9 +2484,30 @@ mod tests {
         };
         let (tx, _rx) = mpsc::channel();
         let own = listen(&args(&["serve", "m", "--port", "0"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        assert!(own.ip().is_loopback(), "the default address is {own}");
         assert_eq!((status(own, "evil.example"), status(own, "localhost:8000"), status(own, "127.0.0.1")), (421, 200, 200));
-        let chosen = listen(&args(&["serve", "m", "--host", "127.0.0.1", "--port", "0"]), "m", 4096, tx).map_err(|r| r.to_string()).unwrap();
-        assert_eq!((status(chosen, "evil.example"), status(chosen, "localhost:8000")), (200, 200));
+        let chosen = listen(&args(&["serve", "m", "--host", "127.0.0.1", "--port", "0"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        assert_eq!((status(chosen, "evil.example"), status(chosen, "localhost:8000")), (421, 200));
+        // an address that is not this computer's own: refused with no key, answered with one or with the user's word (and then any Host is, there being no list of names)
+        for host in ["0.0.0.0", "::", "192.168.1.5"] {
+            let refused = listen(&args(&["serve", "m", "--host", host, "--port", "0"]), "m", 4096, tx.clone()).map(|_| ()).unwrap_err();
+            assert!(refused.to_string().contains("--insecure-no-auth") && refused.to_string().contains("GLYD_API_KEY"), "{host}: {refused}");
+        }
+        let keyed =
+            listen(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--api-key", "k"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        assert_eq!((keyed.ip().is_unspecified(), status(keyed, "192.168.1.5:8000")), (true, 200));
+        let said =
+            listen(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--insecure-no-auth"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        assert_eq!(status(said, "glyd.example.com"), 200);
+        // the lists of what the user lets in are checked before the server starts
+        for bad in ["*", "localhost:5173", "http://a/b"] {
+            let e = listen(&args(&["serve", "m", "--port", "0", "--allowed-origins", bad]), "m", 4096, tx.clone()).map(|_| ()).unwrap_err();
+            assert!(e.to_string().contains("--allowed-origins"), "{bad}: {e}");
+        }
+        // the refusal comes before the model is loaded, from `serve` and `run` themselves
+        let a = args(&["serve", "m", "--host", "0.0.0.0"]);
+        assert!(access_check(&a).is_err());
+        assert_ne!(serve(&a), 0, "an open server with no key started");
     }
 
     /// `--ollama-port N` makes the server listen on N too, where N is free, with the checks the server's own address has; a port in use is said and does not stop the server.
