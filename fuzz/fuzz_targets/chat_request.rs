@@ -24,7 +24,8 @@ fuzz_target!(|data: &[u8]| {
     }
     let _ = tools::template_messages(&v);
     // the other APIs' bodies turned to the completions form, and that form checked as a request of its own
-    let turned = [server::fuzzing::anthropic(&v), server::fuzzing::responses(&v), server::fuzzing::ollama_chat(&v), server::fuzzing::ollama_generate(&v).map(|x| x.0)];
+    let turned =
+        [server::fuzzing::anthropic(&v), server::fuzzing::responses(&v), server::fuzzing::ollama_chat(&v), server::fuzzing::ollama_generate(&v).map(|x| x.0)];
     for o in turned.into_iter().flatten() {
         let _ = server::invalid(&o, true, 1000);
         let _ = server::unsupported(&o);

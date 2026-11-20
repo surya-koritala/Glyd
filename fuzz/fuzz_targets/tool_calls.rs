@@ -8,11 +8,11 @@ use glyd_gpu::json;
 fuzz_target!(|data: &[u8]| {
     let p = glyd_fuzz::parts(data, 2);
     let Ok(text) = std::str::from_utf8(p[0]) else { return };
-    let tools: Vec<json::Value> = std::str::from_utf8(p[1])
-        .ok()
-        .and_then(|t| json::parse(t).ok())
-        .and_then(|v| v.as_array().map(|a| a.to_vec()))
-        .unwrap_or_else(|| vec![json::parse(r#"{"type": "function", "function": {"name": "f", "parameters": {"type": "object", "properties": {"x": {"type": "integer"}}}}}"#).unwrap()]);
+    let tools: Vec<json::Value> =
+        std::str::from_utf8(p[1]).ok().and_then(|t| json::parse(t).ok()).and_then(|v| v.as_array().map(|a| a.to_vec())).unwrap_or_else(|| {
+            vec![json::parse(r#"{"type": "function", "function": {"name": "f", "parameters": {"type": "object", "properties": {"x": {"type": "integer"}}}}}"#)
+                .unwrap()]
+        });
     for format in [Format::Hermes, Format::Xml, Format::Dsml, Format::Glm] {
         let _ = tools::extract(text, format, &tools);
         let mut s = ToolStream::new(format, &tools);
