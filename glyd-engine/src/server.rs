@@ -734,7 +734,8 @@ fn constraint_of(sh: &Shared, v: &Value, api: &Api) -> std::result::Result<Optio
             ToolChoice::Required => None,
             _ => return None,
         };
-        let c = sh.chat.as_ref().filter(|c| !c.is_xtml())?;
+        // (Kimi-K3's and Gemma 4's own markup: a forced call is opened by the prompt, and goes without a grammar)
+        let c = sh.chat.as_ref().filter(|c| !c.is_xtml() && !c.is_gemma())?;
         crate::constrain::call_grammar(&t.list, named.as_deref(), Format::of(c)).map(Spec::Grammar)
     });
     // (a form the request names is refused where it cannot be held; a forced call is opened by the prompt all the same, and goes without the grammar)
@@ -1091,7 +1092,7 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
     // (Kimi-K3's forced call: its opening, written after the template, by where the prompt ends)
     let mut xtml_call: Option<Option<String>> = None;
     if let Some(t) = api.tools.as_ref().filter(|t| !(standalone && t.choice == ToolChoice::None)) {
-        if !(c.mentions("tools") && (c.is_xtml() || c.mentions(Format::of(c).open()))) {
+        if !(c.mentions("tools") && (c.is_xtml() || c.is_gemma() || c.mentions(Format::of(c).open()))) {
             return err("this model's chat template has no tools, or no tool-call format for them: a request with tools cannot be served here (GLYD_ENGINE=0 runs vLLM, which answers it without them)");
         }
         o.tools = Some(t.list.clone());
@@ -1108,7 +1109,13 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
                 _ => None,
             };
         }
-        let forced = tools::forced_prefix(&choice, Format::of(c)).filter(|_| !c.is_xtml()).map(|p| {
+        // (Gemma 4's own: the call's mark and `call:`, and for a named function its name and the `{` of its arguments)
+        let gemma = c.is_gemma().then(|| match &choice {
+            ToolChoice::Required => Some("<|tool_call>call:".to_string()),
+            ToolChoice::Named(n) => Some(format!("<|tool_call>call:{n}{{")),
+            _ => None,
+        });
+        let forced = gemma.unwrap_or_else(|| tools::forced_prefix(&choice, Format::of(c))).filter(|_| !c.is_xtml()).map(|p| {
             if standalone && choice == ToolChoice::Required {
                 p.trim_end_matches(tools::FN_OPEN).to_string()
             } else {
@@ -1336,16 +1343,17 @@ fn start_as(sh: &Shared, tx: &Sender<Job>, o: &Value, chat: bool, hide_reasoning
         prefix: pr.prefix.clone(),
         stream: api.stream,
     });
+    let reader_kind = sh.chat.as_ref().and_then(|c| crate::reader::ReaderKind::of(c, &pr.text));
     let cfg = Cfg {
         chat,
         in_thinking: pr.in_thinking,
         stops: r.stop.clone(),
         include_stop: r.include_stop,
-        skip_special: r.skip_special && reading.is_none(),
+        skip_special: r.skip_special && reading.is_none() && !matches!(reader_kind, Some(crate::reader::ReaderKind::Gemma { .. })),
         hide_reasoning: hide_reasoning || api.hide_reasoning,
         tools: tools_cfg,
         lead: if reading.is_none() { pr.prefix.clone() } else { String::new() },
-        xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)),
+        reader: reader_kind,
     };
     let reply = Reply {
         params: r.params.clone(),
@@ -1457,16 +1465,17 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                 stream: api.stream,
             });
             let lead = if reading.is_none() { pr.prefix.clone() } else { String::new() };
+            let reader_kind = sh.chat.as_ref().and_then(|c| crate::reader::ReaderKind::of(c, &pr.text));
             let cfg = Cfg {
                 chat,
                 in_thinking: pr.in_thinking,
                 stops: r.stop.clone(),
                 include_stop: r.include_stop,
-                skip_special: r.skip_special && reading.is_none(),
+                skip_special: r.skip_special && reading.is_none() && !matches!(reader_kind, Some(crate::reader::ReaderKind::Gemma { .. })),
                 hide_reasoning: api.hide_reasoning,
                 tools: tools_cfg,
                 lead,
-                xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)),
+                reader: reader_kind,
             };
             for i in 0..api.n {
                 let idx = pi * api.n + i;
@@ -3835,6 +3844,122 @@ pub(crate) mod tests {
     /// The tools parts of Qwen3.5's own chat template (tests/fixtures), which writes its calls as XML.
     fn qwen35_template() -> &'static str {
         include_str!("../tests/fixtures/chat_qwen35_tools.jinja")
+    }
+
+    pub(crate) fn gemma_template() -> &'static str {
+        include_str!("../tests/fixtures/chat_gemma4_tools.jinja")
+    }
+
+    const GEMMA_CALL: &str = "<|tool_call>call:get_weather{city:<|\"|>Paris<|\"|>}<tool_call|>";
+
+    /// Gemma 4 (its template, its markup): the prompt has the tools as the template declares them and the thought channel closed; a call written in its own marks is an OpenAI tool call, whole and streamed, whether
+    /// the model chose it, was asked for a function or for a call; the thought channel is the reasoning, not text.
+    #[test]
+    fn gemma_4_tool_calls_and_thinking() {
+        // the prompt
+        let shared = Shared {
+            tok: crate::tok::tests::toy(&["x"]),
+            chat: Some(Chat::from_template(gemma_template()).unwrap()),
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        };
+        let prompt = |extra: &str| {
+            let v = json::parse(&chat_body(extra)).unwrap();
+            let api = api_of(&v, true, 100).unwrap();
+            let r = request_of(&v, 4096, &Params::default());
+            chat_text_of(&shared, &v, &api, &r).unwrap()
+        };
+        let (t, thinking, p, _) = prompt("");
+        assert!(
+            t.contains("<|tool>declaration:get_weather{description:<|\"|>Get the weather<|\"|>") && t.ends_with("<|turn>model\n<|channel>thought\n<channel|>"),
+            "{t}"
+        );
+        assert!(!thinking && p.is_empty());
+        // a function asked for: the call opened in the prompt, to the arguments' brace; a call: to `call:`
+        let (t, _, p, _) = prompt(r#","tool_choice":{"type":"function","function":{"name":"get_weather"}}"#);
+        assert_eq!(p, "<|tool_call>call:get_weather{");
+        assert!(t.ends_with(&format!("<|channel>thought\n<channel|>{p}")), "{t}");
+        let (_, _, p, _) = prompt(r#","tool_choice":"required""#);
+        assert_eq!(p, "<|tool_call>call:");
+        // (a call and its answer in the history: the arguments an object, the answer after it)
+        let v = json::parse(r#"{"messages":[{"role":"user","content":"Weather?"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"18 C"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}"#).unwrap();
+        let api = api_of(&v, true, 100).unwrap();
+        let (t, ..) = chat_text_of(&shared, &v, &api, &request_of(&v, 4096, &Params::default())).unwrap();
+        assert!(
+            t.contains(
+                "<|tool_call>call:get_weather{city:<|\"|>Paris<|\"|>}<tool_call|><|tool_response>response:get_weather{value:<|\"|>18 C<|\"|>}<tool_response|>"
+            ),
+            "{t}"
+        );
+
+        // the reply
+        let addr = serve_script_with(GEMMA_CALL, gemma_template());
+        let (st, body) = call(addr, "/v1/chat/completions", &chat_body(""));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        let c = at(&d, &["choices", "0"]);
+        assert_eq!((at(c, &["finish_reason"]).as_str(), at(c, &["message", "content"])), (Some("tool_calls"), &Value::Null), "{body}");
+        assert_eq!(
+            (
+                at(c, &["message", "tool_calls", "0", "function", "name"]).as_str(),
+                json::parse(at(c, &["message", "tool_calls", "0", "function", "arguments"]).as_str().unwrap()).unwrap()
+            ),
+            (Some("get_weather"), json::parse(r#"{"city":"Paris"}"#).unwrap())
+        );
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(",\"stream\":true"));
+        let (_, content, calls, finishes, _) = put_together(&body);
+        assert_eq!((content.trim(), finishes), ("", vec!["tool_calls".to_string()]), "{body}");
+        assert_eq!(calls[0].1, "get_weather");
+        assert_eq!(json::parse(&calls[0].2).unwrap(), json::parse(r#"{"city":"Paris"}"#).unwrap(), "{calls:?}");
+        assert!(body.matches("\"arguments\"").count() > 2, "the arguments come in pieces: {body}");
+        // asked for a function: the model writes the arguments on from the brace
+        let named = r#","tool_choice":{"type":"function","function":{"name":"get_weather"}}"#;
+        let addr = serve_script_with("city:<|\"|>Paris<|\"|>}<tool_call|>", gemma_template());
+        for extra in [named.to_string(), format!("{named},\"stream\":true")] {
+            let (_, body) = call(addr, "/v1/chat/completions", &chat_body(&extra));
+            let calls = if extra.contains("stream") {
+                put_together(&body).2.into_iter().map(|c| (c.1, c.2)).collect::<Vec<_>>()
+            } else {
+                let d = json::parse(&body).unwrap();
+                vec![(
+                    at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str().unwrap().to_string(),
+                    at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str().unwrap().to_string(),
+                )]
+            };
+            assert_eq!(calls[0].0, "get_weather", "{body}");
+            assert_eq!(json::parse(&calls[0].1).unwrap(), json::parse(r#"{"city":"Paris"}"#).unwrap(), "{body}");
+        }
+        // asked for a call: the model names the function
+        let addr = serve_script_with("get_weather{city:<|\"|>Paris<|\"|>}<tool_call|>", gemma_template());
+        let (_, body) = call(addr, "/v1/chat/completions", &chat_body(r#","tool_choice":"required""#));
+        let d = json::parse(&body).unwrap();
+        assert_eq!(
+            (at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str()),
+            (Some("tool_calls"), Some("get_weather")),
+            "{body}"
+        );
+
+        // the thought channel is the reasoning, the answer the content (the tokens are special ones in the reply: the reader sees them)
+        let addr = serve_script_with("<|channel>thought\nLet me look.\n<channel|>The answer.", gemma_template());
+        let ask = |extra: &str| format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}],\"max_tokens\":200{extra}}}");
+        let (_, body) = call(addr, "/v1/chat/completions", &ask(""));
+        let d = json::parse(&body).unwrap();
+        assert_eq!(
+            (
+                at(&d, &["choices", "0", "message", "reasoning_content"]).as_str().map(str::trim),
+                at(&d, &["choices", "0", "message", "content"]).as_str().map(str::trim)
+            ),
+            (Some("Let me look."), Some("The answer.")),
+            "{body}"
+        );
+        assert!(!body.contains("channel"), "{body}");
+        let (_, body) = call(addr, "/v1/chat/completions", &ask(",\"stream\":true"));
+        let (think, content, _, _, _) = put_together(&body);
+        assert_eq!((think.trim(), content.trim()), ("Let me look.", "The answer."), "{body}");
     }
 
     const XML_CALL: &str = "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>";

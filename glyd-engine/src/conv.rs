@@ -68,8 +68,9 @@ pub struct Stream {
     read: usize,
     /// The text leaves out the special tokens (vLLM's `skip_special_tokens`).
     skip: bool,
-    /// Kimi-K3's tag format read as the other models' replies are (`xtml::Xtml`).
-    xtml: Option<crate::xtml::Xtml>,
+    /// A family's markup read as the other models' replies are (`reader::Reader`: Kimi-K3's tags, Gemma 4's), and what a forced call's opening read as.
+    reader: Option<Box<dyn crate::reader::Reader>>,
+    primed: String,
 }
 
 impl Default for Stream {
@@ -80,20 +81,25 @@ impl Default for Stream {
 
 impl Stream {
     pub fn new() -> Stream {
-        Stream { ids: Vec::new(), prefix: 0, read: 0, skip: false, xtml: None }
+        Stream { ids: Vec::new(), prefix: 0, read: 0, skip: false, reader: None, primed: String::new() }
     }
 
-    /// The reply read through Kimi-K3's tag format where `x` is given (`Some(in_think)`: whether the prompt ended inside the think channel).
-    pub fn with_xtml(mut self, x: Option<bool>) -> Stream {
-        self.xtml = x.map(crate::xtml::Xtml::new);
+    /// The reply read through the reader `k` names, where one is.
+    pub fn with_reader(mut self, k: Option<crate::reader::ReaderKind>) -> Stream {
+        self.reader = k.map(crate::reader::ReaderKind::build);
         self
     }
 
-    /// Kimi-K3's reader told what the prompt ends with (a forced call's opening: `xtml::forced`), its text dropped: the reply is read on from there.
+    /// The reader told what the prompt ends with (a forced call's opening): the reply is read on from there; what the opening reads as is `primed`.
     pub fn prime(&mut self, opening: &str) {
-        if let Some(x) = &mut self.xtml {
-            x.feed(opening);
+        if let Some(r) = &mut self.reader {
+            self.primed = r.prime(opening);
         }
+    }
+
+    /// What a forced call's opening read as (the tool parser starts from it).
+    pub fn primed(&self) -> &str {
+        &self.primed
     }
 
     /// A stream whose text leaves out the special tokens.
@@ -110,8 +116,8 @@ impl Stream {
             let out = now[before.len()..].to_string();
             self.prefix = self.read;
             self.read = self.ids.len();
-            Ok(match &mut self.xtml {
-                Some(x) => x.feed(&out),
+            Ok(match &mut self.reader {
+                Some(r) => r.feed(&out),
                 None => out,
             })
         } else {
@@ -124,8 +130,8 @@ impl Stream {
         let before = tok.decode_with(&self.ids[self.prefix..self.read], self.skip)?;
         let now = tok.decode_with(&self.ids[self.prefix..], self.skip)?;
         let tail = now.get(before.len()..).unwrap_or("").to_string();
-        Ok(match &mut self.xtml {
-            Some(x) => x.feed(&tail) + &x.finish(),
+        Ok(match &mut self.reader {
+            Some(r) => r.feed(&tail) + &r.finish(),
             None => tail,
         })
     }
@@ -401,9 +407,9 @@ impl Talk<'_> {
         let budget = self.e.capacity().saturating_sub(prompt.len());
         let opts = Reply { params: r.params.clone(), max_new: r.max_new.min(budget).max(1), ignore_eos: r.ignore_eos, logprobs: None, stop_ids: Vec::new() };
         let tok = self.tok;
-        // (Kimi-K3's replies through its tag format, from inside the think channel where the prompt ends in it)
-        let xtml = self.chat.filter(|c| c.is_xtml()).map(|_| tok.decode(&prompt[prompt.len().saturating_sub(3)..]).is_ok_and(|t| t.ends_with(XTML_THINK)));
-        let (mut stream, mut stops) = (Stream::new().with_xtml(xtml), Stops::new(&r.stop));
+        // (a family's markup, Kimi-K3's tags or Gemma 4's, through its reader, from inside the think channel where the prompt ends in it)
+        let reader = self.chat.and_then(|c| crate::reader::ReaderKind::of(c, &tok.decode(&prompt[prompt.len().saturating_sub(6)..]).unwrap_or_default()));
+        let (mut stream, mut stops) = (Stream::new().with_reader(reader), Stops::new(&r.stop));
         let mut text = String::new();
         let mut failure: Option<crate::ffi::Error> = None;
         let mut each = |t: u32| -> bool {

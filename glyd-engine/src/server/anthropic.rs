@@ -404,7 +404,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::tests::{at, call, serve_fake_with, serve_script, Fake};
+    use crate::server::tests::{at, call, gemma_template, serve_fake_with, serve_script, serve_script_with, Fake};
     use std::io::Read;
 
     #[test]
@@ -664,6 +664,72 @@ mod tests {
         let (st, b) = ask(addr, &q(r#","tool_choice":{"type":"none"}"#));
         assert_eq!(st, 200, "{b}");
         assert!(!b.contains("\"tool_use\""), "{b}");
+    }
+
+    /// A family whose markup is its own (Gemma 4's): a tool call is a `tool_use` block and the thought channel a `thinking` block, whole and streamed.
+    #[test]
+    fn gemma_4_through_the_messages_api() {
+        let q = |extra: &str| format!(r#"{{"max_tokens":200,"tools":[{TOOL}],"messages":[{{"role":"user","content":"weather in Paris?"}}]{extra}}}"#);
+        let addr = serve_script_with("<|tool_call>call:get_weather{city:<|\"|>Paris<|\"|>}<tool_call|>", gemma_template());
+        let (st, body) = ask(addr, &q(""));
+        assert_eq!(st, 200, "{body}");
+        let d = parse(&body);
+        let tu = d
+            .get("content")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .find(|b| at(b, &["type"]).as_str() == Some("tool_use"))
+            .unwrap_or_else(|| panic!("{body}"));
+        assert_eq!((at(tu, &["name"]).as_str(), at(tu, &["input"])), (Some("get_weather"), &parse(r#"{"city":"Paris"}"#)));
+        assert_eq!(at(&d, &["stop_reason"]).as_str(), Some("tool_use"));
+        let (_, body) = ask(addr, &q(r#","stream":true"#));
+        let evs = events(&body);
+        let json: String = evs
+            .iter()
+            .filter(|e| sv(e, &["delta", "type"]) == Some("input_json_delta"))
+            .map(|e| at(e, &["delta", "partial_json"]).as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(parse(&json), parse(r#"{"city":"Paris"}"#), "{body}");
+        let md = evs.iter().find(|e| at(e, &["type"]).as_str() == Some("message_delta")).unwrap();
+        assert_eq!(at(md, &["delta", "stop_reason"]).as_str(), Some("tool_use"));
+        // a tool_choice that names the function: the call opened by the prompt
+        let named = serve_script_with("city:<|\"|>Paris<|\"|>}<tool_call|>", gemma_template());
+        let (_, body) = ask(named, &q(r#","tool_choice":{"type":"tool","name":"get_weather"}"#));
+        let tu = parse(&body)
+            .get("content")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .find(|b| at(b, &["type"]).as_str() == Some("tool_use"))
+            .cloned()
+            .unwrap_or_else(|| panic!("{body}"));
+        assert_eq!(at(&tu, &["input"]), &parse(r#"{"city":"Paris"}"#));
+        // the thinking
+        let addr = serve_script_with("<|channel>thought\nLet me look.\n<channel|>The answer.", gemma_template());
+        let think = r#","thinking":{"type":"enabled","budget_tokens":1024}"#;
+        let plain = |extra: &str| format!(r#"{{"max_tokens":200,"messages":[{{"role":"user","content":"hi"}}]{extra}}}"#);
+        let (_, body) = ask(addr, &plain(think));
+        let d = parse(&body);
+        assert_eq!(
+            (
+                at(&d, &["content", "0", "type"]).as_str(),
+                at(&d, &["content", "0", "thinking"]).as_str().map(str::trim),
+                at(&d, &["content", "1", "text"]).as_str().map(str::trim)
+            ),
+            (Some("thinking"), Some("Let me look."), Some("The answer.")),
+            "{body}"
+        );
+        let (_, body) = ask(addr, &plain(""));
+        assert!(!body.contains("Let me look") && !body.contains("channel"), "{body}");
+        let (_, body) = ask(addr, &plain(&format!("{think},\"stream\":true")));
+        let evs = events(&body);
+        let t: String = evs
+            .iter()
+            .filter(|e| sv(e, &["delta", "type"]) == Some("thinking_delta"))
+            .map(|e| at(e, &["delta", "thinking"]).as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(t.trim(), "Let me look.", "{body}");
     }
 
     /// The counts, the refusals in Anthropic's error form, and the key: `x-api-key` as the SDKs send it, or a bearer token.
