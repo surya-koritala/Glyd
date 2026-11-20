@@ -95,6 +95,24 @@ jobs:
           wait "$server" 2> /dev/null || true
           [ "$status" = 0 ] || tail -40 /tmp/serve.log
           exit "$status"
+      - name: Four users at once on a served ${{ inputs.client_model }} through the scheduler (each reply against the same prompt's alone; scripts/ci_concurrent_check.py)
+        run: |
+          # (prompts one a pass, GLYD_ENGINE_BATCH_PREFILL=0: every reply at once is the reply alone, token for token; then prompts run together: 3 of 4 at least, none failed. --no-draft: a draft model runs one user at a time)
+          for mode in same together; do
+            if [ "$mode" = same ]; then export GLYD_ENGINE_BATCH_PREFILL=0; args=--same; else unset GLYD_ENGINE_BATCH_PREFILL; args="--least 3"; fi
+            "$E" serve "${{ inputs.client_model }}" --port 8351 --ctx 4096 --users 4 --no-draft > /tmp/serve4.log 2>&1 &
+            server=$!
+            for _ in $(seq 1 900); do
+              curl -sf http://127.0.0.1:8351/v1/models > /dev/null && break
+              kill -0 "$server" 2> /dev/null || { cat /tmp/serve4.log; exit 1; }
+              sleep 2
+            done
+            status=0
+            python3 scripts/ci_concurrent_check.py http://127.0.0.1:8351 --users 4 $args || status=1
+            kill "$server" 2> /dev/null || true
+            wait "$server" 2> /dev/null || true
+            [ "$status" = 0 ] || { tail -40 /tmp/serve4.log; exit 1; }
+          done
       - name: glyd doctor on this GPU (the bundle, every check, the sample plan, nothing secret)
         run: |
           "$E" doctor --bundle /tmp/doctor-bundle.json
@@ -108,6 +126,13 @@ jobs:
           # (a random model of each family's layout with its layer kinds, made here: only models released in the last six months are used, and those are larger than a 16 GB card holds; a fixture's bound is the
           # reference's KL, or the same bits as the engine's own recorded output on this GPU generation)
           "$E" logitscheck --fixtures glyd-engine/tests/logits
+      - name: Several sequences at once on the description executor (random Gemma 4, Qwen3.5-layout and Muse Spark models, each reply against the one-at-a-time reply; logits.rs usercheck)
+        run: |
+          # (prompts one a pass: every reply at once the reply alone, token for token; prompts together: counted)
+          for c in gemma4 qwen35 muse; do
+            GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck "$c" --users 4 --level penguin
+            "$E" usercheck "$c" --users 4 --level penguin
+          done
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

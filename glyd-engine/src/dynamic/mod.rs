@@ -10,6 +10,7 @@ pub mod muse;
 pub mod nemotron;
 pub mod qwen35;
 pub mod range;
+mod rows;
 pub mod split;
 pub mod tp;
 pub mod tp_cache;
@@ -859,6 +860,11 @@ pub struct Dyn {
     /// The sequences this engine holds (`add_seqs`): None at `seq`, the one in the fields above (kc, vc, states, n, pending, verify, graph); `select` swaps another in.
     seqs: Vec<Option<Seq>>,
     seq: usize,
+    /// A pass over the rows of several sequences (src/dynamic/rows.rs): each sequence's rows (first row, rows, its caches), the operation running on one of them now (its index), and the rows
+    /// the head reads, moved to the pass's last rows first. Empty outside such a pass.
+    parts: Vec<rows::Part>,
+    at: std::cell::Cell<Option<usize>>,
+    head_rows: Vec<usize>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1193,6 +1199,9 @@ impl Dyn {
             vpart: None,
             seqs: vec![None],
             seq: 0,
+            parts: Vec::new(),
+            at: std::cell::Cell::new(None),
+            head_rows: Vec::new(),
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {
@@ -1443,21 +1452,22 @@ impl Dyn {
             }
             Op::QkvPrep { d, nq, nk, has_v, stride, q_norm, k_norm, rope, rot, ring } => {
                 let prep = if d == 256 { &self.kg.prep256 } else { &self.kg.prep512 };
+                let (proj, qo) = (p.slot(Slot::Proj) + self.rows_before(stride), p.slot(Slot::Qo) + self.rows_before(nq * d));
                 let (nq, nki) = (nq as i32, nk as i32);
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
+                let (kc, vc) = self.cache(ring);
                 let (cos, sin) = (self.ropes[rope].0.ptr, self.ropes[rope].1.ptr);
                 let (nx, rows) = Self::next_linear(p, l, i, n, head);
                 let (pf, pfb) = self.pf(nx, rows, self.pf_kib[0], (d / 2) as u32);
                 let slice = nu * (nq + nki) as u32;
-                launch!(*prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; p.slot(Slot::Proj), stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, self.ring_cap[ring] as i32, p.slot(Slot::Qo), kc, vc, nq, nki, has_v as i32, eps, pf)?;
+                launch!(*prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; proj, stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, self.ring_cap[ring] as i32, qo, kc, vc, nq, nki, has_v as i32, eps, pf)?;
                 self.mark("prep")
             }
             Op::Attention { d, nq, nk, window, ring } => {
+                let (qo, att) = (p.slot(Slot::Qo) + self.rows_before(nq * d), p.slot(Slot::Att) + self.rows_before(nq * d));
                 let (di, nq, nki) = (d as i32, nq as i32, nk as i32);
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
+                let (kc, vc) = self.cache(ring);
                 let (cap, window) = (self.ring_cap[ring] as i32, window as i32);
                 let g = nq / nki;
-                let (qo, att) = (p.slot(Slot::Qo), p.slot(Slot::Att));
                 if n <= self.split_rows {
                     let parts = if d == 256 { &self.kg.parts256 } else { &self.kg.parts512 };
                     launch!(*parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; qo, kc, vc, pos.1, n as i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32)?;
@@ -1520,7 +1530,8 @@ impl Dyn {
                     copy_d2d_async(k.ptr, p.slot(Slot::Ba), n * ba * 2, s)?;
                     copy_d2d_async(k.ptr + (VERIFY_ROWS * ba * 2) as u64, p.slot(Slot::Mix), n * row * 2, s)?;
                 }
-                self.k35.conv(s, p.slot(Slot::Mix), row as i32, p.small[w].ptr, self.states[state].ptr, p.slot(Slot::Xc), n as i32, cd as i32)?;
+                let (x, y) = (p.slot(Slot::Mix) + self.rows_before(row), p.slot(Slot::Xc) + self.rows_before(cd));
+                self.k35.conv(s, x, row as i32, p.small[w].ptr, self.state(state), y, n as i32, cd as i32)?;
                 self.mark("linear attention: convolution")
             }
             Op::GdnDelta { a_log, dt_bias, state, cd, nk, nv } => {
@@ -1529,14 +1540,14 @@ impl Dyn {
                 self.k35.delta(
                     s,
                     chunked,
-                    p.slot(Slot::Xc),
+                    p.slot(Slot::Xc) + self.rows_before(cd),
                     cd as i32,
-                    p.slot(Slot::Ba),
+                    p.slot(Slot::Ba) + self.rows_before(2 * nv),
                     2 * nv as i32,
                     p.small[a_log].ptr,
                     p.small[dt_bias].ptr,
-                    self.states[state].ptr,
-                    p.slot(Slot::Core),
+                    self.state(state),
+                    p.slot(Slot::Core) + self.rows_before(nv * 128),
                     n as i32,
                     nk as i32,
                     nv as i32,
@@ -1548,10 +1559,11 @@ impl Dyn {
                 self.mark("linear attention: gated norm")
             }
             Op::Prep35 { stride, q_norm, k_norm, half, ring, nq, nk } => {
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
+                let (kc, vc) = self.cache(ring);
+                let qo = p.slot(Slot::Qo) + self.rows_before(nq * 256);
                 self.k35.prep(
                     s,
-                    p.slot(Slot::Mix),
+                    p.slot(Slot::Mix) + self.rows_before(stride),
                     stride as i32,
                     p.small[q_norm].ptr,
                     p.small[k_norm].ptr,
@@ -1559,7 +1571,7 @@ impl Dyn {
                     self.ropes[0].1.ptr,
                     half as i32,
                     pos.0,
-                    p.slot(Slot::Qo),
+                    qo,
                     kc,
                     vc,
                     nu,
@@ -1570,29 +1582,19 @@ impl Dyn {
                 self.mark("attention: q/k norm, rotary, cache write")
             }
             Op::Attn35 { stride, ring, nq, nk } => {
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
+                let (kc, vc) = self.cache(ring);
+                let (qo, gate, att) = (
+                    p.slot(Slot::Qo) + self.rows_before(nq * 256),
+                    p.slot(Slot::Mix) + self.rows_before(stride),
+                    p.slot(Slot::Att) + self.rows_before(nq * 256),
+                );
                 let (qs, nq, nk) = ((nq * 256) as i32, nq as i32, nk as i32);
                 // (a verify pass's rows by the decode step's kernel, each row at its own position: a step's sums)
                 let vpart = self.vpart.as_ref().filter(|_| self.verifying.get() && n > 1).map(|v| v.ptr);
                 if n == 1 || vpart.is_some() {
-                    self.k35.attn_decode(
-                        s,
-                        p.slot(Slot::Qo),
-                        qs,
-                        p.slot(Slot::Mix),
-                        stride as i32,
-                        kc,
-                        vc,
-                        pos.1,
-                        p.slot(Slot::Att),
-                        qs,
-                        n as i32,
-                        nq,
-                        nk,
-                        vpart.unwrap_or(self.part35.ptr),
-                    )?;
+                    self.k35.attn_decode(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk, vpart.unwrap_or(self.part35.ptr))?;
                 } else {
-                    self.k35.attn(s, p.slot(Slot::Qo), qs, p.slot(Slot::Mix), stride as i32, kc, vc, pos.1, p.slot(Slot::Att), qs, n as i32, nq, nk)?;
+                    self.k35.attn(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk)?;
                 }
                 self.mark("attention: attention")
             }
@@ -1817,15 +1819,17 @@ impl Dyn {
             }
             Op::MuseQk { stride, nq, nk, rope, ring, scale } => {
                 let k = &self.kmuse;
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
+                let (kc, vc) = self.cache(ring);
+                let (mix, qo) = (p.slot(Slot::Mix) + self.rows_before(stride), p.slot(Slot::Qo) + self.rows_before(nq * 64));
                 let (c, sn) = (self.ropes[0].0.ptr, self.ropes[0].1.ptr);
-                launch!(k.qk, [nu, ((nq + 2 * nk) as u32).div_ceil(8), 1], [256, 1, 1], s; p.slot(Slot::Mix), stride as i32, p.slot(Slot::Qo), kc, vc, c, sn, pos.0, self.ring_cap[ring] as i32, nq as i32, nk as i32, rope as i32, scale, eps)?;
+                launch!(k.qk, [nu, ((nq + 2 * nk) as u32).div_ceil(8), 1], [256, 1, 1], s; mix, stride as i32, qo, kc, vc, c, sn, pos.0, self.ring_cap[ring] as i32, nq as i32, nk as i32, rope as i32, scale, eps)?;
                 self.mark("attention: q/k norm, rotary, cache write")
             }
             Op::MuseAttn { ring, nq, nk, window } => {
                 let k = &self.kmuse;
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
-                launch!(k.attn, [nu, nk as u32, 1], [(32 * (nq / nk)) as u32, 1, 1], s; p.slot(Slot::Qo), kc, vc, pos.1, p.slot(Slot::Att), self.ring_cap[ring] as i32, nq as i32, nk as i32, window as i32)?;
+                let (kc, vc) = self.cache(ring);
+                let (qo, att) = (p.slot(Slot::Qo) + self.rows_before(nq * 64), p.slot(Slot::Att) + self.rows_before(nq * 64));
+                launch!(k.attn, [nu, nk as u32, 1], [(32 * (nq / nk)) as u32, 1, 1], s; qo, kc, vc, pos.1, att, self.ring_cap[ring] as i32, nq as i32, nk as i32, window as i32)?;
                 self.mark(if window > 0 { "attention (sliding)" } else { "attention (global)" })
             }
             Op::MuseOGate { stride, goff, nq } => {
@@ -2030,6 +2034,18 @@ impl Dyn {
         let mut seen = false;
         for (l, ops) in p.d.layers.iter().enumerate().take(st.layers.1).skip(st.layers.0) {
             for (i, op) in ops.iter().enumerate() {
+                if !self.parts.is_empty() && !rows::row_wise(op) {
+                    // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
+                    for (k, part) in self.parts.iter().enumerate() {
+                        self.at.set(Some(k));
+                        self.start.set(part.start);
+                        let off = 4 * part.row0 as u64;
+                        let r = self.op(p, l, i, op, part.rows, (pos.0 + off, pos.1 + off), head);
+                        self.at.set(None);
+                        r?;
+                    }
+                    continue;
+                }
                 self.op(p, l, i, op, n, pos, head)?;
                 if probe && !seen {
                     for (k, b) in p.slots.iter().enumerate() {
@@ -2047,6 +2063,17 @@ impl Dyn {
             }
         }
         if head > 0 {
+            // (a pass over several sequences: the rows the head reads, the last of each sequence that asks for a token, moved to the pass's last rows in order)
+            let w = (p.d.hidden * 2) as u64;
+            let moved: Vec<Slot> = [Slot::X, Slot::H].into_iter().chain(p.d.final_norm.map(|f| f.1)).collect();
+            for (j, &src) in self.head_rows.iter().enumerate().rev() {
+                let dst = n - self.head_rows.len() + j;
+                if dst != src {
+                    for &slot in &moved {
+                        copy_d2d_async(p.slot(slot) + dst as u64 * w, p.slot(slot) + src as u64 * w, w as usize, s)?;
+                    }
+                }
+            }
             let first = ((n - head) * p.d.hidden * 2) as u64;
             if let Some(post) = p.d.post {
                 self.lin(&p.mats[post], p.slot(Slot::H) + first, head, p.slot(Slot::Hid))?;
@@ -2349,8 +2376,8 @@ impl Dyn {
     /// Room for `k` more sequences beside the one in use (each its own keys and values for the context, its states, its graph captured on them; the
     /// activations and workspaces stay shared): `select` picks the one the next passes run on. Qwen3.5's stages; after `set_head_rows`.
     pub fn add_seqs(&mut self, k: usize) -> Result<()> {
-        if k > 0 && (self.big.d.family != "Qwen3.5" || self.draft.is_some()) {
-            return err(format!("more sequences than one on {}: Qwen3.5's stages only, with no draft model", self.big.d.family));
+        if k > 0 && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark") || self.draft.is_some()) {
+            return err(format!("more sequences than one on {}: Qwen3.5's, Gemma 4's and Muse Spark's only, with no draft model", self.big.d.family));
         }
         for _ in 0..k {
             let states = self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<_>>()?;
@@ -2596,6 +2623,10 @@ impl Dyn {
 impl crate::conv::Gen for Dyn {
     fn capacity(&self) -> usize {
         self.ctx
+    }
+
+    fn as_step(&mut self, users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
+        Ok(self.serve_rows(users)?.map(|k| (k, self as &mut dyn crate::sched::ModelStep)))
     }
 
     /// The weights (a draft model's too), the rings of keys and values for the whole context, and the states; all made in `build` and kept as they are while it runs.
