@@ -26,7 +26,8 @@ GLYD_HIP=1 cargo build --release -p glyd-engine        # AMD RDNA 3/4 (ROCm hipc
 | GPU jobs on rented machines | `glyd-engine/jobs/*.sh`, `tools/runpod/` | see the scripts' headers |
 
 CI runs the CPU suites on every pull request. The GPU suites (`.github/workflows/gpu.yml`) run on `main` and on request once
-a GPU runner is registered (`vars.GPU_RUNNER`); until then, run them locally as below.
+a GPU runner is registered (`vars.GPU_RUNNER`; `tools/ci/setup-gpu-runner.sh` registers an Ubuntu machine's GPU); until then,
+run them locally as below.
 
 ## What a change must show
 
