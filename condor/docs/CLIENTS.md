@@ -106,7 +106,7 @@ before), so each round took about 0.25 s here.
 - `usage.prompt_tokens_details.cached_tokens` is not filled in; the reuse shows in the server's log only.
 
 If you try one, tell me how it went in an issue. This list is tracked in
-[#10](https://github.com/surya-koritala/condor/issues/10).
+[#10](https://github.com/surya-koritala/Glyd/issues/282).
 
 ## Things that will trip up agent frameworks
 
