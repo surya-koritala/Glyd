@@ -23,8 +23,11 @@ pub enum Spec {
     Choice(Vec<String>),
 }
 
-/// The tokenizer as llguidance wants it: the trie of the tokens' bytes.
-struct Env(TokTrie);
+/// How the model's tokenizer tokenizes a text (no special tokens, no token added at the start): where the grammar forces some bytes, llguidance allows the tokens that tokenize them as the model does.
+pub type Tokenize = Box<dyn Fn(&str) -> Option<Vec<u32>> + Send + Sync>;
+
+/// The tokenizer as llguidance wants it: the trie of the tokens' bytes, and the tokenizer's own tokenization.
+struct Env(TokTrie, Tokenize);
 
 impl TokenizerEnv for Env {
     fn tok_trie(&self) -> &TokTrie {
@@ -32,7 +35,8 @@ impl TokenizerEnv for Env {
     }
 
     fn tokenize_bytes(&self, s: &[u8]) -> Vec<u32> {
-        self.0.greedy_tokenize(s)
+        // (bytes that are not text, or that the tokenizer cannot take: the longest tokens that fit)
+        std::str::from_utf8(s).ok().and_then(|t| (self.1)(t)).unwrap_or_else(|| self.0.greedy_tokenize(s))
     }
 }
 
@@ -54,7 +58,12 @@ const KEPT: usize = 32;
 
 impl Grammars {
     /// `bytes`: every token's bytes, special tokens marked (tok.rs); `ends`: the model's end tokens, or none (a token named like one is then taken); `vocab`: the width of a row of logits.
-    pub fn new(mut bytes: Vec<Vec<u8>>, ends: &[u32], vocab: usize) -> Result<Grammars, String> {
+    pub fn new(bytes: Vec<Vec<u8>>, ends: &[u32], vocab: usize) -> Result<Grammars, String> {
+        Grammars::with_tokenizer(bytes, ends, vocab, Box::new(|_| None))
+    }
+
+    /// `new`, with the model's own tokenization of a text (`Tokenize`).
+    pub fn with_tokenizer(mut bytes: Vec<Vec<u8>>, ends: &[u32], vocab: usize, tokenize: Tokenize) -> Result<Grammars, String> {
         bytes.resize(vocab.max(bytes.len()), Vec::new());
         let mut ends: Vec<u32> = ends.iter().copied().filter(|&e| (e as usize) < bytes.len()).collect();
         if ends.is_empty() {
@@ -64,7 +73,7 @@ impl Grammars {
         let Some(&first) = ends.first() else { return Err("constrained decoding needs the model's end token, and its directory names none".to_string()) };
         let info = TokRxInfo::new(bytes.len() as u32, first);
         let trie = TokTrie::from(&info, &bytes).with_eos_tokens(&ends);
-        let env: TokEnv = Arc::new(Env(trie));
+        let env: TokEnv = Arc::new(Env(trie, tokenize));
         let factory = ParserFactory::new_simple(&env).map_err(|e| e.to_string())?;
         Ok(Grammars { factory, ends, vocab: bytes.len(), kept: Mutex::new(Vec::new()) })
     }
@@ -342,8 +351,10 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
                 if let Some(glyd_gpu::json::Value::Object(o)) = props {
                     for (k, p) in o {
                         let string = p.get("type").and_then(glyd_gpu::json::Value::as_str) == Some("string");
-                        let value = if string { "/(?s:.)*/".to_string() } else { format!("%json{}", glyd_gpu::json::to_compact(p)) };
-                        params.push(format!("{} {} {}", lark_str(&format!("<parameter={k}>\n")), value, lark_str("\n</parameter>\n")));
+                        let value = if string { "text".to_string() } else { format!("%json{}", glyd_gpu::json::to_compact(p)) };
+                        // (the text rule takes the end of the parameter with it)
+                        let end = if string { String::new() } else { format!(" {}", lark_str("\n</parameter>\n")) };
+                        params.push(format!("{} {}{}", lark_str(&format!("<parameter={k}>\n")), value, end));
                     }
                 }
                 let rule = format!("params{i}");
@@ -354,7 +365,9 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
                     None => format!("{} {rule} {end}", lark_str(&format!("{}>\n", name_of(t)?))),
                 });
             }
+            // (a string is the text up to the parameter's end: a lexeme of any characters would take the rest of the call too)
             rules.insert(0, format!("start: {}", alts.join(" | ")));
+            rules.push("text[stop=\"\\n</parameter>\\n\"]: /(?s:.*)/".to_string());
         }
         _ => return None,
     }
@@ -627,6 +640,29 @@ mod tests {
                 eprintln!("{}: {} tokens, a step waits {:?} on average, {:?} at most", dir.display(), ids.len(), total / ids.len() as u32, worst);
                 assert!(gram.accepting(), "{}: the document is not whole", dir.display());
                 assert!(gram.allowed().iter().filter(|&&x| x).count() <= 8, "{}: after the document only the end (and white space) may follow", dir.display());
+            }
+            // the calls a forced tool has, as the formats write them (what follows the call's opening in the prompt)
+            let tools = glyd_gpu::json::parse(r#"[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"},"opts":{"type":"object","properties":{"hourly":{"type":"boolean"}}}},"required":["city"]}}}]"#).unwrap();
+            let tools = tools.as_array().unwrap();
+            for (format, named, text) in [
+                (crate::tools::Format::Hermes, Some("get_weather"), "{\"city\": \"Zürich\", \"days\": 3}}\n</tool_call>"),
+                (crate::tools::Format::Hermes, None, "get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>"),
+                (
+                    crate::tools::Format::Xml,
+                    Some("get_weather"),
+                    "<parameter=city>\nSão Paulo, \"Brazil\"\n</parameter>\n<parameter=days>\n3\n</parameter>\n<parameter=opts>\n{\"hourly\": true}\n</parameter>\n</function>\n</tool_call>",
+                ),
+                (crate::tools::Format::Xml, None, "get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>"),
+            ] {
+                let lark = call_grammar(tools, named, format).unwrap();
+                let c = g.compile(&Spec::Grammar(lark)).unwrap_or_else(|e| panic!("{}: {format:?}: {e}", dir.display()));
+                let ids = tok.encode_with(text, false).unwrap();
+                let mut gram = c.start();
+                for (i, &t) in ids.iter().enumerate() {
+                    assert!(gram.allowed()[t as usize], "{}: {format:?} {named:?}: token {i} ({:?}, after {:?}) is not allowed", dir.display(), tok.decode(&[t]).unwrap(), tok.decode(&ids[..i]).unwrap());
+                    gram.consume(t);
+                }
+                assert!(gram.accepting(), "{}: {format:?} {named:?}: the call is not whole", dir.display());
             }
         }
     }

@@ -46,7 +46,9 @@ impl Tok {
         self.grammars
             .get_or_init(|| {
                 let bytes = self.token_bytes(vocab)?;
-                crate::constrain::Grammars::new(bytes, &self.ends, vocab).map(std::sync::Arc::new)
+                let t = plain(&self.t);
+                let tokenize: crate::constrain::Tokenize = Box::new(move |text| t.encode(text, false).ok().map(|e| e.get_ids().to_vec()));
+                crate::constrain::Grammars::with_tokenizer(bytes, &self.ends, vocab, tokenize).map(std::sync::Arc::new)
             })
             .clone()
     }
@@ -153,6 +155,43 @@ impl Tok {
     pub fn decode_with(&self, ids: &[u32], skip_special: bool) -> Result<String> {
         self.t.decode(ids, skip_special).map_err(|e| Error(e.to_string()))
     }
+}
+
+/// The tokenizer as it tokenizes a piece of text that is not the start of one: no space put before it (SentencePiece's `Prepend` normalizer and `Metaspace` prefix), as toktrie_hf_tokenizers has it.
+fn plain(t: &Tokenizer) -> Tokenizer {
+    use tokenizers::{normalizers, pre_tokenizers, NormalizerWrapper, PreTokenizerWrapper};
+    fn no_prepend(n: NormalizerWrapper) -> Option<NormalizerWrapper> {
+        match n {
+            NormalizerWrapper::Prepend(_) => None,
+            NormalizerWrapper::Sequence(l) => {
+                let kept: Vec<_> = l.as_ref().iter().filter_map(|n| no_prepend(n.clone())).collect();
+                (!kept.is_empty()).then(|| NormalizerWrapper::Sequence(normalizers::Sequence::new(kept)))
+            }
+            n => Some(n),
+        }
+    }
+    fn no_prefix(p: PreTokenizerWrapper) -> PreTokenizerWrapper {
+        match p {
+            PreTokenizerWrapper::Metaspace(mut m) => {
+                m.prepend_scheme = pre_tokenizers::metaspace::PrependScheme::Never;
+                PreTokenizerWrapper::Metaspace(m)
+            }
+            PreTokenizerWrapper::Sequence(l) => {
+                PreTokenizerWrapper::Sequence(pre_tokenizers::sequence::Sequence::new(l.as_ref().iter().map(|p| no_prefix(p.clone())).collect()))
+            }
+            p => p,
+        }
+    }
+    let mut t = t.clone();
+    let n = t.get_normalizer().cloned();
+    if let Some(n) = n {
+        t.with_normalizer(no_prepend(n));
+    }
+    let p = t.get_pre_tokenizer().cloned();
+    if let Some(p) = p {
+        t.with_pre_tokenizer(Some(no_prefix(p)));
+    }
+    t
 }
 
 /// The end-of-sequence ids of the model's directory: generation_config.json's where it gives any, else config.json's (or its text_config's).
