@@ -66,7 +66,7 @@ driver's again when the process is gone (the record: 2,223 MiB used before the s
 | `POST /v1/chat/completions` | yes | a chat, JSON or SSE |
 | `POST /v1/completions` | yes | a plain completion, JSON or SSE; `suffix` makes it a fill in the middle (see below) |
 | `POST /v1/responses` | yes | OpenAI's Responses API, stateless: JSON or SSE (see below) |
-| `POST /v1/messages`, `/v1/messages/count_tokens` | yes | Anthropic's Messages API (not tracked by id) |
+| `POST /v1/messages`, `/v1/messages/count_tokens` | yes | Anthropic's Messages API, JSON or SSE (see below; not tracked by id) |
 | `POST /v1/glyd/tokenize` | yes | a request's prompt counted, nothing run |
 | `GET /v1/glyd/info` | yes | what the server is and holds |
 | `GET /v1/glyd/requests/ID` | yes | how a request stands |
@@ -90,6 +90,16 @@ keeps no conversations: `previous_response_id`, `conversation`, `background`, `i
 `function_call`; `status` is `incomplete` with `incomplete_details.reason` `max_output_tokens` where the length cut it. A stream is the events `response.created`, `response.in_progress`,
 `response.output_item.added`, `response.content_part.added`, `response.output_text.delta`, `.done`, `response.reasoning_text.delta`, `.done`, `response.function_call_arguments.delta`, `.done`,
 `response.output_item.done`, then `response.completed` (or `response.incomplete`, `response.failed`), each numbered by `sequence_number`.
+
+## /v1/messages
+
+Anthropic's Messages API for the Anthropic SDKs and Claude Code (`ANTHROPIC_BASE_URL=http://127.0.0.1:8238 ANTHROPIC_API_KEY=any`; with a server key, `x-api-key: KEY` or a bearer token). The request is read as the chat
+request it is the same as and run as any chat request is. Read: `system` (a string or blocks), `messages` (`text`, `image`, `tool_use`, `tool_result` blocks; `thinking` blocks of an earlier turn are skipped),
+`tools` (custom tools; the ones Anthropic runs, `web_search` and the like, are left out), `tool_choice` (`auto`, `any`, `tool`, `none`, `disable_parallel_tool_use`), `thinking` (`enabled` shows the model's thinking in
+a `thinking` block with an empty signature, which this server cannot make; else it is off), `stop_sequences`, `max_tokens` (required), `temperature`, `top_p`, `top_k`, `stream`; `cache_control` is read and has no effect, and the
+usage says no token was cached. A stream is `message_start`, `ping`, each block's `content_block_start`, `content_block_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and
+`content_block_stop`, `message_delta` (the `stop_reason`: `end_turn`, `max_tokens`, `stop_sequence` with the string, `tool_use`; the usage) and `message_stop`, with a `ping` while a request waits for its turn. Errors are
+`{"type": "error", "error": {"type", "message"}}` (`invalid_request_error`, `authentication_error`, `not_found_error`, `api_error`). `/v1/models` carries `type`, `display_name` and `created_at` beside OpenAI's fields.
 
 ## Fill in the middle
 
