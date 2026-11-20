@@ -16,6 +16,10 @@ on:
       model:
         type: string
         default: google/gemma-4-12B-it:wren
+      client_model:
+        description: the model served for the client checks (a lossy level of a model released in the last six months)
+        type: string
+        default: google/gemma-4-12B-it:kestrel
 
 permissions:
   contents: read
@@ -41,7 +45,7 @@ jobs:
     steps:
       - name: Tools
         run: |
-          apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential pkg-config curl git ca-certificates python3 > /dev/null
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential pkg-config curl git ca-certificates python3 python3-venv > /dev/null
           [ -x "$CARGO_HOME/bin/cargo" ] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           nvidia-smi
@@ -66,7 +70,26 @@ jobs:
           out=$("$E" run "${{ inputs.model }}" --prompt "What is 17 + 25? Answer with the number only." --no-think)
           echo "$out"
           echo "$out" | grep -q 42
-      - name: The lossless KV cache (a random Qwen3 dense model made here: kvtest reads the dense engine's cache)
+      - name: The OpenAI, Anthropic and Ollama clients and the Open Responses schema against a served ${{ inputs.client_model }} (chat, streams, tools, thinking, JSON schema; tests/clients)
+        run: |
+          python3 -m venv /tmp/clients && /tmp/clients/bin/pip install -q openai anthropic ollama requests jsonschema
+          "$E" serve "${{ inputs.client_model }}" --port 8350 --ctx 8192 > /tmp/serve.log 2>&1 &
+          server=$!
+          for _ in $(seq 1 900); do
+            curl -sf http://127.0.0.1:8350/v1/models > /dev/null && break
+            kill -0 "$server" 2> /dev/null || { cat /tmp/serve.log; exit 1; }
+            sleep 2
+          done
+          status=0
+          for client in openai anthropic ollama openresponses; do
+            echo "== $client"
+            /tmp/clients/bin/python "tests/clients/${client}_check.py" http://127.0.0.1:8350 || status=1
+          done
+          kill "$server" 2> /dev/null || true
+          wait "$server" 2> /dev/null || true
+          [ "$status" = 0 ] || tail -40 /tmp/serve.log
+          exit "$status"
+      - name: The lossless KV cache (a random Qwen3 dense model made here, which kvtest reads as the dense engine's cache)
         run: |
           "$E" logitsmodel qwen3 /tmp/qwen3-standin
           "$E" kvtest /tmp/qwen3-standin
