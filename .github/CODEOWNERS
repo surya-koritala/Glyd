@@ -1,8 +1,9 @@
 # The model catalog (docs/guide/src/catalog.md): the families the engine runs, their levels, the cards and the
-# pre-packed repos' card tooling. A change to these asks the catalog owner for review. When P4's manifest lands,
-# add its path here in the same change.
+# pre-packed repos' card tooling, and the manifest of short names. A change to these asks the catalog owner for review.
 /glyd-engine/src/support.rs                     @surya-koritala
 /glyd-engine/src/levels.rs                      @surya-koritala
+/glyd-engine/src/models.rs                      @surya-koritala
+/glyd-engine/models.json                        @surya-koritala
 /cards/                                         @surya-koritala
 /huggingface/                                   @surya-koritala
 /docs/guide/src/catalog.md                      @surya-koritala

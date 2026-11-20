@@ -8,8 +8,7 @@ What is listed, who owns it, what a model needs before it is listed, and how a c
 - Each level's definition: `glyd-engine/src/levels.rs`.
 - The cards: `cards/NAME-LEVEL.json`, the measured numbers a model's Hugging Face card is made from
   (`huggingface/model_card.py`), and the pre-packed repos `glyd/NAME-LEVEL` on the Hub.
-- The manifest of short names to repos, when P4 lands ([#153](https://github.com/surya-koritala/Glyd/issues/153)). Its path goes
-  into `.github/CODEOWNERS` in the same change.
+- The manifest of short names to Hub repos and sizes, `glyd-engine/models.json` (P4, [#153](https://github.com/surya-koritala/Glyd/issues/153)).
 
 The engine tells a family apart by its `config.json`, so a new size of a listed family runs without a catalog entry. An entry
 is for a new family, a new level of a family, or a pre-packed repo.
@@ -45,8 +44,9 @@ Every item is a file or a command in the pull request.
 
 The Models page needs no edit: it is generated from `support.rs`.
 
-The manifest's entries must carry the license and a gated flag, the level, the size at each memory tier, and a link to the
-measured run. A schema check that refuses an entry without them is part of P4.
+A manifest entry has a name, aliases, a size and a repo today. The license, a gated flag and a link to the measured run are
+not fields yet. Adding them, with a check that refuses an entry without them, is open work on
+[#226](https://github.com/surya-koritala/Glyd/issues/226).
 
 ## How a review goes
 
