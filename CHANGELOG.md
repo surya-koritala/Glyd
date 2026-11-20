@@ -61,6 +61,10 @@ every earlier format.
 - `glyd run google/gemma-4-12B-it` (or `google/gemma-4-31B-it`, or their penguin repos) on a GPU without room for penguin names the wren repo and the memory
   it takes, where it fits (`glyd run glyd/gemma-4-12B-wren fits: ...`), and stops there; it handed the model to vLLM, whose bf16 needs more memory still, and
   which printed a second estimate and suggested a model Glyd does not run.
+- One program: `glyd` with the engine linked (the `engine` feature of the root crate, which the engine bundle of a release is built with). `glyd run`, `serve`, `pull`, `fit`, `doctor`,
+  `login`, `fetch`, `supports`, `preflight`, `prepare`, `costs`, `rates` and `rangeworker` are its own, with no `glyd-engine` on PATH; `glyd-engine` stays, as a link to `glyd` (or a copy named so), which
+  takes the engine's old command line, and as the cargo package. `fit` and `pull` reach the engine where they used to print "Unknown option"; with no engine here the answer says so. `glyd` with no words
+  explains the models first and the exit status (0 done, 1 an error, 3 not supported). install.sh puts the one program in place of the compression program and links `glyd-engine` to it.
 
 ## v0.32.1 — 2026-10-17
 
