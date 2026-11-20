@@ -123,18 +123,23 @@ impl std::fmt::Debug for Constraint {
 }
 
 impl Constraint {
-    /// A matcher at the start of the grammar, independent of the others; the first mask is begun at once (the prompt's prefill runs meanwhile).
-    pub fn start(&self) -> Gram {
-        let m = self.matcher.lock().unwrap_or_else(|e| e.into_inner()).deep_clone();
+    /// A matcher at the start of the grammar, independent of the others; a worker makes it, and the first mask, at once (the prompt's prefill runs meanwhile).
+    pub fn start(self: &Arc<Self>) -> Gram {
         let mut g = Gram { m: None, pending: None, ready: None, ends: self.ends.clone(), vocab: self.vocab, masks: 0 };
-        g.hand_over(m, None);
+        g.hand_over(Src::Start(self.clone()), None);
         g
     }
 }
 
+/// Where a worker's matcher comes from: a sequence's, or a new one of a grammar.
+enum Src {
+    Matcher(Matcher),
+    Start(Arc<Constraint>),
+}
+
 /// A matcher with the token it is to take, and where its next mask goes.
 struct Job {
-    m: Matcher,
+    m: Src,
     tok: Option<u32>,
     out: std::sync::mpsc::Sender<Made>,
 }
@@ -154,7 +159,11 @@ fn workers() -> &'static std::sync::mpsc::Sender<Job> {
             let rx = rx.clone();
             let _ = std::thread::Builder::new().name(format!("glyd-mask-{i}")).spawn(move || loop {
                 let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
-                let Ok(Job { mut m, tok, out }) = job else { return };
+                let Ok(Job { m, tok, out }) = job else { return };
+                let mut m = match m {
+                    Src::Matcher(m) => m,
+                    Src::Start(c) => c.matcher.lock().unwrap_or_else(|e| e.into_inner()).deep_clone(),
+                };
                 if let Some(t) = tok {
                     let _ = m.consume_token(t);
                 }
@@ -179,11 +188,10 @@ pub struct Gram {
 
 impl Gram {
     /// Sends the matcher to a worker with the token it takes (if any); the mask it makes is then `ready`'s, when `settle` has it back. Where no worker can be had the matcher stays and the mask is made at the draw.
-    fn hand_over(&mut self, m: Matcher, tok: Option<u32>) {
+    fn hand_over(&mut self, m: Src, tok: Option<u32>) {
         let (out, rx) = std::sync::mpsc::channel();
-        match workers().send(Job { m, tok, out }) {
-            Ok(()) => self.pending = Some(rx),
-            Err(e) => self.m = Some(e.0.m),
+        if workers().send(Job { m, tok, out }).is_ok() {
+            self.pending = Some(rx);
         }
     }
 
@@ -249,7 +257,7 @@ impl Gram {
         self.settle();
         self.ready = None;
         if let Some(m) = self.m.take() {
-            self.hand_over(m, Some(tok));
+            self.hand_over(Src::Matcher(m), Some(tok));
         }
     }
 
@@ -375,7 +383,7 @@ mod tests {
     }
 
     /// Greedy decoding from logits that prefer `want`'s tokens in order and, where the grammar does not allow one, the first token it allows: the text of what the mask lets through.
-    fn walk(c: &Constraint, want: &[u32], steps: usize) -> (String, bool) {
+    fn walk(c: &Arc<Constraint>, want: &[u32], steps: usize) -> (String, bool) {
         let mut g = c.start();
         let mut out = Vec::new();
         for i in 0..steps {
