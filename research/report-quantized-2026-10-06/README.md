@@ -1,6 +1,6 @@
 # Quantized 2026 checkpoints under vLLM: stock against Glyd, measured (2026-10-06)
 
-Private report (glyd-gpu-private). Every row of the first table was **measured** on one Runpod pod: stock vLLM 0.30.0 and vLLM with
+Report from the former private repo glyd-gpu-private, now part of this repository. Every row of the first table was **measured** on one Runpod pod: stock vLLM 0.30.0 and vLLM with
 `--quantization glyd` on the same checkpoint, the same GPU, one after the other. No bf16 baseline was run (quantized checkpoints
 have none). Rows for checkpoints that fit none of the GPUs allowed tonight (RTX 4090, RTX 5090, L40S) are **projected** in the
 second table, from the sampled bytes of `research/quant-2026`, and say so.

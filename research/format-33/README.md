@@ -1,6 +1,6 @@
 # format-33: a lossless bf16 code at 10.72 bits a weight (33.0%) as fast as the tiered layout?
 
-Private research (glyd-gpu-private), 2026-10-06. A sampled compression study and static compiled-decoder count; no production kernel or format change.
+Research from the former private repo glyd-gpu-private (now part of this repository), 2026-10-06. A sampled compression study and static compiled-decoder count; no production kernel or format change.
 Tensor samples from eight 2026 bf16 models were read by HTTP range on a Runpod pod. Exact constructed packs
 are identified separately from size-model estimates. Whole-model rows are sample-weighted projections, not
 complete checkpoint encodings or resident GPU measurements. Entropy estimates describe the sampled

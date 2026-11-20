@@ -1,6 +1,6 @@
 # Qwen3.8-27B: optional Glyd lossy representation
 
-Private research, separate from the lossless product and its exactness checks. The candidate is Glyd's Rust representation, intended for Glyd's own engine and CUDA implementation. The prototype neither depends on vLLM nor converts weights into standard FP8/FP4. FP8 is the active comparison baseline. Candidate B and FP4 work are deferred. See [the Candidate A baseline](CANDIDATE-A.md) for the current implementation and acceptance order.
+Research, separate from the lossless product and its exactness checks. The candidate is Glyd's Rust representation, intended for Glyd's own engine and CUDA implementation. The prototype neither depends on vLLM nor converts weights into standard FP8/FP4. FP8 is the active comparison baseline. Candidate B and FP4 work are deferred. See [the Candidate A baseline](CANDIDATE-A.md) for the current implementation and acceptance order.
 
 ## Model and comparison
 

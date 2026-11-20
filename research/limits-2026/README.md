@@ -1,6 +1,6 @@
 # Lossless limits of every weight format, on 2026 checkpoints
 
-Private research (glyd-gpu-private), 2026-10-06. How far below its stored size each weight format can go losslessly, and how much of
+Research from the former private repo glyd-gpu-private (now part of this repository), 2026-10-06. How far below its stored size each weight format can go losslessly, and how much of
 that Glyd's layouts already take: real tensors of 30 checkpoints released in 2026 (10 bf16, 18 quantized, 2 GGUF), 300 samples of
 about 12 MB each read by HTTP range from the Hub (attention, MLP, experts, embeddings, LM heads, vision towers, MTP heads), measured
 on a Runpod pod's CPU. Bit for bit throughout: nothing is requantized. The results JSON and every table of this page are in
