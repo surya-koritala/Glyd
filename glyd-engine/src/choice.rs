@@ -26,8 +26,8 @@ pub struct Cfg {
     pub tools: Option<ToolsCfg>,
     /// What the prompt already wrote of the answer (JSON mode's `{`): the answer's first text.
     pub lead: String,
-    /// Kimi-K3's tag format (`Some(in_think)`: the prompt ended inside its think channel), read as the other models' replies are.
-    pub xtml: Option<bool>,
+    /// A family's own markup (Kimi-K3's tags, Gemma 4's), read as the other models' replies are (`reader::Reader`).
+    pub reader: Option<crate::reader::ReaderKind>,
 }
 
 /// How the answer is read for tool calls.
@@ -99,16 +99,17 @@ pub struct Choice {
 impl Choice {
     pub fn new(cfg: Cfg) -> Choice {
         let (mut tool, mut opening) = (None, Vec::new());
-        // (Kimi-K3's forced opening is its own tags: its reader is primed with them, and the call it writes when the call closes is the parser's whole)
-        let lead_in = |t: &ToolsCfg| if cfg.xtml.is_some() { String::new() } else { t.prefix.clone() };
+        let mut stream = if cfg.skip_special { Stream::skipping() } else { Stream::new() }.with_reader(cfg.reader);
+        // (a forced opening is the family's own markup: its reader is primed with it. Kimi-K3's writes a call when the call closes, so the opening reads as nothing and the call it writes is the parser's whole; Gemma 4's
+        // opening reads as the hermes call's beginning, which the tool parser starts from)
+        if let Some(t) = cfg.tools.as_ref().filter(|t| cfg.reader.is_some() && !t.prefix.is_empty()) {
+            stream.prime(&t.prefix);
+        }
+        let lead_in = |t: &ToolsCfg| if cfg.reader.is_some() { stream.primed().to_string() } else { t.prefix.clone() };
         if let Some(t) = cfg.tools.as_ref().filter(|t| t.stream) {
             let mut ts = ToolStream::new(t.format, &t.list);
             opening = ts.feed(&lead_in(t));
             tool = Some(ts);
-        }
-        let mut stream = if cfg.skip_special { Stream::skipping() } else { Stream::new() }.with_xtml(cfg.xtml);
-        if let Some(t) = cfg.tools.as_ref().filter(|t| cfg.xtml.is_some() && !t.prefix.is_empty()) {
-            stream.prime(&t.prefix);
         }
         let mut c = Choice {
             stream,
@@ -237,7 +238,7 @@ impl Choice {
                     finish_reason = "tool_calls";
                 }
             } else {
-                let lead_in = if self.cfg.xtml.is_some() { "" } else { t.prefix.as_str() };
+                let lead_in = if self.cfg.reader.is_some() { self.stream.primed() } else { t.prefix.as_str() };
                 let mut ex = tools::extract(&(lead_in.to_string() + &self.content), t.format, &t.list);
                 if ex.called {
                     if !t.parallel {
@@ -420,7 +421,7 @@ mod tests {
         ];
         for stream in [false, true] {
             let tools = ToolsCfg { choice: ToolChoice::Auto, parallel: true, format: Format::Hermes, list: Vec::new(), prefix: String::new(), stream };
-            let mut c = Choice::new(Cfg { chat: true, tools: Some(tools), xtml: Some(true), ..Cfg::default() });
+            let mut c = Choice::new(Cfg { chat: true, tools: Some(tools), reader: Some(crate::reader::ReaderKind::Kimi { in_think: true }), ..Cfg::default() });
             let mut streamed = Vec::new();
             for w in script {
                 streamed.extend(c.token(&t, id(w)).unwrap().calls);
@@ -441,7 +442,8 @@ mod tests {
         for stream in [false, true] {
             let prefix = crate::xtml::forced(true, Some("get_weather"));
             let tools = ToolsCfg { choice: ToolChoice::Named("get_weather".into()), parallel: false, format: Format::Hermes, list: Vec::new(), prefix, stream };
-            let mut c = Choice::new(Cfg { chat: true, tools: Some(tools), xtml: Some(false), ..Cfg::default() });
+            let mut c =
+                Choice::new(Cfg { chat: true, tools: Some(tools), reader: Some(crate::reader::ReaderKind::Kimi { in_think: false }), ..Cfg::default() });
             let mut streamed = Vec::new();
             for w in rest {
                 streamed.extend(c.token(&t, id(w)).unwrap().calls);

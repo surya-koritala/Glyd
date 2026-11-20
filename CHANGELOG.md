@@ -6,6 +6,10 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- Gemma 4: tool calls and thinking work. Its replies are read by a reader of their own (`reader::Gemma`, behind the `Reader` interface Kimi-K3's tags use too): the thought channel is the reasoning, a call written `<|tool_call>call:NAME{key:<|"|>text<|"|>,...}<tool_call|>` is an OpenAI tool call (arguments streamed as JSON as they come) and an Anthropic `tool_use`, and a function or a call asked for through `tool_choice` is opened in the prompt. Before, a request with tools was refused and the thought leaked into the answer.
+
 ## v0.33.0 — 2026-11-20
 
 - `glyd connect [TOOL]` finds the server that runs here and prints what OpenAI and Anthropic SDKs, Claude Code, Ollama's libraries, Open WebUI (container) and Continue need to talk to it; the Host check answers `host.docker.internal` and `host.containers.internal` (Docker Desktop's and Podman's names for this computer); the client checks are in `tests/clients/` (docs/serve-api.md, Connecting tools).

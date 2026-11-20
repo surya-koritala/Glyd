@@ -490,6 +490,11 @@ impl Chat {
         self.mentions("<|open|>message")
     }
 
+    /// Whether the template writes Gemma 4's markup (its replies are read through `reader::Gemma`): the thought channel and the tool call's own marks.
+    pub fn is_gemma(&self) -> bool {
+        self.mentions("<|tool_call>call:") && self.mentions("<|channel>")
+    }
+
     /// The special tokens (`bos_token` ...) the template may name.
     pub fn with_tokens(mut self, tokens: Vec<(&'static str, String)>) -> Chat {
         self.tokens = tokens;

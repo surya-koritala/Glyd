@@ -67,8 +67,8 @@ pub enum Format {
 impl Format {
     /// The format of a chat template's tool calls: DSML where it writes `｜DSML｜`, GLM's where it writes `<arg_key>`, XML where it writes `<function=`, else hermes.
     pub fn of(template: &Chat) -> Format {
-        // (Kimi-K3's replies are read through xtml::Xtml, which writes its calls as hermes ones)
-        if template.is_xtml() {
+        // (Kimi-K3's and Gemma 4's replies are read through reader::Reader, which writes their calls as hermes ones)
+        if template.is_xtml() || template.is_gemma() {
             return Format::Hermes;
         }
         if template.mentions("｜DSML｜") {

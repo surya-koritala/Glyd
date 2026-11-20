@@ -124,6 +124,7 @@ pub mod qwen4x_serve;
 pub mod qwen_tools;
 #[cfg(feature = "dev")]
 pub mod qx_trellis;
+pub mod reader;
 #[cfg(feature = "dev")]
 pub mod report;
 pub mod sampler;
