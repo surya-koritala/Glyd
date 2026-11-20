@@ -17,7 +17,7 @@ What holds today:
 - `glyd-engine run` refuses with one line and a fix where it cannot run a model (`machine.rs`, `support.rs`).
 - Every choice can be overridden: `MODEL:level`, `--context`, `--split`, `--devices`, `--users`.
 - At run time the engine needs only the GPU driver, which it opens itself (`glyd-engine/src/ffi.rs`); building it needs
-  nvcc, or hipcc for AMD. `glyd run` from the v0.32.1 release goes through the Python tool and needs Python.
+  nvcc, or hipcc for AMD. The v0.33.0 `install.sh` installs the engine without Python; `glyd run` goes through the Python tool (vLLM) only where that tool is installed and the GPU is not one the engine is the default on.
 
 What is planned:
 

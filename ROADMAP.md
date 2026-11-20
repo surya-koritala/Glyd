@@ -16,16 +16,21 @@ dependencies, under its milestone's epic; the epics are tracked in [#118](https:
 | v1.0.0 | [M6 Stable and operable](https://github.com/surya-koritala/Glyd/milestone/7) | [#125](https://github.com/surya-koritala/Glyd/issues/125) | 7 |
 | after 1.0 | [Later: datacenter scale](https://github.com/surya-koritala/Glyd/milestone/8) | [#210](https://github.com/surya-koritala/Glyd/issues/210) | 7 |
 
-## Where it stands (v0.32.1, 2026-10-17)
+## Where it stands (v0.33.0, 2026-11-20)
 
 Released, on main and planned are listed apart.
 
-**Released: v0.32.1** (2026-10-17, BUSL-1.1; Apache-2.0 starts with v0.33.0)
-- The `glyd` CLI as the Python tool: `glyd run` goes through the frozen vLLM path (Python, vLLM and PyTorch, about 8 GB). The
-  engine is used where asked (`GLYD_ENGINE=1`). The release has no engine tarball.
+**Released: v0.33.0** (2026-11-20, Apache-2.0; the first release built only from this repository)
+- `install.sh` on Linux with an NVIDIA GPU installs the Rust `glyd` and the engine with its GPU library from the
+  release's engine bundle (about 100 MB, no Python); the engine has run on x86_64 only (the aarch64 bundle is built, not yet run).
+  `GLYD_WITH_VLLM=1` installs the Python tool with vLLM and PyTorch.
+- `glyd run` goes to the engine by default where there is no Python tool, and, with the tool, on the RTX 4080 SUPER (the GPU it
+  has been measured on); other GPUs go through the frozen vLLM path unless `GLYD_ENGINE=1`.
 - Compression of files, the store, and the Python GPU package and vLLM plugin.
 
-**On main, not released** (v0.33.0 is the first release from this repository)
+**Before v0.33.0:** v0.32.1 (2026-10-17, BUSL-1.1) went through vLLM and Python and had no engine tarball.
+
+**In v0.33.0** (and on main after it)
 - One repository under Apache-2.0 with the engine, the GPU library, Condor and Starlings (#263); raw data out of the tree
   (#265); rustfmt, clippy and cargo-deny in CI (#266, part of S8); one table of what the engine runs, shared by `fit`,
   `run` and `serve` (#267, P16); security updates (S7, #211).
@@ -33,15 +38,15 @@ Released, on main and planned are listed apart.
   (lossless and lossy levels); and, lossless, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark, each through its own
   pipeline. Qwen3.8-Flash-Next (Condor's model) runs through Condor's `qwenserve`, not `glyd run`. The list is
   `glyd-engine/src/support.rs`.
-- `glyd run` hands a model to the engine only on GPUs listed in `GPUS` (`glyd-engine/src/machine.rs`): none are listed, so it
-  uses vLLM unless `GLYD_ENGINE=1` (S10).
+- With the Python tool, `glyd run` hands a model to the engine only on GPUs listed in `GPUS` (`glyd-engine/src/machine.rs`):
+  the RTX 4080 SUPER is the one so far (S10), the others use vLLM unless `GLYD_ENGINE=1`.
 - Batching on the Qwen3 path only (up to 8 sequences); other families serve one request at a time.
 - MoE experts on GPU/RAM/NVMe with CPU compute for misses; layer split over the GPUs of one machine for Nemotron-H,
   Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark; two-machine pipeline (Starlings, beta). `glyd-engine fit` plans before
   download but `run` does not yet load by the plan (P2a).
 - NVIDIA Ampere to Blackwell, Linux x86_64, driver 580 or newer. AMD RDNA 3/4 as development builds (`GLYD_HIP=1`). The GPU
-  workflow runs on one self-hosted machine (sm_89) with a small model; Windows and macOS CI and the engine on every release
-  platform are not there yet.
+  workflow runs on one self-hosted machine (sm_89) with a small model; Windows and macOS CI compile and unit-test the engine,
+  the codec, the store and the CLI (the engine itself runs on Linux with an NVIDIA GPU only).
 
 **Not there**: Windows engine release, aarch64, Apple, CPU-only runs, CUDA 12 drivers (M1 and later).
 

@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.33.0 — 2026-11-20
 
 - Engine: after a short prompt pass for requests that came in together, the round's decode step waits for the rest of them (first token with 4 short prompts at once 80 to 51 ms on an RTX 4080 SUPER, tokens unchanged), and the prompts of up to 8 requests that arrive together run in one pass (8 short prompts at once 162 to 65 ms on an RTX 4080 SUPER; a reply's last bits can then differ from the same prompt's alone, `GLYD_ENGINE_BATCH_PREFILL=0` keeps every reply identical to solo; `benchmarks/gpu/rtx4080s-batched-prefill-2026-11-20`).
 - **Glyd is open source, all of it, under the Apache License 2.0.** The GPU library and its kernels (`gpu/`), the packer (`glyd-gpu/`),
@@ -33,6 +33,8 @@ every earlier format.
 - On Linux with an NVIDIA GPU, install.sh installs the Rust `glyd`, Glyd's engine and its GPU library in one folder: about 100 MB, no
   Python, no PyTorch. `GLYD_WITH_VLLM=1` installs the Python tool with vLLM as before (about 8 GB), for the bf16 models the engine does not
   run; a machine that already has the Python tool keeps it.
+- `install.sh` takes `GLYD_RELEASE_URL` (a mirror, or `file:///DIR`) in place of the GitHub release's download URL, for the compression program's and the engine's tarballs.
+- Every artifact of a release is built from this repository: `release.yml` (the CLI tarballs and wheels) and `release-gpu.yml` (the GPU libraries, the engine, the `glyd-gpu` wheels and the `glyd-engine-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` bundles with their `.sha256`).
 - `glyd run` and `glyd serve` run DeepSeek-V4-Flash, GLM-5.3-Flash, Muse Spark and Nemotron 3.5 Lightning on Glyd's engine at penguin:
   the release's weights exactly (an FP8 or FP4 release as it is, a bf16 one lossless). The layers are split over the machine's GPUs by
   their free memory (`--split CUTS --devices GPUS` chooses); where the GPUs do not hold the model, `run` says how much it needs and stops.

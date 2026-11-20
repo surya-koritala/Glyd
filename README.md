@@ -32,9 +32,11 @@ More, each with its machine and log: [DETAILS.md](DETAILS.md), [benchmarks/](ben
 
 ## Not yet
 
-- `glyd run` from the current release (v0.32.1) still goes through vLLM and Python. The engine becomes its default on a
-  GPU once it measures at least as fast there ([#214](https://github.com/surya-koritala/Glyd/issues/214)); v0.33.0, the
-  first release built only from this repository, is next ([#129](https://github.com/surya-koritala/Glyd/issues/129)).
+- `install.sh` on Linux with an NVIDIA GPU installs the engine alone (about 100 MB, no Python), and `glyd run` is then the
+  engine's. With the Python tool installed (`GLYD_WITH_VLLM=1`), `glyd run` goes to the engine only on the GPU it has been
+  measured on, the RTX 4080 SUPER ([#214](https://github.com/surya-koritala/Glyd/issues/214)), and to the frozen vLLM path on
+  the others; `GLYD_ENGINE=1` forces the engine, `GLYD_ENGINE=0` keeps vLLM. Models the engine does not run (bf16 models of
+  other families, anything not in the list above) go through vLLM.
 - No Windows, macOS, aarch64 or CPU-only engine. AMD is a development build (`GLYD_HIP=1`).
 - Batching on Qwen3 only (up to 8 requests); the other families serve one request at a time.
 
