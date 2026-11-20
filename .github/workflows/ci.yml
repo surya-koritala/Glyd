@@ -76,6 +76,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.diff.outputs.rust }}
+      hip: ${{ steps.diff.outputs.hip }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -85,6 +86,7 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "hip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # (the pull request's merge commit against its first parent, the base)
@@ -93,6 +95,12 @@ jobs:
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+          # The AMD build: the kernels, their HIP header, the build script and the engine's sources that have a HIP form (cfg glyd_hip), the lock file and this workflow.
+          if grep -Eq '^(glyd-engine/(kernels/|build\.rs|Cargo\.toml|src/(ffi|dev|kern|plan)\.rs)|gpu/hip\.h|Cargo\.lock|\.github/workflows/ci\.yml)' "$RUNNER_TEMP/changed"; then
+            echo "hip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hip=false" >> "$GITHUB_OUTPUT"
           fi
 
   # The codec, the store, glyd-gpu's host code and the engine without its kernels (no nvcc: the CUDA paths report that the build has none), built and unit-tested
@@ -203,7 +211,7 @@ jobs:
   hip:
     name: HIP kernels compile (AMD)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.hip == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -219,6 +227,16 @@ jobs:
         with:
           shared-key: hip
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          # (the engine's own build, the kernels hipcc made, is what the cache is for)
+          cache-workspace-crates: true
+      # Cargo reruns a build script when a source file is newer than its last build, and a checkout makes every file new: the files get the times their content last
+      # changed (scripts/ci_restore_mtimes.py), so hipcc runs again only when a kernel or the build script changed.
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: ${{ runner.temp }}/mtimes-hip.json
+          key: hip-mtimes-${{ github.run_id }}
+          restore-keys: hip-mtimes-
+      - run: python3 scripts/ci_restore_mtimes.py "$RUNNER_TEMP/mtimes-hip.json"
       - name: ROCm 7.2.1's HIP compiler
         run: |
           curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://repo.radeon.com/rocm/rocm.gpg.key -o "$RUNNER_TEMP/rocm.gpg.key"
@@ -235,6 +253,11 @@ jobs:
           echo "HIPCC=$rocm/bin/hipcc" >> "$GITHUB_ENV"
           "$rocm/bin/hipcc" --version
       - run: cargo build --profile ci -p glyd-engine
+      - if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: ${{ runner.temp }}/mtimes-hip.json
+          key: hip-mtimes-${{ github.run_id }}
 
   # rustfmt, clippy with warnings denied (both feature sets of the engine), and the dependency policy (deny.toml).
   # Clippy's findings from before the baseline are allowed by name in Cargo.toml's [workspace.lints.clippy].
