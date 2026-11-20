@@ -1,53 +1,65 @@
+<img src="docs/img/glyd-logo.svg" alt="Glyd" width="72">
+
 # Glyd
 
-Lossless compression for LLM weights and KV cache, and the inference engine that runs on it. Rust, Apache-2.0.
+Compress and run open LLMs on your GPUs, end to end.
 
-You name a model and Glyd fits it to your GPU. Weights and KV cache are packed losslessly (about 10.8 and 12 bits
-instead of bf16's 16) and decoded inside the kernels, bit for bit. When that is not enough: lossy levels (about 6.5,
-5.5 and 4.5 bits), experts in RAM or on NVMe, then more GPUs.
+Glyd packs a model's weights and KV cache losslessly, fits the model to the GPUs you have, and runs and serves it on its
+own Rust engine. It works from one consumer card to a multi-GPU server. Apache-2.0.
+
+[Docs](https://surya-koritala.github.io/Glyd/) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) ·
+[Security](SECURITY.md)
+
+## Features
+
+- **Lossless compression.** Weights and KV cache take less GPU memory and are decoded bit for bit inside the GPU
+  kernels. `glyd-engine verify` checks any packed model against the original.
+- **Lossy levels.** When lossless is not enough: kestrel, swift and wren (about 6.5, 5.5 and 4.5 bits per weight), and
+  hummingbird for mixture-of-experts layers.
+- **Fit to your machine.** `glyd-engine fit` plans the level, context length and placement before anything downloads.
+- **Many GPUs.** Split a model's layers across GPUs, or share every layer across them. Starlings (beta) extends this
+  across machines.
+- **Serving.** OpenAI- and Anthropic-compatible APIs, JSON-schema and tool-call constraints, and a chat page.
+- **Model families.** Qwen, Gemma, GLM, Kimi, DeepSeek, Muse and Nemotron. `glyd-engine supports MODEL` answers for a
+  specific model.
+
+## How it works
+
+1. **Plan.** Glyd reads the model's config and file headers, then your GPUs, RAM and disk, and picks a level, a context
+   length and where each part of the model lives.
+2. **Pack.** Each weight matrix is packed once for your GPU and cached. Lossless packs are verified equal to the
+   original tensors.
+3. **Run.** The engine's CUDA kernels decode packed weights and KV cache as they compute, so the full-size weights never
+   sit in GPU memory. For mixture-of-experts models, busy experts stay on the GPU, the rest move between RAM and NVMe,
+   and the CPU computes the misses.
+4. **Serve.** Responses stream through the API or the chat page.
+
+Design notes: [docs/architecture.md](docs/architecture.md).
+
+## Quick start
+
+Linux x86_64 with an NVIDIA GPU (Ampere or newer, driver 580 or newer). Building needs the CUDA toolkit; running needs
+only the driver.
 
 ```bash
-cargo build --release -p glyd-engine            # building the kernels needs the CUDA toolkit: CONTRIBUTING.md
-target/release/glyd-engine fit Qwen/Qwen3-8B     # the plan for this GPU, before any download
-target/release/glyd-engine run Qwen/Qwen3-8B     # download, pack, chat in the terminal and at http://localhost:8000
-target/release/glyd-engine serve Qwen/Qwen3-8B   # OpenAI and Anthropic APIs, and the chat page
+git clone https://github.com/surya-koritala/Glyd && cd Glyd
+cargo build --release -p glyd-engine
+target/release/glyd-engine fit google/gemma-4-12B-it:kestrel    # the plan for this machine
+target/release/glyd-engine run google/gemma-4-12B-it:kestrel    # chat in the terminal and at http://localhost:8000
 ```
 
-## Measured
+A one-line installer with no Python arrives with v0.33.0 ([#129](https://github.com/surya-koritala/Glyd/issues/129)).
 
-| Run | Machine | bf16 | Glyd |
-| :--- | :--- | ---: | ---: |
-| Qwen3-8B on the engine, lossless | RTX 4080 SUPER 16 GB | 15.3 GiB, over the 14.7 GiB free | 10.3 GiB, 59.7 tokens/s ([log](benchmarks/gpu/rtx4080s-qwen3-8b-engine-2026-11-20)) |
-| Qwen3.8-27B layer matrices, read back bit for bit | A10 | 49.52 GB | 33.28 GB ([log](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/open-models-a10-2026-09-27/sizes.txt)) |
-| Qwen3.8-Flash-Next 180B MoE, decode | RTX 4080 SUPER, 64 GB RAM | does not fit | 91 tokens/s ([log](condor/results/v0.2.4/pc)) |
+## Status
 
-More, each with its machine and log: [DETAILS.md](DETAILS.md), [benchmarks/](benchmarks/).
+Runs today on NVIDIA GPUs under Linux; AMD RDNA 3/4 is a development build. Windows, macOS, Apple Silicon and CPU-only
+are on the [roadmap](ROADMAP.md). Large mixture-of-experts models on one consumer GPU: [condor/](condor/).
 
-## Runs today
+## Contributing
 
-- NVIDIA Ampere or newer, Linux x86_64, driver 580 or newer.
-- Lossless: Qwen3 dense, Gemma 4 12B and 31B, Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark.
-  Lossy only: Qwen3.5, 3.6 and 3.8 dense. `glyd-engine supports MODEL` answers for one model.
-- A 180B mixture of experts on one 12-16 GB GPU: [condor/](condor/). One model across machines: [starlings/](starlings/) (beta).
-
-## Not yet
-
-- `glyd run` from the current release (v0.32.1) still goes through vLLM and Python. The engine becomes its default on a
-  GPU once it measures at least as fast there ([#214](https://github.com/surya-koritala/Glyd/issues/214)); v0.33.0, the
-  first release built only from this repository, is next ([#129](https://github.com/surya-koritala/Glyd/issues/129)).
-- No Windows, macOS, aarch64 or CPU-only engine. AMD is a development build (`GLYD_HIP=1`).
-- Batching on Qwen3 only (up to 8 requests); the other families serve one request at a time.
-
-## Repository
-
-`glyd-engine/` the engine and its CUDA/HIP kernels · `gpu/` the GPU library (C API) · `glyd-gpu/` the packer and
-verifier · `src/`, `glyd-store/` the file codec and store · `condor/`, `starlings/` · `bindings/`, `glyd-gpu-py/`
-Python and Go bindings and the frozen vLLM plugin.
-
-Design: [docs/architecture.md](docs/architecture.md). Work list: [ROADMAP.md](ROADMAP.md). Contributing:
-[CONTRIBUTING.md](CONTRIBUTING.md). Changes: [CHANGELOG.md](CHANGELOG.md).
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[good first issues](https://github.com/surya-koritala/Glyd/labels/good%20first%20issue). Commits carry a DCO sign-off.
 
 ## License
 
-Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)); code in [third_party/](third_party/) keeps its own license.
-Releases v0.29.0 to v0.32.1 were published under BUSL-1.1.
+Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). Releases v0.29.0 to v0.32.1 were published under BUSL-1.1.
