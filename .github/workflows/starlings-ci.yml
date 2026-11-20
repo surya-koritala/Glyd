@@ -112,7 +112,8 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then
             security_case=generation::tests::enrolled_worker_applies_whole_requests_once_and_retains_buffers_until_local_drain
             STARLINGS_TEST_GENERATION_GATE_TRACE=1 rustup run 1.97.1 cargo test --workspace --exclude starlings-cli --locked --offline -- --exact "$security_case" --nocapture
-            STARLINGS_TEST_REGISTRY_TRACE=1 rustup run 1.97.1 cargo test --workspace --exclude starlings-cli --locked --offline -- --nocapture --skip "$security_case"
+            # (the runner's disk does about 25 durable commits a second, shared by every test thread; one at a time keeps a registry heartbeat inside its 6 s deadline)
+            STARLINGS_TEST_REGISTRY_TRACE=1 RUST_TEST_THREADS=1 rustup run 1.97.1 cargo test --workspace --exclude starlings-cli --locked --offline -- --nocapture --skip "$security_case"
           else
             rustup run 1.97.1 cargo test --workspace --locked --offline -- --nocapture
           fi
