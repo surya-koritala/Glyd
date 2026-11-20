@@ -263,6 +263,21 @@ impl RefMuse {
         RefMuse { c, embed: Vec::new(), head: Vec::new(), norm: Vec::new(), layers, pos: 0 }
     }
 
+    /// A model of MoE layers only, from each layer's router, choice bias, pre-expert projection and norm, experts' gate-up and down,
+    /// post-expert norm and projection (the norms' weights as the checkpoint holds them).
+    pub(crate) fn moe_only(c: ConfigMuse, w: Vec<[Vec<f32>; 8]>) -> RefMuse {
+        let mut m = RefMuse::attention_only(c, w.iter().map(|_| Default::default()).collect());
+        for (ly, [router, bias, pre, w_pre, gu, down, w_post_e, post]) in m.layers.iter_mut().zip(w) {
+            (ly.router, ly.bias, ly.pre, ly.w_pre, ly.gu, ly.down, ly.w_post_e, ly.post) =
+                (router, bias, pre, plus_one(&w_pre), gu, down, plus_one(&w_post_e), post);
+        }
+        m
+    }
+
+    pub(crate) fn moe_of(&self, l: usize, h: &[f32]) -> Vec<f32> {
+        self.moe(l, h)
+    }
+
     /// Layer `l`'s attention on its normed input at `self.pos`.
     pub(crate) fn attention_of(&mut self, l: usize, h: &[f32]) -> Vec<f32> {
         self.attention(l, h)

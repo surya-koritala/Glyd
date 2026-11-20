@@ -60,10 +60,13 @@ def ranges(name, shape):
     return (-0.5, 0.5)
 
 
-def fill_module(m, plus_one_norms=False):
+def fill_module(m, plus_one_norms=False, prefix=""):
     specs = {}
     with torch.no_grad():
-        for name, p in m.named_parameters():
+        # (the routers' choice biases are buffers)
+        params = list(m.named_parameters()) + [(n, b) for n, b in m.named_buffers() if n.endswith("e_score_correction_bias")]
+        for name, p in params:
+            name = prefix + name
             lo, hi = ranges(name, list(p.shape))
             if plus_one_norms and "norm" in name and p.dim() == 1:
                 lo, hi = (-0.2, 0.2)
@@ -213,7 +216,163 @@ def glm53_mla():
           "GlmMoeDsaAttention (indexer top-k past the prompt)", c.hidden_size, specs, out)
 
 
+def mlp_case(case, what, source, module, hidden, plus_one_norms=False):
+    specs = fill_module(module, plus_one_norms)
+    x, _ = inputs(hidden)
+    write(case, what, source, hidden, specs, module(x))
+
+
+def gemma4_mlp():
+    from transformers.models.gemma4 import modeling_gemma4 as M
+
+    c = gemma4_config()
+    mlp_case("gemma4_mlp", "gemma-4-12B MLP: GELU-tanh gated, 64 -> 128", "Gemma4TextMLP", M.Gemma4TextMLP(c, 0).eval(), c.hidden_size)
+
+
+def glm53_moe():
+    from transformers.models.glm_moe_dsa import modeling_glm_moe_dsa as M
+    from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
+
+    # GLM-5.3's MoE: sigmoid scores with a choice bias, top-8 of 256 in groups, renormed, x2.5, one shared expert. Here top-2 of 8 in 4
+    # groups keeping 2 (so the group limit removes experts), inter 32.
+    c = GlmMoeDsaConfig(hidden_size=64, n_routed_experts=8, num_experts_per_tok=2, n_group=4, topk_group=2, routed_scaling_factor=2.5,
+                        norm_topk_prob=True, n_shared_experts=1, moe_intermediate_size=32, num_hidden_layers=1, hidden_act="silu")
+    m = M.GlmMoeDsaMoE(c).eval()
+    specs = fill_module(m)
+    x, _ = inputs(c.hidden_size)
+    write("glm53_moe", "GLM-5.3 MoE: sigmoid + choice bias, 4 groups keep 2, top-2 of 8, renorm x2.5, one shared expert",
+          "GlmMoeDsaMoE", c.hidden_size, specs, m(x))
+
+
+def dsv4_moe(layer, case):
+    from transformers.models.deepseek_v4 import modeling_deepseek_v4 as M
+    from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+
+    # DeepSeek-V4's MoE: sqrt-softplus scores, a choice bias, hash routing (a token-id table) in the first layers, SwiGLU limit 10,
+    # renormed, one shared expert. Here top-2 of 8, inter 32, a vocabulary of 32.
+    c = DeepseekV4Config(hidden_size=64, num_local_experts=8, num_experts_per_tok=2, intermediate_size=32, vocab_size=32, num_hidden_layers=2,
+                         mlp_layer_types=["hash_moe", "moe"], scoring_func="sqrtsoftplus", swiglu_limit=1.0, routed_scaling_factor=1.5)
+    m = M.DeepseekV4SparseMoeBlock(c, layer).eval()
+    specs = fill_module(m)
+    hash_table = [[(t * 5 + j * 3) % 8 for j in range(2)] for t in range(32)]
+    if m.is_hash:
+        m.gate.tid2eid.copy_(torch.tensor(hash_table))
+    ids = [(t * 11 + 3) % 32 for t in range(T)]
+    x, _ = inputs(c.hidden_size)
+    out = m(x, torch.tensor(ids).view(1, T))
+    write(case, f"DeepSeek-V4 MoE layer ({c.mlp_layer_types[layer]}): sqrt-softplus, top-2 of 8, SwiGLU limit 1, x1.5, one shared expert",
+          "DeepseekV4SparseMoeBlock", c.hidden_size, specs, out, {"token_ids": ids, "hash": hash_table if m.is_hash else None})
+
+
+def qwen38_moe():
+    from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe as M
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeTextConfig
+
+    # Qwen3.8-2.4T-A95B's MoE (the Qwen3.5 MoE architecture): softmax top-k, renormed, a shared expert gated by sigmoid of its own
+    # router. Here top-3 of 8, inter 32, shared 48.
+    c = Qwen3_5MoeTextConfig(hidden_size=64, num_experts=8, num_experts_per_tok=3, moe_intermediate_size=32, shared_expert_intermediate_size=48,
+                             num_hidden_layers=1)
+    mlp_case("qwen38_moe", "Qwen3.8 MoE: softmax top-3 of 8, renormed, sigmoid-gated shared expert", "Qwen3_5MoeSparseMoeBlock",
+             M.Qwen3_5MoeSparseMoeBlock(c).eval(), c.hidden_size)
+
+
+def rope_scaling():
+    """Each rope_type's inverse frequencies and attention factor, from transformers' own ROPE_INIT_FUNCTIONS."""
+    from transformers import LlamaConfig
+    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+    short = [round(1.0 + 0.05 * i, 4) for i in range(36)]
+    long_ = [round(1.0 + 0.9 * i, 4) for i in range(36)]
+    cases = [
+        ("linear", 64, {"rope_type": "linear", "rope_theta": 10_000.0, "factor": 4.0}, None, 2048),
+        ("dynamic", 64, {"rope_type": "dynamic", "rope_theta": 10_000.0, "factor": 2.0}, 4096, 2048),
+        ("dynamic_short", 64, {"rope_type": "dynamic", "rope_theta": 10_000.0, "factor": 2.0}, 1000, 2048),
+        # DeepSeek-V4's compressed layers: YaRN factor 16 over 65,536 positions on the 64 rotated of 512
+        ("yarn", 64, {"rope_type": "yarn", "rope_theta": 10_000.0, "factor": 16.0, "original_max_position_embeddings": 65536, "beta_fast": 32, "beta_slow": 1}, None, 1048576),
+        ("yarn_mscale", 64, {"rope_type": "yarn", "rope_theta": 10_000.0, "factor": 40.0, "original_max_position_embeddings": 4096, "beta_fast": 32, "beta_slow": 1,
+                             "mscale": 1.0, "mscale_all_dim": 0.707}, None, 163840),
+        ("llama3", 128, {"rope_type": "llama3", "rope_theta": 500_000.0, "factor": 8.0, "low_freq_factor": 1.0, "high_freq_factor": 4.0, "original_max_position_embeddings": 8192}, None, 131072),
+        ("longrope_short", 96, {"rope_type": "longrope", "rope_theta": 10_000.0, "short_factor": short, "long_factor": long_, "original_max_position_embeddings": 4096, "partial_rotary_factor": 0.75}, 2048, 131072),
+        ("longrope_long", 96, {"rope_type": "longrope", "rope_theta": 10_000.0, "short_factor": short, "long_factor": long_, "original_max_position_embeddings": 4096, "partial_rotary_factor": 0.75}, 8192, 131072),
+    ]
+    out = []
+    for name, hd, rp, seq_len, max_pos in cases:
+        c = LlamaConfig(hidden_size=hd * 4, num_attention_heads=4, head_dim=hd, max_position_embeddings=max_pos, rope_parameters=dict(rp))
+        inv, af = ROPE_INIT_FUNCTIONS[rp["rope_type"]](c, None, seq_len=seq_len)
+        out.append({"name": name, "head_dim": hd, "rope_parameters": rp, "seq_len": seq_len, "max_position_embeddings": max_pos,
+                    "inv_freq": [float(v) for v in inv.tolist()], "attention_factor": float(af)})
+        print(name, len(inv), float(af))
+    with open(os.path.join(HERE, "rope_scaling.json"), "w") as f:
+        json.dump({"what": "rope scaling variants", "source": f"transformers {transformers.__version__}: ROPE_INIT_FUNCTIONS", "cases": out}, f, indent=1)
+        f.write("\n")
+
+
+def glm53_mtp():
+    """GLM-5.3's MTP head as tools/glm_ref.py's `mtp_forward` computes it (bf16 between steps), its latent attention and MoE being
+    transformers' GLM-5.3 modules (checked on their own by glm53_mla and glm53_moe)."""
+    import importlib.util
+
+    from transformers.models.glm_moe_dsa import modeling_glm_moe_dsa as M
+    from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
+
+    spec = importlib.util.spec_from_file_location("glm_ref", os.path.join(HERE, "..", "..", "tools", "glm_ref.py"))
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    c = GlmMoeDsaConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=4, q_lora_rank=32, kv_lora_rank=16, qk_nope_head_dim=8,
+                        qk_rope_head_dim=8, v_head_dim=8, num_hidden_layers=1, index_topk=64, index_n_heads=2, index_head_dim=16,
+                        rope_parameters={"rope_type": "default", "rope_theta": 10_000.0}, rms_norm_eps=1e-5, n_routed_experts=8,
+                        num_experts_per_tok=2, n_group=4, topk_group=2, routed_scaling_factor=2.5, norm_topk_prob=True, n_shared_experts=1,
+                        moe_intermediate_size=32, hidden_act="silu")
+    c._attn_implementation = "eager"
+    attn, moe = M.GlmMoeDsaAttention(c, 0).eval(), M.GlmMoeDsaMoE(c).eval()
+    specs = fill_module(attn, prefix="attn.")
+    specs.update(fill_module(moe, prefix="moe."))
+    d, vocab = c.hidden_size, 32
+    W = {}
+    for name, shape, lo, hi in [("enorm", [d], 0.8, 1.2), ("hnorm", [d], 0.8, 1.2), ("eh_proj", [d, 2 * d], -math.sqrt(1.5 / d), math.sqrt(1.5 / d)),
+                                ("norm_a", [d], 0.8, 1.2), ("norm_f", [d], 0.8, 1.2), ("head_norm", [d], 0.8, 1.2), ("embed", [vocab, d], -1.0, 1.0)]:
+        W[name] = torch.from_numpy(fill(name, int(np.prod(shape)), lo, hi)).view(*shape)
+        specs[name] = {"shape": shape, "lo": lo, "hi": hi}
+    pos = torch.arange(T).view(1, T)
+    cos, sin = M.GlmMoeDsaRotaryEmbedding(c)(torch.zeros(1, T, d), pos)
+    g.mla_mixer = lambda h, W, cfg, stages=None, sel=None: g.bf(attn(g.f32(h).view(1, T, d), (cos, sin), causal(), position_ids=pos)[0].view(T, d))
+    g.moe_mixer = lambda h, W, cfg, stages=None: g.bf(moe(g.f32(h).view(1, T, d)).view(T, d))
+    toks = [(t * 7 + 2) % vocab for t in range(T)]
+    prev = g.bf(torch.from_numpy(fill("input", T * d, -1.0, 1.0)).view(T, d))
+    out = g.mtp_forward(prev, torch.tensor(toks), g.bf(W["embed"]), {k: g.bf(v) for k, v in W.items()}, {"eps": 1e-5})
+    write("glm53_mtp", "GLM-5.3 MTP head: eh_proj of the normed embedding and hidden state, an MLA + MoE layer, the head norm",
+          "tools/glm_ref.py mtp_forward with GlmMoeDsaAttention and GlmMoeDsaMoE inside", d, specs, g.f32(out), {"token_ids": toks})
+
+
+def dsv4_mhc():
+    """DeepSeek-V4's mHC residual around one sublayer, as DeepseekV4DecoderLayer applies it: the streams' weighted input through the
+    norm and the sublayer (an MLP here: the residual rule does not depend on the body), then post x out + comb^T x streams."""
+    from transformers.models.deepseek_v4 import modeling_deepseek_v4 as M
+    from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+
+    c = DeepseekV4Config(hidden_size=64, intermediate_size=32, swiglu_limit=10.0, hc_mult=4, hc_sinkhorn_iters=20, hc_eps=1e-6, rms_norm_eps=1e-6,
+                         num_hidden_layers=1)
+    hc, norm, mlp = M.DeepseekV4HyperConnection(c).eval(), M.DeepseekV4RMSNorm(64, eps=1e-6).eval(), M.DeepseekV4MLP(c).eval()
+    specs = fill_module(hc, prefix="hc.")
+    specs.update(fill_module(norm, prefix="norm."))
+    specs.update(fill_module(mlp, prefix="mlp."))
+    n, d = 4, 64
+    x = torch.from_numpy(fill("input", T * n * d, -1.0, 1.0)).view(1, T, n, d)
+    post, comb, collapsed = hc(x)
+    out = post.unsqueeze(-1) * mlp(norm(collapsed)).unsqueeze(-2) + torch.matmul(comb.transpose(-1, -2), x)
+    write("dsv4_mhc", "DeepSeek-V4 mHC around a sublayer: 4 streams of 64, 20 Sinkhorn iterations", "DeepseekV4HyperConnection, DeepseekV4RMSNorm, DeepseekV4MLP",
+          n * d, specs, out.reshape(1, T, n * d))
+
+
 CASES = {
+    "dsv4_mhc": dsv4_mhc,
+    "glm53_mtp": glm53_mtp,
+    "rope_scaling": rope_scaling,
+    "gemma4_mlp": gemma4_mlp,
+    "glm53_moe": glm53_moe,
+    "dsv4_hash_moe": lambda: dsv4_moe(0, "dsv4_hash_moe"),
+    "dsv4_moe": lambda: dsv4_moe(1, "dsv4_moe"),
+    "qwen38_moe": qwen38_moe,
     "qwen38_attention": qwen38_attention,
     "qwen38_gdn": qwen38_gdn,
     "gemma4_sliding": lambda: gemma4_attention(0, "gemma4_sliding", "gemma-4-12B sliding layer: GQA, head dim 16, window 4, rope theta 1e4, q/k/v norm"),

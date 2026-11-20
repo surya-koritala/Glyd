@@ -42,7 +42,7 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
     if q.len() != nh * hd || k.len() != nk * hd || v.len() != nk * vd {
         return err(format!("attention: products of {}, {} and {} values for {nh} x {hd}, {nk} x {hd}, {nk} x {vd}", q.len(), k.len(), v.len()));
     }
-    let rot = a.rope.as_ref().map(|r| (r, rope::inv_freq(r)));
+    let rot = a.rope.as_ref().map(|r| (r, rope::inv_freq_at(r, pos + 1)));
     let prep = |x: &mut [f32], n: &Option<crate::runtime::kinds::Norm>, role: &str, d: usize, rotate: bool| {
         for head in x.chunks_mut(d) {
             if let Some(n) = n {
