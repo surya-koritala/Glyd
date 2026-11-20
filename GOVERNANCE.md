@@ -61,9 +61,7 @@ the other maintainers; the owner can remove one at any time and says why in an i
 The areas where the project wants maintainers beyond the owner: the engine and its runtime, GPU kernels, cluster
 (Starlings), documentation, and CI and release engineering.
 
-## Name and logo (draft)
-
-This section is a draft. It becomes the policy when the owner approves it as final.
+## Name and logo
 
 The Apache License 2.0 gives you the code. It does not give you the right to use the project's name or logo (section 6
 of the license). This is what the project asks.
