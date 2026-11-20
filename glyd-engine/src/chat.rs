@@ -495,6 +495,11 @@ impl Chat {
         self.mentions("<|tool_call>call:") && self.mentions("<|channel>")
     }
 
+    /// Whether the template writes Muse's ATEM protocol (its replies are read through `reader::Muse`): messages to a recipient, tool calls as `<atem:function_calls>` blocks.
+    pub fn is_muse(&self) -> bool {
+        self.mentions("<atem:function_calls>") && self.mentions("<|message|>")
+    }
+
     /// The special tokens (`bos_token` ...) the template may name.
     pub fn with_tokens(mut self, tokens: Vec<(&'static str, String)>) -> Chat {
         self.tokens = tokens;

@@ -39,6 +39,17 @@ const DSML: Tags = Tags {
     param_end: "</｜DSML｜parameter>",
 };
 
+/// Muse's ATEM calls: `<atem:function_calls>`, in it `<atem:invoke name="NAME">`, in that `<atem:parameter name="KEY">VALUE</atem:parameter>` (a string and a scalar as it is, a list and an object JSON; the value is not stripped).
+const ATEM: Tags = Tags {
+    open: "<atem:function_calls>",
+    close: "</atem:function_calls>",
+    func: "<atem:invoke name=\"",
+    named: "\">",
+    func_end: "</atem:invoke>",
+    param: "<atem:parameter name=\"",
+    param_end: "</atem:parameter>",
+};
+
 /// How a request chooses among its tools.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToolChoice {
@@ -62,6 +73,8 @@ pub enum Format {
     Dsml,
     /// GLM's `<tool_call>NAME<arg_key>KEY</arg_key><arg_value>VALUE</arg_value>...</tool_call>`, a value a string as it is or JSON (typed by the tool's schema).
     Glm,
+    /// Muse's ATEM blocks (see `ATEM`).
+    Atem,
 }
 
 impl Format {
@@ -71,7 +84,9 @@ impl Format {
         if template.is_xtml() || template.is_gemma() {
             return Format::Hermes;
         }
-        if template.mentions("｜DSML｜") {
+        if template.mentions("<atem:function_calls>") {
+            Format::Atem
+        } else if template.mentions("｜DSML｜") {
             Format::Dsml
         } else if template.mentions(GLM_KEY) {
             Format::Glm
@@ -88,10 +103,10 @@ impl Format {
     }
 
     fn tags(self) -> &'static Tags {
-        if self == Format::Dsml {
-            &DSML
-        } else {
-            &XML
+        match self {
+            Format::Dsml => &DSML,
+            Format::Atem => &ATEM,
+            _ => &XML,
         }
     }
 }
@@ -306,6 +321,8 @@ pub fn forced_prefix(choice: &ToolChoice, format: Format) -> Option<String> {
         (ToolChoice::Named(n), Format::Xml) => Some(format!("{OPEN}\n{FN_OPEN}{n}>\n")),
         (ToolChoice::Required, Format::Dsml) => Some(format!("\n\n{DSML_OPEN}\n")),
         (ToolChoice::Named(n), Format::Dsml) => Some(format!("\n\n{DSML_OPEN}\n{}{n}\">\n", DSML.func)),
+        (ToolChoice::Required, Format::Atem) => Some(format!("{}\n", ATEM.open)),
+        (ToolChoice::Named(n), Format::Atem) => Some(format!("{}\n{}{n}\">\n", ATEM.open, ATEM.func)),
         (ToolChoice::Required, Format::Glm) => Some(OPEN.to_string()),
         (ToolChoice::Named(n), Format::Glm) => Some(format!("{OPEN}{n}")),
         _ => None,
@@ -331,7 +348,7 @@ pub struct Extracted {
 pub fn extract(text: &str, format: Format, tools: &[Value]) -> Extracted {
     let mut e = match format {
         Format::Hermes => extract_hermes(text),
-        Format::Xml | Format::Dsml => extract_xml(text, tools, format),
+        Format::Xml | Format::Dsml | Format::Atem => extract_xml(text, tools, format),
         Format::Glm => extract_glm(text, tools),
     };
     for c in &mut e.calls {
@@ -489,6 +506,11 @@ fn param_of(group: &str) -> Option<(&str, &str)> {
 /// A parameter of a call as its key and its item of the arguments (`item`). XML: `KEY>VALUE` (`param_of`), typed by the schema `props`. DSML: `KEY" string="true|false">VALUE`, a string as it
 /// is, else JSON (text that is not JSON stays a string). None where it is not that.
 fn param_item<'a>(format: Format, g: &'a str, props: Option<&Value>) -> Option<(&'a str, String)> {
+    if format == Format::Atem {
+        // (`KEY">VALUE`: the value as written, typed by the schema)
+        let (k, v) = g.split_once("\">")?;
+        return Some((k, item(k, v, props)));
+    }
     if format != Format::Dsml {
         let (k, v) = param_of(g)?;
         return Some((k, item(k, v, props)));
@@ -681,7 +703,7 @@ impl ToolStream {
                     out.push(ToolEv::Content(self.text[b.from..b.to].to_string()));
                 }
             }
-            Format::Xml | Format::Dsml => {
+            Format::Xml | Format::Dsml | Format::Atem => {
                 for b in xml_scan(&self.text, false, self.format.tags()).iter().filter(|b| b.funcs.is_empty()) {
                     out.push(ToolEv::Content(self.text[b.from..b.to].to_string()));
                 }
@@ -762,7 +784,7 @@ impl ToolStream {
         }
         match self.format {
             Format::Hermes => self.hermes_calls(&mut out),
-            Format::Xml | Format::Dsml => self.xml_calls(&mut out),
+            Format::Xml | Format::Dsml | Format::Atem => self.xml_calls(&mut out),
             Format::Glm => self.glm_calls(&mut out),
         }
         out

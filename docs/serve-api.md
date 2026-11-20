@@ -134,6 +134,24 @@ and `options`: `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stop`, `num_pr
 (`completion`, `tools`, `thinking`, `vision`, `insert`) and its `context_length`. `/api/pull` of that model says `success`, of another is 404 with what to run; `/api/delete` of the served model is refused.
 Errors are `{"error": "..."}`. The key guards `/api` as it guards `/v1`.
 
+## Tool calls and thinking by family
+
+The server reads each family's tool calls and reasoning from the markup its chat template shows the model, and gives them as OpenAI's `tool_calls` and `reasoning_content` and Anthropic's `tool_use` and `thinking` blocks, whole
+and streamed (a call's name when it is complete, its arguments as they are written; the thinking as it comes). A reader (`src/reader.rs`) turns a family's own markup into the shape the parsers read; the rest are read as they are.
+
+| family | tool calls | reasoning | forced calls (`tool_choice`) |
+| :--- | :--- | :--- | :--- |
+| Qwen3, Qwen3-Coder | hermes `<tool_call>{json}</tool_call>` | `<think>` | grammar, or the prompt opens the call |
+| Qwen3.5, Qwen3.6, Qwen3.8, Nemotron 3 | XML `<tool_call><function=NAME><parameter=KEY>`, typed by the tool's schema | `<think>` | grammar, or the prompt opens the call |
+| GLM-5.3 | `<tool_call>NAME<arg_key>KEY</arg_key><arg_value>VALUE</arg_value>` | `<think>` | the prompt opens the call |
+| DeepSeek-V4 | DSML `<｜DSML｜tool_calls>` blocks | `<think>` | the prompt opens the call |
+| Kimi-K3 | its tags (`reader::Xtml`) | the think channel | the prompt opens the call |
+| Gemma 4 | `<|tool_call>call:NAME{key:<|"|>text<|"|>,...}<tool_call|>` (`reader::Gemma`) | `<|channel>thought\n...<channel|>` | the prompt opens the call |
+| Muse | ATEM `<atem:function_calls>` blocks in a message to the tool (`reader::Muse`), typed by the schema | a message to `self` | the prompt opens the message and the block |
+
+A family's test (`src/families.rs`) renders a conversation with a call and a reasoning through its real chat template and reads both back, whole and in pieces of every size. Where a call is forced by the prompt, the
+model's own arguments are not held to the tool's schema by a grammar.
+
 ## Fill in the middle
 
 `POST /v1/completions` with `"prompt"` (the text before the cursor, one string) and `"suffix"` (the text after) is written with the model's own tokens, `<|fim_prefix|>BEFORE<|fim_suffix|>AFTER<|fim_middle|>`

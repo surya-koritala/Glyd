@@ -35,6 +35,7 @@ impl Reader for crate::xtml::Xtml {
 pub enum ReaderKind {
     Kimi { in_think: bool },
     Gemma { in_think: bool },
+    Muse,
 }
 
 impl ReaderKind {
@@ -44,6 +45,8 @@ impl ReaderKind {
             Some(ReaderKind::Kimi { in_think: prompt.ends_with(crate::conv::XTML_THINK) })
         } else if chat.is_gemma() {
             Some(ReaderKind::Gemma { in_think: prompt.ends_with(GEMMA_THINK) })
+        } else if chat.is_muse() {
+            Some(ReaderKind::Muse)
         } else {
             None
         }
@@ -53,6 +56,7 @@ impl ReaderKind {
         match self {
             ReaderKind::Kimi { in_think } => Box::new(crate::xtml::Xtml::new(in_think)),
             ReaderKind::Gemma { in_think } => Box::new(Gemma::new(in_think)),
+            ReaderKind::Muse => Box::new(Muse::new()),
         }
     }
 }
@@ -333,6 +337,110 @@ impl Reader for Gemma {
                 out.push_str("}\n</tool_call>");
                 self.mode = Mode::Text;
             }
+        }
+        out
+    }
+
+    fn prime(&mut self, opening: &str) -> String {
+        self.feed(opening)
+    }
+}
+
+/// Muse's ATEM replies: a reply is messages, each `[<|start|>assistant] to=RECIPIENT<|message|>BODY<|eom|>` (more follows) or `...<|eot|>` (the turn ends): the recipient `self` is the thinking, `user` the answer, any other a tool,
+/// whose body is its `<atem:function_calls>` block. The thinking becomes `<think>` ... `</think>`, the answer is text and a tool's block goes on as it is, for the tool parser (`tools::Format::Atem`); the markup is dropped.
+pub struct Muse {
+    buf: String,
+    /// Reading a message's header (up to `<|message|>`), else its body for this recipient.
+    body: Option<Recipient>,
+    think_open: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Recipient {
+    Myself,
+    User,
+    Tool,
+}
+
+const M_MSG: &str = "<|message|>";
+const M_ENDS: [&str; 3] = ["<|eom|>", "<|eot|>", "<|start|>"];
+
+impl Muse {
+    pub fn new() -> Muse {
+        Muse { buf: String::new(), body: None, think_open: false }
+    }
+
+    fn step(&mut self, out: &mut String) -> bool {
+        match self.body {
+            None => {
+                let Some(i) = self.buf.find(M_MSG) else { return false };
+                let header: String = self.buf.drain(..i + M_MSG.len()).collect();
+                let header = &header[..i];
+                let to = header.split("to=").nth(1).map(|t| t.split_whitespace().next().unwrap_or("")).unwrap_or("user");
+                let r = match to {
+                    "self" => Recipient::Myself,
+                    "" | "user" => Recipient::User,
+                    _ => Recipient::Tool,
+                };
+                if r != Recipient::Myself && std::mem::take(&mut self.think_open) {
+                    out.push_str("</think>");
+                }
+                if r == Recipient::Myself && !self.think_open {
+                    out.push_str("<think>");
+                    self.think_open = true;
+                }
+                self.body = Some(r);
+                true
+            }
+            Some(_) => {
+                let found = M_ENDS.iter().filter_map(|m| self.buf.find(m).map(|i| (i, *m))).min_by_key(|&(i, _)| i);
+                let Some((at, mark)) = found else {
+                    let n = self.buf.len() - Gemma::held(&self.buf, &M_ENDS);
+                    let t: String = self.buf.drain(..n).collect();
+                    out.push_str(&t);
+                    return false;
+                };
+                let t: String = self.buf.drain(..at + mark.len()).collect();
+                out.push_str(&t[..at]);
+                self.body = None;
+                // (`<|start|>assistant`: the next message's own start, dropped; a header may follow without it)
+                if mark == "<|start|>" {
+                    self.buf = self.buf.trim_start_matches("assistant").to_string();
+                }
+                true
+            }
+        }
+    }
+}
+
+impl Default for Muse {
+    fn default() -> Muse {
+        Muse::new()
+    }
+}
+
+impl Reader for Muse {
+    fn feed(&mut self, text: &str) -> String {
+        self.buf.push_str(text);
+        let mut out = String::new();
+        // (`<|start|>assistant` at the head of a header is dropped as it comes)
+        while self.step(&mut out) {
+            if self.body.is_none() {
+                for lead in ["<|start|>assistant", "<|start|>"] {
+                    if let Some(rest) = self.buf.strip_prefix(lead) {
+                        self.buf = rest.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn finish(&mut self) -> String {
+        let mut out = String::new();
+        if self.body.is_some() {
+            out.push_str(&std::mem::take(&mut self.buf));
         }
         out
     }
