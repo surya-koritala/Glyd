@@ -206,7 +206,7 @@ fn is_model_command(cmd: &str) -> bool {
 /// The engine's commands that the Python tool has no such command for: they are the engine's wherever one is here (linked, beside this program or on PATH), the tool or no tool.
 /// `pull`, `ls` and `rm` are the models in the cache (glyd-engine/src/models.rs); a file of one of these names (./fit) is still compressed where there is no engine.
 fn is_engine_command(cmd: &str) -> bool {
-    matches!(cmd, "fit" | "pull" | "ls" | "rm" | "service" | "ps" | "stop" | "rangeworker")
+    matches!(cmd, "fit" | "pull" | "ls" | "rm" | "service" | "ps" | "stop" | "connect" | "rangeworker")
 }
 
 /// Whether the engine is linked into this program (the `engine` feature: the release tarballs' glyd).
@@ -1034,7 +1034,7 @@ mod tests {
 
     #[test]
     fn fit_pull_and_rangeworker_are_the_engines_with_or_without_the_tool() {
-        for cmd in ["fit", "pull", "ls", "rm", "service", "ps", "stop", "rangeworker"] {
+        for cmd in ["fit", "pull", "ls", "rm", "service", "ps", "stop", "connect", "rangeworker"] {
             assert!(is_engine_command(cmd));
             let mut f = bare();
             f.python_tool = true;
