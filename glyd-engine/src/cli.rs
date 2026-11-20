@@ -1300,7 +1300,11 @@ fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: 
     let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX));
     let fixed = weights + rings + draft + LOSSY_WORK;
     let room = (free.saturating_sub(fixed) / per.max(1)) as usize;
-    let ctx = asked.unwrap_or_else(|| room.min(LOSSY_CTX)).min(cfg.max_pos.max(LOSSY_MIN_CTX)) / 16 * 16;
+    // (served with no draft model, the scheduler gives each of --users a room of its own, its sliding layers' rings and its context (src/dynamic/rows.rs): the context not asked for is what the room gives
+    // each of them, at least LOSSY_MIN_CTX (where that leaves room for fewer, the server takes fewer))
+    let users = if draft == 0 && a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? as u64 } else { 1 };
+    let each = (free.saturating_sub(fixed + rings * (users - 1)) / (per.max(1) * users)) as usize;
+    let ctx = asked.unwrap_or_else(|| each.max(LOSSY_MIN_CTX).min(room).min(LOSSY_CTX)).min(cfg.max_pos.max(LOSSY_MIN_CTX)) / 16 * 16;
     if ctx < LOSSY_MIN_CTX.min(asked.unwrap_or(LOSSY_MIN_CTX)) || ctx > room {
         let fix = "lose programs that use the GPU (nvidia-smi lists them), ask for less context (--context 4096), run without the draft model (--no-draft), or use a GPU with more memory";
         // (penguin that does not fit, of a model with a wren repo that does: that repo first, with its draft model, at the shortest context a plan takes)
@@ -2803,6 +2807,17 @@ mod tests {
             (Some("glyd/gemma-4-31B-wren"), Some("glyd/gemma-4-31B-wren"))
         );
         assert_eq!((gemma_wren("glyd/gemma-4-12B-base-penguin"), gemma_wren("Qwen/Qwen3.8-27B")), (None, None));
+        // (served to --users at once with no draft model: each user's room and context fit beside the others'; run, and a context asked for, keep one user's)
+        let free = 14u64 << 30;
+        let at = |argv: &[&str]| lossy_plan_with(&args(argv), model, Layout::Int4, text, None, free, "NVIDIA GeForce RTX 4080 SUPER", None, None).unwrap();
+        let cfg = crate::model_gemma4::ConfigG4::parse(text, None, false).unwrap();
+        let (one, eight) = (at(&["run", model]), at(&["serve", model, "--users", "8"]));
+        assert_eq!(one.ctx, LOSSY_CTX);
+        assert!(eight.ctx >= LOSSY_MIN_CTX && eight.ctx < one.ctx, "{}", eight.ctx);
+        let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, eight.ctx);
+        assert!(eight.weights + LOSSY_WORK + 8 * (rings + eight.ctx as u64 * per) <= free, "8 users at {} tokens", eight.ctx);
+        assert_eq!(at(&["serve", model, "--users", "1"]).ctx, LOSSY_CTX);
+        assert_eq!(at(&["serve", model, "--users", "8", "--ctx", "8192"]).ctx, 8192);
         // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; other models without one take the lossless route of old)
         assert_eq!(run_level(model, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(run_level(model, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
