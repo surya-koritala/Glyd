@@ -3124,6 +3124,29 @@ fn catalog_service_survives_failure_and_retains_pins_on_drain_and_restart() {
     authority.wait();
 }
 
+/// A loopback address for a stage to listen on, chosen now and bound by a daemon many seconds
+/// later. Nothing holds it in between, so it must come from where no one else allocates: the
+/// range sits below every OS default for ephemeral ports (Linux 32768, macOS and Windows 49152).
+/// An ephemeral pick (`:0`, dropped) can be handed to a connect, the coordinator's `:0`
+/// listeners, a delay relay or a parallel test before the daemon binds it, and the stage then
+/// fails with PORT_IN_USE. Each call returns a different port, and one that is free now.
+#[cfg(feature = "test-backend")]
+fn stage_port() -> std::net::SocketAddr {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    const FIRST: u32 = 20_000;
+    const COUNT: u32 = 11_000;
+    // Binaries that run at the same time start apart.
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let start = std::process::id() % COUNT;
+    loop {
+        let offset = (start + NEXT.fetch_add(1, Ordering::Relaxed) % COUNT) % COUNT;
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], (FIRST + offset) as u16));
+        if TcpListener::bind(address).is_ok() {
+            return address;
+        }
+    }
+}
+
 /// One stage route per layer range; the operator approves each stage's actual `describe`
 /// (it loads nothing). Returns the routes, the model digest and the model's layer count.
 #[cfg(feature = "test-backend")]
@@ -3174,12 +3197,7 @@ fn pipeline_stages_with(
     let gpu = environment
         .get("GLYD_GPU_LIB")
         .map(|lib| starlings_adapters::service::executable_digest(Path::new(lib)).unwrap());
-    let port = || {
-        TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-    };
+    let port = stage_port;
     let private = std::env::temp_dir().join("starlings-describe-engine");
     let mut descriptors = Vec::new();
     let stages = ranges

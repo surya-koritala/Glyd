@@ -2,6 +2,7 @@
 name = "glyd-store"
 version = "0.32.1"
 edition = "2021"
+rust-version = "1.89"
 description = "A store that compresses across the objects it holds: each object kept as a delta against the stored object it most resembles, small objects in packs, on a directory or S3 (built on the glyd codec)"
 repository = "https://github.com/surya-koritala/Glyd"
 readme = "README.md"
