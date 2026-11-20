@@ -2476,7 +2476,7 @@ mod tests {
     #[test]
     fn the_host_checks_are_on_for_this_computers_own_address_and_a_server_opens_to_the_network_only_with_a_key() {
         let status = |addr: std::net::SocketAddr, host: &str| -> u16 {
-            let mut c = std::net::TcpStream::connect(addr).unwrap();
+            let mut c = std::net::TcpStream::connect(("127.0.0.1", addr.port())).unwrap(); // (a server on every address is reached by this computer's own)
             c.write_all(format!("GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
             let mut out = String::new();
             c.read_to_string(&mut out).unwrap();
