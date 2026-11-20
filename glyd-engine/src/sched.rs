@@ -94,6 +94,11 @@ pub trait ModelStep {
     fn slots(&self) -> Option<usize> {
         None
     }
+    /// A slot step whose rooms take memory as they fill (pages behind them): room for the sequence in `slot` to hold its first `upto` tokens, taken now; false where the memory has none
+    /// (nothing taken). The scheduler then gives the newest sequence's room back and asks again. A room of the whole window from the start: always true.
+    fn grow(&mut self, _slot: i32, _upto: usize) -> Result<bool> {
+        Ok(true)
+    }
     fn eos(&self) -> Vec<i64>;
     /// `tokens` at positions `start` on into `pages`; with `last`, the sample after the final token.
     fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>>;
@@ -244,6 +249,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn slots(&self) -> Option<usize> {
         (**self).slots()
+    }
+    fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
+        (**self).grow(slot, upto)
     }
     fn eos(&self) -> Vec<i64> {
         (**self).eos()
@@ -601,7 +609,7 @@ impl<B: ModelStep> Sched<B> {
                 },
             };
             if self.free.is_some() {
-                if !self.admit_slot(k) {
+                if !self.admit_slot(k)? {
                     break;
                 }
                 continue;
@@ -637,28 +645,45 @@ impl<B: ModelStep> Sched<B> {
     }
 
     /// Waiting sequence `k` given a slot of its own (a slot step); false where none is free. A prompt the slot cannot hold with a token after it ends at once with an error in words.
-    fn admit_slot(&mut self, k: usize) -> bool {
+    fn admit_slot(&mut self, k: usize) -> Result<bool> {
         let window = self.be.window();
         if self.waiting[k].tokens.len() >= window {
             let s = self.waiting.remove(k).expect("a waiting sequence");
             self.pending.push((s.out.clone(), Ev::End(Err(format!("{} tokens, where the context holds {window}", s.tokens.len())))));
-            return true;
+            return Ok(true);
         }
-        let Some(slot) = self.free.as_mut().and_then(Vec::pop) else { return false };
+        let Some(slot) = self.free.as_mut().and_then(Vec::pop) else { return Ok(false) };
+        // (room for the whole prompt and a token after it now: an admitted prompt runs; where there is none it waits for the running ones, and with nothing running it never fits)
+        if !self.be.grow(slot, self.waiting[k].tokens.len() + 1)? {
+            self.free.as_mut().expect("a slot step").push(slot);
+            if self.active.is_empty() {
+                let s = self.waiting.remove(k).expect("a waiting sequence");
+                self.pending.push((s.out.clone(), Ev::End(Err(format!("{} tokens, where the cache holds fewer with nothing else running", s.tokens.len())))));
+                return Ok(true);
+            }
+            return Ok(false);
+        }
         let mut s = self.waiting.remove(k).expect("a waiting sequence");
         s.pages = vec![slot];
         (s.done, s.published, s.chain, s.prefilling) = (0, 0, 0, true);
         s.after.clear();
         self.stats.prompt += s.tokens.len() as u64;
         self.active.push(s);
-        true
+        Ok(true)
     }
 
-    /// Pages for the sequence `id`'s first `upto` tokens, the newest sequences giving theirs back where there are none to take. False where `id` itself was sent back to wait. (A slot holds the whole
-    /// window, and a sequence ends at the window's end.)
+    /// Pages for the sequence `id`'s first `upto` tokens, the newest sequences giving theirs back where there are none to take. False where `id` itself was sent back to wait. (A slot step's room grows
+    /// the same way, `ModelStep::grow`.)
     fn ensure_pages(&mut self, id: u64, upto: usize) -> Result<bool> {
         if self.free.is_some() {
-            return Ok(self.active.iter().any(|s| s.id == id));
+            loop {
+                let Some(i) = self.active.iter().position(|s| s.id == id) else { return Ok(false) };
+                if self.be.grow(self.active[i].pages[0], upto)? {
+                    return Ok(true);
+                }
+                let victim = self.active.iter().enumerate().max_by_key(|(_, s)| s.id).map(|(v, _)| v).expect("an active sequence");
+                self.preempt(victim)?;
+            }
         }
         loop {
             let Some(i) = self.active.iter().position(|s| s.id == id) else { return Ok(false) };
@@ -1889,6 +1914,9 @@ pub(crate) mod tests {
         pub most: usize,
         /// The first token of each prompt as it begins (at position 0), in order.
         pub begun: Vec<u32>,
+        /// Rooms that take memory as they fill: the tokens all the rooms may hold together (in blocks of PAGE), and each room's now. None: rooms of the whole window.
+        pub budget: Option<usize>,
+        pub held: Vec<usize>,
         pub rows: Vec<Vec<f32>>,
     }
 
@@ -1905,12 +1933,17 @@ pub(crate) mod tests {
                 most: 0,
                 rows: Vec::new(),
                 begun: Vec::new(),
+                budget: None,
+                held: vec![0; slots],
             }
         }
         fn put(&mut self, slot: &[i32], start: usize, tokens: &[u32]) -> u32 {
             assert_eq!(slot.len(), 1, "a slot step's pages are its slot");
             if start == 0 {
                 self.begun.push(tokens[0]);
+            }
+            if self.budget.is_some() {
+                assert!(start + tokens.len() <= self.held[slot[0] as usize], "tokens past the room the slot was given");
             }
             let room = &mut self.rooms[slot[0] as usize];
             assert_eq!(room.len(), start, "tokens at {start} where the slot holds {}", room.len());
@@ -1983,9 +2016,23 @@ pub(crate) mod tests {
         fn release(&mut self, pages: &[i32]) -> Result<()> {
             for &p in pages {
                 self.rooms[p as usize].clear();
+                self.held[p as usize] = 0;
                 self.emptied += 1;
             }
             Ok(())
+        }
+        fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
+            let Some(budget) = self.budget else { return Ok(true) };
+            let want = upto.div_ceil(PAGE) * PAGE;
+            let have = self.held[slot as usize];
+            if want <= have {
+                return Ok(true);
+            }
+            if self.held.iter().sum::<usize>() + want - have > budget {
+                return Ok(false);
+            }
+            self.held[slot as usize] = want;
+            Ok(true)
         }
     }
 
@@ -2135,5 +2182,35 @@ pub(crate) mod tests {
         let resumed: Vec<u32> = subs.iter().map(|(_, r)| r.load(Relaxed)).collect();
         assert!(s.stats.preempted > 0 && resumed[0] == 0, "{resumed:?}");
         assert!(resumed[3] >= resumed[1], "the newest goes back first: {resumed:?}");
+    }
+
+    /// Rooms that fill as their sequences grow: where the memory runs out the newest sequence gives its room back and runs again later, and every reply is still the one it has alone; a
+    /// prompt that cannot fit even with nothing else running ends with an error in words, and the rest run.
+    #[test]
+    fn rooms_that_run_out_take_back_the_newest_and_every_reply_is_whole() {
+        for (slots, budget) in [(4, 160), (8, 256), (8, 96)] {
+            let mut f = SlotFake::new(slots, 512, 16);
+            f.budget = Some(budget);
+            let mut s = Sched::new(f, slots);
+            let reqs: Vec<(Vec<u32>, usize)> = (0..10).map(|k| (prompt(k as u32 + 7, 5 + 7 * k), 20 + 3 * k)).collect();
+            let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+            run(&mut s);
+            for ((p, n), rx) in reqs.iter().zip(&rx) {
+                match outcome(rx) {
+                    (got, Ok(f)) => assert_eq!((got, f), (reference(p, *n), Finish::Length), "budget {budget}"),
+                    (_, Err(e)) => assert!(p.len() + n + 1 > budget && e.contains("fewer with nothing else running"), "budget {budget}: {e}"),
+                }
+            }
+            assert!(s.stats.preempted > 0, "budget {budget}: the rooms ran out");
+            assert!(s.be.held.iter().all(|&h| h == 0) && s.be.rooms.iter().all(Vec::is_empty));
+        }
+        let mut f = SlotFake::new(2, 512, 16);
+        f.budget = Some(64);
+        let mut s = Sched::new(f, 2);
+        let (big, _) = add(&mut s, prompt(1, 100), 4);
+        let (ok, _) = add(&mut s, prompt(2, 20), 8);
+        run(&mut s);
+        assert!(outcome(&big).1.is_err_and(|e| e.contains("100 tokens")));
+        assert_eq!(collect(&ok), (reference(&prompt(2, 20), 8), Finish::Length));
     }
 }
