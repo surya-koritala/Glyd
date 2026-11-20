@@ -1530,7 +1530,8 @@ impl Dyn {
                     copy_d2d_async(k.ptr, p.slot(Slot::Ba), n * ba * 2, s)?;
                     copy_d2d_async(k.ptr + (VERIFY_ROWS * ba * 2) as u64, p.slot(Slot::Mix), n * row * 2, s)?;
                 }
-                self.k35.conv(s, p.slot(Slot::Mix), row as i32, p.small[w].ptr, self.states[state].ptr, p.slot(Slot::Xc), n as i32, cd as i32)?;
+                let (x, y) = (p.slot(Slot::Mix) + self.rows_before(row), p.slot(Slot::Xc) + self.rows_before(cd));
+                self.k35.conv(s, x, row as i32, p.small[w].ptr, self.state(state), y, n as i32, cd as i32)?;
                 self.mark("linear attention: convolution")
             }
             Op::GdnDelta { a_log, dt_bias, state, cd, nk, nv } => {
@@ -1539,14 +1540,14 @@ impl Dyn {
                 self.k35.delta(
                     s,
                     chunked,
-                    p.slot(Slot::Xc),
+                    p.slot(Slot::Xc) + self.rows_before(cd),
                     cd as i32,
-                    p.slot(Slot::Ba),
+                    p.slot(Slot::Ba) + self.rows_before(2 * nv),
                     2 * nv as i32,
                     p.small[a_log].ptr,
                     p.small[dt_bias].ptr,
-                    self.states[state].ptr,
-                    p.slot(Slot::Core),
+                    self.state(state),
+                    p.slot(Slot::Core) + self.rows_before(nv * 128),
                     n as i32,
                     nk as i32,
                     nv as i32,
@@ -1558,10 +1559,11 @@ impl Dyn {
                 self.mark("linear attention: gated norm")
             }
             Op::Prep35 { stride, q_norm, k_norm, half, ring, nq, nk } => {
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
+                let (kc, vc) = self.cache(ring);
+                let qo = p.slot(Slot::Qo) + self.rows_before(nq * 256);
                 self.k35.prep(
                     s,
-                    p.slot(Slot::Mix),
+                    p.slot(Slot::Mix) + self.rows_before(stride),
                     stride as i32,
                     p.small[q_norm].ptr,
                     p.small[k_norm].ptr,
@@ -1569,7 +1571,7 @@ impl Dyn {
                     self.ropes[0].1.ptr,
                     half as i32,
                     pos.0,
-                    p.slot(Slot::Qo),
+                    qo,
                     kc,
                     vc,
                     nu,
@@ -1580,29 +1582,19 @@ impl Dyn {
                 self.mark("attention: q/k norm, rotary, cache write")
             }
             Op::Attn35 { stride, ring, nq, nk } => {
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
+                let (kc, vc) = self.cache(ring);
+                let (qo, gate, att) = (
+                    p.slot(Slot::Qo) + self.rows_before(nq * 256),
+                    p.slot(Slot::Mix) + self.rows_before(stride),
+                    p.slot(Slot::Att) + self.rows_before(nq * 256),
+                );
                 let (qs, nq, nk) = ((nq * 256) as i32, nq as i32, nk as i32);
                 // (a verify pass's rows by the decode step's kernel, each row at its own position: a step's sums)
                 let vpart = self.vpart.as_ref().filter(|_| self.verifying.get() && n > 1).map(|v| v.ptr);
                 if n == 1 || vpart.is_some() {
-                    self.k35.attn_decode(
-                        s,
-                        p.slot(Slot::Qo),
-                        qs,
-                        p.slot(Slot::Mix),
-                        stride as i32,
-                        kc,
-                        vc,
-                        pos.1,
-                        p.slot(Slot::Att),
-                        qs,
-                        n as i32,
-                        nq,
-                        nk,
-                        vpart.unwrap_or(self.part35.ptr),
-                    )?;
+                    self.k35.attn_decode(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk, vpart.unwrap_or(self.part35.ptr))?;
                 } else {
-                    self.k35.attn(s, p.slot(Slot::Qo), qs, p.slot(Slot::Mix), stride as i32, kc, vc, pos.1, p.slot(Slot::Att), qs, n as i32, nq, nk)?;
+                    self.k35.attn(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk)?;
                 }
                 self.mark("attention: attention")
             }
@@ -2071,10 +2063,11 @@ impl Dyn {
         if head > 0 {
             // (a pass over several sequences: the rows the head reads, the last of each sequence that asks for a token, moved to the pass's last rows in order)
             let w = (p.d.hidden * 2) as u64;
+            let moved: Vec<Slot> = [Slot::X, Slot::H].into_iter().chain(p.d.final_norm.map(|f| f.1)).collect();
             for (j, &src) in self.head_rows.iter().enumerate().rev() {
                 let dst = n - self.head_rows.len() + j;
                 if dst != src {
-                    for slot in [Slot::X, Slot::H] {
+                    for &slot in &moved {
                         copy_d2d_async(p.slot(slot) + dst as u64 * w, p.slot(slot) + src as u64 * w, w as usize, s)?;
                     }
                 }

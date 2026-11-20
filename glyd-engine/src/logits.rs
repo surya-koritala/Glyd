@@ -1279,3 +1279,113 @@ mod tests {
         assert!(kl_of(&r, &shifted) > 1e-3);
     }
 }
+
+/// `usercheck CASE [--level L] [--users N] [--tokens T]` (gemma4, qwen35): the case's random model on the description executor, each of N prompts replied to alone as `run` replies (the reference),
+/// then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts
+/// one a pass, decode steps of up to 8 rows: a step's sums). With prompts run together the replies that differ are counted, not refused (a product of more rows may take another route; a random
+/// model's near ties turn on its last bits).
+pub fn users_check(a: &crate::args::Args) -> Result<()> {
+    use crate::conv::Gen;
+    use crate::sched::{Ev, Finish, Reply, Sched, Submit};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    let case = a.need(1, "CASE")?;
+    let level = a.flag("level").unwrap_or("kestrel");
+    let users: usize = a.num("users", 4usize)?;
+    let tokens: usize = a.num("tokens", 24usize)?;
+    let dir = std::env::temp_dir().join(format!("glyd-usercheck-{case}-{}", std::process::id()));
+    let o = dyn_opts(level_layout(level)?);
+    let mut e: Dyn = match case {
+        "gemma4" => {
+            gemma4_random(&dir)?;
+            let c = crate::model_gemma4::ConfigG4::load(&dir)?;
+            Dyn::new(&dir, crate::dynamic::gemma4::describe(&c), None, &o)?
+        }
+        "qwen35" => {
+            qwen35_random(&dir)?;
+            crate::dynamic::qwen35::load(&dir, &o)?
+        }
+        other => return err(format!("{other}: gemma4 or qwen35")),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    let vocab = e.desc().vocab as u32;
+    let prompts: Vec<Vec<u32>> = (0..users).map(|k| (0..5 + 29 * k as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (vocab - 3)).collect()).collect();
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: None,
+        stop_ids: Vec::new(),
+    };
+    let reference: Vec<Vec<u32>> = prompts.iter().map(|p| e.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<_>>()?;
+    let batchable = e.batchable();
+    let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
+    let mut s = Sched::new(step, k);
+    let ask = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>]| -> Result<Vec<Vec<u32>>> {
+        let rx: Vec<_> = ps
+            .iter()
+            .map(|p| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                s.submit(Submit {
+                    prompt: p.clone(),
+                    reply: reply.clone(),
+                    out: tx,
+                    abort: Arc::new(AtomicBool::new(false)),
+                    resumed: Default::default(),
+                    images: Vec::new(),
+                });
+                rx
+            })
+            .collect();
+        while !s.idle() {
+            s.tick()?;
+        }
+        rx.iter()
+            .map(|r| {
+                let mut out = Vec::new();
+                loop {
+                    match r.recv().map_err(|_| Error("the scheduler dropped a sequence".into()))? {
+                        Ev::Token(t) => out.push(t),
+                        Ev::Lp(_) => {}
+                        Ev::End(Ok(Finish::Length)) => return Ok(out),
+                        Ev::End(f) => return err(format!("a sequence ended {f:?} before its {tokens} tokens")),
+                    }
+                }
+            })
+            .collect()
+    };
+    let mut fails = 0;
+    for (i, p) in prompts.iter().enumerate() {
+        let got = ask(&mut s, std::slice::from_ref(p))?.remove(0);
+        let same = got == reference[i];
+        fails += !same as usize;
+        println!(
+            "{} alone {i} ({} prompt tokens): {}",
+            if same { "PASS" } else { "FAIL" },
+            p.len(),
+            if same { "the reply alone, token for token".into() } else { format!("{got:?} against {:?}", reference[i]) }
+        );
+    }
+    let together = ask(&mut s, &prompts)?;
+    let same = together.iter().zip(&reference).filter(|(a, b)| a == b).count();
+    let strict = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0");
+    let steps: Vec<u64> = crate::sched::SHARED[18..27].iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).collect();
+    println!(
+        "at once: {same} of {} replies the reply alone (prompts {}); {k} sequences, rows in one pass: {batchable}; decode steps by rows {steps:?}",
+        prompts.len(),
+        if strict { "one a pass" } else { "together" }
+    );
+    if strict && same < prompts.len() {
+        println!("FAIL replies at once differ from alone with prompts one a pass");
+        fails += 1;
+    }
+    if batchable && k > 1 && steps[2..].iter().all(|&x| x == 0) {
+        println!("FAIL no decode step had more than one row");
+        fails += 1;
+    }
+    if fails > 0 {
+        return err(format!("{case}: {fails} failed"));
+    }
+    println!("{case}: PASS");
+    Ok(())
+}

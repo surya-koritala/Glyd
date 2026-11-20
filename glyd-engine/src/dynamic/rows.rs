@@ -14,13 +14,14 @@ use crate::ffi::{err, Result};
 use crate::model::FUSED_ROWS;
 use crate::sched::{ModelStep, PrefillJob, Row, Sample};
 
-/// One sequence's rows in a pass over several: the first row, how many, where its tokens begin in the sequence, and its caches.
+/// One sequence's rows in a pass over several: the first row, how many, where its tokens begin in the sequence, and its caches and recurrent states.
 pub(super) struct Part {
     pub row0: usize,
     pub rows: usize,
     pub start: usize,
     pub kc: u64,
     pub vc: u64,
+    pub states: Vec<u64>,
 }
 
 /// Whether an operation acts on each row alone (no cache, no state, no other row): it runs on the rows of every sequence of a pass at once.
@@ -41,9 +42,10 @@ pub(super) fn row_wise(op: &Op) -> bool {
     )
 }
 
-/// Whether an operation on a sequence's cache or states takes its rows at an offset in a pass over several sequences (`Dyn::rows_before`, `Dyn::cache`).
+/// Whether an operation on a sequence's cache or states takes its rows at an offset in a pass over several sequences (`Dyn::rows_before`, `Dyn::cache`, `Dyn::state`): Gemma 4's attention,
+/// Qwen3.5's (Qwen3.8's) gated attention and gated delta rule.
 fn by_sequence(op: &Op) -> bool {
-    matches!(op, Op::QkvPrep { .. } | Op::Attention { .. })
+    matches!(op, Op::QkvPrep { .. } | Op::Attention { .. } | Op::Prep35 { .. } | Op::Attn35 { .. } | Op::GdnConv { .. } | Op::GdnDelta { .. })
 }
 
 impl Dyn {
@@ -58,6 +60,14 @@ impl Dyn {
         match self.at.get() {
             Some(k) => (self.parts[k].kc + off, self.parts[k].vc + off),
             None => (self.kc.ptr + off, self.vc.ptr + off),
+        }
+    }
+
+    /// Recurrent state `i`: the sequence's an operation runs on now in a pass over several, else the selected sequence's.
+    pub(super) fn state(&self, i: usize) -> u64 {
+        match self.at.get() {
+            Some(k) => self.parts[k].states[i],
+            None => self.states[i].ptr,
         }
     }
 
@@ -91,17 +101,17 @@ impl Dyn {
 
     /// Sequence `slot`'s caches and states (none of them copied).
     fn part_of(&self, slot: usize, row0: usize, rows: usize, start: usize) -> Result<Part> {
-        let (kc, vc) = if slot == self.seq {
-            (self.kc.ptr, self.vc.ptr)
+        let (kc, vc, states) = if slot == self.seq {
+            (self.kc.ptr, self.vc.ptr, self.states.iter().map(|b| b.ptr).collect())
         } else {
             let s = self
                 .seqs
                 .get(slot)
                 .and_then(Option::as_ref)
                 .ok_or_else(|| crate::ffi::Error(format!("sequence {slot}: this engine holds {}", self.seqs.len())))?;
-            (s.kc.ptr, s.vc.ptr)
+            (s.kc.ptr, s.vc.ptr, s.states.iter().map(|b| b.ptr).collect())
         };
-        Ok(Part { row0, rows, start, kc, vc })
+        Ok(Part { row0, rows, start, kc, vc, states })
     }
 
     /// Sequence `slot` empty again: no tokens, its states zeroed (its cache is overwritten as it runs).
@@ -188,8 +198,8 @@ impl Dyn {
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
     /// engine runs one sequence only (a draft model, a stage of a split model, a family `add_seqs` refuses).
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
-        // (Gemma 4 first; Qwen3.5's layouts, Qwen3.8 among them, follow with their recurrent layers' rows by sequence)
-        if self.draft.is_some() || !self.stage.first || !self.stage.last || self.big.d.family != "Gemma 4" {
+        // (Gemma 4, and Qwen3.5's layout, which Qwen3.8 dense runs on)
+        if self.draft.is_some() || !self.stage.first || !self.stage.last || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5") {
             return Ok(None);
         }
         if self.seqs.len() > 1 {
