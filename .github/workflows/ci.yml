@@ -16,6 +16,8 @@ on:
   # (no paths-ignore here: a required check must report on every pull request, so the `changes` job decides and the jobs it gates are skipped; `CI result` is the one check to require)
   pull_request:
     branches: [main]
+  # (the merge queue: each queued pull request is tested on top of main and the pull requests ahead of it, before it lands)
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -88,17 +90,27 @@ jobs:
           persist-credentials: false
           fetch-depth: 2
       - id: diff
+        env:
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "versions=true" >> "$GITHUB_OUTPUT"
-            echo "rust=true" >> "$GITHUB_OUTPUT"
-            echo "hip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # (the pull request's merge commit against its first parent, the base)
-          git diff --no-renames --name-only HEAD^1 HEAD | tee "$RUNNER_TEMP/changed"
-          # Anything but docs, benchmarks, research, condor, starlings, cards, tools and the other workflows (each has its own, or none): the heavy jobs run.
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              # (the pull request's merge commit against its first parent, the base)
+              git diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed" ;;
+            merge_group)
+              # (the queue's commit against the main it is built on: what this entry and the ones ahead of it change)
+              git fetch --no-tags --depth=1 origin "$QUEUE_BASE"
+              git diff --no-renames --name-only "$QUEUE_BASE" HEAD > "$RUNNER_TEMP/changed" ;;
+            *)
+              {
+                echo "code=true"
+                echo "versions=true"
+                echo "rust=true"
+                echo "hip=true"
+              } >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+          esac
+          cat "$RUNNER_TEMP/changed"
           code=false
           while IFS= read -r f; do
             case "$f" in
