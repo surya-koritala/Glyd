@@ -292,7 +292,9 @@ architectures; families with unusual parts (Kimi-K3's depth mix, DeepSeek-V4's i
 proportional rope are different shapes, not one `partial` number: partial rope (Qwen3.8, 64 of 256) rotates the first 64 dimensions in
 pairs (i, i + 32), while Gemma 4's proportional rope on global layers rotates the whole head in pairs (i, i + 256) with only a quarter of the
 angles non-zero and exponents over the head dim. `Rope` therefore carries the rotated span, the number of angles with a frequency, the
-exponents' denominator and the pairing (`rotate_half` or interleaved, as GLM-5.3's and DeepSeek's latent attention use).
+exponents' denominator and the pairing (`rotate_half` or interleaved, as GLM-5.3's and DeepSeek's latent attention use). A residual
+rule also sets the width of the stream a block runs on: with mHC (`Streams`) the block's `x` is n x hidden a token and the block takes
+its input from the streams and spreads its output back; `Add`, `Gated` and `AddScaled` keep one stream.
 
 ### A backend implements kinds
 
