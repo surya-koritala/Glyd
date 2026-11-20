@@ -46,7 +46,17 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn>
     let whole = st.first && st.last;
     let w = {
         let moe = crate::moe_glm::factory_f8(level, &dev, &lib8);
-        WeightsGlm::load_ends(dir, threads, o.layout, dev.cc_pair(), dev.total_mem as u64, (!whole).then_some(&only[..]), Some((st.first, st.last)), Some(&moe), Some(&mla))?
+        WeightsGlm::load_ends(
+            dir,
+            threads,
+            o.layout,
+            dev.cc_pair(),
+            dev.total_mem as u64,
+            (!whole).then_some(&only[..]),
+            Some((st.first, st.last)),
+            Some(&moe),
+            Some(&mla),
+        )?
     };
     let lm = w.lm_head().is_some();
     let WeightsGlm { cfg: c, layout, layers: lys, embed, head, norm_f, .. } = w;
@@ -71,7 +81,12 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn>
         };
         let [ha, hf] = ly.hc;
         let (na, nf) = (put(&mut l_.small, ly.norm_a), put(&mut l_.small, ly.norm_f));
-        let pre = |small: &mut Vec<Buf>, h: crate::model_glm::Hc, norm: usize| Op::GlmPre { f: put(small, h.proj), base: put(small, h.base), scale: put(small, h.scale), norm };
+        let pre = |small: &mut Vec<Buf>, h: crate::model_glm::Hc, norm: usize| Op::GlmPre {
+            f: put(small, h.proj),
+            base: put(small, h.base),
+            scale: put(small, h.scale),
+            norm,
+        };
         let mut ops = vec![pre(&mut l_.small, ha, na)];
         let m0 = l_.mats.len();
         let nm = ly.mats.len();
@@ -146,7 +161,22 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn>
         None => return err("the LM head is not loaded"),
     };
     let mut widths = [0usize; super::SLOTS];
-    for (s, wd) in [(Slot::X, hid), (Slot::S, 4 * hid), (Slot::H, hid), (Slot::O, hid), (Slot::Mix, 3 * qd), (Slot::Xc, 3 * qd), (Slot::Proj, c.kda.dim), (Slot::Qo, qd), (Slot::Iq, qd), (Slot::Ba, heads.max(8)), (Slot::Core, qd), (Slot::Att, qd), (Slot::Gu, 2 * c.inter), (Slot::M, c.inter)] {
+    for (s, wd) in [
+        (Slot::X, hid),
+        (Slot::S, 4 * hid),
+        (Slot::H, hid),
+        (Slot::O, hid),
+        (Slot::Mix, 3 * qd),
+        (Slot::Xc, 3 * qd),
+        (Slot::Proj, c.kda.dim),
+        (Slot::Qo, qd),
+        (Slot::Iq, qd),
+        (Slot::Ba, heads.max(8)),
+        (Slot::Core, qd),
+        (Slot::Att, qd),
+        (Slot::Gu, 2 * c.inter),
+        (Slot::M, c.inter),
+    ] {
         widths[s as usize] = wd;
     }
     let d = ModelDesc {

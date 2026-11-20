@@ -2,21 +2,26 @@ use glyd::huffman::*;
 
 fn roundtrip(data: &[u8]) {
     let mut hist = [0u64; 256];
-    for &b in data { hist[b as usize] += 1; }
+    for &b in data {
+        hist[b as usize] += 1;
+    }
     let lengths = build_lengths(&hist);
     for (i, &l) in lengths.iter().enumerate() {
         assert!(l as u32 <= MAX_CODE_LEN, "symbol {} length {} exceeds cap", i, l);
-        if hist[i] > 0 { assert!(l > 0, "used symbol {} got no code", i); }
+        if hist[i] > 0 {
+            assert!(l > 0, "used symbol {} got no code", i);
+        }
     }
     // Kraft sum must not exceed 1 for a valid prefix code.
-    let kraft: f64 = lengths.iter().filter(|&&l| l > 0)
-        .map(|&l| 2f64.powi(-(l as i32))).sum();
+    let kraft: f64 = lengths.iter().filter(|&&l| l > 0).map(|&l| 2f64.powi(-(l as i32))).sum();
     assert!(kraft <= 1.0 + 1e-9, "Kraft sum {} > 1", kraft);
 
     let codes = build_codes(&lengths);
     let mut packed = Vec::new();
     let mut w = BitWriter::new();
-    for &b in data { w.put(codes[b as usize], lengths[b as usize], &mut packed); }
+    for &b in data {
+        w.put(codes[b as usize], lengths[b as usize], &mut packed);
+    }
     w.finish(&mut packed);
 
     let mut lenbuf = Vec::new();
@@ -40,7 +45,9 @@ fn huff_uniform() {
 #[test]
 fn huff_skewed() {
     let mut d = Vec::new();
-    for i in 0..20000 { d.push(if i % 10 == 0 { (i % 251) as u8 } else { 7u8 }); }
+    for i in 0..20000 {
+        d.push(if i % 10 == 0 { (i % 251) as u8 } else { 7u8 });
+    }
     roundtrip(&d);
 }
 
@@ -84,12 +91,7 @@ fn huff_extreme_skew_forces_length_limit() {
             assert!(weights[k + 2] >= sum, "weights not skewed enough at {}", k);
         }
     }
-    assert!(
-        weights.len() > MAX_CODE_LEN as usize + 1,
-        "{} symbols cannot exceed the {}-bit cap",
-        weights.len(),
-        MAX_CODE_LEN
-    );
+    assert!(weights.len() > MAX_CODE_LEN as usize + 1, "{} symbols cannot exceed the {}-bit cap", weights.len(), MAX_CODE_LEN);
 
     let mut d = Vec::with_capacity(total);
     for (s, &w) in weights.iter().enumerate() {
@@ -107,8 +109,15 @@ fn huff_real_token_shape() {
     for _ in 0..50000 {
         st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         let r = (st >> 33) % 100;
-        d.push(if r < 60 { 0u8 } else if r < 80 { 9u8 } else if r < 92 { 17u8 }
-               else { ((st >> 20) % 256) as u8 });
+        d.push(if r < 60 {
+            0u8
+        } else if r < 80 {
+            9u8
+        } else if r < 92 {
+            17u8
+        } else {
+            ((st >> 20) % 256) as u8
+        });
     }
     roundtrip(&d);
 }

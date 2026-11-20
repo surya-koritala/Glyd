@@ -6,8 +6,7 @@
 use glyd::format::*;
 
 fn main() {
-    let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
-                 "reymont","samba","sao","webster","xml","x-ray"];
+    let files = ["dickens", "mozilla", "mr", "nci", "ooffice", "osdb", "reymont", "samba", "sao", "webster", "xml", "x-ray"];
     let dir = std::path::Path::new("corpus");
     let mut lit_h = vec![0u64; 70000];
     let mut match_h = vec![0u64; 70000];
@@ -15,7 +14,9 @@ fn main() {
     let (mut ntok, mut nmatch, mut comp_total) = (0u64, 0u64, 0u64);
     for f in &files {
         let p = dir.join(f);
-        if !p.exists() { continue; }
+        if !p.exists() {
+            continue;
+        }
         let d = std::fs::read(&p).unwrap();
         let c = glyd::compress(&d);
         comp_total += c.len() as u64;
@@ -29,15 +30,27 @@ fn main() {
                 let eb = ob + h.offset_bytes as usize;
                 let (mut oi, mut ei) = (0usize, 0usize);
                 let read_esc = |c: &[u8], ei: &mut usize, base: usize| -> usize {
-                    let v = c[eb + *ei] as usize; *ei += 1;
-                    if v != ESCAPE_CONT as usize { base + v }
-                    else { let w = u16::from_le_bytes([c[eb + *ei], c[eb + *ei + 1]]) as usize; *ei += 2; base + 255 + w }
+                    let v = c[eb + *ei] as usize;
+                    *ei += 1;
+                    if v != ESCAPE_CONT as usize {
+                        base + v
+                    } else {
+                        let w = u16::from_le_bytes([c[eb + *ei], c[eb + *ei + 1]]) as usize;
+                        *ei += 2;
+                        base + 255 + w
+                    }
                 };
                 for i in 0..h.token_count as usize {
                     let t = Token(c[tb + i]);
                     let lc = if t.lit_code() == LIT_CODE_ESCAPE { read_esc(&c, &mut ei, ESCAPE_BASE_LIT) } else { t.lit_code() };
                     let mc = t.match_code();
-                    let rc = if mc == 0 { 0 } else if mc == MATCH_CODE_ESCAPE { read_esc(&c, &mut ei, bias + 15) } else { mc + bias };
+                    let rc = if mc == 0 {
+                        0
+                    } else if mc == MATCH_CODE_ESCAPE {
+                        read_esc(&c, &mut ei, bias + 15)
+                    } else {
+                        mc + bias
+                    };
                     lit_h[lc.min(69999)] += 1;
                     match_h[rc.min(69999)] += 1;
                     ntok += 1;
@@ -56,15 +69,32 @@ fn main() {
     let pct = |n: u64| 100.0 * n as f64 / ntok as f64;
     let cum = |h: &Vec<u64>, upto: usize| -> u64 { h[..=upto].iter().sum() };
     println!("{} tokens, {} matches, output {} bytes", ntok, nmatch, comp_total);
-    println!("literal runs: 0 {:.1}%  <=2 {:.1}%  <=6 {:.1}%  <=14 {:.1}%  <=30 {:.1}%",
-             pct(lit_h[0]), pct(cum(&lit_h, 2)), pct(cum(&lit_h, 6)), pct(cum(&lit_h, 14)), pct(cum(&lit_h, 30)));
+    println!(
+        "literal runs: 0 {:.1}%  <=2 {:.1}%  <=6 {:.1}%  <=14 {:.1}%  <=30 {:.1}%",
+        pct(lit_h[0]),
+        pct(cum(&lit_h, 2)),
+        pct(cum(&lit_h, 6)),
+        pct(cum(&lit_h, 14)),
+        pct(cum(&lit_h, 30))
+    );
     let pm = |n: u64| 100.0 * n as f64 / nmatch as f64;
     let mcum = |upto: usize| -> u64 { match_h[6..=upto].iter().sum() };
-    println!("match lens:   <=12 {:.1}%  <=19 {:.1}%  <=20 {:.1}%  <=36 {:.1}%  <=68 {:.1}%",
-             pm(mcum(12)), pm(mcum(19)), pm(mcum(20)), pm(mcum(36)), pm(mcum(68)));
+    println!(
+        "match lens:   <=12 {:.1}%  <=19 {:.1}%  <=20 {:.1}%  <=36 {:.1}%  <=68 {:.1}%",
+        pm(mcum(12)),
+        pm(mcum(19)),
+        pm(mcum(20)),
+        pm(mcum(36)),
+        pm(mcum(68))
+    );
     let mut acc = 0u64;
     print!("offset bits: ");
-    for b in 1..=24 { acc += off_bits[b]; if b % 4 == 0 || b >= 16 { print!(" <={}b {:.1}%", b, pm(acc)); } }
+    for b in 1..=24 {
+        acc += off_bits[b];
+        if b % 4 == 0 || b >= 16 {
+            print!(" <={}b {:.1}%", b, pm(acc));
+        }
+    }
     println!();
 
     // Cost each layout: (lit bits, match bits, width bits). Escape = lit >
@@ -81,13 +111,39 @@ fn main() {
         let m_esc: u64 = match_h.iter().enumerate().filter(|(l, _)| *l > 0 && *l > 5 + match_codes).map(|(_, n)| n).sum();
         // any-escape approximated as union assuming independence within a token
         let any = lit_esc as f64 + m_esc as f64 - (lit_esc as f64 * m_esc as f64 / ntok as f64);
-        let off_bytes: u64 = (1..=24).map(|b| off_bits[b] * match wb {
-            2 => if b <= 8 { 1 } else if b <= 16 { 2 } else { 3 },
-            1 => if b <= 16 { 2 } else { 3 },
-            _ => 3,
-        }).sum();
+        let off_bytes: u64 = (1..=24)
+            .map(|b| {
+                off_bits[b]
+                    * match wb {
+                        2 => {
+                            if b <= 8 {
+                                1
+                            } else if b <= 16 {
+                                2
+                            } else {
+                                3
+                            }
+                        }
+                        1 => {
+                            if b <= 16 {
+                                2
+                            } else {
+                                3
+                            }
+                        }
+                        _ => 3,
+                    }
+            })
+            .sum();
         let out = comp_total as i64 - cur_off_bytes as i64 + off_bytes as i64;
-        println!("{:<12} {:>8.1}% {:>8.1}% {:>8.1}%   {:>12} {:>8.4}",
-                 format!("L{}/M{}/W{}", lb, mb, wb), pct(lit_esc), pct(m_esc), 100.0 * any / ntok as f64, off_bytes, orig as f64 / out as f64);
+        println!(
+            "{:<12} {:>8.1}% {:>8.1}% {:>8.1}%   {:>12} {:>8.4}",
+            format!("L{}/M{}/W{}", lb, mb, wb),
+            pct(lit_esc),
+            pct(m_esc),
+            100.0 * any / ntok as f64,
+            off_bytes,
+            orig as f64 / out as f64
+        );
     }
 }

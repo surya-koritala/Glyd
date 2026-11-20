@@ -20,7 +20,20 @@ use super::{CParams, Rules};
 /// matches chained at `ip` (`ext` applies the dictionary segment's
 /// rules; `prefix_start_index` and `dict_start_index` only matter then).
 #[allow(clippy::too_many_arguments)]
-fn after_match(input: &[u8], store: &mut SeqStore, long: &mut [u32], small: &mut [u32], p: &CParams, curr: u32, ip: &mut usize, anchor: &mut usize, end: usize, rep1: &mut u32, rep2: &mut u32, ext: Option<(u32, u32)>) {
+fn after_match(
+    input: &[u8],
+    store: &mut SeqStore,
+    long: &mut [u32],
+    small: &mut [u32],
+    p: &CParams,
+    curr: u32,
+    ip: &mut usize,
+    anchor: &mut usize,
+    end: usize,
+    rep1: &mut u32,
+    rep2: &mut u32,
+    ext: Option<(u32, u32)>,
+) {
     let (hbl, hbs, mls) = (p.hash_log, p.chain_log, p.min_match);
     let ilimit = end as isize - HASH_READ_SIZE as isize;
     if *ip as isize > ilimit {
@@ -57,7 +70,17 @@ fn after_match(input: &[u8], store: &mut SeqStore, long: &mut [u32], small: &mut
 /// counts, and a short match is only replaced by the long match a byte
 /// ahead when that one is strictly longer.
 #[allow(clippy::too_many_arguments)]
-pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], rules: &Rules) -> SeqStore {
+pub fn compress_block(
+    input: &[u8],
+    start: usize,
+    end: usize,
+    long: &mut [u32],
+    small: &mut [u32],
+    p: &CParams,
+    window: &Window,
+    rep: &mut [u32; 3],
+    rules: &Rules,
+) -> SeqStore {
     let longer_wins = rules.dfast_longer_wins;
     let mut store = SeqStore::new();
     let (hbl, hbs, mls) = (p.hash_log, p.chain_log, p.min_match);
@@ -136,7 +159,11 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], 
                 // there is one (since 1.5.7 only when that one is longer).
                 if idxs0 >= oldest && read32(input, pos(idxs0)) == read32(input, ip) {
                     let short_len = count(input, ip + 4, pos(idxs0) + 4, end) + 4;
-                    let long1 = if idxl1 > prefix_lowest_index && read64(input, pos(idxl1)) == read64(input, ip1) { Some(count(input, ip1 + 8, pos(idxl1) + 8, end) + 8) } else { None };
+                    let long1 = if idxl1 > prefix_lowest_index && read64(input, pos(idxl1)) == read64(input, ip1) {
+                        Some(count(input, ip1 + 8, pos(idxl1) + 8, end) + 8)
+                    } else {
+                        None
+                    };
                     let (mut ip0, mut m, mut len) = match long1 {
                         Some(l1) if !longer_wins || l1 > short_len => (ip1, pos(idxl1), l1),
                         _ => (ip, pos(idxs0), short_len),
@@ -190,7 +217,17 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], 
 /// with a dictionary segment below `window.dict_limit` (the same in
 /// every version; `rules` only reach the regular variant).
 #[allow(clippy::too_many_arguments)]
-pub fn compress_block_ext(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], rules: &Rules) -> SeqStore {
+pub fn compress_block_ext(
+    input: &[u8],
+    start: usize,
+    end: usize,
+    long: &mut [u32],
+    small: &mut [u32],
+    p: &CParams,
+    window: &Window,
+    rep: &mut [u32; 3],
+    rules: &Rules,
+) -> SeqStore {
     let end_index = idx(end);
     let dict_start_index = window.lowest_match(end_index, p.window_log);
     let prefix_start_index = window.dict_limit.max(dict_start_index);
@@ -216,7 +253,10 @@ pub fn compress_block_ext(input: &[u8], start: usize, end: usize, long: &mut [u3
         small[hs] = curr;
         long[hl] = curr;
         let len;
-        if (prefix_start_index - 1).wrapping_sub(rep_index) >= 3 && rep1 <= curr + 1 - dict_start_index && read32(input, pos(rep_index)) == read32(input, ip + 1) {
+        if (prefix_start_index - 1).wrapping_sub(rep_index) >= 3
+            && rep1 <= curr + 1 - dict_start_index
+            && read32(input, pos(rep_index)) == read32(input, ip + 1)
+        {
             len = count(input, ip + 5, pos(rep_index) + 4, end) + 4;
             ip += 1;
             store.store(&input[anchor..ip], 1, len);

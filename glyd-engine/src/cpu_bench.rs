@@ -18,8 +18,10 @@ const LAYERS: usize = 40;
 
 /// The quantiles (0 to 100%, a value for each percent) of the number of neurons that are not 0 after relu squared in a pair of the probe's held-out text, all 40 layers pooled (the probe's `hz` histogram).
 const ACTIVE_QUANTILES: [u16; 101] = [
-    0, 3, 7, 11, 16, 20, 24, 28, 31, 35, 39, 42, 45, 48, 51, 54, 57, 60, 63, 66, 69, 71, 74, 77, 80, 82, 85, 88, 90, 93, 96, 99, 102, 104, 107, 110, 113, 116, 119, 122, 125, 128, 131, 135, 138, 141, 144, 148, 151, 155, 158, 162, 166, 170, 174,
-    178, 182, 186, 190, 194, 199, 203, 208, 213, 217, 222, 228, 233, 238, 244, 249, 255, 261, 267, 274, 280, 287, 294, 302, 310, 318, 327, 336, 345, 355, 366, 378, 391, 405, 420, 437, 457, 479, 506, 540, 583, 645, 762, 1186, 1367, 2331,
+    0, 3, 7, 11, 16, 20, 24, 28, 31, 35, 39, 42, 45, 48, 51, 54, 57, 60, 63, 66, 69, 71, 74, 77, 80, 82, 85, 88, 90, 93, 96, 99, 102, 104, 107, 110, 113, 116,
+    119, 122, 125, 128, 131, 135, 138, 141, 144, 148, 151, 155, 158, 162, 166, 170, 174, 178, 182, 186, 190, 194, 199, 203, 208, 213, 217, 222, 228, 233, 238,
+    244, 249, 255, 261, 267, 274, 280, 287, 294, 302, 310, 318, 327, 336, 345, 355, 366, 378, 391, 405, 420, 437, 457, 479, 506, 540, 583, 645, 762, 1186,
+    1367, 2331,
 ];
 
 struct Rng(u64);
@@ -78,7 +80,15 @@ fn matrix(bits: u32, on: &[bool], rng: &mut Rng) -> Result<Rows> {
         let (lo, hi) = row.split_at_mut(16 * runs);
         for b in lo.iter_mut() {
             // (four bits: both nibbles' top bit, which is the bias's)
-            *b = if bits == 4 { if up { *b | 0x88 } else { *b & 0x77 } } else { *b };
+            *b = if bits == 4 {
+                if up {
+                    *b | 0x88
+                } else {
+                    *b & 0x77
+                }
+            } else {
+                *b
+            };
         }
         // five and six bits: the top bit of every code, a word of the run's high bits at a time
         for w in hi.chunks_mut(4) {
@@ -108,9 +118,15 @@ fn z_row(rng: &mut Rng) -> Vec<u16> {
 }
 
 fn cpu_name() -> String {
-    let run = |cmd: &str, args: &[&str]| std::process::Command::new(cmd).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let run = |cmd: &str, args: &[&str]| {
+        std::process::Command::new(cmd).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
     run("sysctl", &["-n", "machdep.cpu.brand_string"])
-        .or_else(|| std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|t| t.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split_once(':')).map(|(_, v)| v.trim().to_string())))
+        .or_else(|| {
+            std::fs::read_to_string("/proc/cpuinfo")
+                .ok()
+                .and_then(|t| t.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split_once(':')).map(|(_, v)| v.trim().to_string()))
+        })
         .unwrap_or_else(|| "an unknown processor".to_string())
 }
 
@@ -211,7 +227,11 @@ fn run_hb(a: &Args) -> Result<()> {
         pool.push((cb_matrix(bits, &on, &mut rng)?, cb_matrix(bits, &[], &mut rng)?, bits));
     }
     // (--huge: the experts' bytes copied into memory the kernel is asked to back with 2 MiB pages, as the host tier could be; else the pool's own 4 KiB pages)
-    let arena = a.has("huge").then(|| huge_arena(pool.iter().map(|(u, d, _)| u.codes.len() + u.scales.len() + u.codebook.len() + d.codes.len() + d.scales.len() + d.codebook.len() + 6 * 64).sum()));
+    let arena = a.has("huge").then(|| {
+        huge_arena(
+            pool.iter().map(|(u, d, _)| u.codes.len() + u.scales.len() + u.codebook.len() + d.codes.len() + d.scales.len() + d.codebook.len() + 6 * 64).sum(),
+        )
+    });
     let mut at = 0usize;
     let mut homed = |m: &crate::cpu_hb::CbRows| -> crate::cpu_hb::CbView<'static> {
         let arena = arena.as_ref().expect("the arena");
@@ -225,9 +245,13 @@ fn run_hb(a: &Args) -> Result<()> {
         };
         crate::cpu_hb::CbView { bits: m.bits, rows: m.rows, cols: m.cols, codes: put(&m.codes), scales: put(&m.scales), codebook: put(&m.codebook) }
     };
-    let views: Vec<(crate::cpu_hb::CbView, crate::cpu_hb::CbView)> = pool.iter().map(|(u, d, _)| if arena.is_some() { (homed(u), homed(d)) } else { (u.view(), d.view()) }).collect();
+    let views: Vec<(crate::cpu_hb::CbView, crate::cpu_hb::CbView)> =
+        pool.iter().map(|(u, d, _)| if arena.is_some() { (homed(u), homed(d)) } else { (u.view(), d.view()) }).collect();
     let experts: Vec<HbExpert> = views.iter().map(|(u, d)| HbExpert::new(*u, *d)).collect::<Result<_>>()?;
-    let bytes_of = |e: usize| (INTER * (crate::cpu_hb::strides(pool[e].2, HIDDEN).0 + crate::cpu_hb::strides(pool[e].2, HIDDEN).1 + crate::cpu_hb::strides(pool[e].2, HIDDEN).2)) as f64;
+    let bytes_of = |e: usize| {
+        (INTER * (crate::cpu_hb::strides(pool[e].2, HIDDEN).0 + crate::cpu_hb::strides(pool[e].2, HIDDEN).1 + crate::cpu_hb::strides(pool[e].2, HIDDEN).2))
+            as f64
+    };
     println!("{n_experts} experts made in {:.1} s ({:.2} GB)", t.elapsed().as_secs_f64(), (0..n_experts).map(|e| 2.0 * bytes_of(e)).sum::<f64>() / 1e9);
     let z: Vec<f32> = (0..HIDDEN).map(|_| 0.5 + (rng.next() >> 40) as f32 / (1u64 << 24) as f32).collect();
     for n in [1usize, 2, 4, 6, 10, 16, 32, 64] {
@@ -245,7 +269,12 @@ fn run_hb(a: &Args) -> Result<()> {
             }
         }
         let med = median(&mut times);
-        println!("a call of {n:>2} pairs: {:>7.1} us median ({:.1} us a pair, {:.1} GB/s of the up matrices' bytes)", med * 1e6, med * 1e6 / n as f64, read / med / 1e9);
+        println!(
+            "a call of {n:>2} pairs: {:>7.1} us median ({:.1} us a pair, {:.1} GB/s of the up matrices' bytes)",
+            med * 1e6,
+            med * 1e6 / n as f64,
+            read / med / 1e9
+        );
     }
     Ok(())
 }
@@ -283,7 +312,9 @@ fn run_glm(a: &Args) -> Result<()> {
     let kernel = crate::cpu_hb::checked_kernel();
     println!("{} ({}), {threads} threads, kernel {}: GLM-5.3-Flash experts, {bits}-bit codebook rows", cpu_name(), std::env::consts::ARCH, kernel.name());
     println!("streaming read, {threads} threads: {:.1} GB/s", stream_read(threads, 1.0, 3));
-    let pool: Vec<[CbRows; 3]> = (0..n_experts).map(|_| Ok([cb_random(bits, NI, NH, &mut rng)?, cb_random(bits, NI, NH, &mut rng)?, cb_random(bits, NI, NH, &mut rng)?])).collect::<Result<_>>()?;
+    let pool: Vec<[CbRows; 3]> = (0..n_experts)
+        .map(|_| Ok([cb_random(bits, NI, NH, &mut rng)?, cb_random(bits, NI, NH, &mut rng)?, cb_random(bits, NI, NH, &mut rng)?]))
+        .collect::<Result<_>>()?;
     let (cs, ss, bs) = crate::cpu_hb::strides(bits, NH);
     let bytes = (3 * NI * (cs + ss + bs)) as f64;
     println!("{n_experts} experts made ({:.0} MB), {:.2} MB an expert", n_experts as f64 * bytes / 1e6, bytes / 1e6);
@@ -320,7 +351,13 @@ fn run_glm(a: &Args) -> Result<()> {
             }
         }
         let med = median(&mut times);
-        println!("a call of {n:>2} experts: {:>8.1} us ({:.1} us an expert), {:.0} G weight-ops/s, {:.1} GB/s read", med * 1e6, med * 1e6 / n as f64, n as f64 * 3.0 * (NI * NH) as f64 / med / 1e9, n as f64 * bytes / med / 1e9);
+        println!(
+            "a call of {n:>2} experts: {:>8.1} us ({:.1} us an expert), {:.0} G weight-ops/s, {:.1} GB/s read",
+            med * 1e6,
+            med * 1e6 / n as f64,
+            n as f64 * 3.0 * (NI * NH) as f64 / med / 1e9,
+            n as f64 * bytes / med / 1e9
+        );
     }
     Ok(())
 }
@@ -375,9 +412,13 @@ impl Drop for PackMap {
     fn drop(&mut self) {
         // SAFETY: mapped by `open`, unmapped once.
         #[cfg(unix)]
-        unsafe { munmap(self.ptr, self.len) };
+        unsafe {
+            munmap(self.ptr, self.len)
+        };
         #[cfg(windows)]
-        unsafe { crate::os::win::unmap(self.ptr.cast()) };
+        unsafe {
+            crate::os::win::unmap(self.ptr.cast())
+        };
     }
 }
 
@@ -399,9 +440,17 @@ fn run_cb2_pack(a: &Args, dir: &str) -> Result<()> {
     let path = std::path::Path::new(dir).join(format!("layer-{layer:03}.safetensors"));
     let file = File::open(&path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
     let map = PackMap::open(&path, cold > 0)?;
-    let mut kept: Vec<usize> = file.tensors.iter().filter_map(|(n, _)| n.strip_suffix(".u.0").and_then(|e| e.strip_prefix('e')).and_then(|e| e.parse().ok())).collect();
+    let mut kept: Vec<usize> =
+        file.tensors.iter().filter_map(|(n, _)| n.strip_suffix(".u.0").and_then(|e| e.strip_prefix('e')).and_then(|e| e.parse().ok())).collect();
     kept.sort();
-    println!("{} ({}), {threads} threads, kernel {}: layer {layer} of {dir}: {} experts, {}", cpu_name(), std::env::consts::ARCH, kernel.name(), kept.len(), if copy { "copied to the heap" } else { "read where the file is mapped" });
+    println!(
+        "{} ({}), {threads} threads, kernel {}: layer {layer} of {dir}: {} experts, {}",
+        cpu_name(),
+        std::env::consts::ARCH,
+        kernel.name(),
+        kept.len(),
+        if copy { "copied to the heap" } else { "read where the file is mapped" }
+    );
     let arrays = |e: usize| -> Result<[&[u8]; 4]> {
         let get = |what: &str| -> Result<&[u8]> {
             let name = format!("e{e:03}.{what}");
@@ -418,7 +467,14 @@ fn run_cb2_pack(a: &Args, dir: &str) -> Result<()> {
             let m: [&[u8]; 4] = if copy { [&copies[i][0], &copies[i][1], &copies[i][2], &copies[i][3]] } else { arrays(e)? };
             let view = |rows: usize, codes: &'static [u8], codebook: &'static [u8]| CbView { bits: 2, rows, cols: HID, codes, scales: &[], codebook };
             // SAFETY: the mapping and the copies outlive the experts (both are dropped after this function's last use of them).
-            let (uc, ub, dc, db) = unsafe { (std::mem::transmute::<&[u8], &'static [u8]>(m[0]), std::mem::transmute::<&[u8], &'static [u8]>(m[1]), std::mem::transmute::<&[u8], &'static [u8]>(m[2]), std::mem::transmute::<&[u8], &'static [u8]>(m[3])) };
+            let (uc, ub, dc, db) = unsafe {
+                (
+                    std::mem::transmute::<&[u8], &'static [u8]>(m[0]),
+                    std::mem::transmute::<&[u8], &'static [u8]>(m[1]),
+                    std::mem::transmute::<&[u8], &'static [u8]>(m[2]),
+                    std::mem::transmute::<&[u8], &'static [u8]>(m[3]),
+                )
+            };
             GlmExpert::new(view(4096, uc, ub), view(2048, dc, db), 10.0)
         })
         .collect::<Result<_>>()?;
@@ -435,12 +491,24 @@ fn run_cb2_pack(a: &Args, dir: &str) -> Result<()> {
             ms.push(t.elapsed().as_secs_f64() * 1e3);
         }
         let med = median(&mut ms.clone());
-        println!("first reads (pages let go of): {} calls of 1 expert: median {:.2} ms, {:.0} to {:.0} ms, {:.2} GB/s of the expert's bytes at the median", ms.len(), med, ms.iter().cloned().fold(f64::MAX, f64::min), ms.iter().cloned().fold(0.0, f64::max), bytes / (med / 1e3) / 1e9);
+        println!(
+            "first reads (pages let go of): {} calls of 1 expert: median {:.2} ms, {:.0} to {:.0} ms, {:.2} GB/s of the expert's bytes at the median",
+            ms.len(),
+            med,
+            ms.iter().cloned().fold(f64::MAX, f64::min),
+            ms.iter().cloned().fold(0.0, f64::max),
+            bytes / (med / 1e3) / 1e9
+        );
         let t = Instant::now();
         let again = order.iter().map(|&i| GlmPair { expert: &experts[i], token: 0, weight: 0.5 }).collect::<Vec<_>>();
         let mut outs = vec![0f32; again.len() * HID];
         experts_pinned(kernel, Z::F32(&z), &again, &mut outs, threads, pin)?;
-        println!("the same {} experts again in one call (now in memory): {:.2} ms, {:.1} GB/s", again.len(), t.elapsed().as_secs_f64() * 1e3, again.len() as f64 * bytes / t.elapsed().as_secs_f64() / 1e9);
+        println!(
+            "the same {} experts again in one call (now in memory): {:.2} ms, {:.1} GB/s",
+            again.len(),
+            t.elapsed().as_secs_f64() * 1e3,
+            again.len() as f64 * bytes / t.elapsed().as_secs_f64() / 1e9
+        );
         return Ok(());
     }
     // every expert read once first, so that the sweep below is of pages in memory
@@ -460,7 +528,12 @@ fn run_cb2_pack(a: &Args, dir: &str) -> Result<()> {
             }
         }
         let med = median(&mut times);
-        println!("a call of {n:>2} pairs: {:>8.1} us ({:.1} us a pair), {:.1} GB/s of the experts' bytes", med * 1e6, med * 1e6 / n as f64, n as f64 * bytes / med / 1e9);
+        println!(
+            "a call of {n:>2} pairs: {:>8.1} us ({:.1} us a pair), {:.1} GB/s of the experts' bytes",
+            med * 1e6,
+            med * 1e6 / n as f64,
+            n as f64 * bytes / med / 1e9
+        );
     }
     drop(experts);
     Ok(())
@@ -482,7 +555,12 @@ fn run_cb2(a: &Args) -> Result<()> {
     let (n_experts, reps, pin) = (a.num("experts", 48usize)?, a.num("reps", 60usize)?, a.has("pin"));
     let mut rng = Rng(a.num("seed", 1u64)?.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let kernel = crate::cpu_hb::checked_kernel();
-    println!("{} ({}), {threads} threads, kernel {}: GLM-5.3-Flash experts, two-bit codebook rows with no run scales (glyd-hbr-codes/2)", cpu_name(), std::env::consts::ARCH, kernel.name());
+    println!(
+        "{} ({}), {threads} threads, kernel {}: GLM-5.3-Flash experts, two-bit codebook rows with no run scales (glyd-hbr-codes/2)",
+        cpu_name(),
+        std::env::consts::ARCH,
+        kernel.name()
+    );
     println!("streaming read, {threads} threads: {:.1} GB/s", stream_read(threads, 1.0, 3));
     // the formats: --fmt cb2 (default), cb3, cb4, tern, or X+Y for the up and the down matrix
     let fmts = a.flag("fmt").unwrap_or("cb2");
@@ -490,7 +568,10 @@ fn run_cb2(a: &Args) -> Result<()> {
         Some((u, d)) => (u, d),
         None => (fmts, fmts),
     };
-    let (fu, fd) = (crate::cpu_cb::Fmt::parse(fu).ok_or_else(|| Error(format!("--fmt {fmts}: tern, cb2, cb3 or cb4, or two of them with a + between")))?, crate::cpu_cb::Fmt::parse(fd).ok_or_else(|| Error(format!("--fmt {fmts}: tern, cb2, cb3 or cb4")))?);
+    let (fu, fd) = (
+        crate::cpu_cb::Fmt::parse(fu).ok_or_else(|| Error(format!("--fmt {fmts}: tern, cb2, cb3 or cb4, or two of them with a + between")))?,
+        crate::cpu_cb::Fmt::parse(fd).ok_or_else(|| Error(format!("--fmt {fmts}: tern, cb2, cb3 or cb4")))?,
+    );
     println!("formats: up {} down {}", fu.name(), fd.name());
     let mut matrix = |fmt: crate::cpu_cb::Fmt, rows: usize| -> (Vec<u8>, Vec<u8>) {
         let mut codes = vec![0u8; rows * fmt.row_bytes(HID)];
@@ -499,7 +580,9 @@ fn run_cb2(a: &Args) -> Result<()> {
             // (a byte is five base-3 digits: 0 to 242)
             codes.iter_mut().for_each(|b| *b %= 243);
         }
-        let book: Vec<u8> = (0..rows * fmt.entries()).flat_map(|_| (((rng.next() >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0).to_bits() >> 16).to_le_bytes()[..2].to_vec()).collect();
+        let book: Vec<u8> = (0..rows * fmt.entries())
+            .flat_map(|_| (((rng.next() >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0).to_bits() >> 16).to_le_bytes()[..2].to_vec())
+            .collect();
         (codes, book)
     };
     let pool: Vec<((Vec<u8>, Vec<u8>), (Vec<u8>, Vec<u8>))> = (0..n_experts).map(|_| (matrix(fu, 2 * INTER), matrix(fd, INTER))).collect();
@@ -522,7 +605,13 @@ fn run_cb2(a: &Args) -> Result<()> {
             }
         }
         let med = median(&mut times);
-        println!("a call of {n:>2} pairs: {:>8.1} us ({:.1} us a pair), {:.1} GB/s of the experts' bytes, {:.0} G weight-ops/s", med * 1e6, med * 1e6 / n as f64, n as f64 * bytes / med / 1e9, n as f64 * 3.0 * (INTER * HID) as f64 / med / 1e9);
+        println!(
+            "a call of {n:>2} pairs: {:>8.1} us ({:.1} us a pair), {:.1} GB/s of the experts' bytes, {:.0} G weight-ops/s",
+            med * 1e6,
+            med * 1e6 / n as f64,
+            n as f64 * bytes / med / 1e9,
+            n as f64 * 3.0 * (INTER * HID) as f64 / med / 1e9
+        );
     }
     Ok(())
 }
@@ -543,21 +632,39 @@ pub fn run(a: &Args) -> Result<()> {
     }
     let kernel = match a.flag("kernel") {
         None | Some("auto") => Kernel::best(),
-        Some(k) => Kernel::parse(k).filter(|k| k.runs_here()).ok_or_else(|| Error(format!("--kernel {k}: one of {}", Kernel::available().iter().map(|k| k.name()).collect::<Vec<_>>().join(", "))))?,
+        Some(k) => Kernel::parse(k)
+            .filter(|k| k.runs_here())
+            .ok_or_else(|| Error(format!("--kernel {k}: one of {}", Kernel::available().iter().map(|k| k.name()).collect::<Vec<_>>().join(", "))))?,
     };
     let threads = match a.num("threads", 0usize)? {
         0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
         n => n,
     };
-    let (n_experts, n_pairs, reps, tokens): (usize, usize, usize, usize) = (a.num("experts", 1024)?, a.num("pairs", 512)?, a.num("reps", 5)?, a.num("tokens", 20)?);
-    let misses: Vec<usize> = a.flag("misses").unwrap_or("100,230,400").split(',').map(|m| m.trim().parse().map_err(|_| Error(format!("--misses {m}: not a number")))).collect::<Result<_>>()?;
+    let (n_experts, n_pairs, reps, tokens): (usize, usize, usize, usize) =
+        (a.num("experts", 1024)?, a.num("pairs", 512)?, a.num("reps", 5)?, a.num("tokens", 20)?);
+    let misses: Vec<usize> = a
+        .flag("misses")
+        .unwrap_or("100,230,400")
+        .split(',')
+        .map(|m| m.trim().parse().map_err(|_| Error(format!("--misses {m}: not a number"))))
+        .collect::<Result<_>>()?;
     let mut rng = Rng(a.num("seed", 1u64)?.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     if n_pairs > n_experts || n_pairs == 0 || reps == 0 || tokens == 0 || misses.iter().any(|&m| m == 0 || m > n_experts * LAYERS) {
         return err(format!("--pairs {n_pairs} is at most --experts {n_experts}; --reps and --tokens are at least 1; --misses {misses:?} are at most {} (a layer's experts times {LAYERS})", n_experts * LAYERS));
     }
     let (stride, row_bytes) = (row_stride(bits, HIDDEN) as f64, (row_stride(bits, HIDDEN) + HIDDEN / 32 * 2) as f64);
-    println!("{} ({}), {threads} threads, kernel {} (this computer runs: {})", cpu_name(), std::env::consts::ARCH, kernel.name(), Kernel::available().iter().map(|k| k.name()).collect::<Vec<_>>().join(" "));
-    println!("experts of {INTER} neurons x {HIDDEN} at {bits} bits: {:.2} MB of codes and scales a matrix, {:.2} MB an expert", INTER as f64 * row_bytes / 1e6, 2.0 * INTER as f64 * row_bytes / 1e6);
+    println!(
+        "{} ({}), {threads} threads, kernel {} (this computer runs: {})",
+        cpu_name(),
+        std::env::consts::ARCH,
+        kernel.name(),
+        Kernel::available().iter().map(|k| k.name()).collect::<Vec<_>>().join(" ")
+    );
+    println!(
+        "experts of {INTER} neurons x {HIDDEN} at {bits} bits: {:.2} MB of codes and scales a matrix, {:.2} MB an expert",
+        INTER as f64 * row_bytes / 1e6,
+        2.0 * INTER as f64 * row_bytes / 1e6
+    );
     println!("streaming read, {threads} threads: {:.1} GB/s", stream_read(threads, a.num("gib", 1.0f64)?, 3));
 
     let t = Instant::now();
@@ -590,8 +697,14 @@ pub fn run(a: &Args) -> Result<()> {
     let (mut got, mut want) = (vec![0f32; ids.len() * HIDDEN], vec![0f32; ids.len() * HIDDEN]);
     let n_got = experts_with(kernel, Z::Bf16(&zs[0]), &pairs, &mut got, threads)?;
     let n_want = experts_with(Kernel::Scalar, Z::Bf16(&zs[0]), &pairs, &mut want, threads)?;
-    let same = got.iter().zip(&want).all(|(x, y)| x.to_bits() == y.to_bits()) && n_got == n_want && n_got.iter().zip(&ids).all(|(&n, &e)| n as usize == pool[e].1);
-    println!("check: the {} kernel against the scalar one on {} pairs: {}", kernel.name(), ids.len(), if same { "the same bits, the neurons on are those made on" } else { "DIFFERENT" });
+    let same =
+        got.iter().zip(&want).all(|(x, y)| x.to_bits() == y.to_bits()) && n_got == n_want && n_got.iter().zip(&ids).all(|(&n, &e)| n as usize == pool[e].1);
+    println!(
+        "check: the {} kernel against the scalar one on {} pairs: {}",
+        kernel.name(),
+        ids.len(),
+        if same { "the same bits, the neurons on are those made on" } else { "DIFFERENT" }
+    );
     if !same {
         return err("the kernel's result is not the scalar kernel's");
     }
@@ -664,7 +777,13 @@ fn alone(kernel: Kernel, e: &Expert, rng: &mut Rng) {
     let (mut sums, mut acc) = (vec![0f32; INTER], vec![0f32; HIDDEN]);
     let active: Vec<(u32, f32)> = rng.pick(INTER, 220).into_iter().map(|j| (j as u32, 1000.0)).collect();
     let time = |f: &mut dyn FnMut()| {
-        (0..3).map(|_| { let t = Instant::now(); (0..100).for_each(|_| f()); t.elapsed().as_secs_f64() / 100.0 }).fold(f64::MAX, f64::min)
+        (0..3)
+            .map(|_| {
+                let t = Instant::now();
+                (0..100).for_each(|_| f());
+                t.elapsed().as_secs_f64() / 100.0
+            })
+            .fold(f64::MAX, f64::min)
     };
     let up = time(&mut || simd::up(kernel, &e.up.view(), &z, 0, INTER, &mut sums));
     let down = time(&mut || simd::down(kernel, &e.down.view(), &active, &mut acc));

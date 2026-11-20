@@ -146,24 +146,27 @@ impl Mapping {
             return;
         }
         let (ptr, len) = (self.ptr as usize, self.len);
-        self.populate = std::thread::Builder::new().name("populate".into()).spawn(move || {
-            const STEP: usize = 8 << 20;
-            let mut at = 0;
-            while at < len {
-                let n = STEP.min(len - at);
-                // SAFETY: within the mapping, which outlives this thread
-                // (joined in `Drop`).
-                let r = unsafe { madvise((ptr + at) as *mut std::ffi::c_void, n, MADV_POPULATE_READ) };
-                if r != 0 {
-                    let mut p = at;
-                    while p < at + n {
-                        unsafe { std::ptr::read_volatile((ptr + p) as *const u8) };
-                        p += 4096;
+        self.populate = std::thread::Builder::new()
+            .name("populate".into())
+            .spawn(move || {
+                const STEP: usize = 8 << 20;
+                let mut at = 0;
+                while at < len {
+                    let n = STEP.min(len - at);
+                    // SAFETY: within the mapping, which outlives this thread
+                    // (joined in `Drop`).
+                    let r = unsafe { madvise((ptr + at) as *mut std::ffi::c_void, n, MADV_POPULATE_READ) };
+                    if r != 0 {
+                        let mut p = at;
+                        while p < at + n {
+                            unsafe { std::ptr::read_volatile((ptr + p) as *const u8) };
+                            p += 4096;
+                        }
                     }
+                    at += n;
                 }
-                at += n;
-            }
-        }).ok();
+            })
+            .ok();
     }
 
     fn map(file: &File, len: usize, prot: i32) -> Result<Mapping> {

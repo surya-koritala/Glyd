@@ -15,11 +15,21 @@ fn main() {
         if h.flags & glyd::format::FLAG_RAW_UNCOMPRESSED != 0 {
             raw += 1;
         } else if let Some(l) = glyd::v7_encode::payload_layout_of(&h, body) {
-            if l.sub.reuse & 1 != 0 { lit_reuse += 1; }
-            if l.sub.reuse & 2 != 0 { seq_reuse += 1; }
-            if l.sub.coded & 0b1110 == 0b1110 { seq_coded += 1; }
-            if h.uncompressed_len < 64 * 1024 { small += 1; }
-            for (a, b) in sizes.iter_mut().zip(l.sub.sizes.iter()) { *a += *b as u64; }
+            if l.sub.reuse & 1 != 0 {
+                lit_reuse += 1;
+            }
+            if l.sub.reuse & 2 != 0 {
+                seq_reuse += 1;
+            }
+            if l.sub.coded & 0b1110 == 0b1110 {
+                seq_coded += 1;
+            }
+            if h.uncompressed_len < 64 * 1024 {
+                small += 1;
+            }
+            for (a, b) in sizes.iter_mut().zip(l.sub.sizes.iter()) {
+                *a += *b as u64;
+            }
         }
         cursor = end;
     }

@@ -32,12 +32,19 @@ pub struct SkinnyKern {
 
 impl SkinnyKern {
     pub fn load(dev: &Dev) -> Result<SkinnyKern> {
-        Ok(SkinnyKern { x: [dev.kernel(kname!("skinnyx4"))?, dev.kernel(kname!("skinnyx5"))?, dev.kernel(kname!("skinnyx6"))?], x4h: dev.kernel(kname!("skinnyx4h"))? })
+        Ok(SkinnyKern {
+            x: [dev.kernel(kname!("skinnyx4"))?, dev.kernel(kname!("skinnyx5"))?, dev.kernel(kname!("skinnyx6"))?],
+            x4h: dev.kernel(kname!("skinnyx4h"))?,
+        })
     }
 
     /// Whether `w` is a matrix these products take: the Int4, Int5 or Int6 layout (tiered words), rows a multiple of 64, columns of 32.
     pub fn takes(w: &Pack) -> bool {
-        matches!(w.words, Words::Tiered { tiers, .. } if matches!(tiers[0] >> 24, INT4 | INT5 | INT6 | INT4H)) && w.rows > 0 && w.rows % 64 == 0 && w.cols > 0 && w.cols % 32 == 0
+        matches!(w.words, Words::Tiered { tiers, .. } if matches!(tiers[0] >> 24, INT4 | INT5 | INT6 | INT4H))
+            && w.rows > 0
+            && w.rows % 64 == 0
+            && w.cols > 0
+            && w.cols % 32 == 0
     }
 
     /// Where a block of 64 rows of `w` starts (as `gemv` reads it): its steps at data + r * .2 and its scale words at .1 + r * .3, for the L2 prefetch of a product to come.
@@ -169,7 +176,12 @@ mod bench {
         data.write(0, &t.data)?;
         blocks.write(0, &t.blocks)?;
         base.write(0, &t.block_base)?;
-        let pack = Pack { data: data.ptr, words: Words::Tiered { blocks: blocks.ptr, block_base: base.ptr, tiers: t.tiers }, rows: t.rows as i64, cols: t.cols as i64 };
+        let pack = Pack {
+            data: data.ptr,
+            words: Words::Tiered { blocks: blocks.ptr, block_base: base.ptr, tiers: t.tiers },
+            rows: t.rows as i64,
+            cols: t.cols as i64,
+        };
         Ok(Dev1 { data, blocks, base, pack })
     }
 
@@ -184,11 +196,22 @@ mod bench {
         let mut data = vec![0u8; steps * step];
         data.chunks_mut(8).for_each(|c| c.copy_from_slice(&r.next().to_le_bytes()[..c.len()]));
         let blocks: Vec<u8> = (0..steps / 2 * 64).flat_map(|_| bf16(r.f(0.005, 0.02)).to_le_bytes()).collect();
-        Tiered { rows, cols, data, blocks, block_base: vec![0; steps + 1], tiers: [(match bits {
-            4 => INT4,
-            5 => INT5,
-            _ => INT6,
-        }) << 24, 0, 0] }
+        Tiered {
+            rows,
+            cols,
+            data,
+            blocks,
+            block_base: vec![0; steps + 1],
+            tiers: [
+                (match bits {
+                    4 => INT4,
+                    5 => INT5,
+                    _ => INT6,
+                }) << 24,
+                0,
+                0,
+            ],
+        }
     }
 
     fn check(dev: &Dev, lib: &Lib, kern: &SkinnyKern) -> Result<()> {
@@ -265,7 +288,8 @@ mod bench {
         }
         if let Some(spec) = a.flag("prefill") {
             // --prefill M,M,...: the library's product for a prompt chunk of M rows on each shape (TFLOPS against the card's 104 of bf16 with fp32 sums)
-            let mlist: Vec<usize> = spec.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--prefill {x}: not a number")))).collect::<Result<_>>()?;
+            let mlist: Vec<usize> =
+                spec.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--prefill {x}: not a number")))).collect::<Result<_>>()?;
             let bits: Vec<u32> = a.flag("bits").unwrap_or("5").split(',').map(|x| x.trim().parse().unwrap_or(5)).collect();
             let want: Vec<&str> = a.flag("shapes").filter(|s| *s != "all").map(|s| s.split(',').collect()).unwrap_or_default();
             let mut r = Rng(0xFEED_0000_0000_0002);
@@ -300,13 +324,18 @@ mod bench {
             }
             return Ok(());
         }
-        let list = |name: &str, default: &str| -> Result<Vec<usize>> { a.flag(name).unwrap_or(default).split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--{name} {x}: not a number")))).collect() };
+        let list = |name: &str, default: &str| -> Result<Vec<usize>> {
+            a.flag(name).unwrap_or(default).split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--{name} {x}: not a number")))).collect()
+        };
         let (bits, ms) = (list("bits", "4,5,6")?, list("m", "1,2,4,8")?);
         let want: Vec<&str> = a.flag("shapes").filter(|s| *s != "all").map(|s| s.split(',').collect()).unwrap_or_default();
         let cycle = a.num("mb", 256usize)? << 20;
         let mut r = Rng(0xFEED_0000_0000_0001);
         let t = Timer::new()?;
-        println!("{:<15} {:>7} {:>7} {:>5} {:>3} | {:>9} {:>9} {:>6} | {:>9} {:>9} {:>6} | {:>6}", "matrix", "rows", "cols", "MB", "M", "mine us", "GB/s", "of 736", "lib us", "GB/s", "of 736", "x");
+        println!(
+            "{:<15} {:>7} {:>7} {:>5} {:>3} | {:>9} {:>9} {:>6} | {:>9} {:>9} {:>6} | {:>6}",
+            "matrix", "rows", "cols", "MB", "M", "mine us", "GB/s", "of 736", "lib us", "GB/s", "of 736", "x"
+        );
         for &(name, rows, cols) in SHAPES.iter().filter(|s| want.is_empty() || want.iter().any(|w| s.0.starts_with(w))) {
             for &b in &bits {
                 let tier = random_pack(b as u32, rows, cols, &mut r);

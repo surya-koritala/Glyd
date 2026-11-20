@@ -21,7 +21,15 @@ use std::path::Path;
 use std::time::Instant;
 
 fn usage() {
-    eprintln!("{}", include_str!("glyd-store.rs").lines().take_while(|l| l.starts_with("//!")).map(|l| l.trim_start_matches("//!").trim_start_matches(' ')).collect::<Vec<_>>().join("\n"));
+    eprintln!(
+        "{}",
+        include_str!("glyd-store.rs")
+            .lines()
+            .take_while(|l| l.starts_with("//!"))
+            .map(|l| l.trim_start_matches("//!").trim_start_matches(' '))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 fn main() -> io::Result<()> {
@@ -169,7 +177,15 @@ fn main() -> io::Result<()> {
                 let t = Instant::now();
                 let id = store.put_file(f, std::path::Path::new(f))?;
                 let e = &store.entries()[id as usize];
-                eprintln!("{:>6}  {:>10} -> {:>10} B  {}  {:.0} MB/s  {}", id, e.raw_len, e.stored_len, e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)), len as f64 / t.elapsed().as_secs_f64() / 1e6, f);
+                eprintln!(
+                    "{:>6}  {:>10} -> {:>10} B  {}  {:.0} MB/s  {}",
+                    id,
+                    e.raw_len,
+                    e.stored_len,
+                    e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)),
+                    len as f64 / t.elapsed().as_secs_f64() / 1e6,
+                    f
+                );
             }
         }
         if let Some(id) = store_get {
@@ -209,7 +225,8 @@ fn main() -> io::Result<()> {
             std::fs::create_dir_all(&out)?;
             let t = Instant::now();
             let mut bytes = 0u64;
-            let live: Vec<(u32, String)> = store.entries().iter().filter(|e| !e.deleted && !e.name.starts_with("pack of ")).map(|e| (e.id, e.name.clone())).collect();
+            let live: Vec<(u32, String)> =
+                store.entries().iter().filter(|e| !e.deleted && !e.name.starts_with("pack of ")).map(|e| (e.id, e.name.clone())).collect();
             for (id, name) in &live {
                 let data = store.get(*id)?;
                 bytes += data.len() as u64;
@@ -230,7 +247,13 @@ fn main() -> io::Result<()> {
         }
         if store_stats {
             for e in store.entries() {
-                let how = if e.deleted { "deleted".to_string() } else if let Some((p, i)) = e.pack { format!("in pack {p} at {i}") } else { e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)) };
+                let how = if e.deleted {
+                    "deleted".to_string()
+                } else if let Some((p, i)) = e.pack {
+                    format!("in pack {p} at {i}")
+                } else {
+                    e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth))
+                };
                 println!("{:>6}  {:>12}  {:>12}  {:<28} {}", e.id, e.raw_len, e.stored_len, how, e.name);
             }
             let (raw, stored) = store.stats();
@@ -279,7 +302,11 @@ fn zstd3_len(data: &[u8]) -> Option<usize> {
     let writer = std::thread::spawn(move || stdin.write_all(&data));
     let out = child.wait_with_output().ok()?;
     writer.join().ok()?.ok()?;
-    if out.status.success() { Some(out.stdout.len()) } else { None }
+    if out.status.success() {
+        Some(out.stdout.len())
+    } else {
+        None
+    }
 }
 
 /// The store on a sample of the objects under `target`, scaled to all
@@ -311,7 +338,13 @@ fn run_audit(target: &str, sample: usize) -> io::Result<()> {
     let mut store = glyd_store::Store::open(&dir)?;
     let zstd = zstd3_len(b"probe").is_some();
     let (mut raw, mut alone_z, mut alone_g) = (0u64, 0u64, 0u64);
-    eprintln!("{target}: {} objects, {:.1} GB; sampling {} of them{}", all.len(), total as f64 / 1e9, picked.len(), if zstd { " against zstd -3" } else { " (no zstd CLI: Glyd --max alone stands in for today's codec)" });
+    eprintln!(
+        "{target}: {} objects, {:.1} GB; sampling {} of them{}",
+        all.len(),
+        total as f64 / 1e9,
+        picked.len(),
+        if zstd { " against zstd -3" } else { " (no zstd CLI: Glyd --max alone stands in for today's codec)" }
+    );
     let t = Instant::now();
     for (i, (name, _)) in picked.iter().enumerate() {
         let data = match read_object(name) {
@@ -346,12 +379,24 @@ fn run_audit(target: &str, sample: usize) -> io::Result<()> {
     let money = |d: f64| if d >= 100.0 { format!("${d:.0}") } else { format!("${d:.2}") };
     println!("{target}");
     println!("  {} objects, {} raw; sample of {} objects, {}", all.len(), size(total as f64 / 1e12), picked.len(), size(raw as f64 / 1e12));
-    println!("  {:<34} {:>10} stored  {:>10} a year", if zstd { "zstd -3, each object alone:" } else { "Glyd --max, each object alone:" }, size(tb(today)), money(tb(today) * PRICE_TB_YEAR));
+    println!(
+        "  {:<34} {:>10} stored  {:>10} a year",
+        if zstd { "zstd -3, each object alone:" } else { "Glyd --max, each object alone:" },
+        size(tb(today)),
+        money(tb(today) * PRICE_TB_YEAR)
+    );
     if zstd {
         println!("  {:<34} {:>10} stored  {:>10} a year", "Glyd --max, each object alone:", size(tb(alone_g)), money(tb(alone_g) * PRICE_TB_YEAR));
     }
     println!("  {:<34} {:>10} stored  {:>10} a year", "Glyd store (across the objects):", size(tb(stored)), money(tb(stored) * PRICE_TB_YEAR));
-    println!("  {:.2}x fewer bytes than {}; {} of {} sampled objects stored as deltas, {} packs of small ones", today as f64 / stored.max(1) as f64, if zstd { "zstd -3" } else { "Glyd alone" }, deltas, picked.len(), packs);
+    println!(
+        "  {:.2}x fewer bytes than {}; {} of {} sampled objects stored as deltas, {} packs of small ones",
+        today as f64 / stored.max(1) as f64,
+        if zstd { "zstd -3" } else { "Glyd alone" },
+        deltas,
+        picked.len(),
+        packs
+    );
     println!("  saving about {} a year at S3 Standard's list price ($23/TB-month), scaled from the sample", money((tb(today) - tb(stored)) * PRICE_TB_YEAR));
     Ok(())
 }

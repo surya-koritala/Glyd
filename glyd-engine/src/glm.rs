@@ -102,7 +102,12 @@ pub struct ConfigGlm {
 
 /// Whether a config.json is a GLM-5.3-Flash's (what the dispatcher asks first).
 pub fn is_glm(text: &str) -> bool {
-    json::parse(text).ok().and_then(|v| v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "Glm5NextForConditionalGeneration"))).unwrap_or(false)
+    json::parse(text)
+        .ok()
+        .and_then(|v| {
+            v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "Glm5NextForConditionalGeneration"))
+        })
+        .unwrap_or(false)
 }
 
 impl ConfigGlm {
@@ -133,8 +138,20 @@ impl ConfigGlm {
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
         let f = |k: &str| -> Result<f64> { num(get(k)?, k) };
         // a key that may be left out: its value, else the default
-        let u_or = |k: &str, d: usize| -> Result<usize> { if t.get(k).is_some_and(|x| *x != Value::Null) { u(k) } else { Ok(d) } };
-        let f_or = |k: &str, d: f64| -> Result<f64> { if t.get(k).is_some_and(|x| *x != Value::Null) { f(k) } else { Ok(d) } };
+        let u_or = |k: &str, d: usize| -> Result<usize> {
+            if t.get(k).is_some_and(|x| *x != Value::Null) {
+                u(k)
+            } else {
+                Ok(d)
+            }
+        };
+        let f_or = |k: &str, d: f64| -> Result<f64> {
+            if t.get(k).is_some_and(|x| *x != Value::Null) {
+                f(k)
+            } else {
+                Ok(d)
+            }
+        };
         let flag = |k: &str, d: bool| t.get(k).and_then(Value::as_bool).unwrap_or(d);
         let text_is = |k: &str, want: &str| t.get(k).and_then(Value::as_str).is_none_or(|a| a == want);
         let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
@@ -214,12 +231,23 @@ impl ConfigGlm {
             None if attn.is_none() && t.get("linear_lower_bound").is_some_and(|x| *x == Value::Null) => return refuse("a forget gate without its lower bound"),
             None => f_or("linear_lower_bound", -5.0)?,
         };
-        let kda = KdaDims { heads: ka("num_heads", "linear_num_heads", 64)?, dim: ka("head_dim", "linear_head_dim", 128)?, conv_kernel: ka("short_conv_kernel_size", "linear_conv_kernel_dim", 4)?, bound: bound as f32 };
+        let kda = KdaDims {
+            heads: ka("num_heads", "linear_num_heads", 64)?,
+            dim: ka("head_dim", "linear_head_dim", 128)?,
+            conv_kernel: ka("short_conv_kernel_size", "linear_conv_kernel_dim", 4)?,
+            bound: bound as f32,
+        };
         if kda.heads == 0 || kda.dim == 0 || kda.conv_kernel == 0 {
             return err(format!("{label}: Kimi delta attention of {} heads of {} channels, a convolution of {} taps", kda.heads, kda.dim, kda.conv_kernel));
         }
         let mla = MlaDims { heads, q_rank: u("q_lora_rank")?, kv_rank: u("kv_lora_rank")?, nope: u("qk_nope_head_dim")?, v: u("v_head_dim")? };
-        let indexer = IndexerDims { heads: u("index_n_heads")?, dim: u("index_head_dim")?, topk: u("index_topk")?, kpool: u("index_kpool")?, tail: flag("index_kpool_always_select_tail", true) };
+        let indexer = IndexerDims {
+            heads: u("index_n_heads")?,
+            dim: u("index_head_dim")?,
+            topk: u("index_topk")?,
+            kpool: u("index_kpool")?,
+            tail: flag("index_kpool_always_select_tail", true),
+        };
         if indexer.kpool == 0 || !indexer.topk.is_multiple_of(indexer.kpool) {
             return err(format!("{label}: index_topk {} does not divide by index_kpool {}", indexer.topk, indexer.kpool));
         }
@@ -286,7 +314,12 @@ impl ConfigGlm {
         let mut eos = eos_ids(t, generation);
         if eos.is_empty() {
             // (the config's own end tokens are a list here, which eos_ids reads in a generation config alone)
-            eos = t.get("eos_token_id").or_else(|| v.get("eos_token_id")).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_i64).collect()).unwrap_or_default();
+            eos = t
+                .get("eos_token_id")
+                .or_else(|| v.get("eos_token_id"))
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_i64).collect())
+                .unwrap_or_default();
         }
         Ok(ConfigGlm {
             hidden: u("hidden_size")?,
@@ -368,7 +401,11 @@ impl ConfigGlm {
         let (h, p) = (self.hidden, self.layer_name(l));
         let mut out = Vec::new();
         let mut pack = |module: &str, parts: &[(&str, usize)], cols: usize| {
-            out.push(Pack35 { parts: parts.iter().map(|&(n, r)| (format!("{module}.{n}.weight"), r)).collect(), key: format!("{module}.{}", parts[0].0), cols });
+            out.push(Pack35 {
+                parts: parts.iter().map(|&(n, r)| (format!("{module}.{n}.weight"), r)).collect(),
+                key: format!("{module}.{}", parts[0].0),
+                cols,
+            });
         };
         let a = format!("{p}.self_attn");
         match self.kind_of(l) {
@@ -406,7 +443,11 @@ impl ConfigGlm {
         (0..m.experts)
             .flat_map(|e| {
                 [
-                    Pack35 { key: format!("{p}.{e}.gate_proj"), parts: vec![(format!("{p}.{e}.gate_proj.weight"), m.inter), (format!("{p}.{e}.up_proj.weight"), m.inter)], cols: h },
+                    Pack35 {
+                        key: format!("{p}.{e}.gate_proj"),
+                        parts: vec![(format!("{p}.{e}.gate_proj.weight"), m.inter), (format!("{p}.{e}.up_proj.weight"), m.inter)],
+                        cols: h,
+                    },
                     Pack35 { key: format!("{p}.{e}.down_proj"), parts: vec![(format!("{p}.{e}.down_proj.weight"), h)], cols: m.inter },
                 ]
             })
@@ -434,7 +475,8 @@ impl ConfigGlm {
         let t = |name: String, dtype: &'static str, shape: &[u64]| Tensor35 { name, dtype, shape: shape.to_vec() };
         let mut out = vec![t(format!("{p}.input_layernorm.weight"), "BF16", &[h]), t(format!("{p}.post_attention_layernorm.weight"), "BF16", &[h])];
         let rows = self.hc_rows() as u64;
-        for block in ["attn", "ffn"].into_iter().filter(|_| l < self.layers) {  // (the MTP head's layer has a plain residual stream: no mixing weights)
+        for block in ["attn", "ffn"].into_iter().filter(|_| l < self.layers) {
+            // (the MTP head's layer has a plain residual stream: no mixing weights)
             out.push(t(format!("{p}.hc_{block}_fn"), "BF16", &[rows, self.hc.mult as u64 * h]));
             out.push(t(format!("{p}.hc_{block}_base"), "F32", &[rows]));
             out.push(t(format!("{p}.hc_{block}_scale"), "F32", &[3]));
@@ -476,13 +518,20 @@ impl ConfigGlm {
     pub fn mtp_kept(&self) -> Vec<Tensor35> {
         let (h, p) = (self.hidden as u64, self.layer_name(self.layers));
         let t = |name: String, shape: &[u64]| Tensor35 { name, dtype: "BF16", shape: shape.to_vec() };
-        vec![t(format!("{p}.enorm.weight"), &[h]), t(format!("{p}.hnorm.weight"), &[h]), t(format!("{p}.eh_proj.weight"), &[h, 2 * h]), t(format!("{p}.shared_head.norm.weight"), &[h])]
+        vec![
+            t(format!("{p}.enorm.weight"), &[h]),
+            t(format!("{p}.hnorm.weight"), &[h]),
+            t(format!("{p}.eh_proj.weight"), &[h, 2 * h]),
+            t(format!("{p}.shared_head.norm.weight"), &[h]),
+        ]
     }
 
     /// Every tensor loaded as the checkpoint has it, in load order: each layer's (`layer_kept`) and the parts of its matrices the library cannot pack, then the final norm and any such part of the embedding or the head.
     pub fn kept(&self) -> Vec<Tensor35> {
         let t = |name: String, dtype: &'static str, shape: &[u64]| Tensor35 { name, dtype, shape: shape.to_vec() };
-        let unpacked = |packs: Vec<Pack35>| -> Vec<Tensor35> { packs.into_iter().filter(|p| !p.packable()).flat_map(|p| p.parts.into_iter().map(move |(n, r)| t(n, "BF16", &[r as u64, p.cols as u64]))).collect() };
+        let unpacked = |packs: Vec<Pack35>| -> Vec<Tensor35> {
+            packs.into_iter().filter(|p| !p.packable()).flat_map(|p| p.parts.into_iter().map(move |(n, r)| t(n, "BF16", &[r as u64, p.cols as u64]))).collect()
+        };
         let mut out = Vec::new();
         for l in 0..self.layers {
             out.extend(self.layer_kept(l));
@@ -495,7 +544,12 @@ impl ConfigGlm {
 
     /// Whether a checkpoint's tensor is one the engine leaves out: the vision tower's and the MTP head's (the layers past the model's own).
     pub fn skipped(&self, name: &str) -> bool {
-        let past = |n: &str| n.strip_prefix(&format!("{}layers.", self.prefix)).and_then(|r| r.split('.').next()).and_then(|i| i.parse::<usize>().ok()).is_some_and(|i| i >= self.layers && i < self.layers + self.mtp_layers);
+        let past = |n: &str| {
+            n.strip_prefix(&format!("{}layers.", self.prefix))
+                .and_then(|r| r.split('.').next())
+                .and_then(|i| i.parse::<usize>().ok())
+                .is_some_and(|i| i >= self.layers && i < self.layers + self.mtp_layers)
+        };
         name.starts_with("model.visual.") || past(name)
     }
 
@@ -514,7 +568,14 @@ impl ConfigGlm {
 
     /// The matrices of `packs` among the tensors `by` (name to dtype and shape): each present as bf16 or as FP8 with its block scales (`NAME_scale_inv`, F32 of the grid of the config's blocks), except those held as
     /// saved packs (`packed`, by `Pack35::saved`). The names wanted go into `wanted`, the problems into `bad`.
-    fn matrices_present(&self, packs: &[Pack35], by: &HashMap<&str, (&str, &[u64])>, packed: &HashSet<String>, wanted: &mut HashSet<String>, bad: &mut Vec<String>) {
+    fn matrices_present(
+        &self,
+        packs: &[Pack35],
+        by: &HashMap<&str, (&str, &[u64])>,
+        packed: &HashSet<String>,
+        wanted: &mut HashSet<String>,
+        bad: &mut Vec<String>,
+    ) {
         for p in packs {
             for (n, rows) in &p.parts {
                 if packed.contains(Pack35::saved(n)) {
@@ -552,7 +613,9 @@ impl ConfigGlm {
             wanted.insert(w.name.clone());
             match by.get(w.name.as_str()) {
                 None => bad.push(format!("no {}", w.name)),
-                Some(&(d, s)) if !(d == w.dtype || (w.dtype == "F32" && d == "BF16")) || s != w.shape.as_slice() => bad.push(format!("{}: {d} {s:?}, where {} {:?} is wanted", w.name, w.dtype, w.shape)),
+                Some(&(d, s)) if !(d == w.dtype || (w.dtype == "F32" && d == "BF16")) || s != w.shape.as_slice() => {
+                    bad.push(format!("{}: {d} {s:?}, where {} {:?} is wanted", w.name, w.dtype, w.shape))
+                }
                 _ => {}
             }
         }
@@ -689,8 +752,10 @@ pub(crate) mod tests {
         }
         assert_eq!(kept.len(), 2 + 2 + 7 + 2 + 4);
         // and the engine names every tensor of the layer (the experts' and the FP8 scales aside)
-        let named: std::collections::HashSet<&str> = packs.iter().flat_map(|p| p.parts.iter().map(|x| x.0.as_str())).chain(kept.iter().map(|t| t.name.as_str())).collect();
-        let rest: Vec<&str> = have.iter().map(|t| t.0.as_str()).filter(|n| n.contains(".layers.45.") && !n.ends_with("_scale_inv") && !named.contains(n)).collect();
+        let named: std::collections::HashSet<&str> =
+            packs.iter().flat_map(|p| p.parts.iter().map(|x| x.0.as_str())).chain(kept.iter().map(|t| t.name.as_str())).collect();
+        let rest: Vec<&str> =
+            have.iter().map(|t| t.0.as_str()).filter(|n| n.contains(".layers.45.") && !n.ends_with("_scale_inv") && !named.contains(n)).collect();
         assert!(rest.is_empty(), "tensors of the MTP layer that nothing names: {rest:?}");
     }
 
@@ -709,7 +774,11 @@ pub(crate) mod tests {
             0
         } else {
             let (below, above) = (a - pos[i - 1], pos[i] - a);
-            if below < above || (below == above && (i - 1) % 2 == 0) { i - 1 } else { i }
+            if below < above || (below == above && (i - 1) % 2 == 0) {
+                i - 1
+            } else {
+                i
+            }
         };
         code as u8 | if x.is_sign_negative() { 0x80 } else { 0 }
     }
@@ -728,8 +797,15 @@ pub(crate) mod tests {
         let scales: Vec<f32> = (0..gr * gc)
             .map(|b| {
                 let (r0, c0) = ((b / gc) * block[0], (b % gc) * block[1]);
-                let amax = (r0..(r0 + block[0]).min(rows)).flat_map(|r| (c0..(c0 + block[1]).min(cols)).map(move |c| (r, c))).map(|(r, c)| f(w[r * cols + c]).abs()).fold(0f32, f32::max);
-                if amax > 0.0 { amax / 448.0 } else { 1.0 }
+                let amax = (r0..(r0 + block[0]).min(rows))
+                    .flat_map(|r| (c0..(c0 + block[1]).min(cols)).map(move |c| (r, c)))
+                    .map(|(r, c)| f(w[r * cols + c]).abs())
+                    .fold(0f32, f32::max);
+                if amax > 0.0 {
+                    amax / 448.0
+                } else {
+                    1.0
+                }
             })
             .collect();
         let scale = |i: usize| scales[(i / cols / block[0]) * gc + i % cols / block[1]];
@@ -774,7 +850,11 @@ pub(crate) mod tests {
             let n = shape.iter().product::<u64>() as usize;
             let w = weights(n, seed);
             // (an fp32 parameter: the bf16 word as its high half, and low bits of its own)
-            let bytes = if dtype == "F32" { (0..n).flat_map(|i| (((w[i] as u32) << 16) | ((i as u32).wrapping_mul(2654435761) >> 16)).to_le_bytes()).collect() } else { bf16_bytes(&w) };
+            let bytes = if dtype == "F32" {
+                (0..n).flat_map(|i| (((w[i] as u32) << 16) | ((i as u32).wrapping_mul(2654435761) >> 16)).to_le_bytes()).collect()
+            } else {
+                bf16_bytes(&w)
+            };
             fp8.push((name.clone(), dtype, shape.clone(), bytes.clone()));
             twin.push((name, dtype, shape, bytes));
         }
@@ -792,7 +872,10 @@ pub(crate) mod tests {
     #[test]
     fn the_flash_config() {
         let c = parse();
-        assert_eq!((c.hidden, c.layers, c.vocab, c.eps, c.max_pos, c.tie, c.eos.clone()), (4096, 45, 154880, 1e-5, 1_048_576, false, vec![154820, 154827, 154829]));
+        assert_eq!(
+            (c.hidden, c.layers, c.vocab, c.eps, c.max_pos, c.tie, c.eos.clone()),
+            (4096, 45, 154880, 1e-5, 1_048_576, false, vec![154820, 154827, 154829])
+        );
         assert_eq!(c.kda, KdaDims { heads: 64, dim: 128, conv_kernel: 4, bound: -5.0 });
         assert_eq!(c.mla, MlaDims { heads: 64, q_rank: 1536, kv_rank: 512, nope: 256, v: 256 });
         assert_eq!(c.indexer, IndexerDims { heads: 32, dim: 128, topk: 2048, kpool: 4, tail: true });
@@ -814,7 +897,10 @@ pub(crate) mod tests {
         assert_eq!((c.layers_of(GlmKind::Kda), c.layers_of(GlmKind::Mla), c.moe_layers()), (34, 11, 42));
         let mla: Vec<usize> = (0..45).filter(|&l| s[l].0 == GlmKind::Mla).collect();
         assert_eq!(mla, [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43]);
-        assert_eq!((s[0], s[2], s[3], s[4], s[43], s[44]), ((GlmKind::Kda, 0), (GlmKind::Kda, 2), (GlmKind::Mla, 0), (GlmKind::Kda, 3), (GlmKind::Mla, 10), (GlmKind::Kda, 33)));
+        assert_eq!(
+            (s[0], s[2], s[3], s[4], s[43], s[44]),
+            ((GlmKind::Kda, 0), (GlmKind::Kda, 2), (GlmKind::Mla, 0), (GlmKind::Kda, 3), (GlmKind::Mla, 10), (GlmKind::Kda, 33))
+        );
         assert_eq!(c.moe.iter().position(|&m| m), Some(3));
         assert!(c.moe[3..].iter().all(|&m| m) && !c.moe[..3].iter().any(|&m| m));
         for kind in [GlmKind::Kda, GlmKind::Mla] {
@@ -836,8 +922,14 @@ pub(crate) mod tests {
         refused(&edited(false, |t| set(t, "qk_rope_head_dim", "64")), "a rotary in the latent attention");
         refused(&edited(false, |t| set(t, "num_key_value_heads", "8")), "64 query heads to 8 KV heads");
         refused(&edited(false, |t| set(t, "layer_types", r#"["linear_attention"]"#)), "1 layer_types for 45 layers");
-        refused(&edited(false, |t| set(t, "layer_types", &format!("[{}]", vec![r#""sliding_attention""#; 45].join(",")))), "a layer of type Some(\"sliding_attention\")");
-        refused(&edited(false, |t| set(t, "linear_attn_config", r#"{"kda_layers": [0, 1, 2], "num_heads": 64, "head_dim": 128, "short_conv_kernel_size": 4}"#)), "linear_attn_config.kda_layers is not the layers layer_types gives");
+        refused(
+            &edited(false, |t| set(t, "layer_types", &format!("[{}]", vec![r#""sliding_attention""#; 45].join(",")))),
+            "a layer of type Some(\"sliding_attention\")",
+        );
+        refused(
+            &edited(false, |t| set(t, "linear_attn_config", r#"{"kda_layers": [0, 1, 2], "num_heads": 64, "head_dim": 128, "short_conv_kernel_size": 4}"#)),
+            "linear_attn_config.kda_layers is not the layers layer_types gives",
+        );
         refused(&edited(false, |t| set(t, "mlp_layer_types", r#"["dense"]"#)), "1 mlp_layer_types for 45 layers");
         refused(&edited(false, |t| set(t, "mlp_layer_types", &format!("[{}]", vec![r#""moe""#; 45].join(",")))), "a feed-forward of type Some(\"moe\")");
         refused(&edited(false, |t| set(t, "first_k_dense_replace", "2")), "mlp_layer_types and first_k_dense_replace give other dense layers");
@@ -853,30 +945,77 @@ pub(crate) mod tests {
         refused(&edited(false, |t| set(t, "num_experts_per_tok", "289")), "289 experts a token of 288");
         refused(&edited(false, |t| set(t, "n_shared_experts", "0")), "without a shared expert");
         refused(&edited(false, |t| set(t, "index_kpool", "0")), "index_topk 2048 does not divide by index_kpool 0");
-        refused(&edited(false, |t| set(t, "linear_attn_config", r#"{"safe_gate": false, "gate_lower_bound": null, "num_heads": 64, "head_dim": 128, "short_conv_kernel_size": 4}"#)), "a forget gate without its lower bound");
+        refused(
+            &edited(false, |t| {
+                set(t, "linear_attn_config", r#"{"safe_gate": false, "gate_lower_bound": null, "num_heads": 64, "head_dim": 128, "short_conv_kernel_size": 4}"#)
+            }),
+            "a forget gate without its lower bound",
+        );
         // (transformers' flat key, with no linear_attn_config to fill it, left null is the gate without a bound too)
-        refused(&edited(false, |t| { t.retain(|(k, _)| k != "linear_attn_config"); set(t, "linear_lower_bound", "null") }), "a forget gate without its lower bound");
-        refused(&edited(false, |t| set(t, "linear_attn_config", r#"{"num_heads": 0, "head_dim": 128, "short_conv_kernel_size": 4}"#)), "Kimi delta attention of 0 heads");
+        refused(
+            &edited(false, |t| {
+                t.retain(|(k, _)| k != "linear_attn_config");
+                set(t, "linear_lower_bound", "null")
+            }),
+            "a forget gate without its lower bound",
+        );
+        refused(
+            &edited(false, |t| set(t, "linear_attn_config", r#"{"num_heads": 0, "head_dim": 128, "short_conv_kernel_size": 4}"#)),
+            "Kimi delta attention of 0 heads",
+        );
         refused(&edited(true, |t| set(t, "quantization_config", r#"{"quant_method": "compressed-tensors"}"#)), "a quantization of type \"compressed-tensors\"");
-        refused(&edited(true, |t| set(t, "quantization_config", r#"{"quant_method": "fp8", "fmt": "e5m2", "weight_block_size": [128, 128]}"#)), "FP8 of format e5m2");
-        refused(&edited(true, |t| set(t, "quantization_config", r#"{"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128]}"#)), "no weight_block_size of two sizes");
+        refused(
+            &edited(true, |t| set(t, "quantization_config", r#"{"quant_method": "fp8", "fmt": "e5m2", "weight_block_size": [128, 128]}"#)),
+            "FP8 of format e5m2",
+        );
+        refused(
+            &edited(true, |t| set(t, "quantization_config", r#"{"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128]}"#)),
+            "no weight_block_size of two sizes",
+        );
         refused(&edited(false, |t| set(t, "hc_mult", "0")), "hc_mult 0");
         // what is not refused: the rope fields the latent attention never reads, a quantization config that is not there (a bf16 model), a gate bound left null with the safe gate on (-5, transformers'), and the
         // layer schedules as transformers writes them (indexed_attention or full_attention for the latent layers; none: every fourth layer, and the first three dense)
         let ok = |text: &str| ConfigGlm::parse(text, "x", None).unwrap();
         ok(&edited(false, |t| set(t, "indexer_rope_interleave", "false")));
         assert_eq!(ok(&edited(true, |t| t.retain(|(k, _)| k != "quantization_config"))).fp8_block, None);
-        assert_eq!(ok(&edited(false, |t| set(t, "linear_attn_config", r#"{"gate_lower_bound": null, "num_heads": 64, "head_dim": 128, "short_conv_kernel_size": 4}"#))).kda.bound, -5.0);
+        assert_eq!(
+            ok(&edited(false, |t| set(
+                t,
+                "linear_attn_config",
+                r#"{"gate_lower_bound": null, "num_heads": 64, "head_dim": 128, "short_conv_kernel_size": 4}"#
+            )))
+            .kda
+            .bound,
+            -5.0
+        );
         let c = parse();
-        let named = |name: &str| format!("[{}]", c.kinds.iter().map(|k| if *k == GlmKind::Kda { "\"linear_attention\"".to_string() } else { format!("\"{name}\"") }).collect::<Vec<_>>().join(","));
+        let named = |name: &str| {
+            format!(
+                "[{}]",
+                c.kinds
+                    .iter()
+                    .map(|k| if *k == GlmKind::Kda { "\"linear_attention\"".to_string() } else { format!("\"{name}\"") })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
         for name in ["indexed_attention", "full_attention"] {
             assert_eq!(ok(&edited(false, |t| set(t, "layer_types", &named(name)))).kinds, c.kinds);
         }
-        let by_default = ok(&edited(false, |t| t.retain(|(k, _)| !["layer_types", "mlp_layer_types", "indexer_types", "linear_attn_config"].contains(&k.as_str()))));
+        let by_default =
+            ok(&edited(false, |t| t.retain(|(k, _)| !["layer_types", "mlp_layer_types", "indexer_types", "linear_attn_config"].contains(&k.as_str()))));
         assert_eq!((by_default.kinds.clone(), by_default.moe.clone(), by_default.kda.heads), (c.kinds.clone(), c.moe.clone(), 64));
         // (a `shared` indexer at a layer of Kimi delta attention is never read)
         ok(&edited(false, |t| set(t, "indexer_types", &shared_at(44))));
-        assert_eq!(ok(&edited(false, |t| { set(t, "linear_attn_config", r#"{"head_dim": 32}"#); set(t, "linear_num_heads", "4"); t.retain(|(k, _)| k != "layer_types") })).kda, KdaDims { heads: 4, dim: 32, conv_kernel: 4, bound: -5.0 });
+        assert_eq!(
+            ok(&edited(false, |t| {
+                set(t, "linear_attn_config", r#"{"head_dim": 32}"#);
+                set(t, "linear_num_heads", "4");
+                t.retain(|(k, _)| k != "layer_types")
+            }))
+            .kda,
+            KdaDims { heads: 4, dim: 32, conv_kernel: 4, bound: -5.0 }
+        );
     }
 
     fn l(n: usize, rest: &str) -> String {
@@ -892,7 +1031,10 @@ pub(crate) mod tests {
         assert_eq!(have.len(), 76_108);
         assert_eq!(c.check(&have, &HashSet::new()).unwrap(), 347 + 1_760);
         let skipped: Vec<&str> = have.iter().filter(|t| c.skipped(&t.0)).map(|t| t.0.as_str()).collect();
-        assert_eq!((skipped.iter().filter(|n| n.starts_with("model.visual.")).count(), skipped.iter().filter(|n| n.starts_with(&l(45, ""))).count()), (347, 1_760));
+        assert_eq!(
+            (skipped.iter().filter(|n| n.starts_with("model.visual.")).count(), skipped.iter().filter(|n| n.starts_with(&l(45, ""))).count()),
+            (347, 1_760)
+        );
         // every tensor once: the matrices' parts and their block scales, the tensors kept, the skipped; their number is the checkpoint's
         let by: HashMap<&str, (&str, &[u64])> = have.iter().map(|(n, d, s)| (n.as_str(), (d.as_str(), s.as_slice()))).collect();
         assert_eq!(by.len(), have.len());
@@ -906,7 +1048,19 @@ pub(crate) mod tests {
         assert!(once.iter().all(|n| by.contains_key(n) && !c.skipped(n)));
         // the dtypes that are the checkpoint's own: the small F32 parameters (not cast to bf16 in the plan), the router in bf16, the mHC projection in bf16
         let dtype = |n: &str| by[n].0;
-        assert_eq!([dtype(&l(0, "self_attn.A_log")), dtype(&l(0, "self_attn.dt_bias")), dtype(&l(3, "mlp.gate.e_score_correction_bias")), dtype(&l(0, "hc_attn_base")), dtype(&l(0, "hc_ffn_scale")), dtype(&l(3, "mlp.gate.weight")), dtype(&l(0, "hc_attn_fn")), dtype(&l(0, "self_attn.q_conv1d.weight"))], ["F32", "F32", "F32", "F32", "F32", "BF16", "BF16", "BF16"]);
+        assert_eq!(
+            [
+                dtype(&l(0, "self_attn.A_log")),
+                dtype(&l(0, "self_attn.dt_bias")),
+                dtype(&l(3, "mlp.gate.e_score_correction_bias")),
+                dtype(&l(0, "hc_attn_base")),
+                dtype(&l(0, "hc_ffn_scale")),
+                dtype(&l(3, "mlp.gate.weight")),
+                dtype(&l(0, "hc_attn_fn")),
+                dtype(&l(0, "self_attn.q_conv1d.weight"))
+            ],
+            ["F32", "F32", "F32", "F32", "F32", "BF16", "BF16", "BF16"]
+        );
         assert!(kept.iter().all(|t| dtype(&t.name) == t.dtype), "a kept tensor's dtype is not the checkpoint's");
     }
 
@@ -924,14 +1078,43 @@ pub(crate) mod tests {
         assert!(packs.iter().all(Pack35::packable));
         assert_eq!(packs.iter().map(|p| p.parts.len()).sum::<usize>(), 36_786);
         let shape = |key: &str| packs.iter().find(|p| p.key == key).map(|p| (p.rows(), p.cols)).unwrap_or_else(|| panic!("no pack {key}"));
-        assert_eq!([shape(&l(0, "self_attn.q_proj")), shape(&l(0, "self_attn.o_proj")), shape(&l(0, "self_attn.f_a_proj")), shape(&l(0, "self_attn.f_b_proj")), shape(&l(0, "self_attn.g_a_proj")), shape(&l(0, "self_attn.g_b_proj")), shape(&l(0, "self_attn.b_proj"))],
-                   [(24576, 4096), (4096, 8192), (128, 4096), (8192, 128), (128, 4096), (8192, 128), (64, 4096)]);
-        assert_eq!([shape(&l(3, "self_attn.q_a_proj")), shape(&l(3, "self_attn.q_b_proj")), shape(&l(3, "self_attn.kv_a_proj_with_mqa")), shape(&l(3, "self_attn.kv_b_proj")), shape(&l(3, "self_attn.o_proj"))],
-                   [(1536, 4096), (16384, 1536), (512, 4096), (32768, 512), (4096, 16384)]);
-        assert_eq!([shape(&l(0, "mlp.gate_proj")), shape(&l(2, "mlp.down_proj")), shape(&l(3, "mlp.shared_experts.gate_proj")), shape(&l(44, "mlp.shared_experts.down_proj")), shape(&l(3, "mlp.experts.287.gate_proj")), shape(&l(44, "mlp.experts.0.down_proj"))],
-                   [(24576, 4096), (4096, 12288), (4096, 4096), (4096, 2048), (4096, 4096), (4096, 2048)]);
+        assert_eq!(
+            [
+                shape(&l(0, "self_attn.q_proj")),
+                shape(&l(0, "self_attn.o_proj")),
+                shape(&l(0, "self_attn.f_a_proj")),
+                shape(&l(0, "self_attn.f_b_proj")),
+                shape(&l(0, "self_attn.g_a_proj")),
+                shape(&l(0, "self_attn.g_b_proj")),
+                shape(&l(0, "self_attn.b_proj"))
+            ],
+            [(24576, 4096), (4096, 8192), (128, 4096), (8192, 128), (128, 4096), (8192, 128), (64, 4096)]
+        );
+        assert_eq!(
+            [
+                shape(&l(3, "self_attn.q_a_proj")),
+                shape(&l(3, "self_attn.q_b_proj")),
+                shape(&l(3, "self_attn.kv_a_proj_with_mqa")),
+                shape(&l(3, "self_attn.kv_b_proj")),
+                shape(&l(3, "self_attn.o_proj"))
+            ],
+            [(1536, 4096), (16384, 1536), (512, 4096), (32768, 512), (4096, 16384)]
+        );
+        assert_eq!(
+            [
+                shape(&l(0, "mlp.gate_proj")),
+                shape(&l(2, "mlp.down_proj")),
+                shape(&l(3, "mlp.shared_experts.gate_proj")),
+                shape(&l(44, "mlp.shared_experts.down_proj")),
+                shape(&l(3, "mlp.experts.287.gate_proj")),
+                shape(&l(44, "mlp.experts.0.down_proj"))
+            ],
+            [(24576, 4096), (4096, 12288), (4096, 4096), (4096, 2048), (4096, 4096), (4096, 2048)]
+        );
         assert_eq!((shape("embed"), shape("lm_head")), ((154880, 4096), (154880, 4096)));
-        let parts = |key: &str| packs.iter().find(|p| p.key == key).unwrap().parts.iter().map(|(n, r)| (n.rsplit('.').nth(1).unwrap().to_string(), *r)).collect::<Vec<_>>();
+        let parts = |key: &str| {
+            packs.iter().find(|p| p.key == key).unwrap().parts.iter().map(|(n, r)| (n.rsplit('.').nth(1).unwrap().to_string(), *r)).collect::<Vec<_>>()
+        };
         assert_eq!(parts(&l(0, "self_attn.q_proj")), [("q_proj".to_string(), 8192), ("k_proj".to_string(), 8192), ("v_proj".to_string(), 8192)]);
         assert_eq!(parts(&l(3, "mlp.experts.5.gate_proj")), [("gate_proj".to_string(), 2048), ("up_proj".to_string(), 2048)]);
         assert_eq!(parts(&l(1, "mlp.gate_proj")), [("gate_proj".to_string(), 12288), ("up_proj".to_string(), 12288)]);
@@ -942,7 +1125,8 @@ pub(crate) mod tests {
                 let params = (*r * p.cols) as u64;
                 let fp8 = dtype[n.as_str()] == "F8_E4M3";
                 assert_eq!(fp8, is_fp8(&c, n), "{n}: {}", dtype[n.as_str()]);
-                (fp8_params, bf16_params, fp8_parts) = if fp8 { (fp8_params + params, bf16_params, fp8_parts + 1) } else { (fp8_params, bf16_params + params, fp8_parts) };
+                (fp8_params, bf16_params, fp8_parts) =
+                    if fp8 { (fp8_params + params, bf16_params, fp8_parts + 1) } else { (fp8_params, bf16_params + params, fp8_parts) };
             }
         }
         assert_eq!((fp8_parts, fp8_params, bf16_params), (36_467, 307_023_052_800, 6_132_596_736));
@@ -951,7 +1135,9 @@ pub(crate) mod tests {
         // kept: 748 tensors, 290 fp32 (the router's bias, the mHC base and scales, A_log, dt_bias), the rest bf16; 170.87 million bf16 parameters of them (82.19 million the indexer's) and 295,230 fp32
         let kept = c.kept();
         assert_eq!((kept.len(), kept.iter().filter(|t| t.dtype == "F32").count()), (748, 290));
-        let params = |dtype: &str, f: &dyn Fn(&str) -> bool| kept.iter().filter(|t| t.dtype == dtype && f(&t.name)).map(|t| t.shape.iter().product::<u64>()).sum::<u64>();
+        let params = |dtype: &str, f: &dyn Fn(&str) -> bool| {
+            kept.iter().filter(|t| t.dtype == dtype && f(&t.name)).map(|t| t.shape.iter().product::<u64>()).sum::<u64>()
+        };
         assert_eq!((params("BF16", &|_| true), params("F32", &|_| true), params("BF16", &|n| n.contains(".indexer."))), (170_867_200, 295_230, 82_190_592));
         let k = |name: &str| kept.iter().find(|t| t.name == name).map(|t| (t.dtype, t.shape.clone())).unwrap_or_else(|| panic!("{name} is not kept"));
         assert_eq!(k(&l(0, "self_attn.q_conv1d.weight")), ("BF16", vec![8192, 1, 4]));
@@ -961,11 +1147,26 @@ pub(crate) mod tests {
         assert_eq!(k(&l(0, "hc_attn_fn")), ("BF16", vec![24, 16384]));
         assert_eq!((k(&l(7, "hc_ffn_base")), k(&l(7, "hc_ffn_scale"))), (("F32", vec![24]), ("F32", vec![3])));
         assert_eq!((k(&l(3, "self_attn.q_a_layernorm.weight")), k(&l(3, "self_attn.kv_a_layernorm.weight"))), (("BF16", vec![1536]), ("BF16", vec![512])));
-        assert_eq!((k(&l(3, "self_attn.indexer.wq_b.weight")), k(&l(3, "self_attn.indexer.wk.weight")), k(&l(3, "self_attn.indexer.weights_proj.weight"))), (("BF16", vec![4096, 1536]), ("BF16", vec![128, 4096]), ("BF16", vec![32, 4096])));
-        assert_eq!((k(&l(3, "self_attn.indexer.index_kpool_compress_ape")), k(&l(3, "self_attn.indexer.index_kpool_compress_gate")), k(&l(3, "self_attn.indexer.k_norm.bias"))), (("BF16", vec![4, 128]), ("BF16", vec![128, 4096]), ("BF16", vec![128])));
-        assert_eq!((k(&l(3, "mlp.gate.weight")), k(&l(3, "mlp.gate.e_score_correction_bias")), k("model.language_model.norm.weight")), (("BF16", vec![288, 4096]), ("F32", vec![288]), ("BF16", vec![4096])));
+        assert_eq!(
+            (k(&l(3, "self_attn.indexer.wq_b.weight")), k(&l(3, "self_attn.indexer.wk.weight")), k(&l(3, "self_attn.indexer.weights_proj.weight"))),
+            (("BF16", vec![4096, 1536]), ("BF16", vec![128, 4096]), ("BF16", vec![32, 4096]))
+        );
+        assert_eq!(
+            (
+                k(&l(3, "self_attn.indexer.index_kpool_compress_ape")),
+                k(&l(3, "self_attn.indexer.index_kpool_compress_gate")),
+                k(&l(3, "self_attn.indexer.k_norm.bias"))
+            ),
+            (("BF16", vec![4, 128]), ("BF16", vec![128, 4096]), ("BF16", vec![128]))
+        );
+        assert_eq!(
+            (k(&l(3, "mlp.gate.weight")), k(&l(3, "mlp.gate.e_score_correction_bias")), k("model.language_model.norm.weight")),
+            (("BF16", vec![288, 4096]), ("F32", vec![288]), ("BF16", vec![4096]))
+        );
         // the dense layers have no router, the Kimi delta layers no indexer, the latent attention layers no convolution
-        assert!(!kept.iter().any(|t| t.name.starts_with(&l(0, "mlp.gate.")) || t.name.starts_with(&l(0, "self_attn.indexer")) || t.name.starts_with(&l(3, "self_attn.q_conv1d"))));
+        assert!(!kept.iter().any(|t| t.name.starts_with(&l(0, "mlp.gate."))
+            || t.name.starts_with(&l(0, "self_attn.indexer"))
+            || t.name.starts_with(&l(3, "self_attn.q_conv1d"))));
         // nothing is in both lists
         let names: HashSet<&str> = packs.iter().flat_map(|p| p.parts.iter().map(|x| x.0.as_str())).chain(kept.iter().map(|t| t.name.as_str())).collect();
         assert_eq!(names.len(), packs.iter().map(|p| p.parts.len()).sum::<usize>() + kept.len());
@@ -989,17 +1190,71 @@ pub(crate) mod tests {
         };
         let at = |h: &Index, n: &str| h.iter().position(|t| t.0 == n).unwrap_or_else(|| panic!("{n}"));
         let conv = l(0, "self_attn.q_conv1d.weight");
-        says(&|h| { let i = at(h, &conv); h.remove(i); }, &format!("no {conv}"));
-        says(&|h| { let i = at(h, &conv); h[i].2 = vec![8192, 1, 3]; }, "[8192, 1, 3], where BF16 [8192, 1, 4]");
-        says(&|h| { let i = at(h, &l(0, "self_attn.A_log")); h[i].1 = "F16".into(); }, "where F32 [64]");
-        says(&|h| { let i = at(h, &l(3, "mlp.experts.287.up_proj.weight")); h.remove(i); }, &format!("no {}", l(3, "mlp.experts.287.up_proj.weight")));
+        says(
+            &|h| {
+                let i = at(h, &conv);
+                h.remove(i);
+            },
+            &format!("no {conv}"),
+        );
+        says(
+            &|h| {
+                let i = at(h, &conv);
+                h[i].2 = vec![8192, 1, 3];
+            },
+            "[8192, 1, 3], where BF16 [8192, 1, 4]",
+        );
+        says(
+            &|h| {
+                let i = at(h, &l(0, "self_attn.A_log"));
+                h[i].1 = "F16".into();
+            },
+            "where F32 [64]",
+        );
+        says(
+            &|h| {
+                let i = at(h, &l(3, "mlp.experts.287.up_proj.weight"));
+                h.remove(i);
+            },
+            &format!("no {}", l(3, "mlp.experts.287.up_proj.weight")),
+        );
         // a matrix: FP8 without its scales, with scales of another grid or dtype, of another dtype or shape
         let up = l(3, "mlp.experts.7.up_proj.weight");
-        says(&|h| { let i = at(h, &format!("{up}_scale_inv")); h.remove(i); }, &format!("no {up}_scale_inv, the block scales of {up}"));
-        says(&|h| { let i = at(h, &format!("{up}_scale_inv")); h[i].2 = vec![16, 31]; }, &format!("{up}_scale_inv: F32 [16, 31], where F32 [16, 32] is wanted"));
-        says(&|h| { let i = at(h, &format!("{up}_scale_inv")); h[i].1 = "BF16".into(); }, &format!("{up}_scale_inv: BF16 [16, 32], where F32 [16, 32] is wanted"));
-        says(&|h| { let i = at(h, &up); h[i].1 = "F16".into(); }, &format!("{up}: F16, where BF16 or F8_E4M3 is wanted"));
-        says(&|h| { let i = at(h, &up); h[i].2 = vec![2048, 4000]; }, &format!("{up}: F8_E4M3 [2048, 4000], where [2048, 4096] is wanted"));
+        says(
+            &|h| {
+                let i = at(h, &format!("{up}_scale_inv"));
+                h.remove(i);
+            },
+            &format!("no {up}_scale_inv, the block scales of {up}"),
+        );
+        says(
+            &|h| {
+                let i = at(h, &format!("{up}_scale_inv"));
+                h[i].2 = vec![16, 31];
+            },
+            &format!("{up}_scale_inv: F32 [16, 31], where F32 [16, 32] is wanted"),
+        );
+        says(
+            &|h| {
+                let i = at(h, &format!("{up}_scale_inv"));
+                h[i].1 = "BF16".into();
+            },
+            &format!("{up}_scale_inv: BF16 [16, 32], where F32 [16, 32] is wanted"),
+        );
+        says(
+            &|h| {
+                let i = at(h, &up);
+                h[i].1 = "F16".into();
+            },
+            &format!("{up}: F16, where BF16 or F8_E4M3 is wanted"),
+        );
+        says(
+            &|h| {
+                let i = at(h, &up);
+                h[i].2 = vec![2048, 4000];
+            },
+            &format!("{up}: F8_E4M3 [2048, 4000], where [2048, 4096] is wanted"),
+        );
         // (the same matrix bf16: no scales wanted, a scale left in the checkpoint is not a tensor of the model)
         let mut h = have.clone();
         let i = at(&h, &up);
@@ -1012,7 +1267,10 @@ pub(crate) mod tests {
         assert!(bf16.check(&have, &HashSet::new()).unwrap_err().0.contains("config.json gives no weight_block_size for its block scales"));
         // an FP8 model's tensors against another's: a tensor of no layer, a layer past the MTP head, more layers than the checkpoint has
         says(&|h| h.push(("model.embed_tokens.weight".into(), "BF16".into(), vec![154880, 4096])), "model.embed_tokens.weight: not a tensor of this model");
-        says(&|h| h.push((l(46, "input_layernorm.weight"), "BF16".into(), vec![4096])), &format!("{}: not a tensor of this model", l(46, "input_layernorm.weight")));
+        says(
+            &|h| h.push((l(46, "input_layernorm.weight"), "BF16".into(), vec![4096])),
+            &format!("{}: not a tensor of this model", l(46, "input_layernorm.weight")),
+        );
         let more = ConfigGlm { layers: 46, kinds: [c.kinds.clone(), vec![GlmKind::Kda]].concat(), moe: [c.moe.clone(), vec![true]].concat(), ..c.clone() };
         assert!(more.check(&have, &HashSet::new()).unwrap_err().0.contains(&format!("no {}", l(45, "self_attn.q_proj.weight"))));
         // a packed matrix is held as its buffers, a fused one under its first part's name; its scales are not saved
@@ -1060,7 +1318,8 @@ pub(crate) mod tests {
             }
         }
         let kept = c.kept();
-        let kept_bytes = |dtype: &str| kept.iter().filter(|t| t.dtype == dtype).map(|t| t.shape.iter().product::<u64>() * if dtype == "F32" { 4 } else { 2 }).sum::<u64>();
+        let kept_bytes =
+            |dtype: &str| kept.iter().filter(|t| t.dtype == dtype).map(|t| t.shape.iter().product::<u64>() * if dtype == "F32" { 4 } else { 2 }).sum::<u64>();
         let (bf16, f32) = (kept_bytes("BF16"), kept_bytes("F32"));
         let (w, i6, i5) = table.iter().fold((0, 0, 0), |a, r| (a.0 + r.1, a.1 + r.2, a.2 + r.3));
         println!("{:24} {:>16} {:>16} {:>16}", "", "weights", "i6 (kestrel)", "i5 (swift)");
@@ -1084,7 +1343,17 @@ pub(crate) mod tests {
         let e = by("routed experts");
         assert!((e.2 as f64 / (i6 + bf16 + f32) as f64 - 0.9708).abs() < 1e-4 && (e.3 as f64 / (i5 + bf16 + f32) as f64 - 0.9705).abs() < 1e-4);
         let expert: Vec<Pack35> = c.expert_packs(3);
-        assert_eq!((expert.len(), expert.iter().map(|p| bytes(p, INT6_STEP_BYTES)).sum::<u64>() * 42, expert.iter().map(|p| bytes(p, INT5_STEP_BYTES)).sum::<u64>() * 42), (2 * 288, e.2, e.3));
-        assert_eq!((bytes(&expert[0], INT6_STEP_BYTES) + bytes(&expert[1], INT6_STEP_BYTES), bytes(&expert[0], INT5_STEP_BYTES) + bytes(&expert[1], INT5_STEP_BYTES)), (20_545_544, 17_399_816));
+        assert_eq!(
+            (
+                expert.len(),
+                expert.iter().map(|p| bytes(p, INT6_STEP_BYTES)).sum::<u64>() * 42,
+                expert.iter().map(|p| bytes(p, INT5_STEP_BYTES)).sum::<u64>() * 42
+            ),
+            (2 * 288, e.2, e.3)
+        );
+        assert_eq!(
+            (bytes(&expert[0], INT6_STEP_BYTES) + bytes(&expert[1], INT6_STEP_BYTES), bytes(&expert[0], INT5_STEP_BYTES) + bytes(&expert[1], INT5_STEP_BYTES)),
+            (20_545_544, 17_399_816)
+        );
     }
 }

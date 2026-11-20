@@ -102,7 +102,13 @@ pub fn e4m3_round(v: f32) -> f32 {
 /// v (at most 6 in size) rounded to E2M1, to nearest and ties to even.
 pub fn e2m1_round(v: f32) -> f32 {
     let a = v.abs();
-    let q = if a < 2.0 { 0.5 } else if a < 4.0 { 1.0 } else { 2.0 };
+    let q = if a < 2.0 {
+        0.5
+    } else if a < 4.0 {
+        1.0
+    } else {
+        2.0
+    };
     ((a / q).round_ties_even() * q).copysign(v)
 }
 
@@ -290,7 +296,8 @@ impl Comp {
             return;
         }
         // the rows pooled for each channel c: overlapping, the previous window's first half then the current's second half
-        let rows: Vec<(usize, usize)> = if self.overlap { (0..r).map(|j| (j, 0)).chain((r..2 * r).map(|j| (j, d))).collect() } else { (0..r).map(|j| (j, 0)).collect() };
+        let rows: Vec<(usize, usize)> =
+            if self.overlap { (0..r).map(|j| (j, 0)).chain((r..2 * r).map(|j| (j, d))).collect() } else { (0..r).map(|j| (j, 0)).collect() };
         let mut out: Vec<f32> = (0..d)
             .map(|c| {
                 let s: Vec<f32> = rows.iter().map(|&(j, o)| self.score[j * w + o + c]).collect();
@@ -389,7 +396,11 @@ impl RefV4 {
             let ratio = c.ratios[l];
             let comp = if ratio > 0 { Some(Comp::load(&ck, &format!("{a}.compressor"), c.head_dim, ratio, false)?) } else { None };
             let idx = if ratio == 4 {
-                Some(Indexer { wq_b: mat(&ck, &format!("{a}.indexer.wq_b.weight"))?, wproj: mat(&ck, &format!("{a}.indexer.weights_proj.weight"))?, comp: Comp::load(&ck, &format!("{a}.indexer.compressor"), c.idx_dim, ratio, true)? })
+                Some(Indexer {
+                    wq_b: mat(&ck, &format!("{a}.indexer.wq_b.weight"))?,
+                    wproj: mat(&ck, &format!("{a}.indexer.weights_proj.weight"))?,
+                    comp: Comp::load(&ck, &format!("{a}.indexer.compressor"), c.idx_dim, ratio, true)?,
+                })
             } else {
                 None
             };
@@ -408,7 +419,9 @@ impl RefV4 {
                 win: vec![Vec::new(); c.window],
             };
             let f = format!("{p}.ffn");
-            let ex = |e: &str| -> Result<[Mat; 3]> { Ok([mat(&ck, &format!("{e}.w1.weight"))?, mat(&ck, &format!("{e}.w2.weight"))?, mat(&ck, &format!("{e}.w3.weight"))?]) };
+            let ex = |e: &str| -> Result<[Mat; 3]> {
+                Ok([mat(&ck, &format!("{e}.w1.weight"))?, mat(&ck, &format!("{e}.w2.weight"))?, mat(&ck, &format!("{e}.w3.weight"))?])
+            };
             let hash = l < c.hash_layers;
             let tid2eid = if hash {
                 let b = io(ck.read(&format!("{f}.gate.tid2eid")))?;
@@ -432,7 +445,19 @@ impl RefV4 {
                 moe,
             });
         }
-        Ok(RefV4 { embed: mat(&ck, "embed.weight")?, head: mat(&ck, "head.weight")?, norm: vector(&ck, "norm.weight")?, hc_head: Hc::load(&ck, "hc_head")?, layers, c, pos: 0, act_fp8, sim: act_fp8, trace: None, margin: std::cell::Cell::new((f32::INFINITY, f32::INFINITY)) })
+        Ok(RefV4 {
+            embed: mat(&ck, "embed.weight")?,
+            head: mat(&ck, "head.weight")?,
+            norm: vector(&ck, "norm.weight")?,
+            hc_head: Hc::load(&ck, "hc_head")?,
+            layers,
+            c,
+            pos: 0,
+            act_fp8,
+            sim: act_fp8,
+            trace: None,
+            margin: std::cell::Cell::new((f32::INFINITY, f32::INFINITY)),
+        })
     }
 
     /// A linear of an FP8 or FP4 matrix: its input quantized to FP8 first where `act_fp8`; the output rounded to bf16.
@@ -490,7 +515,11 @@ impl RefV4 {
             let mut sc: Vec<(f32, usize)> = (0..n)
                 .map(|t| {
                     let kt = &ix.comp.cache[t];
-                    let s: f32 = qi.chunks(c.idx_dim).zip(&wts).map(|(qh, &w)| bf16(bf16(qh.iter().zip(kt).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32).max(0.0) * w)).sum();
+                    let s: f32 = qi
+                        .chunks(c.idx_dim)
+                        .zip(&wts)
+                        .map(|(qh, &w)| bf16(bf16(qh.iter().zip(kt).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32).max(0.0) * w))
+                        .sum();
                     (bf16(s), t)
                 })
                 .collect();
@@ -692,8 +721,16 @@ pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
         t.push((format!("{name}.scale"), "F8_E8M0", vec![gr as u64, gc as u64], s));
     };
     let (d, hd, nh) = (c.hidden, c.head_dim, c.heads);
-    let mut tensors_bf16: Vec<(String, Vec<u64>, f32, f32)> = vec![("embed.weight".into(), vec![c.vocab as u64, d as u64], -1.0, 1.0), ("head.weight".into(), vec![c.vocab as u64, d as u64], -0.05, 0.05), ("norm.weight".into(), vec![d as u64], 0.9, 1.1)];
-    let mut tensors_f32: Vec<(String, Vec<u64>, f32, f32)> = vec![("hc_head_fn".into(), vec![4, 4 * d as u64], -0.02, 0.02), ("hc_head_base".into(), vec![4], -0.5, 0.5), ("hc_head_scale".into(), vec![1], 0.5, 1.5)];
+    let mut tensors_bf16: Vec<(String, Vec<u64>, f32, f32)> = vec![
+        ("embed.weight".into(), vec![c.vocab as u64, d as u64], -1.0, 1.0),
+        ("head.weight".into(), vec![c.vocab as u64, d as u64], -0.05, 0.05),
+        ("norm.weight".into(), vec![d as u64], 0.9, 1.1),
+    ];
+    let mut tensors_f32: Vec<(String, Vec<u64>, f32, f32)> = vec![
+        ("hc_head_fn".into(), vec![4, 4 * d as u64], -0.02, 0.02),
+        ("hc_head_base".into(), vec![4], -0.5, 0.5),
+        ("hc_head_scale".into(), vec![1], 0.5, 1.5),
+    ];
     for l in 0..c.layers {
         let p = format!("layers.{l}");
         for b in ["attn", "ffn"] {
@@ -813,7 +850,12 @@ fn engine(dir: &Path, o: &crate::dynamic::Opts, a: &crate::args::Args) -> Result
 pub fn prompt(a: &crate::args::Args) -> Result<()> {
     let dir = Path::new(a.need(1, "DIR")?);
     let n: usize = a.num("tokens", 200)?;
-    let chunks: Vec<usize> = a.flag("chunks").unwrap_or("32,64,128,256").split(',').map(|x| x.trim().parse::<usize>().map_err(|_| Error(format!("--chunks {x}: not a number")))).collect::<Result<_>>()?;
+    let chunks: Vec<usize> = a
+        .flag("chunks")
+        .unwrap_or("32,64,128,256")
+        .split(',')
+        .map(|x| x.trim().parse::<usize>().map_err(|_| Error(format!("--chunks {x}: not a number"))))
+        .collect::<Result<_>>()?;
     let mut r = RefV4::load(dir, !a.has("plain"))?;
     let toks: Vec<u32> = (0..n).map(|i| if i == 0 { 2 } else { ((i as u32 - 1) * 37 + 11) % r.c.vocab as u32 }).collect();
     let mut lr = Vec::new();
@@ -923,7 +965,11 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     for i in 0..n {
         toks.push(tok);
         let lr = r.step(tok);
-        if i == 0 { e.prefill(&[tok])?; } else { e.step(tok)?; }
+        if i == 0 {
+            e.prefill(&[tok])?;
+        } else {
+            e.step(tok)?;
+        }
         let lg = e.logits()?;
         let (br, bg) = (best(&lr), best(&lg));
         let diff = lr.iter().zip(&lg).fold(0f32, |m, (a, b)| m.max((a - b).abs()));
@@ -943,7 +989,13 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         v.sort_by(f32::total_cmp);
         v.get(v.len() / 2).copied().unwrap_or(f32::NAN)
     };
-    println!("steps differing past 0.3: {} (their closest expert choice's median gap {:.5}); the others: {} (median {:.5})", big.len(), median(&mut big.iter().map(|m| m.1).collect::<Vec<f32>>()), small.len(), median(&mut small.iter().map(|m| m.1).collect::<Vec<f32>>()));
+    println!(
+        "steps differing past 0.3: {} (their closest expert choice's median gap {:.5}); the others: {} (median {:.5})",
+        big.len(),
+        median(&mut big.iter().map(|m| m.1).collect::<Vec<f32>>()),
+        small.len(),
+        median(&mut small.iter().map(|m| m.1).collect::<Vec<f32>>())
+    );
     e.reset()?;
     e.prefill(&toks)?;
     let lg = e.logits()?;
@@ -999,7 +1051,8 @@ pub fn layers(a: &crate::args::Args) -> Result<()> {
 /// pair's row the sum over its 128-column blocks of x q times the block's scale, in f64), for 1 to T tokens, gathered (X a token's) and not (X a pair's own): the largest difference in bf16 steps of the row's
 /// largest value, and the time of a step of one token.
 pub fn f8moe_check(a: &crate::args::Args) -> Result<()> {
-    let (e, n, kc, k, tmax): (usize, usize, usize, usize, usize) = (a.num("experts", 32)?, a.num("rows", 512)?, a.num("cols", 384)?, a.num("k", 4)?, a.num("tokens", 64)?);
+    let (e, n, kc, k, tmax): (usize, usize, usize, usize, usize) =
+        (a.num("experts", 32)?, a.num("rows", 512)?, a.num("cols", 384)?, a.num("k", 4)?, a.num("tokens", 64)?);
     let dev = crate::dev::Dev::new(0)?;
     let lib = crate::ffi::Lib::find()?;
     let mut r = 0x2026_1018_f8e4_0001u64;
@@ -1019,7 +1072,11 @@ pub fn f8moe_check(a: &crate::args::Args) -> Result<()> {
                 (((uni(0.0, 2.0) as u32 & 1) << 7) | ((11 - j) << 3) | (uni(0.0, 8.0) as u32 & 7)) as u8
             } else {
                 let b = (uni(0.0, 256.0) as u32 & 0xFF) as u8;
-                if b & 0x7F == 0x7F { b ^ 1 } else { b }
+                if b & 0x7F == 0x7F {
+                    b ^ 1
+                } else {
+                    b
+                }
             }
         })
         .collect();
@@ -1068,7 +1125,12 @@ pub fn f8moe_check(a: &crate::args::Args) -> Result<()> {
                 let want: Vec<f64> = (0..n)
                     .map(|o| {
                         let w = &q[(ex * n + o) * kc..(ex * n + o + 1) * kc];
-                        (0..gc).map(|b| (b * 128..((b + 1) * 128).min(kc)).map(|c| f32::from_bits((xs[c] as u32) << 16) as f64 * val(w[c])).sum::<f64>() * sc[(ex * gr + o / 128) * gc + b] as f64).sum()
+                        (0..gc)
+                            .map(|b| {
+                                (b * 128..((b + 1) * 128).min(kc)).map(|c| f32::from_bits((xs[c] as u32) << 16) as f64 * val(w[c])).sum::<f64>()
+                                    * sc[(ex * gr + o / 128) * gc + b] as f64
+                            })
+                            .sum()
                     })
                     .collect();
                 let big = want.iter().fold(1e-30f64, |m, v| m.max(v.abs()));
@@ -1109,13 +1171,23 @@ pub fn fp4_stat(a: &crate::args::Args) -> Result<()> {
     let ck = Checkpoint::open(path.parent().unwrap_or(Path::new("."))).map_err(|e| Error(e.to_string()))?;
     let h = |c: &[u64]| -> f64 {
         let n: u64 = c.iter().sum();
-        c.iter().filter(|&&x| x > 0).map(|&x| { let p = x as f64 / n as f64; -p * p.log2() }).sum()
+        c.iter()
+            .filter(|&&x| x > 0)
+            .map(|&x| {
+                let p = x as f64 / n as f64;
+                -p * p.log2()
+            })
+            .sum()
     };
     let (mut code, mut mag) = ([0u64; 16], [0u64; 8]);
     let mut nb = vec![[0u64; 8]; 8]; // [left][this] magnitudes
     let mut bymax = vec![[0u64; 8]; 8]; // [run's largest][this]
     let (mut sc, mut dsc) = (vec![0u64; 256], vec![0u64; 512]);
-    let mut names: Vec<String> = ck.names().filter(|n| n.contains(".experts.") && n.ends_with(".weight") && ck.get(&n.replace(".weight", ".scale")).is_some()).map(String::from).collect();
+    let mut names: Vec<String> = ck
+        .names()
+        .filter(|n| n.contains(".experts.") && n.ends_with(".weight") && ck.get(&n.replace(".weight", ".scale")).is_some())
+        .map(String::from)
+        .collect();
     names.sort();
     let (mut weights, mut mats) = (0u64, 0usize);
     for n in names.iter().take(max) {
@@ -1148,19 +1220,43 @@ pub fn fp4_stat(a: &crate::args::Args) -> Result<()> {
     }
     let cond = |m: &Vec<[u64; 8]>| -> f64 {
         let tot: u64 = m.iter().flat_map(|r| r.iter()).sum();
-        m.iter().map(|r| { let n: u64 = r.iter().sum(); n as f64 / tot as f64 * h(r) }).sum()
+        m.iter()
+            .map(|r| {
+                let n: u64 = r.iter().sum();
+                n as f64 / tot as f64 * h(r)
+            })
+            .sum()
     };
     let total: u64 = mag.iter().sum();
     println!("{mats} matrices, {:.2}G weights", weights as f64 / 1e9);
-    println!("magnitudes 0..7 (0, .5, 1, 1.5, 2, 3, 4, 6): {}", mag.iter().map(|&x| format!("{:.2}%", 100.0 * x as f64 / total as f64)).collect::<Vec<_>>().join(" "));
+    println!(
+        "magnitudes 0..7 (0, .5, 1, 1.5, 2, 3, 4, 6): {}",
+        mag.iter().map(|&x| format!("{:.2}%", 100.0 * x as f64 / total as f64)).collect::<Vec<_>>().join(" ")
+    );
     let pos: u64 = code[1..8].iter().sum();
     let neg: u64 = code[9..16].iter().sum();
-    println!("signs: {:.3}% negative of the nonzero; zeros: {:.3}% of them -0", 100.0 * neg as f64 / (pos + neg) as f64, 100.0 * code[8] as f64 / (code[0] + code[8]).max(1) as f64);
+    println!(
+        "signs: {:.3}% negative of the nonzero; zeros: {:.3}% of them -0",
+        100.0 * neg as f64 / (pos + neg) as f64,
+        100.0 * code[8] as f64 / (code[0] + code[8]).max(1) as f64
+    );
     let (hc, hm) = (h(&code), h(&mag));
     println!("H(code) {hc:.3} bits; H(magnitude) {hm:.3}; given its left neighbour {:.3}; given its run's largest {:.3}", cond(&nb), cond(&bymax));
     let scale_bits = h(&sc) / 32.0;
-    println!("scales: H {:.3} bits a run ({:.4} a weight), less the row's first {:.3} ({:.4} a weight); seen {}..{}", h(&sc), scale_bits, h(&dsc), h(&dsc) / 32.0, sc.iter().position(|&x| x > 0).unwrap_or(0), 255 - sc.iter().rev().position(|&x| x > 0).unwrap_or(0));
-    println!("bits a weight: release 4.250; order-0 codes + scales {:.3}; magnitudes given the run's largest + signs (every code, -0 too) + scales {:.3}", hc + scale_bits, cond(&bymax) + 1.0 + h(&sc) / 32.0);
+    println!(
+        "scales: H {:.3} bits a run ({:.4} a weight), less the row's first {:.3} ({:.4} a weight); seen {}..{}",
+        h(&sc),
+        scale_bits,
+        h(&dsc),
+        h(&dsc) / 32.0,
+        sc.iter().position(|&x| x > 0).unwrap_or(0),
+        255 - sc.iter().rev().position(|&x| x > 0).unwrap_or(0)
+    );
+    println!(
+        "bits a weight: release 4.250; order-0 codes + scales {:.3}; magnitudes given the run's largest + signs (every code, -0 too) + scales {:.3}",
+        hc + scale_bits,
+        cond(&bymax) + 1.0 + h(&sc) / 32.0
+    );
     // the scales' spread: in a matrix, a stack of a layer's experts, a row, a block of 64 rows
     let (mut lay_lo, mut lay_hi, mut mat_w, mut row_w, mut blk_w) = (255u8, 0u8, [0u64; 9], [0u64; 9], [0u64; 9]);
     for n in names.iter().take(max) {
@@ -1196,7 +1292,13 @@ pub fn f8_stat(a: &crate::args::Args) -> Result<()> {
     let lib = crate::ffi::Lib::find()?;
     let h = |c: &[u64]| -> f64 {
         let n: u64 = c.iter().sum();
-        c.iter().filter(|&&x| x > 0).map(|&x| { let p = x as f64 / n as f64; -p * p.log2() }).sum()
+        c.iter()
+            .filter(|&&x| x > 0)
+            .map(|&x| {
+                let p = x as f64 / n as f64;
+                -p * p.log2()
+            })
+            .sum()
     };
     let mut names: Vec<String> = ck.names().filter(|n| ck.get(n).is_some_and(|(_, t)| t.dtype == "F8_E4M3" && t.shape.len() == 2)).map(String::from).collect();
     names.sort();
@@ -1219,11 +1321,31 @@ pub fn f8_stat(a: &crate::args::Args) -> Result<()> {
         let m = crate::f8::F8Mat::pack(&dev, &lib, &q, &sc, rows, cols, false)?;
         f8_bytes += m.bytes - sc.len() * 4;
         weights += rows * cols;
-        println!("{n} [{rows}, {cols}]: H {:.3} bits, the FP8 format {:.3}", h(&{ let mut c = vec![0u64; 256]; q.iter().for_each(|&b| c[b as usize] += 1); c }), (m.bytes - sc.len() * 4) as f64 * 8.0 / (rows * cols) as f64);
+        println!(
+            "{n} [{rows}, {cols}]: H {:.3} bits, the FP8 format {:.3}",
+            h(&{
+                let mut c = vec![0u64; 256];
+                q.iter().for_each(|&b| c[b as usize] += 1);
+                c
+            }),
+            (m.bytes - sc.len() * 4) as f64 * 8.0 / (rows * cols) as f64
+        );
     }
     let tot: u64 = nb.iter().flat_map(|r| r.iter()).sum();
-    let cond: f64 = nb.iter().map(|r| { let n: u64 = r.iter().sum(); n as f64 / tot as f64 * h(r) }).sum();
-    println!("{} matrices, {:.2}G weights: H(byte) {:.3} bits, given its left neighbour {cond:.3}; the FP8 format {:.3} bits a weight (the release 8)", names.len().min(max), weights as f64 / 1e9, h(&all), f8_bytes as f64 * 8.0 / weights as f64);
+    let cond: f64 = nb
+        .iter()
+        .map(|r| {
+            let n: u64 = r.iter().sum();
+            n as f64 / tot as f64 * h(r)
+        })
+        .sum();
+    println!(
+        "{} matrices, {:.2}G weights: H(byte) {:.3} bits, given its left neighbour {cond:.3}; the FP8 format {:.3} bits a weight (the release 8)",
+        names.len().min(max),
+        weights as f64 / 1e9,
+        h(&all),
+        f8_bytes as f64 * 8.0 / weights as f64
+    );
     Ok(())
 }
 
@@ -1246,11 +1368,20 @@ pub fn pack_check(a: &crate::args::Args) -> Result<()> {
     let gpu = if a.has("gpu") {
         let dev = crate::dev::Dev::new(0)?;
         let lib = crate::ffi::Lib::find()?;
-        let big = names.iter().map(|n| shape(&ck, &format!("{n}.weight")).map(|(_, s)| s[0].max(s[1]) as usize)).collect::<Result<Vec<_>>>()?.into_iter().max().unwrap_or(1);
+        let big = names
+            .iter()
+            .map(|n| shape(&ck, &format!("{n}.weight")).map(|(_, s)| s[0].max(s[1]) as usize))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .max()
+            .unwrap_or(1);
         let mut need = 0usize;
         for n in &names {
             let (_, sh) = shape(&ck, &format!("{n}.weight"))?;
-            need = need.max(lib.f8_linear_workspace(sh[0] as i64, sh[1] as i64, 1)?).max(lib.linear_workspace(false, sh[0] as i64, sh[1] as i64, 1)?).max(lib.linear_workspace(true, sh[0] as i64, sh[1] as i64, 1)?);
+            need = need
+                .max(lib.f8_linear_workspace(sh[0] as i64, sh[1] as i64, 1)?)
+                .max(lib.linear_workspace(false, sh[0] as i64, sh[1] as i64, 1)?)
+                .max(lib.linear_workspace(true, sh[0] as i64, sh[1] as i64, 1)?);
         }
         let (x, y) = (Buf::zeroed(big * 2)?, Buf::zeroed(big * 2)?);
         let (ws, done) = (Buf::zeroed(need.max(16))?, Buf::zeroed(4 << 18)?);
@@ -1267,7 +1398,11 @@ pub fn pack_check(a: &crate::args::Args) -> Result<()> {
         let t1 = t0.elapsed().as_secs_f64();
         let pk = pack_words(&w, rows, cols, Layout::Tiered, n)?;
         let bytes = pk.data.len() + pk.b1.len() + pk.b2.len();
-        println!("{n}: {rows} x {cols}, {bad} not finite, decoded in {t1:.2} s, packed lossless in {:.2} s: {:.2} bits a weight", t0.elapsed().as_secs_f64() - t1, bytes as f64 * 8.0 / (rows * cols) as f64);
+        println!(
+            "{n}: {rows} x {cols}, {bad} not finite, decoded in {t1:.2} s, packed lossless in {:.2} s: {:.2} bits a weight",
+            t0.elapsed().as_secs_f64() - t1,
+            bytes as f64 * 8.0 / (rows * cols) as f64
+        );
         if let Some(g) = &gpu {
             // (a token's product of each form, 200 times, by events: the time, the bytes it reads, the rate)
             let (dev, lib, x, y, ws, done) = g;
@@ -1276,7 +1411,8 @@ pub fn pack_check(a: &crate::args::Args) -> Result<()> {
             // (copies enough that a round of them is past the L2 cache (256 MB), taken in turn: each product reads its matrix from memory, as a token's pass does)
             let copies = (256 << 20) / bytes.max(1) + 2;
             let fs: Vec<crate::f8::F8Mat> = (0..copies).map(|_| crate::f8::F8Mat::pack(dev, lib, &q, &sc, rows, cols, false)).collect::<Result<_>>()?;
-            let pbs: Vec<crate::weights::PackBuf> = (0..copies).map(|_| crate::weights::upload_packed(pack_words(&w, rows, cols, Layout::Tiered, n)?)).collect::<Result<_>>()?;
+            let pbs: Vec<crate::weights::PackBuf> =
+                (0..copies).map(|_| crate::weights::upload_packed(pack_words(&w, rows, cols, Layout::Tiered, n)?)).collect::<Result<_>>()?;
             let time = |go: &dyn Fn(usize) -> Result<()>| -> Result<f64> {
                 for i in 0..copies {
                     go(i)?;
@@ -1327,16 +1463,29 @@ pub fn pack_check(a: &crate::args::Args) -> Result<()> {
         }
         let t1 = t0.elapsed().as_secs_f64();
         let r = mats.len() * rows;
-        let pk = glyd_gpu::pack::pack_int5_runs_checked(&codes, &scales, e * r, cols).ok_or_else(|| Error(format!("layer {l}: the experts' {what} matrices are not five-bit runs")))?;
+        let pk = glyd_gpu::pack::pack_int5_runs_checked(&codes, &scales, e * r, cols)
+            .ok_or_else(|| Error(format!("layer {l}: the experts' {what} matrices are not five-bit runs")))?;
         let bytes = pk.data.len() + pk.blocks.len();
         exp_b += bytes;
-        println!("experts' {what} matrices: {e} x {r} x {cols}, read and decoded in {t1:.1} s, packed and checked in {:.1} s: {:.2} bits a weight", t0.elapsed().as_secs_f64() - t1, bytes as f64 * 8.0 / (e * r * cols) as f64);
+        println!(
+            "experts' {what} matrices: {e} x {r} x {cols}, read and decoded in {t1:.1} s, packed and checked in {:.1} s: {:.2} bits a weight",
+            t0.elapsed().as_secs_f64() - t1,
+            bytes as f64 * 8.0 / (e * r * cols) as f64
+        );
     }
     let tot: usize = hist.iter().sum();
     let spread: Vec<String> = (0..32).filter(|&k| hist[k] > 0).map(|k| format!("{}:{:.1}%", k as i32 - 16, 100.0 * hist[k] as f64 / tot as f64)).collect();
     println!("expert codes: {}; run scales from {:#06x} to {:#06x} (bf16)", spread.join(" "), smin, smax);
     let layer = dense_b + exp_b;
-    println!("layer {l}: {:.2} GB packed ({:.2} dense at {:.2} bits, {:.2} experts); the model's {} layers about {:.0} GB with the embedding and head", layer as f64 / 1e9, dense_b as f64 / 1e9, dense_b as f64 * 8.0 / dense_w as f64, exp_b as f64 / 1e9, c.layers, (layer * c.layers) as f64 / 1e9 + 2.0 * (c.vocab * d * 2) as f64 / 1e9);
+    println!(
+        "layer {l}: {:.2} GB packed ({:.2} dense at {:.2} bits, {:.2} experts); the model's {} layers about {:.0} GB with the embedding and head",
+        layer as f64 / 1e9,
+        dense_b as f64 / 1e9,
+        dense_b as f64 * 8.0 / dense_w as f64,
+        exp_b as f64 / 1e9,
+        c.layers,
+        (layer * c.layers) as f64 / 1e9 + 2.0 * (c.vocab * d * 2) as f64 / 1e9
+    );
     Ok(())
 }
 
@@ -1345,7 +1494,13 @@ pub fn pack_check(a: &crate::args::Args) -> Result<()> {
 /// time), their mean and the perplexity, and with --out one line a token (`id logprob`) for a comparison with another implementation's.
 pub fn gen(a: &crate::args::Args) -> Result<()> {
     let dir = Path::new(a.need(1, "DIR")?);
-    let o = crate::dynamic::Opts { ctx: a.num("ctx", 4096)?, chunk: a.num("chunk", 256)?, graph: !a.has("no-graph"), device: a.flag("devices").and_then(|d| d.split(',').next()).and_then(|d| d.parse().ok()).unwrap_or(0), layout: a.layout()? };
+    let o = crate::dynamic::Opts {
+        ctx: a.num("ctx", 4096)?,
+        chunk: a.num("chunk", 256)?,
+        graph: !a.has("no-graph"),
+        device: a.flag("devices").and_then(|d| d.split(',').next()).and_then(|d| d.parse().ok()).unwrap_or(0),
+        layout: a.layout()?,
+    };
     let tok = crate::tok::Tok::load(dir)?;
     // (the tokenizer adds no start token: a raw text begins with the config's)
     let bos = match std::fs::read_to_string(dir.join("config.json")) {
@@ -1385,7 +1540,13 @@ pub fn gen(a: &crate::args::Args) -> Result<()> {
             out.push_str(&format!("{} {lp:.6}\n", ids[k]));
             e.step(ids[k])?;
         }
-        println!("{} tokens of {f}: mean log-probability {:.4}, perplexity {:.3} ({:.1} ms a token)", n - 1, sum / (n - 1) as f64, (-sum / (n - 1) as f64).exp(), t1.elapsed().as_secs_f64() * 1e3 / (n - 1) as f64);
+        println!(
+            "{} tokens of {f}: mean log-probability {:.4}, perplexity {:.3} ({:.1} ms a token)",
+            n - 1,
+            sum / (n - 1) as f64,
+            (-sum / (n - 1) as f64).exp(),
+            t1.elapsed().as_secs_f64() * 1e3 / (n - 1) as f64
+        );
         if let Some(of) = a.flag("out") {
             std::fs::write(of, out).map_err(|x| Error(format!("{of}: {x}")))?;
         }
@@ -1405,7 +1566,14 @@ pub fn gen(a: &crate::args::Args) -> Result<()> {
     }
     let td = t2.elapsed().as_secs_f64();
     println!("{prompt}{}", tok.decode(&outs)?);
-    println!("prompt of {} tokens in {:.0} ms; {} tokens at {:.2} ms each ({:.1} a second)", ids.len(), tp * 1e3, n - 1, td * 1e3 / (n - 1).max(1) as f64, (n - 1) as f64 / td);
+    println!(
+        "prompt of {} tokens in {:.0} ms; {} tokens at {:.2} ms each ({:.1} a second)",
+        ids.len(),
+        tp * 1e3,
+        n - 1,
+        td * 1e3 / (n - 1).max(1) as f64,
+        (n - 1) as f64 / td
+    );
     Ok(())
 }
 

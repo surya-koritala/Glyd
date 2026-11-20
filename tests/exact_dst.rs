@@ -16,7 +16,16 @@ fn check(what: &str, compressed: &[u8], input: &[u8], decode: Decode) {
 
 fn inputs() -> Vec<Vec<u8>> {
     let mut x = 0x9E3779B97F4A7C15u64;
-    let mut rnd = |n: usize| -> Vec<u8> { (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect() };
+    let mut rnd = |n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    };
     let mut text = Vec::new();
     while text.len() < 600_000 {
         text.extend_from_slice(b"the quick brown fox jumps over the lazy dog ");
@@ -80,8 +89,7 @@ fn exact_dst_crafted_block() {
 
 #[test]
 fn exact_dst_sequential() {
-    let levels: [(&str, fn(&[u8], &mut Vec<u8>)); 3] =
-        [("default", compress_into), ("fast", compress_into_fast), ("turbo", compress_into_turbo)];
+    let levels: [(&str, fn(&[u8], &mut Vec<u8>)); 3] = [("default", compress_into), ("fast", compress_into_fast), ("turbo", compress_into_turbo)];
     for input in inputs() {
         for (name, level) in levels {
             let mut c = Vec::new();

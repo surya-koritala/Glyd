@@ -72,7 +72,13 @@ impl CbRows {
     /// Whether the fields are a layout's: 2 or 3 bits, rows, columns in runs of 32, and the arrays' lengths.
     pub fn is_valid(&self) -> bool {
         let (c, s, b) = cb_strides(self.bits, self.cols);
-        (2..=3).contains(&self.bits) && self.rows > 0 && self.cols > 0 && self.cols.is_multiple_of(32) && self.codes.len() == self.rows * c && self.scales.len() == self.rows * s && self.codebook.len() == self.rows * b
+        (2..=3).contains(&self.bits)
+            && self.rows > 0
+            && self.cols > 0
+            && self.cols.is_multiple_of(32)
+            && self.codes.len() == self.rows * c
+            && self.scales.len() == self.rows * s
+            && self.codebook.len() == self.rows * b
     }
 
     /// The tag in tiers[0]'s top byte.
@@ -136,7 +142,14 @@ fn pack_row(bits: u32, codes: &[u8], out: &mut [u8]) {
 /// not finite.
 pub fn pack_codebook_rows(codes: &[u8], scales: &[u16], codebook: &[u16], bits: u32, rows: usize, cols: usize) -> Option<CbRows> {
     let (c, s, b) = cb_strides(bits, cols);
-    if !(2..=3).contains(&bits) || rows == 0 || cols == 0 || !cols.is_multiple_of(32) || codes.len() != rows * cols || scales.len() != rows * cols / 32 || codebook.len() != rows << bits {
+    if !(2..=3).contains(&bits)
+        || rows == 0
+        || cols == 0
+        || !cols.is_multiple_of(32)
+        || codes.len() != rows * cols
+        || scales.len() != rows * cols / 32
+        || codebook.len() != rows << bits
+    {
         return None;
     }
     if codes.iter().any(|&u| (u as u32) >> bits != 0) {
@@ -299,7 +312,11 @@ mod tests {
         assert!(pack_codebook_rows(&codes, &scales, &book, 4, 4, 64).is_none() && pack_codebook_rows(&codes, &scales, &book, 1, 4, 64).is_none());
         assert!(pack_codebook_rows(&codes[..4 * 48], &scales[..4 * 3 / 2], &book, 3, 4, 48).is_none(), "48 columns");
         assert!(pack_codebook_rows(&[], &[], &[], 3, 0, 64).is_none());
-        assert!(pack_codebook_rows(&codes[1..], &scales, &book, 3, 4, 64).is_none() && pack_codebook_rows(&codes, &scales[1..], &book, 3, 4, 64).is_none() && pack_codebook_rows(&codes, &scales, &book[1..], 3, 4, 64).is_none());
+        assert!(
+            pack_codebook_rows(&codes[1..], &scales, &book, 3, 4, 64).is_none()
+                && pack_codebook_rows(&codes, &scales[1..], &book, 3, 4, 64).is_none()
+                && pack_codebook_rows(&codes, &scales, &book[1..], 3, 4, 64).is_none()
+        );
         let mut past = codes.clone();
         past[7] = 8;
         assert!(pack_codebook_rows(&past, &scales, &book, 3, 4, 64).is_none());

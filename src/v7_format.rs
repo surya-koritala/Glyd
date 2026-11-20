@@ -55,13 +55,23 @@ const fn log2(v: u32) -> u32 {
 /// Literal-length codes: 0-15 direct; 16-24 in steps of 1, 1, 1, 1, 2,
 /// 2, 3, 3, 4 bits; 25.. one code per power of two from 64 (6 bits) to
 /// 2^18 (18 bits, the run of a whole block).
-pub const LL_BITS: [u8; LL_SYMBOLS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
-pub const LL_BASE: [u32; LL_SYMBOLS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
+pub const LL_BITS: [u8; LL_SYMBOLS] =
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+pub const LL_BASE: [u32; LL_SYMBOLS] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+    131072, 262144,
+];
 /// Match-length codes: 0-31 direct for lengths 3-34; 32-42 in steps of
 /// 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5 bits; 43.. one code per power of two
 /// of (length - 3) from 128 (7 bits) to 2^17 (17 bits).
-pub const ML_BITS: [u8; ML_SYMBOLS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-pub const ML_BASE: [u32; ML_SYMBOLS] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387, 32771, 65539, 131075];
+pub const ML_BITS: [u8; ML_SYMBOLS] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13,
+    14, 15, 16, 17,
+];
+pub const ML_BASE: [u32; ML_SYMBOLS] = [
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 41, 43, 47, 51, 59,
+    67, 83, 99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387, 32771, 65539, 131075,
+];
 
 const _: () = {
     // Each table is contiguous: a code's range ends where the next begins.
@@ -245,10 +255,8 @@ pub struct WalkSplit {
     pub base: [[u32; 256]; 3],
 }
 
-pub static WALK_SPLIT: WalkSplit = WalkSplit {
-    nb: [nb_table(&LL_WALK), nb_table(&ML_WALK), nb_table(&OFF_WALK)],
-    base: [base_table(&LL_WALK), base_table(&ML_WALK), base_table(&OFF_WALK)],
-};
+pub static WALK_SPLIT: WalkSplit =
+    WalkSplit { nb: [nb_table(&LL_WALK), nb_table(&ML_WALK), nb_table(&OFF_WALK)], base: [base_table(&LL_WALK), base_table(&ML_WALK), base_table(&OFF_WALK)] };
 pub static WALK_SPLIT_V7: WalkSplit = WalkSplit {
     nb: [nb_table(&LL_WALK_V7), nb_table(&ML_WALK_V7), nb_table(&OFF_WALK)],
     base: [base_table(&LL_WALK_V7), base_table(&ML_WALK_V7), base_table(&OFF_WALK)],
@@ -416,12 +424,7 @@ impl SubHeader {
             return None;
         }
         let u = |i: usize| u32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]]);
-        Some(SubHeader {
-            coded: src[0],
-            reuse: src[1],
-            dict_id: u(2),
-            sizes: [u(6), u(10), u(14), u(18), u(22)],
-        })
+        Some(SubHeader { coded: src[0], reuse: src[1], dict_id: u(2), sizes: [u(6), u(10), u(14), u(18), u(22)] })
     }
 
     /// The compact form (v9 blocks): one byte of flags (bits 0-3 `coded`,

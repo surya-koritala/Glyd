@@ -39,9 +39,64 @@ struct Box {
 
 /// The boxes measured or planned. ponytail: a table in the source; a file of boxes when there are more than a handful.
 const BOXES: &[Box] = &[
-    Box { name: "4080s", gpus: 1, read: 702.0, read_src: "measured (bandwidth, 2026-10-17)", mem: 16.0, pcie: 25.0, pcie_alone: 25.0, pcie_src: "PCIe 4.0 x16, spec", host: 96.0, hbm: false, ours: (0.922, 0.951, 0.951, "measured at real widths: Kimi-K3 layer 0's bf16 products 92.2%, DeepSeek-V4's 3 layers 95.1% (tpbench --one --prof, 2026-10-22)"), gather_us: [0.0; 3], pair_ms: 0.45, t0_us: (0.0, 0.0) },
-    Box { name: "a100x8", gpus: 8, read: 2039.0, read_src: "spec sheet (A100 SXM4 80 GB)", mem: 80.0, pcie: 12.3, pcie_alone: 23.3, pcie_src: "measured: 8 GPUs copying at once (one alone 23.3), 2 GPUs a PCIe switch", host: 409.6, hbm: true, ours: (0.80, 0.57, 0.57, "bf16: H100's 12-bit 80% (Nsight); FP8 and FP4 experts 57%, fitted to DeepSeek-V4-Flash's split-on-2 and across-2 runs (docs/ceiling.md)"), gather_us: [8.9, 12.9, 19.5], pair_ms: 0.76, t0_us: (0.0, 0.0) },
-    Box { name: "h100x8", gpus: 8, read: 3350.0, read_src: "spec sheet (H100 SXM5)", mem: 80.0, pcie: 25.0, pcie_alone: 50.0, pcie_src: "assumed: half of PCIe 5.0 x16, not measured", host: 614.4, hbm: true, ours: (0.80, 0.80, 0.30, "Nsight on one H100, 2026-10-22; FP8 assumed 80%"), gather_us: [0.0; 3], pair_ms: 0.0, t0_us: (0.0, 0.0) },
+    Box {
+        name: "4080s",
+        gpus: 1,
+        read: 702.0,
+        read_src: "measured (bandwidth, 2026-10-17)",
+        mem: 16.0,
+        pcie: 25.0,
+        pcie_alone: 25.0,
+        pcie_src: "PCIe 4.0 x16, spec",
+        host: 96.0,
+        hbm: false,
+        ours: (
+            0.922,
+            0.951,
+            0.951,
+            "measured at real widths: Kimi-K3 layer 0's bf16 products 92.2%, DeepSeek-V4's 3 layers 95.1% (tpbench --one --prof, 2026-10-22)",
+        ),
+        gather_us: [0.0; 3],
+        pair_ms: 0.45,
+        t0_us: (0.0, 0.0),
+    },
+    Box {
+        name: "a100x8",
+        gpus: 8,
+        read: 2039.0,
+        read_src: "spec sheet (A100 SXM4 80 GB)",
+        mem: 80.0,
+        pcie: 12.3,
+        pcie_alone: 23.3,
+        pcie_src: "measured: 8 GPUs copying at once (one alone 23.3), 2 GPUs a PCIe switch",
+        host: 409.6,
+        hbm: true,
+        ours: (
+            0.80,
+            0.57,
+            0.57,
+            "bf16: H100's 12-bit 80% (Nsight); FP8 and FP4 experts 57%, fitted to DeepSeek-V4-Flash's split-on-2 and across-2 runs (docs/ceiling.md)",
+        ),
+        gather_us: [8.9, 12.9, 19.5],
+        pair_ms: 0.76,
+        t0_us: (0.0, 0.0),
+    },
+    Box {
+        name: "h100x8",
+        gpus: 8,
+        read: 3350.0,
+        read_src: "spec sheet (H100 SXM5)",
+        mem: 80.0,
+        pcie: 25.0,
+        pcie_alone: 50.0,
+        pcie_src: "assumed: half of PCIe 5.0 x16, not measured",
+        host: 614.4,
+        hbm: true,
+        ours: (0.80, 0.80, 0.30, "Nsight on one H100, 2026-10-22; FP8 assumed 80%"),
+        gather_us: [0.0; 3],
+        pair_ms: 0.0,
+        t0_us: (0.0, 0.0),
+    },
 ];
 
 /// A JSON number as f64.
@@ -62,14 +117,16 @@ fn cfg_num(c: &Value, keys: &[&str]) -> Option<f64> {
 fn tensors(model: &str) -> Result<(Value, Vec<(String, String, Vec<u64>, u64)>)> {
     let dir = Path::new(model);
     if dir.join("config.json").exists() {
-        let cfg = json::parse(&std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(e.to_string()))?).map_err(|e| Error(format!("config.json: {e}")))?;
+        let cfg = json::parse(&std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(e.to_string()))?)
+            .map_err(|e| Error(format!("config.json: {e}")))?;
         let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| Error(format!("{model}: {e}")))?;
         let ts = ck.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone(), t.bytes))).collect();
         return Ok((cfg, ts));
     }
     let hub = crate::hub::Hub::from_env();
     let remote = hub.list(model, "main").map_err(|e| Error(format!("{model}: {e}")))?;
-    let cfg = json::parse(&hub.text(model, &remote.commit, "config.json").map_err(|e| Error(format!("{model}: {e}")))?).map_err(|e| Error(format!("config.json: {e}")))?;
+    let cfg = json::parse(&hub.text(model, &remote.commit, "config.json").map_err(|e| Error(format!("{model}: {e}")))?)
+        .map_err(|e| Error(format!("config.json: {e}")))?;
     let files: Vec<_> = remote.files.iter().filter(|e| e.path.ends_with(".safetensors") && !e.path.contains('/')).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let out = std::sync::Mutex::new(Vec::new());
@@ -122,7 +179,15 @@ struct Step {
 /// attention, None: another model's) as src/dynamic/kimi.rs packs them: the delta attention's q, k, v, output gate, f_a and beta one, the latent
 /// attention's q_a, gate and kv_a one, a MoE layer's latent down projection with the shared experts' gate and up.
 fn product_of(base: &str, mla: Option<bool>) -> String {
-    let generic = || base.replace("q_proj", "qkv").replace("k_proj", "qkv").replace("v_proj", "qkv").replace("gate_proj", "gate_up").replace("up_proj", "gate_up").replace(".w1", ".w13").replace(".w3", ".w13");
+    let generic = || {
+        base.replace("q_proj", "qkv")
+            .replace("k_proj", "qkv")
+            .replace("v_proj", "qkv")
+            .replace("gate_proj", "gate_up")
+            .replace("up_proj", "gate_up")
+            .replace(".w1", ".w13")
+            .replace(".w3", ".w13")
+    };
     let (Some(mla), Some((head, last))) = (mla, base.rsplit_once('.')) else { return generic() };
     match last {
         "q_proj" | "k_proj" | "v_proj" | "g_proj" | "f_a_proj" | "b_proj" if !mla && head.ends_with("self_attn") => format!("{head}.qkv_gates"),
@@ -230,7 +295,8 @@ fn step(cfg: &Value, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_shar
         let hd = la.get("head_dim").and_then(num).unwrap_or(128.0);
         let latent = cfg_num(cfg, &["kv_lora_rank"]).unwrap_or(0.0) + cfg_num(cfg, &["qk_rope_head_dim"]).unwrap_or(0.0);
         s.attn = kda as f64 * heads * hd * hd * 4.0 * 2.0 + full as f64 * pos as f64 * latent * 2.0;
-        s.attn_note = format!("{kda} linear layers' states ({heads} x {hd} x {hd} fp32, read and written) + {full} MLA layers' cache at {pos} ({latent} values a token)");
+        s.attn_note =
+            format!("{kda} linear layers' states ({heads} x {hd} x {hd} fp32, read and written) + {full} MLA layers' cache at {pos} ({latent} values a token)");
     } else if mt == "deepseek_v4" {
         let window = cfg_num(cfg, &["sliding_window"]).unwrap_or(128.0);
         let hd = cfg_num(cfg, &["head_dim"]).unwrap_or(512.0);
@@ -244,20 +310,36 @@ fn step(cfg: &Value, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_shar
 }
 
 fn ms(bytes: f64, gbs: f64) -> f64 {
-    if gbs > 0.0 { bytes / gbs / 1e6 } else { f64::NAN }
+    if gbs > 0.0 {
+        bytes / gbs / 1e6
+    } else {
+        f64::NAN
+    }
 }
 
 pub fn cmd(a: &Args) -> Result<()> {
     let model = a.need(1, "MODEL")?;
     let name = a.flag("box").unwrap_or("a100x8");
-    let b = BOXES.iter().find(|b| b.name == name).ok_or_else(|| Error(format!("--box {name}: one of {}", BOXES.iter().map(|b| b.name).collect::<Vec<_>>().join(", "))))?;
+    let b = BOXES
+        .iter()
+        .find(|b| b.name == name)
+        .ok_or_else(|| Error(format!("--box {name}: one of {}", BOXES.iter().map(|b| b.name).collect::<Vec<_>>().join(", "))))?;
     let split = a.has("by-layers");
     let n: usize = a.num("gpus", b.gpus)?;
     let pos: usize = a.num("pos", 512)?;
     let (cfg, ts) = tensors(model)?;
     let mt = cfg.get("model_type").and_then(Value::as_str).unwrap_or("");
     // (DeepSeek-V4's FP8 matrices are held exact, as released; elsewhere layout H's plain packs on HBM, coded on the others)
-    let f8_pct: u64 = a.num("fp8", if mt == "deepseek_v4" { 100 } else if b.hbm { PLAIN_PCT } else { CODED_PCT })?;
+    let f8_pct: u64 = a.num(
+        "fp8",
+        if mt == "deepseek_v4" {
+            100
+        } else if b.hbm {
+            PLAIN_PCT
+        } else {
+            CODED_PCT
+        },
+    )?;
     let across = if split { 1 } else { n };
     let bf16_share: f64 = a.num("bf16-pct", 100.0 * if b.hbm { TWELVE_ACTUAL } else { TIERED_ACTUAL })? / 100.0;
     let s = step(&cfg, &ts, across, bf16_share, f8_pct, pos)?;
@@ -278,7 +360,16 @@ pub fn cmd(a: &Args) -> Result<()> {
     let (t0, t0_moe): (f64, f64) = (a.num("t0-us", b.t0_us.0)?, a.num("t0-moe-us", b.t0_us.1)?);
     let t_products = (s.products as f64 * t0 + 2.0 * s.moe_layers as f64 * t0_moe) / 1e3;
     // (a decode step's gathers are small: tpgather's 1 x 896 a GPU, at the GPUs' count)
-    let ex_us: f64 = a.num("exchange-us", b.gather_us[if n <= 2 { 0 } else if n <= 4 { 1 } else { 2 }])?;
+    let ex_us: f64 = a.num(
+        "exchange-us",
+        b.gather_us[if n <= 2 {
+            0
+        } else if n <= 4 {
+            1
+        } else {
+            2
+        }],
+    )?;
     let ceil_ex_us = 2.0;
     let t_w = ms(w, b.read);
     let t_a = ms(s.attn, b.read);
@@ -300,19 +391,44 @@ pub fn cmd(a: &Args) -> Result<()> {
     let ours_m = if missing > 0.0 { ms(missing, pcie + host_ours) } else { 0.0 };
     let ours_x = s.exchanges as f64 * ex_us / 1e3;
     let gib = |x: f64| x / (1u64 << 30) as f64;
-    println!("{model} on {} ({}), {} GPU{} {}, position {pos}, experts found on the GPUs {:.0}%", b.name, b.read_src, n, if n == 1 { "" } else { "s" }, if split { "split by layers" } else if n > 1 { "every layer across them" } else { "" }, hit * 100.0);
+    println!(
+        "{model} on {} ({}), {} GPU{} {}, position {pos}, experts found on the GPUs {:.0}%",
+        b.name,
+        b.read_src,
+        n,
+        if n == 1 { "" } else { "s" },
+        if split {
+            "split by layers"
+        } else if n > 1 {
+            "every layer across them"
+        } else {
+            ""
+        },
+        hit * 100.0
+    );
     println!("  per GPU a token: weights {:.2} GiB ({:.2} dense: {:.2} sliced, {:.2} whole; {:.2} experts x {:.2} found), attention {:.3} GiB ({}); missing experts {:.2} GiB in all", gib(w), gib(s.dense), gib(s.sliced), gib(s.whole), gib(s.expert), hit, gib(s.attn), s.attn_note, gib(missing));
     println!("  {:<34} {:>10} {:>10}  {}", "term", "ceiling", "ours", "how");
     println!("  {:<34} {:>8.2}ms {:>8.2}ms  bytes / {:.0} GB/s (bf16 packed to {:.1}%); ours at {:.0}% bf16, {:.0}% FP8, {:.0}% FP4 experts ({src}), and {} products x {t0} us + {} experts' x {t0_moe} us = {t_products:.2} ms", "weights", t_w, ours_w, b.read, bf16_share * 100.0, e_bf * 100.0, e_f8 * 100.0, e_fp4 * 100.0, s.products, 2 * s.moe_layers);
     println!("  {:<34} {:>8.2}ms {:>8}  bytes / {:.0} GB/s", "attention's cache and states", t_a, "-", b.read);
     if missing > 0.0 {
-        println!("  {:<34} {:>8.2}ms {:>8.2}ms  host memory {:.0} GB/s bounds it; ours: copies {:.1} GB/s ({}) + the host's pairs {:.1} GB/s ({pair_ms} ms a pair)", "missing experts", t_m, ours_m, b.host, pcie, b.pcie_src, host_ours);
+        println!(
+            "  {:<34} {:>8.2}ms {:>8.2}ms  host memory {:.0} GB/s bounds it; ours: copies {:.1} GB/s ({}) + the host's pairs {:.1} GB/s ({pair_ms} ms a pair)",
+            "missing experts", t_m, ours_m, b.host, pcie, b.pcie_src, host_ours
+        );
     }
     if s.exchanges > 0 {
-        println!("  {:<34} {:>8.2}ms {:>8.2}ms  {} exchanges x {ceil_ex_us} us (one NVLink write and a kernel); ours {ex_us} us each", "exchanges", t_x, ours_x, s.exchanges);
+        println!(
+            "  {:<34} {:>8.2}ms {:>8.2}ms  {} exchanges x {ceil_ex_us} us (one NVLink write and a kernel); ours {ex_us} us each",
+            "exchanges", t_x, ours_x, s.exchanges
+        );
     }
     if fixed_us > 0.0 {
-        println!("  {:<34} {:>10} {:>8.2}ms  measured on the PC: the small kernels, and the cache's plan a MoE layer ({fixed_us} us a step)", "fixed", "-", fixed_us / 1e3);
+        println!(
+            "  {:<34} {:>10} {:>8.2}ms  measured on the PC: the small kernels, and the cache's plan a MoE layer ({fixed_us} us a step)",
+            "fixed",
+            "-",
+            fixed_us / 1e3
+        );
     }
     let ceiling = t_w + t_a + t_m + t_x;
     let ours = ours_w + t_a + ours_m + ours_x + fixed_us / 1e3;
@@ -361,8 +477,17 @@ mod tests {
         let (a, b, f) = ("model.layers.0.self_attn", "model.layers.1.self_attn", "model.layers.1.block_sparse_moe");
         let mut ts: Vec<_> = ["q_proj", "k_proj", "v_proj", "g_proj", "o_proj"].iter().map(|p| m(format!("{a}.{p}.weight"), 4096, 4096)).collect();
         ts.extend([m(format!("{a}.f_a_proj.weight"), 128, 4096), m(format!("{a}.b_proj.weight"), 32, 4096), m(format!("{a}.f_b_proj.weight"), 4096, 128)]);
-        ts.extend([m(format!("{b}.q_a_proj.weight"), 1536, 4096), m(format!("{b}.g_proj.weight"), 4096, 4096), m(format!("{b}.kv_a_proj_with_mqa.weight"), 576, 4096), m(format!("{b}.o_proj.weight"), 4096, 4096)]);
-        ts.extend([m(format!("{f}.routed_expert_down_proj.weight"), 2048, 4096), m(format!("{f}.shared_experts.gate_proj.weight"), 2048, 4096), m(format!("{f}.shared_experts.up_proj.weight"), 2048, 4096)]);
+        ts.extend([
+            m(format!("{b}.q_a_proj.weight"), 1536, 4096),
+            m(format!("{b}.g_proj.weight"), 4096, 4096),
+            m(format!("{b}.kv_a_proj_with_mqa.weight"), 576, 4096),
+            m(format!("{b}.o_proj.weight"), 4096, 4096),
+        ]);
+        ts.extend([
+            m(format!("{f}.routed_expert_down_proj.weight"), 2048, 4096),
+            m(format!("{f}.shared_experts.gate_proj.weight"), 2048, 4096),
+            m(format!("{f}.shared_experts.up_proj.weight"), 2048, 4096),
+        ]);
         ts.extend([m(format!("{f}.shared_experts.down_proj.weight"), 4096, 2048), m(format!("{f}.routed_expert_up_proj.weight"), 4096, 2048)]);
         for e in 0..4 {
             ts.push((format!("{f}.experts.{e}.w1.weight"), "U8".into(), vec![512, 2048], 512 * 2048));

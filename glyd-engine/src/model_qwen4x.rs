@@ -166,7 +166,23 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn gr1(&self, s: Stream, x: u64, w: u64, dq: u64, ds: u64, injw: u64, rs: u64, lo: u64, inj: u64, n: usize, d: usize, r: usize, eps: f32, post: (u64, u64)) -> Result<()> {
+    pub unsafe fn gr1(
+        &self,
+        s: Stream,
+        x: u64,
+        w: u64,
+        dq: u64,
+        ds: u64,
+        injw: u64,
+        rs: u64,
+        lo: u64,
+        inj: u64,
+        n: usize,
+        d: usize,
+        r: usize,
+        eps: f32,
+        post: (u64, u64),
+    ) -> Result<()> {
         if n == 0 || n > 8 || r % 4 != 0 || d % 8 != 0 {
             return err(format!("the fused Gated Residual on {n} rows of a bottleneck of {r} over 4 x {d}"));
         }
@@ -187,7 +203,23 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn gr1_rows(&self, s: Stream, x: u64, w: u64, dq: u64, ds: u64, injw: u64, rs: u64, lo: u64, inj: u64, n: usize, d: usize, r: usize, eps: f32, post: (u64, u64)) -> Result<()> {
+    pub unsafe fn gr1_rows(
+        &self,
+        s: Stream,
+        x: u64,
+        w: u64,
+        dq: u64,
+        ds: u64,
+        injw: u64,
+        rs: u64,
+        lo: u64,
+        inj: u64,
+        n: usize,
+        d: usize,
+        r: usize,
+        eps: f32,
+        post: (u64, u64),
+    ) -> Result<()> {
         // (kernels/qwen4x.cu QG_RB: 2 rows of down a block, the inject's 4 rows in 2 blocks more)
         let blocks = (r / 2) as u32 + if injw != 0 { 2 } else { 0 };
         launch!(rows_kernel(&self.gr1, n), [blocks, 1, 1], [256, 1, 1], s; x, w, dq, ds, injw, rs, lo, inj, n as i32, d as i32, r as i32, eps, post.0, post.1)
@@ -198,7 +230,23 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn gr1q(&self, s: Stream, x: u64, w: u64, dq: u64, ds: u64, injw: u64, rs: u64, lo: u64, inj: u64, n: usize, d: usize, r: usize, eps: f32, post: (u64, u64)) -> Result<()> {
+    pub unsafe fn gr1q(
+        &self,
+        s: Stream,
+        x: u64,
+        w: u64,
+        dq: u64,
+        ds: u64,
+        injw: u64,
+        rs: u64,
+        lo: u64,
+        inj: u64,
+        n: usize,
+        d: usize,
+        r: usize,
+        eps: f32,
+        post: (u64, u64),
+    ) -> Result<()> {
         // (kernels/qwen4x.cu QG_RQ)
         let groups = (r + if injw != 0 { 4 } else { 0 }).div_ceil(9);
         if n > 4 || d % 256 != 0 || d / 8 > 320 || groups > GR1Q_GROUPS || 4 * (r + 4) * 4 > GR1S_SLICES * GR1S_GROUPS * 32 * 8 {
@@ -212,7 +260,21 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn gr2(&self, s: Stream, x: u64, w: u64, rs: u64, lo: u64, uq: u64, us: u64, h: u64, n: usize, d: usize, r: usize, post: (u64, u64)) -> Result<()> {
+    pub unsafe fn gr2(
+        &self,
+        s: Stream,
+        x: u64,
+        w: u64,
+        rs: u64,
+        lo: u64,
+        uq: u64,
+        us: u64,
+        h: u64,
+        n: usize,
+        d: usize,
+        r: usize,
+        post: (u64, u64),
+    ) -> Result<()> {
         if n == 0 || n > 8 || r % 16 != 0 || d % 8 != 0 {
             return err(format!("the fused Gated Residual on {n} rows with a bottleneck of {r} over {d}"));
         }
@@ -266,7 +328,23 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn gdn_conv_ba(&self, s: Stream, x: u64, xs: usize, w: u64, st: u64, y: u64, n: usize, c: usize, xb: u64, wb: u64, yb: u64, ybs: usize, nb: usize, kb: usize) -> Result<()> {
+    pub unsafe fn gdn_conv_ba(
+        &self,
+        s: Stream,
+        x: u64,
+        xs: usize,
+        w: u64,
+        st: u64,
+        y: u64,
+        n: usize,
+        c: usize,
+        xb: u64,
+        wb: u64,
+        yb: u64,
+        ybs: usize,
+        nb: usize,
+        kb: usize,
+    ) -> Result<()> {
         let (cb, nby) = (c.div_ceil(256), nb.div_ceil(8));
         launch!(self.gdn_conv_ba, [(cb + n * nby) as u32, 1, 1], [256, 1, 1], s; x, xs as i32, w, st, y, n as i32, c as i32, cb as i32, xb, kb as i32, wb, yb, ybs as i32, nb as i32, kb as i32, nby as i32)
     }
@@ -277,7 +355,26 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn gdn_rec_gn(&self, s: Stream, xc: u64, c: usize, ba: u64, sba: usize, a_log: u64, dt_bias: u64, state: u64, core: u64, n: usize, nk: usize, nv: usize, z: u64, zs: usize, gw: u64, eps: f32, st1: u64) -> Result<()> {
+    pub unsafe fn gdn_rec_gn(
+        &self,
+        s: Stream,
+        xc: u64,
+        c: usize,
+        ba: u64,
+        sba: usize,
+        a_log: u64,
+        dt_bias: u64,
+        state: u64,
+        core: u64,
+        n: usize,
+        nk: usize,
+        nv: usize,
+        z: u64,
+        zs: usize,
+        gw: u64,
+        eps: f32,
+        st1: u64,
+    ) -> Result<()> {
         launch!(self.gdn_rec_gn, [nv as u32, 1, 1], [128, 1, 1], s; xc, c as i32, ba, sba as i32, a_log, dt_bias, state, core, n as i32, nk as i32, nv as i32, z, zs as i32, gw, eps, st1)
     }
 
@@ -319,7 +416,21 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`; the cache holds every position in `pos`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn ix_prep(&self, s: Stream, qk: u64, wq: u64, cs: u64, sn: u64, half: usize, pos: u64, iq: u64, ik: u64, n: usize, ih: usize, eps: f32) -> Result<()> {
+    pub unsafe fn ix_prep(
+        &self,
+        s: Stream,
+        qk: u64,
+        wq: u64,
+        cs: u64,
+        sn: u64,
+        half: usize,
+        pos: u64,
+        iq: u64,
+        ik: u64,
+        n: usize,
+        ih: usize,
+        eps: f32,
+    ) -> Result<()> {
         launch!(self.ix_prep, [n as u32, ih as u32 + 1, 1], [128, 1, 1], s; qk, wq, cs, sn, half as i32, pos, iq, ik, ih as i32, eps)
     }
 
@@ -337,7 +448,19 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn ix_score(&self, s: Stream, iq: u64, pk: u64, pos: u64, scores: u64, n: usize, pmax: usize, ksel: usize, pools: usize, scale: f32) -> Result<()> {
+    pub unsafe fn ix_score(
+        &self,
+        s: Stream,
+        iq: u64,
+        pk: u64,
+        pos: u64,
+        scores: u64,
+        n: usize,
+        pmax: usize,
+        ksel: usize,
+        pools: usize,
+        scale: f32,
+    ) -> Result<()> {
         if n == 0 || pools == 0 {
             return Ok(());
         }
@@ -349,7 +472,19 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`; ksel at most 1,024.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn select(&self, s: Stream, scores: u64, pmax: usize, pos: u64, sel: u64, cnt: u64, tmax: usize, kp: usize, ksel: usize, n: usize) -> Result<()> {
+    pub unsafe fn select(
+        &self,
+        s: Stream,
+        scores: u64,
+        pmax: usize,
+        pos: u64,
+        sel: u64,
+        cnt: u64,
+        tmax: usize,
+        kp: usize,
+        ksel: usize,
+        n: usize,
+    ) -> Result<()> {
         if ksel == 0 || ksel > 1024 {
             return err(format!("an indexer that picks {ksel} groups of keys: this engine runs up to 1,024"));
         }
@@ -363,7 +498,24 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn_dec(&self, s: Stream, q: u64, qs: usize, gate: u64, gs: usize, kc: u64, vc: u64, sel: u64, cnt: u64, tmax: usize, out: u64, os: usize, part: u64, wpb: usize, n: usize) -> Result<()> {
+    pub unsafe fn attn_dec(
+        &self,
+        s: Stream,
+        q: u64,
+        qs: usize,
+        gate: u64,
+        gs: usize,
+        kc: u64,
+        vc: u64,
+        sel: u64,
+        cnt: u64,
+        tmax: usize,
+        out: u64,
+        os: usize,
+        part: u64,
+        wpb: usize,
+        n: usize,
+    ) -> Result<()> {
         let sl2 = (1.0f64 / 16.0 * std::f64::consts::LOG2_E) as f32;
         let (k, w) = if wpb == 4 { (&self.attn_dec[0], 4u32) } else { (&self.attn_dec[1], 8) };
         let splits = tmax.div_ceil(16 * w as usize);
@@ -376,7 +528,26 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn_sel(&self, s: Stream, q: u64, qs: usize, gate: u64, gs: usize, kc: u64, vc: u64, sel: u64, cnt: u64, tmax: usize, out: u64, os: usize, nq: usize, nk: usize, part: u64, splits: usize, n: usize) -> Result<()> {
+    pub unsafe fn attn_sel(
+        &self,
+        s: Stream,
+        q: u64,
+        qs: usize,
+        gate: u64,
+        gs: usize,
+        kc: u64,
+        vc: u64,
+        sel: u64,
+        cnt: u64,
+        tmax: usize,
+        out: u64,
+        os: usize,
+        nq: usize,
+        nk: usize,
+        part: u64,
+        splits: usize,
+        n: usize,
+    ) -> Result<()> {
         let g = (nq / nk) as u32;
         let smem = (QX_KB * (QX_KS + 128) + 128 * g) * 4;
         let sl2 = (1.0f64 / 16.0 * std::f64::consts::LOG2_E) as f32;
@@ -403,7 +574,21 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn delta2(&self, s: Stream, xc: u64, c: usize, ba: u64, sba: usize, a_log: u64, dt_bias: u64, state: u64, core: u64, n: usize, nk: usize, nv: usize) -> Result<()> {
+    pub unsafe fn delta2(
+        &self,
+        s: Stream,
+        xc: u64,
+        c: usize,
+        ba: u64,
+        sba: usize,
+        a_log: u64,
+        dt_bias: u64,
+        state: u64,
+        core: u64,
+        n: usize,
+        nk: usize,
+        nv: usize,
+    ) -> Result<()> {
         self.delta2_parts(s, xc, c, ba, sba, a_log, dt_bias, state, core, n, nk, nv, 3)
     }
 
@@ -412,7 +597,22 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn delta2_parts(&self, s: Stream, xc: u64, c: usize, ba: u64, sba: usize, a_log: u64, dt_bias: u64, state: u64, core: u64, n: usize, nk: usize, nv: usize, parts: u8) -> Result<()> {
+    pub unsafe fn delta2_parts(
+        &self,
+        s: Stream,
+        xc: u64,
+        c: usize,
+        ba: u64,
+        sba: usize,
+        a_log: u64,
+        dt_bias: u64,
+        state: u64,
+        core: u64,
+        n: usize,
+        nk: usize,
+        nv: usize,
+        parts: u8,
+    ) -> Result<()> {
         if nk == 0 || nv % nk != 0 || n == 0 {
             return err(format!("the delta rule of {n} rows over {nv} value heads and {nk} key heads"));
         }
@@ -445,7 +645,22 @@ impl KernQx {
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn_tc(&self, s: Stream, q: u64, qs: usize, gate: u64, gs: usize, kc: u64, vc: u64, sel: u64, cnt: u64, tmax: usize, out: u64, os: usize, n: usize) -> Result<()> {
+    pub unsafe fn attn_tc(
+        &self,
+        s: Stream,
+        q: u64,
+        qs: usize,
+        gate: u64,
+        gs: usize,
+        kc: u64,
+        vc: u64,
+        sel: u64,
+        cnt: u64,
+        tmax: usize,
+        out: u64,
+        os: usize,
+        n: usize,
+    ) -> Result<()> {
         let sl2 = (1.0f64 / 16.0 * std::f64::consts::LOG2_E) as f32;
         launch!(self.attn_tc, [n.div_ceil(2) as u32, 1, 1], [128, 1, 1], s; q, qs as i32, gate, gs as i32, kc, vc, sel, cnt, tmax as i32, out, os as i32, n as i32, sl2)
     }
@@ -545,7 +760,14 @@ impl Ngram {
         let (size, offset) = (i64s(&format!("{m}.ngram_heads_vocab_sizes"))?, i64s(&format!("{m}.ngram_heads_offsets"))?);
         let heads = (p.ngram - 1) * p.heads;
         if mult.len() != p.ngram || size.len() != heads || offset.len() != heads {
-            return err(format!("{m}: {} multipliers, {} sizes, {} offsets, where {} heads of {}-grams are wanted", mult.len(), size.len(), offset.len(), heads, p.ngram));
+            return err(format!(
+                "{m}: {} multipliers, {} sizes, {} offsets, where {} heads of {}-grams are wanted",
+                mult.len(),
+                size.len(),
+                offset.len(),
+                heads,
+                p.ngram
+            ));
         }
         let mut shards = Vec::new();
         let q4 = ck.get(&format!("{m}.ngram_embedding.shard_0.q4")).is_some();
@@ -564,7 +786,12 @@ impl Ngram {
         let per_shard = shards.first().map_or(0, |s| s.rows);
         let total: u64 = size.iter().sum();
         let row_bytes = if q4 { 2 + row / 2 } else { row * 2 };
-        if shards.is_empty() || row % 2 != 0 || shards.iter().any(|s| s.rows != per_shard || s.row_bytes != row_bytes) || ((shards.len() * per_shard) as u64) < total || offset.last().copied().unwrap_or(0) + size.last().copied().unwrap_or(0) != total {
+        if shards.is_empty()
+            || row % 2 != 0
+            || shards.iter().any(|s| s.rows != per_shard || s.row_bytes != row_bytes)
+            || ((shards.len() * per_shard) as u64) < total
+            || offset.last().copied().unwrap_or(0) + size.last().copied().unwrap_or(0) != total
+        {
             return err(format!("{m}: the table's shards are not {total} rows of {row} in shards alike"));
         }
         Ok(Some(Ngram { shards, q4, per_shard, heads, per_order: p.heads, row, mult: [mult[0], mult[1], mult[2]], size, offset, eos: c.eos_ngram }))
@@ -607,7 +834,24 @@ impl Ngram {
 }
 
 /// NF4's levels (the quantiles of a normal distribution, scaled to [-1, 1]).
-const NF4: [f32; 16] = [-1.0, -0.696_192_8, -0.525_073_05, -0.394_917_5, -0.284_441_38, -0.184_773_43, -0.091_050_036, 0.0, 0.079_580_3, 0.160_930_2, 0.246_112_3, 0.337_915_24, 0.440_709_83, 0.562_617, 0.722_956_84, 1.0];
+const NF4: [f32; 16] = [
+    -1.0,
+    -0.696_192_8,
+    -0.525_073_05,
+    -0.394_917_5,
+    -0.284_441_38,
+    -0.184_773_43,
+    -0.091_050_036,
+    0.0,
+    0.079_580_3,
+    0.160_930_2,
+    0.246_112_3,
+    0.337_915_24,
+    0.440_709_83,
+    0.562_617,
+    0.722_956_84,
+    1.0,
+];
 
 /// A 4-bit row (bf16 scale, then a code a value, low nibble first) as bf16 values into `out`.
 fn q4_row(q: &[u8], out: &mut [u8]) {
@@ -650,7 +894,14 @@ pub struct Gr {
 pub enum GrW {
     Mats(Mat, Mat),
     /// `r` the bottleneck's width as the checkpoint has it (the fused kernels read the rows as they are), `rp` padded to a multiple of 128 (a prompt chunk's dense products, made bf16 with zeros past `r`)
-    Q { r: usize, rp: usize, dq: Buf, ds: Buf, uq: Buf, us: Buf },
+    Q {
+        r: usize,
+        rp: usize,
+        dq: Buf,
+        ds: Buf,
+        uq: Buf,
+        us: Buf,
+    },
 }
 
 /// A matrix's rows as int8 with an fp32 scale each (a row of zeros: scale 1), `rows_pad` rows and `cols_pad` columns (the padding zeros).
@@ -684,7 +935,14 @@ fn gr_q(ck: &Checkpoint, module: &str, w: usize, rank: usize) -> Result<GrW> {
     let (dq, ds) = quant_rows(&down, rank, w, r, w);
     let (uq, us) = quant_rows(&up, w, rank, w, r);
     let bytes = |v: &[i8]| v.iter().map(|&x| x as u8).collect::<Vec<u8>>();
-    Ok(GrW::Q { r, rp, dq: upload_bytes(&bytes(&dq))?, ds: upload_bytes(crate::weights::as_bytes(&ds))?, uq: upload_bytes(&bytes(&uq))?, us: upload_bytes(crate::weights::as_bytes(&us))? })
+    Ok(GrW::Q {
+        r,
+        rp,
+        dq: upload_bytes(&bytes(&dq))?,
+        ds: upload_bytes(crate::weights::as_bytes(&ds))?,
+        uq: upload_bytes(&bytes(&uq))?,
+        us: upload_bytes(crate::weights::as_bytes(&us))?,
+    })
 }
 
 /// PLE's weights: the key and value products as one, the three norms [4 hidden], the convolution [4 hidden, 4].
@@ -875,7 +1133,16 @@ impl WeightsQx {
     /// `load` with the attention layers' matrices (the MTP head's too) and the LM head at `hi` where it is given (the rest at `layout`): the long context's precision kept where a lower layout costs it; the final mixer
     /// and the LM head where `head`.
     #[allow(clippy::too_many_arguments)]
-    pub fn load_mixed(dir: &Path, threads: usize, layout: Layout, hi: Option<Layout>, only: Option<&[usize]>, head: bool, moe: Option<MoeFactoryQx<'_>>, with_mtp: bool) -> Result<WeightsQx> {
+    pub fn load_mixed(
+        dir: &Path,
+        threads: usize,
+        layout: Layout,
+        hi: Option<Layout>,
+        only: Option<&[usize]>,
+        head: bool,
+        moe: Option<MoeFactoryQx<'_>>,
+        with_mtp: bool,
+    ) -> Result<WeightsQx> {
         let cfg = ConfigQx::load(dir)?;
         let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
         let mut wanted: Vec<usize> = only.map_or_else(|| (0..cfg.layers).collect(), |l| l.to_vec());
@@ -960,7 +1227,11 @@ impl WeightsQx {
         let gr = |mat: &mut dyn FnMut(&Pack35) -> Result<Mat>, module: &str, inject: bool| -> Result<Gr> {
             let packs = cfg.gr_packs(module);
             let w = if quant_gr { gr_q(&ck, module, cfg.hc * cfg.hidden, cfg.hc_rank)? } else { GrW::Mats(mat(&packs[0])?, mat(&packs[1])?) };
-            Ok(Gr { norm: tensor(&ck, &format!("{module}.hc_norm.weight"))?, w, inject: if inject { Some(tensor(&ck, &format!("{module}.block_inject_weight.weight"))?) } else { None } })
+            Ok(Gr {
+                norm: tensor(&ck, &format!("{module}.hc_norm.weight"))?,
+                w,
+                inject: if inject { Some(tensor(&ck, &format!("{module}.block_inject_weight.weight"))?) } else { None },
+            })
         };
         let schedule = cfg.schedule();
         let mut layers: Vec<Option<LayerQx>> = (0..cfg.layers).map(|_| None).collect();
@@ -974,17 +1245,33 @@ impl WeightsQx {
             let small = match kind {
                 QxKind::Gdn => {
                     let a = format!("{p}.linear_attn");
-                    vec![tensor(&ck, &format!("{a}.conv1d.weight"))?, upload_bytes(&f32_bytes(&ck, &format!("{a}.A_log"))?)?, tensor(&ck, &format!("{a}.dt_bias"))?, tensor(&ck, &format!("{a}.norm.weight"))?]
+                    vec![
+                        tensor(&ck, &format!("{a}.conv1d.weight"))?,
+                        upload_bytes(&f32_bytes(&ck, &format!("{a}.A_log"))?)?,
+                        tensor(&ck, &format!("{a}.dt_bias"))?,
+                        tensor(&ck, &format!("{a}.norm.weight"))?,
+                    ]
                 }
                 QxKind::Attn => {
                     let a = format!("{p}.self_attn");
-                    vec![tensor(&ck, &format!("{a}.q_norm.weight"))?, tensor(&ck, &format!("{a}.k_norm.weight"))?, tensor(&ck, &format!("{a}.indexer.q_layernorm.weight"))?, tensor(&ck, &format!("{a}.indexer.k_layernorm.weight"))?]
+                    vec![
+                        tensor(&ck, &format!("{a}.q_norm.weight"))?,
+                        tensor(&ck, &format!("{a}.k_norm.weight"))?,
+                        tensor(&ck, &format!("{a}.indexer.q_layernorm.weight"))?,
+                        tensor(&ck, &format!("{a}.indexer.k_layernorm.weight"))?,
+                    ]
                 }
             };
             let ple = match cfg.ple_pack().filter(|_| cfg.ple.as_ref().is_some_and(|x| x.layer == l)) {
                 Some(pk) => {
                     let m = format!("{p}.ple");
-                    Some(PleW { kv: mat(&pk)?, nk: tensor(&ck, &format!("{m}.norm_key.weight"))?, nq: tensor(&ck, &format!("{m}.norm_query.weight"))?, nc: tensor(&ck, &format!("{m}.norm_conv.weight"))?, conv: tensor(&ck, &format!("{m}.conv1d.weight"))? })
+                    Some(PleW {
+                        kv: mat(&pk)?,
+                        nk: tensor(&ck, &format!("{m}.norm_key.weight"))?,
+                        nq: tensor(&ck, &format!("{m}.norm_query.weight"))?,
+                        nc: tensor(&ck, &format!("{m}.norm_conv.weight"))?,
+                        conv: tensor(&ck, &format!("{m}.conv1d.weight"))?,
+                    })
                 }
                 None => None,
             };
@@ -992,7 +1279,9 @@ impl WeightsQx {
                 Some(make) => Some(make(l, &cfg, &ck, layout)?),
                 None => None,
             };
-            bytes += small.iter().map(|b| b.bytes).sum::<usize>() + grs.iter().map(|g| g.norm.bytes + g.inject.as_ref().map_or(0, |b| b.bytes)).sum::<usize>() + block.as_ref().map_or(0, |b| b.bytes());
+            bytes += small.iter().map(|b| b.bytes).sum::<usize>()
+                + grs.iter().map(|g| g.norm.bytes + g.inject.as_ref().map_or(0, |b| b.bytes)).sum::<usize>()
+                + block.as_ref().map_or(0, |b| b.bytes());
             layers[l] = Some(LayerQx { kind, idx, gr: grs, mats, small, ple, moe: block });
         }
         let (mixer, head) = if whole {
@@ -1011,7 +1300,12 @@ impl WeightsQx {
             let mats = packs[..packs.len() - 2].iter().map(&mut mat).collect::<Result<Vec<Mat>>>()?;
             let grs = [gr(&mut mat, &format!("{p}.attn_hyper_connection"), true)?, gr(&mut mat, &format!("{p}.mlp_hyper_connection"), true)?];
             let a = format!("{p}.self_attn");
-            let small = vec![tensor(&ck, &format!("{a}.q_norm.weight"))?, tensor(&ck, &format!("{a}.k_norm.weight"))?, tensor(&ck, &format!("{a}.indexer.q_layernorm.weight"))?, tensor(&ck, &format!("{a}.indexer.k_layernorm.weight"))?];
+            let small = vec![
+                tensor(&ck, &format!("{a}.q_norm.weight"))?,
+                tensor(&ck, &format!("{a}.k_norm.weight"))?,
+                tensor(&ck, &format!("{a}.indexer.q_layernorm.weight"))?,
+                tensor(&ck, &format!("{a}.indexer.k_layernorm.weight"))?,
+            ];
             let block = match &moe {
                 Some(make) => Some(make(l, &cfg, &ck, layout)?),
                 None => None,
@@ -1019,7 +1313,14 @@ impl WeightsQx {
             let fc = |f: &str| Pack35 { key: format!("mtp.{f}"), parts: vec![(format!("mtp.{f}.weight"), cfg.hidden)], cols: cfg.hidden };
             let (fe, fh) = (mat(&fc("fc_embedding"))?, mat(&fc("fc_hidden"))?);
             let layer = LayerQx { kind: QxKind::Attn, idx: cfg.layers_of(QxKind::Attn), gr: grs, mats, small, ple: None, moe: block };
-            Some(MtpQx { ne: tensor(&ck, "mtp.pre_fc_norm_embedding.weight")?, nh: tensor(&ck, "mtp.pre_fc_norm_hidden.weight")?, fe, fh, layer, mixer: gr(&mut mat, &cfg.mixer_name(true), false)? })
+            Some(MtpQx {
+                ne: tensor(&ck, "mtp.pre_fc_norm_embedding.weight")?,
+                nh: tensor(&ck, "mtp.pre_fc_norm_hidden.weight")?,
+                fe,
+                fh,
+                layer,
+                mixer: gr(&mut mat, &cfg.mixer_name(true), false)?,
+            })
         } else {
             None
         };
@@ -1064,7 +1365,21 @@ pub struct OptsQx {
 
 impl Default for OptsQx {
     fn default() -> OptsQx {
-        OptsQx { ctx: 4096, chunk: 1024, device: 0, layout: Layout::Int5, chunked: true, only: None, spec: false, mtp: false, whole: 0, hi: None, span: None, own_ctx: false, peer: false }
+        OptsQx {
+            ctx: 4096,
+            chunk: 1024,
+            device: 0,
+            layout: Layout::Int5,
+            chunked: true,
+            only: None,
+            spec: false,
+            mtp: false,
+            whole: 0,
+            hi: None,
+            span: None,
+            own_ctx: false,
+            peer: false,
+        }
     }
 }
 
@@ -1337,7 +1652,15 @@ fn held(w: &WeightsQx) -> (usize, usize) {
 /// (bf16 [9, 4 hidden]), the attention layers' keys and values (bf16 [na, ctx, kv heads, 256] each), the indexer's raw keys (bf16 [na, ctx, 128]) and block keys (bf16 [na, ctx / 4 + 1, 128]).
 fn seq_sizes(c: &ConfigQx, ng: usize, na: usize, ctx: usize) -> [usize; 7] {
     let kvb = na * ctx * c.kv_heads * c.head_dim * 2;
-    [ng * c.nv * 128 * 128 * 4, ng * 3 * c.conv_dim() * 2, 9 * c.hc * c.hidden * 2, kvb, kvb, na * ctx * c.ix_dim * 2, na * (ctx / c.ix_block + 1) * c.ix_dim * 2]
+    [
+        ng * c.nv * 128 * 128 * 4,
+        ng * 3 * c.conv_dim() * 2,
+        9 * c.hc * c.hidden * 2,
+        kvb,
+        kvb,
+        na * ctx * c.ix_dim * 2,
+        na * (ctx / c.ix_block + 1) * c.ix_dim * 2,
+    ]
 }
 
 /// A sequence beside the engine's own (`EngineQx::swap_seq` puts it in the engine's place): its states and caches (`seq_sizes`, for `ctx` positions), its rotary tables and images (`set_images` turns the tables
@@ -1430,7 +1753,8 @@ impl EngineQx {
     pub fn new(dir: &Path, o: &OptsQx, moe: Option<MoeFactoryQx<'_>>) -> Result<EngineQx> {
         let dev = if o.own_ctx { Dev::new_own(o.device)? } else { Dev::new(o.device)? };
         let lib = Lib::find()?;
-        let (kern, k35, kg, kq, skinny) = (Kern::load(&dev)?, Kern35::load(&dev)?, KernGlm::load(&dev)?, KernQx::load(&dev)?, crate::skinny::SkinnyKern::load(&dev)?);
+        let (kern, k35, kg, kq, skinny) =
+            (Kern::load(&dev)?, Kern35::load(&dev)?, KernGlm::load(&dev)?, KernQx::load(&dev)?, crate::skinny::SkinnyKern::load(&dev)?);
         let (free0, _) = dev.mem_info()?;
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
         // (a part of a model split over GPUs: its layers; the final mixer, the LM head and the MTP head with the last one; the n-gram embedding's layer on the first part, where the rows are staged)
@@ -1587,16 +1911,118 @@ impl EngineQx {
         }
         let eos = c.eos_ngram;
         Ok(EngineQx {
-            dev, lib, kern, k35, kg, kq, skinny, skinny_on: std::rc::Rc::new(Cell::new(false)), w, span: (l0, l1), front: None, hop, chunk: ch, pchunk: Cell::new(ch), ws_prefill, whole, wb: std::cell::RefCell::new(None), whole_on: Cell::new(true), ctx, ctx_max: ctx, chunked: o.chunked && !crate::dev::smem64(), x, xn, gw, lo, injl, rs, inj, h, o: o_, mix, ba, xc, core, qo, ixqk, ixq, scores, sel, cnt, part, ones, ple_e,
-            cos, sin, hlast, logits, tok, val, pos, ws, done, blas, own, scratch_w, gpu_code, ssm, convst, kc, vc, ik, pk, plest, host, n: 0, ng_ctx: [eos, eos], moe_scratch: OnceCell::new(), trace: None, work_bytes,
-            segs: std::cell::RefCell::new(Vec::new()), segmented: Cell::new(false), spec, save: Cell::new(false), pending: Cell::new(None), hs, mtp_prev, draft_vocab: Cell::new(0), dlg: std::cell::RefCell::new(None), draft_min_p: Cell::new(0.0), kprof_passes: Cell::new(false), emit: std::cell::RefCell::new(None), halt: std::rc::Rc::new(Cell::new(false)), keep: Cell::new(0), sampler: std::cell::RefCell::new(None), samp: (Buf::zeroed(4 * crate::kern::TOPK * SPEC_ROWS)?, Buf::zeroed(4 * crate::kern::TOPK * SPEC_ROWS)?, Buf::zeroed(8 * SPEC_ROWS)?, Pinned::new(8 * crate::kern::TOPK * SPEC_ROWS + 8 * SPEC_ROWS)?), draft_p: Cell::new(1.0), dpb: std::cell::RefCell::new(None), ones4, img_rows: std::cell::RefCell::new(Vec::new()), rope_from: Cell::new(None),
+            dev,
+            lib,
+            kern,
+            k35,
+            kg,
+            kq,
+            skinny,
+            skinny_on: std::rc::Rc::new(Cell::new(false)),
+            w,
+            span: (l0, l1),
+            front: None,
+            hop,
+            chunk: ch,
+            pchunk: Cell::new(ch),
+            ws_prefill,
+            whole,
+            wb: std::cell::RefCell::new(None),
+            whole_on: Cell::new(true),
+            ctx,
+            ctx_max: ctx,
+            chunked: o.chunked && !crate::dev::smem64(),
+            x,
+            xn,
+            gw,
+            lo,
+            injl,
+            rs,
+            inj,
+            h,
+            o: o_,
+            mix,
+            ba,
+            xc,
+            core,
+            qo,
+            ixqk,
+            ixq,
+            scores,
+            sel,
+            cnt,
+            part,
+            ones,
+            ple_e,
+            cos,
+            sin,
+            hlast,
+            logits,
+            tok,
+            val,
+            pos,
+            ws,
+            done,
+            blas,
+            own,
+            scratch_w,
+            gpu_code,
+            ssm,
+            convst,
+            kc,
+            vc,
+            ik,
+            pk,
+            plest,
+            host,
+            n: 0,
+            ng_ctx: [eos, eos],
+            moe_scratch: OnceCell::new(),
+            trace: None,
+            work_bytes,
+            segs: std::cell::RefCell::new(Vec::new()),
+            segmented: Cell::new(false),
+            spec,
+            save: Cell::new(false),
+            pending: Cell::new(None),
+            hs,
+            mtp_prev,
+            draft_vocab: Cell::new(0),
+            dlg: std::cell::RefCell::new(None),
+            draft_min_p: Cell::new(0.0),
+            kprof_passes: Cell::new(false),
+            emit: std::cell::RefCell::new(None),
+            halt: std::rc::Rc::new(Cell::new(false)),
+            keep: Cell::new(0),
+            sampler: std::cell::RefCell::new(None),
+            samp: (
+                Buf::zeroed(4 * crate::kern::TOPK * SPEC_ROWS)?,
+                Buf::zeroed(4 * crate::kern::TOPK * SPEC_ROWS)?,
+                Buf::zeroed(8 * SPEC_ROWS)?,
+                Pinned::new(8 * crate::kern::TOPK * SPEC_ROWS + 8 * SPEC_ROWS)?,
+            ),
+            draft_p: Cell::new(1.0),
+            dpb: std::cell::RefCell::new(None),
+            ones4,
+            img_rows: std::cell::RefCell::new(Vec::new()),
+            rope_from: Cell::new(None),
         })
     }
 
     pub fn describe(&self) -> String {
         let gib = |b: usize| b as f64 / (1u64 << 30) as f64;
         let (free, total) = self.dev.mem_info().unwrap_or((0, 0));
-        let me = format!("{} (sm_{}{}): weights {:.3} GiB (layout {:?}), states and workspaces {:.3} GiB, {:.2} of {:.2} GiB in use", self.dev.name, self.dev.cc.0, self.dev.cc.1, gib(self.w.bytes), self.w.layout, gib(self.work_bytes), gib(total - free), gib(total));
+        let me = format!(
+            "{} (sm_{}{}): weights {:.3} GiB (layout {:?}), states and workspaces {:.3} GiB, {:.2} of {:.2} GiB in use",
+            self.dev.name,
+            self.dev.cc.0,
+            self.dev.cc.1,
+            gib(self.w.bytes),
+            self.w.layout,
+            gib(self.work_bytes),
+            gib(total - free),
+            gib(total)
+        );
         if self.front.is_none() && self.hop.is_none() {
             return me;
         }
@@ -1703,7 +2129,8 @@ impl EngineQx {
             if self.dev.mem_info()?.0 >= want {
                 break;
             }
-            let block = if l == n { self.w.mtp.as_ref().and_then(|m| m.layer.moe.as_deref()) } else { self.w.layers[l].as_ref().and_then(|ly| ly.moe.as_deref()) };
+            let block =
+                if l == n { self.w.mtp.as_ref().and_then(|m| m.layer.moe.as_deref()) } else { self.w.layers[l].as_ref().and_then(|ly| ly.moe.as_deref()) };
             if let Some(b) = block {
                 if b.release_places()? > 0 {
                     freed.push(l);
@@ -1721,7 +2148,8 @@ impl EngineQx {
     pub fn return_places(&self, layers: &[usize]) -> Result<()> {
         let n = self.w.layers.len();
         for &l in layers {
-            let block = if l == n { self.w.mtp.as_ref().and_then(|m| m.layer.moe.as_deref()) } else { self.w.layers[l].as_ref().and_then(|ly| ly.moe.as_deref()) };
+            let block =
+                if l == n { self.w.mtp.as_ref().and_then(|m| m.layer.moe.as_deref()) } else { self.w.layers[l].as_ref().and_then(|ly| ly.moe.as_deref()) };
             if let Some(b) = block {
                 b.restore_places()?;
             }
@@ -1768,7 +2196,9 @@ impl EngineQx {
         let gdn = p.max(self.chunk).min(GDN_SLICE).div_ceil(64) * (c.nv * (3 * 64 * 64 * 2 + 64 * 4) + 2 * c.nk * 64 * 128 * 2);
         let need = rows * (hw * 2 + 4 + ple * 2 + c.hc * 4) + crate::moe_qwen4x::whole_call_bytes(rows, c.top_k) + chunk_set + gdn + (128 << 20);
         let lent = if self.dev.mem_info()?.0 < need { self.borrow_places(need)? } else { Vec::new() };
-        let made = (|| -> Result<WholeRows> { Ok(WholeRows { rows, x: Buf::new(rows * hw * 2)?, pos: Buf::zeroed(rows * 4)?, ple: Buf::new(rows * ple * 2)?, inj: Buf::zeroed(rows * c.hc * 4)? }) })();
+        let made = (|| -> Result<WholeRows> {
+            Ok(WholeRows { rows, x: Buf::new(rows * hw * 2)?, pos: Buf::zeroed(rows * 4)?, ple: Buf::new(rows * ple * 2)?, inj: Buf::zeroed(rows * c.hc * 4)? })
+        })();
         match made {
             Ok(w) => {
                 *self.wb.borrow_mut() = Some(w);
@@ -1868,7 +2298,9 @@ impl EngineQx {
     /// Whether every layer's block of this part of the model and of the parts before it (the MTP head's too) takes a prompt layer by layer.
     fn whole_able(&self) -> bool {
         let able = |l: &LayerQx| l.moe.as_ref().is_some_and(|b| b.whole());
-        (self.span.0..self.span.1).all(|l| self.w.layers[l].as_ref().is_some_and(able)) && self.w.mtp.as_ref().is_none_or(|m| able(&m.layer)) && self.front.as_ref().is_none_or(|f| f.whole > 0 && f.whole_able())
+        (self.span.0..self.span.1).all(|l| self.w.layers[l].as_ref().is_some_and(able))
+            && self.w.mtp.as_ref().is_none_or(|m| able(&m.layer))
+            && self.front.as_ref().is_none_or(|f| f.whole > 0 && f.whole_able())
     }
 
     /// The buffers of a prompt of `rows` rows taken layer by layer, on every part of the model (`whole_begin`, `grow_chunk`); `prompt_end` frees them.
@@ -1929,7 +2361,19 @@ impl EngineQx {
         let (cs, sn) = rope_tables(self.w.cfg.theta, self.w.cfg.rotary, ctx);
         let rope = [upload_bytes(crate::weights::as_bytes(&cs))?, upload_bytes(crate::weights::as_bytes(&sn))?];
         let eos = eos_of(&self.w.cfg);
-        Ok(SeqQx { bufs: [a?, b?, c?, d?, e?, f?, g?], rope, img_rows: Vec::new(), rope_from: None, ctx, n: 0, ng_ctx: [eos; 2], segs: Vec::new(), sampler: None, emit: None, halt: std::rc::Rc::new(Cell::new(false)) })
+        Ok(SeqQx {
+            bufs: [a?, b?, c?, d?, e?, f?, g?],
+            rope,
+            img_rows: Vec::new(),
+            rope_from: None,
+            ctx,
+            n: 0,
+            ng_ctx: [eos; 2],
+            segs: Vec::new(),
+            sampler: None,
+            emit: None,
+            halt: std::rc::Rc::new(Cell::new(false)),
+        })
     }
 
     /// The sequence `s` and the engine's own swapped: the engine's steps run on `s`'s states, caches and graphs (and its request's sampler, sink and halt flag), `s` keeps the one that was there. Between passes only
@@ -1940,7 +2384,9 @@ impl EngineQx {
             return err("a sequence swapped out with a verified pass not settled, or on a model split over GPUs");
         }
         let [a, b, c, d, e, f, g] = &mut s.bufs;
-        for (mine, theirs) in [&mut self.ssm, &mut self.convst, &mut self.plest, &mut self.kc, &mut self.vc, &mut self.ik, &mut self.pk].into_iter().zip([a, b, c, d, e, f, g]) {
+        for (mine, theirs) in
+            [&mut self.ssm, &mut self.convst, &mut self.plest, &mut self.kc, &mut self.vc, &mut self.ik, &mut self.pk].into_iter().zip([a, b, c, d, e, f, g])
+        {
             swap(mine, theirs);
         }
         let [c, d] = &mut s.rope;
@@ -2156,7 +2602,25 @@ impl EngineQx {
                 (Some(sp), true) => sp.ssm0.ptr + (ly.idx * c.nv * 128 * 128 * 4) as u64,
                 _ => 0,
             };
-            self.kq.gdn_rec_gn(s, xc, cd, ba, 2 * c.nv, sm[1].ptr, sm[2].ptr, state, self.core.ptr, n, c.nk, c.nv, mix + (cd * 2) as u64, row, sm[3].ptr, c.eps, st1)?;
+            self.kq.gdn_rec_gn(
+                s,
+                xc,
+                cd,
+                ba,
+                2 * c.nv,
+                sm[1].ptr,
+                sm[2].ptr,
+                state,
+                self.core.ptr,
+                n,
+                c.nk,
+                c.nv,
+                mix + (cd * 2) as u64,
+                row,
+                sm[3].ptr,
+                c.eps,
+                st1,
+            )?;
             crate::tmark!(s, "gdn: delta rule, gated norm");
             self.lin(&ly.mats[2], self.core.ptr, n, self.o.ptr)?;
             crate::tmark!(s, "gdn: out product");
@@ -2185,14 +2649,29 @@ impl EngineQx {
             let sl = self.pchunk.get().min(GDN_SLICE);
             for i in (0..n).step_by(sl) {
                 let m = sl.min(n - i);
-                self.kq.delta2(s, xc + (i * cd * 2) as u64, cd, ba + (i * 2 * c.nv * 2) as u64, 2 * c.nv, sm[1].ptr, sm[2].ptr, state, self.core.ptr + (i * vd * 2) as u64, m, c.nk, c.nv)?;
+                self.kq.delta2(
+                    s,
+                    xc + (i * cd * 2) as u64,
+                    cd,
+                    ba + (i * 2 * c.nv * 2) as u64,
+                    2 * c.nv,
+                    sm[1].ptr,
+                    sm[2].ptr,
+                    state,
+                    self.core.ptr + (i * vd * 2) as u64,
+                    m,
+                    c.nk,
+                    c.nv,
+                )?;
             }
             #[cfg(feature = "dev")]
             if let Some((st2, out2)) = check {
                 let st1 = Buf::new(st2.bytes)?;
                 crate::dev::copy_d2d_async(st1.ptr, state, st1.bytes, s)?;
                 self.dev.sync()?;
-                let rel = |a: &[f32], b: &[f32]| (a.iter().zip(b).map(|(x, y)| ((x - y) as f64).powi(2)).sum::<f64>() / b.iter().map(|y| (*y as f64).powi(2)).sum::<f64>().max(1e-30)).sqrt();
+                let rel = |a: &[f32], b: &[f32]| {
+                    (a.iter().zip(b).map(|(x, y)| ((x - y) as f64).powi(2)).sum::<f64>() / b.iter().map(|y| (*y as f64).powi(2)).sum::<f64>().max(1e-30)).sqrt()
+                };
                 let (mut sa, mut sb) = (vec![0f32; c.nv * 128 * 128], vec![0f32; c.nv * 128 * 128]);
                 st1.read(0, &mut sa)?;
                 st2.read(0, &mut sb)?;
@@ -2203,7 +2682,21 @@ impl EngineQx {
                 eprintln!("gdn check: layer {} ({n} rows): outputs relative {:.3e}, state relative {:.3e}", ly.idx, rel(&f(&oa), &f(&ob)), rel(&sa, &sb));
             }
         } else {
-            self.k35.delta(s, self.chunked && n > 1, xc, cd as i32, ba, 2 * c.nv as i32, sm[1].ptr, sm[2].ptr, state, self.core.ptr, n as i32, c.nk as i32, c.nv as i32)?;
+            self.k35.delta(
+                s,
+                self.chunked && n > 1,
+                xc,
+                cd as i32,
+                ba,
+                2 * c.nv as i32,
+                sm[1].ptr,
+                sm[2].ptr,
+                state,
+                self.core.ptr,
+                n as i32,
+                c.nk as i32,
+                c.nv as i32,
+            )?;
         }
         crate::tmark!(s, "gdn: delta rule");
         if !c.gate_sigmoid {
@@ -2230,7 +2723,24 @@ impl EngineQx {
         let pk = self.pk.ptr + (ly.idx * (self.ctx / c.ix_block + 1) * c.ix_dim * 2) as u64;
         self.lin(&ly.mats[0], self.h.ptr, n, self.mix.ptr)?;
         crate::tmark!(s, "attn: qkv product");
-        self.k35.prep(s, self.mix.ptr, qd as i32, sm[0].ptr, sm[1].ptr, self.cos.ptr, self.sin.ptr, half as i32, pos, self.qo.ptr, kc, vc, n as u32, nq as i32, nk as i32, c.eps)?;
+        self.k35.prep(
+            s,
+            self.mix.ptr,
+            qd as i32,
+            sm[0].ptr,
+            sm[1].ptr,
+            self.cos.ptr,
+            self.sin.ptr,
+            half as i32,
+            pos,
+            self.qo.ptr,
+            kc,
+            vc,
+            n as u32,
+            nq as i32,
+            nk as i32,
+            c.eps,
+        )?;
         self.lin(&ly.mats[2], self.h.ptr, n, self.ixqk.ptr)?;
         crate::tmark!(s, "attn: indexer product");
         self.kq.ix_prep(s, self.ixqk.ptr, sm[2].ptr, self.cos.ptr, self.sin.ptr, half, pos, self.ixq.ptr, ik, n, c.ix_heads, c.eps)?;
@@ -2250,7 +2760,24 @@ impl EngineQx {
                 if start % 8192 == 0 && std::env::var("GLYD_IX_CHECK").is_ok() {
                     // (a development check: the scalar kernel's scores of the same rows beside these)
                     let other = Buf::new(n * pmax * 4)?;
-                    self.kg.idx_score(s, self.ixq.ptr, (c.ix_heads * c.ix_dim) as i32, self.ones.ptr, 0, pk, pos, other.ptr, pmax as i32, c.ix_heads as i32, c.ix_dim as i32, c.ix_block as i32, ksel as i32, 1.0 / (c.ix_dim as f32).sqrt(), 1.0, n as u32)?;
+                    self.kg.idx_score(
+                        s,
+                        self.ixq.ptr,
+                        (c.ix_heads * c.ix_dim) as i32,
+                        self.ones.ptr,
+                        0,
+                        pk,
+                        pos,
+                        other.ptr,
+                        pmax as i32,
+                        c.ix_heads as i32,
+                        c.ix_dim as i32,
+                        c.ix_block as i32,
+                        ksel as i32,
+                        1.0 / (c.ix_dim as f32).sqrt(),
+                        1.0,
+                        n as u32,
+                    )?;
                     self.dev.sync()?;
                     let (mut a, mut b) = (vec![0f32; n * pmax], vec![0f32; n * pmax]);
                     self.scores.read(0, &mut a)?;
@@ -2268,7 +2795,24 @@ impl EngineQx {
                     eprintln!("ix check: attention layer {}, rows {start}..{}: largest difference {worst:.3e} of scores up to {big:.3e}", ly.idx, start + n);
                 }
             } else if self.ctx > c.ix_tokens() {
-                self.kg.idx_score(s, self.ixq.ptr, (c.ix_heads * c.ix_dim) as i32, self.ones.ptr, 0, pk, pos, self.scores.ptr, pmax as i32, c.ix_heads as i32, c.ix_dim as i32, c.ix_block as i32, ksel as i32, 1.0 / (c.ix_dim as f32).sqrt(), 1.0, n as u32)?;
+                self.kg.idx_score(
+                    s,
+                    self.ixq.ptr,
+                    (c.ix_heads * c.ix_dim) as i32,
+                    self.ones.ptr,
+                    0,
+                    pk,
+                    pos,
+                    self.scores.ptr,
+                    pmax as i32,
+                    c.ix_heads as i32,
+                    c.ix_dim as i32,
+                    c.ix_block as i32,
+                    ksel as i32,
+                    1.0 / (c.ix_dim as f32).sqrt(),
+                    1.0,
+                    n as u32,
+                )?;
             }
             crate::tmark!(s, "attn: indexer scores");
             self.kq.select(s, self.scores.ptr, pmax, pos, self.sel.ptr, self.cnt.ptr, c.ix_tokens(), c.ix_block, ksel, n)?;
@@ -2283,7 +2827,25 @@ impl EngineQx {
                 if start % 8192 == 0 && std::env::var("GLYD_ATTN_CHECK").is_ok() {
                     // (a development check: the scalar kernel's output of the same rows beside this one)
                     let other = Buf::new(n * qs * 2)?;
-                    self.kq.attn_sel(s, self.qo.ptr, qs, self.mix.ptr, qd, kc, vc, self.sel.ptr, self.cnt.ptr, c.ix_tokens(), other.ptr, qs, nq, nk, self.part.ptr, 1, n)?;
+                    self.kq.attn_sel(
+                        s,
+                        self.qo.ptr,
+                        qs,
+                        self.mix.ptr,
+                        qd,
+                        kc,
+                        vc,
+                        self.sel.ptr,
+                        self.cnt.ptr,
+                        c.ix_tokens(),
+                        other.ptr,
+                        qs,
+                        nq,
+                        nk,
+                        self.part.ptr,
+                        1,
+                        n,
+                    )?;
                     self.dev.sync()?;
                     let (mut a, mut b) = (vec![0u16; n * qs], vec![0u16; n * qs]);
                     self.core.read(0, &mut a)?;
@@ -2297,14 +2859,53 @@ impl EngineQx {
                         sq += (y as f64).powi(2);
                         sd += ((x - y) as f64).powi(2);
                     }
-                    eprintln!("attn check: attention layer {}, rows {start}..{}: largest difference {worst:.3e} of outputs up to {big:.3e}, relative {:.3e}", ly.idx, start + n, (sd / sq.max(1e-30)).sqrt());
+                    eprintln!(
+                        "attn check: attention layer {}, rows {start}..{}: largest difference {worst:.3e} of outputs up to {big:.3e}, relative {:.3e}",
+                        ly.idx,
+                        start + n,
+                        (sd / sq.max(1e-30)).sqrt()
+                    );
                 }
             } else if n <= 8 && nq == 24 && nk == 2 && !crate::tune!("GLYD_ATTN_SCALAR").is_some_and(|v| v == "1") {
                 // (a decode step's rows: a 16-token step a warp, 8 warps a block, merged)
-                self.kq.attn_dec(s, self.qo.ptr, qs, self.mix.ptr, qd, kc, vc, self.sel.ptr, self.cnt.ptr, c.ix_tokens(), self.core.ptr, qs, self.part.ptr, dec_wpb(), n)?;
+                self.kq.attn_dec(
+                    s,
+                    self.qo.ptr,
+                    qs,
+                    self.mix.ptr,
+                    qd,
+                    kc,
+                    vc,
+                    self.sel.ptr,
+                    self.cnt.ptr,
+                    c.ix_tokens(),
+                    self.core.ptr,
+                    qs,
+                    self.part.ptr,
+                    dec_wpb(),
+                    n,
+                )?;
             } else {
                 let splits = if n <= 8 { SEL_SPLITS } else { 1 };
-                self.kq.attn_sel(s, self.qo.ptr, qs, self.mix.ptr, qd, kc, vc, self.sel.ptr, self.cnt.ptr, c.ix_tokens(), self.core.ptr, qs, nq, nk, self.part.ptr, splits, n)?;
+                self.kq.attn_sel(
+                    s,
+                    self.qo.ptr,
+                    qs,
+                    self.mix.ptr,
+                    qd,
+                    kc,
+                    vc,
+                    self.sel.ptr,
+                    self.cnt.ptr,
+                    c.ix_tokens(),
+                    self.core.ptr,
+                    qs,
+                    nq,
+                    nk,
+                    self.part.ptr,
+                    splits,
+                    n,
+                )?;
             }
         }
         crate::tmark!(s, "attn: attention");
@@ -2426,7 +3027,8 @@ impl EngineQx {
     /// The stream is idle (the positions and the staging buffer are written here).
     unsafe fn forward_whole(&mut self, tokens: &[u32], head: bool) -> Result<()> {
         let (t, ch) = (tokens.len(), self.pchunk.get());
-        let (hid, hw, vocab, ple_row) = (self.w.cfg.hidden, self.w.cfg.hc * self.w.cfg.hidden, self.w.cfg.vocab, self.w.cfg.ple.as_ref().map_or(0, |p| p.dim * 2));
+        let (hid, hw, vocab, ple_row) =
+            (self.w.cfg.hidden, self.w.cfg.hc * self.w.cfg.hidden, self.w.cfg.vocab, self.w.cfg.ple.as_ref().map_or(0, |p| p.dim * 2));
         if t == 0 || t > self.whole_now() {
             return err(format!("{t} rows taken layer by layer, where the buffers hold {}", self.whole_now()));
         }
@@ -2479,7 +3081,12 @@ impl EngineQx {
                         me.dev.sync()?;
                         for &q in at.iter().filter(|&&q| q >= me.n && q < me.n + t) {
                             let mut v = vec![0u16; hw];
-                            me.wb.borrow().as_ref().ok_or_else(|| Error("no prompt is being taken layer by layer".into()))?.x.read((q - me.n) * hw * 2, &mut v)?;
+                            me.wb
+                                .borrow()
+                                .as_ref()
+                                .ok_or_else(|| Error("no prompt is being taken layer by layer".into()))?
+                                .x
+                                .read((q - me.n) * hw * 2, &mut v)?;
                             rows.extend(v);
                         }
                     }
@@ -2659,7 +3266,17 @@ impl EngineQx {
             return err(format!("an image at row {from}, where a sequence may reach {}", self.ctx));
         }
         let half = self.w.cfg.rotary / 2;
-        let at: Vec<[u32; 3]> = (from..self.ctx).map(|r| if r < pos.len() { pos[r] } else if first.is_some() { [next + (r - pos.len()) as u32; 3] } else { [r as u32; 3] }).collect();
+        let at: Vec<[u32; 3]> = (from..self.ctx)
+            .map(|r| {
+                if r < pos.len() {
+                    pos[r]
+                } else if first.is_some() {
+                    [next + (r - pos.len()) as u32; 3]
+                } else {
+                    [r as u32; 3]
+                }
+            })
+            .collect();
         let (cs, sn) = crate::vision::rope_rows(self.w.cfg.theta, half, &at);
         let off = (from * half * 2) as u64;
         // SAFETY: rows from..ctx of the tables (ctx rows of `half`), in the stream's order; the pageable rows are read before the calls return.
@@ -2714,7 +3331,9 @@ impl EngineQx {
         for r in 0..rows {
             // SAFETY: the pinned bytes were just copied: TOPK tokens (int32) and logits (f32) a row, then a sum (f64) a row.
             let top = need.map(|nd| unsafe {
-                let cands = (0..TOPK).map(|j| (*(host.add(4 * (r * TOPK + j)) as *const i32) as u32, *(host.add(4 * TOPK * SPEC_ROWS + 4 * (r * TOPK + j)) as *const f32))).collect();
+                let cands = (0..TOPK)
+                    .map(|j| (*(host.add(4 * (r * TOPK + j)) as *const i32) as u32, *(host.add(4 * TOPK * SPEC_ROWS + 4 * (r * TOPK + j)) as *const f32)))
+                    .collect();
                 crate::sampler::Top { cands, mass: nd.mass.then(|| *(host.add(8 * TOPK * SPEC_ROWS + 8 * r) as *const f64)) }
             });
             let row = || -> Result<Vec<f32>> {
@@ -2805,13 +3424,16 @@ impl EngineQx {
     }
 
     fn parts_able(&self) -> bool {
-        (self.span.0..self.span.1).all(|l| self.w.layers[l].as_ref().is_some_and(|l| l.moe.as_ref().is_some_and(|b| b.segmented()))) && self.front.as_ref().is_none_or(|f| f.parts_able())
+        (self.span.0..self.span.1).all(|l| self.w.layers[l].as_ref().is_some_and(|l| l.moe.as_ref().is_some_and(|b| b.segmented())))
+            && self.front.as_ref().is_none_or(|f| f.parts_able())
     }
 
     /// Whether a verification of two rows keeps the GDN layers' states after its first in the snapshot's place (`gdn`, `verify`, `commit`): while every GDN layer's rule of a few rows is `qx_gdn_rec_gn`
     /// (GLYD_GDN_ST1=0: the copy before the pass and the rule run again).
     fn gdn_st1(&self) -> bool {
-        self.w.cfg.gate_sigmoid && crate::tune!("GLYD_GDN_ST1").is_none_or(|v| v != "0") && self.w.layers.iter().flatten().filter(|l| l.kind == QxKind::Gdn).all(|l| matches!(l.mats.get(1), Some(Mat::Dense(..))))
+        self.w.cfg.gate_sigmoid
+            && crate::tune!("GLYD_GDN_ST1").is_none_or(|v| v != "0")
+            && self.w.layers.iter().flatten().filter(|l| l.kind == QxKind::Gdn).all(|l| matches!(l.mats.get(1), Some(Mat::Dense(..))))
     }
 
     /// The graphs of the parts forgotten (the settings they were made for have changed).
@@ -2864,7 +3486,8 @@ impl EngineQx {
         }
         self.on_front(|f| f.forward_segmented(n, verify, start))?;
         let row = c.hc * c.hidden * 2;
-        let layers: Vec<&LayerQx> = (self.span.0..self.span.1).map(|l| self.w.layers[l].as_ref().ok_or_else(|| Error("a layer is not loaded".into()))).collect::<Result<_>>()?;
+        let layers: Vec<&LayerQx> =
+            (self.span.0..self.span.1).map(|l| self.w.layers[l].as_ref().ok_or_else(|| Error("a layer is not loaded".into()))).collect::<Result<_>>()?;
         fn block(ly: &LayerQx) -> Result<&dyn MoeBlockQx> {
             ly.moe.as_deref().ok_or_else(|| Error("a layer without its block of experts".into()))
         }
@@ -2899,27 +3522,29 @@ impl EngineQx {
         })?;
         for i in 0..layers.len() {
             let b = block(layers[i])?;
-            b.host_then(self, n, &mut || self.seg(base + i + 1, || {
-                b.back_post(self, n, self.x.ptr, self.inj[1].ptr)?;
-                if let Some(nx) = layers.get(i + 1) {
-                    return mixer_and_front(nx);
-                }
-                if let Some(h) = &self.hop {
-                    // (a part before another: its streams out to the hop's buffer for the next part to take in)
-                    return if h.peer { Ok(()) } else { copy_d2h_async(h.buf.ptr, self.x.ptr, n * row, s) };
-                }
-                let (Some(mixer), Some(lm)) = (&self.w.mixer, &self.w.head) else { return err("the final mixer or the LM head is not loaded") };
-                if verify {
-                    // (every row's pick, into the draft buffers: `forward_rows`'s)
-                    let sp = self.spec.as_ref().ok_or_else(|| Error("the engine was made without room for a draft (OptsQx::spec)".into()))?;
-                    self.gr_mix(mixer, self.x.ptr, n, sp.hl.ptr, 0)?;
-                    self.lin_packed(lm, sp.hl.ptr, n, sp.lg.ptr)?;
-                    return self.kern.argmax_rows(s, sp.lg.ptr, c.vocab as i32, n as u32, sp.tk.ptr, sp.vl.ptr);
-                }
-                self.gr_mix(mixer, self.x.ptr, 1, self.hlast.ptr, 0)?;
-                self.lin_packed(lm, self.hlast.ptr, 1, self.logits.ptr)?;
-                self.kern.argmax_rows(s, self.logits.ptr, c.vocab as i32, 1, self.tok.ptr, self.val.ptr)
-            }))?;
+            b.host_then(self, n, &mut || {
+                self.seg(base + i + 1, || {
+                    b.back_post(self, n, self.x.ptr, self.inj[1].ptr)?;
+                    if let Some(nx) = layers.get(i + 1) {
+                        return mixer_and_front(nx);
+                    }
+                    if let Some(h) = &self.hop {
+                        // (a part before another: its streams out to the hop's buffer for the next part to take in)
+                        return if h.peer { Ok(()) } else { copy_d2h_async(h.buf.ptr, self.x.ptr, n * row, s) };
+                    }
+                    let (Some(mixer), Some(lm)) = (&self.w.mixer, &self.w.head) else { return err("the final mixer or the LM head is not loaded") };
+                    if verify {
+                        // (every row's pick, into the draft buffers: `forward_rows`'s)
+                        let sp = self.spec.as_ref().ok_or_else(|| Error("the engine was made without room for a draft (OptsQx::spec)".into()))?;
+                        self.gr_mix(mixer, self.x.ptr, n, sp.hl.ptr, 0)?;
+                        self.lin_packed(lm, sp.hl.ptr, n, sp.lg.ptr)?;
+                        return self.kern.argmax_rows(s, sp.lg.ptr, c.vocab as i32, n as u32, sp.tk.ptr, sp.vl.ptr);
+                    }
+                    self.gr_mix(mixer, self.x.ptr, 1, self.hlast.ptr, 0)?;
+                    self.lin_packed(lm, self.hlast.ptr, 1, self.logits.ptr)?;
+                    self.kern.argmax_rows(s, self.logits.ptr, c.vocab as i32, 1, self.tok.ptr, self.val.ptr)
+                })
+            })?;
         }
         if let Some(h) = &self.hop {
             h.ev.record(s)?;
@@ -2965,7 +3590,9 @@ impl EngineQx {
         });
         // SAFETY: live buffers of the engine, sized for a chunk; synchronized above.
         let parts = self.runs_in_parts();
-        let r = unsafe { self.stage(tokens).and_then(|()| if parts { self.forward_segmented(n, true, self.n) } else { self.forward_rows(n, self.pos.ptr, self.n) }) };
+        let r = unsafe {
+            self.stage(tokens).and_then(|()| if parts { self.forward_segmented(n, true, self.n) } else { self.forward_rows(n, self.pos.ptr, self.n) })
+        };
         self.each_part(&mut |e| {
             e.save.set(false);
             e.chunked = chunked;
@@ -3037,7 +3664,21 @@ impl EngineQx {
             unsafe {
                 crate::dev::copy_d2d_async(state, sp.ssm0.ptr + (ly.idx * state_bytes) as u64, state_bytes, s)?;
                 if !st1 {
-                    self.k35.delta(s, false, xc, cd as i32, ba, 2 * c.nv as i32, ly.small[1].ptr, ly.small[2].ptr, state, self.core.ptr, kept as i32, c.nk as i32, c.nv as i32)?;
+                    self.k35.delta(
+                        s,
+                        false,
+                        xc,
+                        cd as i32,
+                        ba,
+                        2 * c.nv as i32,
+                        ly.small[1].ptr,
+                        ly.small[2].ptr,
+                        state,
+                        self.core.ptr,
+                        kept as i32,
+                        c.nk as i32,
+                        c.nv as i32,
+                    )?;
                 }
                 for r in 0..3 {
                     let q = kept + r;
@@ -3155,7 +3796,14 @@ impl EngineQx {
         let lm = self.w.head.as_ref().ok_or_else(|| Error("the LM head is not loaded".into()))?;
         self.gr_mix(&mh.mixer, last, 1, self.hlast.ptr, 0)?;
         let (pv, tail) = (self.draft_vocab.get(), c.vocab.saturating_sub(DRAFT_TAIL));
-        if pv > 0 && pv % 64 == 0 && pv < tail && tail % 64 == 0 && self.skinny_on.get() && lm.pack.rows as usize == c.vocab && crate::skinny::SkinnyKern::takes(&lm.pack) {
+        if pv > 0
+            && pv % 64 == 0
+            && pv < tail
+            && tail % 64 == 0
+            && self.skinny_on.get()
+            && lm.pack.rows as usize == c.vocab
+            && crate::skinny::SkinnyKern::takes(&lm.pack)
+        {
             let dl = self.dlg.borrow().as_ref().map_or(0, |b| b.ptr);
             self.skinny.gemv_rows(s, &lm.pack, self.hlast.ptr, dl, 1, 0, pv)?;
             self.skinny.gemv_rows(s, &lm.pack, self.hlast.ptr, dl, 1, tail, c.vocab)?;
@@ -3280,7 +3928,8 @@ impl EngineQx {
                         if last {
                             first = self.read_sample()?;
                         }
-                        let toks: Vec<u32> = if last { prompt[at + 1..].iter().copied().chain([first.token]).collect() } else { prompt[at + 1..at + 1 + n].to_vec() };
+                        let toks: Vec<u32> =
+                            if last { prompt[at + 1..].iter().copied().chain([first.token]).collect() } else { prompt[at + 1..at + 1 + n].to_vec() };
                         let d = self.mtp_whole(&toks, start)?;
                         if last {
                             self.n = start + n;
@@ -3447,7 +4096,14 @@ impl EngineQx {
 
 /// The core's layer for the model's mixture-of-experts layers: softmax over bf16 logits, the top k renormalised, SwiGLU without a clamp.
 pub fn moe_cfg(c: &ConfigQx) -> MoeCfg {
-    MoeCfg { experts: c.experts, router_hidden: c.hidden, hidden: c.hidden, inter: c.inter, router: Router { renorm: c.norm_topk, ..Router::softmax(c.top_k) }, act: Act::SwiGlu { limit: None } }
+    MoeCfg {
+        experts: c.experts,
+        router_hidden: c.hidden,
+        hidden: c.hidden,
+        inter: c.inter,
+        router: Router { renorm: c.norm_topk, ..Router::softmax(c.top_k) },
+        act: Act::SwiGlu { limit: None },
+    }
 }
 
 /// Expert `e`'s slice of a 3-D expert tensor [experts, rows, cols] (bf16) of `ck`: (the file's tensor, rows, cols).
@@ -3487,23 +4143,34 @@ impl QxMoe {
         let gate = tensor(ck, &format!("{p}.shared_expert_gate.weight"))?;
         let packs = c.layer_packs(l);
         let [s_up, s_down] = &packs[packs.len() - 2..] else { return err("a layer without its shared expert") };
-        let shared = Shared { inter: c.shared_inter, up: upload_packed(read_pack(ck, None, s_up, level)?)?, down: upload_packed(read_pack(ck, None, s_down, level)?)?, gate: Some(gate) };
+        let shared = Shared {
+            inter: c.shared_inter,
+            up: upload_packed(read_pack(ck, None, s_up, level)?)?,
+            down: upload_packed(read_pack(ck, None, s_down, level)?)?,
+            gate: Some(gate),
+        };
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
         let (mut up, mut down): (Vec<glyd_gpu::pack::Tiered>, Vec<glyd_gpu::pack::Tiered>) = (Vec::new(), Vec::new());
         let (gu, dn) = (format!("{p}.experts.gate_up_proj"), format!("{p}.experts.down_proj"));
-        ordered(2 * c.experts, threads, 2 * threads, &|k| {
-            let (name, rows, cols) = if k % 2 == 0 { (&gu, 2 * c.inter, c.hidden) } else { (&dn, c.hidden, c.inter) };
-            let w = read_expert(ck, name, k / 2)?;
-            let packed = match level {
-                Layout::Int6 => glyd_gpu::pack::pack_int6(&w, rows, cols),
-                Layout::Int5 => glyd_gpu::pack::pack_int5(&w, rows, cols),
-                _ => glyd_gpu::pack::pack_int4(&w, rows, cols),
-            };
-            packed.ok_or_else(|| Error(format!("{name}[{}]: not packable at {level:?}", k / 2)))
-        }, |k, t| {
-            (if k % 2 == 0 { &mut up } else { &mut down }).push(t);
-            Ok(())
-        })?;
+        ordered(
+            2 * c.experts,
+            threads,
+            2 * threads,
+            &|k| {
+                let (name, rows, cols) = if k % 2 == 0 { (&gu, 2 * c.inter, c.hidden) } else { (&dn, c.hidden, c.inter) };
+                let w = read_expert(ck, name, k / 2)?;
+                let packed = match level {
+                    Layout::Int6 => glyd_gpu::pack::pack_int6(&w, rows, cols),
+                    Layout::Int5 => glyd_gpu::pack::pack_int5(&w, rows, cols),
+                    _ => glyd_gpu::pack::pack_int4(&w, rows, cols),
+                };
+                packed.ok_or_else(|| Error(format!("{name}[{}]: not packable at {level:?}", k / 2)))
+            },
+            |k, t| {
+                (if k % 2 == 0 { &mut up } else { &mut down }).push(t);
+                Ok(())
+            },
+        )?;
         let (ju, jd) = (Joined::of(&up.iter().collect::<Vec<_>>())?, Joined::of(&down.iter().collect::<Vec<_>>())?);
         let w = MoeWeights { router, bias: None, escale: None, up: ExpertStack::upload(&ju)?, down: Down::Block(ExpertStack::upload(&jd)?) };
         Ok(QxMoe { layer: MoeLayer::new(moe_cfg(c), w, Some(shared))? })
@@ -3550,7 +4217,18 @@ mod tests {
     /// The n-gram contexts follow transformers' `_shift_right_ignore_eos`: the token before (the end token at the start), and the one before that unless the token before is the end token.
     #[test]
     fn the_ngram_contexts() {
-        let g = Ngram { shards: Vec::new(), q4: false, per_shard: 1, heads: 2, per_order: 1, row: 1, mult: [3, 5, 7], size: vec![11, 13], offset: vec![0, 11], eos: 9 };
+        let g = Ngram {
+            shards: Vec::new(),
+            q4: false,
+            per_shard: 1,
+            heads: 2,
+            per_order: 1,
+            row: 1,
+            mult: [3, 5, 7],
+            size: vec![11, 13],
+            offset: vec![0, 11],
+            eos: 9,
+        };
         assert_eq!(g.contexts([9, 9], &[1, 2, 3]), [(1, 9, 9), (2, 1, 9), (3, 2, 1)]);
         assert_eq!(g.contexts([4, 5], &[9, 6, 7]), [(9, 5, 4), (6, 9, 9), (7, 6, 9)]);
         assert_eq!(g.contexts([9, 9], &[]), []);

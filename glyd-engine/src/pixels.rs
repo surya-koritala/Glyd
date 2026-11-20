@@ -60,8 +60,19 @@ fn png(b: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
     }
     let bits = chans * depth;
     let bpp = (bits / 8).max(1);
-    let passes: &[(usize, usize, usize, usize)] = if interlace == 1 { &[(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)] } else { &[(0, 0, 1, 1)] };
-    let want: usize = passes.iter().map(|&(x0, y0, dx, dy)| { let (pw, ph) = (w.saturating_sub(x0).div_ceil(dx), h.saturating_sub(y0).div_ceil(dy)); if pw == 0 { 0 } else { ph * (1 + (pw * bits).div_ceil(8)) } }).sum();
+    let passes: &[(usize, usize, usize, usize)] =
+        if interlace == 1 { &[(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)] } else { &[(0, 0, 1, 1)] };
+    let want: usize = passes
+        .iter()
+        .map(|&(x0, y0, dx, dy)| {
+            let (pw, ph) = (w.saturating_sub(x0).div_ceil(dx), h.saturating_sub(y0).div_ceil(dy));
+            if pw == 0 {
+                0
+            } else {
+                ph * (1 + (pw * bits).div_ceil(8))
+            }
+        })
+        .sum();
     let mut raw = Vec::with_capacity(want);
     flate2::read::ZlibDecoder::new(&z[..]).take(want as u64).read_to_end(&mut raw).map_err(|_| bad())?;
     if raw.len() < want {
@@ -99,7 +110,13 @@ fn png(b: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
                     4 => {
                         let p = a + up - c;
                         let (pa, pb, pc) = ((p - a).abs(), (p - up).abs(), (p - c).abs());
-                        if pa <= pb && pa <= pc { a } else if pb <= pc { up } else { c }
+                        if pa <= pb && pa <= pc {
+                            a
+                        } else if pb <= pc {
+                            up
+                        } else {
+                            c
+                        }
                     }
                     _ => return Err(bad()),
                 };
@@ -127,8 +144,8 @@ fn png(b: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
 
 /// The order a block's 64 coefficients come in (the zigzag), as positions in the 8 x 8 block.
 const ZIGZAG: [usize; 64] = [
-    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
-    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29,
+    22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
 /// A table of the scan's variable-length codes (a DHT segment's): codes of up to 9 bits looked up at once, longer ones by their length's first and last code.
@@ -230,7 +247,11 @@ impl Bits<'_> {
             return 0;
         }
         let v = self.get(s) as i32;
-        if v < 1 << (s - 1) { v - (1 << s) + 1 } else { v }
+        if v < 1 << (s - 1) {
+            v - (1 << s) + 1
+        } else {
+            v
+        }
     }
 
     fn decode(&mut self, t: &Codes) -> Result<u8, String> {
@@ -354,7 +375,9 @@ fn jpeg(b: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
                     c.coef = vec![0; c.bw * c.bh * 64];
                 }
             }
-            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return Err("a JPEG of a kind this engine does not read (lossless, hierarchical or arithmetic-coded)".into()),
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => {
+                return Err("a JPEG of a kind this engine does not read (lossless, hierarchical or arithmetic-coded)".into())
+            }
             0xC4 => {
                 let mut p = 0;
                 while p + 17 <= seg.len() {
@@ -366,7 +389,11 @@ fn jpeg(b: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
                         return Err(bad());
                     }
                     let t = Some(Codes::new(&counts, vals)?);
-                    if class == 0 { dct[id] = t } else { act[id] = t }
+                    if class == 0 {
+                        dct[id] = t
+                    } else {
+                        act[id] = t
+                    }
                     p += 17 + n;
                 }
             }
@@ -452,10 +479,30 @@ fn jpeg(b: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
 
 /// One scan from `at` (after its header) into the components' coefficients; where the next segment starts.
 #[allow(clippy::too_many_arguments)]
-fn scan(b: &[u8], at: usize, comps: &mut [Comp], sc: &[usize], (ss, se, ah, al): (usize, usize, u32, u32), progressive: bool, restart: usize, (mcux, mcuy): (usize, usize), (w, h, hmax, vmax): (usize, usize, usize, usize), dct: &[Option<Codes>], act: &[Option<Codes>]) -> Result<usize, String> {
+fn scan(
+    b: &[u8],
+    at: usize,
+    comps: &mut [Comp],
+    sc: &[usize],
+    (ss, se, ah, al): (usize, usize, u32, u32),
+    progressive: bool,
+    restart: usize,
+    (mcux, mcuy): (usize, usize),
+    (w, h, hmax, vmax): (usize, usize, usize, usize),
+    dct: &[Option<Codes>],
+    act: &[Option<Codes>],
+) -> Result<usize, String> {
     let mut bits = Bits { d: b, at, acc: 0, n: 0, marker: None };
     let table = |t: &[Option<Codes>], i: usize| t[i].clone().ok_or_else(|| "a JPEG scan with a code table it does not define".to_string());
-    let tabs: Vec<(Option<Codes>, Option<Codes>)> = sc.iter().map(|&ci| Ok::<_, String>((if ss == 0 && ah == 0 { Some(table(dct, comps[ci].dc)?) } else { None }, if se > 0 { Some(table(act, comps[ci].ac)?) } else { None }))).collect::<Result<_, _>>()?;
+    let tabs: Vec<(Option<Codes>, Option<Codes>)> = sc
+        .iter()
+        .map(|&ci| {
+            Ok::<_, String>((
+                if ss == 0 && ah == 0 { Some(table(dct, comps[ci].dc)?) } else { None },
+                if se > 0 { Some(table(act, comps[ci].ac)?) } else { None },
+            ))
+        })
+        .collect::<Result<_, _>>()?;
     let mut eobrun = 0u32;
     // the blocks of each MCU: an interleaved scan's MCU has each component's h x v blocks; a scan of one component has its blocks one at a time, as many as its samples cover
     let (units_x, units_y) = if sc.len() == 1 {
@@ -725,7 +772,13 @@ mod tests {
                     _ => {
                         let q = a + b - c;
                         let (pa, pb, pc) = ((q - a).abs(), (q - b).abs(), (q - c).abs());
-                        if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c }
+                        if pa <= pb && pa <= pc {
+                            a
+                        } else if pb <= pc {
+                            b
+                        } else {
+                            c
+                        }
                     }
                 };
                 raw.push(l[k].wrapping_sub(p as u8));
@@ -740,7 +793,14 @@ mod tests {
         head.extend((w as u32).to_be_bytes());
         head.extend((h as u32).to_be_bytes());
         head.extend([depth, color, 0, 0, interlace]);
-        [&b"\x89PNG\r\n\x1a\n"[..], &chunk(b"IHDR", &head), &chunk(b"PLTE", &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]), &chunk(b"IDAT", &z), &chunk(b"IEND", &[])].concat()
+        [
+            &b"\x89PNG\r\n\x1a\n"[..],
+            &chunk(b"IHDR", &head),
+            &chunk(b"PLTE", &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]),
+            &chunk(b"IDAT", &z),
+            &chunk(b"IEND", &[]),
+        ]
+        .concat()
     }
 
     #[test]
@@ -762,7 +822,16 @@ mod tests {
         let lines: Vec<Vec<u8>> = (0..h).map(|y| (0..w).flat_map(|x| px(x, y)).collect()).collect();
         assert_eq!(rgb(&png_of(w, h, 8, 2, 0, &lines, 3)).unwrap(), (w, h, want.clone()));
         // RGBA 16-bit: the high bytes, alpha dropped
-        let lines: Vec<Vec<u8>> = (0..h).map(|y| (0..w).flat_map(|x| { let p = px(x, y); [p[0], 1, p[1], 2, p[2], 3, 9, 9] }).collect()).collect();
+        let lines: Vec<Vec<u8>> = (0..h)
+            .map(|y| {
+                (0..w)
+                    .flat_map(|x| {
+                        let p = px(x, y);
+                        [p[0], 1, p[1], 2, p[2], 3, 9, 9]
+                    })
+                    .collect()
+            })
+            .collect();
         assert_eq!(rgb(&png_of(w, h, 16, 6, 0, &lines, 8)).unwrap().2, want);
         // Adam7 interlaced RGB
         let mut lines = Vec::new();
@@ -774,10 +843,20 @@ mod tests {
         assert_eq!(rgb(&png_of(w, h, 8, 2, 1, &lines, 3)).unwrap().2, want);
         // 2-bit gray (0, 85, 170, 255) and a 4-bit palette
         let g = |x: usize, y: usize| ((x + y) % 4) as u8;
-        let lines: Vec<Vec<u8>> = (0..h).map(|y| (0..w.div_ceil(4)).map(|b| (0..4).fold(0u8, |a, i| a << 2 | if 4 * b + i < w { g(4 * b + i, y) } else { 0 })).collect()).collect();
+        let lines: Vec<Vec<u8>> =
+            (0..h).map(|y| (0..w.div_ceil(4)).map(|b| (0..4).fold(0u8, |a, i| a << 2 | if 4 * b + i < w { g(4 * b + i, y) } else { 0 })).collect()).collect();
         assert_eq!(rgb(&png_of(w, h, 2, 0, 0, &lines, 1)).unwrap().2, (0..h).flat_map(|y| (0..w).flat_map(move |x| [g(x, y) * 85; 3])).collect::<Vec<u8>>());
-        let lines: Vec<Vec<u8>> = (0..h).map(|y| (0..w.div_ceil(2)).map(|b| (0..2).fold(0u8, |a, i| a << 4 | if 2 * b + i < w { g(2 * b + i, y) } else { 0 })).collect()).collect();
-        assert_eq!(rgb(&png_of(w, h, 4, 3, 0, &lines, 1)).unwrap().2, (0..h).flat_map(|y| (0..w).flat_map(move |x| { let k = g(x, y) * 30; [10 + k, 20 + k, 30 + k] })).collect::<Vec<u8>>());
+        let lines: Vec<Vec<u8>> =
+            (0..h).map(|y| (0..w.div_ceil(2)).map(|b| (0..2).fold(0u8, |a, i| a << 4 | if 2 * b + i < w { g(2 * b + i, y) } else { 0 })).collect()).collect();
+        assert_eq!(
+            rgb(&png_of(w, h, 4, 3, 0, &lines, 1)).unwrap().2,
+            (0..h)
+                .flat_map(|y| (0..w).flat_map(move |x| {
+                    let k = g(x, y) * 30;
+                    [10 + k, 20 + k, 30 + k]
+                }))
+                .collect::<Vec<u8>>()
+        );
         assert!(rgb(b"\x89PNG\r\n\x1a\n").is_err());
     }
 

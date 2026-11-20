@@ -346,7 +346,11 @@ pub fn kind_of(t: &Trees, stored_len: usize, z_fixed: bool) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{parse, tests::{text, zlib_deflate}, Kind};
+    use super::super::{
+        parse,
+        tests::{text, zlib_deflate},
+        Kind,
+    };
     use super::*;
 
     /// Every dynamic header of zlib's streams, at every level, comes
@@ -360,8 +364,23 @@ mod tests {
             for (i, b) in s.blocks.iter().enumerate() {
                 if let Kind::Dynamic(h, tokens) = &b.kind {
                     let t = build(tokens);
-                    assert!(t.header == *h, "level {level} block {i}: header\n  got {:?} {:?} {:?}\n  want {:?} {:?} {:?}", t.header.hlit, t.header.hdist, t.header.hclen, h.hlit, h.hdist, h.hclen);
-                    let bytes: usize = tokens.iter().map(|t| match t { Token::Lit(_) => 1, Token::Ref { len, .. } => *len as usize }).sum();
+                    assert!(
+                        t.header == *h,
+                        "level {level} block {i}: header\n  got {:?} {:?} {:?}\n  want {:?} {:?} {:?}",
+                        t.header.hlit,
+                        t.header.hdist,
+                        t.header.hclen,
+                        h.hlit,
+                        h.hdist,
+                        h.hclen
+                    );
+                    let bytes: usize = tokens
+                        .iter()
+                        .map(|t| match t {
+                            Token::Lit(_) => 1,
+                            Token::Ref { len, .. } => *len as usize,
+                        })
+                        .sum();
                     assert_eq!(kind_of(&t, bytes, false), 2, "level {level} block {i}: kind");
                 }
             }
@@ -369,7 +388,13 @@ mod tests {
         let stream = zlib_deflate(&plain, 6, "Z_FIXED");
         for b in &parse(&stream).unwrap().blocks {
             if let Kind::Fixed(tokens) = &b.kind {
-                let bytes: usize = tokens.iter().map(|t| match t { Token::Lit(_) => 1, Token::Ref { len, .. } => *len as usize }).sum();
+                let bytes: usize = tokens
+                    .iter()
+                    .map(|t| match t {
+                        Token::Lit(_) => 1,
+                        Token::Ref { len, .. } => *len as usize,
+                    })
+                    .sum();
                 assert_eq!(kind_of(&build(tokens), bytes, true), 1);
             }
         }

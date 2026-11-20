@@ -23,6 +23,7 @@
 
 use crate::cpu_hb::{CbView, HbExpert};
 use crate::dev::{Buf, Dev, Kernel};
+use crate::disk::{Aligned, DirectFile};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::launch;
 use crate::model35::Mat;
@@ -31,7 +32,6 @@ use crate::moe::{add_shared_with, route_with, shared_add_with, shared_mlp_with, 
 use crate::moe_nh::{bias_f32, moe_cfg};
 use crate::moe_rows::{split_for, ROWS_MAX_INTER};
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
-use crate::disk::{Aligned, DirectFile};
 use crate::offload::{Call, DiskIn, ExpertStore, Groups, GroupsCall, HostHalf, PackIn, Reader, Stage, CPU_TOKENS};
 use crate::weights::{ordered, read_pack, upload_bytes, upload_packed, v7_manifest, Layout};
 use glyd_gpu::codebook::{cb_rows_bits, cb_strides, CbRows};
@@ -124,7 +124,21 @@ impl HbKern {
     /// # Safety
     /// As `rot_in`; the ids in `via` are below the places the stack has.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn up(&self, s: Stream, bits: u32, st: &HbStack, zr: u64, plan: u64, via: u64, a: u64, experts: usize, inter: usize, cols: usize, k: usize, pairs: usize) -> Result<()> {
+    pub unsafe fn up(
+        &self,
+        s: Stream,
+        bits: u32,
+        st: &HbStack,
+        zr: u64,
+        plan: u64,
+        via: u64,
+        a: u64,
+        experts: usize,
+        inter: usize,
+        cols: usize,
+        k: usize,
+        pairs: usize,
+    ) -> Result<()> {
         let m = st.up_arrays();
         launch!(self.up[group_index(bits)], [pairs as u32, inter.div_ceil(UP_ROWS) as u32, 1], [256, 1, 1], s;
             zr, plan, via, m.codes, m.scales, m.book, m.codes_stride, m.scales_stride, m.book_stride, a, experts as i32, inter as i32, cols as i32, k as i32)
@@ -135,7 +149,21 @@ impl HbKern {
     /// # Safety
     /// As `up`; `part` has room for `pairs split hidden` floats.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn down(&self, s: Stream, bits: u32, st: &HbStack, a: u64, plan: u64, via: u64, part: u64, experts: usize, inter: usize, hidden: usize, split: usize, pairs: usize) -> Result<()> {
+    pub unsafe fn down(
+        &self,
+        s: Stream,
+        bits: u32,
+        st: &HbStack,
+        a: u64,
+        plan: u64,
+        via: u64,
+        part: u64,
+        experts: usize,
+        inter: usize,
+        hidden: usize,
+        split: usize,
+        pairs: usize,
+    ) -> Result<()> {
         let m = st.down_arrays();
         launch!(self.down[group_index(bits)], [pairs as u32, split as u32, hidden.div_ceil(DOWN_OUT) as u32], [256, 1, 1], s;
             a, plan, via, m.codes, m.scales, m.book, m.codes_stride, m.scales_stride, m.book_stride, part, experts as i32, inter as i32, hidden as i32, split as i32)
@@ -147,7 +175,21 @@ impl HbKern {
     /// # Safety
     /// As `rot_in`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn sum_rot(&self, s: Stream, part: u64, wts: u64, ids: u64, signs: u64, y: u64, extra: u64, tokens: usize, experts: usize, k: usize, hidden: usize, split: usize) -> Result<()> {
+    pub unsafe fn sum_rot(
+        &self,
+        s: Stream,
+        part: u64,
+        wts: u64,
+        ids: u64,
+        signs: u64,
+        y: u64,
+        extra: u64,
+        tokens: usize,
+        experts: usize,
+        k: usize,
+        hidden: usize,
+        split: usize,
+    ) -> Result<()> {
         if !(ROT_MIN..=ROT_MAX).contains(&hidden) || !hidden.is_power_of_two() {
             return err(format!("a transform over {hidden} values: a power of two from {ROT_MIN} to {ROT_MAX}"));
         }
@@ -188,7 +230,17 @@ impl HbPlace {
         }
         let (c, s, b) = cb_strides(bits, cols);
         let (codes, scales, book) = (pad16(rows * c), pad16(rows * s), pad16(rows * b));
-        Ok(HbPlace { bits, rows, cols, data: 2 * codes, meta: 2 * (scales + book), down_codes: codes, up_book: scales, down_scales: scales + book, down_book: 2 * scales + book })
+        Ok(HbPlace {
+            bits,
+            rows,
+            cols,
+            data: 2 * codes,
+            meta: 2 * (scales + book),
+            down_codes: codes,
+            up_book: scales,
+            down_scales: scales + book,
+            down_book: 2 * scales + book,
+        })
     }
 
     /// The bytes an expert takes in the stack, as the plans count them (codes, scales and codebooks of its two matrices).
@@ -199,7 +251,16 @@ impl HbPlace {
     /// An expert's two matrices as the CPU half reads them (src/cpu_hb.rs), over the bytes of its place as they are: `data` and `meta` are its place's `data` and `meta` bytes, in the host tier or in a stack's host copy (nothing is copied).
     pub fn expert<'a>(&self, data: &'a [u8], meta: &'a [u8]) -> Result<HbExpert<'a>> {
         if data.len() != self.data || meta.len() != self.meta {
-            return err(format!("{} + {} bytes, where an expert of {} x {} at {} bits takes {} + {}", data.len(), meta.len(), self.rows, self.cols, self.bits, self.data, self.meta));
+            return err(format!(
+                "{} + {} bytes, where an expert of {} x {} at {} bits takes {} + {}",
+                data.len(),
+                meta.len(),
+                self.rows,
+                self.cols,
+                self.bits,
+                self.data,
+                self.meta
+            ));
         }
         let (c, s, b) = cb_strides(self.bits, self.cols);
         let view = |codes: usize, scales: usize, book: usize| CbView {
@@ -217,7 +278,10 @@ impl HbPlace {
     fn put(&self, up: &CbRows, down: &CbRows, data: &mut [u8], meta: &mut [u8]) -> Result<()> {
         for m in [up, down] {
             if (m.bits, m.rows, m.cols) != (self.bits, self.rows, self.cols) || !m.is_valid() {
-                return err(format!("a matrix of {} x {} at {} bits, where the group's experts are {} x {} at {}", m.rows, m.cols, m.bits, self.rows, self.cols, self.bits));
+                return err(format!(
+                    "a matrix of {} x {} at {} bits, where the group's experts are {} x {} at {}",
+                    m.rows, m.cols, m.bits, self.rows, self.cols, self.bits
+                ));
             }
         }
         data[..up.codes.len()].copy_from_slice(&up.codes);
@@ -298,12 +362,26 @@ impl HbStack {
 
     pub fn up_arrays(&self) -> HbArrays {
         let p = &self.place;
-        HbArrays { codes: self.data.ptr, scales: self.meta.ptr, book: self.meta.ptr + p.up_book as u64, codes_stride: p.data as i64, scales_stride: p.meta as i64, book_stride: p.meta as i64 }
+        HbArrays {
+            codes: self.data.ptr,
+            scales: self.meta.ptr,
+            book: self.meta.ptr + p.up_book as u64,
+            codes_stride: p.data as i64,
+            scales_stride: p.meta as i64,
+            book_stride: p.meta as i64,
+        }
     }
 
     pub fn down_arrays(&self) -> HbArrays {
         let p = &self.place;
-        HbArrays { codes: self.data.ptr + p.down_codes as u64, scales: self.meta.ptr + p.down_scales as u64, book: self.meta.ptr + p.down_book as u64, codes_stride: p.data as i64, scales_stride: p.meta as i64, book_stride: p.meta as i64 }
+        HbArrays {
+            codes: self.data.ptr + p.down_codes as u64,
+            scales: self.meta.ptr + p.down_scales as u64,
+            book: self.meta.ptr + p.down_book as u64,
+            codes_stride: p.data as i64,
+            scales_stride: p.meta as i64,
+            book_stride: p.meta as i64,
+        }
     }
 }
 
@@ -326,12 +404,21 @@ fn matrix_bits(manifest: &Value, key: &str, rows: usize, cols: usize, down: bool
         "c2r" => 2,
         other => return err(format!("glyd.json: {key}: layout {other:?}, where a Hummingbird directory's experts are `c3r` or `c2r`")),
     };
-    let tiers = e.get("tiers").and_then(Value::as_u64s).filter(|t| t.len() == 3).ok_or_else(|| Error(format!("glyd.json: {key}: the pack's words are missing")))?;
+    let tiers =
+        e.get("tiers").and_then(Value::as_u64s).filter(|t| t.len() == 3).ok_or_else(|| Error(format!("glyd.json: {key}: the pack's words are missing")))?;
     if cb_rows_bits((tiers[0] >> 24) as u32) != Some(bits) || tiers[0] & 0xFF_FFFF != 0 || tiers[1] != 0 || tiers[2] != 0 {
-        return err(format!("glyd.json: {key}: words {tiers:x?}, where the {lay} layout's are [{:#x}, 0, 0]", (glyd_gpu::codebook::cb_rows_tag(bits).unwrap_or(0) as u64) << 24));
+        return err(format!(
+            "glyd.json: {key}: words {tiers:x?}, where the {lay} layout's are [{:#x}, 0, 0]",
+            (glyd_gpu::codebook::cb_rows_tag(bits).unwrap_or(0) as u64) << 24
+        ));
     }
     if e.get("shape").and_then(Value::as_u64s) != Some(vec![rows as u64, cols as u64]) || e.get("transposed").and_then(Value::as_bool) != Some(down) {
-        return err(format!("glyd.json: {key}: shape {:?} (transposed {:?}), where the config has {rows} neuron rows of {cols} values ({})", e.get("shape").and_then(Value::as_u64s), e.get("transposed").and_then(Value::as_bool), if down { "the transpose of the weight" } else { "the weight itself" }));
+        return err(format!(
+            "glyd.json: {key}: shape {:?} (transposed {:?}), where the config has {rows} neuron rows of {cols} values ({})",
+            e.get("shape").and_then(Value::as_u64s),
+            e.get("transposed").and_then(Value::as_bool),
+            if down { "the transpose of the weight" } else { "the weight itself" }
+        ));
     }
     Ok(bits)
 }
@@ -340,7 +427,9 @@ fn matrix_bits(manifest: &Value, key: &str, rows: usize, cols: usize, down: bool
 fn read_matrix(ck: &Checkpoint, manifest: &Value, key: &str, rows: usize, cols: usize, down: bool) -> Result<CbRows> {
     let bits = matrix_bits(manifest, key, rows, cols, down)?;
     let read = |b: &str| ck.read(&format!("{key}.glyd_{b}")).map_err(|e| Error(e.to_string()));
-    CbRows::new(bits, rows, cols, read("data")?, read("blocks")?, read("codebook")?).ok_or_else(|| Error(format!("{key}: buffers that are not {rows} neuron rows of {cols} values at {bits} bits, or a scale or an entry that is not finite")))
+    CbRows::new(bits, rows, cols, read("data")?, read("blocks")?, read("codebook")?).ok_or_else(|| {
+        Error(format!("{key}: buffers that are not {rows} neuron rows of {cols} values at {bits} bits, or a scale or an entry that is not finite"))
+    })
 }
 
 /// The signs of layer `l`'s rotation: `glyd_rot_signs`, int8 [cols] of +1 and -1.
@@ -364,16 +453,27 @@ pub fn read_layer(ck: &Checkpoint, manifest: &Value, c: &ConfigNemotronH, l: usi
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
     let (mut pairs, mut group_of): ([Vec<(CbRows, CbRows)>; 2], Vec<u8>) = ([Vec::new(), Vec::new()], Vec::new());
     let mut local_of = Vec::new();
-    ordered(m.experts, threads, 2 * threads, &|e| Ok((read_matrix(ck, manifest, &format!("{p}.{e}.up_proj"), m.inter, m.latent, false)?, read_matrix(ck, manifest, &format!("{p}.{e}.down_proj"), m.inter, m.latent, true)?)), |e, (up, down)| {
-        if up.bits != down.bits {
-            return err(format!("{p}.{e}: its up matrix is {} bits and its down matrix {}", up.bits, down.bits));
-        }
-        let g = group_index(up.bits);
-        group_of.push(g as u8);
-        local_of.push(pairs[g].len() as u16);
-        pairs[g].push((up, down));
-        Ok(())
-    })?;
+    ordered(
+        m.experts,
+        threads,
+        2 * threads,
+        &|e| {
+            Ok((
+                read_matrix(ck, manifest, &format!("{p}.{e}.up_proj"), m.inter, m.latent, false)?,
+                read_matrix(ck, manifest, &format!("{p}.{e}.down_proj"), m.inter, m.latent, true)?,
+            ))
+        },
+        |e, (up, down)| {
+            if up.bits != down.bits {
+                return err(format!("{p}.{e}: its up matrix is {} bits and its down matrix {}", up.bits, down.bits));
+            }
+            let g = group_index(up.bits);
+            group_of.push(g as u8);
+            local_of.push(pairs[g].len() as u16);
+            pairs[g].push((up, down));
+            Ok(())
+        },
+    )?;
     let mut groups = [None, None];
     for (g, ps) in pairs.iter().enumerate() {
         if !ps.is_empty() {
@@ -404,7 +504,10 @@ pub fn index_layer(manifest: &Value, c: &ConfigNemotronH, l: usize) -> Result<Hb
     let (m, p) = (&c.moe, format!("{}layers.{l}.mixer.experts", c.prefix));
     let mut out = HbIndex { group_of: Vec::new(), local_of: Vec::new(), members: [Vec::new(), Vec::new()] };
     for e in 0..m.experts {
-        let (up, down) = (matrix_bits(manifest, &format!("{p}.{e}.up_proj"), m.inter, m.latent, false)?, matrix_bits(manifest, &format!("{p}.{e}.down_proj"), m.inter, m.latent, true)?);
+        let (up, down) = (
+            matrix_bits(manifest, &format!("{p}.{e}.up_proj"), m.inter, m.latent, false)?,
+            matrix_bits(manifest, &format!("{p}.{e}.down_proj"), m.inter, m.latent, true)?,
+        );
         if up != down {
             return err(format!("{p}.{e}: its up matrix is {up} bits and its down matrix {down}"));
         }
@@ -482,7 +585,9 @@ impl HbDisk {
             let mut segs = [Seg::default(); 6];
             let mut i = 0;
             for (matrix, codes, scales, book) in [("up_proj", 0, 0, place.up_book), ("down_proj", place.down_codes, place.down_scales, place.down_book)] {
-                for (part, bytes, meta, to) in [("data", place.rows * cs, false, codes), ("blocks", place.rows * ss, true, scales), ("codebook", place.rows * bs, true, book)] {
+                for (part, bytes, meta, to) in
+                    [("data", place.rows * cs, false, codes), ("blocks", place.rows * ss, true, scales), ("codebook", place.rows * bs, true, book)]
+                {
                     let key = format!("{p}.{e}.{matrix}.glyd_{part}");
                     let (file, t) = ck.get(&key).ok_or_else(|| Error(format!("{}: no tensor {key}", ck.dir.display())))?;
                     if t.bytes != bytes as u64 || t.dtype != "U8" {
@@ -691,7 +796,9 @@ impl NhMoeHb {
         }
         let bias = tensor(&format!("{p}.gate.e_score_correction_bias")).and_then(|(d, b)| bias_f32(&d, &b))?;
         let dense = c.layer_packs(l).iter().map(|pk| read_pack(ck, Some(&v7), pk, pack_layout(layout, &pk.key))).collect::<Result<Vec<_>>>()?;
-        let Ok([fc1, fc2, s_up, s_down]) = <[_; 4]>::try_from(dense) else { return err(format!("layer {l}: a mixture-of-experts layer has four matrices besides its experts")) };
+        let Ok([fc1, fc2, s_up, s_down]) = <[_; 4]>::try_from(dense) else {
+            return err(format!("layer {l}: a mixture-of-experts layer has four matrices besides its experts"));
+        };
         let index = c.kinds[..l].iter().filter(|&&k| k == NhKind::Moe).count();
         // where the computer's memory holds only some of the model's experts (the store has a budget for them), the layer's experts stay in the packed directory and are read into the host tier's slots as the router asks for them
         // (src/offload.rs `Tier`): none of them is read here but the ones a group the GPU holds whole is uploaded from, and the slots' first experts
@@ -716,8 +823,19 @@ impl NhMoeHb {
                     let (dev, stride) = stack.places();
                     match &disk {
                         // (the host reads the group's places in the host tier where they are: no second copy of any matrix)
-                        None => store.add_layer(2 * index + g, h.experts, s[g], &[PackIn { bytes: [&h.data, &h.meta], stride, dev }], Some(HostHalf::Hb(h.place)))?,
-                        Some((d, ix)) => store.add_layer_on_disk(2 * index + g, h.experts, s[g], DiskIn { place: h.place, dev, ram: store.host_slots(h.experts, h.place.bytes())?, read: d.reader(ix.members[g].clone()) })?,
+                        None => store.add_layer(
+                            2 * index + g,
+                            h.experts,
+                            s[g],
+                            &[PackIn { bytes: [&h.data, &h.meta], stride, dev }],
+                            Some(HostHalf::Hb(h.place)),
+                        )?,
+                        Some((d, ix)) => store.add_layer_on_disk(
+                            2 * index + g,
+                            h.experts,
+                            s[g],
+                            DiskIn { place: h.place, dev, ram: store.host_slots(h.experts, h.place.bytes())?, read: d.reader(ix.members[g].clone()) },
+                        )?,
                     }
                     HbGroup { stack, store_layer: Some(2 * index + g) }
                 }
@@ -755,14 +873,27 @@ impl NhMoeHb {
     fn scratch<'a>(&'a self, e: &'a dyn NhHost) -> Result<(&'a MoeScratch, &'a HbScratch)> {
         if e.moe_scratch().get().is_none() {
             let c = &self.cfg;
-            let shape = Shape { cfg: *c, twelve: false, shared: Some((self.shared.inter, self.shared.up.pack.cols as usize, self.shared.down.pack.rows as usize)), expert_rows: c.inter, sparse: true, slice: 1 };
+            let shape = Shape {
+                cfg: *c,
+                twelve: false,
+                shared: Some((self.shared.inter, self.shared.up.pack.cols as usize, self.shared.down.pack.rows as usize)),
+                expert_rows: c.inter,
+                sparse: true,
+                slice: 1,
+            };
             let _ = e.moe_scratch().set(MoeScratch::for_shapes(e.dev(), e.lib(), &[shape], e.chunk())?);
         }
         let sc = e.moe_scratch().get().ok_or_else(|| Error("the mixture-of-experts scratch is not made".into()))?;
         if self.common.scratch.get().is_none() {
             let (n, k) = (e.chunk(), self.cfg.router.top_k);
             let cpu_pairs = n.min(CPU_TOKENS) * k * 8;
-            let _ = self.common.scratch.set(HbScratch { kern: HbKern::load(e.dev())?, zr: Buf::new(n * self.cfg.hidden * 4)?, gids: Buf::new(n * k * 8)?, ways: [Buf::new(cpu_pairs)?, Buf::new(cpu_pairs)?], sids: Buf::new(cpu_pairs)? });
+            let _ = self.common.scratch.set(HbScratch {
+                kern: HbKern::load(e.dev())?,
+                zr: Buf::new(n * self.cfg.hidden * 4)?,
+                gids: Buf::new(n * k * 8)?,
+                ways: [Buf::new(cpu_pairs)?, Buf::new(cpu_pairs)?],
+                sids: Buf::new(cpu_pairs)?,
+            });
         }
         Ok((sc, self.common.scratch.get().ok_or_else(|| Error("the Hummingbird scratch is not made".into()))?))
     }
@@ -794,9 +925,16 @@ impl NhMoeHb {
         let (k, pairs) = (c.router.top_k, t * c.router.top_k);
         let split = hs.kern.split(pairs).min(sc.part.bytes / (pairs.max(1) * c.hidden * 4));
         if split == 0 {
-            return err(format!("{pairs} pairs of {} outputs need {} bytes of partial sums, where {} are given", c.hidden, pairs * c.hidden * 4, sc.part.bytes));
+            return err(format!(
+                "{pairs} pairs of {} outputs need {} bytes of partial sums, where {} are given",
+                c.hidden,
+                pairs * c.hidden * 4,
+                sc.part.bytes
+            ));
         }
-        let sum = |ids: u64, extra: u64| hs.kern.sum_rot(s, sc.part.ptr, sc.wts.ptr, if ids != 0 { ids } else { sc.ids.ptr }, self.signs.ptr, y, extra, t, c.experts, k, c.hidden, split);
+        let sum = |ids: u64, extra: u64| {
+            hs.kern.sum_rot(s, sc.part.ptr, sc.wts.ptr, if ids != 0 { ids } else { sc.ids.ptr }, self.signs.ptr, y, extra, t, c.experts, k, c.hidden, split)
+        };
         hs.kern.rot_in(s, z, c.hidden, self.signs.ptr, hs.zr.ptr, t, c.hidden)?;
         let layers: [Option<usize>; 2] = [0, 1].map(|g| self.store.as_ref().and_then(|_| self.groups[g].as_ref()?.store_layer));
         for g in (0..2).filter(|&g| self.groups[g].is_some() && layers[g].is_none()) {
@@ -809,7 +947,16 @@ impl NhMoeHb {
         };
         let groups = Groups { layers, group_of: &self.host_group_of, local_of: &self.host_local_of };
         if store.serves_groups(&groups, t, pairs) {
-            let call = GroupsCall { ids: sc.ids.ptr, wts: sc.wts.ptr, z: hs.zr.ptr, ways: [hs.ways[0].ptr, hs.ways[1].ptr], sum_ids: hs.sids.ptr, part: sc.cpu.ptr, tokens: t, pairs };
+            let call = GroupsCall {
+                ids: sc.ids.ptr,
+                wts: sc.wts.ptr,
+                z: hs.zr.ptr,
+                ways: [hs.ways[0].ptr, hs.ways[1].ptr],
+                sum_ids: hs.sids.ptr,
+                part: sc.cpu.ptr,
+                tokens: t,
+                pairs,
+            };
             let mut queued = false;
             store.run_groups(&groups, dev, &call, &mut |stage, g, hy| match stage {
                 Stage::Products => {
@@ -830,7 +977,13 @@ impl NhMoeHb {
         for (g, layer) in layers.iter().enumerate().filter_map(|(g, l)| l.map(|l| (g, l))) {
             hs.kern.group_ids(s, sc.ids.ptr, self.group_of.ptr, self.local_of.ptr, g, hs.gids.ptr, pairs, c.experts)?;
             let call = Call { ids: hs.gids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: t, pairs };
-            store.run(layer, dev, &call, &mut |stage, _, _, _| if stage == Stage::Products { self.products(lib, sc, hs, g, sc.way.ptr, pairs, split, s) } else { Ok(()) })?;
+            store.run(layer, dev, &call, &mut |stage, _, _, _| {
+                if stage == Stage::Products {
+                    self.products(lib, sc, hs, g, sc.way.ptr, pairs, split, s)
+                } else {
+                    Ok(())
+                }
+            })?;
         }
         sum(0, 0)?;
         Ok(true)
@@ -877,7 +1030,10 @@ impl MoeBlock for NhMoeHb {
     }
 
     fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
-        [&self.fc1, &self.fc2].into_iter().filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None }).collect()
+        [&self.fc1, &self.fc2]
+            .into_iter()
+            .filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None })
+            .collect()
     }
 }
 
@@ -926,11 +1082,24 @@ mod tests {
         let hosts: Vec<HbHost> = (0..2)
             .map(|g| {
                 let n = group.iter().filter(|&&x| x == g).count();
-                HbHost::of(places[g], &(0..n).map(|_| (matrix(&mut rng, g as u32 + 2, rows, cols), matrix(&mut rng, g as u32 + 2, rows, cols))).collect::<Vec<_>>()).unwrap()
+                HbHost::of(
+                    places[g],
+                    &(0..n).map(|_| (matrix(&mut rng, g as u32 + 2, rows, cols), matrix(&mut rng, g as u32 + 2, rows, cols))).collect::<Vec<_>>(),
+                )
+                .unwrap()
             })
             .collect();
         let local: Vec<usize> = (0..e).map(|x| group[..x].iter().filter(|&&y| y == group[x]).count()).collect();
-        let experts: Vec<HbExpert> = (0..e).map(|x| places[group[x]].expert(&hosts[group[x]].data[local[x] * places[group[x]].data..][..places[group[x]].data], &hosts[group[x]].meta[local[x] * places[group[x]].meta..][..places[group[x]].meta]).unwrap()).collect();
+        let experts: Vec<HbExpert> = (0..e)
+            .map(|x| {
+                places[group[x]]
+                    .expert(
+                        &hosts[group[x]].data[local[x] * places[group[x]].data..][..places[group[x]].data],
+                        &hosts[group[x]].meta[local[x] * places[group[x]].meta..][..places[group[x]].meta],
+                    )
+                    .unwrap()
+            })
+            .collect();
         let signs: Vec<i8> = (0..cols).map(|_| if rng.next() & 1 == 0 { 1 } else { -1 }).collect();
         let z: Vec<f32> = (0..tokens * cols).map(|_| f32::from_bits((bf16(rand(&mut rng) * 2.0 - 1.0) as u32) << 16)).collect();
         let wts: Vec<f32> = (0..tokens * k).map(|_| 0.3 + rand(&mut rng)).collect();
@@ -1034,7 +1203,15 @@ mod tests {
                 let (d, m) = (&h.data[k * place.data..(k + 1) * place.data], &h.meta[k * place.meta..(k + 1) * place.meta]);
                 let (c, s, b) = cb_strides(bits, cols);
                 for (mat, codes, scales, book) in [(up, 0, 0, place.up_book), (down, place.down_codes, place.down_scales, place.down_book)] {
-                    let back = CbRows::new(bits, rows, cols, d[codes..codes + rows * c].to_vec(), m[scales..scales + rows * s].to_vec(), m[book..book + rows * b].to_vec()).unwrap();
+                    let back = CbRows::new(
+                        bits,
+                        rows,
+                        cols,
+                        d[codes..codes + rows * c].to_vec(),
+                        m[scales..scales + rows * s].to_vec(),
+                        m[book..book + rows * b].to_vec(),
+                    )
+                    .unwrap();
                     assert_eq!(&back, mat);
                     let (mut w, mut v) = (vec![0f32; rows * cols], vec![0f32; rows * cols]);
                     assert!(decode_codebook_rows(&back, &mut w) && decode_codebook_rows(mat, &mut v) && w == v);
@@ -1091,7 +1268,7 @@ mod tests {
     fn kernels_and_signatures_are_in_the_source() {
         // (the launches: rot_in z zs signs zr n scale; group_ids ids group_of local_of group out pairs E; up and down the three arrays and their strides; sum_rot part wts ids signs y extra E k hidden split scale)
         for (name, want) in [
-            ("hb_rot_in", "pipp" .to_string() + "if"),
+            ("hb_rot_in", "pipp".to_string() + "if"),
             ("hb_group_ids", "pppipii".to_string()),
             ("hb_up2", "pppppplllpiiii".to_string()),
             ("hb_up3", "pppppplllpiiii".to_string()),
@@ -1123,16 +1300,29 @@ mod tests {
                     let book: Vec<u16> = (0..rows << bits).map(|_| bf16((rng.next() >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0)).collect();
                     let theirs = pack_codebook_rows(&codes, &scales, &book, bits, rows, cols).unwrap();
                     let mine = CpuRows::from_codes(bits, rows, cols, &codes, &scales, &book).unwrap();
-                    assert!(theirs.codes == mine.codes && theirs.scales == mine.scales && theirs.codebook == mine.codebook, "{bits} bits: the CPU half's rows are not glyd-gpu's pack");
+                    assert!(
+                        theirs.codes == mine.codes && theirs.scales == mine.scales && theirs.codebook == mine.codebook,
+                        "{bits} bits: the CPU half's rows are not glyd-gpu's pack"
+                    );
                     theirs
                 };
                 pairs.push((one(&mut rng), one(&mut rng)));
             }
             let host = HbHost::of(place, &pairs).unwrap();
             let z: Vec<f32> = (0..2 * cols).map(|_| (rng.next() >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0).collect();
-            let apart: Vec<(CpuRows, CpuRows)> = pairs.iter().map(|(u, d)| (CpuRows::new(bits, rows, cols, u.codes.clone(), u.scales.clone(), u.codebook.clone()).unwrap(), CpuRows::new(bits, rows, cols, d.codes.clone(), d.scales.clone(), d.codebook.clone()).unwrap())).collect();
+            let apart: Vec<(CpuRows, CpuRows)> = pairs
+                .iter()
+                .map(|(u, d)| {
+                    (
+                        CpuRows::new(bits, rows, cols, u.codes.clone(), u.scales.clone(), u.codebook.clone()).unwrap(),
+                        CpuRows::new(bits, rows, cols, d.codes.clone(), d.scales.clone(), d.codebook.clone()).unwrap(),
+                    )
+                })
+                .collect();
             let experts_apart: Vec<HbExpert> = apart.iter().map(|(u, d)| HbExpert::new(u.view(), d.view()).unwrap()).collect();
-            let experts_in_place: Vec<HbExpert> = (0..3).map(|k| place.expert(&host.data[k * place.data..(k + 1) * place.data], &host.meta[k * place.meta..(k + 1) * place.meta]).unwrap()).collect();
+            let experts_in_place: Vec<HbExpert> = (0..3)
+                .map(|k| place.expert(&host.data[k * place.data..(k + 1) * place.data], &host.meta[k * place.meta..(k + 1) * place.meta]).unwrap())
+                .collect();
             let tokens = [(0usize, 0usize, 1.5f32), (1, 1, 0.5), (0, 2, 2.0), (1, 0, 1.0)];
             let run = |e: &[HbExpert]| {
                 let ps: Vec<HbPair> = tokens.iter().map(|&(t, x, w)| HbPair { expert: &e[x], token: t, weight: w }).collect();
@@ -1141,7 +1331,12 @@ mod tests {
                 (out, n)
             };
             let (a, b) = (run(&experts_apart), run(&experts_in_place));
-            assert!(a.0.iter().zip(&b.0).all(|(x, y)| x.to_bits() == y.to_bits()) && a.1 == b.1 && a.1.iter().any(|&n| n > 0), "{bits} bits: {:?} against {:?}", a.1, b.1);
+            assert!(
+                a.0.iter().zip(&b.0).all(|(x, y)| x.to_bits() == y.to_bits()) && a.1 == b.1 && a.1.iter().any(|&n| n > 0),
+                "{bits} bits: {:?} against {:?}",
+                a.1,
+                b.1
+            );
             assert!(place.expert(&host.data[..place.data - 1], &host.meta[..place.meta]).is_err());
         }
     }
@@ -1172,7 +1367,10 @@ mod tests {
                     for (e, ex) in disk.experts.iter().enumerate() {
                         let mut segs = ex.segs;
                         segs.sort_by_key(|s| s.at);
-                        assert!(segs.windows(2).all(|w| w[0].at + w[0].len as u64 == w[1].at), "{shards}, layer {l}: the tensors of expert {e} are not one run of the file");
+                        assert!(
+                            segs.windows(2).all(|w| w[0].at + w[0].len as u64 == w[1].at),
+                            "{shards}, layer {l}: the tensors of expert {e} are not one run of the file"
+                        );
                         assert_eq!(segs.iter().map(|s| s.len as u64).sum::<u64>(), disk.places[ex.group as usize].bytes());
                     }
                 }
@@ -1182,7 +1380,10 @@ mod tests {
                     // (a place that was not zeroed: whatever the read does not write is the read's to write)
                     let (mut d, mut m) = (vec![0xEEu8; h.place.data], vec![0xEEu8; h.place.meta]);
                     disk.read(e, &mut d, &mut m).unwrap();
-                    assert!(d == h.data[k * h.place.data..(k + 1) * h.place.data] && m == h.meta[k * h.place.meta..(k + 1) * h.place.meta], "{shards}, layer {l}, expert {e}");
+                    assert!(
+                        d == h.data[k * h.place.data..(k + 1) * h.place.data] && m == h.meta[k * h.place.meta..(k + 1) * h.place.meta],
+                        "{shards}, layer {l}, expert {e}"
+                    );
                 }
                 // the reader of a group: its expert k is the layer's expert members[k]
                 for g in 0..2 {
@@ -1191,7 +1392,10 @@ mod tests {
                     let k = h.experts / 2;
                     let (mut d, mut m) = (vec![0u8; h.place.data], vec![0u8; h.place.meta]);
                     read(k, &mut d, &mut m).unwrap();
-                    assert!(d == h.data[k * h.place.data..(k + 1) * h.place.data] && m == h.meta[k * h.place.meta..(k + 1) * h.place.meta], "{shards}, layer {l}, group {g}'s expert {k}");
+                    assert!(
+                        d == h.data[k * h.place.data..(k + 1) * h.place.data] && m == h.meta[k * h.place.meta..(k + 1) * h.place.meta],
+                        "{shards}, layer {l}, group {g}'s expert {k}"
+                    );
                     assert!(read(h.experts, &mut d, &mut m).is_err());
                 }
                 // refused: a place of another size, an expert past the layer's

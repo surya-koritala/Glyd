@@ -230,8 +230,13 @@ pub fn chunks(data: &[u8]) -> Option<(Vec<Chunk>, String)> {
                     let (mut def, mut rep) = stack.last().map_or((0, 0), |&(_, d, r)| (d, r));
                     if i > 0 {
                         // OPTIONAL (1) adds a definition level, REPEATED (2) both.
-                        if repetition == 1 { def += 1; }
-                        if repetition == 2 { def += 1; rep += 1; }
+                        if repetition == 1 {
+                            def += 1;
+                        }
+                        if repetition == 2 {
+                            def += 1;
+                            rep += 1;
+                        }
                     }
                     if let Some(top) = stack.last_mut() {
                         top.0 -= 1;
@@ -261,7 +266,19 @@ pub fn chunks(data: &[u8]) -> Option<(Vec<Chunk>, String)> {
                         let (cols, _) = r.list()?;
                         for c in 0..cols {
                             let (ty, max_def, max_rep) = leaf_types.get(c).copied().unwrap_or((-1, u16::MAX, u16::MAX));
-                            let mut chunk = Chunk { row_group: g, column: c, codec: Codec::Uncompressed, physical_type: ty, max_def_level: max_def, max_rep_level: max_rep, encodings: Vec::new(), num_values: 0, start: 0, compressed_len: 0, uncompressed_len: 0 };
+                            let mut chunk = Chunk {
+                                row_group: g,
+                                column: c,
+                                codec: Codec::Uncompressed,
+                                physical_type: ty,
+                                max_def_level: max_def,
+                                max_rep_level: max_rep,
+                                encodings: Vec::new(),
+                                num_values: 0,
+                                start: 0,
+                                compressed_len: 0,
+                                uncompressed_len: 0,
+                            };
                             let (mut data_at, mut dict_at) = (0usize, 0usize);
                             r.fields(|r, fid, t| {
                                 if fid != 3 || t != 12 {
@@ -316,7 +333,18 @@ pub fn pages(data: &[u8], chunk: &Chunk) -> Option<Vec<Page>> {
     }
     while p < end {
         let mut r = Reader { b: data, p };
-        let mut page = Page { header_at: p, body_at: 0, compressed_len: 0, uncompressed_len: 0, kind: -1, num_values: 0, encoding: -1, num_nulls: 0, v2_levels_len: 0, v2_compressed: true };
+        let mut page = Page {
+            header_at: p,
+            body_at: 0,
+            compressed_len: 0,
+            uncompressed_len: 0,
+            kind: -1,
+            num_values: 0,
+            encoding: -1,
+            num_nulls: 0,
+            v2_levels_len: 0,
+            v2_compressed: true,
+        };
         r.fields(|r, fid, t| {
             match (fid, t) {
                 (1, 5) => page.kind = r.zigzag()? as i32,
@@ -701,19 +729,33 @@ fn index_runs(values: &[u8], count: usize) -> Option<(Vec<u32>, u32, usize)> {
 pub fn index_page_diagnosis(raw: &[u8], chunk: &Chunk, page: &Page) -> String {
     let Some(at) = values_at(raw, chunk, page) else { return "levels".into() };
     let values = &raw[at..];
-    if values.is_empty() { return "empty".into(); }
+    if values.is_empty() {
+        return "empty".into();
+    }
     let bit_width = values[0] as u32;
-    if bit_width > 32 { return format!("bit width {bit_width}"); }
+    if bit_width > 32 {
+        return format!("bit width {bit_width}");
+    }
     let Some(count) = present_values(raw, chunk, page) else { return "present".into() };
     let Some(mut decoded) = rle_decode(&values[1..], bit_width, count) else { return "decode".into() };
-    if decoded.len() < count { return format!("short: {} of {count}", decoded.len()); }
+    if decoded.len() < count {
+        return format!("short: {} of {count}", decoded.len());
+    }
     decoded.truncate(count);
     // The encoder that agrees longest.
-    let (at, again) = ENCODERS.iter().map(|e| {
-        let again = e(&decoded, bit_width);
-        let at = again.iter().zip(values[1..].iter()).position(|(a, b)| a != b).unwrap_or(if again.len() == values.len() - 1 { usize::MAX } else { again.len().min(values.len() - 1) });
-        (at, again.len())
-    }).max().unwrap();
+    let (at, again) = ENCODERS
+        .iter()
+        .map(|e| {
+            let again = e(&decoded, bit_width);
+            let at = again.iter().zip(values[1..].iter()).position(|(a, b)| a != b).unwrap_or(if again.len() == values.len() - 1 {
+                usize::MAX
+            } else {
+                again.len().min(values.len() - 1)
+            });
+            (at, again.len())
+        })
+        .max()
+        .unwrap();
     if at != usize::MAX {
         return format!("encode differs at {at} of {} (ours {again} B), width {bit_width}", values.len() - 1);
     }
@@ -937,7 +979,13 @@ pub fn model(raw: &[u8], chunk: &Chunk, page: &Page) -> Option<(Vec<u8>, Vec<u8>
         // planes of the bytes that hold them.
         let count = present_values(raw, chunk, page)?;
         let (decoded, bit_width, by) = index_runs(values, count)?;
-        let width = if bit_width <= 8 { 1 } else if bit_width <= 16 { 2 } else { 4 };
+        let width = if bit_width <= 8 {
+            1
+        } else if bit_width <= 16 {
+            2
+        } else {
+            4
+        };
         let mut bytes = Vec::with_capacity(count * width);
         for &v in &decoded {
             bytes.extend_from_slice(&v.to_le_bytes()[..width]);
@@ -1082,11 +1130,19 @@ pub fn unmodel(recipe: &[u8], modeled: &[u8]) -> Option<Vec<u8>> {
     let values = match kind {
         M_RAW => body.to_vec(),
         M_PLANES => {
-            if d > 0 { scaled(&values, width, d, false) } else { values }
+            if d > 0 {
+                scaled(&values, width, d, false)
+            } else {
+                values
+            }
         }
         M_DELTA_PLANES => {
             let v = undeltas(&values, width);
-            if d > 0 { scaled(&v, width, d, false) } else { v }
+            if d > 0 {
+                scaled(&v, width, d, false)
+            } else {
+                v
+            }
         }
         M_DECIMAL => undecimal(&undeltas(&values, 8), d),
         _ => return None,
@@ -1101,16 +1157,47 @@ mod tests {
 
     #[test]
     fn models_come_back_exactly() {
-        let chunk = |ty: i32| Chunk { row_group: 0, column: 0, codec: Codec::Snappy, physical_type: ty, max_def_level: 1, max_rep_level: 0, encodings: vec![], num_values: 0, start: 0, compressed_len: 0, uncompressed_len: 0 };
-        let page = Page { header_at: 0, body_at: 0, compressed_len: 0, uncompressed_len: 0, kind: 0, num_values: 0, encoding: 0, num_nulls: 0, v2_levels_len: 0, v2_compressed: true };
+        let chunk = |ty: i32| Chunk {
+            row_group: 0,
+            column: 0,
+            codec: Codec::Snappy,
+            physical_type: ty,
+            max_def_level: 1,
+            max_rep_level: 0,
+            encodings: vec![],
+            num_values: 0,
+            start: 0,
+            compressed_len: 0,
+            uncompressed_len: 0,
+        };
+        let page = Page {
+            header_at: 0,
+            body_at: 0,
+            compressed_len: 0,
+            uncompressed_len: 0,
+            kind: 0,
+            num_values: 0,
+            encoding: 0,
+            num_nulls: 0,
+            v2_levels_len: 0,
+            v2_compressed: true,
+        };
         // A definition-level block of 3 bytes, then values.
         let levels = [3u8, 0, 0, 0, 0x11, 0x22, 0x33];
         let mut ints = levels.to_vec();
-        for i in 0..500i64 { ints.extend_from_slice(&(1_700_000_000_000 + i * 60_000).to_le_bytes()); }
+        for i in 0..500i64 {
+            ints.extend_from_slice(&(1_700_000_000_000 + i * 60_000).to_le_bytes());
+        }
         let mut money = levels.to_vec();
-        for i in 0..500 { money.extend_from_slice(&((i as f64) * 0.25 + 12.5).to_le_bytes()); }
+        for i in 0..500 {
+            money.extend_from_slice(&((i as f64) * 0.25 + 12.5).to_le_bytes());
+        }
         let mut texts = levels.to_vec();
-        for i in 0..300u32 { let s = format!("name{}", i % 7); texts.extend_from_slice(&(s.len() as u32).to_le_bytes()); texts.extend_from_slice(s.as_bytes()); }
+        for i in 0..300u32 {
+            let s = format!("name{}", i % 7);
+            texts.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            texts.extend_from_slice(s.as_bytes());
+        }
         for (raw, ty, kind) in [(&ints, 2, M_DELTA_PLANES), (&money, 5, M_DECIMAL), (&texts, 6, M_BYTE_ARRAYS)] {
             let (recipe, modeled) = model(raw, &chunk(ty), &page).unwrap();
             assert_eq!(recipe[0], kind, "type {ty}");
@@ -1122,7 +1209,15 @@ mod tests {
         assert!(model(&levels, &chunk(2), &page).is_none(), "no values");
         // Dictionary indices: runs of repeats and literals, a partial last group.
         let mut idx: Vec<u32> = Vec::new();
-        for i in 0..700u32 { idx.push(if i % 3 == 0 { 0 } else if i % 50 < 20 { 3 } else { (i * 7) % 11 }); }
+        for i in 0..700u32 {
+            idx.push(if i % 3 == 0 {
+                0
+            } else if i % 50 < 20 {
+                3
+            } else {
+                (i * 7) % 11
+            });
+        }
         let stream = rle_encode(&idx, 4);
         assert_eq!(rle_decode(&stream, 4, idx.len()).unwrap()[..idx.len()], idx[..]);
         let mut page_bytes = vec![0u8, 0, 0, 0];
@@ -1182,7 +1277,12 @@ mod tests {
         // Every encoder's runs, at every width, found again: long
         // literals (past polars' 8192), runs of every length, one value.
         let mut x = 5u64;
-        let mut rnd = move || { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x };
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
         for bit_width in [0u32, 1, 2, 3, 5, 8, 11, 16, 17, 24, 32] {
             let top = if bit_width == 32 { u32::MAX } else { (1u32 << bit_width) - 1 };
             let mut v = Vec::new();
@@ -1203,8 +1303,31 @@ mod tests {
             }
         }
         // A page of DuckDB's runs modeled under its own recipe kind.
-        let chunk = Chunk { row_group: 0, column: 0, codec: Codec::Snappy, physical_type: 2, max_def_level: 0, max_rep_level: 0, encodings: vec![], num_values: 0, start: 0, compressed_len: 0, uncompressed_len: 0 };
-        let page = Page { header_at: 0, body_at: 0, compressed_len: 0, uncompressed_len: 0, kind: 0, num_values: 3000, encoding: 2, num_nulls: 0, v2_levels_len: 0, v2_compressed: true };
+        let chunk = Chunk {
+            row_group: 0,
+            column: 0,
+            codec: Codec::Snappy,
+            physical_type: 2,
+            max_def_level: 0,
+            max_rep_level: 0,
+            encodings: vec![],
+            num_values: 0,
+            start: 0,
+            compressed_len: 0,
+            uncompressed_len: 0,
+        };
+        let page = Page {
+            header_at: 0,
+            body_at: 0,
+            compressed_len: 0,
+            uncompressed_len: 0,
+            kind: 0,
+            num_values: 3000,
+            encoding: 2,
+            num_nulls: 0,
+            v2_levels_len: 0,
+            v2_compressed: true,
+        };
         let mut idx: Vec<u32> = Vec::new();
         while idx.len() < 3000 {
             let r = rnd();
@@ -1240,7 +1363,8 @@ mod tests {
             }
             seen.push(-100 - fid as i64 * (t as i64 + 1));
             Some(false)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(seen, vec![300, -100 - 2 * 9, 1, -1, -100 - 5 * 8, -100 - 6 * 2]);
         assert_eq!(r.p, b.len());
         assert!(!is_parquet(&b));

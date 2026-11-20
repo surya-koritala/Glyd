@@ -41,8 +41,8 @@ pub mod c_api;
 use glyd::mmap::Mapping;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Result, Write};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 /// Chains are at most this deep.
 pub const MAX_DEPTH: usize = 4;
@@ -370,7 +370,12 @@ impl Cached {
 
     fn plain(&self) -> Option<(&[u8], &glyd::BaseIndex)> {
         self.plain
-            .get_or_init(|| glyd::deflate::open(&self.data).map(|o| { let index = glyd::BaseIndex::new(&o.plain); (o.plain, index) }))
+            .get_or_init(|| {
+                glyd::deflate::open(&self.data).map(|o| {
+                    let index = glyd::BaseIndex::new(&o.plain);
+                    (o.plain, index)
+                })
+            })
             .as_ref()
             .map(|(p, i)| (p.as_slice(), i))
     }
@@ -407,10 +412,9 @@ impl Writer {
                 let result = if failed {
                     Ok(())
                 } else {
-                    objects
-                        .write(&Store::key(job.id), &job.stored)
-                        .and_then(|_| objects.write(&format!("{}.index", job.id), job.line.as_bytes()))
-                        .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(dir.join("index")).and_then(|mut f| f.write_all(job.line.as_bytes())))
+                    objects.write(&Store::key(job.id), &job.stored).and_then(|_| objects.write(&format!("{}.index", job.id), job.line.as_bytes())).and_then(
+                        |_| std::fs::OpenOptions::new().create(true).append(true).open(dir.join("index")).and_then(|mut f| f.write_all(job.line.as_bytes())),
+                    )
                 };
                 let mut s = shared.0.lock().unwrap();
                 match result {
@@ -554,7 +558,19 @@ impl Store {
         let table = Table::open(dir.join("table"))?;
         let objects: Arc<dyn Backend> = Arc::from(objects);
         let writer = Writer::new(objects.clone(), dir.clone(), 0);
-        let mut store = Store { dir, objects, entries: Vec::new(), table, level: Level::Max, names: HashMap::new(), pending: Vec::new(), pending_bytes: 0, pack_cache: std::cell::RefCell::new(None), cache: std::cell::RefCell::new(Vec::new()), writer };
+        let mut store = Store {
+            dir,
+            objects,
+            entries: Vec::new(),
+            table,
+            level: Level::Max,
+            names: HashMap::new(),
+            pending: Vec::new(),
+            pending_bytes: 0,
+            pack_cache: std::cell::RefCell::new(None),
+            cache: std::cell::RefCell::new(Vec::new()),
+            writer,
+        };
         let index = store.dir.join("index");
         if index.exists() {
             let text = std::fs::read_to_string(&index)?;
@@ -605,7 +621,23 @@ impl Store {
                 let id = e.id as usize;
                 by_id[id] = Some(e);
             }
-            store.entries = by_id.into_iter().enumerate().map(|(id, e)| e.unwrap_or(Entry { id: id as u32, name: "(lost: not flushed)".to_string(), base: None, depth: 0, family: id as u32, raw_len: 0, stored_len: 0, pack: Some((u32::MAX, u32::MAX)), deleted: true })).collect();
+            store.entries = by_id
+                .into_iter()
+                .enumerate()
+                .map(|(id, e)| {
+                    e.unwrap_or(Entry {
+                        id: id as u32,
+                        name: "(lost: not flushed)".to_string(),
+                        base: None,
+                        depth: 0,
+                        family: id as u32,
+                        raw_len: 0,
+                        stored_len: 0,
+                        pack: Some((u32::MAX, u32::MAX)),
+                        deleted: true,
+                    })
+                })
+                .collect();
             for id in deleted {
                 if let Some(e) = store.entries.get_mut(id as usize) {
                     e.deleted = true;
@@ -693,7 +725,17 @@ impl Store {
     }
 
     fn line(entry: &Entry) -> String {
-        format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", entry.id, entry.base.map_or("-".to_string(), |b| b.to_string()), entry.depth, entry.raw_len, entry.stored_len, entry.pack.map_or("-".to_string(), |(p, i)| format!("{p}:{i}")), entry.family, entry.name)
+        format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            entry.id,
+            entry.base.map_or("-".to_string(), |b| b.to_string()),
+            entry.depth,
+            entry.raw_len,
+            entry.stored_len,
+            entry.pack.map_or("-".to_string(), |(p, i)| format!("{p}:{i}")),
+            entry.family,
+            entry.name
+        )
     }
 
     /// The index lines of object `id`, kept beside it in the backend.
@@ -981,7 +1023,17 @@ impl Store {
         let name = name.replace(['\t', '\n'], " ");
         if data.len() < SMALL {
             self.names.insert(name.clone(), id);
-            let entry = Entry { id, name, base: None, depth: 0, family: id, raw_len: data.len() as u64, stored_len: 0, pack: Some((u32::MAX, self.pending.len() as u32)), deleted: false };
+            let entry = Entry {
+                id,
+                name,
+                base: None,
+                depth: 0,
+                family: id,
+                raw_len: data.len() as u64,
+                stored_len: 0,
+                pack: Some((u32::MAX, self.pending.len() as u32)),
+                deleted: false,
+            };
             self.entries.push(entry);
             self.pending_bytes += data.len();
             self.pending.push((id, data.to_vec()));
@@ -1031,11 +1083,8 @@ impl Store {
         // where the whole ran 68%, and the head's verdict lost a 1.2 GB
         // delta to 1.8 GB alone. An object up to 64 MB is its own
         // sample.
-        let windows: Vec<(usize, usize)> = if data.len() <= 64 << 20 {
-            vec![(0, data.len())]
-        } else {
-            (0..4).map(|i| (data.len() / 8 * (2 * i + 1) - (4 << 20), 8 << 20)).collect()
-        };
+        let windows: Vec<(usize, usize)> =
+            if data.len() <= 64 << 20 { vec![(0, data.len())] } else { (0..4).map(|i| (data.len() / 8 * (2 * i + 1) - (4 << 20), 8 << 20)).collect() };
         let sample_len: usize = windows.iter().map(|w| w.1).sum();
         let window_anchors = |at: usize, len: usize| -> Vec<(u64, u64)> {
             anchors.iter().filter(|a| (a.1 as usize) >= at && (a.1 as usize) < at + len).map(|a| (a.0, a.1 - at as u64)).collect()
@@ -1070,7 +1119,10 @@ impl Store {
         let mut stored = Vec::new();
         let (scored, coverage) = self.candidates(&prints)?;
         if timing {
-            eprintln!("  candidates {id}: {} (coverage {coverage:.3})", scored.iter().map(|(c, s, h)| format!("{c} ({:.3}, holds {:.2})", s, h)).collect::<Vec<_>>().join(", "));
+            eprintln!(
+                "  candidates {id}: {} (coverage {coverage:.3})",
+                scored.iter().map(|(c, s, h)| format!("{c} ({:.3}, holds {:.2})", s, h)).collect::<Vec<_>>().join(", ")
+            );
         }
         let best = scored.first().copied();
         // A candidate at the depth cap falls back to its family's first
@@ -1200,7 +1252,11 @@ impl Store {
         lap("cache", &mut laps);
         if timing {
             let total: f64 = laps.iter().map(|(_, t)| t).sum();
-            eprintln!("  timing {id}: {}  total {total:.2} s ({:.0} MB/s)", laps.iter().map(|(w, t)| format!("{w} {t:.2}")).collect::<Vec<_>>().join(", "), raw_len as f64 / total / 1e6);
+            eprintln!(
+                "  timing {id}: {}  total {total:.2} s ({:.0} MB/s)",
+                laps.iter().map(|(w, t)| format!("{w} {t:.2}")).collect::<Vec<_>>().join(", "),
+                raw_len as f64 / total / 1e6
+            );
         }
         Ok(id)
     }
@@ -1223,7 +1279,17 @@ impl Store {
         };
         glyd::compress_pack(&objects, &mut stored, level);
         self.objects.write(&Self::key(pack_id), &stored)?;
-        let pack = Entry { id: pack_id, name: format!("pack of {}", self.pending.len()), base: None, depth: 0, family: pack_id, raw_len: 0, stored_len: stored.len() as u64, pack: None, deleted: false };
+        let pack = Entry {
+            id: pack_id,
+            name: format!("pack of {}", self.pending.len()),
+            base: None,
+            depth: 0,
+            family: pack_id,
+            raw_len: 0,
+            stored_len: stored.len() as u64,
+            pack: None,
+            deleted: false,
+        };
         // The members' entries, now that their pack has an id.
         for (i, (member, _)) in self.pending.iter().enumerate() {
             let e = &mut self.entries[*member as usize];
@@ -1706,7 +1772,18 @@ mod tests {
         assert!(store.get(2).is_err());
         assert!(store.get(3).unwrap() == versions[3], "v3 still rebuilds through its deleted base");
         assert_eq!(store.compact().unwrap(), 0);
-        let chain: Vec<u32> = (0..versions.len() as u32).filter(|&i| { let mut at = Some(i); while let Some(j) = at { if j == 2 { return true; } at = store.entries()[j as usize].base; } false }).collect();
+        let chain: Vec<u32> = (0..versions.len() as u32)
+            .filter(|&i| {
+                let mut at = Some(i);
+                while let Some(j) = at {
+                    if j == 2 {
+                        return true;
+                    }
+                    at = store.entries()[j as usize].base;
+                }
+                false
+            })
+            .collect();
         assert_eq!(chain, vec![2, 3, 4, 5], "v5 took v3, the second candidate under the cap");
         for &i in &chain {
             store.delete(i).unwrap();
@@ -1769,7 +1846,10 @@ mod tests {
         let after = store.entries().to_vec();
         assert_eq!(after.len(), before.len());
         for (x, y) in before.iter().zip(&after) {
-            assert_eq!((x.id, x.base, x.depth, x.raw_len, x.stored_len, x.pack, &x.name, x.deleted), (y.id, y.base, y.depth, y.raw_len, y.stored_len, y.pack, &y.name, y.deleted));
+            assert_eq!(
+                (x.id, x.base, x.depth, x.raw_len, x.stored_len, x.pack, &x.name, x.deleted),
+                (y.id, y.base, y.depth, y.raw_len, y.stored_len, y.pack, &y.name, y.deleted)
+            );
         }
         for (id, data) in &originals {
             if after[*id as usize].deleted {

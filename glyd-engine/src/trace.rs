@@ -117,7 +117,16 @@ pub fn layers(marks: &[Mark]) -> Vec<Layer> {
     for (k, &a) in starts.iter().enumerate() {
         let end = starts.get(k + 1).copied().unwrap_or(marks.len() - 1);
         let find = |label: &str| (a..=end.min(marks.len() - 1)).find(|&i| marks[i].label == label);
-        let (ffn, req, read, planned, prod, sums, sumq, last) = (find("feed-forward half start"), find("store: choices requested"), find("store: choices read"), find("store: planned"), find("store: products queued"), find("store: host sums sent"), find("store: sum queued"), find("mHC update (feed-forward)"));
+        let (ffn, req, read, planned, prod, sums, sumq, last) = (
+            find("feed-forward half start"),
+            find("store: choices requested"),
+            find("store: choices read"),
+            find("store: planned"),
+            find("store: products queued"),
+            find("store: host sums sent"),
+            find("store: sum queued"),
+            find("mHC update (feed-forward)"),
+        );
         let mut l = Layer { total: at[end] - at[a], ..Layer::default() };
         let (Some(ffn), Some(last)) = (ffn, last) else {
             l.always = l.total;

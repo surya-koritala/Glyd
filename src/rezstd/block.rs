@@ -21,30 +21,27 @@ const ML_FSE_LOG: u32 = 9;
 const OFF_FSE_LOG: u32 = 8;
 const LONG_NB_SEQ: usize = 0x7F00;
 
-pub static LL_BITS: [u8; MAX_LL + 1] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-];
-pub static LL_DEFAULT_NORM: [i16; MAX_LL + 1] = [
-    4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1, -1, -1, -1, -1,
-];
+pub static LL_BITS: [u8; MAX_LL + 1] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+pub static LL_DEFAULT_NORM: [i16; MAX_LL + 1] =
+    [4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1, -1, -1, -1, -1];
 pub const LL_DEFAULT_NORM_LOG: u32 = 6;
 pub static ML_BITS: [u8; MAX_ML + 1] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13,
+    14, 15, 16,
 ];
 pub static ML_DEFAULT_NORM: [i16; MAX_ML + 1] = [
-    1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1,
+    1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1,
+    -1, -1, -1,
 ];
 pub const ML_DEFAULT_NORM_LOG: u32 = 6;
-pub static OF_DEFAULT_NORM: [i16; DEFAULT_MAX_OFF + 1] = [
-    1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1,
-];
+pub static OF_DEFAULT_NORM: [i16; DEFAULT_MAX_OFF + 1] = [1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1];
 pub const OF_DEFAULT_NORM_LOG: u32 = 5;
 
 /// `ZSTD_LLcode`.
 pub fn ll_code(lit_len: u32) -> u8 {
     static LL_CODE: [u8; 64] = [
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 20, 20, 21, 21, 21, 21, 22, 22, 22, 22, 22, 22, 22, 22, 23, 23, 23, 23, 23, 23,
-        23, 23, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 20, 20, 21, 21, 21, 21, 22, 22, 22, 22, 22, 22, 22, 22,
+        23, 23, 23, 23, 23, 23, 23, 23, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
     ];
     if lit_len > 63 {
         (highbit(lit_len) + 19) as u8
@@ -56,9 +53,10 @@ pub fn ll_code(lit_len: u32) -> u8 {
 /// `ZSTD_MLcode` of a match length less three.
 pub fn ml_code(ml_base: u32) -> u8 {
     static ML_CODE: [u8; 128] = [
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 32, 33, 33, 34, 34, 35, 35, 36, 36, 36, 36, 37, 37,
-        37, 37, 38, 38, 38, 38, 38, 38, 38, 38, 39, 39, 39, 39, 39, 39, 39, 39, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 41, 41, 41, 41, 41, 41, 41, 41, 41,
-        41, 41, 41, 41, 41, 41, 41, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 32, 33, 33, 34, 34, 35, 35,
+        36, 36, 36, 36, 37, 37, 37, 37, 38, 38, 38, 38, 38, 38, 38, 38, 39, 39, 39, 39, 39, 39, 39, 39, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40,
+        40, 40, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+        42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
     ];
     if ml_base > 127 {
         (highbit(ml_base) + 36) as u8
@@ -228,7 +226,20 @@ fn select_coding(repeat: &mut Repeat, most_frequent: usize, nb_seq: usize, defau
 /// `ZSTD_buildCTable`: `next` built (or copied from `prev`) for
 /// `coding`; the table description, if any, appended to `out`.
 #[allow(clippy::too_many_arguments)]
-fn build_ctable(out: &mut Vec<u8>, cap: usize, next: &mut CTable, fse_log: u32, coding: Coding, count: &mut [u32], max: usize, codes: &[u8], default_norm: &[i16], default_norm_log: u32, default_max: usize, prev: &CTable) -> Result<(), TooSmall> {
+fn build_ctable(
+    out: &mut Vec<u8>,
+    cap: usize,
+    next: &mut CTable,
+    fse_log: u32,
+    coding: Coding,
+    count: &mut [u32],
+    max: usize,
+    codes: &[u8],
+    default_norm: &[i16],
+    default_norm_log: u32,
+    default_max: usize,
+    prev: &CTable,
+) -> Result<(), TooSmall> {
     match coding {
         Coding::Rle => {
             *next = CTable::rle(max as u8);
@@ -260,7 +271,16 @@ fn build_ctable(out: &mut Vec<u8>, cap: usize, next: &mut CTable, fse_log: u32, 
 
 /// `ZSTD_encodeSequences` on a 64-bit build (no long offsets).
 #[allow(clippy::too_many_arguments)]
-fn encode_sequences(cap: usize, store: &SeqStore, ll: &CTable, of: &CTable, ml: &CTable, ll_codes: &[u8], of_codes: &[u8], ml_codes: &[u8]) -> Result<Vec<u8>, TooSmall> {
+fn encode_sequences(
+    cap: usize,
+    store: &SeqStore,
+    ll: &CTable,
+    of: &CTable,
+    ml: &CTable,
+    ll_codes: &[u8],
+    of_codes: &[u8],
+    ml_codes: &[u8],
+) -> Result<Vec<u8>, TooSmall> {
     let mut w = BitWriter::new(cap).ok_or(TooSmall)?;
     let seqs = &store.seqs;
     let n = seqs.len();
@@ -327,7 +347,20 @@ fn compress_internal(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: 
     next.fse.ll_repeat = prev.fse.ll_repeat;
     let ll_type = select_coding(&mut next.fse.ll_repeat, most_frequent as usize, nb_seq, LL_DEFAULT_NORM_LOG, true, strategy);
     let at = out.len();
-    build_ctable(&mut out, cap - at, &mut next.fse.ll, LL_FSE_LOG, ll_type, &mut count, max, &ll_codes, &LL_DEFAULT_NORM, LL_DEFAULT_NORM_LOG, MAX_LL, &prev.fse.ll)?;
+    build_ctable(
+        &mut out,
+        cap - at,
+        &mut next.fse.ll,
+        LL_FSE_LOG,
+        ll_type,
+        &mut count,
+        max,
+        &ll_codes,
+        &LL_DEFAULT_NORM,
+        LL_DEFAULT_NORM_LOG,
+        MAX_LL,
+        &prev.fse.ll,
+    )?;
     if ll_type == Coding::Compressed {
         last_count_size = out.len() - at;
     }
@@ -336,7 +369,20 @@ fn compress_internal(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: 
     next.fse.of_repeat = prev.fse.of_repeat;
     let of_type = select_coding(&mut next.fse.of_repeat, most_frequent as usize, nb_seq, OF_DEFAULT_NORM_LOG, default_allowed, strategy);
     let at = out.len();
-    build_ctable(&mut out, cap - at, &mut next.fse.of, OFF_FSE_LOG, of_type, &mut count, max, &of_codes, &OF_DEFAULT_NORM, OF_DEFAULT_NORM_LOG, DEFAULT_MAX_OFF, &prev.fse.of)?;
+    build_ctable(
+        &mut out,
+        cap - at,
+        &mut next.fse.of,
+        OFF_FSE_LOG,
+        of_type,
+        &mut count,
+        max,
+        &of_codes,
+        &OF_DEFAULT_NORM,
+        OF_DEFAULT_NORM_LOG,
+        DEFAULT_MAX_OFF,
+        &prev.fse.of,
+    )?;
     if of_type == Coding::Compressed {
         last_count_size = out.len() - at;
     }
@@ -344,7 +390,20 @@ fn compress_internal(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: 
     next.fse.ml_repeat = prev.fse.ml_repeat;
     let ml_type = select_coding(&mut next.fse.ml_repeat, most_frequent as usize, nb_seq, ML_DEFAULT_NORM_LOG, true, strategy);
     let at = out.len();
-    build_ctable(&mut out, cap - at, &mut next.fse.ml, ML_FSE_LOG, ml_type, &mut count, max, &ml_codes, &ML_DEFAULT_NORM, ML_DEFAULT_NORM_LOG, MAX_ML, &prev.fse.ml)?;
+    build_ctable(
+        &mut out,
+        cap - at,
+        &mut next.fse.ml,
+        ML_FSE_LOG,
+        ml_type,
+        &mut count,
+        max,
+        &ml_codes,
+        &ML_DEFAULT_NORM,
+        ML_DEFAULT_NORM_LOG,
+        MAX_ML,
+        &prev.fse.ml,
+    )?;
     if ml_type == Coding::Compressed {
         last_count_size = out.len() - at;
     }

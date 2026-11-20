@@ -110,7 +110,11 @@ fn chunks_of<'a>(data: &'a [u8], spec: &Spec) -> Vec<&'a [u8]> {
 fn hists_of(spec: &Spec, layout: &[StreamSpec], lookup: Option<&[u8]>, chunk: &[u8], scratch: &mut Vec<Vec<u8>>) -> Vec<Vec<u32>> {
     scratch.resize_with(layout.len(), Vec::new);
     kinds::split(spec, chunk, scratch);
-    let aux = if layout.iter().any(|s| matches!(s.ctx, kinds::CtxSpec::Aux(_))) { kinds::aux(spec, lookup.unwrap(), &[&scratch[0][..], &scratch[1][..]]) } else { Vec::new() };
+    let aux = if layout.iter().any(|s| matches!(s.ctx, kinds::CtxSpec::Aux(_))) {
+        kinds::aux(spec, lookup.unwrap(), &[&scratch[0][..], &scratch[1][..]])
+    } else {
+        Vec::new()
+    };
     let mut out = Vec::with_capacity(layout.len());
     for (s, sp) in layout.iter().enumerate() {
         if sp.bits1 {
@@ -284,7 +288,16 @@ fn plan_region(data: &[u8], spec0: &Spec) -> Option<Plan> {
     let chunks = chunks_of(data, spec0);
     // what the variants are tried on: up to three pieces of the run, a quarter of a chunk or so each
     let piece = (spec0.chunk_units() / 2).max(1) * ub;
-    let sample: Vec<&[u8]> = if chunks.len() <= 3 { chunks.iter().map(|c| &c[..c.len().min(piece)]).collect() } else { (0..3).map(|i| { let c = chunks[i * (chunks.len() - 1) / 2]; &c[..c.len().min(piece)] }).collect() };
+    let sample: Vec<&[u8]> = if chunks.len() <= 3 {
+        chunks.iter().map(|c| &c[..c.len().min(piece)]).collect()
+    } else {
+        (0..3)
+            .map(|i| {
+                let c = chunks[i * (chunks.len() - 1) / 2];
+                &c[..c.len().min(piece)]
+            })
+            .collect()
+    };
     let cands = candidates(spec0, &sample);
     let spec = if cands.len() == 1 {
         cands[0].clone()
@@ -324,7 +337,11 @@ fn encode_chunk(plan: &Plan, chunk: &[u8], scratch: &mut Vec<Vec<u8>>, out: &mut
     let l = &plan.layout;
     scratch.resize_with(l.len(), Vec::new);
     kinds::split(&plan.spec, chunk, scratch);
-    let aux = if l.iter().any(|s| matches!(s.ctx, kinds::CtxSpec::Aux(_))) { kinds::aux(&plan.spec, plan.lookup.as_deref().unwrap(), &[&scratch[0][..], &scratch[1][..]]) } else { Vec::new() };
+    let aux = if l.iter().any(|s| matches!(s.ctx, kinds::CtxSpec::Aux(_))) {
+        kinds::aux(&plan.spec, plan.lookup.as_deref().unwrap(), &[&scratch[0][..], &scratch[1][..]])
+    } else {
+        Vec::new()
+    };
     let mut body = Vec::new();
     for (s, m) in plan.modes.iter().enumerate() {
         body.clear();
@@ -346,7 +363,6 @@ thread_local! {
     static SCRATCH: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
     static ARENA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
-
 
 /// `input` as an envelope, its model-file tensors coded and the rest compressed by `kept_level`;
 /// `false` (nothing written) for anything else, or where it would not pay.
@@ -694,7 +710,9 @@ fn decode_chunk(h: &RegionHdr, tabs: &[Option<DecTables>], payload: &[u8], units
                     }
                     CtxSpec::Q8Max => rans::decode(data, nsym, t, &kinds::Q8Ctx, out)?,
                     CtxSpec::Nibbles(p) => rans::decode(data, nsym, t, &kinds::NibbleCtx(*p as usize - 1), out)?,
-                    CtxSpec::Extremes { period, lo, hi } => rans::decode(data, nsym, t, &kinds::ExtremeCtx { mask: *period as usize - 1, lo: *lo, hi: *hi }, out)?,
+                    CtxSpec::Extremes { period, lo, hi } => {
+                        rans::decode(data, nsym, t, &kinds::ExtremeCtx { mask: *period as usize - 1, lo: *lo, hi: *hi }, out)?
+                    }
                 }
             }
         }

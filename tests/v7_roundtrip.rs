@@ -23,9 +23,13 @@ fn sample_sequences() -> (Vec<Sequence>, Vec<u8>) {
     let mut lits = Vec::new();
     let mut x = 42u64;
     for i in 0..5000u32 {
-        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
         let ll = (x % 20) as u32;
-        for _ in 0..ll { lits.push((x >> 8) as u8); }
+        for _ in 0..ll {
+            lits.push((x >> 8) as u8);
+        }
         let ml = 3 + (x >> 16) as u32 % 40;
         let offset = if i % 3 == 0 { 100 } else { 1 + (x >> 24) as u32 % 5000 };
         seqs.push(Sequence { lit_len: ll, match_len: ml, offset });
@@ -95,8 +99,7 @@ fn v7_encode_reuse_with_new_symbol_does_not_panic() {
 #[test]
 fn v7_encode_reuse_falls_back_when_a_stream_goes_raw() {
     fn repeated_matches(n: u32) -> (Vec<Sequence>, Vec<u8>) {
-        let mut seqs: Vec<Sequence> =
-            (0..n).map(|i| Sequence { lit_len: 0, match_len: 3 + (i % 16), offset: 1 }).collect();
+        let mut seqs: Vec<Sequence> = (0..n).map(|i| Sequence { lit_len: 0, match_len: 3 + (i % 16), offset: 1 }).collect();
         seqs.push(Sequence { lit_len: 0, match_len: 0, offset: 0 });
         (seqs, Vec::new())
     }
@@ -138,7 +141,12 @@ fn materialize(seqs: &[Sequence], lits: &[u8]) -> Vec<u8> {
     out
 }
 
-fn rnd(x: &mut u64) -> u64 { *x ^= *x << 13; *x ^= *x >> 7; *x ^= *x << 17; *x }
+fn rnd(x: &mut u64) -> u64 {
+    *x ^= *x << 13;
+    *x ^= *x >> 7;
+    *x ^= *x << 17;
+    *x
+}
 
 fn well_formed_sequences() -> (Vec<Sequence>, Vec<u8>) {
     // Offsets never exceed what has been produced so far. Literal bytes are
@@ -151,7 +159,9 @@ fn well_formed_sequences() -> (Vec<Sequence>, Vec<u8>) {
     for i in 0..4000u32 {
         let r = rnd(&mut x);
         let ll = if i == 0 { 50 } else { (r % 12) as u32 };
-        for _ in 0..ll { lits.push(b"aaaabbbcdefghijk"[(rnd(&mut x) >> 8) as usize % 16]); }
+        for _ in 0..ll {
+            lits.push(b"aaaabbbcdefghijk"[(rnd(&mut x) >> 8) as usize % 16]);
+        }
         produced += ll;
         let ml = 3 + ((r >> 16) % 60) as u32;
         let offset = 1 + ((r >> 24) as u32 % produced.min(2000));
@@ -179,10 +189,12 @@ fn v7_block_roundtrip_two_blocks_with_reuse() {
     let mut dtab = DecTables::none();
     let mut scratch = Scratch::new();
     let base = dst.as_ptr();
-    let n = unsafe { decode_block(&p1, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
+    let n =
+        unsafe { decode_block(&p1, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
     assert_eq!(n, expect.len());
     assert_eq!(&dst[..n], &expect[..]);
-    let n2 = unsafe { decode_block(&p2, true, false, false, seqs.len(), lits.len(), &mut dst[n..], base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
+    let n2 = unsafe { decode_block(&p2, true, false, false, seqs.len(), lits.len(), &mut dst[n..], base, expect.len(), &mut dtab, &mut scratch, None, true) }
+        .unwrap();
     assert_eq!(&dst[n..n + n2], &expect[..]);
 }
 
@@ -196,12 +208,16 @@ fn v7_block_rejects_bad_offset_and_wrong_length() {
     let expect_len = materialize(&well_formed_sequences().0, &lits).len();
     let mut dst = vec![0u8; expect_len + 128];
     let base = dst.as_ptr();
-    let r = unsafe { decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect_len, &mut DecTables::none(), &mut Scratch::new(), None, true) };
+    let r = unsafe {
+        decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect_len, &mut DecTables::none(), &mut Scratch::new(), None, true)
+    };
     assert!(matches!(r, Err(CodecError::OffsetOutOfBounds { offset: 1_000_000, .. })), "{:?}", r);
     let (seqs, lits) = well_formed_sequences();
     let mut p = Vec::new();
     encode_block(&seqs, &lits, 0, &mut Tables::none(), &mut p);
-    let r = unsafe { decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect_len - 1, &mut DecTables::none(), &mut Scratch::new(), None, true) };
+    let r = unsafe {
+        decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect_len - 1, &mut DecTables::none(), &mut Scratch::new(), None, true)
+    };
     assert!(matches!(r, Err(CodecError::CorruptedBitstream(_))), "{:?}", r);
 }
 
@@ -221,12 +237,27 @@ fn v7_block_decode_never_panics_on_mutations() {
     for it in 0..20_000 {
         let mut q = p.clone();
         match it % 4 {
-            0 => { let i = rnd(&mut x) as usize % q.len(); q[i] = rnd(&mut x) as u8; }
-            1 => { let i = rnd(&mut x) as usize % q.len(); q[i] ^= 1 << (rnd(&mut x) % 8); }
-            2 => { q.truncate(rnd(&mut x) as usize % q.len()); }
-            _ => { for _ in 0..8 { let i = rnd(&mut x) as usize % q.len(); q[i] = rnd(&mut x) as u8; } }
+            0 => {
+                let i = rnd(&mut x) as usize % q.len();
+                q[i] = rnd(&mut x) as u8;
+            }
+            1 => {
+                let i = rnd(&mut x) as usize % q.len();
+                q[i] ^= 1 << (rnd(&mut x) % 8);
+            }
+            2 => {
+                q.truncate(rnd(&mut x) as usize % q.len());
+            }
+            _ => {
+                for _ in 0..8 {
+                    let i = rnd(&mut x) as usize % q.len();
+                    q[i] = rnd(&mut x) as u8;
+                }
+            }
         }
-        let _ = unsafe { decode_block(&q, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut DecTables::none(), &mut scratch, None, true) };
+        let _ = unsafe {
+            decode_block(&q, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut DecTables::none(), &mut scratch, None, true)
+        };
     }
     for _ in 0..2_000 {
         let n_seq = rnd(&mut x) as usize % (seqs.len() * 2);
@@ -254,7 +285,9 @@ fn v7_block_decode_with_raw_literals_and_raw_codes() {
     // framing cannot beat the raw codes.
     for i in 0..60u32 {
         let ll = if i == 0 { 40 } else { (rnd(&mut x) % 16) as u32 };
-        for _ in 0..ll { lits.push((rnd(&mut x) >> 24) as u8); }
+        for _ in 0..ll {
+            lits.push((rnd(&mut x) >> 24) as u8);
+        }
         produced += ll;
         let ml = 3 + (rnd(&mut x) % 16) as u32;
         let offset = 1 + (rnd(&mut x) as u32 % produced.min(4000));
@@ -286,17 +319,25 @@ fn v7_block_decode_with_raw_literals_and_raw_codes() {
     let mut dtab = DecTables::none();
     let mut scratch = Scratch::new();
     let base = dst.as_ptr();
-    let n1 = unsafe { decode_block(&p1, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
+    let n1 =
+        unsafe { decode_block(&p1, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
     assert_eq!(&dst[..n1], &expect[..]);
-    let n2 = unsafe { decode_block(&p2, true, false, false, seqs.len(), lits.len(), &mut dst[n1..], base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
+    let n2 = unsafe { decode_block(&p2, true, false, false, seqs.len(), lits.len(), &mut dst[n1..], base, expect.len(), &mut dtab, &mut scratch, None, true) }
+        .unwrap();
     assert_eq!(&dst[n1..n1 + n2], &expect[..]);
-    let n3 = unsafe { decode_block(&p3, true, false, false, seqs3.len(), lits3.len(), &mut dst[n1 + n2..], base, expect3.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
+    let n3 = unsafe {
+        decode_block(&p3, true, false, false, seqs3.len(), lits3.len(), &mut dst[n1 + n2..], base, expect3.len(), &mut dtab, &mut scratch, None, true)
+    }
+    .unwrap();
     assert_eq!(&dst[n1 + n2..n1 + n2 + n3], &expect3[..]);
     let at = n1 + n2 + n3;
-    let n4 = unsafe { decode_block(&p4, true, false, false, seqs.len(), lits.len(), &mut dst[at..], base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
+    let n4 = unsafe { decode_block(&p4, true, false, false, seqs.len(), lits.len(), &mut dst[at..], base, expect.len(), &mut dtab, &mut scratch, None, true) }
+        .unwrap();
     assert_eq!(&dst[at..at + n4], &expect[..]);
     let at = at + n4;
-    let n5 = unsafe { decode_block(&p5, true, false, false, seqs3.len(), lits3.len(), &mut dst[at..], base, expect3.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
+    let n5 =
+        unsafe { decode_block(&p5, true, false, false, seqs3.len(), lits3.len(), &mut dst[at..], base, expect3.len(), &mut dtab, &mut scratch, None, true) }
+            .unwrap();
     assert_eq!(&dst[at..at + n5], &expect3[..]);
 }
 
@@ -354,7 +395,24 @@ fn v7_block_decode_into_exact_dst_writes_nothing_past_it() {
         encode_block(&seqs, &lits, 0, &mut Tables::none(), &mut p);
         let mut dst = vec![0xEEu8; expect.len() + 256];
         let base = dst.as_ptr();
-        let n = unsafe { decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst[..expect.len()], base, expect.len(), &mut DecTables::none(), &mut Scratch::new(), None, true) }.unwrap();
+        let n = unsafe {
+            decode_block(
+                &p,
+                true,
+                false,
+                false,
+                seqs.len(),
+                lits.len(),
+                &mut dst[..expect.len()],
+                base,
+                expect.len(),
+                &mut DecTables::none(),
+                &mut Scratch::new(),
+                None,
+                true,
+            )
+        }
+        .unwrap();
         assert_eq!(n, expect.len());
         assert_eq!(&dst[..n], &expect[..]);
         assert!(dst[n..].iter().all(|&b| b == 0xEE), "bytes past dst were written");
@@ -370,14 +428,26 @@ fn v7_block_decode_into_exact_dst_writes_nothing_past_it() {
 #[test]
 fn v7_max_level_roundtrip_through_container() {
     let mut x = 0x1234_5678_9ABC_DEF0u64;
-    let mut rnd = |n: usize| -> Vec<u8> { (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect() };
+    let mut rnd = |n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    };
     let mut inputs: Vec<Vec<u8>> = vec![Vec::new(), b"x".to_vec(), vec![b'A'; 300_000], rnd(300_000)];
     for period in [3usize, 17, 1000, 70_000] {
         let pat = rnd(period);
         inputs.push(pat.iter().cycle().take(600_000).copied().collect());
     }
     let mut text = Vec::new();
-    while text.len() < 1_200_000 { text.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); text.extend_from_slice(&rnd(2)); }
+    while text.len() < 1_200_000 {
+        text.extend_from_slice(b"the quick brown fox jumps over the lazy dog ");
+        text.extend_from_slice(&rnd(2));
+    }
     inputs.push(text);
     // Word salad from a fixed vocabulary: stationary literal statistics
     // with the same support block after block, so the literal table gets
@@ -387,9 +457,17 @@ fn v7_max_level_roundtrip_through_container() {
     // an offset bucket) flickers between blocks, and reuse is decided by
     // cost (`table_cost`), so the old table's extra bits for that block's
     // histogram outweigh a fresh table's saving.
-    let vocab: Vec<Vec<u8>> = (0..300).map(|_| { let n = 3 + rnd(1)[0] as usize % 8; rnd(n).iter().map(|b| b'a' + b % 26).collect() }).collect();
+    let vocab: Vec<Vec<u8>> = (0..300)
+        .map(|_| {
+            let n = 3 + rnd(1)[0] as usize % 8;
+            rnd(n).iter().map(|b| b'a' + b % 26).collect()
+        })
+        .collect();
     let mut salad = Vec::new();
-    while salad.len() < 1_200_000 { salad.extend_from_slice(&vocab[u16::from_le_bytes(rnd(2).try_into().unwrap()) as usize % 300]); salad.push(b' '); }
+    while salad.len() < 1_200_000 {
+        salad.extend_from_slice(&vocab[u16::from_le_bytes(rnd(2).try_into().unwrap()) as usize % 300]);
+        salad.push(b' ');
+    }
     inputs.push(salad);
     // 64-byte records: every block parses to the same few codes, so the
     // sequence tables get reused block after block; the literals (the
@@ -400,7 +478,12 @@ fn v7_max_level_roundtrip_through_container() {
     fn versions(c: &[u8]) -> Vec<(u16, u8, u8)> {
         let mut v = Vec::new();
         for (h, body) in blocks_of(c) {
-            let sub = if h.flags & glyd::format::FLAG_RAW_UNCOMPRESSED != 0 { (0, 0) } else { let l = layout_of(&h, body).sub; (l.coded, l.reuse) };
+            let sub = if h.flags & glyd::format::FLAG_RAW_UNCOMPRESSED != 0 {
+                (0, 0)
+            } else {
+                let l = layout_of(&h, body).sub;
+                (l.coded, l.reuse)
+            };
             v.push((h.version, sub.0, sub.1));
         }
         v
@@ -457,7 +540,9 @@ fn records_input() -> Vec<u8> {
     let mut data = Vec::new();
     let mut x = 9u64;
     for i in 0..20_000u32 {
-        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
         data.extend_from_slice(format!("id={:08} name=user{:03} score={:05}\n", i, x % 500, x % 100_000).as_bytes());
     }
     data
@@ -494,14 +579,22 @@ fn v7_max_matches_reference_block_encoder() {
 
     // One entry per container block, in order; None for a raw block.
     fn block_payloads(c: &[u8]) -> Vec<Option<(bool, &[u8])>> {
-        blocks_of(c).into_iter().map(|(h, body)| if h.flags & glyd::format::FLAG_RAW_UNCOMPRESSED != 0 { None } else { Some((h.version == VERSION_V9, body)) }).collect()
+        blocks_of(c)
+            .into_iter()
+            .map(|(h, body)| if h.flags & glyd::format::FLAG_RAW_UNCOMPRESSED != 0 { None } else { Some((h.version == VERSION_V9, body)) })
+            .collect()
     }
 
     let mut text = Vec::new();
-    while text.len() < 600_000 { text.extend_from_slice(b"the quick brown fox jumps over the lazy dog. "); }
+    while text.len() < 600_000 {
+        text.extend_from_slice(b"the quick brown fox jumps over the lazy dog. ");
+    }
     let mut mixed = Vec::new();
     let mut x = 99u64;
-    while mixed.len() < 600_000 { mixed.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); mixed.extend_from_slice(&rnd(&mut x).to_le_bytes()[..3]); }
+    while mixed.len() < 600_000 {
+        mixed.extend_from_slice(b"the quick brown fox jumps over the lazy dog ");
+        mixed.extend_from_slice(&rnd(&mut x).to_le_bytes()[..3]);
+    }
 
     for input in [records_input(), text, mixed] {
         let mut c = Vec::new();
@@ -549,10 +642,18 @@ fn v7_max_matches_reference_block_encoder() {
 fn v7_dictionary_helps_small_inputs_and_is_required() {
     use glyd::{compress_with_dict, decompress, decompress_parallel, decompress_with_dict};
     let mut x = 1u64;
-    let fields: Vec<Vec<u8>> = (0..64).map(|i| { let r = rnd(&mut x); format!("\"field_{:02}\":\"{}-{:x}-value-of-field-{:02}\",", i, ["alpha", "beta", "gamma", "delta"][(r % 4) as usize], r >> 40, i).into_bytes() }).collect();
+    let fields: Vec<Vec<u8>> = (0..64)
+        .map(|i| {
+            let r = rnd(&mut x);
+            format!("\"field_{:02}\":\"{}-{:x}-value-of-field-{:02}\",", i, ["alpha", "beta", "gamma", "delta"][(r % 4) as usize], r >> 40, i).into_bytes()
+        })
+        .collect();
     let dict = glyd::Dict::from_content(&fields.concat(), &[]);
     let mut doc = b"{".to_vec();
-    for i in 0..16 { doc.extend_from_slice(&fields[(i * 7) % 64]); doc.extend_from_slice(format!("\"n{}\":{},", i, rnd(&mut x) % 100_000).as_bytes()); }
+    for i in 0..16 {
+        doc.extend_from_slice(&fields[(i * 7) % 64]);
+        doc.extend_from_slice(format!("\"n{}\":{},", i, rnd(&mut x) % 100_000).as_bytes());
+    }
     doc.push(b'}');
     let mut plain = Vec::new();
     glyd::compress_into_max(&doc, &mut plain);
@@ -561,7 +662,10 @@ fn v7_dictionary_helps_small_inputs_and_is_required() {
     assert!(with.len() * 4 < plain.len() * 3, "dictionary must help: {} vs {}", with.len(), plain.len());
     assert_eq!(decompress_with_dict(&dict, &with).unwrap(), doc);
     assert_eq!(decompress(&with), Err(CodecError::CorruptedBitstream("dictionary id mismatch")));
-    assert_eq!(decompress_with_dict(&glyd::Dict::from_content(b"wrong dictionary bytes", &[]), &with), Err(CodecError::CorruptedBitstream("dictionary id mismatch")));
+    assert_eq!(
+        decompress_with_dict(&glyd::Dict::from_content(b"wrong dictionary bytes", &[]), &with),
+        Err(CodecError::CorruptedBitstream("dictionary id mismatch"))
+    );
     // The serialized form round-trips and names the same id.
     let again = glyd::Dict::from_bytes(&dict.to_bytes()).unwrap();
     assert_eq!(again.id(), dict.id());
@@ -570,7 +674,10 @@ fn v7_dictionary_helps_small_inputs_and_is_required() {
     // Several blocks, matches into the dictionary and across blocks; an
     // incompressible doc is stored raw (no id) and still round-trips.
     let mut big = Vec::new();
-    while big.len() < 600_000 { big.extend_from_slice(&fields[(rnd(&mut x) % 64) as usize]); big.extend_from_slice(&rnd(&mut x).to_le_bytes()[..3]); }
+    while big.len() < 600_000 {
+        big.extend_from_slice(&fields[(rnd(&mut x) % 64) as usize]);
+        big.extend_from_slice(&rnd(&mut x).to_le_bytes()[..3]);
+    }
     let noise: Vec<u8> = (0..5000).map(|_| rnd(&mut x) as u8).collect();
     for input in [big, noise, Vec::new()] {
         let mut c = Vec::new();
@@ -635,13 +742,30 @@ fn v7_max_output_is_deterministic() {
     let y = bytes(9_997);
     let a = [y.clone(), y, bytes(6), s.clone()].concat();
     let mut b = [s.clone(), s.clone()].concat();
-    for i in 0..30 { b.extend_from_slice(&bytes(3)); let k = 1000 + 600 * i; b.extend_from_slice(&s[k..k + 200]); }
-    while b.len() < 1_200_000 { b.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); b.extend_from_slice(&bytes(3)); }
+    for i in 0..30 {
+        b.extend_from_slice(&bytes(3));
+        let k = 1000 + 600 * i;
+        b.extend_from_slice(&s[k..k + 200]);
+    }
+    while b.len() < 1_200_000 {
+        b.extend_from_slice(b"the quick brown fox jumps over the lazy dog ");
+        b.extend_from_slice(&bytes(3));
+    }
     // A in every 256 KB chunk (zero padding indexes nothing), so the
     // parallel path's pool threads are warmed too.
-    let a_chunks: Vec<u8> = (0..8).flat_map(|_| { let mut c = a.clone(); c.resize(256 * 1024, 0); c }).collect();
+    let a_chunks: Vec<u8> = (0..8)
+        .flat_map(|_| {
+            let mut c = a.clone();
+            c.resize(256 * 1024, 0);
+            c
+        })
+        .collect();
     for level in [glyd::compress_into_max as fn(&[u8], &mut Vec<u8>), glyd::compress_parallel_into_max] {
-        let run = move |input: &[u8]| { let mut c = Vec::new(); level(input, &mut c); c };
+        let run = move |input: &[u8]| {
+            let mut c = Vec::new();
+            level(input, &mut c);
+            c
+        };
         run(&a_chunks);
         run(&a);
         let warm1 = run(&b);

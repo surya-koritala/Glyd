@@ -99,7 +99,15 @@ impl CbRows {
             return err(format!("a matrix of {rows} x {cols} at level {bits}: not a shape or level this engine reads"));
         };
         if (codes.len(), scales.len(), codebook.len()) != want {
-            return err(format!("{rows} rows of {cols} at {bits} bits take {} + {} + {} bytes: {} + {} + {} are given", want.0, want.1, want.2, codes.len(), scales.len(), codebook.len()));
+            return err(format!(
+                "{rows} rows of {cols} at {bits} bits take {} + {} + {} bytes: {} + {} + {} are given",
+                want.0,
+                want.1,
+                want.2,
+                codes.len(),
+                scales.len(),
+                codebook.len()
+            ));
         }
         Ok(CbRows { bits, rows, cols, codes, scales, codebook })
     }
@@ -121,7 +129,14 @@ impl CbRows {
                 }
             }
         }
-        CbRows::new(bits as u32, rows, cols, packed, scales.iter().flat_map(|s| s.to_le_bytes()).collect(), codebook.iter().flat_map(|e| e.to_le_bytes()).collect())
+        CbRows::new(
+            bits as u32,
+            rows,
+            cols,
+            packed,
+            scales.iter().flat_map(|s| s.to_le_bytes()).collect(),
+            codebook.iter().flat_map(|e| e.to_le_bytes()).collect(),
+        )
     }
 
     pub fn view(&self) -> CbView<'_> {
@@ -139,7 +154,10 @@ pub struct HbExpert<'a> {
 impl<'a> HbExpert<'a> {
     pub fn new(up: CbView<'a>, down: CbView<'a>) -> Result<HbExpert<'a>> {
         if !up.is_valid() || !down.is_valid() || (up.bits, up.rows, up.cols) != (down.bits, down.rows, down.cols) {
-            return err(format!("an expert's up is {} x {} at {} bits and its transposed down {} x {} at {} bits: valid matrices of the same shape are wanted", up.rows, up.cols, up.bits, down.rows, down.cols, down.bits));
+            return err(format!(
+                "an expert's up is {} x {} at {} bits and its transposed down {} x {} at {} bits: valid matrices of the same shape are wanted",
+                up.rows, up.cols, up.bits, down.rows, down.cols, down.bits
+            ));
         }
         Ok(HbExpert { up, down })
     }
@@ -192,8 +210,18 @@ pub fn experts_pinned(kernel: Kernel, z: Z, pairs: &[HbPair], out: &mut [f32], t
     let (mut at, mut used) = (vec![usize::MAX; tokens], Vec::new());
     for (p, pair) in pairs.iter().enumerate() {
         let e = pair.expert;
-        if !e.up.is_valid() || !e.down.is_valid() || (e.up.bits, e.up.rows, e.up.cols) != (e.down.bits, e.down.rows, e.down.cols) || e.hidden() != hidden || pair.token >= tokens {
-            return err(format!("pair {p}: an expert of width {} and token {}, where {hidden} and 0 to {} are wanted", e.hidden(), pair.token, tokens.saturating_sub(1)));
+        if !e.up.is_valid()
+            || !e.down.is_valid()
+            || (e.up.bits, e.up.rows, e.up.cols) != (e.down.bits, e.down.rows, e.down.cols)
+            || e.hidden() != hidden
+            || pair.token >= tokens
+        {
+            return err(format!(
+                "pair {p}: an expert of width {} and token {}, where {hidden} and 0 to {} are wanted",
+                e.hidden(),
+                pair.token,
+                tokens.saturating_sub(1)
+            ));
         }
         if at[pair.token] == usize::MAX {
             at[pair.token] = used.len();
@@ -475,7 +503,9 @@ mod tests {
 
     /// The weights of a matrix, exactly: the table's entry times the run's scale, as f64.
     fn exact(m: &CbView) -> Vec<f64> {
-        (0..m.rows * m.cols).map(|i| (bf16_to_f32(m.entry(i / m.cols, m.code(i / m.cols, i % m.cols) as usize)) * bf16_to_f32(m.scale(i / m.cols, i % m.cols / RUN))) as f64).collect()
+        (0..m.rows * m.cols)
+            .map(|i| (bf16_to_f32(m.entry(i / m.cols, m.code(i / m.cols, i % m.cols) as usize)) * bf16_to_f32(m.scale(i / m.cols, i % m.cols / RUN))) as f64)
+            .collect()
     }
 
     /// The pair by the arithmetic of the spec, a value at a time in f32 (written out apart from the kernels): the active neurons with their activations, and the output row.
@@ -575,7 +605,11 @@ mod tests {
             assert!(n_want.iter().any(|&n| n > 0) && want.iter().any(|&x| x != 0.0));
             for (i, p) in pairs.iter().enumerate() {
                 let (list, row) = spec_pair(p.expert, &z[p.token * hidden..(p.token + 1) * hidden], p.weight);
-                assert_eq!((n_want[i], same_bits(&want[i * hidden..(i + 1) * hidden], &row)), (list.len() as u32, true), "{inter} x {hidden}: pair {i} against the spec");
+                assert_eq!(
+                    (n_want[i], same_bits(&want[i * hidden..(i + 1) * hidden], &row)),
+                    (list.len() as u32, true),
+                    "{inter} x {hidden}: pair {i} against the spec"
+                );
                 let e = (i * 3) % 10 % 5;
                 if p.token < 2 && e == 2 {
                     assert!(n_want[i] == 0 && row.iter().all(|&x| x == 0.0), "no neuron on");
@@ -629,7 +663,8 @@ mod tests {
         for bits in 2..=3u32 {
             let m = make_sparse(&mut rng, bits, inter, hidden, 0.3);
             let off = |v: &[u8]| [&[0xAAu8][..], v].concat();
-            let (uc, us, ub, dc, ds, db) = (off(&m.up.codes), off(&m.up.scales), off(&m.up.codebook), off(&m.down.codes), off(&m.down.scales), off(&m.down.codebook));
+            let (uc, us, ub, dc, ds, db) =
+                (off(&m.up.codes), off(&m.up.scales), off(&m.up.codebook), off(&m.down.codes), off(&m.down.scales), off(&m.down.codebook));
             fn view<'a>(m: &CbRows, c: &'a [u8], s: &'a [u8], b: &'a [u8]) -> CbView<'a> {
                 CbView { bits: m.bits, rows: m.rows, cols: m.cols, codes: &c[1..], scales: &s[1..], codebook: &b[1..] }
             }
@@ -674,7 +709,11 @@ mod tests {
                     let got = experts_with(k, Z::F32(&z), &[HbPair { expert: &e, token: 0, weight: 2.5 }], &mut out, 1).unwrap();
                     let (e_book, e_own) = (rel(&out, &want), rel(&out, &own));
                     worst = (worst.0.max(e_book), worst.1.max(e_own));
-                    eprintln!("bits {bits} {name:6} {:7}: {} active (by the book {n}), error {e_book:.2e} against the book, {e_own:.2e} against the same activations", k.name(), got[0]);
+                    eprintln!(
+                        "bits {bits} {name:6} {:7}: {} active (by the book {n}), error {e_book:.2e} against the book, {e_own:.2e} against the same activations",
+                        k.name(),
+                        got[0]
+                    );
                     assert!(got[0].abs_diff(n) <= 1, "bits {bits} {name} {}: {} and {n}", k.name(), got[0]);
                     // (the second sum is a chain of up to 192 fused multiply-adds of terms of both signs: its f32 rounding is about 3e-8 sqrt(active neurons) of the result's norm)
                     assert!(e_book < 1e-4 && e_own < 5e-7, "bits {bits} {name} {}: {e_book} against the book, {e_own} against the same activations", k.name());
@@ -720,7 +759,11 @@ mod tests {
         let ex: Vec<HbExpert> = made.iter().map(Made::expert).collect();
         let zb: Vec<u16> = (0..2 * hidden).map(|_| bits_of(4.0 * (rng.f() - 0.5))).collect();
         let zf: Vec<f32> = zb.iter().map(|&b| bf16_to_f32(b)).collect();
-        let pairs = [HbPair { expert: &ex[0], token: 1, weight: 1.5 }, HbPair { expert: &ex[1], token: 0, weight: 0.5 }, HbPair { expert: &ex[0], token: 0, weight: 2.0 }];
+        let pairs = [
+            HbPair { expert: &ex[0], token: 1, weight: 1.5 },
+            HbPair { expert: &ex[1], token: 0, weight: 0.5 },
+            HbPair { expert: &ex[0], token: 0, weight: 2.0 },
+        ];
         let (mut a, mut b) = (vec![0f32; 3 * hidden], vec![0f32; 3 * hidden]);
         assert_eq!(experts(Z::Bf16(&zb), &pairs, &mut a, 2).unwrap(), experts(Z::F32(&zf), &pairs, &mut b, 2).unwrap());
         assert!(same_bits(&a, &b) && a.iter().any(|&x| x != 0.0));
@@ -811,7 +854,10 @@ mod tests {
         assert!(HbExpert::new(ea.up, ea.down).is_ok());
         // the matrices
         assert!(CbRows::new(3, 2, 64, vec![0; 2 * 24], vec![0; 2 * 2 * 2], vec![0; 2 * 16]).is_ok());
-        assert!(CbRows::new(3, 2, 64, vec![0; 2 * 24], vec![0; 7], vec![0; 2 * 16]).is_err() && CbRows::new(4, 2, 64, vec![0; 64], vec![0; 8], vec![0; 64]).is_err());
+        assert!(
+            CbRows::new(3, 2, 64, vec![0; 2 * 24], vec![0; 7], vec![0; 2 * 16]).is_err()
+                && CbRows::new(4, 2, 64, vec![0; 64], vec![0; 8], vec![0; 64]).is_err()
+        );
         assert!(CbRows::from_codes(2, 1, 32, &[4; 32], &[0], &[0; 4]).is_err(), "a code past the bits");
         assert!(CbRows::from_codes(2, 1, 32, &[0; 32], &[0], &[0; 8]).is_err() && CbRows::from_codes(2, 1, 33, &[0; 33], &[0], &[0; 4]).is_err());
         assert!(CbRows::from_codes(1, 1, 32, &[0; 32], &[0], &[0; 2]).is_err() && CbRows::from_codes(2, 0, 32, &[], &[], &[]).is_err());

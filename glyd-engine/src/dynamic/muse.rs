@@ -149,7 +149,9 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         // the experts: each stacked matrix packed as one (gate and up [E 2I, latent], down [E latent, I]); the router fp32 as it is
         let stack = |n: &str, rows: usize, cols: usize| -> Result<ExpertStack> {
             let w = words(&read(&format!("{m}.experts.{n}"))?);
-            let Some(t) = sl else { return ExpertStack::lossless(upload_packed(pack_words(&w, e * rows, cols, Layout::Tiered, &format!("{m}.experts.{n}"))?)?, e) };
+            let Some(t) = sl else {
+                return ExpertStack::lossless(upload_packed(pack_words(&w, e * rows, cols, Layout::Tiered, &format!("{m}.experts.{n}"))?)?, e);
+            };
             // (a group of GPUs: this GPU's rows of each expert's, stacked)
             if rows % (64 * t.n) != 0 {
                 return err(format!("{m}.experts.{n}: experts of {rows} rows across {} GPUs: each GPU's rows in 64s are wanted", t.n));
@@ -164,7 +166,14 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         let router = upload_bytes(&read(&format!("{m}.gate.weight"))?)?;
         let bias = upload_bytes(&read(&format!("{m}.gate.e_score_correction_bias"))?)?;
         // (the clamp of an infinite limit: the activation is the kernel's, so the products are not fused)
-        let cfg = MoeCfg { experts: e, router_hidden: d, hidden: lat, inter, router: Router::sigmoid(c.top_k, c.route_scale), act: Act::SwiGlu { limit: Some(f32::INFINITY) } };
+        let cfg = MoeCfg {
+            experts: e,
+            router_hidden: d,
+            hidden: lat,
+            inter,
+            router: Router::sigmoid(c.top_k, c.route_scale),
+            act: Act::SwiGlu { limit: Some(f32::INFINITY) },
+        };
         let block = l_.moe.len();
         l_.moe.push(Box::new(MuseMoe(MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?)));
         let ring = rings.len();
@@ -210,7 +219,18 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     }
     let ropes = vec![(upload_bytes(as_bytes(&cs))?, upload_bytes(as_bytes(&sn))?)];
     let mut widths = [0usize; super::SLOTS];
-    for (s, w) in [(Slot::X, d), (Slot::H, d), (Slot::Mix, row), (Slot::Qo, nq * hd), (Slot::Att, nq * hd), (Slot::Core, nq * hd), (Slot::O, d), (Slot::Proj, lat), (Slot::Xc, lat), (Slot::M, lat)] {
+    for (s, w) in [
+        (Slot::X, d),
+        (Slot::H, d),
+        (Slot::Mix, row),
+        (Slot::Qo, nq * hd),
+        (Slot::Att, nq * hd),
+        (Slot::Core, nq * hd),
+        (Slot::O, d),
+        (Slot::Proj, lat),
+        (Slot::Xc, lat),
+        (Slot::M, lat),
+    ] {
         widths[s as usize] = w;
     }
     let desc = ModelDesc {

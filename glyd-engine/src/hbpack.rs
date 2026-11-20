@@ -26,7 +26,10 @@ pub fn plan(c: &ConfigNemotronH, f32: &dyn Fn(&str) -> bool) -> String {
     for (l, &(_, k)) in c.schedule().iter().enumerate().filter(|(_, (kind, _))| *kind == NhKind::Moe) {
         for e in 0..c.moe.experts {
             for (name, matrix) in [("up_proj", "up"), ("down_proj", "downT")] {
-                puts.push(format!("{{\"codebook\": \"{}layers.{l}.mixer.experts.{e}.{name}\", \"layer\": {k}, \"expert\": {e}, \"matrix\": \"{matrix}\"}}", c.prefix));
+                puts.push(format!(
+                    "{{\"codebook\": \"{}layers.{l}.mixer.experts.{e}.{name}\", \"layer\": {k}, \"expert\": {e}, \"matrix\": \"{matrix}\"}}",
+                    c.prefix
+                ));
             }
         }
         puts.push(format!("{{\"signs\": \"{}layers.{l}.mixer.glyd_rot_signs\", \"layer\": {k}}}", c.prefix));
@@ -38,7 +41,16 @@ pub fn plan(c: &ConfigNemotronH, f32: &dyn Fn(&str) -> bool) -> String {
 pub fn check(c: &ConfigNemotronH, ex: &HbExport) -> Result<()> {
     let m = &c.moe;
     if (ex.rows, ex.cols, ex.experts) != (m.inter, m.latent, m.experts) {
-        return err(format!("{}: {} experts of {} neuron rows of {} values, where the model has {} of {} of {}", ex.dir.display(), ex.experts, ex.rows, ex.cols, m.experts, m.inter, m.latent));
+        return err(format!(
+            "{}: {} experts of {} neuron rows of {} values, where the model has {} of {} of {}",
+            ex.dir.display(),
+            ex.experts,
+            ex.rows,
+            ex.cols,
+            m.experts,
+            m.inter,
+            m.latent
+        ));
     }
     let blocks: Vec<usize> = (0..c.layers).filter(|&l| c.kinds[l] == NhKind::Moe).collect();
     if ex.layers.len() != blocks.len() {
@@ -46,7 +58,11 @@ pub fn check(c: &ConfigNemotronH, ex: &HbExport) -> Result<()> {
     }
     for (k, (l, b)) in ex.layers.iter().zip(&blocks).enumerate() {
         if l.block != *b {
-            return err(format!("{}: layer {k} of the export is block {}, where the model's {k}-th mixture-of-experts layer is block {b}", ex.dir.display(), l.block));
+            return err(format!(
+                "{}: layer {k} of the export is block {}, where the model's {k}-th mixture-of-experts layer is block {b}",
+                ex.dir.display(),
+                l.block
+            ));
         }
     }
     Ok(())
@@ -188,7 +204,8 @@ pub(crate) mod tests {
         let v = save::verify(&out, 2, &save::Decoder::Cpu).unwrap();
         assert_eq!(v.unchecked, 0);
         let ck = Checkpoint::open(&out).unwrap();
-        let have: Vec<(String, String, Vec<u64>)> = ck.names().map(|n| (n.to_string(), ck.get(n).unwrap().1.dtype.clone(), ck.get(n).unwrap().1.shape.clone())).collect();
+        let have: Vec<(String, String, Vec<u64>)> =
+            ck.names().map(|n| (n.to_string(), ck.get(n).unwrap().1.dtype.clone(), ck.get(n).unwrap().1.shape.clone())).collect();
         c.check(&have, &c.saved(&ck)).unwrap();
         // the layers read back
         for (k, &l) in [1usize, 3, 5].iter().enumerate() {

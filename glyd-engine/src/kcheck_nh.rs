@@ -81,7 +81,15 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     let (nh, ng, n, eps, dt_min, split) = (m[0] as usize, m[1] as usize, m[2] as usize, m[3] as f32, m[4] as f32, m[5] as usize);
     let (di, cd) = (nh * NH_P, nh * NH_P + 2 * ng * NH_N);
     let w = di + cd + nh;
-    let (mix, cw, cb, alog, dd, dtb, nw) = (load(ind, "mix.bin")?, load(ind, "conv_w.bin")?, load(ind, "conv_b.bin")?, load(ind, "a_log.bin")?, load(ind, "d.bin")?, load(ind, "dt_bias.bin")?, load(ind, "norm_w.bin")?);
+    let (mix, cw, cb, alog, dd, dtb, nw) = (
+        load(ind, "mix.bin")?,
+        load(ind, "conv_w.bin")?,
+        load(ind, "conv_b.bin")?,
+        load(ind, "a_log.bin")?,
+        load(ind, "d.bin")?,
+        load(ind, "dt_bias.bin")?,
+        load(ind, "norm_w.bin")?,
+    );
     let (state0, cstate0) = (load(ind, "state0.bin")?, load(ind, "cstate0.bin")?);
     let ws = SsdWs::sized(nh, ng, n)?;
     let first = if split > 0 && split < n { split } else { n };
@@ -128,12 +136,29 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     let qkv = load(ind, "qkv.bin")?;
     let pos = Buf::new(na * 4)?;
     pos.write(0, &(0..na as i32).collect::<Vec<_>>())?;
-    let (kv, out, part, pre) = (Buf::zeroed(na * nk * 256 * 2)?, Buf::zeroed(na * nq * 128 * 2)?, Buf::zeroed(nq * crate::model_nh::NH_SPLITS * 130 * 4)?, Buf::zeroed(na * nq * 128 * 2)?);
+    let (kv, out, part, pre) = (
+        Buf::zeroed(na * nk * 256 * 2)?,
+        Buf::zeroed(na * nq * 128 * 2)?,
+        Buf::zeroed(nq * crate::model_nh::NH_SPLITS * 130 * 4)?,
+        Buf::zeroed(na * nq * 128 * 2)?,
+    );
     // SAFETY: as above.
     unsafe {
         k.kv_write(s, qkv.ptr, qs as i32, pos.ptr, kv.ptr, na as u32, nq as i32, nk as i32)?;
         for t in 0..na {
-            k.attn_decode(s, qkv.ptr + (t * qs * 2) as u64, qs as i32, kv.ptr, pos.ptr + (t * 4) as u64, 1, nq as i32, nk as i32, part.ptr, out.ptr + (t * nq * 128 * 2) as u64, (nq * 128) as i32)?;
+            k.attn_decode(
+                s,
+                qkv.ptr + (t * qs * 2) as u64,
+                qs as i32,
+                kv.ptr,
+                pos.ptr + (t * 4) as u64,
+                1,
+                nq as i32,
+                nk as i32,
+                part.ptr,
+                out.ptr + (t * nq * 128 * 2) as u64,
+                (nq * 128) as i32,
+            )?;
         }
         kern.prefill_attn(s, qkv.ptr, qs as i32, kv.ptr, pre.ptr, (nq * 128) as i32, na as i32, 0, nq as i32, nk as i32)?;
     }
@@ -185,7 +210,9 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
             }
         };
         match mode {
-            "prefill" => prefill_calls(case.get("calls").and_then(Value::as_u64s).unwrap_or_default().into_iter().map(|v| v as usize).collect(), &mut at, &mut calls),
+            "prefill" => {
+                prefill_calls(case.get("calls").and_then(Value::as_u64s).unwrap_or_default().into_iter().map(|v| v as usize).collect(), &mut at, &mut calls)
+            }
             "decode" => prefill_calls(vec![1; get(case, "tokens").unwrap_or(1)], &mut at, &mut calls),
             "mixed" => {
                 prefill_calls(vec![get(case, "prefill").unwrap_or(1)], &mut at, &mut calls);
@@ -337,7 +364,8 @@ pub fn toy(dir: &Path, outd: &Path, cache: Option<(&str, Offload)>) -> Result<()
         let mut grab = |e: &EngineNh, logits: &mut Vec<u16>| -> Result<()> {
             let row: Vec<u16> = e.logits()?.into_iter().map(|f| (f.to_bits() >> 16) as u16).collect();
             if let Some(top) = e.top.read() {
-                top_vs_row(&top, &row, 0.7).map_err(|m| Error(format!("{tag}: row {}: the sampler's candidates are not the logits' largest: {m}", logits.len() / row.len())))?;
+                top_vs_row(&top, &row, 0.7)
+                    .map_err(|m| Error(format!("{tag}: row {}: the sampler's candidates are not the logits' largest: {m}", logits.len() / row.len())))?;
                 tops += 1;
             }
             logits.extend(row);
@@ -354,14 +382,21 @@ pub fn toy(dir: &Path, outd: &Path, cache: Option<(&str, Offload)>) -> Result<()
             tokens.push(s.token.to_string());
             grab(&e, &mut logits)?;
         }
-        println!("{tag}: prefill of {p} tokens {:.1} ms, {} steps {:.2} ms each", pre * 1e3, total - p, t1.elapsed().as_secs_f64() * 1e3 / (total - p).max(1) as f64);
+        println!(
+            "{tag}: prefill of {p} tokens {:.1} ms, {} steps {:.2} ms each",
+            pre * 1e3,
+            total - p,
+            t1.elapsed().as_secs_f64() * 1e3 / (total - p).max(1) as f64
+        );
         if places.is_some() {
             println!("{tag}: {}", store.report()?);
         }
         if tops == 0 {
             println!("{tag}: candidates: none made (the vocabulary of {} is not a multiple of 8 of at least 64)", e.w.cfg.vocab);
         } else {
-            println!("{tag}: candidates: the 64 largest logits and the sum of their exponentials, as the sampler is given them, are the row's in all {tops} rows");
+            println!(
+                "{tag}: candidates: the 64 largest logits and the sum of their exponentials, as the sampler is given them, are the row's in all {tops} rows"
+            );
         }
         save_bytes(outd, &format!("toy_{tag}_logits.bin"), &logits)?;
         io(std::fs::write(outd.join(format!("toy_{tag}_tokens.txt")), tokens.join(" ")))?;
@@ -378,7 +413,11 @@ pub fn cache_for(spec: Option<&str>, dir: &Path, level: Layout, cfg: &ConfigNemo
         None => Ok(None),
         Some(g) if g == "auto" || g.starts_with("auto:") => {
             let (free, gpu) = match g.strip_prefix("auto:") {
-                Some(n) => ((n.parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0).ok_or_else(|| Error(format!("--expert-cache {g}: auto or auto:GIB")))? * (1u64 << 30) as f64) as u64, "the GPU".to_string()),
+                Some(n) => (
+                    (n.parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0).ok_or_else(|| Error(format!("--expert-cache {g}: auto or auto:GIB")))?
+                        * (1u64 << 30) as f64) as u64,
+                    "the GPU".to_string(),
+                ),
                 None => {
                     let p = Dev::probe(0)?;
                     (p.free, p.name)
@@ -387,7 +426,8 @@ pub fn cache_for(spec: Option<&str>, dir: &Path, level: Layout, cfg: &ConfigNemo
             crate::cli::expert_cache_for(dir, level, free, &gpu, crate::offload::host_memory()).map_err(|r| Error(r.to_string()))
         }
         Some(g) => {
-            let gib: f64 = g.parse().ok().filter(|v: &f64| v.is_finite() && *v > 0.0).ok_or_else(|| Error(format!("--expert-cache {g}: not a number of GiB")))?;
+            let gib: f64 =
+                g.parse().ok().filter(|v: &f64| v.is_finite() && *v > 0.0).ok_or_else(|| Error(format!("--expert-cache {g}: not a number of GiB")))?;
             let plan = crate::moe_nh::cache_plan(cfg, level, (gib * (1u64 << 30) as f64) as u64, cfg.moe.top_k)?;
             Ok(Some(plan.ok_or_else(|| Error(format!("--expert-cache {g}: fewer than {} experts a layer fit", cfg.moe.top_k)))?))
         }
@@ -440,7 +480,14 @@ pub fn host_setup(plan: Option<&CachePlan>, variants: &mut [Offload]) -> Result<
                     eprintln!("the computer's memory holds the experts but not the host's half besides: auto copies");
                     v.mode = Mode::Copy;
                 }
-                Mode::Cpu | Mode::Split => return err(format!("--offload-mode {}: the host's half takes {:.1} GiB besides the experts' {:.1}, and this computer has {said} to give", v.mode.name(), gib(p.host_half_bytes()), gib(p.host_bytes()))),
+                Mode::Cpu | Mode::Split => {
+                    return err(format!(
+                        "--offload-mode {}: the host's half takes {:.1} GiB besides the experts' {:.1}, and this computer has {said} to give",
+                        v.mode.name(),
+                        gib(p.host_half_bytes()),
+                        gib(p.host_bytes())
+                    ))
+                }
                 Mode::Copy => {}
             }
         }
@@ -524,7 +571,11 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
     if hummingbird {
         println!("the experts: codebook rows (c3r, c2r) in the rotated basis of the layer, the sparse second product");
     } else {
-        println!("the experts' second matrices: {} ({})", down.name(), if down.row_bits().is_some() { "the row layout: the sparse product" } else { "the block layout: the library's dense product" });
+        println!(
+            "the experts' second matrices: {} ({})",
+            down.name(),
+            if down.row_bits().is_some() { "the row layout: the sparse product" } else { "the block layout: the library's dense product" }
+        );
     }
     let ids: Vec<u32> = nums(outd, "ids.txt")?.into_iter().map(|x| x as u32).collect();
     if p == 0 || p > total || total > ids.len() {
@@ -533,7 +584,12 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
     // (what a run is, the chunk of its engine, the prompt, the tokens it steps through)
     let runs: Vec<(String, usize, Vec<u32>, Vec<u32>)> = vec![
         (format!("{p} tokens in chunks of 128, then {} steps", total - p), 128, ids[..p].to_vec(), ids[p..total].to_vec()),
-        ("400 tokens in one chunk, then 8 steps".to_string(), 512, ids.iter().cycle().take(400).copied().collect(), ids[p..total].iter().take(8).copied().collect()),
+        (
+            "400 tokens in one chunk, then 8 steps".to_string(),
+            512,
+            ids.iter().cycle().take(400).copied().collect(),
+            ids[p..total].iter().take(8).copied().collect(),
+        ),
     ];
     // the prefill and the steps: the logits after each (bf16 words) and the tokens chosen; `hints` (the store, the layers it holds, the experts of a layer) put experts in the places between steps
     let run = |e: &mut dyn Pass, prompt: &[u32], steps: &[u32], hints: Option<(&ExpertStore, usize, usize)>| -> Result<(Vec<u16>, Vec<u32>)> {
@@ -583,8 +639,13 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
             println!("ok   {what}: {} logits and {} tokens as the run with every expert there", got.0.len(), got.1.len());
         } else {
             let at = got.0.iter().zip(&want.0).position(|(a, b)| a != b);
-            let worst = got.0.iter().zip(&want.0).map(|(a, b)| (f32::from_bits((*a as u32) << 16) - f32::from_bits((*b as u32) << 16)).abs()).fold(0f32, f32::max);
-            println!("FAIL {what}: the logits differ from the first at {at:?} (of {} per step), by {worst} at most; tokens {}", want.0.len() / want.1.len().max(1), if got.1 == want.1 { "the same" } else { "differ" });
+            let worst =
+                got.0.iter().zip(&want.0).map(|(a, b)| (f32::from_bits((*a as u32) << 16) - f32::from_bits((*b as u32) << 16)).abs()).fold(0f32, f32::max);
+            println!(
+                "FAIL {what}: the logits differ from the first at {at:?} (of {} per step), by {worst} at most; tokens {}",
+                want.0.len() / want.1.len().max(1),
+                if got.1 == want.1 { "the same" } else { "differ" }
+            );
         }
         same
     };
@@ -647,14 +708,25 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
                 host_used |= st.cpu > 0;
                 if tolerant && (hummingbird || down.row_bits().is_some()) && host.is_some_and(|o| o.mode == Mode::Cpu) {
                     if st.cpu == 0 || st.promoted == 0 {
-                        println!("FAIL {n} places: the host computed {} experts ({} pairs) and {} were copied in behind them: the host's half was not used", st.cpu, st.cpu_pairs, st.promoted);
+                        println!(
+                            "FAIL {n} places: the host computed {} experts ({} pairs) and {} were copied in behind them: the host's half was not used",
+                            st.cpu, st.cpu_pairs, st.promoted
+                        );
                         ok = false;
                     }
                 }
             }
             if n < experts {
                 for &budget in memory {
-                    ok &= on_disk(dir, &o(true), level, n, (prompt, steps), (host.unwrap_or(Offload { mode: Mode::Copy, ..Offload::default() }), budget, all_experts), &run)?;
+                    ok &= on_disk(
+                        dir,
+                        &o(true),
+                        level,
+                        n,
+                        (prompt, steps),
+                        (host.unwrap_or(Offload { mode: Mode::Copy, ..Offload::default() }), budget, all_experts),
+                        &run,
+                    )?;
                 }
             }
             drop(e);
@@ -665,7 +737,10 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
             let make = factory_cached(level, n, &store);
             let mut d = crate::dynamic::nemotron::load_with(dir, &dyo, &make, whole(&cfg))?;
             if (n < experts) == d.has_graph() {
-                println!("FAIL dynamic engine, {n} places: a decode graph {} (it is one where every expert is on the GPU alone)", if d.has_graph() { "was captured" } else { "was not captured" });
+                println!(
+                    "FAIL dynamic engine, {n} places: a decode graph {} (it is one where every expert is on the GPU alone)",
+                    if d.has_graph() { "was captured" } else { "was not captured" }
+                );
                 ok = false;
             }
             for pass in ["first pass", "second pass, the cache warm"] {
@@ -715,7 +790,15 @@ macro_rules! pass_for {
 pass_for!(EngineNh);
 pass_for!(crate::dynamic::Dyn);
 
-fn on_disk(dir: &Path, o: &OptsNh, level: Layout, n: usize, (prompt, steps): (&[u32], &[u32]), (mode, budget, all): (Offload, u64, u64), run: Run) -> Result<bool> {
+fn on_disk(
+    dir: &Path,
+    o: &OptsNh,
+    level: Layout,
+    n: usize,
+    (prompt, steps): (&[u32], &[u32]),
+    (mode, budget, all): (Offload, u64, u64),
+    run: Run,
+) -> Result<bool> {
     use crate::moe_nh::factory_cached;
     let mut results = Vec::new();
     for bytes in [None, Some(budget)] {
@@ -763,7 +846,9 @@ pub fn disk(dir: &Path, reads: usize, depth: usize) -> Result<()> {
     use crate::moe_hb::{index_layer, HbDisk};
     use std::cell::RefCell;
     use std::sync::Arc;
-    let Some((Layout::Hummingbird, manifest)) = v7_manifest(dir)? else { return err(format!("{}: not a glyd-v7 directory at the Hummingbird level", dir.display())) };
+    let Some((Layout::Hummingbird, manifest)) = v7_manifest(dir)? else {
+        return err(format!("{}: not a glyd-v7 directory at the Hummingbird level", dir.display()));
+    };
     let c = ConfigNemotronH::load(dir)?;
     let ck = io(Checkpoint::open(dir))?;
     let layers: Vec<usize> = (0..c.layers).filter(|&l| c.kinds[l] == NhKind::Moe).collect();
@@ -793,7 +878,15 @@ pub fn disk(dir: &Path, reads: usize, depth: usize) -> Result<()> {
             })
             .collect()
     };
-    let say = |what: &str, n: usize, secs: f64, bytes: f64| println!("diskcheck {what}: {n} experts, {:.0} MB in {secs:.2} s: {:.0} MB/s, {:.0} experts/s, {:.2} ms an expert", bytes / 1e6, bytes / 1e6 / secs, n as f64 / secs, secs * 1e3 / n as f64);
+    let say = |what: &str, n: usize, secs: f64, bytes: f64| {
+        println!(
+            "diskcheck {what}: {n} experts, {:.0} MB in {secs:.2} s: {:.0} MB/s, {:.0} experts/s, {:.2} ms an expert",
+            bytes / 1e6,
+            bytes / 1e6 / secs,
+            n as f64 / secs,
+            secs * 1e3 / n as f64
+        )
+    };
     println!("diskcheck: {} experts of the {} layers of {}", picks.len(), layers.len(), dir.display());
     // (an expert's bytes are its group's place's: the sum is what the reads moved)
     let bytes_of = |from: &[(usize, usize)]| -> f64 { from.iter().map(|&(l, e)| disks[l].bytes_of(e) as f64).sum() };
@@ -812,10 +905,17 @@ pub fn disk(dir: &Path, reads: usize, depth: usize) -> Result<()> {
         if first == 0.0 {
             first = secs;
         } else if secs * 3.0 < first {
-            println!("diskcheck: the experts read again came {:.1} times faster: the page cache is keeping them (this file system takes no direct reads?)", first / secs);
+            println!(
+                "diskcheck: the experts read again came {:.1} times faster: the page cache is keeping them (this file system takes no direct reads?)",
+                first / secs
+            );
         }
     }
-    println!("diskcheck: the shards are read {} (the page cache is {})", disks[0].mode(), if disks[0].mode() == "buffered" { "asked to drop what is read, after each read" } else { "bypassed" });
+    println!(
+        "diskcheck: the shards are read {} (the page cache is {})",
+        disks[0].mode(),
+        if disks[0].mode() == "buffered" { "asked to drop what is read, after each read" } else { "bypassed" }
+    );
     Ok(())
 }
 
@@ -849,7 +949,8 @@ fn unpacked(ck: &Checkpoint, v7: &(Layout, Value), pk: &Pack35) -> Result<Vec<u1
 /// (the layers' residual input); tokens.json.
 pub fn decode(dir: &Path, out: &Path, layers: &[usize], tokens: usize) -> Result<()> {
     let cfg = ConfigNemotronH::load(dir)?;
-    let v7 = v7_manifest(dir)?.ok_or_else(|| Error(format!("{}: not a glyd-v7 directory (glyd-engine pack MODEL DIR --layout i6|i5|i4 makes one)", dir.display())))?;
+    let v7 = v7_manifest(dir)?
+        .ok_or_else(|| Error(format!("{}: not a glyd-v7 directory (glyd-engine pack MODEL DIR --layout i6|i5|i4 makes one)", dir.display())))?;
     let ck = io(Checkpoint::open(dir))?;
     if let Some(&l) = layers.iter().find(|&&l| l >= cfg.layers) {
         return err(format!("layer {l}, where the model has {}", cfg.layers));
@@ -889,7 +990,13 @@ pub fn decode(dir: &Path, out: &Path, layers: &[usize], tokens: usize) -> Result
     io(std::fs::copy(dir.join("config.json"), out.join("config.json")))?;
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), d.as_str(), s.clone(), &b[..])).collect();
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
-    println!("{}: {} tensors of layers {layers:?} decoded from the packs of the {:?} level ({:.0} MB), {tokens} embeddings", out.display(), tensors.len(), v7.0, tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
+    println!(
+        "{}: {} tensors of layers {layers:?} decoded from the packs of the {:?} level ({:.0} MB), {tokens} embeddings",
+        out.display(),
+        tensors.len(),
+        v7.0,
+        tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6
+    );
     Ok(())
 }
 
@@ -939,7 +1046,8 @@ mod tests {
             // the embeddings of the tokens: rows of the embedding's pack, decoded
             let ids = json::parse(&std::fs::read_to_string(mini.join("tokens.json")).unwrap()).unwrap().get("ids").and_then(Value::as_u64s).unwrap();
             let (packed_ck, v7) = (Checkpoint::open(&packed).unwrap(), v7_manifest(&packed).unwrap().unwrap());
-            let table = unpacked(&packed_ck, &v7, &Pack35 { key: "embed".into(), parts: vec![("backbone.embeddings.weight".into(), c.vocab)], cols: c.hidden }).unwrap();
+            let table = unpacked(&packed_ck, &v7, &Pack35 { key: "embed".into(), parts: vec![("backbone.embeddings.weight".into(), c.vocab)], cols: c.hidden })
+                .unwrap();
             let x = std::fs::read(mini.join("x.bin")).unwrap();
             assert_eq!((ids.len(), x.len()), (40, 40 * c.hidden * 2));
             for (i, &id) in ids.iter().enumerate() {
@@ -993,7 +1101,9 @@ mod tests {
         let flipped = [row(&[15.5, 16.0, -3.0, 0.5]), row(&[1.0, 2.0, 8.0, 7.0])].concat();
         let ok = logits_within(&flipped, &tied, 2, 0.05).unwrap();
         assert!(ok.contains("the same at 1"), "{ok}");
-        assert!(logits_within(&want[..7], &want, 2, 0.1).is_err() && logits_within(&want, &want, 0, 0.1).is_err() && logits_within(&want, &want, 3, 0.1).is_err());
+        assert!(
+            logits_within(&want[..7], &want, 2, 0.1).is_err() && logits_within(&want, &want, 0, 0.1).is_err() && logits_within(&want, &want, 3, 0.1).is_err()
+        );
     }
 
     /// `diskcheck` reads the tiny model's directory (random whole experts, one at a time and several at a time, the same ones again) and says so; a directory that is not a Hummingbird one is refused, and a budget for the
@@ -1068,13 +1178,22 @@ pub fn random(out: &Path, latent: usize, experts: usize) -> Result<()> {
                 (-a, a)
             }
         };
-        let bytes = if t.dtype == "F32" { (0..n).flat_map(|_| uni(lo, hi).to_le_bytes()).collect() } else { crate::weights::as_bytes(&(0..n).map(|_| bf(uni(lo, hi))).collect::<Vec<u16>>()).to_vec() };
+        let bytes = if t.dtype == "F32" {
+            (0..n).flat_map(|_| uni(lo, hi).to_le_bytes()).collect()
+        } else {
+            crate::weights::as_bytes(&(0..n).map(|_| bf(uni(lo, hi))).collect::<Vec<u16>>()).to_vec()
+        };
         tensors.push((t.name.clone(), t.dtype, t.shape.clone(), bytes));
     }
     io(std::fs::create_dir_all(out))?;
     io(std::fs::write(out.join("config.json"), &text))?;
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
-    println!("{}: a random Nemotron-H model, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
+    println!(
+        "{}: a random Nemotron-H model, {} tensors, {:.0} MB",
+        out.display(),
+        tensors.len(),
+        tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6
+    );
     Ok(())
 }

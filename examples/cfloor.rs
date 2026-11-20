@@ -13,7 +13,9 @@ use std::time::Instant;
 const GB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 #[inline(always)]
-fn h4(w: u32) -> usize { (w.wrapping_mul(2654435761) >> 18) as usize } // 14 bits
+fn h4(w: u32) -> usize {
+    (w.wrapping_mul(2654435761) >> 18) as usize
+} // 14 bits
 
 #[inline(never)]
 unsafe fn hash_ins(src: &[u8], table: &mut [u32]) -> usize {
@@ -52,7 +54,8 @@ unsafe fn greedy(src: &[u8], table: &mut [u32]) -> (usize, usize) {
     let n = src.len().saturating_sub(12);
     let mut i = 0;
     let (mut tokens, mut mbytes) = (0usize, 0usize);
-    let mut step = 1usize; let mut miss = 0usize;
+    let mut step = 1usize;
+    let mut miss = 0usize;
     while i < n {
         let w = std::ptr::read_unaligned(p.add(i) as *const u32);
         let h = h4(w);
@@ -66,14 +69,23 @@ unsafe fn greedy(src: &[u8], table: &mut [u32]) -> (usize, usize) {
             while l + 8 <= max {
                 let x = std::ptr::read_unaligned(p.add(i + l) as *const u64);
                 let y = std::ptr::read_unaligned(p.add(c + l) as *const u64);
-                if x != y { l += ((x ^ y).trailing_zeros() / 8) as usize; break; }
+                if x != y {
+                    l += ((x ^ y).trailing_zeros() / 8) as usize;
+                    break;
+                }
                 l += 8;
             }
-            tokens += 1; mbytes += l;
-            i += l; step = 1; miss = 0;
+            tokens += 1;
+            mbytes += l;
+            i += l;
+            step = 1;
+            miss = 0;
         } else {
-            i += step; miss += 1;
-            if miss & 31 == 0 { step += 1; } // LZ4-style acceleration
+            i += step;
+            miss += 1;
+            if miss & 31 == 0 {
+                step += 1;
+            } // LZ4-style acceleration
         }
     }
     (tokens, mbytes)
@@ -81,8 +93,19 @@ unsafe fn greedy(src: &[u8], table: &mut [u32]) -> (usize, usize) {
 
 /// find_matches_fast with emit replaced by counting: the parse alone.
 #[inline(never)]
-unsafe fn fast_noemit<const MIN: usize, const BITS: u32, const H5: bool, const WIN: usize, const RATIO: bool, const ACC: u32, const MINOFF: usize>(src_s: &[u8], block_start: usize, block_len: usize, table: &mut [u32]) -> (usize, usize) {
-    let hh = |p: *const u8| -> usize { if H5 { ((std::ptr::read_unaligned(p as *const u64) << 24).wrapping_mul(889523592379u64) >> (64 - BITS)) as usize } else { (std::ptr::read_unaligned(p as *const u32).wrapping_mul(2654435761) >> (32 - BITS)) as usize } };
+unsafe fn fast_noemit<const MIN: usize, const BITS: u32, const H5: bool, const WIN: usize, const RATIO: bool, const ACC: u32, const MINOFF: usize>(
+    src_s: &[u8],
+    block_start: usize,
+    block_len: usize,
+    table: &mut [u32],
+) -> (usize, usize) {
+    let hh = |p: *const u8| -> usize {
+        if H5 {
+            ((std::ptr::read_unaligned(p as *const u64) << 24).wrapping_mul(889523592379u64) >> (64 - BITS)) as usize
+        } else {
+            (std::ptr::read_unaligned(p as *const u32).wrapping_mul(2654435761) >> (32 - BITS)) as usize
+        }
+    };
     let src = src_s.as_ptr();
     let block_end = block_start + block_len;
     let limit = block_end.saturating_sub(8).max(block_start);
@@ -91,16 +114,23 @@ unsafe fn fast_noemit<const MIN: usize, const BITS: u32, const H5: bool, const W
     'outer: loop {
         let (cand, mut rc);
         loop {
-            if pos >= limit { break 'outer; }
+            if pos >= limit {
+                break 'outer;
+            }
             let h = hh(src.add(pos));
             let c = *table.get_unchecked(h) as usize;
             *table.get_unchecked_mut(h) = pos as u32;
-            let step = (search_nb >> 6) as usize; search_nb += 1;
+            let step = (search_nb >> 6) as usize;
+            search_nb += 1;
             let d = pos.wrapping_sub(c);
             if d >= MINOFF && d < WIN {
                 let x = std::ptr::read_unaligned(src.add(pos) as *const u64) ^ std::ptr::read_unaligned(src.add(c) as *const u64);
                 let len = if x == 0 { 8 } else { (x.trailing_zeros() / 8) as usize };
-                if len >= MIN { cand = c; rc = len; break; }
+                if len >= MIN {
+                    cand = c;
+                    rc = len;
+                    break;
+                }
             }
             pos += step;
         }
@@ -109,18 +139,44 @@ unsafe fn fast_noemit<const MIN: usize, const BITS: u32, const H5: bool, const W
         let ml = (block_end - pos).min(530);
         if rc == 8 && ml > 8 {
             let (mut a, mut b, mut n, max) = (src.add(pos + 8), src.add(cand + 8), 0usize, ml - 8);
-            while n + 8 <= max { let x = std::ptr::read_unaligned(a as *const u64); let y = std::ptr::read_unaligned(b as *const u64); if x != y { n += ((x ^ y).trailing_zeros() / 8) as usize; break; } n += 8; a = a.add(8); b = b.add(8); }
+            while n + 8 <= max {
+                let x = std::ptr::read_unaligned(a as *const u64);
+                let y = std::ptr::read_unaligned(b as *const u64);
+                if x != y {
+                    n += ((x ^ y).trailing_zeros() / 8) as usize;
+                    break;
+                }
+                n += 8;
+                a = a.add(8);
+                b = b.add(8);
+            }
             rc = 8 + n.min(max);
         }
         rc = rc.min(ml);
-        let mut lc = pos - anchor; let mut mpos = pos;
-        if lc != 0 { let mut room = if RATIO { lc.min(cand) } else { lc.min(cand).min(16) }; let mut bmc = 0usize;
-            while room > 0 && *src.add(mpos - 1 - bmc) == *src.add(cand - 1 - bmc) { bmc += 1; room -= 1; }
-            rc += bmc; mpos -= bmc; lc -= bmc; }
-        ntok += 1; outb += 3 + lc + (lc > 6) as usize + (rc > MIN + 13) as usize; let _ = d;
-        pos = mpos + rc; anchor = pos;
-        if pos >= 2 && pos < limit { *table.get_unchecked_mut(hh(src.add(pos - 2))) = (pos - 2) as u32; }
-        if RATIO { search_nb = 0; } // next probe steps by 0: re-check at pos before accelerating
+        let mut lc = pos - anchor;
+        let mut mpos = pos;
+        if lc != 0 {
+            let mut room = if RATIO { lc.min(cand) } else { lc.min(cand).min(16) };
+            let mut bmc = 0usize;
+            while room > 0 && *src.add(mpos - 1 - bmc) == *src.add(cand - 1 - bmc) {
+                bmc += 1;
+                room -= 1;
+            }
+            rc += bmc;
+            mpos -= bmc;
+            lc -= bmc;
+        }
+        ntok += 1;
+        outb += 3 + lc + (lc > 6) as usize + (rc > MIN + 13) as usize;
+        let _ = d;
+        pos = mpos + rc;
+        anchor = pos;
+        if pos >= 2 && pos < limit {
+            *table.get_unchecked_mut(hh(src.add(pos - 2))) = (pos - 2) as u32;
+        }
+        if RATIO {
+            search_nb = 0;
+        } // next probe steps by 0: re-check at pos before accelerating
     }
     (ntok, outb + (block_end - anchor))
 }
@@ -135,7 +191,9 @@ unsafe fn fast_lz4style<const MIN: usize, const BITS: u32>(src_s: &[u8], block_s
     let limit = block_end.saturating_sub(12).max(block_start);
     let (mut anchor, mut ntok, mut outb) = (block_start, 0usize, 0usize);
     let mut ip = block_start;
-    if ip >= limit { return (0, block_end - anchor); }
+    if ip >= limit {
+        return (0, block_end - anchor);
+    }
     *table.get_unchecked_mut(hh(src.add(ip))) = ip as u32;
     ip += 1;
     let mut fwd_h = hh(src.add(ip));
@@ -151,8 +209,11 @@ unsafe fn fast_lz4style<const MIN: usize, const BITS: u32>(src_s: &[u8], block_s
                 let h = fwd_h;
                 ip = fwd;
                 fwd += step;
-                step = (search_nb >> 6) as usize; search_nb += 1;
-                if fwd > limit { break 'outer; }
+                step = (search_nb >> 6) as usize;
+                search_nb += 1;
+                if fwd > limit {
+                    break 'outer;
+                }
                 cand = *table.get_unchecked(h) as usize;
                 fwd_h = hh(src.add(fwd));
                 *table.get_unchecked_mut(h) = ip as u32;
@@ -160,25 +221,47 @@ unsafe fn fast_lz4style<const MIN: usize, const BITS: u32>(src_s: &[u8], block_s
                 if d >= 8 && d < 131072 {
                     let x = std::ptr::read_unaligned(src.add(ip) as *const u64) ^ std::ptr::read_unaligned(src.add(cand) as *const u64);
                     let len = if x == 0 { 8 } else { (x.trailing_zeros() / 8) as usize };
-                    if len >= MIN { rc = len; break; }
+                    if len >= MIN {
+                        rc = len;
+                        break;
+                    }
                 }
             }
         }
         loop {
             // catch up
-            let mut mpos = ip; let mut c = cand;
-            while mpos > anchor && c > 0 && *src.add(mpos - 1) == *src.add(c - 1) { mpos -= 1; c -= 1; rc += 1; }
+            let mut mpos = ip;
+            let mut c = cand;
+            while mpos > anchor && c > 0 && *src.add(mpos - 1) == *src.add(c - 1) {
+                mpos -= 1;
+                c -= 1;
+                rc += 1;
+            }
             let ml = (block_end - mpos).min(530);
             if rc >= 8 + (ip - mpos) && ml > rc {
                 let (mut a, mut b, mut n, max) = (src.add(mpos + rc), src.add(c + rc), 0usize, ml - rc);
-                while n + 8 <= max { let x = std::ptr::read_unaligned(a as *const u64); let y = std::ptr::read_unaligned(b as *const u64); if x != y { n += ((x ^ y).trailing_zeros() / 8) as usize; break; } n += 8; a = a.add(8); b = b.add(8); }
+                while n + 8 <= max {
+                    let x = std::ptr::read_unaligned(a as *const u64);
+                    let y = std::ptr::read_unaligned(b as *const u64);
+                    if x != y {
+                        n += ((x ^ y).trailing_zeros() / 8) as usize;
+                        break;
+                    }
+                    n += 8;
+                    a = a.add(8);
+                    b = b.add(8);
+                }
                 rc += n.min(max);
             }
             rc = rc.min(ml);
             let lc = mpos - anchor;
-            ntok += 1; outb += 3 + lc + (lc > 6) as usize + (rc > MIN + 13) as usize;
-            ip = mpos + rc; anchor = ip;
-            if ip >= limit { break 'outer; }
+            ntok += 1;
+            outb += 3 + lc + (lc > 6) as usize + (rc > MIN + 13) as usize;
+            ip = mpos + rc;
+            anchor = ip;
+            if ip >= limit {
+                break 'outer;
+            }
             *table.get_unchecked_mut(hh(src.add(ip - 2))) = (ip - 2) as u32;
             // immediate re-check at ip
             let h = hh(src.add(ip));
@@ -188,7 +271,10 @@ unsafe fn fast_lz4style<const MIN: usize, const BITS: u32>(src_s: &[u8], block_s
             if d >= 8 && d < 131072 {
                 let x = std::ptr::read_unaligned(src.add(ip) as *const u64) ^ std::ptr::read_unaligned(src.add(cand) as *const u64);
                 let len = if x == 0 { 8 } else { (x.trailing_zeros() / 8) as usize };
-                if len >= MIN { rc = len; continue; }
+                if len >= MIN {
+                    rc = len;
+                    continue;
+                }
             }
             ip += 1;
             fwd_h = hh(src.add(ip));
@@ -215,16 +301,23 @@ unsafe fn fast_bf<const BITS: u32>(src_s: &[u8], block_start: usize, block_len: 
     'outer: loop {
         let (cand, mut rc);
         loop {
-            if pos >= limit { break 'outer; }
+            if pos >= limit {
+                break 'outer;
+            }
             let h = hh(src.add(pos));
             let c = *table.get_unchecked(h) as usize;
             *table.get_unchecked_mut(h) = pos as u32;
-            let step = (search_nb >> 6) as usize; search_nb += 1;
+            let step = (search_nb >> 6) as usize;
+            search_nb += 1;
             let d = pos.wrapping_sub(c);
             if d >= 8 && d < 131072 {
                 let x = std::ptr::read_unaligned(src.add(pos) as *const u64) ^ std::ptr::read_unaligned(src.add(c) as *const u64);
                 let len = if x == 0 { 8 } else { (x.trailing_zeros() / 8) as usize };
-                if len >= MIN { cand = c; rc = len; break; }
+                if len >= MIN {
+                    cand = c;
+                    rc = len;
+                    break;
+                }
             }
             pos += step;
         }
@@ -233,35 +326,65 @@ unsafe fn fast_bf<const BITS: u32>(src_s: &[u8], block_start: usize, block_len: 
         let ml = (block_end - pos).min(530);
         // Extend: 32 bytes at once, branch only if all 32 match.
         if rc == 8 && pos + 40 <= block_end {
-            let a = src.add(pos + 8); let b = src.add(cand + 8);
+            let a = src.add(pos + 8);
+            let b = src.add(cand + 8);
             let e0 = vceqq_u8(vld1q_u8(a), vld1q_u8(b));
             let e1 = vceqq_u8(vld1q_u8(a.add(16)), vld1q_u8(b.add(16)));
             let p = vpaddq_u8(vandq_u8(e0, bitsel), vandq_u8(e1, bitsel));
-            let p = vpaddq_u8(p, p); let p = vpaddq_u8(p, p);
+            let p = vpaddq_u8(p, p);
+            let p = vpaddq_u8(p, p);
             let m = !vgetq_lane_u32(vreinterpretq_u32_u8(p), 0);
             let n = m.trailing_zeros() as usize; // 32 if all equal
             rc += n;
             if n == 32 {
                 let (mut a, mut b, mut k) = (a.add(32), b.add(32), 40usize);
-                while k + 8 <= ml { let x = std::ptr::read_unaligned(a as *const u64) ^ std::ptr::read_unaligned(b as *const u64); if x != 0 { rc += ((x.trailing_zeros()) / 8) as usize; break; } rc += 8; k += 8; a = a.add(8); b = b.add(8); }
+                while k + 8 <= ml {
+                    let x = std::ptr::read_unaligned(a as *const u64) ^ std::ptr::read_unaligned(b as *const u64);
+                    if x != 0 {
+                        rc += ((x.trailing_zeros()) / 8) as usize;
+                        break;
+                    }
+                    rc += 8;
+                    k += 8;
+                    a = a.add(8);
+                    b = b.add(8);
+                }
             }
         } else if rc == 8 && ml > 8 {
             let (mut a, mut b, mut n, max) = (src.add(pos + 8), src.add(cand + 8), 0usize, ml - 8);
-            while n + 8 <= max { let x = std::ptr::read_unaligned(a as *const u64); let y = std::ptr::read_unaligned(b as *const u64); if x != y { n += ((x ^ y).trailing_zeros() / 8) as usize; break; } n += 8; a = a.add(8); b = b.add(8); }
+            while n + 8 <= max {
+                let x = std::ptr::read_unaligned(a as *const u64);
+                let y = std::ptr::read_unaligned(b as *const u64);
+                if x != y {
+                    n += ((x ^ y).trailing_zeros() / 8) as usize;
+                    break;
+                }
+                n += 8;
+                a = a.add(8);
+                b = b.add(8);
+            }
             rc = 8 + n.min(max);
         }
         rc = rc.min(ml);
         // Back-match: one u64 compare of the 8 bytes before pos and cand.
-        let mut lc = pos - anchor; let mut mpos = pos;
+        let mut lc = pos - anchor;
+        let mut mpos = pos;
         if lc != 0 && cand >= 8 {
             let x = std::ptr::read_unaligned(src.add(pos - 8) as *const u64) ^ std::ptr::read_unaligned(src.add(cand - 8) as *const u64);
             let eq = if x == 0 { 8 } else { (x.leading_zeros() / 8) as usize };
             let bmc = eq.min(lc).min(8);
-            rc += bmc; mpos -= bmc; lc -= bmc;
+            rc += bmc;
+            mpos -= bmc;
+            lc -= bmc;
         }
-        ntok += 1; outb += 3 + lc + (lc > 6) as usize + (rc > MIN + 13) as usize; let _ = d;
-        pos = mpos + rc; anchor = pos;
-        if pos >= 2 && pos < limit { *table.get_unchecked_mut(hh(src.add(pos - 2))) = (pos - 2) as u32; }
+        ntok += 1;
+        outb += 3 + lc + (lc > 6) as usize + (rc > MIN + 13) as usize;
+        let _ = d;
+        pos = mpos + rc;
+        anchor = pos;
+        if pos >= 2 && pos < limit {
+            *table.get_unchecked_mut(hh(src.add(pos - 2))) = (pos - 2) as u32;
+        }
     }
     (ntok, outb + (block_end - anchor))
 }
@@ -280,16 +403,23 @@ unsafe fn fast_record<const BITS: u32>(src_s: &[u8], block_start: usize, block_l
     'outer: loop {
         let (cand, mut rc);
         loop {
-            if pos >= limit { break 'outer; }
+            if pos >= limit {
+                break 'outer;
+            }
             let h = hh(src.add(pos));
             let c = *table.get_unchecked(h) as usize;
             *table.get_unchecked_mut(h) = pos as u32;
-            let step = (search_nb >> 6) as usize; search_nb += 1;
+            let step = (search_nb >> 6) as usize;
+            search_nb += 1;
             let d = pos.wrapping_sub(c);
             if d >= 8 && d < 131072 {
                 let x = std::ptr::read_unaligned(src.add(pos) as *const u64) ^ std::ptr::read_unaligned(src.add(c) as *const u64);
                 let len = if x == 0 { 8 } else { (x.trailing_zeros() / 8) as usize };
-                if len >= MIN { cand = c; rc = len; break; }
+                if len >= MIN {
+                    cand = c;
+                    rc = len;
+                    break;
+                }
             }
             pos += step;
         }
@@ -298,50 +428,120 @@ unsafe fn fast_record<const BITS: u32>(src_s: &[u8], block_start: usize, block_l
         let ml = (block_end - pos).min(530);
         if rc == 8 && ml > 8 {
             let (mut a, mut b, mut n, max) = (src.add(pos + 8), src.add(cand + 8), 0usize, ml - 8);
-            while n + 8 <= max { let x = std::ptr::read_unaligned(a as *const u64); let y = std::ptr::read_unaligned(b as *const u64); if x != y { n += ((x ^ y).trailing_zeros() / 8) as usize; break; } n += 8; a = a.add(8); b = b.add(8); }
+            while n + 8 <= max {
+                let x = std::ptr::read_unaligned(a as *const u64);
+                let y = std::ptr::read_unaligned(b as *const u64);
+                if x != y {
+                    n += ((x ^ y).trailing_zeros() / 8) as usize;
+                    break;
+                }
+                n += 8;
+                a = a.add(8);
+                b = b.add(8);
+            }
             rc = 8 + n.min(max);
         }
         rc = rc.min(ml);
-        let mut lc = pos - anchor; let mut mpos = pos;
-        if lc != 0 { let mut room = lc.min(cand).min(16); let mut bmc = 0usize;
-            while room > 0 && *src.add(mpos - 1 - bmc) == *src.add(cand - 1 - bmc) { bmc += 1; room -= 1; }
-            rc += bmc; mpos -= bmc; lc -= bmc; }
-        *rp = [anchor as u32, lc as u32, rc as u32, d as u32]; rp = rp.add(1);
-        pos = mpos + rc; anchor = pos;
-        if pos >= 2 && pos < limit { *table.get_unchecked_mut(hh(src.add(pos - 2))) = (pos - 2) as u32; }
+        let mut lc = pos - anchor;
+        let mut mpos = pos;
+        if lc != 0 {
+            let mut room = lc.min(cand).min(16);
+            let mut bmc = 0usize;
+            while room > 0 && *src.add(mpos - 1 - bmc) == *src.add(cand - 1 - bmc) {
+                bmc += 1;
+                room -= 1;
+            }
+            rc += bmc;
+            mpos -= bmc;
+            lc -= bmc;
+        }
+        *rp = [anchor as u32, lc as u32, rc as u32, d as u32];
+        rp = rp.add(1);
+        pos = mpos + rc;
+        anchor = pos;
+        if pos >= 2 && pos < limit {
+            *table.get_unchecked_mut(hh(src.add(pos - 2))) = (pos - 2) as u32;
+        }
     }
     let trailing = block_end - anchor;
-    if trailing > 0 { *rp = [anchor as u32, trailing as u32, 0, 0]; rp = rp.add(1); }
+    if trailing > 0 {
+        *rp = [anchor as u32, trailing as u32, 0, 0];
+        rp = rp.add(1);
+    }
     let n = rp.offset_from(rp0) as usize;
     rec.set_len(rec.len() + n);
     n
 }
 
 fn main() {
-    let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
-                 "reymont","samba","sao","webster","xml","x-ray"];
+    let files = ["dickens", "mozilla", "mr", "nci", "ooffice", "osdb", "reymont", "samba", "sao", "webster", "xml", "x-ray"];
     let mut data: Vec<Vec<u8>> = Vec::new();
     for f in &files {
         let p = std::path::Path::new("corpus").join(f);
-        if p.exists() { data.push(std::fs::read(p).unwrap()); }
+        if p.exists() {
+            data.push(std::fs::read(p).unwrap());
+        }
     }
     let total: usize = data.iter().map(|d| d.len()).sum();
     let time = |f: &mut dyn FnMut()| -> f64 {
         let mut best = f64::MAX;
-        for _ in 0..5 { let t = Instant::now(); f(); let e = t.elapsed().as_secs_f64(); if e < best { best = e; } }
+        for _ in 0..5 {
+            let t = Instant::now();
+            f();
+            let e = t.elapsed().as_secs_f64();
+            if e < best {
+                best = e;
+            }
+        }
         best
     };
     let pr = |name: &str, t: f64, extra: String| {
         println!("{:<10} {:>8.1} ms  {:>5.2} ns/byte  {:>6.2} GB/s  {}", name, t * 1e3, t * 1e9 / total as f64, total as f64 / GB / t, extra);
     };
     let mut out = vec![0u8; total + 4096];
-    let t_memcpy = time(&mut || { let mut o = 0; for d in &data { out[o..o + d.len()].copy_from_slice(d); o += d.len(); } });
-    let t_ck = time(&mut || { let mut s = 0u32; for d in &data { for c in d.chunks(256 * 1024) { s ^= glyd::compute_checksum(c); } } std::hint::black_box(s); });
+    let t_memcpy = time(&mut || {
+        let mut o = 0;
+        for d in &data {
+            out[o..o + d.len()].copy_from_slice(d);
+            o += d.len();
+        }
+    });
+    let t_ck = time(&mut || {
+        let mut s = 0u32;
+        for d in &data {
+            for c in d.chunks(256 * 1024) {
+                s ^= glyd::compute_checksum(c);
+            }
+        }
+        std::hint::black_box(s);
+    });
     let mut table = vec![0u32; 1 << 14];
-    let t_ins = time(&mut || { for d in &data { table.fill(0); unsafe { hash_ins(d, &mut table); } } });
-    let t_probe = time(&mut || { for d in &data { table.fill(0); unsafe { hash_probe(d, &mut table); } } });
+    let t_ins = time(&mut || {
+        for d in &data {
+            table.fill(0);
+            unsafe {
+                hash_ins(d, &mut table);
+            }
+        }
+    });
+    let t_probe = time(&mut || {
+        for d in &data {
+            table.fill(0);
+            unsafe {
+                hash_probe(d, &mut table);
+            }
+        }
+    });
     let mut gt = (0, 0);
-    let t_greedy = time(&mut || { gt = (0, 0); for d in &data { table.fill(0); let r = unsafe { greedy(d, &mut table) }; gt.0 += r.0; gt.1 += r.1; } });
+    let t_greedy = time(&mut || {
+        gt = (0, 0);
+        for d in &data {
+            table.fill(0);
+            let r = unsafe { greedy(d, &mut table) };
+            gt.0 += r.0;
+            gt.1 += r.1;
+        }
+    });
     // real finder, no framing
     let mut tb = glyd::finder::new_table();
     let (mut tk, mut of, mut ex, mut li) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -353,7 +553,10 @@ fn main() {
             let mut s = 0;
             while s < d.len() {
                 let l = (d.len() - s).min(256 * 1024);
-                tk.clear(); of.clear(); ex.clear(); li.clear();
+                tk.clear();
+                of.clear();
+                ex.clear();
+                li.clear();
                 glyd::fallback::compress_chained_fallback::<glyd::finder::Lzav>(d, s, l, &mut tb, &mut tk, &mut of, &mut ex, &mut li);
                 fout += tk.len() + of.len() + ex.len() + li.len();
                 s += l;
@@ -369,26 +572,85 @@ fn main() {
             let mut s = 0;
             while s < d.len() {
                 let l = (d.len() - s).min(256 * 1024);
-                tk.clear(); of.clear(); ex.clear(); li.clear();
+                tk.clear();
+                of.clear();
+                ex.clear();
+                li.clear();
                 let mut st = glyd::finder::Streams::new(5, &mut tk, &mut of, &mut ex, &mut li);
-                unsafe { glyd::finder::find_matches_fast::<glyd::finder::Dense>(d, s, l, &mut ft, &mut st); }
+                unsafe {
+                    glyd::finder::find_matches_fast::<glyd::finder::Dense>(d, s, l, &mut ft, &mut st);
+                }
                 fout2 += tk.len() + of.len() + ex.len() + li.len();
                 s += l;
             }
         }
     });
     let mut fne = (0usize, 0usize);
-    let t_fne = time(&mut || { fne = (0, 0); for d in &data { table.fill(0); let mut s = 0; while s < d.len() { let l = (d.len() - s).min(256 * 1024); let r = unsafe { fast_noemit::<7, 14, false, 131072, false, 1, 8>(d, s, l, &mut table) }; fne.0 += r.0; fne.1 += r.1; s += l; } } });
+    let t_fne = time(&mut || {
+        fne = (0, 0);
+        for d in &data {
+            table.fill(0);
+            let mut s = 0;
+            while s < d.len() {
+                let l = (d.len() - s).min(256 * 1024);
+                let r = unsafe { fast_noemit::<7, 14, false, 131072, false, 1, 8>(d, s, l, &mut table) };
+                fne.0 += r.0;
+                fne.1 += r.1;
+                s += l;
+            }
+        }
+    });
     let mut fne5 = (0usize, 0usize);
-    let t_fne5 = time(&mut || { fne5 = (0, 0); for d in &data { table.fill(0); let mut s = 0; while s < d.len() { let l = (d.len() - s).min(256 * 1024); let r = unsafe { fast_noemit::<5, 14, false, 131072, false, 1, 8>(d, s, l, &mut table) }; fne5.0 += r.0; fne5.1 += r.1; s += l; } } });
+    let t_fne5 = time(&mut || {
+        fne5 = (0, 0);
+        for d in &data {
+            table.fill(0);
+            let mut s = 0;
+            while s < d.len() {
+                let l = (d.len() - s).min(256 * 1024);
+                let r = unsafe { fast_noemit::<5, 14, false, 131072, false, 1, 8>(d, s, l, &mut table) };
+                fne5.0 += r.0;
+                fne5.1 += r.1;
+                s += l;
+            }
+        }
+    });
     let mut fne4 = (0usize, 0usize);
-    let t_fne4 = time(&mut || { fne4 = (0, 0); for d in &data { table.fill(0); let mut s = 0; while s < d.len() { let l = (d.len() - s).min(256 * 1024); let r = unsafe { fast_noemit::<4, 14, false, 131072, false, 1, 8>(d, s, l, &mut table) }; fne4.0 += r.0; fne4.1 += r.1; s += l; } } });
-    macro_rules! ne { ($name:expr, $m:expr, $b:expr, $h:expr, $w:expr, $r:expr, $a:expr, $o:expr) => {{
-        let mut r = (0usize, 0usize);
-        let mut tb = vec![0u32; 1 << $b];
-        let t = time(&mut || { r = (0, 0); for d in &data { tb.fill(0); let mut s = 0; while s < d.len() { let l = (d.len() - s).min(256 * 1024); let x = unsafe { fast_noemit::<$m, $b, $h, $w, $r, $a, $o>(d, s, l, &mut tb) }; r.0 += x.0; r.1 += x.1; s += l; } } });
-        pr($name, t, format!("{} tokens, est ratio {:.3}", r.0, total as f64 / r.1 as f64));
-    }}; }
+    let t_fne4 = time(&mut || {
+        fne4 = (0, 0);
+        for d in &data {
+            table.fill(0);
+            let mut s = 0;
+            while s < d.len() {
+                let l = (d.len() - s).min(256 * 1024);
+                let r = unsafe { fast_noemit::<4, 14, false, 131072, false, 1, 8>(d, s, l, &mut table) };
+                fne4.0 += r.0;
+                fne4.1 += r.1;
+                s += l;
+            }
+        }
+    });
+    macro_rules! ne {
+        ($name:expr, $m:expr, $b:expr, $h:expr, $w:expr, $r:expr, $a:expr, $o:expr) => {{
+            let mut r = (0usize, 0usize);
+            let mut tb = vec![0u32; 1 << $b];
+            let t = time(&mut || {
+                r = (0, 0);
+                for d in &data {
+                    tb.fill(0);
+                    let mut s = 0;
+                    while s < d.len() {
+                        let l = (d.len() - s).min(256 * 1024);
+                        let x = unsafe { fast_noemit::<$m, $b, $h, $w, $r, $a, $o>(d, s, l, &mut tb) };
+                        r.0 += x.0;
+                        r.1 += x.1;
+                        s += l;
+                    }
+                }
+            });
+            pr($name, t, format!("{} tokens, est ratio {:.3}", r.0, total as f64 / r.1 as f64));
+        }};
+    }
     ne!("m5_h5_14", 5, 14, true, 131072, false, 1, 8);
     ne!("m5_h4_12", 5, 12, false, 131072, false, 1, 8);
     ne!("m5_h5_12", 5, 12, true, 131072, false, 1, 8);
@@ -418,31 +680,80 @@ fn main() {
     {
         let mut r = (0usize, 0usize);
         let mut tb = vec![0u32; 1 << 13];
-        let t = time(&mut || { r = (0, 0); for d in &data { tb.fill(0); let mut s = 0; while s < d.len() { let l = (d.len() - s).min(256 * 1024); let x = unsafe { fast_lz4style::<5, 13>(d, s, l, &mut tb) }; r.0 += x.0; r.1 += x.1; s += l; } } });
+        let t = time(&mut || {
+            r = (0, 0);
+            for d in &data {
+                tb.fill(0);
+                let mut s = 0;
+                while s < d.len() {
+                    let l = (d.len() - s).min(256 * 1024);
+                    let x = unsafe { fast_lz4style::<5, 13>(d, s, l, &mut tb) };
+                    r.0 += x.0;
+                    r.1 += x.1;
+                    s += l;
+                }
+            }
+        });
         pr("lz4style_13", t, format!("{} tokens, est ratio {:.3}", r.0, total as f64 / r.1 as f64));
     }
     #[cfg(target_arch = "aarch64")]
     {
         let mut r = (0usize, 0usize);
         let mut tb = vec![0u32; 1 << 13];
-        let t = time(&mut || { r = (0, 0); for d in &data { tb.fill(0); let mut s = 0; while s < d.len() { let l = (d.len() - s).min(256 * 1024); let x = unsafe { fast_bf::<13>(d, s, l, &mut tb) }; r.0 += x.0; r.1 += x.1; s += l; } } });
+        let t = time(&mut || {
+            r = (0, 0);
+            for d in &data {
+                tb.fill(0);
+                let mut s = 0;
+                while s < d.len() {
+                    let l = (d.len() - s).min(256 * 1024);
+                    let x = unsafe { fast_bf::<13>(d, s, l, &mut tb) };
+                    r.0 += x.0;
+                    r.1 += x.1;
+                    s += l;
+                }
+            }
+        });
         pr("bf_13", t, format!("{} tokens, est ratio {:.3}", r.0, total as f64 / r.1 as f64));
     }
     {
         let mut tb = vec![0u32; 1 << 13];
         let mut recs: Vec<Vec<[u32; 4]>> = Vec::new();
-        let t_rec = time(&mut || { recs.clear(); for d in &data { tb.fill(0); let mut s = 0; let mut r = Vec::new(); while s < d.len() { let l = (d.len() - s).min(256 * 1024); unsafe { fast_record::<13>(d, s, l, &mut tb, &mut r); } s += l; } recs.push(r); } });
+        let t_rec = time(&mut || {
+            recs.clear();
+            for d in &data {
+                tb.fill(0);
+                let mut s = 0;
+                let mut r = Vec::new();
+                while s < d.len() {
+                    let l = (d.len() - s).min(256 * 1024);
+                    unsafe {
+                        fast_record::<13>(d, s, l, &mut tb, &mut r);
+                    }
+                    s += l;
+                }
+                recs.push(r);
+            }
+        });
         let ntok: usize = recs.iter().map(|r| r.len()).sum();
         pr("record_13", t_rec, format!("{} tokens", ntok));
         let mut fo = 0usize;
         let t_emit = time(&mut || {
             fo = 0;
             for (d, r) in data.iter().zip(&recs) {
-                tk.clear(); of.clear(); ex.clear(); li.clear();
+                tk.clear();
+                of.clear();
+                ex.clear();
+                li.clear();
                 let mut st = glyd::finder::Streams::new(5, &mut tk, &mut of, &mut ex, &mut li);
                 let mut c = st.begin_block(d.len());
-                let src = d.as_ptr(); let end = unsafe { src.add(d.len()) };
-                for e in r { unsafe { c.emit(src.add(e[0] as usize), e[1] as usize, e[2] as usize, e[3] as usize, end); } }
+                let src = d.as_ptr();
+                let end = unsafe { src.add(d.len()) };
+                for e in r {
+                    unsafe {
+                        c.emit(src.add(e[0] as usize), e[1] as usize, e[2] as usize, e[3] as usize, end);
+                    }
+                }
                 st.finish(c);
                 fo += tk.len() + of.len() + ex.len() + li.len();
             }
@@ -451,14 +762,39 @@ fn main() {
     }
     let mut cbuf = Vec::with_capacity(total);
     let mut clen = 0;
-    let t_lib = time(&mut || { clen = 0; for d in &data { cbuf.clear(); glyd::compress_into(d, &mut cbuf); clen += cbuf.len(); } });
+    let t_lib = time(&mut || {
+        clen = 0;
+        for d in &data {
+            cbuf.clear();
+            glyd::compress_into(d, &mut cbuf);
+            clen += cbuf.len();
+        }
+    });
     let mut clen2 = 0;
-    let t_libfast = time(&mut || { clen2 = 0; for d in &data { cbuf.clear(); glyd::compress_into_fast(d, &mut cbuf); clen2 += cbuf.len(); } });
+    let t_libfast = time(&mut || {
+        clen2 = 0;
+        for d in &data {
+            cbuf.clear();
+            glyd::compress_into_fast(d, &mut cbuf);
+            clen2 += cbuf.len();
+        }
+    });
     // round-trip check of the fast level
-    if std::env::var("NOCHECK").is_err() { for d in &data { cbuf.clear(); glyd::compress_into_fast(d, &mut cbuf); assert_eq!(&glyd::decompress(&cbuf).unwrap(), d, "fast roundtrip"); } }
+    if std::env::var("NOCHECK").is_err() {
+        for d in &data {
+            cbuf.clear();
+            glyd::compress_into_fast(d, &mut cbuf);
+            assert_eq!(&glyd::decompress(&cbuf).unwrap(), d, "fast roundtrip");
+        }
+    }
     let mut lz = vec![0u8; lz4::block::compress_bound(64 << 20).unwrap()];
     let mut lzlen = 0;
-    let t_lz4 = time(&mut || { lzlen = 0; for d in &data { lzlen += lz4::block::compress_to_buffer(d, None, false, &mut lz).unwrap(); } });
+    let t_lz4 = time(&mut || {
+        lzlen = 0;
+        for d in &data {
+            lzlen += lz4::block::compress_to_buffer(d, None, false, &mut lz).unwrap();
+        }
+    });
 
     println!("{} MB input", total >> 20);
     pr("memcpy", t_memcpy, String::new());

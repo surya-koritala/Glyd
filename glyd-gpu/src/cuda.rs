@@ -122,7 +122,11 @@ impl Context {
     /// one's GPU).
     pub fn new(ordinal: i32) -> Result<Context> {
         if LIVE.get() {
-            return Err(Error::Cuda { call: "Context::new", status: crate::INVALID_VALUE, text: "a Context lives on this thread already: one a thread (a thread for each GPU)".into() });
+            return Err(Error::Cuda {
+                call: "Context::new",
+                status: crate::INVALID_VALUE,
+                text: "a Context lives on this thread already: one a thread (a thread for each GPU)".into(),
+            });
         }
         let d = driver()?;
         let (mut device, mut ctx) = (0, std::ptr::null_mut());

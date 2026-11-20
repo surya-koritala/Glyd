@@ -1,7 +1,4 @@
-use glyd::{
-    compress, compress_parallel, decompress, decompress_into_raw, decompress_parallel,
-    decompress_parallel_into_raw, fallback,
-};
+use glyd::{compress, compress_parallel, decompress, decompress_into_raw, decompress_parallel, decompress_parallel_into_raw, fallback};
 use std::io::Write;
 
 /// G1 requirement from docs/history/GOAL.md: 1,000,000 random mutations of compressed
@@ -20,16 +17,7 @@ fn test_fallback_parity() {
     fallback::compress_fallback(input, &mut table, &mut tokens, &mut offsets, &mut extras, &mut literals);
 
     let mut decomp_buf = vec![0u8; input.len()];
-    let written = fallback::decompress_fallback(
-        &tokens,
-        &offsets,
-        &extras,
-        &literals,
-        &mut decomp_buf,
-        input.len(),
-        glyd::format::MIN_MATCH_LEN,
-    )
-    .unwrap();
+    let written = fallback::decompress_fallback(&tokens, &offsets, &extras, &literals, &mut decomp_buf, input.len(), glyd::format::MIN_MATCH_LEN).unwrap();
     assert_eq!(written, input.len());
     assert_eq!(&decomp_buf[..written], input);
 }
@@ -212,12 +200,7 @@ fn test_corruption_mutation_fuzz_1m() {
             // Every mutation goes through the sequential paths. Neither may
             // panic, write out of bounds, or hang.
             if let Ok(out) = decompress(&corrupted) {
-                assert!(
-                    out.len() <= *orig_len + 4096,
-                    "decompress produced {} bytes for a {}-byte original",
-                    out.len(),
-                    orig_len
-                );
+                assert!(out.len() <= *orig_len + 4096, "decompress produced {} bytes for a {}-byte original", out.len(), orig_len);
                 clean_decodes += 1;
             }
             // The Rayon paths carry thread-pool overhead, so sample them.
@@ -262,12 +245,7 @@ fn test_corruption_mutation_fuzz_1m() {
     let mut f = std::fs::File::create(".g1-status.json").expect("write G1 marker");
     f.write_all(marker.as_bytes()).expect("write G1 marker");
 
-    println!(
-        "G1 fuzz: {} mutations over {} streams, {} still decoded cleanly, 0 panics",
-        mutations,
-        streams.len(),
-        clean_decodes
-    );
+    println!("G1 fuzz: {} mutations over {} streams, {} still decoded cleanly, 0 panics", mutations, streams.len(), clean_decodes);
 }
 
 /// A flipped byte in one unit of a multi-unit stream is an error, not a
@@ -279,9 +257,13 @@ fn corrupted_unit_fails_fast_in_the_streaming_decoder() {
     let mut x = 11u64;
     let mut data = Vec::with_capacity(24 << 20);
     while data.len() < 24 << 20 {
-        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
         data.push(b"the quick brown fox jumps over the lazy dog "[(x % 44) as usize]);
-        if x % 7 == 0 { data.push((x >> 20) as u8); }
+        if x % 7 == 0 {
+            data.push((x >> 20) as u8);
+        }
     }
     for level in [glyd::compress_parallel_into_turbo as fn(&[u8], &mut Vec<u8>), glyd::compress_parallel_into, glyd::compress_parallel_into_max] {
         let mut c = Vec::new();
@@ -291,7 +273,10 @@ fn corrupted_unit_fails_fast_in_the_streaming_decoder() {
             bad[at] ^= 0x40;
             let start = std::time::Instant::now();
             let mut got = 0usize;
-            let r = glyd::decompress_stream(&bad, |b| { got += b.len(); Ok(()) });
+            let r = glyd::decompress_stream(&bad, |b| {
+                got += b.len();
+                Ok(())
+            });
             let r2 = glyd::decompress_parallel(&bad);
             assert!(start.elapsed().as_secs() < 30, "the decoder hung on a corrupted unit");
             match (r, r2) {

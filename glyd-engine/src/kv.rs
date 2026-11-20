@@ -299,7 +299,8 @@ impl Kv {
         let mut buf = vec![0u32; ring as usize];
         self.status.read(4 * (HEAD_WORDS + kind * ring as usize), &mut buf)?;
         let first = head.wrapping_sub(take as u32);
-        let mut blocks: Vec<i32> = (0..take as u32).filter_map(|j| Some(buf[(first.wrapping_add(j) as u64 % ring) as usize]).filter(|&e| e != 0).map(|e| e as i32 - 1)).collect();
+        let mut blocks: Vec<i32> =
+            (0..take as u32).filter_map(|j| Some(buf[(first.wrapping_add(j) as u64 % ring) as usize]).filter(|&e| e != 0).map(|e| e as i32 - 1)).collect();
         blocks.sort_unstable();
         blocks.dedup();
         Ok((blocks, n > ring))
@@ -408,7 +409,16 @@ pub struct Pager {
 
 impl Pager {
     pub fn new(pages: usize) -> Pager {
-        Pager { free: (0..pages as i32).rev().collect(), refs: vec![0; pages], entry: (0..pages).map(|_| None).collect(), heavy: vec![false; pages], cache: Default::default(), idle: Default::default(), age: vec![0; pages], tick: 0 }
+        Pager {
+            free: (0..pages as i32).rev().collect(),
+            refs: vec![0; pages],
+            entry: (0..pages).map(|_| None).collect(),
+            heavy: vec![false; pages],
+            cache: Default::default(),
+            idle: Default::default(),
+            age: vec![0; pages],
+            tick: 0,
+        }
     }
 
     pub fn pages(&self) -> usize {
@@ -639,12 +649,22 @@ mod tests {
         let p = dir.join("kv-tables.safetensors");
         let (k, v): (Vec<u8>, Vec<u8>) = ((0..2 * 8 * 128).map(|i| (i % 120) as u8).collect(), (0..2 * 8 * 128).map(|i| ((i + 7) % 120) as u8).collect());
         let meta = r#"{"positions":4096,"model":"m","version":8,"store":{"bay":15,"worst_chunks_per_layer_leaf":2.8611,"hard":0}}"#;
-        crate::pack::write_safetensors(&p, &[("format", "glyd-kv-tables-v0".to_string()), ("meta", meta.to_string())], &[("k", "U8", vec![2, 8, 128], &k[..]), ("v", "U8", vec![2, 8, 128], &v[..])]).unwrap();
+        crate::pack::write_safetensors(
+            &p,
+            &[("format", "glyd-kv-tables-v0".to_string()), ("meta", meta.to_string())],
+            &[("k", "U8", vec![2, 8, 128], &k[..]), ("v", "U8", vec![2, 8, 128], &v[..])],
+        )
+        .unwrap();
         assert!(KvTables::is_current(&p));
         let t = KvTables::load(&p).unwrap();
         assert_eq!((t.layers, t.heads, t.channels, t.positions, t.arena, t.heavy_tokens), (2, 8, 128, 4096, 15, 0));
         let older = dir.join("older.safetensors");
-        crate::pack::write_safetensors(&older, &[("format", "glyd-kv-tables-v0".to_string()), ("meta", meta.replace("\"version\":8", "\"version\":7"))], &[("k", "U8", vec![2, 8, 128], &t.k[..]), ("v", "U8", vec![2, 8, 128], &t.v[..])]).unwrap();
+        crate::pack::write_safetensors(
+            &older,
+            &[("format", "glyd-kv-tables-v0".to_string()), ("meta", meta.replace("\"version\":8", "\"version\":7"))],
+            &[("k", "U8", vec![2, 8, 128], &t.k[..]), ("v", "U8", vec![2, 8, 128], &t.v[..])],
+        )
+        .unwrap();
         assert!(!KvTables::is_current(&older) && !KvTables::is_current(&dir.join("none.safetensors")));
         assert_eq!(t.worst_chunks, Some(2.8611));
         assert_eq!((t.k, t.v), (k, v));

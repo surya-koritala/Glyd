@@ -54,12 +54,18 @@ fn run() -> Result<()> {
         let mut got = vec![0u16; o * k];
         whole.read(&mut got)?;
         let differ = got.iter().zip(&want).filter(|(a, b)| a != b).count();
-        println!("[{o}, {k}] unpack: {} of {} weights as unpack_int5 decodes them{}", o * k - differ, o * k, if differ == 0 { " (bit for bit)" } else { "  FAIL" });
+        println!(
+            "[{o}, {k}] unpack: {} of {} weights as unpack_int5 decodes them{}",
+            o * k - differ,
+            o * k,
+            if differ == 0 { " (bit for bit)" } else { "  FAIL" }
+        );
         failures += (differ != 0) as usize;
         // the decoded matrix in the tiered layout (lossless), its products the reference
         let t = pack_tiered_checked(&want, o, k).ok_or("the decoded matrix did not pack tiered")?;
         let (td, tb, tbb) = (ctx.upload(&t.data)?, ctx.upload(&t.blocks)?, ctx.upload(&t.block_base)?);
-        let mt = Matrix { pack: Pack::Tiered(Tiered { data: td.ptr(), blocks: tb.ptr(), block_base: tbb.ptr(), tiers: t.tiers }), rows: o as i64, cols: k as i64 };
+        let mt =
+            Matrix { pack: Pack::Tiered(Tiered { data: td.ptr(), blocks: tb.ptr(), block_base: tbb.ptr(), tiers: t.tiers }), rows: o as i64, cols: k as i64 };
         for m in [1usize, 2, 8, 16, 33, 64, 65, 200, 512] {
             let x = weights(m * k, 100 + m as u64, 1.0);
             let xd = ctx.upload(&x)?;
@@ -70,14 +76,25 @@ fn run() -> Result<()> {
             };
             let (n5, nt) = (need(&m5)?, need(&mt)?);
             let (Some(n5), Some(nt)) = (n5, nt) else {
-                println!("[{o}, {k}] {m:>3} tokens: no kernel takes it in {} (W decoded for a GEMM of the caller's)", if n5.is_none() && nt.is_none() { "either layout" } else { "one layout  FAIL" });
+                println!(
+                    "[{o}, {k}] {m:>3} tokens: no kernel takes it in {} (W decoded for a GEMM of the caller's)",
+                    if n5.is_none() && nt.is_none() { "either layout" } else { "one layout  FAIL" }
+                );
                 failures += (n5.is_some() != nt.is_some()) as usize;
                 continue;
             };
             let ws = ctx.alloc(n5.max(nt).max(16))?;
             let mut done = ctx.alloc((m.div_ceil(128) * (o / 64)).max(1024) * 4)?;
             let counters = done.ptr();
-            let prod = |y: &cuda::Buffer, bytes: usize| Product { x: xd.ptr(), m: m as i64, bias: std::ptr::null(), y: y.ptr(), workspace: ws.ptr(), workspace_bytes: bytes, done: counters };
+            let prod = |y: &cuda::Buffer, bytes: usize| Product {
+                x: xd.ptr(),
+                m: m as i64,
+                bias: std::ptr::null(),
+                y: y.ptr(),
+                workspace: ws.ptr(),
+                workspace_bytes: bytes,
+                done: counters,
+            };
             done.zero()?;
             // SAFETY: x [m, k] and y [m, o] in device memory, the workspace of the query's bytes, the counters zeroed, the packs uploaded whole.
             unsafe { lib.linear(&m5, &prod(&y5, n5), None, Stream::DEFAULT)? };
@@ -93,7 +110,10 @@ fn run() -> Result<()> {
             let place = |v: u16| if v & 0x8000 != 0 { -((v & 0x7FFF) as i32) } else { v as i32 };
             let same = a.iter().zip(&bt).filter(|(p, q)| p == q).count();
             let far = a.iter().zip(&bt).map(|(&p, &q)| (place(p) - place(q)).abs()).max().unwrap_or(0);
-            let mut line = format!("[{o}, {k}] {m:>3} tokens: {same} of {} outputs as the tiered layout's product of the same weights, the rest at most {far} bf16 places apart", m * o);
+            let mut line = format!(
+                "[{o}, {k}] {m:>3} tokens: {same} of {} outputs as the tiered layout's product of the same weights, the rest at most {far} bf16 places apart",
+                m * o
+            );
             let mut ok = m <= 16 || same == m * o;
             if m <= 16 {
                 let (mut worst, mut bad5, mut badt) = (0f64, 0usize, 0usize);
@@ -112,7 +132,9 @@ fn run() -> Result<()> {
                         badt += (dt > bound) as usize;
                     }
                 }
-                line += &format!("; against f64, the largest relative difference {worst:.2e}, outside one rounding and the sum's error: {bad5} five-bit, {badt} tiered");
+                line += &format!(
+                    "; against f64, the largest relative difference {worst:.2e}, outside one rounding and the sum's error: {bad5} five-bit, {badt} tiered"
+                );
                 ok &= bad5 == 0;
             }
             println!("{line}{}", if ok { "" } else { "  FAIL" });

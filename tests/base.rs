@@ -104,7 +104,12 @@ fn drift_and_size_changes() {
     let (mut front_alone, mut old_alone) = (Vec::new(), Vec::new());
     glyd::compress_parallel_into_max(&front, &mut front_alone);
     glyd::compress_parallel_into_max(&old[..30 << 20], &mut old_alone);
-    assert!(with_base < front_alone.len() + old_alone.len() / 10, "moved content should be found: {with_base} vs {} new + {} moved", front_alone.len(), old_alone.len());
+    assert!(
+        with_base < front_alone.len() + old_alone.len() / 10,
+        "moved content should be found: {with_base} vs {} new + {} moved",
+        front_alone.len(),
+        old_alone.len()
+    );
 }
 
 #[test]

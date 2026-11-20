@@ -9,12 +9,12 @@
 //! sequence). The extra-bits section is always 8 raw padded sub-streams
 //! behind a size table: sub-stream k holds, for sequences i == k (mod 8)
 //! in order, the ll extra bits, then ml, then offset extra bits.
-use std::sync::Arc;
 use crate::bits::{section_frame_bytes, write_section, Framing, PAD};
 use crate::format::MAX_BLOCK_SIZE;
 use crate::huff8;
 use crate::tans;
 use crate::v7_format::*;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sequence {
@@ -179,7 +179,15 @@ fn hist8<const N: usize>(data: &[u8]) -> [u32; N] {
 /// freshly normalized for this block, or the previous block's when
 /// `reusing`), or the codes raw if coding would not pay for itself.
 /// Returns whether it was coded; a raw section never carries reuse.
-fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reused: Option<&tans::EncodeTable>, framing: Framing, chunks: &mut Vec<u32>, out: &mut Vec<u8>) -> bool {
+fn encode_codes(
+    codes: &[u8],
+    hist: &[u32],
+    counts: &[u16],
+    reused: Option<&tans::EncodeTable>,
+    framing: Framing,
+    chunks: &mut Vec<u32>,
+    out: &mut Vec<u8>,
+) -> bool {
     let n_symbols = counts.len();
     let bits = table_cost(&hist[..n_symbols], counts).expect("table covers the data");
     let table_bytes = if reused.is_some() { 0 } else { tans_table_bytes(counts) };
@@ -493,7 +501,8 @@ pub fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &
     // Each section's framing: the block's, and for a compact block's
     // short sections a single stream.
     let framing = |symbols: usize| if compact { Framing::compact_for(symbols) } else { Framing::Wide };
-    let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { crate::huffman::packed_lengths_v8_size(&lit_lengths) } else { 0 } + section_frame_bytes(framing(literals.len()));
+    let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { crate::huffman::packed_lengths_v8_size(&lit_lengths) } else { 0 }
+        + section_frame_bytes(framing(literals.len()));
     // A reused table costs nothing to carry, so even a short section is
     // coded when the bits say so; a fresh one is not worth building
     // under 64 literals.
@@ -545,7 +554,11 @@ pub fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &
         Some(_) if n < SMALL_SEQUENCES => true,
         Some(prev_bits) => {
             fresh_tables(&mut fresh);
-            let fresh_bits: u64 = hists.iter().zip(fresh.as_ref().unwrap()).map(|(h, t)| table_cost(h, t).expect("fresh table covers the data") + (((8 * tans_table_bytes(t)) as u64) << 16)).sum();
+            let fresh_bits: u64 = hists
+                .iter()
+                .zip(fresh.as_ref().unwrap())
+                .map(|(h, t)| table_cost(h, t).expect("fresh table covers the data") + (((8 * tans_table_bytes(t)) as u64) << 16))
+                .sum();
             prev_bits <= fresh_bits
         }
         None => false,
@@ -564,7 +577,9 @@ pub fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &
     let mut coded = [false; 3];
     for _ in 0..2 {
         let enc = if seq_reuse { Some(prev.seq_enc().clone()) } else { None };
-        for (i, (codes, hist, counts)) in [(&s.ll, &ll_hist, &ll_counts), (&s.ml, &ml_hist, &ml_counts), (&s.off, &off_hist, &off_counts)].into_iter().enumerate() {
+        for (i, (codes, hist, counts)) in
+            [(&s.ll, &ll_hist, &ll_counts), (&s.ml, &ml_hist, &ml_counts), (&s.off, &off_hist, &off_counts)].into_iter().enumerate()
+        {
             let start = out.len();
             coded[i] = encode_codes(codes, hist, counts, enc.as_ref().map(|e| &e[i]), framing(n), &mut s.chunks, out);
             sizes[i] = out.len() - start;
@@ -718,12 +733,7 @@ impl DfastTables {
     /// would not have found, so for output that depends only on the
     /// input, `clear` first (as `compress_into_max` does per call).
     pub fn new() -> Box<Self> {
-        Box::new(DfastTables {
-            long: vec![0; 1 << DFAST_LONG_BITS],
-            short: vec![0; 1 << DFAST_SHORT_BITS],
-            lbits: DFAST_LONG_BITS,
-            sbits: DFAST_SHORT_BITS,
-        })
+        Box::new(DfastTables { long: vec![0; 1 << DFAST_LONG_BITS], short: vec![0; 1 << DFAST_SHORT_BITS], lbits: DFAST_LONG_BITS, sbits: DFAST_SHORT_BITS })
     }
 
     /// Empty both tables (2 MB of stores at full size).
@@ -884,7 +894,18 @@ pub struct DictTables {
 }
 
 #[inline(always)]
-unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: &Slot, el: u32, es: u32, r: &[u32; 3], dict: Option<&DictTables>, eld: u32, esd: u32) -> Found {
+unsafe fn probe<const D: bool>(
+    src: *const u8,
+    pos: usize,
+    block_end: usize,
+    c: &Slot,
+    el: u32,
+    es: u32,
+    r: &[u32; 3],
+    dict: Option<&DictTables>,
+    eld: u32,
+    esd: u32,
+) -> Found {
     use crate::finder::{MatchLen, ScalarMatch};
     let p = src.add(pos);
     // The last offset is not checked here: a match ending at `pos`
@@ -945,7 +966,16 @@ unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: 
 /// entries of `pos + 1` are computed and loaded while `pos` is checked,
 /// so a mispredicted check does not restart that load chain; a hit's
 /// lazy step and a step-1 miss's next probe both use them.
-pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+pub fn find_sequences_dfast(
+    input: &[u8],
+    block_start: usize,
+    block_len: usize,
+    t: &mut DfastTables,
+    reps: &mut [u32; 3],
+    seqs: &mut Vec<Sequence>,
+    literals: &mut Vec<u8>,
+    codes: &mut EncScratch,
+) {
     if t.full_size() {
         find_sequences_dfast_impl::<false, false, true, true>(input, block_start, block_len, t, None, &NO_FAR, reps, seqs, literals, codes)
     } else {
@@ -959,7 +989,17 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
 /// the loop is compiled without the far cursor when there are no far
 /// matches and with the table sizes as constants when the tables are
 /// full size, each a register the loop keeps for itself.
-pub fn find_sequences_dfast_far(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, far: &crate::ldm::Matches, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+pub fn find_sequences_dfast_far(
+    input: &[u8],
+    block_start: usize,
+    block_len: usize,
+    t: &mut DfastTables,
+    far: &crate::ldm::Matches,
+    reps: &mut [u32; 3],
+    seqs: &mut Vec<Sequence>,
+    literals: &mut Vec<u8>,
+    codes: &mut EncScratch,
+) {
     match (far.list.is_empty(), t.full_size()) {
         (true, true) => find_sequences_dfast_impl::<false, false, true, false>(input, block_start, block_len, t, None, far, reps, seqs, literals, codes),
         (true, false) => find_sequences_dfast_impl::<false, false, false, false>(input, block_start, block_len, t, None, far, reps, seqs, literals, codes),
@@ -973,7 +1013,17 @@ static NO_FAR: crate::ldm::Matches = crate::ldm::Matches { list: Vec::new() };
 /// `find_sequences_dfast` with a prepared dictionary's tables: its
 /// content is history before `input` (offsets reach through it), found
 /// through its own tables after the input's.
-pub fn find_sequences_dfast_dict(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: &DictTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+pub fn find_sequences_dfast_dict(
+    input: &[u8],
+    block_start: usize,
+    block_len: usize,
+    t: &mut DfastTables,
+    dict: &DictTables,
+    reps: &mut [u32; 3],
+    seqs: &mut Vec<Sequence>,
+    literals: &mut Vec<u8>,
+    codes: &mut EncScratch,
+) {
     find_sequences_dfast_impl::<true, false, false, false>(input, block_start, block_len, t, Some(dict), &NO_FAR, reps, seqs, literals, codes)
 }
 
@@ -982,7 +1032,18 @@ pub fn find_sequences_dfast_dict(input: &[u8], block_start: usize, block_len: us
 /// (constants in the loop); `S`: the sequences are written to `seqs`
 /// besides their codes.
 #[inline(always)]
-fn find_sequences_dfast_impl<const D: bool, const F: bool, const FULL: bool, const S: bool>(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: Option<&DictTables>, far: &crate::ldm::Matches, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+fn find_sequences_dfast_impl<const D: bool, const F: bool, const FULL: bool, const S: bool>(
+    input: &[u8],
+    block_start: usize,
+    block_len: usize,
+    t: &mut DfastTables,
+    dict: Option<&DictTables>,
+    far: &crate::ldm::Matches,
+    reps: &mut [u32; 3],
+    seqs: &mut Vec<Sequence>,
+    literals: &mut Vec<u8>,
+    codes: &mut EncScratch,
+) {
     use crate::finder::{MatchLen, ScalarMatch};
     let src = input.as_ptr();
     debug_assert!(!FULL || t.full_size());

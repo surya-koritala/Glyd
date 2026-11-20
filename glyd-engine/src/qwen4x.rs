@@ -89,7 +89,13 @@ impl ConfigQx {
         let t = v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?;
         let get = |k: &str| t.get(k).filter(|x| **x != Value::Null).ok_or_else(|| Error(format!("{label}: no {k}")));
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
-        let u_or = |k: &str, d: usize| -> Result<usize> { if t.get(k).is_some_and(|x| *x != Value::Null) { u(k) } else { Ok(d) } };
+        let u_or = |k: &str, d: usize| -> Result<usize> {
+            if t.get(k).is_some_and(|x| *x != Value::Null) {
+                u(k)
+            } else {
+                Ok(d)
+            }
+        };
         let text_is = |k: &str, want: &str| t.get(k).and_then(Value::as_str).is_none_or(|a| a == want);
         let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
         if !text_is("hidden_act", "silu") {
@@ -197,7 +203,14 @@ impl ConfigQx {
         if c.head_dim != 256 || c.kv_heads == 0 || !c.heads.is_multiple_of(c.kv_heads) || c.heads / c.kv_heads > 16 || c.rotary > 128 || c.rotary % 2 != 0 {
             return refuse(&format!("attention of {} heads of {} over {} key-value heads, a rotary of {}", c.heads, c.head_dim, c.kv_heads, c.rotary));
         }
-        if c.ix_dim != 128 || u_or("indexer_kv_heads", 1)? != 1 || c.ix_block != 4 || c.ix_budget == 0 || !c.ix_budget.is_multiple_of(c.ix_block) || c.ix_budget / c.ix_block > 1024 || c.rotary > c.ix_dim {
+        if c.ix_dim != 128
+            || u_or("indexer_kv_heads", 1)? != 1
+            || c.ix_block != 4
+            || c.ix_budget == 0
+            || !c.ix_budget.is_multiple_of(c.ix_block)
+            || c.ix_budget / c.ix_block > 1024
+            || c.rotary > c.ix_dim
+        {
             return refuse("an indexer other than one key head of 128 over blocks of 4 tokens");
         }
         if c.hc != 4 || c.hidden > 4096 || !c.hidden.is_multiple_of(64) {
@@ -266,11 +279,19 @@ impl ConfigQx {
     /// One layer's matrices (the token mixer's, then the shared expert's two), in the forward pass's order. GDN: q, k, v and z as one, b and a as one, out; attention: q, k and v as one, o, the indexer's.
     pub fn layer_packs(&self, l: usize) -> Vec<Pack35> {
         let (h, p) = (self.hidden, self.layer_name(l));
-        let pk = |module: &str, parts: &[(&str, usize)], cols: usize| Pack35 { parts: parts.iter().map(|&(n, r)| (format!("{module}.{n}.weight"), r)).collect(), key: format!("{module}.{}", parts[0].0), cols };
+        let pk = |module: &str, parts: &[(&str, usize)], cols: usize| Pack35 {
+            parts: parts.iter().map(|&(n, r)| (format!("{module}.{n}.weight"), r)).collect(),
+            key: format!("{module}.{}", parts[0].0),
+            cols,
+        };
         let mut out = match self.kind_of(l) {
             QxKind::Gdn => {
                 let m = format!("{p}.linear_attn");
-                vec![pk(&m, &[("in_proj_qkv", self.conv_dim()), ("in_proj_z", self.value_dim())], h), pk(&m, &[("in_proj_b", self.nv), ("in_proj_a", self.nv)], h), pk(&m, &[("out_proj", h)], self.value_dim())]
+                vec![
+                    pk(&m, &[("in_proj_qkv", self.conv_dim()), ("in_proj_z", self.value_dim())], h),
+                    pk(&m, &[("in_proj_b", self.nv), ("in_proj_a", self.nv)], h),
+                    pk(&m, &[("out_proj", h)], self.value_dim()),
+                ]
             }
             QxKind::Attn => {
                 let m = format!("{p}.self_attn");
@@ -310,7 +331,11 @@ impl ConfigQx {
     pub fn ple_pack(&self) -> Option<Pack35> {
         let p = self.ple.as_ref()?;
         let m = format!("{}.ple", self.layer_name(p.layer));
-        Some(Pack35 { key: format!("{m}.key_proj"), parts: vec![(format!("{m}.key_proj.weight"), self.hc * self.hidden), (format!("{m}.value_proj.weight"), self.hidden)], cols: p.dim })
+        Some(Pack35 {
+            key: format!("{m}.key_proj"),
+            parts: vec![(format!("{m}.key_proj.weight"), self.hc * self.hidden), (format!("{m}.value_proj.weight"), self.hidden)],
+            cols: p.dim,
+        })
     }
 }
 
@@ -319,7 +344,8 @@ mod tests {
     use super::*;
 
     pub(crate) fn real() -> ConfigQx {
-        ConfigQx::parse(include_str!("../tests/fixtures/qwen4x_config.json"), "qx", Some(include_str!("../tests/fixtures/qwen4x_generation_config.json"))).unwrap()
+        ConfigQx::parse(include_str!("../tests/fixtures/qwen4x_config.json"), "qx", Some(include_str!("../tests/fixtures/qwen4x_generation_config.json")))
+            .unwrap()
     }
 
     /// The pinned config is read as research/qwen38-flash-next.md has it: 36 GDN and 12 attention layers, the PLE at layer 1, the indexer's 2,048 tokens in blocks of 4, a rotary of 64.

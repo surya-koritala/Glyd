@@ -6,8 +6,8 @@
 //! 3. Sub-millisecond page decompression into GPU / pinned memory buffers.
 //! 4. Transparent host DRAM <-> GPU VRAM offload pipeline.
 
+use glyd::{compress, compress_parallel, decompress, decompress_parallel};
 use std::time::Instant;
-use glyd::{compress, decompress, compress_parallel, decompress_parallel};
 
 /// Simulates a standard PagedAttention Block (vLLM style):
 /// - 16 tokens per block
@@ -40,9 +40,7 @@ fn generate_synthetic_kv_block(block_id: u32) -> Vec<u8> {
     let half_words = KV_BLOCK_BYTES / 2;
 
     // Cast as u16 slices to generate realistic half-precision float bit patterns
-    let u16_slice: &mut [u16] = unsafe {
-        std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u16, half_words)
-    };
+    let u16_slice: &mut [u16] = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u16, half_words) };
 
     let base_val = 0x3c00u16; // 1.0 in FP16
     let scale = (block_id % 7) as u16;
@@ -51,12 +49,9 @@ fn generate_synthetic_kv_block(block_id: u32) -> Vec<u8> {
         // Attention sink tokens and shared head projections repeat structured patterns
         let head_idx = (i / (TOKENS_PER_BLOCK * HEAD_DIM)) % NUM_KV_HEADS;
         let dim_idx = i % HEAD_DIM;
-        
-        let val = base_val
-            .wrapping_add((head_idx as u16) << 2)
-            .wrapping_add((dim_idx as u16 % 16) << 1)
-            .wrapping_add(scale);
-        
+
+        let val = base_val.wrapping_add((head_idx as u16) << 2).wrapping_add((dim_idx as u16 % 16) << 1).wrapping_add(scale);
+
         u16_slice[i] = val;
     }
 
@@ -84,10 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for id in 0..num_blocks as u32 {
         let block_data = generate_synthetic_kv_block(id);
         total_raw_bytes += block_data.len();
-        raw_blocks.push(KvBlock {
-            block_id: id,
-            data: block_data,
-        });
+        raw_blocks.push(KvBlock { block_id: id, data: block_data });
     }
 
     let total_mb = total_raw_bytes as f64 / (1024.0 * 1024.0);
@@ -102,11 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for block in &raw_blocks {
         let comp = compress(&block.data);
         total_comp_bytes += comp.len();
-        compressed_blocks.push(CompressedKvBlock {
-            block_id: block.block_id,
-            uncompressed_size: block.data.len(),
-            compressed_data: comp,
-        });
+        compressed_blocks.push(CompressedKvBlock { block_id: block.block_id, uncompressed_size: block.data.len(), compressed_data: comp });
     }
     let comp_dur = t0.elapsed();
     let comp_mb = total_comp_bytes as f64 / (1024.0 * 1024.0);

@@ -19,7 +19,16 @@ fn events(n: usize, seed: u64) -> Vec<Vec<u8>> {
             for _ in 0..8 {
                 let r = rnd(&mut x);
                 t += r % 5;
-                o.extend_from_slice(format!("{{\"ts\": {}, \"host\": \"h{}\", \"status\": {}, \"bytes\": {}}}\n", t, r % 30, if r % 9 == 0 { 500 } else { 200 }, (r >> 20) % 5000).as_bytes());
+                o.extend_from_slice(
+                    format!(
+                        "{{\"ts\": {}, \"host\": \"h{}\", \"status\": {}, \"bytes\": {}}}\n",
+                        t,
+                        r % 30,
+                        if r % 9 == 0 { 500 } else { 200 },
+                        (r >> 20) % 5000
+                    )
+                    .as_bytes(),
+                );
             }
             o
         })
@@ -41,7 +50,14 @@ fn objects_come_back_alone_and_together() {
     }
     assert!(glyd::decompress_pack_object(&pack, 1000).is_err());
     // Alone, each object costs far more.
-    let alone: usize = objs.iter().map(|o| { let mut c = Vec::new(); glyd::compress_into_max(o, &mut c); c.len() }).sum();
+    let alone: usize = objs
+        .iter()
+        .map(|o| {
+            let mut c = Vec::new();
+            glyd::compress_into_max(o, &mut c);
+            c.len()
+        })
+        .sum();
     assert!(pack.len() * 2 < alone, "{} packed vs {alone} alone", pack.len());
 }
 
@@ -50,7 +66,12 @@ fn any_bytes_and_corruption() {
     let mut x = 5u64;
     let mut objs: Vec<Vec<u8>> = Vec::new();
     for i in 0..300 {
-        let len = match i % 4 { 0 => 0, 1 => 1, 2 => (rnd(&mut x) % 5000) as usize, _ => 64 };
+        let len = match i % 4 {
+            0 => 0,
+            1 => 1,
+            2 => (rnd(&mut x) % 5000) as usize,
+            _ => 64,
+        };
         objs.push((0..len).map(|_| (rnd(&mut x) >> 8) as u8).collect());
     }
     let refs: Vec<&[u8]> = objs.iter().map(|v| v.as_slice()).collect();

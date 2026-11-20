@@ -190,10 +190,13 @@ impl Split {
     }
 
     pub fn describe(&self) -> String {
-        (0..self.w.len()).map(|k| match self.ask(k, Cmd::Describe) {
-            Ok(Out::Text(t)) => format!("stage {k}: {t}"),
-            _ => format!("stage {k}: gone"),
-        }).collect::<Vec<_>>().join("; ")
+        (0..self.w.len())
+            .map(|k| match self.ask(k, Cmd::Describe) {
+                Ok(Out::Text(t)) => format!("stage {k}: {t}"),
+                _ => format!("stage {k}: gone"),
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
     }
 
     pub fn capacity(&self) -> usize {
@@ -281,7 +284,9 @@ pub fn tp_args(a: &crate::args::Args) -> Result<Option<Vec<i32>>> {
 
 /// `--split CUT,..` and `--devices GPU,..` of a command line: the cuts (none: one GPU) and the devices (one more than the cuts; GPU 0 for each where not given).
 pub fn split_args(a: &crate::args::Args) -> Result<(Vec<usize>, Vec<i32>)> {
-    let num = |v: &str, what: &str| -> Result<Vec<i64>> { v.split(',').map(|x| x.trim().parse::<i64>().map_err(|_| Error(format!("--{what} {v}: numbers")))).collect() };
+    let num = |v: &str, what: &str| -> Result<Vec<i64>> {
+        v.split(',').map(|x| x.trim().parse::<i64>().map_err(|_| Error(format!("--{what} {v}: numbers")))).collect()
+    };
     let cuts: Vec<usize> = match a.flag("split") {
         Some(v) => num(v, "split")?.into_iter().map(|x| x as usize).collect(),
         None => Vec::new(),
@@ -489,7 +494,15 @@ pub fn fit(dir: &Path, nl: usize, room: &[(i32, u64)], hbm: bool, twelve: bool) 
 /// besides its routed experts (`dense`) and, where it has experts (`moe`), places for the same number of them, `expert` bytes each, the most that lets every
 /// layer fit (`base`, the rest, half on the first GPU and half on the last); then each GPU's room left over as more places for its own layers, as many as a
 /// layer has at most. The cuts, their GPUs and each stage's places a layer; None where fewer than `least` a layer fit.
-pub fn places_plan(dense: &[u64], base: u64, moe: &[bool], room: &[(i32, u64)], expert: u64, experts: usize, least: usize) -> Option<(Vec<usize>, Vec<i32>, Vec<usize>)> {
+pub fn places_plan(
+    dense: &[u64],
+    base: u64,
+    moe: &[bool],
+    room: &[(i32, u64)],
+    expert: u64,
+    experts: usize,
+    least: usize,
+) -> Option<(Vec<usize>, Vec<i32>, Vec<usize>)> {
     let n = dense.len();
     let foot = |l: usize, p: u64| dense[l] + if moe[l] { p * expert } else { 0 };
     // (the layers in order, each GPU filled to its room, with p places a layer: where each stage starts; None where the GPUs do not hold them)
@@ -535,10 +548,17 @@ pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: 
     let c = crate::kimi::ConfigKimi::load(dir)?;
     let owned = dir.to_path_buf();
     let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
-    Run::new(c.layers, c.eos.clone(), cuts, devices, o, std::sync::Arc::new(move |st, o: &Opts| {
-        let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
-        super::kimi::load_with_places(&owned, o, st, places.get(k).copied())
-    }))
+    Run::new(
+        c.layers,
+        c.eos.clone(),
+        cuts,
+        devices,
+        o,
+        std::sync::Arc::new(move |st, o: &Opts| {
+            let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
+            super::kimi::load_with_places(&owned, o, st, places.get(k).copied())
+        }),
+    )
 }
 
 /// Kimi-K3 with every layer across `devices` (src/dynamic/tp.rs), `places` of a layer's experts in each GPU's slices of its places, the rest in the expert
@@ -546,7 +566,13 @@ pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: 
 pub fn open_kimi_tp(dir: &Path, o: &Opts, devices: &[i32], places: usize) -> Result<Run> {
     let c = crate::kimi::ConfigKimi::load(dir)?;
     let owned = dir.to_path_buf();
-    Ok(Run::Tp(super::tp::Tp::with(c.layers, c.eos.clone(), devices, o, std::sync::Arc::new(move |st, o: &Opts| super::kimi::load_with_places(&owned, o, st, Some(places))))?))
+    Ok(Run::Tp(super::tp::Tp::with(
+        c.layers,
+        c.eos.clone(),
+        devices,
+        o,
+        std::sync::Arc::new(move |st, o: &Opts| super::kimi::load_with_places(&owned, o, st, Some(places))),
+    )?))
 }
 
 /// The layer a tensor's name is of (`...layers.12....`).
@@ -642,7 +668,9 @@ mod tests {
         let (raw, base) = layer_bytes(&dir, 2, 100).unwrap();
         assert_eq!((raw, base), (vec![262144, 262144], 131072 * 72 / 100));
         let (plain, coded) = (2 * (262144 * 113 / 100) + base, 2 * (262144 * 90 / 100) + base);
-        let one = |room: u64, hbm: bool| fit(&dir, 2, &[(0, room)], hbm, false).map(|(b, c, switched, _)| (b.0.iter().sum::<u64>() + b.1, c.is_some(), switched)).unwrap();
+        let one = |room: u64, hbm: bool| {
+            fit(&dir, 2, &[(0, room)], hbm, false).map(|(b, c, switched, _)| (b.0.iter().sum::<u64>() + b.1, c.is_some(), switched)).unwrap()
+        };
         assert_eq!(one(plain, true), (plain, true, false));
         assert_eq!(one(plain - 1, true), (coded, true, true));
         assert_eq!(one(coded - 1, true), (coded, false, false));
@@ -650,7 +678,9 @@ mod tests {
         // (a loader that takes the 12-bit layout: the bf16 head in it where it fits, else tiered, plain FP8 first)
         let base12 = 131072 * TWELVE_PCT / 100;
         let (plain12, coded12) = (plain - base + base12, coded - base + base12);
-        let one12 = |room: u64| fit(&dir, 2, &[(0, room)], true, true).map(|(b, c, switched, twelve)| (b.0.iter().sum::<u64>() + b.1, c.is_some(), switched, twelve)).unwrap();
+        let one12 = |room: u64| {
+            fit(&dir, 2, &[(0, room)], true, true).map(|(b, c, switched, twelve)| (b.0.iter().sum::<u64>() + b.1, c.is_some(), switched, twelve)).unwrap()
+        };
         assert_eq!(one12(plain12), (plain12, true, false, true));
         assert_eq!(one12(plain12 - 1), (plain, true, false, false));
         assert_eq!(one12(plain - 1), (coded12, true, true, true));

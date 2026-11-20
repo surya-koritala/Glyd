@@ -74,7 +74,8 @@ pub struct Jpeg {
 }
 
 pub const ZIGZAG: [usize; 64] = [
-    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29,
+    22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
 /// A Huffman table as the DHT segment gives it: the code lengths'
@@ -454,7 +455,17 @@ impl Blocks {
 /// MCUs `mcu0..mcu1` of a scan decoded from `at` (the byte after the
 /// restart marker before them, or the scan's start): the odd pad
 /// bits met, and the position of the marker after the band.
-fn decode_band(data: &[u8], at: usize, f: &Frame, tables: &[Vec<Option<Huffman>>], scan: &Scan, l: &Layout, mcu0: usize, mcu1: usize, blocks: &Blocks) -> Option<(Vec<(u32, u8)>, usize)> {
+fn decode_band(
+    data: &[u8],
+    at: usize,
+    f: &Frame,
+    tables: &[Vec<Option<Huffman>>],
+    scan: &Scan,
+    l: &Layout,
+    mcu0: usize,
+    mcu1: usize,
+    blocks: &Blocks,
+) -> Option<(Vec<(u32, u8)>, usize)> {
     let mut bits = Bits::new(data, at);
     let restart = scan.restart as usize;
     let mut preds = [0i16; 4];
@@ -767,7 +778,11 @@ impl Layout {
 
     #[inline]
     fn shape(&self, c: &Component) -> (usize, usize) {
-        if self.single { (1, 1) } else { (c.h as usize, c.v as usize) }
+        if self.single {
+            (1, 1)
+        } else {
+            (c.h as usize, c.v as usize)
+        }
     }
 
     /// Where the bands of a scan begin and end: about one per core,
@@ -785,7 +800,16 @@ impl Layout {
 /// restart markers between the intervals inside the band and at its
 /// end (when the scan goes on). Without restart intervals the DC
 /// predictors continue from the MCU before the band.
-fn encode_band<S: Sink>(w: &mut S, f: &Frame, tables: &[Vec<Option<Huffman>>], scan: &Scan, blocks: &[Vec<[i16; 64]>], l: &Layout, mcu0: usize, mcu1: usize) -> Option<()> {
+fn encode_band<S: Sink>(
+    w: &mut S,
+    f: &Frame,
+    tables: &[Vec<Option<Huffman>>],
+    scan: &Scan,
+    blocks: &[Vec<[i16; 64]>],
+    l: &Layout,
+    mcu0: usize,
+    mcu1: usize,
+) -> Option<()> {
     let restart = scan.restart as usize;
     let mut preds = [0i16; 4];
     if restart == 0 && mcu0 > 0 {
@@ -1025,7 +1049,13 @@ pub(super) mod tests {
             let nonzero: usize = j.blocks.iter().flatten().map(|b| b.iter().filter(|&&c| c != 0).count()).sum();
             assert!(nonzero > 1000, "{name}: coefficients");
             let back = write(&j).unwrap_or_else(|| panic!("{name}: writes"));
-            assert!(back == data, "{name}: bit for bit ({} against {} bytes, first difference {:?})", back.len(), data.len(), back.iter().zip(&data).position(|(a, b)| a != b));
+            assert!(
+                back == data,
+                "{name}: bit for bit ({} against {} bytes, first difference {:?})",
+                back.len(),
+                data.len(),
+                back.iter().zip(&data).position(|(a, b)| a != b)
+            );
         }
         assert!(parse(&fixture("q75-420-prog.jpg")).is_none(), "progressive stays closed for now");
         let mut tail = fixture("q75-420.jpg");
@@ -1064,7 +1094,17 @@ pub(super) mod tests {
             let refs: Vec<&[u8]> = streams.iter().map(|s| &s[..]).collect();
             #[cfg(feature = "jpg-stats")]
             {
-                let cost: Vec<String> = ["count", "zero", "exp", "mant", "sign", "e0", "eexp", "emant", "esign", "dc0", "dcexp", "dcmant", "dcsign"].iter().zip(model::COST.iter().zip(model::DECISIONS.iter())).map(|(n, (c, d))| format!("{n} {:.0} KB/{:.1} M", c.load(std::sync::atomic::Ordering::Relaxed) as f64 / 8000.0 / 1000.0, d.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e6)).collect();
+                let cost: Vec<String> = ["count", "zero", "exp", "mant", "sign", "e0", "eexp", "emant", "esign", "dc0", "dcexp", "dcmant", "dcsign"]
+                    .iter()
+                    .zip(model::COST.iter().zip(model::DECISIONS.iter()))
+                    .map(|(n, (c, d))| {
+                        format!(
+                            "{n} {:.0} KB/{:.1} M",
+                            c.load(std::sync::atomic::Ordering::Relaxed) as f64 / 8000.0 / 1000.0,
+                            d.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e6
+                        )
+                    })
+                    .collect();
                 eprintln!("  {}", cost.join(", "));
             }
             let model_s = t.elapsed().as_secs_f64();
@@ -1075,7 +1115,9 @@ pub(super) mod tests {
             let lepton = {
                 #[cfg(feature = "jpeg")]
                 {
-                    lepton_jpeg::encode_lepton_verify(&data, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_write(), &lepton_jpeg::SingleThreadPool {}).ok().map(|(l, _)| l.len())
+                    lepton_jpeg::encode_lepton_verify(&data, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_write(), &lepton_jpeg::SingleThreadPool {})
+                        .ok()
+                        .map(|(l, _)| l.len())
                 }
                 #[cfg(not(feature = "jpeg"))]
                 None::<usize>
@@ -1092,16 +1134,30 @@ pub(super) mod tests {
                 let l1 = lepton_jpeg::encode_lepton_verify(&data, &one, &lepton_jpeg::SingleThreadPool {}).ok().map(|(l, _)| l.len());
                 let l1_s = t.elapsed().as_secs_f64();
                 let t = std::time::Instant::now();
-                let l8 = lepton_jpeg::encode_lepton_verify(&data, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_write(), &lepton_jpeg::DEFAULT_THREAD_POOL).ok().map(|(l, _)| l);
+                let l8 =
+                    lepton_jpeg::encode_lepton_verify(&data, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_write(), &lepton_jpeg::DEFAULT_THREAD_POOL)
+                        .ok()
+                        .map(|(l, _)| l);
                 let l8_s = t.elapsed().as_secs_f64();
                 let l8_dec = l8.as_ref().map(|l| {
                     let t = std::time::Instant::now();
                     let mut out = Vec::new();
-                    lepton_jpeg::decode_lepton(&mut std::io::Cursor::new(l), &mut out, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_read(), &lepton_jpeg::DEFAULT_THREAD_POOL).unwrap();
+                    lepton_jpeg::decode_lepton(
+                        &mut std::io::Cursor::new(l),
+                        &mut out,
+                        &lepton_jpeg::EnabledFeatures::compat_lepton_vector_read(),
+                        &lepton_jpeg::DEFAULT_THREAD_POOL,
+                    )
+                    .unwrap();
                     assert!(out == data);
                     t.elapsed().as_secs_f64()
                 });
-                eprintln!("  lepton 1 partition {:?} B in {l1_s:.2} s; 8 partitions on its pool: {:?} B in {l8_s:.2} s, decode {:?} s", l1, l8.map(|l| l.len()), l8_dec.map(|s| (s * 100.0).round() / 100.0));
+                eprintln!(
+                    "  lepton 1 partition {:?} B in {l1_s:.2} s; 8 partitions on its pool: {:?} B in {l8_s:.2} s, decode {:?} s",
+                    l1,
+                    l8.map(|l| l.len()),
+                    l8_dec.map(|s| (s * 100.0).round() / 100.0)
+                );
             }
             let t = std::time::Instant::now();
             let packed = pack(&data).unwrap();
@@ -1150,7 +1206,13 @@ pub(super) mod tests {
                 assert!(out == data);
                 eprintln!("  read parts: headers {hdr_s:.3} s, model ({} streams) {model_s:.3} s, write {write_s:.3} s", n);
             }
-            eprintln!("  pack {} B in {pack_s:.2} s ({:.0} MB/s), unpack {unpack_s:.2} s ({:.0} MB/s); lepton in {lepton_s:.2} s ({:.0} MB/s)", packed.len(), data.len() as f64 / 1e6 / pack_s, data.len() as f64 / 1e6 / unpack_s, data.len() as f64 / 1e6 / lepton_s);
+            eprintln!(
+                "  pack {} B in {pack_s:.2} s ({:.0} MB/s), unpack {unpack_s:.2} s ({:.0} MB/s); lepton in {lepton_s:.2} s ({:.0} MB/s)",
+                packed.len(),
+                data.len() as f64 / 1e6 / pack_s,
+                data.len() as f64 / 1e6 / unpack_s,
+                data.len() as f64 / 1e6 / lepton_s
+            );
             eprintln!("{}: {} B, {} blocks, parse {parse_s:.3} s, write {write_s:.3} s; model {} B ({:.1}%) in {model_s:.2} s, back in {decode_s:.2} s; lepton {:?} ({:.1}%)", path.display(), data.len(), j.blocks.iter().map(|b| b.len()).sum::<usize>(), stream.len(), 100.0 * stream.len() as f64 / data.len() as f64, lepton, lepton.map_or(0.0, |l| 100.0 * l as f64 / data.len() as f64));
         }
     }

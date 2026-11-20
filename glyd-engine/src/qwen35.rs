@@ -59,8 +59,10 @@ impl Config35 {
     /// `model.embed_tokens`), whatever its copied config.json says of the checkpoint it came from, and no vision tower.
     pub fn as_saved(mut self, dir: &Path) -> Config35 {
         let m = std::fs::read_to_string(dir.join("glyd.json")).ok().and_then(|t| json::parse(&t).ok());
-        let causal = |k: &str| m.as_ref().and_then(|m| m.get(k)).and_then(Value::as_object).is_some_and(|o| o.iter().any(|(n, _)| n.starts_with("model.layers.")));
-        let saved = matches!(m.as_ref().and_then(|m| m.get("format")).and_then(Value::as_str), Some("glyd-v7" | "glyd-v4")) && (causal("packs") || causal("tensors"));
+        let causal =
+            |k: &str| m.as_ref().and_then(|m| m.get(k)).and_then(Value::as_object).is_some_and(|o| o.iter().any(|(n, _)| n.starts_with("model.layers.")));
+        let saved =
+            matches!(m.as_ref().and_then(|m| m.get("format")).and_then(Value::as_str), Some("glyd-v7" | "glyd-v4")) && (causal("packs") || causal("tensors"));
         if saved {
             (self.prefix, self.vision) = ("model.", false);
         }
@@ -72,7 +74,9 @@ impl Config35 {
         let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
         let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
         let (t, prefix, vision) = match arch {
-            "Qwen3_5ForConditionalGeneration" => (v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?, "model.language_model.", true),
+            "Qwen3_5ForConditionalGeneration" => {
+                (v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?, "model.language_model.", true)
+            }
             "Qwen3_5ForCausalLM" => (&v, "model.", false),
             "Qwen3_5MoeForConditionalGeneration" | "Qwen3_5MoeForCausalLM" => {
                 return err(format!("{label}: {arch}: a mixture of experts, which the engine runs after the dense Qwen3.5 models"))
@@ -287,7 +291,11 @@ impl Config35 {
         let (h, hd) = (self.hidden, self.head_dim);
         let mut out = Vec::new();
         let mut pack = |module: String, parts: &[(&str, usize)], cols: usize| {
-            out.push(Pack35 { parts: parts.iter().map(|&(n, r)| (format!("{module}.{n}.weight"), r)).collect(), key: format!("{module}.{}", parts[0].0), cols });
+            out.push(Pack35 {
+                parts: parts.iter().map(|&(n, r)| (format!("{module}.{n}.weight"), r)).collect(),
+                key: format!("{module}.{}", parts[0].0),
+                cols,
+            });
         };
         for (l, &kind) in self.kinds.iter().enumerate() {
             let p = format!("{}layers.{l}", self.prefix);
@@ -348,14 +356,21 @@ impl Config35 {
     /// A checkpoint's tensors (name, dtype, shape) against what the engine loads: every one present with its dtype and shape, and nothing else but the classes it skips.
     /// Returns the number of tensors skipped. The tensors in `packed` (by `Pack35::saved`) are held as their three buffers, not as bf16 tensors.
     pub fn check(&self, have: &[(String, String, Vec<u64>)], packed: &HashSet<String>) -> Result<usize> {
-        let mut want: Vec<Tensor35> = self.packs().into_iter().flat_map(|p| p.parts.into_iter().map(move |(n, r)| Tensor35 { name: n, dtype: "BF16", shape: vec![r as u64, p.cols as u64] })).filter(|t| !packed.contains(Pack35::saved(&t.name))).collect();
+        let mut want: Vec<Tensor35> = self
+            .packs()
+            .into_iter()
+            .flat_map(|p| p.parts.into_iter().map(move |(n, r)| Tensor35 { name: n, dtype: "BF16", shape: vec![r as u64, p.cols as u64] }))
+            .filter(|t| !packed.contains(Pack35::saved(&t.name)))
+            .collect();
         want.extend(self.kept());
         let by: HashMap<&str, (&str, &[u64])> = have.iter().map(|(n, d, s)| (n.as_str(), (d.as_str(), s.as_slice()))).collect();
         let mut bad = Vec::new();
         for w in &want {
             match by.get(w.name.as_str()) {
                 None => bad.push(format!("no {}", w.name)),
-                Some((d, s)) if !(*d == w.dtype || (w.dtype == "F32" && *d == "BF16")) || *s != w.shape.as_slice() => bad.push(format!("{}: {d} {s:?}, where {} {:?} is wanted", w.name, w.dtype, w.shape)),
+                Some((d, s)) if !(*d == w.dtype || (w.dtype == "F32" && *d == "BF16")) || *s != w.shape.as_slice() => {
+                    bad.push(format!("{}: {d} {s:?}, where {} {:?} is wanted", w.name, w.dtype, w.shape))
+                }
                 _ => {}
             }
         }
@@ -423,7 +438,8 @@ mod tests {
         std::fs::write(d.join("config.json"), config("Qwen/Qwen3.5-9B")).unwrap();
         let c = Config35::load(&d).unwrap();
         assert_eq!((c.prefix, c.vision), ("model.language_model.", true));
-        std::fs::write(d.join("glyd.json"), r#"{"format": "glyd-v7", "packs": {"model.layers.0.mlp.down_proj": {}}, "tensors": {"model.norm.weight": {}}}"#).unwrap();
+        std::fs::write(d.join("glyd.json"), r#"{"format": "glyd-v7", "packs": {"model.layers.0.mlp.down_proj": {}}, "tensors": {"model.norm.weight": {}}}"#)
+            .unwrap();
         let c = Config35::load(&d).unwrap();
         assert_eq!((c.prefix, c.vision), ("model.", false));
         // (a lossless glyd-v4 save, glyd/NAME-penguin's, names the causal model the same way; a save whose packs keep the checkpoint's names does not change the prefix)
@@ -484,7 +500,12 @@ mod tests {
         refused(&edited(|t| set(t, "mamba_ssm_dtype", r#""bfloat16""#)), "float32");
         refused(&edited(|t| set(t, "layer_types", r#"["linear_attention", "full_attention"]"#)), "2 layer_types for 32 layers");
         refused(&edited(|t| set(t, "linear_num_value_heads", "24")), "24 linear-attention value heads to 16");
-        refused(&edited(|t| set(t, "rope_parameters", r#"{"rope_type": "default", "rope_theta": 1e7, "partial_rotary_factor": 0.25, "mrope_section": [11, 11, 11]}"#)), "mrope_section");
+        refused(
+            &edited(|t| {
+                set(t, "rope_parameters", r#"{"rope_type": "default", "rope_theta": 1e7, "partial_rotary_factor": 0.25, "mrope_section": [11, 11, 11]}"#)
+            }),
+            "mrope_section",
+        );
         refused(&edited(|t| set(t, "num_key_value_heads", "3")), "16 query heads to 3 KV heads");
         refused(&edited(|t| set(t, "num_attention_heads", "0")), "0 query heads to 4 KV heads");
         refused(&edited(|t| set(t, "output_gate_type", r#""sigmoid""#)), "output gate of type sigmoid");
@@ -492,7 +513,15 @@ mod tests {
         let text = edited(|t| t.retain(|(k, _)| k != "layer_types"));
         let c = Config35::parse(&text, "x", Some(r#"{"eos_token_id": [248046, 248044]}"#)).unwrap();
         assert_eq!((c.full_layers(), c.eos), (8, vec![248046, 248044]));
-        let c = Config35::parse(&edited(|t| { t.retain(|(k, _)| k != "layer_types"); set(t, "full_attention_interval", "2") }), "x", None).unwrap();
+        let c = Config35::parse(
+            &edited(|t| {
+                t.retain(|(k, _)| k != "layer_types");
+                set(t, "full_attention_interval", "2")
+            }),
+            "x",
+            None,
+        )
+        .unwrap();
         assert_eq!(c.full_layers(), 16);
     }
 
@@ -528,10 +557,16 @@ mod tests {
 
     fn tensors(model: &str) -> Index {
         let v = json::parse(include_str!("../tests/fixtures/qwen35_tensors.json")).unwrap();
-        v.get(model).unwrap().as_object().unwrap().iter().map(|(n, e)| {
-            let a = e.as_array().unwrap();
-            (n.clone(), a[0].as_str().unwrap().to_string(), a[1].as_u64s().unwrap())
-        }).collect()
+        v.get(model)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(n, e)| {
+                let a = e.as_array().unwrap();
+                (n.clone(), a[0].as_str().unwrap().to_string(), a[1].as_u64s().unwrap())
+            })
+            .collect()
     }
 
     #[test]
@@ -567,7 +602,10 @@ mod tests {
         assert_eq!(shape("embed"), (248320, 4096, true));
         assert_eq!(shape("lm_head"), (248320, 4096, true));
         let q = packs.iter().find(|p| p.key == format!("{pre}.3.self_attn.q_proj")).unwrap();
-        assert_eq!(q.parts.iter().map(|(n, r)| (n.rsplit('.').nth(1).unwrap(), *r)).collect::<Vec<_>>(), [("q_proj", 8192), ("k_proj", 1024), ("v_proj", 1024)]);
+        assert_eq!(
+            q.parts.iter().map(|(n, r)| (n.rsplit('.').nth(1).unwrap(), *r)).collect::<Vec<_>>(),
+            [("q_proj", 8192), ("k_proj", 1024), ("v_proj", 1024)]
+        );
         // a merge is packed only where each part is: 32 rows as one of 64 is not (the packer keeps both parts as they are)
         let ba = Pack35 { key: "x".into(), parts: vec![("b".into(), 32), ("a".into(), 32)], cols: 4096 };
         assert!(ba.rows() == 64 && !ba.packable());
@@ -589,10 +627,28 @@ mod tests {
         };
         let at = |h: &Index, n: &str| h.iter().position(|t| t.0 == n).unwrap();
         let conv = "model.language_model.layers.0.linear_attn.conv1d.weight";
-        says(&|h| { let i = at(h, conv); h.remove(i); }, &format!("no {conv}"));
-        says(&|h| { let i = at(h, conv); h[i].2 = vec![6144, 1, 3]; }, "[6144, 1, 3], where BF16 [6144, 1, 4]");
+        says(
+            &|h| {
+                let i = at(h, conv);
+                h.remove(i);
+            },
+            &format!("no {conv}"),
+        );
+        says(
+            &|h| {
+                let i = at(h, conv);
+                h[i].2 = vec![6144, 1, 3];
+            },
+            "[6144, 1, 3], where BF16 [6144, 1, 4]",
+        );
         let a_log = "model.language_model.layers.0.linear_attn.A_log";
-        says(&|h| { let i = at(h, a_log); h[i].1 = "F16".into(); }, "where F32 [16]");
+        says(
+            &|h| {
+                let i = at(h, a_log);
+                h[i].1 = "F16".into();
+            },
+            "where F32 [16]",
+        );
         says(&|h| h.push(("lm_head.weight".into(), "BF16".into(), vec![248320, 1024])), "lm_head.weight: not a tensor of this model");
         // a config with more layers than the checkpoint
         let more = Config35 { layers: 25, kinds: [c.kinds.clone(), vec![Kind::Linear]].concat(), ..c.clone() };
@@ -603,7 +659,12 @@ mod tests {
     fn packed_matrices_are_held_as_their_buffers() {
         let c = parse("Qwen/Qwen3.5-9B").unwrap();
         let mut have = tensors("Qwen/Qwen3.5-9B");
-        let keys: HashSet<String> = c.packs().iter().filter(|p| p.key.starts_with("model.language_model.layers.0.") || p.key == "embed").flat_map(|p| p.parts.iter().map(|x| Pack35::saved(&x.0).to_string())).collect();
+        let keys: HashSet<String> = c
+            .packs()
+            .iter()
+            .filter(|p| p.key.starts_with("model.language_model.layers.0.") || p.key == "embed")
+            .flat_map(|p| p.parts.iter().map(|x| Pack35::saved(&x.0).to_string()))
+            .collect();
         assert!(keys.iter().any(|k| k.ends_with("embed_tokens")) && keys.iter().any(|k| k.ends_with("in_proj_z")));
         have.retain(|t| !keys.contains(Pack35::saved(&t.0)));
         assert!(c.check(&have, &HashSet::new()).is_err());
@@ -617,13 +678,20 @@ mod tests {
     fn qwen38_pinned_bf16_inventory() {
         let c = Config35::parse(include_str!("../../research/lossy-2026/qwen38-config.json"), "Qwen/Qwen3.8-27B", None).unwrap();
         let v = json::parse(include_str!("../../research/lossy-2026/qwen38-inventory.json")).unwrap();
-        let mut have: Vec<(String, String, Vec<u64>)> = v.as_array().unwrap().iter().map(|t| (
-            t.get("name").unwrap().as_str().unwrap().to_string(),
-            t.get("dtype").unwrap().as_str().unwrap().to_string(),
-            t.get("shape").unwrap().as_u64s().unwrap(),
-        )).collect();
+        let mut have: Vec<(String, String, Vec<u64>)> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                (
+                    t.get("name").unwrap().as_str().unwrap().to_string(),
+                    t.get("dtype").unwrap().as_str().unwrap().to_string(),
+                    t.get("shape").unwrap().as_u64s().unwrap(),
+                )
+            })
+            .collect();
         assert_eq!(c.check(&have, &HashSet::new()).unwrap(), 348);
-        let i = have.iter().position(|(n,_,_)| n.ends_with("layers.0.linear_attn.A_log")).unwrap();
+        let i = have.iter().position(|(n, _, _)| n.ends_with("layers.0.linear_attn.A_log")).unwrap();
         have[i].1 = "F32".into();
         assert_eq!(c.check(&have, &HashSet::new()).unwrap(), 348);
         have[i].1 = "F16".into();
@@ -632,5 +700,4 @@ mod tests {
         have[i].2 = vec![47];
         assert!(c.check(&have, &HashSet::new()).is_err());
     }
-
 }

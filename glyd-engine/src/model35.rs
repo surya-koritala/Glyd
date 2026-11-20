@@ -7,14 +7,17 @@
 //! the qkvz and ba products, the causal convolution with SiLU, the gated delta rule (a recurrence, or in chunks for a prompt), the gated norm, the out product.
 
 use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Ev, Graph, Kernel, Pinned};
-use std::cell::RefCell;
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::kern::{norm_threads, Kern};
 use crate::launch;
 use crate::model::{embed_plan, Sample, TopGpu};
 use crate::qwen35::{Config35, Kind, Pack35};
-use crate::weights::{choose_layout, lossless_manifest, ordered, pack_item_map, read_lossless_parts, read_v7, rope_tables, upload_bytes, upload_packed, v7_manifest, Item, Layout, PackBuf};
+use crate::weights::{
+    choose_layout, lossless_manifest, ordered, pack_item_map, read_lossless_parts, read_v7, rope_tables, upload_bytes, upload_packed, v7_manifest, Item,
+    Layout, PackBuf,
+};
 use glyd_gpu::safetensors::Checkpoint;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -91,7 +94,25 @@ impl Kern35 {
     /// # Safety
     /// As `rmsnorm`; the cache holds every position in `pos`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn prep(&self, s: Stream, qkv: u64, stride: i32, qw: u64, kw: u64, cos: u64, sin: u64, half: i32, pos: u64, qo: u64, kc: u64, vc: u64, n: u32, nq: i32, nk: i32, eps: f32) -> Result<()> {
+    pub unsafe fn prep(
+        &self,
+        s: Stream,
+        qkv: u64,
+        stride: i32,
+        qw: u64,
+        kw: u64,
+        cos: u64,
+        sin: u64,
+        half: i32,
+        pos: u64,
+        qo: u64,
+        kc: u64,
+        vc: u64,
+        n: u32,
+        nq: i32,
+        nk: i32,
+        eps: f32,
+    ) -> Result<()> {
         if !(1..=64).contains(&half) {
             return err(format!("a rotary of {} dims: not supported", 2 * half));
         }
@@ -103,7 +124,22 @@ impl Kern35 {
     /// # Safety
     /// As `rmsnorm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn(&self, s: Stream, q: u64, qs: i32, gate: u64, gs: i32, kc: u64, vc: u64, pos: u64, out: u64, os: i32, n: i32, nq: i32, nk: i32) -> Result<()> {
+    pub unsafe fn attn(
+        &self,
+        s: Stream,
+        q: u64,
+        qs: i32,
+        gate: u64,
+        gs: i32,
+        kc: u64,
+        vc: u64,
+        pos: u64,
+        out: u64,
+        os: i32,
+        n: i32,
+        nq: i32,
+        nk: i32,
+    ) -> Result<()> {
         if nk == 0 || nq % nk != 0 || nq / nk > 16 {
             return err(format!("{nq} query heads over {nk} key-value heads: not supported"));
         }
@@ -119,7 +155,23 @@ impl Kern35 {
     /// # Safety
     /// As `rmsnorm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn_decode(&self, s: Stream, q: u64, qs: i32, gate: u64, gs: i32, kc: u64, vc: u64, pos: u64, out: u64, os: i32, n: i32, nq: i32, nk: i32, part: u64) -> Result<()> {
+    pub unsafe fn attn_decode(
+        &self,
+        s: Stream,
+        q: u64,
+        qs: i32,
+        gate: u64,
+        gs: i32,
+        kc: u64,
+        vc: u64,
+        pos: u64,
+        out: u64,
+        os: i32,
+        n: i32,
+        nq: i32,
+        nk: i32,
+        part: u64,
+    ) -> Result<()> {
         if nk == 0 || nq % nk != 0 || nq / nk > 16 {
             return err(format!("{nq} query heads over {nk} key-value heads: not supported"));
         }
@@ -145,7 +197,22 @@ impl Kern35 {
     /// # Safety
     /// As `rmsnorm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn delta(&self, s: Stream, chunked: bool, xc: u64, c: i32, ba: u64, sba: i32, a_log: u64, dt_bias: u64, state: u64, core: u64, n: i32, nk: i32, nv: i32) -> Result<()> {
+    pub unsafe fn delta(
+        &self,
+        s: Stream,
+        chunked: bool,
+        xc: u64,
+        c: i32,
+        ba: u64,
+        sba: i32,
+        a_log: u64,
+        dt_bias: u64,
+        state: u64,
+        core: u64,
+        n: i32,
+        nk: i32,
+        nv: i32,
+    ) -> Result<()> {
         if chunked {
             launch!(self.chunk, [nv as u32, 2, 1], [256, 1, 1], smem GDN_CHUNK_SMEM, s; xc, c, ba, sba, a_log, dt_bias, state, core, n, nk, nv)
         } else {
@@ -256,7 +323,11 @@ pub fn layer_mats(cfg: &Config35) -> Vec<Vec<Src>> {
                 Kind::Full => vec![Src::Pack(format!("{p}.self_attn.q_proj")), Src::Pack(format!("{p}.self_attn.o_proj"))],
                 Kind::Linear => {
                     let m = format!("{p}.linear_attn");
-                    vec![Src::Pack(format!("{m}.in_proj_qkv")), one(format!("{m}.in_proj_b"), &[("in_proj_b", cfg.lin_v_heads), ("in_proj_a", cfg.lin_v_heads)], &m), Src::Pack(format!("{m}.out_proj"))]
+                    vec![
+                        Src::Pack(format!("{m}.in_proj_qkv")),
+                        one(format!("{m}.in_proj_b"), &[("in_proj_b", cfg.lin_v_heads), ("in_proj_a", cfg.lin_v_heads)], &m),
+                        Src::Pack(format!("{m}.out_proj")),
+                    ]
                 }
             };
             v.push(Src::Pack(format!("{p}.mlp.gate_proj")));
@@ -299,17 +370,23 @@ pub fn round_a_all(w: &mut [u16]) {
 }
 
 fn transform_bf16_bytes(bytes: &mut [u8], transform: Option<fn(&mut [u16])>) -> Result<()> {
-    if bytes.len() % 2 != 0 { return err("odd BF16 byte count"); }
+    if bytes.len() % 2 != 0 {
+        return err("odd BF16 byte count");
+    }
     if let Some(f) = transform {
         let mut words: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
         f(&mut words);
-        for (b, w) in bytes.chunks_exact_mut(2).zip(words) { b.copy_from_slice(&w.to_le_bytes()); }
+        for (b, w) in bytes.chunks_exact_mut(2).zip(words) {
+            b.copy_from_slice(&w.to_le_bytes());
+        }
     }
     Ok(())
 }
 
 fn runtime_parameter(bytes: Vec<u8>, source: &str, wanted: &str) -> Result<Vec<u8>> {
-    if source == wanted { return Ok(bytes); }
+    if source == wanted {
+        return Ok(bytes);
+    }
     if source == "BF16" && wanted == "F32" && bytes.len() % 2 == 0 {
         return Ok(bytes.chunks_exact(2).flat_map(|b| ((u16::from_le_bytes([b[0], b[1]]) as u32) << 16).to_le_bytes()).collect());
     }
@@ -323,24 +400,44 @@ impl Weights35 {
 
     /// A Hub-format directory (config.json, the safetensors): checked against the weight map, every packable matrix packed here by `threads` workers in `layout` (None: the GPU's,
     /// as `glyd-engine run` chooses), each checked to decode to its weights bit for bit (the packer's own check) and copied to the GPU as it is done.
-    pub fn load(dir: &Path, max_pos: usize, threads: usize, layout: Option<Layout>, cc: (i32, i32), total_mem: u64, transform: Option<fn(&mut [u16])>) -> Result<Weights35> {
+    pub fn load(
+        dir: &Path,
+        max_pos: usize,
+        threads: usize,
+        layout: Option<Layout>,
+        cc: (i32, i32),
+        total_mem: u64,
+        transform: Option<fn(&mut [u16])>,
+    ) -> Result<Weights35> {
         Weights35::load_stage(dir, max_pos, threads, layout, cc, total_mem, transform, None)
     }
 
     /// As `load`, of a stage alone where `stage` is (layers a..b, whether it holds the embedding and the head: a model split across GPUs): another
     /// stage's matrices and tensors are not read, and stand here as empty buffers (never run).
     #[allow(clippy::too_many_arguments)]
-    pub fn load_stage(dir: &Path, max_pos: usize, threads: usize, layout: Option<Layout>, cc: (i32, i32), total_mem: u64, transform: Option<fn(&mut [u16])>, stage: Option<((usize, usize), bool, bool)>) -> Result<Weights35> {
+    pub fn load_stage(
+        dir: &Path,
+        max_pos: usize,
+        threads: usize,
+        layout: Option<Layout>,
+        cc: (i32, i32),
+        total_mem: u64,
+        transform: Option<fn(&mut [u16])>,
+        stage: Option<((usize, usize), bool, bool)>,
+    ) -> Result<Weights35> {
         // (the layer a tensor or pack belongs to: the number after "layers.")
         let layer_of = |name: &str| name.split("layers.").nth(1).and_then(|r| r.split('.').next()).and_then(|n| n.parse::<usize>().ok());
         let ((la, lb), first, last) = stage.unwrap_or(((0, usize::MAX), true, true));
         let in_stage = |name: &str| layer_of(name).is_none_or(|l| (la..lb).contains(&l));
         let cfg = Config35::load(dir)?;
         let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
-        let have: Vec<(String, String, Vec<u64>)> = ck.names().map(|n| {
-            let (_, t) = ck.get(n).expect("a tensor the checkpoint names");
-            (n.to_string(), t.dtype.clone(), t.shape.clone())
-        }).collect();
+        let have: Vec<(String, String, Vec<u64>)> = ck
+            .names()
+            .map(|n| {
+                let (_, t) = ck.get(n).expect("a tensor the checkpoint names");
+                (n.to_string(), t.dtype.clone(), t.shape.clone())
+            })
+            .collect();
         // a glyd-v7 directory (a lossy level's packs, saved): its matrices are read as they are, in its level's layout; one it holds as bf16 (the embedding, the LM head) is packed here
         // (a lossless glyd-v4 save, glyd/NAME-penguin's: the tiered layout, its packs read as saved; a matrix it holds in two packs is decoded and packed again, read_lossless_parts)
         let v7 = match v7_manifest(dir)? {
@@ -355,11 +452,27 @@ impl Weights35 {
         let packs = cfg.packs();
         // (each pack's saved parts: its own name where the save fused them, else each part's)
         let has = |k: &str| ck.get(&format!("{k}.glyd_data")).is_some();
-        let saved: Vec<Vec<(&str, usize)>> = packs.iter().map(|p| {
-            let each: Vec<(&str, usize)> = p.parts.iter().map(|x| (Pack35::saved(&x.0), x.1)).collect();
-            if v7.is_none() { vec![] } else if has(each[0].0) && (each.len() == 1 || !has(each[1].0)) { vec![(each[0].0, p.rows())] } else if each.iter().all(|x| has(x.0)) { each } else { vec![] }
-        }).collect();
-        let held: HashSet<String> = saved.iter().flatten().map(|x| x.0.to_string()).chain(packs.iter().zip(&saved).filter(|(_, s)| s.len() == 1).flat_map(|(p, _)| p.parts.iter().map(|x| Pack35::saved(&x.0).to_string()))).collect();
+        let saved: Vec<Vec<(&str, usize)>> = packs
+            .iter()
+            .map(|p| {
+                let each: Vec<(&str, usize)> = p.parts.iter().map(|x| (Pack35::saved(&x.0), x.1)).collect();
+                if v7.is_none() {
+                    vec![]
+                } else if has(each[0].0) && (each.len() == 1 || !has(each[1].0)) {
+                    vec![(each[0].0, p.rows())]
+                } else if each.iter().all(|x| has(x.0)) {
+                    each
+                } else {
+                    vec![]
+                }
+            })
+            .collect();
+        let held: HashSet<String> = saved
+            .iter()
+            .flatten()
+            .map(|x| x.0.to_string())
+            .chain(packs.iter().zip(&saved).filter(|(_, s)| s.len() == 1).flat_map(|(p, _)| p.parts.iter().map(|x| Pack35::saved(&x.0).to_string())))
+            .collect();
         let skipped = cfg.check(&have, &held)?;
         let matrix_bytes: u64 = packs.iter().map(|p| (p.rows() * p.cols * 2) as u64).sum();
         let kept = cfg.kept();
@@ -379,17 +492,39 @@ impl Weights35 {
         };
         let ks: Vec<usize> = (0..packs.len()).filter(|&k| wanted(&packs[k].key)).collect();
         let mut packed: HashMap<String, PackBuf> = HashMap::new();
-        ordered(ks.len(), threads, 2 * threads.max(1), &|i| { let k = ks[i]; match &v7 {
-            Some((Layout::Tiered, m)) if !saved[k].is_empty() => read_lossless_parts(&ck, m, &saved[k], items[k].cols),
-            Some((_, m)) if !saved[k].is_empty() => read_v7(&ck, m, layout, &saved[k], items[k].cols),
-            _ => pack_item_map(&ck, &items[k], layout, &|w| { if let Some(f) = transform { f(w); } }),
-        } }, |i, p| {
-            crate::status::STATUS.beat(); // (a sign of life for the program that started the engine)
-            packed.insert(packs[ks[i]].key.clone(), upload_packed(p)?);
-            Ok(())
-        })?;
+        ordered(
+            ks.len(),
+            threads,
+            2 * threads.max(1),
+            &|i| {
+                let k = ks[i];
+                match &v7 {
+                    Some((Layout::Tiered, m)) if !saved[k].is_empty() => read_lossless_parts(&ck, m, &saved[k], items[k].cols),
+                    Some((_, m)) if !saved[k].is_empty() => read_v7(&ck, m, layout, &saved[k], items[k].cols),
+                    _ => pack_item_map(&ck, &items[k], layout, &|w| {
+                        if let Some(f) = transform {
+                            f(w);
+                        }
+                    }),
+                }
+            },
+            |i, p| {
+                crate::status::STATUS.beat(); // (a sign of life for the program that started the engine)
+                packed.insert(packs[ks[i]].key.clone(), upload_packed(p)?);
+                Ok(())
+            },
+        )?;
         // (an empty pack: where another stage holds the matrix)
-        let empty = || upload_packed(crate::weights::Packed { data: vec![0; 16], b1: vec![0; 16], b2: vec![0; 16], words: crate::ffi::Words::Tiered { blocks: 0, block_base: 0, tiers: [0; 3] }, rows: 0, cols: 0 });
+        let empty = || {
+            upload_packed(crate::weights::Packed {
+                data: vec![0; 16],
+                b1: vec![0; 16],
+                b2: vec![0; 16],
+                words: crate::ffi::Words::Tiered { blocks: 0, block_base: 0, tiers: [0; 3] },
+                rows: 0,
+                cols: 0,
+            })
+        };
         let read = |name: &str| -> Result<Vec<u8>> {
             let mut b = ck.read(name).map_err(|e| Error(e.to_string()))?;
             if ck.get(name).expect("validated tensor").1.dtype == "BF16" {
@@ -412,7 +547,8 @@ impl Weights35 {
                 .collect()
         };
         let plan = layer_mats(&cfg);
-        let dense: std::collections::HashSet<String> = plan.iter().flatten().filter_map(|s| if let Src::Dense(p, ..) = s { Some(p.clone()) } else { None }).flatten().collect();
+        let dense: std::collections::HashSet<String> =
+            plan.iter().flatten().filter_map(|s| if let Src::Dense(p, ..) = s { Some(p.clone()) } else { None }).flatten().collect();
         let mut small: HashMap<String, Buf> = HashMap::new();
         for t in kept.iter().filter(|t| !dense.contains(&t.name) && in_stage(&t.name) && (last || layer_of(&t.name).is_some())) {
             let source_dtype = &ck.get(&t.name).expect("validated tensor").1.dtype;
@@ -432,7 +568,14 @@ impl Weights35 {
             if !(la..lb).contains(&l) {
                 // (another stage's layer: empty buffers, never run)
                 let n_small = if kind == Kind::Full { 2 } else { 4 };
-                layers.push(Layer35 { kind, idx, mats: (0..srcs.len()).map(|_| Ok(Mat::Dense(Buf::new(2)?, 0, 0))).collect::<Result<_>>()?, in_norm: Buf::new(4)?, post_norm: Buf::new(4)?, small: (0..n_small).map(|_| Buf::new(4)).collect::<Result<_>>()? });
+                layers.push(Layer35 {
+                    kind,
+                    idx,
+                    mats: (0..srcs.len()).map(|_| Ok(Mat::Dense(Buf::new(2)?, 0, 0))).collect::<Result<_>>()?,
+                    in_norm: Buf::new(4)?,
+                    post_norm: Buf::new(4)?,
+                    small: (0..n_small).map(|_| Buf::new(4)).collect::<Result<_>>()?,
+                });
                 continue;
             }
             let ms = mats_of(srcs)?;
@@ -445,14 +588,27 @@ impl Weights35 {
                     take(format!("{p}.linear_attn.norm.weight"))?,
                 ],
             };
-            layers.push(Layer35 { kind, idx, mats: ms, in_norm: take(format!("{p}.input_layernorm.weight"))?, post_norm: take(format!("{p}.post_attention_layernorm.weight"))?, small: sm });
+            layers.push(Layer35 {
+                kind,
+                idx,
+                mats: ms,
+                in_norm: take(format!("{p}.input_layernorm.weight"))?,
+                post_norm: take(format!("{p}.post_attention_layernorm.weight"))?,
+                small: sm,
+            });
         }
         let embed = match packed.remove("embed") {
             Some(e) => e,
             None if !(first || (last && cfg.tie)) => empty()?,
             None => return err("the embedding is not packed"),
         };
-        let head = if cfg.tie { None } else if last { Some(packed.remove("lm_head").ok_or_else(|| Error("the LM head is not packed".into()))?) } else { Some(empty()?) };
+        let head = if cfg.tie {
+            None
+        } else if last {
+            Some(packed.remove("lm_head").ok_or_else(|| Error("the LM head is not packed".into()))?)
+        } else {
+            Some(empty()?)
+        };
         if let Some(k) = packed.keys().next() {
             return err(format!("a pack the forward pass does not take: {k}"));
         }
@@ -561,7 +717,10 @@ impl Engine35 {
         let w = Weights35::load(dir, o.ctx + 16, threads, o.layout, dev.cc_pair(), dev.total_mem as u64, o.weight_transform)?;
         let c = &w.cfg;
         if c.head_dim != 256 || c.lin_k_dim != 128 || c.lin_v_dim != 128 || c.conv_kernel != 4 {
-            return err(format!("head {}, linear heads {}/{}, convolution {}: this engine runs head 256, linear heads of 128 and a convolution of 4", c.head_dim, c.lin_k_dim, c.lin_v_dim, c.conv_kernel));
+            return err(format!(
+                "head {}, linear heads {}/{}, convolution {}: this engine runs head 256, linear heads of 128 and a convolution of 4",
+                c.head_dim, c.lin_k_dim, c.lin_v_dim, c.conv_kernel
+            ));
         }
         let (hid, nq, nk, nv, inter) = (c.hidden, c.heads, c.kv_heads, c.lin_v_heads, c.inter);
         let (kd, vd, cd) = (c.key_dim(), c.value_dim(), c.conv_dim());
@@ -588,7 +747,8 @@ impl Engine35 {
         let own = want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9));
         let gpu_code = lib.gpu()? as i64;
         let packed: Vec<&PackBuf> = w.layers.iter().flat_map(|l| l.mats.iter()).filter_map(|m| m.packed().ok()).collect();
-        let scratch_w = if blas.is_some() || own { Buf::new(packed.iter().map(|p| (p.pack.rows * p.pack.cols) as usize * 2).max().unwrap_or(16))? } else { Buf::new(16)? };
+        let scratch_w =
+            if blas.is_some() || own { Buf::new(packed.iter().map(|p| (p.pack.rows * p.pack.cols) as usize * 2).max().unwrap_or(16))? } else { Buf::new(16)? };
         let mut shapes: Vec<(i64, i64, bool)> = packed.iter().map(|p| (p.pack.rows, p.pack.cols, p.pack.is_twelve())).collect();
         shapes.sort_unstable();
         shapes.dedup();
@@ -612,7 +772,53 @@ impl Engine35 {
         let used = free0.saturating_sub(dev.mem_info()?.0);
         let work_bytes = used.saturating_sub(w.bytes + kc.bytes + vc.bytes + ssm.bytes + convst.bytes);
         let mut e = Engine35 {
-            dev, lib, kern, k35, w, chunk: ch, ctx, chunked: o.chunked, x, h, mix, ba, xc, core, qo, att, o: o_, gu, m, d, hlast, logits, scratch, embed_groups, embed_pairs, pos, st, tok, val, lse, top, attn_part, ws, done, blas, own, scratch_w, gpu_code, kc, vc, ssm, convst, graph: None, host, n: 0, work_bytes, marks: RefCell::new(None),
+            dev,
+            lib,
+            kern,
+            k35,
+            w,
+            chunk: ch,
+            ctx,
+            chunked: o.chunked,
+            x,
+            h,
+            mix,
+            ba,
+            xc,
+            core,
+            qo,
+            att,
+            o: o_,
+            gu,
+            m,
+            d,
+            hlast,
+            logits,
+            scratch,
+            embed_groups,
+            embed_pairs,
+            pos,
+            st,
+            tok,
+            val,
+            lse,
+            top,
+            attn_part,
+            ws,
+            done,
+            blas,
+            own,
+            scratch_w,
+            gpu_code,
+            kc,
+            vc,
+            ssm,
+            convst,
+            graph: None,
+            host,
+            n: 0,
+            work_bytes,
+            marks: RefCell::new(None),
         };
         if o.graph {
             e.capture_graph()?;
@@ -824,7 +1030,21 @@ impl Engine35 {
                     self.mark("linear attention: ba product")?;
                     self.k35.conv(s, self.mix.ptr, row, sw, self.convst.ptr + ly.idx as u64 * conv_layer, self.xc.ptr, n as i32, cd as i32)?;
                     self.mark("linear attention: convolution")?;
-                    self.k35.delta(s, chunked, self.xc.ptr, cd as i32, self.ba.ptr, 2 * nv, sa, sd, self.ssm.ptr + ly.idx as u64 * ssm_layer, self.core.ptr, n as i32, c.lin_k_heads as i32, nv)?;
+                    self.k35.delta(
+                        s,
+                        chunked,
+                        self.xc.ptr,
+                        cd as i32,
+                        self.ba.ptr,
+                        2 * nv,
+                        sa,
+                        sd,
+                        self.ssm.ptr + ly.idx as u64 * ssm_layer,
+                        self.core.ptr,
+                        n as i32,
+                        c.lin_k_heads as i32,
+                        nv,
+                    )?;
                     self.mark("linear attention: delta rule")?;
                     self.k35.gated_norm(s, self.core.ptr, self.mix.ptr + (cd * 2) as u64, row, sn, nu, nv, eps)?;
                     self.mark("linear attention: gated norm")?;
@@ -835,10 +1055,42 @@ impl Engine35 {
                     let (kc, vc) = (self.kc.ptr + ly.idx as u64 * kv_layer, self.vc.ptr + ly.idx as u64 * kv_layer);
                     self.lin(&ly.mats[0], self.h.ptr, n, self.mix.ptr)?;
                     self.mark("attention: qkv product")?;
-                    self.k35.prep(s, self.mix.ptr, full_w, ly.small[0].ptr, ly.small[1].ptr, self.w.cos.ptr, self.w.sin.ptr, (c.rotary_dim / 2) as i32, pos, self.qo.ptr, kc, vc, nu, nq, nk, eps)?;
+                    self.k35.prep(
+                        s,
+                        self.mix.ptr,
+                        full_w,
+                        ly.small[0].ptr,
+                        ly.small[1].ptr,
+                        self.w.cos.ptr,
+                        self.w.sin.ptr,
+                        (c.rotary_dim / 2) as i32,
+                        pos,
+                        self.qo.ptr,
+                        kc,
+                        vc,
+                        nu,
+                        nq,
+                        nk,
+                        eps,
+                    )?;
                     self.mark("attention: q/k norm, rotary, cache write")?;
                     if n == 1 {
-                        self.k35.attn_decode(s, self.qo.ptr, nq * 256, self.mix.ptr, full_w, kc, vc, pos, self.att.ptr, nq * 256, 1, nq, nk, self.attn_part.ptr)?;
+                        self.k35.attn_decode(
+                            s,
+                            self.qo.ptr,
+                            nq * 256,
+                            self.mix.ptr,
+                            full_w,
+                            kc,
+                            vc,
+                            pos,
+                            self.att.ptr,
+                            nq * 256,
+                            1,
+                            nq,
+                            nk,
+                            self.attn_part.ptr,
+                        )?;
                     } else {
                         self.k35.attn(s, self.qo.ptr, nq * 256, self.mix.ptr, full_w, kc, vc, pos, self.att.ptr, nq * 256, n as i32, nq, nk)?;
                     }
@@ -1076,5 +1328,4 @@ mod tests {
         assert_eq!(runtime_parameter(b, "BF16", "F32").unwrap(), 1.0f32.to_le_bytes());
         assert!(transform_bf16_bytes(&mut [0], None).is_err());
     }
-
 }

@@ -84,7 +84,8 @@ impl Router {
             Scoring::Sigmoid => FLAG_SIGMOID,
             Scoring::SqrtSoftplus => FLAG_SQRTSP,
             Scoring::Softmax => 0,
-        }) | (if self.renorm { FLAG_RENORM } else { 0 }) | (if self.bf16_logits { FLAG_BF16 } else { 0 })
+        }) | (if self.renorm { FLAG_RENORM } else { 0 })
+            | (if self.bf16_logits { FLAG_BF16 } else { 0 })
     }
 }
 
@@ -161,7 +162,13 @@ impl MoeCfg {
             return err(format!("a router over {} values: not divisible by 8", self.router_hidden));
         }
         if !self.hidden.is_multiple_of(64) || !self.inter.is_multiple_of(32) || !self.up_rows().is_multiple_of(64) {
-            return err(format!("experts of hidden size {} and intermediate size {}: the products take rows divisible by 64 ({} and {}) and columns divisible by 32", self.hidden, self.inter, self.hidden, self.up_rows()));
+            return err(format!(
+                "experts of hidden size {} and intermediate size {}: the products take rows divisible by 64 ({} and {}) and columns divisible by 32",
+                self.hidden,
+                self.inter,
+                self.hidden,
+                self.up_rows()
+            ));
         }
         if let Act::SwiGlu { limit: Some(l) } = self.act {
             if l.is_nan() || l <= 0.0 {
@@ -199,7 +206,9 @@ pub fn scale_bytes(tag: u32, steps: u64, ks: u64) -> u64 {
 
 /// An expert's bytes in a block layout of `tag`: its codes and its scales (a matrix of whole row blocks of 64 rows, columns a multiple of 32).
 pub fn expert_strides(tag: u32, rows: usize, cols: usize) -> Result<(u64, u64)> {
-    let Some(step) = block_step_bytes(tag) else { return err(format!("a layout of tag {tag}: experts are held end to end in the block layouts (Int6, Int5, Int4) alone")) };
+    let Some(step) = block_step_bytes(tag) else {
+        return err(format!("a layout of tag {tag}: experts are held end to end in the block layouts (Int6, Int5, Int4) alone"));
+    };
     if rows == 0 || !rows.is_multiple_of(64) || cols == 0 || !cols.is_multiple_of(32) {
         return err(format!("an expert of {rows} x {cols}: rows divisible by 64 and columns divisible by 32 are wanted"));
     }
@@ -227,7 +236,17 @@ impl Joined {
         let (mut data, mut scales) = (Vec::with_capacity(packs.len() * data_bytes as usize), Vec::with_capacity(packs.len() * scale_bytes as usize));
         for (i, p) in packs.iter().enumerate() {
             if p.tiers != p0.tiers || (p.rows, p.cols) != (p0.rows, p0.cols) || p.data.len() as u64 != data_bytes || p.blocks.len() as u64 != scale_bytes {
-                return err(format!("expert {i}: a pack of {} x {} (words {:x?}, {} + {} bytes), where expert 0's is {} x {} ({:x?}, {data_bytes} + {scale_bytes})", p.rows, p.cols, p.tiers, p.data.len(), p.blocks.len(), p0.rows, p0.cols, p0.tiers));
+                return err(format!(
+                    "expert {i}: a pack of {} x {} (words {:x?}, {} + {} bytes), where expert 0's is {} x {} ({:x?}, {data_bytes} + {scale_bytes})",
+                    p.rows,
+                    p.cols,
+                    p.tiers,
+                    p.data.len(),
+                    p.blocks.len(),
+                    p0.rows,
+                    p0.cols,
+                    p0.tiers
+                ));
             }
             data.extend_from_slice(&p.data);
             scales.extend_from_slice(&p.blocks);
@@ -244,7 +263,14 @@ impl Joined {
         let tag = p.tiers[0] >> 24;
         let (data_bytes, scale_bytes) = expert_strides(tag, rows, p.cols)?;
         if p.data.len() as u64 != data_bytes * experts as u64 || p.blocks.len() as u64 != scale_bytes * experts as u64 {
-            return err(format!("a pack of {} + {} bytes, where {experts} experts of {rows} x {} take {} + {}", p.data.len(), p.blocks.len(), p.cols, data_bytes * experts as u64, scale_bytes * experts as u64));
+            return err(format!(
+                "a pack of {} + {} bytes, where {experts} experts of {rows} x {} take {} + {}",
+                p.data.len(),
+                p.blocks.len(),
+                p.cols,
+                data_bytes * experts as u64,
+                scale_bytes * experts as u64
+            ));
         }
         Ok(Joined { tag, tiers: p.tiers, experts, rows, cols: p.cols, data: p.data.clone(), scales: p.blocks.clone() })
     }
@@ -288,7 +314,19 @@ impl ExpertStack {
             Words::Tiered { tiers, .. } => tiers[0] >> 24,
             Words::Twelve { .. } => 0,
         };
-        Ok(ExpertStack { pack: p.pack, experts, slots: experts, rows: rows_all / experts, cols, tag, data_stride: 0, scale_stride: 0, bytes: p.bytes, tp_rows: 0, _bufs: Keep::Pack(p) })
+        Ok(ExpertStack {
+            pack: p.pack,
+            experts,
+            slots: experts,
+            rows: rows_all / experts,
+            cols,
+            tag,
+            data_stride: 0,
+            scale_stride: 0,
+            bytes: p.bytes,
+            tp_rows: 0,
+            _bufs: Keep::Pack(p),
+        })
     }
 
     /// No experts' buffers, the shape alone: a layer whose experts are held in another format (`MoeLayer::f8`).
@@ -309,7 +347,13 @@ impl ExpertStack {
     pub fn from_buffers(tag: u32, tiers: [u32; 3], experts: usize, rows: usize, cols: usize, data: Buf, scales: Buf) -> Result<ExpertStack> {
         let (data_stride, scale_stride) = expert_strides(tag, rows, cols)?;
         if tiers[0] >> 24 != tag || data.bytes as u64 != data_stride * experts as u64 || scales.bytes as u64 != scale_stride * experts as u64 {
-            return err(format!("{experts} experts of {rows} x {cols} in the layout of tag {tag} take {} + {} bytes: {} + {} are given", data_stride * experts as u64, scale_stride * experts as u64, data.bytes, scales.bytes));
+            return err(format!(
+                "{experts} experts of {rows} x {cols} in the layout of tag {tag} take {} + {} bytes: {} + {} are given",
+                data_stride * experts as u64,
+                scale_stride * experts as u64,
+                data.bytes,
+                scales.bytes
+            ));
         }
         let pack = Pack { data: data.ptr, words: Words::Tiered { blocks: scales.ptr, block_base: 0, tiers }, rows: (experts * rows) as i64, cols: cols as i64 };
         let bytes = data.bytes + scales.bytes;
@@ -331,7 +375,11 @@ impl ExpertStack {
 
     /// An expert's whole rows: `tp_rows` where the stack holds slices of them, else its own.
     pub fn whole_rows(&self) -> usize {
-        if self.tp_rows > 0 { self.tp_rows } else { self.rows }
+        if self.tp_rows > 0 {
+            self.tp_rows
+        } else {
+            self.rows
+        }
     }
 
     /// The addresses of the codes and of the scales (of the first expert's, or of the first place).
@@ -344,7 +392,12 @@ impl ExpertStack {
     pub fn expert(&self, e: usize) -> Pack {
         assert!(self.data_stride > 0, "a lossless stack's experts are not at fixed strides");
         let Words::Tiered { blocks, block_base, tiers } = self.pack.words else { unreachable!("an ExpertStack holds a block layout") };
-        Pack { data: self.pack.data + e as u64 * self.data_stride, words: Words::Tiered { blocks: blocks + e as u64 * self.scale_stride, block_base, tiers }, rows: self.rows as i64, cols: self.cols as i64 }
+        Pack {
+            data: self.pack.data + e as u64 * self.data_stride,
+            words: Words::Tiered { blocks: blocks + e as u64 * self.scale_stride, block_base, tiers },
+            rows: self.rows as i64,
+            cols: self.cols as i64,
+        }
     }
 }
 
@@ -529,7 +582,12 @@ impl MoeLayer {
         let (e, hidden, inter, up_rows) = (cfg.experts, cfg.hidden, cfg.inter, cfg.up_rows());
         let shape = |s: &ExpertStack, what: &str, rows: usize, cols: usize| -> Result<()> {
             if (s.experts, s.whole_rows(), s.cols) != (e, rows, cols) {
-                return err(format!("the experts' {what}: {} experts of {} x {}, where the layer has {e} of {rows} x {cols}", s.experts, s.whole_rows(), s.cols));
+                return err(format!(
+                    "the experts' {what}: {} experts of {} x {}, where the layer has {e} of {rows} x {cols}",
+                    s.experts,
+                    s.whole_rows(),
+                    s.cols
+                ));
             }
             Ok(())
         };
@@ -541,7 +599,8 @@ impl MoeLayer {
             Down::Block(d) => shape(d, "second matrix", hidden, inter)?,
             rows => rows.check(&cfg)?,
         }
-        if w.router.bytes < e * cfg.router_hidden * 2 || w.bias.as_ref().is_some_and(|b| b.bytes < e * 4) || w.escale.as_ref().is_some_and(|b| b.bytes < e * 4) {
+        if w.router.bytes < e * cfg.router_hidden * 2 || w.bias.as_ref().is_some_and(|b| b.bytes < e * 4) || w.escale.as_ref().is_some_and(|b| b.bytes < e * 4)
+        {
             return err("the router's weights, bias or per-expert scale are smaller than the layer's experts take");
         }
         if cfg.router.scoring == Scoring::Softmax && w.bias.is_some() {
@@ -549,7 +608,12 @@ impl MoeLayer {
         }
         if let Some(sx) = &shared {
             let (rows, in_, out) = (if cfg.act.gated() { 2 * sx.inter } else { sx.inter }, sx.up.pack.cols as usize, sx.down.whole_rows());
-            if sx.up.whole_rows() != rows || sx.down.pack.cols as usize != sx.inter || !in_.is_multiple_of(8) || !out.is_multiple_of(8) || !sx.inter.is_multiple_of(8) {
+            if sx.up.whole_rows() != rows
+                || sx.down.pack.cols as usize != sx.inter
+                || !in_.is_multiple_of(8)
+                || !out.is_multiple_of(8)
+                || !sx.inter.is_multiple_of(8)
+            {
                 return err(format!("the shared expert's matrices {} x {} and {} x {}, where its intermediate size {} wants {rows} x (a width divisible by 8) and (a width divisible by 8) x {}", sx.up.pack.rows, in_, sx.down.pack.rows, sx.down.pack.cols, sx.inter, sx.inter));
             }
             if sx.gate.as_ref().is_some_and(|g| g.bytes < in_ * 2) {
@@ -562,7 +626,10 @@ impl MoeLayer {
     /// The shared expert's matrices in the FP8 format (`shared8`): the shapes of `shared`'s, which holds them alone.
     pub fn with_shared8(mut self, up: crate::f8::F8Mat, down: crate::f8::F8Mat) -> Result<MoeLayer> {
         let Some(sx) = &self.shared else { return err("FP8 shared expert matrices for a layer without a shared expert") };
-        if (up.whole_n(), up.k, down.whole_n(), down.k) != (sx.up.pack.rows as usize, sx.up.pack.cols as usize, sx.down.pack.rows as usize, sx.down.pack.cols as usize) || sx.up.bytes + sx.down.bytes != 0 {
+        if (up.whole_n(), up.k, down.whole_n(), down.k)
+            != (sx.up.pack.rows as usize, sx.up.pack.cols as usize, sx.down.pack.rows as usize, sx.down.pack.cols as usize)
+            || sx.up.bytes + sx.down.bytes != 0
+        {
             return err("the FP8 shared expert's matrices and the shapes held beside them differ");
         }
         self.shared8 = Some((up, down));
@@ -599,9 +666,25 @@ impl MoeLayer {
         // (a stack of this GPU's slices of each expert's rows: the whole experts' shapes, src/dynamic/tp.rs)
         let whole = |m: &crate::f8::F8Mat| if m.tp_rows > 0 { e * m.tp_rows } else { m.n };
         if f8.experts != e || (whole(&f8.up), f8.up.k, whole(&f8.down), f8.down.k) != (e * up_rows, cfg.hidden, e * cfg.hidden, cfg.inter) {
-            return err(format!("FP8 experts of {} x {} and {} x {}, where the layer's {e} take {} x {} and {} x {}", whole(&f8.up), f8.up.k, whole(&f8.down), f8.down.k, e * up_rows, cfg.hidden, e * cfg.hidden, cfg.inter));
+            return err(format!(
+                "FP8 experts of {} x {} and {} x {}, where the layer's {e} take {} x {} and {} x {}",
+                whole(&f8.up),
+                f8.up.k,
+                whole(&f8.down),
+                f8.down.k,
+                e * up_rows,
+                cfg.hidden,
+                e * cfg.hidden,
+                cfg.inter
+            ));
         }
-        let w = MoeWeights { router, bias, escale: None, up: ExpertStack::shape_only(e, up_rows, cfg.hidden), down: Down::Block(ExpertStack::shape_only(e, cfg.hidden, cfg.inter)) };
+        let w = MoeWeights {
+            router,
+            bias,
+            escale: None,
+            up: ExpertStack::shape_only(e, up_rows, cfg.hidden),
+            down: Down::Block(ExpertStack::shape_only(e, cfg.hidden, cfg.inter)),
+        };
         let mut l = MoeLayer::new(cfg, w, shared)?;
         l.f8 = Some(f8);
         Ok(l)
@@ -609,7 +692,11 @@ impl MoeLayer {
 
     /// Device bytes of the layer's weights.
     pub fn weights_bytes(&self) -> usize {
-        self.w.router.bytes + self.w.bias.as_ref().map_or(0, |b| b.bytes) + self.w.escale.as_ref().map_or(0, |b| b.bytes) + self.w.up.bytes + self.w.down.bytes()
+        self.w.router.bytes
+            + self.w.bias.as_ref().map_or(0, |b| b.bytes)
+            + self.w.escale.as_ref().map_or(0, |b| b.bytes)
+            + self.w.up.bytes
+            + self.w.down.bytes()
             + self.shared.as_ref().map_or(0, |s| s.up.bytes + s.down.bytes + s.gate.as_ref().map_or(0, |g| g.bytes))
             + self.f8.as_ref().map_or(0, |f| f.up.bytes + f.down.bytes)
             + self.shared8.as_ref().map_or(0, |(u, d)| u.bytes + d.bytes)
@@ -693,8 +780,14 @@ impl MoeLayer {
             return Ok(());
         }
         // (calls that share a layer's pairs keep the sums of the earlier ones in the workspace, where a first product with K split over blocks would write its parts; the sparse second product keeps them in its own)
-        if calls > 1 && matches!(self.w.down, Down::Block(_)) && lib.moe_workspace(self.w.up.pack.is_twelve(), e, self.w.up.rows as i64, c.hidden as i64, tt, k, c.fused(), false)? > 0 {
-            return err(format!("{t} tokens of {} choices: the first product needs a workspace, which the sums of a layer's earlier calls are kept in", c.router.top_k));
+        if calls > 1
+            && matches!(self.w.down, Down::Block(_))
+            && lib.moe_workspace(self.w.up.pack.is_twelve(), e, self.w.up.rows as i64, c.hidden as i64, tt, k, c.fused(), false)? > 0
+        {
+            return err(format!(
+                "{t} tokens of {} choices: the first product needs a workspace, which the sums of a layer's earlier calls are kept in",
+                c.router.top_k
+            ));
         }
         lib.moe_way(way.unwrap_or(sc.ids.ptr), pairs as i64, e, sc.plan.ptr, s)?;
         moe_tp(lib, &self.w.up, e, x, tt, k, true, sc.plan.ptr, c.fused(), 0, 0, sc.a.ptr, pairs, sc, s)?;
@@ -710,7 +803,9 @@ impl MoeLayer {
         match &self.w.down {
             // (the sum's pairs by their places where the store gives them in one call: a pair the host computes or leaves out, -1, is left out of it; over
             // several calls, the waves, by the router's choices: each call sums the rows of the earlier ones too)
-            Down::Block(d) => moe_tp(lib, d, e, rows, tt, k, false, sc.plan.ptr, 0, sc.wts.ptr, if calls > 1 { sc.ids.ptr } else { way.unwrap_or(sc.ids.ptr) }, y, t, sc, s),
+            Down::Block(d) => {
+                moe_tp(lib, d, e, rows, tt, k, false, sc.plan.ptr, 0, sc.wts.ptr, if calls > 1 { sc.ids.ptr } else { way.unwrap_or(sc.ids.ptr) }, y, t, sc, s)
+            }
             Down::Rows(_) if self.w.up.tp_rows > 0 => err("experts sliced across GPUs with a second matrix in a row layout"),
             Down::Rows(r) => sc.rk.down(s, c, r, rows, sc.plan.ptr, way.unwrap_or(sc.ids.ptr), sc.part.ptr, sc.part.bytes, t),
         }
@@ -760,7 +855,21 @@ impl MoeLayer {
     /// # Safety
     /// As `route`; `router`, `bias`, `post_w` and `inv` live device buffers of those sizes.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn forward_muse(&self, lib: &Lib, sc: &MoeScratch, s: Stream, h: u64, x: u64, t: usize, y: u64, router: u64, mult: f32, post_w: u64, eps: f32, inv: u64) -> Result<()> {
+    pub unsafe fn forward_muse(
+        &self,
+        lib: &Lib,
+        sc: &MoeScratch,
+        s: Stream,
+        h: u64,
+        x: u64,
+        t: usize,
+        y: u64,
+        router: u64,
+        mult: f32,
+        post_w: u64,
+        eps: f32,
+        inv: u64,
+    ) -> Result<()> {
         self.check_tokens(sc, t)?;
         if t == 0 {
             return Ok(());
@@ -786,7 +895,19 @@ impl MoeLayer {
     /// # Safety
     /// As `route`; `ones` and `hash`'s buffers live device buffers of those sizes.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn forward_release(&self, lib: &Lib, sc: &MoeScratch, s: Stream, h: u64, hq: u64, t: usize, y: u64, hash: Option<(u64, u64)>, ones: u64, fp8: bool) -> Result<()> {
+    pub unsafe fn forward_release(
+        &self,
+        lib: &Lib,
+        sc: &MoeScratch,
+        s: Stream,
+        h: u64,
+        hq: u64,
+        t: usize,
+        y: u64,
+        hash: Option<(u64, u64)>,
+        ones: u64,
+        fp8: bool,
+    ) -> Result<()> {
         self.check_tokens(sc, t)?;
         if t == 0 {
             return Ok(());
@@ -809,7 +930,9 @@ impl MoeLayer {
         }
         sc.k.logits(s, h, c.hidden, self.w.router.ptr, sc.logits.ptr, t, e, c.hidden)?;
         match hash {
-            Some((table, tok)) => launch!(sc.k.hash, [(t as u32).div_ceil(128), 1, 1], [128, 1, 1], s; sc.logits.ptr, table, tok, sc.ids.ptr, sc.wts.ptr, t as i32, e as i32, k as i32, c.router.scale)?,
+            Some((table, tok)) => {
+                launch!(sc.k.hash, [(t as u32).div_ceil(128), 1, 1], [128, 1, 1], s; sc.logits.ptr, table, tok, sc.ids.ptr, sc.wts.ptr, t as i32, e as i32, k as i32, c.router.scale)?
+            }
             None => sc.k.select(s, sc.logits.ptr, self.w.bias.as_ref().map_or(0, |b| b.ptr), 0, sc.ids.ptr, sc.wts.ptr, t, e, k, &c.router)?,
         }
         crate::tmark!(s, "moe: router");
@@ -840,7 +963,6 @@ impl MoeLayer {
         crate::tmark!(s, "moe: add");
         Ok(())
     }
-
 
     /// `shared_mlp` after its first product, given: gu [t, 2 inter] its gate's and up's values (a product the shared expert's first matrix was packed into
     /// with others: Kimi-K3's latent projection's), the activation and the second product into the scratch's `so`. A shared expert of a gated activation
@@ -932,7 +1054,23 @@ pub(crate) unsafe fn linear_tp(lib: &Lib, p: &PackBuf, x: u64, t: usize, y: u64,
 /// # Safety
 /// As `MoeLayer::route`.
 #[allow(clippy::too_many_arguments)]
-unsafe fn moe_tp(lib: &Lib, st: &ExpertStack, e: i64, x: u64, t: i64, k: i64, first: bool, plan: u64, act: i64, wts: u64, ids: u64, y: u64, rows: usize, sc: &MoeScratch, s: Stream) -> Result<()> {
+unsafe fn moe_tp(
+    lib: &Lib,
+    st: &ExpertStack,
+    e: i64,
+    x: u64,
+    t: i64,
+    k: i64,
+    first: bool,
+    plan: u64,
+    act: i64,
+    wts: u64,
+    ids: u64,
+    y: u64,
+    rows: usize,
+    sc: &MoeScratch,
+    s: Stream,
+) -> Result<()> {
     if st.tp_rows == 0 {
         return lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, y, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s);
     }
@@ -948,7 +1086,17 @@ unsafe fn moe_tp(lib: &Lib, st: &ExpertStack, e: i64, x: u64, t: i64, k: i64, fi
 /// # Safety
 /// As `MoeLayer::route`.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn route_with(c: &MoeCfg, router: &Buf, bias: Option<&Buf>, escale: Option<&Buf>, sc: &MoeScratch, s: Stream, x: u64, xs: usize, t: usize) -> Result<()> {
+pub unsafe fn route_with(
+    c: &MoeCfg,
+    router: &Buf,
+    bias: Option<&Buf>,
+    escale: Option<&Buf>,
+    sc: &MoeScratch,
+    s: Stream,
+    x: u64,
+    xs: usize,
+    t: usize,
+) -> Result<()> {
     if t > sc.max_tokens {
         return err(format!("{t} tokens, where the scratch is made for {}", sc.max_tokens));
     }
@@ -1124,7 +1272,9 @@ impl Sizes {
             z.cpu = z.cpu.max(max_tokens.min(CPU_TOKENS) * c.hidden * 4);
             // (the second product is the library's unless it is sparse)
             let sl = sh.slice.max(1);
-            for (rows, cols, act, weighted) in [(c.up_rows() / sl, c.hidden, fused, 0), (c.hidden / sl, c.inter, 0, 1)].into_iter().take(if sh.sparse { 1 } else { 2 }) {
+            for (rows, cols, act, weighted) in
+                [(c.up_rows() / sl, c.hidden, fused, 0), (c.hidden / sl, c.inter, 0, 1)].into_iter().take(if sh.sparse { 1 } else { 2 })
+            {
                 let key = [sh.twelve as i64, c.experts as i64, rows as i64, cols as i64, c.router.top_k as i64, act, weighted];
                 if !z.grouped.contains(&key) {
                     z.grouped.push(key);
@@ -1158,12 +1308,28 @@ impl MoeScratch {
         }
         let shapes: Vec<Shape> = layers
             .iter()
-            .map(|l| Shape { cfg: l.cfg, twelve: l.w.up.pack.is_twelve(), shared: l.shared.as_ref().map(|x| (x.inter, x.up.pack.cols as usize, x.down.whole_rows())), expert_rows: l.w.up.rows, sparse: matches!(l.w.down, Down::Rows(_)), slice: if l.w.up.tp_rows > 0 { l.w.up.tp_rows / l.w.up.rows } else { l.shared.as_ref().filter(|x| x.up.tp_rows > 0).map_or(1, |x| x.up.tp_rows / x.up.pack.rows as usize) } })
+            .map(|l| Shape {
+                cfg: l.cfg,
+                twelve: l.w.up.pack.is_twelve(),
+                shared: l.shared.as_ref().map(|x| (x.inter, x.up.pack.cols as usize, x.down.whole_rows())),
+                expert_rows: l.w.up.rows,
+                sparse: matches!(l.w.down, Down::Rows(_)),
+                slice: if l.w.up.tp_rows > 0 {
+                    l.w.up.tp_rows / l.w.up.rows
+                } else {
+                    l.shared.as_ref().filter(|x| x.up.tp_rows > 0).map_or(1, |x| x.up.tp_rows / x.up.pack.rows as usize)
+                },
+            })
             .collect();
         let (mut f8, mut beside) = (0, 0);
         for l in layers {
             if let Some(f) = &l.f8 {
-                f8 = f8.max(f.up.moe_workspace(lib, f.experts, max_tokens, l.cfg.router.top_k)?).max(f.down.moe_workspace(lib, f.experts, max_tokens, l.cfg.router.top_k)?);
+                f8 = f8.max(f.up.moe_workspace(lib, f.experts, max_tokens, l.cfg.router.top_k)?).max(f.down.moe_workspace(
+                    lib,
+                    f.experts,
+                    max_tokens,
+                    l.cfg.router.top_k,
+                )?);
             }
             if let Some((u, d)) = &l.shared8 {
                 for m in 1..=max_tokens.min(64) {
@@ -1175,15 +1341,28 @@ impl MoeScratch {
                 for m in 1..=max_tokens.min(BESIDE_TOKENS) {
                     beside = beside.max(match &l.shared8 {
                         Some((u, d)) => u.workspace(lib, m)?.max(d.workspace(lib, m)?),
-                        None => lib.linear_workspace(sx.up.pack.is_twelve(), sx.up.pack.rows, sx.up.pack.cols, m as i64)?.max(lib.linear_workspace(sx.down.pack.is_twelve(), sx.down.pack.rows, sx.down.pack.cols, m as i64)?),
+                        None => lib.linear_workspace(sx.up.pack.is_twelve(), sx.up.pack.rows, sx.up.pack.cols, m as i64)?.max(lib.linear_workspace(
+                            sx.down.pack.is_twelve(),
+                            sx.down.pack.rows,
+                            sx.down.pack.cols,
+                            m as i64,
+                        )?),
                     });
                 }
             }
         }
         let mut sc = MoeScratch::sized(dev, lib, &shapes, max_tokens, f8)?;
         // (a development build's GLYD_MOE_BESIDE=0: the shared expert after the routed ones, on the engine's stream)
-        if layers.iter().any(|l| l.shared.is_some() && matches!((l.cfg.act, &l.w.down), (Act::SwiGlu { limit: Some(_) }, Down::Block(_)))) && crate::tune!("GLYD_MOE_BESIDE").as_deref() != Some("0") {
-            sc.beside = Some(Beside { side: crate::dev::Side::new()?, fork: crate::dev::Ev::new()?, join: crate::dev::Ev::new()?, ws: Buf::zeroed(beside.max(16))?, done: Buf::zeroed(4 << 18)? });
+        if layers.iter().any(|l| l.shared.is_some() && matches!((l.cfg.act, &l.w.down), (Act::SwiGlu { limit: Some(_) }, Down::Block(_))))
+            && crate::tune!("GLYD_MOE_BESIDE").as_deref() != Some("0")
+        {
+            sc.beside = Some(Beside {
+                side: crate::dev::Side::new()?,
+                fork: crate::dev::Ev::new()?,
+                join: crate::dev::Ev::new()?,
+                ws: Buf::zeroed(beside.max(16))?,
+                done: Buf::zeroed(4 << 18)?,
+            });
         }
         Ok(sc)
     }
@@ -1266,7 +1445,27 @@ impl MoeScratch {
 
     /// Device bytes of the scratch.
     pub fn bytes(&self) -> usize {
-        [&self.logits, &self.ids, &self.wts, &self.plan, &self.way, &self.a, &self.h, &self.ws, &self.done, &self.part, &self.cpu, &self.sg, &self.sh, &self.so, &self.gate].iter().map(|b| b.bytes).sum::<usize>() + self.beside.as_ref().map_or(0, |b| b.ws.bytes + b.done.bytes)
+        [
+            &self.logits,
+            &self.ids,
+            &self.wts,
+            &self.plan,
+            &self.way,
+            &self.a,
+            &self.h,
+            &self.ws,
+            &self.done,
+            &self.part,
+            &self.cpu,
+            &self.sg,
+            &self.sh,
+            &self.so,
+            &self.gate,
+        ]
+        .iter()
+        .map(|b| b.bytes)
+        .sum::<usize>()
+            + self.beside.as_ref().map_or(0, |b| b.ws.bytes + b.done.bytes)
     }
 }
 
@@ -1286,7 +1485,8 @@ mod tests {
         // Gemma-4-26B-A4B: 8 of 128, hidden 2816, intermediate 704, GELU
         let gemma = MoeCfg { experts: 128, router_hidden: 2816, hidden: 2816, inter: 704, router: Router::softmax(8), act: Act::GeGlu };
         // GLM-5.3-Flash: 8 of 288, hidden 4096, intermediate 2048, sigmoid x 2.5, SwiGLU clamped at 10
-        let glm = MoeCfg { experts: 288, router_hidden: 4096, hidden: 4096, inter: 2048, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(10.0) } };
+        let glm =
+            MoeCfg { experts: 288, router_hidden: 4096, hidden: 4096, inter: 2048, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(10.0) } };
         // Nemotron 3 Super: 22 of 512, the router over 4096, the experts over a latent of 1024, intermediate 2688, sigmoid x 5, relu squared without a gate
         let nemo = MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 };
         for c in [qwen, gemma, glm, nemo] {
@@ -1382,7 +1582,12 @@ mod tests {
         // the tiered layout holds its steps in blocks of any length: its experts are not at strides
         assert!(expert_strides(2, 64, 64).is_err());
         assert!(expert_strides(INT5_TAG, 100, 64).is_err() && expert_strides(INT5_TAG, 64, 48).is_err());
-        assert!(expert_strides(INT4_TAG, 100, 64).is_err() && expert_strides(INT4_TAG, 64, 48).is_err() && expert_strides(glyd_gpu::pack::INT3_TAG, 64, 64).is_err(), "the three-bit layout is not held yet");
+        assert!(
+            expert_strides(INT4_TAG, 100, 64).is_err()
+                && expert_strides(INT4_TAG, 64, 48).is_err()
+                && expert_strides(glyd_gpu::pack::INT3_TAG, 64, 64).is_err(),
+            "the three-bit layout is not held yet"
+        );
     }
 
     /// The library's grouped products take the layouts this table holds: `glyd_gpu_mma_moe` (the products) and `glyd_gpu_mma_moe_unpack` (the experts back to bf16) each dispatch on every tag `block_step_bytes` knows
@@ -1400,8 +1605,14 @@ mod tests {
                 assert_eq!(f.contains(&format!("int{bits}_words(tiers, K, data, blocks, bad)")), held, "{head} and the {bits}-bit layout");
                 assert_eq!(f.contains(&format!("Int{bits}{{data, blocks}}")), held, "{head} and the {bits}-bit layout");
             }
-            assert!(block_step_bytes(FP4_TAG).is_some() && f.contains("fp4_words(tiers, K, data, blocks, bad)") && f.contains("Fp4{data, blocks}"), "{head} and the FP4 layout");
-            assert!(block_step_bytes(FP4R_TAG).is_some() && f.contains("fp4r_words(tiers, K, data, blocks, bad)") && f.contains("fp4r_fmt(data, blocks, K)"), "{head} and the FP4 layout with packed scales");
+            assert!(
+                block_step_bytes(FP4_TAG).is_some() && f.contains("fp4_words(tiers, K, data, blocks, bad)") && f.contains("Fp4{data, blocks}"),
+                "{head} and the FP4 layout"
+            );
+            assert!(
+                block_step_bytes(FP4R_TAG).is_some() && f.contains("fp4r_words(tiers, K, data, blocks, bad)") && f.contains("fp4r_fmt(data, blocks, K)"),
+                "{head} and the FP4 layout with packed scales"
+            );
         }
     }
 
@@ -1421,10 +1632,23 @@ mod tests {
     #[test]
     fn kernels_and_constants_are_in_the_source() {
         for name in ["moe_logits", "moe_select8", "moe_select16", "moe_select32", "moe_act", "moe_add"] {
-            assert!(SRC.contains(&format!("extern \"C\" __global__ void {name}(")) || SRC.contains(&format!(") {name}(")), "no kernel {name} in kernels/moe.cu");
+            assert!(
+                SRC.contains(&format!("extern \"C\" __global__ void {name}(")) || SRC.contains(&format!(") {name}(")),
+                "no kernel {name} in kernels/moe.cu"
+            );
         }
-        let define = |n: &str| -> Option<i32> { SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok()) };
-        for (n, v) in [("MOE_SIGMOID", FLAG_SIGMOID), ("MOE_RENORM", FLAG_RENORM), ("MOE_BF16", FLAG_BF16), ("MOE_SILU", ACT_SILU), ("MOE_GELU", ACT_GELU), ("MOE_RELU2", ACT_RELU2), ("MOE_SITU", ACT_SITU)] {
+        let define = |n: &str| -> Option<i32> {
+            SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok())
+        };
+        for (n, v) in [
+            ("MOE_SIGMOID", FLAG_SIGMOID),
+            ("MOE_RENORM", FLAG_RENORM),
+            ("MOE_BF16", FLAG_BF16),
+            ("MOE_SILU", ACT_SILU),
+            ("MOE_GELU", ACT_GELU),
+            ("MOE_RELU2", ACT_RELU2),
+            ("MOE_SITU", ACT_SITU),
+        ] {
             assert_eq!(define(n), Some(v), "{n}");
         }
         // the select kernels' registers a lane hold the experts they are chosen for
@@ -1434,8 +1658,29 @@ mod tests {
     /// The scratch is the largest layer's, not the layers' sum: forty layers of a model take what one takes; and the sizes of the four models' layers at a prompt chunk are what their shapes give.
     #[test]
     fn the_scratch_is_the_largest_layers_not_the_sum() {
-        let glm = Shape { cfg: MoeCfg { experts: 288, router_hidden: 4096, hidden: 4096, inter: 2048, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(10.0) } }, twelve: false, shared: Some((2048, 4096, 4096)), expert_rows: 4096, sparse: false, slice: 1 };
-        let nemo = Shape { cfg: MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 }, twelve: false, shared: Some((5376, 4096, 4096)), expert_rows: 2688, sparse: false, slice: 1 };
+        let glm = Shape {
+            cfg: MoeCfg {
+                experts: 288,
+                router_hidden: 4096,
+                hidden: 4096,
+                inter: 2048,
+                router: Router::sigmoid(8, 2.5),
+                act: Act::SwiGlu { limit: Some(10.0) },
+            },
+            twelve: false,
+            shared: Some((2048, 4096, 4096)),
+            expert_rows: 4096,
+            sparse: false,
+            slice: 1,
+        };
+        let nemo = Shape {
+            cfg: MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 },
+            twelve: false,
+            shared: Some((5376, 4096, 4096)),
+            expert_rows: 2688,
+            sparse: false,
+            slice: 1,
+        };
         let one = Sizes::of(&[glm], 2048);
         assert_eq!(Sizes::of(&[glm; 42], 2048), one, "42 layers of one shape");
         // GLM-5.3-Flash at 2,048 tokens: 16,384 pairs; the clamp is a kernel's: the first product's rows are 4,096 wide and the activation's 2,048

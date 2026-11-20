@@ -55,7 +55,14 @@ pub fn run(ind: &Path, outd: &Path) -> Result<()> {
         let (c, sn_) = crate::weights::rope_tables(m[5], 128, m[3] as usize);
         io(std::fs::write(outd.join("my_cos.bin"), crate::weights::as_bytes(&c)))?;
         io(std::fs::write(outd.join("my_sin.bin"), crate::weights::as_bytes(&sn_)))?;
-        let (qkv, qw, kw, cs, sn, pos) = (load(ind, "rope_qkv.bin")?, load(ind, "rope_qw.bin")?, load(ind, "rope_kw.bin")?, load(ind, "rope_cos.bin")?, load(ind, "rope_sin.bin")?, load(ind, "rope_pos.bin")?);
+        let (qkv, qw, kw, cs, sn, pos) = (
+            load(ind, "rope_qkv.bin")?,
+            load(ind, "rope_qw.bin")?,
+            load(ind, "rope_kw.bin")?,
+            load(ind, "rope_cos.bin")?,
+            load(ind, "rope_sin.bin")?,
+            load(ind, "rope_pos.bin")?,
+        );
         let (qo, ko) = (Buf::new(t as usize * nq as usize * 128 * 2)?, Buf::new(t as usize * nk as usize * 128 * 2)?);
         k.qk_norm_rope(s, qkv.ptr, (nq + 2 * nk) * 128, qw.ptr, kw.ptr, cs.ptr, sn.ptr, pos.ptr, qo.ptr, ko.ptr, t, nq, nk, eps)?;
         dev.sync()?;
@@ -79,7 +86,11 @@ pub fn run(ind: &Path, outd: &Path) -> Result<()> {
 /// bf16 bits as the number that grows with the value (-0 and +0 the same), as the kernel orders them.
 fn key(b: u16) -> u32 {
     let b = if b == 0x8000 { 0 } else { b as u32 };
-    if b & 0x8000 != 0 { !b & 0xFFFF } else { b | 0x8000 }
+    if b & 0x8000 != 0 {
+        !b & 0xFFFF
+    } else {
+        b | 0x8000
+    }
 }
 
 /// The largest 64 of a row's bf16 values by the order the sampler takes its candidates in: largest first, equal values by the smaller index.
@@ -202,7 +213,10 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
                 worst = worst.max(rel);
                 if rel.is_nan() || rel >= 2e-6 {
                     off += 1;
-                    println!("DIFFERENT: {name}, {label}, temperature {t}: the sum of the exponentials is {} on the host, {} on the GPU ({rel:.2e} apart)", want, got[i]);
+                    println!(
+                        "DIFFERENT: {name}, {label}, temperature {t}: the sum of the exponentials is {} on the host, {} on the GPU ({rel:.2e} apart)",
+                        want, got[i]
+                    );
                 }
             }
         }
@@ -223,7 +237,10 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
         }
         t.stop(dev.stream)? / 50.0
     };
-    println!("top-64 kernel: {checked} rows of {} shapes checked against the host's order, {bad} differ; {ms:.3} ms for a step's {rows} rows of {v} logits", 10);
+    println!(
+        "top-64 kernel: {checked} rows of {} shapes checked against the host's order, {bad} differ; {ms:.3} ms for a step's {rows} rows of {v} logits",
+        10
+    );
     // the sum of the exponentials: a row of Nemotron 3 Super's vocabulary and of Qwen3.5's
     let mut times = Vec::new();
     for v in [131_072usize, 248_320] {

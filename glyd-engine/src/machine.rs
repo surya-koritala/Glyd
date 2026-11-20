@@ -103,7 +103,10 @@ fn refusal_on(table: &[(&str, (i32, i32))], archs: &[&str], g: &Gpu, arch: &str,
         ));
     }
     if !archs.contains(&arch) {
-        return Some(cannot(format!("this engine has not run on {arch} computers yet ({})", g.name), format!("It runs on {} computers so far; vLLM runs the model here", archs.join(" and "))));
+        return Some(cannot(
+            format!("this engine has not run on {arch} computers yet ({})", g.name),
+            format!("It runs on {} computers so far; vLLM runs the model here", archs.join(" and ")),
+        ));
     }
     if !asked && !table.iter().any(|(_, cc)| *cc == g.cc) {
         return Some(cannot(
@@ -113,7 +116,11 @@ fn refusal_on(table: &[(&str, (i32, i32))], archs: &[&str], g: &Gpu, arch: &str,
     }
     if g.driver < DRIVER_MIN {
         return Some(cannot(
-            format!("the NVIDIA driver here runs CUDA {}.{}, and this engine's kernels need CUDA 13 (driver 580 or newer)", g.driver / 1000, g.driver % 1000 / 10),
+            format!(
+                "the NVIDIA driver here runs CUDA {}.{}, and this engine's kernels need CUDA 13 (driver 580 or newer)",
+                g.driver / 1000,
+                g.driver % 1000 / 10
+            ),
             "Update the NVIDIA driver to 580 or newer (https://www.nvidia.com/drivers), or run the model with vLLM",
         ));
     }
@@ -132,10 +139,16 @@ fn not_measured(gpu: &str, words: &[&str]) -> String {
 /// Why the model's shape does not fit the engine's KV cache, or None: its attention heads take 128 values, and up to `MAX_GROUP` query heads share a KV head.
 pub fn config_refusal(name: &str, c: &Config) -> Option<Refusal> {
     if c.head_dim != 128 {
-        return Some(cannot(format!("{name}: its attention heads have {} values, and the engine's KV cache takes 128", c.head_dim), "Other models run with vLLM"));
+        return Some(cannot(
+            format!("{name}: its attention heads have {} values, and the engine's KV cache takes 128", c.head_dim),
+            "Other models run with vLLM",
+        ));
     }
     if c.kv_heads == 0 || !c.heads.is_multiple_of(c.kv_heads) || c.heads / c.kv_heads > MAX_GROUP {
-        return Some(cannot(format!("{name} has {} query heads to {} KV heads, and the engine takes up to {MAX_GROUP} to one", c.heads, c.kv_heads), "Other models run with vLLM"));
+        return Some(cannot(
+            format!("{name} has {} query heads to {} KV heads, and the engine takes up to {MAX_GROUP} to one", c.heads, c.kv_heads),
+            "Other models run with vLLM",
+        ));
     }
     None
 }
@@ -158,12 +171,19 @@ pub fn disk_refusal(name: &str, models: Option<u64>, cache: Option<u64>, same: b
     let short = |free: Option<u64>, need: u64| free.filter(|&f| need > 0 && f < need + SPARE);
     if same {
         let free = models.or(cache);
-        return short(free, download + pack).map(|f| cannot(format!("the disk has {} left, and the first run of {name} writes {} (the download and the packed copy)", gb(f), gb(download + pack)), fix));
+        return short(free, download + pack).map(|f| {
+            cannot(format!("the disk has {} left, and the first run of {name} writes {} (the download and the packed copy)", gb(f), gb(download + pack)), fix)
+        });
     }
     if let Some(f) = short(models, download) {
         return Some(cannot(format!("the disk holding the downloaded models has {} left, and {name} takes {} to download", gb(f), gb(download)), fix));
     }
-    short(cache, pack).map(|f| cannot(format!("the disk holding the engine's cache has {} left, and the packed copy of {name} takes {}", gb(f), gb(pack)), "Free some space, or put the cache on another drive: GLYD_CACHE=/path/on/that/drive"))
+    short(cache, pack).map(|f| {
+        cannot(
+            format!("the disk holding the engine's cache has {} left, and the packed copy of {name} takes {}", gb(f), gb(pack)),
+            "Free some space, or put the cache on another drive: GLYD_CACHE=/path/on/that/drive",
+        )
+    })
 }
 
 #[cfg(test)]
@@ -178,7 +198,20 @@ mod tests {
     }
 
     fn qwen3_8b() -> Config {
-        Config { hidden: 4096, layers: 36, heads: 32, kv_heads: 8, head_dim: 128, inter: 12288, vocab: 151936, eps: 1e-6, rope_theta: 1e6, max_pos: 40960, tie: false, eos: vec![] }
+        Config {
+            hidden: 4096,
+            layers: 36,
+            heads: 32,
+            kv_heads: 8,
+            head_dim: 128,
+            inter: 12288,
+            vocab: 151936,
+            eps: 1e-6,
+            rope_theta: 1e6,
+            max_pos: 40960,
+            tie: false,
+            eos: vec![],
+        }
     }
 
     #[test]
@@ -254,7 +287,10 @@ mod tests {
                 continue; // (a GPU the measurements added is the case that is meant)
             }
             let r = gpu_refusal(&g, "x86_64", false).unwrap_or_else(|| panic!("{name} was not refused"));
-            assert!(r.code == 3 && r.what.contains(name) && r.what.contains("measured at least as fast as vLLM") && r.fix == "vLLM runs the model on this GPU", "{r:?}");
+            assert!(
+                r.code == 3 && r.what.contains(name) && r.what.contains("measured at least as fast as vLLM") && r.fix == "vLLM runs the model on this GPU",
+                "{r:?}"
+            );
         }
         // an empty list: the bar first, for every kind of GPU and computer, and no list in the words
         for (g, arch) in [
@@ -267,7 +303,12 @@ mod tests {
             (gpu("Tesla T4", (7, 5), 15, 13000), "x86_64"),
         ] {
             let r = refusal_on(&[], ARCHS, &g, arch, false).unwrap();
-            assert_eq!((r.code, r.what.as_str()), (3, format!("{} is not a GPU the engine is measured at least as fast as vLLM on", g.name).as_str()), "{} {arch}", g.name);
+            assert_eq!(
+                (r.code, r.what.as_str()),
+                (3, format!("{} is not a GPU the engine is measured at least as fast as vLLM on", g.name).as_str()),
+                "{} {arch}",
+                g.name
+            );
             assert_eq!(r.fix, "vLLM runs the model on this GPU");
         }
         // and with a list, the bar is the last thing asked of a GPU that has run, and says where the engine is measured

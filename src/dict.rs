@@ -143,7 +143,6 @@ impl Dict {
         &self.content[..self.content.len() - CONTENT_PAD]
     }
 
-
     pub fn id(&self) -> u32 {
         self.id
     }

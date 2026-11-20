@@ -8,10 +8,10 @@
 //! (no alignment is asked there; the same reads are made), and a file system that takes no direct reads (tmpfs, some network and overlay file systems) is read as any file is, each range's pages dropped from the cache after
 //! the read (`posix_fadvise` DONTNEED, Linux's). NVMe wants a queue of reads to give its speed, not one at a time: `Pool` is a set of threads that live as long as the process and take the reads of a call (16 of them).
 
+use crate::os::FileExt;
 use std::alloc::{alloc, dealloc, Layout};
 use std::fs::File;
 use std::io;
-use crate::os::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
@@ -118,7 +118,8 @@ impl DirectFile {
         }
         let (skip, room) = loop {
             let aligned = self.aligned();
-            let (start, end) = if aligned { (offset & !(ALIGN as u64 - 1), (offset + len as u64).next_multiple_of(ALIGN as u64)) } else { (offset, offset + len as u64) };
+            let (start, end) =
+                if aligned { (offset & !(ALIGN as u64 - 1), (offset + len as u64).next_multiple_of(ALIGN as u64)) } else { (offset, offset + len as u64) };
             let (skip, room) = ((offset - start) as usize, (end - start) as usize);
             if self.fill(bounce.reserve(room)?, start, skip + len, aligned)? {
                 if !aligned {
@@ -162,12 +163,20 @@ impl DirectFile {
         let mut got = 0usize;
         while got < need {
             match file.read_at(&mut buf[got..], start + got as u64) {
-                Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("{}: the file ends at {}, {} bytes before the end of the range read", self.path.display(), start + got as u64, need - got))),
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!("{}: the file ends at {}, {} bytes before the end of the range read", self.path.display(), start + got as u64, need - got),
+                    ))
+                }
                 Ok(n) => {
                     got += n;
                     // (a direct read goes on from a whole block: a short read that ends inside one is the file's end, which is short of the range)
                     if aligned && got < need && !got.is_multiple_of(ALIGN) {
-                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("{}: the file ends at {}, {} bytes before the end of the range read", self.path.display(), start + got as u64, need - got)));
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            format!("{}: the file ends at {}, {} bytes before the end of the range read", self.path.display(), start + got as u64, need - got),
+                        ));
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -384,7 +393,17 @@ mod tests {
         std::fs::write(d.join("f"), &data).unwrap();
         let f = DirectFile::open(&d.join("f")).unwrap();
         let mut bounce = Aligned::new();
-        for (off, len) in [(0usize, 1usize), (1, 4095), (4095, 2), (4096, 4096), (5, 1_000_000), (123_457, 2_494_464 / 2), (data.len() - 7, 7), (data.len() - 4097, 4097), (0, data.len())] {
+        for (off, len) in [
+            (0usize, 1usize),
+            (1, 4095),
+            (4095, 2),
+            (4096, 4096),
+            (5, 1_000_000),
+            (123_457, 2_494_464 / 2),
+            (data.len() - 7, 7),
+            (data.len() - 4097, 4097),
+            (0, data.len()),
+        ] {
             assert_eq!(f.read_span(off as u64, len, &mut bounce).unwrap(), &data[off..off + len], "{len} bytes at {off}");
         }
         for _ in 0..300 {

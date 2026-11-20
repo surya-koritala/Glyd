@@ -101,7 +101,17 @@ fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Rejected
     }
     let line = String::from_utf8_lossy(&buf).into_owned();
     let mut it = line.split_whitespace();
-    let mut h = Head { method: it.next().unwrap_or("").to_string(), path: it.next().unwrap_or("").to_string(), len: 0, expect: false, auth: None, host: String::new(), origin: String::new(), ask_method: None, ask_headers: None };
+    let mut h = Head {
+        method: it.next().unwrap_or("").to_string(),
+        path: it.next().unwrap_or("").to_string(),
+        len: 0,
+        expect: false,
+        auth: None,
+        host: String::new(),
+        origin: String::new(),
+        ask_method: None,
+        ask_headers: None,
+    };
     let mut headers = 0;
     while head_line(r, &mut budget, &mut buf)? && buf != b"\r\n" && buf != b"\n" {
         headers += 1;
@@ -182,7 +192,11 @@ fn respond(s: &mut TcpStream, code: u16, ctype: &str, body: &[u8]) {
 
 /// `respond` with more header lines (each ending in CRLF).
 fn respond_with(s: &mut TcpStream, code: u16, ctype: &str, extra: &str, body: &[u8]) {
-    let head = format!("HTTP/1.1 {code} {}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n", status_text(code), body.len());
+    let head = format!(
+        "HTTP/1.1 {code} {}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n",
+        status_text(code),
+        body.len()
+    );
     if s.write_all(head.as_bytes()).is_ok() {
         s.write_all(body).ok();
     }
@@ -230,7 +244,10 @@ fn py_repr(s: &str, n: usize) -> String {
 /// the Host is another page's script (403, a preflight too). A request with no Host or no Origin is not refused for the missing one (curl and the OpenAI libraries send no Origin).
 pub fn refusal(host: &str, origin: &str) -> Option<(u16, String)> {
     if !host.is_empty() && !LOOPBACK.contains(&hostname(host).as_str()) {
-        return Some((421, format!("this server answers to localhost, 127.0.0.1 and [::1], not to {} (glyd serve --host sets another address)", py_repr(host, 80))));
+        return Some((
+            421,
+            format!("this server answers to localhost, 127.0.0.1 and [::1], not to {} (glyd serve --host sets another address)", py_repr(host, 80)),
+        ));
     }
     if !origin.is_empty() && origin.to_lowercase() != format!("http://{}", host.trim().to_lowercase()) {
         return Some((403, format!("this server answers to its own page, not to a script from {} (to let a web app of your own in: glyd serve MODEL --host 127.0.0.1 turns these checks off for every origin; GLYD_ENGINE=0 glyd serve MODEL --host 127.0.0.1 -- --allowed-origins '[\"http://localhost:5173\"]' keeps vLLM's limit to the origin named)", py_repr(origin, 80))));
@@ -270,7 +287,11 @@ fn preflight(s: &mut TcpStream, local_only: bool, port: u16, origin: &str, metho
     }
     let mut extra = format!("Access-Control-Allow-Methods: {}\r\nAccess-Control-Max-Age: 600\r\n", METHODS.join(", "));
     if allowed {
-        extra.push_str(&if local_only { format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n") } else { "Access-Control-Allow-Origin: *\r\n".to_string() });
+        extra.push_str(&if local_only {
+            format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n")
+        } else {
+            "Access-Control-Allow-Origin: *\r\n".to_string()
+        });
     }
     if let Some(h) = headers {
         extra.push_str(&format!("Access-Control-Allow-Headers: {h}\r\n"));
@@ -329,7 +350,11 @@ pub static STANDALONE: AtomicBool = AtomicBool::new(false);
 
 /// A refusal's words; where the server runs alone, without the notes that point at vLLM.
 fn said(msg: &str) -> String {
-    if STANDALONE.load(Ordering::Relaxed) { without_vllm(msg) } else { msg.to_string() }
+    if STANDALONE.load(Ordering::Relaxed) {
+        without_vllm(msg)
+    } else {
+        msg.to_string()
+    }
 }
 
 /// A message without its notes in brackets that point at vLLM (`GLYD_ENGINE=0 ...`).
@@ -520,7 +545,8 @@ const NOT_DONE: &[(&str, &str)] = &[
 ];
 
 /// The fields of constrained decoding (a grammar, a JSON schema, a regular expression, a choice): not done yet.
-const CONSTRAINED: &[&str] = &["structured_outputs", "guided_json", "guided_regex", "guided_choice", "guided_grammar", "guided_decoding_backend", "guided_whitespace_pattern"];
+const CONSTRAINED: &[&str] =
+    &["structured_outputs", "guided_json", "guided_regex", "guided_choice", "guided_grammar", "guided_decoding_backend", "guided_whitespace_pattern"];
 
 /// What an engine that runs one sequence at a time (`work_gen`'s: a level's) does not do besides NOT_DONE, as NOT_DONE lists it: it gives no log-probabilities, and no least length (`min_tokens`).
 pub const ONE_AT_A_TIME: &[(&str, &str)] = &[("logprobs", "false"), ("min_tokens", "0")];
@@ -533,7 +559,12 @@ fn asked(v: &Value, name: &str, default: &str) -> bool {
 /// What a request asks for that this server does not do, said instead of ignored (a client that asks for a JSON schema, a beam search or the prompt's log-probabilities and gets none of them would go on as if it had).
 pub fn unsupported(v: &Value) -> Option<String> {
     let yet = "is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)";
-    if let Some(t) = v.get("response_format").and_then(|r| r.get("type")).and_then(Value::as_str).filter(|t| *t != "text" && json_rule(v, STANDALONE.load(Ordering::Relaxed)).is_none()) {
+    if let Some(t) = v
+        .get("response_format")
+        .and_then(|r| r.get("type"))
+        .and_then(Value::as_str)
+        .filter(|t| *t != "text" && json_rule(v, STANDALONE.load(Ordering::Relaxed)).is_none())
+    {
         return Some(format!("response_format of type {t} (constrained decoding) {yet}"));
     }
     for name in CONSTRAINED {
@@ -586,10 +617,12 @@ struct Api {
 fn int_field(v: &Value, k: &str) -> std::result::Result<Option<i64>, String> {
     match v.get(k) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) => match n.parse::<i64>().ok().or_else(|| n.parse::<f64>().ok().filter(|f| f.fract() == 0.0 && f.abs() < 9e18).map(|f| f as i64)) {
-            Some(i) => Ok(Some(i)),
-            None => Err(format!("`{k}` must be an integer.")),
-        },
+        Some(Value::Number(n)) => {
+            match n.parse::<i64>().ok().or_else(|| n.parse::<f64>().ok().filter(|f| f.fract() == 0.0 && f.abs() < 9e18).map(|f| f as i64)) {
+                Some(i) => Ok(Some(i)),
+                None => Err(format!("`{k}` must be an integer.")),
+            }
+        }
         Some(_) => Err(format!("`{k}` must be an integer.")),
     }
 }
@@ -749,14 +782,18 @@ fn api_of(v: &Value, chat: bool, vocab: usize) -> std::result::Result<Api, Strin
         return Err(format!("n must be at least 1, got {n}."));
     }
     if n > MAX_ROWS as i64 {
-        return Err(format!("n must be at most {MAX_ROWS}, got {n}. (This engine runs up to {MAX_ROWS} sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"));
+        return Err(format!(
+            "n must be at most {MAX_ROWS}, got {n}. (This engine runs up to {MAX_ROWS} sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"
+        ));
     }
     check_values(v, vocab)?;
     if chat && v.get("echo").and_then(Value::as_bool) == Some(true) {
         return Err("echo of a chat reply is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)".to_string());
     }
     if !chat && v.get("echo").and_then(Value::as_bool) == Some(true) && logprobs_asked(v, false, vocab)?.is_some() {
-        return Err("logprobs with echo (the prompt's log-probabilities too) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)".to_string());
+        return Err(
+            "logprobs with echo (the prompt's log-probabilities too) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)".to_string()
+        );
     }
     let hide_reasoning = v.get("include_reasoning").and_then(Value::as_bool) == Some(false);
     let logprobs = logprobs_asked(v, chat, vocab)?;
@@ -806,14 +843,21 @@ fn prompts_of(sh: &Shared, v: &Value, chat: bool, api: &Api, r: &Request) -> Res
         let ids: Option<Vec<u32>> = a.iter().map(|x| x.as_u64().filter(|&t| (t as usize) < sh.vocab).map(|t| t as u32)).collect();
         ids.ok_or_else(|| Error(format!("a prompt of token ids with one that is not a token of the vocabulary (size {})", sh.vocab)))
     };
-    let from_text = |t: &str| -> Result<Prompt> { Ok(Prompt { ids: sh.tok.encode_with(t, special)?, text: t.to_string(), in_thinking: false, prefix: String::new(), images: Vec::new() }) };
-    let from_ids = |ids: Vec<u32>| -> Result<Prompt> { Ok(Prompt { text: sh.tok.decode(&ids)?, ids, in_thinking: false, prefix: String::new(), images: Vec::new() }) };
+    let from_text = |t: &str| -> Result<Prompt> {
+        Ok(Prompt { ids: sh.tok.encode_with(t, special)?, text: t.to_string(), in_thinking: false, prefix: String::new(), images: Vec::new() })
+    };
+    let from_ids =
+        |ids: Vec<u32>| -> Result<Prompt> { Ok(Prompt { text: sh.tok.decode(&ids)?, ids, in_thinking: false, prefix: String::new(), images: Vec::new() }) };
     let wrong = || Error("`prompt` must be a string, a list of strings, a list of token ids or a list of lists of token ids".into());
     let prompts = match v.get("prompt") {
         Some(Value::String(t)) if !t.is_empty() => vec![from_text(t)?],
         Some(Value::Array(a)) if !a.is_empty() && a.iter().all(|x| matches!(x, Value::Number(_))) => vec![from_ids(ids_of_list(a)?)?],
-        Some(Value::Array(a)) if !a.is_empty() && a.iter().all(|x| matches!(x, Value::String(_))) => a.iter().filter_map(Value::as_str).map(from_text).collect::<Result<_>>()?,
-        Some(Value::Array(a)) if !a.is_empty() && a.iter().all(|x| matches!(x, Value::Array(l) if !l.is_empty())) => a.iter().filter_map(Value::as_array).map(|l| from_ids(ids_of_list(l)?)).collect::<Result<_>>()?,
+        Some(Value::Array(a)) if !a.is_empty() && a.iter().all(|x| matches!(x, Value::String(_))) => {
+            a.iter().filter_map(Value::as_str).map(from_text).collect::<Result<_>>()?
+        }
+        Some(Value::Array(a)) if !a.is_empty() && a.iter().all(|x| matches!(x, Value::Array(l) if !l.is_empty())) => {
+            a.iter().filter_map(Value::as_array).map(|l| from_ids(ids_of_list(l)?)).collect::<Result<_>>()?
+        }
         None | Some(Value::Null) | Some(Value::String(_)) => return Err(empty()),
         Some(Value::Array(a)) if a.is_empty() => return Err(empty()),
         _ => return Err(wrong()),
@@ -830,9 +874,15 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
     let Some(c) = sh.chat.as_ref() else {
         // (a model with no template: lines of `role: text`)
         if api.tools.is_some() {
-            return err("this model has no chat template, so it has no way to be told of tools (GLYD_ENGINE=0 runs vLLM, which answers the request without them)");
+            return err(
+                "this model has no chat template, so it has no way to be told of tools (GLYD_ENGINE=0 runs vLLM, which answers the request without them)",
+            );
         }
-        let mut t = messages.iter().map(|m| format!("{}: {}", m.get("role").and_then(Value::as_str).unwrap_or(""), m.get("content").and_then(Value::as_str).unwrap_or(""))).collect::<Vec<_>>().join("\n");
+        let mut t = messages
+            .iter()
+            .map(|m| format!("{}: {}", m.get("role").and_then(Value::as_str).unwrap_or(""), m.get("content").and_then(Value::as_str).unwrap_or("")))
+            .collect::<Vec<_>>()
+            .join("\n");
         t.push_str("\nassistant:");
         return Ok((t, false, String::new(), urls));
     };
@@ -847,7 +897,9 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
         }
         o.tools = Some(t.list.clone());
         // (a call required of one tool is a call of that tool: else the model may name one it was not given)
-        let only = (standalone && t.choice == ToolChoice::Required && t.list.len() == 1).then(|| t.list[0].get("function").and_then(|f| f.get("name")).and_then(Value::as_str)).flatten();
+        let only = (standalone && t.choice == ToolChoice::Required && t.list.len() == 1)
+            .then(|| t.list[0].get("function").and_then(|f| f.get("name")).and_then(Value::as_str))
+            .flatten();
         let choice = only.map_or(t.choice.clone(), |n| ToolChoice::Named(n.to_string()));
         // (a call required of several tools opens with `<tool_call>` alone where the server runs alone: cut after `<function=`, the model named a tool it was not given, as `weather` for `get_weather`)
         if c.is_xtml() {
@@ -857,7 +909,13 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
                 _ => None,
             };
         }
-        let forced = tools::forced_prefix(&choice, Format::of(c)).filter(|_| !c.is_xtml()).map(|p| if standalone && choice == ToolChoice::Required { p.trim_end_matches(tools::FN_OPEN).to_string() } else { p });
+        let forced = tools::forced_prefix(&choice, Format::of(c)).filter(|_| !c.is_xtml()).map(|p| {
+            if standalone && choice == ToolChoice::Required {
+                p.trim_end_matches(tools::FN_OPEN).to_string()
+            } else {
+                p
+            }
+        });
         if let Some(p) = forced {
             // a forced call is the reply's first words: the thinking is closed in the prompt, where the template can
             if c.mentions("enable_thinking") {
@@ -996,7 +1054,9 @@ fn delta_fields(d: &Delta) -> String {
             .calls
             .iter()
             .filter_map(|c| match c {
-                ToolEv::Start { index, id, name } => Some(format!("{{\"index\":{index},\"id\":{},\"type\":\"function\",\"function\":{{\"name\":{}}}}}", jstr(id), jstr(name))),
+                ToolEv::Start { index, id, name } => {
+                    Some(format!("{{\"index\":{index},\"id\":{},\"type\":\"function\",\"function\":{{\"name\":{}}}}}", jstr(id), jstr(name)))
+                }
                 ToolEv::Args { index, args } => Some(format!("{{\"index\":{index},\"function\":{{\"arguments\":{}}}}}", jstr(args))),
                 ToolEv::Content(_) => None,
             })
@@ -1043,7 +1103,14 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
         return respond_with(s, 200, "application/json", &req.cors, format!("{{\"prompt_tokens\":{n},\"max_model_len\":{}}}", sh.window).as_bytes());
     }
     if let Some(p) = prompts.iter().find(|p| p.ids.len() + 1 > sh.window) {
-        return bad(s, &format!("This prompt has {} tokens, longer than the model's context of {} tokens: maximum context length (a longer one: --context N)", p.ids.len(), sh.window));
+        return bad(
+            s,
+            &format!(
+                "This prompt has {} tokens, longer than the model's context of {} tokens: maximum context length (a longer one: --context N)",
+                p.ids.len(),
+                sh.window
+            ),
+        );
     }
     // a length asked for that the context has no room for after the prompt is refused, not cut short (a request that asks for none has the room there is)
     if let Some(m) = int_field(&v, "max_completion_tokens").ok().flatten().or(int_field(&v, "max_tokens").ok().flatten()) {
@@ -1053,7 +1120,10 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
     }
     api.total = prompts.len() * api.n;
     if api.total > MAX_CHOICES {
-        return bad(s, &format!("{} prompts of {} choices each are {} sequences: this engine takes up to {MAX_CHOICES} in a request", prompts.len(), api.n, api.total));
+        return bad(
+            s,
+            &format!("{} prompts of {} choices each are {} sequences: this engine takes up to {MAX_CHOICES} in a request", prompts.len(), api.n, api.total),
+        );
     }
     if api.echo {
         api.echo_texts = (0..api.total).map(|i| prompts[i / api.n].text.clone()).collect();
@@ -1082,9 +1152,26 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
     std::thread::scope(|sc| {
         'prompts: for (pi, pr) in prompts.iter().enumerate() {
             let max_new = r.max_new.min(sh.window - pr.ids.len()).max(1);
-            let tools_cfg = reading.map(|t| ToolsCfg { choice: t.choice.clone(), parallel: t.parallel, format: sh.chat.as_ref().map_or(Format::Hermes, Format::of), list: t.list.clone(), prefix: pr.prefix.clone(), stream: api.stream });
+            let tools_cfg = reading.map(|t| ToolsCfg {
+                choice: t.choice.clone(),
+                parallel: t.parallel,
+                format: sh.chat.as_ref().map_or(Format::Hermes, Format::of),
+                list: t.list.clone(),
+                prefix: pr.prefix.clone(),
+                stream: api.stream,
+            });
             let lead = if reading.is_none() { pr.prefix.clone() } else { String::new() };
-            let cfg = Cfg { chat, in_thinking: pr.in_thinking, stops: r.stop.clone(), include_stop: r.include_stop, skip_special: r.skip_special && reading.is_none(), hide_reasoning: api.hide_reasoning, tools: tools_cfg, lead, xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)) };
+            let cfg = Cfg {
+                chat,
+                in_thinking: pr.in_thinking,
+                stops: r.stop.clone(),
+                include_stop: r.include_stop,
+                skip_special: r.skip_special && reading.is_none(),
+                hide_reasoning: api.hide_reasoning,
+                tools: tools_cfg,
+                lead,
+                xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)),
+            };
             for i in 0..api.n {
                 let idx = pi * api.n + i;
                 let mut reply = Reply { params: r.params.clone(), max_new, ignore_eos: r.ignore_eos, logprobs: api.logprobs, stop_ids: r.stop_ids.clone() };
@@ -1116,7 +1203,12 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                     // (nothing to send yet: the request waits for its turn or its prompt is read. A streamed reply's headers go out, then a comment each tick, so a client's read timeout does
                     // not fire while it waits; a client that has gone ends the request before its prompt runs)
                     if api.stream {
-                        gone = !if started { sse_comment(s) } else { started = true; start_stream(s, &head, chat, &api, &req.cors) };
+                        gone = !if started {
+                            sse_comment(s)
+                        } else {
+                            started = true;
+                            start_stream(s, &head, chat, &api, &req.cors)
+                        };
                     }
                     gone = gone || client_gone(s);
                     if gone {
@@ -1145,7 +1237,8 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                     }
                     if api.stream && !gone {
                         let text = delta_fields(&last);
-                        gone = !stream_chunk(s, &req.cors, &mut started, &head, chat, &api, tok, i, &text, &last.lps, &mut offsets[i], Some(done.finish_reason));
+                        gone =
+                            !stream_chunk(s, &req.cors, &mut started, &head, chat, &api, tok, i, &text, &last.lps, &mut offsets[i], Some(done.finish_reason));
                     }
                     if let Some(reasoning) = thinking {
                         acc[i].ended = Some((done, reasoning));
@@ -1220,21 +1313,74 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
             }
         })
         .collect();
-    let body = format!("{{\"id\":\"{ident}\",\"object\":\"{kind}\",\"created\":{created},\"model\":{},\"choices\":[{}],\"usage\":{}}}", jstr(name), choices.join(","), wire::usage(prompt_tokens, completion_tokens));
+    let body = format!(
+        "{{\"id\":\"{ident}\",\"object\":\"{kind}\",\"created\":{created},\"model\":{},\"choices\":[{}],\"usage\":{}}}",
+        jstr(name),
+        choices.join(","),
+        wire::usage(prompt_tokens, completion_tokens)
+    );
     respond_with(s, 200, "application/json", &req.cors, body.as_bytes());
 }
 
 /// The fields a request may carry that this server reads (a value of some is refused, in words: `unsupported`, `invalid`), with NO_EFFECT's, NOT_DONE's and CONSTRAINED's the ones it knows: another is said once on the
 /// program's standard error where it comes, not taken for something it is not.
 const DONE: &[&str] = &[
-    "messages", "prompt", "model", "frequency_penalty", "logit_bias", "logprobs", "top_logprobs", "max_tokens", "max_completion_tokens", "n", "presence_penalty", "response_format", "seed", "stop", "stream", "stream_options",
-    "temperature", "top_p", "tools", "tool_choice", "reasoning_effort", "include_reasoning", "parallel_tool_calls", "top_k", "min_p", "repetition_penalty", "stop_token_ids", "include_stop_str_in_output", "ignore_eos",
-    "min_tokens", "skip_special_tokens", "allowed_token_ids", "echo", "add_generation_prompt", "add_special_tokens", "documents", "chat_template_kwargs", "request_id", "return_tokens_as_token_ids", "best_of",
+    "messages",
+    "prompt",
+    "model",
+    "frequency_penalty",
+    "logit_bias",
+    "logprobs",
+    "top_logprobs",
+    "max_tokens",
+    "max_completion_tokens",
+    "n",
+    "presence_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "stream",
+    "stream_options",
+    "temperature",
+    "top_p",
+    "tools",
+    "tool_choice",
+    "reasoning_effort",
+    "include_reasoning",
+    "parallel_tool_calls",
+    "top_k",
+    "min_p",
+    "repetition_penalty",
+    "stop_token_ids",
+    "include_stop_str_in_output",
+    "ignore_eos",
+    "min_tokens",
+    "skip_special_tokens",
+    "allowed_token_ids",
+    "echo",
+    "add_generation_prompt",
+    "add_special_tokens",
+    "documents",
+    "chat_template_kwargs",
+    "request_id",
+    "return_tokens_as_token_ids",
+    "best_of",
 ];
 
 /// The fields that change nothing on a server of one model on this computer.
 const NO_EFFECT: &[&str] = &[
-    "user", "watermarking", "length_penalty", "spaces_between_special_tokens", "session_id", "store", "metadata", "safety_identifier", "prompt_cache_key", "verbosity", "modalities", "routed_experts_prompt_start",
+    "user",
+    "watermarking",
+    "length_penalty",
+    "spaces_between_special_tokens",
+    "session_id",
+    "store",
+    "metadata",
+    "safety_identifier",
+    "prompt_cache_key",
+    "verbosity",
+    "modalities",
+    "routed_experts_prompt_start",
 ];
 
 /// A field of a request that the server does not know, said once.
@@ -1245,7 +1391,8 @@ fn warn_unknown(v: &Value, chat: bool) {
             continue;
         }
         if let Ok(mut said) = SAID.lock() {
-            if said.len() < 64 && !said.contains(k) {  // (a client that sends names without end is told of the first few: the list and its search stay small)
+            if said.len() < 64 && !said.contains(k) {
+                // (a client that sends names without end is told of the first few: the list and its search stay small)
                 said.push(k.clone());
                 eprintln!("glyd: a {} request has a field this server does not know, {k:?}: it has no effect", if chat { "chat" } else { "completions" });
             }
@@ -1255,7 +1402,9 @@ fn warn_unknown(v: &Value, chat: bool) {
 
 /// The headers of a streamed reply, and (a chat's) the first chunk of every choice, which carries the role.
 fn start_stream(s: &mut TcpStream, head: &str, chat: bool, api: &Api, cors: &str) -> bool {
-    let h = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+    let h = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+    );
     if s.write_all(h.as_bytes()).is_err() {
         return false;
     }
@@ -1278,7 +1427,20 @@ fn start_stream(s: &mut TcpStream, head: &str, chat: bool, api: &Api, cors: &str
 /// A chunk of a streamed reply for choice `i`: its delta (`fields`, the inside of a chat's delta object, or a plain completion's text) with the log-probabilities that go with it, and the finish reason where it ends.
 /// False where the client has gone.
 #[allow(clippy::too_many_arguments)]
-fn stream_chunk(s: &mut TcpStream, cors: &str, started: &mut bool, head: &str, chat: bool, api: &Api, tok: &Tok, i: usize, fields: &str, lps: &[Lp], offset: &mut usize, finish: Option<&str>) -> bool {
+fn stream_chunk(
+    s: &mut TcpStream,
+    cors: &str,
+    started: &mut bool,
+    head: &str,
+    chat: bool,
+    api: &Api,
+    tok: &Tok,
+    i: usize,
+    fields: &str,
+    lps: &[Lp],
+    offset: &mut usize,
+    finish: Option<&str>,
+) -> bool {
     if !*started {
         *started = true;
         if !start_stream(s, head, chat, api, cors) {
@@ -1342,7 +1504,15 @@ pub fn listen(addr: &str, name: &str, window: usize, key: Option<String>, local_
 
 /// `listen` for a server that listens while its model loads (qwenserve): `/health` answers 503 `{"status":"loading"}` for as long as `loading` is set (the program clears it when the model can serve), so
 /// a script that waits for a 200 sends its first request after the load and not before. Nothing else answers differently: the model list, the page and the completions requests (which wait for their turn) are as they were.
-pub fn listen_loading(addr: &str, name: &str, window: usize, key: Option<String>, local_only: bool, tx: Sender<Job>, loading: Arc<AtomicBool>) -> Result<std::net::SocketAddr> {
+pub fn listen_loading(
+    addr: &str,
+    name: &str,
+    window: usize,
+    key: Option<String>,
+    local_only: bool,
+    tx: Sender<Job>,
+    loading: Arc<AtomicBool>,
+) -> Result<std::net::SocketAddr> {
     let listener = TcpListener::bind(addr).map_err(|e| Error(format!("{addr}: {e}")))?;
     let bound = listener.local_addr().map_err(|e| Error(e.to_string()))?;
     let name = Arc::new(name.to_string());
@@ -1379,7 +1549,16 @@ fn forbidden_body(why: &str, code: u16) -> String {
 /// One connection's request. The checks come in the order of the Python server's layers: the Host and the Origin where the server is on this computer's own address (everything is refused for them, the page too), a CORS
 /// preflight, the key for the API.
 #[allow(clippy::too_many_arguments)]
-fn route(mut s: TcpStream, name: &str, window: usize, key: &Option<[u8; 32]>, (local_only, port): (bool, u16), tx: &Sender<Job>, id: u64, loading: &AtomicBool) {
+fn route(
+    mut s: TcpStream,
+    name: &str,
+    window: usize,
+    key: &Option<[u8; 32]>,
+    (local_only, port): (bool, u16),
+    tx: &Sender<Job>,
+    id: u64,
+    loading: &AtomicBool,
+) {
     let mut req = match read_request(&mut s) {
         Ok(Some(r)) => r,
         Ok(None) => return,
@@ -1410,7 +1589,9 @@ fn route(mut s: TcpStream, name: &str, window: usize, key: &Option<[u8; 32]>, (l
         ("GET" | "HEAD", "/") | ("GET" | "HEAD", "/index.html") => {
             // (a page given with the server, read for each request: its own headers, since it loads its files from /web/)
             let (page, headers) = match PAGE_DIR.get() {
-                Some(d) => (std::fs::read(d.join("chat.html")).unwrap_or_else(|e| format!("<p>{}: {e}</p>", d.join("chat.html").display()).into_bytes()).into(), ""),
+                Some(d) => {
+                    (std::fs::read(d.join("chat.html")).unwrap_or_else(|e| format!("<p>{}: {e}</p>", d.join("chat.html").display()).into_bytes()).into(), "")
+                }
                 None => (std::borrow::Cow::Borrowed(PAGE.as_bytes()), PAGE_HEADERS),
             };
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{headers}{cors}Connection: close\r\n\r\n", page.len());
@@ -1421,7 +1602,10 @@ fn route(mut s: TcpStream, name: &str, window: usize, key: &Option<[u8; 32]>, (l
         ("GET", p) if p.starts_with("/web/") && PAGE_DIR.get().is_some() => {
             // (a file of the page's: a plain name, no path)
             let f = &p[5..];
-            let file = PAGE_DIR.get().map(|d| d.join("web").join(f)).filter(|_| !f.is_empty() && f.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c)) && !f.starts_with('.'));
+            let file = PAGE_DIR
+                .get()
+                .map(|d| d.join("web").join(f))
+                .filter(|_| !f.is_empty() && f.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c)) && !f.starts_with('.'));
             match file.and_then(|f| std::fs::read(f).ok()) {
                 Some(b) => {
                     let kind = match f.rsplit('.').next() {
@@ -1450,14 +1634,22 @@ fn route(mut s: TcpStream, name: &str, window: usize, key: &Option<[u8; 32]>, (l
             };
             match answer {
                 Some(b) => respond_with(&mut s, 200, "application/json", &cors, b.as_bytes()),
-                None => respond_with(&mut s, 404, "application/json", &cors, error_body("no request has this id (the last 64 that ended are kept)", 404).as_bytes()),
+                None => {
+                    respond_with(&mut s, 404, "application/json", &cors, error_body("no request has this id (the last 64 that ended are kept)", 404).as_bytes())
+                }
             }
         }
-        ("GET", "/health" | "/v1/health") if loading.load(Ordering::Relaxed) => respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"loading\"}"),
+        ("GET", "/health" | "/v1/health") if loading.load(Ordering::Relaxed) => {
+            respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"loading\"}")
+        }
         ("GET", "/health" | "/v1/health") => respond_with(&mut s, 200, "application/json", &cors, b"{\"status\":\"ok\"}"),
         ("GET", "/stats") => respond_with(&mut s, 200, "application/json", &cors, stats_json().as_bytes()),
         ("GET", "/v1/models") => {
-            let body = format!("{{\"object\":\"list\",\"data\":[{{\"id\":{},\"object\":\"model\",\"created\":{},\"owned_by\":\"glyd\",\"max_model_len\":{window}}}]}}", jstr(name), now());
+            let body = format!(
+                "{{\"object\":\"list\",\"data\":[{{\"id\":{},\"object\":\"model\",\"created\":{},\"owned_by\":\"glyd\",\"max_model_len\":{window}}}]}}",
+                jstr(name),
+                now()
+            );
             respond_with(&mut s, 200, "application/json", &cors, body.as_bytes());
         }
         ("POST", p @ ("/v1/chat/completions" | "/v1/completions" | "/v1/glyd/tokenize")) => {
@@ -1473,7 +1665,9 @@ fn route(mut s: TcpStream, name: &str, window: usize, key: &Option<[u8; 32]>, (l
                 respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
             }
         }
-        (_, "/v1/chat/completions") | (_, "/v1/completions") | (_, "/v1/models") | (_, "/v1/messages") | (_, "/v1/glyd/tokenize") | (_, "/v1/glyd/info") => respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes()),
+        (_, "/v1/chat/completions") | (_, "/v1/completions") | (_, "/v1/models") | (_, "/v1/messages") | (_, "/v1/glyd/tokenize") | (_, "/v1/glyd/info") => {
+            respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes())
+        }
         _ => respond_with(&mut s, 404, "application/json", &cors, error_body("not found", 404).as_bytes()),
     }
 }
@@ -1533,10 +1727,36 @@ fn info_json(i: &Info) -> String {
     let here: Vec<&str> = i.refused.iter().map(|(n, _)| *n).collect();
     let held = |f: fn(&crate::dev::Held) -> u64| i.held.as_ref().map_or(Value::Null, |h| Value::from(f(h)));
     let mut o = vec![("object", Value::from("glyd.info")), ("api", Value::from(API))];
-    o.push(("build", obj(vec![("version", Value::from(env!("CARGO_PKG_VERSION"))), ("commit", option_env!("GLYD_SOURCE_COMMIT").filter(|c| !c.is_empty()).map_or(Value::Null, Value::from)), ("development", Value::Bool(cfg!(feature = "dev")))])));
+    o.push((
+        "build",
+        obj(vec![
+            ("version", Value::from(env!("CARGO_PKG_VERSION"))),
+            ("commit", option_env!("GLYD_SOURCE_COMMIT").filter(|c| !c.is_empty()).map_or(Value::Null, Value::from)),
+            ("development", Value::Bool(cfg!(feature = "dev"))),
+        ]),
+    ));
     o.extend(i.about.iter().cloned());
-    o.push(("limits", obj(vec![("context_tokens", num(i.window)), ("concurrency", num(i.concurrency)), ("max_choices", num(MAX_CHOICES)), ("max_body_bytes", num(MAX_BODY)), ("max_header_bytes", num(MAX_HEAD)), ("max_headers", num(MAX_HEADERS)), ("max_connections", num(MAX_CONNECTIONS)), ("read_timeout_seconds", num(30))])));
-    o.push(("fields", obj(vec![("read", names(DONE.iter().copied().filter(|f| !here.contains(f)))), ("no_effect", names(NO_EFFECT.iter().copied())), ("refused", names(NOT_DONE.iter().map(|(n, _)| *n).chain(CONSTRAINED.iter().copied()).chain(here.iter().copied())))])));
+    o.push((
+        "limits",
+        obj(vec![
+            ("context_tokens", num(i.window)),
+            ("concurrency", num(i.concurrency)),
+            ("max_choices", num(MAX_CHOICES)),
+            ("max_body_bytes", num(MAX_BODY)),
+            ("max_header_bytes", num(MAX_HEAD)),
+            ("max_headers", num(MAX_HEADERS)),
+            ("max_connections", num(MAX_CONNECTIONS)),
+            ("read_timeout_seconds", num(30)),
+        ]),
+    ));
+    o.push((
+        "fields",
+        obj(vec![
+            ("read", names(DONE.iter().copied().filter(|f| !here.contains(f)))),
+            ("no_effect", names(NO_EFFECT.iter().copied())),
+            ("refused", names(NOT_DONE.iter().map(|(n, _)| *n).chain(CONSTRAINED.iter().copied()).chain(here.iter().copied()))),
+        ]),
+    ));
     o.push(("state", Value::from(if failed.is_some() { "failed" } else { "ready" })));
     o.push(("error", failed.map_or(Value::Null, |(t, e)| obj(vec![("at", secs(t)), ("message", Value::String(e))]))));
     o.push(("requests", obj(vec![("running", num(running)), ("cancelling", num(cancelling))])));
@@ -1590,7 +1810,9 @@ impl Remote {
         }
         let (out, events) = std::sync::mpsc::channel();
         let abort = Arc::new(AtomicBool::new(false));
-        self.tx.send(Job::Seq(Submit { prompt: prompt.to_vec(), reply: o.clone(), out, abort: abort.clone(), resumed: Default::default(), images })).map_err(|_| Error("the engine is not running".into()))?;
+        self.tx
+            .send(Job::Seq(Submit { prompt: prompt.to_vec(), reply: o.clone(), out, abort: abort.clone(), resumed: Default::default(), images }))
+            .map_err(|_| Error("the engine is not running".into()))?;
         Ok(Handle { events, abort })
     }
 }
@@ -1800,7 +2022,12 @@ fn track_json(x: &Track) -> String {
         (None, None) => "running",
     };
     let (ended, how) = x.ended.as_ref().map_or(("null".to_string(), "null".to_string()), |(t, h)| (format!("{t:.3}"), jstr(h)));
-    format!("{{\"id\":{},\"state\":\"{state}\",\"cancel\":{},\"began\":{:.3},\"ended\":{ended},\"how\":{how}}}", jstr(&x.id), x.cancel.map_or("null".to_string(), jstr), x.began)
+    format!(
+        "{{\"id\":{},\"state\":\"{state}\",\"cancel\":{},\"began\":{:.3},\"ended\":{ended},\"how\":{how}}}",
+        jstr(&x.id),
+        x.cancel.map_or("null".to_string(), jstr),
+        x.began
+    )
 }
 
 /// The engine's first failure (when, and what): nothing is sure of the GPU after one, so /v1/glyd/info says the server has failed from then on.
@@ -1827,7 +2054,9 @@ pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, Str
     let text_of = |c: &Value| -> String {
         match c {
             Value::String(t) => t.clone(),
-            Value::Array(b) => b.iter().filter(|x| x.get("type").and_then(Value::as_str) == Some("text")).filter_map(|x| x.get("text").and_then(Value::as_str)).collect(),
+            Value::Array(b) => {
+                b.iter().filter(|x| x.get("type").and_then(Value::as_str) == Some("text")).filter_map(|x| x.get("text").and_then(Value::as_str)).collect()
+            }
             _ => String::new(),
         }
     };
@@ -1867,8 +2096,16 @@ pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, Str
                     };
                     parts.push(obj(vec![("type", Value::from("image_url")), ("image_url", obj(vec![("url", Value::String(url))]))]));
                 }
-                Some("tool_use") => calls.push(obj(vec![("id", get("id")), ("type", Value::from("function")), ("function", obj(vec![("name", get("name")), ("arguments", b.get("input").cloned().unwrap_or(Value::Object(vec![])))]))])),
-                Some("tool_result") => msgs.push(obj(vec![("role", Value::from("tool")), ("tool_call_id", get("tool_use_id")), ("content", Value::String(b.get("content").map(text_of).unwrap_or_default()))])),
+                Some("tool_use") => calls.push(obj(vec![
+                    ("id", get("id")),
+                    ("type", Value::from("function")),
+                    ("function", obj(vec![("name", get("name")), ("arguments", b.get("input").cloned().unwrap_or(Value::Object(vec![])))])),
+                ])),
+                Some("tool_result") => msgs.push(obj(vec![
+                    ("role", Value::from("tool")),
+                    ("tool_call_id", get("tool_use_id")),
+                    ("content", Value::String(b.get("content").map(text_of).unwrap_or_default())),
+                ])),
                 _ => {}
             }
         }
@@ -1882,10 +2119,27 @@ pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, Str
         }
     }
     let mut o = vec![("messages", Value::Array(msgs))];
-    let tools: Vec<Value> = v.get("tools").and_then(Value::as_array).unwrap_or(&[]).iter().filter(|t| t.get("name").is_some()).map(|t| {
-        let get = |k: &str, or: Value| t.get(k).cloned().unwrap_or(or);
-        obj(vec![("type", Value::from("function")), ("function", obj(vec![("name", get("name", Value::Null)), ("description", get("description", Value::from(""))), ("parameters", get("input_schema", Value::Object(vec![])))]))])
-    }).collect();
+    let tools: Vec<Value> = v
+        .get("tools")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|t| t.get("name").is_some())
+        .map(|t| {
+            let get = |k: &str, or: Value| t.get(k).cloned().unwrap_or(or);
+            obj(vec![
+                ("type", Value::from("function")),
+                (
+                    "function",
+                    obj(vec![
+                        ("name", get("name", Value::Null)),
+                        ("description", get("description", Value::from(""))),
+                        ("parameters", get("input_schema", Value::Object(vec![]))),
+                    ]),
+                ),
+            ])
+        })
+        .collect();
     if !tools.is_empty() {
         o.push(("tools", Value::Array(tools)));
         let choice = v.get("tool_choice");
@@ -1893,7 +2147,9 @@ pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, Str
         match choice.and_then(|c| c.get("type")).and_then(Value::as_str) {
             Some("any") => o.push(("tool_choice", Value::from("required"))),
             Some("none") => o.push(("tool_choice", Value::from("none"))),
-            Some("tool") if named.is_some() => o.push(("tool_choice", obj(vec![("type", Value::from("function")), ("function", obj(vec![("name", named.unwrap_or(Value::Null))]))]))),
+            Some("tool") if named.is_some() => {
+                o.push(("tool_choice", obj(vec![("type", Value::from("function")), ("function", obj(vec![("name", named.unwrap_or(Value::Null))]))])))
+            }
             _ => {}
         }
         if choice.and_then(|c| c.get("disable_parallel_tool_use")).and_then(Value::as_bool) == Some(true) {
@@ -1915,7 +2171,13 @@ pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, Str
 
 fn anthropic_error(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
     let kind = if code == 400 { "invalid_request_error" } else { "api_error" };
-    respond_with(s, code, "application/json", cors, format!("{{\"type\":\"error\",\"error\":{{\"type\":\"{kind}\",\"message\":{}}}}}", jstr(&said(msg))).as_bytes());
+    respond_with(
+        s,
+        code,
+        "application/json",
+        cors,
+        format!("{{\"type\":\"error\",\"error\":{{\"type\":\"{kind}\",\"message\":{}}}}}", jstr(&said(msg))).as_bytes(),
+    );
 }
 
 /// An event of a streamed Messages reply, as one chunk of the chunked body.
@@ -1947,7 +2209,8 @@ impl Blocks {
         let mut ok = true;
         if !d.content.is_empty() {
             if self.open != Some(true) {
-                ok &= self.close(s) && event(s, "content_block_start", &format!("\"index\":{},\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}", self.next));
+                ok &=
+                    self.close(s) && event(s, "content_block_start", &format!("\"index\":{},\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}", self.next));
                 self.open = Some(true);
             }
             ok &= event(s, "content_block_delta", &format!("\"index\":{},\"delta\":{{\"type\":\"text_delta\",\"text\":{}}}", self.next, jstr(&d.content)));
@@ -1955,12 +2218,26 @@ impl Blocks {
         for c in &d.calls {
             match c {
                 ToolEv::Start { id, name, .. } => {
-                    ok &= self.close(s) && event(s, "content_block_start", &format!("\"index\":{},\"content_block\":{{\"type\":\"tool_use\",\"id\":{},\"name\":{},\"input\":{{}}}}", self.next, jstr(id), jstr(name)));
+                    ok &= self.close(s)
+                        && event(
+                            s,
+                            "content_block_start",
+                            &format!(
+                                "\"index\":{},\"content_block\":{{\"type\":\"tool_use\",\"id\":{},\"name\":{},\"input\":{{}}}}",
+                                self.next,
+                                jstr(id),
+                                jstr(name)
+                            ),
+                        );
                     self.open = Some(false);
                     self.called = true;
                 }
                 ToolEv::Args { args, .. } if self.open == Some(false) => {
-                    ok &= event(s, "content_block_delta", &format!("\"index\":{},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{}}}", self.next, jstr(args)));
+                    ok &= event(
+                        s,
+                        "content_block_delta",
+                        &format!("\"index\":{},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{}}}", self.next, jstr(args)),
+                    );
                 }
                 _ => {}
             }
@@ -2003,9 +2280,32 @@ fn handle_messages(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, 
         return bad(s, &format!("prompt is too long: {} tokens > {} maximum (the server's context: --ctx N)", pr.ids.len(), sh.window));
     }
     let reading = api.tools.as_ref().filter(|t| t.choice != ToolChoice::None);
-    let tools_cfg = reading.map(|t| ToolsCfg { choice: t.choice.clone(), parallel: t.parallel, format: sh.chat.as_ref().map_or(Format::Hermes, Format::of), list: t.list.clone(), prefix: pr.prefix.clone(), stream: api.stream });
-    let cfg = Cfg { chat: true, in_thinking: pr.in_thinking, stops: r.stop.clone(), include_stop: r.include_stop, skip_special: r.skip_special && reading.is_none(), hide_reasoning: true, tools: tools_cfg, lead: String::new(), xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)) };
-    let reply = Reply { params: r.params.clone(), max_new: r.max_new.min(sh.window - pr.ids.len()).max(1), ignore_eos: r.ignore_eos, logprobs: None, stop_ids: r.stop_ids.clone() };
+    let tools_cfg = reading.map(|t| ToolsCfg {
+        choice: t.choice.clone(),
+        parallel: t.parallel,
+        format: sh.chat.as_ref().map_or(Format::Hermes, Format::of),
+        list: t.list.clone(),
+        prefix: pr.prefix.clone(),
+        stream: api.stream,
+    });
+    let cfg = Cfg {
+        chat: true,
+        in_thinking: pr.in_thinking,
+        stops: r.stop.clone(),
+        include_stop: r.include_stop,
+        skip_special: r.skip_special && reading.is_none(),
+        hide_reasoning: true,
+        tools: tools_cfg,
+        lead: String::new(),
+        xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)),
+    };
+    let reply = Reply {
+        params: r.params.clone(),
+        max_new: r.max_new.min(sh.window - pr.ids.len()).max(1),
+        ignore_eos: r.ignore_eos,
+        logprobs: None,
+        stop_ids: r.stop_ids.clone(),
+    };
     let h = match (Remote { tx: tx.clone(), window: sh.window }).start_with(&pr.ids, pr.images.clone(), &reply) {
         Ok(h) => h,
         Err(e) => return anthropic_error(s, cors, 500, &e.to_string()),
@@ -2030,14 +2330,23 @@ fn handle_messages(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, 
                     Ok(Out::Done { last, done, .. }) => {
                         let _ = blocks.delta(s, &last)
                             && blocks.close(s)
-                            && event(s, "message_delta", &format!("\"delta\":{{\"stop_reason\":\"{}\",\"stop_sequence\":null}},\"usage\":{{\"output_tokens\":{}}}", if blocks.called { "tool_use" } else { stop_reason(done.finish_reason) }, done.tokens))
+                            && event(
+                                s,
+                                "message_delta",
+                                &format!(
+                                    "\"delta\":{{\"stop_reason\":\"{}\",\"stop_sequence\":null}},\"usage\":{{\"output_tokens\":{}}}",
+                                    if blocks.called { "tool_use" } else { stop_reason(done.finish_reason) },
+                                    done.tokens
+                                ),
+                            )
                             && event(s, "message_stop", "")
                             && s.write_all(b"0\r\n\r\n").is_ok();
                         return;
                     }
                     Ok(Out::Failed(e)) => {
                         eprintln!("glyd: a request failed: {e}");
-                        let _ = event(s, "error", &format!("\"error\":{{\"type\":\"api_error\",\"message\":{}}}", jstr(&e))) && s.write_all(b"0\r\n\r\n").is_ok();
+                        let _ =
+                            event(s, "error", &format!("\"error\":{{\"type\":\"api_error\",\"message\":{}}}", jstr(&e))) && s.write_all(b"0\r\n\r\n").is_ok();
                         return;
                     }
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -2055,10 +2364,16 @@ fn handle_messages(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, 
                 }
                 Err(RecvTimeoutError::Timeout) | Ok(Out::Delta(..)) => {}
                 Ok(Out::Done { done, .. }) => {
-                    let mut content: Vec<String> = done.content.iter().filter(|t| !t.is_empty()).map(|t| format!("{{\"type\":\"text\",\"text\":{}}}", jstr(t))).collect();
+                    let mut content: Vec<String> =
+                        done.content.iter().filter(|t| !t.is_empty()).map(|t| format!("{{\"type\":\"text\",\"text\":{}}}", jstr(t))).collect();
                     for c in &done.calls {
                         let input = json::parse(&c.arguments).ok().filter(|x| matches!(x, Value::Object(_))).unwrap_or(Value::Object(vec![]));
-                        content.push(format!("{{\"type\":\"tool_use\",\"id\":{},\"name\":{},\"input\":{}}}", jstr(&tools::new_id()), jstr(&c.name), json::to_compact(&input)));
+                        content.push(format!(
+                            "{{\"type\":\"tool_use\",\"id\":{},\"name\":{},\"input\":{}}}",
+                            jstr(&tools::new_id()),
+                            jstr(&c.name),
+                            json::to_compact(&input)
+                        ));
                     }
                     let body = format!(
                         "{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[{}],\"stop_reason\":\"{}\",\"stop_sequence\":null,\"usage\":{{\"input_tokens\":{n_in},\"output_tokens\":{}}}}}",
@@ -2087,7 +2402,10 @@ mod tests {
         let roles: Vec<&str> = o.get("messages").and_then(Value::as_array).unwrap().iter().filter_map(|m| m.get("role").and_then(Value::as_str)).collect();
         assert_eq!(roles, ["system", "user", "assistant", "tool"]);
         let m = o.get("messages").and_then(Value::as_array).unwrap();
-        assert_eq!(m[2].get("tool_calls").and_then(Value::as_array).unwrap()[0].get("function").and_then(|f| f.get("name")).and_then(Value::as_str), Some("ls"));
+        assert_eq!(
+            m[2].get("tool_calls").and_then(Value::as_array).unwrap()[0].get("function").and_then(|f| f.get("name")).and_then(Value::as_str),
+            Some("ls")
+        );
         assert_eq!(m[3].get("content").and_then(Value::as_str), Some("a.txt"));
         assert_eq!(o.get("tool_choice").and_then(Value::as_str), Some("required"));
         assert_eq!(o.get("stop").and_then(Value::as_array).map(|a| a.len()), Some(1));
@@ -2097,7 +2415,10 @@ mod tests {
         // an image block: left out where the model reads text alone; where it reads images, an image_url part beside the text, in order
         let v = json::parse(r#"{"max_tokens":9,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},{"type":"text","text":"What is it?"},{"type":"image","source":{"type":"url","url":"https://x/y.jpg"}}]}]}"#).unwrap();
         let o = openai_of_with(&v, false).unwrap();
-        assert_eq!(o.get("messages").and_then(Value::as_array).and_then(|m| m.first()).and_then(|m| m.get("content")).and_then(Value::as_str), Some("What is it?"));
+        assert_eq!(
+            o.get("messages").and_then(Value::as_array).and_then(|m| m.first()).and_then(|m| m.get("content")).and_then(Value::as_str),
+            Some("What is it?")
+        );
         let o = openai_of_with(&v, true).unwrap();
         let mut urls = Vec::new();
         let m = tools::template_messages_with(&o, Some(&mut urls)).unwrap();
@@ -2157,13 +2478,21 @@ mod tests {
 
     #[test]
     fn the_standalone_servers_words() {
-        assert_eq!(without_vllm("echo of a chat reply is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"), "echo of a chat reply is not supported by this engine yet");
-        assert_eq!(without_vllm("n must be at most 8, got 9. (This engine runs up to 8 sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"), "n must be at most 8, got 9.");
+        assert_eq!(
+            without_vllm("echo of a chat reply is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"),
+            "echo of a chat reply is not supported by this engine yet"
+        );
+        assert_eq!(
+            without_vllm("n must be at most 8, got 9. (This engine runs up to 8 sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"),
+            "n must be at most 8, got 9."
+        );
         assert_eq!(without_vllm("a (b) c"), "a (b) c");
         let v = |t: &str| json::parse(t).unwrap();
         assert_eq!(json_rule(&v(r#"{"response_format":{"type":"json_object"}}"#), false), None);
         assert!(json_rule(&v(r#"{"response_format":{"type":"json_object"}}"#), true).unwrap().starts_with("Reply with one JSON object"));
-        assert!(json_rule(&v(r#"{"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{"type":"object"}}}}"#), true).unwrap().ends_with(r#"schema: {"type":"object"}"#));
+        assert!(json_rule(&v(r#"{"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{"type":"object"}}}}"#), true)
+            .unwrap()
+            .ends_with(r#"schema: {"type":"object"}"#));
         assert_eq!(json_rule(&v(r#"{"response_format":{"type":"text"}}"#), true), None);
     }
 
@@ -2207,13 +2536,17 @@ mod tests {
     fn requests_as_the_openai_api_names_them() {
         let v = json::parse(r#"{"messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}],"temperature":0.5,"top_p":0.9,"top_k":40,"max_tokens":64,"stop":["x","y"],"seed":7,"chat_template_kwargs":{"enable_thinking":false}}"#).unwrap();
         let m = tools::template_messages(&v).unwrap();
-        assert_eq!((at(&m[0], &["role"]).as_str(), at(&m[0], &["content"]).as_str(), at(&m[1], &["content"]).as_str()), (Some("system"), Some("s"), Some("a\nb"))); // (text parts are joined by new lines, as vLLM's chat path joins them)
+        assert_eq!(
+            (at(&m[0], &["role"]).as_str(), at(&m[0], &["content"]).as_str(), at(&m[1], &["content"]).as_str()),
+            (Some("system"), Some("s"), Some("a\nb"))
+        ); // (text parts are joined by new lines, as vLLM's chat path joins them)
         let r = request_of(&v, 4096, &Params { temperature: 1.0, ..Params::default() });
         assert_eq!((r.params.temperature, r.params.top_p, r.params.top_k, r.params.seed, r.max_new), (0.5, 0.9, 40, 7, 64));
         assert_eq!((r.stop.clone(), r.thinking), (vec!["x".to_string(), "y".to_string()], Some(false)));
         assert!(r.template_kwargs.is_empty());
         // every other key of chat_template_kwargs is a variable of the template, as given (vLLM's own rule: reasoning_effort, date_string ...)
-        let k = request_of(&json::parse(r#"{"chat_template_kwargs":{"reasoning_effort":"low","enable_thinking":true,"n":3}}"#).unwrap(), 4096, &Params::default());
+        let k =
+            request_of(&json::parse(r#"{"chat_template_kwargs":{"reasoning_effort":"low","enable_thinking":true,"n":3}}"#).unwrap(), 4096, &Params::default());
         assert_eq!(k.thinking, Some(true));
         assert_eq!(k.template_kwargs, vec![("reasoning_effort".to_string(), json::Value::from("low")), ("n".to_string(), json::Value::from(3u64))]);
         let o = k.template_options();
@@ -2236,12 +2569,28 @@ mod tests {
         serve_fake_with(f, template, users, false, None, &[])
     }
 
-    fn serve_fake_with(f: Fake, template: Option<&str>, users: usize, local_only: bool, key: Option<&str>, refused: &'static [(&'static str, &'static str)]) -> std::net::SocketAddr {
+    fn serve_fake_with(
+        f: Fake,
+        template: Option<&str>,
+        users: usize,
+        local_only: bool,
+        key: Option<&str>,
+        refused: &'static [(&'static str, &'static str)],
+    ) -> std::net::SocketAddr {
         let words: Vec<String> = (1..=1100).map(|i| format!(" w{i}")).collect();
         let refs: Vec<&str> = words.iter().map(String::as_str).collect();
         let window = f.store.len() * crate::kv::PAGE;
         let chat = template.map(|t| Chat::from_template(t).unwrap());
-        let shared = Arc::new(Shared { tok: crate::tok::tests::toy(&refs), chat, name: "fake".to_string(), defaults: Params { temperature: 1.0, ..Params::default() }, window, vocab: 2048, thinking: None, refused });
+        let shared = Arc::new(Shared {
+            tok: crate::tok::tests::toy(&refs),
+            chat,
+            name: "fake".to_string(),
+            defaults: Params { temperature: 1.0, ..Params::default() },
+            window,
+            vocab: 2048,
+            thinking: None,
+            refused,
+        });
         let (tx, rx) = std::sync::mpsc::channel();
         let addr = listen("127.0.0.1:0", "fake", window, key.map(str::to_string), local_only, tx.clone()).unwrap();
         std::thread::spawn(move || work_with(&mut Sched::new(f, users), shared, &rx, &tx));
@@ -2251,7 +2600,8 @@ mod tests {
     /// A request and its whole answer: (status, the body, with a chunked body put together).
     fn call(addr: std::net::SocketAddr, path: &str, body: &str) -> (u16, String) {
         let mut c = TcpStream::connect(addr).unwrap();
-        c.write_all(format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+        c.write_all(format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+            .unwrap();
         let mut raw = Vec::new();
         c.read_to_end(&mut raw).unwrap();
         let raw = String::from_utf8(raw).unwrap();
@@ -2275,7 +2625,10 @@ mod tests {
 
     /// The JSON of each `data:` event of a streamed answer (`[DONE]` last, as the string it is).
     fn events(body: &str) -> Vec<json::Value> {
-        body.split("\n\n").filter_map(|e| e.strip_prefix("data: ")).map(|d| if d == "[DONE]" { Value::String("[DONE]".to_string()) } else { json::parse(d).unwrap() }).collect()
+        body.split("\n\n")
+            .filter_map(|e| e.strip_prefix("data: "))
+            .map(|d| if d == "[DONE]" { Value::String("[DONE]".to_string()) } else { json::parse(d).unwrap() })
+            .collect()
     }
 
     fn f64_of(v: &Value) -> f64 {
@@ -2333,7 +2686,9 @@ mod tests {
             assert_eq!(ev.last().unwrap(), &Value::String("[DONE]".into()));
             let mut streamed = Vec::new();
             for e in &ev[..ev.len() - 1] {
-                if let Some(l) = e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("logprobs")).and_then(|l| l.get("content")) {
+                if let Some(l) =
+                    e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("logprobs")).and_then(|l| l.get("content"))
+                {
                     streamed.extend(l.as_array().unwrap().iter().map(|x| at(x, &["token"]).as_str().unwrap().to_string()));
                 }
             }
@@ -2372,7 +2727,8 @@ mod tests {
         let q = r#""messages":[{"role":"user","content":"hello there"}],"temperature":0"#;
         let (_, body) = call(addr, "/v1/chat/completions", &format!("{{{q},\"max_tokens\":4,\"logprobs\":true}}"));
         let d = json::parse(&body).unwrap();
-        let first_four: Vec<String> = at(&d, &["choices", "0", "logprobs", "content"]).as_array().unwrap().iter().map(|e| at(e, &["token"]).as_str().unwrap().to_string()).collect();
+        let first_four: Vec<String> =
+            at(&d, &["choices", "0", "logprobs", "content"]).as_array().unwrap().iter().map(|e| at(e, &["token"]).as_str().unwrap().to_string()).collect();
         // the model's fourth token is an end token for a server whose model ends there: the same prompt, the end token among the model's
         let fourth_id: usize = first_four[3].trim().trim_start_matches('w').parse().unwrap();
         let mut f = Fake::new(64, 32);
@@ -2400,7 +2756,9 @@ mod tests {
         let addr = serve_fake(f, None, 4);
         let prompt = "w ".repeat(100); // 100 tokens
         let q = |extra: &str| format!("{{\"prompt\":\"{prompt}\",\"max_tokens\":12,\"temperature\":2.0,\"top_k\":20{extra}}}");
-        let texts = |body: &str| -> Vec<String> { at(&json::parse(body).unwrap(), &["choices"]).as_array().unwrap().iter().map(|c| at(c, &["text"]).as_str().unwrap().to_string()).collect() };
+        let texts = |body: &str| -> Vec<String> {
+            at(&json::parse(body).unwrap(), &["choices"]).as_array().unwrap().iter().map(|c| at(c, &["text"]).as_str().unwrap().to_string()).collect()
+        };
         let before = ran.load(Relaxed);
         let (st, body) = call(addr, "/v1/completions", &q(",\"n\":4,\"seed\":7"));
         assert_eq!(st, 200, "{body}");
@@ -2413,7 +2771,11 @@ mod tests {
             assert_eq!(at(c, &["index"]), &Value::Number(i.to_string()));
             assert_eq!(at(c, &["finish_reason"]).as_str(), Some("length"));
         }
-        assert_eq!((at(&d, &["usage", "prompt_tokens"]), at(&d, &["usage", "completion_tokens"]), at(&d, &["usage", "total_tokens"])), (&Value::Number("100".into()), &Value::Number("48".into()), &Value::Number("148".into())), "{body}");
+        assert_eq!(
+            (at(&d, &["usage", "prompt_tokens"]), at(&d, &["usage", "completion_tokens"]), at(&d, &["usage", "total_tokens"])),
+            (&Value::Number("100".into()), &Value::Number("48".into()), &Value::Number("148".into())),
+            "{body}"
+        );
         let t = texts(&body);
         assert!(t.iter().any(|x| x != &t[0]), "four choices of one text: {t:?}");
         // the same seed, the same four texts; another seed, other texts
@@ -2435,7 +2797,10 @@ mod tests {
         assert_eq!(st, 200, "{body}");
         let ev = events(&body);
         assert_eq!(ev.last().unwrap(), &Value::String("[DONE]".into()));
-        let first: Vec<String> = ev[..3].iter().map(|e| format!("{}:{}", f64_of(at(e, &["choices", "0", "index"])), at(e, &["choices", "0", "delta", "role"]).as_str().unwrap())).collect();
+        let first: Vec<String> = ev[..3]
+            .iter()
+            .map(|e| format!("{}:{}", f64_of(at(e, &["choices", "0", "index"])), at(e, &["choices", "0", "delta", "role"]).as_str().unwrap()))
+            .collect();
         assert_eq!(first, vec!["0:assistant", "1:assistant", "2:assistant"]);
         let (mut built, mut finishes) = (vec![String::new(); 3], vec![0; 3]);
         for e in &ev[3..ev.len() - 2] {
@@ -2455,12 +2820,22 @@ mod tests {
         let usage = ev[ev.len() - 2].get("usage").expect("a usage chunk before [DONE]");
         assert_eq!((at(usage, &["completion_tokens"]), ev[ev.len() - 2].get("choices").unwrap()), (&Value::Number("36".into()), &Value::Array(vec![])));
         let (_, whole) = call(addr, "/v1/chat/completions", &format!("{{{chat}}}"));
-        let whole: Vec<String> = at(&json::parse(&whole).unwrap(), &["choices"]).as_array().unwrap().iter().map(|c| at(c, &["message", "content"]).as_str().unwrap().to_string()).collect();
+        let whole: Vec<String> = at(&json::parse(&whole).unwrap(), &["choices"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| at(c, &["message", "content"]).as_str().unwrap().to_string())
+            .collect();
         assert_eq!(built, whole, "streamed and whole choices are the same texts");
         // the limits: 8 at the most (and 8 are served by 4 users, 4 waiting), none or fewer than one is wrong, and greedy draws are all one text
         let (st, body) = call(addr, "/v1/completions", &q(",\"n\":8"));
         assert_eq!((st, texts(&body).len()), (200, 8), "{body}");
-        for (extra, want) in [(",\"n\":9", "n must be at most 8, got 9"), (",\"n\":0", "n must be at least 1, got 0"), (",\"n\":2.5", "`n` must be an integer"), (",\"n\":2,\"temperature\":0", "n must be 1 when using greedy sampling, got 2")] {
+        for (extra, want) in [
+            (",\"n\":9", "n must be at most 8, got 9"),
+            (",\"n\":0", "n must be at least 1, got 0"),
+            (",\"n\":2.5", "`n` must be an integer"),
+            (",\"n\":2,\"temperature\":0", "n must be 1 when using greedy sampling, got 2"),
+        ] {
             let (st, body) = call(addr, "/v1/completions", &format!("{{\"prompt\":\"{prompt}\",\"max_tokens\":4{extra}}}"));
             assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
         }
@@ -2498,7 +2873,18 @@ mod tests {
         assert_eq!(status("GET", "/v1/models", &[("Host", "localhost:8000"), ("Origin", "HTTP://LOCALHOST:8000")]), 200);
         assert_eq!(status("GET", "/", &[("Host", "localhost:8000")]), 200);
         // a name that is not this computer's: the rebinding page's own, whatever the path (the page is not answered to it either)
-        for host in ["evil.example", "evil.example:8000", "localhost.evil.example:8000", "127.0.0.1.evil.example", "192.168.1.5:8000", "0.0.0.0:8000", "localhost.:8000", "[::1", "[::2]:8000", "[fe80::1]:8000"] {
+        for host in [
+            "evil.example",
+            "evil.example:8000",
+            "localhost.evil.example:8000",
+            "127.0.0.1.evil.example",
+            "192.168.1.5:8000",
+            "0.0.0.0:8000",
+            "localhost.:8000",
+            "[::1",
+            "[::2]:8000",
+            "[fe80::1]:8000",
+        ] {
             for path in ["/v1/models", "/", "/health", "/stats"] {
                 let (st, _, body) = ask(addr, "GET", path, &[("Host", host)]);
                 assert_eq!(st, 421, "{host} {path}");
@@ -2508,7 +2894,15 @@ mod tests {
             }
         }
         // an Origin that is not the server's own: another site's script, another port, another scheme, another way of writing the address, `null`, a name that begins as the Host
-        for origin in ["http://evil.example", "https://localhost:8000", "http://localhost:5173", "http://127.0.0.1:8000", "null", "http://localhost:8000.evil.example", "http://"] {
+        for origin in [
+            "http://evil.example",
+            "https://localhost:8000",
+            "http://localhost:5173",
+            "http://127.0.0.1:8000",
+            "null",
+            "http://localhost:8000.evil.example",
+            "http://",
+        ] {
             let (st, _, body) = ask(addr, "POST", "/v1/chat/completions", &[("Host", "localhost:8000"), ("Origin", origin), ("Content-Length", "0")]);
             assert_eq!(st, 403, "{origin}");
             assert_eq!(at(&json::parse(&body).unwrap(), &["error", "type"]).as_str(), Some("Forbidden"));
@@ -2521,17 +2915,40 @@ mod tests {
         // the preflight of another site's script is refused (the page's own requests have none)
         let pre = [("Host", "localhost:8000"), ("Origin", "http://evil.example"), ("Access-Control-Request-Method", "POST")];
         assert_eq!(status("OPTIONS", "/v1/chat/completions", &pre), 403);
-        assert_eq!(status("OPTIONS", "/v1/chat/completions", &[("Host", "evil.example"), ("Origin", "http://evil.example"), ("Access-Control-Request-Method", "POST")]), 421);
+        assert_eq!(
+            status(
+                "OPTIONS",
+                "/v1/chat/completions",
+                &[("Host", "evil.example"), ("Origin", "http://evil.example"), ("Access-Control-Request-Method", "POST")]
+            ),
+            421
+        );
         // a preflight of the server's own origin, as the CORS middleware of vLLM answers it (the origins are the three addresses at the server's port); one of the right form for the Host but not this port, or for a method
         // there is none of, is 400
         let own = format!("http://localhost:{}", addr.port());
         let host = format!("localhost:{}", addr.port());
-        let (st, head, body) = ask(addr, "OPTIONS", "/v1/chat/completions", &[("Host", &host), ("Origin", &own), ("Access-Control-Request-Method", "POST"), ("Access-Control-Request-Headers", "content-type,authorization")]);
+        let (st, head, body) = ask(
+            addr,
+            "OPTIONS",
+            "/v1/chat/completions",
+            &[("Host", &host), ("Origin", &own), ("Access-Control-Request-Method", "POST"), ("Access-Control-Request-Headers", "content-type,authorization")],
+        );
         assert_eq!((st, body.as_str()), (200, "OK"));
-        for line in [format!("access-control-allow-origin: {}", own.to_lowercase()), "access-control-allow-methods: delete, get, head, options, patch, post, put".to_string(), "access-control-allow-headers: content-type,authorization".to_string(), "access-control-max-age: 600".to_string(), "vary: origin".to_string()] {
+        for line in [
+            format!("access-control-allow-origin: {}", own.to_lowercase()),
+            "access-control-allow-methods: delete, get, head, options, patch, post, put".to_string(),
+            "access-control-allow-headers: content-type,authorization".to_string(),
+            "access-control-max-age: 600".to_string(),
+            "vary: origin".to_string(),
+        ] {
             assert!(head.contains(&line), "{line} in {head}");
         }
-        let (st, head, body) = ask(addr, "OPTIONS", "/v1/chat/completions", &[("Host", "localhost:8000"), ("Origin", "http://localhost:8000"), ("Access-Control-Request-Method", "POST")]);
+        let (st, head, body) = ask(
+            addr,
+            "OPTIONS",
+            "/v1/chat/completions",
+            &[("Host", "localhost:8000"), ("Origin", "http://localhost:8000"), ("Access-Control-Request-Method", "POST")],
+        );
         assert_eq!((st, body.as_str(), head.contains("access-control-allow-origin")), (400, "Disallowed CORS origin", false));
         let (st, _, body) = ask(addr, "OPTIONS", "/v1/chat/completions", &[("Host", &host), ("Origin", &own), ("Access-Control-Request-Method", "TRACE")]);
         assert_eq!((st, body.as_str()), (400, "Disallowed CORS method"));
@@ -2561,9 +2978,24 @@ mod tests {
         assert_eq!(st, 200);
         assert!(head.contains("access-control-allow-origin: *"), "{head}");
         assert!(!ask(addr, "GET", "/v1/models", &[("Host", "evil.example")]).1.contains("access-control"));
-        let (st, head, body) = ask(addr, "OPTIONS", "/v1/chat/completions", &[("Host", "x:1"), ("Origin", "http://localhost:5173"), ("Access-Control-Request-Method", "POST"), ("Access-Control-Request-Headers", "authorization")]);
+        let (st, head, body) = ask(
+            addr,
+            "OPTIONS",
+            "/v1/chat/completions",
+            &[
+                ("Host", "x:1"),
+                ("Origin", "http://localhost:5173"),
+                ("Access-Control-Request-Method", "POST"),
+                ("Access-Control-Request-Headers", "authorization"),
+            ],
+        );
         assert_eq!((st, body.as_str()), (200, "OK"));
-        assert!(head.contains("access-control-allow-origin: *") && head.contains("access-control-allow-headers: authorization") && head.contains("access-control-allow-methods: delete, get, head, options, patch, post, put"), "{head}");
+        assert!(
+            head.contains("access-control-allow-origin: *")
+                && head.contains("access-control-allow-headers: authorization")
+                && head.contains("access-control-allow-methods: delete, get, head, options, patch, post, put"),
+            "{head}"
+        );
     }
 
     /// The API key as vLLM's middleware checks it: `Authorization: Bearer KEY` (the scheme in any case; the token is what follows the first space), by the digests of both in constant time; for every path of /v1, and
@@ -2582,7 +3014,18 @@ mod tests {
         for ok in ["Bearer s3cret key", "bearer s3cret key", "BEARER s3cret key", "Bearer s3cret key  "] {
             assert_eq!(get("/v1/models", Some(ok)).0, 200, "{ok:?}");
         }
-        for bad in ["Bearer s3cret", "Bearer s3cret keyx", "Bearer  s3cret key", "Basic s3cret key", "s3cret key", "Bearer", "Bearer ", "", "Bearer S3CRET KEY", "Token s3cret key"] {
+        for bad in [
+            "Bearer s3cret",
+            "Bearer s3cret keyx",
+            "Bearer  s3cret key",
+            "Basic s3cret key",
+            "s3cret key",
+            "Bearer",
+            "Bearer ",
+            "",
+            "Bearer S3CRET KEY",
+            "Token s3cret key",
+        ] {
             let (st, _, body) = get("/v1/models", Some(bad));
             assert_eq!((st, body.as_str()), (401, "{\"error\":\"Unauthorized\"}"), "{bad:?}");
         }
@@ -2718,7 +3161,10 @@ mod tests {
         let text = "POST /v1/completions HTTP/1.1\r\nHost: localhost:8000\r\nOrigin: http://localhost:8000\r\nAuthorization: Bearer k\r\nContent-Length: 12\r\nExpect: 100-continue\r\nAccess-Control-Request-Method: POST\r\n\r\nbody";
         let mut r = BufReader::new(text.as_bytes());
         let h = read_head(&mut r).unwrap().unwrap();
-        assert_eq!((h.method.as_str(), h.path.as_str(), h.len, h.expect, h.host.as_str(), h.origin.as_str()), ("POST", "/v1/completions", 12, true, "localhost:8000", "http://localhost:8000"));
+        assert_eq!(
+            (h.method.as_str(), h.path.as_str(), h.len, h.expect, h.host.as_str(), h.origin.as_str()),
+            ("POST", "/v1/completions", 12, true, "localhost:8000", "http://localhost:8000")
+        );
         assert_eq!((h.auth.as_deref(), h.ask_method.as_deref(), h.ask_headers), (Some("Bearer k"), Some("POST"), None));
         // (the body is left in the reader, for the body's own read)
         let mut rest = String::new();
@@ -2742,7 +3188,16 @@ mod tests {
     /// prompt, the thinking closed before it.
     #[test]
     fn the_prompt_of_a_request_with_tools() {
-        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(&qwen3_template()).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let shared = Shared {
+            tok: crate::tok::tests::toy(&["x"]),
+            chat: Some(Chat::from_template(&qwen3_template()).unwrap()),
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
             let r = request_of(&v, 4096, &Params::default());
@@ -2752,7 +3207,10 @@ mod tests {
         let head = "<|im_start|>system\nBe brief.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n";
         let msgs = r#""messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Weather in Paris?"}]"#;
         let (t, thinking, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}]}}"));
-        assert_eq!((t.as_str(), thinking, prefix.as_str()), (format!("{head}<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n").as_str(), false, ""));
+        assert_eq!(
+            (t.as_str(), thinking, prefix.as_str()),
+            (format!("{head}<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n").as_str(), false, "")
+        );
         // none: the tools are shown all the same (vLLM does), and no call is read
         assert_eq!(text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":\"none\"}}")).0, t);
         // no tools: no tools block
@@ -2763,10 +3221,12 @@ mod tests {
         let (t, _, _) = text(&format!("{{{conv},\"tools\":[{WEATHER}]}}"));
         assert_eq!(t, format!("{head}<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{{\"name\": \"get_weather\", \"arguments\": {{\"city\": \"Paris\"}}}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nsunny, 20C\n</tool_response><|im_end|>\n<|im_start|>assistant\n"));
         // a forced call: the thinking is closed in the prompt and the call opened (for a named function, to its arguments)
-        let (t, thinking, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
+        let (t, thinking, prefix) =
+            text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
         assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "), "{t}");
         assert_eq!((thinking, prefix.as_str()), (false, "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "));
-        let (t, _, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":\"required\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}"));
+        let (t, _, prefix) =
+            text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":\"required\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}"));
         assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n{\"name\": \""), "{t}");
         assert_eq!(prefix, "<tool_call>\n{\"name\": \"");
         // the thinking of the model, left on: the generation prompt as it is
@@ -2779,7 +3239,16 @@ mod tests {
     /// arguments), and none where the call is not forced.
     #[test]
     fn a_kimi_prompt_ends_with_its_forced_call() {
-        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(crate::chat::KIMI_CHAT).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let shared = Shared {
+            tok: crate::tok::tests::toy(&["x"]),
+            chat: Some(Chat::from_template(crate::chat::KIMI_CHAT).unwrap()),
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
             let r = request_of(&v, 4096, &Params::default());
@@ -2800,7 +3269,16 @@ mod tests {
     #[test]
     fn a_forced_call_closes_a_thinking_the_template_opens() {
         let template = "{%- for m in messages %}<|{{ m.role }}|>{{ m.content }}{% endfor %}{% if tools %}<tools>{% for t in tools %}{{ t | tojson }}{% endfor %}</tools><tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>{% endif %}{%- if add_generation_prompt %}<|assistant|><think>{% endif %}";
-        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(template).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let shared = Shared {
+            tok: crate::tok::tests::toy(&["x"]),
+            chat: Some(Chat::from_template(template).unwrap()),
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
             let r = request_of(&v, 4096, &Params::default());
@@ -2810,7 +3288,8 @@ mod tests {
         let msgs = r#""messages":[{"role":"user","content":"Weather in Paris?"}]"#;
         let (t, thinking, _) = text(&format!("{{{msgs},\"tools\":[{WEATHER}]}}"));
         assert!(t.ends_with("<|assistant|><think>") && thinking, "{t}");
-        let (t, thinking, p) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
+        let (t, thinking, p) =
+            text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
         assert!(!thinking && t.ends_with(&format!("<|assistant|><think></think>{p}")) && p.starts_with("<tool_call>get_weather"), "{t}");
     }
 
@@ -2841,7 +3320,16 @@ mod tests {
         f.script = Some(script);
         let refs: Vec<&str> = words.iter().map(String::as_str).collect();
         let window = f.store.len() * crate::kv::PAGE;
-        let shared = Arc::new(Shared { tok: crate::tok::tests::toy(&refs), chat: Some(Chat::from_template(template).unwrap()), name: "fake".into(), defaults: Params { temperature: 0.0, ..Params::default() }, window, vocab: 2048, thinking: None, refused: &[] });
+        let shared = Arc::new(Shared {
+            tok: crate::tok::tests::toy(&refs),
+            chat: Some(Chat::from_template(template).unwrap()),
+            name: "fake".into(),
+            defaults: Params { temperature: 0.0, ..Params::default() },
+            window,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        });
         let (tx, rx) = std::sync::mpsc::channel();
         let addr = listen("127.0.0.1:0", "fake", window, None, false, tx.clone()).unwrap();
         std::thread::spawn(move || work_with(&mut Sched::new(f, 4), shared, &rx, &tx));
@@ -2851,7 +3339,8 @@ mod tests {
     /// A streamed chat answer put together: (thinking, content, the calls as (id, name, arguments) by index, the finish reasons, the usage's completion tokens).
     #[allow(clippy::type_complexity)]
     fn put_together(body: &str) -> (String, String, Vec<(String, String, String)>, Vec<String>, Option<f64>) {
-        let (mut think, mut content, mut calls, mut finishes, mut usage) = (String::new(), String::new(), Vec::<(String, String, String)>::new(), Vec::new(), None);
+        let (mut think, mut content, mut calls, mut finishes, mut usage) =
+            (String::new(), String::new(), Vec::<(String, String, String)>::new(), Vec::new(), None);
         for e in events(body) {
             let Some(c) = e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()) else {
                 if let Some(u) = e.get("usage") {
@@ -2886,11 +3375,16 @@ mod tests {
     #[test]
     fn hidden_reasoning_is_not_spelled_out_by_log_probabilities() {
         let addr = serve_script("<think>\nsecret thought\n</think>\n\nthe answer");
-        let q = |extra: &str| format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}],\"max_tokens\":200,\"logprobs\":true,\"top_logprobs\":1{extra}}}");
+        let q =
+            |extra: &str| format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}],\"max_tokens\":200,\"logprobs\":true,\"top_logprobs\":1{extra}}}");
         let (st, body) = call(addr, "/v1/chat/completions", &q(",\"include_reasoning\":false"));
         assert_eq!(st, 200, "{body}");
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str().map(str::trim), at(&d, &["choices", "0", "logprobs"])), (Some("the answer"), &Value::Null), "{body}");
+        assert_eq!(
+            (at(&d, &["choices", "0", "message", "content"]).as_str().map(str::trim), at(&d, &["choices", "0", "logprobs"])),
+            (Some("the answer"), &Value::Null),
+            "{body}"
+        );
         assert!(!body.contains("secr") && !body.contains("thought"), "{body}");
         let (_, body) = call(addr, "/v1/chat/completions", &q(",\"include_reasoning\":false,\"stream\":true"));
         let (think, content, _, _, _) = put_together(&body);
@@ -2948,7 +3442,10 @@ mod tests {
         assert_eq!(tc.len(), 1);
         let id = at(&tc[0], &["id"]).as_str().unwrap();
         assert!(id.starts_with("chatcmpl-tool-") && id.len() == 30, "{id}");
-        assert_eq!((at(&tc[0], &["type"]).as_str(), at(&tc[0], &["function", "name"]).as_str(), at(&tc[0], &["function", "arguments"]).as_str()), (Some("function"), Some("get_weather"), Some("{\"city\": \"Paris\"}")));
+        assert_eq!(
+            (at(&tc[0], &["type"]).as_str(), at(&tc[0], &["function", "name"]).as_str(), at(&tc[0], &["function", "arguments"]).as_str()),
+            (Some("function"), Some("get_weather"), Some("{\"city\": \"Paris\"}"))
+        );
         assert_eq!(f64_of(at(&d, &["usage", "completion_tokens"])), (CALL.chars().count().div_ceil(4) + 1) as f64, "the pieces of the call and the end token");
         // streamed: a chunk with the function (its id), chunks of arguments, the finish; nothing as content; the same call
         let (st, body) = call(addr, "/v1/chat/completions", &chat_body(",\"stream\":true,\"stream_options\":{\"include_usage\":true}"));
@@ -2960,13 +3457,31 @@ mod tests {
         assert_eq!(usage, Some((CALL.chars().count().div_ceil(4) + 1) as f64));
         // the first chunk of the call names the function and has no arguments; the rest have no id
         let ev = events(&body);
-        let starts: Vec<&Value> = ev.iter().filter_map(|e| e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("delta")).and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).and_then(|t| t.first())).collect();
-        assert!(starts[0].get("id").is_some() && at(starts[0], &["function"]).get("arguments").is_none() && starts[1..].iter().all(|t| t.get("id").is_none()), "{starts:?}");
+        let starts: Vec<&Value> = ev
+            .iter()
+            .filter_map(|e| {
+                e.get("choices")
+                    .and_then(|c| c.as_array())
+                    .and_then(|c| c.first())
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("tool_calls"))
+                    .and_then(|t| t.as_array())
+                    .and_then(|t| t.first())
+            })
+            .collect();
+        assert!(
+            starts[0].get("id").is_some() && at(starts[0], &["function"]).get("arguments").is_none() && starts[1..].iter().all(|t| t.get("id").is_none()),
+            "{starts:?}"
+        );
         // an Open WebUI chat: every request carries its tools, and the model answers in text (a normal reply, whole and streamed)
         let talk = serve_script("The weather in Paris is sunny.");
         let (st, body) = call(talk, "/v1/chat/completions", &chat_body(""));
         let d = json::parse(&body).unwrap();
-        assert_eq!((st, at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (200, Some("The weather in Paris is sunny."), Some("stop")), "{body}");
+        assert_eq!(
+            (st, at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()),
+            (200, Some("The weather in Paris is sunny."), Some("stop")),
+            "{body}"
+        );
         assert!(at(&d, &["choices", "0", "message"]).get("tool_calls").is_none());
         let (_, body) = call(talk, "/v1/chat/completions", &chat_body(",\"stream\":true"));
         let (_, content, calls, finishes, _) = put_together(&body);
@@ -2975,7 +3490,10 @@ mod tests {
         let both = serve_script(&format!("Let me look.\n{CALL}"));
         let (_, body) = call(both, "/v1/chat/completions", &chat_body(""));
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some("Let me look.\n"), Some("tool_calls")));
+        assert_eq!(
+            (at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()),
+            (Some("Let me look.\n"), Some("tool_calls"))
+        );
         let (_, body) = call(both, "/v1/chat/completions", &chat_body(",\"stream\":true"));
         let (_, content, calls, finishes, _) = put_together(&body);
         assert_eq!((content.as_str(), calls.len(), finishes), ("Let me look.\n", 1, vec!["tool_calls".to_string()]));
@@ -2983,17 +3501,33 @@ mod tests {
         let thought = serve_script(&format!("<think>\nParis, so the weather tool.\n</think>\n\n{CALL}"));
         let (_, body) = call(thought, "/v1/chat/completions", &chat_body(""));
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "message", "reasoning_content"]).as_str(), at(&d, &["choices", "0", "message", "reasoning"]).as_str(), at(&d, &["choices", "0", "message", "content"])), (Some("Paris, so the weather tool."), Some("Paris, so the weather tool."), &Value::Null), "{body}");
+        assert_eq!(
+            (
+                at(&d, &["choices", "0", "message", "reasoning_content"]).as_str(),
+                at(&d, &["choices", "0", "message", "reasoning"]).as_str(),
+                at(&d, &["choices", "0", "message", "content"])
+            ),
+            (Some("Paris, so the weather tool."), Some("Paris, so the weather tool."), &Value::Null),
+            "{body}"
+        );
         assert_eq!(at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(), Some("get_weather"));
         let (_, body) = call(thought, "/v1/chat/completions", &chat_body(",\"stream\":true"));
         let (think, content, calls, _, _) = put_together(&body);
         assert_eq!((think.as_str(), content.as_str(), calls.len()), ("Paris, so the weather tool.", "", 1), "{body}");
         // a block that is not a call is text, never an error
-        for text in ["<tool_call>\nnot json\n</tool_call>", "<tool_call>\n{\"name\": \"get_weather\"}\n</tool_call>", "Ok <tool_call>\n{\"name\": \"f\", \"arguments\": {"] {
+        for text in [
+            "<tool_call>\nnot json\n</tool_call>",
+            "<tool_call>\n{\"name\": \"get_weather\"}\n</tool_call>",
+            "Ok <tool_call>\n{\"name\": \"f\", \"arguments\": {",
+        ] {
             let bad = serve_script(text);
             let (st, body) = call(bad, "/v1/chat/completions", &chat_body(""));
             let d = json::parse(&body).unwrap();
-            assert_eq!((st, at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (200, Some(text), Some("stop")), "{text}: {body}");
+            assert_eq!(
+                (st, at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()),
+                (200, Some(text), Some("stop")),
+                "{text}: {body}"
+            );
             assert!(at(&d, &["choices", "0", "message"]).get("tool_calls").is_none());
         }
         let bad = serve_script("<tool_call>\nnot json\n</tool_call>");
@@ -3019,15 +3553,31 @@ mod tests {
         let d = json::parse(&body).unwrap();
         for i in 0..2 {
             let c = at(&d, &["choices", &i.to_string()]);
-            assert_eq!((at(c, &["finish_reason"]).as_str(), at(c, &["message", "tool_calls"]).as_array().unwrap().len(), at(c, &["message", "tool_calls", "0", "function", "name"]).as_str()), (Some("tool_calls"), 1, Some("get_weather")), "{body}");
+            assert_eq!(
+                (
+                    at(c, &["finish_reason"]).as_str(),
+                    at(c, &["message", "tool_calls"]).as_array().unwrap().len(),
+                    at(c, &["message", "tool_calls", "0", "function", "name"]).as_str()
+                ),
+                (Some("tool_calls"), 1, Some("get_weather")),
+                "{body}"
+            );
         }
-        assert_ne!(at(&d, &["choices", "0", "message", "tool_calls", "0", "id"]), at(&d, &["choices", "1", "message", "tool_calls", "0", "id"]), "each call has an id of its own");
+        assert_ne!(
+            at(&d, &["choices", "0", "message", "tool_calls", "0", "id"]),
+            at(&d, &["choices", "1", "message", "tool_calls", "0", "id"]),
+            "each call has an id of its own"
+        );
         let (_, body) = call(addr, "/v1/chat/completions", &chat_body(&format!("{pair},\"stream\":true,\"stream_options\":{{\"include_usage\":true}}")));
         let (mut per, mut finishes) = (vec![0usize; 2], vec![0usize; 2]);
         for e in events(&body) {
             if let Some(c) = e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()) {
                 let i = f64_of(at(c, &["index"])) as usize;
-                per[i] += c.get("delta").and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).map_or(0, |t| t.iter().filter(|x| x.get("id").is_some()).count());
+                per[i] += c
+                    .get("delta")
+                    .and_then(|d| d.get("tool_calls"))
+                    .and_then(|t| t.as_array())
+                    .map_or(0, |t| t.iter().filter(|x| x.get("id").is_some()).count());
                 finishes[i] += (c.get("finish_reason").and_then(Value::as_str) == Some("tool_calls")) as usize;
             }
         }
@@ -3037,7 +3587,10 @@ mod tests {
         let d = json::parse(&body).unwrap();
         assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some(CALL), Some("stop")));
         // refused, in vLLM's words
-        for (extra, want) in [(",\"tool_choice\":\"sometimes\"", "Invalid value for `tool_choice`"), (",\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"nope\"}}", "does not match any of the specified `tools`")] {
+        for (extra, want) in [
+            (",\"tool_choice\":\"sometimes\"", "Invalid value for `tool_choice`"),
+            (",\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"nope\"}}", "does not match any of the specified `tools`"),
+        ] {
             let (st, body) = call(addr, "/v1/chat/completions", &chat_body(extra));
             assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
         }
@@ -3056,8 +3609,18 @@ mod tests {
         let (st, body) = call(addr, "/v1/chat/completions", &chat_body(named));
         assert_eq!(st, 200, "{body}");
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "content"]).as_str()), (Some("stop"), Some("")), "{body}");
-        assert_eq!((at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()), (Some("get_weather"), Some("{\"city\": \"Paris\"}")));
+        assert_eq!(
+            (at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "content"]).as_str()),
+            (Some("stop"), Some("")),
+            "{body}"
+        );
+        assert_eq!(
+            (
+                at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(),
+                at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()
+            ),
+            (Some("get_weather"), Some("{\"city\": \"Paris\"}"))
+        );
         let (_, body) = call(addr, "/v1/chat/completions", &chat_body(&format!("{named},\"stream\":true")));
         let (_, content, calls, finishes, _) = put_together(&body);
         assert_eq!((content.as_str(), finishes), ("", vec!["stop".to_string()]));
@@ -3066,7 +3629,11 @@ mod tests {
         let any = serve_script("get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>");
         let (_, body) = call(any, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"required\""));
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str()), (Some("tool_calls"), Some("get_weather")), "{body}");
+        assert_eq!(
+            (at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str()),
+            (Some("tool_calls"), Some("get_weather")),
+            "{body}"
+        );
         let (_, body) = call(any, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"required\",\"stream\":true"));
         let (_, _, calls, finishes, _) = put_together(&body);
         assert_eq!((finishes, calls[0].1.as_str(), calls[0].2.as_str()), (vec!["tool_calls".to_string()], "get_weather", "{\"city\": \"Paris\"}"));
@@ -3089,7 +3656,16 @@ mod tests {
     /// its name, a required one's through `<function=`) at the end of the prompt, the thinking closed before it.
     #[test]
     fn the_prompt_of_a_request_with_xml_tools() {
-        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(qwen35_template()).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let shared = Shared {
+            tok: crate::tok::tests::toy(&["x"]),
+            chat: Some(Chat::from_template(qwen35_template()).unwrap()),
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
             let r = request_of(&v, 4096, &Params::default());
@@ -3099,17 +3675,25 @@ mod tests {
         let head = "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n";
         let msgs = r#""messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"Weather in Paris?"}]"#;
         let (t, thinking, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}]}}"));
-        assert!(t.starts_with(head) && t.ends_with("</IMPORTANT>\n\nBe brief.<|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"), "{t}");
+        assert!(
+            t.starts_with(head)
+                && t.ends_with(
+                    "</IMPORTANT>\n\nBe brief.<|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+                ),
+            "{t}"
+        );
         assert_eq!((thinking, prefix.as_str()), (false, ""));
         // a call and its result in the conversation (the arguments a string, as Open WebUI sends them): the call as the template writes it, the arguments an object
         let conv = r#""messages":[{"role":"user","content":"Weather in Paris?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"sunny, 20C"}]"#;
         let (t, _, _) = text(&format!("{{{conv},\"tools\":[{WEATHER}]}}"));
         assert!(t.contains("<|im_start|>assistant\n<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nsunny, 20C\n</tool_response><|im_end|>\n"), "{t}");
         // a forced call: the thinking closed in the prompt and the call opened
-        let (t, thinking, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
+        let (t, thinking, prefix) =
+            text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":{{\"type\":\"function\",\"function\":{{\"name\":\"get_weather\"}}}}}}"));
         assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=get_weather>\n"), "{t}");
         assert_eq!((thinking, prefix.as_str()), (false, "<tool_call>\n<function=get_weather>\n"));
-        let (t, _, prefix) = text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":\"required\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}"));
+        let (t, _, prefix) =
+            text(&format!("{{{msgs},\"tools\":[{WEATHER}],\"tool_choice\":\"required\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}"));
         assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function="), "{t}");
         assert_eq!(prefix, "<tool_call>\n<function=");
     }
@@ -3129,30 +3713,55 @@ mod tests {
         assert_eq!(tc.len(), 1);
         let id = at(&tc[0], &["id"]).as_str().unwrap();
         assert!(id.starts_with("chatcmpl-tool-") && id.len() == 30, "{id}");
-        assert_eq!((at(&tc[0], &["type"]).as_str(), at(&tc[0], &["function", "name"]).as_str(), at(&tc[0], &["function", "arguments"]).as_str()), (Some("function"), Some("get_weather"), Some("{\"city\": \"Paris\"}")));
-        assert_eq!(f64_of(at(&d, &["usage", "completion_tokens"])), (XML_CALL.chars().count().div_ceil(4) + 1) as f64, "the pieces of the call and the end token");
+        assert_eq!(
+            (at(&tc[0], &["type"]).as_str(), at(&tc[0], &["function", "name"]).as_str(), at(&tc[0], &["function", "arguments"]).as_str()),
+            (Some("function"), Some("get_weather"), Some("{\"city\": \"Paris\"}"))
+        );
+        assert_eq!(
+            f64_of(at(&d, &["usage", "completion_tokens"])),
+            (XML_CALL.chars().count().div_ceil(4) + 1) as f64,
+            "the pieces of the call and the end token"
+        );
         // the types of the tool's schema
         let forecast = r#"{"type":"function","function":{"name":"forecast","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"},"metric":{"type":"boolean"},"tags":{"type":"array"}}}}}"#;
         let typed = serve_script_with("<tool_call>\n<function=forecast>\n<parameter=city>\n12\n</parameter>\n<parameter=days>\n3\n</parameter>\n<parameter=metric>\nFalse\n</parameter>\n<parameter=tags>\n[\"a\", \"é\"]\n</parameter>\n</function>\n</tool_call>", qwen35_template());
         let (_, body) = call(typed, "/v1/chat/completions", &chat_body_with(forecast, ""));
-        assert_eq!(at(&json::parse(&body).unwrap(), &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str(), Some("{\"city\": \"12\", \"days\": 3, \"metric\": false, \"tags\": [\"a\", \"é\"]}"), "{body}");
+        assert_eq!(
+            at(&json::parse(&body).unwrap(), &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str(),
+            Some("{\"city\": \"12\", \"days\": 3, \"metric\": false, \"tags\": [\"a\", \"é\"]}"),
+            "{body}"
+        );
         // an ordinary answer, with the tools offered
         let talk = serve_script_with("The weather in Paris is sunny.", qwen35_template());
         let (_, body) = call(talk, "/v1/chat/completions", &chat_body(""));
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some("The weather in Paris is sunny."), Some("stop")), "{body}");
+        assert_eq!(
+            (at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()),
+            (Some("The weather in Paris is sunny."), Some("stop")),
+            "{body}"
+        );
         assert!(at(&d, &["choices", "0", "message"]).get("tool_calls").is_none());
         // text before the call is content
         let both = serve_script_with(&format!("Let me look.\n\n{XML_CALL}"), qwen35_template());
         let (_, body) = call(both, "/v1/chat/completions", &chat_body(""));
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some("Let me look.\n\n"), Some("tool_calls")));
+        assert_eq!(
+            (at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()),
+            (Some("Let me look.\n\n"), Some("tool_calls"))
+        );
         // what is not a call is text, never an error: a JSON call (Qwen3's) in a block, a function with no `>`
-        for text in ["<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>", "Ok <tool_call>\n<function=get_weather\n</tool_call>"] {
+        for text in [
+            "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>",
+            "Ok <tool_call>\n<function=get_weather\n</tool_call>",
+        ] {
             let bad = serve_script_with(text, qwen35_template());
             let (st, body) = call(bad, "/v1/chat/completions", &chat_body(""));
             let d = json::parse(&body).unwrap();
-            assert_eq!((st, at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (200, Some(text), Some("stop")), "{text}: {body}");
+            assert_eq!(
+                (st, at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()),
+                (200, Some(text), Some("stop")),
+                "{text}: {body}"
+            );
             assert!(at(&d, &["choices", "0", "message"]).get("tool_calls").is_none());
         }
         // two calls: both, or the first where parallel calls are off
@@ -3166,7 +3775,10 @@ mod tests {
         // tool_choice none: the tools were shown, the text stays text
         let (_, body) = call(addr, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"none\""));
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (Some(XML_CALL), Some("stop")));
+        assert_eq!(
+            (at(&d, &["choices", "0", "message", "content"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()),
+            (Some(XML_CALL), Some("stop"))
+        );
     }
 
     /// The same calls streamed: a chunk with the function (its id), chunks of arguments (the `{`, each parameter when its end is written, the `}`), the finish; the text before the call as content; the thinking apart; what is not a
@@ -3183,13 +3795,36 @@ mod tests {
         assert_eq!(usage, Some((XML_CALL.chars().count().div_ceil(4) + 1) as f64));
         // the first chunk of the call names the function and has no arguments; the rest have no id
         let ev = events(&body);
-        let starts: Vec<&Value> = ev.iter().filter_map(|e| e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("delta")).and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).and_then(|t| t.first())).collect();
-        assert!(starts[0].get("id").is_some() && at(starts[0], &["function"]).get("arguments").is_none() && starts[1..].iter().all(|t| t.get("id").is_none()), "{starts:?}");
+        let starts: Vec<&Value> = ev
+            .iter()
+            .filter_map(|e| {
+                e.get("choices")
+                    .and_then(|c| c.as_array())
+                    .and_then(|c| c.first())
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("tool_calls"))
+                    .and_then(|t| t.as_array())
+                    .and_then(|t| t.first())
+            })
+            .collect();
+        assert!(
+            starts[0].get("id").is_some() && at(starts[0], &["function"]).get("arguments").is_none() && starts[1..].iter().all(|t| t.get("id").is_none()),
+            "{starts:?}"
+        );
         // the arguments come as the parameters are written, a chunk each: the `{`, then `"city": "Paris"`, then the `}`
         let pieces: Vec<&str> = starts.iter().filter_map(|t| t.get("function").and_then(|f| f.get("arguments")).and_then(Value::as_str)).collect();
         assert_eq!(pieces, vec!["{", "\"city\": \"Paris\"", "}"]);
         for e in &ev {
-            assert!(e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("delta")).and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).map_or(true, |t| t.len() == 1), "a chunk of one update: {e:?}");
+            assert!(
+                e.get("choices")
+                    .and_then(|c| c.as_array())
+                    .and_then(|c| c.first())
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("tool_calls"))
+                    .and_then(|t| t.as_array())
+                    .map_or(true, |t| t.len() == 1),
+                "a chunk of one update: {e:?}"
+            );
         }
         // the types of the tool's schema, as in the whole reply
         let forecast = r#"{"type":"function","function":{"name":"forecast","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"},"metric":{"type":"boolean"},"tags":{"type":"array"}}}}}"#;
@@ -3205,9 +3840,16 @@ mod tests {
         let both = serve_script_with(&format!("<think>\nParis, so the weather tool.\n</think>\n\nLet me look.\n\n{XML_CALL}"), qwen35_template());
         let (_, body) = call(both, "/v1/chat/completions", &chat_body(",\"stream\":true"));
         let (think, content, calls, finishes, _) = put_together(&body);
-        assert_eq!((think.as_str(), content.trim(), calls.len(), finishes), ("Paris, so the weather tool.", "Let me look.", 1, vec!["tool_calls".to_string()]), "{body}");
+        assert_eq!(
+            (think.as_str(), content.trim(), calls.len(), finishes),
+            ("Paris, so the weather tool.", "Let me look.", 1, vec!["tool_calls".to_string()]),
+            "{body}"
+        );
         // what is not a call is text, never an error
-        for text in ["<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>", "Ok <tool_call>\n<function=get_weather\n</tool_call>"] {
+        for text in [
+            "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>",
+            "Ok <tool_call>\n<function=get_weather\n</tool_call>",
+        ] {
             let bad = serve_script_with(text, qwen35_template());
             let (_, body) = call(bad, "/v1/chat/completions", &chat_body(",\"stream\":true"));
             let (_, content, calls, finishes, _) = put_together(&body);
@@ -3226,7 +3868,11 @@ mod tests {
         for e in events(&body) {
             if let Some(c) = e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()) {
                 let i = f64_of(at(c, &["index"])) as usize;
-                per[i] += c.get("delta").and_then(|d| d.get("tool_calls")).and_then(|t| t.as_array()).map_or(0, |t| t.iter().filter(|x| x.get("id").is_some()).count());
+                per[i] += c
+                    .get("delta")
+                    .and_then(|d| d.get("tool_calls"))
+                    .and_then(|t| t.as_array())
+                    .map_or(0, |t| t.iter().filter(|x| x.get("id").is_some()).count());
                 finishes[i] += (c.get("finish_reason").and_then(Value::as_str) == Some("tool_calls")) as usize;
             }
         }
@@ -3242,8 +3888,18 @@ mod tests {
         let (st, body) = call(addr, "/v1/chat/completions", &chat_body(named));
         assert_eq!(st, 200, "{body}");
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "content"]).as_str()), (Some("stop"), Some("")), "{body}");
-        assert_eq!((at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()), (Some("get_weather"), Some("{\"city\": \"Paris\"}")));
+        assert_eq!(
+            (at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "content"]).as_str()),
+            (Some("stop"), Some("")),
+            "{body}"
+        );
+        assert_eq!(
+            (
+                at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(),
+                at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()
+            ),
+            (Some("get_weather"), Some("{\"city\": \"Paris\"}"))
+        );
         let (_, body) = call(addr, "/v1/chat/completions", &chat_body(&format!("{named},\"stream\":true")));
         let (_, content, calls, finishes, _) = put_together(&body);
         assert_eq!((content.as_str(), finishes), ("", vec!["stop".to_string()]));
@@ -3252,7 +3908,15 @@ mod tests {
         let any = serve_script_with("get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>", qwen35_template());
         let (_, body) = call(any, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"required\""));
         let d = json::parse(&body).unwrap();
-        assert_eq!((at(&d, &["choices", "0", "finish_reason"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(), at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()), (Some("tool_calls"), Some("get_weather"), Some("{\"city\": \"Paris\"}")), "{body}");
+        assert_eq!(
+            (
+                at(&d, &["choices", "0", "finish_reason"]).as_str(),
+                at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "name"]).as_str(),
+                at(&d, &["choices", "0", "message", "tool_calls", "0", "function", "arguments"]).as_str()
+            ),
+            (Some("tool_calls"), Some("get_weather"), Some("{\"city\": \"Paris\"}")),
+            "{body}"
+        );
         let (_, body) = call(any, "/v1/chat/completions", &chat_body(",\"tool_choice\":\"required\",\"stream\":true"));
         let (_, _, calls, finishes, _) = put_together(&body);
         assert_eq!((finishes, calls[0].1.as_str(), calls[0].2.as_str()), (vec!["tool_calls".to_string()], "get_weather", "{\"city\": \"Paris\"}"));
@@ -3264,13 +3928,17 @@ mod tests {
     fn open_webui_requests() {
         let tools = r#"[{"type":"function","function":{"name":"search_web","description":"Search the web for information.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"The search query"},"count":{"type":"integer","description":"Results to return","default":5}},"required":["query"]}}},{"type":"function","function":{"name":"get_current_timestamp","description":"Get the current time.","parameters":{"type":"object","properties":{}}}}]"#;
         let addr = serve_script("It is the capital.");
-        let chat = format!(r#"{{"stream":true,"model":"Qwen/Qwen3-8B","messages":[{{"role":"system","content":"You are a helpful assistant."}},{{"role":"user","content":"What is the capital of France?"}}],"tools":{tools},"stream_options":{{"include_usage":true}},"temperature":0.7,"top_p":0.9,"max_tokens":64}}"#);
+        let chat = format!(
+            r#"{{"stream":true,"model":"Qwen/Qwen3-8B","messages":[{{"role":"system","content":"You are a helpful assistant."}},{{"role":"user","content":"What is the capital of France?"}}],"tools":{tools},"stream_options":{{"include_usage":true}},"temperature":0.7,"top_p":0.9,"max_tokens":64}}"#
+        );
         let (st, body) = call(addr, "/v1/chat/completions", &chat);
         assert_eq!(st, 200, "{body}");
         let (_, content, calls, finishes, usage) = put_together(&body);
         assert_eq!((content.as_str(), calls.len(), finishes, usage.is_some()), ("It is the capital.", 0, vec!["stop".to_string()], true));
         // the follow-up, with the call and its result in the history
-        let follow = format!(r#"{{"stream":true,"model":"Qwen/Qwen3-8B","messages":[{{"role":"user","content":"Search for glyd"}},{{"role":"assistant","content":"","tool_calls":[{{"id":"call_ab12","type":"function","function":{{"name":"search_web","arguments":"{{\"query\": \"glyd\"}}"}}}}]}},{{"role":"tool","tool_call_id":"call_ab12","content":"{{\"results\": [\"a\", \"b\"]}}"}}],"tools":{tools},"stream_options":{{"include_usage":true}}}}"#);
+        let follow = format!(
+            r#"{{"stream":true,"model":"Qwen/Qwen3-8B","messages":[{{"role":"user","content":"Search for glyd"}},{{"role":"assistant","content":"","tool_calls":[{{"id":"call_ab12","type":"function","function":{{"name":"search_web","arguments":"{{\"query\": \"glyd\"}}"}}}}]}},{{"role":"tool","tool_call_id":"call_ab12","content":"{{\"results\": [\"a\", \"b\"]}}"}}],"tools":{tools},"stream_options":{{"include_usage":true}}}}"#
+        );
         let (st, body) = call(addr, "/v1/chat/completions", &follow);
         assert_eq!(st, 200, "{body}");
         assert_eq!(put_together(&body).1, "It is the capital.");
@@ -3315,8 +3983,14 @@ mod tests {
             (",\"allowed_token_ids\":[]", "allowed_token_ids is not None and empty!"),
             (",\"allowed_token_ids\":[3000]", "in allowed_token_ids contain out-of-vocab"),
             (",\"seed\":1.5", "`seed` must be an integer."),
-            (",\"response_format\":{\"type\":\"json_object\"}", "response_format of type json_object (constrained decoding) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"),
-            (",\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"x\",\"schema\":{}}}", "response_format of type json_schema (constrained decoding) is not supported"),
+            (
+                ",\"response_format\":{\"type\":\"json_object\"}",
+                "response_format of type json_object (constrained decoding) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)",
+            ),
+            (
+                ",\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"x\",\"schema\":{}}}",
+                "response_format of type json_schema (constrained decoding) is not supported",
+            ),
             (",\"structured_outputs\":{\"json\":{}}", "structured_outputs (constrained decoding) is not supported by this engine yet"),
             (",\"guided_json\":{}", "guided_json (constrained decoding) is not supported"),
             (",\"bad_words\":[\"x\"]", "bad_words is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"),
@@ -3332,7 +4006,21 @@ mod tests {
             assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
         }
         // what is not asked for is not refused: null, and the value that means it
-        for ok in [",\"response_format\":{\"type\":\"text\"}", ",\"response_format\":null", ",\"use_beam_search\":false", ",\"priority\":0", ",\"bad_words\":[]", ",\"suffix\":null", ",\"best_of\":1", ",\"user\":\"u\"", ",\"temperature\":0.001", ",\"top_k\":-1", ",\"stop\":null", ",\"stop\":[\"zz\"]", ",\"n\":1"] {
+        for ok in [
+            ",\"response_format\":{\"type\":\"text\"}",
+            ",\"response_format\":null",
+            ",\"use_beam_search\":false",
+            ",\"priority\":0",
+            ",\"bad_words\":[]",
+            ",\"suffix\":null",
+            ",\"best_of\":1",
+            ",\"user\":\"u\"",
+            ",\"temperature\":0.001",
+            ",\"top_k\":-1",
+            ",\"stop\":null",
+            ",\"stop\":[\"zz\"]",
+            ",\"n\":1",
+        ] {
             let (st, body) = ask(ok);
             assert_eq!(st, 200, "{ok}: {body}");
         }
@@ -3344,7 +4032,8 @@ mod tests {
             (",\"reasoning_effort\":\"extreme\"", "reasoning_effort"),
             (",\"documents\":[1]", "`documents`"),
         ] {
-            let (st, body) = call(addr, "/v1/chat/completions", &format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}],\"max_tokens\":4{extra}}}"));
+            let (st, body) =
+                call(addr, "/v1/chat/completions", &format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}],\"max_tokens\":4{extra}}}"));
             assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
         }
         // a temperature above 0 and below 0.01 is 0.01 (it is not greedy: n of several is allowed)
@@ -3368,14 +4057,24 @@ mod tests {
         assert_eq!(text(",\"stop\":[\"END\"],\"include_stop_str_in_output\":true"), "Hello world END");
         assert_eq!(text(",\"echo\":true,\"stop\":[\"END\"]"), "hiHello world ");
         // streamed with the prompt echoed: its text first
-        let (_, body) = call(addr, "/v1/completions", "{\"prompt\":\"hi\",\"max_tokens\":100,\"temperature\":0,\"echo\":true,\"stream\":true,\"stop\":[\"END\"]}");
-        let built: String = events(&body).iter().filter_map(|e| e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("text")).and_then(Value::as_str).map(str::to_string)).collect();
+        let (_, body) =
+            call(addr, "/v1/completions", "{\"prompt\":\"hi\",\"max_tokens\":100,\"temperature\":0,\"echo\":true,\"stream\":true,\"stop\":[\"END\"]}");
+        let built: String = events(&body)
+            .iter()
+            .filter_map(|e| {
+                e.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).and_then(|c| c.get("text")).and_then(Value::as_str).map(str::to_string)
+            })
+            .collect();
         assert_eq!(built, "hiHello world ");
         // the length a plain completion has where it gives none (16 tokens: the script is longer), and the id it asked for
         let long = serve_script(&"ab".repeat(40));
         let (_, body) = call(long, "/v1/completions", "{\"prompt\":\"hi\",\"temperature\":0,\"request_id\":\"mine-7\"}");
         let d = json::parse(&body).unwrap();
-        assert_eq!((f64_of(at(&d, &["usage", "completion_tokens"])), at(&d, &["id"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()), (16.0, Some("cmpl-mine-7"), Some("length")), "{body}");
+        assert_eq!(
+            (f64_of(at(&d, &["usage", "completion_tokens"])), at(&d, &["id"]).as_str(), at(&d, &["choices", "0", "finish_reason"]).as_str()),
+            (16.0, Some("cmpl-mine-7"), Some("length")),
+            "{body}"
+        );
         let (_, body) = call(long, "/v1/chat/completions", "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"temperature\":0}");
         assert!(f64_of(at(&json::parse(&body).unwrap(), &["usage", "completion_tokens"])) > 16.0, "a chat has the context for its length");
         // the prompts of a plain completion: a string, a list of strings, token ids, a list of them: each its own choice, the prompt tokens added up
@@ -3383,7 +4082,15 @@ mod tests {
             let (st, body) = call(addr, "/v1/completions", &format!("{{\"prompt\":{prompt},\"max_tokens\":3,\"temperature\":0}}"));
             assert_eq!(st, 200, "{prompt}: {body}");
             let d = json::parse(&body).unwrap();
-            (at(&d, &["choices"]).as_array().unwrap().iter().map(|c| format!("{}:{}", f64_of(at(c, &["index"])), at(c, &["text"]).as_str().unwrap().chars().take(5).collect::<String>())).collect(), f64_of(at(&d, &["usage", "prompt_tokens"])))
+            (
+                at(&d, &["choices"])
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| format!("{}:{}", f64_of(at(c, &["index"])), at(c, &["text"]).as_str().unwrap().chars().take(5).collect::<String>()))
+                    .collect(),
+                f64_of(at(&d, &["usage", "prompt_tokens"])),
+            )
         };
         let (one, p1) = tokens(r#""one two three""#);
         assert_eq!((one.len(), p1), (1, 3.0));
@@ -3397,7 +4104,14 @@ mod tests {
         let (_, body) = call(addr, "/v1/completions", r#"{"prompt":["a b","c d"],"n":2,"max_tokens":2,"temperature":1.0,"top_k":5,"seed":3}"#);
         let idx: Vec<f64> = at(&json::parse(&body).unwrap(), &["choices"]).as_array().unwrap().iter().map(|c| f64_of(at(c, &["index"]))).collect();
         assert_eq!(idx, vec![0.0, 1.0, 2.0, 3.0]);
-        for (prompt, want) in [("\"\"", "Either prompt or prompt_embeds must be provided and non-empty."), ("[]", "Either prompt or prompt_embeds must be provided and non-empty."), ("[1, \"a\"]", "`prompt` must be a string"), ("[[1], \"a\"]", "`prompt` must be a string"), ("[99999]", "not a token of the vocabulary"), ("5", "`prompt` must be a string")] {
+        for (prompt, want) in [
+            ("\"\"", "Either prompt or prompt_embeds must be provided and non-empty."),
+            ("[]", "Either prompt or prompt_embeds must be provided and non-empty."),
+            ("[1, \"a\"]", "`prompt` must be a string"),
+            ("[[1], \"a\"]", "`prompt` must be a string"),
+            ("[99999]", "not a token of the vocabulary"),
+            ("5", "`prompt` must be a string"),
+        ] {
             let (st, body) = call(addr, "/v1/completions", &format!("{{\"prompt\":{prompt}}}"));
             assert!(st == 400 && body.contains(want), "{prompt}: {st} {body}");
         }
@@ -3420,9 +4134,22 @@ mod tests {
         let d = json::parse(&body).unwrap();
         let cut = at(&d, &["choices", "0", "text"]).as_str().unwrap().to_string();
         let first = words.iter().position(|w| *w == format!("w{stop}")).unwrap();
-        assert_eq!((cut.split_whitespace().count(), at(&d, &["choices", "0", "finish_reason"]).as_str(), f64_of(at(&d, &["usage", "completion_tokens"]))), (first, Some("stop"), (first + 1) as f64), "{cut:?} {body}");
+        assert_eq!(
+            (cut.split_whitespace().count(), at(&d, &["choices", "0", "finish_reason"]).as_str(), f64_of(at(&d, &["usage", "completion_tokens"]))),
+            (first, Some("stop"), (first + 1) as f64),
+            "{cut:?} {body}"
+        );
         // a chat that is not given the generation prompt, and effort none that closes the thinking
-        let shared = Shared { tok: crate::tok::tests::toy(&["x"]), chat: Some(Chat::from_template(&qwen3_template()).unwrap()), name: "m".into(), defaults: Params::default(), window: 4096, vocab: 2048, thinking: None, refused: &[] };
+        let shared = Shared {
+            tok: crate::tok::tests::toy(&["x"]),
+            chat: Some(Chat::from_template(&qwen3_template()).unwrap()),
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        };
         let prompt_text = |body: &str| {
             let v = json::parse(body).unwrap();
             chat_text_of(&shared, &v, &api_of(&v, true, 2048).unwrap(), &request_of(&v, 4096, &Params::default())).unwrap().0
@@ -3432,7 +4159,11 @@ mod tests {
         assert!(prompt_text(&format!("{{{msgs},\"add_generation_prompt\":false}}")).ends_with("hi<|im_end|>\n"));
         assert!(prompt_text(&format!("{{{msgs},\"reasoning_effort\":\"none\"}}")).ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
         assert!(prompt_text(&format!("{{{msgs},\"reasoning_effort\":\"high\"}}")).ends_with("<|im_start|>assistant\n"));
-        assert!(prompt_text(&format!("{{{msgs},\"reasoning_effort\":\"none\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}")).ends_with("<|im_start|>assistant\n"), "a variable the request names wins over the effort");
+        assert!(
+            prompt_text(&format!("{{{msgs},\"reasoning_effort\":\"none\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}"))
+                .ends_with("<|im_start|>assistant\n"),
+            "a variable the request names wins over the effort"
+        );
     }
 
     /// /v1/glyd/info, behind the key: what `serve` set (the model, its levels), the build, the limits, the fields read, of no effect and refused (the engine's own refusals among them), whether the engine has
@@ -3440,26 +4171,43 @@ mod tests {
     #[test]
     fn the_server_says_what_it_is_and_what_it_holds() {
         let held = crate::dev::Held { weights: 5 << 30, kv: 1 << 28, state: 1 << 20, kv_type: "bf16", state_type: "fp32" };
-        let about = vec![("model", tools::obj(vec![("id", Value::from("Qwen/Qwen3.5-9B:swift"))])), ("level", tools::obj(vec![("requested", Value::from("swift")), ("effective", Value::from("swift"))]))];
+        let about = vec![
+            ("model", tools::obj(vec![("id", Value::from("Qwen/Qwen3.5-9B:swift"))])),
+            ("level", tools::obj(vec![("requested", Value::from("swift")), ("effective", Value::from("swift"))])),
+        ];
         assert!(INFO.set(Info { about, gpu: None, held: Some(held), concurrency: 1, window: 4096, refused: ONE_AT_A_TIME, started: 1.5 }).is_ok());
         let (tx, _rx) = std::sync::mpsc::channel();
         let addr = listen("127.0.0.1:0", "Qwen/Qwen3.5-9B:swift", 4096, Some("k".into()), false, tx).unwrap();
         assert_eq!(ask(addr, "GET", "/v1/glyd/info", &[("Host", "x")]).0, 401);
         let info = || json::parse(&ask(addr, "GET", "/v1/glyd/info", &[("Host", "x"), ("Authorization", "Bearer k")]).2).unwrap();
         let d = info();
-        assert_eq!((at(&d, &["object"]).as_str(), at(&d, &["api"]).as_str(), at(&d, &["model", "id"]).as_str(), at(&d, &["level", "effective"]).as_str()), (Some("glyd.info"), Some(API), Some("Qwen/Qwen3.5-9B:swift"), Some("swift")));
+        assert_eq!(
+            (at(&d, &["object"]).as_str(), at(&d, &["api"]).as_str(), at(&d, &["model", "id"]).as_str(), at(&d, &["level", "effective"]).as_str()),
+            (Some("glyd.info"), Some(API), Some("Qwen/Qwen3.5-9B:swift"), Some("swift"))
+        );
         assert_eq!(at(&d, &["build", "version"]).as_str(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!((f64_of(at(&d, &["limits", "context_tokens"])), f64_of(at(&d, &["limits", "concurrency"]))), (4096.0, 1.0));
         let list = |k: &str| at(&d, &["fields", k]).as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
         for f in ["logprobs", "min_tokens", "guided_json", "use_beam_search"] {
             assert!(list("refused").contains(&f.to_string()), "{f}");
         }
-        assert!(!list("read").contains(&"logprobs".to_string()) && list("read").contains(&"max_tokens".to_string()) && list("no_effect").contains(&"user".to_string()));
+        assert!(
+            !list("read").contains(&"logprobs".to_string())
+                && list("read").contains(&"max_tokens".to_string())
+                && list("no_effect").contains(&"user".to_string())
+        );
         assert!(matches!(at(&d, &["state"]).as_str(), Some("ready" | "failed")));
         let m = at(&d, &["memory"]);
-        assert_eq!((f64_of(at(m, &["weights_bytes"])), f64_of(at(m, &["kv_bytes"])), f64_of(at(m, &["state_bytes"]))), ((5u64 << 30) as f64, (1u64 << 28) as f64, (1u64 << 20) as f64));
+        assert_eq!(
+            (f64_of(at(m, &["weights_bytes"])), f64_of(at(m, &["kv_bytes"])), f64_of(at(m, &["state_bytes"]))),
+            ((5u64 << 30) as f64, (1u64 << 28) as f64, (1u64 << 20) as f64)
+        );
         let parts = ((5u64 << 30) + (1 << 28) + (1 << 20)) as f64;
-        assert_eq!(f64_of(at(m, &["scratch_bytes"])), (f64_of(at(m, &["engine_bytes"])) - parts).max(0.0), "the working memory is what the engine's buffers hold besides the model's parts");
+        assert_eq!(
+            f64_of(at(m, &["scratch_bytes"])),
+            (f64_of(at(m, &["engine_bytes"])) - parts).max(0.0),
+            "the working memory is what the engine's buffers hold besides the model's parts"
+        );
         assert!(f64_of(at(m, &["peak_bytes"])) >= f64_of(at(m, &["engine_bytes"])) && f64_of(at(m, &["peak_since"])) == 1.5);
         assert_eq!((at(m, &["gpu"]), at(m, &["device_total_bytes"]), at(m, &["device_free_bytes"])), (&Value::Null, &Value::Null, &Value::Null));
         // after a failure of the engine it says so (nothing is sure of the GPU after one), with when and what
@@ -3471,7 +4219,11 @@ mod tests {
     /// A streamed request written, and its answer read up to its first event: the reader, kept open, and the reply's id.
     fn first_event(addr: std::net::SocketAddr, body: &str) -> (BufReader<TcpStream>, String) {
         let mut c = TcpStream::connect(addr).unwrap();
-        c.write_all(format!("POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+        c.write_all(
+            format!("POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+                .as_bytes(),
+        )
+        .unwrap();
         let mut r = BufReader::new(c);
         let mut line = String::new();
         while r.read_line(&mut line).unwrap() > 0 {
@@ -3541,8 +4293,13 @@ mod tests {
         let f = Fake::new(64, 32);
         let (ran, window) = (f.prefilled.clone(), f.store.len() * crate::kv::PAGE);
         let addr = serve_fake_with(f, None, 4, false, None, ONE_AT_A_TIME);
-        let chat = |extra: &str| call(addr, "/v1/chat/completions", &format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hello there\"}}],\"temperature\":0{extra}}}"));
-        for (extra, want) in [(",\"logprobs\":true", "logprobs is not supported by the engine this model runs on yet"), (",\"min_tokens\":2", "min_tokens is not supported by the engine this model runs on yet")] {
+        let chat = |extra: &str| {
+            call(addr, "/v1/chat/completions", &format!("{{\"messages\":[{{\"role\":\"user\",\"content\":\"hello there\"}}],\"temperature\":0{extra}}}"))
+        };
+        for (extra, want) in [
+            (",\"logprobs\":true", "logprobs is not supported by the engine this model runs on yet"),
+            (",\"min_tokens\":2", "min_tokens is not supported by the engine this model runs on yet"),
+        ] {
             let (st, body) = chat(extra);
             assert!(st == 400 && body.contains(want), "{extra}: {st} {body}");
         }
@@ -3567,7 +4324,10 @@ mod tests {
         // a length the context has no room for: refused with the numbers, whichever field asks for it; one that fills the context to its last token is served
         for field in ["max_tokens", "max_completion_tokens"] {
             let (st, body) = chat(&format!(",\"{field}\":{}", window - used + 1));
-            assert!(st == 400 && body.contains(&format!("This prompt has {used} tokens and asks for up to {} more, {} in all", window - used + 1, window + 1)), "{field}: {st} {body}");
+            assert!(
+                st == 400 && body.contains(&format!("This prompt has {used} tokens and asks for up to {} more, {} in all", window - used + 1, window + 1)),
+                "{field}: {st} {body}"
+            );
         }
         let (st, body) = chat(&format!(",\"max_tokens\":{}", window - used));
         assert_eq!(st, 200, "{body}");
@@ -3587,12 +4347,29 @@ mod tests {
                 Ok((vec![7], Finish::Length))
             }
         }
-        let shared = Arc::new(Shared { tok: crate::tok::tests::toy(&["x"]), chat: None, name: "m".into(), defaults: Params::default(), window: 64, vocab: 2048, thinking: None, refused: ONE_AT_A_TIME });
+        let shared = Arc::new(Shared {
+            tok: crate::tok::tests::toy(&["x"]),
+            chat: None,
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 64,
+            vocab: 2048,
+            thinking: None,
+            refused: ONE_AT_A_TIME,
+        });
         let (tx, rx) = std::sync::mpsc::channel();
         let seq = |abort: bool| {
             let (out, events) = std::sync::mpsc::channel();
             let reply = Reply { params: Params::default(), max_new: 4, ignore_eos: false, logprobs: None, stop_ids: Vec::new() };
-            tx.send(Job::Seq(Submit { prompt: vec![1, 2], reply, out, abort: Arc::new(AtomicBool::new(abort)), resumed: Default::default(), images: Vec::new() })).unwrap();
+            tx.send(Job::Seq(Submit {
+                prompt: vec![1, 2],
+                reply,
+                out,
+                abort: Arc::new(AtomicBool::new(abort)),
+                resumed: Default::default(),
+                images: Vec::new(),
+            }))
+            .unwrap();
             events
         };
         let (gone, kept) = (seq(true), seq(false));

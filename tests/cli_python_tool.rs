@@ -186,7 +186,12 @@ fn the_tool_decides_where_there_is_one_and_is_told_which_engine_this_program_fou
         let env: Vec<(&str, &str)> = set.map(|v| ("GLYD_ENGINE", v)).into_iter().collect();
         let o = glyd(&["serve", "Qwen/Qwen3-8B", "--prompt", "hi"], &path, &t, &env);
         let engine_is = if named { exe.display().to_string() } else { set.unwrap_or("").to_string() };
-        assert_eq!(text(&o.stdout).trim(), format!("python glyd: forwarded=1 engine={engine_is} args=serve Qwen/Qwen3-8B --prompt hi"), "{set:?}: {}", text(&o.stderr));
+        assert_eq!(
+            text(&o.stdout).trim(),
+            format!("python glyd: forwarded=1 engine={engine_is} args=serve Qwen/Qwen3-8B --prompt hi"),
+            "{set:?}: {}",
+            text(&o.stderr)
+        );
         assert_eq!(text(&o.stderr), "");
     }
     // an engine beside this program is found too (a copy of this program in a folder of its own, with a stand-in beside it)
@@ -212,7 +217,10 @@ fn the_tool_decides_where_there_is_one_and_is_told_which_engine_this_program_fou
     assert_eq!((text(&o.stdout).trim(), text(&o.stderr)), ("engine: doctor", String::new()));
     // a missing model and the usage text are the tool's words
     let o = glyd(&["run", "--help"], &path, &t, &[]);
-    assert_eq!((text(&o.stdout).trim(), text(&o.stderr)), (format!("python glyd: forwarded=1 engine={} args=run --help", exe.display()).as_str(), String::new()));
+    assert_eq!(
+        (text(&o.stdout).trim(), text(&o.stderr)),
+        (format!("python glyd: forwarded=1 engine={} args=run --help", exe.display()).as_str(), String::new())
+    );
     // vLLM's flags after a lone -- reach the tool whole
     let o = glyd(&["run", "m", "--", "--max-model-len", "2048"], &path, &t, &[]);
     assert!(text(&o.stdout).contains("args=run m -- --max-model-len 2048"), "{}", text(&o.stdout));
@@ -260,7 +268,12 @@ fn a_key_and_a_token_reach_the_engine_in_its_environment_and_not_on_its_command_
     let path = format!("{}:/usr/bin:/bin", en.display());
     let o = glyd(&["serve", "Qwen/Qwen3-8B", "--port", "8001", "--api-key", "K1", "--hf-token=T1"], &path, &t, &[]);
     assert_eq!(text(&o.stdout).trim(), "engine: serve Qwen/Qwen3-8B --port 8001 key=K1 token=T1", "{}", text(&o.stderr));
-    assert!(text(&o.stderr).contains("the API key goes to the engine in GLYD_API_KEY") && text(&o.stderr).contains("the Hugging Face token goes to the engine in HF_TOKEN"), "{}", text(&o.stderr));
+    assert!(
+        text(&o.stderr).contains("the API key goes to the engine in GLYD_API_KEY")
+            && text(&o.stderr).contains("the Hugging Face token goes to the engine in HF_TOKEN"),
+        "{}",
+        text(&o.stderr)
+    );
     assert!(!text(&o.stderr).contains("K1") && !text(&o.stderr).contains("T1"), "a line said the secret: {}", text(&o.stderr));
     // no flag: the environment as it was; a flag with no value (`--hf-token` alone: the saved login) and a prompt that looks like a flag stay as they were
     let o = glyd(&["run", "m", "--prompt", "--api-key", "--hf-token"], &path, &t, &[("GLYD_API_KEY", "FROMENV")]);
@@ -279,7 +292,14 @@ fn a_rust_only_install_passes_a_models_commands_to_the_engine() {
     let en = t.join("enbin");
     engine(&en);
     let path = en.display().to_string();
-    for args in [&["fetch", "glyd/Qwen3.5-9B-swift"][..], &["verify", "glyd/Qwen3.5-9B-swift"][..], &["preflight", "Qwen/Qwen3.5-9B:swift"][..], &["costs", "glyd/Qwen3.5-9B-swift", "--predict"][..], &["supports", "m"][..], &["prepare", "m"][..]] {
+    for args in [
+        &["fetch", "glyd/Qwen3.5-9B-swift"][..],
+        &["verify", "glyd/Qwen3.5-9B-swift"][..],
+        &["preflight", "Qwen/Qwen3.5-9B:swift"][..],
+        &["costs", "glyd/Qwen3.5-9B-swift", "--predict"][..],
+        &["supports", "m"][..],
+        &["prepare", "m"][..],
+    ] {
         let o = glyd(args, &path, &t, &[]);
         assert_eq!(text(&o.stdout).trim(), format!("engine: {}", args.join(" ")), "{args:?}: {}", text(&o.stderr));
     }

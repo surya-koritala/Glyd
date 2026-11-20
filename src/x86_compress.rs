@@ -1,6 +1,6 @@
+use crate::finder::{find_matches, init_table, HashTable, Lzav, MatchLen, Mode, Streams};
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
-use crate::finder::{find_matches, init_table, HashTable, Lzav, MatchLen, Mode, Streams};
 
 /// Measure common prefix length using AVX2 vector comparisons.
 #[target_feature(enable = "avx2")]
@@ -68,14 +68,7 @@ pub unsafe fn compress_chained_avx2<P: Mode>(
 /// Single-block standalone compressor (used when compressing independent blocks in parallel).
 #[target_feature(enable = "avx2")]
 #[target_feature(enable = "bmi2")]
-pub unsafe fn compress_avx2(
-    src: &[u8],
-    table: &mut HashTable,
-    tokens: &mut Vec<u8>,
-    offsets: &mut Vec<u8>,
-    extras: &mut Vec<u8>,
-    literals: &mut Vec<u8>,
-) {
+pub unsafe fn compress_avx2(src: &[u8], table: &mut HashTable, tokens: &mut Vec<u8>, offsets: &mut Vec<u8>, extras: &mut Vec<u8>, literals: &mut Vec<u8>) {
     init_table(table, src);
     compress_chained_avx2::<Lzav>(src, 0, src.len(), table, tokens, offsets, extras, literals);
 }

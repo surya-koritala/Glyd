@@ -1,17 +1,10 @@
 use crate::error::{CodecError, Result};
 use crate::finder::{find_matches, init_table, HashTable, Mode, ScalarMatch, Streams};
-use crate::format::{
-    Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, MATCH_CODE_ESCAPE, OFFSET_BYTES,
-};
+use crate::format::{Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, MATCH_CODE_ESCAPE, OFFSET_BYTES};
 
 /// Read one escaped length from the extras stream.
 #[inline(always)]
-pub unsafe fn read_escape(
-    extras: *const u8,
-    extras_len: usize,
-    idx: &mut usize,
-    base: usize,
-) -> Result<usize> {
+pub unsafe fn read_escape(extras: *const u8, extras_len: usize, idx: &mut usize, base: usize) -> Result<usize> {
     if *idx >= extras_len {
         return Err(CodecError::CorruptedBitstream("Insufficient extras in bitstream"));
     }
@@ -49,10 +42,7 @@ pub unsafe fn decompress_fallback_raw(
 ) -> Result<usize> {
     let bias = min_match - 1;
     if uncompressed_len > dst.len() {
-        return Err(CodecError::OutputBufferTooSmall {
-            required: uncompressed_len,
-            provided: dst.len(),
-        });
+        return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }
     let block = dst.as_mut_ptr();
     let mut dst_pos = 0usize;
@@ -65,11 +55,7 @@ pub unsafe fn decompress_fallback_raw(
         let lc = token.lit_code();
         let mc = token.match_code();
 
-        let lit_len = if lc == LIT_CODE_ESCAPE {
-            read_escape(extras, extras_len, &mut extra_idx, ESCAPE_BASE_LIT)?
-        } else {
-            lc
-        };
+        let lit_len = if lc == LIT_CODE_ESCAPE { read_escape(extras, extras_len, &mut extra_idx, ESCAPE_BASE_LIT)? } else { lc };
         let match_len = if mc == 0 {
             0
         } else if mc == MATCH_CODE_ESCAPE {
@@ -80,9 +66,7 @@ pub unsafe fn decompress_fallback_raw(
 
         // A corrupted token must never write past the declared block length.
         if lit_len + match_len > uncompressed_len - dst_pos {
-            return Err(CodecError::CorruptedBitstream(
-                "Token output exceeds declared block length",
-            ));
+            return Err(CodecError::CorruptedBitstream("Token output exceeds declared block length"));
         }
 
         if lit_len > 0 {
@@ -170,14 +154,7 @@ pub fn compress_chained_fallback<P: Mode>(
 }
 
 /// Portable single-block compressor with the ordinary parse.
-pub fn compress_fallback(
-    src: &[u8],
-    table: &mut HashTable,
-    tokens: &mut Vec<u8>,
-    offsets: &mut Vec<u8>,
-    extras: &mut Vec<u8>,
-    literals: &mut Vec<u8>,
-) {
+pub fn compress_fallback(src: &[u8], table: &mut HashTable, tokens: &mut Vec<u8>, offsets: &mut Vec<u8>, extras: &mut Vec<u8>, literals: &mut Vec<u8>) {
     init_table(table, src);
     compress_chained_fallback::<crate::finder::Lzav>(src, 0, src.len(), table, tokens, offsets, extras, literals);
 }

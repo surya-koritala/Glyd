@@ -15,8 +15,25 @@ fn main() {
             let lo = map.partition_point(|e| e.0 < *h);
             let hi = map.partition_point(|e| e.0 <= *h);
             let k = hi - lo;
-            ks[match k { 0 => 0, 1 => 1, 2 => 2, 3..=4 => 3, 5..=16 => 4, _ => 5 }] += 1;
+            ks[match k {
+                0 => 0,
+                1 => 1,
+                2 => 2,
+                3..=4 => 3,
+                5..=16 => 4,
+                _ => 5,
+            }] += 1;
         }
-        println!("unit {:>4} MB: {:>6} anchors; k=0 {:>6} k=1 {:>6} k=2 {:>5} k=3-4 {:>5} k=5-16 {:>5} k>16 {:>5}", a >> 20, an.len(), ks[0], ks[1], ks[2], ks[3], ks[4], ks[5]);
+        println!(
+            "unit {:>4} MB: {:>6} anchors; k=0 {:>6} k=1 {:>6} k=2 {:>5} k=3-4 {:>5} k=5-16 {:>5} k>16 {:>5}",
+            a >> 20,
+            an.len(),
+            ks[0],
+            ks[1],
+            ks[2],
+            ks[3],
+            ks[4],
+            ks[5]
+        );
     }
 }

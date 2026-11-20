@@ -29,7 +29,15 @@ struct Tags {
 }
 
 const XML: Tags = Tags { open: OPEN, close: CLOSE, func: FN_OPEN, named: ">", func_end: FN_CLOSE, param: PARAM_OPEN, param_end: PARAM_CLOSE };
-const DSML: Tags = Tags { open: DSML_OPEN, close: "</｜DSML｜tool_calls>", func: "<｜DSML｜invoke name=\"", named: "\">", func_end: "</｜DSML｜invoke>", param: "<｜DSML｜parameter name=\"", param_end: "</｜DSML｜parameter>" };
+const DSML: Tags = Tags {
+    open: DSML_OPEN,
+    close: "</｜DSML｜tool_calls>",
+    func: "<｜DSML｜invoke name=\"",
+    named: "\">",
+    func_end: "</｜DSML｜invoke>",
+    param: "<｜DSML｜parameter name=\"",
+    param_end: "</｜DSML｜parameter>",
+};
 
 /// How a request chooses among its tools.
 #[derive(Clone, Debug, PartialEq)]
@@ -118,7 +126,9 @@ pub fn tools_of(v: &Value) -> Result<Option<Tools>, String> {
                 None => Ok(None),
             }
         }
-        Some(Value::Array(a)) if a.is_empty() => return Err("`tools` must not be an empty array. Either provide at least one tool or omit the field entirely.".to_string()),
+        Some(Value::Array(a)) if a.is_empty() => {
+            return Err("`tools` must not be an empty array. Either provide at least one tool or omit the field entirely.".to_string())
+        }
         Some(Value::Array(a)) => a,
         Some(_) => return Err("`tools` must be a list.".to_string()),
     };
@@ -128,7 +138,11 @@ pub fn tools_of(v: &Value) -> Result<Option<Tools>, String> {
         let f = t.get("function").filter(|f| matches!(f, Value::Object(_)));
         let (true, Some(f)) = (ty == "function", f) else { return Err("each of `tools` is {\"type\": \"function\", \"function\": {...}}".to_string()) };
         let Some(name) = f.get("name").and_then(Value::as_str) else { return Err("a tool's function needs a `name`".to_string()) };
-        let mut pairs = vec![("name", Value::from(name)), ("description", f.get("description").cloned().filter(|d| matches!(d, Value::String(_))).unwrap_or(Value::Null)), ("parameters", f.get("parameters").cloned().filter(|p| matches!(p, Value::Object(_))).unwrap_or(Value::Null))];
+        let mut pairs = vec![
+            ("name", Value::from(name)),
+            ("description", f.get("description").cloned().filter(|d| matches!(d, Value::String(_))).unwrap_or(Value::Null)),
+            ("parameters", f.get("parameters").cloned().filter(|p| matches!(p, Value::Object(_))).unwrap_or(Value::Null)),
+        ];
         if let Some(b @ Value::Bool(_)) = f.get("strict") {
             pairs.push(("strict", b.clone()));
         }
@@ -145,7 +159,9 @@ pub fn tools_of(v: &Value) -> Result<Option<Tools>, String> {
         },
         Some(c @ Value::Object(_)) => {
             let correct = "Correct usage: `{\"type\": \"function\", \"function\": {\"name\": \"my_function\"}}`";
-            let Some(f @ Value::Object(_)) = c.get("function") else { return Err(format!("Invalid value for `function`: `{}` in `tool_choice`! {correct}", c.get("function").map_or("None".to_string(), py_dumps))) };
+            let Some(f @ Value::Object(_)) = c.get("function") else {
+                return Err(format!("Invalid value for `function`: `{}` in `tool_choice`! {correct}", c.get("function").map_or("None".to_string(), py_dumps)));
+            };
             let Some(n) = f.get("name") else { return Err(format!("Expected field `name` in `function` in `tool_choice`! {correct}")) };
             match n.as_str() {
                 Some(n) if !n.is_empty() => {
@@ -157,7 +173,9 @@ pub fn tools_of(v: &Value) -> Result<Option<Tools>, String> {
                 _ => return Err(format!("Invalid `name` in `function`: `{}` in `tool_choice`! {correct}", py_dumps(n))),
             }
         }
-        Some(other) => return Err(format!("Invalid value for `tool_choice`: {}! Only named tools, \"none\", \"auto\" or \"required\" are supported.", py_dumps(other))),
+        Some(other) => {
+            return Err(format!("Invalid value for `tool_choice`: {}! Only named tools, \"none\", \"auto\" or \"required\" are supported.", py_dumps(other)))
+        }
     };
     // a named tool is one call to it, as vLLM's guided decoding makes it
     let parallel = !matches!(choice, ToolChoice::Named(_)) && v.get("parallel_tool_calls").and_then(Value::as_bool) != Some(false);
@@ -176,14 +194,18 @@ fn parts_text(parts: &[Value], mut images: Option<&mut Vec<String>>) -> Result<S
             Value::Object(_) => {
                 let ty = p.get("type").and_then(Value::as_str).unwrap_or(if p.get("text").is_some() { "text" } else { "" });
                 if let (Some(list), "image_url") = (images.as_deref_mut(), ty) {
-                    let url = p.get("image_url").and_then(|u| u.as_str().or_else(|| u.get("url").and_then(Value::as_str))).ok_or("an image_url part with no url")?;
+                    let url =
+                        p.get("image_url").and_then(|u| u.as_str().or_else(|| u.get("url").and_then(Value::as_str))).ok_or("an image_url part with no url")?;
                     list.push(url.to_string());
                     texts.push(IMAGE_PLACE);
                     saw_image = true;
                     continue;
                 }
                 if ty != "text" {
-                    return Err(format!("a message part of type {ty:?}: this model reads text{}", if images.is_some() { " and image_url parts" } else { " only" }));
+                    return Err(format!(
+                        "a message part of type {ty:?}: this model reads text{}",
+                        if images.is_some() { " and image_url parts" } else { " only" }
+                    ));
                 }
                 texts.push(p.get("text").and_then(Value::as_str).ok_or("a text part with no text")?);
             }
@@ -666,7 +688,8 @@ impl ToolStream {
             }
             Format::Glm => {
                 // (a last block not closed: a call where it reads as one, else its text)
-                let blocks: Vec<(String, bool, Option<Call>)> = glm_blocks(&self.text).iter().map(|b| (self.text[b.0..b.1].to_string(), b.3, glm_call(b.2, &self.tools))).collect();
+                let blocks: Vec<(String, bool, Option<Call>)> =
+                    glm_blocks(&self.text).iter().map(|b| (self.text[b.0..b.1].to_string(), b.3, glm_call(b.2, &self.tools))).collect();
                 for (i, (text, closed, call)) in blocks.into_iter().enumerate().skip(self.calls.len()) {
                     match (closed, call) {
                         (false, Some(c)) => self.glm_emit(i, c, &mut out),
@@ -864,23 +887,34 @@ mod tests {
     fn tools_and_the_choice_among_them() {
         let t = tools_of(&v(&format!(r#"{{"tools":[{WEATHER},{{"function":{{"name":"bare"}}}}]}}"#))).unwrap().unwrap();
         assert_eq!((t.choice.clone(), t.parallel), (ToolChoice::Auto, true));
-        assert_eq!(py_dumps(&t.list[0]), r#"{"type": "function", "function": {"name": "get_weather", "description": "Get the weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}"#);
+        assert_eq!(
+            py_dumps(&t.list[0]),
+            r#"{"type": "function", "function": {"name": "get_weather", "description": "Get the weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}"#
+        );
         assert_eq!(py_dumps(&t.list[1]), r#"{"type": "function", "function": {"name": "bare", "description": null, "parameters": null}}"#);
         let with = |extra: &str| tools_of(&v(&format!(r#"{{"tools":[{WEATHER}],{extra}}}"#)));
         assert_eq!(with(r#""tool_choice":"none""#).unwrap().unwrap().choice, ToolChoice::None);
         assert_eq!(with(r#""tool_choice":"required""#).unwrap().unwrap().choice, ToolChoice::Required);
         assert_eq!(with(r#""tool_choice":null"#).unwrap().unwrap().choice, ToolChoice::Auto);
-        assert_eq!(with(r#""tool_choice":{"type":"function","function":{"name":"get_weather"}}"#).unwrap().unwrap().choice, ToolChoice::Named("get_weather".into()));
+        assert_eq!(
+            with(r#""tool_choice":{"type":"function","function":{"name":"get_weather"}}"#).unwrap().unwrap().choice,
+            ToolChoice::Named("get_weather".into())
+        );
         assert!(!with(r#""parallel_tool_calls":false"#).unwrap().unwrap().parallel);
         assert!(!with(r#""tool_choice":{"type":"function","function":{"name":"get_weather"}}"#).unwrap().unwrap().parallel);
         // none: no tools, no choice, or a choice of none
-        assert!(tools_of(&v("{}")).unwrap().is_none() && tools_of(&v(r#"{"tools":null}"#)).unwrap().is_none() && tools_of(&v(r#"{"tool_choice":"none"}"#)).unwrap().is_none());
+        assert!(
+            tools_of(&v("{}")).unwrap().is_none()
+                && tools_of(&v(r#"{"tools":null}"#)).unwrap().is_none()
+                && tools_of(&v(r#"{"tool_choice":"none"}"#)).unwrap().is_none()
+        );
         // refused, in vLLM's words
         let bad = |t: &str| tools_of(&v(t)).unwrap_err();
         assert!(bad(r#"{"tools":[]}"#).contains("must not be an empty array"));
         assert!(bad(r#"{"tool_choice":"auto"}"#).contains("When using `tool_choice`, `tools` must be set."));
         assert!(bad(&format!(r#"{{"tools":[{WEATHER}],"tool_choice":"sometimes"}}"#)).contains("Invalid value for `tool_choice`: sometimes!"));
-        assert!(bad(&format!(r#"{{"tools":[{WEATHER}],"tool_choice":{{"type":"function","function":{{"name":"nope"}}}}}}"#)).contains("does not match any of the specified `tools`"));
+        assert!(bad(&format!(r#"{{"tools":[{WEATHER}],"tool_choice":{{"type":"function","function":{{"name":"nope"}}}}}}"#))
+            .contains("does not match any of the specified `tools`"));
         assert!(bad(&format!(r#"{{"tools":[{WEATHER}],"tool_choice":{{"type":"function"}}}}"#)).contains("Invalid value for `function`"));
         assert!(bad(&format!(r#"{{"tools":[{WEATHER}],"tool_choice":{{"function":{{}}}}}}"#)).contains("Expected field `name`"));
         assert!(bad(r#"{"tools":[{"type":"retrieval"}]}"#).contains("type"));
@@ -902,22 +936,33 @@ mod tests {
                 {"id":"c4","type":"function","function":{"name":"obj","arguments":{"x":1}}},
                 {"id":"c5","type":"function","function":{"name":"none"}}]},
             {"role":"assistant","content":"x","tool_calls":[]},
-            {"role":"tool","tool_call_id":"c1","name":"get_weather","content":[{"type":"text","text":"sunny"},{"type":"text","text":"20C"}]}]}"#)).unwrap();
+            {"role":"tool","tool_call_id":"c1","name":"get_weather","content":[{"type":"text","text":"sunny"},{"type":"text","text":"20C"}]}]}"#))
+        .unwrap();
         assert_eq!(py_dumps(&m[0]), r#"{"role": "system", "content": "a\nb"}"#);
-        assert_eq!(py_dumps(&m[2]), r#"{"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": {"city": "Paris", "days": 2}}}, {"id": "c2", "function": {"name": "bad", "arguments": {}}}, {"id": "c3", "type": "function", "function": {"name": "list", "arguments": {}}}, {"id": "c4", "type": "function", "function": {"name": "obj", "arguments": {"x": 1}}}, {"id": "c5", "type": "function", "function": {"name": "none", "arguments": {}}}], "reasoning": "plan", "reasoning_content": "plan"}"#);
+        assert_eq!(
+            py_dumps(&m[2]),
+            r#"{"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": {"city": "Paris", "days": 2}}}, {"id": "c2", "function": {"name": "bad", "arguments": {}}}, {"id": "c3", "type": "function", "function": {"name": "list", "arguments": {}}}, {"id": "c4", "type": "function", "function": {"name": "obj", "arguments": {"x": 1}}}, {"id": "c5", "type": "function", "function": {"name": "none", "arguments": {}}}], "reasoning": "plan", "reasoning_content": "plan"}"#
+        );
         assert_eq!(py_dumps(&m[3]), r#"{"role": "assistant", "content": "x"}"#, "an empty list of calls is none");
         assert_eq!(py_dumps(&m[4]), r#"{"role": "tool", "content": "sunny\n20C", "tool_call_id": "c1", "name": "get_weather"}"#);
         let bad = |t: &str| template_messages(&v(t)).unwrap_err();
         assert!(bad(r#"{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}"#).contains("image_url"));
         assert!(bad(r#"{"messages":[{"role":"assistant","tool_calls":[{"type":"code","function":{"name":"f"}}]}]}"#).contains("type 'function'"));
         assert!(bad(r#"{"messages":[{"role":"assistant","tool_calls":["x"]}]}"#).contains("must be objects"));
-        assert!(bad(r#"{"messages":[{"content":"x"}]}"#).contains("no role") && bad(r#"{"messages":[]}"#).contains("no messages") && bad(r#"{"messages":[3]}"#).contains("not an object") && bad(r#"{"messages":[{"role":"user","content":5}]}"#).contains("not text"));
+        assert!(
+            bad(r#"{"messages":[{"content":"x"}]}"#).contains("no role")
+                && bad(r#"{"messages":[]}"#).contains("no messages")
+                && bad(r#"{"messages":[3]}"#).contains("not an object")
+                && bad(r#"{"messages":[{"role":"user","content":5}]}"#).contains("not text")
+        );
         // where the model reads images: an image part is its place in the text (the parts joined as the template joins them), its URL kept in order
         let mut urls = Vec::new();
         let m = template_messages_with(&v(r#"{"messages":[{"role":"user","content":[{"type":"text","text":"Look: "},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA"}},{"type":"image_url","image_url":"http://x/b.jpg"},{"type":"text","text":"which?"}]}]}"#), Some(&mut urls)).unwrap();
         assert_eq!(m[0].get("content").and_then(Value::as_str), Some(format!("Look: {IMAGE_PLACE}{IMAGE_PLACE}which?").as_str()));
         assert_eq!(urls, ["data:image/png;base64,AA", "http://x/b.jpg"]);
-        assert!(template_messages_with(&v(r#"{"messages":[{"role":"system","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}"#), Some(&mut urls)).unwrap_err().contains("System message"));
+        assert!(template_messages_with(&v(r#"{"messages":[{"role":"system","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}"#), Some(&mut urls))
+            .unwrap_err()
+            .contains("System message"));
     }
 
     /// The prompt's opening of a forced call, which the reply goes on from.
@@ -925,7 +970,10 @@ mod tests {
     fn a_forced_call_begins_in_the_prompt() {
         assert_eq!(forced_prefix(&ToolChoice::Auto, Format::Hermes), None);
         assert_eq!(forced_prefix(&ToolChoice::Required, Format::Hermes).unwrap(), "<tool_call>\n{\"name\": \"");
-        assert_eq!(forced_prefix(&ToolChoice::Named("get_weather".into()), Format::Hermes).unwrap(), "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": ");
+        assert_eq!(
+            forced_prefix(&ToolChoice::Named("get_weather".into()), Format::Hermes).unwrap(),
+            "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        );
         // the prefix and what the model writes after it are one reply for the parser
         let e = hermes(&(forced_prefix(&ToolChoice::Named("f".into()), Format::Hermes).unwrap() + "{\"a\": 1}}\n</tool_call>"));
         assert_eq!(e.calls, vec![Call { name: "f".into(), arguments: "{\"a\": 1}".into() }]);
@@ -939,7 +987,14 @@ mod tests {
     fn calls_read_from_a_whole_reply() {
         let one = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\":\"Paris\",\"n\":2.50,\"é\":[1,null,true]}}\n</tool_call>";
         let e = hermes(one);
-        assert_eq!(e, Extracted { called: true, calls: vec![Call { name: "get_weather".into(), arguments: r#"{"city": "Paris", "n": 2.5, "é": [1, null, true]}"#.into() }], content: None });
+        assert_eq!(
+            e,
+            Extracted {
+                called: true,
+                calls: vec![Call { name: "get_weather".into(), arguments: r#"{"city": "Paris", "n": 2.5, "é": [1, null, true]}"#.into() }],
+                content: None
+            }
+        );
         // text before the first call is the content; white space is none; two calls, in order; the text after the last is dropped, as vLLM drops it
         let e = hermes(&format!("Let me check.\n{one}\n<tool_call>\n{{\"name\": \"b\", \"arguments\": {{}}}}\n</tool_call>\nDone."));
         assert_eq!((e.content.as_deref(), e.calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()), (Some("Let me check.\n"), vec!["get_weather", "b"]));
@@ -1017,7 +1072,10 @@ mod tests {
         assert_eq!(xml(one), Extracted { called: true, calls: vec![call("forecast", r#"{"city": "Paris", "days": 3}"#)], content: None });
         let rome = "<tool_call>\n<function=forecast>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>";
         let e = xml(&format!("Let me check.\n\n{one}\n{rome}\nDone."));
-        assert_eq!((e.content.as_deref(), e.calls), (Some("Let me check.\n\n"), vec![call("forecast", r#"{"city": "Paris", "days": 3}"#), call("forecast", r#"{"city": "Rome"}"#)]));
+        assert_eq!(
+            (e.content.as_deref(), e.calls),
+            (Some("Let me check.\n\n"), vec![call("forecast", r#"{"city": "Paris", "days": 3}"#), call("forecast", r#"{"city": "Rome"}"#)])
+        );
         assert_eq!(xml(&format!("\n\n{one}")).content, None);
         // two functions in one block are two calls
         let both = "<tool_call>\n<function=forecast>\n<parameter=city>\nParis\n</parameter>\n</function>\n<function=forecast>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>";
@@ -1041,15 +1099,27 @@ mod tests {
     #[test]
     fn xml_values_are_typed_by_the_schema() {
         let typed = "<tool_call>\n<function=forecast>\n<parameter=city>\n12\n</parameter>\n<parameter=days>\nthree\n</parameter>\n<parameter=ratio>\n2.50\n</parameter>\n<parameter=metric>\nTrue\n</parameter>\n<parameter=tags>\n[\"a\", \"é\"]\n</parameter>\n<parameter=opts>\n{\"k\":[1,2.50,null,true]}\n</parameter>\n<parameter=either>\n7\n</parameter>\n<parameter=extra>\n5\n</parameter>\n</function>\n</tool_call>";
-        assert_eq!(xml(typed).calls, vec![call("forecast", r#"{"city": "12", "days": "three", "ratio": 2.5, "metric": true, "tags": ["a", "é"], "opts": {"k": [1, 2.5, null, true]}, "either": 7, "extra": "5"}"#)]);
+        assert_eq!(
+            xml(typed).calls,
+            vec![call(
+                "forecast",
+                r#"{"city": "12", "days": "three", "ratio": 2.5, "metric": true, "tags": ["a", "é"], "opts": {"k": [1, 2.5, null, true]}, "either": 7, "extra": "5"}"#
+            )]
+        );
         let more = "<tool_call>\n<function=forecast>\n<parameter=days>\n 7 \n</parameter>\n<parameter=ratio>\n3.0\n</parameter>\n<parameter=metric>\nyes\n</parameter>\n<parameter=tags>\nnot json\n</parameter>\n<parameter=either>\nhi\n</parameter>\n<parameter=city>\nNULL\n</parameter>\n<parameter=opts>\nnull\n</parameter>\n</function>\n</tool_call>";
-        assert_eq!(xml(more).calls, vec![call("forecast", r#"{"days": 7, "ratio": 3, "metric": false, "tags": "not json", "either": "hi", "city": null, "opts": null}"#)]);
+        assert_eq!(
+            xml(more).calls,
+            vec![call("forecast", r#"{"days": 7, "ratio": 3, "metric": false, "tags": "not json", "either": "hi", "city": null, "opts": null}"#)]
+        );
         let bad = "<tool_call>\n<function=forecast>\n<parameter=days>\n3.0\n</parameter>\n<parameter=ratio>\nabc\n</parameter>\n<parameter=metric>\nfalse\n</parameter>\n<parameter=opts>\n{\"a\": 1\n</parameter>\n</function>\n</tool_call>";
         assert_eq!(xml(bad).calls, vec![call("forecast", r#"{"days": "3.0", "ratio": "abc", "metric": false, "opts": "{\"a\": 1"}"#)]);
         let unknown = "<tool_call>\n<function=mystery>\n<parameter=n>\n5\n</parameter>\n<parameter=z>\nnull\n</parameter>\n</function>\n</tool_call>";
         assert_eq!(xml(unknown).calls, vec![call("mystery", r#"{"n": "5", "z": null}"#)]);
         // a request with no tools reads every value as text
-        assert_eq!(extract("<tool_call>\n<function=forecast>\n<parameter=days>\n3\n</parameter>\n</function>\n</tool_call>", Format::Xml, &[]).calls, vec![call("forecast", r#"{"days": "3"}"#)]);
+        assert_eq!(
+            extract("<tool_call>\n<function=forecast>\n<parameter=days>\n3\n</parameter>\n</function>\n</tool_call>", Format::Xml, &[]).calls,
+            vec![call("forecast", r#"{"days": "3"}"#)]
+        );
     }
 
     /// A reply that is not well formed, as vLLM's parser reads it: a function with no `</function>` and a parameter with no `</parameter>` end where the next thing begins or the block does, a reply cut off in a value is read
@@ -1060,12 +1130,17 @@ mod tests {
         let paris = vec![call("forecast", r#"{"city": "Paris"}"#)];
         assert_eq!(xml("<tool_call>\n<function=forecast>\n<parameter=city>\nParis\n</parameter>\n</tool_call>").calls, paris);
         assert_eq!(xml("<tool_call>\n<function=forecast>\n<parameter=city>\nParis\n</function>\n</tool_call>").calls, paris);
-        assert_eq!(xml("<tool_call>\n<function=forecast>\n<parameter=city>\nParis\n<parameter=days>\n2\n</function>\n</tool_call>").calls, vec![call("forecast", r#"{"city": "Paris", "days": 2}"#)]);
+        assert_eq!(
+            xml("<tool_call>\n<function=forecast>\n<parameter=city>\nParis\n<parameter=days>\n2\n</function>\n</tool_call>").calls,
+            vec![call("forecast", r#"{"city": "Paris", "days": 2}"#)]
+        );
         assert_eq!(xml("<tool_call>\n<function=forecast>\n<parameter=city>\nPar").calls, vec![call("forecast", r#"{"city": "Par"}"#)]);
         assert_eq!(xml("<tool_call>\n<function=forecast>\n<parameter=city>\nParis\n").calls, paris, "the new line that ends the text is not the value's");
         let bare = xml("Sure.\n<function=forecast>\n<parameter=city>\nParis\n</parameter>\n</function>");
         assert_eq!((bare.calls, bare.content.as_deref()), (paris, Some("Sure.\n")));
-        let second = xml("<tool_call>\n<function=forecast\n</tool_call>\n<tool_call>\n<function=forecast>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>");
+        let second = xml(
+            "<tool_call>\n<function=forecast\n</tool_call>\n<tool_call>\n<function=forecast>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>",
+        );
         assert_eq!(second.calls, vec![call("forecast", r#"{"city": "Rome"}"#)]);
         for bad in [
             "<tool_call>\n</tool_call>",
@@ -1120,7 +1195,10 @@ mod tests {
     fn calls_read_as_they_are_written() {
         let text = "Sure.\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>";
         let whole = run(&[text]);
-        assert_eq!(whole, (vec!["content \"Sure.\\n\"".to_string(), "start 0 get_weather".to_string(), "args 0 \"{\\\"city\\\": \\\"Paris\\\"}\"".to_string()], true));
+        assert_eq!(
+            whole,
+            (vec!["content \"Sure.\\n\"".to_string(), "start 0 get_weather".to_string(), "args 0 \"{\\\"city\\\": \\\"Paris\\\"}\"".to_string()], true)
+        );
         // a character at a time: the pieces differ, what they add up to does not
         let pieces: Vec<String> = chars(text);
         let refs: Vec<&str> = pieces.iter().map(String::as_str).collect();
@@ -1218,9 +1296,20 @@ mod tests {
     #[test]
     fn xml_calls_read_as_they_are_written() {
         let tools = [v(FORECAST)];
-        let reply = "Sure.\n<tool_call>\n<function=forecast>\n<parameter=city>\nParis\n</parameter>\n<parameter=days>\n3\n</parameter>\n</function>\n</tool_call>";
+        let reply =
+            "Sure.\n<tool_call>\n<function=forecast>\n<parameter=city>\nParis\n</parameter>\n<parameter=days>\n3\n</parameter>\n</function>\n</tool_call>";
         let whole = run_in(Format::Xml, &tools, &[reply]);
-        assert_eq!(whole, (vec!["content \"Sure.\\n\"".to_string(), "start 0 forecast".to_string(), "args 0 \"{\\\"city\\\": \\\"Paris\\\", \\\"days\\\": 3}\"".to_string()], true));
+        assert_eq!(
+            whole,
+            (
+                vec![
+                    "content \"Sure.\\n\"".to_string(),
+                    "start 0 forecast".to_string(),
+                    "args 0 \"{\\\"city\\\": \\\"Paris\\\", \\\"days\\\": 3}\"".to_string()
+                ],
+                true
+            )
+        );
         // a character at a time: the pieces of arguments are the `{`, the parameters as their ends come, and the `}`
         let pieces = chars(reply);
         let refs: Vec<&str> = pieces.iter().map(String::as_str).collect();
@@ -1235,16 +1324,32 @@ mod tests {
         let one_block = "<tool_call>\n<function=forecast>\n</function>\n<function=bare>\n</function>\n</tool_call>";
         assert_eq!(run_in(Format::Xml, &tools, &[one_block]).0, vec!["start 0 forecast", "args 0 \"{}\"", "start 1 bare", "args 1 \"{}\""]);
         // the function is sent alone, the `{` with the next piece
-        assert_eq!(run_in(Format::Xml, &tools, &["<tool_call>\n<function=bare>\n", "\n", "</function>"]).0, vec!["start 0 bare", "args 0 \"{\"", "args 0 \"}\""]);
-        assert_eq!(run_in(Format::Xml, &tools, &["<tool_call>\n<function=bare>\n"]).0, vec!["start 0 bare", "args 0 \"{\""], "the reply's end is the next piece");
+        assert_eq!(
+            run_in(Format::Xml, &tools, &["<tool_call>\n<function=bare>\n", "\n", "</function>"]).0,
+            vec!["start 0 bare", "args 0 \"{\"", "args 0 \"}\""]
+        );
+        assert_eq!(
+            run_in(Format::Xml, &tools, &["<tool_call>\n<function=bare>\n"]).0,
+            vec!["start 0 bare", "args 0 \"{\""],
+            "the reply's end is the next piece"
+        );
         // the tag split between pieces is held, not sent as content; so is a function's tag, which is not content either
-        assert_eq!(run_in(Format::Xml, &tools, &["Hi <tool", "_call>\n<func", "tion=bare>\n</function>"]).0, vec!["content \"Hi \"", "start 0 bare", "args 0 \"{}\""]);
+        assert_eq!(
+            run_in(Format::Xml, &tools, &["Hi <tool", "_call>\n<func", "tion=bare>\n</function>"]).0,
+            vec!["content \"Hi \"", "start 0 bare", "args 0 \"{}\""]
+        );
         assert_eq!(run_in(Format::Xml, &tools, &["a <tool", " b"]).0, vec!["content \"a \"", "content \"<tool b\""]);
         // plain text with tools offered: content, no call (an ordinary answer); a function with no block is text, as the stream of vLLM's parser has it
-        assert_eq!(run_in(Format::Xml, &tools, &["The weather ", "is fine."]), (vec!["content \"The weather \"".to_string(), "content \"is fine.\"".to_string()], false));
+        assert_eq!(
+            run_in(Format::Xml, &tools, &["The weather ", "is fine."]),
+            (vec!["content \"The weather \"".to_string(), "content \"is fine.\"".to_string()], false)
+        );
         assert_eq!(run_in(Format::Xml, &tools, &["<function=bare>\n</function>"]), (vec!["content \"<function=bare>\\n</function>\"".to_string()], false));
         // the arguments wait for a parameter's end: its value is typed by then
-        assert_eq!(run_in(Format::Xml, &tools, &["<tool_call>\n<function=forecast>\n<parameter=days>\n12", "\n</para", "meter>\n"]).0, vec!["start 0 forecast", "args 0 \"{\"", "args 0 \"\\\"days\\\": 12\""]);
+        assert_eq!(
+            run_in(Format::Xml, &tools, &["<tool_call>\n<function=forecast>\n<parameter=days>\n12", "\n</para", "meter>\n"]).0,
+            vec!["start 0 forecast", "args 0 \"{\"", "args 0 \"\\\"days\\\": 12\""]
+        );
     }
 
     /// A block that holds no function is text at the end; a call that was begun stays what was sent; a function with no `</function>` ends with its block; nothing is lost and nothing fails.
@@ -1263,10 +1368,20 @@ mod tests {
         assert_eq!(calls, vec![call("forecast", r#"{"city": "Paris", "days": 2}"#)]);
         // a bad block after a good one: the good one was sent, the bad one is text; before it: the same, and the call is the first
         let good = "<tool_call>\n<function=bare>\n</function>\n</tool_call>";
-        assert_eq!(run_in(Format::Xml, &tools, &[&format!("{good}<tool_call>garbage</tool_call>")]).0, vec!["start 0 bare", "args 0 \"{}\"", "content \"<tool_call>garbage</tool_call>\""]);
-        assert_eq!(run_in(Format::Xml, &tools, &[&format!("<tool_call>garbage</tool_call>{good}")]).0, vec!["start 0 bare", "args 0 \"{}\"", "content \"<tool_call>garbage</tool_call>\""]);
+        assert_eq!(
+            run_in(Format::Xml, &tools, &[&format!("{good}<tool_call>garbage</tool_call>")]).0,
+            vec!["start 0 bare", "args 0 \"{}\"", "content \"<tool_call>garbage</tool_call>\""]
+        );
+        assert_eq!(
+            run_in(Format::Xml, &tools, &[&format!("<tool_call>garbage</tool_call>{good}")]).0,
+            vec!["start 0 bare", "args 0 \"{}\"", "content \"<tool_call>garbage</tool_call>\""]
+        );
         // a parameter with no `>` is left out of the stream
-        let (_, calls) = sum(Format::Xml, &tools, &["<tool_call>\n<function=forecast>\n<parameter=city</parameter>\n<parameter=days>\n4\n</parameter>\n</function>\n</tool_call>"]);
+        let (_, calls) = sum(
+            Format::Xml,
+            &tools,
+            &["<tool_call>\n<function=forecast>\n<parameter=city</parameter>\n<parameter=days>\n4\n</parameter>\n</function>\n</tool_call>"],
+        );
         assert_eq!(calls, vec![call("forecast", r#"{"days": 4}"#)]);
     }
 
@@ -1327,7 +1442,10 @@ mod tests {
     /// A name the tools have without OpenAI's `functions.` namespace is read as theirs, whole and streamed; one they have with it, or one they do not have at all, as written.
     #[test]
     fn a_functions_namespace_is_the_tools_name() {
-        let tools = vec![json::parse(r#"{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"n": {"type": "integer"}}}}}"#).unwrap()];
+        let tools = vec![json::parse(
+            r#"{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"n": {"type": "integer"}}}}}"#,
+        )
+        .unwrap()];
         let reply = "<tool_call>\n<function=functions.get_weather>\n<parameter=n>\n2\n</parameter>\n</function>\n</tool_call>";
         let e = extract(reply, Format::Xml, &tools);
         assert_eq!(e.calls, vec![Call { name: "get_weather".into(), arguments: "{\"n\": 2}".into() }]);
@@ -1343,9 +1461,16 @@ mod tests {
     #[test]
     fn dsml_calls_read_from_a_whole_reply() {
         assert_eq!(Format::of(&Chat::from_template(crate::chat::DSV4_CHAT).unwrap()), Format::Dsml);
-        let want = vec![call("lookup", r#"{"word": "glyph", "limit": 2}"#), call("lookup", r#"{"opts": {"deep": true, "tags": ["a"]}, "n": "not json"}"#), call("ping", "{}")];
+        let want = vec![
+            call("lookup", r#"{"word": "glyph", "limit": 2}"#),
+            call("lookup", r#"{"opts": {"deep": true, "tags": ["a"]}, "n": "not json"}"#),
+            call("ping", "{}"),
+        ];
         assert_eq!(extract(DSML_REPLY, Format::Dsml, &[]), Extracted { called: true, calls: want.clone(), content: None });
-        assert_eq!(extract(&format!("Let me look.{DSML_REPLY}"), Format::Dsml, &[]), Extracted { called: true, calls: want, content: Some("Let me look.".into()) });
+        assert_eq!(
+            extract(&format!("Let me look.{DSML_REPLY}"), Format::Dsml, &[]),
+            Extracted { called: true, calls: want, content: Some("Let me look.".into()) }
+        );
         assert_eq!(extract("No tools needed.\n\n", Format::Dsml, &[]), text_only("No tools needed.\n\n"));
         // a forced call: the block's opening (and a named one's invoke) is in the prompt, and the reply read with it
         assert_eq!(forced_prefix(&ToolChoice::Required, Format::Dsml).unwrap(), "\n\n<｜DSML｜tool_calls>\n");
@@ -1376,7 +1501,10 @@ mod tests {
         let tools = vec![json::parse(r#"{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {"word": {"type": "string"}, "limit": {"type": "integer"}, "opts": {"type": "object"}}}}}"#).unwrap()];
         let calls = "<tool_call>lookup<arg_key>word</arg_key><arg_value>12</arg_value><arg_key>limit</arg_key><arg_value>2</arg_value><arg_key>opts</arg_key><arg_value>{\"deep\": true}</arg_value></tool_call><tool_call>lookup\n<arg_key>word</arg_key>\n<arg_value>glyph</arg_value>\n</tool_call>";
         let reply = format!("Let me look.{calls}");
-        let want = vec![Call { name: "lookup".into(), arguments: r#"{"word": "12", "limit": 2, "opts": {"deep": true}}"#.into() }, Call { name: "lookup".into(), arguments: r#"{"word": "glyph"}"#.into() }];
+        let want = vec![
+            Call { name: "lookup".into(), arguments: r#"{"word": "12", "limit": 2, "opts": {"deep": true}}"#.into() },
+            Call { name: "lookup".into(), arguments: r#"{"word": "glyph"}"#.into() },
+        ];
         let e = extract(&reply, Format::Glm, &tools);
         assert_eq!((e.content.as_deref(), e.calls.clone()), (Some("Let me look."), want.clone()));
         let cs: Vec<char> = reply.chars().collect();

@@ -1,0 +1,3 @@
+# The code's own long-line style, kept: the widest lines and the smallest number of breaks rustfmt allows.
+max_width = 160
+use_small_heuristics = "Max"

@@ -5,8 +5,12 @@ use glyd::v7_encode::{find_sequences_dfast, DfastTables, EncScratch, Sequence};
 use glyd::v7_format::{ll_code, ml_code, LL_SYMBOLS, ML_SYMBOLS, OFF_SYMBOLS};
 
 fn main() {
-    let mut files: Vec<_> = std::fs::read_dir("corpus").unwrap().filter_map(|e| e.ok()).map(|e| e.path())
-        .filter(|p| p.is_file() && !p.file_name().unwrap().to_string_lossy().starts_with("enwik")).collect();
+    let mut files: Vec<_> = std::fs::read_dir("corpus")
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && !p.file_name().unwrap().to_string_lossy().starts_with("enwik"))
+        .collect();
     files.sort();
     let (mut hll, mut hml, mut hoff) = ([0u64; LL_SYMBOLS], [0u64; ML_SYMBOLS], [0u64; OFF_SYMBOLS]);
     let mut t = DfastTables::new();
@@ -20,7 +24,8 @@ fn main() {
         let mut off = 0;
         while off < d.len() {
             let len = (d.len() - off).min(256 * 1024);
-            seqs.clear(); lits.clear();
+            seqs.clear();
+            lits.clear();
             let mut reps = [1u32, 4, 8];
             if std::env::var("ULTRA").is_ok() {
                 glyd::v7_ultra::find_sequences_ultra(&d, off, len, &mut st, [1, 4, 8], &mut seqs, &mut lits);
@@ -30,11 +35,29 @@ fn main() {
             let mut r = [1u32, 4, 8];
             for q in &seqs {
                 hll[ll_code(q.lit_len).0 as usize] += 1;
-                if q.match_len == 0 { continue; }
+                if q.match_len == 0 {
+                    continue;
+                }
                 hml[ml_code(q.match_len).0 as usize] += 1;
-                let c = if q.offset == r[0] { 0 } else if q.offset == r[1] { 1 } else if q.offset == r[2] { 2 } else { 3 + (31 - q.offset.leading_zeros()) as usize };
+                let c = if q.offset == r[0] {
+                    0
+                } else if q.offset == r[1] {
+                    1
+                } else if q.offset == r[2] {
+                    2
+                } else {
+                    3 + (31 - q.offset.leading_zeros()) as usize
+                };
                 hoff[c] += 1;
-                r = if q.offset == r[0] { r } else if q.offset == r[1] { [r[1], r[0], r[2]] } else if q.offset == r[2] { [r[2], r[0], r[1]] } else { [q.offset, r[0], r[1]] };
+                r = if q.offset == r[0] {
+                    r
+                } else if q.offset == r[1] {
+                    [r[1], r[0], r[2]]
+                } else if q.offset == r[2] {
+                    [r[2], r[0], r[1]]
+                } else {
+                    [q.offset, r[0], r[1]]
+                };
             }
             off += len;
         }

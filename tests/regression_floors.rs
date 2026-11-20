@@ -45,13 +45,7 @@ fn test_silesia_ratio_regression_floors() {
 
         let ratio = data.len() as f64 / compressed.len() as f64;
         println!("Corpus {:<10}: ratio {:.2}x (floor: {:.2}x)", name, ratio, min_ratio);
-        assert!(
-            ratio >= *min_ratio,
-            "Ratio regression on {}: got {:.2}x, floor is {:.2}x",
-            name,
-            ratio,
-            min_ratio
-        );
+        assert!(ratio >= *min_ratio, "Ratio regression on {}: got {:.2}x, floor is {:.2}x", name, ratio, min_ratio);
 
         total_orig += data.len();
         total_comp += compressed.len();
@@ -62,11 +56,7 @@ fn test_silesia_ratio_regression_floors() {
         // GOAL3 S1.3: the floor ratchets up to liblz4's 2.1009; being denser than
         // LZ4 is the whole point of beating it on speed.
         println!("TOTAL Silesia ratio: {:.4}x (floor: 2.1009x)", total_ratio);
-        assert!(
-            total_ratio >= 2.1009,
-            "Total Silesia ratio regression: got {:.4}x, floor is 2.1009x",
-            total_ratio
-        );
+        assert!(total_ratio >= 2.1009, "Total Silesia ratio regression: got {:.4}x, floor is 2.1009x", total_ratio);
     }
 }
 
@@ -87,19 +77,16 @@ fn test_parallel_pipeline_roundtrip_and_interop_floors() {
 
         // 1. Parallel compress -> Parallel decompress
         let par_compressed = compress_parallel(&data);
-        let par_restored = decompress_parallel(&par_compressed)
-            .expect("Parallel decompress of parallel stream failed");
+        let par_restored = decompress_parallel(&par_compressed).expect("Parallel decompress of parallel stream failed");
         assert_eq!(par_restored, data);
 
         // 2. Parallel compress -> Sequential decompress
-        let seq_restored = decompress(&par_compressed)
-            .expect("Sequential decompress of parallel stream failed");
+        let seq_restored = decompress(&par_compressed).expect("Sequential decompress of parallel stream failed");
         assert_eq!(seq_restored, data);
 
         // 3. Sequential compress -> Parallel decompress (must safely fall back to sequential)
         let seq_compressed = compress(&data);
-        let fallback_restored = decompress_parallel(&seq_compressed)
-            .expect("Parallel decompress fallback of sequential stream failed");
+        let fallback_restored = decompress_parallel(&seq_compressed).expect("Parallel decompress fallback of sequential stream failed");
         assert_eq!(fallback_restored, data);
     }
 }

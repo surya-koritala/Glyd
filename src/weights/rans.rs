@@ -71,10 +71,8 @@ fn normalize(h: &[u32], bits: u8) -> Vec<u16> {
     while sum != m {
         if sum > m {
             // the symbols that lose least by one slot
-            let mut cand: Vec<(f64, usize)> = (0..h.len())
-                .filter(|&s| f[s] > 1)
-                .map(|s| (h[s] as f64 * ((f[s] as f64).ln() - ((f[s] - 1) as f64).ln()), s))
-                .collect();
+            let mut cand: Vec<(f64, usize)> =
+                (0..h.len()).filter(|&s| f[s] > 1).map(|s| (h[s] as f64 * ((f[s] as f64).ln() - ((f[s] - 1) as f64).ln()), s)).collect();
             cand.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             let mut d = (sum - m) as usize;
             for &(_, s) in cand.iter().take(d.min(cand.len())) {
@@ -517,7 +515,11 @@ mod tests {
         (0..n)
             .map(|i| {
                 let start = i == 0 || (seg > 0 && i % seg == 0 && i / seg < LANES);
-                if start { 0 } else { (syms[i - 1] >> shift) as u16 }
+                if start {
+                    0
+                } else {
+                    (syms[i - 1] >> shift) as u16
+                }
             })
             .collect()
     }
@@ -631,7 +633,12 @@ mod tests {
         let mut r = rng(9);
         let n = 1 << 24;
         // an exponent-like distribution, about 2.55 bits a symbol
-        let syms: Vec<u8> = (0..n).map(|_| { let a = (r() % 64) as u32; (118 + (a.leading_zeros() - 26).min(7) + (r() % 3 == 0) as u32) as u8 }).collect();
+        let syms: Vec<u8> = (0..n)
+            .map(|_| {
+                let a = (r() % 64) as u32;
+                (118 + (a.leading_zeros() - 26).min(7) + (r() % 3 == 0) as u32) as u8
+            })
+            .collect();
         let mut hist = vec![0u32; 256];
         for &s in &syms {
             hist[s as usize] += 1;
@@ -649,7 +656,14 @@ mod tests {
         }
         let td = (cpu_ns() - t0) / 4;
         assert_eq!(out, syms);
-        println!("no ctx: {} -> {} bytes ({:.3} bits), encode {:.2} ns/sym, decode {:.2} ns/sym", n, enc.len(), enc.len() as f64 * 8.0 / n as f64, te as f64 / n as f64, td as f64 / n as f64);
+        println!(
+            "no ctx: {} -> {} bytes ({:.3} bits), encode {:.2} ns/sym, decode {:.2} ns/sym",
+            n,
+            enc.len(),
+            enc.len() as f64 * 8.0 / n as f64,
+            te as f64 / n as f64,
+            td as f64 / n as f64
+        );
         // 64 contexts from the symbol before
         let ctx = lane_ctx(&syms, 2);
         let mut h2 = vec![0u32; 64 * 256];
@@ -684,7 +698,12 @@ mod tests {
         let cls: Vec<u8> = (0..n).map(|_| (r() % 7) as u8).collect();
         let sy7: Vec<u8> = syms.iter().map(|&s| s & 127).collect();
         let seg = n / LANES;
-        let ctx2: Vec<u16> = (0..n).map(|i| { let st = i == 0 || (i % seg == 0 && i / seg < LANES); ((if st { 0 } else { sy7[i - 1] >> 1 }) as usize * 8 + cls[i] as usize) as u16 }).collect();
+        let ctx2: Vec<u16> = (0..n)
+            .map(|i| {
+                let st = i == 0 || (i % seg == 0 && i / seg < LANES);
+                ((if st { 0 } else { sy7[i - 1] >> 1 }) as usize * 8 + cls[i] as usize) as u16
+            })
+            .collect();
         for bits in [12u8, 10] {
             let mut h3 = vec![0u32; 512 * 128];
             for (i, &s) in sy7.iter().enumerate() {
@@ -711,44 +730,49 @@ mod tests {
         // the same distribution under `ntab` identical tables, picked by the context
         let mut r = rng(11);
         let n = 1 << 24;
-        let syms: Vec<u8> = (0..n).map(|_| { let a = (r() % 64) as u32; (118 + (a.leading_zeros() - 26).min(7) + (r() % 3 == 0) as u32) as u8 }).collect();
+        let syms: Vec<u8> = (0..n)
+            .map(|_| {
+                let a = (r() % 64) as u32;
+                (118 + (a.leading_zeros() - 26).min(7) + (r() % 3 == 0) as u32) as u8
+            })
+            .collect();
         let mut hist = vec![0u32; 256];
         for &s in &syms {
             hist[s as usize] += 1;
         }
         let cls0: Vec<u8> = (0..n + 1024).map(|_| (r() % 64) as u8).collect();
         for off in [0usize, 64, 1000] {
-        let cls = &cls0[off..off + n];
-        println!("offset {}", off);
-        for bits in [12u8] {
-            let (t1, _, _) = plan(&hist, 1, 256, bits);
-            for ntab in [1usize, 4, 16, 64, 256] {
-                let t = Tables { bits, alphabet: 256, map: (0..256).map(|c| (c % ntab) as u16).collect(), freq: vec![t1.freq[0].clone(); ntab] };
-                let ctx: Vec<u16> = cls.iter().map(|&c| c as u16 * 4 % 256).collect();
-                struct Cl<'a>(&'a [u8]);
-                impl Ctx for Cl<'_> {
-                    #[inline(always)]
-                    fn at(&self, i: usize, _: u8) -> usize {
-                        (self.0[i] as usize) * 4 % 256
+            let cls = &cls0[off..off + n];
+            println!("offset {}", off);
+            for bits in [12u8] {
+                let (t1, _, _) = plan(&hist, 1, 256, bits);
+                for ntab in [1usize, 4, 16, 64, 256] {
+                    let t = Tables { bits, alphabet: 256, map: (0..256).map(|c| (c % ntab) as u16).collect(), freq: vec![t1.freq[0].clone(); ntab] };
+                    let ctx: Vec<u16> = cls.iter().map(|&c| c as u16 * 4 % 256).collect();
+                    struct Cl<'a>(&'a [u8]);
+                    impl Ctx for Cl<'_> {
+                        #[inline(always)]
+                        fn at(&self, i: usize, _: u8) -> usize {
+                            (self.0[i] as usize) * 4 % 256
+                        }
+                        #[inline(always)]
+                        fn next(&self, _: usize, _: u8, _: u8) -> u8 {
+                            0
+                        }
                     }
-                    #[inline(always)]
-                    fn next(&self, _: usize, _: u8, _: u8) -> u8 {
-                        0
+                    let mut enc = Vec::new();
+                    encode(&syms, Some(&ctx), &t, &mut enc);
+                    let d = DecTables::new(&t);
+                    let mut out = vec![0u8; n];
+                    let t0 = cpu_ns();
+                    for _ in 0..3 {
+                        decode(&enc, n, &d, &Cl(cls), &mut out).unwrap();
                     }
+                    let td = (cpu_ns() - t0) / 3;
+                    assert_eq!(out, syms);
+                    println!("bits {} tables {:3}: decode {:.2} ns/sym", bits, ntab, td as f64 / n as f64);
                 }
-                let mut enc = Vec::new();
-                encode(&syms, Some(&ctx), &t, &mut enc);
-                let d = DecTables::new(&t);
-                let mut out = vec![0u8; n];
-                let t0 = cpu_ns();
-                for _ in 0..3 {
-                    decode(&enc, n, &d, &Cl(cls), &mut out).unwrap();
-                }
-                let td = (cpu_ns() - t0) / 3;
-                assert_eq!(out, syms);
-                println!("bits {} tables {:3}: decode {:.2} ns/sym", bits, ntab, td as f64 / n as f64);
             }
-        }
         }
     }
 

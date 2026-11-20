@@ -40,7 +40,12 @@ pub struct ConfigMuse {
 }
 
 pub fn is_muse(text: &str) -> bool {
-    json::parse(text).ok().and_then(|v| v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "MuseSparkForConditionalGeneration"))).unwrap_or(false)
+    json::parse(text)
+        .ok()
+        .and_then(|v| {
+            v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "MuseSparkForConditionalGeneration"))
+        })
+        .unwrap_or(false)
 }
 
 impl ConfigMuse {
@@ -60,7 +65,13 @@ impl ConfigMuse {
         let get = |k: &str| t.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
         let f = |k: &str| -> Result<f64> { num(get(k)?, k) };
-        let f_or = |k: &str, d: f64| -> Result<f64> { if t.get(k).is_some_and(|x| *x != Value::Null) { f(k) } else { Ok(d) } };
+        let f_or = |k: &str, d: f64| -> Result<f64> {
+            if t.get(k).is_some_and(|x| *x != Value::Null) {
+                f(k)
+            } else {
+                Ok(d)
+            }
+        };
         let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
         if t.get("hidden_act").and_then(Value::as_str).is_some_and(|a| a != "silu") {
             return refuse("an activation other than silu");
@@ -72,17 +83,27 @@ impl ConfigMuse {
             return refuse("shared experts");
         }
         let layers = u("num_hidden_layers")?;
-        let strs = |k: &str| -> Result<Vec<String>> { Ok(get(k)?.as_array().ok_or_else(|| Error(format!("{label}: {k}: not a list")))?.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect()) };
+        let strs = |k: &str| -> Result<Vec<String>> {
+            Ok(get(k)?.as_array().ok_or_else(|| Error(format!("{label}: {k}: not a list")))?.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect())
+        };
         let types = strs("layer_types")?;
         let mlp = strs("mlp_layer_types")?;
         if types.len() != layers || mlp.len() != layers || mlp.iter().any(|m| m != "sparse") {
             return refuse("layer types other than one per layer, every MLP sparse");
         }
-        let thetas: Vec<f64> = get("layer_rope_theta")?.as_array().ok_or_else(|| Error(format!("{label}: layer_rope_theta: not a list")))?.iter().map(|x| num(x, "layer_rope_theta")).collect::<Result<_>>()?;
+        let thetas: Vec<f64> = get("layer_rope_theta")?
+            .as_array()
+            .ok_or_else(|| Error(format!("{label}: layer_rope_theta: not a list")))?
+            .iter()
+            .map(|x| num(x, "layer_rope_theta"))
+            .collect::<Result<_>>()?;
         let sliding: Vec<bool> = types.iter().map(|s| s == "sliding_attention").collect();
         let theta = thetas.iter().copied().find(|&x| x > 0.0).unwrap_or(0.0);
         // (the rotary is on the window's layers and off on the others, at one base)
-        if thetas.len() != layers || sliding.iter().zip(&thetas).any(|(&s, &th)| s != (th > 0.0) || (th > 0.0 && th != theta)) || types.iter().any(|s| s != "sliding_attention" && s != "full_attention") {
+        if thetas.len() != layers
+            || sliding.iter().zip(&thetas).any(|(&s, &th)| s != (th > 0.0) || (th > 0.0 && th != theta))
+            || types.iter().any(|s| s != "sliding_attention" && s != "full_attention")
+        {
             return refuse("a rotary that is not on exactly the window's layers, at one base");
         }
         if t.get("rope_parameters").and_then(|r| r.get("rope_type")).and_then(Value::as_str).is_some_and(|r| r != "default") {

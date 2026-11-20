@@ -15,8 +15,8 @@
 //! predicted from the rest; then the DC, from the same relation on
 //! both edges.
 
-use super::{Frame, Jpeg, ZIGZAG};
 use super::coder::{Decoder, Encoder as Coder, Prob};
+use super::{Frame, Jpeg, ZIGZAG};
 
 /// The rate of adaptation shrinks with the number of bits seen, down
 /// to 1/`LIMIT`: a context that has seen many bits trusts its count.
@@ -74,7 +74,6 @@ impl Prob for Bit {
 pub static COST: [std::sync::atomic::AtomicU64; 13] = [const { std::sync::atomic::AtomicU64::new(0) }; 13];
 #[cfg(feature = "jpg-stats")]
 pub static DECISIONS: [std::sync::atomic::AtomicU64; 13] = [const { std::sync::atomic::AtomicU64::new(0) }; 13];
-
 
 /// One side of the coding: the encoder knows every bit, the decoder
 /// finds it out. Every decision is `io.bit(context, &mut bit)`, so
@@ -225,7 +224,11 @@ const fn left_bucket(n: u32) -> usize {
 #[inline]
 fn pred_bucket(p: i32) -> usize {
     let m = mag_bucket(p.unsigned_abs());
-    if p < 0 { MAG_BUCKETS + m } else { m }
+    if p < 0 {
+        MAG_BUCKETS + m
+    } else {
+        m
+    }
 }
 
 /// The contexts of one component kind (luma, chroma).
@@ -735,7 +738,12 @@ impl<'a> Block<'a> {
         let c = ((i * EDGE_CTX + pb) * 8 + self.edge_left) * 4 + (self.t.pri[k] as usize).min(3);
         let mut v = self.block[k] as i32;
         io.slot(5);
-        let (zero, exp, mant, sign) = (&mut m.edge_zero[c], &mut m.edge_exp[c * 12..(c + 1) * 12], &mut m.edge_mant[i * 12 * MANT..(i + 1) * 12 * MANT], &mut m.edge_sign[i * EDGE_CTX + pb]);
+        let (zero, exp, mant, sign) = (
+            &mut m.edge_zero[c],
+            &mut m.edge_exp[c * 12..(c + 1) * 12],
+            &mut m.edge_mant[i * 12 * MANT..(i + 1) * 12 * MANT],
+            &mut m.edge_sign[i * EDGE_CTX + pb],
+        );
         signed(io, zero, exp, mant, sign, &mut v)?;
         if v != 0 {
             self.edge_left -= 1;
@@ -834,7 +842,14 @@ mod speed {
     fn coder_alone() {
         let n = 50_000_000u32;
         let mut x = 12345u32;
-        let bits: Vec<u8> = (0..n).map(|_| { x ^= x << 13; x ^= x >> 17; x ^= x << 5; ((x >> 7) % 10 < 3) as u8 }).collect();
+        let bits: Vec<u8> = (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                ((x >> 7) % 10 < 3) as u8
+            })
+            .collect();
         let mut ctx = vec![Bit::default(); 4096];
         let t = std::time::Instant::now();
         let mut e = Coder::new();

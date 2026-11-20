@@ -17,7 +17,18 @@ fn delimited(lines: usize) -> Vec<u8> {
     let mut v = Vec::new();
     for i in 0..lines {
         let r = rnd(&mut x);
-        v.extend_from_slice(format!("{} host{} 2024-01-15T10:{:02}:{:02} GET /path/{} 200 {}\n", 1_700_000_000 + i as u64 * 3, r % 40, (i / 60) % 60, i % 60, r % 3000, r % 100_000).as_bytes());
+        v.extend_from_slice(
+            format!(
+                "{} host{} 2024-01-15T10:{:02}:{:02} GET /path/{} 200 {}\n",
+                1_700_000_000 + i as u64 * 3,
+                r % 40,
+                (i / 60) % 60,
+                i % 60,
+                r % 3000,
+                r % 100_000
+            )
+            .as_bytes(),
+        );
     }
     v
 }
@@ -28,7 +39,17 @@ fn json_lines(lines: usize) -> Vec<u8> {
     let mut v = Vec::new();
     for i in 0..lines {
         let r = rnd(&mut x);
-        v.extend_from_slice(format!("{{\"id\":{},\"type\":\"{}Event\",\"actor\":{{\"login\":\"user{}\",\"id\":{}}},\"payload\":{{\"n\":{}}}}}\n", i, ["Push", "Watch", "Issue", "Fork"][(r % 4) as usize], r % 900, r % 100_000, r % 17).as_bytes());
+        v.extend_from_slice(
+            format!(
+                "{{\"id\":{},\"type\":\"{}Event\",\"actor\":{{\"login\":\"user{}\",\"id\":{}}},\"payload\":{{\"n\":{}}}}}\n",
+                i,
+                ["Push", "Watch", "Issue", "Fork"][(r % 4) as usize],
+                r % 900,
+                r % 100_000,
+                r % 17
+            )
+            .as_bytes(),
+        );
     }
     v
 }

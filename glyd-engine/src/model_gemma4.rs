@@ -732,8 +732,51 @@ impl EngineG4 {
         let (kc, vc) = (Buf::zeroed(at as usize)?, Buf::zeroed(at as usize)?);
         let host = Pinned::new(4096)?;
         let mut e = EngineG4 {
-            dev, lib, kern, kg, skinny, skinny_on: crate::tune!("GLYD_G4_SKINNY").map_or(true, |v| v != "0"), w, chunk: ch, ctx, cap_s, x, xf, ablate: crate::tune!("GLYD_G4_ABLATE").unwrap_or_default(), pf_kib: pf_kib(crate::tune!("GLYD_G4_PF").as_deref())?, pf_shift: crate::tune!("GLYD_G4_PF_SHIFT").and_then(|v| v.parse().ok()).filter(|v| (5..=7).contains(v)).unwrap_or(7), h, proj, qo, att, o: o_, gu, m, d, logits, scratch, embed_groups, embed_pairs, pos, st, tok, val, lse, top, part, ws, done, kv_off, kc, vc,
-            graph: None, host, n: 0, split_rows: rows_out, drafter, prof: None,
+            dev,
+            lib,
+            kern,
+            kg,
+            skinny,
+            skinny_on: crate::tune!("GLYD_G4_SKINNY").map_or(true, |v| v != "0"),
+            w,
+            chunk: ch,
+            ctx,
+            cap_s,
+            x,
+            xf,
+            ablate: crate::tune!("GLYD_G4_ABLATE").unwrap_or_default(),
+            pf_kib: pf_kib(crate::tune!("GLYD_G4_PF").as_deref())?,
+            pf_shift: crate::tune!("GLYD_G4_PF_SHIFT").and_then(|v| v.parse().ok()).filter(|v| (5..=7).contains(v)).unwrap_or(7),
+            h,
+            proj,
+            qo,
+            att,
+            o: o_,
+            gu,
+            m,
+            d,
+            logits,
+            scratch,
+            embed_groups,
+            embed_pairs,
+            pos,
+            st,
+            tok,
+            val,
+            lse,
+            top,
+            part,
+            ws,
+            done,
+            kv_off,
+            kc,
+            vc,
+            graph: None,
+            host,
+            n: 0,
+            split_rows: rows_out,
+            drafter,
+            prof: None,
         };
         if o.graph {
             e.capture_graph()?;
@@ -802,7 +845,9 @@ impl EngineG4 {
     /// The prefetch of `kib` KiB of each first-wave block of `p` (where `lin` takes it skinny), and the spare blocks of `threads` that issue it (4 lines a thread; two
     /// blocks an SM or more measured slower, 11.26-11.32 ms against 11.22-11.24).
     fn pf(&self, p: &PackBuf, m: usize, kib: usize, threads: u32) -> (G4Pf, u32) {
-        let Some((data, scales, ds, ss)) = crate::skinny::SkinnyKern::regions(&p.pack).filter(|_| kib > 0 && self.skinny_takes(p, m)) else { return (G4Pf::default(), 0) };
+        let Some((data, scales, ds, ss)) = crate::skinny::SkinnyKern::regions(&p.pack).filter(|_| kib > 0 && self.skinny_takes(p, m)) else {
+            return (G4Pf::default(), 0);
+        };
         let dhead = ((kib as u64 * 1024).min(ds) / 128 * 128) as i32;
         let shead = ((dhead as u64 * ss / ds).div_ceil(128) * 128).min(ss) as i32;
         let regions = ((p.pack.rows / 64) as i32).min(2 * self.dev.sms);
@@ -856,7 +901,9 @@ impl EngineG4 {
         let first = &self.w.layers[0];
         self.mark("start")?;
         match &self.xf {
-            Some(xf) => launch!(self.kg.embed_norm_x32, [nu, 1, 1], [nt, 1, 1], s; self.x.ptr, (c.hidden as f32).sqrt(), first.in_norm.ptr, xf.ptr, self.h.ptr, hid, eps)?,
+            Some(xf) => {
+                launch!(self.kg.embed_norm_x32, [nu, 1, 1], [nt, 1, 1], s; self.x.ptr, (c.hidden as f32).sqrt(), first.in_norm.ptr, xf.ptr, self.h.ptr, hid, eps)?
+            }
             None => launch!(self.kg.embed_norm, [nu, 1, 1], [nt, 1, 1], s; self.x.ptr, c.embed_scale(), first.in_norm.ptr, self.h.ptr, hid, eps)?,
         }
         for (l, ly) in self.w.layers.iter().enumerate() {
@@ -874,9 +921,9 @@ impl EngineG4 {
             let stride = c.proj_width(ly.kind) as i32;
             let prep = if d == 256 { &self.kg.prep256 } else { &self.kg.prep512 };
             if self.on("prep") {
-            let (pf, pfb) = self.pf(&ly.o, n, self.pf_kib[0], (d / 2) as u32);
-            let slice = nu * (nq + nki) as u32;
-            launch!(*prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; self.proj.ptr, stride, ly.q_norm.ptr, ly.k_norm.ptr, cos, sin, rot, pos, cap, self.qo.ptr, kc, vc, nq, nki, has_v as i32, eps, pf)?;
+                let (pf, pfb) = self.pf(&ly.o, n, self.pf_kib[0], (d / 2) as u32);
+                let slice = nu * (nq + nki) as u32;
+                launch!(*prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; self.proj.ptr, stride, ly.q_norm.ptr, ly.k_norm.ptr, cos, sin, rot, pos, cap, self.qo.ptr, kc, vc, nq, nki, has_v as i32, eps, pf)?;
             }
             self.mark("prep")?;
             let g = nq / nki;
@@ -907,7 +954,9 @@ impl EngineG4 {
             self.mark("o")?;
             match &self.xf {
                 _ if !self.on("norms") => {}
-                Some(xf) => launch!(self.kg.add_norm_x32, [nu, 1, 1], [nt, 1, 1], s; xf.ptr, self.o.ptr, ly.post_attn.ptr, null, ly.pre_ff.ptr, self.h.ptr, hid, eps)?,
+                Some(xf) => {
+                    launch!(self.kg.add_norm_x32, [nu, 1, 1], [nt, 1, 1], s; xf.ptr, self.o.ptr, ly.post_attn.ptr, null, ly.pre_ff.ptr, self.h.ptr, hid, eps)?
+                }
                 None => {
                     let (pf, pfb) = self.pf(&ly.gate_up, n, self.pf_kib[1], nt);
                     launch!(self.kg.add_norm, [nu, 1 + pfb.div_ceil(nu), 1], [nt, 1, 1], s; self.x.ptr, self.o.ptr, ly.post_attn.ptr, null, ly.pre_ff.ptr, self.h.ptr, hid, eps, pf)?
@@ -920,9 +969,9 @@ impl EngineG4 {
             self.mark("gate_up")?;
             let inter = c.inter as i32;
             if self.on("gelu") {
-            let gx = (c.inter as u32).div_ceil(256).min(64);
-            let (pf, pfb) = self.pf(&ly.down, n, self.pf_kib[2], 256);
-            launch!(self.kg.gelu, [gx, nu, 1 + pfb.div_ceil(gx * nu)], [256, 1, 1], s; self.gu.ptr, self.m.ptr, inter, pf)?;
+                let gx = (c.inter as u32).div_ceil(256).min(64);
+                let (pf, pfb) = self.pf(&ly.down, n, self.pf_kib[2], 256);
+                launch!(self.kg.gelu, [gx, nu, 1 + pfb.div_ceil(gx * nu)], [256, 1, 1], s; self.gu.ptr, self.m.ptr, inter, pf)?;
             }
             self.mark("gelu")?;
             if self.on("down") {
@@ -932,7 +981,9 @@ impl EngineG4 {
             let next = if l + 1 < self.w.layers.len() { self.w.layers[l + 1].in_norm.ptr } else { self.w.norm.ptr };
             match &self.xf {
                 _ if !self.on("norms") => {}
-                Some(xf) => launch!(self.kg.add_norm_x32, [nu, 1, 1], [nt, 1, 1], s; xf.ptr, self.d.ptr, ly.post_ff.ptr, ly.scalar.ptr, next, self.h.ptr, hid, eps)?,
+                Some(xf) => {
+                    launch!(self.kg.add_norm_x32, [nu, 1, 1], [nt, 1, 1], s; xf.ptr, self.d.ptr, ly.post_ff.ptr, ly.scalar.ptr, next, self.h.ptr, hid, eps)?
+                }
                 None => {
                     let to = if l + 1 < self.w.layers.len() { &self.w.layers[l + 1].proj } else { &self.w.embed };
                     let (pf, pfb) = self.pf(to, if l + 1 < self.w.layers.len() { n } else { head }, self.pf_kib[1], nt);
@@ -1363,7 +1414,12 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         Box::new(sp)
     } else if a.has("dynamic") {
         let c = ConfigG4::load(dir)?;
-        let mut d = crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::describe(&c), None, &crate::dynamic::Opts { ctx: o.ctx, chunk: o.chunk, graph: o.graph, device: o.device, layout: o.layout })?;
+        let mut d = crate::dynamic::Dyn::new(
+            dir,
+            crate::dynamic::gemma4::describe(&c),
+            None,
+            &crate::dynamic::Opts { ctx: o.ctx, chunk: o.chunk, graph: o.graph, device: o.device, layout: o.layout },
+        )?;
         if prof {
             d.prof = Some(Default::default());
         }
@@ -1409,10 +1465,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 break;
             }
             let rid: Vec<u64> = top_ids[at].as_u64s().unwrap_or_default();
-            let rlp: Vec<f64> = top_lp[at].as_array().unwrap_or(&[]).iter().filter_map(|v| match v {
-                Value::Number(n) => n.parse().ok(),
-                _ => None,
-            }).collect();
+            let rlp: Vec<f64> = top_lp[at]
+                .as_array()
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|v| match v {
+                    Value::Number(n) => n.parse().ok(),
+                    _ => None,
+                })
+                .collect();
             let lg = e.logits()?;
             let m = lg.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
             let lse = m + lg.iter().map(|&x| (x as f64 - m).exp()).sum::<f64>().ln();
@@ -1426,7 +1487,13 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             n_p += 1;
         }
         let steps = n_p.saturating_sub(1).max(1);
-        eprintln!("{} prompt tokens in {prompt_ms:.0} ms, then {:.2} ms a token ({:.1} tok/s): top-1 agrees {a_p}/{n_p}, KL (top-8) {:.5}", ids.len(), step_ms / steps as f64, 1000.0 * steps as f64 / step_ms.max(1e-9), kl_p / n_p.max(1) as f64);
+        eprintln!(
+            "{} prompt tokens in {prompt_ms:.0} ms, then {:.2} ms a token ({:.1} tok/s): top-1 agrees {a_p}/{n_p}, KL (top-8) {:.5}",
+            ids.len(),
+            step_ms / steps as f64,
+            1000.0 * steps as f64 / step_ms.max(1e-9),
+            kl_p / n_p.max(1) as f64
+        );
         agree += a_p;
         total += n_p;
         kl_sum += kl_p;
@@ -1451,7 +1518,14 @@ pub fn score(a: &crate::args::Args) -> Result<()> {
     let tokp = a.need(2, "CHUNKS")?;
     let out = a.need(3, "OUT")?;
     let text = std::fs::read_to_string(tokp).map_err(|e| Error(format!("{tokp}: {e}")))?;
-    let docs: Vec<Vec<u32>> = json::parse(&text).map_err(|e| Error(format!("{tokp}: {e}")))?.get("docs").and_then(Value::as_array).unwrap_or(&[]).iter().map(|d| d.as_u64s().unwrap_or_default().into_iter().map(|x| x as u32).collect()).collect();
+    let docs: Vec<Vec<u32>> = json::parse(&text)
+        .map_err(|e| Error(format!("{tokp}: {e}")))?
+        .get("docs")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .map(|d| d.as_u64s().unwrap_or_default().into_iter().map(|x| x as u32).collect())
+        .collect();
     let o = OptsG4 { ctx: a.num("ctx", 1024usize)?, chunk: a.num("chunk", 512usize)?, layout: a.layout()?, ..OptsG4::default() };
     let t0 = std::time::Instant::now();
     let mut e = EngineG4::new(dir, &o)?;
@@ -1479,7 +1553,13 @@ pub fn score(a: &crate::args::Args) -> Result<()> {
         eprintln!("chunk {}/{} ({:.0} s)", c + 1, docs.len(), t0.elapsed().as_secs_f64());
     }
     f.flush().map_err(|e| Error(e.to_string()))?;
-    let meta = format!("{{\"vocab\": {}, \"rows_per_chunk\": {per}, \"model\": {:?}, \"chunks\": {}, \"engine\": \"glyd-engine g4score\", \"layout\": \"{:?}\"}}", e.w.cfg.vocab, dir.display().to_string(), docs.len(), e.w.layout);
+    let meta = format!(
+        "{{\"vocab\": {}, \"rows_per_chunk\": {per}, \"model\": {:?}, \"chunks\": {}, \"engine\": \"glyd-engine g4score\", \"layout\": \"{:?}\"}}",
+        e.w.cfg.vocab,
+        dir.display().to_string(),
+        docs.len(),
+        e.w.layout
+    );
     std::fs::write(format!("{out}.json"), meta).map_err(|e| Error(e.to_string()))?;
     Ok(())
 }
@@ -1534,12 +1614,14 @@ pub fn fa_test(a: &crate::args::Args) -> Result<()> {
     let s = dev.stream;
     let mut seed = 0x9e3779b97f4a7c15u64;
     let mut rnd = |m: usize| -> Vec<u16> {
-        (0..m).map(|_| {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            bf16_bits(((seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * scale)
-        }).collect()
+        (0..m)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                bf16_bits(((seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * scale)
+            })
+            .collect()
     };
     for (d, nk) in [(256usize, 16usize), (512, 4)] {
         let nq = 32;
@@ -1573,11 +1655,23 @@ pub fn fa_test(a: &crate::args::Args) -> Result<()> {
         let mut bad_rows = std::collections::BTreeSet::new();
         for i in 0..x.len() {
             let dd = (f(x[i]) - f(y[i])).abs();
-            if dd > worst.0 { worst = (dd, i); }
-            if dd > 0.05 { bad_rows.insert(i / (nq * d)); }
+            if dd > worst.0 {
+                worst = (dd, i);
+            }
+            if dd > 0.05 {
+                bad_rows.insert(i / (nq * d));
+            }
         }
         let wi = worst.1;
-        println!("head {d}: largest difference {:.4} (row {}, head {}, dim {}); rows differing by > 0.05: {} of {n} {:?}", worst.0, wi / (nq * d), (wi / d) % nq, wi % d, bad_rows.len(), bad_rows.iter().take(12).collect::<Vec<_>>());
+        println!(
+            "head {d}: largest difference {:.4} (row {}, head {}, dim {}); rows differing by > 0.05: {} of {n} {:?}",
+            worst.0,
+            wi / (nq * d),
+            (wi / d) % nq,
+            wi % d,
+            bad_rows.len(),
+            bad_rows.iter().take(12).collect::<Vec<_>>()
+        );
     }
     Ok(())
 }
@@ -1604,7 +1698,13 @@ pub fn tok_check(a: &crate::args::Args) -> Result<()> {
         let same = got == want;
         n += 1;
         ok += (same && dec == want_text) as usize;
-        println!("{} ids ({} vs {}), decode {}: {prompt:?}", if same { "SAME" } else { "DIFFER" }, got.len(), want.len(), if dec == want_text { "same" } else { "DIFFERS" });
+        println!(
+            "{} ids ({} vs {}), decode {}: {prompt:?}",
+            if same { "SAME" } else { "DIFFER" },
+            got.len(),
+            want.len(),
+            if dec == want_text { "same" } else { "DIFFERS" }
+        );
         if !same {
             println!("  ours   {got:?}\n  theirs {want:?}\n  rendered {rendered:?}");
         }
@@ -1642,13 +1742,23 @@ pub fn spec_check(a: &crate::args::Args) -> Result<()> {
     let mut e: Box<dyn Pass> = if a.has("dynamic") {
         let (c, dc) = (ConfigG4::load(dir)?, ConfigG4::load_for(Path::new(draft), true)?);
         let spec = crate::dynamic::DraftSpec { dir: Path::new(draft), desc: crate::dynamic::gemma4::describe_draft(&dc, &c), k };
-        let d = crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::describe(&c), Some(spec), &crate::dynamic::Opts { ctx: o.ctx, chunk: o.chunk, graph: true, device: o.device, layout: o.layout })?;
+        let d = crate::dynamic::Dyn::new(
+            dir,
+            crate::dynamic::gemma4::describe(&c),
+            Some(spec),
+            &crate::dynamic::Opts { ctx: o.ctx, chunk: o.chunk, graph: true, device: o.device, layout: o.layout },
+        )?;
         eprintln!("loaded in {:.1} s: {}", t0.elapsed().as_secs_f64(), d.describe());
         Box::new(d)
     } else {
         let g = EngineG4::new(dir, &o)?;
         let dbytes = g.drafter.as_ref().map_or(0, |d| d.m.bytes);
-        eprintln!("loaded in {:.1} s: {}; draft model {:.3} GiB, {k} draft tokens a round", t0.elapsed().as_secs_f64(), g.describe(), dbytes as f64 / (1u64 << 30) as f64);
+        eprintln!(
+            "loaded in {:.1} s: {}; draft model {:.3} GiB, {k} draft tokens a round",
+            t0.elapsed().as_secs_f64(),
+            g.describe(),
+            dbytes as f64 / (1u64 << 30) as f64
+        );
         Box::new(g)
     };
     let (mut plain_ms, mut spec_ms, mut plain_n, mut spec_n, mut rounds, mut same_all) = (0f64, 0f64, 0usize, 0usize, 0usize, true);
@@ -1758,7 +1868,14 @@ pub fn i4x_check(a: &crate::args::Args) -> Result<()> {
                 continue;
             }
         };
-        let pb = upload_packed(crate::weights::Packed { data: pk.data, b1: pk.blocks, b2: pk.block_base.iter().flat_map(|x| x.to_le_bytes()).collect(), words: crate::ffi::Words::Tiered { blocks: 0, block_base: 0, tiers: pk.tiers }, rows, cols })?;
+        let pb = upload_packed(crate::weights::Packed {
+            data: pk.data,
+            b1: pk.blocks,
+            b2: pk.block_base.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            words: crate::ffi::Words::Tiered { blocks: 0, block_base: 0, tiers: pk.tiers },
+            rows,
+            cols,
+        })?;
         let out = Buf::new(rows * cols * 2)?;
         // SAFETY: the pack and the buffer are live and sized for `rows` rows.
         unsafe { lib.unpack(&pb.pack, 0, rows as i64, out.ptr, dev.stream)? };

@@ -15,14 +15,14 @@ pub fn bits(layout: Layout) -> f64 {
     match layout {
         Layout::Tiered => 10.80,
         Layout::Twelve => 12.04,
-        Layout::Compact => 6.80,  // (Candidate A, lossy: run --lossy)
-        Layout::Int6 | Layout::Int6Row => 6.53,     // (six-bit codes, a bf16 scale a run of 32, a step's unread word: 6 + 0.5 + 0.03; a row layout's the same bytes)
-        Layout::Int5 | Layout::Int5Row => 5.53,     // (five-bit codes, a bf16 scale a run of 32, a step's unread word: 5 + 0.5 + 0.03)
-        Layout::Int4 | Layout::Int4Row => 4.53,     // (four-bit codes, a bf16 scale a run of 32, a step's unread word: 4 + 0.5 + 0.03)
-        Layout::Int4H => 4.53,    // (four-bit codes, a 16-bit scale a run of 32, a step's unread word, as Int4)
-        Layout::Int3 => 3.53,     // (three-bit codes, a bf16 scale a run of 32, a step's unread word: 3 + 0.5 + 0.03)
-        Layout::Cb3Row => 3.625,  // (three-bit codes, a bf16 scale a run of 32 and eight bf16 entries a row of 1,024: 3 + 0.5 + 0.125)
-        Layout::Cb2Row => 2.5625, // (two-bit codes, a bf16 scale a run of 32 and four bf16 entries a row of 1,024: 2 + 0.5 + 0.0625)
+        Layout::Compact => 6.80,                // (Candidate A, lossy: run --lossy)
+        Layout::Int6 | Layout::Int6Row => 6.53, // (six-bit codes, a bf16 scale a run of 32, a step's unread word: 6 + 0.5 + 0.03; a row layout's the same bytes)
+        Layout::Int5 | Layout::Int5Row => 5.53, // (five-bit codes, a bf16 scale a run of 32, a step's unread word: 5 + 0.5 + 0.03)
+        Layout::Int4 | Layout::Int4Row => 4.53, // (four-bit codes, a bf16 scale a run of 32, a step's unread word: 4 + 0.5 + 0.03)
+        Layout::Int4H => 4.53,                  // (four-bit codes, a 16-bit scale a run of 32, a step's unread word, as Int4)
+        Layout::Int3 => 3.53,                   // (three-bit codes, a bf16 scale a run of 32, a step's unread word: 3 + 0.5 + 0.03)
+        Layout::Cb3Row => 3.625,                // (three-bit codes, a bf16 scale a run of 32 and eight bf16 entries a row of 1,024: 3 + 0.5 + 0.125)
+        Layout::Cb2Row => 2.5625,               // (two-bit codes, a bf16 scale a run of 32 and four bf16 entries a row of 1,024: 2 + 0.5 + 0.0625)
         Layout::Hummingbird => 2.99, // (the experts of the recipe hb40: 205 of a layer's 512 at 3.625 and the rest at 2.5625; the directory's own bytes are what a plan uses where it has them)
     }
 }
@@ -81,7 +81,10 @@ pub fn plan(cfg: &Config, name: &str, free: u64, layout: Layout, asked: Option<u
     let max_ctx = (room_after_weights.saturating_sub(min_work) / per.max(1)) as usize / 256 * 256;
     let ctx = match asked {
         Some(a) if a > cfg.max_pos => {
-            return Err(Refusal::new(format!("{name} has a context of {} tokens at most, and {a} were asked for", cfg.max_pos), format!("Ask for up to {}: --context {}", cfg.max_pos, cfg.max_pos)));
+            return Err(Refusal::new(
+                format!("{name} has a context of {} tokens at most, and {a} were asked for", cfg.max_pos),
+                format!("Ask for up to {}: --context {}", cfg.max_pos, cfg.max_pos),
+            ));
         }
         Some(a) if !fits(a) => {
             return Err(if max_ctx >= 1024 {
@@ -106,7 +109,13 @@ pub fn plan(cfg: &Config, name: &str, free: u64, layout: Layout, asked: Option<u
 fn too_big(name: &str, free: u64, w: u64, per: u64) -> Refusal {
     let need = w + RUNTIME + HEADROOM + CTX_MIN as u64 * per + (500 << 20);
     Refusal::unsupported(
-        format!("{name} does not fit this GPU: it needs about {} (the weights {} with Glyd, {} of context and the runtime), and {} are free", gib(need), gib(w), CTX_MIN, gib(free)),
+        format!(
+            "{name} does not fit this GPU: it needs about {} (the weights {} with Glyd, {} of context and the runtime), and {} are free",
+            gib(need),
+            gib(w),
+            CTX_MIN,
+            gib(free)
+        ),
         "Close programs that use the GPU (nvidia-smi lists them), or run a smaller model",
     )
 }
@@ -116,7 +125,20 @@ mod tests {
     use super::*;
 
     fn qwen3_8b() -> Config {
-        Config { hidden: 4096, layers: 36, heads: 32, kv_heads: 8, head_dim: 128, inter: 12288, vocab: 151936, eps: 1e-6, rope_theta: 1e6, max_pos: 40960, tie: false, eos: vec![] }
+        Config {
+            hidden: 4096,
+            layers: 36,
+            heads: 32,
+            kv_heads: 8,
+            head_dim: 128,
+            inter: 12288,
+            vocab: 151936,
+            eps: 1e-6,
+            rope_theta: 1e6,
+            max_pos: 40960,
+            tie: false,
+            eos: vec![],
+        }
     }
 
     #[test]

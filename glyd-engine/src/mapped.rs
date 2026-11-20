@@ -106,9 +106,13 @@ impl Mapping {
         if end > start {
             // SAFETY: a range inside the mapping, page aligned at its start; an advice only.
             #[cfg(unix)]
-            unsafe { madvise((self.ptr as *mut u8).add(start) as *mut c_void, end - start, MADV_WILLNEED) };
+            unsafe {
+                madvise((self.ptr as *mut u8).add(start) as *mut c_void, end - start, MADV_WILLNEED)
+            };
             #[cfg(windows)]
-            unsafe { crate::os::win::prefetch((self.ptr as *mut u8).add(start) as *mut c_void, end - start) };
+            unsafe {
+                crate::os::win::prefetch((self.ptr as *mut u8).add(start) as *mut c_void, end - start)
+            };
         }
     }
 }
@@ -122,7 +126,9 @@ impl Mapping {
         if end > start {
             // SAFETY: a range inside the mapping, page aligned at its start; an advice only.
             #[cfg(unix)]
-            unsafe { madvise((self.ptr as *mut u8).add(start) as *mut c_void, end - start, MADV_RANDOM) };
+            unsafe {
+                madvise((self.ptr as *mut u8).add(start) as *mut c_void, end - start, MADV_RANDOM)
+            };
             // ponytail: Windows has no random-access advice for a view; if a table's row reads pull its neighbours into the page cache and evict the pack (Linux's 2026-10-11 case), read those rows with ReadFile instead
             #[cfg(windows)]
             let _ = (start, end);
@@ -135,9 +141,13 @@ impl Drop for Mapping {
         if self.pinned.is_none() {
             // SAFETY: mapped by `open`, unmapped once.
             #[cfg(unix)]
-            unsafe { munmap(self.ptr, self.len) };
+            unsafe {
+                munmap(self.ptr, self.len)
+            };
             #[cfg(windows)]
-            unsafe { crate::os::win::unmap(self.ptr) };
+            unsafe {
+                crate::os::win::unmap(self.ptr)
+            };
         }
     }
 }

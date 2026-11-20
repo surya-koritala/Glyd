@@ -15,8 +15,11 @@ fn main() {
         blocks += 1;
         if h.flags & FLAG_RAW_UNCOMPRESSED == 0 {
             let l = payload_layout_of(&h, &c[cursor + hl..cursor + hl + len]).unwrap();
-            for i in 0..5 { sizes[i] += l.sub.sizes[i] as u64; }
-            lits += h.literal_len as u64; seqs += h.token_count as u64;
+            for i in 0..5 {
+                sizes[i] += l.sub.sizes[i] as u64;
+            }
+            lits += h.literal_len as u64;
+            seqs += h.token_count as u64;
         }
         cursor += hl + len;
     }

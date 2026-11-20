@@ -44,7 +44,11 @@ const PLAIN: [(&str, u32, u32, u32, u32, u32); 6] = [
     (kname!("gemm3_256x128_b64_s2"), 256, 128, 64, 256, 2),
 ];
 /// The same with silu(gate) * up in the epilogue, for the gate-and-up product.
-const FUSED: [(&str, u32, u32, u32, u32, u32); 3] = [(kname!("gemm3f_256x128_s3"), 256, 128, 32, 256, 3), (kname!("gemm3f_128x256_b64_s2"), 128, 256, 64, 256, 2), (kname!("gemm3f_128x256_s3"), 128, 256, 32, 256, 3)];
+const FUSED: [(&str, u32, u32, u32, u32, u32); 3] = [
+    (kname!("gemm3f_256x128_s3"), 256, 128, 32, 256, 3),
+    (kname!("gemm3f_128x256_b64_s2"), 128, 256, 64, 256, 2),
+    (kname!("gemm3f_128x256_s3"), 128, 256, 32, 256, 3),
+];
 
 fn tiles(dev: &Dev, list: &[(&'static str, u32, u32, u32, u32, u32)]) -> Result<Vec<Tile>> {
     list.iter()
@@ -284,7 +288,23 @@ impl Kern {
     /// # Safety
     /// As `copy_row`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn qk_norm_rope(&self, s: Stream, qkv: u64, stride: i32, qw: u64, kw: u64, cos: u64, sin: u64, pos: u64, qo: u64, ko: u64, m: u32, nq: i32, nk: i32, eps: f32) -> Result<()> {
+    pub unsafe fn qk_norm_rope(
+        &self,
+        s: Stream,
+        qkv: u64,
+        stride: i32,
+        qw: u64,
+        kw: u64,
+        cos: u64,
+        sin: u64,
+        pos: u64,
+        qo: u64,
+        ko: u64,
+        m: u32,
+        nq: i32,
+        nk: i32,
+        eps: f32,
+    ) -> Result<()> {
         launch!(self.qk_norm_rope, [m, (nq + nk) as u32, 1], [64, 1, 1], s; qkv, stride, qw, kw, cos, sin, pos, qo, ko, nq, nk, eps)
     }
 
@@ -305,7 +325,19 @@ impl Kern {
     /// # Safety
     /// As `copy_row`; `kv` holds start + n tokens.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn prefill_attn(&self, s: Stream, q: u64, q_stride: i32, kv: u64, out: u64, out_stride: i32, n: i32, start: i32, heads: i32, kv_heads: i32) -> Result<()> {
+    pub unsafe fn prefill_attn(
+        &self,
+        s: Stream,
+        q: u64,
+        q_stride: i32,
+        kv: u64,
+        out: u64,
+        out_stride: i32,
+        n: i32,
+        start: i32,
+        heads: i32,
+        kv_heads: i32,
+    ) -> Result<()> {
         if heads % kv_heads != 0 {
             return crate::ffi::err(format!("{heads} query heads over {kv_heads} key-value heads"));
         }
@@ -419,7 +451,20 @@ impl Kern {
     /// # Safety
     /// As `copy_row`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_leaf_hp(&self, s: Stream, k: u64, ks: i32, v: u64, vs: i32, kbase: u64, vbase: u64, heads: i32, npages: u32, page0: i32, hp: u64) -> Result<()> {
+    pub unsafe fn kv_leaf_hp(
+        &self,
+        s: Stream,
+        k: u64,
+        ks: i32,
+        v: u64,
+        vs: i32,
+        kbase: u64,
+        vbase: u64,
+        heads: i32,
+        npages: u32,
+        page0: i32,
+        hp: u64,
+    ) -> Result<()> {
         if npages == 0 {
             return Ok(());
         }
@@ -431,7 +476,23 @@ impl Kern {
     /// # Safety
     /// As `copy_row`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_sweep(&self, s: Stream, k: u64, ks: i32, v: u64, vs: i32, kbase: u64, vbase: u64, heads: i32, layer: i32, layers: i32, row0: i32, m: u32, need: u64, exc: u64) -> Result<()> {
+    pub unsafe fn kv_sweep(
+        &self,
+        s: Stream,
+        k: u64,
+        ks: i32,
+        v: u64,
+        vs: i32,
+        kbase: u64,
+        vbase: u64,
+        heads: i32,
+        layer: i32,
+        layers: i32,
+        row0: i32,
+        m: u32,
+        need: u64,
+        exc: u64,
+    ) -> Result<()> {
         launch!(self.kv_sweep, [m, 1, 1], [32 * heads as u32, 1, 1], s; k, ks, v, vs, kbase, vbase, heads, layer, layers, row0, need, exc)
     }
 
@@ -453,7 +514,9 @@ mod tests {
     #[test]
     fn kernel_names_are_the_sources_in_every_build() {
         let tiles: Vec<&str> = PLAIN.iter().chain(FUSED.iter()).map(|t| t.0).collect();
-        for n in tiles.iter().copied().chain([kname!("copy_row"), kname!("kv_hist"), kname!("prefill_attn_w4_b64"), kname!("topk64_bf16"), kname!("expsum_bf16")]) {
+        for n in
+            tiles.iter().copied().chain([kname!("copy_row"), kname!("kv_hist"), kname!("prefill_attn_w4_b64"), kname!("topk64_bf16"), kname!("expsum_bf16")])
+        {
             assert!(!(n.starts_with("gk_") && n[3..].bytes().all(|b| b.is_ascii_digit())), "{n}");
         }
         assert_eq!(tiles.iter().collect::<std::collections::HashSet<_>>().len(), tiles.len());

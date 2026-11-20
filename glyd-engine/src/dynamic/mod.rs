@@ -20,8 +20,8 @@ use crate::kern::{norm_threads, Kern};
 use crate::launch;
 use crate::model::{embed_plan, Sample, TopGpu};
 use crate::model35::{Kern35, Mat, ATTN_PART, ATTN_SPLITS};
-use crate::model_nh::{KernNh, MoeBlock, SsdWs, NH_PART, NH_SPLITS};
 use crate::model_gemma4::{attn_smem, fa_smem, pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS, FA512B_SMEM, PART_WARPS, SPLITS};
+use crate::model_nh::{KernNh, MoeBlock, SsdWs, NH_PART, NH_SPLITS};
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -84,125 +84,401 @@ impl View {
 #[derive(Clone, Debug)]
 pub enum Op {
     /// x = bf16(x scale) (the embedding's scale), h = bf16(rmsnorm(x) norm).
-    EmbedNorm { scale: f32, norm: usize },
+    EmbedNorm {
+        scale: f32,
+        norm: usize,
+    },
     /// y = x W^T for matrix `w` (any layout: the skinny products for a few rows, the library's otherwise); `name` labels the stage in a profile.
-    Linear { w: usize, x: Slot, y: Slot, name: &'static str },
+    Linear {
+        w: usize,
+        x: Slot,
+        y: Slot,
+        name: &'static str,
+    },
     /// y = x W^T for the part's FP8 matrix `w` (the library's lossless FP8 format, an FP8 checkpoint's matrix as released).
-    F8Lin { w: usize, x: Slot, y: Slot, name: &'static str },
+    F8Lin {
+        w: usize,
+        x: Slot,
+        y: Slot,
+        name: &'static str,
+    },
     /// The heads of proj (rows `stride` wide: nq query heads, nk key heads, then the values where `has_v`) of width `d`: the q and k norms, the rotary of
     /// table `rope` on its first `rot` pairs, the queries to qo and the keys and values into ring `ring`.
-    QkvPrep { d: usize, nq: usize, nk: usize, has_v: bool, stride: usize, q_norm: usize, k_norm: usize, rope: usize, rot: usize, ring: usize },
+    QkvPrep {
+        d: usize,
+        nq: usize,
+        nk: usize,
+        has_v: bool,
+        stride: usize,
+        q_norm: usize,
+        k_norm: usize,
+        rope: usize,
+        rot: usize,
+        ring: usize,
+    },
     /// Causal attention of qo over ring `ring` (`window` 0: every position), into att.
-    Attention { d: usize, nq: usize, nk: usize, window: usize, ring: usize },
+    Attention {
+        d: usize,
+        nq: usize,
+        nk: usize,
+        window: usize,
+        ring: usize,
+    },
     /// The sandwich residual: x = bf16(x + bf16(rmsnorm(y) post)) (then bf16(x scalar) where `scalar`), and h = bf16(rmsnorm(x) next).
-    AddNorm { y: Slot, post: usize, scalar: Option<usize>, next: usize },
+    AddNorm {
+        y: Slot,
+        post: usize,
+        scalar: Option<usize>,
+        next: usize,
+    },
     /// m = bf16(bf16(gelu_tanh(gate)) up), gate and up the halves of gu.
-    GeluMul { inter: usize },
+    GeluMul {
+        inter: usize,
+    },
     /// y = bf16(rmsnorm(x) w).
-    Norm { x: Slot, w: usize, y: Slot },
+    Norm {
+        x: Slot,
+        w: usize,
+        y: Slot,
+    },
     /// A draft model's input: In = [the big model's raw embedding row (its X) times `scale`, Hid].
-    DraftIn { scale: f32 },
+    DraftIn {
+        scale: f32,
+    },
     /// The pre-norm models' norms: y = bf16(rmsnorm(x) w), times (1 + w) where `plus1` (Qwen3.5's); and the pre-norm residual, x += y, h = the norm of x.
-    RmsNorm { x: Slot, w: usize, y: Slot, plus1: bool },
-    NormAdd { y: Slot, w: usize, plus1: bool },
+    RmsNorm {
+        x: Slot,
+        w: usize,
+        y: Slot,
+        plus1: bool,
+    },
+    NormAdd {
+        y: Slot,
+        w: usize,
+        plus1: bool,
+    },
     /// A linear-attention (Gated DeltaNet) layer: the causal convolution of Mix's first `cd` channels (rows `row` wide) with weights `w` and its state into Xc;
     /// the delta rule over Xc and Ba (`nk` key heads, `nv` value heads; A_log, dt_bias) with its state into Core; the gated norm of Core by Mix's z (at `z_off`).
-    GdnConv { w: usize, state: usize, cd: usize, row: usize },
-    GdnDelta { a_log: usize, dt_bias: usize, state: usize, cd: usize, nk: usize, nv: usize },
-    GatedNorm { w: usize, row: usize, nv: usize, z_off: usize },
+    GdnConv {
+        w: usize,
+        state: usize,
+        cd: usize,
+        row: usize,
+    },
+    GdnDelta {
+        a_log: usize,
+        dt_bias: usize,
+        state: usize,
+        cd: usize,
+        nk: usize,
+        nv: usize,
+    },
+    GatedNorm {
+        w: usize,
+        row: usize,
+        nv: usize,
+        z_off: usize,
+    },
     /// Qwen3.5's full attention (heads of 256): q/k norms, the rotary on the first `half` pairs, the cache write (Mix rows `stride` wide); then the attention
     /// of qo over ring `ring` times sigmoid of Mix's gate, into att.
-    Prep35 { stride: usize, q_norm: usize, k_norm: usize, half: usize, ring: usize, nq: usize, nk: usize },
-    Attn35 { stride: usize, ring: usize, nq: usize, nk: usize },
+    Prep35 {
+        stride: usize,
+        q_norm: usize,
+        k_norm: usize,
+        half: usize,
+        ring: usize,
+        nq: usize,
+        nk: usize,
+    },
+    Attn35 {
+        stride: usize,
+        ring: usize,
+        nq: usize,
+        nk: usize,
+    },
     /// m = silu(gate) up of matrix `w`'s product (gate and up stacked) of h.
-    GateUpSilu { w: usize, inter: usize },
+    GateUpSilu {
+        w: usize,
+        inter: usize,
+    },
     /// A Mamba-2 layer (Nemotron-H): the causal convolution (weights `w`, `bias`) of Mix's xBC (at `x_off`, rows `row` wide) with its state into Xc; the scan over Xc with
     /// Mix's dt (at `dt_off`) into Core (chunked for a prompt); the gated norm of Core by Mix's z in `ng` groups.
-    MambaConv { w: usize, bias: usize, state: usize, cd: usize, row: usize, x_off: usize },
-    MambaScan { dt_bias: usize, a_log: usize, d: usize, state: usize, cd: usize, row: usize, dt_off: usize, nh: usize, ng: usize },
-    MambaNorm { w: usize, row: usize, di: usize, ng: usize },
+    MambaConv {
+        w: usize,
+        bias: usize,
+        state: usize,
+        cd: usize,
+        row: usize,
+        x_off: usize,
+    },
+    MambaScan {
+        dt_bias: usize,
+        a_log: usize,
+        d: usize,
+        state: usize,
+        cd: usize,
+        row: usize,
+        dt_off: usize,
+        nh: usize,
+        ng: usize,
+    },
+    MambaNorm {
+        w: usize,
+        row: usize,
+        di: usize,
+        ng: usize,
+    },
     /// Nemotron-H's attention (heads of 128, no positional encoding): the keys and values of Mix (rows `stride` wide) into ring `ring` (k and v of a head in one row of 256), then
     /// the attention of Mix's queries into Att.
-    KvWrite { ring: usize, stride: usize, nq: usize, nk: usize },
-    AttnNh { ring: usize, stride: usize, nq: usize, nk: usize },
+    KvWrite {
+        ring: usize,
+        stride: usize,
+        nq: usize,
+        nk: usize,
+    },
+    AttnNh {
+        ring: usize,
+        stride: usize,
+        nq: usize,
+        nk: usize,
+    },
     /// A mixture-of-experts layer (the part's block `block`) of H into O.
-    Moe { block: usize },
+    Moe {
+        block: usize,
+    },
     /// DeepSeek-V4's (src/dynamic/deepseek_v4.rs, kernels/dsv4.cu): the streams S from the embedding row X, four times.
     V4Streams,
     /// hc_pre: the mixing weights of S by the fp32 projection `f` (small, [24, 4 hidden]), `base` and `scale`, made doubly stochastic, and the collapse normed by `norm` into H; the weights kept for V4Post.
-    V4Pre { f: usize, base: usize, scale: usize, norm: usize },
+    V4Pre {
+        f: usize,
+        base: usize,
+        scale: usize,
+        norm: usize,
+    },
     /// hc_post: S from the block's output O and the weights V4Pre kept.
     V4Post,
     /// hc_head and the final norm into H (the LM head reads its last rows).
-    V4Head { f: usize, base: usize, scale: usize, norm: usize },
+    V4Head {
+        f: usize,
+        base: usize,
+        scale: usize,
+        norm: usize,
+    },
     /// y = x as the release's products quantize their input: E4M3 in blocks of `block`.
-    Fp8 { x: Slot, y: Slot, block: usize },
+    Fp8 {
+        x: Slot,
+        y: Slot,
+        block: usize,
+    },
     /// The queries Qo (`heads` of 512): each normed in bf16 arithmetic, the rotary of table `rope`.
-    V4Q { rope: usize, heads: usize },
+    V4Q {
+        rope: usize,
+        heads: usize,
+    },
     /// The key-value row Kv: normed by `norm`, the rotary of `rope`, its first 448 channels to E4M3; into ring `ring`.
-    V4Kv { norm: usize, rope: usize, ring: usize },
+    V4Kv {
+        norm: usize,
+        rope: usize,
+        ring: usize,
+    },
     /// A compressor of H: its two products by `w` (small: [2 W, hidden] bf16, kv's rows then the gate's) in fp32 into Cp, the pooling of every `ratio` rows with `ape` (small, fp32) and its state (states
     /// `state` and `state` + 1: the kv rows and the scores), each completed window's entry normed by `norm`, the rotary of `rope`, quantized (`indexer`: rotated, E2M1; else E4M3) into state `cache` [entries, d].
-    V4Comp { w: usize, ape: usize, norm: usize, d: usize, ratio: usize, rope: usize, cache: usize, state: usize, indexer: bool },
+    V4Comp {
+        w: usize,
+        ape: usize,
+        norm: usize,
+        d: usize,
+        ratio: usize,
+        rope: usize,
+        cache: usize,
+        state: usize,
+        indexer: bool,
+    },
     /// The indexer's queries Iq (`heads` of 128): the rotary of `rope`, the rotation, E2M1.
-    V4IdxQ { rope: usize, heads: usize },
+    V4IdxQ {
+        rope: usize,
+        heads: usize,
+    },
     /// The indexer's picks: Iq and Iw (its weights' product, times `wscale`) scored against its cache (state `cache`), each row's `topk` best entries.
-    V4IdxPick { cache: usize, ratio: usize, heads: usize, topk: usize, wscale: f32 },
+    V4IdxPick {
+        cache: usize,
+        ratio: usize,
+        heads: usize,
+        topk: usize,
+        wscale: f32,
+    },
     /// The attention of Qo over the window (ring `ring`) and the cache (state `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the rotary of `rope` taken off
     /// its output; into Att in the grouped low rank's order (`hpg` heads a group).
-    V4Attn { ring: usize, cache: Option<usize>, ratio: usize, sink: usize, rope: usize, heads: usize, hpg: usize },
+    V4Attn {
+        ring: usize,
+        cache: Option<usize>,
+        ratio: usize,
+        sink: usize,
+        rope: usize,
+        heads: usize,
+        hpg: usize,
+    },
     /// The grouped low rank: group g's rows of Att (hpg 512 wide) by matrix `w` + g (an FP8 matrix where `in_f8`) into Mid (`ol` wide), then back in rows into `y` (E4M3 where `fp8`).
-    V4OLora { w: usize, in_f8: bool, groups: usize, hpg: usize, ol: usize, y: Slot, fp8: bool },
+    V4OLora {
+        w: usize,
+        in_f8: bool,
+        groups: usize,
+        hpg: usize,
+        ol: usize,
+        y: Slot,
+        fp8: bool,
+    },
     /// The same with the groups' matrices one FP8 stack (`f8[w]`, [groups ol, hpg 512]): every group's product in one launch, the groups as the experts' product's experts.
-    V4OLoraStack { w: usize, groups: usize, ol: usize, y: Slot, fp8: bool },
+    V4OLoraStack {
+        w: usize,
+        groups: usize,
+        ol: usize,
+        y: Slot,
+        fp8: bool,
+    },
     /// The mixture of experts as the release computes it (block `block`; the first layers' table of experts by token, small int64 [vocab, k], `hash`): the router reads H, the experts Hq; into O.
-    V4Moe { block: usize, hash: Option<usize> },
+    V4Moe {
+        block: usize,
+        hash: Option<usize>,
+    },
     /// GLM-5.3-Flash's (src/dynamic/glm.rs; kernels/glm.cu, transformers' rounding): the streams S from X; a block's mixing weights (the projection `f`, bf16 [24, 4 hidden], `base`, `scale`) and its normed
     /// collapse into H; the streams updated from O; the mean of the streams normed by `norm` into H.
     GlmStreams,
-    GlmPre { f: usize, base: usize, scale: usize, norm: usize },
+    GlmPre {
+        f: usize,
+        base: usize,
+        scale: usize,
+        norm: usize,
+    },
     GlmPost,
-    GlmHead { norm: usize },
+    GlmHead {
+        norm: usize,
+    },
     /// Kimi delta attention: the causal convolution of Mix's first `c` channels (q, k and v; Mix's rows `row` apart) with weights `w` and its state into Xc; the delta rule over Xc, the forget gate's product
     /// Qo and the input gate's `ba` (`heads` heads, A_log, dt_bias, the forget gate's lower `bound`) with its state into Core; the gated norm of Core by the output gate's product `iq` into Att.
-    KdaConv { w: usize, state: usize, c: usize, row: usize, w32: bool },
-    KdaDelta { a_log: usize, dt_bias: usize, state: usize, heads: usize, bound: f32, ba: View },
-    KdaOut { w: usize, heads: usize, w32: bool, iq: View },
+    KdaConv {
+        w: usize,
+        state: usize,
+        c: usize,
+        row: usize,
+        w32: bool,
+    },
+    KdaDelta {
+        a_log: usize,
+        dt_bias: usize,
+        state: usize,
+        heads: usize,
+        bound: f32,
+        ba: View,
+    },
+    KdaOut {
+        w: usize,
+        heads: usize,
+        w32: bool,
+        iq: View,
+    },
     /// y = w x, x a part of a fused product's rows (`View`)
-    LinearAt { w: usize, x: View, y: Slot, name: &'static str },
+    LinearAt {
+        w: usize,
+        x: View,
+        y: Slot,
+        name: &'static str,
+    },
     /// A prompt's parts of the fused product in Mix (rows `row` apart): each (column, values, slot) copied into its slot, rows as wide as the part (one
     /// token's are read in place: `View`)
-    KimiParts { row: usize, parts: [(usize, usize, Slot); 3] },
+    KimiParts {
+        row: usize,
+        parts: [(usize, usize, Slot); 3],
+    },
     /// GLM's latent attention over the keys its indexer picks (the part's block `block`, src/mla_glm.rs) of H into O.
-    Mla { block: usize },
+    Mla {
+        block: usize,
+    },
     /// Kimi-K3's half-layer start, one kernel: X = bf16(X + O) where `add`; the depth mix of the first `nb` completed blocks (Blk) and X, by its norm
     /// weight and projection (`small`'s); X into block `push` of Blk, then X = 0, where given (the next block's partial sum starts empty); KimiRMSNorm (two
     /// roundings) of the mix by `w` into H
-    KimiMixNorm { add: bool, nb: usize, w_n: usize, w_p: usize, push: Option<usize>, w: usize, eps: f32 },
+    KimiMixNorm {
+        add: bool,
+        nb: usize,
+        w_n: usize,
+        w_p: usize,
+        push: Option<usize>,
+        w: usize,
+        eps: f32,
+    },
     /// X = bf16(X + x)
-    KimiAdd { x: Slot },
+    KimiAdd {
+        x: Slot,
+    },
     /// Kimi-K3's guess of a cached layer's experts in a decode step: the depth mix and norm of its experts' input (the mix's `nb`, `w_n`, `w_p`, the norm's `w`)
     /// over X before the layer's attention adds to it, into Att (written before it is read in the layer), and the block's router on that
     /// (`MoeBlock::early`), so that the copies of the experts it guesses run beside the attention.
-    KimiEarly { block: usize, nb: usize, w_n: usize, w_p: usize, w: usize, eps: f32 },
+    KimiEarly {
+        block: usize,
+        nb: usize,
+        w_n: usize,
+        w_p: usize,
+        w: usize,
+        eps: f32,
+    },
     /// The MLP's situ (Gu [gate, up] into M)
-    Situ { inter: usize, beta: f32, linear: f32 },
+    Situ {
+        inter: usize,
+        beta: f32,
+        linear: f32,
+    },
     /// Nothing (a model whose first operation is none)
     Nop,
     /// M = silu(min(gate, limit)) clamp(up, -limit, limit) of Gu (the gate's `inter` columns, then the up's), rounded once.
-    SwiGluClamp { inter: usize, limit: f32 },
+    SwiGluClamp {
+        inter: usize,
+        limit: f32,
+    },
     /// Muse Spark's (src/dynamic/muse.rs; kernels/muse.cu): an RMS norm with eps (y = bf16(rmsnorm(x) w), the weight a centered norm's bf16(1 + w), or ones for none); the input-scaled norm
     /// (y = RMS(bf16(x w))); the residual gate (X = alpha X + beta O, small `alpha`, `beta`).
-    MuseRms { x: Slot, w: usize, y: Slot, eps: f32 },
-    MuseRmsIn { x: Slot, w: usize, y: Slot, eps: f32 },
-    MuseGate { alpha: usize, beta: usize },
+    MuseRms {
+        x: Slot,
+        w: usize,
+        y: Slot,
+        eps: f32,
+    },
+    MuseRmsIn {
+        x: Slot,
+        w: usize,
+        y: Slot,
+        eps: f32,
+    },
+    MuseGate {
+        alpha: usize,
+        beta: usize,
+    },
     /// The attention's heads of 64 from Mix (rows `stride` wide: q, k, v, the gate): q and k normed, q times `scale`, the rotary where `rope`, into Qo and ring `ring`; the attention of Qo over the ring
     /// (`window` 0: every position) into Att; each head of Att normed and gated by Mix's gate (at `goff`) into Core.
-    MuseQk { stride: usize, nq: usize, nk: usize, rope: bool, ring: usize, scale: f32 },
-    MuseAttn { ring: usize, nq: usize, nk: usize, window: usize },
-    MuseOGate { stride: usize, goff: usize, nq: usize },
+    MuseQk {
+        stride: usize,
+        nq: usize,
+        nk: usize,
+        rope: bool,
+        ring: usize,
+        scale: f32,
+    },
+    MuseAttn {
+        ring: usize,
+        nq: usize,
+        nk: usize,
+        window: usize,
+    },
+    MuseOGate {
+        stride: usize,
+        goff: usize,
+        nq: usize,
+    },
     /// The experts in the latent (block `block`): the router reads H, the experts Xc; each expert's output normed (small `post_w`, eps); their weighted sum into M.
-    MuseMoe { block: usize, post_w: usize, eps: f32 },
+    MuseMoe {
+        block: usize,
+        post_w: usize,
+        eps: f32,
+    },
 }
 
 /// What DeepSeek-V4's operations need beyond the slots (its scratch is sized from these and the context).
@@ -333,7 +609,16 @@ impl Op {
 
     fn ring(&self) -> Option<usize> {
         match *self {
-            Op::QkvPrep { ring, .. } | Op::Attention { ring, .. } | Op::Prep35 { ring, .. } | Op::Attn35 { ring, .. } | Op::KvWrite { ring, .. } | Op::AttnNh { ring, .. } | Op::V4Kv { ring, .. } | Op::V4Attn { ring, .. } | Op::MuseQk { ring, .. } | Op::MuseAttn { ring, .. } => Some(ring),
+            Op::QkvPrep { ring, .. }
+            | Op::Attention { ring, .. }
+            | Op::Prep35 { ring, .. }
+            | Op::Attn35 { ring, .. }
+            | Op::KvWrite { ring, .. }
+            | Op::AttnNh { ring, .. }
+            | Op::V4Kv { ring, .. }
+            | Op::V4Attn { ring, .. }
+            | Op::MuseQk { ring, .. }
+            | Op::MuseAttn { ring, .. } => Some(ring),
             _ => None,
         }
     }
@@ -417,7 +702,11 @@ impl Part {
     }
 
     fn bytes(&self) -> usize {
-        self.mats.iter().map(Mat::bytes).sum::<usize>() + self.f8.iter().map(|m| m.bytes).sum::<usize>() + self.mla.iter().map(|b| b.bytes()).sum::<usize>() + self.small.iter().map(|b| b.bytes).sum::<usize>() + self.moe.iter().map(|b| b.bytes()).sum::<usize>()
+        self.mats.iter().map(Mat::bytes).sum::<usize>()
+            + self.f8.iter().map(|m| m.bytes).sum::<usize>()
+            + self.mla.iter().map(|b| b.bytes()).sum::<usize>()
+            + self.small.iter().map(|b| b.bytes).sum::<usize>()
+            + self.moe.iter().map(|b| b.bytes()).sum::<usize>()
     }
 
     /// The part's weights as loaded by the family's own loader, with its activations and outputs.
@@ -450,7 +739,15 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
         Ok(())
     })?;
     // ponytail: a matrix another stage holds is an empty dense one here (never multiplied by); a Mat variant of its own if one is ever read by mistake
-    let mats: Vec<Mat> = packed.into_iter().map(|x| Ok(match x { Some(p) => Mat::Packed(p), None => Mat::Dense(Buf::new(2)?, 0, 0) })).collect::<Result<_>>()?;
+    let mats: Vec<Mat> = packed
+        .into_iter()
+        .map(|x| {
+            Ok(match x {
+                Some(p) => Mat::Packed(p),
+                None => Mat::Dense(Buf::new(2)?, 0, 0),
+            })
+        })
+        .collect::<Result<_>>()?;
     let small: Vec<Buf> = d
         .small
         .iter()
@@ -690,13 +987,34 @@ impl Dyn {
 
     /// A model a family's own loader put on the GPU (its matrices, small tensors and rotary tables, in its description's order).
     #[allow(clippy::too_many_arguments)]
-    pub fn from_loaded(dev: Dev, d: ModelDesc, mats: Vec<Mat>, small: Vec<Buf>, moe: Vec<Box<dyn MoeBlock>>, ropes: Vec<(Buf, Buf)>, layout: Layout, st: Stage, o: &Opts) -> Result<Dyn> {
+    pub fn from_loaded(
+        dev: Dev,
+        d: ModelDesc,
+        mats: Vec<Mat>,
+        small: Vec<Buf>,
+        moe: Vec<Box<dyn MoeBlock>>,
+        ropes: Vec<(Buf, Buf)>,
+        layout: Layout,
+        st: Stage,
+        o: &Opts,
+    ) -> Result<Dyn> {
         Dyn::from_loaded_f8(dev, d, mats, Vec::new(), small, moe, ropes, layout, st, o)
     }
 
     /// `from_loaded` with FP8 matrices too (`Op::F8Lin`'s).
     #[allow(clippy::too_many_arguments)]
-    pub fn from_loaded_f8(dev: Dev, d: ModelDesc, mats: Vec<Mat>, f8: Vec<crate::f8::F8Mat>, small: Vec<Buf>, moe: Vec<Box<dyn MoeBlock>>, ropes: Vec<(Buf, Buf)>, layout: Layout, st: Stage, o: &Opts) -> Result<Dyn> {
+    pub fn from_loaded_f8(
+        dev: Dev,
+        d: ModelDesc,
+        mats: Vec<Mat>,
+        f8: Vec<crate::f8::F8Mat>,
+        small: Vec<Buf>,
+        moe: Vec<Box<dyn MoeBlock>>,
+        ropes: Vec<(Buf, Buf)>,
+        layout: Layout,
+        st: Stage,
+        o: &Opts,
+    ) -> Result<Dyn> {
         Dyn::from_parts(dev, d, Loaded { mats, f8, small, moe, mla: Vec::new() }, ropes, layout, st, o)
     }
 
@@ -724,14 +1042,21 @@ impl Dyn {
         let whole = stage.first && stage.last;
         let (mut ring_off, mut ring_cap, mut at) = (Vec::new(), Vec::new(), 0u64);
         for (i, r) in d.rings.iter().enumerate() {
-            let cap = if !whole && !rings_used.contains(&i) { 0 } else if r.window > 0 { (r.window + ch).min(ctx) } else { ctx };
+            let cap = if !whole && !rings_used.contains(&i) {
+                0
+            } else if r.window > 0 {
+                (r.window + ch).min(ctx)
+            } else {
+                ctx
+            };
             ring_off.push(at);
             ring_cap.push(cap);
             at += (cap * r.nk * r.d * 2) as u64;
         }
         let (kc, vc) = (Buf::zeroed(at as usize)?, Buf::zeroed(at as usize)?);
         let states_used: std::collections::HashSet<usize> = ops().flat_map(Op::states).collect();
-        let states: Vec<Buf> = d.states.iter().enumerate().map(|(i, &b)| Buf::zeroed(if whole || states_used.contains(&i) { b.max(4) } else { 4 })).collect::<Result<_>>()?;
+        let states: Vec<Buf> =
+            d.states.iter().enumerate().map(|(i, &b)| Buf::zeroed(if whole || states_used.contains(&i) { b.max(4) } else { 4 })).collect::<Result<_>>()?;
         let (heads, dmax) = d.heads();
         let heads35 = d.layers.iter().flatten().filter_map(|op| if let Op::Attn35 { nq, .. } = op { Some(*nq) } else { None }).max().unwrap_or(0);
         let hid = d.hidden;
@@ -895,7 +1220,21 @@ impl Dyn {
         let dr = self.draft.as_ref().map_or(String::new(), |x| format!("; draft model {:.3} GiB, {} draft tokens a round", gib(x.p.bytes()), x.k));
         format!(
             "{} (sm_{}{}): {} on the dynamic engine, {} layers, weights {:.3} GiB (layout {:?}), KV {:.3} GiB ({} positions), {:.2} of {:.2} GiB in use{dr}",
-            self.dev.name, self.dev.cc.0, self.dev.cc.1, self.big.d.family, if self.stage.first && self.stage.last { self.big.d.layers.len().to_string() } else { format!("{}..{} of {}", self.stage.layers.0, self.stage.layers.1, self.big.d.layers.len()) }, gib(self.big.bytes()), self.layout, gib(self.kc.bytes + self.vc.bytes), self.ctx, gib(total - free), gib(total)
+            self.dev.name,
+            self.dev.cc.0,
+            self.dev.cc.1,
+            self.big.d.family,
+            if self.stage.first && self.stage.last {
+                self.big.d.layers.len().to_string()
+            } else {
+                format!("{}..{} of {}", self.stage.layers.0, self.stage.layers.1, self.big.d.layers.len())
+            },
+            gib(self.big.bytes()),
+            self.layout,
+            gib(self.kc.bytes + self.vc.bytes),
+            self.ctx,
+            gib(total - free),
+            gib(total)
         )
     }
 
@@ -986,7 +1325,9 @@ impl Dyn {
     /// The L2 prefetch of `kib` KiB of each first-wave block of `p` (where `lin` takes it skinny) and the spare blocks of `threads` that issue it (GLY-312).
     fn pf(&self, w: &Mat, m: usize, kib: usize, threads: u32) -> (G4Pf, u32) {
         let Mat::Packed(p) = w else { return (G4Pf::default(), 0) };
-        let Some((data, scales, ds, ss)) = crate::skinny::SkinnyKern::regions(&p.pack).filter(|_| kib > 0 && self.skinny_takes(p, m)) else { return (G4Pf::default(), 0) };
+        let Some((data, scales, ds, ss)) = crate::skinny::SkinnyKern::regions(&p.pack).filter(|_| kib > 0 && self.skinny_takes(p, m)) else {
+            return (G4Pf::default(), 0);
+        };
         let dhead = ((kib as u64 * 1024).min(ds) / 128 * 128) as i32;
         let shead = ((dhead as u64 * ss / ds).div_ceil(128) * 128).min(ss) as i32;
         let regions = ((p.pack.rows / 64) as i32).min(2 * self.dev.sms);
@@ -1185,7 +1526,21 @@ impl Dyn {
             Op::GdnDelta { a_log, dt_bias, state, cd, nk, nv } => {
                 // (a verify pass's rows one after another, as steps)
                 let chunked = self.chunked && n > 1 && !self.verifying.get();
-                self.k35.delta(s, chunked, p.slot(Slot::Xc), cd as i32, p.slot(Slot::Ba), 2 * nv as i32, p.small[a_log].ptr, p.small[dt_bias].ptr, self.states[state].ptr, p.slot(Slot::Core), n as i32, nk as i32, nv as i32)?;
+                self.k35.delta(
+                    s,
+                    chunked,
+                    p.slot(Slot::Xc),
+                    cd as i32,
+                    p.slot(Slot::Ba),
+                    2 * nv as i32,
+                    p.small[a_log].ptr,
+                    p.small[dt_bias].ptr,
+                    self.states[state].ptr,
+                    p.slot(Slot::Core),
+                    n as i32,
+                    nk as i32,
+                    nv as i32,
+                )?;
                 self.mark("linear attention: delta rule")
             }
             Op::GatedNorm { w, row, nv, z_off } => {
@@ -1194,7 +1549,24 @@ impl Dyn {
             }
             Op::Prep35 { stride, q_norm, k_norm, half, ring, nq, nk } => {
                 let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
-                self.k35.prep(s, p.slot(Slot::Mix), stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, self.ropes[0].0.ptr, self.ropes[0].1.ptr, half as i32, pos.0, p.slot(Slot::Qo), kc, vc, nu, nq as i32, nk as i32, eps)?;
+                self.k35.prep(
+                    s,
+                    p.slot(Slot::Mix),
+                    stride as i32,
+                    p.small[q_norm].ptr,
+                    p.small[k_norm].ptr,
+                    self.ropes[0].0.ptr,
+                    self.ropes[0].1.ptr,
+                    half as i32,
+                    pos.0,
+                    p.slot(Slot::Qo),
+                    kc,
+                    vc,
+                    nu,
+                    nq as i32,
+                    nk as i32,
+                    eps,
+                )?;
                 self.mark("attention: q/k norm, rotary, cache write")
             }
             Op::Attn35 { stride, ring, nq, nk } => {
@@ -1203,7 +1575,22 @@ impl Dyn {
                 // (a verify pass's rows by the decode step's kernel, each row at its own position: a step's sums)
                 let vpart = self.vpart.as_ref().filter(|_| self.verifying.get() && n > 1).map(|v| v.ptr);
                 if n == 1 || vpart.is_some() {
-                    self.k35.attn_decode(s, p.slot(Slot::Qo), qs, p.slot(Slot::Mix), stride as i32, kc, vc, pos.1, p.slot(Slot::Att), qs, n as i32, nq, nk, vpart.unwrap_or(self.part35.ptr))?;
+                    self.k35.attn_decode(
+                        s,
+                        p.slot(Slot::Qo),
+                        qs,
+                        p.slot(Slot::Mix),
+                        stride as i32,
+                        kc,
+                        vc,
+                        pos.1,
+                        p.slot(Slot::Att),
+                        qs,
+                        n as i32,
+                        nq,
+                        nk,
+                        vpart.unwrap_or(self.part35.ptr),
+                    )?;
                 } else {
                     self.k35.attn(s, p.slot(Slot::Qo), qs, p.slot(Slot::Mix), stride as i32, kc, vc, pos.1, p.slot(Slot::Att), qs, n as i32, nq, nk)?;
                 }
@@ -1212,7 +1599,13 @@ impl Dyn {
             Op::GateUpSilu { w, inter } => {
                 // (our own dense product fuses the SiLU where the matrix is decoded first, as Qwen3.5's engine)
                 if let Mat::Packed(pk) = &p.mats[w] {
-                    if pk.tp_rows == 0 && self.blas.is_none() && self.own && self.decoded_way(pk, n)? && pk.pack.rows as usize == 2 * inter && inter.is_multiple_of(128) {
+                    if pk.tp_rows == 0
+                        && self.blas.is_none()
+                        && self.own
+                        && self.decoded_way(pk, n)?
+                        && pk.pack.rows as usize == 2 * inter
+                        && inter.is_multiple_of(128)
+                    {
                         self.lib.unpack(&pk.pack, 0, pk.pack.rows, self.scratch_w.ptr, s)?;
                         self.kern.gemm_silu(s, p.slot(Slot::H), self.scratch_w.ptr, p.slot(Slot::M), nu as i32, pk.pack.rows as i32, pk.pack.cols as i32)?;
                         return self.mark("MLP: gate and up product, SiLU");
@@ -1223,14 +1616,26 @@ impl Dyn {
                 self.mark("MLP: gate and up product, SiLU")
             }
             Op::MambaConv { w, bias, state, cd, row, x_off } => {
-                self.knh.conv(s, p.slot(Slot::Mix) + (x_off * 2) as u64, row as i32, p.small[w].ptr, p.small[bias].ptr, self.states[state].ptr, p.slot(Slot::Xc), n as i32, cd as i32)?;
+                self.knh.conv(
+                    s,
+                    p.slot(Slot::Mix) + (x_off * 2) as u64,
+                    row as i32,
+                    p.small[w].ptr,
+                    p.small[bias].ptr,
+                    self.states[state].ptr,
+                    p.slot(Slot::Xc),
+                    n as i32,
+                    cd as i32,
+                )?;
                 self.mark("Mamba-2: convolution")
             }
             Op::MambaScan { dt_bias, a_log, d, state, cd, row, dt_off, nh, ng } => {
                 let (dtr, st) = (p.slot(Slot::Mix) + (dt_off * 2) as u64, self.states[state].ptr);
                 let (dtb, al, dd, core, xc) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr, p.slot(Slot::Core), p.slot(Slot::Xc));
                 match &self.ssd {
-                    Some(ws) if self.chunked && n > 1 => self.knh.ssd(s, ws, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?,
+                    Some(ws) if self.chunked && n > 1 => {
+                        self.knh.ssd(s, ws, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?
+                    }
                     _ => self.knh.ssm(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?,
                 }
                 self.mark("Mamba-2: scan")
@@ -1275,7 +1680,21 @@ impl Dyn {
             }
             Op::GlmStreams => self.kglm.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid),
             Op::GlmPre { f, base, scale, norm } => {
-                self.kglm.hc_mix_raw(s, p.slot(Slot::S), p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr, p.small[norm].ptr, p.slot(Slot::H), self.hcp.ptr, nu, hid, eps, p.d.hc.0, p.d.hc.1)?;
+                self.kglm.hc_mix_raw(
+                    s,
+                    p.slot(Slot::S),
+                    p.small[f].ptr,
+                    p.small[base].ptr,
+                    p.small[scale].ptr,
+                    p.small[norm].ptr,
+                    p.slot(Slot::H),
+                    self.hcp.ptr,
+                    nu,
+                    hid,
+                    eps,
+                    p.d.hc.0,
+                    p.d.hc.1,
+                )?;
                 self.mark("hyper-connections")
             }
             Op::GlmPost => {
@@ -1288,7 +1707,20 @@ impl Dyn {
                 self.mark("linear attention: convolution")
             }
             Op::KdaDelta { a_log, dt_bias, state, heads, bound, ba } => {
-                self.kglm.delta(s, self.chunked && n > 1, p.slot(Slot::Xc), p.slot(Slot::Qo), p.small[dt_bias].ptr, p.small[a_log].ptr, p.view(ba, n), self.states[state].ptr, p.slot(Slot::Core), n as i32, heads as i32, bound)?;
+                self.kglm.delta(
+                    s,
+                    self.chunked && n > 1,
+                    p.slot(Slot::Xc),
+                    p.slot(Slot::Qo),
+                    p.small[dt_bias].ptr,
+                    p.small[a_log].ptr,
+                    p.view(ba, n),
+                    self.states[state].ptr,
+                    p.slot(Slot::Core),
+                    n as i32,
+                    heads as i32,
+                    bound,
+                )?;
                 self.mark("linear attention: delta rule")
             }
             Op::KdaOut { w, heads, w32, iq } => {
@@ -1315,7 +1747,23 @@ impl Dyn {
                 let (blk, hd) = (p.slot(Slot::Blk), hid as usize);
                 let o = if add { p.slot(Slot::O) } else { 0 };
                 let at = push.map_or(0, |b| blk + (b * hd * 2) as u64);
-                self.kkimi.mix_norm(s, blk, p.d.width(Slot::Blk), nb, p.slot(Slot::X), o, p.small[w_n].ptr, p.small[w_p].ptr, at, p.small[w].ptr, p.slot(Slot::H), p.d.width(Slot::H), hd, eps, nu)?;
+                self.kkimi.mix_norm(
+                    s,
+                    blk,
+                    p.d.width(Slot::Blk),
+                    nb,
+                    p.slot(Slot::X),
+                    o,
+                    p.small[w_n].ptr,
+                    p.small[w_p].ptr,
+                    at,
+                    p.small[w].ptr,
+                    p.slot(Slot::H),
+                    p.d.width(Slot::H),
+                    hd,
+                    eps,
+                    nu,
+                )?;
                 self.mark("depth mix and norm")
             }
             Op::KimiAdd { x } => self.kkimi.add(s, p.slot(Slot::X), p.slot(x), n * hid as usize),
@@ -1324,7 +1772,23 @@ impl Dyn {
                     return Ok(());
                 }
                 let (h, hd) = (p.slot(Slot::Att), hid as usize);
-                self.kkimi.mix_norm(s, p.slot(Slot::Blk), p.d.width(Slot::Blk), nb, p.slot(Slot::X), 0, p.small[w_n].ptr, p.small[w_p].ptr, 0, p.small[w].ptr, h, hd, hd, eps, 1)?;
+                self.kkimi.mix_norm(
+                    s,
+                    p.slot(Slot::Blk),
+                    p.d.width(Slot::Blk),
+                    nb,
+                    p.slot(Slot::X),
+                    0,
+                    p.small[w_n].ptr,
+                    p.small[w_p].ptr,
+                    0,
+                    p.small[w].ptr,
+                    h,
+                    hd,
+                    hd,
+                    eps,
+                    1,
+                )?;
                 p.moe[block].early(self, h)?;
                 self.mark("experts: the early guess")
             }
@@ -1372,10 +1836,36 @@ impl Dyn {
             Op::MuseMoe { block, post_w, eps: pe } => {
                 let (layer, _) = p.moe[block].resident().ok_or_else(|| Error("Muse Spark's experts are not on the GPU".into()))?;
                 let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
-                layer.forward_muse(&self.lib, sc, s, p.slot(Slot::H), p.slot(Slot::Xc), n, p.slot(Slot::M), layer.w.router.ptr, p.d.logit_mult, p.small[post_w].ptr, pe, self.mu_inv.ptr)?;
+                layer.forward_muse(
+                    &self.lib,
+                    sc,
+                    s,
+                    p.slot(Slot::H),
+                    p.slot(Slot::Xc),
+                    n,
+                    p.slot(Slot::M),
+                    layer.w.router.ptr,
+                    p.d.logit_mult,
+                    p.small[post_w].ptr,
+                    pe,
+                    self.mu_inv.ptr,
+                )?;
                 self.mark("mixture of experts")
             }
-            Op::V4Streams | Op::V4Pre { .. } | Op::V4Post | Op::V4Head { .. } | Op::Fp8 { .. } | Op::V4Q { .. } | Op::V4Kv { .. } | Op::V4Comp { .. } | Op::V4IdxQ { .. } | Op::V4IdxPick { .. } | Op::V4Attn { .. } | Op::V4OLora { .. } | Op::V4OLoraStack { .. } | Op::V4Moe { .. } => self.op_v4(p, op, n, pos.0),
+            Op::V4Streams
+            | Op::V4Pre { .. }
+            | Op::V4Post
+            | Op::V4Head { .. }
+            | Op::Fp8 { .. }
+            | Op::V4Q { .. }
+            | Op::V4Kv { .. }
+            | Op::V4Comp { .. }
+            | Op::V4IdxQ { .. }
+            | Op::V4IdxPick { .. }
+            | Op::V4Attn { .. }
+            | Op::V4OLora { .. }
+            | Op::V4OLoraStack { .. }
+            | Op::V4Moe { .. } => self.op_v4(p, op, n, pos.0),
         }
     }
 
@@ -1439,7 +1929,7 @@ impl Dyn {
                 self.mark("indexer: q")
             }
             Op::V4IdxPick { cache, ratio, heads, topk, wscale } => {
-                let smem = (heads * 129 * 4 + 8 * 64 * 4) as u32;  // (the queries and weights, then v4_idx_score's warps' terms: at most 64 heads)
+                let smem = (heads * 129 * 4 + 8 * 64 * 4) as u32; // (the queries and weights, then v4_idx_score's warps' terms: at most 64 heads)
                 for r0 in (0..n).step_by(v.ra) {
                     let rn = v.ra.min(n - r0) as u32;
                     launch!(k.idx_score, [rn, (v.emax as u32).div_ceil(8), 1], [256, 1, 1], smem smem, s; p.slot(Slot::Iq) + (r0 * heads * 128 * 2) as u64, p.slot(Slot::Iw) + (r0 * heads * 2) as u64, wscale, self.states[cache].ptr, pos + (r0 * 4) as u64, v.isc.ptr, heads as i32, ratio as i32, v.emax as i32)?;
@@ -1455,7 +1945,11 @@ impl Dyn {
                 let scale = (512f32).powf(-0.5);
                 for r0 in (0..n).step_by(v.ra) {
                     let rn = v.ra.min(n - r0) as u32;
-                    let (pr, sel, cnt) = (pos + (r0 * 4) as u64, if picked { v.sel.ptr + (r0 * topk * 4) as u64 } else { 0 }, if picked { v.cnt.ptr + (r0 * 4) as u64 } else { 0 });
+                    let (pr, sel, cnt) = (
+                        pos + (r0 * 4) as u64,
+                        if picked { v.sel.ptr + (r0 * topk * 4) as u64 } else { 0 },
+                        if picked { v.cnt.ptr + (r0 * 4) as u64 } else { 0 },
+                    );
                     let q = p.slot(Slot::Qo) + (r0 * heads * 512 * 2) as u64;
                     launch!(k.attn_scores, [rn, (v.lmax as u32).div_ceil(32), (heads as u32).div_ceil(16)], [256, 1, 1], s; q, kc, cap, cache, sel, cnt, topk as i32, pr, v.sc.ptr, heads as i32, v.lmax as i32, window, ratio as i32, scale)?;
                     launch!(k.attn_soft, [rn, (heads as u32).div_ceil(8), 1], [256, 1, 1], s; v.sc.ptr, p.small[sink].ptr, v.den.ptr, pr, cnt, heads as i32, v.lmax as i32, window, ratio as i32)?;
@@ -1503,7 +1997,18 @@ impl Dyn {
             Op::V4Moe { block, hash } => {
                 let (layer, _) = p.moe[block].resident().ok_or_else(|| Error("DeepSeek-V4's experts are not on the GPU".into()))?;
                 let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
-                layer.forward_release(&self.lib, sc, s, p.slot(Slot::H), p.slot(Slot::Hq), n, p.slot(Slot::O), hash.map(|h| (p.small[h].ptr, v.tok.ptr)), v.ones.ptr, v.dims.sim)?;
+                layer.forward_release(
+                    &self.lib,
+                    sc,
+                    s,
+                    p.slot(Slot::H),
+                    p.slot(Slot::Hq),
+                    n,
+                    p.slot(Slot::O),
+                    hash.map(|h| (p.small[h].ptr, v.tok.ptr)),
+                    v.ones.ptr,
+                    v.dims.sim,
+                )?;
                 self.mark("mixture of experts")
             }
             _ => unreachable!(),
@@ -1548,7 +2053,8 @@ impl Dyn {
             }
             let hl = match p.d.final_norm {
                 Some((w, y, plus1)) => {
-                    let (x, y, w, out, rows, hid) = (p.slot(Slot::X) + first, p.slot(y) + first, p.small[w].ptr, p.slot(Slot::Hlast), head as u32, p.d.hidden as i32);
+                    let (x, y, w, out, rows, hid) =
+                        (p.slot(Slot::X) + first, p.slot(y) + first, p.small[w].ptr, p.slot(Slot::Hlast), head as u32, p.d.hidden as i32);
                     if plus1 {
                         self.k35.rmsnorm_add(s, x, y, w, out, rows, hid, p.d.eps)?;
                     } else {
@@ -1632,24 +2138,23 @@ impl Dyn {
     pub fn layer_costs(&self) -> (Vec<(usize, usize, usize)>, usize, usize, usize) {
         let p = &self.big;
         let (a, b) = self.stage.layers;
-        let layers = p
-            .d
-            .layers
-            .iter()
-            .enumerate()
-            .map(|(l, ops)| {
-                if !(a..b).contains(&l) {
-                    return (0, 0, 0);
-                }
-                let w = ops.iter().filter_map(Op::mat).map(|k| p.mats[k].bytes()).sum();
-                let mut rings: Vec<usize> = ops.iter().filter_map(Op::ring).collect();
-                rings.dedup();
-                let mut states: Vec<usize> = ops.iter().flat_map(Op::states).collect();
-                states.sort_unstable();
-                states.dedup();
-                (w, rings.iter().map(|&r| 2 * p.d.rings[r].nk * p.d.rings[r].d * 2).sum(), states.iter().map(|&s| self.states[s].bytes).sum())
-            })
-            .collect();
+        let layers =
+            p.d.layers
+                .iter()
+                .enumerate()
+                .map(|(l, ops)| {
+                    if !(a..b).contains(&l) {
+                        return (0, 0, 0);
+                    }
+                    let w = ops.iter().filter_map(Op::mat).map(|k| p.mats[k].bytes()).sum();
+                    let mut rings: Vec<usize> = ops.iter().filter_map(Op::ring).collect();
+                    rings.dedup();
+                    let mut states: Vec<usize> = ops.iter().flat_map(Op::states).collect();
+                    states.sort_unstable();
+                    states.dedup();
+                    (w, rings.iter().map(|&r| 2 * p.d.rings[r].nk * p.d.rings[r].d * 2).sum(), states.iter().map(|&s| self.states[s].bytes).sum())
+                })
+                .collect();
         let embed = if self.stage.first { p.mats[p.d.embed].bytes() } else { 0 };
         let head = if self.stage.last && p.d.lm != p.d.embed { p.mats[p.d.lm].bytes() } else { 0 };
         (layers, embed, head, p.small.iter().map(|b| b.bytes).sum())
@@ -1737,7 +2242,8 @@ impl Dyn {
                 self.verify = Some(self.verify_room()?);
             }
             if self.vpart.is_none() {
-                let heads = self.big.d.layers.iter().flatten().filter_map(|op| if let Op::Attn35 { nq, .. } = op { Some(*nq) } else { None }).max().unwrap_or(0);
+                let heads =
+                    self.big.d.layers.iter().flatten().filter_map(|op| if let Op::Attn35 { nq, .. } = op { Some(*nq) } else { None }).max().unwrap_or(0);
                 self.vpart = Some(Buf::new(VERIFY_ROWS * heads.max(1) * ATTN_SPLITS * ATTN_PART * 4)?);
             }
             self.keep_states()?;
@@ -1782,8 +2288,31 @@ impl Dyn {
                     let Some(k) = k else { continue };
                     for op in &p.d.layers[l] {
                         match *op {
-                            Op::GdnConv { w, state, cd, row } => self.k35.conv(s, k.ptr + (VERIFY_ROWS * ba * 2) as u64, row as i32, p.small[w].ptr, self.states[state].ptr, p.slot(Slot::Xc), keep as i32, cd as i32)?,
-                            Op::GdnDelta { a_log, dt_bias, state, cd, nk, nv } => self.k35.delta(s, false, p.slot(Slot::Xc), cd as i32, k.ptr, ba as i32, p.small[a_log].ptr, p.small[dt_bias].ptr, self.states[state].ptr, p.slot(Slot::Core), keep as i32, nk as i32, nv as i32)?,
+                            Op::GdnConv { w, state, cd, row } => self.k35.conv(
+                                s,
+                                k.ptr + (VERIFY_ROWS * ba * 2) as u64,
+                                row as i32,
+                                p.small[w].ptr,
+                                self.states[state].ptr,
+                                p.slot(Slot::Xc),
+                                keep as i32,
+                                cd as i32,
+                            )?,
+                            Op::GdnDelta { a_log, dt_bias, state, cd, nk, nv } => self.k35.delta(
+                                s,
+                                false,
+                                p.slot(Slot::Xc),
+                                cd as i32,
+                                k.ptr,
+                                ba as i32,
+                                p.small[a_log].ptr,
+                                p.small[dt_bias].ptr,
+                                self.states[state].ptr,
+                                p.slot(Slot::Core),
+                                keep as i32,
+                                nk as i32,
+                                nv as i32,
+                            )?,
                             _ => {}
                         }
                     }
@@ -1825,7 +2354,15 @@ impl Dyn {
         }
         for _ in 0..k {
             let states = self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<_>>()?;
-            self.seqs.push(Some(Seq { kc: Buf::zeroed(self.kc.bytes)?, vc: Buf::zeroed(self.vc.bytes)?, states, n: 0, pending: None, verify: None, graph: None }));
+            self.seqs.push(Some(Seq {
+                kc: Buf::zeroed(self.kc.bytes)?,
+                vc: Buf::zeroed(self.vc.bytes)?,
+                states,
+                n: 0,
+                pending: None,
+                verify: None,
+                graph: None,
+            }));
             let (back, graph) = (self.seq, self.graph.is_some());
             if graph {
                 // (its own graph: the one-row step captured on its buffers)
@@ -2071,7 +2608,13 @@ impl crate::conv::Gen for Dyn {
         };
         // (every sequence's: they are alike, `add_seqs`)
         let k = self.seqs.len() as u64;
-        Some(crate::dev::Held { weights: self.bytes as u64, kv: k * (self.kc.bytes + self.vc.bytes) as u64, state: k * self.states.iter().map(|b| b.bytes as u64).sum::<u64>(), kv_type: "bf16", state_type })
+        Some(crate::dev::Held {
+            weights: self.bytes as u64,
+            kv: k * (self.kc.bytes + self.vc.bytes) as u64,
+            state: k * self.states.iter().map(|b| b.bytes as u64).sum::<u64>(),
+            kv_type: "bf16",
+            state_type,
+        })
     }
 
     fn reply(&mut self, prompt: &[u32], o: &crate::model::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::model::Finish)> {
@@ -2210,7 +2753,13 @@ pub fn prodbench(a: &crate::args::Args) -> Result<()> {
         let (rows, cols) = (mats.iter().map(|m| m.pack.rows).max().unwrap_or(0) as usize, mats.iter().map(|m| m.pack.cols).max().unwrap_or(0) as usize);
         let x = Buf::zeroed(cols * 2)?;
         let y = Buf::zeroed(rows * 2)?;
-        let need = mats.iter().map(|m| lib.linear_workspace(m.pack.is_twelve(), m.pack.rows, m.pack.cols, 1)).collect::<Result<Vec<_>>>()?.into_iter().max().unwrap_or(16);
+        let need = mats
+            .iter()
+            .map(|m| lib.linear_workspace(m.pack.is_twelve(), m.pack.rows, m.pack.cols, 1))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .max()
+            .unwrap_or(16);
         let (ws, done) = (Buf::zeroed(need.max(16))?, Buf::zeroed(4 << 18)?);
         let run = |m: &PackBuf| -> Result<()> {
             // SAFETY: live buffers of the sizes the product reads and writes.
@@ -2234,7 +2783,11 @@ pub fn prodbench(a: &crate::args::Args) -> Result<()> {
         }
         let us = t.stop(dev.stream)? as f64 * 1e3 / (reps * layers) as f64;
         let rate = bytes as f64 / layers as f64 / us / 1e3;
-        println!("{name:>8} {rows:>6} x {cols:<6} {:.1} MB  {us:7.1} us  {rate:6.1} GB/s  {:5.1}% of the copy rate", bytes as f64 / layers as f64 / 1e6, 100.0 * rate / gbs);
+        println!(
+            "{name:>8} {rows:>6} x {cols:<6} {:.1} MB  {us:7.1} us  {rate:6.1} GB/s  {:5.1}% of the copy rate",
+            bytes as f64 / layers as f64 / 1e6,
+            100.0 * rate / gbs
+        );
     }
     Ok(())
 }

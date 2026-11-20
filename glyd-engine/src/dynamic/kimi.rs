@@ -16,8 +16,8 @@ use crate::model35::Mat;
 use crate::model_glm::{GlmHost, MlaBlock};
 use crate::model_nh::{MoeBlock, NhHost};
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
-use crate::offload::{Call, ExpertStore, PinnedPack};
 use crate::moe_rows::Down;
+use crate::offload::{Call, ExpertStore, PinnedPack};
 use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
 use std::cell::OnceCell;
@@ -106,9 +106,29 @@ impl KernKimi {
     /// # Safety
     /// As `gate`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn mix_norm(&self, s: Stream, blk: u64, rs: usize, nb: usize, x: u64, o: u64, wn: u64, wp: u64, push: u64, w: u64, y: u64, ys: usize, d: usize, eps: f32, n: u32) -> Result<()> {
+    pub unsafe fn mix_norm(
+        &self,
+        s: Stream,
+        blk: u64,
+        rs: usize,
+        nb: usize,
+        x: u64,
+        o: u64,
+        wn: u64,
+        wp: u64,
+        push: u64,
+        w: u64,
+        y: u64,
+        ys: usize,
+        d: usize,
+        eps: f32,
+        n: u32,
+    ) -> Result<()> {
         if nb + 1 > 16 || d > 8192 || d % 8 != 0 || rs % 8 != 0 || ys % 8 != 0 {
-            return err(format!("a depth mix of {} sources over {d} values (rows {rs} and {ys} apart): the kernel takes 16 sources and up to 8,192 values, in 8s", nb + 1));
+            return err(format!(
+                "a depth mix of {} sources over {d} values (rows {rs} and {ys} apart): the kernel takes 16 sources and up to 8,192 values, in 8s",
+                nb + 1
+            ));
         }
         launch!(self.mix_norm, [n, 1, 1], [512, 1, 1], s; blk, rs as i64, nb as i32, x, o, wn, wp, push, w, y, ys as i32, d as i32, eps)
     }
@@ -221,10 +241,37 @@ impl MlaBlock for KimiMla {
         kg.rms2(s, kv, row as i32, self.kv_norm.ptr, lat.ptr, ks as i32, pos, d.kv_rank as i32, self.eps, nr)?;
         kg.scatter(s, kv + (d.kv_rank * 2) as u64, row as i32, lat.ptr + (d.kv_rank * 2) as u64, ks as i32, pos, d.rope as i32, nr)?;
         e.mark("MLA: kv norm, cache");
-        kg.absorb_with(s, sc.q.ptr, (nh * qw) as i32, qw as i32, self.wkv.ptr, sc.qa.ptr, n as i32, nh as i32, d.nope as i32, d.v as i32, d.kv_rank as i32, ks as i32)?;
+        kg.absorb_with(
+            s,
+            sc.q.ptr,
+            (nh * qw) as i32,
+            qw as i32,
+            self.wkv.ptr,
+            sc.qa.ptr,
+            n as i32,
+            nh as i32,
+            d.nope as i32,
+            d.v as i32,
+            d.kv_rank as i32,
+            ks as i32,
+        )?;
         e.mark("MLA: absorb");
         k.dense_cnt(s, pos, sc.cnt.ptr, n)?;
-        kg.mla_attn_with(s, sc.qa.ptr, lat.ptr, 0, sc.cnt.ptr, sc.olat.ptr, sc.part.ptr, e.ctx() as i32, nh as i32, d.kv_rank as i32, ks as i32, 1.0 / (qw as f32).sqrt(), nr)?;
+        kg.mla_attn_with(
+            s,
+            sc.qa.ptr,
+            lat.ptr,
+            0,
+            sc.cnt.ptr,
+            sc.olat.ptr,
+            sc.part.ptr,
+            e.ctx() as i32,
+            nh as i32,
+            d.kv_rank as i32,
+            ks as i32,
+            1.0 / (qw as f32).sqrt(),
+            nr,
+        )?;
         e.mark("MLA: attention");
         kg.expand_v(s, sc.olat.ptr, self.wkv.ptr, sc.ov.ptr, n as i32, nh as i32, d.nope as i32, d.v as i32, d.kv_rank as i32)?;
         e.mark("MLA: v");
@@ -242,7 +289,10 @@ impl MlaBlock for KimiMla {
     }
 
     fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
-        [&self.qg, &self.q_b, &self.o].iter().filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None }).collect()
+        [&self.qg, &self.q_b, &self.o]
+            .iter()
+            .filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None })
+            .collect()
     }
 }
 
@@ -411,7 +461,12 @@ impl MoeBlock for KimiMoeCached {
             c.set(c.get() + 1);
             if c.get() % 64 == 0 {
                 let early = self.guess.as_ref().map_or(0, Guess::copies);
-                eprintln!("layers from {}: 64 steps in {:.1} ms, {early} early copies a layer; {}", self.index, at.get().elapsed().as_secs_f64() * 1e3, self.store.report()?);
+                eprintln!(
+                    "layers from {}: 64 steps in {:.1} ms, {early} early copies a layer; {}",
+                    self.index,
+                    at.get().elapsed().as_secs_f64() * 1e3,
+                    self.store.report()?
+                );
                 at.set(std::time::Instant::now());
                 self.store.reset_stats()?;
                 if let Some(g) = &self.guess {
@@ -514,7 +569,15 @@ impl MoeBlock for KimiMoeTp {
 /// there (glyd_gpu::pack's `_into`s); in the layout with packed scales where every expert's scales fit it, else as released. Whether packed, and the
 /// two matrices' strides (codes, scales) and buffers. No copy of the layer is made: a load of Kimi-K3 joined each layer's 15 GB, copied it into pinned
 /// memory and freed it, and spent about half its time in the TLB shootdowns of that.
-fn pack_into_host(ck: &Checkpoint, f: &str, experts: usize, inter: usize, latent: usize, threads: usize, portable: bool) -> Result<(bool, [(u64, u64, crate::dev::Pinned, crate::dev::Pinned); 2])> {
+fn pack_into_host(
+    ck: &Checkpoint,
+    f: &str,
+    experts: usize,
+    inter: usize,
+    latent: usize,
+    threads: usize,
+    portable: bool,
+) -> Result<(bool, [(u64, u64, crate::dev::Pinned, crate::dev::Pinned); 2])> {
     use glyd_gpu::pack::{fp4_bytes, pack_fp4_into, pack_fp4r_into};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     for packed in [true, false] {
@@ -542,7 +605,17 @@ fn pack_into_host(ck: &Checkpoint, f: &str, experts: usize, inter: usize, latent
                             io(file.read_into_uncached(t, buf))
                         };
                         let r = (|| -> Result<bool> {
-                            for (k, (w, part)) in [("w1", "weight_packed"), ("w1", "weight_scale"), ("w3", "weight_packed"), ("w3", "weight_scale"), ("w2", "weight_packed"), ("w2", "weight_scale")].into_iter().enumerate() {
+                            for (k, (w, part)) in [
+                                ("w1", "weight_packed"),
+                                ("w1", "weight_scale"),
+                                ("w3", "weight_packed"),
+                                ("w3", "weight_scale"),
+                                ("w2", "weight_packed"),
+                                ("w2", "weight_scale"),
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
                                 read(w, part, &mut raw[k])?;
                             }
                             // SAFETY: expert x's place in each buffer (x times its stride, its stride long) is written by this item alone, and the buffers live for the scope.
@@ -550,7 +623,9 @@ fn pack_into_host(ck: &Checkpoint, f: &str, experts: usize, inter: usize, latent
                             let (ud_, us_, dd_, ds_) = (place(0, ud), place(1, us), place(2, dd), place(3, ds));
                             let (g_d, u_d) = ud_.split_at_mut(gd);
                             let (g_s, u_s) = us_.split_at_mut(gs);
-                            Ok(pk(&raw[0], &raw[1], inter, latent, g_d, g_s) && pk(&raw[2], &raw[3], inter, latent, u_d, u_s) && pk(&raw[4], &raw[5], latent, inter, dd_, ds_))
+                            Ok(pk(&raw[0], &raw[1], inter, latent, g_d, g_s)
+                                && pk(&raw[2], &raw[3], inter, latent, u_d, u_s)
+                                && pk(&raw[4], &raw[5], latent, inter, dd_, ds_))
                         })();
                         match r {
                             Ok(true) => {}
@@ -618,7 +693,11 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
     // (every layer across a group of GPUs: this GPU's slice of a big matrix's rows, of each expert's: src/dynamic/tp.rs)
     let tp = super::tp::comm();
     let crew = crate::cpu_experts::default_threads().min(64);
-    let guess_copies: Rc<[usize]> = crate::tune!("GLYD_KIMI_EARLY").and_then(|v| v.split(',').map(|x| x.trim().parse().ok()).collect::<Option<Vec<usize>>>()).filter(|v| !v.is_empty()).unwrap_or_else(|| vec![GUESS_COPIES]).into();
+    let guess_copies: Rc<[usize]> = crate::tune!("GLYD_KIMI_EARLY")
+        .and_then(|v| v.split(',').map(|x| x.trim().parse().ok()).collect::<Option<Vec<usize>>>())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| vec![GUESS_COPIES])
+        .into();
     let (guessing, guess_turn) = (guess_copies.iter().any(|&k| k > 0), Rc::new(std::cell::Cell::new(0usize)));
     let mode = crate::tune!("GLYD_KIMI_HOST").as_deref().and_then(crate::offload::Mode::parse).unwrap_or(crate::offload::Mode::Auto);
     store.set_offload(crate::offload::Offload { mode, threads: crew, pin: true, ..Default::default() });
@@ -705,12 +784,16 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
         crate::status::STATUS.beat();
         let q = format!("{p}layers.{l}");
         let a = format!("{q}.self_attn");
-        let (in_n, post_n) = (put(&mut l_.small, small(&format!("{q}.input_layernorm.weight"))?), put(&mut l_.small, small(&format!("{q}.post_attention_layernorm.weight"))?));
-        let res = |sm: &mut Vec<Buf>, n: &str| -> Result<(usize, usize)> { Ok((put(sm, small(&format!("{q}.{n}_res_norm.weight"))?), put(sm, small(&format!("{q}.{n}_res_proj.weight"))?))) };
+        let (in_n, post_n) =
+            (put(&mut l_.small, small(&format!("{q}.input_layernorm.weight"))?), put(&mut l_.small, small(&format!("{q}.post_attention_layernorm.weight"))?));
+        let res = |sm: &mut Vec<Buf>, n: &str| -> Result<(usize, usize)> {
+            Ok((put(sm, small(&format!("{q}.{n}_res_norm.weight"))?), put(sm, small(&format!("{q}.{n}_res_proj.weight"))?)))
+        };
         let (an, ap) = res(&mut l_.small, "self_attention")?;
         let (mn, mp) = res(&mut l_.small, "mlp")?;
         // (the layer before's output added here where that layer is this stage's: its add is this mix's; a block's first layer makes X a block)
-        let mut ops = vec![Op::KimiMixNorm { add: l > st.layers.0, nb: before, w_n: an, w_p: ap, push: (l % c.res_block == 0).then_some(before), w: in_n, eps: c.eps }];
+        let mut ops =
+            vec![Op::KimiMixNorm { add: l > st.layers.0, nb: before, w_n: an, w_p: ap, push: (l % c.res_block == 0).then_some(before), w: in_n, eps: c.eps }];
         if c.moe[l] && guessing && places.is_some_and(|p| p < e.experts) {
             ops.push(Op::KimiEarly { block: l_.moe.len(), nb: before + usize::from(l % c.res_block == 0), w_n: mn, w_p: mp, w: post_n, eps: c.eps });
         }
@@ -719,7 +802,8 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
                 let m0 = l_.mats.len();
                 // (q, k, v, the output gate, the forget gate's first product and beta: one product of the layer's input, three fewer a layer; the gates read
                 // where it leaves them, a prompt's copied out first: KimiParts)
-                let fa = ck.get(&format!("{a}.f_a_proj.weight")).map(|(_, t)| t.shape[0] as usize).ok_or_else(|| Error(format!("no tensor {a}.f_a_proj.weight")))?;
+                let fa =
+                    ck.get(&format!("{a}.f_a_proj.weight")).map(|(_, t)| t.shape[0] as usize).ok_or_else(|| Error(format!("no tensor {a}.f_a_proj.weight")))?;
                 let names = ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj"].map(|x| format!("{a}.{x}"));
                 let fused = pack(&names)?;
                 let row = fused.whole_rows();
@@ -741,7 +825,12 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
                 }
                 let nw32 = dtype(&format!("{a}.o_norm.weight"))? == "F32";
                 let s0 = l_.small.len();
-                l_.small.extend([upload_bytes(&conv)?, f32s(&ck, &format!("{a}.A_log"))?, f32s(&ck, &format!("{a}.dt_bias"))?, small(&format!("{a}.o_norm.weight"))?]);
+                l_.small.extend([
+                    upload_bytes(&conv)?,
+                    f32s(&ck, &format!("{a}.A_log"))?,
+                    f32s(&ck, &format!("{a}.dt_bias"))?,
+                    small(&format!("{a}.o_norm.weight"))?,
+                ]);
                 let (cv, ssm) = (states.len(), states.len() + 1);
                 states.push(3 * 3 * qd * 2);
                 states.push(nh * kd.dim * kd.dim * 4);
@@ -797,7 +886,14 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
                         let (packed, packs) = pack_into_host(&ck, &f, e.experts, e.inter, e.latent, threads, true)?;
                         let [(ud, us, a, b), (dd, ds, c2, d2)] = packs;
                         use super::tp_cache::HostBuf;
-                        let h = std::sync::Arc::new(super::tp_cache::HostLayer { mats: [[HostBuf(a), HostBuf(b)], [HostBuf(c2), HostBuf(d2)]], stride: [[ud, us], [dd, ds]], packed, inter: e.inter, latent: e.latent, act: c.situ });
+                        let h = std::sync::Arc::new(super::tp_cache::HostLayer {
+                            mats: [[HostBuf(a), HostBuf(b)], [HostBuf(c2), HostBuf(d2)]],
+                            stride: [[ud, us], [dd, ds]],
+                            packed,
+                            inter: e.inter,
+                            latent: e.latent,
+                            act: c.situ,
+                        });
                         cache.put_host(l, h.clone())?;
                         h
                     } else {
@@ -876,9 +972,15 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
                     let down = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, e.latent, e.inter)?;
                     let [(ud, us, a, b), (dd, ds, c2, d2)] = packs;
                     if [ud, us, dd, ds] != [up.data_stride, up.scale_stride, down.data_stride, down.scale_stride] {
-                        return err(format!("{f}: experts of {ud} + {us} and {dd} + {ds} bytes, where the places hold {} + {} and {} + {}", up.data_stride, up.scale_stride, down.data_stride, down.scale_stride));
+                        return err(format!(
+                            "{f}: experts of {ud} + {us} and {dd} + {ds} bytes, where the places hold {} + {} and {} + {}",
+                            up.data_stride, up.scale_stride, down.data_stride, down.scale_stride
+                        ));
                     }
-                    let host = vec![PinnedPack { data: a, scales: b, stride: [ud, us], dev: up.buffers() }, PinnedPack { data: c2, scales: d2, stride: [dd, ds], dev: down.buffers() }];
+                    let host = vec![
+                        PinnedPack { data: a, scales: b, stride: [ud, us], dev: up.buffers() },
+                        PinnedPack { data: c2, scales: d2, stride: [dd, ds], dev: down.buffers() },
+                    ];
                     // (the host computes the misses it is better at from the host tier's bytes as they are: src/cpu_fp4.rs)
                     let half = crate::offload::HostHalf::Fp4 { inter: e.inter, latent: e.latent, packed, act: c.situ };
                     store.add_layer_pinned(l, e.experts, p, host, Some(half))?;
@@ -891,7 +993,13 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
             mix_w = mix_w.max(dg.whole_rows());
             let Mat::Packed(sd) = one(format!("{f}.shared_experts.down_proj"))? else { return err(format!("{f}.shared_experts.down_proj: not packed")) };
             let si = e.shared * e.inter;
-            let w = MoeWeights { router: small(&format!("{f}.gate.weight"))?, bias: Some(f32s(&ck, &format!("{f}.gate.e_score_correction_bias"))?), escale: None, up, down: Down::Block(down) };
+            let w = MoeWeights {
+                router: small(&format!("{f}.gate.weight"))?,
+                bias: Some(f32s(&ck, &format!("{f}.gate.e_score_correction_bias"))?),
+                escale: None,
+                up,
+                down: Down::Block(down),
+            };
             let layer = MoeLayer::new(cfg, w, Some(Shared { inter: si, up: PackBuf::shape_only(2 * si, h)?, down: sd, gate: None }))?;
             let b = KimiMoe {
                 layer,
@@ -906,13 +1014,36 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
             match slots {
                 None => l_.moe.push(Box::new(b)),
                 Some(_) if tp_places.is_some() => {
-                    let report = (crate::tune!("GLYD_KIMI_STATS").is_some() && tpr.is_some_and(|r| r.0 == 0) && !l_.moe.iter().any(|b| b.resident().is_none())).then(|| (std::cell::Cell::new(0), std::cell::Cell::new(std::time::Instant::now())));
-                    let dev = if tp_places.as_ref().is_some_and(|pl| pl.dev.is_some()) { Some((crate::dev::Buf::new(e.top_k * 8)?, crate::dev::Buf::zeroed(4)?)) } else { None };
-                    l_.moe.push(Box::new(KimiMoeTp { moe: b, rank: tp_rank.clone().expect("a group's cache"), index: l, places: tp_places.take().expect("the places"), report, dev }))
+                    let report = (crate::tune!("GLYD_KIMI_STATS").is_some() && tpr.is_some_and(|r| r.0 == 0) && !l_.moe.iter().any(|b| b.resident().is_none()))
+                        .then(|| (std::cell::Cell::new(0), std::cell::Cell::new(std::time::Instant::now())));
+                    let dev = if tp_places.as_ref().is_some_and(|pl| pl.dev.is_some()) {
+                        Some((crate::dev::Buf::new(e.top_k * 8)?, crate::dev::Buf::zeroed(4)?))
+                    } else {
+                        None
+                    };
+                    l_.moe.push(Box::new(KimiMoeTp {
+                        moe: b,
+                        rank: tp_rank.clone().expect("a group's cache"),
+                        index: l,
+                        places: tp_places.take().expect("the places"),
+                        report,
+                        dev,
+                    }))
                 }
                 Some(_) => {
-                    let report = (crate::tune!("GLYD_KIMI_STATS").is_some() && !l_.moe.iter().any(|b| b.resident().is_none())).then(|| (std::cell::Cell::new(0), std::cell::Cell::new(std::time::Instant::now())));
-                    let guess = guessing.then(|| -> Result<Guess> { Ok(Guess { copies: guess_copies.clone(), turn: guess_turn.clone(), ids: crate::dev::Pinned::new(e.top_k * 8)?, ev: crate::dev::Ev::new()?, pending: Default::default() }) }).transpose()?;
+                    let report = (crate::tune!("GLYD_KIMI_STATS").is_some() && !l_.moe.iter().any(|b| b.resident().is_none()))
+                        .then(|| (std::cell::Cell::new(0), std::cell::Cell::new(std::time::Instant::now())));
+                    let guess = guessing
+                        .then(|| -> Result<Guess> {
+                            Ok(Guess {
+                                copies: guess_copies.clone(),
+                                turn: guess_turn.clone(),
+                                ids: crate::dev::Pinned::new(e.top_k * 8)?,
+                                ev: crate::dev::Ev::new()?,
+                                pending: Default::default(),
+                            })
+                        })
+                        .transpose()?;
                     l_.moe.push(Box::new(KimiMoeCached { moe: b, store: store.clone(), index: l, guess, report }))
                 }
             }
@@ -933,9 +1064,21 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
     }
     if st.last {
         // the final depth mix of every block and the last partial sum, the norm into H (the head reads it)
-        let (on, opj, norm) = (put(&mut l_.small, small(&format!("{p}output_attn_res_norm.weight"))?), put(&mut l_.small, small(&format!("{p}output_attn_res_proj.weight"))?), put(&mut l_.small, small(&format!("{p}norm.weight"))?));
+        let (on, opj, norm) = (
+            put(&mut l_.small, small(&format!("{p}output_attn_res_norm.weight"))?),
+            put(&mut l_.small, small(&format!("{p}output_attn_res_proj.weight"))?),
+            put(&mut l_.small, small(&format!("{p}norm.weight"))?),
+        );
         let all = c.layers.div_ceil(c.res_block);
-        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::KimiMixNorm { add: st.layers.1 > st.layers.0, nb: all, w_n: on, w_p: opj, push: None, w: norm, eps: c.eps });
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::KimiMixNorm {
+            add: st.layers.1 > st.layers.0,
+            nb: all,
+            w_n: on,
+            w_p: opj,
+            push: None,
+            w: norm,
+            eps: c.eps,
+        });
     }
     // (a stage without the embedding or the head keeps their places, empty, so that their indices hold)
     let empty = || -> Result<Mat> { Ok(Mat::Dense(Buf::new(2)?, 0, 0)) };
@@ -947,7 +1090,22 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
     let blocks = c.layers.div_ceil(c.res_block);
     let mut widths = [0usize; super::SLOTS];
     let gu = 2 * c.inter;
-    for (s, wd) in [(Slot::X, h), (Slot::H, h), (Slot::O, h), (Slot::Blk, blocks * h), (Slot::Mix, mix_w.max(h)), (Slot::Xc, (3 * qd).max(h)), (Slot::Proj, proj_w), (Slot::Qo, qd), (Slot::Iq, qd), (Slot::Ba, nh.max(8)), (Slot::Core, qd), (Slot::Att, qd), (Slot::Gu, gu), (Slot::M, c.inter)] {
+    for (s, wd) in [
+        (Slot::X, h),
+        (Slot::H, h),
+        (Slot::O, h),
+        (Slot::Blk, blocks * h),
+        (Slot::Mix, mix_w.max(h)),
+        (Slot::Xc, (3 * qd).max(h)),
+        (Slot::Proj, proj_w),
+        (Slot::Qo, qd),
+        (Slot::Iq, qd),
+        (Slot::Ba, nh.max(8)),
+        (Slot::Core, qd),
+        (Slot::Att, qd),
+        (Slot::Gu, gu),
+        (Slot::M, c.inter),
+    ] {
         widths[s as usize] = wd;
     }
     let d = ModelDesc {

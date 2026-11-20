@@ -127,7 +127,12 @@ impl<'d> DecTables<'d> {
 
     /// Tables that borrow `d`'s (a dictionary's, built once).
     pub fn borrowing(d: &'d DecTables<'static>) -> Self {
-        DecTables { lit: d.lit.get().map_or(Slot::None, Slot::Ref), ll: d.ll.get().map_or(Slot::None, Slot::Ref), ml: d.ml.get().map_or(Slot::None, Slot::Ref), off: d.off.get().map_or(Slot::None, Slot::Ref) }
+        DecTables {
+            lit: d.lit.get().map_or(Slot::None, Slot::Ref),
+            ll: d.ll.get().map_or(Slot::None, Slot::Ref),
+            ml: d.ml.get().map_or(Slot::None, Slot::Ref),
+            off: d.off.get().map_or(Slot::None, Slot::Ref),
+        }
     }
 }
 
@@ -257,7 +262,17 @@ fn tans_counts(sec: &[u8], v8: bool, n_symbols: usize, counts: &mut [u16; tans::
 #[cfg_attr(target_arch = "x86_64", inline(always))]
 /// A code stream's raw codes copied into `codes`, or, for a coded one,
 /// its table (built here unless reused) and its sub-streams.
-fn code_stream_open<'a, 'p, 'd>(sec: Section<'a>, v8: bool, compact: bool, coded: bool, reuse: bool, n_symbols: usize, n: usize, prev: &'p mut Slot<'d, tans::DecodeTable>, codes: &mut [u8]) -> Result<Option<(&'p tans::DecodeTable, [Stream<'a>; 8], bool)>> {
+fn code_stream_open<'a, 'p, 'd>(
+    sec: Section<'a>,
+    v8: bool,
+    compact: bool,
+    coded: bool,
+    reuse: bool,
+    n_symbols: usize,
+    n: usize,
+    prev: &'p mut Slot<'d, tans::DecodeTable>,
+    codes: &mut [u8],
+) -> Result<Option<(&'p tans::DecodeTable, [Stream<'a>; 8], bool)>> {
     if !coded {
         let sec = sec.own();
         if sec.len() != n {
@@ -359,7 +374,13 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, ll0: boo
     let v8 = V8;
     let compact = layout.compact;
     let (ll_symbols, ml_symbols) = if v8 { (LL_SYMBOLS, ML_SYMBOLS) } else { (LL_SYMBOLS_V7, ML_SYMBOLS_V7) };
-    let off_symbols = if compact { OFF_SYMBOLS } else if v8 { OFF_SYMBOLS_V8 } else { OFF_SYMBOLS_V7 };
+    let off_symbols = if compact {
+        OFF_SYMBOLS
+    } else if v8 {
+        OFF_SYMBOLS_V8
+    } else {
+        OFF_SYMBOLS_V7
+    };
     let ll = code_stream_open(Section::of(payload, layout, S_LL), v8, compact, coded(S_LL), reuse, ll_symbols, n, &mut prev.ll, &mut s.codes)?;
     let ml = code_stream_open(Section::of(payload, layout, S_ML), v8, compact, coded(S_ML), reuse, ml_symbols, n, &mut prev.ml, &mut s.codes[8..])?;
     let off = code_stream_open(Section::of(payload, layout, S_OFF), v8, compact, coded(S_OFF), reuse, off_symbols, n, &mut prev.off, &mut s.codes[16..])?;
@@ -378,7 +399,9 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, ll0: boo
         }
     }
     // A table built from `n_symbols` counts only ever yields those symbols.
-    debug_assert!((0..n).all(|i| (s.codes[at(i)] as usize) < ll_symbols && (s.codes[at(i) + 8] as usize) < ml_symbols && (s.codes[at(i) + 16] as usize) < off_symbols));
+    debug_assert!(
+        (0..n).all(|i| (s.codes[at(i)] as usize) < ll_symbols && (s.codes[at(i) + 8] as usize) < ml_symbols && (s.codes[at(i) + 16] as usize) < off_symbols)
+    );
     if !(coded(S_LL) && coded(S_ML) && coded(S_OFF)) {
         // The encoder drops its tables whenever any stream went raw.
         prev.ll = Slot::None;
@@ -935,7 +958,21 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
 /// `buffer_start` must point into the same allocation as `dst`, at or
 /// before `dst.as_ptr()`, with every byte between them initialised: that
 /// is the match window (the previous blocks of the same chain).
-pub unsafe fn decode_block(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
+pub unsafe fn decode_block(
+    payload: &[u8],
+    v8: bool,
+    compact: bool,
+    prepadded: bool,
+    n_seq: usize,
+    n_lit: usize,
+    dst: &mut [u8],
+    buffer_start: *const u8,
+    uncompressed_len: usize,
+    prev: &mut DecTables,
+    scratch: &mut Scratch,
+    ext: Option<&[u8]>,
+    ll0: bool,
+) -> Result<usize> {
     #[cfg(target_arch = "x86_64")]
     {
         if crate::has_avx2() {
@@ -949,12 +986,40 @@ pub unsafe fn decode_block(payload: &[u8], v8: bool, compact: bool, prepadded: b
 /// copies and single-uop variable shifts (`shrx`) in the bit loops.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,bmi2")]
-unsafe fn decode_block_avx2(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
+unsafe fn decode_block_avx2(
+    payload: &[u8],
+    v8: bool,
+    compact: bool,
+    prepadded: bool,
+    n_seq: usize,
+    n_lit: usize,
+    dst: &mut [u8],
+    buffer_start: *const u8,
+    uncompressed_len: usize,
+    prev: &mut DecTables,
+    scratch: &mut Scratch,
+    ext: Option<&[u8]>,
+    ll0: bool,
+) -> Result<usize> {
     decode_block_impl(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext, ll0)
 }
 
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
+unsafe fn decode_block_impl(
+    payload: &[u8],
+    v8: bool,
+    compact: bool,
+    prepadded: bool,
+    n_seq: usize,
+    n_lit: usize,
+    dst: &mut [u8],
+    buffer_start: *const u8,
+    uncompressed_len: usize,
+    prev: &mut DecTables,
+    scratch: &mut Scratch,
+    ext: Option<&[u8]>,
+    ll0: bool,
+) -> Result<usize> {
     if uncompressed_len > dst.len() {
         return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }
@@ -983,7 +1048,20 @@ unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, prepadded: 
 /// The passes over a payload whose streams may be read `PAD` bytes past
 /// their ends.
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-unsafe fn decode_padded(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
+unsafe fn decode_padded(
+    payload: &[u8],
+    v8: bool,
+    compact: bool,
+    n_seq: usize,
+    n_lit: usize,
+    dst: &mut [u8],
+    buffer_start: *const u8,
+    uncompressed_len: usize,
+    prev: &mut DecTables,
+    scratch: &mut Scratch,
+    ext: Option<&[u8]>,
+    ll0: bool,
+) -> Result<usize> {
     let mut layout = if compact { payload_layout_compact(payload, true) } else { payload_layout(payload) }.ok_or(corrupt("v7: payload layout"))?;
     layout.v8 = v8;
     let sub = &layout.sub;
@@ -991,7 +1069,8 @@ unsafe fn decode_padded(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n
     if (sub.reuse & 1 != 0 && !coded(S_LIT)) || (sub.reuse & 2 != 0 && !(coded(S_LL) && coded(S_ML) && coded(S_OFF))) {
         return Err(corrupt("v7: table reuse on a raw stream"));
     }
-    let (lit_total, match_total) = if v8 { sequences::<true>(payload, &layout, n_seq, ll0, prev, scratch)? } else { sequences::<false>(payload, &layout, n_seq, ll0, prev, scratch)? };
+    let (lit_total, match_total) =
+        if v8 { sequences::<true>(payload, &layout, n_seq, ll0, prev, scratch)? } else { sequences::<false>(payload, &layout, n_seq, ll0, prev, scratch)? };
     if lit_total != n_lit || lit_total + match_total != uncompressed_len {
         return Err(corrupt("v7: sequence totals disagree with header"));
     }

@@ -36,7 +36,19 @@ use std::sync::{Condvar, Mutex};
 /// A shard is closed once it holds this many bytes (save_pretrained's shard_bytes).
 pub const SHARD_BYTES: u64 = 5_000_000_000;
 /// The files copied from the source beside the weights (format.py's FILES).
-const FILES: &[&str] = &["config.json", "generation_config.json", "tokenizer*", "special_tokens_map.json", "added_tokens.json", "vocab*", "merges.txt", "*.model", "chat_template*", "preprocessor_config.json", "processor_config.json"];
+const FILES: &[&str] = &[
+    "config.json",
+    "generation_config.json",
+    "tokenizer*",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "vocab*",
+    "merges.txt",
+    "*.model",
+    "chat_template*",
+    "preprocessor_config.json",
+    "processor_config.json",
+];
 
 fn bad(why: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, why.to_string())
@@ -64,7 +76,8 @@ fn hub_cache() -> PathBuf {
     if let Some(p) = std::env::var_os("HF_HOME") {
         return Path::new(&p).join("hub");
     }
-    let cache = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| Path::new(&std::env::var_os("HOME").unwrap_or_default()).join(".cache"));
+    let cache =
+        std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| Path::new(&std::env::var_os("HOME").unwrap_or_default()).join(".cache"));
     cache.join("huggingface").join("hub")
 }
 
@@ -79,11 +92,24 @@ impl Source {
         if dir.is_dir() {
             // transformers' commit hash for a directory: its snapshot's, where it is one
             let p = dir.join("config.json").to_string_lossy().replace('\\', "/");
-            let revision = p.split("snapshots/").nth(1).and_then(|r| r.split('/').next()).filter(|r| is_hash(r) && p.contains(&format!("snapshots/{r}/"))).map(str::to_string);
+            let revision = p
+                .split("snapshots/")
+                .nth(1)
+                .and_then(|r| r.split('/').next())
+                .filter(|r| is_hash(r) && p.contains(&format!("snapshots/{r}/")))
+                .map(str::to_string);
             return Ok(Source { dir: dir.to_path_buf(), repo: model.to_string(), revision });
         }
         let repo = hub_cache().join(format!("models--{}", model.replace('/', "--")));
-        let revision = std::fs::read_to_string(repo.join("refs").join("main")).map(|r| r.trim().to_string()).map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("{model}: no such directory, nor in the Hugging Face cache ({}): download it first (glyd fetch {model}), or give its directory", hub_cache().display())))?;
+        let revision = std::fs::read_to_string(repo.join("refs").join("main")).map(|r| r.trim().to_string()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "{model}: no such directory, nor in the Hugging Face cache ({}): download it first (glyd fetch {model}), or give its directory",
+                    hub_cache().display()
+                ),
+            )
+        })?;
         let dir = repo.join("snapshots").join(&revision);
         if !dir.is_dir() || !is_hash(&revision) {
             return Err(bad(format!("{model}: the cache's main revision {revision} has no snapshot there")));
@@ -137,7 +163,8 @@ struct Family {
 use Child::{Experts, Linear, Plain};
 
 const ATTENTION: &[Child] = &[Linear("q_proj"), Linear("k_proj"), Linear("v_proj"), Linear("o_proj")];
-const ATTENTION_QK_NORMS: &[Child] = &[Linear("q_proj"), Linear("k_proj"), Linear("v_proj"), Linear("o_proj"), Plain("q_norm.weight", ""), Plain("k_norm.weight", "")];
+const ATTENTION_QK_NORMS: &[Child] =
+    &[Linear("q_proj"), Linear("k_proj"), Linear("v_proj"), Linear("o_proj"), Plain("q_norm.weight", ""), Plain("k_norm.weight", "")];
 const QKV: &[&str] = &["q_proj", "k_proj", "v_proj"];
 const MLP: &[Child] = &[Linear("gate_proj"), Linear("up_proj"), Linear("down_proj")];
 const GATE_UP: &[&str] = &["gate_proj", "up_proj"];
@@ -155,7 +182,14 @@ const FAMILIES: &[Family] = &[
         layer: &[
             ("self_attn", ATTENTION, QKV),
             ("", NORMS, &[]),
-            ("block_sparse_moe", &[Plain("router.weight", "router.layer.weight"), Experts("experts", &[("gate_up_proj", "input_linear.weight"), ("down_proj", "output_linear.weight")])], &[]),
+            (
+                "block_sparse_moe",
+                &[
+                    Plain("router.weight", "router.layer.weight"),
+                    Experts("experts", &[("gate_up_proj", "input_linear.weight"), ("down_proj", "output_linear.weight")]),
+                ],
+                &[],
+            ),
         ],
         experts: "num_local_experts",
     },
@@ -231,7 +265,23 @@ impl Layout {
     }
 
     pub fn by_name(name: &str) -> Option<Layout> {
-        [Layout::Tiered, Layout::Twelve, Layout::Int6, Layout::Int5, Layout::Int4, Layout::Int4H, Layout::Int3, Layout::Int6Row, Layout::Int5Row, Layout::Int4Row, Layout::Cb3Row, Layout::Cb2Row, Layout::Hummingbird].into_iter().find(|l| l.name() == name)
+        [
+            Layout::Tiered,
+            Layout::Twelve,
+            Layout::Int6,
+            Layout::Int5,
+            Layout::Int4,
+            Layout::Int4H,
+            Layout::Int3,
+            Layout::Int6Row,
+            Layout::Int5Row,
+            Layout::Int4Row,
+            Layout::Cb3Row,
+            Layout::Cb2Row,
+            Layout::Hummingbird,
+        ]
+        .into_iter()
+        .find(|l| l.name() == name)
     }
 
     /// The bits of a code in a codebook row layout; None for the others.
@@ -266,7 +316,19 @@ impl Layout {
     /// A pack's words' name in glyd.json: the tiered layout's three tiers, the 12-bit layout's base hb (an int).
     fn words(self) -> &'static str {
         match self {
-            Layout::Tiered | Layout::Compact | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => "tiers",
+            Layout::Tiered
+            | Layout::Compact
+            | Layout::Int6
+            | Layout::Int5
+            | Layout::Int4
+            | Layout::Int4H
+            | Layout::Int3
+            | Layout::Int6Row
+            | Layout::Int5Row
+            | Layout::Int4Row
+            | Layout::Cb3Row
+            | Layout::Cb2Row
+            | Layout::Hummingbird => "tiers",
             Layout::Twelve => "hb",
         }
     }
@@ -334,7 +396,8 @@ impl Plan {
         let head = if tied { embed.clone() } else { need("lm_head.weight")? };
         let gembedding = embed.shape.len() == 2 && embed.shape[1] % 128 == 0;
         let (mut puts, mut rest) = (Vec::new(), Vec::new());
-        if gembedding && lossy && embed.shape[0] % 64 == 0 {  // (a block layout's: the embedding a pack as the engine packs it, the output layer tied to it reading it)
+        if gembedding && lossy && embed.shape[0] % 64 == 0 {
+            // (a block layout's: the embedding a pack as the engine packs it, the output layer tied to it reading it)
             puts.push(Put::Linear { members: vec!["model.embed_tokens".into()], from: vec!["model.embed_tokens".into()], layout: None });
         } else if gembedding {
             puts.push(Put::Copy { name: "model.embed_tokens.weight".into(), from: "model.embed_tokens.weight".into(), cast: false });
@@ -352,7 +415,10 @@ impl Plan {
                 }
                 // the group runs as one product where every member is packed and all or none have a bias
                 let has_bias = |c: &str| get(&format!("{}.bias", path(c))).is_some();
-                let merged = merge && !group.is_empty() && group.iter().all(|c| get(&format!("{}.weight", path(c))).is_some_and(|t| packable(&t))) && group.iter().all(|c| has_bias(c) == has_bias(group[0]));
+                let merged = merge
+                    && !group.is_empty()
+                    && group.iter().all(|c| get(&format!("{}.weight", path(c))).is_some_and(|t| packable(&t)))
+                    && group.iter().all(|c| has_bias(c) == has_bias(group[0]));
                 for &child in children {
                     match child {
                         Linear(c) => {
@@ -375,8 +441,10 @@ impl Plan {
                             rest.push(Put::Copy { name: path(name), from, cast: false });
                         }
                         Experts(module, weights) => {
-                            let e = config.get(family.experts).and_then(Value::as_u64).ok_or_else(|| bad(format!("config.json: no {}", family.experts)))? as usize;
-                            let ts: Vec<(&str, String, TensorInfo)> = weights.iter().map(|&(w, from)| need(&path(from)).map(|t| (w, path(from), t))).collect::<io::Result<_>>()?;
+                            let e =
+                                config.get(family.experts).and_then(Value::as_u64).ok_or_else(|| bad(format!("config.json: no {}", family.experts)))? as usize;
+                            let ts: Vec<(&str, String, TensorInfo)> =
+                                weights.iter().map(|&(w, from)| need(&path(from)).map(|t| (w, path(from), t))).collect::<io::Result<_>>()?;
                             // packed where every matrix [out, in] has rows a multiple of 64 and columns of 16
                             let all = ts.iter().all(|(_, _, t)| t.shape.len() == 3 && t.shape[0] as usize == e && t.shape[1] % 64 == 0 && t.shape[2] % 16 == 0);
                             for (w, from, _) in ts {
@@ -400,7 +468,11 @@ impl Plan {
         if packable(&head) && !tied {
             puts.push(Put::Linear { members: vec!["lm_head".into()], from: vec!["lm_head".into()], layout: None });
         } else if !packable(&head) {
-            rest.push(Put::Copy { name: "lm_head.weight".into(), from: if tied { "model.embed_tokens.weight".into() } else { "lm_head.weight".into() }, cast: false });
+            rest.push(Put::Copy {
+                name: "lm_head.weight".into(),
+                from: if tied { "model.embed_tokens.weight".into() } else { "lm_head.weight".into() },
+                cast: false,
+            });
         }
         puts.extend(rest);
         Ok(Plan { puts })
@@ -440,12 +512,32 @@ impl Plan {
                 let ts = from.iter().map(|m| weight(&format!("{m}.weight"))).collect::<io::Result<Vec<_>>>()?;
                 let layout = match it.get("layout") {
                     None => None,
-                    Some(l) => Some(l.as_str().and_then(Layout::by_name).filter(|l| matches!(l, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Int6Row | Layout::Int5Row | Layout::Int4Row)).ok_or_else(|| bad(format!("plan: {}: a layout other than i6, i5, i4, i3, i6r, i5r or i4r", members.join(" + "))))?),
+                    Some(l) => Some(
+                        l.as_str()
+                            .and_then(Layout::by_name)
+                            .filter(|l| {
+                                matches!(
+                                    l,
+                                    Layout::Int6
+                                        | Layout::Int5
+                                        | Layout::Int4
+                                        | Layout::Int4H
+                                        | Layout::Int3
+                                        | Layout::Int6Row
+                                        | Layout::Int5Row
+                                        | Layout::Int4Row
+                                )
+                            })
+                            .ok_or_else(|| bad(format!("plan: {}: a layout other than i6, i5, i4, i3, i6r, i5r or i4r", members.join(" + "))))?,
+                    ),
                 };
                 // (a row layout packs one weight's transpose: its outputs runs of 32, its weights whole thousands)
                 let rows_pack = layout.is_some_and(|l| l.row_bits().is_some());
                 if rows_pack && (ts.len() != 1 || !packable_rows(&ts[0])) {
-                    return Err(bad(format!("plan: {} is not packable in a row layout (one weight, its outputs runs of 32 and its size whole thousands)", members.join(" + "))));
+                    return Err(bad(format!(
+                        "plan: {} is not packable in a row layout (one weight, its outputs runs of 32 and its size whole thousands)",
+                        members.join(" + ")
+                    )));
                 }
                 if !rows_pack && (!ts.iter().all(packable) || ts.iter().any(|t| dims(t).1 != dims(&ts[0]).1)) {
                     return Err(bad(format!("plan: {} is not packable as one matrix", members.join(" + "))));
@@ -584,14 +676,36 @@ fn shape_value(s: &[u64]) -> Value {
 /// weight's E (held as [E, out, in]).
 fn entry(layout: Layout, shape: [usize; 2], words: &[u32], tensors: Vec<(String, Vec<u64>, String)>, experts: Option<usize>) -> Value {
     let words = match layout {
-        Layout::Tiered | Layout::Compact | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => Value::Array(words.iter().map(|&t| Value::from(t as u64)).collect()),
+        Layout::Tiered
+        | Layout::Compact
+        | Layout::Int6
+        | Layout::Int5
+        | Layout::Int4
+        | Layout::Int4H
+        | Layout::Int3
+        | Layout::Int6Row
+        | Layout::Int5Row
+        | Layout::Int4Row
+        | Layout::Cb3Row
+        | Layout::Cb2Row
+        | Layout::Hummingbird => Value::Array(words.iter().map(|&t| Value::from(t as u64)).collect()),
         Layout::Twelve => Value::from(words[0] as u64),
     };
     let mut e = vec![
         ("layout".to_string(), Value::from(layout.name())),
         ("shape".to_string(), shape_value(&[shape[0] as u64, shape[1] as u64])),
         (layout.words().to_string(), words),
-        ("tensors".to_string(), Value::Array(tensors.into_iter().map(|(n, s, h)| Value::Object(vec![("name".into(), Value::String(n)), ("shape".into(), shape_value(&s)), ("sha256".into(), Value::String(h))])).collect())),
+        (
+            "tensors".to_string(),
+            Value::Array(
+                tensors
+                    .into_iter()
+                    .map(|(n, s, h)| {
+                        Value::Object(vec![("name".into(), Value::String(n)), ("shape".into(), shape_value(&s)), ("sha256".into(), Value::String(h))])
+                    })
+                    .collect(),
+            ),
+        ),
     ];
     if let Some(n) = experts {
         e.push(("experts".into(), Value::from(n as u64)));
@@ -605,12 +719,20 @@ fn entry(layout: Layout, shape: [usize; 2], words: &[u32], tensors: Vec<(String,
 /// ...), its words (the tiers; the 12-bit layout's base hb) and the layout it is in. A lossy block layout leaves `w` the
 /// weights it decodes to (what the GPU computes with, and what glyd.json hashes). `coded`: a block layout's codes and
 /// scales (a calibration's) to pack as they are, instead of the fit of `w`'s.
-fn packed(layout: Layout, w: &mut [u16], rows: usize, cols: usize, key: &str, what: &str, coded: Option<(&[i8], &[u16])>) -> io::Result<(Vec<Saved>, Vec<u32>, Layout)> {
+fn packed(
+    layout: Layout,
+    w: &mut [u16],
+    rows: usize,
+    cols: usize,
+    key: &str,
+    what: &str,
+    coded: Option<(&[i8], &[u16])>,
+) -> io::Result<(Vec<Saved>, Vec<u32>, Layout)> {
     let differ = || bad(format!("{what}: decoded to other bits than its weights"));
     let steps = (rows * cols / pack::STEP) as u64;
     let buffer = |name: String, dtype, shape, bytes| Saved { name, dtype, shape: vec![shape], bytes, sha256: None };
     let tiered = |p: pack::Tiered| {
-        let (blocks, data) = (p.blocks.len() as u64, p.data.len() as u64);  // (1280 bytes a step; the compact layout's 768)
+        let (blocks, data) = (p.blocks.len() as u64, p.data.len() as u64); // (1280 bytes a step; the compact layout's 768)
         let base = le_bytes(&p.block_base, i32::to_le_bytes);
         let lay = match p.tiers[0] >> 24 {
             pack::COMPACT_TAG => Layout::Compact,
@@ -624,12 +746,28 @@ fn packed(layout: Layout, w: &mut [u16], rows: usize, cols: usize, key: &str, wh
             pack::INT4_ROW_TAG => Layout::Int4Row,
             _ => Layout::Tiered,
         };
-        (vec![buffer(format!("{key}data"), "U8", data, p.data), buffer(format!("{key}blocks"), "U8", blocks, p.blocks), buffer(format!("{key}block_base"), "I32", steps + 1, base)], p.tiers.to_vec(), lay)
+        (
+            vec![
+                buffer(format!("{key}data"), "U8", data, p.data),
+                buffer(format!("{key}blocks"), "U8", blocks, p.blocks),
+                buffer(format!("{key}block_base"), "I32", steps + 1, base),
+            ],
+            p.tiers.to_vec(),
+            lay,
+        )
     };
     let twelve = |p: pack::Twelve| {
         let (exc, base) = (le_bytes(&p.exc, i32::to_le_bytes), le_bytes(&p.exc_base, i32::to_le_bytes));
         let hb = p.hb() as u32;
-        (vec![buffer(format!("{key}data"), "U8", steps * 1536, p.data), buffer(format!("{key}exc"), "I32", p.exc.len() as u64, exc), buffer(format!("{key}exc_base"), "I32", steps + 1, base)], vec![hb], Layout::Twelve)
+        (
+            vec![
+                buffer(format!("{key}data"), "U8", steps * 1536, p.data),
+                buffer(format!("{key}exc"), "I32", p.exc.len() as u64, exc),
+                buffer(format!("{key}exc_base"), "I32", steps + 1, base),
+            ],
+            vec![hb],
+            Layout::Twelve,
+        )
     };
     Ok(match layout {
         Layout::Tiered => match pack::pack_smallest_checked(w, rows, cols).ok_or_else(differ)? {
@@ -637,7 +775,7 @@ fn packed(layout: Layout, w: &mut [u16], rows: usize, cols: usize, key: &str, wh
             pack::Packed::Twelve(p) => twelve(p),
         },
         Layout::Twelve => twelve(pack::pack_twelve_checked(w, rows, cols).ok_or_else(differ)?),
-        Layout::Compact => tiered(pack::pack_compact_checked(w, rows, cols).ok_or_else(differ)?),  // (w rounded by its caller)
+        Layout::Compact => tiered(pack::pack_compact_checked(w, rows, cols).ok_or_else(differ)?), // (w rounded by its caller)
         Layout::Int6 => {
             let p = match coded {
                 Some((c, s)) => pack::pack_int6_runs_checked(c, s, rows, cols),
@@ -657,24 +795,35 @@ fn packed(layout: Layout, w: &mut [u16], rows: usize, cols: usize, key: &str, wh
             tiered(p)
         }
         Layout::Int4 => {
-            let p = pack::pack_int4_checked(w, rows, cols).ok_or_else(|| bad(format!("{what}: not a four-bit layout's matrix, or decoded to other bits than its codes")))?;
+            let p = pack::pack_int4_checked(w, rows, cols)
+                .ok_or_else(|| bad(format!("{what}: not a four-bit layout's matrix, or decoded to other bits than its codes")))?;
             pack::unpack_int4(&p, w);
             tiered(p)
         }
-        Layout::Int4H => tiered(pack::pack_int4h_checked(w, rows, cols).ok_or_else(|| bad(format!("{what}: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)")))?),
+        Layout::Int4H => tiered(
+            pack::pack_int4h_checked(w, rows, cols)
+                .ok_or_else(|| bad(format!("{what}: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)")))?,
+        ),
         Layout::Int3 => {
-            let p = pack::pack_int3_checked(w, rows, cols).ok_or_else(|| bad(format!("{what}: not a three-bit layout's matrix, or decoded to other bits than its codes")))?;
+            let p = pack::pack_int3_checked(w, rows, cols)
+                .ok_or_else(|| bad(format!("{what}: not a three-bit layout's matrix, or decoded to other bits than its codes")))?;
             pack::unpack_int3(&p, w);
             tiered(p)
         }
         // (`w` is the matrix to pack, already the transpose of the tensor's: `Put::run`)
         Layout::Int6Row | Layout::Int5Row | Layout::Int4Row => {
             let bits = layout.row_bits().expect("a row layout");
-            let p = pack::pack_rows_checked(bits, w, rows, cols).ok_or_else(|| bad(format!("{what}: not a {bits}-bit row layout's matrix (columns of 32 and whole thousands of weights), or decoded to other bits than its codes")))?;
+            let p = pack::pack_rows_checked(bits, w, rows, cols).ok_or_else(|| {
+                bad(format!(
+                    "{what}: not a {bits}-bit row layout's matrix (columns of 32 and whole thousands of weights), or decoded to other bits than its codes"
+                ))
+            })?;
             pack::unpack_rows(&p, w);
             tiered(p)
         }
-        Layout::Cb3Row | Layout::Cb2Row => return Err(bad(format!("{what}: a codebook row layout holds codes made apart (an export), not a fit of the weights"))),
+        Layout::Cb3Row | Layout::Cb2Row => {
+            return Err(bad(format!("{what}: a codebook row layout holds codes made apart (an export), not a fit of the weights")))
+        }
         Layout::Hummingbird => return Err(bad(format!("{what}: a Hummingbird save packs each of its linears in a layout of their own (the plan says which)"))),
     })
 }
@@ -698,7 +847,8 @@ impl Put {
                 let (f, t) = src.get(from).ok_or_else(|| bad(format!("no {from}")))?;
                 let mut bytes = if *cast { bf16_from_f32(&f.read(t)?) } else { f.read(t)? };
                 if layout == Layout::Compact && !*cast && t.dtype == "BF16" {
-                    for b in bytes.chunks_exact_mut(2) {  // (Candidate A: every bf16 parameter rounded; an f32 one, cast here, as it is)
+                    for b in bytes.chunks_exact_mut(2) {
+                        // (Candidate A: every bf16 parameter rounded; an f32 one, cast here, as it is)
                         let r = pack::round_a(u16::from_le_bytes([b[0], b[1]]));
                         b.copy_from_slice(&r.to_le_bytes());
                     }
@@ -712,7 +862,7 @@ impl Put {
                 let cols = dims(&ts[0]).1;
                 let rows: Vec<usize> = ts.iter().map(|t| dims(t).0).collect();
                 let mut w = vec![0u16; rows.iter().sum::<usize>() * cols];
-                let coded = codes.map(|c| read_codes(c, from, &rows, cols)).transpose()?.flatten();  // (calibrated: the codes and scales are packed as they are, the weights not read)
+                let coded = codes.map(|c| read_codes(c, from, &rows, cols)).transpose()?.flatten(); // (calibrated: the codes and scales are packed as they are, the weights not read)
                 let mut at = 0;
                 for (m, &r) in from.iter().zip(&rows) {
                     if coded.is_none() {
@@ -721,7 +871,7 @@ impl Put {
                     at += r * cols;
                 }
                 if layout == Layout::Compact {
-                    w.iter_mut().for_each(|x| *x = pack::round_a(*x));  // (the values packed and hashed are Candidate A's)
+                    w.iter_mut().for_each(|x| *x = pack::round_a(*x)); // (the values packed and hashed are Candidate A's)
                 }
                 let all = w.len() / cols;
                 // a row layout packs the transpose of the weight [out, in]: [in, out], each row one input's weights; the weight it decodes to goes back to [out, in] (what glyd.json hashes)
@@ -757,7 +907,12 @@ impl Put {
                 }
                 let n = hashed.len();
                 let shape = if rows_of { [cols, all] } else { [all, cols] };
-                Ok(Done { tensors, entry: Some((members[0].clone(), entry(lay, shape, &words, hashed, None))), checked: n, coded: if coded.is_some() { n } else { 0 } })
+                Ok(Done {
+                    tensors,
+                    entry: Some((members[0].clone(), entry(lay, shape, &words, hashed, None))),
+                    checked: n,
+                    coded: if coded.is_some() { n } else { 0 },
+                })
             }
             Put::Codebook { module, layer, expert, down } => {
                 let export = hb.ok_or_else(|| bad(format!("{module}: a matrix of an export of codes, and none is given")))?;
@@ -767,7 +922,10 @@ impl Put {
                 // (the tensor is [neurons, row] for an up matrix, [row, neurons] for a down one: the pack holds its neurons' rows either way)
                 let want = if *down { vec![p.cols as u64, p.rows as u64] } else { vec![p.rows as u64, p.cols as u64] };
                 if t.shape != want {
-                    return Err(bad(format!("{tensor}: {:?} in the source, where the export's {} neuron rows of {} values are {want:?}", t.shape, p.rows, p.cols)));
+                    return Err(bad(format!(
+                        "{tensor}: {:?} in the source, where the export's {} neuron rows of {} values are {want:?}",
+                        t.shape, p.rows, p.cols
+                    )));
                 }
                 let mut w = vec![0u16; p.rows * p.cols];
                 if !codebook::unpack_codebook_rows(&p, &mut w) {
@@ -778,17 +936,28 @@ impl Put {
                 }
                 let lay = if p.bits == 3 { Layout::Cb3Row } else { Layout::Cb2Row };
                 let key = format!("{module}.glyd_");
-                let buffer = |suffix: &str, bytes: Vec<u8>| Saved { name: format!("{key}{suffix}"), dtype: "U8", shape: vec![bytes.len() as u64], bytes, sha256: None };
+                let buffer =
+                    |suffix: &str, bytes: Vec<u8>| Saved { name: format!("{key}{suffix}"), dtype: "U8", shape: vec![bytes.len() as u64], bytes, sha256: None };
                 let mut e = entry(lay, [p.rows, p.cols], &p.tiers(), vec![(tensor, t.shape.clone(), sha256_u16(&w))], None);
                 if let Value::Object(o) = &mut e {
                     o.push(("transposed".into(), Value::Bool(*down)));
                 }
-                Ok(Done { tensors: vec![buffer("data", p.codes), buffer("blocks", p.scales), buffer("codebook", p.codebook)], entry: Some((module.clone(), e)), checked: 1, coded: 1 })
+                Ok(Done {
+                    tensors: vec![buffer("data", p.codes), buffer("blocks", p.scales), buffer("codebook", p.codebook)],
+                    entry: Some((module.clone(), e)),
+                    checked: 1,
+                    coded: 1,
+                })
             }
             Put::Signs { name, layer } => {
                 let export = hb.ok_or_else(|| bad(format!("{name}: the signs of an export of codes, and none is given")))?;
                 let l = export.layers.get(*layer).ok_or_else(|| bad(format!("{name}: the export has no MoE layer {layer}")))?;
-                Ok(Done { tensors: vec![Saved::plain(name.clone(), "I8", vec![l.signs.len() as u64], l.signs.iter().map(|&s| s as u8).collect())], entry: None, checked: 0, coded: 0 })
+                Ok(Done {
+                    tensors: vec![Saved::plain(name.clone(), "I8", vec![l.signs.len() as u64], l.signs.iter().map(|&s| s as u8).collect())],
+                    entry: None,
+                    checked: 0,
+                    coded: 0,
+                })
             }
             Put::Experts { module, weight, from, experts } => {
                 let (_, t) = src.get(from).ok_or_else(|| bad(format!("no {from}")))?;
@@ -798,7 +967,12 @@ impl Put {
                 let (tensors, words, lay) = packed(layout, &mut w, e * a, b, &format!("{module}.glyd_{weight}_"), &format!("{module}.{weight}"), None)?;
                 let sha = sha256_u16(&w);
                 let name = format!("{module}.{weight}");
-                Ok(Done { tensors, entry: Some((name.clone(), entry(lay, [e * a, b], &words, vec![(name, t.shape.clone(), sha)], Some(e)))), checked: 1, coded: 0 })
+                Ok(Done {
+                    tensors,
+                    entry: Some((name.clone(), entry(lay, [e * a, b], &words, vec![(name, t.shape.clone(), sha)], Some(e)))),
+                    checked: 1,
+                    coded: 0,
+                })
             }
         }
     }
@@ -808,7 +982,15 @@ impl Put {
 /// waits for, else a `big` one (a large matrix's pack runs beside the others, not after them), else the next in order,
 /// but for the one `done` waits for only while the items taken and not yet handed to `done` weigh at most `budget`
 /// with it (their weights: bytes held, or 1 an item). The results wait for their turn in a map.
-fn in_order<T: Sync, R: Send>(items: &[T], weights: &[u64], big: &[bool], threads: usize, budget: u64, run: impl Fn(&T) -> io::Result<R> + Sync, mut done: impl FnMut(R) -> io::Result<()>) -> io::Result<()> {
+fn in_order<T: Sync, R: Send>(
+    items: &[T],
+    weights: &[u64],
+    big: &[bool],
+    threads: usize,
+    budget: u64,
+    run: impl Fn(&T) -> io::Result<R> + Sync,
+    mut done: impl FnMut(R) -> io::Result<()>,
+) -> io::Result<()> {
     struct State<R> {
         taken: Vec<bool>,
         next: usize,
@@ -885,14 +1067,24 @@ fn in_order<T: Sync, R: Send>(items: &[T], weights: &[u64], big: &[bool], thread
 /// a multiple of 8 bytes; the data in the header's order.
 pub(crate) fn write_safetensors(path: &Path, tensors: &mut [Saved]) -> io::Result<()> {
     // safetensors' Dtype, in its order
-    const DTYPES: &[&str] = &["BOOL", "F4", "F6_E2M3", "F6_E3M2", "U8", "I8", "F8_E5M2", "F8_E4M3", "F8_E8M0", "I16", "U16", "F16", "BF16", "I32", "U32", "F32", "C64", "F64", "I64", "U64"];
+    const DTYPES: &[&str] = &[
+        "BOOL", "F4", "F6_E2M3", "F6_E3M2", "U8", "I8", "F8_E5M2", "F8_E4M3", "F8_E8M0", "I16", "U16", "F16", "BF16", "I32", "U32", "F32", "C64", "F64", "I64",
+        "U64",
+    ];
     let rank = |d: &str| DTYPES.iter().position(|x| *x == d).expect("a dtype safetensors has");
     tensors.sort_by(|a, b| rank(b.dtype).cmp(&rank(a.dtype)).then(a.name.cmp(&b.name)));
     let mut header = vec![("__metadata__".to_string(), Value::Object(vec![("format".into(), Value::from("pt"))]))];
     let mut pos = 0u64;
     for t in tensors.iter() {
         let n = t.bytes.len() as u64;
-        header.push((t.name.clone(), Value::Object(vec![("dtype".into(), Value::from(t.dtype)), ("shape".into(), shape_value(&t.shape)), ("data_offsets".into(), Value::Array(vec![Value::from(pos), Value::from(pos + n)]))])));
+        header.push((
+            t.name.clone(),
+            Value::Object(vec![
+                ("dtype".into(), Value::from(t.dtype)),
+                ("shape".into(), shape_value(&t.shape)),
+                ("data_offsets".into(), Value::Array(vec![Value::from(pos), Value::from(pos + n)])),
+            ]),
+        ));
         pos += n;
     }
     let mut h = json::to_compact(&Value::Object(header)).into_bytes();
@@ -934,7 +1126,9 @@ pub struct Saving {
 /// worth of weights in flight past the one the save waits for (the module's docs). A directory holding another
 /// checkpoint is refused.
 pub fn save(source: &Source, out: &Path, threads: usize, shard_bytes: u64, merge: bool, layout: Layout) -> io::Result<Saving> {
-    save_as::<false>(source, out, threads, shard_bytes, layout, None, None, false, |src, config| Plan::new(src, config, merge, matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3)))
+    save_as::<false>(source, out, threads, shard_bytes, layout, None, None, false, |src, config| {
+        Plan::new(src, config, merge, matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3))
+    })
 }
 
 /// `save` with a plan made elsewhere (huggingface/plan.py: what save_pretrained writes for the model transformers
@@ -969,15 +1163,30 @@ pub fn save_hummingbird(source: &Source, out: &Path, threads: usize, shard_bytes
 /// `EXTRAS`: whether this save may have calibrated codes or an export (`save_calibrated`, `save_hummingbird`); `save_planned`'s is false, so the program of a
 /// build that only packs plainly (a release engine) holds none of their code.
 #[allow(clippy::too_many_arguments)]
-fn save_as<const EXTRAS: bool>(source: &Source, out: &Path, threads: usize, shard_bytes: u64, layout: Layout, codes: Option<&Path>, hb: Option<&HbExport>, penguin: bool, plan: impl FnOnce(&Checkpoint, &Value) -> io::Result<Plan>) -> io::Result<Saving> {
+fn save_as<const EXTRAS: bool>(
+    source: &Source,
+    out: &Path,
+    threads: usize,
+    shard_bytes: u64,
+    layout: Layout,
+    codes: Option<&Path>,
+    hb: Option<&HbExport>,
+    penguin: bool,
+    plan: impl FnOnce(&Checkpoint, &Value) -> io::Result<Plan>,
+) -> io::Result<Saving> {
     let cfg = source.dir.join("config.json");
     let config = json::parse(&std::fs::read_to_string(&cfg).map_err(at(&cfg))?).map_err(|e| bad(format!("{}: {e}", cfg.display())))?;
     let src = Checkpoint::open(&source.dir)?;
     if layout.row_bits().is_some() || layout.cb_bits().is_some() {
-        return Err(bad(format!("a save in the {} layout: a row layout is a pack's own, a linear's \"layout\" in the plan of a save in a block layout (i6, i5, i4, i3)", layout.name())));
+        return Err(bad(format!(
+            "a save in the {} layout: a row layout is a pack's own, a linear's \"layout\" in the plan of a save in a block layout (i6, i5, i4, i3)",
+            layout.name()
+        )));
     }
     let plan = plan(&src, &config)?;
-    if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Hummingbird) && plan.puts.iter().any(|p| matches!(p, Put::Linear { layout: Some(_), .. })) {
+    if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Hummingbird)
+        && plan.puts.iter().any(|p| matches!(p, Put::Linear { layout: Some(_), .. }))
+    {
         return Err(bad("plan: a linear's own layout is for a save in a block layout (i6, i5, i4, i3)"));
     }
     // a calibration export belongs to the Hummingbird level alone, which is nothing without one; its matrices and signs are held to what the export has before the first pack
@@ -989,9 +1198,15 @@ fn save_as<const EXTRAS: bool>(source: &Source, out: &Path, threads: usize, shar
         for p in &plan.puts {
             match p {
                 Put::Codebook { module, layer, expert, .. } if *layer >= ex.layers.len() || *expert >= ex.experts => {
-                    return Err(bad(format!("plan: {module}: layer {layer} expert {expert}, where the export has {} MoE layers of {} experts", ex.layers.len(), ex.experts)));
+                    return Err(bad(format!(
+                        "plan: {module}: layer {layer} expert {expert}, where the export has {} MoE layers of {} experts",
+                        ex.layers.len(),
+                        ex.experts
+                    )));
                 }
-                Put::Signs { name, layer } if *layer >= ex.layers.len() => return Err(bad(format!("plan: {name}: layer {layer}, where the export has {} MoE layers", ex.layers.len()))),
+                Put::Signs { name, layer } if *layer >= ex.layers.len() => {
+                    return Err(bad(format!("plan: {name}: layer {layer}, where the export has {} MoE layers", ex.layers.len())))
+                }
                 _ => {}
             }
         }
@@ -1010,7 +1225,16 @@ fn save_as<const EXTRAS: bool>(source: &Source, out: &Path, threads: usize, shar
             if c.names().next().is_none() {
                 return Err(bad(format!("{}: no codes", dir.display())));
             }
-            let packed: HashSet<&str> = plan.puts.iter().filter_map(|p| match p { Put::Linear { from, .. } => Some(from), _ => None }).flatten().map(String::as_str).collect();
+            let packed: HashSet<&str> = plan
+                .puts
+                .iter()
+                .filter_map(|p| match p {
+                    Put::Linear { from, .. } => Some(from),
+                    _ => None,
+                })
+                .flatten()
+                .map(String::as_str)
+                .collect();
             if let Some(n) = c.names().find(|n| n.strip_suffix(".codes").or_else(|| n.strip_suffix(".scales")).is_none_or(|m| !packed.contains(m))) {
                 return Err(bad(format!("{}: {n} is not a matrix the plan packs (codes of another model, or another plan?)", dir.display())));
             }
@@ -1025,7 +1249,10 @@ fn save_as<const EXTRAS: bool>(source: &Source, out: &Path, threads: usize, shar
     };
     let old = listing(&|n| (n.starts_with("model") && n.ends_with(".safetensors")) || n == "model.safetensors.index.json")?;
     if !old.is_empty() && !out.join("glyd.json").exists() {
-        let held = old.iter().filter(|p| p.extension().is_some_and(|e| e == "safetensors")).any(|p| crate::safetensors::File::open(p).is_ok_and(|f| f.tensors.iter().any(|(n, _)| n.contains(".glyd_"))));
+        let held = old
+            .iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "safetensors"))
+            .any(|p| crate::safetensors::File::open(p).is_ok_and(|f| f.tensors.iter().any(|(n, _)| n.contains(".glyd_"))));
         if !held {
             return Err(bad(format!("{} holds another checkpoint; save into a directory of its own", out.display())));
         }
@@ -1041,7 +1268,7 @@ fn save_as<const EXTRAS: bool>(source: &Source, out: &Path, threads: usize, shar
     let weights: Vec<u64> = plan.puts.iter().map(|p| p.weight(&src)).collect();
     let bytes: u64 = weights.iter().sum();
     let big: Vec<bool> = weights.iter().map(|&w| w >= bytes / 16).collect(); // (a model's output layer, its embedding)
-    // a shard written by a thread of its own as the next is made (the host holds two at most)
+                                                                             // a shard written by a thread of its own as the next is made (the host holds two at most)
     let (to_writer, shards_in) = std::sync::mpsc::sync_channel::<(PathBuf, Vec<Saved>)>(0);
     std::thread::scope(|s| {
         let writer = s.spawn(move || -> io::Result<()> {
@@ -1060,24 +1287,32 @@ fn save_as<const EXTRAS: bool>(source: &Source, out: &Path, threads: usize, shar
                 }
                 Ok(())
             };
-            in_order(&plan.puts, &weights, &big, threads, shard_bytes, |p| p.run(&src, layout, codes.as_ref().map(|c| &c.0), hb), |d: Done| {
-                checked += d.checked;
-                calibrated += d.coded;
-                if let Some((name, e)) = d.entry {
-                    packs.push((name, e));
-                }
-                for mut t in d.tensors {
-                    if let Some(h) = t.sha256.take() {
-                        hashes.push((t.name.clone(), Value::String(h)));
+            in_order(
+                &plan.puts,
+                &weights,
+                &big,
+                threads,
+                shard_bytes,
+                |p| p.run(&src, layout, codes.as_ref().map(|c| &c.0), hb),
+                |d: Done| {
+                    checked += d.checked;
+                    calibrated += d.coded;
+                    if let Some((name, e)) = d.entry {
+                        packs.push((name, e));
                     }
-                    size += t.bytes.len() as u64;
-                    part.push(t);
-                    if size >= shard_bytes {
-                        flush(&mut part, &mut size)?;
+                    for mut t in d.tensors {
+                        if let Some(h) = t.sha256.take() {
+                            hashes.push((t.name.clone(), Value::String(h)));
+                        }
+                        size += t.bytes.len() as u64;
+                        part.push(t);
+                        if size >= shard_bytes {
+                            flush(&mut part, &mut size)?;
+                        }
                     }
-                }
-                Ok(())
-            })
+                    Ok(())
+                },
+            )
             .and_then(|_| flush(&mut part, &mut size))
         };
         drop(to_writer);
@@ -1094,46 +1329,94 @@ fn save_as<const EXTRAS: bool>(source: &Source, out: &Path, threads: usize, shar
     for p in old {
         std::fs::remove_file(&p).map_err(at(&p))?;
     }
-    let names: Vec<String> = if shards.len() == 1 { vec!["model.safetensors".into()] } else { (1..=shards.len()).map(|i| format!("model-{i:05}-of-{:05}.safetensors", shards.len())).collect() };
+    let names: Vec<String> = if shards.len() == 1 {
+        vec!["model.safetensors".into()]
+    } else {
+        (1..=shards.len()).map(|i| format!("model-{i:05}-of-{:05}.safetensors", shards.len())).collect()
+    };
     for ((tmp, _, _), name) in shards.iter().zip(&names) {
         std::fs::rename(out.join(tmp), out.join(name)).map_err(at(&out.join(name)))?;
     }
     if shards.len() > 1 {
         let map = shards.iter().zip(&names).flat_map(|((_, ks, _), name)| ks.iter().map(move |k| (k.clone(), Value::from(name.as_str())))).collect();
         let total: u64 = shards.iter().map(|s| s.2).sum();
-        let index = Value::Object(vec![("metadata".into(), Value::Object(vec![("total_size".into(), Value::from(total))])), ("weight_map".into(), Value::Object(map))]);
+        let index =
+            Value::Object(vec![("metadata".into(), Value::Object(vec![("total_size".into(), Value::from(total))])), ("weight_map".into(), Value::Object(map))]);
         let p = out.join("model.safetensors.index.json");
         std::fs::write(&p, json::to_python(&index, 2)).map_err(at(&p))?;
     }
-    let source_v = Value::Object(vec![("repo".into(), Value::String(source.repo.clone())), ("revision".into(), source.revision.clone().map_or(Value::Null, Value::String))]);
+    let source_v = Value::Object(vec![
+        ("repo".into(), Value::String(source.repo.clone())),
+        ("revision".into(), source.revision.clone().map_or(Value::Null, Value::String)),
+    ]);
     let hashed = hashes.len();
     let mut m = Value::Object(vec![
-        ("format".into(), Value::from(match layout { Layout::Twelve => "glyd-v3", Layout::Compact => "glyd-v6", Layout::Tiered if penguin => "glyd-v7", Layout::Tiered => "glyd-v4", Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => "glyd-v7" })),
+        (
+            "format".into(),
+            Value::from(match layout {
+                Layout::Twelve => "glyd-v3",
+                Layout::Compact => "glyd-v6",
+                Layout::Tiered if penguin => "glyd-v7",
+                Layout::Tiered => "glyd-v4",
+                Layout::Int6
+                | Layout::Int5
+                | Layout::Int4
+                | Layout::Int4H
+                | Layout::Int3
+                | Layout::Int6Row
+                | Layout::Int5Row
+                | Layout::Int4Row
+                | Layout::Cb3Row
+                | Layout::Cb2Row
+                | Layout::Hummingbird => "glyd-v7",
+            }),
+        ),
         ("glyd".into(), Value::from(env!("CARGO_PKG_VERSION"))),
         ("source".into(), source_v),
         ("layout".into(), Value::from(layout.name())),
         ("packs".into(), Value::Object(packs)),
         ("tensors".into(), Value::Object(hashes)),
     ]);
-    if let (Value::Object(o), Some(level)) = (&mut m, match layout { Layout::Tiered if penguin => Some("penguin"), Layout::Int6 => Some("kestrel"), Layout::Int5 => Some("swift"), Layout::Int4 | Layout::Int4H => Some("wren"), Layout::Hummingbird => Some("hummingbird"), _ => None }) {
-        o.push(("level".into(), Value::from(level)));  // (the level the lossy layout serves)
+    if let (Value::Object(o), Some(level)) = (
+        &mut m,
+        match layout {
+            Layout::Tiered if penguin => Some("penguin"),
+            Layout::Int6 => Some("kestrel"),
+            Layout::Int5 => Some("swift"),
+            Layout::Int4 | Layout::Int4H => Some("wren"),
+            Layout::Hummingbird => Some("hummingbird"),
+            _ => None,
+        },
+    ) {
+        o.push(("level".into(), Value::from(level))); // (the level the lossy layout serves)
     }
     if let (true, Value::Object(o), Some((_, cal))) = (EXTRAS, &mut m, &codes) {
-        o.push(("calibration".into(), cal.clone()));  // (how the codes were made: calibration.json as it is)
+        o.push(("calibration".into(), cal.clone())); // (how the codes were made: calibration.json as it is)
     }
     if let (true, Value::Object(o), Some(ex)) = (EXTRAS, &mut m, hb) {
         let (twos, threes) = ex.bit_counts();
-        let cal = Value::Object(vec![("method".into(), Value::from("hummingbird")), ("recipe".into(), Value::from(ex.recipe.as_str())), ("experts_at_2_bits".into(), Value::from(twos as u64)), ("experts_at_3_bits".into(), Value::from(threes as u64)), ("export".into(), ex.meta_brief())]);
-        o.push(("calibration".into(), cal));  // (how the codes were made: the export's meta.json without the signs and the experts' bits)
+        let cal = Value::Object(vec![
+            ("method".into(), Value::from("hummingbird")),
+            ("recipe".into(), Value::from(ex.recipe.as_str())),
+            ("experts_at_2_bits".into(), Value::from(twos as u64)),
+            ("experts_at_3_bits".into(), Value::from(threes as u64)),
+            ("export".into(), ex.meta_brief()),
+        ]);
+        o.push(("calibration".into(), cal)); // (how the codes were made: the export's meta.json without the signs and the experts' bits)
     }
     std::fs::write(&manifest, json::to_python(&m, 1)).map_err(at(&manifest))?;
     // the source's config, generation config and tokenizer files, each once, its content alone
     if std::fs::canonicalize(&source.dir)? != std::fs::canonicalize(out)? {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&source.dir)?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_file() && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| !n.starts_with('.') && FILES.iter().any(|f| matches(f, n)))).collect();
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&source.dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| !n.starts_with('.') && FILES.iter().any(|f| matches(f, n))))
+            .collect();
         files.sort();
         for f in files {
             let to = out.join(f.file_name().unwrap());
-            std::fs::write(&to, std::fs::read(&f).map_err(at(&f))?).map_err(at(&to))?; // (the Hub's cache keeps them read-only: not the mode)
+            std::fs::write(&to, std::fs::read(&f).map_err(at(&f))?).map_err(at(&to))?;
+            // (the Hub's cache keeps them read-only: not the mode)
         }
     }
     Ok(Saving { checked, hashed, bytes, shards: shards.len(), calibrated })
@@ -1192,7 +1475,12 @@ fn decode(dir: &Checkpoint, name: &str, e: &Value, old: bool, decoder: &Decoder)
     // the C API's words: the tiered layout's three tiers; the 12-bit layout's base hb (0-120) in the first's bytes
     let words: Vec<u32> = match layout {
         Layout::Tiered | Layout::Compact | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 => {
-            let t: Vec<u32> = u64s(e.get("tiers")).filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64)).ok_or_else(|| what("a pack's sizes are missing from glyd.json"))?.into_iter().map(|x| x as u32).collect();
+            let t: Vec<u32> = u64s(e.get("tiers"))
+                .filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64))
+                .ok_or_else(|| what("a pack's sizes are missing from glyd.json"))?
+                .into_iter()
+                .map(|x| x as u32)
+                .collect();
             let tag = t[0] >> 24;
             let ok = match layout {
                 Layout::Int6 => tag == pack::INT6_TAG,
@@ -1211,7 +1499,9 @@ fn decode(dir: &Checkpoint, name: &str, e: &Value, old: bool, decoder: &Decoder)
             None => return Err(what("a pack an unreleased glyd saved: save it again")),
             Some(h) => pack::twelve_words(h.as_u64().filter(|&h| h <= 120).ok_or_else(|| what("its hb is not an int 0-120"))? as u8).to_vec(),
         },
-        Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => unreachable!("a row layout's pack is decoded above"),
+        Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => {
+            unreachable!("a row layout's pack is decoded above")
+        }
     };
     let (rows, cols) = (shape[0] as usize, shape[1] as usize);
     if rows == 0 || rows % 64 != 0 || cols == 0 || cols % 16 != 0 || rows > (1 << 40) / cols {
@@ -1258,7 +1548,9 @@ fn decode(dir: &Checkpoint, name: &str, e: &Value, old: bool, decoder: &Decoder)
                 return Err(what(if int { "its scales are not its shape's" } else { "its blocks do not hold its escapes" }));
             }
         }
-        (Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird, _) => unreachable!("a row layout's pack is decoded above"),
+        (Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird, _) => {
+            unreachable!("a row layout's pack is decoded above")
+        }
         (Layout::Twelve, Decoder::Cpu) => {
             if a.len() % 16 != 0 {
                 return Err(what("its exceptions not a multiple of 4"));
@@ -1273,13 +1565,29 @@ fn decode(dir: &Checkpoint, name: &str, e: &Value, old: bool, decoder: &Decoder)
             // its digits), the 12-bit exceptions' runs within exc (a multiple of 4).
             let base = i32s(&base);
             // (a compact pack's escapes checked in its bytes restored: the tiered layout's)
-            let restored = compact.then(|| pack::expand_compact(&pack::Tiered { rows, cols, data: data.clone(), blocks: Vec::new(), block_base: Vec::new(), tiers: [words[0], words[1], words[2]] }).map(|t| t.data)).flatten();
+            let restored = compact
+                .then(|| {
+                    pack::expand_compact(&pack::Tiered {
+                        rows,
+                        cols,
+                        data: data.clone(),
+                        blocks: Vec::new(),
+                        block_base: Vec::new(),
+                        tiers: [words[0], words[1], words[2]],
+                    })
+                    .map(|t| t.data)
+                })
+                .flatten();
             let ok = match layout {
                 Layout::Tiered if old => crate::v1::blocks_hold(&data, &a, &base),
-                Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 => cols % 32 == 0 && a.len() == steps / 2 * 128,  // (a scale for each run of 32 of a row, 128 bytes a pair of steps)
-                Layout::Tiered | Layout::Compact => (!compact || restored.is_some()) && pack::tiered_blocks_hold(restored.as_deref().unwrap_or(&data), &a, &base),
+                Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 => cols % 32 == 0 && a.len() == steps / 2 * 128, // (a scale for each run of 32 of a row, 128 bytes a pair of steps)
+                Layout::Tiered | Layout::Compact => {
+                    (!compact || restored.is_some()) && pack::tiered_blocks_hold(restored.as_deref().unwrap_or(&data), &a, &base)
+                }
                 Layout::Twelve => a.len() % 16 == 0 && base[0] == 0 && base.windows(2).all(|x| x[0] <= x[1]) && base[steps] as usize <= a.len() / 4,
-                Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => unreachable!("a row layout's pack is decoded above"),
+                Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => {
+                    unreachable!("a row layout's pack is decoded above")
+                }
             };
             if !ok {
                 return Err(what("its buffers do not hold what its data says (the GPU's decode would read past them)"));
@@ -1288,9 +1596,15 @@ fn decode(dir: &Checkpoint, name: &str, e: &Value, old: bool, decoder: &Decoder)
             let (d, x, b) = (ctx.upload(&data).map_err(bad)?, ctx.upload(&a).map_err(bad)?, ctx.upload(&base).map_err(bad)?);
             let out = ctx.alloc(rows * cols * 2).map_err(bad)?;
             let p = match layout {
-                Layout::Tiered | Layout::Compact | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 => crate::Pack::Tiered(crate::Tiered { data: d.ptr(), blocks: x.ptr(), block_base: b.ptr(), tiers: [words[0], words[1], words[2]] }),
-                Layout::Twelve => crate::Pack::Twelve(crate::Twelve { data: d.ptr(), exc: x.ptr(), exc_base: b.ptr(), sym: [words[0], words[1], words[2], words[3]] }),
-                Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => unreachable!("a row layout's pack is decoded above"),
+                Layout::Tiered | Layout::Compact | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 => {
+                    crate::Pack::Tiered(crate::Tiered { data: d.ptr(), blocks: x.ptr(), block_base: b.ptr(), tiers: [words[0], words[1], words[2]] })
+                }
+                Layout::Twelve => {
+                    crate::Pack::Twelve(crate::Twelve { data: d.ptr(), exc: x.ptr(), exc_base: b.ptr(), sym: [words[0], words[1], words[2], words[3]] })
+                }
+                Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => {
+                    unreachable!("a row layout's pack is decoded above")
+                }
             };
             let m = crate::Matrix { pack: p, rows: rows as i64, cols: cols as i64 };
             // SAFETY: the pack's buffers uploaded whole, their sizes and every place the decode reads by them held to
@@ -1307,7 +1621,12 @@ fn decode(dir: &Checkpoint, name: &str, e: &Value, old: bool, decoder: &Decoder)
 /// is returned as the tensor, [out, in] bf16, the weights it decodes to.
 fn decode_rows(dir: &Checkpoint, name: &str, e: &Value, layout: Layout, bits: u32, shape: &[u64]) -> io::Result<(usize, usize, Vec<u16>)> {
     let what = |why: &str| bad(format!("{name}: {why}"));
-    let t: Vec<u32> = u64s(e.get("tiers")).filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64)).ok_or_else(|| what("a pack's sizes are missing from glyd.json"))?.into_iter().map(|x| x as u32).collect();
+    let t: Vec<u32> = u64s(e.get("tiers"))
+        .filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64))
+        .ok_or_else(|| what("a pack's sizes are missing from glyd.json"))?
+        .into_iter()
+        .map(|x| x as u32)
+        .collect();
     if pack::rows_bits(t[0] >> 24) != Some(bits) {
         return Err(what("a pack's sizes are not its layout's"));
     }
@@ -1341,7 +1660,12 @@ fn decode_rows(dir: &Checkpoint, name: &str, e: &Value, layout: Layout, bits: u3
 fn decode_cb(dir: &Checkpoint, name: &str, e: &Value, bits: u32, shape: &[u64]) -> io::Result<(usize, usize, Vec<u16>)> {
     let what = |why: &str| bad(format!("{name}: {why}"));
     let layout = if bits == 3 { Layout::Cb3Row } else { Layout::Cb2Row };
-    let t: Vec<u32> = u64s(e.get("tiers")).filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64)).ok_or_else(|| what("a pack's sizes are missing from glyd.json"))?.into_iter().map(|x| x as u32).collect();
+    let t: Vec<u32> = u64s(e.get("tiers"))
+        .filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64))
+        .ok_or_else(|| what("a pack's sizes are missing from glyd.json"))?
+        .into_iter()
+        .map(|x| x as u32)
+        .collect();
     if codebook::cb_rows_bits(t[0] >> 24) != Some(bits) || t[1] != 0 || t[2] != 0 {
         return Err(what("a pack's sizes are not its layout's"));
     }
@@ -1493,17 +1817,23 @@ pub fn verify(dir: &Path, threads: usize, decoder: &Decoder) -> io::Result<Verif
     let hashed: HashMap<&str, &str> = hashes.iter().flatten().map(|(k, v)| (k.as_str(), v.as_str().unwrap_or(""))).collect();
     let (mut buffers, mut members) = (HashSet::new(), HashSet::new());
     for (name, e) in &packs {
-        let layout = e.get("layout").and_then(Value::as_str).and_then(Layout::by_name).ok_or_else(|| bad(format!("{name}: a layout this glyd does not read")))?;
+        let layout =
+            e.get("layout").and_then(Value::as_str).and_then(Layout::by_name).ok_or_else(|| bad(format!("{name}: a layout this glyd does not read")))?;
         let key = pack_key(name, e);
         buffers.extend(layout.buffers().0.iter().map(|(b, _)| format!("{key}{b}")));
-        let ts: Vec<&str> = e.get("tensors").and_then(Value::as_array).unwrap_or(&[]).iter().map(|t| t.get("name").and_then(Value::as_str).unwrap_or("")).collect();
+        let ts: Vec<&str> =
+            e.get("tensors").and_then(Value::as_array).unwrap_or(&[]).iter().map(|t| t.get("name").and_then(Value::as_str).unwrap_or("")).collect();
         // its own: an experts' weight's name, its module's .weight, a merged group's (q, k, v; gate, up: every name
         // the key's; q, k alone where a layer's values are its keys, Gemma 4's global layers)
         let (parent, first) = name.rsplit_once('.').unwrap_or(("", name));
         let own: Vec<String> = match (e.get("experts"), ts.len()) {
             (Some(_), _) => vec![name.clone()],
             (None, 1) => vec![format!("{name}.weight")],
-            _ => [QKV, GATE_UP].iter().filter(|g| g[0] == first && g.len() >= ts.len()).flat_map(|g| g[..ts.len()].iter().map(|c| format!("{parent}.{c}.weight"))).collect(),
+            _ => [QKV, GATE_UP]
+                .iter()
+                .filter(|g| g[0] == first && g.len() >= ts.len())
+                .flat_map(|g| g[..ts.len()].iter().map(|c| format!("{parent}.{c}.weight")))
+                .collect(),
         };
         if ts != own {
             return Err(bad(format!("glyd.json: {name}'s tensors are not its own: {:?}", &ts[..ts.len().min(3)])));
@@ -1542,17 +1872,33 @@ pub fn verify(dir: &Path, threads: usize, decoder: &Decoder) -> io::Result<Verif
     let one = |(name, e): &(String, Value), decoder: &Decoder| decode(&saved, name, e, old, decoder).and_then(|(r, c, w)| hashes_match(name, e, r, c, &w));
     match decoder {
         // a pack and its matrix a thread, and one more waiting its turn
-        Decoder::Cpu => in_order(&packs, &vec![1; packs.len()], &vec![false; packs.len()], threads, threads as u64 + 1, |p| one(p, &Decoder::Cpu), |k| {
-            n += k;
-            Ok(())
-        })?,
+        Decoder::Cpu => in_order(
+            &packs,
+            &vec![1; packs.len()],
+            &vec![false; packs.len()],
+            threads,
+            threads as u64 + 1,
+            |p| one(p, &Decoder::Cpu),
+            |k| {
+                n += k;
+                Ok(())
+            },
+        )?,
         Decoder::Gpu(..) => {
             // (the library has no kernel for a row layout: its packs are decoded on the CPU, on the threads, and the others by the GPU one after another)
             let (rows, others): (Vec<_>, Vec<_>) = packs.iter().cloned().partition(|(_, e)| is_rows(e));
-            in_order(&rows, &vec![1; rows.len()], &vec![false; rows.len()], threads, threads as u64 + 1, |p| one(p, &Decoder::Cpu), |k| {
-                n += k;
-                Ok(())
-            })?;
+            in_order(
+                &rows,
+                &vec![1; rows.len()],
+                &vec![false; rows.len()],
+                threads,
+                threads as u64 + 1,
+                |p| one(p, &Decoder::Cpu),
+                |k| {
+                    n += k;
+                    Ok(())
+                },
+            )?;
             for p in &others {
                 n += one(p, decoder)?;
             }
@@ -1575,7 +1921,14 @@ mod tests {
     /// digits, a point, digits, then a point and digits or anything; else not a version (a separator one bit off).
     #[test]
     fn versions_as_python_reads_them() {
-        for (v, want) in [("0.25.0", Some((0, 25, 0))), ("0.25", Some((0, 25, 0))), ("0.25rc1.3", Some((0, 25, 0))), ("0.25.0.dev0", Some((0, 25, 0))), ("0.25.", Some((0, 25, 0))), ("12.3.4", Some((12, 3, 4)))] {
+        for (v, want) in [
+            ("0.25.0", Some((0, 25, 0))),
+            ("0.25", Some((0, 25, 0))),
+            ("0.25rc1.3", Some((0, 25, 0))),
+            ("0.25.0.dev0", Some((0, 25, 0))),
+            ("0.25.", Some((0, 25, 0))),
+            ("12.3.4", Some((12, 3, 4))),
+        ] {
             assert_eq!(version(v), want, "{v}");
         }
         for v in ["0/25.0", "0,25.0", "0x.25.0", ".25.0", "0.x", "", "v0.25", "0", "0.\u{0663}"] {
@@ -1592,10 +1945,18 @@ mod tests {
             let weights: Vec<u64> = items.iter().map(|&i| if i == 7 { 5000 } else { 1 + (i % 5) as u64 }).collect();
             let big: Vec<bool> = items.iter().map(|&i| i % 50 == 49).collect();
             let mut got = Vec::new();
-            in_order(&items, &weights, &big, threads, budget, |&i| Ok(i * 3), |r| {
-                got.push(r);
-                Ok(())
-            })
+            in_order(
+                &items,
+                &weights,
+                &big,
+                threads,
+                budget,
+                |&i| Ok(i * 3),
+                |r| {
+                    got.push(r);
+                    Ok(())
+                },
+            )
             .unwrap();
             assert_eq!(got, items.iter().map(|i| i * 3).collect::<Vec<_>>(), "{threads} threads, budget {budget}");
         }
@@ -1614,7 +1975,11 @@ mod tests {
         let p = crate::v1::pack(&w, rows, cols);
         let steps = (rows * cols / pack::STEP) as u64;
         let saved = |name: &str, dtype: &'static str, n: u64, bytes: Vec<u8>| Saved { name: name.into(), dtype, shape: vec![n], bytes, sha256: None };
-        let mut ts = vec![saved("m.o_proj.glyd_data", "U8", steps * 1280, p.data.clone()), saved("m.o_proj.glyd_blocks", "U8", p.blocks.len() as u64, p.blocks.clone()), saved("m.o_proj.glyd_block_base", "I32", steps + 1, le_bytes(&p.block_base, i32::to_le_bytes))];
+        let mut ts = vec![
+            saved("m.o_proj.glyd_data", "U8", steps * 1280, p.data.clone()),
+            saved("m.o_proj.glyd_blocks", "U8", p.blocks.len() as u64, p.blocks.clone()),
+            saved("m.o_proj.glyd_block_base", "I32", steps + 1, le_bytes(&p.block_base, i32::to_le_bytes)),
+        ];
         write_safetensors(&dir.join("model.safetensors"), &mut ts).unwrap();
         let manifest = |format: &str, glyd: &str, tiers: [u32; 3], map: bool| {
             let tiers = tiers.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
@@ -1643,7 +2008,11 @@ mod tests {
         refused("a pack's sizes are not its layout's");
         let mut cut = p.blocks.clone();
         cut.truncate(cut.len() - 300); // the last blocks gone: a step's block past the end
-        let mut ts = vec![saved("m.o_proj.glyd_data", "U8", steps * 1280, p.data.clone()), saved("m.o_proj.glyd_blocks", "U8", cut.len() as u64, cut), saved("m.o_proj.glyd_block_base", "I32", steps + 1, le_bytes(&p.block_base, i32::to_le_bytes))];
+        let mut ts = vec![
+            saved("m.o_proj.glyd_data", "U8", steps * 1280, p.data.clone()),
+            saved("m.o_proj.glyd_blocks", "U8", cut.len() as u64, cut),
+            saved("m.o_proj.glyd_block_base", "I32", steps + 1, le_bytes(&p.block_base, i32::to_le_bytes)),
+        ];
         write_safetensors(&dir.join("model.safetensors"), &mut ts).unwrap();
         manifest("glyd-v1", "0.27.0", p.tiers, true);
         refused("do not hold its escapes");
@@ -1654,15 +2023,32 @@ mod tests {
     /// weights it decodes to, the shape refused.
     #[test]
     fn int_packs_are_named_and_leave_their_decoded_weights() {
-        for (layout, name, tag) in [(Layout::Int6, "i6", pack::INT6_TAG), (Layout::Int5, "i5", pack::INT5_TAG), (Layout::Int4, "i4", pack::INT4_TAG), (Layout::Int3, "i3", pack::INT3_TAG)] {
+        for (layout, name, tag) in [
+            (Layout::Int6, "i6", pack::INT6_TAG),
+            (Layout::Int5, "i5", pack::INT5_TAG),
+            (Layout::Int4, "i4", pack::INT4_TAG),
+            (Layout::Int3, "i3", pack::INT3_TAG),
+        ] {
             let (rows, cols) = (128, 96);
             let orig = pack::tests::weights(rows * cols, 0.0, 9);
             let mut w = orig.clone();
             let (ts, words, lay) = packed(layout, &mut w, rows, cols, "x.glyd_", "x", None).unwrap();
             assert!(lay == layout && words[0] >> 24 == tag && ts.len() == 3 && w != orig);
             let mut back = vec![0u16; w.len()];
-            let p = pack::Tiered { rows, cols, data: ts[0].bytes.clone(), blocks: ts[1].bytes.clone(), block_base: vec![0; rows * cols / pack::STEP + 1], tiers: [words[0], words[1], words[2]] };
-            let unpack = match layout { Layout::Int6 => pack::unpack_int6, Layout::Int5 => pack::unpack_int5, Layout::Int4 => pack::unpack_int4, _ => pack::unpack_int3 };
+            let p = pack::Tiered {
+                rows,
+                cols,
+                data: ts[0].bytes.clone(),
+                blocks: ts[1].bytes.clone(),
+                block_base: vec![0; rows * cols / pack::STEP + 1],
+                tiers: [words[0], words[1], words[2]],
+            };
+            let unpack = match layout {
+                Layout::Int6 => pack::unpack_int6,
+                Layout::Int5 => pack::unpack_int5,
+                Layout::Int4 => pack::unpack_int4,
+                _ => pack::unpack_int3,
+            };
             assert!(unpack(&p, &mut back) && back == w);
             let e = entry(lay, [rows, cols], &words, vec![], None);
             assert_eq!(e.get("layout").and_then(Value::as_str), Some(name));
@@ -1680,14 +2066,16 @@ mod tests {
         let src = dir.join("src");
         tiny_qwen3(&src);
         let source = Source::find(src.to_str().unwrap()).unwrap();
-        for (layout, name, level) in [(Layout::Int5, "i5", Some("swift")), (Layout::Int6, "i6", Some("kestrel")), (Layout::Int4, "i4", Some("wren")), (Layout::Int3, "i3", None)] {
+        for (layout, name, level) in
+            [(Layout::Int5, "i5", Some("swift")), (Layout::Int6, "i6", Some("kestrel")), (Layout::Int4, "i4", Some("wren")), (Layout::Int3, "i3", None)]
+        {
             let out = dir.join(name);
             save(&source, &out, 2, 1 << 30, true, layout).unwrap();
             let m = json::parse(&std::fs::read_to_string(out.join("glyd.json")).unwrap()).unwrap();
             let s = |k: &str| m.get(k).and_then(Value::as_str);
             assert_eq!((s("format"), s("layout"), s("level")), (Some("glyd-v7"), Some(name), level));
             let v = verify(&out, 2, &Decoder::Cpu).unwrap();
-            assert_eq!((v.packed, v.hashed, v.unchecked), (15, 9, 0), "{name}");  // (the embedding a pack, not a tensor saved as it is)
+            assert_eq!((v.packed, v.hashed, v.unchecked), (15, 9, 0), "{name}"); // (the embedding a pack, not a tensor saved as it is)
             let c = Checkpoint::open(&out).unwrap();
             let e = m.get("packs").unwrap().get("model.embed_tokens").expect("the embedding is packed");
             assert_eq!((e.get("layout").and_then(Value::as_str), u64s(e.get("shape"))), (Some(name), Some(vec![256, 128])));
@@ -1720,7 +2108,11 @@ mod tests {
             let items: Vec<String> = puts
                 .iter()
                 .map(|p| match p {
-                    Put::Linear { members, .. } => format!("{{\"linear\": [{}]{}}}", members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", "), if six(members) { format!(", \"layout\": \"{own}\"") } else { String::new() }),
+                    Put::Linear { members, .. } => format!(
+                        "{{\"linear\": [{}]{}}}",
+                        members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", "),
+                        if six(members) { format!(", \"layout\": \"{own}\"") } else { String::new() }
+                    ),
                     Put::Copy { name, from, .. } => format!("{{\"copy\": \"{name}\", \"from\": \"{from}\"}}"),
                     Put::Experts { .. } | Put::Codebook { .. } | Put::Signs { .. } => unreachable!(),
                 })
@@ -1734,11 +2126,21 @@ mod tests {
         assert_eq!((s("format"), s("layout"), s("level")), (Some("glyd-v7"), Some("i4"), Some("wren")));
         let (mut four, mut six_bit) = (0, 0);
         for (name, e) in m.get("packs").and_then(Value::as_object).unwrap() {
-            let (layout, tag) = if name.contains(".mlp.") || name.contains("embed_tokens") { six_bit += 1; ("i6", pack::INT6_TAG) } else { four += 1; ("i4", pack::INT4_TAG) };
+            let (layout, tag) = if name.contains(".mlp.") || name.contains("embed_tokens") {
+                six_bit += 1;
+                ("i6", pack::INT6_TAG)
+            } else {
+                four += 1;
+                ("i4", pack::INT4_TAG)
+            };
             assert_eq!(e.get("layout").and_then(Value::as_str), Some(layout), "{name}");
             assert_eq!(u64s(e.get("tiers")).map(|t| (t[0] >> 24) as u32), Some(tag), "{name}");
         }
-        assert_eq!((four, six_bit), (4, 5), "two layers' attention packs (q, k, v as one, and o); their MLPs' (gate and up as one, and down) and the embedding");
+        assert_eq!(
+            (four, six_bit),
+            (4, 5),
+            "two layers' attention packs (q, k, v as one, and o); their MLPs' (gate and up as one, and down) and the embedding"
+        );
         let v = verify(&out, 2, &Decoder::Cpu).unwrap();
         assert_eq!((v.packed, v.hashed, v.unchecked), (15, 9, 0));
         // a pack saved in one layout and named as the other: its words are not that layout's
@@ -1775,7 +2177,13 @@ mod tests {
                 .iter()
                 .map(|p| match p {
                     Put::Linear { members, .. } => {
-                        let own = if members.len() == 1 && members[0].ends_with(".down_proj") { format!(", \"layout\": \"{down}\"") } else if members.len() > 1 && !merged.is_empty() { format!(", \"layout\": \"{merged}\"") } else { String::new() };
+                        let own = if members.len() == 1 && members[0].ends_with(".down_proj") {
+                            format!(", \"layout\": \"{down}\"")
+                        } else if members.len() > 1 && !merged.is_empty() {
+                            format!(", \"layout\": \"{merged}\"")
+                        } else {
+                            String::new()
+                        };
                         format!("{{\"linear\": [{}]{own}}}", members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", "))
                     }
                     Put::Copy { name, from, .. } => format!("{{\"copy\": \"{name}\", \"from\": \"{from}\"}}"),
@@ -1792,7 +2200,10 @@ mod tests {
         assert_eq!((Layout::Int3.row_of(), Layout::Tiered.row_of(), Layout::Int5Row.row_of()), (None, None, None));
         // (the entries a GPU's verify decodes on the CPU)
         let entry_of = |name: &str| json::parse(&format!("{{\"layout\": \"{name}\"}}")).unwrap();
-        assert_eq!(["i6r", "i5r", "i4r", "i6", "i5", "i4", "i3", "mma", "mma12", "i7r"].map(|n| is_rows(&entry_of(n))), [true, true, true, false, false, false, false, false, false, false]);
+        assert_eq!(
+            ["i6r", "i5r", "i4r", "i6", "i5", "i4", "i3", "mma", "mma12", "i7r"].map(|n| is_rows(&entry_of(n))),
+            [true, true, true, false, false, false, false, false, false, false]
+        );
         assert!(!is_rows(&json::parse("{}").unwrap()));
         let out = dir.join("rows");
         save_planned(&source, &out, 2, 1 << 30, Layout::Int5, &plan("i5r", "")).unwrap();
@@ -1802,12 +2213,21 @@ mod tests {
         let (saved, original) = (Checkpoint::open(&out).unwrap(), Checkpoint::open(&src).unwrap());
         let mut rows_packs = 0;
         for (name, e) in m.get("packs").and_then(Value::as_object).unwrap() {
-            let (layout, tag) = if name.ends_with(".down_proj") { rows_packs += 1; ("i5r", pack::INT5_ROW_TAG) } else { ("i5", pack::INT5_TAG) };
+            let (layout, tag) = if name.ends_with(".down_proj") {
+                rows_packs += 1;
+                ("i5r", pack::INT5_ROW_TAG)
+            } else {
+                ("i5", pack::INT5_TAG)
+            };
             assert_eq!(e.get("layout").and_then(Value::as_str), Some(layout), "{name}");
             assert_eq!(u64s(e.get("tiers")).map(|t| (t[0] >> 24) as u32), Some(tag), "{name}");
             if layout == "i5r" {
                 // the pack is the transpose [in, out], its tensor the weight [out, in]; its bytes the packer's own of the transpose
-                assert_eq!((u64s(e.get("shape")), u64s(e.get("tensors").and_then(Value::as_array).map(|t| &t[0]).and_then(|t| t.get("shape")))), (Some(vec![256, 128]), Some(vec![128, 256])), "{name}");
+                assert_eq!(
+                    (u64s(e.get("shape")), u64s(e.get("tensors").and_then(Value::as_array).map(|t| &t[0]).and_then(|t| t.get("shape")))),
+                    (Some(vec![256, 128]), Some(vec![128, 256])),
+                    "{name}"
+                );
                 let mut w = vec![0u16; 128 * 256];
                 original.read_bf16(&format!("{name}.weight"), &mut w).unwrap();
                 let want = pack::pack_rows(5, &pack::transpose(&w, 128, 256), 256, 128).unwrap();
@@ -1821,7 +2241,9 @@ mod tests {
         assert_eq!((v.packed, v.hashed, v.unchecked), (15, 9, 0));
         // an entry that names the pack another layout than its bytes are in
         let text = std::fs::read_to_string(out.join("glyd.json")).unwrap();
-        for (name, why) in [("i5", "a pack's sizes are not its layout's"), ("i4r", "a pack's sizes are not its layout's"), ("i6r", "a pack's sizes are not its layout's")] {
+        for (name, why) in
+            [("i5", "a pack's sizes are not its layout's"), ("i4r", "a pack's sizes are not its layout's"), ("i6r", "a pack's sizes are not its layout's")]
+        {
             std::fs::write(out.join("glyd.json"), text.replacen("\"layout\": \"i5r\"", &format!("\"layout\": \"{name}\""), 1)).unwrap();
             let e = verify(&out, 2, &Decoder::Cpu).err().map(|e| e.to_string()).unwrap_or_default();
             assert!(e.contains(why), "{name}: {e:?}");
@@ -1863,7 +2285,17 @@ mod tests {
         let w: Vec<u16> = (0..16 * 64).map(|i| 0x3C00 + i as u16 % 64).collect();
         let mut ts = vec![Saved { name: "d.weight".into(), dtype: "BF16", shape: vec![16, 64], bytes: u16_bytes(&w), sha256: None }];
         write_safetensors(&odd.join("model.safetensors"), &mut ts).unwrap();
-        let e = save_planned(&Source::find(odd.to_str().unwrap()).unwrap(), &dir.join("odd-out"), 1, 1 << 30, Layout::Int5, r#"{"puts": [{"linear": ["d"], "layout": "i5r"}]}"#).err().map(|e| e.to_string()).unwrap_or_default();
+        let e = save_planned(
+            &Source::find(odd.to_str().unwrap()).unwrap(),
+            &dir.join("odd-out"),
+            1,
+            1 << 30,
+            Layout::Int5,
+            r#"{"puts": [{"linear": ["d"], "layout": "i5r"}]}"#,
+        )
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
         assert!(e.contains("not packable in a row layout"), "{e:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1880,11 +2312,17 @@ mod tests {
         let source = Source::find(src.to_str().unwrap()).unwrap();
         let config = json::parse(&std::fs::read_to_string(src.join("config.json")).unwrap()).unwrap();
         let puts = Plan::new(&Checkpoint::open(&src).unwrap(), &config, true, true).unwrap().puts;
-        let plan = format!("{{\"puts\": [{}]}}", puts.iter().map(|p| match p {
-            Put::Linear { members, .. } => format!("{{\"linear\": [{}]}}", members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ")),
-            Put::Copy { name, from, .. } => format!("{{\"copy\": \"{name}\", \"from\": \"{from}\"}}"),
-            Put::Experts { .. } | Put::Codebook { .. } | Put::Signs { .. } => unreachable!(),
-        }).collect::<Vec<_>>().join(", "));
+        let plan = format!(
+            "{{\"puts\": [{}]}}",
+            puts.iter()
+                .map(|p| match p {
+                    Put::Linear { members, .. } => format!("{{\"linear\": [{}]}}", members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ")),
+                    Put::Copy { name, from, .. } => format!("{{\"copy\": \"{name}\", \"from\": \"{from}\"}}"),
+                    Put::Experts { .. } | Put::Codebook { .. } | Put::Signs { .. } => unreachable!(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         let calibration = r#"{"method": "gptq-act", "data": [{"dataset": "Salesforce/wikitext", "revision": "b08601e0"}], "seqs": 512, "tokens": 2048}"#;
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
         let mut next = move || {
@@ -1893,8 +2331,18 @@ mod tests {
             seed ^= seed << 17;
             seed
         };
-        let linears: Vec<(String, usize, usize)> = puts.iter().filter_map(|p| match p { Put::Linear { from, .. } if from[0] != "model.embed_tokens" => Some(from), _ => None }).flatten()
-            .map(|m| { let (r, c) = dims(Checkpoint::open(&src).unwrap().get(&format!("{m}.weight")).unwrap().1); (m.clone(), r, c) }).collect();
+        let linears: Vec<(String, usize, usize)> = puts
+            .iter()
+            .filter_map(|p| match p {
+                Put::Linear { from, .. } if from[0] != "model.embed_tokens" => Some(from),
+                _ => None,
+            })
+            .flatten()
+            .map(|m| {
+                let (r, c) = dims(Checkpoint::open(&src).unwrap().get(&format!("{m}.weight")).unwrap().1);
+                (m.clone(), r, c)
+            })
+            .collect();
         for (layout, name, q, level) in [(Layout::Int5, "i5", 15i8, "swift"), (Layout::Int6, "i6", 31, "kestrel")] {
             let value = |c: i8, s: u16| if q == 15 { pack::int5_value((c + 16) as u8, s) } else { pack::int6_value((c + 32) as u8, s) };
             let codes = dir.join(format!("codes-{name}"));
@@ -1906,8 +2354,20 @@ mod tests {
                 let scale: Vec<u16> = (0..r * c / 32).map(|_| next() as u16 & 0xBF7F | 0x3000).collect();
                 let values: Vec<u16> = code.iter().zip(scale.iter().flat_map(|s| [s; 32])).map(|(&c, &s)| value(c, s)).collect();
                 want.insert(format!("{m}.weight"), sha256_u16(&values));
-                tensors.push(Saved { name: format!("{m}.codes"), dtype: "I8", shape: vec![*r as u64, *c as u64], bytes: code.iter().map(|&c| c as u8).collect(), sha256: None });
-                tensors.push(Saved { name: format!("{m}.scales"), dtype: "BF16", shape: vec![*r as u64, *c as u64 / 32], bytes: u16_bytes(&scale), sha256: None });
+                tensors.push(Saved {
+                    name: format!("{m}.codes"),
+                    dtype: "I8",
+                    shape: vec![*r as u64, *c as u64],
+                    bytes: code.iter().map(|&c| c as u8).collect(),
+                    sha256: None,
+                });
+                tensors.push(Saved {
+                    name: format!("{m}.scales"),
+                    dtype: "BF16",
+                    shape: vec![*r as u64, *c as u64 / 32],
+                    bytes: u16_bytes(&scale),
+                    sha256: None,
+                });
             }
             write_safetensors(&codes.join("model.safetensors"), &mut tensors).unwrap();
             let (out, plain) = (dir.join(name), dir.join(format!("plain-{name}")));
@@ -1938,7 +2398,13 @@ mod tests {
             let refused = |why: &str, edit: &dyn Fn(&mut Vec<Saved>), layout: Layout| {
                 let mut ts = Vec::new();
                 for (n, t) in Checkpoint::open(&codes).unwrap().files[0].tensors.iter() {
-                    ts.push(Saved { name: n.clone(), dtype: if n.ends_with(".codes") { "I8" } else { "BF16" }, shape: t.shape.clone(), bytes: std::fs::read(&codes.join("model.safetensors")).unwrap()[t.offset as usize..(t.offset + t.bytes) as usize].to_vec(), sha256: None });
+                    ts.push(Saved {
+                        name: n.clone(),
+                        dtype: if n.ends_with(".codes") { "I8" } else { "BF16" },
+                        shape: t.shape.clone(),
+                        bytes: std::fs::read(&codes.join("model.safetensors")).unwrap()[t.offset as usize..(t.offset + t.bytes) as usize].to_vec(),
+                        sha256: None,
+                    });
                 }
                 edit(&mut ts);
                 let bad = dir.join("bad-codes");
@@ -1950,15 +2416,41 @@ mod tests {
                 assert!(e.contains(why), "{name}: not refused for {why:?}: {e:?}");
             };
             refused("no codes", &|ts| ts.clear(), layout);
-            refused("is not a matrix the plan packs", &|ts| ts.push(Saved { name: "model.layers.0.self_attn.nope.codes".into(), dtype: "I8", shape: vec![1], bytes: vec![0], sha256: None }), layout);
-            refused("is not a matrix the plan packs", &|ts| ts.push(Saved { name: "model.embed_tokens.stray".into(), dtype: "I8", shape: vec![1], bytes: vec![0], sha256: None }), layout);
+            refused(
+                "is not a matrix the plan packs",
+                &|ts| ts.push(Saved { name: "model.layers.0.self_attn.nope.codes".into(), dtype: "I8", shape: vec![1], bytes: vec![0], sha256: None }),
+                layout,
+            );
+            refused(
+                "is not a matrix the plan packs",
+                &|ts| ts.push(Saved { name: "model.embed_tokens.stray".into(), dtype: "I8", shape: vec![1], bytes: vec![0], sha256: None }),
+                layout,
+            );
             refused("no model.layers.0.self_attn.k_proj.codes", &|ts| ts.retain(|t| t.name != "model.layers.0.self_attn.k_proj.codes"), layout);
             refused("no model.layers.0.self_attn.k_proj.scales", &|ts| ts.retain(|t| t.name != "model.layers.0.self_attn.k_proj.scales"), layout);
-            refused("where I8 [128, 128] is wanted", &|ts| { let t = ts.iter_mut().find(|t| t.name == "model.layers.0.self_attn.o_proj.codes").unwrap(); t.shape = vec![64, 256]; }, layout);
-            refused("where BF16 [128, 4] is wanted", &|ts| { let t = ts.iter_mut().find(|t| t.name == "model.layers.0.self_attn.o_proj.scales").unwrap(); t.shape = vec![64, 8]; }, layout);
+            refused(
+                "where I8 [128, 128] is wanted",
+                &|ts| {
+                    let t = ts.iter_mut().find(|t| t.name == "model.layers.0.self_attn.o_proj.codes").unwrap();
+                    t.shape = vec![64, 256];
+                },
+                layout,
+            );
+            refused(
+                "where BF16 [128, 4] is wanted",
+                &|ts| {
+                    let t = ts.iter_mut().find(|t| t.name == "model.layers.0.self_attn.o_proj.scales").unwrap();
+                    t.shape = vec![64, 8];
+                },
+                layout,
+            );
             let not_block = if q == 15 { "not a five-bit layout's matrix" } else { "not a six-bit layout's matrix" };
             refused(not_block, &|ts| ts.iter_mut().find(|t| t.name == "model.layers.1.mlp.down_proj.codes").unwrap().bytes[9] = q as u8 + 1, layout);
-            refused(not_block, &|ts| ts.iter_mut().find(|t| t.name == "model.layers.1.mlp.down_proj.scales").unwrap().bytes[..2].copy_from_slice(&0x7F80u16.to_le_bytes()), layout);
+            refused(
+                not_block,
+                &|ts| ts.iter_mut().find(|t| t.name == "model.layers.1.mlp.down_proj.scales").unwrap().bytes[..2].copy_from_slice(&0x7F80u16.to_le_bytes()),
+                layout,
+            );
             refused("calibrated codes are for the block layouts", &|_| {}, Layout::Tiered);
             std::fs::remove_file(codes.join("calibration.json")).unwrap();
             let e = save_calibrated(&source, &dir.join("refused"), 2, 1 << 30, layout, &plan, &codes).err().map(|e| e.to_string()).unwrap_or_default();
@@ -1973,7 +2465,17 @@ mod tests {
     /// f32 made bf16 as torch rounds it: to nearest, ties to even, up to infinity past the largest; NaN 0x7FC0.
     #[test]
     fn bf16_from_f32_rounds_as_torch() {
-        let cases: [(u32, u16); 9] = [(0x3F80_0000, 0x3F80), (0x3F80_8000, 0x3F80), (0x3F81_8000, 0x3F82), (0x3F80_8001, 0x3F81), (0x8000_0000, 0x8000), (0x7F80_0000, 0x7F80), (0x7F7F_FFFF, 0x7F80), (0x7FC0_0001, 0x7FC0), (0x0000_8000, 0x0000)];
+        let cases: [(u32, u16); 9] = [
+            (0x3F80_0000, 0x3F80),
+            (0x3F80_8000, 0x3F80),
+            (0x3F81_8000, 0x3F82),
+            (0x3F80_8001, 0x3F81),
+            (0x8000_0000, 0x8000),
+            (0x7F80_0000, 0x7F80),
+            (0x7F7F_FFFF, 0x7F80),
+            (0x7FC0_0001, 0x7FC0),
+            (0x0000_8000, 0x0000),
+        ];
         let bytes: Vec<u8> = cases.iter().flat_map(|c| c.0.to_le_bytes()).collect();
         let got: Vec<u16> = bf16_from_f32(&bytes).chunks_exact(2).map(|h| u16::from_le_bytes([h[0], h[1]])).collect();
         assert_eq!(got, cases.iter().map(|c| c.1).collect::<Vec<_>>());
@@ -1994,7 +2496,14 @@ mod tests {
                     o.push(("table".into(), Value::Bool(true)));
                 }
                 let source = Value::Object(vec![("repo".into(), Value::Null), ("revision".into(), Value::Null)]);
-                let m = Value::Object(vec![("format".into(), Value::from("glyd-v5")), ("glyd".into(), Value::from(env!("CARGO_PKG_VERSION"))), ("source".into(), source), ("layout".into(), Value::from(layout.name())), ("packs".into(), Value::Object(vec![("model.embed_tokens".into(), e)])), ("tensors".into(), Value::Object(vec![]))]);
+                let m = Value::Object(vec![
+                    ("format".into(), Value::from("glyd-v5")),
+                    ("glyd".into(), Value::from(env!("CARGO_PKG_VERSION"))),
+                    ("source".into(), source),
+                    ("layout".into(), Value::from(layout.name())),
+                    ("packs".into(), Value::Object(vec![("model.embed_tokens".into(), e)])),
+                    ("tensors".into(), Value::Object(vec![])),
+                ]);
                 std::fs::write(dir.join("glyd.json"), json::to_python(&m, 1)).unwrap();
             };
             manifest(sha256_u16(&w));
@@ -2010,7 +2519,18 @@ mod tests {
     /// A tensor of a checkpoint as a `Saved` (its dtype one of the three these tests use).
     fn saved_of(c: &Checkpoint) -> Vec<Saved> {
         let dtype = |d: &str| ["BF16", "F32", "F8_E4M3"].into_iter().find(|x| *x == d).expect("a dtype of the tests");
-        c.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| Saved { name: n.clone(), dtype: dtype(&t.dtype), shape: t.shape.clone(), bytes: f.read(t).unwrap(), sha256: None })).collect()
+        c.files
+            .iter()
+            .flat_map(|f| {
+                f.tensors.iter().map(|(n, t)| Saved {
+                    name: n.clone(),
+                    dtype: dtype(&t.dtype),
+                    shape: t.shape.clone(),
+                    bytes: f.read(t).unwrap(),
+                    sha256: None,
+                })
+            })
+            .collect()
     }
 
     /// FP8 matrices (E4M3 with block scales of 128 x 128, as GLM-5.3-Flash holds its experts, MLPs and latent-attention projections) beside bf16 and F32 tensors, written to `dir`: a gate and an up of 192 x 160
@@ -2032,7 +2552,13 @@ mod tests {
         let (mut fp8, mut dequantised, mut names) = (Vec::new(), Vec::new(), Vec::new());
         for (name, rows, cols) in [("e.gate_proj", 192usize, 160usize), ("e.up_proj", 192, 160), ("e.down_proj", 64, 192)] {
             let [gr, gc] = crate::fp8::grid(rows, cols, [128, 128]);
-            let q: Vec<u8> = (0..rows * cols).map(|_| match (next() >> 24) as u8 { 0x7F => 0x7E, 0xFF => 0xFE, b => b }).collect();
+            let q: Vec<u8> = (0..rows * cols)
+                .map(|_| match (next() >> 24) as u8 {
+                    0x7F => 0x7E,
+                    0xFF => 0xFE,
+                    b => b,
+                })
+                .collect();
             // (scales of a trained matrix's size: about 2^-10 to 2^-9)
             let scales: Vec<f32> = (0..gr * gc).map(|_| f32::from_bits(0x3A80_0000 + ((next() >> 40) as u32) % 0x0100_0000)).collect();
             let w: Vec<u16> = (0..rows * cols)
@@ -2044,7 +2570,13 @@ mod tests {
                 .collect();
             let shape = vec![rows as u64, cols as u64];
             fp8.push(Saved { name: format!("{name}.weight"), dtype: "F8_E4M3", shape: shape.clone(), bytes: q, sha256: None });
-            fp8.push(Saved { name: format!("{name}.weight_scale_inv"), dtype: "F32", shape: vec![gr as u64, gc as u64], bytes: le_bytes(&scales, f32::to_le_bytes), sha256: None });
+            fp8.push(Saved {
+                name: format!("{name}.weight_scale_inv"),
+                dtype: "F32",
+                shape: vec![gr as u64, gc as u64],
+                bytes: le_bytes(&scales, f32::to_le_bytes),
+                sha256: None,
+            });
             dequantised.push(Saved { name: format!("{name}.weight"), dtype: "BF16", shape, bytes: u16_bytes(&w), sha256: None });
             names.push(format!("{name}.weight"));
         }
@@ -2054,11 +2586,20 @@ mod tests {
             let bytes = if dtype == "F32" {
                 le_bytes(&(0..n).map(|_| f32::from_bits(0x3F00_0000 | (next() >> 41) as u32)).collect::<Vec<f32>>(), f32::to_le_bytes)
             } else {
-                u16_bytes(&(0..n).map(|_| { let x = next(); ((x >> 20) as u16 & 0x807F) | ((116 + (x >> 40) % 14) as u16) << 7 }).collect::<Vec<u16>>())
+                u16_bytes(
+                    &(0..n)
+                        .map(|_| {
+                            let x = next();
+                            ((x >> 20) as u16 & 0x807F) | ((116 + (x >> 40) % 14) as u16) << 7
+                        })
+                        .collect::<Vec<u16>>(),
+                )
             };
             same.push(Saved { name: name.into(), dtype, shape, bytes, sha256: None });
         }
-        let copy = |ts: &[Saved]| ts.iter().map(|t| Saved { name: t.name.clone(), dtype: t.dtype, shape: t.shape.clone(), bytes: t.bytes.clone(), sha256: None }).collect::<Vec<_>>();
+        let copy = |ts: &[Saved]| {
+            ts.iter().map(|t| Saved { name: t.name.clone(), dtype: t.dtype, shape: t.shape.clone(), bytes: t.bytes.clone(), sha256: None }).collect::<Vec<_>>()
+        };
         let (mut a, mut b) = (fp8, dequantised);
         a.extend(copy(&same));
         b.extend(same);
@@ -2076,7 +2617,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let (src, src16) = (dir.join("src"), dir.join("src16"));
         let names = tiny_fp8(&src, &src16);
-        let plan = r#"{"puts": [{"linear": ["e.gate_proj", "e.up_proj"]}, {"linear": ["e.down_proj"]}, {"linear": ["m"]}, {"copy": "n.weight"}, {"copy": "p"}]}"#;
+        let plan =
+            r#"{"puts": [{"linear": ["e.gate_proj", "e.up_proj"]}, {"linear": ["e.down_proj"]}, {"linear": ["m"]}, {"copy": "n.weight"}, {"copy": "p"}]}"#;
         let (source, source16) = (Source::find(src.to_str().unwrap()).unwrap(), Source::find(src16.to_str().unwrap()).unwrap());
         let (c, c16) = (Checkpoint::open(&src).unwrap(), Checkpoint::open(&src16).unwrap());
         assert_eq!((c.fp8_block, c16.fp8_block), (Some([128, 128]), Some([128, 128])));
@@ -2102,7 +2644,10 @@ mod tests {
             theirs.sort();
             assert_eq!(ours, theirs, "{layout:?}");
             assert!(ours.iter().all(|n| a.read(n).unwrap() == b.read(n).unwrap()), "{layout:?}");
-            let (ma, mb) = (json::parse(&std::fs::read_to_string(out.join("glyd.json")).unwrap()).unwrap(), json::parse(&std::fs::read_to_string(out16.join("glyd.json")).unwrap()).unwrap());
+            let (ma, mb) = (
+                json::parse(&std::fs::read_to_string(out.join("glyd.json")).unwrap()).unwrap(),
+                json::parse(&std::fs::read_to_string(out16.join("glyd.json")).unwrap()).unwrap(),
+            );
             assert!(ma.get("packs").is_some() && ma.get("packs") == mb.get("packs") && ma.get("tensors") == mb.get("tensors"), "{layout:?}");
             // the gate and the up are one pack under the gate's name; the F32 parameter is F32 in the save and is not a pack; no scale is saved
             assert!(ma.get("packs").unwrap().get("e.gate_proj").is_some() && ma.get("packs").unwrap().get("e.up_proj").is_none());
@@ -2129,7 +2674,8 @@ mod tests {
             let d = dir.join(name);
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(d.join("config.json"), config).unwrap();
-            let mut ts: Vec<Saved> = base.iter().map(|t| Saved { name: t.name.clone(), dtype: t.dtype, shape: t.shape.clone(), bytes: t.bytes.clone(), sha256: None }).collect();
+            let mut ts: Vec<Saved> =
+                base.iter().map(|t| Saved { name: t.name.clone(), dtype: t.dtype, shape: t.shape.clone(), bytes: t.bytes.clone(), sha256: None }).collect();
             edit(&mut ts);
             write_safetensors(&d.join("model.safetensors"), &mut ts).unwrap();
             Checkpoint::open(&d).unwrap()
@@ -2146,8 +2692,19 @@ mod tests {
         let ok = variant("ok", &config("[128, 128]"), &|_| {});
         ok.matrix("e.up_proj.weight").unwrap();
         wanted(&variant("noscale", &config("[128, 128]"), &|ts| ts.retain(|t| t.name != scale)), "there is no e.up_proj.weight_scale_inv, its block scales");
-        wanted(&variant("dtype", &config("[128, 128]"), &|ts| ts.iter_mut().filter(|t| t.name == scale).for_each(|t| { t.dtype = "BF16"; t.bytes.truncate(8); })), "are BF16 [2, 2], where F32 [2, 2] is wanted for blocks of 128 x 128");
-        wanted(&variant("grid", &config("[128, 128]"), &|ts| ts.iter_mut().filter(|t| t.name == scale).for_each(|t| t.shape = vec![4, 1])), "are F32 [4, 1], where F32 [2, 2] is wanted");
+        wanted(
+            &variant("dtype", &config("[128, 128]"), &|ts| {
+                ts.iter_mut().filter(|t| t.name == scale).for_each(|t| {
+                    t.dtype = "BF16";
+                    t.bytes.truncate(8);
+                })
+            }),
+            "are BF16 [2, 2], where F32 [2, 2] is wanted for blocks of 128 x 128",
+        );
+        wanted(
+            &variant("grid", &config("[128, 128]"), &|ts| ts.iter_mut().filter(|t| t.name == scale).for_each(|t| t.shape = vec![4, 1])),
+            "are F32 [4, 1], where F32 [2, 2] is wanted",
+        );
         wanted(&variant("noblock", r#"{"architectures": ["Tiny"]}"#, &|_| {}), "gives no quantization_config.weight_block_size");
         wanted(&variant("badblock", &config("[128]"), &|_| {}), "gives no quantization_config.weight_block_size");
         wanted(&variant("block", &config("[64, 32]"), &|_| {}), "where F32 [3, 5] is wanted for blocks of 64 x 32");
@@ -2155,13 +2712,24 @@ mod tests {
         let e = ok.matrix("p").err().map(|e| e.to_string()).unwrap_or_default();
         assert!(e.contains("p: F32, where a bf16 matrix, or an FP8 one with its block scales, is wanted"), "{e:?}");
         let flat = variant("flat", &config("[128, 128]"), &|ts| ts.iter_mut().filter(|t| t.name == "e.up_proj.weight").for_each(|t| t.shape = vec![192 * 160]));
-        assert!(flat.matrix("e.up_proj.weight").err().map(|e| e.to_string()).unwrap_or_default().contains("F8_E4M3 of shape [30720], where a matrix is wanted"));
+        assert!(flat
+            .matrix("e.up_proj.weight")
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
+            .contains("F8_E4M3 of shape [30720], where a matrix is wanted"));
         // a plan: a linear needs the scales; a copy of an FP8 tensor is refused, and so is a copy of a scale, which is F32 and may be saved but is no tensor of a plan's
         let source = Source::find(dir.join("noscale").to_str().unwrap()).unwrap();
-        let e = save_planned(&source, &dir.join("o1"), 1, 1 << 30, Layout::Int6, r#"{"puts": [{"linear": ["e.up_proj"]}]}"#).err().map(|e| e.to_string()).unwrap_or_default();
+        let e = save_planned(&source, &dir.join("o1"), 1, 1 << 30, Layout::Int6, r#"{"puts": [{"linear": ["e.up_proj"]}]}"#)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
         assert!(e.contains("there is no e.up_proj.weight_scale_inv"), "{e:?}");
         let source = Source::find(src.to_str().unwrap()).unwrap();
-        let e = save_planned(&source, &dir.join("o2"), 1, 1 << 30, Layout::Int6, r#"{"puts": [{"copy": "e.up_proj.weight"}]}"#).err().map(|e| e.to_string()).unwrap_or_default();
+        let e = save_planned(&source, &dir.join("o2"), 1, 1 << 30, Layout::Int6, r#"{"puts": [{"copy": "e.up_proj.weight"}]}"#)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
         assert!(e.contains("e.up_proj.weight: F8_E4M3, where glyd packs a bf16 checkpoint"), "{e:?}");
         // the lossless families take a bf16 checkpoint alone, an FP8 tensor in it or not
         std::fs::write(src.join("config.json"), r#"{"architectures": ["Qwen3ForCausalLM"], "num_hidden_layers": 0, "quantization_config": {"quant_method": "fp8", "weight_block_size": [128, 128]}}"#).unwrap();
@@ -2190,7 +2758,19 @@ mod tests {
         };
         let mut ts = vec![t("model.embed_tokens.weight", &[256, 128]), t("model.norm.weight", &[128])];
         for i in 0..2 {
-            for (n, s) in [("self_attn.q_proj.weight", &[128, 128][..]), ("self_attn.k_proj.weight", &[64, 128]), ("self_attn.v_proj.weight", &[64, 128]), ("self_attn.o_proj.weight", &[128, 128]), ("self_attn.q_norm.weight", &[32]), ("self_attn.k_norm.weight", &[32]), ("mlp.gate_proj.weight", &[256, 128]), ("mlp.up_proj.weight", &[256, 128]), ("mlp.down_proj.weight", &[128, 256]), ("input_layernorm.weight", &[128]), ("post_attention_layernorm.weight", &[128])] {
+            for (n, s) in [
+                ("self_attn.q_proj.weight", &[128, 128][..]),
+                ("self_attn.k_proj.weight", &[64, 128]),
+                ("self_attn.v_proj.weight", &[64, 128]),
+                ("self_attn.o_proj.weight", &[128, 128]),
+                ("self_attn.q_norm.weight", &[32]),
+                ("self_attn.k_norm.weight", &[32]),
+                ("mlp.gate_proj.weight", &[256, 128]),
+                ("mlp.up_proj.weight", &[256, 128]),
+                ("mlp.down_proj.weight", &[128, 256]),
+                ("input_layernorm.weight", &[128]),
+                ("post_attention_layernorm.weight", &[128]),
+            ] {
                 ts.push(t(&format!("model.layers.{i}.{n}"), s));
             }
         }
@@ -2212,27 +2792,46 @@ mod tests {
         let s = save(&source, &out, 3, 64 << 10, true, Layout::Tiered).unwrap();
         // the family's plan written as JSON (as huggingface/plan.py writes one) saves the same files, byte for byte
         let config = json::parse(&std::fs::read_to_string(src.join("config.json")).unwrap()).unwrap();
-        let puts: Vec<String> = Plan::new(&Checkpoint::open(&src).unwrap(), &config, true, false).unwrap().puts.iter().map(|p| match p {
-            Put::Linear { members, .. } => format!("{{\"linear\": [{}]}}", members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ")),
-            Put::Copy { name, from, .. } => format!("{{\"copy\": \"{name}\", \"from\": \"{from}\"}}"),
-            Put::Experts { .. } | Put::Codebook { .. } | Put::Signs { .. } => unreachable!(),
-        }).collect();
+        let puts: Vec<String> = Plan::new(&Checkpoint::open(&src).unwrap(), &config, true, false)
+            .unwrap()
+            .puts
+            .iter()
+            .map(|p| match p {
+                Put::Linear { members, .. } => format!("{{\"linear\": [{}]}}", members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ")),
+                Put::Copy { name, from, .. } => format!("{{\"copy\": \"{name}\", \"from\": \"{from}\"}}"),
+                Put::Experts { .. } | Put::Codebook { .. } | Put::Signs { .. } => unreachable!(),
+            })
+            .collect();
         let planned = dir.join("planned");
         save_planned(&source, &planned, 2, 64 << 10, Layout::Tiered, &format!("{{\"puts\": [{}]}}", puts.join(", "))).unwrap();
         let mut names: Vec<_> = std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name()).collect();
         names.sort();
-        assert_eq!(names, { let mut n: Vec<_> = std::fs::read_dir(&planned).unwrap().map(|e| e.unwrap().file_name()).collect(); n.sort(); n });
+        assert_eq!(names, {
+            let mut n: Vec<_> = std::fs::read_dir(&planned).unwrap().map(|e| e.unwrap().file_name()).collect();
+            n.sort();
+            n
+        });
         for n in &names {
             assert!(std::fs::read(out.join(n)).unwrap() == std::fs::read(planned.join(n)).unwrap(), "{n:?} differs");
         }
-        for (plan, why) in [("{\"puts\": [{\"copy\": \"model.nope\"}]}", "model.nope is not in"), ("{\"puts\": [{\"linear\": [\"model.layers.0.self_attn.nope\"]}]}", "nope.weight is not in"), ("{\"puts\": [{\"linear\": [\"model.layers.0.self_attn.q_norm\"]}]}", "q_norm is not packable"), ("{\"puts\": [{\"copy\": \"model.norm.weight\", \"cast\": \"BF16\"}]}", "where a cast to BF16 takes F32"), ("{\"puts\": [{\"linear\": [\"model.layers.0.mlp.gate_proj\", \"model.layers.0.mlp.down_proj\"]}]}", "not packable as one matrix"), ("{\"puts\": [{\"x\": 1}]}", "neither a linear, a codebook matrix, signs nor a copy")] {
+        for (plan, why) in [
+            ("{\"puts\": [{\"copy\": \"model.nope\"}]}", "model.nope is not in"),
+            ("{\"puts\": [{\"linear\": [\"model.layers.0.self_attn.nope\"]}]}", "nope.weight is not in"),
+            ("{\"puts\": [{\"linear\": [\"model.layers.0.self_attn.q_norm\"]}]}", "q_norm is not packable"),
+            ("{\"puts\": [{\"copy\": \"model.norm.weight\", \"cast\": \"BF16\"}]}", "where a cast to BF16 takes F32"),
+            ("{\"puts\": [{\"linear\": [\"model.layers.0.mlp.gate_proj\", \"model.layers.0.mlp.down_proj\"]}]}", "not packable as one matrix"),
+            ("{\"puts\": [{\"x\": 1}]}", "neither a linear, a codebook matrix, signs nor a copy"),
+        ] {
             let e = save_planned(&source, &dir.join("refused"), 2, 64 << 10, Layout::Tiered, plan).err().map(|e| e.to_string()).unwrap_or_default();
             assert!(e.contains(why), "not refused for {why:?}: {e:?}");
         }
         assert_eq!((s.checked, s.hashed, s.shards > 1), (14, 10, true));
         let m = json::parse(&std::fs::read_to_string(out.join("glyd.json")).unwrap()).unwrap();
         let packs: Vec<&str> = m.get("packs").unwrap().as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(&packs[..4], &["model.layers.0.self_attn.o_proj", "model.layers.0.self_attn.q_proj", "model.layers.0.mlp.down_proj", "model.layers.0.mlp.gate_proj"]);
+        assert_eq!(
+            &packs[..4],
+            &["model.layers.0.self_attn.o_proj", "model.layers.0.self_attn.q_proj", "model.layers.0.mlp.down_proj", "model.layers.0.mlp.gate_proj"]
+        );
         assert_eq!(m.get("format").and_then(Value::as_str), Some("glyd-v4"));
         let hashed: Vec<&str> = m.get("tensors").unwrap().as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(&hashed[..3], &["model.embed_tokens.weight", "model.layers.0.self_attn.q_norm.weight", "model.layers.0.self_attn.k_norm.weight"]);
@@ -2267,15 +2866,23 @@ mod tests {
         let c = fresh(&bad);
         std::fs::OpenOptions::new().append(true).open(&c.files[0].path).unwrap().write_all(&[0; 8]).unwrap();
         refused("8 bytes past its last tensor");
-        for (from, to, why) in [("self_attn.k_proj.weight", "self_attn.v_proj.weight", "self_attn.q_proj's tensors are not its own"), ("self_attn.k_proj.weight", "self_attn.k_prok.weight", "self_attn.q_proj's tensors are not its own"), ("self_attn.o_proj.weight", "self_attn.q_proj.weight", "self_attn.o_proj's tensors are not its own")] {
+        for (from, to, why) in [
+            ("self_attn.k_proj.weight", "self_attn.v_proj.weight", "self_attn.q_proj's tensors are not its own"),
+            ("self_attn.k_proj.weight", "self_attn.k_prok.weight", "self_attn.q_proj's tensors are not its own"),
+            ("self_attn.o_proj.weight", "self_attn.q_proj.weight", "self_attn.o_proj's tensors are not its own"),
+        ] {
             fresh(&bad);
-            let text = std::fs::read_to_string(bad.join("glyd.json")).unwrap().replacen(&format!("\"model.layers.0.{from}\""), &format!("\"model.layers.0.{to}\""), 1);
+            let text =
+                std::fs::read_to_string(bad.join("glyd.json")).unwrap().replacen(&format!("\"model.layers.0.{from}\""), &format!("\"model.layers.0.{to}\""), 1);
             std::fs::write(bad.join("glyd.json"), text).unwrap();
             refused(why);
         }
         // a member of one pack another's: down_proj's pack renamed up_proj's in glyd.json (its tensor then its own)
         fresh(&bad);
-        let text = std::fs::read_to_string(bad.join("glyd.json")).unwrap().replace("layers.0.mlp.down_proj\"", "layers.0.mlp.up_proj\"").replace("layers.0.mlp.down_proj.weight\"", "layers.0.mlp.up_proj.weight\"");
+        let text = std::fs::read_to_string(bad.join("glyd.json"))
+            .unwrap()
+            .replace("layers.0.mlp.down_proj\"", "layers.0.mlp.up_proj\"")
+            .replace("layers.0.mlp.down_proj.weight\"", "layers.0.mlp.up_proj.weight\"");
         std::fs::write(bad.join("glyd.json"), text).unwrap();
         refused("a tensor held by two packs, or twice by one");
         fresh(&bad);
@@ -2358,7 +2965,10 @@ mod tests {
         assert!(Checkpoint::open(&out12).unwrap().get("model.layers.1.self_attn.o_proj.glyd_exc_base").is_some());
         assert_eq!(verify(&out12, 2, &Decoder::Cpu).unwrap().packed, 14);
         let bad12 = dir.join("bad12");
-        for (to, why) in [("\"sym\": [\n    1,\n    2,\n    3,\n    4\n   ]".to_string(), "a pack an unreleased glyd saved"), ("\"hb\": 121".to_string(), "its hb is not an int 0-120")] {
+        for (to, why) in [
+            ("\"sym\": [\n    1,\n    2,\n    3,\n    4\n   ]".to_string(), "a pack an unreleased glyd saved"),
+            ("\"hb\": 121".to_string(), "its hb is not an int 0-120"),
+        ] {
             let _ = std::fs::remove_dir_all(&bad12);
             std::fs::create_dir_all(&bad12).unwrap();
             for e in std::fs::read_dir(&out12).unwrap() {
@@ -2391,12 +3001,17 @@ mod tests {
         std::fs::write(src.join("config.json"), "{}").unwrap();
         let mut x = 99u64;
         let mut bf = |n: usize| -> Vec<u8> {
-            (0..n).flat_map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                ((((x >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.1).to_bits() >> 16) as u16
-            }.to_le_bytes()).collect()
+            (0..n)
+                .flat_map(|_| {
+                    {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        ((((x >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.1).to_bits() >> 16) as u16
+                    }
+                    .to_le_bytes()
+                })
+                .collect()
         };
         let m = "m.layers.1.mixer";
         let t = |name: String, shape: Vec<u64>, bytes: Vec<u8>| Saved { name, dtype: "BF16", shape, bytes, sha256: None };
@@ -2428,7 +3043,14 @@ mod tests {
         let s = |k: &str| j.get(k).and_then(Value::as_str);
         assert_eq!((s("format"), s("layout"), s("level")), (Some("glyd-v7"), Some("hb"), Some("hummingbird")));
         let cal = j.get("calibration").unwrap();
-        assert_eq!((cal.get("method").and_then(Value::as_str), cal.get("experts_at_3_bits").and_then(Value::as_u64), cal.get("experts_at_2_bits").and_then(Value::as_u64)), (Some("hummingbird"), Some(1), Some(1)));
+        assert_eq!(
+            (
+                cal.get("method").and_then(Value::as_str),
+                cal.get("experts_at_3_bits").and_then(Value::as_u64),
+                cal.get("experts_at_2_bits").and_then(Value::as_u64)
+            ),
+            (Some("hummingbird"), Some(1), Some(1))
+        );
         assert!(cal.get("export").unwrap().get("layers").and_then(Value::as_array).unwrap()[0].get("signs_u8").is_none());
         let saved = Checkpoint::open(&out).unwrap();
         let packs = j.get("packs").unwrap();
@@ -2442,7 +3064,11 @@ mod tests {
                 assert_eq!(u64s(ent.get("shape")), Some(vec![rows as u64, cols as u64]), "{key}: the pack holds the neurons' rows");
                 assert_eq!(ent.get("transposed").and_then(Value::as_bool), Some(down), "{key}");
                 let tensor = ent.get("tensors").and_then(Value::as_array).unwrap();
-                assert_eq!(u64s(tensor[0].get("shape")), Some(if down { vec![cols as u64, rows as u64] } else { vec![rows as u64, cols as u64] }), "{key}: its tensor");
+                assert_eq!(
+                    u64s(tensor[0].get("shape")),
+                    Some(if down { vec![cols as u64, rows as u64] } else { vec![rows as u64, cols as u64] }),
+                    "{key}: its tensor"
+                );
                 let p = &held[0][e][mat];
                 assert_eq!(saved.read(&format!("{key}.glyd_data")).unwrap(), p.codes, "{key}: the export's codes");
                 assert_eq!(saved.read(&format!("{key}.glyd_blocks")).unwrap(), p.scales);
@@ -2469,12 +3095,55 @@ mod tests {
         refused("made from an export of codes", save_planned(&source, &o2, 2, 1 << 30, Layout::Hummingbird, &plan("")));
         refused("made from an export of codes", save_planned(&source, &o2, 2, 1 << 30, Layout::Int6, &plan("")));
         refused("made from an export of codes", save_hummingbird(&source, &o2, 2, 1 << 30, "{\"puts\": [{\"copy\": \"m.norm.weight\"}]}", &exp).map(|s| s));
-        refused("layer 3 expert 0", save_hummingbird(&source, &o2, 2, 1 << 30, &plan(&format!("{{\"codebook\": \"{m}.experts.0.up_proj\", \"layer\": 3, \"expert\": 0, \"matrix\": \"up\"}}")), &exp));
-        refused("expert 2", save_hummingbird(&source, &o2, 2, 1 << 30, &plan(&format!("{{\"codebook\": \"{m}.experts.1.up_proj\", \"layer\": 0, \"expert\": 2, \"matrix\": \"up\"}}")), &exp));
-        refused("a matrix Some(\"down\")", save_hummingbird(&source, &o2, 2, 1 << 30, &plan(&format!("{{\"codebook\": \"{m}.experts.1.up_proj\", \"layer\": 0, \"expert\": 1, \"matrix\": \"down\"}}")), &exp));
-        refused("layer 2, where the export has 1 MoE layers", save_hummingbird(&source, &o2, 2, 1 << 30, &plan(&format!("{{\"signs\": \"{m}.glyd_rot_signs2\", \"layer\": 2}}")), &exp));
+        refused(
+            "layer 3 expert 0",
+            save_hummingbird(
+                &source,
+                &o2,
+                2,
+                1 << 30,
+                &plan(&format!("{{\"codebook\": \"{m}.experts.0.up_proj\", \"layer\": 3, \"expert\": 0, \"matrix\": \"up\"}}")),
+                &exp,
+            ),
+        );
+        refused(
+            "expert 2",
+            save_hummingbird(
+                &source,
+                &o2,
+                2,
+                1 << 30,
+                &plan(&format!("{{\"codebook\": \"{m}.experts.1.up_proj\", \"layer\": 0, \"expert\": 2, \"matrix\": \"up\"}}")),
+                &exp,
+            ),
+        );
+        refused(
+            "a matrix Some(\"down\")",
+            save_hummingbird(
+                &source,
+                &o2,
+                2,
+                1 << 30,
+                &plan(&format!("{{\"codebook\": \"{m}.experts.1.up_proj\", \"layer\": 0, \"expert\": 1, \"matrix\": \"down\"}}")),
+                &exp,
+            ),
+        );
+        refused(
+            "layer 2, where the export has 1 MoE layers",
+            save_hummingbird(&source, &o2, 2, 1 << 30, &plan(&format!("{{\"signs\": \"{m}.glyd_rot_signs2\", \"layer\": 2}}")), &exp),
+        );
         // an up matrix named as a down one: the source's tensor is [rows, cols], the export's downT would be [cols, rows]
-        refused("in the source, where the export's", save_hummingbird(&source, &o2, 2, 1 << 30, &plan(&format!("{{\"codebook\": \"{m}.experts.1.up_proj\", \"layer\": 0, \"expert\": 1, \"matrix\": \"downT\"}}")), &exp));
+        refused(
+            "in the source, where the export's",
+            save_hummingbird(
+                &source,
+                &o2,
+                2,
+                1 << 30,
+                &plan(&format!("{{\"codebook\": \"{m}.experts.1.up_proj\", \"layer\": 0, \"expert\": 1, \"matrix\": \"downT\"}}")),
+                &exp,
+            ),
+        );
         refused("a layout other than", save_planned(&source, &o2, 2, 1 << 30, Layout::Int6, "{\"puts\": [{\"linear\": [\"m.fc\"], \"layout\": \"c3r\"}]}"));
         refused("a row layout is a pack's own", save_planned(&source, &o2, 2, 1 << 30, Layout::Cb3Row, "{\"puts\": []}"));
         // a changed byte of a pack's codes, and a pack named another layout

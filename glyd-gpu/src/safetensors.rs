@@ -191,7 +191,8 @@ impl Checkpoint {
             let v = json::parse(&std::fs::read_to_string(&index).map_err(at(&index))?).map_err(|e| bad(&index, e))?;
             let mut m = Vec::new();
             for (name, f) in v.get("weight_map").and_then(Value::as_object).ok_or_else(|| bad(&index, "no weight_map"))? {
-                let f = f.as_str().filter(|f| !f.is_empty() && !f.contains('/') && *f != "..").ok_or_else(|| bad(&index, "a shard not a file of its directory"))?;
+                let f =
+                    f.as_str().filter(|f| !f.is_empty() && !f.contains('/') && *f != "..").ok_or_else(|| bad(&index, "a shard not a file of its directory"))?;
                 if !shards.iter().any(|s| s == f) {
                     shards.push(f.to_string());
                 }
@@ -246,7 +247,10 @@ impl Checkpoint {
         let (f, st) = self.get(&scale).ok_or_else(|| what(format!("F8_E4M3, and there is no {scale}, its block scales")))?;
         let grid = fp8::grid(t.shape[0] as usize, t.shape[1] as usize, block).map(|g| g as u64);
         if st.dtype != "F32" || st.shape != grid {
-            return Err(what(format!("its block scales {scale} are {} {:?}, where F32 {grid:?} is wanted for blocks of {} x {}", st.dtype, st.shape, block[0], block[1])));
+            return Err(what(format!(
+                "its block scales {scale} are {} {:?}, where F32 {grid:?} is wanted for blocks of {} x {}",
+                st.dtype, st.shape, block[0], block[1]
+            )));
         }
         Ok((block, f, st))
     }
@@ -309,7 +313,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("glyd-gpu-st-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = |offs: [(u64, u64); 2], data: usize| {
-            let h = format!(r#"{{"a":{{"dtype":"U8","shape":[{}],"data_offsets":[{},{}]}},"b":{{"dtype":"U8","shape":[{}],"data_offsets":[{},{}]}}}}"#, offs[0].1 - offs[0].0, offs[0].0, offs[0].1, offs[1].1 - offs[1].0, offs[1].0, offs[1].1);
+            let h = format!(
+                r#"{{"a":{{"dtype":"U8","shape":[{}],"data_offsets":[{},{}]}},"b":{{"dtype":"U8","shape":[{}],"data_offsets":[{},{}]}}}}"#,
+                offs[0].1 - offs[0].0,
+                offs[0].0,
+                offs[0].1,
+                offs[1].1 - offs[1].0,
+                offs[1].0,
+                offs[1].1
+            );
             let p = dir.join("model.safetensors");
             let mut b = (h.len() as u64).to_le_bytes().to_vec();
             b.extend(h.as_bytes());

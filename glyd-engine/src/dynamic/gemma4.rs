@@ -14,7 +14,10 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         small.push(n);
         small.len() - 1
     };
-    let ropes = vec![Rope { theta: c.sliding_theta, dim: c.head_dim, pairs: c.head_dim / 2 }, Rope { theta: c.global_theta, dim: c.global_head_dim, pairs: c.global_rot }];
+    let ropes = vec![
+        Rope { theta: c.sliding_theta, dim: c.head_dim, pairs: c.head_dim / 2 },
+        Rope { theta: c.global_theta, dim: c.global_head_dim, pairs: c.global_rot },
+    ];
     let mut rings = Vec::new();
     let in_norms: Vec<usize> = (0..c.layers).map(|l| name(format!("{p}layers.{l}.input_layernorm.weight"))).collect();
     let final_norm = name(format!("{p}norm.weight"));
@@ -32,7 +35,18 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         let w = 4 * l;
         layers.push(vec![
             Op::Linear { w, x: Slot::H, y: Slot::Proj, name: if sliding { "qkv (sliding)" } else { "qk (global)" } },
-            Op::QkvPrep { d, nq: c.heads, nk, has_v, stride: c.proj_width(kind), q_norm, k_norm, rope: if sliding { 0 } else { 1 }, rot: if sliding { c.head_dim / 2 } else { c.global_rot }, ring },
+            Op::QkvPrep {
+                d,
+                nq: c.heads,
+                nk,
+                has_v,
+                stride: c.proj_width(kind),
+                q_norm,
+                k_norm,
+                rope: if sliding { 0 } else { 1 },
+                rot: if sliding { c.head_dim / 2 } else { c.global_rot },
+                ring,
+            },
             Op::Attention { d, nq: c.heads, nk, window: if sliding { c.window } else { 0 }, ring },
             Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "o" },
             Op::AddNorm { y: Slot::O, post: post_attn, scalar: None, next: pre_ff },
@@ -45,7 +59,17 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
     let proj_w = c.kinds.iter().map(|&k| c.proj_width(k)).max().unwrap_or(0);
     let q_w = c.heads * c.global_head_dim;
     let mut widths = [0usize; super::SLOTS];
-    for (s, w) in [(Slot::X, c.hidden), (Slot::H, c.hidden), (Slot::Proj, proj_w), (Slot::Qo, q_w), (Slot::Att, q_w), (Slot::O, c.hidden), (Slot::Gu, 2 * c.inter), (Slot::M, c.inter), (Slot::D, c.hidden)] {
+    for (s, w) in [
+        (Slot::X, c.hidden),
+        (Slot::H, c.hidden),
+        (Slot::Proj, proj_w),
+        (Slot::Qo, q_w),
+        (Slot::Att, q_w),
+        (Slot::O, c.hidden),
+        (Slot::Gu, 2 * c.inter),
+        (Slot::M, c.inter),
+        (Slot::D, c.hidden),
+    ] {
         widths[s as usize] = w;
     }
     ModelDesc {
@@ -87,7 +111,11 @@ pub fn describe_draft(dc: &ConfigG4, c: &ConfigG4) -> ModelDesc {
         mats.push(crate::weights::Item { members: vec![format!("{a}.q_proj.weight")], rows: dc.heads * d, cols: dc.hidden });
         mats.push(crate::weights::Item { members: vec![format!("{a}.o_proj.weight")], rows: dc.hidden, cols: dc.heads * d });
         let mlp = format!("{p}layers.{l}.mlp");
-        mats.push(crate::weights::Item { members: vec![format!("{mlp}.gate_proj.weight"), format!("{mlp}.up_proj.weight")], rows: 2 * dc.inter, cols: dc.hidden });
+        mats.push(crate::weights::Item {
+            members: vec![format!("{mlp}.gate_proj.weight"), format!("{mlp}.up_proj.weight")],
+            rows: 2 * dc.inter,
+            cols: dc.hidden,
+        });
         mats.push(crate::weights::Item { members: vec![format!("{mlp}.down_proj.weight")], rows: dc.hidden, cols: dc.inter });
     }
     let (pre, post, embed) = (mats.len(), mats.len() + 1, mats.len() + 2);
@@ -120,7 +148,18 @@ pub fn describe_draft(dc: &ConfigG4, c: &ConfigG4) -> ModelDesc {
         }
         ops.extend([
             Op::Linear { w, x: Slot::H, y: Slot::Proj, name: "draft" },
-            Op::QkvPrep { d, nq: dc.heads, nk: 0, has_v: false, stride: dc.heads * d, q_norm, k_norm: q_norm, rope: if sliding { 0 } else { 1 }, rot: if sliding { c.head_dim / 2 } else { c.global_rot }, ring: ring_of(kind) },
+            Op::QkvPrep {
+                d,
+                nq: dc.heads,
+                nk: 0,
+                has_v: false,
+                stride: dc.heads * d,
+                q_norm,
+                k_norm: q_norm,
+                rope: if sliding { 0 } else { 1 },
+                rot: if sliding { c.head_dim / 2 } else { c.global_rot },
+                ring: ring_of(kind),
+            },
             Op::Attention { d, nq: dc.heads, nk, window: if sliding { c.window } else { 0 }, ring: ring_of(kind) },
             Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "draft" },
             Op::AddNorm { y: Slot::O, post: post_attn, scalar: None, next: pre_ff },
@@ -133,7 +172,19 @@ pub fn describe_draft(dc: &ConfigG4, c: &ConfigG4) -> ModelDesc {
     }
     let qd = dc.heads * c.global_head_dim.max(c.head_dim);
     let mut widths = [0usize; super::SLOTS];
-    for (s, w) in [(Slot::X, dc.hidden), (Slot::H, dc.hidden), (Slot::Proj, qd), (Slot::Qo, qd), (Slot::Att, qd), (Slot::O, dc.hidden), (Slot::Gu, 2 * dc.inter), (Slot::M, dc.inter), (Slot::D, dc.hidden), (Slot::In, 2 * c.hidden), (Slot::Hid, c.hidden)] {
+    for (s, w) in [
+        (Slot::X, dc.hidden),
+        (Slot::H, dc.hidden),
+        (Slot::Proj, qd),
+        (Slot::Qo, qd),
+        (Slot::Att, qd),
+        (Slot::O, dc.hidden),
+        (Slot::Gu, 2 * dc.inter),
+        (Slot::M, dc.inter),
+        (Slot::D, dc.hidden),
+        (Slot::In, 2 * c.hidden),
+        (Slot::Hid, c.hidden),
+    ] {
         widths[s as usize] = w;
     }
     ModelDesc {

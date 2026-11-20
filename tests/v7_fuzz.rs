@@ -9,27 +9,54 @@ use glyd::{compress_into_max, decompress, decompress_into};
 
 fn seed_inputs() -> Vec<Vec<u8>> {
     let mut x = 0xC0FFEEu64;
-    let mut rnd = |n: usize| -> Vec<u8> { (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect() };
+    let mut rnd = |n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    };
     let mut v = vec![b"hello hello hello world".to_vec(), vec![0u8; 5000], rnd(20_000)];
     let pat = rnd(37);
     v.push(pat.iter().cycle().take(300_000).copied().collect());
     let mut text = Vec::new();
-    while text.len() < 400_000 { text.extend_from_slice(b"lorem ipsum dolor sit amet "); text.extend_from_slice(&rnd(3)); }
+    while text.len() < 400_000 {
+        text.extend_from_slice(b"lorem ipsum dolor sit amet ");
+        text.extend_from_slice(&rnd(3));
+    }
     v.push(text);
     v
 }
 
 /// `m` = `c` with one mutation: a bit flip, a byte, a truncation or a swap.
 fn mutate(x: &mut u64, c: &[u8], m: &mut Vec<u8>) {
-    *x ^= *x << 13; *x ^= *x >> 7; *x ^= *x << 17;
+    *x ^= *x << 13;
+    *x ^= *x >> 7;
+    *x ^= *x << 17;
     let x = *x;
     m.clear();
     m.extend_from_slice(c);
     match x % 4 {
-        0 => { let i = (x >> 8) as usize % m.len(); m[i] ^= 1 << ((x >> 40) & 7); }
-        1 => { let i = (x >> 8) as usize % m.len(); m[i] = (x >> 40) as u8; }
-        2 => { let n = (x >> 8) as usize % m.len(); m.truncate(n); }
-        _ => { let i = (x >> 8) as usize % m.len(); let j = (x >> 32) as usize % m.len(); m.swap(i, j); }
+        0 => {
+            let i = (x >> 8) as usize % m.len();
+            m[i] ^= 1 << ((x >> 40) & 7);
+        }
+        1 => {
+            let i = (x >> 8) as usize % m.len();
+            m[i] = (x >> 40) as u8;
+        }
+        2 => {
+            let n = (x >> 8) as usize % m.len();
+            m.truncate(n);
+        }
+        _ => {
+            let i = (x >> 8) as usize % m.len();
+            let j = (x >> 32) as usize % m.len();
+            m.swap(i, j);
+        }
     }
 }
 
@@ -40,7 +67,14 @@ fn fuzz_target() -> u64 {
 #[test]
 fn v7_mutation_fuzz() {
     let inputs = seed_inputs();
-    let streams: Vec<Vec<u8>> = inputs.iter().map(|i| { let mut c = Vec::new(); compress_into_max(i, &mut c); c }).collect();
+    let streams: Vec<Vec<u8>> = inputs
+        .iter()
+        .map(|i| {
+            let mut c = Vec::new();
+            compress_into_max(i, &mut c);
+            c
+        })
+        .collect();
     let mut x = 0x5EEDu64;
     let mut mutations = 0u64;
     let target = fuzz_target();
@@ -60,9 +94,13 @@ fn v7_mutation_fuzz() {
                     assert!(out.len() <= input.len() && out[..] == input[..out.len()], "checksum passed but data differs");
                 }
                 mutations += 1;
-                if mutations >= target { break; }
+                if mutations >= target {
+                    break;
+                }
             }
-            if mutations >= target { break; }
+            if mutations >= target {
+                break;
+            }
         }
     }
     std::fs::write(".v7-fuzz-status", format!("{}", mutations)).unwrap();
@@ -103,7 +141,14 @@ fn v7_small_object_mutation_fuzz() {
     let samples: Vec<&[u8]> = text[..200_000].chunks(2000).collect();
     let dict = glyd::Dict::train(&samples, 16_000);
     let dict = &dict;
-    let objects: Vec<&[u8]> = [300usize, 1000, 2500, 6000, 20_000].iter().scan(200_000usize, |at, &n| { let o = &text[*at..*at + n]; *at += n; Some(o) }).collect();
+    let objects: Vec<&[u8]> = [300usize, 1000, 2500, 6000, 20_000]
+        .iter()
+        .scan(200_000usize, |at, &n| {
+            let o = &text[*at..*at + n];
+            *at += n;
+            Some(o)
+        })
+        .collect();
     let mut x = 0x5A11u64;
     let mut m = Vec::new();
     for input in objects {

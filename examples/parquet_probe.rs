@@ -42,7 +42,10 @@ fn main() {
                     if matches!(p.encoding, 2 | 8) {
                         let why = glyd::parquet::index_page_diagnosis(&plain, c, &p);
                         let why = if why.starts_with("encode differs") { format!("encode differs, width {}", why.rsplit(' ').next().unwrap()) } else { why };
-                        *kinds.entry(format!("  why not: {why}")).or_insert((0, 0, 0)) = { let e = kinds.get(&format!("  why not: {why}")).copied().unwrap_or((0, 0, 0)); (e.0 + 1, e.1 + plain.len(), e.2) };
+                        *kinds.entry(format!("  why not: {why}")).or_insert((0, 0, 0)) = {
+                            let e = kinds.get(&format!("  why not: {why}")).copied().unwrap_or((0, 0, 0));
+                            (e.0 + 1, e.1 + plain.len(), e.2)
+                        };
                     }
                     let name = format!("type {} enc {} {} (as is)", c.physical_type, p.encoding, if p.kind == 2 { "dict" } else { "data" });
                     let e = kinds.entry(name.clone()).or_insert((0, 0, 0));
@@ -62,7 +65,11 @@ fn main() {
         glyd::compress_into_max(b, &mut out);
         out.len()
     };
-    println!("{}: {} B, written by {created_by:?}; {pages} pages opened, {unmodeled} left as they are, recipes {recipes} B", f.rsplit('/').next().unwrap(), data.len());
+    println!(
+        "{}: {} B, written by {created_by:?}; {pages} pages opened, {unmodeled} left as they are, recipes {recipes} B",
+        f.rsplit('/').next().unwrap(),
+        data.len()
+    );
     println!("  closed pages {} B -> --max {} B", closed.len(), size(&closed));
     println!("  raw pages    {} B -> --max {} B", raw.len(), size(&raw));
     println!("  modeled      {} B -> --max {} B", modeled.len(), size(&modeled));

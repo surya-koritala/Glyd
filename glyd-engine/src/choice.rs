@@ -108,7 +108,19 @@ impl Choice {
         if let Some(t) = cfg.tools.as_ref().filter(|t| cfg.xtml.is_some() && !t.prefix.is_empty()) {
             stream.prime(&t.prefix);
         }
-        let mut c = Choice { stream, stops: Stops::new(&cfg.stops).including(cfg.include_stop), split: Splitter::new(cfg.in_thinking), pending: Vec::new(), reasoning: String::new(), content: cfg.lead.clone(), tokens: 0, tool, opening: Vec::new(), lead: cfg.lead.clone(), cfg };
+        let mut c = Choice {
+            stream,
+            stops: Stops::new(&cfg.stops).including(cfg.include_stop),
+            split: Splitter::new(cfg.in_thinking),
+            pending: Vec::new(),
+            reasoning: String::new(),
+            content: cfg.lead.clone(),
+            tokens: 0,
+            tool,
+            opening: Vec::new(),
+            lead: cfg.lead.clone(),
+            cfg,
+        };
         // (what the forced opening of the reply says is sent with the first delta)
         let mut first = Delta::default();
         for ev in opening.drain(..) {
@@ -347,10 +359,63 @@ mod tests {
     /// channel the reasoning, the response the answer, its call a tool call, whether the calls are streamed or read at the end.
     #[test]
     fn a_kimi_reply_reads_as_reasoning_answer_and_calls() {
-        let words = ["Look", " it", " up.", "<|close|>", "think", "<|sep|>", "<|open|>", "response", "Checking.", "tools", "call tool=\"get_weather\" index=\"1\"", "argument key=\"city\" type=\"string\"", "Paris", "argument", "call", "message"];
+        let words = [
+            "Look",
+            " it",
+            " up.",
+            "<|close|>",
+            "think",
+            "<|sep|>",
+            "<|open|>",
+            "response",
+            "Checking.",
+            "tools",
+            "call tool=\"get_weather\" index=\"1\"",
+            "argument key=\"city\" type=\"string\"",
+            "Paris",
+            "argument",
+            "call",
+            "message",
+        ];
         let t = toy(&words);
         let id = |w: &str| words.iter().position(|x| *x == w).unwrap() as u32 + 1;
-        let script = ["Look", " it", " up.", "<|close|>", "think", "<|sep|>", "<|open|>", "response", "<|sep|>", "Checking.", "<|close|>", "response", "<|sep|>", "<|open|>", "tools", "<|sep|>", "<|open|>", "call tool=\"get_weather\" index=\"1\"", "<|sep|>", "<|open|>", "argument key=\"city\" type=\"string\"", "<|sep|>", "Paris", "<|close|>", "argument", "<|sep|>", "<|close|>", "call", "<|sep|>", "<|close|>", "tools", "<|sep|>", "<|close|>", "message", "<|sep|>"];
+        let script = [
+            "Look",
+            " it",
+            " up.",
+            "<|close|>",
+            "think",
+            "<|sep|>",
+            "<|open|>",
+            "response",
+            "<|sep|>",
+            "Checking.",
+            "<|close|>",
+            "response",
+            "<|sep|>",
+            "<|open|>",
+            "tools",
+            "<|sep|>",
+            "<|open|>",
+            "call tool=\"get_weather\" index=\"1\"",
+            "<|sep|>",
+            "<|open|>",
+            "argument key=\"city\" type=\"string\"",
+            "<|sep|>",
+            "Paris",
+            "<|close|>",
+            "argument",
+            "<|sep|>",
+            "<|close|>",
+            "call",
+            "<|sep|>",
+            "<|close|>",
+            "tools",
+            "<|sep|>",
+            "<|close|>",
+            "message",
+            "<|sep|>",
+        ];
         for stream in [false, true] {
             let tools = ToolsCfg { choice: ToolChoice::Auto, parallel: true, format: Format::Hermes, list: Vec::new(), prefix: String::new(), stream };
             let mut c = Choice::new(Cfg { chat: true, tools: Some(tools), xtml: Some(true), ..Cfg::default() });

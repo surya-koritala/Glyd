@@ -35,7 +35,17 @@ impl Request {
 
 impl Default for Request {
     fn default() -> Request {
-        Request { params: Params::default(), max_new: 2048, stop: Vec::new(), thinking: None, template_kwargs: Vec::new(), ignore_eos: false, stop_ids: Vec::new(), include_stop: false, skip_special: true }
+        Request {
+            params: Params::default(),
+            max_new: 2048,
+            stop: Vec::new(),
+            thinking: None,
+            template_kwargs: Vec::new(),
+            ignore_eos: false,
+            stop_ids: Vec::new(),
+            include_stop: false,
+            skip_special: true,
+        }
     }
 }
 
@@ -379,7 +389,11 @@ impl Talk<'_> {
     /// A reply to a prompt already in tokens (a plain completion).
     pub fn reply_to(&mut self, prompt: &[u32], r: &Request, on_text: &mut dyn FnMut(&str) -> bool) -> Result<Outcome> {
         if prompt.len() + 1 > self.e.capacity() {
-            return err(format!("This prompt has {} tokens, longer than the model's context of {} tokens: maximum context length (a longer one: --context N)", prompt.len(), self.e.capacity()));
+            return err(format!(
+                "This prompt has {} tokens, longer than the model's context of {} tokens: maximum context length (a longer one: --context N)",
+                prompt.len(),
+                self.e.capacity()
+            ));
         }
         let budget = self.e.capacity().saturating_sub(prompt.len());
         let opts = Reply { params: r.params.clone(), max_new: r.max_new.min(budget).max(1), ignore_eos: r.ignore_eos, logprobs: None, stop_ids: Vec::new() };

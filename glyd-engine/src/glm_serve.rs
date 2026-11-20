@@ -33,7 +33,9 @@ pub fn serve(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     let dump = a.flag("dump").map(std::path::PathBuf::from);
     // (the experts are read from the page cache and the engine packs the always-on matrices in memory: refuse to start where the computer has less than the headroom to spare)
     let need_gib: f64 = a.num("min-free-gb", 8.0f64)?;
-    let avail_gib = crate::os::meminfo().and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemAvailable:")?.trim().trim_end_matches("kB").trim().parse::<f64>().ok())).map(|kb| kb / (1024.0 * 1024.0));
+    let avail_gib = crate::os::meminfo()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemAvailable:")?.trim().trim_end_matches("kB").trim().parse::<f64>().ok()))
+        .map(|kb| kb / (1024.0 * 1024.0));
     match avail_gib {
         Some(g) if g < need_gib => return err(format!("MemAvailable is {g:.1} GiB, where {need_gib:.1} GiB are wanted free to start (--min-free-gb)")),
         Some(g) => stderr_line(&format!("MemAvailable {g:.1} GiB")),
@@ -68,18 +70,33 @@ pub fn serve(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     };
     let place_bytes = layers.iter().map(|&l| pack.place_bytes(l)).max().unwrap_or(CODES + BOOKS);
     let slots = (((gb * 1e9) / (layers.len() as f64 * place_bytes as f64)) as usize).clamp(4, kept.max(4));
-    stderr_line(&format!("{} layers of experts in {}, {kept} kept a layer; {slots} places a layer on the GPU ({:.2} GB)", layers.len(), pack_dir.display(), (slots * layers.len() * place_bytes) as f64 / 1e9));
+    stderr_line(&format!(
+        "{} layers of experts in {}, {kept} kept a layer; {slots} places a layer on the GPU ({:.2} GB)",
+        layers.len(),
+        pack_dir.display(),
+        (slots * layers.len() * place_bytes) as f64 / 1e9
+    ));
     let store = ExpertStore::new();
     // (the host computes the misses: `--mode copy` copies them all instead; `--cpu-threads N` its crew, 16 pinned by default)
     let mode = a.flag("mode").map_or(Some(Mode::Auto), Mode::parse).ok_or_else(|| Error("--mode: copy, cpu, split or auto".into()))?;
     let od = Offload::default();
-    store.set_offload(Offload { mode, threads: a.num("cpu-threads", 16usize)?.max(1), pin: !a.has("no-pin"), window: a.num("window", od.window)?, promote: a.num("promote", od.promote)?, skip: a.num("skip", 0.0f32)?, async_copies: a.has("async-copies"), ..od });
+    store.set_offload(Offload {
+        mode,
+        threads: a.num("cpu-threads", 16usize)?.max(1),
+        pin: !a.has("no-pin"),
+        window: a.num("window", od.window)?,
+        promote: a.num("promote", od.promote)?,
+        skip: a.num("skip", 0.0f32)?,
+        async_copies: a.has("async-copies"),
+        ..od
+    });
     let common = CbShared::new();
     common.read_ahead.set((ahead * (1u64 << 30) as f64) as u64);
     let make = factory(&pack, slots, 0, &store, &common);
     common.topk.set(a.num("topk", 0usize)?);
     let make_mla = crate::mla_glm::factory();
-    let o = OptsGlm { ctx, chunk, graph: false, layout: Some(layout), chunked: true, spec: a.has("spec") || a.has("mtp"), mtp: a.has("mtp"), ..Default::default() };
+    let o =
+        OptsGlm { ctx, chunk, graph: false, layout: Some(layout), chunked: true, spec: a.has("spec") || a.has("mtp"), mtp: a.has("mtp"), ..Default::default() };
     let t0 = Instant::now();
     let mut e = EngineGlm::new(snap, &o, Some(&make), Some(&make_mla))?;
     stderr_line(&format!("loaded in {:.1} s: {}", t0.elapsed().as_secs_f64(), e.describe()));
@@ -161,15 +178,34 @@ pub(crate) fn print_trace(steps: &[(Vec<crate::trace::Layer>, Vec<(&'static str,
     let mean = |f: &dyn Fn(&crate::trace::Layer) -> f64, l: usize| used.iter().map(|s| f(&s.0[l])).sum::<f64>() / n;
     let step_ms = used.iter().map(|s| s.2).sum::<f64>() / n;
     let mut tot = [0f64; 11];
-    let mut lines = vec![format!("trace: {} decode steps ({} of them averaged), a step {step_ms:.1} ms; per layer, microseconds on the stream's clock", steps.len(), used.len())];
+    let mut lines = vec![format!(
+        "trace: {} decode steps ({} of them averaged), a step {step_ms:.1} ms; per layer, microseconds on the stream's clock",
+        steps.len(),
+        used.len()
+    )];
     lines.push("  layer   always  router readback     plan products hostexp      sum     post |    total | host: queue   wait".into());
     for l in 0..layers {
-        let f: [&dyn Fn(&crate::trace::Layer) -> f64; 11] = [&|x| x.always, &|x| x.router, &|x| x.readback, &|x| x.plan, &|x| x.products, &|x| x.host_experts, &|x| x.sum, &|x| x.post, &|x| x.total, &|x| x.host_queue, &|x| x.host_wait];
+        let f: [&dyn Fn(&crate::trace::Layer) -> f64; 11] = [
+            &|x| x.always,
+            &|x| x.router,
+            &|x| x.readback,
+            &|x| x.plan,
+            &|x| x.products,
+            &|x| x.host_experts,
+            &|x| x.sum,
+            &|x| x.post,
+            &|x| x.total,
+            &|x| x.host_queue,
+            &|x| x.host_wait,
+        ];
         let v: Vec<f64> = f.iter().map(|g| mean(g, l)).collect();
         for (t, x) in tot.iter_mut().zip(&v) {
             *t += x;
         }
-        lines.push(format!("  {l:>5} {:>8.0} {:>7.0} {:>8.0} {:>8.0} {:>8.0} {:>7.0} {:>8.0} {:>8.0} | {:>8.0} | {:>11.0} {:>6.0}", v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10]));
+        lines.push(format!(
+            "  {l:>5} {:>8.0} {:>7.0} {:>8.0} {:>8.0} {:>8.0} {:>7.0} {:>8.0} {:>8.0} | {:>8.0} | {:>11.0} {:>6.0}",
+            v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10]
+        ));
     }
     lines.push(format!("  total {:>8.0} {:>7.0} {:>8.0} {:>8.0} {:>8.0} {:>7.0} {:>8.0} {:>8.0} | {:>8.0} | {:>11.0} {:>6.0}   (the layers; a step is {:.0} us with the head and the embedding)", tot[0], tot[1], tot[2], tot[3], tot[4], tot[5], tot[6], tot[7], tot[8], tot[9], tot[10], step_ms * 1e3));
     let sum = tot[8].max(1e-9);
@@ -226,7 +262,16 @@ fn json_string(s: &str) -> String {
 
 /// One request line: the prompt through the model, then greedy decoding to `max_new` tokens or a stop token; the reply line.
 #[allow(clippy::too_many_arguments)]
-fn one_request(e: &mut EngineGlm, store: &std::rc::Rc<ExpertStore>, common: &std::rc::Rc<CbShared>, draft: &mut crate::draft_loop::Drafting, line: &str, eos: &[u32], dump: Option<&Path>, first_request: &mut bool) -> Result<String> {
+fn one_request(
+    e: &mut EngineGlm,
+    store: &std::rc::Rc<ExpertStore>,
+    common: &std::rc::Rc<CbShared>,
+    draft: &mut crate::draft_loop::Drafting,
+    line: &str,
+    eos: &[u32],
+    dump: Option<&Path>,
+    first_request: &mut bool,
+) -> Result<String> {
     let v = json::parse(line).map_err(|x| Error(format!("a request: {x}")))?;
     // a setting of the session between requests: {"set": {"mode": "auto", "promote": 1, "window": 16, "cpu_threads": 16, "topk": 6}}
     if let Some(set) = v.get("set") {
@@ -296,7 +341,13 @@ fn one_request(e: &mut EngineGlm, store: &std::rc::Rc<ExpertStore>, common: &std
         let (k, t1) = (k as usize, Instant::now());
         let (out, st) = e.generate_spec(&ids, max_new.max(1), &mut |all: &[u32]| vec![all[all.len() - 1]; k])?;
         let list = out.iter().map(|x| x.token.to_string()).collect::<Vec<_>>().join(",");
-        return Ok(format!("{{\"ids\":[{list}],\"passes\":{},\"drafted\":{},\"accepted\":{},\"ms\":{:.1}}}", st.passes, st.drafted, st.accepted, t1.elapsed().as_secs_f64() * 1e3));
+        return Ok(format!(
+            "{{\"ids\":[{list}],\"passes\":{},\"drafted\":{},\"accepted\":{},\"ms\":{:.1}}}",
+            st.passes,
+            st.drafted,
+            st.accepted,
+            t1.elapsed().as_secs_f64() * 1e3
+        ));
     }
     let dumping = *first_request && dump.is_some();
     if let (true, Some(dir)) = (dumping, dump) {
@@ -388,7 +439,12 @@ pub fn cb_test(pack_dir: &Path, vec: &Path) -> Result<()> {
     let dev = Dev::new(0)?;
     let kern = KernCb::load(&dev)?;
     // SAFETY: the mapping holds the kept experts end to end (map_layer checked it); the slices are inside it.
-    let (codes, books) = unsafe { (std::slice::from_raw_parts((map.ptr as *const u8).add(coff + i * CODES), CODES), std::slice::from_raw_parts((map.ptr as *const u8).add(boff + i * BOOKS), BOOKS)) };
+    let (codes, books) = unsafe {
+        (
+            std::slice::from_raw_parts((map.ptr as *const u8).add(coff + i * CODES), CODES),
+            std::slice::from_raw_parts((map.ptr as *const u8).add(boff + i * BOOKS), BOOKS),
+        )
+    };
     let place = [crate::dev::Buf::new(CODES)?, crate::dev::Buf::new(BOOKS)?];
     place[0].write(0, codes)?;
     place[1].write(0, books)?;
@@ -396,7 +452,15 @@ pub fn cb_test(pack_dir: &Path, vec: &Path) -> Result<()> {
     let sg = get("signs")?;
     let sgb = crate::dev::Buf::new(4096)?;
     sgb.write(0, &sg)?;
-    let (xb, xr, gu, part, wts, yb, way) = (crate::dev::Buf::new(4096 * 2)?, crate::dev::Buf::new(4096 * 4)?, crate::dev::Buf::new(4096 * 4)?, crate::dev::Buf::new(4 * 4096 * 4)?, crate::dev::Buf::new(4)?, crate::dev::Buf::new(4096 * 2)?, crate::dev::Buf::new(8)?);
+    let (xb, xr, gu, part, wts, yb, way) = (
+        crate::dev::Buf::new(4096 * 2)?,
+        crate::dev::Buf::new(4096 * 4)?,
+        crate::dev::Buf::new(4096 * 4)?,
+        crate::dev::Buf::new(4 * 4096 * 4)?,
+        crate::dev::Buf::new(4)?,
+        crate::dev::Buf::new(4096 * 2)?,
+        crate::dev::Buf::new(8)?,
+    );
     xb.write(0, &x)?;
     wts.write(0, &[1.0f32])?;
     way.write(0, &[0i64])?;
@@ -475,7 +539,12 @@ pub fn cb_block(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
         let f: Vec<f32> = out.iter().map(|&w| f32::from_bits((w as u32) << 16)).collect();
         let finite = f.iter().filter(|v| v.is_finite()).count();
         let norm = (f.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / f.len() as f64).sqrt();
-        println!("pass {pass}: {n} rows in {:.1} ms; {finite} of {} values finite, rms {norm:.4}; {}", t.elapsed().as_secs_f64() * 1e3, f.len(), store.report().unwrap_or_default().replace('\n', " | "));
+        println!(
+            "pass {pass}: {n} rows in {:.1} ms; {finite} of {} values finite, rms {norm:.4}; {}",
+            t.elapsed().as_secs_f64() * 1e3,
+            f.len(),
+            store.report().unwrap_or_default().replace('\n', " | ")
+        );
     }
     Ok(())
 }

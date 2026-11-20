@@ -114,7 +114,6 @@ impl KernQc {
         })
     }
 
-
     /// `rot_in` and `local` in one launch (the pairs of each token mapped by its first block; k at most 512).
     ///
     /// # Safety
@@ -126,14 +125,34 @@ impl KernQc {
     /// # Safety
     /// As `rot_in`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn router_rot(&self, s: Stream, x: u64, xs: usize, w: u64, logits: u64, n: usize, c: &MoeCfg, bias: u64, ids: u64, wts: u64, sg: u64, xr: u64, xrb: u64, local: u64, gids: u64, experts: usize, host: [u64; 3], map: u64, way: u64) -> Result<()> {
+    pub unsafe fn router_rot(
+        &self,
+        s: Stream,
+        x: u64,
+        xs: usize,
+        w: u64,
+        logits: u64,
+        n: usize,
+        c: &MoeCfg,
+        bias: u64,
+        ids: u64,
+        wts: u64,
+        sg: u64,
+        xr: u64,
+        xrb: u64,
+        local: u64,
+        gids: u64,
+        experts: usize,
+        host: [u64; 3],
+        map: u64,
+        way: u64,
+    ) -> Result<()> {
         if n == 0 || n > 8 || c.experts > 512 || c.router.top_k > 32 || c.router_hidden != H {
             return err(format!("the fused front on {n} rows of {} experts, {} a token, width {}", c.experts, c.router.top_k, c.router_hidden));
         }
         let blocks = c.experts.div_ceil(8) + 5 * n;
         launch!(self.router_rot, [blocks as u32, 1, 1], [512, 1, 1], s; x, xs as i32, w, logits, n as i32, c.experts as i32, H as i32, bias, ids, wts, c.router.top_k as i32, c.router.flags(), c.router.scale, self.counter.ptr, host[1], sg, xr, xrb, local, gids, experts as i32, host[0], host[2], self.flag.ptr as u64, map, way)
     }
-
 
     pub unsafe fn rot_in(&self, s: Stream, x: u64, xs: usize, sg: u64, xr: u64, xrb: u64, n: usize) -> Result<()> {
         launch!(self.rot_in, [n as u32, (H / 512) as u32, 1], [512, 1, 1], s; x, xs as i32, sg, xr, xrb)
@@ -161,7 +180,18 @@ impl KernQc {
     /// # Safety
     /// As `rot_in`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn down(&self, s: Stream, places: [u64; 2], strides: [usize; 2], way: u64, gu: u64, part: u64, split: usize, pairs: usize, mixed: bool) -> Result<()> {
+    pub unsafe fn down(
+        &self,
+        s: Stream,
+        places: [u64; 2],
+        strides: [usize; 2],
+        way: u64,
+        gu: u64,
+        part: u64,
+        split: usize,
+        pairs: usize,
+        mixed: bool,
+    ) -> Result<()> {
         launch!(self.down, [split as u32, pairs as u32, 1], [256, 1, 1], s; places[0], strides[0] as u64, places[1], strides[1] as u64, way, gu, part, split as i32, NO_CLAMP, mixed as i32)
     }
 
@@ -170,7 +200,21 @@ impl KernQc {
     /// # Safety
     /// As `rot_in`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn products_pp(&self, s: Stream, pp: u64, strides: [usize; 2], way: u64, xr: u64, gu: u64, part: u64, k: usize, pairs: usize, split: usize, t: bool, mixed: bool) -> Result<()> {
+    pub unsafe fn products_pp(
+        &self,
+        s: Stream,
+        pp: u64,
+        strides: [usize; 2],
+        way: u64,
+        xr: u64,
+        gu: u64,
+        part: u64,
+        k: usize,
+        pairs: usize,
+        split: usize,
+        t: bool,
+        mixed: bool,
+    ) -> Result<()> {
         launch!(self.upi, [(2 * I / 32) as u32, pairs as u32, 1], [256, 1, 1], s; pp, strides[0] as u64, strides[1] as u64, way, xr, gu, k as i32, mixed as i32)?;
         if t {
             return launch!(self.downti, [(H / 256) as u32, pairs as u32, 1], [256, 1, 1], s; pp, strides[0] as u64, strides[1] as u64, way, gu, part, NO_CLAMP, mixed as i32, pairs as i32);
@@ -233,7 +277,16 @@ pub struct QxCbShared {
 
 impl QxCbShared {
     pub fn new() -> Rc<QxCbShared> {
-        Rc::new(QxCbShared { scratch: OnceCell::new(), topk: Cell::new(0), read_ahead: Cell::new(u64::MAX), stream: Cell::new(false), maps: std::cell::RefCell::new(Vec::new()), places_bytes: Cell::new(0), pin_pack: Cell::new(false), drain: Cell::new(false) })
+        Rc::new(QxCbShared {
+            scratch: OnceCell::new(),
+            topk: Cell::new(0),
+            read_ahead: Cell::new(u64::MAX),
+            stream: Cell::new(false),
+            maps: std::cell::RefCell::new(Vec::new()),
+            places_bytes: Cell::new(0),
+            pin_pack: Cell::new(false),
+            drain: Cell::new(false),
+        })
     }
 
     /// The page tables of the layers' files (as far as the read-ahead budget went) filled on a thread of its own: a host expert's first read of a page is then no page fault (a call of one pair 100 -> 46 us). The thread
@@ -250,7 +303,12 @@ impl QxCbShared {
                 ok &= m.populate(off, len);
                 bytes += len;
             }
-            eprintln!("[load] {:.1} GB of the pack mapped in {:.1} s{}", bytes as f64 / 1e9, t0.elapsed().as_secs_f64(), if ok { "" } else { " (the system refused some: their first reads fault)" });
+            eprintln!(
+                "[load] {:.1} GB of the pack mapped in {:.1} s{}",
+                bytes as f64 / 1e9,
+                t0.elapsed().as_secs_f64(),
+                if ok { "" } else { " (the system refused some: their first reads fault)" }
+            );
         });
     }
 }
@@ -258,7 +316,11 @@ impl QxCbShared {
 /// The byte ranges of `map` (offset, length) that the placement's experts are in, in order, those less than 1 MiB apart joined.
 fn used_ranges(p: &crate::offload::Placement, map: &crate::mapped::Mapping) -> Vec<(usize, usize)> {
     let (base, end) = (map.ptr as usize, map.ptr as usize + map.len);
-    let mut r: Vec<(usize, usize)> = (0..2).flat_map(|k| p.at[k].iter().zip(&p.len[k]).map(|(&a, &l)| (a as usize, l as usize))).filter(|&(a, l)| a >= base && a + l <= end).map(|(a, l)| (a - base, l)).collect();
+    let mut r: Vec<(usize, usize)> = (0..2)
+        .flat_map(|k| p.at[k].iter().zip(&p.len[k]).map(|(&a, &l)| (a as usize, l as usize)))
+        .filter(|&(a, l)| a >= base && a + l <= end)
+        .map(|(a, l)| (a - base, l))
+        .collect();
     r.sort_unstable();
     let mut out: Vec<(usize, usize)> = Vec::new();
     for (a, l) in r {
@@ -410,9 +472,21 @@ impl QxMoeCb {
     /// Layer `l` (`l` = layers: the MTP head's): the router and the shared expert's gate (bf16), the shared expert at `level`, the layer's rotation, and the experts: `pack`'s file mapped as the cache's host tier, with
     /// `slots` places on the GPU.
     #[allow(clippy::too_many_arguments)]
-    pub fn load(l: usize, c: &ConfigQx, ck: &Checkpoint, level: Layout, pack: &CbPack, store: &Rc<ExpertStore>, slots: usize, common: &Rc<QxCbShared>) -> Result<QxMoeCb> {
+    pub fn load(
+        l: usize,
+        c: &ConfigQx,
+        ck: &Checkpoint,
+        level: Layout,
+        pack: &CbPack,
+        store: &Rc<ExpertStore>,
+        slots: usize,
+        common: &Rc<QxCbShared>,
+    ) -> Result<QxMoeCb> {
         if (c.hidden, c.inter, pack.hidden, pack.inter) != (H, I, H, I) {
-            return err(format!("experts of {} neurons over {} (the pack's {} over {}): the kernels take {I} over {H}", c.inter, c.hidden, pack.inter, pack.hidden));
+            return err(format!(
+                "experts of {} neurons over {} (the pack's {} over {}): the kernels take {I} over {H}",
+                c.inter, c.hidden, pack.inter, pack.hidden
+            ));
         }
         let kept = pack.kept(l).ok_or_else(|| Error(format!("{}: no experts of layer {l}", pack.dir.display())))?.to_vec();
         let p = format!("{}.mlp", c.layer_name(l));
@@ -422,8 +496,12 @@ impl QxMoeCb {
         for (i, &e) in kept.iter().enumerate() {
             local[e] = i as i32;
         }
-        let bias = if kept.len() < c.experts { Some(upload_bytes(&local.iter().flat_map(|&x| if x < 0 { -1e30f32 } else { 0.0 }.to_le_bytes()).collect::<Vec<u8>>())?) } else { None };
-        let _ = level;  // (the shared expert is held as int8 rows whatever the engine's layout)
+        let bias = if kept.len() < c.experts {
+            Some(upload_bytes(&local.iter().flat_map(|&x| if x < 0 { -1e30f32 } else { 0.0 }.to_le_bytes()).collect::<Vec<u8>>())?)
+        } else {
+            None
+        };
+        let _ = level; // (the shared expert is held as int8 rows whatever the engine's layout)
         let shared = QxShared::load(ck, &p, c.hidden, c.shared_inter)?;
         let slots = slots.clamp(1, kept.len());
         let lm = pack.map_layer(l)?;
@@ -457,7 +535,16 @@ impl QxMoeCb {
             }
         }
         let host = if side { [HostMem::none(), HostMem::none()] } else { [HostMem::mapped(&map, starts.0), HostMem::mapped(&map, starts.1)] };
-        store.add_layer_mapped(l, kept.len(), slots, host, place, [strides[0] as u64, strides[1] as u64], [places[0].ptr, places[1].ptr], Some((NO_CLAMP, H, I)))?;
+        store.add_layer_mapped(
+            l,
+            kept.len(),
+            slots,
+            host,
+            place,
+            [strides[0] as u64, strides[1] as u64],
+            [places[0].ptr, places[1].ptr],
+            Some((NO_CLAMP, H, I)),
+        )?;
         let signs = pack.signs(l).ok_or_else(|| Error(format!("no signs of layer {l}")))?;
         let tc_ok = descs.iter().all(|d| [d.up, d.down].iter().all(|f| matches!(f, crate::cpu_cb::Fmt::Cb2 | crate::cpu_cb::Fmt::Tq)));
         let pp = upload_bytes(crate::weights::as_bytes(&[places[0].ptr, places[1].ptr]))?;
@@ -638,7 +725,10 @@ impl QxMoeCb {
         crate::cb2_prefill::cb2_prefill_experts(&e.dev, kern, &descs, n, self.cfg.router.top_k, xrb, gids, wts, y, s)?;
         if crate::tune!("GLYD_CB2_HOSTLOG").is_some() && kern.host.get().is_some() {
             let t = kern.took.get();
-            eprintln!("host share: layer {} rows {n}: {} experts, {} pairs, host {:.1} ms, GPU loop {:.1} ms", self.layer, t.experts, t.pairs, t.host_ms, t.gpu_ms);
+            eprintln!(
+                "host share: layer {} rows {n}: {} experts, {} pairs, host {:.1} ms, GPU loop {:.1} ms",
+                self.layer, t.experts, t.pairs, t.host_ms, t.gpu_ms
+            );
         }
         Ok(())
     }
@@ -693,7 +783,14 @@ impl QxMoeCb {
         let mut lm = cs.lm.borrow_mut();
         if lm.as_ref().is_none_or(|w| w.rows < rows) {
             *lm = None;
-            *lm = Some(Whole { rows, xrb: Buf::new(rows * H * 2)?, wts: Buf::new(rows * k * 4)?, gids: Buf::new(rows * k * 8)?, y: Buf::new(rows * H * 4)?, sh: Buf::new(rows * H * 2)? });
+            *lm = Some(Whole {
+                rows,
+                xrb: Buf::new(rows * H * 2)?,
+                wts: Buf::new(rows * k * 4)?,
+                gids: Buf::new(rows * k * 8)?,
+                y: Buf::new(rows * H * 4)?,
+                sh: Buf::new(rows * H * 2)?,
+            });
         }
         let w = lm.as_ref().expect("the set");
         Ok(WholePtrs { rows: w.rows, xrb: w.xrb.ptr, wts: w.wts.ptr, gids: w.gids.ptr, y: w.y.ptr, sh: w.sh.ptr })
@@ -764,7 +861,27 @@ impl MoeBlockQx for QxMoeCb {
         let [hids, hwts, hz] = self.store.parts_host()?;
         let mapped = self.mapped();
         let map = if mapped { self.pmap.ptr as u64 } else { 0 };
-        cs.kern.router_rot(s, h, H, self.router.ptr, sc.logits.ptr, n, c, self.bias.as_ref().map_or(0, |b| b.ptr), sc.ids.ptr, sc.wts.ptr, self.signs.ptr, cs.xr.ptr, cs.xrb.ptr, self.local_of.ptr, cs.gids.ptr, self.experts, [hids, hwts, hz], map, sc.way.ptr)?;
+        cs.kern.router_rot(
+            s,
+            h,
+            H,
+            self.router.ptr,
+            sc.logits.ptr,
+            n,
+            c,
+            self.bias.as_ref().map_or(0, |b| b.ptr),
+            sc.ids.ptr,
+            sc.wts.ptr,
+            self.signs.ptr,
+            cs.xr.ptr,
+            cs.xrb.ptr,
+            self.local_of.ptr,
+            cs.gids.ptr,
+            self.experts,
+            [hids, hwts, hz],
+            map,
+            sc.way.ptr,
+        )?;
         crate::tmark!(s, "router");
         if mapped {
             // (the shared expert and the products of the pairs with a place, no wait for the host: it computes the others meanwhile, `host`)
@@ -791,7 +908,11 @@ impl MoeBlockQx for QxMoeCb {
         let sums = std::slice::from_raw_parts_mut(cs.hsum.ptr as *mut f32, cs.hsum.bytes / 4);
         // (the kernel census times each launch alone, waiting for it: the next graph then after the sums)
         let ahead = !crate::dev::kprof_on();
-        let r = if ahead { self.store.run_parts_mapped(self.layer, &e.dev, &call, self.pmap_mut(), next, sums) } else { self.store.run_parts_mapped(self.layer, &e.dev, &call, self.pmap_mut(), &mut || Ok(()), sums) };
+        let r = if ahead {
+            self.store.run_parts_mapped(self.layer, &e.dev, &call, self.pmap_mut(), next, sums)
+        } else {
+            self.store.run_parts_mapped(self.layer, &e.dev, &call, self.pmap_mut(), &mut || Ok(()), sums)
+        };
         // the word the next graph's back waits for, whatever came of the call (the GPU is not left waiting): whether there are sums, then the front's count
         let w = cs.kern.hword.ptr as *mut u32;
         std::ptr::write_volatile(w.add(1), matches!(r, Ok((_, true))) as u32);
@@ -947,7 +1068,12 @@ impl MoeBlockQx for QxMoeCb {
         }
         let (k, kk, s) = (c.router.top_k, self.cfg.router.top_k, e.dev.stream);
         if n == 0 || n > e.front_rows() || at + n > lm.rows || k != kk {
-            return err(format!("rows {at} to {} of a prompt taken layer by layer ({} rows, a part at most {}, {k} of {kk} pairs)", at + n, lm.rows, e.front_rows()));
+            return err(format!(
+                "rows {at} to {} of a prompt taken layer by layer ({} rows, a part at most {}, {k} of {kk} pairs)",
+                at + n,
+                lm.rows,
+                e.front_rows()
+            ));
         }
         self.route(e, &c, sc, h, n)?;
         crate::tmark!(s, "router");
@@ -1031,12 +1157,22 @@ impl MoeBlockQx for QxMoeCb {
     }
 
     fn bytes(&self) -> usize {
-        self.router.bytes + self.bias.as_ref().map_or(0, |b| b.bytes) + self.shared.bytes() + self.signs.bytes + self.local_of.bytes + self.places.borrow().iter().map(|b| b.bytes).sum::<usize>()
+        self.router.bytes
+            + self.bias.as_ref().map_or(0, |b| b.bytes)
+            + self.shared.bytes()
+            + self.signs.bytes
+            + self.local_of.bytes
+            + self.places.borrow().iter().map(|b| b.bytes).sum::<usize>()
     }
 }
 
 /// The factory `EngineQx::new` takes for experts in `pack`: each layer's block a `QxMoeCb` with `slots` places, all sharing `store` and `common`; the shared expert at the engine's layout.
-pub fn factory<'a>(pack: &'a CbPack, slots: usize, store: &'a Rc<ExpertStore>, common: &'a Rc<QxCbShared>) -> impl Fn(usize, &ConfigQx, &Checkpoint, Layout) -> Result<Box<dyn MoeBlockQx>> + 'a {
+pub fn factory<'a>(
+    pack: &'a CbPack,
+    slots: usize,
+    store: &'a Rc<ExpertStore>,
+    common: &'a Rc<QxCbShared>,
+) -> impl Fn(usize, &ConfigQx, &Checkpoint, Layout) -> Result<Box<dyn MoeBlockQx>> + 'a {
     move |l, c, ck, layout| {
         crate::status::STATUS.beat();
         Ok(Box::new(QxMoeCb::load(l, c, ck, layout, pack, store, slots, common)?))

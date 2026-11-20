@@ -30,7 +30,11 @@ pub fn write_safetensors(path: &Path, metadata: &[(&str, String)], tensors: &[(&
     let mut parts = Vec::new();
     for (name, dtype, shape, bytes) in tensors {
         let end = at + bytes.len() as u64;
-        parts.push(format!("\"{}\":{{\"dtype\":\"{dtype}\",\"shape\":[{}],\"data_offsets\":[{at},{end}]}}", esc(name), shape.iter().map(u64::to_string).collect::<Vec<_>>().join(",")));
+        parts.push(format!(
+            "\"{}\":{{\"dtype\":\"{dtype}\",\"shape\":[{}],\"data_offsets\":[{at},{end}]}}",
+            esc(name),
+            shape.iter().map(u64::to_string).collect::<Vec<_>>().join(",")
+        ));
         at = end;
     }
     h.push_str(&parts.join(","));
@@ -59,11 +63,14 @@ fn plan_json(packs: &[Pack35], kept: &[Tensor35], f32: &dyn Fn(&str) -> bool, ow
 /// The puts of `plan_json`, one JSON object each.
 pub(crate) fn plan_puts(packs: &[Pack35], kept: &[Tensor35], f32: &dyn Fn(&str) -> bool, own: &dyn Fn(&Pack35) -> Option<Layout>) -> Vec<String> {
     let q = |n: &str| format!("\"{n}\"");
-    let mut puts: Vec<String> = packs.iter().map(|p| {
-        let names = p.parts.iter().map(|x| q(Pack35::saved(&x.0))).collect::<Vec<_>>().join(", ");
-        let layout = own(p).map_or(String::new(), |l| format!(", \"layout\": {}", q(l.name())));
-        format!("{{\"linear\": [{names}], \"from\": [{names}]{layout}}}")
-    }).collect();
+    let mut puts: Vec<String> = packs
+        .iter()
+        .map(|p| {
+            let names = p.parts.iter().map(|x| q(Pack35::saved(&x.0))).collect::<Vec<_>>().join(", ");
+            let layout = own(p).map_or(String::new(), |l| format!(", \"layout\": {}", q(l.name())));
+            format!("{{\"linear\": [{names}], \"from\": [{names}]{layout}}}")
+        })
+        .collect();
     puts.extend(kept.iter().map(|t| format!("{{\"copy\": {}{}}}", q(&t.name), if f32(&t.name) { ", \"cast\": \"BF16\"" } else { "" })));
     puts
 }
@@ -108,7 +115,15 @@ pub fn gemma4_plan(c: &crate::model_gemma4::ConfigG4) -> String {
         puts.push(lin(&[format!("{a}.o_proj")]));
         puts.push(lin(&[format!("{m}.gate_proj"), format!("{m}.up_proj")]));
         puts.push(lin(&[format!("{m}.down_proj")]));
-        for t in ["input_layernorm.weight", "post_attention_layernorm.weight", "pre_feedforward_layernorm.weight", "post_feedforward_layernorm.weight", "self_attn.q_norm.weight", "self_attn.k_norm.weight", "layer_scalar"] {
+        for t in [
+            "input_layernorm.weight",
+            "post_attention_layernorm.weight",
+            "pre_feedforward_layernorm.weight",
+            "post_feedforward_layernorm.weight",
+            "self_attn.q_norm.weight",
+            "self_attn.k_norm.weight",
+            "layer_scalar",
+        ] {
             puts.push(format!("{{\"copy\": {}}}", q(&format!("{p}layers.{l}.{t}"))));
         }
     }
@@ -154,7 +169,11 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
         }
         for e in io(std::fs::read_dir(out))? {
             let name = io(e)?.file_name().to_string_lossy().into_owned();
-            if name == "glyd.json" || name == "engine.safetensors" || name == "model.safetensors.index.json" || (name.starts_with("model") && name.ends_with(".safetensors")) {
+            if name == "glyd.json"
+                || name == "engine.safetensors"
+                || name == "model.safetensors.index.json"
+                || (name.starts_with("model") && name.ends_with(".safetensors"))
+            {
                 io(std::fs::remove_file(out.join(&name)))?;
             }
         }
@@ -167,14 +186,31 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
     } else {
         // (a lossy level of a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash model: the loader's own packs and tensors, in the checkpoint's names)
         // (and penguin of a Gemma 4 model: its engine reads the packs as saved, a glyd-v7 directory of level penguin)
-        let planned = if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || (layout == Layout::Tiered && gemma) { level_plan(&source.dir, layout)? } else { None };
+        let planned = if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || (layout == Layout::Tiered && gemma) {
+            level_plan(&source.dir, layout)?
+        } else {
+            None
+        };
         let s = match planned {
             Some(plan) if layout == Layout::Tiered => io(save::save_penguin(&source, out, threads, 5 << 30, &plan))?,
             Some(plan) => io(save::save_planned(&source, out, threads, 5 << 30, layout, &plan))?,
             None => io(save::save(&source, out, threads, 5 << 30, true, layout))?,
         };
         if !quiet {
-            eprintln!("{}: {} packs checked, {} tensors hashed, {:.2} GB of bf16 read, {} shards ({:.1} s)", match layout { Layout::Twelve => "glyd-v3", Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 => "glyd-v7", Layout::Tiered if gemma => "glyd-v7", _ => "glyd-v4" }, s.checked, s.hashed, s.bytes as f64 / 1e9, s.shards, t0.elapsed().as_secs_f64());
+            eprintln!(
+                "{}: {} packs checked, {} tensors hashed, {:.2} GB of bf16 read, {} shards ({:.1} s)",
+                match layout {
+                    Layout::Twelve => "glyd-v3",
+                    Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 => "glyd-v7",
+                    Layout::Tiered if gemma => "glyd-v7",
+                    _ => "glyd-v4",
+                },
+                s.checked,
+                s.hashed,
+                s.bytes as f64 / 1e9,
+                s.shards,
+                t0.elapsed().as_secs_f64()
+            );
         }
     }
     if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || gemma {
@@ -203,24 +239,48 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
     // (the smallest layout packs the embedding in the smaller of the two, as it does each matrix of the save; the sidecar's metadata says which)
     let packed = match layout {
         Layout::Tiered | Layout::Compact => pack_smallest_checked(&w, rows, cols).ok_or_else(what)?,
-        Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => unreachable!("returned above"),
+        Layout::Int6
+        | Layout::Int5
+        | Layout::Int4
+        | Layout::Int4H
+        | Layout::Int3
+        | Layout::Int6Row
+        | Layout::Int5Row
+        | Layout::Int4Row
+        | Layout::Cb3Row
+        | Layout::Cb2Row
+        | Layout::Hummingbird => unreachable!("returned above"),
         Layout::Twelve => Packed::Twelve(pack_twelve_checked(&w, rows, cols).ok_or_else(what)?),
     };
     let (meta, mut bufs, used): (String, Bufs, Layout) = match packed {
         Packed::Tiered(p) => {
             let base = le(&p.block_base);
-            (format!("{{\"layout\":\"mma\",\"shape\":[{rows},{cols}],\"{}\":[{},{},{}]}}", crate::weights::WORDS_KEY, p.tiers[0], p.tiers[1], p.tiers[2]), vec![("embed.glyd_data", "U8", p.data), ("embed.glyd_blocks", "U8", p.blocks), ("embed.glyd_block_base", "I32", base)], Layout::Tiered)
+            (
+                format!("{{\"layout\":\"mma\",\"shape\":[{rows},{cols}],\"{}\":[{},{},{}]}}", crate::weights::WORDS_KEY, p.tiers[0], p.tiers[1], p.tiers[2]),
+                vec![("embed.glyd_data", "U8", p.data), ("embed.glyd_blocks", "U8", p.blocks), ("embed.glyd_block_base", "I32", base)],
+                Layout::Tiered,
+            )
         }
         Packed::Twelve(p) => {
             let (exc, base) = (le(&p.exc), le(&p.exc_base));
-            (format!("{{\"layout\":\"mma12\",\"shape\":[{rows},{cols}],\"hb\":{}}}", p.hb()), vec![("embed.glyd_data", "U8", p.data), ("embed.glyd_exc", "I32", exc), ("embed.glyd_exc_base", "I32", base)], Layout::Twelve)
+            (
+                format!("{{\"layout\":\"mma12\",\"shape\":[{rows},{cols}],\"hb\":{}}}", p.hb()),
+                vec![("embed.glyd_data", "U8", p.data), ("embed.glyd_exc", "I32", exc), ("embed.glyd_exc_base", "I32", base)],
+                Layout::Twelve,
+            )
         }
     };
     drop(w);
-    let tensors: Vec<(&str, &str, Vec<u64>, &[u8])> = bufs.iter_mut().map(|(n, d, b)| (*n, *d, vec![b.len() as u64 / if *d == "I32" { 4 } else { 1 }], &b[..])).collect();
+    let tensors: Vec<(&str, &str, Vec<u64>, &[u8])> =
+        bufs.iter_mut().map(|(n, d, b)| (*n, *d, vec![b.len() as u64 / if *d == "I32" { 4 } else { 1 }], &b[..])).collect();
     write_safetensors(&out.join("engine.safetensors"), &[("format", "glyd-engine-v1".to_string()), ("embed", meta)], &tensors)?;
     if !quiet {
-        eprintln!("embedding {rows} x {cols} packed ({}) and checked ({:.1} s); wrote {}", used.name(), t1.elapsed().as_secs_f64(), out.join("engine.safetensors").display());
+        eprintln!(
+            "embedding {rows} x {cols} packed ({}) and checked ({:.1} s); wrote {}",
+            used.name(),
+            t1.elapsed().as_secs_f64(),
+            out.join("engine.safetensors").display()
+        );
     }
     Ok(())
 }
@@ -238,7 +298,12 @@ mod tests {
         let p = dir.join("t.safetensors");
         let a = vec![1u8, 2, 3, 4, 5];
         let b: Vec<u8> = [7i32, -8, 9].iter().flat_map(|x| x.to_le_bytes()).collect();
-        write_safetensors(&p, &[("format", "x".to_string()), ("meta", "{\"a\":1}".to_string())], &[("a", "U8", vec![5], &a[..]), ("b", "I32", vec![3], &b[..])]).unwrap();
+        write_safetensors(
+            &p,
+            &[("format", "x".to_string()), ("meta", "{\"a\":1}".to_string())],
+            &[("a", "U8", vec![5], &a[..]), ("b", "I32", vec![3], &b[..])],
+        )
+        .unwrap();
         let f = File::open(&p).unwrap();
         assert_eq!(f.tensors.len(), 2);
         assert_eq!(f.read(f.get("a").unwrap()).unwrap(), a);
@@ -310,13 +375,34 @@ mod tests {
         // (bf16, used in fp32) and everything small: the norms, Mamba-2's convolution, A_log, D, dt_bias and gated norm
         let (packed, kept): (Vec<&str>, Vec<&str>) = (linear.iter().map(String::as_str).collect(), copy.iter().map(|c| c.0.as_str()).collect());
         let count = |names: &[&str], suffix: &str| names.iter().filter(|n| n.ends_with(suffix)).count();
-        for (suffix, n) in [("mixer.in_proj", 40), ("mixer.out_proj", 40), ("mixer.q_proj", 8), ("mixer.k_proj", 8), ("mixer.v_proj", 8), ("mixer.o_proj", 8), ("mixer.fc1_latent_proj", 40), ("mixer.fc2_latent_proj", 40),
-                            ("shared_experts.up_proj", 40), ("shared_experts.down_proj", 40), ("embeddings", 1), ("lm_head", 1)] {
+        for (suffix, n) in [
+            ("mixer.in_proj", 40),
+            ("mixer.out_proj", 40),
+            ("mixer.q_proj", 8),
+            ("mixer.k_proj", 8),
+            ("mixer.v_proj", 8),
+            ("mixer.o_proj", 8),
+            ("mixer.fc1_latent_proj", 40),
+            ("mixer.fc2_latent_proj", 40),
+            ("shared_experts.up_proj", 40),
+            ("shared_experts.down_proj", 40),
+            ("embeddings", 1),
+            ("lm_head", 1),
+        ] {
             assert_eq!((count(&packed, suffix), count(&kept, &format!("{suffix}.weight"))), (n, 0), "{suffix} packed");
         }
         assert_eq!((count(&packed, ".up_proj") - 40, count(&packed, ".down_proj") - 40), (20_480, 20_480));
-        for (suffix, n) in [("mixer.gate.weight", 40), ("mixer.gate.e_score_correction_bias", 40), ("mixer.A_log", 40), ("mixer.D", 40), ("mixer.dt_bias", 40), ("mixer.conv1d.weight", 40), ("mixer.conv1d.bias", 40),
-                            ("mixer.norm.weight", 40), ("norm_f.weight", 1)] {
+        for (suffix, n) in [
+            ("mixer.gate.weight", 40),
+            ("mixer.gate.e_score_correction_bias", 40),
+            ("mixer.A_log", 40),
+            ("mixer.D", 40),
+            ("mixer.dt_bias", 40),
+            ("mixer.conv1d.weight", 40),
+            ("mixer.conv1d.bias", 40),
+            ("mixer.norm.weight", 40),
+            ("norm_f.weight", 1),
+        ] {
             assert_eq!((count(&kept, suffix), count(&packed, suffix.trim_end_matches(".weight"))), (n, 0), "{suffix} kept");
         }
         assert_eq!(count(&kept, ".norm.weight") - 40, 88);
@@ -353,10 +439,23 @@ mod tests {
             }
             assert_eq!((linears.iter().filter(|l| l.0.contains(".mixer.experts.")).count(), named), (40_960, 258 + 20_480));
             for (name, own) in &linears {
-                assert_eq!(*own, if down(name) { Some("i4r") } else if name.contains(".mixer.experts.") { None } else { Some("i6") }, "{name}");
+                assert_eq!(
+                    *own,
+                    if down(name) {
+                        Some("i4r")
+                    } else if name.contains(".mixer.experts.") {
+                        None
+                    } else {
+                        Some("i6")
+                    },
+                    "{name}"
+                );
             }
             let own = |name: &str| linears.iter().find(|l| l.0 == name).unwrap().1;
-            assert_eq!((own("backbone.embeddings"), own("lm_head"), own("backbone.layers.1.mixer.shared_experts.up_proj")), (Some("i6"), Some("i6"), Some("i6")));
+            assert_eq!(
+                (own("backbone.embeddings"), own("lm_head"), own("backbone.layers.1.mixer.shared_experts.up_proj")),
+                (Some("i6"), Some("i6"), Some("i6"))
+            );
         }
         // (a dense Qwen3.5's plan: byte for byte what it was, no layout in it)
         let (all, tensors) = (glyd_gpu::json::parse(include_str!("../tests/fixtures/qwen35_configs.json")).unwrap(), "Qwen/Qwen3.5-9B");
@@ -416,7 +515,8 @@ mod tests {
             // the loader's check of the directory: every matrix held saved, every small tensor there (the bias, fp32 in the source, bf16 here)
             let held = c.saved(&saved);
             assert_eq!(held.len(), c.packs().iter().map(|p| p.parts.len()).sum::<usize>());
-            let have: Vec<(String, String, Vec<u64>)> = saved.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone()))).collect();
+            let have: Vec<(String, String, Vec<u64>)> =
+                saved.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone()))).collect();
             assert_eq!(c.check(&have, &held).unwrap(), 0);
             assert!(c.check(&have, &Default::default()).is_err(), "the matrices are not bf16 tensors there");
             c.check_layers(&have, &[0, 1, 2], &held).unwrap();
@@ -456,12 +556,36 @@ mod tests {
         assert_eq!(copy, c.kept().into_iter().map(|t| t.name).collect::<Vec<_>>());
         assert_eq!(copy.len(), 748);
         let count = |names: &[String], suffix: &str| names.iter().filter(|n| n.ends_with(suffix)).count();
-        for (suffix, n) in [("self_attn.q_proj", 34), ("self_attn.k_proj", 34), ("self_attn.b_proj", 34), ("self_attn.f_b_proj", 34), ("self_attn.kv_b_proj", 11), ("self_attn.kv_a_proj_with_mqa", 11), ("embed_tokens", 1), ("lm_head", 1)] {
+        for (suffix, n) in [
+            ("self_attn.q_proj", 34),
+            ("self_attn.k_proj", 34),
+            ("self_attn.b_proj", 34),
+            ("self_attn.f_b_proj", 34),
+            ("self_attn.kv_b_proj", 11),
+            ("self_attn.kv_a_proj_with_mqa", 11),
+            ("embed_tokens", 1),
+            ("lm_head", 1),
+        ] {
             assert_eq!((count(&linear, suffix), count(&copy, &format!("{suffix}.weight"))), (n, 0), "{suffix} packed");
         }
         // (the first expert's gate and up in each of the 42 layers; every down: the dense MLPs', the shared experts' and the experts')
-        assert_eq!((count(&linear, "mlp.experts.0.gate_proj") + count(&linear, "mlp.experts.0.up_proj"), count(&linear, ".down_proj")), (2 * 42, 3 + 42 + 42 * 288));
-        for (suffix, n) in [("mlp.gate.weight", 42), ("mlp.gate.e_score_correction_bias", 42), ("self_attn.A_log", 34), ("self_attn.dt_bias", 34), ("self_attn.q_conv1d.weight", 34), ("hc_attn_fn", 45), ("hc_ffn_base", 45), ("indexer.wq_b.weight", 11), ("indexer.weights_proj.weight", 11), ("indexer.index_kpool_compress_gate", 11), ("norm.weight", 45 * 2 + 11 * 2 + 34 + 11 + 1)] {
+        assert_eq!(
+            (count(&linear, "mlp.experts.0.gate_proj") + count(&linear, "mlp.experts.0.up_proj"), count(&linear, ".down_proj")),
+            (2 * 42, 3 + 42 + 42 * 288)
+        );
+        for (suffix, n) in [
+            ("mlp.gate.weight", 42),
+            ("mlp.gate.e_score_correction_bias", 42),
+            ("self_attn.A_log", 34),
+            ("self_attn.dt_bias", 34),
+            ("self_attn.q_conv1d.weight", 34),
+            ("hc_attn_fn", 45),
+            ("hc_ffn_base", 45),
+            ("indexer.wq_b.weight", 11),
+            ("indexer.weights_proj.weight", 11),
+            ("indexer.index_kpool_compress_gate", 11),
+            ("norm.weight", 45 * 2 + 11 * 2 + 34 + 11 + 1),
+        ] {
             assert_eq!((count(&copy, suffix), count(&linear, suffix.trim_end_matches(".weight"))), (n, 0), "{suffix} kept");
         }
         let all: std::collections::HashSet<String> = linear.iter().map(|l| format!("{l}.weight")).chain(copy.iter().cloned()).collect();
@@ -487,7 +611,8 @@ mod tests {
         let n_parts = c.packs().iter().map(|p| p.parts.len()).sum::<usize>();
         // (the source: FP8 matrices, their scales, and what the engine leaves out)
         assert!(fp8.names().filter(|n| n.ends_with("_scale_inv")).count() > 20 && bf16.names().all(|n| !n.ends_with("_scale_inv")));
-        let src: Vec<(String, String, Vec<u64>)> = fp8.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone()))).collect();
+        let src: Vec<(String, String, Vec<u64>)> =
+            fp8.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone()))).collect();
         assert_eq!(c.check(&src, &Default::default()).unwrap(), 3);
         for asked in [Layout::Int6, Layout::Int5] {
             let out = dir.join(asked.name());
@@ -503,7 +628,16 @@ mod tests {
                 let key = Pack35::saved(&p.parts[0].0);
                 let e = m.get("packs").and_then(|x| x.get(key)).unwrap_or_else(|| panic!("no pack {key}"));
                 let lens = ["data", "blocks", "block_base"].map(|s| saved.get(&format!("{key}.glyd_{s}")).unwrap().1.bytes);
-                check_v7(key, layout, p.rows(), p.cols, &e.get("shape").and_then(|s| s.as_u64s()).unwrap(), &e.get(WORDS_KEY).and_then(|s| s.as_u64s()).unwrap(), lens).unwrap();
+                check_v7(
+                    key,
+                    layout,
+                    p.rows(),
+                    p.cols,
+                    &e.get("shape").and_then(|s| s.as_u64s()).unwrap(),
+                    &e.get(WORDS_KEY).and_then(|s| s.as_u64s()).unwrap(),
+                    lens,
+                )
+                .unwrap();
                 // (a gate and an up, or q, k and v, are one pack under the first's name)
                 assert_eq!(saved_parts(&saved, &p), vec![(key, p.rows())], "{key}");
                 let got = read_pack(&saved, Some(&(layout, m.clone())), &p, asked).unwrap();
@@ -526,7 +660,8 @@ mod tests {
             // the loader's check of the directory: every matrix held saved, every small tensor there
             let held = c.saved(&saved);
             assert_eq!(held.len(), n_parts);
-            let have: Vec<(String, String, Vec<u64>)> = saved.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone()))).collect();
+            let have: Vec<(String, String, Vec<u64>)> =
+                saved.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone()))).collect();
             assert_eq!(c.check(&have, &held).unwrap(), 0);
             assert!(c.check(&have, &Default::default()).is_err(), "the matrices are not tensors there");
             let v = save::verify(&out, 2, &save::Decoder::Cpu).unwrap();
@@ -558,16 +693,25 @@ mod tests {
         std::fs::write(src.join("config.json"), config).unwrap();
         let c = Config35::parse(config, "tiny", None).unwrap();
         let mut want = c.kept();
-        want.extend(c.packs().iter().flat_map(|p| p.parts.iter().map(|x| Tensor35 { name: x.0.clone(), dtype: "BF16", shape: vec![x.1 as u64, p.cols as u64] })));
+        want.extend(
+            c.packs().iter().flat_map(|p| p.parts.iter().map(|x| Tensor35 { name: x.0.clone(), dtype: "BF16", shape: vec![x.1 as u64, p.cols as u64] })),
+        );
         want.push(Tensor35 { name: "model.visual.patch_embed.weight".into(), dtype: "BF16", shape: vec![64, 64] });
         want.push(Tensor35 { name: "mtp.fc.weight".into(), dtype: "BF16", shape: vec![64, 64] });
-        let data: Vec<(String, &str, Vec<u64>, Vec<u8>)> = want.iter().map(|t| {
-            let n: u64 = t.shape.iter().product();
-            // (bf16 values in a small range; the two F32 parameters as the checkpoint holds them)
-            let f = |i: u64| ((((i * 2654435761) >> 7) % 400) as f32 / 100.0 - 2.0).to_bits();
-            let bytes = if t.dtype == "F32" { (0..n).flat_map(|i| f(i).to_le_bytes()).collect() } else { (0..n).flat_map(|i| ((f(i) >> 16) as u16).to_le_bytes()).collect() };
-            (t.name.clone(), t.dtype, t.shape.clone(), bytes)
-        }).collect();
+        let data: Vec<(String, &str, Vec<u64>, Vec<u8>)> = want
+            .iter()
+            .map(|t| {
+                let n: u64 = t.shape.iter().product();
+                // (bf16 values in a small range; the two F32 parameters as the checkpoint holds them)
+                let f = |i: u64| ((((i * 2654435761) >> 7) % 400) as f32 / 100.0 - 2.0).to_bits();
+                let bytes = if t.dtype == "F32" {
+                    (0..n).flat_map(|i| f(i).to_le_bytes()).collect()
+                } else {
+                    (0..n).flat_map(|i| ((f(i) >> 16) as u16).to_le_bytes()).collect()
+                };
+                (t.name.clone(), t.dtype, t.shape.clone(), bytes)
+            })
+            .collect();
         let tensors: Vec<(&str, &str, Vec<u64>, &[u8])> = data.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
         write_safetensors(&src.join("model.safetensors"), &[("format", "pt".to_string())], &tensors).unwrap();
         let source = Source::find(src.to_str().unwrap()).unwrap();
@@ -594,14 +738,24 @@ mod tests {
                 let key = Pack35::saved(&p.parts[0].0);
                 let e = m.get("packs").and_then(|x| x.get(key)).unwrap_or_else(|| panic!("no pack {key}"));
                 let lens = ["data", "blocks", "block_base"].map(|s| saved.get(&format!("{key}.glyd_{s}")).unwrap().1.bytes);
-                crate::weights::check_v7(key, layout, p.rows(), p.cols, &e.get("shape").and_then(|s| s.as_u64s()).unwrap(), &e.get(crate::weights::WORDS_KEY).and_then(|s| s.as_u64s()).unwrap(), lens).unwrap();
+                crate::weights::check_v7(
+                    key,
+                    layout,
+                    p.rows(),
+                    p.cols,
+                    &e.get("shape").and_then(|s| s.as_u64s()).unwrap(),
+                    &e.get(crate::weights::WORDS_KEY).and_then(|s| s.as_u64s()).unwrap(),
+                    lens,
+                )
+                .unwrap();
             }
             for t in c.kept() {
                 assert_eq!(saved.get(&t.name).unwrap().1.dtype, "BF16", "{}", t.name);
             }
             assert!(saved.get("model.visual.patch_embed.weight").is_none() && saved.get("mtp.fc.weight").is_none());
-            let held: std::collections::HashSet<String> = c.packs().iter().flat_map(|p| p.parts.iter().map(|x| Pack35::saved(&x.0).to_string())).collect();  // (a fused pack holds its parts)
-            let have: Vec<(String, String, Vec<u64>)> = saved.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone()))).collect();
+            let held: std::collections::HashSet<String> = c.packs().iter().flat_map(|p| p.parts.iter().map(|x| Pack35::saved(&x.0).to_string())).collect(); // (a fused pack holds its parts)
+            let have: Vec<(String, String, Vec<u64>)> =
+                saved.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone()))).collect();
             c.check(&have, &held).unwrap();
         }
         // `run_with` (what `glyd run` and `glyd-engine pack` call) takes the same plan from the config
@@ -632,19 +786,34 @@ mod tests {
             std::fs::create_dir_all(&codes).unwrap();
             std::fs::write(codes.join("calibration.json"), calibration).unwrap();
             // a pack's codes and scales, its parts' stacked (the embedding's pack has none: it is packed from its weights)
-            let coded: Vec<(Pack35, Vec<i8>, Vec<u16>)> = c.packs().into_iter().filter(|p| p.key != "embed").map(|p| {
-                let code = (0..p.rows() * p.cols).map(|_| (next() % (2 * q as u64 + 1)) as i8 - q).collect();
-                let scale = (0..p.rows() * p.cols / 32).map(|_| next() as u16 & 0xBF7F | 0x3000).collect();
-                (p, code, scale)
-            }).collect();
+            let coded: Vec<(Pack35, Vec<i8>, Vec<u16>)> = c
+                .packs()
+                .into_iter()
+                .filter(|p| p.key != "embed")
+                .map(|p| {
+                    let code = (0..p.rows() * p.cols).map(|_| (next() % (2 * q as u64 + 1)) as i8 - q).collect();
+                    let scale = (0..p.rows() * p.cols / 32).map(|_| next() as u16 & 0xBF7F | 0x3000).collect();
+                    (p, code, scale)
+                })
+                .collect();
             assert!(coded.len() + 1 <= c.packs().len() && !coded.is_empty());
             let mut held = Vec::new();
             for (p, code, scale) in &coded {
                 let (mut at_c, mut at_s) = (0, 0);
                 for (name, r) in &p.parts {
                     let m = Pack35::saved(name);
-                    held.push((format!("{m}.codes"), "I8", vec![*r as u64, p.cols as u64], code[at_c..at_c + r * p.cols].iter().map(|&c| c as u8).collect::<Vec<u8>>()));
-                    held.push((format!("{m}.scales"), "BF16", vec![*r as u64, p.cols as u64 / 32], scale[at_s..at_s + r * p.cols / 32].iter().flat_map(|s| s.to_le_bytes()).collect()));
+                    held.push((
+                        format!("{m}.codes"),
+                        "I8",
+                        vec![*r as u64, p.cols as u64],
+                        code[at_c..at_c + r * p.cols].iter().map(|&c| c as u8).collect::<Vec<u8>>(),
+                    ));
+                    held.push((
+                        format!("{m}.scales"),
+                        "BF16",
+                        vec![*r as u64, p.cols as u64 / 32],
+                        scale[at_s..at_s + r * p.cols / 32].iter().flat_map(|s| s.to_le_bytes()).collect(),
+                    ));
                     (at_c, at_s) = (at_c + r * p.cols, at_s + r * p.cols / 32);
                 }
             }
@@ -660,13 +829,30 @@ mod tests {
                 let key = Pack35::saved(&p.parts[0].0);
                 let e = m.get("packs").and_then(|x| x.get(key)).unwrap_or_else(|| panic!("no pack {key}"));
                 let lens = ["data", "blocks", "block_base"].map(|s| saved.get(&format!("{key}.glyd_{s}")).unwrap().1.bytes);
-                crate::weights::check_v7(key, found, p.rows(), p.cols, &e.get("shape").and_then(|s| s.as_u64s()).unwrap(), &e.get(crate::weights::WORDS_KEY).and_then(|s| s.as_u64s()).unwrap(), lens).unwrap();
+                crate::weights::check_v7(
+                    key,
+                    found,
+                    p.rows(),
+                    p.cols,
+                    &e.get("shape").and_then(|s| s.as_u64s()).unwrap(),
+                    &e.get(crate::weights::WORDS_KEY).and_then(|s| s.as_u64s()).unwrap(),
+                    lens,
+                )
+                .unwrap();
             }
             for (p, code, scale) in &coded {
-                let want = if q == 31 { glyd_gpu::pack::pack_int6_runs_checked(code, scale, p.rows(), p.cols) } else { glyd_gpu::pack::pack_int5_runs_checked(code, scale, p.rows(), p.cols) }.unwrap();
+                let want = if q == 31 {
+                    glyd_gpu::pack::pack_int6_runs_checked(code, scale, p.rows(), p.cols)
+                } else {
+                    glyd_gpu::pack::pack_int5_runs_checked(code, scale, p.rows(), p.cols)
+                }
+                .unwrap();
                 let key = Pack35::saved(&p.parts[0].0);
                 crate::weights::read_v7(&saved, &m, found, &[(key, p.rows())], p.cols).unwrap();
-                assert!(saved.read(&format!("{key}.glyd_data")).unwrap() == want.data && saved.read(&format!("{key}.glyd_blocks")).unwrap() == want.blocks, "{key}");
+                assert!(
+                    saved.read(&format!("{key}.glyd_data")).unwrap() == want.data && saved.read(&format!("{key}.glyd_blocks")).unwrap() == want.blocks,
+                    "{key}"
+                );
             }
         }
         std::fs::remove_dir_all(&dir).unwrap();

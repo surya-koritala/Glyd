@@ -1,9 +1,8 @@
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
 use crate::error::{CodecError, Result};
 use crate::fallback::read_escape;
-use crate::format::{ESCAPE_BASE_LIT, ESCAPE_CONT, OFFSET_BYTES,
-    TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_OFF_SHIFT};
+use crate::format::{ESCAPE_BASE_LIT, ESCAPE_CONT, OFFSET_BYTES, TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_OFF_SHIFT};
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
 
 /// 32-Byte AVX2 Decompressor.
 ///
@@ -27,19 +26,12 @@ pub unsafe fn decompress_avx2(
     esc_base_match: usize,
 ) -> Result<usize> {
     if uncompressed_len > dst.len() {
-        return Err(CodecError::OutputBufferTooSmall {
-            required: uncompressed_len,
-            provided: dst.len(),
-        });
+        return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }
     let mut dst_ptr = dst.as_mut_ptr();
     let block_start = dst_ptr;
     let block_end = dst_ptr.add(uncompressed_len);
-    let safe_limit = if uncompressed_len >= 64 {
-        block_end.sub(64)
-    } else {
-        block_start
-    };
+    let safe_limit = if uncompressed_len >= 64 { block_end.sub(64) } else { block_start };
 
     let mut lit_ptr = literals.as_ptr();
     let lit_limit = literals.as_ptr().add(literals.len());
@@ -114,8 +106,7 @@ pub unsafe fn decompress_avx2(
             // Chunk totals from the byte vectors (sum of 8-byte groups).
             let sum8 = |x: __m256i| -> usize {
                 let s = _mm256_sad_epu8(x, zero);
-                (_mm256_extract_epi64(s, 0) + _mm256_extract_epi64(s, 1)
-                    + _mm256_extract_epi64(s, 2) + _mm256_extract_epi64(s, 3)) as usize
+                (_mm256_extract_epi64(s, 0) + _mm256_extract_epi64(s, 1) + _mm256_extract_epi64(s, 2) + _mm256_extract_epi64(s, 3)) as usize
             };
             let mut lit_sum = sum8(lit);
             let mut ml_sum = sum8(ml);
@@ -129,8 +120,7 @@ pub unsafe fn decompress_avx2(
             // by a conservative 3-bytes-per-field check up front.
             let mut e = extra_idx;
             if esc_mask != 0 {
-                let fields = esc_mask.count_ones() as usize
-                    + (lit_esc_mask & m_esc_mask).count_ones() as usize;
+                let fields = esc_mask.count_ones() as usize + (lit_esc_mask & m_esc_mask).count_ones() as usize;
                 if e + 3 * fields > extras_len {
                     careful = CHUNK - 1;
                     break 'chunk;
@@ -175,10 +165,7 @@ pub unsafe fn decompress_avx2(
             // byte; literal loads need 64 past the chunk's literals; offsets
             // need OFFSET_BYTES per match.
             let remaining = block_end.offset_from(dst_ptr) as usize;
-            if lit_sum + ml_sum + 64 > remaining
-                || lit_ptr.add(lit_sum + 64) > lit_limit
-                || off_pos + n_match * OFFSET_BYTES > offsets_len
-            {
+            if lit_sum + ml_sum + 64 > remaining || lit_ptr.add(lit_sum + 64) > lit_limit || off_pos + n_match * OFFSET_BYTES > offsets_len {
                 careful = CHUNK - 1;
                 break 'chunk;
             }
@@ -186,9 +173,7 @@ pub unsafe fn decompress_avx2(
             // Copy-only loop, in its own function so its cursors stay in
             // registers: inlined into this large frame they spilled, and the
             // spill made dst_ptr a store-load chain (~10 cycles per token).
-            let (nl, nd, no) = copy_chunk(
-                &litl, &mll, tokens.add(token_idx), lit_ptr, dst_ptr, offsets, off_pos, buffer_start,
-            )?;
+            let (nl, nd, no) = copy_chunk(&litl, &mll, tokens.add(token_idx), lit_ptr, dst_ptr, offsets, off_pos, buffer_start)?;
             lit_ptr = nl;
             dst_ptr = nd;
             off_pos = no;
@@ -215,15 +200,9 @@ pub unsafe fn decompress_avx2(
 
         // A corrupted token must never write past the declared block length.
         // This check has to happen before any copy, not after.
-        let remaining = if dst_ptr <= block_end {
-            block_end.offset_from(dst_ptr) as usize
-        } else {
-            0
-        };
+        let remaining = if dst_ptr <= block_end { block_end.offset_from(dst_ptr) as usize } else { 0 };
         if lit_len + match_len > remaining {
-            return Err(CodecError::CorruptedBitstream(
-                "Token output exceeds declared block length",
-            ));
+            return Err(CodecError::CorruptedBitstream("Token output exceeds declared block length"));
         }
 
         if lit_len > 0 {

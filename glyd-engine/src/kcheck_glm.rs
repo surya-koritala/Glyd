@@ -12,8 +12,8 @@
 use crate::dev::{Buf, Dev, Graph};
 use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
-use crate::model_glm::{EngineGlm, Hc, KernGlm, OptsGlm, GM_D, GM_HC, GM_NP};
 use crate::mla_glm::unpacked;
+use crate::model_glm::{EngineGlm, Hc, KernGlm, OptsGlm, GM_D, GM_HC, GM_NP};
 use crate::moe_glm::factory;
 use crate::weights::Layout;
 use glyd_gpu::json::{self, Value};
@@ -117,7 +117,19 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
             let len = w[1] - w[0];
             if len > 0 {
                 // SAFETY: as above.
-                unsafe { k.conv(s, cx.ptr + (w[0] * 3 * qd * 2) as u64, (3 * qd) as i32, cw.ptr, false, cst.ptr, y.ptr + (w[0] * 3 * qd * 2) as u64, len as i32, (3 * qd) as i32)? };
+                unsafe {
+                    k.conv(
+                        s,
+                        cx.ptr + (w[0] * 3 * qd * 2) as u64,
+                        (3 * qd) as i32,
+                        cw.ptr,
+                        false,
+                        cst.ptr,
+                        y.ptr + (w[0] * 3 * qd * 2) as u64,
+                        len as i32,
+                        (3 * qd) as i32,
+                    )?
+                };
             }
         }
         dev.sync()?;
@@ -129,7 +141,8 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     let (d, n2, heps, hc_eps, iters) = (h[0] as usize, h[1] as usize, h[2] as f32, h[3] as f32, h[4] as i32);
     let hc = Hc { proj: load(ind, "hfn.bin")?, base: load(ind, "hbase.bin")?, scale: load(ind, "hscale.bin")? };
     let (hx, hnw, ho) = (load(ind, "hx.bin")?, load(ind, "hnw.bin")?, load(ind, "ho.bin")?);
-    let (hh, hcp, post, head, spread) = (Buf::zeroed(n2 * d * 2)?, Buf::zeroed(n2 * GM_NP * 4)?, copy(&hx)?, Buf::zeroed(n2 * d * 2)?, Buf::zeroed(n2 * GM_HC * d * 2)?);
+    let (hh, hcp, post, head, spread) =
+        (Buf::zeroed(n2 * d * 2)?, Buf::zeroed(n2 * GM_NP * 4)?, copy(&hx)?, Buf::zeroed(n2 * d * 2)?, Buf::zeroed(n2 * GM_HC * d * 2)?);
     // SAFETY: as above.
     unsafe {
         k.hc_mix(s, hx.ptr, &hc, hnw.ptr, hh.ptr, hcp.ptr, n2 as u32, d as i32, heps, hc_eps, iters)?;
@@ -167,11 +180,19 @@ fn mla_kernels(dev: &Dev, k: &KernGlm, ind: &Path, outd: &Path) -> Result<()> {
     let tail = m.get(11 + nc).is_none_or(|&x| x != 0.0);
     let (ksel, tmax, pmax) = (topk / kp, topk + kp - 1, n / kp + 1);
     let ld = |name: &str| load(ind, &format!("mla_{name}.bin"));
-    let (kvraw, kvw, ikraw, knw, knb, gsraw, ape, iq, wts, q, wkv) = (ld("kvraw")?, ld("kvw")?, ld("ikraw")?, ld("knw")?, ld("knb")?, ld("gsraw")?, ld("ape")?, ld("iq")?, ld("wts")?, ld("q")?, ld("wkv")?);
+    let (kvraw, kvw, ikraw, knw, knb, gsraw, ape, iq, wts, q, wkv) =
+        (ld("kvraw")?, ld("kvw")?, ld("ikraw")?, ld("knw")?, ld("knb")?, ld("gsraw")?, ld("ape")?, ld("iq")?, ld("wts")?, ld("q")?, ld("wkv")?);
     let posb = Buf::new(n * 4)?;
     posb.write(0, &(0..n as i32).collect::<Vec<_>>())?;
     let (lat, ikc, gsc, pkc) = (Buf::zeroed(n * kr * 2)?, Buf::zeroed(n * id * 2)?, Buf::zeroed(n * id * 2)?, Buf::zeroed(pmax * id * 2)?);
-    let (qa, scores, sel, cnt, olat, ov) = (Buf::zeroed(n * nh * kr * 4)?, Buf::zeroed(n * pmax * 4)?, Buf::zeroed(n * tmax * 4)?, Buf::zeroed(n * 4)?, Buf::zeroed(n * nh * kr * 4)?, Buf::zeroed(n * nh * vd * 2)?);
+    let (qa, scores, sel, cnt, olat, ov) = (
+        Buf::zeroed(n * nh * kr * 4)?,
+        Buf::zeroed(n * pmax * 4)?,
+        Buf::zeroed(n * tmax * 4)?,
+        Buf::zeroed(n * 4)?,
+        Buf::zeroed(n * nh * kr * 4)?,
+        Buf::zeroed(n * nh * vd * 2)?,
+    );
     let (scale, iscale, wscale) = ((nope as f32).powf(-0.5), (id as f32).powf(-0.5), (ih as f32).powf(-0.5));
     let part = Buf::zeroed(crate::model_glm::HC_FEW as usize * nh * 8 * (kr + 2) * 4)?;
     let (s, t0) = (dev.stream, Instant::now());
@@ -184,11 +205,62 @@ fn mla_kernels(dev: &Dev, k: &KernGlm, ind: &Path, outd: &Path) -> Result<()> {
             k.layernorm(s, ikraw.ptr + (a * id * 2) as u64, id as i32, knw.ptr, knb.ptr, ikc.ptr, id as i32, ps, id as i32, 1e-6, l)?;
             k.scatter(s, gsraw.ptr + (a * id * 2) as u64, id as i32, gsc.ptr, id as i32, ps, id as i32, l)?;
             k.kp_keys(s, ikc.ptr, gsc.ptr, ape.ptr, pkc.ptr, ps, len as i32, id as i32, kp as i32)?;
-            k.absorb(s, q.ptr + (a * nh * nope * 2) as u64, (nh * nope) as i32, wkv.ptr, qa.ptr + (a * nh * kr * 4) as u64, len as i32, nh as i32, nope as i32, vd as i32, kr as i32)?;
-            k.idx_score(s, iq.ptr + (a * ih * id * 2) as u64, (ih * id) as i32, wts.ptr + (a * ih * 2) as u64, ih as i32, pkc.ptr, ps, scores.ptr, pmax as i32, ih as i32, id as i32, kp as i32, ksel as i32, iscale, wscale, l)?;
+            k.absorb(
+                s,
+                q.ptr + (a * nh * nope * 2) as u64,
+                (nh * nope) as i32,
+                wkv.ptr,
+                qa.ptr + (a * nh * kr * 4) as u64,
+                len as i32,
+                nh as i32,
+                nope as i32,
+                vd as i32,
+                kr as i32,
+            )?;
+            k.idx_score(
+                s,
+                iq.ptr + (a * ih * id * 2) as u64,
+                (ih * id) as i32,
+                wts.ptr + (a * ih * 2) as u64,
+                ih as i32,
+                pkc.ptr,
+                ps,
+                scores.ptr,
+                pmax as i32,
+                ih as i32,
+                id as i32,
+                kp as i32,
+                ksel as i32,
+                iscale,
+                wscale,
+                l,
+            )?;
             k.select(s, scores.ptr, pmax as i32, ps, sel.ptr + (a * tmax * 4) as u64, cnt.ptr + (a * 4) as u64, tmax as i32, kp as i32, ksel as i32, tail, l)?;
-            k.mla_attn(s, qa.ptr + (a * nh * kr * 4) as u64, lat.ptr, sel.ptr + (a * tmax * 4) as u64, cnt.ptr + (a * 4) as u64, olat.ptr + (a * nh * kr * 4) as u64, part.ptr, tmax as i32, nh as i32, kr as i32, scale, l)?;
-            k.expand_v(s, olat.ptr + (a * nh * kr * 4) as u64, wkv.ptr, ov.ptr + (a * nh * vd * 2) as u64, len as i32, nh as i32, nope as i32, vd as i32, kr as i32)?;
+            k.mla_attn(
+                s,
+                qa.ptr + (a * nh * kr * 4) as u64,
+                lat.ptr,
+                sel.ptr + (a * tmax * 4) as u64,
+                cnt.ptr + (a * 4) as u64,
+                olat.ptr + (a * nh * kr * 4) as u64,
+                part.ptr,
+                tmax as i32,
+                nh as i32,
+                kr as i32,
+                scale,
+                l,
+            )?;
+            k.expand_v(
+                s,
+                olat.ptr + (a * nh * kr * 4) as u64,
+                wkv.ptr,
+                ov.ptr + (a * nh * vd * 2) as u64,
+                len as i32,
+                nh as i32,
+                nope as i32,
+                vd as i32,
+                kr as i32,
+            )?;
         }
         a += len;
     }
@@ -255,7 +327,10 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
         let l = get(case, "layer").ok_or_else(|| Error(format!("{name}: no layer")))?;
         let mode = case.get("mode").and_then(Value::as_str).unwrap_or("prefill");
         let graph = case.get("graph").and_then(Value::as_bool).unwrap_or(false);
-        let windows: Option<Vec<(usize, usize)>> = case.get("sample").and_then(Value::as_array).map(|a| a.iter().filter_map(|w| w.as_u64s().filter(|w| w.len() == 2).map(|w| (w[0] as usize, w[1] as usize))).collect());
+        let windows: Option<Vec<(usize, usize)>> = case
+            .get("sample")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|w| w.as_u64s().filter(|w| w.len() == 2).map(|w| (w[0] as usize, w[1] as usize))).collect());
         let sampled = |r: usize| windows.as_ref().is_none_or(|w| w.iter().any(|&(first, k)| r >= first && r < first + k));
         let (kind, moe) = e.w.layers[l].as_ref().map(|ly| (ly.kind, ly.moe.is_some())).ok_or_else(|| Error(format!("{name}: layer {l} is not loaded")))?;
         // the calls: (first row, rows)
@@ -268,7 +343,9 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
             }
         };
         match mode {
-            "prefill" => prefill_calls(case.get("calls").and_then(Value::as_u64s).unwrap_or_default().into_iter().map(|v| v as usize).collect(), &mut at, &mut calls),
+            "prefill" => {
+                prefill_calls(case.get("calls").and_then(Value::as_u64s).unwrap_or_default().into_iter().map(|v| v as usize).collect(), &mut at, &mut calls)
+            }
             "decode" => prefill_calls(vec![1; get(case, "tokens").unwrap_or(1)], &mut at, &mut calls),
             "mixed" => {
                 prefill_calls(vec![get(case, "prefill").unwrap_or(1)], &mut at, &mut calls);
@@ -294,7 +371,18 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
         }
         // the stages dumped: (name, width of a row), and the engine's buffer each is read from
         let live_a: Vec<(&str, usize, &Buf)> = if kind == GlmKind::Kda {
-            vec![("h1", hid, &e.h), ("mix", 3 * qd, &e.mix), ("conv", 3 * qd, &e.xc), ("fg", qd, &e.fg), ("bb", heads, &e.bb), ("og", qd, &e.og), ("core", qd, &e.core), ("att", qd, &e.att), ("o1", hid, &e.o), ("x1", GM_HC * hid, &e.x)]
+            vec![
+                ("h1", hid, &e.h),
+                ("mix", 3 * qd, &e.mix),
+                ("conv", 3 * qd, &e.xc),
+                ("fg", qd, &e.fg),
+                ("bb", heads, &e.bb),
+                ("og", qd, &e.og),
+                ("core", qd, &e.core),
+                ("att", qd, &e.att),
+                ("o1", hid, &e.o),
+                ("x1", GM_HC * hid, &e.x),
+            ]
         } else {
             vec![("h1", hid, &e.h), ("o1", hid, &e.o), ("x1", GM_HC * hid, &e.x)]
         };
@@ -349,7 +437,10 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
                 e.dev.sync()?;
                 spent += t2.elapsed().as_secs_f64();
                 if half == 0 && kind == GlmKind::Mla {
-                    let block = e.w.layers[l].as_ref().and_then(|ly| ly.mla.as_ref()).ok_or_else(|| Error(format!("{name}: layer {l} has no latent attention block")))?;
+                    let block = e.w.layers[l]
+                        .as_ref()
+                        .and_then(|ly| ly.mla.as_ref())
+                        .ok_or_else(|| Error(format!("{name}: layer {l} has no latent attention block")))?;
                     for (nm, bytes) in block.stages(&e, n, a)? {
                         let whole = rows.len() == n || WHOLE_MLA.contains(&nm) || n == 0 || bytes.len() % n != 0;
                         extra.entry(nm).or_default().extend(if whole { bytes } else { pick_rows(&bytes, bytes.len() / n, &rows) });
@@ -394,7 +485,8 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
             save(outd, &format!("{name}.ssm.bin"), &e.ssm, idx * heads * GM_D * GM_D * 4, heads * GM_D * GM_D * 4)?;
             save(outd, &format!("{name}.cstate.bin"), &e.convst, idx * 3 * 3 * qd * 2, 3 * 3 * qd * 2)?;
         } else {
-            let block = e.w.layers[l].as_ref().and_then(|ly| ly.mla.as_ref()).ok_or_else(|| Error(format!("{name}: layer {l} has no latent attention block")))?;
+            let block =
+                e.w.layers[l].as_ref().and_then(|ly| ly.mla.as_ref()).ok_or_else(|| Error(format!("{name}: layer {l} has no latent attention block")))?;
             extra.extend(block.finish(&e, at)?);
             for (nm, bytes) in &extra {
                 io(std::fs::write(outd.join(format!("{name}.{nm}.bin")), bytes))?;
@@ -404,7 +496,8 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
             save_bytes(outd, &format!("{name}.ids.bin"), &chosen.0)?;
             save_bytes(outd, &format!("{name}.wts.bin"), &chosen.1)?;
         }
-        let what = format!("{} and {}", if kind == GlmKind::Kda { "Kimi delta attention" } else { "latent attention" }, if moe { "experts" } else { "a dense MLP" });
+        let what =
+            format!("{} and {}", if kind == GlmKind::Kda { "Kimi delta attention" } else { "latent attention" }, if moe { "experts" } else { "a dense MLP" });
         println!(
             "case {name}: layer {l} ({what}), {} calls, {at} rows: {:.1} ms in the layer ({:.3} ms a call), {:.1} ms with the dumps",
             calls.len(),
@@ -478,7 +571,12 @@ pub fn toy(dir: &Path, outd: &Path) -> Result<()> {
             tokens.push(s.token.to_string());
             grab(&e, &mut logits)?;
         }
-        println!("{tag}: prefill of {p} tokens {:.1} ms, {} steps {:.2} ms each", pre * 1e3, total - p, t1.elapsed().as_secs_f64() * 1e3 / (total - p).max(1) as f64);
+        println!(
+            "{tag}: prefill of {p} tokens {:.1} ms, {} steps {:.2} ms each",
+            pre * 1e3,
+            total - p,
+            t1.elapsed().as_secs_f64() * 1e3 / (total - p).max(1) as f64
+        );
         save_bytes(outd, &format!("toy_{tag}_logits.bin"), &logits)?;
         io(std::fs::write(outd.join(format!("toy_{tag}_tokens.txt")), tokens.join(" ")))?;
         for (nm, bytes) in traced.borrow().iter() {
@@ -553,7 +651,12 @@ pub fn prof(dir: &Path, layers: &[usize], ctx: usize, reps: usize) -> Result<()>
             }
         }
         let per = |ms: f64| ms * 1e3 / reps.max(1) as f64;
-        println!("layer {l} ({} and {}), a decode step at position {ctx}: {:.1} us in a graph's replay", if kind == GlmKind::Kda { "Kimi delta attention" } else { "latent attention" }, if moe { "experts" } else { "a dense MLP" }, per(whole));
+        println!(
+            "layer {l} ({} and {}), a decode step at position {ctx}: {:.1} us in a graph's replay",
+            if kind == GlmKind::Kda { "Kimi delta attention" } else { "latent attention" },
+            if moe { "experts" } else { "a dense MLP" },
+            per(whole)
+        );
         for i in 1..marks.len() {
             println!("   {:<36} {:>8.1} us {:>5.1} %", marks[i].0, per(acc[i]), 100.0 * acc[i] / whole.max(1e-9));
         }
@@ -819,7 +922,13 @@ pub fn real(snap: &Path, refd: &Path, outd: &Path, first: usize, end: usize, lev
                 save_bytes(outd, &format!("real_L{l}.wts.bin"), &wts)?;
             }
         }
-        let line = format!("layer {l}: {} and {}: loaded in {loaded:.1} s, run on {rows} positions in {:.1} ms, {:.2} GiB of weights", if ly.kind == GlmKind::Kda { "Kimi delta attention" } else { "latent attention" }, if ly.moe.is_some() { "experts" } else { "a dense MLP" }, ran * 1e3, e.w.bytes as f64 / (1u64 << 30) as f64);
+        let line = format!(
+            "layer {l}: {} and {}: loaded in {loaded:.1} s, run on {rows} positions in {:.1} ms, {:.2} GiB of weights",
+            if ly.kind == GlmKind::Kda { "Kimi delta attention" } else { "latent attention" },
+            if ly.moe.is_some() { "experts" } else { "a dense MLP" },
+            ran * 1e3,
+            e.w.bytes as f64 / (1u64 << 30) as f64
+        );
         println!("{line}");
         times.push_str(&line);
         times.push('\n');
@@ -837,7 +946,11 @@ pub fn real(snap: &Path, refd: &Path, outd: &Path, first: usize, end: usize, lev
 pub fn fp8(dir: &Path, outd: &Path, only: Option<&str>) -> Result<()> {
     let ck = io(Checkpoint::open(dir))?;
     io(std::fs::create_dir_all(outd))?;
-    let mut names: Vec<String> = ck.names().filter(|n| ck.get(n).is_some_and(|(_, t)| t.dtype == "F8_E4M3") && only.is_none_or(|o| o.split(',').any(|p| n.contains(p)))).map(String::from).collect();
+    let mut names: Vec<String> = ck
+        .names()
+        .filter(|n| ck.get(n).is_some_and(|(_, t)| t.dtype == "F8_E4M3") && only.is_none_or(|o| o.split(',').any(|p| n.contains(p))))
+        .map(String::from)
+        .collect();
     names.sort();
     let t0 = Instant::now();
     for n in &names {
@@ -882,7 +995,12 @@ pub fn decode(dir: &Path, out: &Path, layers: &[usize], level: Layout) -> Result
     io(std::fs::copy(dir.join("config.json"), out.join("config.json")))?;
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), d.as_str(), s.clone(), &b[..])).collect();
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
-    println!("{}: {} tensors of layers {layers:?} decoded from the packs of {level:?} ({:.0} MB)", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
+    println!(
+        "{}: {} tensors of layers {layers:?} decoded from the packs of {level:?} ({:.0} MB)",
+        out.display(),
+        tensors.len(),
+        tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6
+    );
     Ok(())
 }
 
@@ -908,7 +1026,12 @@ mod tests {
             assert_eq!(got.names().count(), 3 + 4 * 3);
             assert_eq!(std::fs::read(out.join("config.json")).unwrap(), std::fs::read(dir.join("fp8").join("config.json")).unwrap());
             let p = "model.language_model.layers.1.mlp";
-            for name in [format!("{p}.shared_experts.gate_proj.weight"), format!("{p}.shared_experts.up_proj.weight"), format!("{p}.experts.2.up_proj.weight"), format!("{p}.experts.3.down_proj.weight")] {
+            for name in [
+                format!("{p}.shared_experts.gate_proj.weight"),
+                format!("{p}.shared_experts.up_proj.weight"),
+                format!("{p}.experts.2.up_proj.weight"),
+                format!("{p}.experts.3.down_proj.weight"),
+            ] {
                 let (_, t) = got.get(&name).unwrap_or_else(|| panic!("no {name}"));
                 assert_eq!(t.dtype, "BF16");
                 // (the pack of the matrix on its own, decoded, is the same words)
@@ -938,7 +1061,14 @@ mod tests {
         fp8(&dir.join("fp8"), &out, Some("layers.0.mlp.")).unwrap();
         let names = std::fs::read_to_string(out.join("names.txt")).unwrap();
         let names: Vec<&str> = names.lines().collect();
-        assert_eq!(names, ["model.language_model.layers.0.mlp.down_proj.weight", "model.language_model.layers.0.mlp.gate_proj.weight", "model.language_model.layers.0.mlp.up_proj.weight"]);
+        assert_eq!(
+            names,
+            [
+                "model.language_model.layers.0.mlp.down_proj.weight",
+                "model.language_model.layers.0.mlp.gate_proj.weight",
+                "model.language_model.layers.0.mlp.up_proj.weight"
+            ]
+        );
         for n in &names {
             let got: Vec<u16> = std::fs::read(out.join(format!("{n}.bf16"))).unwrap().as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect();
             assert!(got == words[*n], "{n}");
@@ -971,7 +1101,12 @@ mod tests {
 pub fn random(out: &Path, fp8: bool, real: Option<(usize, usize)>) -> Result<()> {
     let io = |r: std::io::Result<()>| r.map_err(|e| Error(e.to_string()));
     let fp8 = fp8 || real.is_some();
-    let mut v = json::parse(if real.is_some() { include_str!("../tests/fixtures/glm5_next_config.json") } else { include_str!("../tests/fixtures/glm5_next_toy_config.json") }).map_err(|e| Error(e.to_string()))?;
+    let mut v = json::parse(if real.is_some() {
+        include_str!("../tests/fixtures/glm5_next_config.json")
+    } else {
+        include_str!("../tests/fixtures/glm5_next_toy_config.json")
+    })
+    .map_err(|e| Error(e.to_string()))?;
     if let (Some((layers, experts)), Value::Object(o)) = (real, &mut v) {
         if let Some((_, Value::Object(t))) = o.iter_mut().find(|(k, _)| k == "text_config") {
             let kinds: Vec<Value> = (0..layers).map(|l| Value::from(if l + 1 == layers { "deepseek_sparse_attention" } else { "linear_attention" })).collect();
@@ -1036,7 +1171,8 @@ pub fn random(out: &Path, fp8: bool, real: Option<(usize, usize)>) -> Result<()>
     };
     let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
     // (E4M3: a value rounded to it, then its byte)
-    let code: std::collections::HashMap<u32, u8> = (0..=255u8).filter(|b| !glyd_gpu::fp8::E4M3[*b as usize].is_nan()).map(|b| (glyd_gpu::fp8::E4M3[b as usize].to_bits(), b)).collect();
+    let code: std::collections::HashMap<u32, u8> =
+        (0..=255u8).filter(|b| !glyd_gpu::fp8::E4M3[*b as usize].is_nan()).map(|b| (glyd_gpu::fp8::E4M3[b as usize].to_bits(), b)).collect();
     for pk in c.packs() {
         let a = (3.0 / pk.cols as f32).sqrt();
         for (name, rows) in &pk.parts {
@@ -1049,7 +1185,8 @@ pub fn random(out: &Path, fp8: bool, real: Option<(usize, usize)>) -> Result<()>
                     let b = &mut sc[(i / cols) / 128 * gc + (i % cols) / 128];
                     *b = b.max(x.abs() / 448.0);
                 }
-                let q: Vec<u8> = w.iter().enumerate().map(|(i, x)| code[&crate::dsv4_ref::e4m3_round(x / sc[(i / cols) / 128 * gc + (i % cols) / 128]).to_bits()]).collect();
+                let q: Vec<u8> =
+                    w.iter().enumerate().map(|(i, x)| code[&crate::dsv4_ref::e4m3_round(x / sc[(i / cols) / 128 * gc + (i % cols) / 128]).to_bits()]).collect();
                 tensors.push((name.clone(), "F8_E4M3", vec![*rows as u64, cols as u64], q));
                 tensors.push((format!("{name}_scale_inv"), "F32", vec![gr as u64, gc as u64], sc.iter().flat_map(|x| x.to_le_bytes()).collect()));
                 continue;
@@ -1077,7 +1214,11 @@ pub fn random(out: &Path, fp8: bool, real: Option<(usize, usize)>) -> Result<()>
                 (-a, a)
             }
         };
-        let bytes = if t.dtype == "F32" { (0..n).flat_map(|_| uni(lo, hi).to_le_bytes()).collect() } else { crate::weights::as_bytes(&(0..n).map(|_| bf(uni(lo, hi))).collect::<Vec<u16>>()).to_vec() };
+        let bytes = if t.dtype == "F32" {
+            (0..n).flat_map(|_| uni(lo, hi).to_le_bytes()).collect()
+        } else {
+            crate::weights::as_bytes(&(0..n).map(|_| bf(uni(lo, hi))).collect::<Vec<u16>>()).to_vec()
+        };
         tensors.push((t.name.clone(), t.dtype, t.shape.clone(), bytes));
     }
     io(std::fs::create_dir_all(out))?;
@@ -1085,7 +1226,12 @@ pub fn random(out: &Path, fp8: bool, real: Option<(usize, usize)>) -> Result<()>
     io(std::fs::write(out.join("generation_config.json"), include_str!("../tests/fixtures/glm5_next_generation_config.json")))?;
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
-    println!("{}: a random GLM-5.3-Flash of the toy's shape, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
+    println!(
+        "{}: a random GLM-5.3-Flash of the toy's shape, {} tensors, {:.0} MB",
+        out.display(),
+        tensors.len(),
+        tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6
+    );
     Ok(())
 }
 

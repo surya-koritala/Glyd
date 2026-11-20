@@ -44,7 +44,11 @@ fn run(args: &[String]) -> Result<bool> {
         return Err(fail(&name, "a mixture of experts' layer: this example takes a Linear's"));
     }
     let shape = pack.get("shape").and_then(json::Value::as_u64s).filter(|s| s.len() == 2).ok_or_else(|| fail(&name, "no shape in glyd.json"))?;
-    let tiers = pack.get("tiers").and_then(json::Value::as_u64s).filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64)).ok_or_else(|| fail(&name, "no tiers (three 32-bit words) in glyd.json"))?;
+    let tiers = pack
+        .get("tiers")
+        .and_then(json::Value::as_u64s)
+        .filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64))
+        .ok_or_else(|| fail(&name, "no tiers (three 32-bit words) in glyd.json"))?;
     // W [O, K] as the tiered layout holds it (O a multiple of 64, K of 16), up to 2^40 weights
     let (o, k) = (shape[0], shape[1]);
     if o < 64 || o % 64 != 0 || k < 16 || k % 16 != 0 || o > (1 << 40) / k {

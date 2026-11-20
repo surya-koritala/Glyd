@@ -6,12 +6,12 @@
 //! pages with lengths start + 1 ... start + n.
 
 use crate::dev::{copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
-use std::cell::RefCell;
 use crate::ffi::{err, Lib, Result};
 use crate::kern::{Kern, TOPK};
 use crate::kv::{self, Kv, KvTables, Lost, HEAD_WORDS};
 use crate::sampler::{Need, Top};
 use crate::weights::{PackBuf, Weights};
+use std::cell::RefCell;
 use std::path::Path;
 use std::time::Instant;
 
@@ -143,7 +143,16 @@ pub struct TopGpu {
 
 impl TopGpu {
     pub fn new(vocab: usize) -> Result<TopGpu> {
-        Ok(TopGpu { tok: Buf::zeroed(4 * TOPK)?, val: Buf::zeroed(4 * TOPK)?, sum: Buf::zeroed(8)?, stage: Pinned::new(8 * TOPK + 8)?, vocab, ask: None, got: None, off: crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some() })
+        Ok(TopGpu {
+            tok: Buf::zeroed(4 * TOPK)?,
+            val: Buf::zeroed(4 * TOPK)?,
+            sum: Buf::zeroed(8)?,
+            stage: Pinned::new(8 * TOPK + 8)?,
+            vocab,
+            ask: None,
+            got: None,
+            off: crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some(),
+        })
     }
 
     /// Behind the step's work on the stream: the candidates of the row `ask` names, with the copies to the host (the caller synchronizes). The kernels take a vocabulary of a multiple of 8 and at least TOPK; a smaller one has none.
@@ -330,7 +339,9 @@ impl Engine {
         } else {
             // a Hub-format directory: packed here, in memory, in the layout asked for or the GPU's
             let layout = crate::weights::choose_layout(o.layout, dev.cc_pair(), dev.total_mem as u64, crate::weights::Config::load(dir)?.matrix_bytes(), 0).0;
-            let threads = crate::tune!("GLYD_ENGINE_THREADS").and_then(|t| t.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(8, |n| n.get().min(16)));
+            let threads = crate::tune!("GLYD_ENGINE_THREADS")
+                .and_then(|t| t.parse().ok())
+                .unwrap_or_else(|| std::thread::available_parallelism().map_or(8, |n| n.get().min(16)));
             Weights::load_bf16(dir, max_pos, threads, layout)?
         };
         lap("weights uploaded");
@@ -347,7 +358,13 @@ impl Engine {
         let blas = if (o.chunk == 0 || o.chunk > 64) && (want == "blas" || (want.is_empty() && dev.cc != (8, 9))) { crate::ffi::Blas::find() } else { None };
         let own = want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9));
         let decode_from = crate::tune!("GLYD_ENGINE_DECODE_FROM").and_then(|v| v.parse().ok());
-        let c = if o.chunk > 0 { o.chunk } else if blas.is_some() || own { 4096 } else { 2048 };
+        let c = if o.chunk > 0 {
+            o.chunk
+        } else if blas.is_some() || own {
+            4096
+        } else {
+            2048
+        };
         let qkv_w = (cfg.heads + 2 * kvh) * hd;
         let act = |cols: usize, rows: usize| Buf::new(rows * cols * 2);
         let (x, h, qkv) = (act(hid, c)?, act(hid, c)?, act(qkv_w, c)?);
@@ -365,11 +382,19 @@ impl Engine {
         // a long prompt's products by the library's routes: where it says DECODE (W decoded to bf16, then the caller's GEMM), cuBLAS where the machine has it
         let gpu_code = lib.gpu()? as i64;
         let scratch_w = match (&blas, own) {
-            (Some(_), _) | (_, true) => Buf::new(w.layers.iter().flat_map(|l| [&l.qkv, &l.o, &l.gate_up, &l.down]).map(|p| (p.pack.rows * p.pack.cols) as usize * 2).max().unwrap_or(16))?,
+            (Some(_), _) | (_, true) => Buf::new(
+                w.layers.iter().flat_map(|l| [&l.qkv, &l.o, &l.gate_up, &l.down]).map(|p| (p.pack.rows * p.pack.cols) as usize * 2).max().unwrap_or(16),
+            )?,
             _ => Buf::new(16)?,
         };
         // products' workspace: the most any matrix takes for any token count up to a chunk
-        let shapes: Vec<(i64, i64)> = vec![(qkv_w as i64, hid as i64), (hid as i64, (cfg.heads * hd) as i64), (2 * inter as i64, hid as i64), (hid as i64, inter as i64), (cfg.vocab as i64, hid as i64)];
+        let shapes: Vec<(i64, i64)> = vec![
+            (qkv_w as i64, hid as i64),
+            (hid as i64, (cfg.heads * hd) as i64),
+            (2 * inter as i64, hid as i64),
+            (hid as i64, inter as i64),
+            (cfg.vocab as i64, hid as i64),
+        ];
         // (a pack is in the layout that was smaller for its matrix: the workspace is the most of the two layouts')
         let mut need = 0usize;
         for m_ in 1..=c as i64 {
@@ -452,7 +477,11 @@ impl Engine {
             let want = o.pool.max(tokens).div_ceil(16) * 16;
             let (free, _) = dev.mem_info()?;
             let fits = (free.saturating_sub(768 << 20) as f64 / per_token) as usize / 16 * 16;
-            if tables.is_some() { want.min(fits).max(window) } else { window }
+            if tables.is_some() {
+                want.min(fits).max(window)
+            } else {
+                window
+            }
         };
         let kv = match &tables {
             Some(t) => Kv::new(&lib, t, kvh, group, cfg.layers, pool_tokens, kv::ring_for(c))?,
@@ -465,7 +494,71 @@ impl Engine {
         let (bstate, btab) = (Buf::zeroed(128)?, Buf::zeroed(MAX_ROWS * bt_stride as usize * 4)?);
         let (lslots, gpages, rel) = (Buf::zeroed(8 * c)?, Buf::zeroed(4 * stage_blocks as usize)?, Buf::zeroed(4 * kv.nblocks.max(1) as usize)?);
         let mut e = Engine {
-            dev, lib, kern, w, kv, chunk: c, x, h, qkv, qo, ko, attn, o: o_, gu, m, d, hlast, logits, scratch, tok, val, topk_tok, topk_val, lse, pos, slots, lens, st, ws, done, kvws, stage, stage_blocks, iota, attn_decode: o.attn_decode, splits_dec, graph: None, bstate, btab, bt_stride, graphs: (0..=MAX_ROWS).map(|_| None).collect(), lslots, gpages, rel, steps: 0, lazy_release: crate::tune!("GLYD_ENGINE_LAZY_RELEASE").is_some(), verify: None, lost_acc: Lost::default(), graph_ev: (Ev::new()?, Ev::new()?), host_sampling: crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some(), window, blas, own, decode_from, scratch_w, embed_groups, embed_pairs, gpu_code, host, n: 0, cached: Vec::new(), work_bytes, marks: RefCell::new(None), dump_row: std::cell::Cell::new(None), dumped: RefCell::new(Vec::new()),
+            dev,
+            lib,
+            kern,
+            w,
+            kv,
+            chunk: c,
+            x,
+            h,
+            qkv,
+            qo,
+            ko,
+            attn,
+            o: o_,
+            gu,
+            m,
+            d,
+            hlast,
+            logits,
+            scratch,
+            tok,
+            val,
+            topk_tok,
+            topk_val,
+            lse,
+            pos,
+            slots,
+            lens,
+            st,
+            ws,
+            done,
+            kvws,
+            stage,
+            stage_blocks,
+            iota,
+            attn_decode: o.attn_decode,
+            splits_dec,
+            graph: None,
+            bstate,
+            btab,
+            bt_stride,
+            graphs: (0..=MAX_ROWS).map(|_| None).collect(),
+            lslots,
+            gpages,
+            rel,
+            steps: 0,
+            lazy_release: crate::tune!("GLYD_ENGINE_LAZY_RELEASE").is_some(),
+            verify: None,
+            lost_acc: Lost::default(),
+            graph_ev: (Ev::new()?, Ev::new()?),
+            host_sampling: crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some(),
+            window,
+            blas,
+            own,
+            decode_from,
+            scratch_w,
+            embed_groups,
+            embed_pairs,
+            gpu_code,
+            host,
+            n: 0,
+            cached: Vec::new(),
+            work_bytes,
+            marks: RefCell::new(None),
+            dump_row: std::cell::Cell::new(None),
+            dumped: RefCell::new(Vec::new()),
         };
         if crate::tune!("GLYD_ENGINE_VERIFY").is_some() && tables.is_some() {
             let per_layer = e.kv.nblocks as usize * 16 * kvh * 256 * 2;
@@ -581,7 +674,13 @@ impl Engine {
     /// The gate-and-up product and silu(gate) * up into `m`: one kernel where the engine's own product runs it (the same bits as the two steps), else the two.
     unsafe fn gate_up_silu(&self, p: &PackBuf, h: u64, n: usize, inter: usize) -> Result<()> {
         let s = self.dev.stream;
-        if self.blas.is_none() && self.own && self.decoded_way(p, n)? && p.pack.rows as usize == 2 * inter && inter.is_multiple_of(128) && crate::tune!("GLYD_ENGINE_NO_FUSE").is_none() {
+        if self.blas.is_none()
+            && self.own
+            && self.decoded_way(p, n)?
+            && p.pack.rows as usize == 2 * inter
+            && inter.is_multiple_of(128)
+            && crate::tune!("GLYD_ENGINE_NO_FUSE").is_none()
+        {
             self.lib.unpack(&p.pack, 0, p.pack.rows, self.scratch_w.ptr, s)?;
             self.kern.gemm_silu(s, h, self.scratch_w.ptr, self.m.ptr, n as i32, p.pack.rows as i32, p.pack.cols as i32)?;
             self.mark("gate and up product with SiLU product")?;
@@ -626,14 +725,37 @@ impl Engine {
     /// The layers on the n rows in x: their cache slots, positions and lengths at the given device addresses; where `logits`,
     /// the LM head on the last row and its argmax follow. One sequence on the identity block table.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) unsafe fn forward(&self, n: usize, pos: u64, slots: u64, lens: u64, bt_stride: i64, splits: i64, logits: bool, flash_start: Option<usize>, hook: Option<Hook>) -> Result<()> {
+    pub(crate) unsafe fn forward(
+        &self,
+        n: usize,
+        pos: u64,
+        slots: u64,
+        lens: u64,
+        bt_stride: i64,
+        splits: i64,
+        logits: bool,
+        flash_start: Option<usize>,
+        hook: Option<Hook>,
+    ) -> Result<()> {
         let flash = flash_start.map(|start| Flash { start, gather: self.iota.ptr, lslots: slots });
         self.forward_ex(n, pos, slots, lens, self.kv.block_table.ptr, bt_stride, splits, if logits { Head::Last } else { Head::None }, flash, hook)
     }
 
     /// `forward` for any sequences: the block table at `bt` (rows `bt_stride` apart, one for each row of x where the rows are sequences), the head on the rows `head` says, a prompt chunk's attention as `flash` says.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) unsafe fn forward_ex(&self, n: usize, pos: u64, slots: u64, lens: u64, bt: u64, bt_stride: i64, splits: i64, head: Head, flash: Option<Flash>, mut hook: Option<Hook>) -> Result<()> {
+    pub(crate) unsafe fn forward_ex(
+        &self,
+        n: usize,
+        pos: u64,
+        slots: u64,
+        lens: u64,
+        bt: u64,
+        bt_stride: i64,
+        splits: i64,
+        head: Head,
+        flash: Option<Flash>,
+        mut hook: Option<Hook>,
+    ) -> Result<()> {
         let c = &self.w.cfg;
         let s = self.dev.stream;
         let (hid, hd, kvh, inter) = (c.hidden, c.head_dim, c.kv_heads, c.inter);
@@ -652,7 +774,22 @@ impl Engine {
             }
             self.lin(&ly.qkv, self.h.ptr, n, self.qkv.ptr)?;
             self.mark("qkv product")?;
-            self.kern.qk_norm_rope(s, self.qkv.ptr, qkv_w as i32, ly.q_norm.ptr, ly.k_norm.ptr, self.w.cos.ptr, self.w.sin.ptr, pos, self.qo.ptr, self.ko.ptr, nu, c.heads as i32, kvh as i32, eps)?;
+            self.kern.qk_norm_rope(
+                s,
+                self.qkv.ptr,
+                qkv_w as i32,
+                ly.q_norm.ptr,
+                ly.k_norm.ptr,
+                self.w.cos.ptr,
+                self.w.sin.ptr,
+                pos,
+                self.qo.ptr,
+                self.ko.ptr,
+                nu,
+                c.heads as i32,
+                kvh as i32,
+                eps,
+            )?;
             self.mark("query/key norm and rotary")?;
             if let Some(h) = hook.as_mut() {
                 // calibrating: the keys (self.ko) and values (in self.qkv) of the layer go to the calibration, which does the attention on its own memory
@@ -660,30 +797,103 @@ impl Engine {
                 self.mark("layer hook")?;
             } else {
                 self.lib.kv_write(
-                    &self.kv.geom, self.kv.pools[l].ptr, self.kv.kbase[l].ptr, self.kv.vbase[l].ptr, l as i64,
-                    self.ko.ptr, (kvh * hd) as i64, self.qkv.ptr + ((c.heads + kvh) * hd * 2) as u64, qkv_w as i64, slots, n as i64, self.kv.status.ptr, self.kv.lost.ptr, self.kv.nlost, self.kv.ring, s,
+                    &self.kv.geom,
+                    self.kv.pools[l].ptr,
+                    self.kv.kbase[l].ptr,
+                    self.kv.vbase[l].ptr,
+                    l as i64,
+                    self.ko.ptr,
+                    (kvh * hd) as i64,
+                    self.qkv.ptr + ((c.heads + kvh) * hd * 2) as u64,
+                    qkv_w as i64,
+                    slots,
+                    n as i64,
+                    self.kv.status.ptr,
+                    self.kv.lost.ptr,
+                    self.kv.nlost,
+                    self.kv.ring,
+                    s,
                 )?;
                 self.mark("KV write")?;
                 if let Some(v) = &self.verify {
-                    self.lib.kv_stage_put(&self.kv.geom, self.ko.ptr, (kvh * hd) as i64, self.qkv.ptr + ((c.heads + kvh) * hd * 2) as u64, qkv_w as i64, slots, n as i64, v.shadow[l].ptr, self.kv.nblocks, s)?;
+                    self.lib.kv_stage_put(
+                        &self.kv.geom,
+                        self.ko.ptr,
+                        (kvh * hd) as i64,
+                        self.qkv.ptr + ((c.heads + kvh) * hd * 2) as u64,
+                        qkv_w as i64,
+                        slots,
+                        n as i64,
+                        v.shadow[l].ptr,
+                        self.kv.nblocks,
+                        s,
+                    )?;
                 }
                 match flash {
                     Some(Flash { start, gather, lslots }) => {
                         // a prompt chunk: the earlier pages decoded to bf16, the chunk's own keys and values put after them, our causal kernel on that
                         let earlier = (start as i64 + 15) / 16;
                         if earlier > 0 {
-                            self.lib.kv_gather(&self.kv.geom, self.kv.pools[l].ptr, self.kv.kbase[l].ptr, self.kv.vbase[l].ptr, gather, self.iota.ptr, earlier, self.stage.ptr, s)?;
+                            self.lib.kv_gather(
+                                &self.kv.geom,
+                                self.kv.pools[l].ptr,
+                                self.kv.kbase[l].ptr,
+                                self.kv.vbase[l].ptr,
+                                gather,
+                                self.iota.ptr,
+                                earlier,
+                                self.stage.ptr,
+                                s,
+                            )?;
                         }
                         self.mark("KV gather")?;
-                        self.lib.kv_stage_put(&self.kv.geom, self.ko.ptr, (kvh * hd) as i64, self.qkv.ptr + ((c.heads + kvh) * hd * 2) as u64, qkv_w as i64, lslots, n as i64, self.stage.ptr, self.stage_blocks, s)?;
+                        self.lib.kv_stage_put(
+                            &self.kv.geom,
+                            self.ko.ptr,
+                            (kvh * hd) as i64,
+                            self.qkv.ptr + ((c.heads + kvh) * hd * 2) as u64,
+                            qkv_w as i64,
+                            lslots,
+                            n as i64,
+                            self.stage.ptr,
+                            self.stage_blocks,
+                            s,
+                        )?;
                         self.mark("KV stage")?;
-                        self.kern.prefill_attn(s, self.qo.ptr, (c.heads * hd) as i32, self.stage.ptr, self.attn.ptr, (c.heads * hd) as i32, n as i32, start as i32, c.heads as i32, kvh as i32)?;
+                        self.kern.prefill_attn(
+                            s,
+                            self.qo.ptr,
+                            (c.heads * hd) as i32,
+                            self.stage.ptr,
+                            self.attn.ptr,
+                            (c.heads * hd) as i32,
+                            n as i32,
+                            start as i32,
+                            c.heads as i32,
+                            kvh as i32,
+                        )?;
                         self.mark("prompt attention")?;
                     }
                     None => {
                         self.lib.kv_decode(
-                            &self.kv.geom, self.kv.group, self.kv.pools[l].ptr, self.kv.kbase[l].ptr, self.kv.vbase[l].ptr,
-                            self.qo.ptr, (c.heads * hd) as i64, bt, bt_stride, lens, n as i64, splits, scale, self.attn.ptr, (c.heads * hd) as i64, self.kvws.ptr, self.kvws.bytes, s,
+                            &self.kv.geom,
+                            self.kv.group,
+                            self.kv.pools[l].ptr,
+                            self.kv.kbase[l].ptr,
+                            self.kv.vbase[l].ptr,
+                            self.qo.ptr,
+                            (c.heads * hd) as i64,
+                            bt,
+                            bt_stride,
+                            lens,
+                            n as i64,
+                            splits,
+                            scale,
+                            self.attn.ptr,
+                            (c.heads * hd) as i64,
+                            self.kvws.ptr,
+                            self.kvws.bytes,
+                            s,
                         )?;
                         self.mark("attention over the cache")?;
                     }
@@ -796,9 +1006,27 @@ impl Engine {
             for l in 0..self.kv.layers {
                 // SAFETY: live buffers of the engine; `rel` holds the page numbers, `iota` 0, 1, ...; the temporary holds 64 pages.
                 unsafe {
-                    self.lib.kv_gather(&self.kv.geom, self.kv.pools[l].ptr, self.kv.kbase[l].ptr, self.kv.vbase[l].ptr, self.rel.ptr, self.iota.ptr, part.len() as i64, v.tmp.ptr, self.dev.stream)?;
+                    self.lib.kv_gather(
+                        &self.kv.geom,
+                        self.kv.pools[l].ptr,
+                        self.kv.kbase[l].ptr,
+                        self.kv.vbase[l].ptr,
+                        self.rel.ptr,
+                        self.iota.ptr,
+                        part.len() as i64,
+                        v.tmp.ptr,
+                        self.dev.stream,
+                    )?;
                     for (j, &(p, n)) in part.iter().enumerate() {
-                        self.kern.count_diff(self.dev.stream, v.tmp.ptr + j as u64 * elems * 2, v.shadow[l].ptr + p as u64 * elems * 2, n as u64 * per_token, v.count.ptr, self.kv.geom.heads as i32, 128)?;
+                        self.kern.count_diff(
+                            self.dev.stream,
+                            v.tmp.ptr + j as u64 * elems * 2,
+                            v.shadow[l].ptr + p as u64 * elems * 2,
+                            n as u64 * per_token,
+                            v.count.ptr,
+                            self.kv.geom.heads as i32,
+                            128,
+                        )?;
                     }
                 }
             }
@@ -870,8 +1098,28 @@ impl Engine {
         for l in 0..self.kv.layers {
             // SAFETY: live buffers of the engine; the stream is synchronized before they are read.
             unsafe {
-                self.lib.kv_gather(&self.kv.geom, self.kv.pools[l].ptr, self.kv.kbase[l].ptr, self.kv.vbase[l].ptr, pa.ptr, self.iota.ptr, np as i64, ta.ptr, self.dev.stream)?;
-                self.lib.kv_gather(&self.kv.geom, self.kv.pools[l].ptr, self.kv.kbase[l].ptr, self.kv.vbase[l].ptr, pb.ptr, self.iota.ptr, np as i64, tb.ptr, self.dev.stream)?;
+                self.lib.kv_gather(
+                    &self.kv.geom,
+                    self.kv.pools[l].ptr,
+                    self.kv.kbase[l].ptr,
+                    self.kv.vbase[l].ptr,
+                    pa.ptr,
+                    self.iota.ptr,
+                    np as i64,
+                    ta.ptr,
+                    self.dev.stream,
+                )?;
+                self.lib.kv_gather(
+                    &self.kv.geom,
+                    self.kv.pools[l].ptr,
+                    self.kv.kbase[l].ptr,
+                    self.kv.vbase[l].ptr,
+                    pb.ptr,
+                    self.iota.ptr,
+                    np as i64,
+                    tb.ptr,
+                    self.dev.stream,
+                )?;
             }
             self.dev.sync()?;
             ta.read(0, &mut xa)?;
@@ -921,7 +1169,18 @@ impl Engine {
         // SAFETY: live buffers of the engine, sized for a chunk; the stream orders every step.
         unsafe {
             self.embed(tokens)?;
-            self.forward_ex(n, self.pos.ptr, self.slots.ptr, self.lens.ptr, self.kv.block_table.ptr, 0, 0, if last { Head::Last } else { Head::None }, Some(flash), None)?;
+            self.forward_ex(
+                n,
+                self.pos.ptr,
+                self.slots.ptr,
+                self.lens.ptr,
+                self.kv.block_table.ptr,
+                0,
+                0,
+                if last { Head::Last } else { Head::None },
+                Some(flash),
+                None,
+            )?;
             self.queue_head()?;
         }
         self.dev.sync()?;
@@ -990,7 +1249,9 @@ impl Engine {
         self.dev.sync()?;
         let t_done = Instant::now();
         // SAFETY: the pinned bytes were just written.
-        let out = (0..b).map(|i| unsafe { Sample { token: *(p.add(512 + 4 * i) as *const i32) as u32, logit: *(p.add(768 + 4 * i) as *const f32), logprob: None } }).collect();
+        let out = (0..b)
+            .map(|i| unsafe { Sample { token: *(p.add(512 + 4 * i) as *const i32) as u32, logit: *(p.add(768 + 4 * i) as *const f32), logprob: None } })
+            .collect();
         self.steps += 1;
         // (a row at the first token of a block starts a new life of it; every row's token is the last of its page so far)
         let fresh: Vec<i32> = rows.iter().filter(|r| r.pos % 16 == 0).map(|r| r.pages[r.pos / 16]).collect();
@@ -1029,7 +1290,20 @@ impl Engine {
             self.rel.write(0, part)?;
             for l in 0..self.kv.layers {
                 // SAFETY: live buffers of the engine; `rel` holds the page numbers.
-                unsafe { self.lib.kv_release(&self.kv.geom, self.kv.pools[l].ptr, self.kv.nblocks, self.rel.ptr, part.len() as i64, l as i64, self.kv.status.ptr, self.kv.lost.ptr, self.kv.nlost, self.dev.stream)? };
+                unsafe {
+                    self.lib.kv_release(
+                        &self.kv.geom,
+                        self.kv.pools[l].ptr,
+                        self.kv.nblocks,
+                        self.rel.ptr,
+                        part.len() as i64,
+                        l as i64,
+                        self.kv.status.ptr,
+                        self.kv.lost.ptr,
+                        self.kv.nlost,
+                        self.dev.stream,
+                    )?
+                };
             }
         }
         self.dev.sync()?;

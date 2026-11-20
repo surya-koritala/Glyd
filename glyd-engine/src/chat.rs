@@ -88,7 +88,16 @@ impl Civil {
         let leap = (year % 4 == 0 && year % 100 != 0) || year.rem_euclid(400) == 0;
         const CUM: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
         let yday = CUM[month as usize - 1] + day + (leap && month > 2) as u32;
-        Civil { year, month, day, hour: (rem / 3600) as u32, minute: (rem % 3600 / 60) as u32, second: (rem % 60) as u32, weekday: (days + 3).rem_euclid(7) as u32, yday }
+        Civil {
+            year,
+            month,
+            day,
+            hour: (rem / 3600) as u32,
+            minute: (rem % 3600 / 60) as u32,
+            second: (rem % 60) as u32,
+            weekday: (days + 3).rem_euclid(7) as u32,
+            yday,
+        }
     }
 
     /// Now, in the computer's local time (as Python's `datetime.now()` gives it, which is what transformers' `strftime_now` reads).
@@ -425,7 +434,9 @@ impl Chat {
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
         // Python's `iterable` test: none is not one (minijinja iterates none as an empty sequence), and a template may ask `tools is iterable and tools | length > 0` of its `tools = none`
         env.add_test("iterable", |v: Value| !v.is_none() && v.try_iter().is_ok());
-        env.add_function("raise_exception", |msg: String| -> std::result::Result<String, minijinja::Error> { Err(minijinja::Error::new(ErrorKind::InvalidOperation, msg)) });
+        env.add_function("raise_exception", |msg: String| -> std::result::Result<String, minijinja::Error> {
+            Err(minijinja::Error::new(ErrorKind::InvalidOperation, msg))
+        });
         env.add_function("strftime_now", move |fmt: String| -> std::result::Result<String, minijinja::Error> {
             strftime(&fmt, &clock()).map_err(|e| minijinja::Error::new(ErrorKind::InvalidOperation, e.to_string()))
         });
@@ -452,7 +463,10 @@ impl Chat {
             py_json_with(&v, &JsonForm { indent, seps, sort: sort.unwrap_or(false) }, 0, &mut s)?;
             if ascii == Some(true) {
                 // (json.dumps's \uXXXX for every character past ASCII, a pair of them past the BMP)
-                s = s.chars().map(|c| if c.is_ascii() { c.to_string() } else { c.encode_utf16(&mut [0; 2]).iter().map(|u| format!("\\u{u:04x}")).collect() }).collect();
+                s = s
+                    .chars()
+                    .map(|c| if c.is_ascii() { c.to_string() } else { c.encode_utf16(&mut [0; 2]).iter().map(|u| format!("\\u{u:04x}")).collect() })
+                    .collect();
             }
             Ok(Value::from(s))
         });
@@ -503,7 +517,12 @@ impl Chat {
     }
 
     pub fn render_with(&self, messages: &[Message], o: &Options) -> Result<String> {
-        let msgs = Json::Array(messages.iter().map(|m| Json::Object(vec![("role".to_string(), Json::from(m.role.as_str())), ("content".to_string(), Json::from(m.content.as_str()))])).collect());
+        let msgs = Json::Array(
+            messages
+                .iter()
+                .map(|m| Json::Object(vec![("role".to_string(), Json::from(m.role.as_str())), ("content".to_string(), Json::from(m.content.as_str()))]))
+                .collect(),
+        );
         self.render_json(&msgs, o)
     }
 
@@ -611,9 +630,15 @@ mod tests {
         assert!(c.is_xtml());
         let hi = json::parse(r#"[{"role": "user", "content": "Hi"}]"#).unwrap();
         let o = Options::new(true);
-        assert_eq!(c.render_json(&hi, &o).unwrap(), "<|open|>message role=\"user\"<|sep|>Hi<|close|>message<|sep|><|end_of_msg|><|open|>message role=\"assistant\"<|sep|><|open|>think<|sep|>");
+        assert_eq!(
+            c.render_json(&hi, &o).unwrap(),
+            "<|open|>message role=\"user\"<|sep|>Hi<|close|>message<|sep|><|end_of_msg|><|open|>message role=\"assistant\"<|sep|><|open|>think<|sep|>"
+        );
         assert!(c.render_json(&hi, &Options::new(true).thinking(Some(false))).unwrap().ends_with("role=\"assistant\"<|sep|><|open|>response<|sep|>"));
-        let tool = json::parse(r#"{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {"word": {"type": "string"}}}}}"#).unwrap();
+        let tool = json::parse(
+            r#"{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {"word": {"type": "string"}}}}}"#,
+        )
+        .unwrap();
         let m = json::parse(r#"[{"role": "user", "content": "Define glyph."},
             {"role": "assistant", "content": "", "reasoning_content": "Look it up.", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "lookup", "arguments": {"word": "glyph", "limit": 2, "opts": {"deep": true}, "x": null}}}]},
             {"role": "tool", "tool_call_id": "c1", "content": "a carved symbol"}]"#).unwrap();
@@ -628,21 +653,31 @@ mod tests {
     fn a_conversation_as_text() {
         let c = Chat::from_template(SMALL).unwrap();
         let m = vec![Message::new("system", "Be brief."), Message::new("user", "Hi"), Message::new("assistant", "\nHello\n")];
-        assert_eq!(c.render(&m, false, None).unwrap(), "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello<|im_end|>\n");
+        assert_eq!(
+            c.render(&m, false, None).unwrap(),
+            "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello<|im_end|>\n"
+        );
         assert_eq!(c.render(&m[..2], true, None).unwrap(), "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n");
-        assert_eq!(c.render(&m[..2], true, Some(false)).unwrap(), "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
+        assert_eq!(
+            c.render(&m[..2], true, Some(false)).unwrap(),
+            "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        );
     }
 
     /// Nemotron 3's template asks `tools is iterable and tools | length > 0` of the `tools = none` that a render without tools gives it: none is not iterable, as in Python's Jinja (minijinja iterates it as an
     /// empty sequence, and the length of none is an error there); a list of tools, a string and the undefined are.
     #[test]
     fn none_is_not_iterable_as_in_python() {
-        let c = Chat::from_template("{%- if tools is iterable and tools | length > 0 %}tools: {{ tools | length }}{%- else %}none{%- endif %}|{{ messages | length }}").unwrap();
+        let c = Chat::from_template(
+            "{%- if tools is iterable and tools | length > 0 %}tools: {{ tools | length }}{%- else %}none{%- endif %}|{{ messages | length }}",
+        )
+        .unwrap();
         let m = vec![Message::new("user", "Hi")];
         assert_eq!(c.render(&m, false, None).unwrap(), "none|1");
         let with = Options { tools: Some(vec![glyd_gpu::json::parse(r#"{"type": "function", "function": {"name": "f"}}"#).unwrap()]), ..Options::default() };
         assert_eq!(c.render_with(&m, &with).unwrap(), "tools: 1|1");
-        let t = Chat::from_template("{{ 'a' is iterable }} {{ [1] is iterable }} {{ 3 is iterable }} {{ none is iterable }} {{ nothing is iterable }}").unwrap();
+        let t =
+            Chat::from_template("{{ 'a' is iterable }} {{ [1] is iterable }} {{ 3 is iterable }} {{ none is iterable }} {{ nothing is iterable }}").unwrap();
         assert_eq!(t.render(&m, false, None).unwrap(), "True True False False True");
     }
 
@@ -672,14 +707,18 @@ mod tests {
             let gen = case.get("gen").unwrap().as_bool().unwrap();
             let thinking = case.get("thinking").and_then(glyd_gpu::json::Value::as_bool);
             let want = case.get("text").unwrap().as_str().unwrap();
-            assert_eq!(c.render(&msgs, gen, thinking).unwrap(), want, "case {i}: {:?} gen {gen} thinking {thinking:?}", msgs.iter().map(|m| &m.role).collect::<Vec<_>>());
+            assert_eq!(
+                c.render(&msgs, gen, thinking).unwrap(),
+                want,
+                "case {i}: {:?} gen {gen} thinking {thinking:?}",
+                msgs.iter().map(|m| &m.role).collect::<Vec<_>>()
+            );
         }
     }
 
     fn fixed() -> Arc<dyn Fn() -> Civil + Send + Sync> {
         Arc::new(|| Civil::from_unix(1_791_210_600, 0)) // 2026-10-05 14:30:00 UTC, the date the fixtures were made on
     }
-
 
     /// Without the tokenizer's tokens a Llama prompt has no BOS (what the engine did before): the tokens are what put it there.
     #[test]
@@ -699,7 +738,11 @@ mod tests {
         assert_eq!(tokens_of(&v), vec![("eos_token", "<|im_end|>".to_string()), ("pad_token", "<pad>".to_string()), ("unk_token", "<unk>".to_string())]);
         let dir = std::env::temp_dir().join(format!("glyd-engine-chat-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("tokenizer_config.json"), r#"{"bos_token": "<s>", "chat_template": "{{ bos_token }}{{ messages[0]['content'] }}{% if bos_token is defined %}!{% endif %}"}"#).unwrap();
+        std::fs::write(
+            dir.join("tokenizer_config.json"),
+            r#"{"bos_token": "<s>", "chat_template": "{{ bos_token }}{{ messages[0]['content'] }}{% if bos_token is defined %}!{% endif %}"}"#,
+        )
+        .unwrap();
         let c = Chat::load(&dir).unwrap().unwrap();
         assert_eq!(c.render(&[Message::new("user", "x")], false, None).unwrap(), "<s>x!");
         std::fs::remove_dir_all(&dir).unwrap();

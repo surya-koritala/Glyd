@@ -208,7 +208,19 @@ impl<B: Backend> Sched<B> {
                 }
             }
         });
-        Sched { pending: Vec::new(), emit, be, pager, users: users.clamp(1, MAX_ROWS), waiting: VecDeque::new(), active: Vec::new(), next_id: 0, eos, stats: Stats::default(), trace: crate::tune!("GLYD_ENGINE_TRACE_SCHED").is_some() }
+        Sched {
+            pending: Vec::new(),
+            emit,
+            be,
+            pager,
+            users: users.clamp(1, MAX_ROWS),
+            waiting: VecDeque::new(),
+            active: Vec::new(),
+            next_id: 0,
+            eos,
+            stats: Stats::default(),
+            trace: crate::tune!("GLYD_ENGINE_TRACE_SCHED").is_some(),
+        }
     }
 
     pub fn idle(&self) -> bool {
@@ -238,13 +250,60 @@ impl<B: Backend> Sched<B> {
             let ends = if s.reply.ignore_eos { Vec::new() } else { self.eos.iter().map(|&t| t as u32).collect() };
             sampler.set_suppress(ends.into_iter().chain(s.reply.stop_ids.iter().copied()).collect());
         }
-        self.waiting.push_back(Seq { id: self.next_id, out: s.out, abort: s.abort, resumed: s.resumed, reply: s.reply, greedy, sampler, tokens: s.prompt, generated: 0, pages: Vec::new(), done: 0, published: 0, chain: 0, prefilling: true, tries: 0, after: Vec::new(), solo: false });
+        self.waiting.push_back(Seq {
+            id: self.next_id,
+            out: s.out,
+            abort: s.abort,
+            resumed: s.resumed,
+            reply: s.reply,
+            greedy,
+            sampler,
+            tokens: s.prompt,
+            generated: 0,
+            pages: Vec::new(),
+            done: 0,
+            published: 0,
+            chain: 0,
+            prefilling: true,
+            tries: 0,
+            after: Vec::new(),
+            solo: false,
+        });
         self.gauges();
     }
 
     fn gauges(&self) {
         let st = &self.stats;
-        for (a, v) in SHARED.iter().zip([st.prompt, st.hit, st.preempted, st.steps, st.rows, self.active.len() as u64, self.waiting.len() as u64, st.decode_ns, st.prefill_ns, st.tick_ns, st.release_ns, st.admit_ns, st.after_ns, st.before_ns, st.lost_blocks, st.heavy_blocks, st.taken_back, st.ended_lost, st.by_rows[0], st.by_rows[1], st.by_rows[2], st.by_rows[3], st.by_rows[4], st.by_rows[5], st.by_rows[6], st.by_rows[7], st.by_rows[8], st.prefill_rounds]) {
+        for (a, v) in SHARED.iter().zip([
+            st.prompt,
+            st.hit,
+            st.preempted,
+            st.steps,
+            st.rows,
+            self.active.len() as u64,
+            self.waiting.len() as u64,
+            st.decode_ns,
+            st.prefill_ns,
+            st.tick_ns,
+            st.release_ns,
+            st.admit_ns,
+            st.after_ns,
+            st.before_ns,
+            st.lost_blocks,
+            st.heavy_blocks,
+            st.taken_back,
+            st.ended_lost,
+            st.by_rows[0],
+            st.by_rows[1],
+            st.by_rows[2],
+            st.by_rows[3],
+            st.by_rows[4],
+            st.by_rows[5],
+            st.by_rows[6],
+            st.by_rows[7],
+            st.by_rows[8],
+            st.prefill_rounds,
+        ]) {
             a.store(v, Relaxed);
         }
     }
@@ -600,7 +659,8 @@ impl<B: Backend> Sched<B> {
         if idx.is_empty() {
             return Ok(());
         }
-        let rows: Vec<Row> = idx.iter().map(|&i| Row { token: self.active[i].tokens[self.active[i].done], pos: self.active[i].done, pages: &self.active[i].pages }).collect();
+        let rows: Vec<Row> =
+            idx.iter().map(|&i| Row { token: self.active[i].tokens[self.active[i].done], pos: self.active[i].done, pages: &self.active[i].pages }).collect();
         self.stats.before_ns += tb.elapsed().as_nanos() as u64;
         let t = std::time::Instant::now();
         let samples = self.be.decode(&rows)?;
@@ -692,7 +752,29 @@ pub(crate) mod tests {
 
     impl Fake {
         pub fn new(pages: usize, chunk: usize) -> Fake {
-            Fake { store: vec![[0; PAGE]; pages], chunk, released: 0, steps: 0, eos: vec![0], heavy: |_| false, slabs: usize::MAX, slabs_used: 0, chunks: 0, chunks_used: 0, state: vec![0; pages], pending: Lost::default(), overflow_at: None, voided: 0, decode_delay: std::time::Duration::ZERO, rows: Vec::new(), gpu_top: false, logit_reads: 0, prefilled: Default::default(), script: None, script_from: 0 }
+            Fake {
+                store: vec![[0; PAGE]; pages],
+                chunk,
+                released: 0,
+                steps: 0,
+                eos: vec![0],
+                heavy: |_| false,
+                slabs: usize::MAX,
+                slabs_used: 0,
+                chunks: 0,
+                chunks_used: 0,
+                state: vec![0; pages],
+                pending: Lost::default(),
+                overflow_at: None,
+                voided: 0,
+                decode_delay: std::time::Duration::ZERO,
+                rows: Vec::new(),
+                gpu_top: false,
+                logit_reads: 0,
+                prefilled: Default::default(),
+                script: None,
+                script_from: 0,
+            }
         }
         /// The token after `toks` (`n` of them): the hash, or the script's word for this place.
         fn said(&self, toks: &[u32], n: usize) -> u32 {
@@ -737,7 +819,11 @@ pub(crate) mod tests {
                 .map(|p| {
                     let page = pages[p / PAGE] as usize;
                     let t = self.store[page][p % PAGE];
-                    if self.state[page] == 2 { t ^ 0xDEAD_0000 } else { t }
+                    if self.state[page] == 2 {
+                        t ^ 0xDEAD_0000
+                    } else {
+                        t
+                    }
                 })
                 .collect()
         }
@@ -780,7 +866,8 @@ pub(crate) mod tests {
             for r in rows {
                 self.write(r.pages[r.pos / PAGE] as usize, r.pos % PAGE, r.token);
             }
-            let out: Vec<Sample> = rows.iter().map(|r| Sample { token: self.said(&self.read(r.pages, r.pos + 1), r.pos + 1), logit: 0.0, logprob: None }).collect();
+            let out: Vec<Sample> =
+                rows.iter().map(|r| Sample { token: self.said(&self.read(r.pages, r.pos + 1), r.pos + 1), logit: 0.0, logprob: None }).collect();
             self.rows = out.iter().map(|s| row_of(s.token)).collect();
             Ok(out)
         }
@@ -958,7 +1045,14 @@ pub(crate) mod tests {
         let first = r.iter().position(|&t| t == r[at]).unwrap();
         assert_eq!((got, f), (r[..first].to_vec(), Finish::Stop));
         let (tx, rx) = channel();
-        s.submit(Submit { prompt: p.clone(), reply: Reply { ignore_eos: true, ..reply(50) }, out: tx, abort: Arc::new(AtomicBool::new(false)), resumed: Default::default(), images: Vec::new() });
+        s.submit(Submit {
+            prompt: p.clone(),
+            reply: Reply { ignore_eos: true, ..reply(50) },
+            out: tx,
+            abort: Arc::new(AtomicBool::new(false)),
+            resumed: Default::default(),
+            images: Vec::new(),
+        });
         run(&mut s);
         assert_eq!(collect(&rx), (r, Finish::Length));
     }
@@ -1245,7 +1339,14 @@ pub(crate) mod tests {
             let p = prompt(3, 40);
             let ask = |s: &mut Sched<Fake>, params: Params| {
                 let (tx, rx) = channel();
-                s.submit(Submit { prompt: p.clone(), reply: Reply { params, max_new: 12, ignore_eos: false, logprobs: None, stop_ids: Vec::new() }, out: tx, abort: Arc::new(AtomicBool::new(false)), resumed: Default::default(), images: Vec::new() });
+                s.submit(Submit {
+                    prompt: p.clone(),
+                    reply: Reply { params, max_new: 12, ignore_eos: false, logprobs: None, stop_ids: Vec::new() },
+                    out: tx,
+                    abort: Arc::new(AtomicBool::new(false)),
+                    resumed: Default::default(),
+                    images: Vec::new(),
+                });
                 run(s);
                 collect(&rx)
             };
@@ -1291,7 +1392,14 @@ pub(crate) mod tests {
                 let mut s = Sched::new(f, 4);
                 s.eos = s.be.eos.clone();
                 let (tx, rx) = channel();
-                s.submit(Submit { prompt: p.clone(), reply: Reply { params, max_new: 10, ignore_eos: false, logprobs, stop_ids: Vec::new() }, out: tx, abort: Arc::new(AtomicBool::new(false)), resumed: Default::default(), images: Vec::new() });
+                s.submit(Submit {
+                    prompt: p.clone(),
+                    reply: Reply { params, max_new: 10, ignore_eos: false, logprobs, stop_ids: Vec::new() },
+                    out: tx,
+                    abort: Arc::new(AtomicBool::new(false)),
+                    resumed: Default::default(),
+                    images: Vec::new(),
+                });
                 run(&mut s);
                 (events(&rx), s.be.logit_reads)
             };
@@ -1326,7 +1434,20 @@ pub(crate) mod tests {
         f.gpu_top = true;
         let mut s = Sched::new(f, 4);
         let (tx, rx) = channel();
-        s.submit(Submit { prompt: prompt(2, 20), reply: Reply { params: Params { temperature: 1.0, top_k: 20, seed: 3, ..Params::default() }, max_new: 6, ignore_eos: false, logprobs: None, stop_ids: Vec::new() }, out: tx, abort: Arc::new(AtomicBool::new(false)), resumed: Default::default(), images: Vec::new() });
+        s.submit(Submit {
+            prompt: prompt(2, 20),
+            reply: Reply {
+                params: Params { temperature: 1.0, top_k: 20, seed: 3, ..Params::default() },
+                max_new: 6,
+                ignore_eos: false,
+                logprobs: None,
+                stop_ids: Vec::new(),
+            },
+            out: tx,
+            abort: Arc::new(AtomicBool::new(false)),
+            resumed: Default::default(),
+            images: Vec::new(),
+        });
         run(&mut s);
         let _ = events(&rx);
         assert_eq!(s.be.logit_reads, 0, "a draw from the candidates reads no row");
@@ -1346,7 +1467,14 @@ pub(crate) mod tests {
             let mut s = Sched::new(f, 4);
             s.eos = s.be.eos.clone();
             let (tx, rx) = channel();
-            s.submit(Submit { prompt: p.clone(), reply: Reply { params: Params { temperature: 0.0, min_tokens, ..Params::default() }, max_new: 12, ignore_eos: false, logprobs: None, stop_ids }, out: tx, abort: Arc::new(AtomicBool::new(false)), resumed: Default::default(), images: Vec::new() });
+            s.submit(Submit {
+                prompt: p.clone(),
+                reply: Reply { params: Params { temperature: 0.0, min_tokens, ..Params::default() }, max_new: 12, ignore_eos: false, logprobs: None, stop_ids },
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                images: Vec::new(),
+            });
             run(&mut s);
             collect(&rx)
         };

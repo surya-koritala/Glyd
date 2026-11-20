@@ -86,7 +86,11 @@ impl Prep {
         if num("patch_size") != Some(PATCH) || num("merge_size") != Some(MERGE) || num("temporal_patch_size").is_some_and(|t| t != FRAMES) {
             return err(format!("{}: patches other than 16 x 16 in blocks of 2 x 2: not supported", p.display()));
         }
-        let halves = |k: &str| pc.get(k).and_then(Value::as_array).is_some_and(|a| a.len() == 3 && a.iter().all(|x| matches!(x, Value::Number(n) if n.parse::<f64>().ok() == Some(0.5))));
+        let halves = |k: &str| {
+            pc.get(k)
+                .and_then(Value::as_array)
+                .is_some_and(|a| a.len() == 3 && a.iter().all(|x| matches!(x, Value::Number(n) if n.parse::<f64>().ok() == Some(0.5))))
+        };
         if !halves("image_mean") || !halves("image_std") {
             return err(format!("{}: a mean or deviation other than 0.5: not supported", p.display()));
         }
@@ -141,13 +145,23 @@ fn vision_config(dir: &Path) -> Result<Option<VisionCfg>> {
         return Ok(None);
     }
     let u = |k: &str| v.get(k).and_then(Value::as_u64).map(|x| x as usize);
-    let want = [("hidden_size", HIDDEN), ("num_heads", HEADS), ("intermediate_size", INTER), ("out_hidden_size", 2560), ("patch_size", PATCH), ("spatial_merge_size", MERGE), ("num_position_embeddings", 2304)];
+    let want = [
+        ("hidden_size", HIDDEN),
+        ("num_heads", HEADS),
+        ("intermediate_size", INTER),
+        ("out_hidden_size", 2560),
+        ("patch_size", PATCH),
+        ("spatial_merge_size", MERGE),
+        ("num_position_embeddings", 2304),
+    ];
     for (k, x) in want {
         if u(k) != Some(x) {
             return err(format!("{}: vision_config.{k} {:?}, where this engine's tower has {x}", p.display(), u(k)));
         }
     }
-    if v.get("hidden_act").and_then(Value::as_str) != Some("gelu_pytorch_tanh") || v.get("deepstack_visual_indexes").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
+    if v.get("hidden_act").and_then(Value::as_str) != Some("gelu_pytorch_tanh")
+        || v.get("deepstack_visual_indexes").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
+    {
         return err(format!("{}: a vision tower with another activation or deepstack layers: not supported", p.display()));
     }
     let image_token = c.get("image_token_id").and_then(Value::as_u64).ok_or_else(|| Error(format!("{}: no image_token_id", p.display())))? as u32;
@@ -180,7 +194,11 @@ pub fn fetch(url: &str) -> Result<Vec<u8>> {
     }
     // (redirects followed here, one at a time, so that every hop's host is checked)
     let agent = ureq::Agent::new_with_config(
-        ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(30))).max_redirects(0).user_agent(concat!("glyd-engine/", env!("CARGO_PKG_VERSION"))).build(),
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .max_redirects(0)
+            .user_agent(concat!("glyd-engine/", env!("CARGO_PKG_VERSION")))
+            .build(),
     );
     let mut at = url.to_string();
     for _ in 0..6 {
@@ -229,15 +247,30 @@ pub fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => {
             let o = v.octets();
-            !(v.is_unspecified() || v.is_loopback() || v.is_private() || v.is_link_local() || v.is_broadcast() || v.is_multicast() || v.is_documentation()
-                || (o[0] == 100 && (o[1] & 0xC0) == 64) || o[0] >= 240 || (o[0] == 192 && o[1] == 0 && o[2] == 0) || (o[0] == 198 && (o[1] & 0xFE) == 18))
+            !(v.is_unspecified()
+                || v.is_loopback()
+                || v.is_private()
+                || v.is_link_local()
+                || v.is_broadcast()
+                || v.is_multicast()
+                || v.is_documentation()
+                || (o[0] == 100 && (o[1] & 0xC0) == 64)
+                || o[0] >= 240
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                || (o[0] == 198 && (o[1] & 0xFE) == 18))
         }
         IpAddr::V6(v) => {
             if let Some(m) = v.to_ipv4_mapped() {
                 return public_ip(IpAddr::V4(m));
             }
             let s = v.segments();
-            !(v.is_unspecified() || v.is_loopback() || v.is_multicast() || (s[0] & 0xFE00) == 0xFC00 || (s[0] & 0xFFC0) == 0xFE80 || (s[0] == 0x2001 && s[1] == 0x0DB8) || v.to_ipv4().is_some())
+            !(v.is_unspecified()
+                || v.is_loopback()
+                || v.is_multicast()
+                || (s[0] & 0xFE00) == 0xFC00
+                || (s[0] & 0xFFC0) == 0xFE80
+                || (s[0] == 0x2001 && s[1] == 0x0DB8)
+                || v.to_ipv4().is_some())
         }
     }
 }
@@ -324,7 +357,20 @@ fn taps(inp: usize, out: usize) -> (Vec<(usize, Vec<i16>)>, u32) {
     while prec < 22 && ((0.5 + top * (1u64 << (prec + 1)) as f64) as i64) < (1 << 15) {
         prec += 1;
     }
-    let q = rows.into_iter().map(|(x0, w)| (x0, w.iter().map(|&v| { let v = v * (1u64 << prec) as f64; (if v < 0.0 { -0.5 + v } else { 0.5 + v }) as i16 }).collect())).collect();
+    let q = rows
+        .into_iter()
+        .map(|(x0, w)| {
+            (
+                x0,
+                w.iter()
+                    .map(|&v| {
+                        let v = v * (1u64 << prec) as f64;
+                        (if v < 0.0 { -0.5 + v } else { 0.5 + v }) as i16
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
     (q, prec)
 }
 
@@ -480,7 +526,20 @@ impl Tower {
         ];
         let (h, i) = (HIDDEN as u64, INTER as u64);
         for l in 0..cfg.depth {
-            for (n, s) in [("norm1.weight", vec![h]), ("norm1.bias", vec![h]), ("norm2.weight", vec![h]), ("norm2.bias", vec![h]), ("attn.qkv.weight", vec![3 * h, h]), ("attn.qkv.bias", vec![3 * h]), ("attn.proj.weight", vec![h, h]), ("attn.proj.bias", vec![h]), ("mlp.linear_fc1.weight", vec![i, h]), ("mlp.linear_fc1.bias", vec![i]), ("mlp.linear_fc2.weight", vec![h, i]), ("mlp.linear_fc2.bias", vec![h])] {
+            for (n, s) in [
+                ("norm1.weight", vec![h]),
+                ("norm1.bias", vec![h]),
+                ("norm2.weight", vec![h]),
+                ("norm2.bias", vec![h]),
+                ("attn.qkv.weight", vec![3 * h, h]),
+                ("attn.qkv.bias", vec![3 * h]),
+                ("attn.proj.weight", vec![h, h]),
+                ("attn.proj.bias", vec![h]),
+                ("mlp.linear_fc1.weight", vec![i, h]),
+                ("mlp.linear_fc1.bias", vec![i]),
+                ("mlp.linear_fc2.weight", vec![h, i]),
+                ("mlp.linear_fc2.bias", vec![h]),
+            ] {
                 want.push((format!("blocks.{l}.{n}"), s));
             }
         }
@@ -505,7 +564,14 @@ impl Tower {
         }
         let attn = dev.kernel(kname!("vis_attn"))?;
         attn.allow_smem(ATTN_SMEM)?;
-        let k = KernVis { ln: dev.kernel(kname!("vis_ln"))?, bias: dev.kernel(kname!("vis_bias"))?, embed: dev.kernel(kname!("vis_embed"))?, rope: dev.kernel(kname!("vis_rope"))?, attn, pad: dev.kernel(kname!("vis_pad"))? };
+        let k = KernVis {
+            ln: dev.kernel(kname!("vis_ln"))?,
+            bias: dev.kernel(kname!("vis_bias"))?,
+            embed: dev.kernel(kname!("vis_embed"))?,
+            rope: dev.kernel(kname!("vis_rope"))?,
+            attn,
+            pad: dev.kernel(kname!("vis_pad"))?,
+        };
         Ok(Some(Tower { src, depth: cfg.depth, k }))
     }
 
@@ -561,7 +627,14 @@ impl Tower {
         }
         // the rotary's cos and sin of each row or column position on each of its 18 frequencies (theta 10,000 over 36 dims), fp32 as the reference makes them
         let inv: Vec<f32> = (0..18).map(|j| 1.0f32 / 10000f32.powf((2 * j) as f32 / 36.0)).collect();
-        let rot: Vec<f32> = (0..img.gh.max(img.gw)).flat_map(|p| inv.iter().flat_map(move |&f| { let a = p as f32 * f; [a.cos(), a.sin()] })).collect();
+        let rot: Vec<f32> = (0..img.gh.max(img.gw))
+            .flat_map(|p| {
+                inv.iter().flat_map(move |&f| {
+                    let a = p as f32 * f;
+                    [a.cos(), a.sin()]
+                })
+            })
+            .collect();
         let (pos_b, idx_b, wt_b, rot_b) = (Buf::new(pos.len() * 4)?, Buf::new(idx.len() * 4)?, Buf::new(wt.len() * 4)?, Buf::new(rot.len() * 4)?);
         let (ni, ci, hi, inter) = (n as i32, HIDDEN as i32, HIDDEN as i64, INTER_PAD as i64);
         let elems = |rows: usize, cols: usize| (rows * cols) as i64;
@@ -597,7 +670,20 @@ impl Tower {
             let sl2 = (1.0 / (HEAD_DIM as f32).sqrt()) * std::f32::consts::LOG2_E;
             for l in 0..self.depth {
                 let p = |t: &str| format!("blocks.{l}.{t}");
-                for (dst, t) in [(n1w, "norm1.weight"), (n1b, "norm1.bias"), (n2w, "norm2.weight"), (n2b, "norm2.bias"), (qw, "attn.qkv.weight"), (qb, "attn.qkv.bias"), (ow, "attn.proj.weight"), (ob, "attn.proj.bias"), (f1w, "mlp.linear_fc1.weight"), (f1b, "mlp.linear_fc1.bias"), (f2raw, "mlp.linear_fc2.weight"), (f2b, "mlp.linear_fc2.bias")] {
+                for (dst, t) in [
+                    (n1w, "norm1.weight"),
+                    (n1b, "norm1.bias"),
+                    (n2w, "norm2.weight"),
+                    (n2b, "norm2.bias"),
+                    (qw, "attn.qkv.weight"),
+                    (qb, "attn.qkv.bias"),
+                    (ow, "attn.proj.weight"),
+                    (ob, "attn.proj.bias"),
+                    (f1w, "mlp.linear_fc1.weight"),
+                    (f1b, "mlp.linear_fc1.bias"),
+                    (f2raw, "mlp.linear_fc2.weight"),
+                    (f2b, "mlp.linear_fc2.bias"),
+                ] {
                     self.put(dev, dst, &p(t))?;
                 }
                 launch!(self.k.pad, grid(elems(HIDDEN, INTER_PAD)), [256, 1, 1], s; f2raw, f2w, INTER as i32, INTER_PAD as i32, elems(HIDDEN, INTER_PAD))?;
@@ -628,7 +714,14 @@ impl Tower {
             if at as usize > wb.bytes {
                 return err("the vision weights' buffer is too small");
             }
-            for (dst, t) in [(nw_, "merger.norm.weight"), (nb_, "merger.norm.bias"), (w1, "merger.linear_fc1.weight"), (b1, "merger.linear_fc1.bias"), (w2, "merger.linear_fc2.weight"), (b2, "merger.linear_fc2.bias")] {
+            for (dst, t) in [
+                (nw_, "merger.norm.weight"),
+                (nb_, "merger.norm.bias"),
+                (w1, "merger.linear_fc1.weight"),
+                (b1, "merger.linear_fc1.bias"),
+                (w2, "merger.linear_fc2.weight"),
+                (b2, "merger.linear_fc2.bias"),
+            ] {
                 self.put(dev, dst, t)?;
             }
             launch!(self.k.ln, [n as u32, 1, 1], [256, 1, 1], s; x.ptr, nw_, nb_, h.ptr, ci, 1e-6f32)?;
@@ -663,7 +756,8 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let out = Path::new(a.flag("out").unwrap_or("."));
     std::fs::create_dir_all(out).map_err(|e| Error(format!("{}: {e}", out.display())))?;
     for path in a.pos.iter().skip(2) {
-        let bytes = if path.contains("://") || path.starts_with("data:") { fetch(path)? } else { std::fs::read(path).map_err(|e| Error(format!("{path}: {e}")))? };
+        let bytes =
+            if path.contains("://") || path.starts_with("data:") { fetch(path)? } else { std::fs::read(path).map_err(|e| Error(format!("{path}: {e}")))? };
         let name = Path::new(path).file_stem().map_or("image".into(), |s| s.to_string_lossy().to_string());
         let Some((dev, kern, tower)) = gpu.as_ref() else {
             let t = std::time::Instant::now();
@@ -686,8 +780,16 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         let bytes_of = |v: &[u16]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
         std::fs::write(out.join(format!("{name}.patches.bf16")), bytes_of(&img.patches)).map_err(|e| Error(e.to_string()))?;
         std::fs::write(out.join(format!("{name}.rows.bf16")), bytes_of(&rows)).map_err(|e| Error(e.to_string()))?;
-        std::fs::write(out.join(format!("{name}.json")), format!("{{\"grid_thw\":[1,{},{}],\"tokens\":{}}}\n", img.gh, img.gw, img.tokens())).map_err(|e| Error(e.to_string()))?;
-        eprintln!("{path}: {} x {} patches, {} tokens; preprocessing {prep_ms:.1} ms, the tower {ms:.1} ms; {:.0} MB of GPU memory wanted ({:.0} MB free before)", img.gh, img.gw, img.tokens(), Tower::bytes(img.gh * img.gw) as f64 / 1e6, free0 as f64 / 1e6);
+        std::fs::write(out.join(format!("{name}.json")), format!("{{\"grid_thw\":[1,{},{}],\"tokens\":{}}}\n", img.gh, img.gw, img.tokens()))
+            .map_err(|e| Error(e.to_string()))?;
+        eprintln!(
+            "{path}: {} x {} patches, {} tokens; preprocessing {prep_ms:.1} ms, the tower {ms:.1} ms; {:.0} MB of GPU memory wanted ({:.0} MB free before)",
+            img.gh,
+            img.gw,
+            img.tokens(),
+            Tower::bytes(img.gh * img.gw) as f64 / 1e6,
+            free0 as f64 / 1e6
+        );
     }
     Ok(())
 }
@@ -698,7 +800,28 @@ mod tests {
 
     #[test]
     fn only_public_hosts_are_fetched() {
-        for ip in ["127.0.0.1", "10.1.2.3", "172.16.5.5", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "240.0.0.1", "192.0.0.1", "198.18.0.1", "::1", "::", "fe80::1", "fc00::1", "fd12::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "2001:db8::1"] {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.5.5",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "240.0.0.1",
+            "192.0.0.1",
+            "198.18.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "fd12::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "2001:db8::1",
+        ] {
             assert!(!public_ip(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["8.8.8.8", "93.184.216.34", "2606:4700::1111", "2a00:1450:4001::1"] {

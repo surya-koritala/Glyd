@@ -544,7 +544,8 @@ impl Library {
                             entries.push(*table.add(i));
                             i += 1;
                         }
-                        Api::load(&|name| entries.iter().find(|e| e.id == table_id(name)).map_or(std::ptr::null_mut(), |e| e.function as *mut c_void)).map_err(|name| format!("{path}: no {name}"))
+                        Api::load(&|name| entries.iter().find(|e| e.id == table_id(name)).map_or(std::ptr::null_mut(), |e| e.function as *mut c_void))
+                            .map_err(|name| format!("{path}: no {name}"))
                     }
                 }
             },
@@ -662,7 +663,23 @@ impl Library {
     /// # Safety
     /// See the crate's.
     pub unsafe fn gemm_big(&self, w: &Matrix, p: &Product, variant: i64, cs: Stream) -> Result<()> {
-        let r = mma!(self, w, glyd_gpu_mma_gemm_x1, glyd_gpu_mma12_gemm_x1, w.rows, w.cols, p.x, p.m, null(p.bias), p.y, variant, p.workspace, p.workspace_bytes, p.done, cs);
+        let r = mma!(
+            self,
+            w,
+            glyd_gpu_mma_gemm_x1,
+            glyd_gpu_mma12_gemm_x1,
+            w.rows,
+            w.cols,
+            p.x,
+            p.m,
+            null(p.bias),
+            p.y,
+            variant,
+            p.workspace,
+            p.workspace_bytes,
+            p.done,
+            cs
+        );
         self.check("gemm_big", r)
     }
 
@@ -688,7 +705,22 @@ impl Library {
     /// See the crate's.
     pub unsafe fn gemm_mid(&self, w: &Matrix, p: &Product, cs: Stream) -> Result<()> {
         let t = Self::twelve(w, "gemm_mid")?;
-        let r = (self.api.glyd_gpu_mma12_gemm_x2)(t.data, t.exc, t.exc_base, t.sym.as_ptr(), w.rows, w.cols, p.x, p.m, null(p.bias), p.y, p.workspace, p.workspace_bytes, p.done, cs);
+        let r = (self.api.glyd_gpu_mma12_gemm_x2)(
+            t.data,
+            t.exc,
+            t.exc_base,
+            t.sym.as_ptr(),
+            w.rows,
+            w.cols,
+            p.x,
+            p.m,
+            null(p.bias),
+            p.y,
+            p.workspace,
+            p.workspace_bytes,
+            p.done,
+            cs,
+        );
         self.check("gemm_mid", r)
     }
 
@@ -706,7 +738,22 @@ impl Library {
     /// See the crate's.
     pub unsafe fn gemm_wg(&self, w: &Matrix, p: &Product, cs: Stream) -> Result<()> {
         let t = Self::twelve(w, "gemm_wg")?;
-        let r = (self.api.glyd_gpu_mma12_gemm_x3)(t.data, t.exc, t.exc_base, t.sym.as_ptr(), w.rows, w.cols, p.x, p.m, null(p.bias), p.y, p.workspace, p.workspace_bytes, p.done, cs);
+        let r = (self.api.glyd_gpu_mma12_gemm_x3)(
+            t.data,
+            t.exc,
+            t.exc_base,
+            t.sym.as_ptr(),
+            w.rows,
+            w.cols,
+            p.x,
+            p.m,
+            null(p.bias),
+            p.y,
+            p.workspace,
+            p.workspace_bytes,
+            p.done,
+            cs,
+        );
         self.check("gemm_wg", r)
     }
 
@@ -788,7 +835,23 @@ impl Library {
     /// # Safety
     /// See the crate's.
     pub unsafe fn linear(&self, w: &Matrix, p: &Product, route: Option<Route>, cs: Stream) -> Result<()> {
-        let r = mma!(self, w, glyd_gpu_mma_linear, glyd_gpu_mma12_linear, w.rows, w.cols, p.x, p.m, null(p.bias), p.y, route.map_or(-1, |r| r as i64), p.workspace, p.workspace_bytes, p.done, cs);
+        let r = mma!(
+            self,
+            w,
+            glyd_gpu_mma_linear,
+            glyd_gpu_mma12_linear,
+            w.rows,
+            w.cols,
+            p.x,
+            p.m,
+            null(p.bias),
+            p.y,
+            route.map_or(-1, |r| r as i64),
+            p.workspace,
+            p.workspace_bytes,
+            p.done,
+            cs
+        );
         self.check("linear", r)
     }
 
@@ -827,7 +890,30 @@ impl Library {
     /// See the crate's.
     pub unsafe fn moe(&self, w: &Matrix, m: &Moe, cs: Stream) -> Result<()> {
         let o = w.rows / m.experts.max(1);
-        let r = mma!(self, w, glyd_gpu_mma_moe, glyd_gpu_mma12_moe, m.experts, o, w.cols, m.x, m.tokens, m.k, m.gather as i64, m.plan, m.act, null(m.bias), m.weights, m.weights_f32 as i64, m.ids, m.y, m.workspace, m.workspace_bytes, m.done, cs);
+        let r = mma!(
+            self,
+            w,
+            glyd_gpu_mma_moe,
+            glyd_gpu_mma12_moe,
+            m.experts,
+            o,
+            w.cols,
+            m.x,
+            m.tokens,
+            m.k,
+            m.gather as i64,
+            m.plan,
+            m.act,
+            null(m.bias),
+            m.weights,
+            m.weights_f32 as i64,
+            m.ids,
+            m.y,
+            m.workspace,
+            m.workspace_bytes,
+            m.done,
+            cs
+        );
         self.check("moe", r)
     }
 
@@ -853,7 +939,30 @@ impl Library {
     /// See the crate's.
     pub unsafe fn attn_decode(&self, a: &Attention, cs: Stream) -> Result<()> {
         let (k, v) = (a.keys, a.values);
-        let r = (self.api.glyd_gpu_attn_decode)(a.q, a.head_dim, k.data, k.blocks, k.block_base, k.tiers.as_ptr(), v.data, v.blocks, v.block_base, v.tiers.as_ptr(), a.tail_keys, a.tail_values, a.tail, a.pairs, a.queries, a.pages, a.scale, a.out, a.workspace, a.workspace_bytes, a.done, cs);
+        let r = (self.api.glyd_gpu_attn_decode)(
+            a.q,
+            a.head_dim,
+            k.data,
+            k.blocks,
+            k.block_base,
+            k.tiers.as_ptr(),
+            v.data,
+            v.blocks,
+            v.block_base,
+            v.tiers.as_ptr(),
+            a.tail_keys,
+            a.tail_values,
+            a.tail,
+            a.pairs,
+            a.queries,
+            a.pages,
+            a.scale,
+            a.out,
+            a.workspace,
+            a.workspace_bytes,
+            a.done,
+            cs,
+        );
         self.check("attn_decode", r)
     }
 
@@ -888,7 +997,8 @@ impl Library {
     /// # Safety
     /// See the crate's.
     pub unsafe fn fast_gemm(&self, w: &Fast, p: &Product, cs: Stream) -> Result<()> {
-        let r = (self.api.glyd_gpu_fast_gemm)(w.sm, w.planes, w.exc, w.exc_base, w.top, w.rows, w.cols, p.x, p.m, p.bias, p.y, p.workspace, p.workspace_bytes, cs);
+        let r =
+            (self.api.glyd_gpu_fast_gemm)(w.sm, w.planes, w.exc, w.exc_base, w.top, w.rows, w.cols, p.x, p.m, p.bias, p.y, p.workspace, p.workspace_bytes, cs);
         self.check("fast_gemm", r)
     }
 
@@ -903,7 +1013,8 @@ impl Library {
     /// # Safety
     /// See the crate's.
     pub unsafe fn fast_bgemv(&self, w: &Fast, p: &Product, cs: Stream) -> Result<()> {
-        let r = (self.api.glyd_gpu_fast_bgemv)(w.sm, w.planes, w.exc, w.exc_base, w.top, w.rows, w.cols, p.x, p.m, p.bias, p.y, p.workspace, p.workspace_bytes, cs);
+        let r =
+            (self.api.glyd_gpu_fast_bgemv)(w.sm, w.planes, w.exc, w.exc_base, w.top, w.rows, w.cols, p.x, p.m, p.bias, p.y, p.workspace, p.workspace_bytes, cs);
         self.check("fast_bgemv", r)
     }
 
@@ -922,7 +1033,18 @@ impl Library {
     /// # Safety
     /// See the crate's.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn pass_b(&self, w: *const u16, n: i64, len: *const u8, code: *const u32, offs: *const u32, out: *mut u32, tw: i64, v: i64, cs: Stream) -> Result<()> {
+    pub unsafe fn pass_b(
+        &self,
+        w: *const u16,
+        n: i64,
+        len: *const u8,
+        code: *const u32,
+        offs: *const u32,
+        out: *mut u32,
+        tw: i64,
+        v: i64,
+        cs: Stream,
+    ) -> Result<()> {
         self.check("pass_b", (self.api.glyd_gpu_pass_b)(w, n, len, code, offs, out, tw, v, cs))
     }
 
@@ -941,7 +1063,18 @@ impl Library {
     /// # Safety
     /// See the crate's.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn gemv(&self, d: &Dense, o: i64, k: i64, x: *const u16, bias: *const u16, y: *mut u16, sum: *mut f32, count: *mut c_int, cs: Stream) -> Result<()> {
+    pub unsafe fn gemv(
+        &self,
+        d: &Dense,
+        o: i64,
+        k: i64,
+        x: *const u16,
+        bias: *const u16,
+        y: *mut u16,
+        sum: *mut f32,
+        count: *mut c_int,
+        cs: Stream,
+    ) -> Result<()> {
         let r = (self.api.glyd_gpu_gemv)(d.sm, d.stream, d.stream_words, d.offs, d.tables, o, k, d.tw, d.v, d.tile_words, x, bias, y, sum, count, cs);
         self.check("gemv", r)
     }
@@ -1028,7 +1161,16 @@ mod tests {
             let args: Vec<String> = if args == "void" { vec![] } else { args.split(',').map(rust_type).collect() };
             declared.push((name.to_string(), args, ret));
         }
-        let ours: Vec<(String, Vec<String>, String)> = DECLARED.iter().map(|(n, a, r)| (n.to_string(), a.iter().map(|s| s.replace(' ', "").replace("*const", "*const ").replace("*mut", "*mut ")).collect(), r.replace(' ', "").replace("*const", "*const "))).collect();
+        let ours: Vec<(String, Vec<String>, String)> = DECLARED
+            .iter()
+            .map(|(n, a, r)| {
+                (
+                    n.to_string(),
+                    a.iter().map(|s| s.replace(' ', "").replace("*const", "*const ").replace("*mut", "*mut ")).collect(),
+                    r.replace(' ', "").replace("*const", "*const "),
+                )
+            })
+            .collect();
         let mut theirs = declared.clone();
         theirs.sort();
         let mut mine = ours.clone();
@@ -1039,14 +1181,37 @@ mod tests {
         for d in &mine {
             assert!(theirs.contains(d), "{} is declared here, not so in glyd_gpu.h: {:?}, the header's {:?}", d.0, d, theirs.iter().find(|t| t.0 == d.0));
         }
-        let define = |name: &str| h.split(&format!("#define {name} ")).nth(1).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse::<i32>().ok()).unwrap_or_else(|| panic!("glyd_gpu.h has no {name}"));
+        let define = |name: &str| {
+            h.split(&format!("#define {name} "))
+                .nth(1)
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|v| v.parse::<i32>().ok())
+                .unwrap_or_else(|| panic!("glyd_gpu.h has no {name}"))
+        };
         assert_eq!(define("GLYD_GPU_API_VERSION"), API_VERSION, "GLYD_GPU_API_VERSION is not API_VERSION");
-        for (name, r) in [("DECODE", Route::Decode), ("GEMM", Route::Gemm), ("MID", Route::Mid), ("WG", Route::Wg), ("BIG", Route::Big), ("AHEAD", Route::Ahead), ("SPLIT", Route::Split)] {
+        for (name, r) in [
+            ("DECODE", Route::Decode),
+            ("GEMM", Route::Gemm),
+            ("MID", Route::Mid),
+            ("WG", Route::Wg),
+            ("BIG", Route::Big),
+            ("AHEAD", Route::Ahead),
+            ("SPLIT", Route::Split),
+        ] {
             assert_eq!(define(&format!("GLYD_GPU_ROUTE_{name}")), r as i32, "GLYD_GPU_ROUTE_{name}");
             assert_eq!(Route::from_c(r as c_int).unwrap(), r);
         }
         assert_eq!(
-            (define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S"), define("GLYD_GPU_PCIE"), define("GLYD_GPU_GH200"), define("GLYD_GPU_H100"), define("GLYD_GPU_WITH_SPLIT")),
+            (
+                define("GLYD_GPU_GEFORCE"),
+                define("GLYD_GPU_A10"),
+                define("GLYD_GPU_L4"),
+                define("GLYD_GPU_L40S"),
+                define("GLYD_GPU_PCIE"),
+                define("GLYD_GPU_GH200"),
+                define("GLYD_GPU_H100"),
+                define("GLYD_GPU_WITH_SPLIT")
+            ),
             (GEFORCE, A10, L4, L40S, PCIE, GH200, H100, WITH_SPLIT)
         );
     }

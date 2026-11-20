@@ -66,7 +66,13 @@ pub fn text_logprobs(tok: &Tok, lps: &[Lp], as_ids: bool, offset: &mut usize) ->
         tokens.push(jstr(&t));
         tops.push(format!("{{{}}}", top.join(",")));
     }
-    format!("{{\"text_offset\":[{}],\"token_logprobs\":[{}],\"tokens\":[{}],\"top_logprobs\":[{}]}}", offsets.join(","), lp_list.join(","), tokens.join(","), tops.join(","))
+    format!(
+        "{{\"text_offset\":[{}],\"token_logprobs\":[{}],\"tokens\":[{}],\"top_logprobs\":[{}]}}",
+        offsets.join(","),
+        lp_list.join(","),
+        tokens.join(","),
+        tops.join(",")
+    )
 }
 
 /// A usage object: the prompt counted once, the tokens of every choice added.
@@ -89,7 +95,10 @@ mod tests {
         // the legacy form: offsets in characters from where the reply's text begins
         let mut at = 0;
         let got = text_logprobs(&t, &lps, false, &mut at);
-        assert_eq!(got, "{\"text_offset\":[0,2],\"token_logprobs\":[-0.25,-9999],\"tokens\":[\"Hi\",\"é\"],\"top_logprobs\":[{\"Hi\":-0.25,\" there\":-1.5},{}]}");
+        assert_eq!(
+            got,
+            "{\"text_offset\":[0,2],\"token_logprobs\":[-0.25,-9999],\"tokens\":[\"Hi\",\"é\"],\"top_logprobs\":[{\"Hi\":-0.25,\" there\":-1.5},{}]}"
+        );
         assert_eq!(at, 3);
         assert_eq!(usage(10, 5), "{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}");
         assert!(glyd_gpu::json::parse(&got).is_ok() && glyd_gpu::json::parse(want).is_ok());

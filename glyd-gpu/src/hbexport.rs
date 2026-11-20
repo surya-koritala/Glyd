@@ -107,7 +107,11 @@ impl HbExport {
                 .into_iter()
                 .map(|b| b as u32)
                 .collect();
-            let name = r.get("file").and_then(Value::as_str).filter(|f| !f.is_empty() && !f.contains('/') && *f != "..").ok_or_else(|| what(format!("layer {i}: no file")))?;
+            let name = r
+                .get("file")
+                .and_then(Value::as_str)
+                .filter(|f| !f.is_empty() && !f.contains('/') && *f != "..")
+                .ok_or_else(|| what(format!("layer {i}: no file")))?;
             let file = File::open(&dir.join(name))?;
             if r.get("bytes").and_then(Value::as_u64).is_some_and(|b| std::fs::metadata(&file.path).map(|m| m.len()).ok() != Some(b)) {
                 return Err(what(format!("layer {i}: {name} is not the {} bytes meta.json says", r.get("bytes").and_then(Value::as_u64).unwrap_or(0))));
@@ -176,7 +180,12 @@ impl HbLayer {
         for (name, (dtype, shape)) in Self::names(e, m).iter().zip(want) {
             let t = self.file.get(name).ok_or_else(|| bad(format!("{}: no tensor {name}", self.file.path.display())))?;
             if t.dtype != dtype || t.shape != shape {
-                return Err(bad(format!("{}: {name} is {} {:?}, where {dtype} {shape:?} is wanted (a {bits}-bit expert)", self.file.path.display(), t.dtype, t.shape)));
+                return Err(bad(format!(
+                    "{}: {name} is {} {:?}, where {dtype} {shape:?} is wanted (a {bits}-bit expert)",
+                    self.file.path.display(),
+                    t.dtype,
+                    t.shape
+                )));
             }
         }
         Ok(())
@@ -202,7 +211,11 @@ pub(crate) mod tests {
         let mut at = 0u64;
         let mut parts = vec!["\"__metadata__\":{\"format\":\"pt\"}".to_string()];
         for (n, d, s, b) in tensors {
-            parts.push(format!("\"{n}\":{{\"dtype\":\"{d}\",\"shape\":[{}],\"data_offsets\":[{at},{}]}}", s.iter().map(u64::to_string).collect::<Vec<_>>().join(","), at + b.len() as u64));
+            parts.push(format!(
+                "\"{n}\":{{\"dtype\":\"{d}\",\"shape\":[{}],\"data_offsets\":[{at},{}]}}",
+                s.iter().map(u64::to_string).collect::<Vec<_>>().join(","),
+                at + b.len() as u64
+            ));
             at += b.len() as u64;
         }
         let mut h = format!("{{{}}}", parts.join(",")).into_bytes();
@@ -217,7 +230,15 @@ pub(crate) mod tests {
 
     /// A synthetic export of `layers` MoE layers (blocks 1, 3, 5, ...) of `experts` experts of `rows` x `cols`, expert e at `bits(layer, e)` bits, written as nemotron_hbr.py's Exporter writes it; returns the matrices it
     /// holds (`[layer][expert][up, downT]`) as the packer makes them from the codes, scales and codebooks it drew.
-    pub(crate) fn synthetic(dir: &Path, layers: usize, experts: usize, rows: usize, cols: usize, bits: &dyn Fn(usize, usize) -> u32, seed: u64) -> Vec<Vec<[CbRows; 2]>> {
+    pub(crate) fn synthetic(
+        dir: &Path,
+        layers: usize,
+        experts: usize,
+        rows: usize,
+        cols: usize,
+        bits: &dyn Fn(usize, usize) -> u32,
+        seed: u64,
+    ) -> Vec<Vec<[CbRows; 2]>> {
         std::fs::create_dir_all(dir).unwrap();
         let mut x = seed | 1;
         let mut next = move || {
@@ -280,7 +301,12 @@ pub(crate) mod tests {
         assert_eq!((ex.layers.len(), ex.experts, ex.rows, ex.cols, ex.recipe.as_str()), (3, 6, 64, 128, "hbr40"));
         for (l, mats) in held.iter().enumerate() {
             assert_eq!((ex.layers[l].block, ex.layers[l].seed), (2 * l + 1, l as u64 * 8 + 2));
-            assert!(ex.layers[l].signs.len() == 128 && ex.layers[l].signs.iter().all(|&s| s == 1 || s == -1) && ex.layers[l].signs.contains(&1) && ex.layers[l].signs.contains(&-1));
+            assert!(
+                ex.layers[l].signs.len() == 128
+                    && ex.layers[l].signs.iter().all(|&s| s == 1 || s == -1)
+                    && ex.layers[l].signs.contains(&1)
+                    && ex.layers[l].signs.contains(&-1)
+            );
             for (e, pair) in mats.iter().enumerate() {
                 assert_eq!(ex.layers[l].expert_bits[e], bits(l, e));
                 assert_eq!(ex.matrix(l, e, Matrix::Up).unwrap(), pair[0]);

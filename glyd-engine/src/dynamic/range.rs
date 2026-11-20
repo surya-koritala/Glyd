@@ -28,7 +28,8 @@ pub const MAX_BODY: usize = 64 << 20;
 const KEEP: usize = 256;
 const KEEP_BODY: usize = 64 << 20;
 /// The operations, as describe lists them.
-const OPS: [&str; 13] = ["describe", "inspect", "prepare", "commit", "begin_session", "run_chunk", "status", "cancel", "end_session", "unload", "exit", "tokenize", "detokenize"];
+const OPS: [&str; 13] =
+    ["describe", "inspect", "prepare", "commit", "begin_session", "run_chunk", "status", "cancel", "end_session", "unload", "exit", "tokenize", "detokenize"];
 /// The most sessions a stage holds at once (`--sessions`).
 const MAX_SESSIONS: usize = 2;
 /// A request id: 1 to 128 of these.
@@ -143,7 +144,14 @@ fn check_handle(h: &str, kind: char, inc: u64) -> Result<()> {
     }
     let what = if kind == 'i' { "an instance" } else { "a session" };
     match h.split('-').collect::<Vec<_>>()[..] {
-        [k, i, n] if k.len() == 1 && k.starts_with(kind) && i.len() == 16 && i.bytes().all(|b| b.is_ascii_hexdigit()) && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+        [k, i, n]
+            if k.len() == 1
+                && k.starts_with(kind)
+                && i.len() == 16
+                && i.bytes().all(|b| b.is_ascii_hexdigit())
+                && !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit()) =>
+        {
             err(format!("{h}: {what} handle of another worker incarnation (this one is {inc:016x}; a restart invalidates every handle)"))
         }
         _ => err(format!("{h}: not {what} handle")),
@@ -365,7 +373,13 @@ pub fn worker(a: &Args) -> Result<()> {
     let (la, lb) = layers_arg(a, nl)?;
     let st = Stage { layers: (la, lb), first: la == 0, last: lb == nl };
     // (--no-graph: a development build's)
-    let o = Opts { ctx: a.num("ctx", 4096usize)?, chunk: a.num("chunk", 1024usize)?, graph: !(cfg!(feature = "dev") && a.has("no-graph")), device: a.num("device", 0i32)?, layout };
+    let o = Opts {
+        ctx: a.num("ctx", 4096usize)?,
+        chunk: a.num("chunk", 1024usize)?,
+        graph: !(cfg!(feature = "dev") && a.has("no-graph")),
+        device: a.num("device", 0i32)?,
+        layout,
+    };
     let head_rows = a.num("head-rows", 1usize)?;
     if head_rows == 0 || head_rows > o.chunk.min(64) {
         return err(format!("--head-rows {head_rows}: 1 to {} (the chunk, and 64)", o.chunk.min(64)));
@@ -375,13 +389,27 @@ pub fn worker(a: &Args) -> Result<()> {
         return err(format!("--sessions {sessions}: 1 to {MAX_SESSIONS}"));
     }
     let max_body = (o.chunk * 4 * cfg.hidden).max(cfg.vocab * 2 * head_rows).min(MAX_BODY);
-    let setup = Arc::new(Setup { level: level_name(&dir, layout)?, max_body, defaults: crate::sampler::generation_defaults(&dir), dir, cfg, st, o, inc: incarnation(), head_rows, sessions });
+    let setup = Arc::new(Setup {
+        level: level_name(&dir, layout)?,
+        max_body,
+        defaults: crate::sampler::generation_defaults(&dir),
+        dir,
+        cfg,
+        st,
+        o,
+        inc: incarnation(),
+        head_rows,
+        sessions,
+    });
     let live = Arc::new(Mutex::new(Live::default()));
     let store = Arc::new(Mutex::new(Store::default()));
     let (tx, rx) = mpsc::channel::<Job>();
     let exec = {
         let (setup, live, store) = (setup.clone(), live.clone(), store.clone());
-        std::thread::Builder::new().name("glyd-range-exec".into()).spawn(move || executor(rx, &setup, &live, &store)).map_err(|e| Error(format!("the executor thread: {e}")))?
+        std::thread::Builder::new()
+            .name("glyd-range-exec".into())
+            .spawn(move || executor(rx, &setup, &live, &store))
+            .map_err(|e| Error(format!("the executor thread: {e}")))?
     };
     eprintln!("worker {}..{} of {nl} layers of {} ({}): {PROTOCOL}, incarnation {:016x}", la, lb, setup.dir.display(), setup.level, setup.inc);
     let mut inp = std::io::stdin().lock();
@@ -437,7 +465,10 @@ pub fn worker(a: &Args) -> Result<()> {
                         continue;
                     }
                     Known::Retired => {
-                        send(&reply_frame(&id, err(format!("{id}: this request was answered and its reply let go ({KEEP} kept, {KEEP_BODY} bytes of bodies)"))));
+                        send(&reply_frame(
+                            &id,
+                            err(format!("{id}: this request was answered and its reply let go ({KEEP} kept, {KEEP_BODY} bytes of bodies)")),
+                        ));
                         continue;
                     }
                 };
@@ -509,7 +540,14 @@ fn text_op(op: &str, h: &Value, dir: &Path, words: &mut Option<Words>) -> Answer
         };
         return Ok((vec![("ids", list(ids.iter().map(|&t| num(t))))], Vec::new()));
     }
-    let ids: Vec<u32> = h.get("ids").and_then(Value::as_u64s).filter(|v| v.iter().all(|&t| t <= u32::MAX as u64)).ok_or_else(|| Error("detokenize needs ids [token ids]".into()))?.into_iter().map(|t| t as u32).collect();
+    let ids: Vec<u32> = h
+        .get("ids")
+        .and_then(Value::as_u64s)
+        .filter(|v| v.iter().all(|&t| t <= u32::MAX as u64))
+        .ok_or_else(|| Error("detokenize needs ids [token ids]".into()))?
+        .into_iter()
+        .map(|t| t as u32)
+        .collect();
     Ok((vec![("text", text(&w.tok.decode_with(&ids, get_bool(h, "skip_special").unwrap_or(true))?))], Vec::new()))
 }
 
@@ -540,7 +578,9 @@ fn sampler_of(v: &Value, defaults: &Params, ctx: usize) -> Result<Sampler> {
         return err(format!("sampling: temperature {} (0 to 2), top_p {} (above 0, to 1), min_p {} (0 to 1)", p.temperature, p.top_p, p.min_p));
     }
     p.seed = get_u64(v, "seed").ok_or_else(|| Error("sampling needs a seed (0 to 2^64 - 1)".into()))?;
-    let step = get_u64(v, "step").filter(|&x| x <= ctx as u64).ok_or_else(|| Error(format!("sampling needs the step: the tokens of the answer before this one (0 for the token after the prompt; at most {ctx})")))?;
+    let step = get_u64(v, "step")
+        .filter(|&x| x <= ctx as u64)
+        .ok_or_else(|| Error(format!("sampling needs the step: the tokens of the answer before this one (0 for the token after the prompt; at most {ctx})")))?;
     let mut sm = Sampler::new(p, &[]);
     sm.skip(step);
     Ok(sm)
@@ -569,7 +609,17 @@ fn status(l: &Live, inc: u64, who: Option<&str>) -> Vec<(&'static str, Value)> {
         ("session", ses.map_or(Value::Null, |x| Value::from(x.0.as_str()))),
         ("session_cancelled", Value::Bool(ses.is_some_and(cancelled))),
         ("tokens", num(ses.map_or(0, |x| x.1))),
-        ("running", l.running.as_ref().map_or(Value::Null, |(id, op, t, h)| obj(vec![("id", text(id)), ("op", text(op)), ("ms", num(format!("{:.1}", t.elapsed().as_secs_f64() * 1e3))), ("session", h.as_deref().map_or(Value::Null, Value::from))]))),
+        (
+            "running",
+            l.running.as_ref().map_or(Value::Null, |(id, op, t, h)| {
+                obj(vec![
+                    ("id", text(id)),
+                    ("op", text(op)),
+                    ("ms", num(format!("{:.1}", t.elapsed().as_secs_f64() * 1e3))),
+                    ("session", h.as_deref().map_or(Value::Null, Value::from)),
+                ])
+            }),
+        ),
         ("sessions", list(l.sessions.iter().map(|x| obj(vec![("session", text(&x.0)), ("tokens", num(x.1)), ("cancelled", Value::Bool(cancelled(x)))])))),
     ]
 }
@@ -588,7 +638,8 @@ fn executor(rx: mpsc::Receiver<Job>, s: &Setup, live: &Mutex<Live>, store: &Mute
             Job::Run(f) => f,
         };
         let (id, op) = (get_str(&f.head, "id").unwrap_or("").to_string(), get_str(&f.head, "op").unwrap_or("").to_string());
-        live.lock().unwrap_or_else(|e| e.into_inner()).running = Some((id.clone(), op.clone(), Instant::now(), get_str(&f.head, "session").map(str::to_string)));
+        live.lock().unwrap_or_else(|e| e.into_inner()).running =
+            Some((id.clone(), op.clone(), Instant::now(), get_str(&f.head, "session").map(str::to_string)));
         let r = exec(&op, &f, s, &mut held, &mut counter, live);
         let reply = reply_frame(&id, r);
         {
@@ -621,7 +672,15 @@ fn allocated(e: &Dyn) -> Vec<(&'static str, Value)> {
         ("scratch_bytes", num(live.saturating_sub(h.weights + h.kv + h.state))),
         ("engine_bytes", num(live)),
         ("peak_bytes", num(peak)),
-        ("device", obj(vec![("name", text(&e.dev.name)), ("compute_capability", text(&format!("{}.{}", e.dev.cc.0, e.dev.cc.1))), ("free_bytes", num(free)), ("total_bytes", num(total))])),
+        (
+            "device",
+            obj(vec![
+                ("name", text(&e.dev.name)),
+                ("compute_capability", text(&format!("{}.{}", e.dev.cc.0, e.dev.cc.1))),
+                ("free_bytes", num(free)),
+                ("total_bytes", num(total)),
+            ]),
+        ),
     ]
 }
 
@@ -652,20 +711,43 @@ fn exec(op: &str, f: &Frame, s: &Setup, held: &mut Option<Held>, counter: &mut u
             }
             *counter += 1;
             let instance = handle('i', s.inc, *counter);
-            let mut pairs = vec![("instance", text(&instance)), ("load_s", num(format!("{:.2}", t0.elapsed().as_secs_f64()))), ("describe", text(&e.describe()))];
+            let mut pairs =
+                vec![("instance", text(&instance)), ("load_s", num(format!("{:.2}", t0.elapsed().as_secs_f64()))), ("describe", text(&e.describe()))];
             pairs.extend(allocated(&e));
             *held = Some(Held { e, instance, committed: false, sessions: Vec::new() });
             Ok((pairs, Vec::new()))
         }
         "inspect" => {
-            let Some(h) = held.as_ref() else { return Ok((vec![("available", Value::Bool(false)), ("why", text("nothing is loaded: prepare first; the costs are the loaded stage's own allocations"))], Vec::new())) };
+            let Some(h) = held.as_ref() else {
+                return Ok((
+                    vec![
+                        ("available", Value::Bool(false)),
+                        ("why", text("nothing is loaded: prepare first; the costs are the loaded stage's own allocations")),
+                    ],
+                    Vec::new(),
+                ));
+            };
             let (layers, embed, head, small) = h.e.layer_costs();
             let (a, b) = s.st.layers;
             let rows: Vec<Value> = layers
                 .iter()
                 .enumerate()
                 .filter(|(l, _)| (a..b).contains(l))
-                .map(|(l, &(w, kv, st))| obj(vec![("layer", num(l)), ("kind", text(match s.cfg.kinds[l] { Kind::Linear => "linear_attention", Kind::Full => "full_attention" })), ("weights_bytes", num(w)), ("kv_bytes_per_token", num(kv)), ("state_bytes", num(st))]))
+                .map(|(l, &(w, kv, st))| {
+                    obj(vec![
+                        ("layer", num(l)),
+                        (
+                            "kind",
+                            text(match s.cfg.kinds[l] {
+                                Kind::Linear => "linear_attention",
+                                Kind::Full => "full_attention",
+                            }),
+                        ),
+                        ("weights_bytes", num(w)),
+                        ("kv_bytes_per_token", num(kv)),
+                        ("state_bytes", num(st)),
+                    ])
+                })
                 .collect();
             let per_token: usize = layers.iter().map(|x| x.1).sum();
             let mut pairs = vec![
@@ -694,7 +776,11 @@ fn exec(op: &str, f: &Frame, s: &Setup, held: &mut Option<Held>, counter: &mut u
                 return err("commit before a session");
             }
             let Some(seq) = (0..s.sessions).find(|&q| h.sessions.iter().all(|x| x.seq != q)) else {
-                return err(format!("{}: open; this worker takes {} at a time (--sessions); end one first", h.sessions.iter().map(|x| x.handle.as_str()).collect::<Vec<_>>().join(", "), s.sessions));
+                return err(format!(
+                    "{}: open; this worker takes {} at a time (--sessions); end one first",
+                    h.sessions.iter().map(|x| x.handle.as_str()).collect::<Vec<_>>().join(", "),
+                    s.sessions
+                ));
             };
             h.e.select(seq)?;
             h.e.reset()?;
@@ -703,7 +789,16 @@ fn exec(op: &str, f: &Frame, s: &Setup, held: &mut Option<Held>, counter: &mut u
             h.sessions.push(Session { handle: handle.clone(), n: 0, cancelled: false, seq });
             // (the session's own: the sequences are alike)
             let (hd, k) = (h.e.held().expect("the dynamic engine says what it holds"), h.e.seqs().0 as u64);
-            Ok((vec![("session", text(&handle)), ("context_tokens", num(h.e.capacity())), ("kv_bytes", num(hd.kv / k)), ("state_bytes", num(hd.state / k)), ("tokens", num(0))], Vec::new()))
+            Ok((
+                vec![
+                    ("session", text(&handle)),
+                    ("context_tokens", num(h.e.capacity())),
+                    ("kv_bytes", num(hd.kv / k)),
+                    ("state_bytes", num(hd.state / k)),
+                    ("tokens", num(0)),
+                ],
+                Vec::new(),
+            ))
         }
         "run_chunk" => {
             let hs = get_str(&f.head, "session").ok_or_else(|| Error("run_chunk needs the session".into()))?;
@@ -751,7 +846,14 @@ fn exec(op: &str, f: &Frame, s: &Setup, held: &mut Option<Held>, counter: &mut u
                 (true, Some(v)) => v.as_u64().ok_or_else(|| Error("head_rows: a number of rows".into()))? as usize,
             };
             let (tokens, n) = if s.st.first {
-                let t: Vec<u32> = f.head.get("tokens").and_then(Value::as_u64s).ok_or_else(|| Error("the first stage's run_chunk needs tokens".into()))?.into_iter().map(|x| x as u32).collect();
+                let t: Vec<u32> = f
+                    .head
+                    .get("tokens")
+                    .and_then(Value::as_u64s)
+                    .ok_or_else(|| Error("the first stage's run_chunk needs tokens".into()))?
+                    .into_iter()
+                    .map(|x| x as u32)
+                    .collect();
                 let n = t.len();
                 (t, n)
             } else {
@@ -821,7 +923,10 @@ fn exec(op: &str, f: &Frame, s: &Setup, held: &mut Option<Held>, counter: &mut u
                 pairs.push(("tokens", list(picks.iter().map(|p| num(p.0)))));
             }
             if logits {
-                pairs.push(("body", obj(vec![("what", text("logits")), ("dtype", text("bf16")), ("rows", num(rows)), ("width", num(s.cfg.vocab)), ("bytes", num(w.len() * 2))])));
+                pairs.push((
+                    "body",
+                    obj(vec![("what", text("logits")), ("dtype", text("bf16")), ("rows", num(rows)), ("width", num(s.cfg.vocab)), ("bytes", num(w.len() * 2))]),
+                ));
                 return Ok((pairs, words_bytes(&w)));
             }
             Ok((pairs, Vec::new()))
@@ -829,7 +934,8 @@ fn exec(op: &str, f: &Frame, s: &Setup, held: &mut Option<Held>, counter: &mut u
         "end_session" => {
             let hs = get_str(&f.head, "session").ok_or_else(|| Error("end_session needs the session".into()))?;
             check_handle(hs, 's', s.inc)?;
-            let h = held.as_mut().filter(|h| h.sessions.iter().any(|x| x.handle == hs)).ok_or_else(|| Error(format!("{hs}: no session of this handle is open")))?;
+            let h =
+                held.as_mut().filter(|h| h.sessions.iter().any(|x| x.handle == hs)).ok_or_else(|| Error(format!("{hs}: no session of this handle is open")))?;
             // (the other sessions as they are)
             let i = h.sessions.iter().position(|x| x.handle == hs).expect("checked");
             let ses = h.sessions.remove(i);
@@ -871,7 +977,17 @@ impl Client {
     /// `exe worker --model DIR --layers A..B` with the options; stderr is this process's.
     pub fn spawn(exe: &Path, dir: &Path, layers: (usize, usize), o: &Opts, head_rows: usize, sessions: usize, k: usize) -> Result<Client> {
         let mut c = std::process::Command::new(exe);
-        c.arg("rangeworker").arg("--model").arg(dir).arg("--layers").arg(format!("{}..{}", layers.0, layers.1)).arg("--ctx").arg(o.ctx.to_string()).arg("--chunk").arg(o.chunk.to_string()).arg("--device").arg(o.device.to_string());
+        c.arg("rangeworker")
+            .arg("--model")
+            .arg(dir)
+            .arg("--layers")
+            .arg(format!("{}..{}", layers.0, layers.1))
+            .arg("--ctx")
+            .arg(o.ctx.to_string())
+            .arg("--chunk")
+            .arg(o.chunk.to_string())
+            .arg("--device")
+            .arg(o.device.to_string());
         c.arg("--head-rows").arg(head_rows.to_string()).arg("--sessions").arg(sessions.to_string());
         if let Some(l) = o.layout {
             c.arg("--layout").arg(l.name());
@@ -879,10 +995,24 @@ impl Client {
         if !o.graph {
             c.arg("--no-graph");
         }
-        let mut child = c.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).spawn().map_err(|e| Error(format!("{}: {e}", exe.display())))?;
+        let mut child = c
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .map_err(|e| Error(format!("{}: {e}", exe.display())))?;
         let inp = child.stdin.take().expect("piped");
         let out = std::io::BufReader::new(child.stdout.take().expect("piped"));
-        Ok(Client { child, inp, out, n: 0, tag: format!("worker {k} (layers {}..{})", layers.0, layers.1), instance: String::new(), session: String::new(), last: None })
+        Ok(Client {
+            child,
+            inp,
+            out,
+            n: 0,
+            tag: format!("worker {k} (layers {}..{})", layers.0, layers.1),
+            instance: String::new(),
+            session: String::new(),
+            last: None,
+        })
     }
 
     pub fn send_frame(&mut self, f: &Frame) -> Result<()> {
@@ -980,7 +1110,7 @@ pub fn level_name(dir: &Path, layout: Option<Layout>) -> Result<String> {
         _ => "penguin",
     }
     .to_string()
-    + " (packed at load)")
+        + " (packed at load)")
 }
 
 // ---- rangecheck ---------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1030,7 +1160,14 @@ fn same(what: &str, a: &(Vec<u32>, Vec<Vec<f32>>), b: &(Vec<u32>, Vec<Vec<f32>>)
         }
         if let Some(j) = (0..x.len()).find(|&j| x[j].to_bits() != y[j].to_bits()) {
             let n = (0..x.len()).filter(|&j| x[j].to_bits() != y[j].to_bits()).count();
-            return err(format!("{what}: step {i}: logit {j} is {} ({:#010x}), where the whole model gave {} ({:#010x}); {n} of {} differ at this step", y[j], y[j].to_bits(), x[j], x[j].to_bits(), x.len()));
+            return err(format!(
+                "{what}: step {i}: logit {j} is {} ({:#010x}), where the whole model gave {} ({:#010x}); {n} of {} differ at this step",
+                y[j],
+                y[j].to_bits(),
+                x[j],
+                x[j].to_bits(),
+                x.len()
+            ));
         }
         cells += x.len();
         if a.0[i] != b.0[i] {
@@ -1061,7 +1198,12 @@ fn chain_with(ws: &mut [Client], tokens: &[u32], at: usize, head: bool, every: &
     let mut last = Some(last);
     let decode = tokens.len() == 1 || every.iter().any(|x| x.0 == "verify");
     for (k, w) in ws.iter_mut().enumerate() {
-        let mut pairs = vec![("session", text(&w.session)), ("phase", text(if decode { "decode" } else { "prefill" })), ("position_start", num(at)), ("head", Value::Bool(head))];
+        let mut pairs = vec![
+            ("session", text(&w.session)),
+            ("phase", text(if decode { "decode" } else { "prefill" })),
+            ("position_start", num(at)),
+            ("head", Value::Bool(head)),
+        ];
         pairs.extend(every.iter().cloned());
         if k == 0 {
             pairs.push(("tokens", list(tokens.iter().map(|&t| num(t)))));
@@ -1104,7 +1246,13 @@ fn fresh(ws: &mut [Client]) -> Result<()> {
 /// The prompt through the workers in chunks (the head on the last, with `last`'s fields), then `new` - 1 steps (step i's `last` fields from `each(i)`): the
 /// tokens and every step's logits.
 #[cfg(feature = "dev")]
-fn generate(ws: &mut [Client], prompt: &[u32], chunk: usize, new: usize, each: &dyn Fn(usize) -> Vec<(&'static str, Value)>) -> Result<(Vec<u32>, Vec<Vec<f32>>)> {
+fn generate(
+    ws: &mut [Client],
+    prompt: &[u32],
+    chunk: usize,
+    new: usize,
+    each: &dyn Fn(usize) -> Vec<(&'static str, Value)>,
+) -> Result<(Vec<u32>, Vec<Vec<f32>>)> {
     let mut at = 0;
     let mut out = None;
     for ch in prompt.chunks(chunk) {
@@ -1185,7 +1333,12 @@ fn lane_step(ws: &mut [Client], l: &mut Lane, chunk: usize, drafts: Option<(&[u3
     let words = bytes_words(&r.body);
     let took = (0..k).take_while(|&i| g.get(i) == Some(&rows[i + 1])).count();
     if took != a || words.len() != hk * vocab {
-        return err(format!("drafting: the verify chunk at {}: {took} drafts kept, where the plain run's tokens give {a}: tokens {g:?}, drafts {:?}; {} logit words", l.at, &rows[1..], words.len()));
+        return err(format!(
+            "drafting: the verify chunk at {}: {took} drafts kept, where the plain run's tokens give {a}: tokens {g:?}, drafts {:?}; {} logit words",
+            l.at,
+            &rows[1..],
+            words.len()
+        ));
     }
     for (i, &x) in g.iter().enumerate().take(a + 1) {
         l.toks.push(x);
@@ -1211,7 +1364,9 @@ fn on<T>(ws: &mut [Client], other: &mut [String], f: impl FnOnce(&mut [Client]) 
 /// A session begun on every worker (beside the ones open): the handles.
 #[cfg(feature = "dev")]
 fn begin_all(ws: &mut [Client]) -> Result<Vec<String>> {
-    ws.iter_mut().map(|w| Ok(get_str(&w.call("begin_session", vec![("instance", text(&w.instance.clone()))], vec![])?.head, "session").unwrap_or("").to_string())).collect()
+    ws.iter_mut()
+        .map(|w| Ok(get_str(&w.call("begin_session", vec![("instance", text(&w.instance.clone()))], vec![])?.head, "session").unwrap_or("").to_string()))
+        .collect()
 }
 
 /// Every worker's session of `hs` ended.
@@ -1227,7 +1382,19 @@ fn end_all(ws: &mut [Client], hs: &[String]) -> Result<()> {
 /// were past their prompts (a step or a verify chunk each), and how many.
 #[cfg(feature = "dev")]
 #[allow(clippy::too_many_arguments)]
-fn interleave(ws: &mut [Client], hb: &mut [String], a: &mut Lane, da: Option<(&[u32], usize)>, a_until: usize, b: &mut Lane, db: Option<(&[u32], usize)>, b_until: usize, chunk: usize, new: usize, vocab: usize) -> Result<(f64, usize)> {
+fn interleave(
+    ws: &mut [Client],
+    hb: &mut [String],
+    a: &mut Lane,
+    da: Option<(&[u32], usize)>,
+    a_until: usize,
+    b: &mut Lane,
+    db: Option<(&[u32], usize)>,
+    b_until: usize,
+    chunk: usize,
+    new: usize,
+    vocab: usize,
+) -> Result<(f64, usize)> {
     let (mut ms, mut turns) = (0f64, 0usize);
     while a.toks.len() < a_until || b.toks.len() < b_until {
         let both = a.prompted() && b.prompted() && a.toks.len() < a_until && b.toks.len() < b_until;
@@ -1278,7 +1445,13 @@ pub fn rangecheck(a: &Args) -> Result<()> {
     if cuts.windows(2).any(|w| w[0] >= w[1]) || cuts.iter().any(|&c| c == 0 || c >= nl) {
         return err(format!("cuts {cuts:?}: ascending, inside 1..{nl}"));
     }
-    let o = Opts { ctx: a.num("ctx", (np + new + 16).div_ceil(16) * 16)?, chunk: a.num("chunk", 1024usize)?, graph: !a.has("no-graph"), device: a.num("device", 0i32)?, layout };
+    let o = Opts {
+        ctx: a.num("ctx", (np + new + 16).div_ceil(16) * 16)?,
+        chunk: a.num("chunk", 1024usize)?,
+        graph: !a.has("no-graph"),
+        device: a.num("device", 0i32)?,
+        layout,
+    };
     let level = level_name(&dir, layout)?;
     let sessions = a.num("sessions", 1usize)?;
     if !(1..=MAX_SESSIONS).contains(&sessions) {
@@ -1303,12 +1476,27 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         println!("whole model: weights {} bytes = layers {} + embedding {} + lm_head {} + small tensors {}; kv {} bytes ({} a token), states {} bytes, scratch {} bytes, engine {} bytes", fmt_bytes(h.weights as usize), fmt_bytes(layers.iter().map(|x| x.0).sum()), fmt_bytes(embed), fmt_bytes(head), fmt_bytes(small), fmt_bytes(h.kv as usize), fmt_bytes(layers.iter().map(|x| x.1).sum()), fmt_bytes(h.state as usize), fmt_bytes((live as usize).saturating_sub((h.weights + h.kv + h.state) as usize)), fmt_bytes(live as usize));
         println!("layer  kind              weights_bytes  kv_bytes_per_token  state_bytes");
         for (l, &(w, kv, st)) in layers.iter().enumerate() {
-            println!("{l:>5}  {:<16} {:>14}  {:>18}  {:>11}", match cfg.kinds[l] { Kind::Linear => "linear_attention", Kind::Full => "full_attention" }, fmt_bytes(w), fmt_bytes(kv), fmt_bytes(st));
+            println!(
+                "{l:>5}  {:<16} {:>14}  {:>18}  {:>11}",
+                match cfg.kinds[l] {
+                    Kind::Linear => "linear_attention",
+                    Kind::Full => "full_attention",
+                },
+                fmt_bytes(w),
+                fmt_bytes(kv),
+                fmt_bytes(st)
+            );
         }
         println!("boundary: {:?} ({} bytes a token)", e.boundary(), e.boundary().iter().map(|x| 2 * x.1).sum::<usize>());
     }
     let whole = greedy(&mut r, &prompt, new)?;
-    println!("whole model: prompt {:.1} ms, a step {:.2} ms (the logits read each step); tokens {:?}..; sha256(tokens, logits) {}", whole.2, whole.3, &whole.0[..whole.0.len().min(12)], digest(&whole.0, &whole.1));
+    println!(
+        "whole model: prompt {:.1} ms, a step {:.2} ms (the logits read each step); tokens {:?}..; sha256(tokens, logits) {}",
+        whole.2,
+        whole.3,
+        &whole.0[..whole.0.len().min(12)],
+        digest(&whole.0, &whole.1)
+    );
     let whole_b = if sessions > 1 {
         let b = greedy(&mut r, &prompt_b, new)?;
         println!("whole model, the second prompt ({} tokens): tokens {:?}..; sha256 {}", prompt_b.len(), &b.0[..b.0.len().min(12)], digest(&b.0, &b.1));
@@ -1447,7 +1635,12 @@ pub fn rangecheck(a: &Args) -> Result<()> {
             toks.push(tok);
             lg.push(l);
         }
-        println!("workers: prompt {:.1} ms, a step {:.2} ms (the frames and the logits' body each step); sha256 {}", pre, t.elapsed().as_secs_f64() * 1e3 / (new - 1).max(1) as f64, digest(&toks, &lg));
+        println!(
+            "workers: prompt {:.1} ms, a step {:.2} ms (the frames and the logits' body each step); sha256 {}",
+            pre,
+            t.elapsed().as_secs_f64() * 1e3 / (new - 1).max(1) as f64,
+            digest(&toks, &lg)
+        );
         let line = same("workers chained through the protocol", &whole, &(toks, lg))?;
         println!("{line}");
 
@@ -1459,8 +1652,18 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         let again = ws[k].recv()?;
         let st1 = ws[k].call("status", vec![], vec![])?;
         let want = get_u64(&req.head, "position_start").unwrap_or(0) + 1;
-        if get_bool(&again.head, "ok") != Some(true) || get_u64(&again.head, "position_end") != Some(want) || again.body.len() != cfg.vocab * 2 || get_u64(&st0.head, "tokens") != get_u64(&st1.head, "tokens") {
-            return err(format!("the repeated request {:?} was not answered from the kept reply: {} (tokens {:?} then {:?})", get_str(&req.head, "id"), json::to_compact(&again.head), get_u64(&st0.head, "tokens"), get_u64(&st1.head, "tokens")));
+        if get_bool(&again.head, "ok") != Some(true)
+            || get_u64(&again.head, "position_end") != Some(want)
+            || again.body.len() != cfg.vocab * 2
+            || get_u64(&st0.head, "tokens") != get_u64(&st1.head, "tokens")
+        {
+            return err(format!(
+                "the repeated request {:?} was not answered from the kept reply: {} (tokens {:?} then {:?})",
+                get_str(&req.head, "id"),
+                json::to_compact(&again.head),
+                get_u64(&st0.head, "tokens"),
+                get_u64(&st1.head, "tokens")
+            ));
         }
         println!("workers: the last step's request sent again (id {:?}): the kept reply came back (position_end {want}, {} bytes of logits), the session still at {:?} tokens; not run again", get_str(&req.head, "id"), again.body.len(), get_u64(&st1.head, "tokens"));
         let mut conflict = req.clone();
@@ -1479,14 +1682,22 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         }
         println!("workers: the same id with another position_start: refused: {e}");
         let ses = ws[k].session.clone();
-        let r = ws[k].call_raw("run_chunk", vec![("session", text(&ses)), ("phase", text("decode")), ("position_start", num(want - 1)), ("rows", num(1))], vec![0u8; 4 * cfg.hidden])?;
+        let r = ws[k].call_raw(
+            "run_chunk",
+            vec![("session", text(&ses)), ("phase", text("decode")), ("position_start", num(want - 1)), ("rows", num(1))],
+            vec![0u8; 4 * cfg.hidden],
+        )?;
         let e = get_str(&r.head, "error").unwrap_or("");
         if get_bool(&r.head, "ok") != Some(false) || !e.contains("position_start") {
             return err(format!("a chunk at an earlier position was not refused: {}", json::to_compact(&r.head)));
         }
         println!("workers: a new request at position {}: refused: {e}", want - 1);
         let foreign = format!("s-{:016x}-1", 0u64);
-        let r = ws[k].call_raw("run_chunk", vec![("session", text(&foreign)), ("phase", text("decode")), ("position_start", num(want)), ("rows", num(1))], vec![0u8; 4 * cfg.hidden])?;
+        let r = ws[k].call_raw(
+            "run_chunk",
+            vec![("session", text(&foreign)), ("phase", text("decode")), ("position_start", num(want)), ("rows", num(1))],
+            vec![0u8; 4 * cfg.hidden],
+        )?;
         let e = get_str(&r.head, "error").unwrap_or("");
         if get_bool(&r.head, "ok") != Some(false) || !e.contains("incarnation") {
             return err(format!("another incarnation's handle was not refused: {}", json::to_compact(&r.head)));
@@ -1507,7 +1718,11 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         let ses = w0.session.clone();
         let big: Vec<Value> = prompt[..o.chunk.min(prompt.len())].iter().map(|&t| num(t)).collect();
         let t = Instant::now();
-        let id_run = w0.send("run_chunk", vec![("session", text(&ses)), ("phase", text("prefill")), ("position_start", num(0)), ("head", Value::Bool(false)), ("tokens", list(big.clone()))], vec![])?;
+        let id_run = w0.send(
+            "run_chunk",
+            vec![("session", text(&ses)), ("phase", text("prefill")), ("position_start", num(0)), ("head", Value::Bool(false)), ("tokens", list(big.clone()))],
+            vec![],
+        )?;
         std::thread::sleep(std::time::Duration::from_millis(20)); // (so that the chunk is under way when the status is asked)
         let id_st = w0.send("status", vec![], vec![])?;
         let first = w0.recv()?;
@@ -1518,7 +1733,17 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         if get_str(&st_frame.head, "id") != Some(&id_st) || get_str(&run_frame.head, "id") != Some(&id_run) {
             return err(format!("the status and the chunk were not both answered: {} / {}", json::to_compact(&first.head), json::to_compact(&second.head)));
         }
-        println!("{}: a prefill chunk of {} tokens sent, then status: the first reply ({:.1} ms) was {}: {}; the second ({:.1} ms) was {}: ok {:?}", w0.tag, big.len(), t_first, if std::ptr::eq(st_frame, &first) { "the status" } else { "the chunk" }, json::to_compact(&st_frame.head), t_second, if std::ptr::eq(st_frame, &first) { "the chunk" } else { "the status" }, get_bool(&run_frame.head, "ok"));
+        println!(
+            "{}: a prefill chunk of {} tokens sent, then status: the first reply ({:.1} ms) was {}: {}; the second ({:.1} ms) was {}: ok {:?}",
+            w0.tag,
+            big.len(),
+            t_first,
+            if std::ptr::eq(st_frame, &first) { "the status" } else { "the chunk" },
+            json::to_compact(&st_frame.head),
+            t_second,
+            if std::ptr::eq(st_frame, &first) { "the chunk" } else { "the status" },
+            get_bool(&run_frame.head, "ok")
+        );
         if get_bool(&run_frame.head, "ok") != Some(true) {
             return err(format!("the chunk failed: {}", json::to_compact(&run_frame.head)));
         }
@@ -1529,7 +1754,11 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         w0.session = get_str(&s.head, "session").unwrap_or("").to_string();
         let ses = w0.session.clone();
         let t = Instant::now();
-        let id_run = w0.send("run_chunk", vec![("session", text(&ses)), ("phase", text("prefill")), ("position_start", num(0)), ("head", Value::Bool(false)), ("tokens", list(big.clone()))], vec![])?;
+        let id_run = w0.send(
+            "run_chunk",
+            vec![("session", text(&ses)), ("phase", text("prefill")), ("position_start", num(0)), ("head", Value::Bool(false)), ("tokens", list(big.clone()))],
+            vec![],
+        )?;
         std::thread::sleep(std::time::Duration::from_millis(20)); // (the cancel during the chunk)
         let id_c = w0.send("cancel", vec![("session", text(&ses))], vec![])?;
         let first = w0.recv()?;
@@ -1540,8 +1769,24 @@ pub fn rangecheck(a: &Args) -> Result<()> {
             return err(format!("the cancel and the chunk were not both answered: {} / {}", json::to_compact(&first.head), json::to_compact(&second.head)));
         }
         let st = w0.call("status", vec![], vec![])?;
-        println!("{}: a prefill chunk sent, then cancel: the cancel's answer {}; the chunk's answer {}; both in {:.1} ms; status then {}", w0.tag, json::to_compact(&c_frame.head), json::to_compact(&run_frame.head), t_both, json::to_compact(&st.head));
-        let r = w0.call_raw("run_chunk", vec![("session", text(&ses)), ("phase", text("decode")), ("position_start", num(get_u64(&st.head, "tokens").unwrap_or(0))), ("tokens", list([num(1u32)]))], vec![])?;
+        println!(
+            "{}: a prefill chunk sent, then cancel: the cancel's answer {}; the chunk's answer {}; both in {:.1} ms; status then {}",
+            w0.tag,
+            json::to_compact(&c_frame.head),
+            json::to_compact(&run_frame.head),
+            t_both,
+            json::to_compact(&st.head)
+        );
+        let r = w0.call_raw(
+            "run_chunk",
+            vec![
+                ("session", text(&ses)),
+                ("phase", text("decode")),
+                ("position_start", num(get_u64(&st.head, "tokens").unwrap_or(0))),
+                ("tokens", list([num(1u32)])),
+            ],
+            vec![],
+        )?;
         if get_bool(&r.head, "ok") != Some(false) {
             return err("a chunk after a cancel was not refused");
         }
@@ -1553,22 +1798,31 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         let w0 = &mut ws[0];
         let say = "The range worker's text: 12 layers, ünïcödé, 東京 🦀.";
         let t = Instant::now();
-        let ids = w0.call("tokenize", vec![("text", text(say)), ("chat", Value::Bool(false))], vec![])?.head.get("ids").and_then(Value::as_u64s).unwrap_or_default();
+        let ids =
+            w0.call("tokenize", vec![("text", text(say)), ("chat", Value::Bool(false))], vec![])?.head.get("ids").and_then(Value::as_u64s).unwrap_or_default();
         let t_first = t.elapsed().as_secs_f64() * 1e3;
         let back = w0.call("detokenize", vec![("ids", list(ids.iter().map(|&x| num(x))))], vec![])?;
         if ids.is_empty() || get_str(&back.head, "text") != Some(say) {
             return err(format!("tokenize then detokenize: {ids:?} gave {}, where {say:?} went in", json::to_compact(&back.head)));
         }
-        let chat = w0.call("tokenize", vec![("text", text(say)), ("chat", Value::Bool(true))], vec![])?.head.get("ids").and_then(Value::as_u64s).unwrap_or_default();
+        let chat =
+            w0.call("tokenize", vec![("text", text(say)), ("chat", Value::Bool(true))], vec![])?.head.get("ids").and_then(Value::as_u64s).unwrap_or_default();
         let shown = w0.call("detokenize", vec![("ids", list(chat.iter().map(|&x| num(x)))), ("skip_special", Value::Bool(false))], vec![])?;
         let shown = get_str(&shown.head, "text").unwrap_or("").to_string();
         if !(chat.len() > ids.len() && shown.contains(say) && shown.contains("user")) {
             return err(format!("tokenize as a chat: {} ids, {shown:?}", chat.len()));
         }
-        println!("{}: tokenize {say:?}: {} ids ({t_first:.1} ms, the tokenizer loaded); detokenize: the same text back; as a chat: {} ids, {shown:?}", w0.tag, ids.len(), chat.len());
+        println!(
+            "{}: tokenize {say:?}: {} ids ({t_first:.1} ms, the tokenizer loaded); detokenize: the same text back; as a chat: {} ids, {shown:?}",
+            w0.tag,
+            ids.len(),
+            chat.len()
+        );
         // chat messages: one user turn is the same ids as chat true; a system, user, assistant, user chat holds every turn, and is longer than its last turn
         let turn = |role: &str, content: &str| obj(vec![("role", text(role)), ("content", text(content))]);
-        let mut turns = |t: Vec<Value>| -> Result<Vec<u64>> { Ok(w0.call("tokenize", vec![("messages", list(t))], vec![])?.head.get("ids").and_then(Value::as_u64s).unwrap_or_default()) };
+        let mut turns = |t: Vec<Value>| -> Result<Vec<u64>> {
+            Ok(w0.call("tokenize", vec![("messages", list(t))], vec![])?.head.get("ids").and_then(Value::as_u64s).unwrap_or_default())
+        };
         let one = turns(vec![turn("user", say)])?;
         let four = turns(vec![turn("system", "Answer in one word."), turn("user", "Name a colour."), turn("assistant", "Blue."), turn("user", say)])?;
         let shown = w0.call("detokenize", vec![("ids", list(four.iter().map(|&x| num(x)))), ("skip_special", Value::Bool(false))], vec![])?;
@@ -1581,7 +1835,12 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         // a seeded sampled run, twice from fresh sessions: the same tokens; the same as serve's sampler drawing token after token over the same logits
         let m = new.min(16);
         let (temperature, top_p, top_k, seed) = (0.8f32, 0.95f32, 40usize, 1234u64);
-        let sampling = |i: usize| vec![("sampling", obj(vec![("temperature", num(temperature)), ("top_p", num(top_p)), ("top_k", num(top_k)), ("seed", num(seed)), ("step", num(i))]))];
+        let sampling = |i: usize| {
+            vec![(
+                "sampling",
+                obj(vec![("temperature", num(temperature)), ("top_p", num(top_p)), ("top_k", num(top_k)), ("seed", num(seed)), ("step", num(i))]),
+            )]
+        };
         fresh(&mut ws)?;
         let a1 = generate(&mut ws, &prompt, o.chunk, m, &sampling)?;
         fresh(&mut ws)?;
@@ -1606,10 +1865,23 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         let again = ws[k].recv()?;
         let st1 = ws[k].call("status", vec![], vec![])?;
         let (tok, row) = picked(&again)?;
-        if tok != a2.0[m - 1] || row.iter().zip(&a2.1[m - 1]).any(|(x, y)| x.to_bits() != y.to_bits()) || get_u64(&st0.head, "tokens") != get_u64(&st1.head, "tokens") {
-            return err(format!("the repeated sampled request {:?}: {} (tokens {:?} then {:?})", get_str(&req.head, "id"), json::to_compact(&again.head), get_u64(&st0.head, "tokens"), get_u64(&st1.head, "tokens")));
+        if tok != a2.0[m - 1]
+            || row.iter().zip(&a2.1[m - 1]).any(|(x, y)| x.to_bits() != y.to_bits())
+            || get_u64(&st0.head, "tokens") != get_u64(&st1.head, "tokens")
+        {
+            return err(format!(
+                "the repeated sampled request {:?}: {} (tokens {:?} then {:?})",
+                get_str(&req.head, "id"),
+                json::to_compact(&again.head),
+                get_u64(&st0.head, "tokens"),
+                get_u64(&st1.head, "tokens")
+            ));
         }
-        println!("workers: the last sampled step sent again (id {:?}): the kept reply, token {tok}, the session still at {:?} tokens", get_str(&req.head, "id"), get_u64(&st1.head, "tokens"));
+        println!(
+            "workers: the last sampled step sent again (id {:?}): the kept reply, token {tok}, the session still at {:?} tokens",
+            get_str(&req.head, "id"),
+            get_u64(&st1.head, "tokens")
+        );
 
         // the head on hk rows: the prompt, then the first hk greedy tokens as one chunk; every row's token and logits the whole model's
         if let Some((picks, words)) = &rows_ref {
@@ -1625,7 +1897,10 @@ pub fn rangecheck(a: &Args) -> Result<()> {
             let got = bytes_words(&r.body);
             if toks != want || get_u64(&r.head, "token") != Some(want[hk - 1] as u64) || got != *words {
                 let d = got.iter().zip(words.iter()).position(|(x, y)| x != y);
-                return err(format!("head_rows {hk}: tokens {toks:?}, where the whole model gave {want:?}; {} logit words, the first different at {d:?}", got.len()));
+                return err(format!(
+                    "head_rows {hk}: tokens {toks:?}, where the whole model gave {want:?}; {} logit words, the first different at {d:?}",
+                    got.len()
+                ));
             }
             let agree = (0..hk).filter(|&i| want[i] == whole.0[i + 1]).count();
             println!("workers: a chunk of {hk} tokens, head_rows {hk}: every row's token and logits the whole model's, bit for bit ({} logits): {toks:?}; {agree} of {hk} the same as the one-row steps' (a chunk's products are not a step's)", got.len());
@@ -1646,7 +1921,11 @@ pub fn rangecheck(a: &Args) -> Result<()> {
             }
             let ms = t.elapsed().as_secs_f64() * 1e3;
             let (keep, p0, rounds) = (l.keep, l.p0, l.rounds);
-            let line = same(&format!("drafted through the workers ({rounds} verify chunks of {hk} rows; drafts kept 0..={k}: {:?} chunks each)", l.seen), &whole, &(l.toks, l.lg))?;
+            let line = same(
+                &format!("drafted through the workers ({rounds} verify chunks of {hk} rows; drafts kept 0..={k}: {:?} chunks each)", l.seen),
+                &whole,
+                &(l.toks, l.lg),
+            )?;
             println!("{line}; {:.2} ms a verify chunk, {:.2} ms a token", ms / rounds as f64, ms / (new - 1) as f64);
 
             // the rules, on the first worker (the last verify chunk at p0 keeps `kept`): keep_previous past its rows, 0, at another position; a verify chunk of too many
@@ -1659,8 +1938,19 @@ pub fn rangecheck(a: &Args) -> Result<()> {
                 (vec![("position_start", num(p0 + hk + 1)), ("keep_previous", num(hk + 1)), one()], Some("1 to the verify chunk's")),
                 (vec![("position_start", num(p0)), ("keep_previous", num(0)), one()], Some("1 to the verify chunk's")),
                 (vec![("position_start", num(p0 + kept + 1)), ("keep_previous", num(kept)), one()], Some("after keep_previous")),
-                (vec![("position_start", num(p0 + kept)), ("keep_previous", num(kept)), ("verify", Value::Bool(true)), ("tokens", list((0..=VERIFY_ROWS).map(num)))], Some("a verify chunk 1 to")),
-                (vec![("phase", text("prefill")), ("position_start", num(p0 + kept)), ("keep_previous", num(kept)), ("verify", Value::Bool(true)), one()], Some("verify: a decode chunk")),
+                (
+                    vec![
+                        ("position_start", num(p0 + kept)),
+                        ("keep_previous", num(kept)),
+                        ("verify", Value::Bool(true)),
+                        ("tokens", list((0..=VERIFY_ROWS).map(num))),
+                    ],
+                    Some("a verify chunk 1 to"),
+                ),
+                (
+                    vec![("phase", text("prefill")), ("position_start", num(p0 + kept)), ("keep_previous", num(kept)), ("verify", Value::Bool(true)), one()],
+                    Some("verify: a decode chunk"),
+                ),
                 (vec![("position_start", num(p0 + kept)), ("keep_previous", num(kept)), one()], None),
                 (vec![("position_start", num(p0 + kept + 1)), ("keep_previous", num(1)), one()], Some("not a verify chunk")),
             ];
@@ -1674,7 +1964,9 @@ pub fn rangecheck(a: &Args) -> Result<()> {
                 let e = get_str(&r.head, "error").unwrap_or("");
                 match want {
                     Some(wt) if get_bool(&r.head, "ok") == Some(false) && e.contains(wt) => println!("{}: refused: {e}", w0.tag),
-                    None if get_bool(&r.head, "ok") == Some(true) && get_u64(&r.head, "position_end") == Some((p0 + kept + 1) as u64) => println!("{}: keep_previous {kept} and a plain step at {}: taken", w0.tag, p0 + kept),
+                    None if get_bool(&r.head, "ok") == Some(true) && get_u64(&r.head, "position_end") == Some((p0 + kept + 1) as u64) => {
+                        println!("{}: keep_previous {kept} and a plain step at {}: taken", w0.tag, p0 + kept)
+                    }
                     _ => return err(format!("drafting's rules: {want:?} wanted, the reply {}", json::to_compact(&r.head))),
                 }
             }
@@ -1702,13 +1994,29 @@ pub fn rangecheck(a: &Args) -> Result<()> {
                 let c = w.call("cancel", vec![("session", text(&a))], vec![])?;
                 let sb = w.call("status", vec![("session", text(b))], vec![])?;
                 let all = w.call("status", vec![], vec![])?;
-                if get_str(&c.head, "state") != Some("cancelled") || get_bool(&c.head, "session_cancelled") != Some(true) || get_str(&c.head, "session") != Some(&a) || get_bool(&sb.head, "session_cancelled") != Some(false) || get_str(&sb.head, "state") != Some("idle") || get_str(&all.head, "session") != Some(&a) {
-                    return err(format!("{}: cancel {a}: {}; status of {b}: {}; status: {}", w.tag, json::to_compact(&c.head), json::to_compact(&sb.head), json::to_compact(&all.head)));
+                if get_str(&c.head, "state") != Some("cancelled")
+                    || get_bool(&c.head, "session_cancelled") != Some(true)
+                    || get_str(&c.head, "session") != Some(&a)
+                    || get_bool(&sb.head, "session_cancelled") != Some(false)
+                    || get_str(&sb.head, "state") != Some("idle")
+                    || get_str(&all.head, "session") != Some(&a)
+                {
+                    return err(format!(
+                        "{}: cancel {a}: {}; status of {b}: {}; status: {}",
+                        w.tag,
+                        json::to_compact(&c.head),
+                        json::to_compact(&sb.head),
+                        json::to_compact(&all.head)
+                    ));
                 }
                 println!("{}: cancel A: {}; status of B: {}", w.tag, json::to_compact(&c.head), json::to_compact(&sb.head));
             }
             let a0 = ws[0].session.clone();
-            let r = ws[0].call_raw("run_chunk", vec![("session", text(&a0)), ("phase", text("decode")), ("position_start", num(la.at)), ("tokens", list([num(la.toks[la.toks.len() - 1])]))], vec![])?;
+            let r = ws[0].call_raw(
+                "run_chunk",
+                vec![("session", text(&a0)), ("phase", text("decode")), ("position_start", num(la.at)), ("tokens", list([num(la.toks[la.toks.len() - 1])]))],
+                vec![],
+            )?;
             if get_bool(&r.head, "ok") != Some(false) || !get_str(&r.head, "error").unwrap_or("").contains("cancelled") {
                 return err(format!("a chunk of the cancelled session was not refused: {}", json::to_compact(&r.head)));
             }
@@ -1738,8 +2046,25 @@ pub fn rangecheck(a: &Args) -> Result<()> {
                     let db = if both { Some((&whole_b.0[..], hk)) } else { None };
                     let (ms, turns) = interleave(&mut ws, &mut hb, &mut la, Some((&whole.0, hk)), new, &mut lb, db, new, o.chunk, new, cfg.vocab)?;
                     let what = if both { "both drafted" } else { "A drafted, B plain" };
-                    println!("{}", same(&format!("session A drafted ({} verify chunks, kept {:?}), a pass each in turn with B ({what})", la.rounds, la.seen), &whole, &(la.toks, la.lg))?);
-                    println!("{}", same(&format!("session B {} ({what})", if both { format!("drafted ({} verify chunks, kept {:?})", lb.rounds, lb.seen) } else { "plain".into() }), &whole_b, &(lb.toks, lb.lg))?);
+                    println!(
+                        "{}",
+                        same(
+                            &format!("session A drafted ({} verify chunks, kept {:?}), a pass each in turn with B ({what})", la.rounds, la.seen),
+                            &whole,
+                            &(la.toks, la.lg)
+                        )?
+                    );
+                    println!(
+                        "{}",
+                        same(
+                            &format!(
+                                "session B {} ({what})",
+                                if both { format!("drafted ({} verify chunks, kept {:?})", lb.rounds, lb.seen) } else { "plain".into() }
+                            ),
+                            &whole_b,
+                            &(lb.toks, lb.lg)
+                        )?
+                    );
                     println!("workers, {what}: {:.2} ms a turn of two passes ({turns} turns)", ms / turns.max(1) as f64);
                 }
             }
@@ -1752,7 +2077,11 @@ pub fn rangecheck(a: &Args) -> Result<()> {
             println!("{}: end_session: {}", w.tag, json::to_compact(&e.head));
             let u = w.call("unload", vec![("instance", text(&w.instance.clone()))], vec![])?;
             println!("{}: unload: {}", w.tag, json::to_compact(&u.head));
-            let r = w.call_raw("run_chunk", vec![("session", text(&w.session.clone())), ("phase", text("decode")), ("position_start", num(0)), ("rows", num(1))], vec![])?;
+            let r = w.call_raw(
+                "run_chunk",
+                vec![("session", text(&w.session.clone())), ("phase", text("decode")), ("position_start", num(0)), ("rows", num(1))],
+                vec![],
+            )?;
             if get_bool(&r.head, "ok") != Some(false) {
                 return err("a chunk on an ended session was not refused");
             }
@@ -1786,8 +2115,17 @@ mod tests {
         let turn = |role: &str, content: &str| obj(vec![("role", text(role)), ("content", text(content))]);
         let ok = list(vec![turn("system", "be brief"), turn("user", "hi"), turn("assistant", "hello"), turn("user", "and?")]);
         let m = chat_messages(&ok).unwrap();
-        assert_eq!(m.iter().map(|m| (m.role.as_str(), m.content.as_str())).collect::<Vec<_>>(), [("system", "be brief"), ("user", "hi"), ("assistant", "hello"), ("user", "and?")]);
-        for bad in [list(vec![]), list(vec![turn("user", "hi"), turn("assistant", "hello")]), list(vec![turn("tool", "x"), turn("user", "hi")]), list(vec![obj(vec![("role", text("user"))])]), text("hi")] {
+        assert_eq!(
+            m.iter().map(|m| (m.role.as_str(), m.content.as_str())).collect::<Vec<_>>(),
+            [("system", "be brief"), ("user", "hi"), ("assistant", "hello"), ("user", "and?")]
+        );
+        for bad in [
+            list(vec![]),
+            list(vec![turn("user", "hi"), turn("assistant", "hello")]),
+            list(vec![turn("tool", "x"), turn("user", "hi")]),
+            list(vec![obj(vec![("role", text("user"))])]),
+            text("hi"),
+        ] {
             assert!(chat_messages(&bad).is_err(), "{}", json::to_compact(&bad));
         }
     }
@@ -1924,9 +2262,19 @@ mod tests {
             let v = json::parse(&format!(r#"{{"temperature": 0.8, "top_p": 0.95, "top_k": 40, "seed": 99, "step": {i}}}"#)).unwrap();
             assert_eq!(sampler_of(&v, &defaults, 4096).unwrap().sample(row), serve.sample(row), "step {i}");
         }
-        let first = |seed: u64, step: usize| sampler_of(&json::parse(&format!(r#"{{"seed": {seed}, "step": {step}}}"#)).unwrap(), &defaults, 4096).unwrap().sample(&rows[0]);
+        let first = |seed: u64, step: usize| {
+            sampler_of(&json::parse(&format!(r#"{{"seed": {seed}, "step": {step}}}"#)).unwrap(), &defaults, 4096).unwrap().sample(&rows[0])
+        };
         assert!((0..8).any(|s| first(1, s) != first(1, 0)) && (0..8).any(|s| first(s, 0) != first(0, 0)));
-        for (bad, says) in [(r#"{"step": 0}"#, "seed"), (r#"{"seed": 1}"#, "step"), (r#"{"seed": 1, "step": 5000}"#, "at most 4096"), (r#"{"seed": -1, "step": 0}"#, "seed"), (r#"{"seed": 1, "step": 0, "top_p": 0}"#, "top_p"), (r#"{"seed": 1, "step": 0, "temperature": 3}"#, "temperature"), (r#"{"seed": 1, "step": 0, "repetition_penalty": 1.1}"#, "repetition_penalty")] {
+        for (bad, says) in [
+            (r#"{"step": 0}"#, "seed"),
+            (r#"{"seed": 1}"#, "step"),
+            (r#"{"seed": 1, "step": 5000}"#, "at most 4096"),
+            (r#"{"seed": -1, "step": 0}"#, "seed"),
+            (r#"{"seed": 1, "step": 0, "top_p": 0}"#, "top_p"),
+            (r#"{"seed": 1, "step": 0, "temperature": 3}"#, "temperature"),
+            (r#"{"seed": 1, "step": 0, "repetition_penalty": 1.1}"#, "repetition_penalty"),
+        ] {
             assert!(sampler_of(&json::parse(bad).unwrap(), &defaults, 4096).err().unwrap().0.contains(says), "{bad}");
         }
     }
@@ -1940,12 +2288,19 @@ mod tests {
         assert!(st(&l, None).starts_with(r#"{"state":"idle","incarnation":"0000000000000001","instance":"i-1","session":"s-a","session_cancelled":false,"tokens":5,"running":null,"sessions":[{"session":"s-a","tokens":5,"cancelled":false},"#), "{}", st(&l, None));
         l.cancel.push("s-a".into());
         assert!(st(&l, Some("s-a")).contains(r#""state":"cancelled","#) && st(&l, Some("s-a")).contains(r#""session_cancelled":true"#));
-        assert!(st(&l, Some("s-b")).starts_with(r#"{"state":"idle","#) && st(&l, Some("s-b")).contains(r#""session":"s-b","session_cancelled":false,"tokens":9"#));
+        assert!(
+            st(&l, Some("s-b")).starts_with(r#"{"state":"idle","#) && st(&l, Some("s-b")).contains(r#""session":"s-b","session_cancelled":false,"tokens":9"#)
+        );
         l.running = Some(("r7".into(), "run_chunk".into(), Instant::now(), Some("s-b".into())));
         assert!(st(&l, Some("s-a")).starts_with(r#"{"state":"running","#) && st(&l, Some("s-b")).starts_with(r#"{"state":"running","#));
         l.running = Some(("r8".into(), "run_chunk".into(), Instant::now(), Some("s-a".into())));
         assert!(st(&l, Some("s-a")).starts_with(r#"{"state":"cancelling","#) && st(&l, None).starts_with(r#"{"state":"cancelling","#));
-        assert!(st(&l, None).contains(r#""session":"s-a"},"sessions":[{"session":"s-a","tokens":5,"cancelled":true},{"session":"s-b","tokens":9,"cancelled":false}]"#), "{}", st(&l, None));
+        assert!(
+            st(&l, None)
+                .contains(r#""session":"s-a"},"sessions":[{"session":"s-a","tokens":5,"cancelled":true},{"session":"s-b","tokens":9,"cancelled":false}]"#),
+            "{}",
+            st(&l, None)
+        );
         let l = Live::default();
         assert!(st(&l, None).starts_with(r#"{"state":"empty","#) && st(&l, None).contains(r#""session":null,"session_cancelled":false,"tokens":0"#));
     }

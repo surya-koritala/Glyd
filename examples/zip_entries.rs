@@ -20,14 +20,25 @@ fn main() {
                 Ok((r, t)) => {
                     ok += 1;
                     end = data + r.compressed_size;
-                    if n <= 5 { println!("{name}: flags {flags:#x} csize {csize} -> ok, compressed {} plain {} corrections {}", r.compressed_size, t.text().len(), r.corrections.len()); }
+                    if n <= 5 {
+                        println!(
+                            "{name}: flags {flags:#x} csize {csize} -> ok, compressed {} plain {} corrections {}",
+                            r.compressed_size,
+                            t.text().len(),
+                            r.corrections.len()
+                        );
+                    }
                 }
                 Err(e) => {
                     fail += 1;
                     let key = format!("{:?}", e.exit_code());
                     *errors.entry(key.clone()).or_default() += 1;
-                    if fail <= 5 { println!("{name}: flags {flags:#x} csize {csize} -> ERROR {key}: {}", e.message()); }
-                    if csize == 0 { end = (data..d.len() - 3).find(|&p| &d[p..p + 4] == b"PK\x03\x04").unwrap_or(d.len()); }
+                    if fail <= 5 {
+                        println!("{name}: flags {flags:#x} csize {csize} -> ERROR {key}: {}", e.message());
+                    }
+                    if csize == 0 {
+                        end = (data..d.len() - 3).find(|&p| &d[p..p + 4] == b"PK\x03\x04").unwrap_or(d.len());
+                    }
                 }
             }
         }

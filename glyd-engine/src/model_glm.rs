@@ -150,7 +150,22 @@ impl KernGlm {
     /// # Safety
     /// As `streams`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn hc_mix_raw(&self, s: Stream, x: u64, proj: u64, base: u64, scale: u64, nw: u64, h: u64, hcp: u64, n: u32, d: i32, eps: f32, hc_eps: f32, iters: i32) -> Result<()> {
+    pub unsafe fn hc_mix_raw(
+        &self,
+        s: Stream,
+        x: u64,
+        proj: u64,
+        base: u64,
+        scale: u64,
+        nw: u64,
+        h: u64,
+        hcp: u64,
+        n: u32,
+        d: i32,
+        eps: f32,
+        hc_eps: f32,
+        iters: i32,
+    ) -> Result<()> {
         if d <= 0 || d % 2 != 0 || d > 16 * 480 {
             return err(format!("streams of {d} values: not supported"));
         }
@@ -198,7 +213,21 @@ impl KernGlm {
     /// # Safety
     /// As `streams`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn delta(&self, s: Stream, chunked: bool, xc: u64, fg: u64, dtb: u64, alog: u64, bb: u64, state: u64, core: u64, n: i32, heads: i32, bound: f32) -> Result<()> {
+    pub unsafe fn delta(
+        &self,
+        s: Stream,
+        chunked: bool,
+        xc: u64,
+        fg: u64,
+        dtb: u64,
+        alog: u64,
+        bb: u64,
+        state: u64,
+        core: u64,
+        n: i32,
+        heads: i32,
+        bound: f32,
+    ) -> Result<()> {
         if chunked {
             launch!(self.chunk, [heads as u32, 2, 1], [256, 1, 1], smem GM_CHUNK_SMEM, s; xc, fg, dtb, alog, bb, state, core, n, heads, bound)
         } else {
@@ -262,7 +291,21 @@ impl KernGlm {
     /// # Safety
     /// As `streams`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn absorb_with(&self, s: Stream, q: u64, qs: i32, qhs: i32, wkv: u64, qa: u64, n: i32, heads: i32, nope: i32, vd: i32, kr: i32, ks: i32) -> Result<()> {
+    pub unsafe fn absorb_with(
+        &self,
+        s: Stream,
+        q: u64,
+        qs: i32,
+        qhs: i32,
+        wkv: u64,
+        qa: u64,
+        n: i32,
+        heads: i32,
+        nope: i32,
+        vd: i32,
+        kr: i32,
+        ks: i32,
+    ) -> Result<()> {
         if nope <= 0 || nope > 256 || kr <= 0 || kr > 512 || ks < kr || qhs < nope + ks - kr {
             return err(format!("latent attention with heads of {nope} ({qhs} wide), latents of {kr} and scores over {ks}: this engine runs heads up to 256 and latents up to 512"));
         }
@@ -286,7 +329,25 @@ impl KernGlm {
     /// # Safety
     /// As `streams`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn idx_score(&self, s: Stream, iq: u64, iqs: i32, wts: u64, wsr: i32, pk: u64, pos: u64, scores: u64, pmax: i32, ih: i32, d: i32, kp: i32, ksel: i32, scale: f32, wscale: f32, n: u32) -> Result<()> {
+    pub unsafe fn idx_score(
+        &self,
+        s: Stream,
+        iq: u64,
+        iqs: i32,
+        wts: u64,
+        wsr: i32,
+        pk: u64,
+        pos: u64,
+        scores: u64,
+        pmax: i32,
+        ih: i32,
+        d: i32,
+        kp: i32,
+        ksel: i32,
+        scale: f32,
+        wscale: f32,
+        n: u32,
+    ) -> Result<()> {
         let smem = ((ih * (d + 1) + ih + 8 * d) * 4) as u32;
         launch!(self.idx_score, [(pmax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s; iq, iqs, wts, wsr, pk, pos, scores, pmax, ih, d, kp, ksel, scale, wscale)
     }
@@ -296,7 +357,20 @@ impl KernGlm {
     /// # Safety
     /// As `streams`; ksel at most 1,024.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn select(&self, s: Stream, scores: u64, pmax: i32, pos: u64, sel: u64, cnt: u64, tmax: i32, kp: i32, ksel: i32, tail: bool, n: u32) -> Result<()> {
+    pub unsafe fn select(
+        &self,
+        s: Stream,
+        scores: u64,
+        pmax: i32,
+        pos: u64,
+        sel: u64,
+        cnt: u64,
+        tmax: i32,
+        kp: i32,
+        ksel: i32,
+        tail: bool,
+        n: u32,
+    ) -> Result<()> {
         if ksel <= 0 || ksel > 1024 {
             return err(format!("an indexer that picks {ksel} groups of keys: this engine runs up to 1,024"));
         }
@@ -309,7 +383,21 @@ impl KernGlm {
     /// # Safety
     /// As `streams`; kv_rank a multiple of 64 up to 512.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn mla_attn(&self, s: Stream, qa: u64, lat: u64, sel: u64, cnt: u64, olat: u64, part: u64, tmax: i32, heads: i32, kr: i32, scale: f32, n: u32) -> Result<()> {
+    pub unsafe fn mla_attn(
+        &self,
+        s: Stream,
+        qa: u64,
+        lat: u64,
+        sel: u64,
+        cnt: u64,
+        olat: u64,
+        part: u64,
+        tmax: i32,
+        heads: i32,
+        kr: i32,
+        scale: f32,
+        n: u32,
+    ) -> Result<()> {
         self.mla_attn_with(s, qa, lat, sel, cnt, olat, part, tmax, heads, kr, kr, scale, n)
     }
 
@@ -318,7 +406,22 @@ impl KernGlm {
     /// # Safety
     /// As `streams`; kv_rank and ks multiples of 64, kv_rank up to 512.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn mla_attn_with(&self, s: Stream, qa: u64, lat: u64, sel: u64, cnt: u64, olat: u64, part: u64, tmax: i32, heads: i32, kr: i32, ks: i32, scale: f32, n: u32) -> Result<()> {
+    pub unsafe fn mla_attn_with(
+        &self,
+        s: Stream,
+        qa: u64,
+        lat: u64,
+        sel: u64,
+        cnt: u64,
+        olat: u64,
+        part: u64,
+        tmax: i32,
+        heads: i32,
+        kr: i32,
+        ks: i32,
+        scale: f32,
+        n: u32,
+    ) -> Result<()> {
         if ks < kr || ks % 64 != 0 {
             return err(format!("latent attention of scores over {ks} channels and latents of {kr}: this engine does not run that shape"));
         }
@@ -326,7 +429,10 @@ impl KernGlm {
         // (a block's tokens a tile at a time: as many as its shared memory holds, two words a token besides the query's KS)
         let mut tile = ((tmax + splits - 1) / splits).min(mla_positions(self.mla_smem, ks) as i32).max(1);
         if tile < 64 && tile < (tmax + splits - 1) / splits {
-            return err(format!("latent attention with scores over {ks} channels: {} bytes of shared memory a block hold too few tokens a pass", self.mla_smem));
+            return err(format!(
+                "latent attention with scores over {ks} channels: {} bytes of shared memory a block hold too few tokens a pass",
+                self.mla_smem
+            ));
         }
         // (a development build's GLYD_MLA_TILE: smaller tiles, the passes of a long context on a short one)
         if let Some(t) = crate::tune!("GLYD_MLA_TILE").and_then(|v| v.parse::<i32>().ok()).filter(|&t| t > 0) {
@@ -576,14 +682,33 @@ impl WeightsGlm {
     /// (`layout` None, or the same): the packs it holds saved are read as they are, the rest (a matrix the packer does not take) as the Hub's. A latent attention layer holds its norms and mixing weights and its block, which
     /// is `mla`'s (else `NoMla`); a mixture-of-experts layer the same with `moe`'s (else `NoMoe`): a block gets the checkpoint and the layout and loads what it needs of the layer's tensors.
     #[allow(clippy::too_many_arguments)]
-    pub fn load(dir: &Path, threads: usize, layout: Option<Layout>, cc: (i32, i32), total_mem: u64, only: Option<&[usize]>, moe: Option<MoeFactory<'_>>, mla: Option<MlaFactory<'_>>) -> Result<WeightsGlm> {
+    pub fn load(
+        dir: &Path,
+        threads: usize,
+        layout: Option<Layout>,
+        cc: (i32, i32),
+        total_mem: u64,
+        only: Option<&[usize]>,
+        moe: Option<MoeFactory<'_>>,
+        mla: Option<MlaFactory<'_>>,
+    ) -> Result<WeightsGlm> {
         WeightsGlm::load_ends(dir, threads, layout, cc, total_mem, only, None, moe, mla)
     }
 
     /// `load`, with the ends asked for apart from the layers: `ends` (the embedding; the LM head and the final norm) for a stage of a model split across GPUs, None for `load`'s (with the whole model, or with no
     /// layer: the MTP head's).
     #[allow(clippy::too_many_arguments)]
-    pub fn load_ends(dir: &Path, threads: usize, layout: Option<Layout>, cc: (i32, i32), total_mem: u64, only: Option<&[usize]>, ends: Option<(bool, bool)>, moe: Option<MoeFactory<'_>>, mla: Option<MlaFactory<'_>>) -> Result<WeightsGlm> {
+    pub fn load_ends(
+        dir: &Path,
+        threads: usize,
+        layout: Option<Layout>,
+        cc: (i32, i32),
+        total_mem: u64,
+        only: Option<&[usize]>,
+        ends: Option<(bool, bool)>,
+        moe: Option<MoeFactory<'_>>,
+        mla: Option<MlaFactory<'_>>,
+    ) -> Result<WeightsGlm> {
         let cfg = ConfigGlm::load(dir)?;
         let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
         let have: Vec<(String, String, Vec<u64>)> = ck
@@ -636,7 +761,8 @@ impl WeightsGlm {
         let mut packed: HashMap<String, PackBuf> = HashMap::new();
         // (a GPU of a group: its slice of the rows of each big matrix but the embedding, src/dynamic/tp.rs)
         let sl = crate::dynamic::tp::slicer();
-        let cut: Vec<Option<(usize, usize)>> = items.iter().map(|p| sl.filter(|s| p.key != "embed" && s.slices(p.rows(), p.cols)).map(|s| s.rows(p.rows()))).collect();
+        let cut: Vec<Option<(usize, usize)>> =
+            items.iter().map(|p| sl.filter(|s| p.key != "embed" && s.slices(p.rows(), p.cols)).map(|s| s.rows(p.rows()))).collect();
         ordered(items.len(), threads, 2 * threads.max(1), &|k| crate::weights::read_pack_rows(&ck, v7.as_ref(), &items[k], layout, cut[k]), |k, p| {
             crate::status::STATUS.beat(); // (a sign of life for the program that started the engine)
             let mut b = upload_packed(p)?;
@@ -673,7 +799,9 @@ impl WeightsGlm {
             // (layer_kept's order: the two norms, the mixing weights of the two blocks, then Kimi delta attention's three convolutions, A_log, dt_bias and gated norm)
             let kept = cfg.layer_kept(l);
             let (norm_a, norm_f) = (read(&kept[0].name)?, read(&kept[1].name)?);
-            let hc = |i: usize| -> Result<Hc> { Ok(Hc { proj: read(&kept[2 + 3 * i].name)?, base: read_f32(&kept[3 + 3 * i].name)?, scale: read_f32(&kept[4 + 3 * i].name)? }) };
+            let hc = |i: usize| -> Result<Hc> {
+                Ok(Hc { proj: read(&kept[2 + 3 * i].name)?, base: read_f32(&kept[3 + 3 * i].name)?, scale: read_f32(&kept[4 + 3 * i].name)? })
+            };
             let hc = [hc(0)?, hc(1)?];
             let small = if kind == GlmKind::Kda {
                 let mut conv = Vec::new();
@@ -700,7 +828,11 @@ impl WeightsGlm {
             } else {
                 None
             };
-            bytes += norm_a.bytes + norm_f.bytes + hc.iter().map(|h| h.proj.bytes + h.base.bytes + h.scale.bytes).sum::<usize>() + mats.iter().map(Mat::bytes).sum::<usize>() + small.iter().map(|b| b.bytes).sum::<usize>();
+            bytes += norm_a.bytes
+                + norm_f.bytes
+                + hc.iter().map(|h| h.proj.bytes + h.base.bytes + h.scale.bytes).sum::<usize>()
+                + mats.iter().map(Mat::bytes).sum::<usize>()
+                + small.iter().map(|b| b.bytes).sum::<usize>();
             bytes += mla_block.as_ref().map_or(0, |b| b.bytes()) + moe_block.as_ref().map_or(0, |b| b.bytes());
             layers[l] = Some(LayerGlm { kind, idx, norm_a, norm_f, hc, mats, small, mla: mla_block, moe: moe_block });
         }
@@ -877,7 +1009,8 @@ impl EngineGlm {
         let w = WeightsGlm::load(dir, threads, o.layout, dev.cc_pair(), dev.total_mem as u64, o.only.as_deref(), moe, mla)?;
         let mtp = if o.mtp && w.cfg.mtp_layers > 0 { Some(crate::mtp_glm::MtpHead::load(&w.cfg, dir, w.layout, moe, mla)?) } else { None };
         let c = &w.cfg;
-        if c.kda.dim != GM_D || c.kda.conv_kernel != 4 || c.hc.mult != GM_HC || !c.hidden.is_multiple_of(8) || c.hidden > 16 * 480 || !c.inter.is_multiple_of(8) {
+        if c.kda.dim != GM_D || c.kda.conv_kernel != 4 || c.hc.mult != GM_HC || !c.hidden.is_multiple_of(8) || c.hidden > 16 * 480 || !c.inter.is_multiple_of(8)
+        {
             return err(format!(
                 "Kimi delta heads of {} channels with a convolution of {}, {} residual streams, a width of {} and an MLP of {}: this engine runs heads of {GM_D} channels, a convolution of 4, {GM_HC} streams, a width divisible by 8 up to 7,680",
                 c.kda.dim, c.kda.conv_kernel, c.hc.mult, c.hidden, c.inter
@@ -901,7 +1034,13 @@ impl EngineGlm {
         let blas = if ch > 64 && (want == "blas" || (want.is_empty() && dev.cc != (8, 9))) { crate::ffi::Blas::find() } else { None };
         let own = want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9));
         let gpu_code = lib.gpu()? as i64;
-        let mut shapes: Vec<(i64, i64, bool)> = w.layers.iter().flatten().flat_map(|l| l.mats.iter()).filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None }).collect();
+        let mut shapes: Vec<(i64, i64, bool)> = w
+            .layers
+            .iter()
+            .flatten()
+            .flat_map(|l| l.mats.iter())
+            .filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None })
+            .collect();
         shapes.extend(w.layers.iter().flatten().filter_map(|l| l.moe.as_ref()).flat_map(|b| b.pack_shapes()));
         shapes.extend(w.layers.iter().flatten().filter_map(|l| l.mla.as_ref()).flat_map(|b| b.pack_shapes()));
         shapes.extend(mtp.iter().flat_map(|m| m.pack_shapes()));
@@ -944,8 +1083,60 @@ impl EngineGlm {
         let used = free0.saturating_sub(dev.mem_info()?.0);
         let work_bytes = used.saturating_sub(w.bytes + ssm.bytes + convst.bytes);
         let mut e = EngineGlm {
-            dev, lib, kern, k, kmoe, w, chunk: ch, ctx, chunked: o.chunked, x, h, o: o_, mix, xc, fg, og, low, bb, core, att, hcp, hlast, logits, scratch, embed_groups, embed_pairs, pos, st, tok, val, ws, done, blas, own,
-            scratch_w, gpu_code, ssm, convst, graph: None, segs: std::cell::RefCell::new(Vec::new()), segmented: std::cell::Cell::new(false), skinny, skinny_on: std::cell::Cell::new(false), host, n: 0, work_bytes, moe_scratch: std::cell::OnceCell::new(), mla_scratch: std::cell::OnceCell::new(), trace: None, spec, pending: std::cell::Cell::new(None), hall: if mtp.is_some() { Some(Buf::zeroed(ch * hid * 2)?) } else { None }, mtp, save: std::cell::Cell::new(false),
+            dev,
+            lib,
+            kern,
+            k,
+            kmoe,
+            w,
+            chunk: ch,
+            ctx,
+            chunked: o.chunked,
+            x,
+            h,
+            o: o_,
+            mix,
+            xc,
+            fg,
+            og,
+            low,
+            bb,
+            core,
+            att,
+            hcp,
+            hlast,
+            logits,
+            scratch,
+            embed_groups,
+            embed_pairs,
+            pos,
+            st,
+            tok,
+            val,
+            ws,
+            done,
+            blas,
+            own,
+            scratch_w,
+            gpu_code,
+            ssm,
+            convst,
+            graph: None,
+            segs: std::cell::RefCell::new(Vec::new()),
+            segmented: std::cell::Cell::new(false),
+            skinny,
+            skinny_on: std::cell::Cell::new(false),
+            host,
+            n: 0,
+            work_bytes,
+            moe_scratch: std::cell::OnceCell::new(),
+            mla_scratch: std::cell::OnceCell::new(),
+            trace: None,
+            spec,
+            pending: std::cell::Cell::new(None),
+            hall: if mtp.is_some() { Some(Buf::zeroed(ch * hid * 2)?) } else { None },
+            mtp,
+            save: std::cell::Cell::new(false),
             #[cfg(feature = "dev")]
             prof: std::cell::RefCell::new(None),
         };
@@ -974,7 +1165,15 @@ impl EngineGlm {
         let (free, total) = self.dev.mem_info().unwrap_or((0, 0));
         format!(
             "{} (sm_{}{}): weights {:.3} GiB (layout {:?}), states {:.3} GiB, workspaces {:.3} GiB, {:.2} of {:.2} GiB in use",
-            self.dev.name, self.dev.cc.0, self.dev.cc.1, gib(self.w.bytes), self.w.layout, gib(self.ssm.bytes + self.convst.bytes), gib(self.work_bytes), gib(total - free), gib(total)
+            self.dev.name,
+            self.dev.cc.0,
+            self.dev.cc.1,
+            gib(self.w.bytes),
+            self.w.layout,
+            gib(self.ssm.bytes + self.convst.bytes),
+            gib(self.work_bytes),
+            gib(total - free),
+            gib(total)
         )
     }
 
@@ -1148,7 +1347,9 @@ impl EngineGlm {
         mark!(self, "mHC mix (mixer)");
         match ly.kind {
             GlmKind::Kda => self.delta(ly, n)?,
-            GlmKind::Mla => ly.mla.as_ref().ok_or_else(|| Error("a latent attention layer has no block".into()))?.forward(self, self.h.ptr, n, pos, start, self.o.ptr)?,
+            GlmKind::Mla => {
+                ly.mla.as_ref().ok_or_else(|| Error("a latent attention layer has no block".into()))?.forward(self, self.h.ptr, n, pos, start, self.o.ptr)?
+            }
         }
         mark!(self, "o product");
         self.k.hc_post(s, self.x.ptr, self.o.ptr, self.hcp[0].ptr, n as u32, hid)?;
@@ -1328,7 +1529,10 @@ impl EngineGlm {
 
     /// Whether a decode step is run in parts: it is asked for, the model has mixture-of-experts layers and every block of them can be.
     fn runs_in_parts(&self) -> bool {
-        self.segmented.get() && self.trace.is_none() && self.w.layers.iter().flatten().filter_map(|l| l.moe.as_ref()).all(|b| b.segmented()) && self.w.layers.iter().flatten().any(|l| l.moe.is_some())
+        self.segmented.get()
+            && self.trace.is_none()
+            && self.w.layers.iter().flatten().filter_map(|l| l.moe.as_ref()).all(|b| b.segmented())
+            && self.w.layers.iter().flatten().any(|l| l.moe.is_some())
     }
 
     /// The graphs of the parts forgotten (the settings they were made for have changed).
@@ -1487,7 +1691,8 @@ impl EngineGlm {
         let mut all: Vec<u32> = prompt.to_vec();
         all.push(out[0].token);
         let mut stats = SpecStats::default();
-        while out.len() < max_new && self.n + 2 <= self.ctx {  // (a pass of r rows needs n + r + 1 positions: at the edge of the context the tokens made so far are returned)
+        while out.len() < max_new && self.n + 2 <= self.ctx {
+            // (a pass of r rows needs n + r + 1 positions: at the edge of the context the tokens made so far are returned)
             let mut guesses = draft(&all);
             guesses.truncate((SPEC_ROWS - 1).min(max_new - out.len()).min(self.ctx - self.n - 2));
             let mut rows = vec![all[all.len() - 1]];
@@ -1666,19 +1871,42 @@ mod tests {
     /// The constants this file names are the kernels' (`#define`s of kernels/glm.cu), and the shared memory of the chunked rule is what its arrays take.
     #[test]
     fn the_kernels_constants_are_the_sources() {
-        let define = |n: &str| -> Option<usize> { SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok()) };
+        let define = |n: &str| -> Option<usize> {
+            SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok())
+        };
         assert_eq!((define("GM_D"), define("GM_HC"), define("GM_NP"), define("GM_L")), (Some(GM_D), Some(GM_HC), Some(GM_NP), Some(GM_L)));
         let (bv, ks, ls) = (define("GM_BV").unwrap(), define("GM_KS").unwrap(), define("GM_LS").unwrap());
         assert_eq!((3 * GM_L * ks + GM_D * bv + GM_L * bv + 2 * GM_L * ls + GM_L) * 4, GM_CHUNK_SMEM as usize);
         // (it fits the 99 KB a block of an Ampere, Ada or Blackwell consumer card may ask for)
         const { assert!(GM_CHUNK_SMEM <= 101_376) };
         // the latent attention's: the limits the launches hold to and the rows a block takes are the kernels' defines
-        assert_eq!((define("GM_NOPE_MAX"), define("GM_KSEL_MAX"), define("GM_IDX_W"), define("GM_RB"), define("GM_VB")), (Some(256), Some(1024), Some(8), Some(8), Some(4)));
+        assert_eq!(
+            (define("GM_NOPE_MAX"), define("GM_KSEL_MAX"), define("GM_IDX_W"), define("GM_RB"), define("GM_VB")),
+            (Some(256), Some(1024), Some(8), Some(8), Some(4))
+        );
         for name in [
-            "glm_streams", "glm_hc_mix", "glm_hc_post", "glm_hc_head", "glm_kda_rec", "glm_kda_chunk", "glm_kda_out", "glm_kda_out_w32", "glm_rms2", "glm_layernorm", "glm_scatter", "glm_absorb", "glm_kp_keys", "glm_idx_score", "glm_select",
-            "glm_mla_attn", "glm_expand_v",
+            "glm_streams",
+            "glm_hc_mix",
+            "glm_hc_post",
+            "glm_hc_head",
+            "glm_kda_rec",
+            "glm_kda_chunk",
+            "glm_kda_out",
+            "glm_kda_out_w32",
+            "glm_rms2",
+            "glm_layernorm",
+            "glm_scatter",
+            "glm_absorb",
+            "glm_kp_keys",
+            "glm_idx_score",
+            "glm_select",
+            "glm_mla_attn",
+            "glm_expand_v",
         ] {
-            assert!(SRC.contains(&format!("extern \"C\" __global__ void {name}(")) || SRC.contains(&format!(") {name}(")), "no kernel {name} in kernels/glm.cu");
+            assert!(
+                SRC.contains(&format!("extern \"C\" __global__ void {name}(")) || SRC.contains(&format!(") {name}(")),
+                "no kernel {name} in kernels/glm.cu"
+            );
         }
     }
 
@@ -1686,7 +1914,14 @@ mod tests {
     #[test]
     fn the_real_config_is_one_the_engine_runs() {
         let c = crate::glm::tests::parse();
-        assert!(c.kda.dim == GM_D && c.kda.conv_kernel == 4 && c.hc.mult == GM_HC && c.hidden.is_multiple_of(8) && c.hidden <= 16 * 512 && c.inter.is_multiple_of(8));
+        assert!(
+            c.kda.dim == GM_D
+                && c.kda.conv_kernel == 4
+                && c.hc.mult == GM_HC
+                && c.hidden.is_multiple_of(8)
+                && c.hidden <= 16 * 512
+                && c.inter.is_multiple_of(8)
+        );
         assert_eq!(c.hc_rows(), GM_NP);
         // the qkv product's rows are the convolutions' channels, and its state the delta rule's: 34 layers of 4 MiB
         assert_eq!((3 * c.qkv(), c.layers_of(GlmKind::Kda) * c.kda.heads * GM_D * GM_D * 4), (24576, 34 * 4 * 1024 * 1024));
@@ -1701,8 +1936,19 @@ mod tests {
         let (k, m) = (GlmKind::Kda, GlmKind::Mla);
         assert_eq!(c.kinds, [k, k, k, m, k, k, k, m]);
         assert_eq!(c.moe, [false, false, false, true, true, true, true, true]);
-        assert!(c.kda.dim == GM_D && c.kda.conv_kernel == 4 && c.hc.mult == GM_HC && c.hidden.is_multiple_of(8) && c.hidden <= 16 * 512 && c.inter.is_multiple_of(8) && c.kda.heads == 2);
-        assert_eq!((c.hidden, c.inter, c.experts.experts, c.experts.top_k, c.experts.inter, c.experts.shared_inter, c.vocab), (256, 384, 16, 4, 192, 192, 2048));
+        assert!(
+            c.kda.dim == GM_D
+                && c.kda.conv_kernel == 4
+                && c.hc.mult == GM_HC
+                && c.hidden.is_multiple_of(8)
+                && c.hidden <= 16 * 512
+                && c.inter.is_multiple_of(8)
+                && c.kda.heads == 2
+        );
+        assert_eq!(
+            (c.hidden, c.inter, c.experts.experts, c.experts.top_k, c.experts.inter, c.experts.shared_inter, c.vocab),
+            (256, 384, 16, 4, 192, 192, 2048)
+        );
         // latent attention: 2 heads of 64 with latents of 64 and a query latent of 64; an indexer of 4 heads of 32 channels that picks 2 pools of 4 tokens (so that a prompt of 12 tokens or more prunes)
         assert_eq!(c.mla, MlaDims { heads: 2, q_rank: 64, kv_rank: 64, nope: 64, v: 64 });
         assert_eq!(c.indexer, IndexerDims { heads: 4, dim: 32, topk: 8, kpool: 4, tail: true });
@@ -1724,7 +1970,14 @@ mod tests {
         let [bm, bn] = c.fp8_block.unwrap();
         assert!(c.layer_packs(0).iter().skip(7).all(|p| p.parts.iter().all(|x| x.1 % bm == 0) && p.cols % bn == 0));
         // the kernels' limits: heads and latents the latent attention kernels take
-        assert!(c.mla.nope <= 256 && c.mla.kv_rank <= 512 && c.mla.kv_rank.is_multiple_of(64) && c.indexer.dim <= 256 && c.indexer.kpool <= 8 && c.indexer.topk / c.indexer.kpool <= 1024);
+        assert!(
+            c.mla.nope <= 256
+                && c.mla.kv_rank <= 512
+                && c.mla.kv_rank.is_multiple_of(64)
+                && c.indexer.dim <= 256
+                && c.indexer.kpool <= 8
+                && c.indexer.topk / c.indexer.kpool <= 1024
+        );
     }
 
     /// What the loader holds of each layer: nine matrices for a Kimi delta layer with a dense MLP (the delta attention's seven, the MLP's two), seven where the feed-forward is a block of experts, none for a latent attention
@@ -1732,8 +1985,23 @@ mod tests {
     #[test]
     fn the_matrices_a_layer_holds() {
         let c = crate::glm::tests::parse();
-        let keys = |l: usize| -> Vec<String> { layer_matrices(&c, l).iter().map(|p| p.key.rsplit("layers.").next().unwrap().split_once('.').unwrap().1.to_string()).collect() };
-        assert_eq!(keys(1), ["self_attn.q_proj", "self_attn.o_proj", "self_attn.f_a_proj", "self_attn.f_b_proj", "self_attn.g_a_proj", "self_attn.g_b_proj", "self_attn.b_proj", "mlp.gate_proj", "mlp.down_proj"]);
+        let keys = |l: usize| -> Vec<String> {
+            layer_matrices(&c, l).iter().map(|p| p.key.rsplit("layers.").next().unwrap().split_once('.').unwrap().1.to_string()).collect()
+        };
+        assert_eq!(
+            keys(1),
+            [
+                "self_attn.q_proj",
+                "self_attn.o_proj",
+                "self_attn.f_a_proj",
+                "self_attn.f_b_proj",
+                "self_attn.g_a_proj",
+                "self_attn.g_b_proj",
+                "self_attn.b_proj",
+                "mlp.gate_proj",
+                "mlp.down_proj"
+            ]
+        );
         assert_eq!(keys(4), keys(1)[..7]);
         assert_eq!(keys(44), keys(1)[..7]);
         assert!(layer_matrices(&c, 3).is_empty() && layer_matrices(&c, 43).is_empty());
@@ -1750,8 +2018,22 @@ mod tests {
         let names: Vec<String> = c.layer_kept(4).into_iter().map(|t| t.name.rsplit("layers.4.").next().unwrap().to_string()).collect();
         assert_eq!(
             names[..14],
-            ["input_layernorm.weight", "post_attention_layernorm.weight", "hc_attn_fn", "hc_attn_base", "hc_attn_scale", "hc_ffn_fn", "hc_ffn_base", "hc_ffn_scale", "self_attn.q_conv1d.weight", "self_attn.k_conv1d.weight",
-             "self_attn.v_conv1d.weight", "self_attn.A_log", "self_attn.dt_bias", "self_attn.o_norm.weight"]
+            [
+                "input_layernorm.weight",
+                "post_attention_layernorm.weight",
+                "hc_attn_fn",
+                "hc_attn_base",
+                "hc_attn_scale",
+                "hc_ffn_fn",
+                "hc_ffn_base",
+                "hc_ffn_scale",
+                "self_attn.q_conv1d.weight",
+                "self_attn.k_conv1d.weight",
+                "self_attn.v_conv1d.weight",
+                "self_attn.A_log",
+                "self_attn.dt_bias",
+                "self_attn.o_norm.weight"
+            ]
         );
         // a layer's packs: the attention's, then the MLP's two; a Kimi delta layer's attention has seven
         assert_eq!((c.layer_packs(4).len(), c.layer_packs(3).len()), (9, 7));
@@ -1767,7 +2049,12 @@ mod tests {
         let w = [0x3f80u16, 0xbf00, 0x3dcd];
         let bf16: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
         let widened: Vec<u8> = w.iter().flat_map(|&x| ((x as u32) << 16).to_le_bytes()).collect();
-        crate::pack::write_safetensors(&dir.join("model.safetensors"), &[], &[("a", "F32", vec![3], &widened[..]), ("b", "BF16", vec![3], &bf16[..]), ("c", "F16", vec![3], &bf16[..])]).unwrap();
+        crate::pack::write_safetensors(
+            &dir.join("model.safetensors"),
+            &[],
+            &[("a", "F32", vec![3], &widened[..]), ("b", "BF16", vec![3], &bf16[..]), ("c", "F16", vec![3], &bf16[..])],
+        )
+        .unwrap();
         let ck = Checkpoint::open(&dir).unwrap();
         assert_eq!(f32_bytes(&ck, "a").unwrap(), widened);
         assert_eq!(f32_bytes(&ck, "b").unwrap(), widened);

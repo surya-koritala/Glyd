@@ -103,10 +103,7 @@ pub struct Codes {
 impl Codes {
     pub fn build(lengths: &[u8; 256]) -> Codes {
         let codes = build_codes(lengths);
-        Codes {
-            rev: std::array::from_fn(|s| reverse_bits(codes[s], lengths[s]) as u32),
-            len: std::array::from_fn(|s| lengths[s] as u32),
-        }
+        Codes { rev: std::array::from_fn(|s| reverse_bits(codes[s], lengths[s]) as u32), len: std::array::from_fn(|s| lengths[s] as u32) }
     }
 }
 

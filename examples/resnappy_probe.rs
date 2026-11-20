@@ -20,7 +20,12 @@ fn main() {
             e.2 += p.uncompressed_len;
             if c.codec == glyd::parquet::Codec::Zstd {
                 let stream = p.compressed(&data);
-                *by_build.entry(match glyd::rezstd::reproduce(stream) { Some((_, b)) => format!("zstd {:?}/{:?}/{:?}{}", b.version, b.level, b.writer, if b.checksum { "+ck" } else { "" }), None => "zstd: NOT reproduced".to_string() }).or_insert(0) += 1;
+                *by_build
+                    .entry(match glyd::rezstd::reproduce(stream) {
+                        Some((_, b)) => format!("zstd {:?}/{:?}/{:?}{}", b.version, b.level, b.writer, if b.checksum { "+ck" } else { "" }),
+                        None => "zstd: NOT reproduced".to_string(),
+                    })
+                    .or_insert(0) += 1;
                 continue;
             }
             if c.codec != glyd::parquet::Codec::Snappy {

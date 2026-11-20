@@ -192,7 +192,15 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
 /// Stage `st` of the model (its layers; the embedding where it is the first, the head where the last).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     let c = ConfigV4::load(dir)?;
-    if c.head_dim != 512 || c.rope_dim != 64 || c.idx_dim != 128 || c.hc_mult != 4 || c.hidden % 512 != 0 || c.q_lora % 128 != 0 || c.o_lora % 128 != 0 || c.inter % 128 != 0 {
+    if c.head_dim != 512
+        || c.rope_dim != 64
+        || c.idx_dim != 128
+        || c.hc_mult != 4
+        || c.hidden % 512 != 0
+        || c.q_lora % 128 != 0
+        || c.o_lora % 128 != 0
+        || c.inter % 128 != 0
+    {
         return err(format!("heads of {} ({} rotary), indexer heads of {}, {} streams, widths {} / {} / {} / {}: this engine runs heads of 512 (64 rotary), indexer heads of 128, 4 streams and widths of 128s", c.head_dim, c.rope_dim, c.idx_dim, c.hc_mult, c.hidden, c.q_lora, c.o_lora, c.inter));
     }
     if c.idx_heads > 64 {
@@ -267,7 +275,8 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         mats.push(pack(&fp8_bf16(q, sc, r1 - r0, cols)?, r1 - r0, cols, &what)?);
         Ok(Lin::Mat(mats.len() - 1))
     };
-    let (mut mats, mut sm, mut moe, mut rings, mut states, mut layers): (Vec<Mat>, Vec<Buf>, Vec<Box<dyn MoeBlock>>, Vec<Ring>, Vec<usize>, Vec<Vec<Op>>) = Default::default();
+    let (mut mats, mut sm, mut moe, mut rings, mut states, mut layers): (Vec<Mat>, Vec<Buf>, Vec<Box<dyn MoeBlock>>, Vec<Ring>, Vec<usize>, Vec<Vec<Op>>) =
+        Default::default();
     let put = |sm: &mut Vec<Buf>, b: Buf| {
         sm.push(b);
         sm.len() - 1
@@ -282,7 +291,9 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         let (p, a) = (format!("layers.{l}"), format!("layers.{l}.attn"));
         let ratio = c.ratios[l];
         let rope = (ratio != 0) as usize;
-        let hc = |sm: &mut Vec<Buf>, b: &str| -> Result<[usize; 3]> { Ok([put(sm, small(&format!("{p}.hc_{b}_fn"))?), put(sm, small(&format!("{p}.hc_{b}_base"))?), put(sm, small(&format!("{p}.hc_{b}_scale"))?)]) };
+        let hc = |sm: &mut Vec<Buf>, b: &str| -> Result<[usize; 3]> {
+            Ok([put(sm, small(&format!("{p}.hc_{b}_fn"))?), put(sm, small(&format!("{p}.hc_{b}_base"))?), put(sm, small(&format!("{p}.hc_{b}_scale"))?)])
+        };
         let [fa, ba, sa] = hc(&mut sm, "attn")?;
         let attn_norm = put(&mut sm, small(&format!("{p}.attn_norm.weight"))?);
         let q_norm = put(&mut sm, small(&format!("{a}.q_norm.weight"))?);
@@ -292,11 +303,16 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         let wq_b = fp8_mat(&mut mats, &format!("{a}.wq_b"), None, 1)?;
         let wkv = fp8_mat(&mut mats, &format!("{a}.wkv"), None, 1)?;
         // the groups' matrices: as one FP8 stack where the level holds FP8 as released (every group's product in one launch), else each its own, one after another in their list
-        let stack = if exact8 && ol % 64 == 0 && crate::tune!("GLYD_V4_OSTACK").as_deref() != Some("0") { Some(fp8_mat(&mut mats, &format!("{a}.wo_a"), None, c.o_groups)?).filter(|x| matches!(x, Lin::F8(_))) } else { None };
+        let stack = if exact8 && ol % 64 == 0 && crate::tune!("GLYD_V4_OSTACK").as_deref() != Some("0") {
+            Some(fp8_mat(&mut mats, &format!("{a}.wo_a"), None, c.o_groups)?).filter(|x| matches!(x, Lin::F8(_)))
+        } else {
+            None
+        };
         let (wo_a0, wo_a_f8) = match stack {
             Some(Lin::F8(i)) => (i, true),
             _ => {
-                let groups: Vec<Lin> = (0..c.o_groups).map(|g| fp8_mat(&mut mats, &format!("{a}.wo_a"), Some((g * ol, (g + 1) * ol)), 1)).collect::<Result<_>>()?;
+                let groups: Vec<Lin> =
+                    (0..c.o_groups).map(|g| fp8_mat(&mut mats, &format!("{a}.wo_a"), Some((g * ol, (g + 1) * ol)), 1)).collect::<Result<_>>()?;
                 let first = match groups[0] {
                     Lin::F8(i) => (i, true),
                     Lin::Mat(i) => (i, false),
@@ -361,7 +377,11 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         }
         ops.extend([
             Op::V4Attn { ring, cache, ratio, sink, rope, heads: nh, hpg },
-            if stack.is_some() { Op::V4OLoraStack { w: wo_a0, groups: c.o_groups, ol, y: Slot::M, fp8: true } } else { Op::V4OLora { w: wo_a0, in_f8: wo_a_f8, groups: c.o_groups, hpg, ol, y: Slot::M, fp8: true } },
+            if stack.is_some() {
+                Op::V4OLoraStack { w: wo_a0, groups: c.o_groups, ol, y: Slot::M, fp8: true }
+            } else {
+                Op::V4OLora { w: wo_a0, in_f8: wo_a_f8, groups: c.o_groups, hpg, ol, y: Slot::M, fp8: true }
+            },
             wo_b.op(Slot::M, Slot::O, "attention: o"),
             Op::V4Post,
         ]);
@@ -374,7 +394,13 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         // bits a weight), else the FP4 layout as released (4.25), else five-bit runs (5.5; GLYD_V4_FP4=0 asks for them); packed on all the cores (an expert's pack is its rows of the stacked matrix's:
         // block layouts have fixed strides), then joined
         // (a group of GPUs: the FP4 layouts alone, each expert's rows sliced)
-        let kinds: &[u8] = if tpr.is_some() { &[2, 1] } else if crate::tune!("GLYD_V4_FP4").as_deref() != Some("0") { &[2, 1, 0] } else { &[0] };
+        let kinds: &[u8] = if tpr.is_some() {
+            &[2, 1]
+        } else if crate::tune!("GLYD_V4_FP4").as_deref() != Some("0") {
+            &[2, 1, 0]
+        } else {
+            &[0]
+        };
         let one = |x: usize, kind: u8| -> Result<Option<(glyd_gpu::pack::Tiered, glyd_gpu::pack::Tiered)>> {
             let raw = |wn: &str| -> Result<(Vec<u8>, Vec<u8>)> {
                 let q = format!("{f}.experts.{x}.{wn}");
@@ -409,7 +435,10 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             us.extend(gs);
             let (dc, ds) = runs("w2", d, i)?;
             let bad = || Error(format!("{f}.experts.{x}: not five-bit runs"));
-            Ok(Some((glyd_gpu::pack::pack_int5_runs_checked(&uc, &us, 2 * i, d).ok_or_else(bad)?, glyd_gpu::pack::pack_int5_runs_checked(&dc, &ds, d, i).ok_or_else(bad)?)))
+            Ok(Some((
+                glyd_gpu::pack::pack_int5_runs_checked(&uc, &us, 2 * i, d).ok_or_else(bad)?,
+                glyd_gpu::pack::pack_int5_runs_checked(&dc, &ds, d, i).ok_or_else(bad)?,
+            )))
         };
         let (mut ups, mut downs) = (Vec::with_capacity(e), Vec::with_capacity(e));
         for &kind in kinds {
@@ -427,7 +456,10 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             }
         }
         if ups.len() != e {
-            return err(format!("{f}: experts the FP4 layouts do not hold exactly{}", if tpr.is_some() { " (across GPUs, the five-bit runs are not taken)" } else { "" }));
+            return err(format!(
+                "{f}: experts the FP4 layouts do not hold exactly{}",
+                if tpr.is_some() { " (across GPUs, the five-bit runs are not taken)" } else { "" }
+            ));
         }
         let mut up = ExpertStack::upload(&Joined::of(&ups.iter().collect::<Vec<_>>())?)?;
         let mut down = ExpertStack::upload(&Joined::of(&downs.iter().collect::<Vec<_>>())?)?;
@@ -446,7 +478,15 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
                 // (a group of GPUs: this GPU's rows, in whole blocks of 128 of the scales)
                 if let Some((rank, n)) = tpr.filter(|&(_, n)| rows % (128 * n) == 0) {
                     let (r0, rn, gc) = (rank * rows / n, rows / n, cols.div_ceil(128));
-                    let mut m = crate::f8::F8Mat::pack(&dev, &lib, &q[r0 * cols..(r0 + rn) * cols], &sc[r0 / 128 * gc..(r0 + rn) / 128 * gc], rn, cols, cfg!(feature = "dev"))?;
+                    let mut m = crate::f8::F8Mat::pack(
+                        &dev,
+                        &lib,
+                        &q[r0 * cols..(r0 + rn) * cols],
+                        &sc[r0 / 128 * gc..(r0 + rn) / 128 * gc],
+                        rn,
+                        cols,
+                        cfg!(feature = "dev"),
+                    )?;
                     m.tp_rows = rows;
                     return Ok(m);
                 }
@@ -469,12 +509,30 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
                         Mat::Dense(..) => err(format!("{name}: rows of a block layout are wanted")),
                     }
                 };
-                Shared { inter: i, up: packed(&su, 2 * i, d, &format!("{f}.shared_experts.w13"))?, down: packed(&w2, d, i, &format!("{f}.shared_experts.w2"))?, gate: None }
+                Shared {
+                    inter: i,
+                    up: packed(&su, 2 * i, d, &format!("{f}.shared_experts.w13"))?,
+                    down: packed(&w2, d, i, &format!("{f}.shared_experts.w2"))?,
+                    gate: None,
+                }
             }
         };
         let hash = l < c.hash_layers;
-        let cfg = MoeCfg { experts: e, router_hidden: d, hidden: d, inter: i, router: Router { scoring: Scoring::SqrtSoftplus, top_k: k, renorm: true, scale: c.route_scale, bf16_logits: false }, act: Act::SwiGlu { limit: (c.swiglu_limit > 0.0).then_some(c.swiglu_limit) } };
-        let w = MoeWeights { router: small(&format!("{f}.gate.weight"))?, bias: if hash { None } else { Some(small(&format!("{f}.gate.bias"))?) }, escale: None, up, down: Down::Block(down) };
+        let cfg = MoeCfg {
+            experts: e,
+            router_hidden: d,
+            hidden: d,
+            inter: i,
+            router: Router { scoring: Scoring::SqrtSoftplus, top_k: k, renorm: true, scale: c.route_scale, bf16_logits: false },
+            act: Act::SwiGlu { limit: (c.swiglu_limit > 0.0).then_some(c.swiglu_limit) },
+        };
+        let w = MoeWeights {
+            router: small(&format!("{f}.gate.weight"))?,
+            bias: if hash { None } else { Some(small(&format!("{f}.gate.bias"))?) },
+            escale: None,
+            up,
+            down: Down::Block(down),
+        };
         let block = moe.len();
         let layer = MoeLayer::new(cfg, w, Some(shared))?;
         moe.push(Box::new(V4Moe(match shared8 {
@@ -506,7 +564,10 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         layers[c.layers - 1].push(Op::V4Head { f, base: b, scale: s, norm });
     }
     let mp = ctx + ch + 16;
-    let ropes = vec![tables(&crate::deepseek_v4::freqs(c.rope_dim, c.rope_theta, None), mp)?, tables(&crate::deepseek_v4::freqs(c.rope_dim, c.compress_theta, Some(c.yarn)), mp)?];
+    let ropes = vec![
+        tables(&crate::deepseek_v4::freqs(c.rope_dim, c.rope_theta, None), mp)?,
+        tables(&crate::deepseek_v4::freqs(c.rope_dim, c.compress_theta, Some(c.yarn)), mp)?,
+    ];
     let mut widths = [0usize; super::SLOTS];
     let wmax = if c.ratios.contains(&4) { 2 * hd } else { hd };
     for (s, w) in [
@@ -553,7 +614,18 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         post: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
-        v4: Some(V4Dims { hc_eps: c.hc_eps, iters: c.hc_iters as i32, heads: nh, idx_heads: c.idx_heads, topk: c.idx_topk, window: c.window, experts_k: c.top_k, all_ratio, sim: crate::tune!("GLYD_V4_SIM").as_deref() != Some("0"), o_groups: c.o_groups }),
+        v4: Some(V4Dims {
+            hc_eps: c.hc_eps,
+            iters: c.hc_iters as i32,
+            heads: nh,
+            idx_heads: c.idx_heads,
+            topk: c.idx_topk,
+            window: c.window,
+            experts_k: c.top_k,
+            all_ratio,
+            sim: crate::tune!("GLYD_V4_SIM").as_deref() != Some("0"),
+            o_groups: c.o_groups,
+        }),
     };
     drop(fp8_mat);
     Dyn::from_loaded_f8(dev, desc, mats, f8, sm, moe, ropes, layout, st, o)

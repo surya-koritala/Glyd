@@ -4,8 +4,8 @@
 //! which `pack.rs` writes: the embedding packed.
 
 use crate::dev::{copy_h2d_async, Buf, Pinned};
-use crate::ffi::{err, Error, Pack, Result, Stream};
 use crate::ffi::Words;
+use crate::ffi::{err, Error, Pack, Result, Stream};
 use crate::qwen35::Pack35;
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
@@ -160,7 +160,15 @@ pub fn best_layout(cc: (i32, i32), total_mem: u64, matrix_bytes: u64, other_byte
     let room = total_mem.saturating_sub(2 << 30);
     let (tiered, twelve) = ((matrix_bytes as f64 * 10.80 / 16.0) as u64 + other_bytes, (matrix_bytes as f64 * 12.04 / 16.0) as u64 + other_bytes);
     if twelve > room && room >= tiered {
-        return (Layout::Tiered, format!("only the mma layout fits (the smallest: {:.1} GB; mma12 {:.1} GB, room {:.1} GB)", tiered as f64 / 1e9, twelve as f64 / 1e9, room as f64 / 1e9));
+        return (
+            Layout::Tiered,
+            format!(
+                "only the mma layout fits (the smallest: {:.1} GB; mma12 {:.1} GB, room {:.1} GB)",
+                tiered as f64 / 1e9,
+                twelve as f64 / 1e9,
+                room as f64 / 1e9
+            ),
+        );
     }
     if smallest_is_fastest(cc) {
         return (Layout::Tiered, "Ada: mma, the smallest layout, is as fast as mma12 (measured)".to_string());
@@ -242,11 +250,8 @@ unsafe impl Send for Raw {}
 /// copies the one before to the GPU, so a load goes at the slower of the file and the bus. Returns each tensor's device buffer, by name.
 fn load_all(jobs: &[Job], stream: Stream) -> Result<std::vec::IntoIter<(String, Buf)>> {
     const NBUF: usize = 3;
-    let pieces: Vec<(usize, usize, usize)> = jobs
-        .iter()
-        .enumerate()
-        .flat_map(|(i, j)| (0..j.bytes.div_ceil(PIECE)).map(move |k| (i, k * PIECE, PIECE.min(j.bytes - k * PIECE))))
-        .collect();
+    let pieces: Vec<(usize, usize, usize)> =
+        jobs.iter().enumerate().flat_map(|(i, j)| (0..j.bytes.div_ceil(PIECE)).map(move |k| (i, k * PIECE, PIECE.min(j.bytes - k * PIECE)))).collect();
     let mut pins = Vec::new();
     for _ in 0..NBUF {
         pins.push(Pinned::new(PIECE)?);
@@ -366,7 +371,17 @@ impl Feed {
 fn suffixes(layout: Layout) -> [&'static str; 3] {
     match layout {
         Layout::Cb3Row | Layout::Cb2Row => ["data", "blocks", "codebook"],
-        Layout::Tiered | Layout::Compact | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Hummingbird => ["data", "blocks", "block_base"],
+        Layout::Tiered
+        | Layout::Compact
+        | Layout::Int6
+        | Layout::Int5
+        | Layout::Int4
+        | Layout::Int4H
+        | Layout::Int3
+        | Layout::Int6Row
+        | Layout::Int5Row
+        | Layout::Int4Row
+        | Layout::Hummingbird => ["data", "blocks", "block_base"],
         Layout::Twelve => ["data", "exc", "exc_base"],
     }
 }
@@ -374,8 +389,24 @@ fn suffixes(layout: Layout) -> [&'static str; 3] {
 /// A pack's words from its manifest entry: the tiered layout's three tiers, or the 12-bit layout's base (the library's four words).
 fn words_of(layout: Layout, e: &Value, name: &str) -> Result<([u64; 3], [u32; 4])> {
     match layout {
-        Layout::Tiered | Layout::Compact | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => {
-            let t = e.get(WORDS_KEY).and_then(Value::as_u64s).filter(|t| t.len() == 3).ok_or_else(|| Error(format!("glyd.json: {name}: the pack's words are missing")))?;
+        Layout::Tiered
+        | Layout::Compact
+        | Layout::Int6
+        | Layout::Int5
+        | Layout::Int4
+        | Layout::Int4H
+        | Layout::Int3
+        | Layout::Int6Row
+        | Layout::Int5Row
+        | Layout::Int4Row
+        | Layout::Cb3Row
+        | Layout::Cb2Row
+        | Layout::Hummingbird => {
+            let t = e
+                .get(WORDS_KEY)
+                .and_then(Value::as_u64s)
+                .filter(|t| t.len() == 3)
+                .ok_or_else(|| Error(format!("glyd.json: {name}: the pack's words are missing")))?;
             let tag = (t[0] >> 24) as u32;
             if tag == glyd_gpu::v1::TAG {
                 return err(format!("glyd.json: {name}: {EARLIER_FORMAT}: pack the model again"));
@@ -457,7 +488,10 @@ pub fn plan(dir: &Path) -> Result<Plan> {
         let shape = e.get("shape").and_then(Value::as_u64s).filter(|s| s.len() == 2).ok_or_else(|| Error(format!("{}: {key}: no shape", gj.display())))?;
         if let Some((rows, cols)) = expect {
             if shape[0] as usize != rows || shape[1] as usize != cols {
-                return err(format!("{key}: a pack of {} x {}, where Qwen3 with this config has {rows} x {cols} (merged q, k, v and gate, up?)", shape[0], shape[1]));
+                return err(format!(
+                    "{key}: a pack of {} x {}, where Qwen3 with this config has {rows} x {cols} (merged q, k, v and gate, up?)",
+                    shape[0], shape[1]
+                ));
             }
         }
         for sf in suffixes(lay) {
@@ -500,10 +534,23 @@ pub fn plan(dir: &Path) -> Result<Plan> {
 
 fn pack_from(feed: &mut Feed, key: &str, rows: i64, cols: i64, layout: Layout, words: ([u64; 3], [u32; 4])) -> Result<PackBuf> {
     let sfx = suffixes(layout);
-    let (data, b1, b2) = (feed.take(&format!("{key}.glyd_{}", sfx[0]))?, feed.take(&format!("{key}.glyd_{}", sfx[1]))?, feed.take(&format!("{key}.glyd_{}", sfx[2]))?);
+    let (data, b1, b2) =
+        (feed.take(&format!("{key}.glyd_{}", sfx[0]))?, feed.take(&format!("{key}.glyd_{}", sfx[1]))?, feed.take(&format!("{key}.glyd_{}", sfx[2]))?);
     let bytes = data.bytes + b1.bytes + b2.bytes;
     let w = match layout {
-        Layout::Tiered | Layout::Compact | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => Words::Tiered { blocks: b1.ptr, block_base: b2.ptr, tiers: [words.0[0] as u32, words.0[1] as u32, words.0[2] as u32] },
+        Layout::Tiered
+        | Layout::Compact
+        | Layout::Int6
+        | Layout::Int5
+        | Layout::Int4
+        | Layout::Int4H
+        | Layout::Int3
+        | Layout::Int6Row
+        | Layout::Int5Row
+        | Layout::Int4Row
+        | Layout::Cb3Row
+        | Layout::Cb2Row
+        | Layout::Hummingbird => Words::Tiered { blocks: b1.ptr, block_base: b2.ptr, tiers: [words.0[0] as u32, words.0[1] as u32, words.0[2] as u32] },
         Layout::Twelve => Words::Twelve { exc: b1.ptr, exc_base: b2.ptr, sym: words.1 },
     };
     let pack = Pack { data: data.ptr, words: w, rows, cols };
@@ -563,7 +610,16 @@ impl Weights {
 
     /// The loaded parts as a `Weights`: the bytes they take (and bf16 would), per kind of matrix, and the rotary tables.
     #[allow(clippy::too_many_arguments)]
-    fn finish(cfg: Config, layout: Layout, layers: Vec<Layer>, norm: Buf, embed: PackBuf, head: Option<PackBuf>, max_pos: Option<usize>, dir: &Path) -> Result<Weights> {
+    fn finish(
+        cfg: Config,
+        layout: Layout,
+        layers: Vec<Layer>,
+        norm: Buf,
+        embed: PackBuf,
+        head: Option<PackBuf>,
+        max_pos: Option<usize>,
+        dir: &Path,
+    ) -> Result<Weights> {
         let (h, d) = (cfg.hidden, cfg.head_dim);
         let (mut bytes, mut bf16_bytes) = (0usize, 0usize);
         let mut kinds: Vec<(&'static str, usize, usize)> = ["qkv", "o", "gate_up", "down", "embed", "lm_head"].iter().map(|&n| (n, 0, 0)).collect();
@@ -659,46 +715,120 @@ pub(crate) fn pack_words(w: &[u16], rows: usize, cols: usize, layout: Layout, na
         // Candidate A (its values made by the caller's transform, pack::round_a): the compact tiered layout, checked by decoding
         Layout::Compact => {
             let p = glyd_gpu::pack::pack_compact_checked(w, rows, cols).ok_or_else(what)?;
-            Ok(Packed { data: p.data, b1: p.blocks, b2: i32_bytes(&p.block_base), words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers }, rows, cols })
+            Ok(Packed {
+                data: p.data,
+                b1: p.blocks,
+                b2: i32_bytes(&p.block_base),
+                words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+                rows,
+                cols,
+            })
         }
         // Six-bit block codes (lossy: the packer quantizes; its decode is the reference the GPU's matches)
         Layout::Int6 => {
-            let p = glyd_gpu::pack::pack_int6(w, rows, cols).ok_or_else(|| Error(format!("{}: not packable in the six-bit layout (a weight that is not finite, or {} columns not a multiple of 32)", name, cols)))?;
-            Ok(Packed { data: p.data, b1: p.blocks, b2: i32_bytes(&p.block_base), words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers }, rows, cols })
+            let p = glyd_gpu::pack::pack_int6(w, rows, cols).ok_or_else(|| {
+                Error(format!("{}: not packable in the six-bit layout (a weight that is not finite, or {} columns not a multiple of 32)", name, cols))
+            })?;
+            Ok(Packed {
+                data: p.data,
+                b1: p.blocks,
+                b2: i32_bytes(&p.block_base),
+                words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+                rows,
+                cols,
+            })
         }
         // Five-bit block codes (lossy: the packer quantizes; its decode is the reference the GPU's matches)
         Layout::Int5 => {
-            let p = glyd_gpu::pack::pack_int5(w, rows, cols).ok_or_else(|| Error(format!("{}: not packable in the five-bit layout (a weight that is not finite, or {} columns not a multiple of 32)", name, cols)))?;
-            Ok(Packed { data: p.data, b1: p.blocks, b2: i32_bytes(&p.block_base), words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers }, rows, cols })
+            let p = glyd_gpu::pack::pack_int5(w, rows, cols).ok_or_else(|| {
+                Error(format!("{}: not packable in the five-bit layout (a weight that is not finite, or {} columns not a multiple of 32)", name, cols))
+            })?;
+            Ok(Packed {
+                data: p.data,
+                b1: p.blocks,
+                b2: i32_bytes(&p.block_base),
+                words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+                rows,
+                cols,
+            })
         }
         // Four-bit block codes (lossy: the packer quantizes; its decode is the reference the GPU's matches)
         Layout::Int4 => {
-            let p = glyd_gpu::pack::pack_int4(w, rows, cols).ok_or_else(|| Error(format!("{}: not packable at the wren level (a weight that is not finite, or {} columns not a multiple of 32)", name, cols)))?;
-            Ok(Packed { data: p.data, b1: p.blocks, b2: i32_bytes(&p.block_base), words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers }, rows, cols })
+            let p = glyd_gpu::pack::pack_int4(w, rows, cols).ok_or_else(|| {
+                Error(format!("{}: not packable at the wren level (a weight that is not finite, or {} columns not a multiple of 32)", name, cols))
+            })?;
+            Ok(Packed {
+                data: p.data,
+                b1: p.blocks,
+                b2: i32_bytes(&p.block_base),
+                words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+                rows,
+                cols,
+            })
         }
         // Exact four-bit block codes (lossless: a checkpoint trained to four bits, held bit for bit); a matrix that is not one keeps the smallest lossless layout
         Layout::Int4H => match glyd_gpu::pack::pack_int4h_checked(w, rows, cols) {
-            Some(p) => Ok(Packed { data: p.data, b1: p.blocks, b2: i32_bytes(&p.block_base), words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers }, rows, cols }),
+            Some(p) => Ok(Packed {
+                data: p.data,
+                b1: p.blocks,
+                b2: i32_bytes(&p.block_base),
+                words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+                rows,
+                cols,
+            }),
             None => pack_words(w, rows, cols, Layout::Tiered, name),
         },
         // A row layout (lossy): the weight [out, in] transposed, [in, out], one input's weights a row (an experts' down matrix, read for the inputs that are not zero); the pack's rows are the weight's columns
         Layout::Int6Row | Layout::Int5Row | Layout::Int4Row => {
             let bits = layout.row_bits().expect("a row layout");
-            let p = glyd_gpu::pack::pack_rows(bits, &glyd_gpu::pack::transpose(w, rows, cols), cols, rows)
-                .ok_or_else(|| Error(format!("{}: not packable in a {bits}-bit row layout (a weight that is not finite, or {} outputs not a multiple of 32)", name, rows)))?;
-            Ok(Packed { data: p.data, b1: p.blocks, b2: i32_bytes(&p.block_base), words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers }, rows: cols, cols: rows })
+            let p = glyd_gpu::pack::pack_rows(bits, &glyd_gpu::pack::transpose(w, rows, cols), cols, rows).ok_or_else(|| {
+                Error(format!("{}: not packable in a {bits}-bit row layout (a weight that is not finite, or {} outputs not a multiple of 32)", name, rows))
+            })?;
+            Ok(Packed {
+                data: p.data,
+                b1: p.blocks,
+                b2: i32_bytes(&p.block_base),
+                words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+                rows: cols,
+                cols: rows,
+            })
         }
         // The codebook rows and the Hummingbird level hold codes made apart (src/moe_hb.rs reads them from a directory), which no fit of bf16 weights makes
-        Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => err(format!("{}: the {} layout holds codes made apart, not a fit of the weights", name, layout.name())),
+        Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => {
+            err(format!("{}: the {} layout holds codes made apart, not a fit of the weights", name, layout.name()))
+        }
         // Three-bit block codes (lossy: the packer quantizes; its decode is the reference the GPU's matches)
         Layout::Int3 => {
-            let p = glyd_gpu::pack::pack_int3(w, rows, cols).ok_or_else(|| Error(format!("{}: not packable at the hummingbird level (a weight that is not finite, or {} columns not a multiple of 32)", name, cols)))?;
-            Ok(Packed { data: p.data, b1: p.blocks, b2: i32_bytes(&p.block_base), words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers }, rows, cols })
+            let p = glyd_gpu::pack::pack_int3(w, rows, cols).ok_or_else(|| {
+                Error(format!("{}: not packable at the hummingbird level (a weight that is not finite, or {} columns not a multiple of 32)", name, cols))
+            })?;
+            Ok(Packed {
+                data: p.data,
+                b1: p.blocks,
+                b2: i32_bytes(&p.block_base),
+                words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+                rows,
+                cols,
+            })
         }
         Layout::Tiered => match glyd_gpu::pack::pack_smallest_checked(w, rows, cols).ok_or_else(what)? {
             // (the smallest layout: a matrix that takes fewer bytes in the 12-bit layout is held in it, as `glyd-gpu pack` saves it)
-            glyd_gpu::pack::Packed::Tiered(p) => Ok(Packed { data: p.data, b1: p.blocks, b2: i32_bytes(&p.block_base), words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers }, rows, cols }),
-            glyd_gpu::pack::Packed::Twelve(p) => Ok(Packed { data: p.data, b1: i32_bytes(&p.exc), b2: i32_bytes(&p.exc_base), words: Words::Twelve { exc: 0, exc_base: 0, sym: p.sym }, rows, cols }),
+            glyd_gpu::pack::Packed::Tiered(p) => Ok(Packed {
+                data: p.data,
+                b1: p.blocks,
+                b2: i32_bytes(&p.block_base),
+                words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+                rows,
+                cols,
+            }),
+            glyd_gpu::pack::Packed::Twelve(p) => Ok(Packed {
+                data: p.data,
+                b1: i32_bytes(&p.exc),
+                b2: i32_bytes(&p.exc_base),
+                words: Words::Twelve { exc: 0, exc_base: 0, sym: p.sym },
+                rows,
+                cols,
+            }),
         },
         Layout::Twelve => {
             let p = glyd_gpu::pack::pack_twelve_checked(w, rows, cols).ok_or_else(what)?;
@@ -735,7 +865,11 @@ pub fn v7_manifest(dir: &Path) -> Result<Option<(Layout, Value)>> {
     let name = m.get("layout").and_then(Value::as_str);
     // (the Hummingbird level, `hb`: the experts in codebook rows, every other matrix in six-bit codes, a level of its own and no block layout's)
     // (penguin, `mma`: lossless packs a planned save made for an engine that reads them itself, Gemma 4's; read_lossless)
-    match name.and_then(|n| block_layout(n).or_else(|| (n == Layout::Hummingbird.name()).then_some(Layout::Hummingbird)).or_else(|| (n == Layout::Tiered.name()).then_some(Layout::Tiered))) {
+    match name.and_then(|n| {
+        block_layout(n)
+            .or_else(|| (n == Layout::Hummingbird.name()).then_some(Layout::Hummingbird))
+            .or_else(|| (n == Layout::Tiered.name()).then_some(Layout::Tiered))
+    }) {
         Some(layout) => Ok(Some((layout, m))),
         None => err(format!("{}: glyd.json: layout {name:?}, where a glyd-v7 directory has `i6`, `i5`, `i4`, `i3`, `hb` or `mma`", dir.display())),
     }
@@ -744,7 +878,10 @@ pub fn v7_manifest(dir: &Path) -> Result<Option<(Layout, Value)>> {
 /// A saved block pack (its glyd.json `shape` and `tiers`, its three buffers' lengths in bytes) against `layout` and the `rows` x `cols` the config gives its matrix: the tag, the shape and the
 /// lengths pack_int6, pack_int5, pack_int4 and pack_int3 make (a step of 64 rows and 16 columns takes the layout's step bytes of data, a pair of steps 128 bytes of scales, and one more base than steps takes 4 bytes each).
 pub(crate) fn check_v7(key: &str, layout: Layout, rows: usize, cols: usize, shape: &[u64], tiers: &[u64], lens: [u64; 3]) -> Result<()> {
-    use glyd_gpu::pack::{rows_stride, INT3_STEP_BYTES, INT3_TAG, INT4H_TAG, INT4_ROW_TAG, INT4_STEP_BYTES, INT4_TAG, INT5_ROW_TAG, INT5_STEP_BYTES, INT5_TAG, INT6_ROW_TAG, INT6_STEP_BYTES, INT6_TAG};
+    use glyd_gpu::pack::{
+        rows_stride, INT3_STEP_BYTES, INT3_TAG, INT4H_TAG, INT4_ROW_TAG, INT4_STEP_BYTES, INT4_TAG, INT5_ROW_TAG, INT5_STEP_BYTES, INT5_TAG, INT6_ROW_TAG,
+        INT6_STEP_BYTES, INT6_TAG,
+    };
     // a row layout's pack is the weight's transpose [cols, rows]: a row for each of the weight's inputs, `rows_stride` bytes of codes and a scale for each run of 32 outputs
     if let Some(bits) = layout.row_bits() {
         let tag = [INT4_ROW_TAG, INT5_ROW_TAG, INT6_ROW_TAG][bits as usize - 4];
@@ -752,7 +889,9 @@ pub(crate) fn check_v7(key: &str, layout: Layout, rows: usize, cols: usize, shap
             return err(format!("glyd.json: {key}: words of tag {:?}, where the {} layout's is {tag}", tiers.first().map(|t| t >> 24), layout.name()));
         }
         if shape != [cols as u64, rows as u64] || rows == 0 || cols == 0 || !rows.is_multiple_of(32) || !(rows * cols).is_multiple_of(1024) {
-            return err(format!("glyd.json: {key}: shape {shape:?}, where the config has {rows} x {cols} (a row layout holds {cols} x {rows}, its outputs runs of 32)"));
+            return err(format!(
+                "glyd.json: {key}: shape {shape:?}, where the config has {rows} x {cols} (a row layout holds {cols} x {rows}, its outputs runs of 32)"
+            ));
         }
         let want = [(cols * rows_stride(bits, rows)) as u64, (cols * rows / 32 * 2) as u64, ((rows * cols / 1024 + 1) * 4) as u64];
         if lens != want {
@@ -800,12 +939,21 @@ pub(crate) fn read_v7(ck: &Checkpoint, manifest: &Value, layout: Layout, parts: 
         let e = manifest.get("packs").and_then(|p| p.get(key)).ok_or_else(|| Error(format!("glyd.json: no pack {key}")))?;
         let own = match e.get("layout").and_then(Value::as_str) {
             None => layout,
-            Some(name) => entry_layout(name).ok_or_else(|| Error(format!("glyd.json: {key}: layout {name:?}, where a glyd-v7 pack has `i6`, `i5`, `i4`, `i3`, `i6r`, `i5r` or `i4r`")))?,
+            Some(name) => entry_layout(name)
+                .ok_or_else(|| Error(format!("glyd.json: {key}: layout {name:?}, where a glyd-v7 pack has `i6`, `i5`, `i4`, `i3`, `i6r`, `i5r` or `i4r`")))?,
         };
         if *joined.get_or_insert(own) != own {
-            return err(format!("glyd.json: {key}: packed in the {} layout, where the part of its matrix before it is in {}", own.name(), joined.map_or("none", Layout::name)));
+            return err(format!(
+                "glyd.json: {key}: packed in the {} layout, where the part of its matrix before it is in {}",
+                own.name(),
+                joined.map_or("none", Layout::name)
+            ));
         }
-        let t = e.get(WORDS_KEY).and_then(Value::as_u64s).filter(|t| t.len() == 3).ok_or_else(|| Error(format!("glyd.json: {key}: the pack's words are missing")))?;
+        let t = e
+            .get(WORDS_KEY)
+            .and_then(Value::as_u64s)
+            .filter(|t| t.len() == 3)
+            .ok_or_else(|| Error(format!("glyd.json: {key}: the pack's words are missing")))?;
         let names = ["data", "blocks", "block_base"].map(|s| format!("{key}.glyd_{s}"));
         let mut lens = [0u64; 3];
         for (l, n) in lens.iter_mut().zip(&names) {
@@ -850,7 +998,14 @@ pub(crate) fn read_lossless(ck: &Checkpoint, manifest: &Value, key: &str, rows: 
     let base: Vec<i32> = b2.as_chunks::<4>().0.iter().map(|b| i32::from_le_bytes(*b)).collect();
     let holds = match layout {
         Layout::Tiered => data.len() == steps * 1280 && glyd_gpu::pack::tiered_blocks_hold(&data, &b1, &base),
-        _ => data.len() == steps * 1536 && b1.len() % 16 == 0 && base.len() == steps + 1 && base[0] == 0 && base.windows(2).all(|x| x[0] <= x[1]) && base[steps] as usize <= b1.len() / 4,
+        _ => {
+            data.len() == steps * 1536
+                && b1.len() % 16 == 0
+                && base.len() == steps + 1
+                && base[0] == 0
+                && base.windows(2).all(|x| x[0] <= x[1])
+                && base[steps] as usize <= b1.len() / 4
+        }
     };
     if !holds {
         return err(format!("{key}: its buffers do not hold what its data says (damaged? glyd verify checks the whole save)"));
@@ -883,8 +1038,12 @@ pub(crate) fn read_lossless_parts(ck: &Checkpoint, manifest: &Value, parts: &[(&
         let p = read_lossless(ck, manifest, key, r, cols)?;
         let out = &mut w[at..at + r * cols];
         let ok = match p.words {
-            Words::Tiered { tiers, .. } => glyd_gpu::pack::unpack_tiered(&glyd_gpu::pack::Tiered { rows: r, cols, data: p.data, blocks: p.b1, block_base: i32s(&p.b2), tiers }, out),
-            Words::Twelve { sym, .. } => glyd_gpu::pack::unpack_twelve(&glyd_gpu::pack::Twelve { rows: r, cols, data: p.data, exc: i32s(&p.b1), exc_base: i32s(&p.b2), sym }, out),
+            Words::Tiered { tiers, .. } => {
+                glyd_gpu::pack::unpack_tiered(&glyd_gpu::pack::Tiered { rows: r, cols, data: p.data, blocks: p.b1, block_base: i32s(&p.b2), tiers }, out)
+            }
+            Words::Twelve { sym, .. } => {
+                glyd_gpu::pack::unpack_twelve(&glyd_gpu::pack::Twelve { rows: r, cols, data: p.data, exc: i32s(&p.b1), exc_base: i32s(&p.b2), sym }, out)
+            }
         };
         if !ok {
             return err(format!("{key}: its pack does not decode (damaged? glyd verify checks the whole save)"));
@@ -931,7 +1090,13 @@ pub(crate) fn read_pack(ck: &Checkpoint, v7: Option<&(Layout, Value)>, pk: &Pack
 }
 
 /// `n` jobs run by `threads` workers, the results handed to `each` in order as they are ready (a worker waits where the next `window` results are not yet taken).
-pub(crate) fn ordered<T: Send>(n: usize, threads: usize, window: usize, work: &(dyn Fn(usize) -> Result<T> + Sync), mut each: impl FnMut(usize, T) -> Result<()>) -> Result<()> {
+pub(crate) fn ordered<T: Send>(
+    n: usize,
+    threads: usize,
+    window: usize,
+    work: &(dyn Fn(usize) -> Result<T> + Sync),
+    mut each: impl FnMut(usize, T) -> Result<()>,
+) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Condvar, Mutex};
     let slots: Mutex<Vec<Option<Result<T>>>> = Mutex::new((0..n).map(|_| None).collect());
@@ -1050,19 +1215,40 @@ pub(crate) fn upload_packed(p: Packed) -> Result<PackBuf> {
 impl PackBuf {
     /// The whole matrix's rows: `tp_rows` where it is a slice of them, else its own.
     pub fn whole_rows(&self) -> usize {
-        if self.tp_rows > 0 { self.tp_rows } else { self.pack.rows as usize }
+        if self.tp_rows > 0 {
+            self.tp_rows
+        } else {
+            self.pack.rows as usize
+        }
     }
 
     /// A matrix's shape and no weights (a matrix held in another format beside it, as `MoeLayer::shared8` holds the shared expert's): never multiplied by.
     pub fn shape_only(rows: usize, cols: usize) -> Result<PackBuf> {
         let bufs = [Buf::new(16)?, Buf::new(16)?, Buf::new(16)?];
-        Ok(PackBuf { pack: Pack { data: bufs[0].ptr, words: Words::Tiered { blocks: bufs[1].ptr, block_base: bufs[2].ptr, tiers: [0; 3] }, rows: rows as i64, cols: cols as i64 }, bytes: 0, tp_rows: 0, _bufs: bufs })
+        Ok(PackBuf {
+            pack: Pack {
+                data: bufs[0].ptr,
+                words: Words::Tiered { blocks: bufs[1].ptr, block_base: bufs[2].ptr, tiers: [0; 3] },
+                rows: rows as i64,
+                cols: cols as i64,
+            },
+            bytes: 0,
+            tp_rows: 0,
+            _bufs: bufs,
+        })
     }
 }
 
 /// A pack of glyd-gpu's packer (the tiered layout, Int6, Int5) in host memory, copied to the GPU.
 pub fn upload_tiered(p: &glyd_gpu::pack::Tiered) -> Result<PackBuf> {
-    upload_packed(Packed { data: p.data.clone(), b1: p.blocks.clone(), b2: i32_bytes(&p.block_base), words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers }, rows: p.rows, cols: p.cols })
+    upload_packed(Packed {
+        data: p.data.clone(),
+        b1: p.blocks.clone(),
+        b2: i32_bytes(&p.block_base),
+        words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+        rows: p.rows,
+        cols: p.cols,
+    })
 }
 
 pub(crate) fn upload_bytes(bytes: &[u8]) -> Result<Buf> {
@@ -1101,14 +1287,20 @@ mod tests {
     #[test]
     fn ordered_results() {
         let mut got = Vec::new();
-        ordered(40, 4, 6, &|i| {
-            std::thread::sleep(std::time::Duration::from_micros(((40 - i) * 50) as u64));
-            Ok(i * i)
-        }, |i, v| {
-            assert_eq!(i, got.len());
-            got.push(v);
-            Ok(())
-        })
+        ordered(
+            40,
+            4,
+            6,
+            &|i| {
+                std::thread::sleep(std::time::Duration::from_micros(((40 - i) * 50) as u64));
+                Ok(i * i)
+            },
+            |i, v| {
+                assert_eq!(i, got.len());
+                got.push(v);
+                Ok(())
+            },
+        )
         .unwrap();
         assert_eq!(got, (0..40).map(|i| i * i).collect::<Vec<_>>());
         let e = ordered(40, 4, 6, &|i| if i == 17 { err("seventeen") } else { Ok(i) }, |_, _| Ok(())).unwrap_err();
@@ -1138,7 +1330,11 @@ mod tests {
             assert_eq!(best_layout(cc, mem * gib, m, 1_000_000).0, want, "{gpu}");
             assert_eq!(choose_layout(None, cc, mem * gib, m, 1_000_000).0, want, "{gpu} with no flag");
             // --layout wins on every GPU, either way
-            assert_eq!(choose_layout(Some(Layout::Tiered), cc, mem * gib, m, 1_000_000), (Layout::Tiered, "as asked".to_string()), "{gpu} asked for the tiered layout");
+            assert_eq!(
+                choose_layout(Some(Layout::Tiered), cc, mem * gib, m, 1_000_000),
+                (Layout::Tiered, "as asked".to_string()),
+                "{gpu} asked for the tiered layout"
+            );
             assert_eq!(choose_layout(Some(Layout::Twelve), cc, mem * gib, m, 1_000_000).0, Layout::Twelve, "{gpu} asked for the 12-bit layout");
         }
         // a 24 GiB A10 for a 14B-class model: 12.04 bits do not fit, 10.8 do
@@ -1276,8 +1472,14 @@ mod tests {
         let decode = |p: &Packed| -> Vec<u16> {
             let mut out = vec![0u16; p.rows * p.cols];
             let ok = match p.words {
-                Words::Tiered { tiers, .. } => glyd_gpu::pack::unpack_tiered(&glyd_gpu::pack::Tiered { rows: p.rows, cols: p.cols, data: p.data.clone(), blocks: p.b1.clone(), block_base: le_i32(&p.b2), tiers }, &mut out),
-                Words::Twelve { sym, .. } => glyd_gpu::pack::unpack_twelve(&glyd_gpu::pack::Twelve { rows: p.rows, cols: p.cols, data: p.data.clone(), exc: le_i32(&p.b1), exc_base: le_i32(&p.b2), sym }, &mut out),
+                Words::Tiered { tiers, .. } => glyd_gpu::pack::unpack_tiered(
+                    &glyd_gpu::pack::Tiered { rows: p.rows, cols: p.cols, data: p.data.clone(), blocks: p.b1.clone(), block_base: le_i32(&p.b2), tiers },
+                    &mut out,
+                ),
+                Words::Twelve { sym, .. } => glyd_gpu::pack::unpack_twelve(
+                    &glyd_gpu::pack::Twelve { rows: p.rows, cols: p.cols, data: p.data.clone(), exc: le_i32(&p.b1), exc_base: le_i32(&p.b2), sym },
+                    &mut out,
+                ),
             };
             assert!(ok);
             out
@@ -1315,14 +1517,27 @@ mod tests {
         let planned = plan(&out).unwrap();
         let layout_of = |k: &str| planned.packs.iter().find(|p| p.key == k).unwrap_or_else(|| panic!("no pack {k}")).layout;
         assert_eq!(layout_of("model.layers.1.mlp.gate_proj"), Layout::Twelve, "the matrix of any bits is held in the 12-bit layout");
-        for k in ["model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.o_proj", "model.layers.0.mlp.gate_proj", "model.layers.0.mlp.down_proj", "model.layers.1.self_attn.q_proj", "model.layers.1.mlp.down_proj", "embed"] {
+        for k in [
+            "model.layers.0.self_attn.q_proj",
+            "model.layers.0.self_attn.o_proj",
+            "model.layers.0.mlp.gate_proj",
+            "model.layers.0.mlp.down_proj",
+            "model.layers.1.self_attn.q_proj",
+            "model.layers.1.mlp.down_proj",
+            "embed",
+        ] {
             assert_eq!(layout_of(k), Layout::Tiered, "{k}");
         }
         assert_eq!(planned.packs.len(), 9, "two layers of four packs and the embedding (the head is the embedding's)");
         // the tensors to load: each pack's three buffers by its layout's names, in the order the loader takes them
         let names = planned.tensors();
-        assert!(names.contains(&"model.layers.1.mlp.gate_proj.glyd_exc_base".to_string()) && !names.contains(&"model.layers.1.mlp.gate_proj.glyd_blocks".to_string()));
-        assert!(names.contains(&"model.layers.0.mlp.gate_proj.glyd_blocks".to_string()) && !names.contains(&"model.layers.0.mlp.gate_proj.glyd_exc".to_string()));
+        assert!(
+            names.contains(&"model.layers.1.mlp.gate_proj.glyd_exc_base".to_string())
+                && !names.contains(&"model.layers.1.mlp.gate_proj.glyd_blocks".to_string())
+        );
+        assert!(
+            names.contains(&"model.layers.0.mlp.gate_proj.glyd_blocks".to_string()) && !names.contains(&"model.layers.0.mlp.gate_proj.glyd_exc".to_string())
+        );
         assert_eq!(names.len(), 9 * 3 + 2 * 4 + 1);
 
         // every pack as the library holds it, decoded on the CPU, against the weights it was made from
@@ -1350,9 +1565,28 @@ mod tests {
             let buf = |i: usize| read(&format!("{key}.glyd_{}", sfx[i]), sidecar);
             let mut out = vec![0u16; rows * cols];
             let ok = match pp.layout {
-                Layout::Tiered | Layout::Compact | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 | Layout::Int6Row | Layout::Int5Row | Layout::Int4Row | Layout::Cb3Row | Layout::Cb2Row | Layout::Hummingbird => {
+                Layout::Tiered
+                | Layout::Compact
+                | Layout::Int6
+                | Layout::Int5
+                | Layout::Int4
+                | Layout::Int4H
+                | Layout::Int3
+                | Layout::Int6Row
+                | Layout::Int5Row
+                | Layout::Int4Row
+                | Layout::Cb3Row
+                | Layout::Cb2Row
+                | Layout::Hummingbird => {
                     assert_eq!(pp.words.0[0] >> 24, glyd_gpu::pack::TIERED_TAG as u64, "{key}: the new layout's number");
-                    let p = glyd_gpu::pack::Tiered { rows, cols, data: buf(0), blocks: buf(1), block_base: le_i32(&buf(2)), tiers: [pp.words.0[0] as u32, pp.words.0[1] as u32, pp.words.0[2] as u32] };
+                    let p = glyd_gpu::pack::Tiered {
+                        rows,
+                        cols,
+                        data: buf(0),
+                        blocks: buf(1),
+                        block_base: le_i32(&buf(2)),
+                        tiers: [pp.words.0[0] as u32, pp.words.0[1] as u32, pp.words.0[2] as u32],
+                    };
                     glyd_gpu::pack::unpack_tiered(&p, &mut out)
                 }
                 Layout::Twelve => {
@@ -1422,10 +1656,15 @@ mod tests {
         let item = Item { members: members.clone(), rows: 256, cols: 128 };
         let stacked: Vec<u16> = members.iter().flat_map(|n| w[n].1.clone()).collect();
         type Pack = fn(&[u16], usize, usize) -> Option<glyd_gpu::pack::Tiered>;
-        for (layout, pack, tag) in [(Layout::Int4, glyd_gpu::pack::pack_int4 as Pack, glyd_gpu::pack::INT4_TAG), (Layout::Int3, glyd_gpu::pack::pack_int3, glyd_gpu::pack::INT3_TAG)] {
+        for (layout, pack, tag) in
+            [(Layout::Int4, glyd_gpu::pack::pack_int4 as Pack, glyd_gpu::pack::INT4_TAG), (Layout::Int3, glyd_gpu::pack::pack_int3, glyd_gpu::pack::INT3_TAG)]
+        {
             let got = pack_item(&ck, &item, layout).unwrap();
             let want = pack(&stacked, 256, 128).unwrap();
-            assert!(got.data == want.data && got.b1 == want.blocks && got.b2 == i32_bytes(&want.block_base) && (got.rows, got.cols) == (256, 128), "{layout:?}");
+            assert!(
+                got.data == want.data && got.b1 == want.blocks && got.b2 == i32_bytes(&want.block_base) && (got.rows, got.cols) == (256, 128),
+                "{layout:?}"
+            );
             assert!(matches!(got.words, Words::Tiered { tiers, .. } if tiers == want.tiers && tiers[0] >> 24 == tag), "{layout:?}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1447,7 +1686,8 @@ mod tests {
         let (names, rows) = (["m.a", "m.b", "m.c", "m.d"], [128usize, 64, 64, 64]);
         let w: Vec<Vec<u16>> = rows.iter().enumerate().map(|(i, &r)| weights_of_spread(r * 64, 0.0, 10 + i as u64)).collect();
         let (files, data): (Vec<String>, Vec<Vec<u8>>) = names.iter().zip(&w).map(|(n, w)| (format!("{n}.weight"), bytes_of(w))).unzip();
-        let tensors: Vec<(&str, &str, Vec<u64>, &[u8])> = files.iter().zip(&rows).zip(&data).map(|((n, &r), b)| (n.as_str(), "BF16", vec![r as u64, 64], &b[..])).collect();
+        let tensors: Vec<(&str, &str, Vec<u64>, &[u8])> =
+            files.iter().zip(&rows).zip(&data).map(|((n, &r), b)| (n.as_str(), "BF16", vec![r as u64, 64], &b[..])).collect();
         crate::pack::write_safetensors(&src.join("model.safetensors"), &[("format", "pt".to_string())], &tensors).unwrap();
         let plan = r#"{"puts": [{"linear": ["m.a"], "layout": "i6"}, {"linear": ["m.b"]}, {"linear": ["m.c"]}, {"linear": ["m.d"], "layout": "i6"}]}"#;
         glyd_gpu::save::save_planned(&glyd_gpu::save::Source::find(src.to_str().unwrap()).unwrap(), &out, 2, 1 << 30, Layout::Int4, plan).unwrap();
@@ -1455,7 +1695,12 @@ mod tests {
         assert_eq!(level, Layout::Int4);
         let ck = Checkpoint::open(&out).unwrap();
         type Pack = fn(&[u16], usize, usize) -> Option<glyd_gpu::pack::Tiered>;
-        for (k, own, pack, tag) in [(0, Layout::Int6, pack_int6 as Pack, INT6_TAG), (1, Layout::Int4, pack_int4 as Pack, INT4_TAG), (2, Layout::Int4, pack_int4 as Pack, INT4_TAG), (3, Layout::Int6, pack_int6 as Pack, INT6_TAG)] {
+        for (k, own, pack, tag) in [
+            (0, Layout::Int6, pack_int6 as Pack, INT6_TAG),
+            (1, Layout::Int4, pack_int4 as Pack, INT4_TAG),
+            (2, Layout::Int4, pack_int4 as Pack, INT4_TAG),
+            (3, Layout::Int6, pack_int6 as Pack, INT6_TAG),
+        ] {
             let key = names[k];
             let got = read_v7(&ck, &m, level, &[(key, rows[k])], 64).unwrap();
             let want = pack(&w[k], rows[k], 64).unwrap();
@@ -1469,7 +1714,8 @@ mod tests {
             let e = m.get("packs").and_then(|p| p.get(key)).unwrap();
             assert_eq!(e.get("layout").and_then(Value::as_str), Some(own.name()), "{key}");
             let lens = ["data", "blocks", "block_base"].map(|s| ck.get(&format!("{key}.glyd_{s}")).unwrap().1.bytes);
-            let said = check_v7(key, level, rows[k], 64, &e.get("shape").and_then(Value::as_u64s).unwrap(), &e.get(WORDS_KEY).and_then(Value::as_u64s).unwrap(), lens);
+            let said =
+                check_v7(key, level, rows[k], 64, &e.get("shape").and_then(Value::as_u64s).unwrap(), &e.get(WORDS_KEY).and_then(Value::as_u64s).unwrap(), lens);
             match own == level {
                 true => assert!(said.is_ok(), "{key}"),
                 false => assert!(said.unwrap_err().0.contains("where the i4 layout's is 6"), "{key}"),
@@ -1496,7 +1742,10 @@ mod tests {
         let e = read_v7(&ck, &edited(Some("mma")), level, &[("m.b", 64)], 64).err().unwrap().0;
         assert!(e.contains("m.b: layout \"mma\", where a glyd-v7 pack has"), "{e}");
         assert!(read_v7(&ck, &edited(None), level, &[("m.b", 64)], 64).unwrap().data == pack_int4(&w[1], 64, 64).unwrap().data);
-        assert!(read_v7(&ck, &edited(None), Layout::Int6, &[("m.b", 64)], 64).err().unwrap().0.contains("where the i6 layout's is 4"), "no entry layout: the directory's, checked as before");
+        assert!(
+            read_v7(&ck, &edited(None), Layout::Int6, &[("m.b", 64)], 64).err().unwrap().0.contains("where the i6 layout's is 4"),
+            "no entry layout: the directory's, checked as before"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

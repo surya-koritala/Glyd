@@ -93,7 +93,10 @@ impl MtpHead {
 
     /// Device bytes the head's weights take.
     pub fn bytes(&self) -> usize {
-        self.mla.bytes() + self.moe.bytes() + self.eh.bytes() + [&self.enorm, &self.hnorm, &self.in_ln, &self.post_ln, &self.head_norm].iter().map(|b| b.bytes).sum::<usize>()
+        self.mla.bytes()
+            + self.moe.bytes()
+            + self.eh.bytes()
+            + [&self.enorm, &self.hnorm, &self.in_ln, &self.post_ln, &self.head_norm].iter().map(|b| b.bytes).sum::<usize>()
     }
 
     /// The (rows, columns, whether 12-bit) of the packs the head multiplies through `EngineGlm::lin`, for the engine's workspace.

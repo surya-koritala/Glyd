@@ -10,7 +10,10 @@
 //! TOO_FAR rule for 3-byte matches, and a block every 16,383 tokens.
 //! Bytes past the end of the input compare as zero.
 
-use super::{coder::{Bit, Decoder, Encoder}, trees, Block, Kind, Token};
+use super::{
+    coder::{Bit, Decoder, Encoder},
+    trees, Block, Kind, Token,
+};
 
 const MIN_MATCH: u32 = 3;
 const MAX_MATCH: u32 = 258;
@@ -49,7 +52,9 @@ pub struct Params {
 impl Params {
     /// Every level, the likeliest first (a tie goes to the first).
     pub fn all(mem: u8, window: u8) -> impl Iterator<Item = Params> {
-        [6u8, 8, 9, 1, 5, 4, 7, 3, 2, 0].into_iter().flat_map(move |level| [false, true].into_iter().filter(move |f| !*f || level >= 4).map(move |filtered| Params { level, filtered, fixed: false, mem, window }))
+        [6u8, 8, 9, 1, 5, 4, 7, 3, 2, 0].into_iter().flat_map(move |level| {
+            [false, true].into_iter().filter(move |f| !*f || level >= 4).map(move |filtered| Params { level, filtered, fixed: false, mem, window })
+        })
     }
 
     fn w_size(&self) -> u32 {
@@ -421,7 +426,18 @@ pub fn detect(padded: &[u8], blocks: &[Block]) -> Params {
     // The window: the smallest that holds the largest distance used. A
     // larger window would only have found a farther match if it were
     // longer, and then its distance would be here.
-    let max_dist = blocks.iter().flat_map(|b| match &b.kind { Kind::Fixed(t) | Kind::Dynamic(_, t) => &t[..], _ => &[] }).map(|t| match t { Token::Ref { dist, .. } => *dist as u32, _ => 0 }).max().unwrap_or(0);
+    let max_dist = blocks
+        .iter()
+        .flat_map(|b| match &b.kind {
+            Kind::Fixed(t) | Kind::Dynamic(_, t) => &t[..],
+            _ => &[],
+        })
+        .map(|t| match t {
+            Token::Ref { dist, .. } => *dist as u32,
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0);
     let window = (9..=15u8).find(|&w| max_dist <= (1u32 << w) - MIN_LOOKAHEAD).unwrap_or(15);
     // Judged on the first 4,096 tokens and, when the stream goes on,
     // on 4,096 more from the block nearest its middle: a start that
@@ -527,7 +543,19 @@ fn kind(t: &Token) -> usize {
 }
 
 fn span(tokens: &[Token]) -> u32 {
-    tokens.iter().map(|t| match t { Token::Lit(_) => 1, Token::Ref { len, .. } => if *len == 259 { 258 } else { *len as u32 } }).sum()
+    tokens
+        .iter()
+        .map(|t| match t {
+            Token::Lit(_) => 1,
+            Token::Ref { len, .. } => {
+                if *len == 259 {
+                    258
+                } else {
+                    *len as u32
+                }
+            }
+        })
+        .sum()
 }
 
 /// One token coded against the guess; `pos` moved past it.
@@ -693,7 +721,13 @@ pub fn recreate(padded: &[u8], p: Params, corrections: &[u8], n_blocks: usize, s
         }
         let t = trees::build(&tokens);
         let predicted_kind = trees::kind_of(&t, (pos - start) as usize, p.fixed);
-        let kind = if d.bit(&mut m.kind_same) == 1 { predicted_kind } else if d.bit(&mut m.kind_same) == 1 { 2 } else { 1 };
+        let kind = if d.bit(&mut m.kind_same) == 1 {
+            predicted_kind
+        } else if d.bit(&mut m.kind_same) == 1 {
+            2
+        } else {
+            1
+        };
         let last = last_as_predicted == (pos == total);
         let kind = if kind == 1 {
             Kind::Fixed(tokens)
@@ -715,7 +749,10 @@ pub fn recreate(padded: &[u8], p: Params, corrections: &[u8], n_blocks: usize, s
 
 #[cfg(test)]
 mod tests {
-    use super::super::{parse, tests::{text, zlib_deflate}};
+    use super::super::{
+        parse,
+        tests::{text, zlib_deflate},
+    };
     use super::*;
 
     /// zlib's own streams predicted with few corrections, and every
@@ -732,15 +769,38 @@ mod tests {
             // wins the tie.
             let padded = pad(&plain);
             let detected = detect(&padded, &s.blocks);
-            assert!(detected == p || (level >= 8 && detected.level >= 8 && detected.filtered == filtered), "level {level} filtered {filtered}: detected {detected:?}");
+            assert!(
+                detected == p || (level >= 8 && detected.level >= 8 && detected.filtered == filtered),
+                "level {level} filtered {filtered}: detected {detected:?}"
+            );
             let c = predict(&padded, p, &s.blocks, 0);
-            let n_tokens: usize = s.blocks.iter().map(|b| match &b.kind { Kind::Fixed(t) | Kind::Dynamic(_, t) => t.len(), _ => 0 }).sum();
+            let n_tokens: usize = s
+                .blocks
+                .iter()
+                .map(|b| match &b.kind {
+                    Kind::Fixed(t) | Kind::Dynamic(_, t) => t.len(),
+                    _ => 0,
+                })
+                .sum();
             #[cfg(feature = "deflate")]
             {
                 let (r, _) = preflate_rs::preflate_whole_deflate_stream(&stream, &preflate_rs::PreflateConfig::default()).unwrap();
-                eprintln!("level {level} filtered {filtered}: stream {} B, {} tokens in {} blocks; corrections ours {} B, preflate {} B", stream.len(), n_tokens, s.blocks.len(), c.len(), r.corrections.len());
+                eprintln!(
+                    "level {level} filtered {filtered}: stream {} B, {} tokens in {} blocks; corrections ours {} B, preflate {} B",
+                    stream.len(),
+                    n_tokens,
+                    s.blocks.len(),
+                    c.len(),
+                    r.corrections.len()
+                );
             }
-            assert!(c.len() * 400 < stream.len(), "level {level} filtered {filtered}: {} bytes of corrections for {} tokens, {} bytes of stream", c.len(), n_tokens, stream.len());
+            assert!(
+                c.len() * 400 < stream.len(),
+                "level {level} filtered {filtered}: {} bytes of corrections for {} tokens, {} bytes of stream",
+                c.len(),
+                n_tokens,
+                stream.len()
+            );
             let back = recreate(&padded, p, &c, s.blocks.len(), 0, plain.len() as u32).unwrap();
             assert!(back.iter().zip(&s.blocks).all(|(a, b)| a.last == b.last && a.kind == b.kind), "level {level}: blocks back");
         }
@@ -752,4 +812,3 @@ mod tests {
         assert!(recreate(&padded, p, &c, s.blocks.len(), 0, plain.len() as u32).unwrap().iter().zip(&s.blocks).all(|(a, b)| a.kind == b.kind));
     }
 }
-

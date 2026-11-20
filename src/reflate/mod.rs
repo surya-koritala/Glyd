@@ -64,7 +64,8 @@ pub struct Stream {
 
 const LEN_BASE: [u16; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
 const LEN_EXTRA: [u8; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
-const DIST_BASE: [u16; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+const DIST_BASE: [u16; 30] =
+    [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
 const DIST_EXTRA: [u8; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
 const CLEN_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
@@ -568,7 +569,19 @@ pub fn open_in(data: &[u8], chunk: usize) -> Option<Opened> {
     for (i, b) in s.blocks.iter().enumerate() {
         at += match &b.kind {
             Kind::Stored(x) => x.len() as u32,
-            Kind::Fixed(t) | Kind::Dynamic(_, t) => t.iter().map(|t| match t { Token::Lit(_) => 1, Token::Ref { len, .. } => if *len == 259 { 258 } else { *len as u32 } }).sum(),
+            Kind::Fixed(t) | Kind::Dynamic(_, t) => t
+                .iter()
+                .map(|t| match t {
+                    Token::Lit(_) => 1,
+                    Token::Ref { len, .. } => {
+                        if *len == 259 {
+                            258
+                        } else {
+                            *len as u32
+                        }
+                    }
+                })
+                .sum(),
         };
         if (at - plain_start) as usize >= chunk || i + 1 == s.blocks.len() {
             chunks.push((first, i + 1 - first, plain_start, at));
@@ -671,7 +684,9 @@ pub(super) mod tests {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
-            v.extend_from_slice(format!("{} GET /path/{}/item?id={} HTTP/1.0 {} {}\n", x % 251, x % 17, x % 100000, 200 + (x % 3) as u32 * 102, x % 9000).as_bytes());
+            v.extend_from_slice(
+                format!("{} GET /path/{}/item?id={} HTTP/1.0 {} {}\n", x % 251, x % 17, x % 100000, 200 + (x % 3) as u32 * 102, x % 9000).as_bytes(),
+            );
         }
         v.truncate(n);
         v
@@ -754,8 +769,11 @@ pub(super) mod tests {
     #[test]
     fn open_and_close_bit_for_bit() {
         let plain = text(1 << 20);
-        let mut streams: Vec<(String, Vec<u8>)> = ["-1", "-6", "-9"].iter().map(|l| (format!("gzip {l}"), gzip_body(&run("gzip", &[l, "-c", "{}"], &plain)).to_vec())).collect();
-        for (level, strategy) in [(0, "Z_DEFAULT_STRATEGY"), (3, "Z_DEFAULT_STRATEGY"), (6, "Z_DEFAULT_STRATEGY"), (9, "Z_DEFAULT_STRATEGY"), (6, "Z_FIXED"), (6, "Z_HUFFMAN_ONLY")] {
+        let mut streams: Vec<(String, Vec<u8>)> =
+            ["-1", "-6", "-9"].iter().map(|l| (format!("gzip {l}"), gzip_body(&run("gzip", &[l, "-c", "{}"], &plain)).to_vec())).collect();
+        for (level, strategy) in
+            [(0, "Z_DEFAULT_STRATEGY"), (3, "Z_DEFAULT_STRATEGY"), (6, "Z_DEFAULT_STRATEGY"), (9, "Z_DEFAULT_STRATEGY"), (6, "Z_FIXED"), (6, "Z_HUFFMAN_ONLY")]
+        {
             streams.push((format!("zlib -{level} {strategy}"), zlib_deflate(&plain, level, strategy)));
         }
         let mut mixed = text(200 << 10);
@@ -769,7 +787,13 @@ pub(super) mod tests {
             #[cfg(feature = "deflate")]
             {
                 let pre = preflate_rs::preflate_whole_deflate_stream(stream, &preflate_rs::PreflateConfig::default()).map(|(r, _)| r.corrections.len());
-                eprintln!("{what:28} stream {:7} B  recipe {:6} B ({:.2}%)  preflate {:?}", stream.len(), o.recipe.len(), 100.0 * o.recipe.len() as f64 / stream.len() as f64, pre.ok());
+                eprintln!(
+                    "{what:28} stream {:7} B  recipe {:6} B ({:.2}%)  preflate {:?}",
+                    stream.len(),
+                    o.recipe.len(),
+                    100.0 * o.recipe.len() as f64 / stream.len() as f64,
+                    pre.ok()
+                );
             }
         }
         let stream = zlib_deflate(&mixed, 6, "Z_DEFAULT_STRATEGY");
@@ -813,9 +837,24 @@ pub(super) mod tests {
         let t = std::time::Instant::now();
         let back = close(&o.plain, &o.recipe).unwrap();
         let close_s = t.elapsed().as_secs_f64();
-        assert!(back == &stream[..o.consumed], "consumed {} of {}, back {}, first difference {:?}", o.consumed, stream.len(), back.len(), back.iter().zip(stream).position(|(a, b)| a != b));
+        assert!(
+            back == &stream[..o.consumed],
+            "consumed {} of {}, back {}, first difference {:?}",
+            o.consumed,
+            stream.len(),
+            back.len(),
+            back.iter().zip(stream).position(|(a, b)| a != b)
+        );
         let mb = o.plain.len() as f64 / 1e6;
-        eprintln!("reflate:  open {open_s:.2} s ({:.0} MB/s of content, with the check), close {close_s:.2} s ({:.0} MB/s), recipe {} B, level {} mem {} window {}", mb / open_s, mb / close_s, o.recipe.len(), o.recipe[0] & 0xf, o.recipe[1] & 0xf, o.recipe[1] >> 4);
+        eprintln!(
+            "reflate:  open {open_s:.2} s ({:.0} MB/s of content, with the check), close {close_s:.2} s ({:.0} MB/s), recipe {} B, level {} mem {} window {}",
+            mb / open_s,
+            mb / close_s,
+            o.recipe.len(),
+            o.recipe[0] & 0xf,
+            o.recipe[1] & 0xf,
+            o.recipe[1] >> 4
+        );
         #[cfg(feature = "deflate")]
         {
             let t = std::time::Instant::now();
@@ -826,7 +865,12 @@ pub(super) mod tests {
             let back = preflate_rs::recreate_whole_deflate_stream(text.text(), &r.corrections).unwrap();
             let close_s = t.elapsed().as_secs_f64();
             assert!(back == &stream[..r.compressed_size]);
-            eprintln!("preflate: open {open_s:.2} s ({:.0} MB/s), close {close_s:.2} s ({:.0} MB/s), corrections {} B", mb / open_s, mb / close_s, r.corrections.len());
+            eprintln!(
+                "preflate: open {open_s:.2} s ({:.0} MB/s), close {close_s:.2} s ({:.0} MB/s), corrections {} B",
+                mb / open_s,
+                mb / close_s,
+                r.corrections.len()
+            );
         }
     }
 
@@ -876,17 +920,27 @@ mod pdf_probe {
         let mut worst: Vec<(f64, usize, usize, String)> = Vec::new();
         while let Some(i) = data[at..].windows(6).position(|w| w == b"stream") {
             let mut p = at + i + 6;
-            if data.get(p) == Some(&b'\r') { p += 1; }
-            if data.get(p) == Some(&b'\n') { p += 1; }
+            if data.get(p) == Some(&b'\r') {
+                p += 1;
+            }
+            if data.get(p) == Some(&b'\n') {
+                p += 1;
+            }
             at = p;
-            if data.get(p..p + 2).map_or(true, |h| h[0] & 0x0f != 8 || (u16::from_be_bytes([h[0], h[1]]) % 31) != 0) { continue; }
+            if data.get(p..p + 2).map_or(true, |h| h[0] & 0x0f != 8 || (u16::from_be_bytes([h[0], h[1]]) % 31) != 0) {
+                continue;
+            }
             let Some(s) = parse(&data[p + 2..]) else { continue };
             let padded = zlib::pad(&s.plain);
             let params = zlib::detect(&padded, &s.blocks);
             let c = zlib::predict(&padded, params, &s.blocks, 0);
             let mut desc = format!("{params:?}; blocks:");
             for b in s.blocks.iter().take(12) {
-                desc += &match &b.kind { Kind::Stored(x) => format!(" S{}", x.len()), Kind::Fixed(t) => format!(" F{}", t.len()), Kind::Dynamic(_, t) => format!(" D{}", t.len()) };
+                desc += &match &b.kind {
+                    Kind::Stored(x) => format!(" S{}", x.len()),
+                    Kind::Fixed(t) => format!(" F{}", t.len()),
+                    Kind::Dynamic(_, t) => format!(" D{}", t.len()),
+                };
             }
             // mismatches per block at the detected params
             let mut z = zlib::Zlib::new_at(&padded, params, 0);
@@ -897,12 +951,23 @@ mod pdf_probe {
             for b in &s.blocks {
                 let mut w = 0;
                 match &b.kind {
-                    Kind::Stored(x) => { pos += x.len() as u32; }
-                    Kind::Fixed(t) | Kind::Dynamic(_, t) => for &tok in t {
-                        if let Token::Ref { dist, .. } = tok { max_dist = max_dist.max(dist); }
-                        let g = z.predict(pos);
-                        if g != tok { w += 1; if examples.len() < 5 && w > 100 { examples.push((pos, g, tok)); } }
-                        pos = z.commit(pos, tok);
+                    Kind::Stored(x) => {
+                        pos += x.len() as u32;
+                    }
+                    Kind::Fixed(t) | Kind::Dynamic(_, t) => {
+                        for &tok in t {
+                            if let Token::Ref { dist, .. } = tok {
+                                max_dist = max_dist.max(dist);
+                            }
+                            let g = z.predict(pos);
+                            if g != tok {
+                                w += 1;
+                                if examples.len() < 5 && w > 100 {
+                                    examples.push((pos, g, tok));
+                                }
+                            }
+                            pos = z.commit(pos, tok);
+                        }
                     }
                 }
                 wrong.push(w);
@@ -918,11 +983,19 @@ mod pdf_probe {
         let mut biggest: Vec<(usize, usize)> = Vec::new();
         while let Some(i) = data[at..].windows(6).position(|w| w == b"stream") {
             let mut p = at + i + 6;
-            if data.get(p) == Some(&b'\r') { p += 1; }
-            if data.get(p) == Some(&b'\n') { p += 1; }
+            if data.get(p) == Some(&b'\r') {
+                p += 1;
+            }
+            if data.get(p) == Some(&b'\n') {
+                p += 1;
+            }
             at = p;
-            if data.get(p..p + 2).map_or(true, |h| h[0] & 0x0f != 8 || (u16::from_be_bytes([h[0], h[1]]) % 31) != 0) { continue; }
-            if let Some(s) = parse(&data[p + 2..]) { biggest.push((s.plain.len(), p + 2)); }
+            if data.get(p..p + 2).map_or(true, |h| h[0] & 0x0f != 8 || (u16::from_be_bytes([h[0], h[1]]) % 31) != 0) {
+                continue;
+            }
+            if let Some(s) = parse(&data[p + 2..]) {
+                biggest.push((s.plain.len(), p + 2));
+            }
         }
         biggest.sort_by(|a, b| b.cmp(a));
         for &(plain_len, p) in biggest.iter().take(3) {

@@ -47,7 +47,14 @@ pub fn grid(rows: usize, cols: usize, block: [usize; 2]) -> [usize; 2] {
 pub fn dequant(q: &[u8], scales: &[f32], rows: usize, cols: usize, block: [usize; 2], out: &mut [u16]) -> Result<(), String> {
     let [gr, gc] = grid(rows, cols, block);
     if block[0] == 0 || block[1] == 0 || q.len() != rows * cols || out.len() != rows * cols || scales.len() != gr * gc {
-        return Err(format!("{} bytes, {} scales and {} words for a {rows} x {cols} matrix in blocks of {} x {}", q.len(), scales.len(), out.len(), block[0], block[1]));
+        return Err(format!(
+            "{} bytes, {} scales and {} words for a {rows} x {cols} matrix in blocks of {} x {}",
+            q.len(),
+            scales.len(),
+            out.len(),
+            block[0],
+            block[1]
+        ));
     }
     if let Some(i) = scales.iter().position(|s| !s.is_finite()) {
         return Err(format!("the scale of block ({}, {}) is {}", i / gc, i % gc, scales[i]));
@@ -101,7 +108,10 @@ mod tests {
             }
         }
         assert_eq!(nan, [0x7F, 0xFF]);
-        assert_eq!((E4M3[0x7E], E4M3[0xFE], E4M3[0x01], E4M3[0x38], E4M3[0x08], E4M3[0x07]), (448.0, -448.0, 2f32.powi(-9), 1.0, 2f32.powi(-6), 7.0 * 2f32.powi(-9)));
+        assert_eq!(
+            (E4M3[0x7E], E4M3[0xFE], E4M3[0x01], E4M3[0x38], E4M3[0x08], E4M3[0x07]),
+            (448.0, -448.0, 2f32.powi(-9), 1.0, 2f32.powi(-6), 7.0 * 2f32.powi(-9))
+        );
         assert_eq!((E4M3[0x00].to_bits(), E4M3[0x80].to_bits()), (0, 0x8000_0000));
         // 254 finite bytes: 126 values of each sign and the two zeros; the codes run up with the values
         assert_eq!(E4M3.iter().filter(|v| v.is_finite()).count(), 254);
@@ -119,7 +129,13 @@ mod tests {
 
     /// Bytes of a spread of values, none of them NaN.
     fn bytes(n: usize) -> Vec<u8> {
-        (0..n).map(|i| match ((i.wrapping_mul(2654435761) >> 9) & 0xFF) as u8 { 0x7F => 0x7E, 0xFF => 0xFE, b => b }).collect()
+        (0..n)
+            .map(|i| match ((i.wrapping_mul(2654435761) >> 9) & 0xFF) as u8 {
+                0x7F => 0x7E,
+                0xFF => 0xFE,
+                b => b,
+            })
+            .collect()
     }
 
     /// One weight from the grid by division: the product the matrix is read as.
@@ -163,7 +179,12 @@ mod tests {
     fn the_block_is_the_configs() {
         let (rows, cols) = (4, 6);
         let q = bytes(rows * cols);
-        for (block, scales) in [([2, 3], vec![1.0, 2.0, 4.0, 8.0]), ([3, 4], vec![0.25, 0.5, 3.0, 5.0]), ([4, 6], vec![0.125]), ([1, 1], (1..=24).map(|i| i as f32 / 8.0).collect())] {
+        for (block, scales) in [
+            ([2, 3], vec![1.0, 2.0, 4.0, 8.0]),
+            ([3, 4], vec![0.25, 0.5, 3.0, 5.0]),
+            ([4, 6], vec![0.125]),
+            ([1, 1], (1..=24).map(|i| i as f32 / 8.0).collect()),
+        ] {
             assert_eq!(scales.len(), grid(rows, cols, block).iter().product::<usize>());
             let mut out = vec![0u16; rows * cols];
             dequant(&q, &scales, rows, cols, block, &mut out).unwrap();

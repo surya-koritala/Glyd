@@ -267,7 +267,15 @@ static BIT_INDEXES: [[u8; 8]; 256] = {
 /// without a branch per anchor (a stray branch mispredicts once per
 /// 16 bytes), then hashed in a loop of known length.
 #[inline(always)]
-unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *const u32, table_shift: u32, positions: &mut [u32; CHUNK + 16], anchors: &mut [(u32, u32)]) -> usize {
+unsafe fn gather<S: Scan>(
+    src: *const u8,
+    mut pos: usize,
+    end: usize,
+    table: *const u32,
+    table_shift: u32,
+    positions: &mut [u32; CHUNK + 16],
+    anchors: &mut [(u32, u32)],
+) -> usize {
     let mut count = 0usize;
     while pos + 16 <= end {
         let m = S::mask16(src.add(pos)) as usize;
@@ -316,7 +324,15 @@ unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *co
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,bmi2")]
-unsafe fn gather_avx2(src: *const u8, pos: usize, end: usize, table: *const u32, table_shift: u32, positions: &mut [u32; CHUNK + 16], anchors: &mut [(u32, u32)]) -> usize {
+unsafe fn gather_avx2(
+    src: *const u8,
+    pos: usize,
+    end: usize,
+    table: *const u32,
+    table_shift: u32,
+    positions: &mut [u32; CHUNK + 16],
+    anchors: &mut [(u32, u32)],
+) -> usize {
     gather::<Avx2>(src, pos, end, table, table_shift, positions, anchors)
 }
 
@@ -368,9 +384,9 @@ impl Matches {
         let mut covered = 0usize; // no match may start before this
         let mut yield_all = 0usize; // bytes in matches
         let mut yield_far = 0usize; // bytes in matches beyond GATE_OFFSET
-        // Anchors are gathered a chunk at a time and their table slots
-        // prefetched (the table is 16 MB: a random slot per anchor, one
-        // anchor in 16 bytes, is what the pass would otherwise wait on).
+                                    // Anchors are gathered a chunk at a time and their table slots
+                                    // prefetched (the table is 16 MB: a random slot per anchor, one
+                                    // anchor in 16 bytes, is what the pass would otherwise wait on).
         let mut anchors: Vec<(u32, u32)> = vec![(0, 0); CHUNK + 16];
         let mut positions = Box::new([0u32; CHUNK + 16]);
         let mut chunk_start = 0usize;
@@ -564,7 +580,13 @@ mod speed {
             let m = super::Matches::find(&data, gated);
             let s = t.elapsed().as_secs_f64();
             let bytes: u64 = m.list.iter().map(|x| x.len as u64).sum();
-            eprintln!("{f}: gated {gated}: {:.2} s ({:.0} MB/s), {} matches covering {:.1}%", s, data.len() as f64 / 1e6 / s, m.list.len(), 100.0 * bytes as f64 / data.len() as f64);
+            eprintln!(
+                "{f}: gated {gated}: {:.2} s ({:.0} MB/s), {} matches covering {:.1}%",
+                s,
+                data.len() as f64 / 1e6 / s,
+                m.list.len(),
+                100.0 * bytes as f64 / data.len() as f64
+            );
         }
     }
 }

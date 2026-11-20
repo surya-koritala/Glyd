@@ -98,7 +98,11 @@ pub fn block_len(input: &[u8], start: usize, max: usize) -> usize {
             best = (c, cut);
         }
     }
-    if best.1 != 0 { best.1 } else { n }
+    if best.1 != 0 {
+        best.1
+    } else {
+        n
+    }
 }
 
 /// The block loop's view of the splitter: asks `block_len` until
@@ -138,10 +142,19 @@ mod tests {
         // 128 KB of text-like bytes then 128 KB of noise: the cut lands
         // on the seam; uniform content is one block.
         let mut x = 5u64;
-        let mut rnd = || { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x };
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
         let mut d = Vec::new();
-        for _ in 0..(128 << 10) { d.push(b"etaoin shrdlu"[(rnd() % 13) as usize]); }
-        for _ in 0..(128 << 10) { d.push(rnd() as u8); }
+        for _ in 0..(128 << 10) {
+            d.push(b"etaoin shrdlu"[(rnd() % 13) as usize]);
+        }
+        for _ in 0..(128 << 10) {
+            d.push(rnd() as u8);
+        }
         let cut = block_len(&d, 0, 256 << 10);
         assert_eq!(cut, 128 << 10, "cut at {cut}");
         assert_eq!(block_len(&d, cut, 256 << 10), 128 << 10);

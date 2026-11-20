@@ -326,7 +326,17 @@ pub struct Offload {
 
 impl Default for Offload {
     fn default() -> Offload {
-        Offload { mode: Mode::Auto, threads: default_threads(), pin: false, window: 16, promote: 4, skip: 0.0, skip_rank: 0, skip_rank_later: 0, async_copies: false }
+        Offload {
+            mode: Mode::Auto,
+            threads: default_threads(),
+            pin: false,
+            window: 16,
+            promote: 4,
+            skip: 0.0,
+            skip_rank: 0,
+            skip_rank_later: 0,
+            async_copies: false,
+        }
     }
 }
 
@@ -590,7 +600,17 @@ pub fn place_groups(groups: &mut [Option<Slice>; 2], group_of: &[u8], local_of: 
     let (pairs, experts) = (host_ids.len(), group_of.len().min(local_of.len()));
     let mut out = Placed::default();
     for (g, local) in out.local.iter_mut().enumerate() {
-        *local = host_ids.iter().map(|&e| if groups[g].is_some() && e >= 0 && (e as usize) < experts && group_of[e as usize] as usize == g { local_of[e as usize] as i64 } else { -1 }).collect();
+        *local =
+            host_ids
+                .iter()
+                .map(|&e| {
+                    if groups[g].is_some() && e >= 0 && (e as usize) < experts && group_of[e as usize] as usize == g {
+                        local_of[e as usize] as i64
+                    } else {
+                        -1
+                    }
+                })
+                .collect();
     }
     let mut pairs_of: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
     for g in 0..2 {
@@ -916,7 +936,12 @@ pub enum HostHalf {
     Cb2(f32, usize, usize),
     /// Kimi-K3's experts in the exact FP4 block layouts, read where the host tier holds them (src/cpu_fp4.rs): the layer's two packs, the first [2 inter,
     /// latent] (gate then up), the second [latent, inter]; `packed` the Fp4R layout's scales; `act` situ's two caps.
-    Fp4 { inter: usize, latent: usize, packed: bool, act: (f32, f32) },
+    Fp4 {
+        inter: usize,
+        latent: usize,
+        packed: bool,
+        act: (f32, f32),
+    },
 }
 
 /// The host's half of a layer, and the call each expert was last computed in (0: never).
@@ -1260,7 +1285,10 @@ impl Worker {
         let (tx, rx) = channel::<CopyJob>();
         let left = Arc::new((Mutex::new(0usize), Condvar::new()));
         let l2 = left.clone();
-        let handle = std::thread::Builder::new().name("glyd-expert-copies".into()).spawn(move || copy_worker(ordinal, rx, l2)).map_err(|e| Error(format!("the copy thread: {e}")))?;
+        let handle = std::thread::Builder::new()
+            .name("glyd-expert-copies".into())
+            .spawn(move || copy_worker(ordinal, rx, l2))
+            .map_err(|e| Error(format!("the copy thread: {e}")))?;
         Ok(Worker { tx: Some(tx), handle: Some(handle), left })
     }
 
@@ -1332,7 +1360,13 @@ pub struct ExpertStore {
 }
 
 fn pinned_copy(bytes: &[u8]) -> Result<Pinned> {
-    let p = Pinned::new(bytes.len()).map_err(|e| Error(format!("{} MiB of the computer's memory cannot be pinned for the experts: {}", bytes.len() >> 20, e.0.replace("out of memory", "no memory left"))))?;
+    let p = Pinned::new(bytes.len()).map_err(|e| {
+        Error(format!(
+            "{} MiB of the computer's memory cannot be pinned for the experts: {}",
+            bytes.len() >> 20,
+            e.0.replace("out of memory", "no memory left")
+        ))
+    })?;
     // SAFETY: the allocation holds bytes.len() bytes and does not overlap the slice.
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p.ptr as *mut u8, bytes.len()) };
     Ok(p)
@@ -1350,7 +1384,25 @@ impl Drop for Cuda {
 
 impl Cuda {
     fn new() -> Result<Cuda> {
-        Ok(Cuda { copy: Side::new()?, ids: Pinned::new(8)?, way: Pinned::new(8)?, wts: Pinned::new(8)?, z: Pinned::new(8)?, part: Pinned::new(8)?, out: Vec::new(), timing: VecDeque::new(), spare: Vec::new(), issued: 0, retired: 0, frozen: false, worker: None, use_worker: false, ordinal: None, hands: None, fixed: false })
+        Ok(Cuda {
+            copy: Side::new()?,
+            ids: Pinned::new(8)?,
+            way: Pinned::new(8)?,
+            wts: Pinned::new(8)?,
+            z: Pinned::new(8)?,
+            part: Pinned::new(8)?,
+            out: Vec::new(),
+            timing: VecDeque::new(),
+            spare: Vec::new(),
+            issued: 0,
+            retired: 0,
+            frozen: false,
+            worker: None,
+            use_worker: false,
+            ordinal: None,
+            hands: None,
+            fixed: false,
+        })
     }
 
     fn event(&mut self) -> Result<Ev> {
@@ -1404,7 +1456,13 @@ impl Cuda {
             }
             dev.sync()?;
             // (the choices, their weights and the input mapped for the device: a kernel of the step's front writes them there, with no copy: `parts_host`)
-            for (b, need, mapped) in [(&mut self.ids, pairs * 8, true), (&mut self.way, pairs * 8 * WAYS, false), (&mut self.wts, pairs * 4, true), (&mut self.z, z, true), (&mut self.part, part, false)] {
+            for (b, need, mapped) in [
+                (&mut self.ids, pairs * 8, true),
+                (&mut self.way, pairs * 8 * WAYS, false),
+                (&mut self.wts, pairs * 4, true),
+                (&mut self.z, z, true),
+                (&mut self.part, part, false),
+            ] {
                 if short(b, need) {
                     *b = if mapped { Pinned::mapped(need.max(8))? } else { Pinned::new(need.max(8))? };
                 }
@@ -1462,7 +1520,10 @@ impl Resident {
     fn host_slot(&self, e: usize) -> Result<usize> {
         match &self.tier {
             None => Ok(e),
-            Some(t) => t.ram.slot_of(e).ok_or_else(|| Error(format!("expert {e} is not in the computer's memory: it was not read from the packed directory before it was used"))),
+            Some(t) => t
+                .ram
+                .slot_of(e)
+                .ok_or_else(|| Error(format!("expert {e} is not in the computer's memory: it was not read from the packed directory before it was used"))),
         }
     }
 
@@ -1489,7 +1550,11 @@ impl Resident {
         let (hid, inter) = (*hid, *inter);
         let (dc, uc) = codes.split_at(inter * fd.row_bytes(hid));
         let (db, ub) = books.split_at(inter * fd.entries() * 2);
-        GlmExpert::mixed(GlmMat { fmt: fu, rows: 2 * inter, cols: hid, codes: uc, book: ub }, GlmMat { fmt: fd, rows: inter, cols: hid, codes: dc, book: db }, limit)
+        GlmExpert::mixed(
+            GlmMat { fmt: fu, rows: 2 * inter, cols: hid, codes: uc, book: ub },
+            GlmMat { fmt: fd, rows: inter, cols: hid, codes: dc, book: db },
+            limit,
+        )
     }
 
     /// Expert `e` as the host's kernels read it: the first matrices of `cpu`, the second ones the host tier's.
@@ -1499,7 +1564,12 @@ impl Resident {
         let down = &self.packs[1];
         let (dd, ds) = (down.stride[0] as usize, down.stride[1] as usize);
         // SAFETY: the host tier holds every expert of the layer end to end (`add_layer` checked the sizes), and nothing writes it.
-        let (data, scales) = unsafe { (std::slice::from_raw_parts((down.host[0].ptr as *const u8).add(e * dd), dd), std::slice::from_raw_parts((down.host[1].ptr as *const u8).add(e * ds), ds)) };
+        let (data, scales) = unsafe {
+            (
+                std::slice::from_raw_parts((down.host[0].ptr as *const u8).add(e * dd), dd),
+                std::slice::from_raw_parts((down.host[1].ptr as *const u8).add(e * ds), ds),
+            )
+        };
         ExpertView {
             up: RowsView { bits: c.bits, rows: c.inter, cols: c.hidden, data: &c.data[e * ud..(e + 1) * ud], scales: &c.scales[e * us..(e + 1) * us] },
             down: RowsView { bits: c.bits, rows: c.inter, cols: c.hidden, data, scales },
@@ -1514,7 +1584,9 @@ impl Resident {
         let view = |p: &HostPack, rows: usize, cols: usize| {
             let (d, s) = (p.stride[0] as usize, p.stride[1] as usize);
             // SAFETY: the host tier holds every expert of the layer end to end (`add_layer` checked the sizes), and nothing writes it.
-            let (data, blocks) = unsafe { (std::slice::from_raw_parts((p.host[0].ptr as *const u8).add(e * d), d), std::slice::from_raw_parts((p.host[1].ptr as *const u8).add(e * s), s)) };
+            let (data, blocks) = unsafe {
+                (std::slice::from_raw_parts((p.host[0].ptr as *const u8).add(e * d), d), std::slice::from_raw_parts((p.host[1].ptr as *const u8).add(e * s), s))
+            };
             crate::cpu_fp4::Fp4View { data, blocks, rows, cols, packed: *packed }
         };
         crate::cpu_fp4::Fp4Expert { up: view(&self.packs[0], 2 * inter, *latent), down: view(&self.packs[1], *latent, *inter) }
@@ -1569,7 +1641,8 @@ fn fetch(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut S
                 }
             }
             let state = JobState::new();
-            let job = CopyJob { copies, stream: s, wait: ly.done.as_ref(), start: a.as_ref(), stop: b.as_ref(), ready: ly.ready.as_ref(), state: state.clone() };
+            let job =
+                CopyJob { copies, stream: s, wait: ly.done.as_ref(), start: a.as_ref(), stop: b.as_ref(), ready: ly.ready.as_ref(), state: state.clone() };
             cuda.worker.as_ref().expect("the copy thread").submit(job)?;
             ly.pending = true;
             ly.job = Some(state.clone());
@@ -1622,7 +1695,8 @@ fn stage(cuda: &mut Cuda, ly: &mut Resident, wanted: &[u16], stats: &mut Stats, 
     if wanted.is_empty() {
         return Ok(());
     }
-    let mem = Slots { base: [packs[0].host[0].ptr as *mut u8, packs[0].host[1].ptr as *mut u8], stride: [packs[0].stride[0] as usize, packs[0].stride[1] as usize] };
+    let mem =
+        Slots { base: [packs[0].host[0].ptr as *mut u8, packs[0].host[1].ptr as *mut u8], stride: [packs[0].stride[0] as usize, packs[0].stride[1] as usize] };
     // (the batches that have run by now are counted, so that a slot is waited for only if its copies are really still queued)
     cuda.count(stats, costs, expert, false)?;
     let retired = cuda.retired;
@@ -1649,7 +1723,10 @@ fn stage_pair(cuda: &mut Cuda, ly: [Option<&mut Resident>; 2], wanted: [&[u16]; 
         if wanted.is_empty() {
             continue;
         }
-        let mem = Slots { base: [packs[0].host[0].ptr as *mut u8, packs[0].host[1].ptr as *mut u8], stride: [packs[0].stride[0] as usize, packs[0].stride[1] as usize] };
+        let mem = Slots {
+            base: [packs[0].host[0].ptr as *mut u8, packs[0].host[1].ptr as *mut u8],
+            stride: [packs[0].stride[0] as usize, packs[0].stride[1] as usize],
+        };
         match t.begin(wanted, mem, retired, &mut || {
             cuda.count(stats, costs, expert, true)?;
             Ok(cuda.retired)
@@ -1797,7 +1874,22 @@ unsafe fn send_sums(cuda: &mut Cuda, tokens_of: impl Iterator<Item = usize>, hid
 impl ExpertStore {
     /// An empty store. Its GPU side (the copy stream) is made with the first layer, in the context the engine made current.
     pub fn new() -> Rc<ExpertStore> {
-        Rc::new(ExpertStore { inner: RefCell::new(Inner { cuda: None, layers: Vec::new(), stats: Stats::default(), predict: None, offload: Offload::default(), costs: Costs::default(), kernel: None, expert_bytes: 0, host: None, pinned: 0, frozen: false, ready: None }) })
+        Rc::new(ExpertStore {
+            inner: RefCell::new(Inner {
+                cuda: None,
+                layers: Vec::new(),
+                stats: Stats::default(),
+                predict: None,
+                offload: Offload::default(),
+                costs: Costs::default(),
+                kernel: None,
+                expert_bytes: 0,
+                host: None,
+                pinned: 0,
+                frozen: false,
+                ready: None,
+            }),
+        })
     }
 
     /// How a miss is served from now on (the layers loaded with a host half serve them by the mode; the others copy).
@@ -1844,7 +1936,10 @@ impl ExpertStore {
         let share = (experts as u128 * m.bytes as u128 / m.total.max(1) as u128) as usize;
         let slots = share.clamp(1, experts).min((m.bytes.saturating_sub(inner.pinned) / bytes.max(1)) as usize);
         if slots == 0 {
-            return err(format!("{} MiB of the computer's memory for the experts are spent: a group of {experts} experts of {bytes} bytes has none left", m.bytes >> 20));
+            return err(format!(
+                "{} MiB of the computer's memory for the experts are spent: a group of {experts} experts of {bytes} bytes has none left",
+                m.bytes >> 20
+            ));
         }
         inner.pinned += slots as u64 * bytes;
         Ok(slots)
@@ -1865,7 +1960,10 @@ impl ExpertStore {
     /// (the one pack must be the place's: the host reads the experts in the host tier).
     pub fn add_layer(&self, layer: usize, experts: usize, slots: usize, packs: &[PackIn], cpu: Option<HostHalf>) -> Result<()> {
         self.check_layer(experts, slots, packs, &cpu)?;
-        let host = packs.iter().map(|p| Ok(HostPack { stride: p.stride, dev: p.dev, host: [pinned_copy(p.bytes[0])?.into(), pinned_copy(p.bytes[1])?.into()], place: None })).collect::<Result<Vec<_>>>()?;
+        let host = packs
+            .iter()
+            .map(|p| Ok(HostPack { stride: p.stride, dev: p.dev, host: [pinned_copy(p.bytes[0])?.into(), pinned_copy(p.bytes[1])?.into()], place: None }))
+            .collect::<Result<Vec<_>>>()?;
         self.install(layer, experts, slots, host, cpu.map(|half| CpuSide { half, last: vec![0; experts] }), None)
     }
 
@@ -1874,7 +1972,19 @@ impl ExpertStore {
     pub fn add_layer_pinned(&self, layer: usize, experts: usize, slots: usize, packs: Vec<PinnedPack>, cpu: Option<HostHalf>) -> Result<()> {
         {
             // SAFETY: each buffer holds `bytes` bytes, written by the caller, and lives while the views do.
-            let views: Vec<PackIn> = packs.iter().map(|p| unsafe { PackIn { bytes: [std::slice::from_raw_parts(p.data.ptr as *const u8, p.data.bytes), std::slice::from_raw_parts(p.scales.ptr as *const u8, p.scales.bytes)], stride: p.stride, dev: p.dev } }).collect();
+            let views: Vec<PackIn> = packs
+                .iter()
+                .map(|p| unsafe {
+                    PackIn {
+                        bytes: [
+                            std::slice::from_raw_parts(p.data.ptr as *const u8, p.data.bytes),
+                            std::slice::from_raw_parts(p.scales.ptr as *const u8, p.scales.bytes),
+                        ],
+                        stride: p.stride,
+                        dev: p.dev,
+                    }
+                })
+                .collect();
             self.check_layer(experts, slots, &views, &cpu)?;
         }
         let host = packs.into_iter().map(|p| HostPack { stride: p.stride, dev: p.dev, host: [p.data.into(), p.scales.into()], place: None }).collect();
@@ -1888,7 +1998,13 @@ impl ExpertStore {
         }
         for p in packs {
             if (0..2).any(|k| p.bytes[k].len() as u64 != p.stride[k] * experts as u64) {
-                return err(format!("a matrix of {} + {} bytes for {experts} experts of {} + {}", p.bytes[0].len(), p.bytes[1].len(), p.stride[0], p.stride[1]));
+                return err(format!(
+                    "a matrix of {} + {} bytes for {experts} experts of {} + {}",
+                    p.bytes[0].len(),
+                    p.bytes[1].len(),
+                    p.stride[0],
+                    p.stride[1]
+                ));
             }
         }
         // (the host reads the second matrices where the host tier holds them: they must be the rows' size)
@@ -1896,18 +2012,52 @@ impl ExpertStore {
             Some(HostHalf::Rows(rows)) => {
                 let (ud, us) = (rows.inter * row_stride(rows.bits, rows.hidden), rows.inter * (rows.hidden / 32) * 2);
                 let down = packs.get(1).map(|p| p.stride);
-                if !(4..=6).contains(&rows.bits) || rows.hidden == 0 || rows.hidden % 32 != 0 || rows.data.len() != experts * ud || rows.scales.len() != experts * us || down != Some([ud as u64, us as u64]) {
-                    return err(format!("a host half of {} + {} bytes for {experts} experts of {} neurons of {} outputs at {} bits, with second matrices of {:?} bytes", rows.data.len(), rows.scales.len(), rows.inter, rows.hidden, rows.bits, down));
+                if !(4..=6).contains(&rows.bits)
+                    || rows.hidden == 0
+                    || rows.hidden % 32 != 0
+                    || rows.data.len() != experts * ud
+                    || rows.scales.len() != experts * us
+                    || down != Some([ud as u64, us as u64])
+                {
+                    return err(format!(
+                        "a host half of {} + {} bytes for {experts} experts of {} neurons of {} outputs at {} bits, with second matrices of {:?} bytes",
+                        rows.data.len(),
+                        rows.scales.len(),
+                        rows.inter,
+                        rows.hidden,
+                        rows.bits,
+                        down
+                    ));
                 }
             }
             Some(HostHalf::Hb(place)) if packs.len() != 1 || packs[0].stride != [place.data as u64, place.meta as u64] => {
-                return err(format!("a host half of {} x {} rows at format {} ({} + {} bytes an expert), with packs of {:?} bytes", place.rows, place.cols, place.bits, place.data, place.meta, packs.iter().map(|p| p.stride).collect::<Vec<_>>()));
+                return err(format!(
+                    "a host half of {} x {} rows at format {} ({} + {} bytes an expert), with packs of {:?} bytes",
+                    place.rows,
+                    place.cols,
+                    place.bits,
+                    place.data,
+                    place.meta,
+                    packs.iter().map(|p| p.stride).collect::<Vec<_>>()
+                ));
             }
             Some(HostHalf::Fp4 { inter, latent, packed, .. }) => {
                 let ok = packs.len() == 2
-                    && [(2 * inter, *latent), (*latent, *inter)].iter().zip(packs).all(|(&(r, c), p)| crate::cpu_fp4::Fp4View { data: p.bytes[0].get(..p.stride[0] as usize).unwrap_or(&[]), blocks: p.bytes[1].get(..p.stride[1] as usize).unwrap_or(&[]), rows: r, cols: c, packed: *packed }.is_valid());
+                    && [(2 * inter, *latent), (*latent, *inter)].iter().zip(packs).all(|(&(r, c), p)| {
+                        crate::cpu_fp4::Fp4View {
+                            data: p.bytes[0].get(..p.stride[0] as usize).unwrap_or(&[]),
+                            blocks: p.bytes[1].get(..p.stride[1] as usize).unwrap_or(&[]),
+                            rows: r,
+                            cols: c,
+                            packed: *packed,
+                        }
+                        .is_valid()
+                    });
                 if !ok {
-                    return err(format!("a host half of FP4 experts of {inter} neurons and {latent} outputs, with packs of {:?} bytes", packs.iter().map(|p| p.stride).collect::<Vec<_>>()));
+                    return err(format!(
+                        "a host half of FP4 experts of {inter} neurons and {latent} outputs, with packs of {:?} bytes",
+                        packs.iter().map(|p| p.stride).collect::<Vec<_>>()
+                    ));
                 }
             }
             Some(HostHalf::Hb(_)) | Some(HostHalf::Cb2(..)) | None => {}
@@ -1923,7 +2073,15 @@ impl ExpertStore {
             return err(format!("a cache of {slots} places and room in the computer's memory for {} experts, for {experts} experts", disk.ram));
         }
         let stride = [place.data as u64, place.meta as u64];
-        let alloc = |k: usize| Pinned::new(disk.ram * stride[k] as usize).map_err(|e| Error(format!("{} MiB of the computer's memory cannot be pinned for the experts: {}", (disk.ram as u64 * stride[k]) >> 20, e.0.replace("out of memory", "no memory left"))));
+        let alloc = |k: usize| {
+            Pinned::new(disk.ram * stride[k] as usize).map_err(|e| {
+                Error(format!(
+                    "{} MiB of the computer's memory cannot be pinned for the experts: {}",
+                    (disk.ram as u64 * stride[k]) >> 20,
+                    e.0.replace("out of memory", "no memory left")
+                ))
+            })
+        };
         let pack = HostPack { stride, dev: disk.dev, host: [alloc(0)?.into(), alloc(1)?.into()], place: None };
         let mem = Slots { base: [pack.host[0].ptr as *mut u8, pack.host[1].ptr as *mut u8], stride: [place.data, place.meta] };
         let mut tier = Tier::new(experts, disk.ram, disk.read);
@@ -1933,14 +2091,28 @@ impl ExpertStore {
 
     /// Layer `layer` of `experts` experts with `slots` places on the GPU, whose experts are read from host memory the caller gives (`HostMem`: the codes and the codebooks of every expert end to end, `stride` bytes an
     /// expert in each, copied to the places at `dev + place * stride`): no pinned copy is made, so a mapped file serves as the host tier. Copies only (no host half).
-    pub fn add_layer_mapped(&self, layer: usize, experts: usize, slots: usize, host: [HostMem; 2], place: Option<Placement>, stride: [u64; 2], dev: [u64; 2], cb2: Option<(f32, usize, usize)>) -> Result<()> {
+    pub fn add_layer_mapped(
+        &self,
+        layer: usize,
+        experts: usize,
+        slots: usize,
+        host: [HostMem; 2],
+        place: Option<Placement>,
+        stride: [u64; 2],
+        dev: [u64; 2],
+        cb2: Option<(f32, usize, usize)>,
+    ) -> Result<()> {
         if slots == 0 || slots > experts {
             return err(format!("a cache of {slots} places for {experts} experts"));
         }
         match &place {
-            None if cb2.is_some_and(|(_, h, i)| stride != [(3 * i * h / 4) as u64, (3 * i * 8) as u64]) => return err(format!("a host half of the smallest format for experts of {stride:?} bytes")),
+            None if cb2.is_some_and(|(_, h, i)| stride != [(3 * i * h / 4) as u64, (3 * i * 8) as u64]) => {
+                return err(format!("a host half of the smallest format for experts of {stride:?} bytes"))
+            }
             Some(pl) => {
-                let ok = (0..2).all(|k| pl.at[k].len() == experts && pl.len[k].len() == experts && pl.len[k].iter().all(|&l| l as u64 <= stride[k])) && pl.fmts.len() == experts && pl.marks.len() == experts;
+                let ok = (0..2).all(|k| pl.at[k].len() == experts && pl.len[k].len() == experts && pl.len[k].iter().all(|&l| l as u64 <= stride[k]))
+                    && pl.fmts.len() == experts
+                    && pl.marks.len() == experts;
                 if !ok || stride[1] < 16 + pl.len[1].iter().copied().max().unwrap_or(0) as u64 {
                     return err(format!("the placement of {experts} experts in places of {stride:?} bytes does not hold (every expert within a place)"));
                 }
@@ -1963,7 +2135,18 @@ impl ExpertStore {
             inner.layers.resize_with(layer + 1, || None);
         }
         inner.expert_bytes = host.iter().map(|p| p.stride[0] + p.stride[1]).sum();
-        inner.layers[layer] = Some(Resident { cache: LayerCache::new(experts, slots), packs: host, ready: Ev::new()?, done: Ev::new()?, pending: false, job: None, place: vec![-1; experts], cpu, calls: 0, tier });
+        inner.layers[layer] = Some(Resident {
+            cache: LayerCache::new(experts, slots),
+            packs: host,
+            ready: Ev::new()?,
+            done: Ev::new()?,
+            pending: false,
+            job: None,
+            place: vec![-1; experts],
+            cpu,
+            calls: 0,
+            tier,
+        });
         Ok(())
     }
 
@@ -2039,7 +2222,10 @@ impl ExpertStore {
             }
             // (a disk tier starts as it was loaded: the copy stream has run every copy by now, so no slot is read by one)
             let Resident { tier: Some(t), packs, .. } = ly else { continue };
-            t.reseed(Slots { base: [packs[0].host[0].ptr as *mut u8, packs[0].host[1].ptr as *mut u8], stride: [packs[0].stride[0] as usize, packs[0].stride[1] as usize] })?;
+            t.reseed(Slots {
+                base: [packs[0].host[0].ptr as *mut u8, packs[0].host[1].ptr as *mut u8],
+                stride: [packs[0].stride[0] as usize, packs[0].stride[1] as usize],
+            })?;
         }
         inner.stats = Stats::default();
         inner.costs = Costs::default();
@@ -2066,7 +2252,18 @@ impl ExpertStore {
             let inner = self.inner.borrow();
             let ly = inner.layers.get(layer).and_then(Option::as_ref).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
             let mut misses = 0;
-            experts.iter().copied().filter(|&x| ly.cache.slot_of(x as usize).is_some() || (misses < copies && { misses += 1; true })).rev().collect()
+            experts
+                .iter()
+                .copied()
+                .filter(|&x| {
+                    ly.cache.slot_of(x as usize).is_some()
+                        || (misses < copies && {
+                            misses += 1;
+                            true
+                        })
+                })
+                .rev()
+                .collect()
         };
         self.hint(layer, &want)
     }
@@ -2110,7 +2307,14 @@ impl ExpertStore {
     ///
     /// # Safety
     /// As `run`; `early` queues work on the engine's stream alone and does not use the store.
-    pub unsafe fn run_early(&self, layer: usize, dev: &Dev, call: &Call, early: &mut dyn FnMut() -> Result<()>, body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>) -> Result<()> {
+    pub unsafe fn run_early(
+        &self,
+        layer: usize,
+        dev: &Dev,
+        call: &Call,
+        early: &mut dyn FnMut() -> Result<()>,
+        body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
+    ) -> Result<()> {
         let s = dev.stream;
         let pairs = call.pairs;
         let (needed, host_ids, host_wts, hybrid) = {
@@ -2121,7 +2325,10 @@ impl ExpertStore {
             cuda.use_worker = inner.offload.async_copies;
             let ly = inner.layers.get(layer).and_then(Option::as_ref).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
             let hidden = ly.hidden();
-            let hybrid = mode != Mode::Copy && ly.cpu.as_ref().is_some_and(|c| matches!(c.half, HostHalf::Rows(_) | HostHalf::Cb2(..) | HostHalf::Fp4 { .. })) && (1..=CPU_TOKENS).contains(&call.tokens) && pairs.is_multiple_of(call.tokens);
+            let hybrid = mode != Mode::Copy
+                && ly.cpu.as_ref().is_some_and(|c| matches!(c.half, HostHalf::Rows(_) | HostHalf::Cb2(..) | HostHalf::Fp4 { .. }))
+                && (1..=CPU_TOKENS).contains(&call.tokens)
+                && pairs.is_multiple_of(call.tokens);
             cuda.reserve(pairs, if hybrid { call.tokens * hidden * 2 } else { 0 }, if hybrid { call.tokens * hidden * 4 } else { 0 }, dev)?;
             crate::tmark!(s, "store: choices requested");
             copy_d2h_async(cuda.ids.ptr, call.ids, pairs * 8, s)?;
@@ -2147,7 +2354,10 @@ impl ExpertStore {
             let overlap = {
                 let inner = self.inner.borrow();
                 let ly = inner.layers[layer].as_ref().expect("a layer");
-                inner.offload.async_copies && inner.predict.is_none() && ly.tier.is_none() && matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Cb2(..)))
+                inner.offload.async_copies
+                    && inner.predict.is_none()
+                    && ly.tier.is_none()
+                    && matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Cb2(..)))
             };
             if overlap {
                 return self.run_hybrid_overlap(layer, dev, call, &needed, &host_ids, &host_wts, false, body);
@@ -2204,7 +2414,17 @@ impl ExpertStore {
     /// # Safety
     /// As `run`.
     #[allow(clippy::too_many_arguments)]
-    unsafe fn run_hybrid_overlap(&self, layer: usize, dev: &Dev, call: &Call, needed: &[u16], host_ids: &[i64], host_wts: &[f32], parts: bool, body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>) -> Result<()> {
+    unsafe fn run_hybrid_overlap(
+        &self,
+        layer: usize,
+        dev: &Dev,
+        call: &Call,
+        needed: &[u16],
+        host_ids: &[i64],
+        host_wts: &[f32],
+        parts: bool,
+        body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
+    ) -> Result<()> {
         use crate::cpu_cb::{GlmExpert, GlmPair};
         let s = dev.stream;
         let (pairs, k) = (call.pairs, call.pairs / call.tokens);
@@ -2337,7 +2557,11 @@ impl ExpertStore {
     pub fn supports_parts(&self, layer: usize) -> bool {
         let inner = self.inner.borrow();
         let Some(ly) = inner.layers.get(layer).and_then(Option::as_ref) else { return false };
-        inner.offload.async_copies && inner.offload.mode != Mode::Copy && inner.predict.is_none() && ly.tier.is_none() && matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Cb2(..)))
+        inner.offload.async_copies
+            && inner.offload.mode != Mode::Copy
+            && inner.predict.is_none()
+            && ly.tier.is_none()
+            && matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Cb2(..)))
     }
 
     /// The host's buffers right for calls of `tokens` tokens of `pairs` pairs: a capture of the parts may not reallocate them (that waits for the stream).
@@ -2384,7 +2608,14 @@ impl ExpertStore {
     ///
     /// # Safety
     /// As `run`.
-    pub unsafe fn run_parts(&self, layer: usize, dev: &Dev, call: &Call, early: &mut dyn FnMut() -> Result<()>, products: &mut dyn FnMut(&Hybrid) -> Result<()>) -> Result<()> {
+    pub unsafe fn run_parts(
+        &self,
+        layer: usize,
+        dev: &Dev,
+        call: &Call,
+        early: &mut dyn FnMut() -> Result<()>,
+        products: &mut dyn FnMut(&Hybrid) -> Result<()>,
+    ) -> Result<()> {
         let pairs = call.pairs;
         let (needed, host_ids, host_wts) = {
             let mut guard = self.inner.borrow_mut();
@@ -2453,7 +2684,15 @@ impl ExpertStore {
     ///
     /// # Safety
     /// As `run`; `prepare_parts` and `parts_host` have been called, the engine's stream has the call's products queued, no kernel reads `map` until this returns, and none reads `sums` before it returns.
-    pub unsafe fn run_parts_mapped(&self, layer: usize, dev: &Dev, call: &Call, map: &mut [i32], next: &mut dyn FnMut() -> Result<()>, sums: &mut [f32]) -> Result<(bool, bool)> {
+    pub unsafe fn run_parts_mapped(
+        &self,
+        layer: usize,
+        dev: &Dev,
+        call: &Call,
+        map: &mut [i32],
+        next: &mut dyn FnMut() -> Result<()>,
+        sums: &mut [f32],
+    ) -> Result<(bool, bool)> {
         use crate::cpu_cb::{GlmExpert, GlmPair};
         let s = dev.stream;
         let (pairs, k) = (call.pairs, call.pairs / call.tokens);
@@ -2496,7 +2735,9 @@ impl ExpertStore {
             let needed = distinct(&host_ids, experts);
             let mut pairs_of = vec![0usize; experts];
             host_ids.iter().filter(|&&e| e >= 0 && (e as usize) < experts).for_each(|&e| pairs_of[e as usize] += 1);
-            let Some(CpuSide { half: HostHalf::Cb2(limit, ..), last, .. }) = ly.cpu.as_mut() else { return err("a layer without a host half of format 0 to 4 rows".to_string()) };
+            let Some(CpuSide { half: HostHalf::Cb2(limit, ..), last, .. }) = ly.cpu.as_mut() else {
+                return err("a layer without a host half of format 0 to 4 rows".to_string());
+            };
             let limit = *limit;
             cuda.count(&mut inner.stats, &mut inner.costs, inner.expert_bytes, false)?;
             // (every miss the host's, the ones it kept a short while before promoted; the hits the map's experts and the experts copied in that it does not have yet, whose pairs are the host's too)
@@ -2608,7 +2849,16 @@ impl ExpertStore {
     /// # Safety
     /// As `run`.
     #[allow(clippy::too_many_arguments)]
-    unsafe fn run_hybrid(&self, layer: usize, dev: &Dev, call: &Call, needed: &[u16], host_ids: &[i64], host_wts: &[f32], body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>) -> Result<()> {
+    unsafe fn run_hybrid(
+        &self,
+        layer: usize,
+        dev: &Dev,
+        call: &Call,
+        needed: &[u16],
+        host_ids: &[i64],
+        host_wts: &[f32],
+        body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
+    ) -> Result<()> {
         let s = dev.stream;
         let (pairs, k) = (call.pairs, call.pairs / call.tokens);
         let dropped;
@@ -2699,13 +2949,24 @@ impl ExpertStore {
                     }
                 }
                 let experts: Vec<crate::cpu_cb::GlmExpert> = mine.iter().map(|&j| ly.glm_expert(host_ids[j] as usize, *limit)).collect::<Result<_>>()?;
-                let gp: Vec<crate::cpu_cb::GlmPair> = mine.iter().zip(&experts).map(|(&j, e)| crate::cpu_cb::GlmPair { expert: e, token: j / k, weight: host_wts[j] }).collect();
+                let gp: Vec<crate::cpu_cb::GlmPair> =
+                    mine.iter().zip(&experts).map(|(&j, e)| crate::cpu_cb::GlmPair { expert: e, token: j / k, weight: host_wts[j] }).collect();
                 crate::cpu_cb::experts_pinned(crate::cpu_hb::checked_kernel(), Z::Bf16(z), &gp, &mut cuda.out, inner.offload.threads, inner.offload.pin)?;
             } else if let Some(CpuSide { half: HostHalf::Fp4 { act, .. }, .. }) = &ly.cpu {
-                let fp: Vec<crate::cpu_fp4::Fp4Pair> = mine.iter().map(|&j| crate::cpu_fp4::Fp4Pair { expert: ly.fp4_expert(host_ids[j] as usize), token: j / k, weight: host_wts[j] }).collect();
-                crate::cpu_fp4::experts(*inner.kernel.get_or_insert_with(checked_kernel), z, &fp, &mut cuda.out, *act, inner.offload.threads, inner.offload.pin)?;
+                let fp: Vec<crate::cpu_fp4::Fp4Pair> =
+                    mine.iter().map(|&j| crate::cpu_fp4::Fp4Pair { expert: ly.fp4_expert(host_ids[j] as usize), token: j / k, weight: host_wts[j] }).collect();
+                crate::cpu_fp4::experts(
+                    *inner.kernel.get_or_insert_with(checked_kernel),
+                    z,
+                    &fp,
+                    &mut cuda.out,
+                    *act,
+                    inner.offload.threads,
+                    inner.offload.pin,
+                )?;
             } else {
-                let views: Vec<PairView> = mine.iter().map(|&j| PairView { expert: ly.cpu_expert(host_ids[j] as usize), token: j / k, weight: host_wts[j] }).collect();
+                let views: Vec<PairView> =
+                    mine.iter().map(|&j| PairView { expert: ly.cpu_expert(host_ids[j] as usize), token: j / k, weight: host_wts[j] }).collect();
                 experts_views(*inner.kernel.get_or_insert_with(checked_kernel), Z::Bf16(z), &views, &mut cuda.out, inner.offload.threads, inner.offload.pin)?;
             }
             let us = t0.elapsed().as_secs_f64() * 1e6;
@@ -2729,7 +2990,11 @@ impl ExpertStore {
         inner.offload.mode != Mode::Copy
             && (1..=CPU_TOKENS).contains(&tokens)
             && pairs.is_multiple_of(tokens)
-            && groups.layers.iter().flatten().all(|&l| inner.layers.get(l).and_then(Option::as_ref).is_some_and(|ly| matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Hb(_)))))
+            && groups
+                .layers
+                .iter()
+                .flatten()
+                .all(|&l| inner.layers.get(l).and_then(Option::as_ref).is_some_and(|ly| matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Hb(_)))))
     }
 
     /// One call of a model layer whose experts are in groups (`Groups`), served as `run_hybrid` serves a layer with a host half and with the one wait that a layer has: the router's choices, their weights and the experts'
@@ -2752,7 +3017,12 @@ impl ExpertStore {
             let mut guard = self.inner.borrow_mut();
             let inner = &mut *guard;
             let cuda = inner.cuda.as_mut().ok_or_else(|| Error("the expert cache has no layers".into()))?;
-            let hidden = layers.iter().flatten().find_map(|&l| inner.layers.get(l).and_then(Option::as_ref).map(Resident::hidden)).filter(|&h| h > 0).ok_or_else(|| Error("no group of the layer is in the expert cache".into()))?;
+            let hidden = layers
+                .iter()
+                .flatten()
+                .find_map(|&l| inner.layers.get(l).and_then(Option::as_ref).map(Resident::hidden))
+                .filter(|&h| h > 0)
+                .ok_or_else(|| Error("no group of the layer is in the expert cache".into()))?;
             cuda.reserve(pairs, call.tokens * hidden * 4, call.tokens * hidden * 4, dev)?;
             copy_d2h_async(cuda.ids.ptr, call.ids, pairs * 8, s)?;
             copy_d2h_async(cuda.wts.ptr, call.wts, pairs * 4, s)?;
@@ -2761,7 +3031,11 @@ impl ExpertStore {
             dev.sync()?;
             inner.stats.wait_ms += t0.elapsed().as_secs_f64() * 1e3;
             // SAFETY: the pinned buffers hold `pairs` int64 and fp32, written by the copies that have completed.
-            (std::slice::from_raw_parts(cuda.ids.ptr as *const i64, pairs).to_vec(), std::slice::from_raw_parts(cuda.wts.ptr as *const f32, pairs).to_vec(), hidden)
+            (
+                std::slice::from_raw_parts(cuda.ids.ptr as *const i64, pairs).to_vec(),
+                std::slice::from_raw_parts(cuda.wts.ptr as *const f32, pairs).to_vec(),
+                hidden,
+            )
         };
         // the plan, the copies, and each group's pairs' places
         let (placed, gpu) = {
@@ -2769,7 +3043,8 @@ impl ExpertStore {
             let inner = &mut *guard;
             let cuda = inner.cuda.as_mut().expect("the copy stream");
             cuda.count(&mut inner.stats, &mut inner.costs, inner.expert_bytes, false)?;
-            let (offload, costs, per) = (inner.offload, Costs { backlog: cuda.backlog(inner.expert_bytes, &inner.costs), ..inner.costs }, inner.expert_bytes.max(1) as f64);
+            let (offload, costs, per) =
+                (inner.offload, Costs { backlog: cuda.backlog(inner.expert_bytes, &inner.costs), ..inner.costs }, inner.expert_bytes.max(1) as f64);
             let placed = {
                 let mut slices: [Option<Slice>; 2] = [None, None];
                 for (i, ly) in inner.layers.iter_mut().enumerate() {
@@ -2843,18 +3118,37 @@ impl ExpertStore {
             let cuda = inner.cuda.as_mut().expect("the copy stream");
             // the pairs the host computes, in rounds of the pairs whose experts the host tier's slots hold at once (one round, as ever, where a layer has every expert in memory or its slots are as many as the call has experts), each
             // round's experts read from the packed directory first
-            let slots: [usize; 2] = [0, 1].map(|g| layers[g].and_then(|l| inner.layers[l].as_ref()?.tier.as_ref().map(|t| t.ram.slots())).unwrap_or(usize::MAX));
+            let slots: [usize; 2] =
+                [0, 1].map(|g| layers[g].and_then(|l| inner.layers[l].as_ref()?.tier.as_ref().map(|t| t.ram.slots())).unwrap_or(usize::MAX));
             cuda.out.resize(placed.mine.len() * hidden, 0.0);
             // SAFETY: the pinned buffers hold the tokens' rows of z and of sums, and the engine's stream does not read the sums until the copy in `send_sums`.
             let z = std::slice::from_raw_parts(cuda.z.ptr as *const f32, call.tokens * hidden);
             for (start, end, seen) in host_rounds(&placed.mine, &placed.local, slots) {
                 if slots != [usize::MAX; 2] {
-                    stage_pair(cuda, two_layers(&mut inner.layers, layers[0], layers[1]), [&seen[0], &seen[1]], &mut inner.stats, &mut inner.costs, inner.expert_bytes)?;
+                    stage_pair(
+                        cuda,
+                        two_layers(&mut inner.layers, layers[0], layers[1]),
+                        [&seen[0], &seen[1]],
+                        &mut inner.stats,
+                        &mut inner.costs,
+                        inner.expert_bytes,
+                    )?;
                 }
-                let experts: Vec<HbExpert> = placed.mine[start..end].iter().map(|&(g, j)| inner.layers[layers[g].expect("a group in the store")].as_ref().expect("a layer").hb_expert(placed.local[g][j] as usize)).collect::<Result<_>>()?;
-                let views: Vec<HbPair> = placed.mine[start..end].iter().zip(&experts).map(|(&(_, j), e)| HbPair { expert: e, token: j / k, weight: host_wts[j] }).collect();
+                let experts: Vec<HbExpert> = placed.mine[start..end]
+                    .iter()
+                    .map(|&(g, j)| inner.layers[layers[g].expect("a group in the store")].as_ref().expect("a layer").hb_expert(placed.local[g][j] as usize))
+                    .collect::<Result<_>>()?;
+                let views: Vec<HbPair> =
+                    placed.mine[start..end].iter().zip(&experts).map(|(&(_, j), e)| HbPair { expert: e, token: j / k, weight: host_wts[j] }).collect();
                 let t0 = Instant::now();
-                cpu_hb::experts_pinned(cpu_hb::checked_kernel(), Z::F32(z), &views, &mut cuda.out[start * hidden..end * hidden], inner.offload.threads, inner.offload.pin)?;
+                cpu_hb::experts_pinned(
+                    cpu_hb::checked_kernel(),
+                    Z::F32(z),
+                    &views,
+                    &mut cuda.out[start * hidden..end * hidden],
+                    inner.offload.threads,
+                    inner.offload.pin,
+                )?;
                 let round = t0.elapsed().as_secs_f64() * 1e6;
                 inner.stats.cpu_pairs += views.len() as u64;
                 inner.stats.cpu_ms += round / 1e3;
@@ -3116,7 +3410,11 @@ mod tests {
         let store = ExpertStore::new();
         let bytes = vec![0u8; 8 * 10];
         let pack = |n: usize| PackIn { bytes: [&bytes[..n], &bytes[..8]], stride: [10, 1], dev: [0, 0] };
-        for (slots, packs, why) in [(0, vec![], "a cache of 0 places for 8 experts"), (9, vec![], "a cache of 9 places for 8 experts"), (4, vec![pack(79)], "a matrix of 79 + 8 bytes for 8 experts of 10 + 1")] {
+        for (slots, packs, why) in [
+            (0, vec![], "a cache of 0 places for 8 experts"),
+            (9, vec![], "a cache of 9 places for 8 experts"),
+            (4, vec![pack(79)], "a matrix of 79 + 8 bytes for 8 experts of 10 + 1"),
+        ] {
             let e = store.add_layer(0, 8, slots, &packs, None).unwrap_err();
             assert!(e.0.contains(why), "{e}");
         }
@@ -3158,7 +3456,12 @@ mod tests {
             let base = Offload { threads: 20, ..Offload::default() };
             assert_eq!(parse_variant("cpu", &base), Some(Offload { mode: Mode::Cpu, ..base }));
             assert_eq!(parse_variant("split:8:pin", &base), Some(Offload { mode: Mode::Split, threads: 8, pin: true, ..base }));
-            assert!(parse_variant("cpu:0", &base).is_none() && parse_variant("fast", &base).is_none() && parse_variant("cpu:x", &base).is_none() && parse_variant("", &base).is_none());
+            assert!(
+                parse_variant("cpu:0", &base).is_none()
+                    && parse_variant("fast", &base).is_none()
+                    && parse_variant("cpu:x", &base).is_none()
+                    && parse_variant("", &base).is_none()
+            );
         }
     }
 
@@ -3274,7 +3577,10 @@ mod tests {
         let off = Offload { mode: Mode::Cpu, window: 10, promote: 3, ..Offload::default() };
         let run = |c0: &mut LayerCache, c1: &mut LayerCache, l0: &mut Vec<u64>, l1: &mut Vec<u64>, now: u64, off: &Offload| {
             let (n0, n1) = ([0u16, 6, 7, 1], [5u16, 2, 3]);
-            let mut parts = [Part { cache: c0, needed: &n0, pairs_of: &pairs_one(8), last: l0, now, size: 1.0 }, Part { cache: c1, needed: &n1, pairs_of: &pairs_one(6), last: l1, now, size: 0.7 }];
+            let mut parts = [
+                Part { cache: c0, needed: &n0, pairs_of: &pairs_one(8), last: l0, now, size: 1.0 },
+                Part { cache: c1, needed: &n1, pairs_of: &pairs_one(6), last: l1, now, size: 0.7 },
+            ];
             serve_groups(&mut parts, off, &costs).unwrap()
         };
         let sv = run(&mut c0, &mut c1, &mut l0, &mut l1, 1, &off);
@@ -3289,7 +3595,10 @@ mod tests {
         // a mode that copies: cheap copies fill each group's own places, never more than it has, and what is not copied is kept
         let (mut f0, mut f1) = (LayerCache::new(8, 3), LayerCache::new(6, 2));
         let (n0, n1, cheap) = ([0u16, 6, 7, 1], [5u16, 2, 3], Costs { copy: 1.0, ..costs });
-        let mut parts = [Part { cache: &mut f0, needed: &n0, pairs_of: &pairs_one(8), last: &mut [0; 8], now: 1, size: 1.0 }, Part { cache: &mut f1, needed: &n1, pairs_of: &pairs_one(6), last: &mut [0; 6], now: 1, size: 0.7 }];
+        let mut parts = [
+            Part { cache: &mut f0, needed: &n0, pairs_of: &pairs_one(8), last: &mut [0; 8], now: 1, size: 1.0 },
+            Part { cache: &mut f1, needed: &n1, pairs_of: &pairs_one(6), last: &mut [0; 6], now: 1, size: 0.7 },
+        ];
         let sv = serve_groups(&mut parts, &Offload { mode: Mode::Split, ..off }, &cheap).unwrap();
         assert_eq!((sv[0].loads.len(), sv[0].kept.len(), sv[1].loads.len(), sv[1].kept.len()), (3, 1, 2, 1));
         assert!(sv[0].loads.iter().all(|&(e, p)| e < 8 && p < 3) && sv[1].loads.iter().all(|&(e, p)| e < 6 && p < 2));
@@ -3339,7 +3648,10 @@ mod tests {
                     }
                     let [c0, c1] = &mut caches;
                     let [l0, l1] = &mut lasts;
-                    let mut slices = [Some(Slice { cache: c0, last: l0, now: call, size: 1.0 }), (absent != Some(1)).then_some(Slice { cache: c1, last: l1, now: call, size: 0.7 })];
+                    let mut slices = [
+                        Some(Slice { cache: c0, last: l0, now: call, size: 1.0 }),
+                        (absent != Some(1)).then_some(Slice { cache: c1, last: l1, now: call, size: 0.7 }),
+                    ];
                     let placed = place_groups(&mut slices, &group_of, &local_of, &ids, &off, &costs).unwrap();
                     let mut mine = Vec::new();
                     for (j, &e) in ids.iter().enumerate() {
@@ -3350,7 +3662,11 @@ mod tests {
                             assert!(placed.ways[g].is_empty() && placed.served[g].is_none());
                             continue;
                         }
-                        assert_eq!(placed.ways[g][j], caches[g].slot_of(l as usize).map_or(-1, |p| p as i64), "{mode:?} call {call} pair {j}: its place is its expert's");
+                        assert_eq!(
+                            placed.ways[g][j],
+                            caches[g].slot_of(l as usize).map_or(-1, |p| p as i64),
+                            "{mode:?} call {call} pair {j}: its place is its expert's"
+                        );
                         if placed.ways[g][j] < 0 {
                             mine.push((g, j));
                         }
@@ -3500,7 +3816,14 @@ mod tests {
         let gib = 1u64 << 30;
         let v2 = format!("anon {}\nfile {}\ninactive_file {}\nactive_file {}\nslab 5\n", 30 * gib, 60 * gib, 40 * gib, 20 * gib);
         assert_eq!(cgroup_free(100 * gib, 99 * gib, &v2), 61 * gib);
-        let v1 = format!("cache {}\ninactive_file {}\nactive_file {}\ntotal_inactive_file {}\ntotal_active_file {}\n", 60 * gib, 40 * gib, 20 * gib, 40 * gib, 20 * gib);
+        let v1 = format!(
+            "cache {}\ninactive_file {}\nactive_file {}\ntotal_inactive_file {}\ntotal_active_file {}\n",
+            60 * gib,
+            40 * gib,
+            20 * gib,
+            40 * gib,
+            20 * gib
+        );
         assert_eq!(cgroup_free(100 * gib, 99 * gib, &v1), 61 * gib, "version 1 lists the group's and the total: the cache is counted once");
         assert_eq!(cgroup_free(100 * gib, 99 * gib, ""), gib, "no statistics: the group's own count");
         assert_eq!(cgroup_free(10 * gib, 99 * gib, &v2), 0, "no more than the limit");
@@ -3516,7 +3839,11 @@ mod tests {
     /// The arrays of an .npz that numpy's savez_compressed wrote (entries deflated, their sizes in a zip64 field of the local header): name -> (shape, the elements' bytes).
     fn npz(path: &str) -> std::collections::HashMap<String, (Vec<usize>, Vec<u8>)> {
         let b = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
-        let (u16_at, u32_at, u64_at) = (|o: usize| u16::from_le_bytes([b[o], b[o + 1]]) as usize, |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as u64, |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap()));
+        let (u16_at, u32_at, u64_at) = (
+            |o: usize| u16::from_le_bytes([b[o], b[o + 1]]) as usize,
+            |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as u64,
+            |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap()),
+        );
         let (mut out, mut at) = (std::collections::HashMap::new(), 0usize);
         while b.len() >= at + 30 && b[at..at + 4] == *b"PK\x03\x04" {
             let (method, mut csize, name_len, extra_len) = (u16_at(at + 8), u32_at(at + 18), u16_at(at + 26), u16_at(at + 28));
@@ -3542,7 +3869,8 @@ mod tests {
             assert!(data.starts_with(b"\x93NUMPY\x01\x00"), "{name}: not a version 1.0 .npy");
             let hl = u16::from_le_bytes([data[8], data[9]]) as usize;
             let head = std::str::from_utf8(&data[10..10 + hl]).unwrap();
-            let shape: Vec<usize> = head.split("'shape': (").nth(1).unwrap().split(')').next().unwrap().split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            let shape: Vec<usize> =
+                head.split("'shape': (").nth(1).unwrap().split(')').next().unwrap().split(',').filter_map(|v| v.trim().parse().ok()).collect();
             out.insert(name.trim_end_matches(".npy").to_string(), (shape, data[10 + hl..].to_vec()));
         }
         out
@@ -3640,7 +3968,10 @@ mod tests {
         for (cap, found, kept, promoted) in [(52usize, 0.46, 480.0, 140.0), (122, 0.63, 330.0, 105.0), (191, 0.73, 240.0, 80.0)] {
             let off = Offload { mode: Mode::Cpu, ..Offload::default() };
             let (hit, copied, left, made) = replay_served(cap, &off, &Costs::default());
-            assert!(hit >= found && left <= kept && made <= promoted && copied == 0.0, "{cap} places: {hit:.3} found, {left:.0} for the host, {made:.0} promoted");
+            assert!(
+                hit >= found && left <= kept && made <= promoted && copied == 0.0,
+                "{cap} places: {hit:.3} found, {left:.0} for the host, {made:.0} promoted"
+            );
         }
     }
 
@@ -3853,7 +4184,15 @@ mod tests {
             (0..rows * cols)
                 .map(|n| {
                     if grid {
-                        let code = if n % 32 == 0 { if rng.next() & 1 == 0 { kmax } else { -kmax } } else { (rng.next() % (2 * kmax as u64 + 1)) as i32 - kmax };
+                        let code = if n % 32 == 0 {
+                            if rng.next() & 1 == 0 {
+                                kmax
+                            } else {
+                                -kmax
+                            }
+                        } else {
+                            (rng.next() % (2 * kmax as u64 + 1)) as i32 - kmax
+                        };
                         bits_of(code as f32 * 2f32.powi(-8))
                     } else {
                         bits_of(rng.uniform() * 0.3)
@@ -3873,7 +4212,13 @@ mod tests {
             down[x * d * i..][..d * i].iter_mut().zip(transpose(&db, i, d)).for_each(|(o, b)| *o = f32::from_bits((b as u32) << 16));
             experts.push(Expert::new(Rows::from_block(&up_p).unwrap(), Rows::new(bits, i, d, down_p.data.clone(), down_p.blocks.clone()).unwrap()).unwrap());
         }
-        HostLayer { cfg: MoeCfg { experts: e, router_hidden: d, hidden: d, inter: i, router: Router::sigmoid(k, 5.0), act: Act::Relu2 }, router: vec![0.0; e * d], up, down, experts }
+        HostLayer {
+            cfg: MoeCfg { experts: e, router_hidden: d, hidden: d, inter: i, router: Router::sigmoid(k, 5.0), act: Act::Relu2 },
+            router: vec![0.0; e * d],
+            up,
+            down,
+            experts,
+        }
     }
 
     /// The layer with some of its experts on the host is the layer all there, to a bound: the reference's products over the weights as the GPU decodes them for the experts that have places, the host's kernels
@@ -3950,7 +4295,9 @@ mod tests {
         use crate::qwen35_ref::bf16;
         let (e, slots, d, i, k) = (24usize, 7usize, 128usize, 256usize, 6usize);
         let mut rng = Xs(0x9E37_79B9_7F4A_7C15);
-        for (mode, bits, grid, limit) in [(Mode::Cpu, 4u32, true, 2e-4f64), (Mode::Split, 5, true, 2e-4), (Mode::Auto, 6, false, 1.2e-2), (Mode::Cpu, 5, false, 1.2e-2)] {
+        for (mode, bits, grid, limit) in
+            [(Mode::Cpu, 4u32, true, 2e-4f64), (Mode::Split, 5, true, 2e-4), (Mode::Auto, 6, false, 1.2e-2), (Mode::Cpu, 5, false, 1.2e-2)]
+        {
             let l = host_layer(bits, grid, (e, d, i, k), &mut rng);
             let all = RefLayer { cfg: &l.cfg, router: &l.router, bias: None, escale: None, up: &l.up, down: &l.down };
             let (mut pup, mut pdown) = (vec![0f32; slots * i * d], vec![0f32; slots * d * i]);
@@ -3986,7 +4333,10 @@ mod tests {
                 // the products read the places: every pair's place holds its own expert's weights
                 for (j, &w) in way.iter().enumerate().filter(|(_, &w)| w >= 0) {
                     let (ex, p) = (ids[j] as usize, w as usize);
-                    assert!(pup[p * i * d..][..i * d] == l.up[ex * i * d..][..i * d] && pdown[p * d * i..][..d * i] == l.down[ex * d * i..][..d * i], "round {round}: pair {j} of expert {ex} at place {p}");
+                    assert!(
+                        pup[p * i * d..][..i * d] == l.up[ex * i * d..][..i * d] && pdown[p * d * i..][..d * i] == l.down[ex * d * i..][..d * i],
+                        "round {round}: pair {j} of expert {ex} at place {p}"
+                    );
                 }
                 // (the GPU's sums of the pairs that have places, by the places' weights)
                 let by_place = RefLayer { cfg: &l.cfg, router: &l.router, bias: None, escale: None, up: &pup, down: &pdown };
@@ -4064,7 +4414,12 @@ mod tests {
     /// The slot `s` of two byte vectors, the host tier's memory in a test.
     fn slot(mem: &Slots, s: usize) -> (&[u8], &[u8]) {
         // SAFETY: the vectors the test made hold `slots` slots of these strides, and nothing writes them while the slices live.
-        unsafe { (std::slice::from_raw_parts(mem.base[0].add(s * mem.stride[0]), mem.stride[0]), std::slice::from_raw_parts(mem.base[1].add(s * mem.stride[1]), mem.stride[1])) }
+        unsafe {
+            (
+                std::slice::from_raw_parts(mem.base[0].add(s * mem.stride[0]), mem.stride[0]),
+                std::slice::from_raw_parts(mem.base[1].add(s * mem.stride[1]), mem.stride[1]),
+            )
+        }
     }
 
     /// A call's `n` distinct experts out of `experts`: most from a hot set, as a router's are, the rest from all of them.
@@ -4190,7 +4545,7 @@ mod tests {
             let (mut x, mut free_calls) = (Pick(0xD1CE), 0usize);
             for _ in 0..1500 {
                 let n = 1 + (x.next() % slots as u64) as usize;
-            let wanted = call_of(&mut x, n, experts);
+                let wanted = call_of(&mut x, n, experts);
                 let waits = st.waits;
                 let retired = st.retired;
                 // (a call stages, then queues the copies of the experts it wanted that were read: the GPU's misses)
@@ -4319,10 +4674,19 @@ mod tests {
                         // SAFETY: the vectors hold 3 slots of the place's sizes, which nothing writes while the views live.
                         let view = unsafe { hb_view(&place, mem.base[0] as *const u8, mem.base[1] as *const u8, at) }.unwrap();
                         let all = place.expert(&h.data[k * place.data..(k + 1) * place.data], &h.meta[k * place.meta..(k + 1) * place.meta]).unwrap();
-                        assert!(view.up.codes == all.up.codes && view.up.scales == all.up.scales && view.up.codebook == all.up.codebook, "layer {l} group {g} round {round}: the up matrix of expert {k} in slot {at}");
-                        assert!(view.down.codes == all.down.codes && view.down.scales == all.down.scales && view.down.codebook == all.down.codebook, "layer {l} group {g} round {round}: the down matrix of expert {k} in slot {at}");
+                        assert!(
+                            view.up.codes == all.up.codes && view.up.scales == all.up.scales && view.up.codebook == all.up.codebook,
+                            "layer {l} group {g} round {round}: the up matrix of expert {k} in slot {at}"
+                        );
+                        assert!(
+                            view.down.codes == all.down.codes && view.down.scales == all.down.scales && view.down.codebook == all.down.codebook,
+                            "layer {l} group {g} round {round}: the down matrix of expert {k} in slot {at}"
+                        );
                         let (d, m) = slot(&mem, at);
-                        assert!(d == &h.data[k * place.data..(k + 1) * place.data] && m == &h.meta[k * place.meta..(k + 1) * place.meta], "layer {l} group {g} round {round}: the bytes of expert {k}");
+                        assert!(
+                            d == &h.data[k * place.data..(k + 1) * place.data] && m == &h.meta[k * place.meta..(k + 1) * place.meta],
+                            "layer {l} group {g} round {round}: the bytes of expert {k}"
+                        );
                     }
                 }
             }

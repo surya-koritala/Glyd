@@ -38,18 +38,54 @@ fn main() {
         let mut buf = Vec::with_capacity(size + 1024);
         let mut out = vec![0u8; size + 64];
         // Glyd
-        let gc: Vec<Vec<u8>> = objects.iter().map(|o| { let mut b = Vec::new(); glyd::compress_with_dict(&gdict, o, &mut b); b }).collect();
-        let g_comp = best_of_three(|| { for o in &objects { buf.clear(); glyd::compress_with_dict(&gdict, o, &mut buf); } raw });
-        let g_dec = best_of_three(|| { for c in &gc { glyd::decompress_with_dict_into(&gdict, c, &mut out).unwrap(); } raw });
+        let gc: Vec<Vec<u8>> = objects
+            .iter()
+            .map(|o| {
+                let mut b = Vec::new();
+                glyd::compress_with_dict(&gdict, o, &mut b);
+                b
+            })
+            .collect();
+        let g_comp = best_of_three(|| {
+            for o in &objects {
+                buf.clear();
+                glyd::compress_with_dict(&gdict, o, &mut buf);
+            }
+            raw
+        });
+        let g_dec = best_of_three(|| {
+            for c in &gc {
+                glyd::decompress_with_dict_into(&gdict, c, &mut out).unwrap();
+            }
+            raw
+        });
         // zstd
         let mut zc = zstd::bulk::Compressor::with_dictionary(3, &zdict).unwrap();
         let zcv: Vec<Vec<u8>> = objects.iter().map(|o| zc.compress(o).unwrap()).collect();
-        let z_comp = best_of_three(|| { for o in &objects { buf.clear(); zc.compress_to_buffer(o, &mut buf).unwrap(); } raw });
+        let z_comp = best_of_three(|| {
+            for o in &objects {
+                buf.clear();
+                zc.compress_to_buffer(o, &mut buf).unwrap();
+            }
+            raw
+        });
         let mut zd = zstd::bulk::Decompressor::with_dictionary(&zdict).unwrap();
-        let z_dec = best_of_three(|| { for c in &zcv { zd.decompress_to_buffer(c, &mut out[..]).unwrap(); } raw });
+        let z_dec = best_of_three(|| {
+            for c in &zcv {
+                zd.decompress_to_buffer(c, &mut out[..]).unwrap();
+            }
+            raw
+        });
         let gout: usize = gc.iter().map(|c| c.len()).sum();
         let zout: usize = zcv.iter().map(|c| c.len()).sum();
-        println!("{size:6} B: Glyd --max+dict ratio {:.2} comp {:.0} MB/s decode {:.0} MB/s | zstd -3+dict ratio {:.2} comp {:.0} MB/s decode {:.0} MB/s",
-            raw as f64 / gout as f64, g_comp, g_dec, raw as f64 / zout as f64, z_comp, z_dec);
+        println!(
+            "{size:6} B: Glyd --max+dict ratio {:.2} comp {:.0} MB/s decode {:.0} MB/s | zstd -3+dict ratio {:.2} comp {:.0} MB/s decode {:.0} MB/s",
+            raw as f64 / gout as f64,
+            g_comp,
+            g_dec,
+            raw as f64 / zout as f64,
+            z_comp,
+            z_dec
+        );
     }
 }

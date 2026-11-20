@@ -369,7 +369,16 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, table: &mut [u32],
 /// `ZSTD_compressBlock_fast_extDict_generic`: the block parsed with a
 /// dictionary segment below `window.dict_limit`.
 #[allow(clippy::too_many_arguments)]
-pub fn compress_block_ext(input: &[u8], start: usize, end: usize, table: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], rules: &Rules) -> SeqStore {
+pub fn compress_block_ext(
+    input: &[u8],
+    start: usize,
+    end: usize,
+    table: &mut [u32],
+    p: &CParams,
+    window: &Window,
+    rep: &mut [u32; 3],
+    rules: &Rules,
+) -> SeqStore {
     let end_index = idx(end);
     let dict_start_index = window.lowest_match(end_index, p.window_log);
     let prefix_start_index = window.dict_limit.max(dict_start_index);
@@ -517,7 +526,17 @@ pub fn compress_block_ext(input: &[u8], start: usize, end: usize, table: &mut [u
 /// checked against the index of the match's start (`curr`), as the
 /// reference does.
 #[allow(clippy::too_many_arguments)]
-fn compress_block_ext_old(input: &[u8], start: usize, end: usize, table: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], dict_start_index: u32, prefix_start_index: u32) -> SeqStore {
+fn compress_block_ext_old(
+    input: &[u8],
+    start: usize,
+    end: usize,
+    table: &mut [u32],
+    p: &CParams,
+    window: &Window,
+    rep: &mut [u32; 3],
+    dict_start_index: u32,
+    prefix_start_index: u32,
+) -> SeqStore {
     let _ = window;
     let mut store = SeqStore::new();
     let hlog = p.hash_log;
@@ -535,7 +554,10 @@ fn compress_block_ext_old(input: &[u8], start: usize, end: usize, table: &mut [u
         let curr = idx(ip);
         let rep_index = (curr + 1).wrapping_sub(rep1);
         table[h] = curr;
-        if (prefix_start_index - 1).wrapping_sub(rep_index) >= 3 && rep1 <= curr + 1 - dict_start_index && read32(input, pos(rep_index)) == read32(input, ip + 1) {
+        if (prefix_start_index - 1).wrapping_sub(rep_index) >= 3
+            && rep1 <= curr + 1 - dict_start_index
+            && read32(input, pos(rep_index)) == read32(input, ip + 1)
+        {
             let rlen = count(input, ip + 5, pos(rep_index) + 4, end) + 4;
             ip += 1;
             store.store(&input[anchor..ip], 1, rlen);
@@ -568,7 +590,10 @@ fn compress_block_ext_old(input: &[u8], start: usize, end: usize, table: &mut [u
             while ip as isize <= ilimit {
                 let current2 = idx(ip);
                 let rep_index2 = current2.wrapping_sub(rep2);
-                if (prefix_start_index - 1).wrapping_sub(rep_index2) >= 3 && rep2 <= curr - dict_start_index && read32(input, pos(rep_index2)) == read32(input, ip) {
+                if (prefix_start_index - 1).wrapping_sub(rep_index2) >= 3
+                    && rep2 <= curr - dict_start_index
+                    && read32(input, pos(rep_index2)) == read32(input, ip)
+                {
                     let rlen = count(input, ip + 4, pos(rep_index2) + 4, end) + 4;
                     std::mem::swap(&mut rep1, &mut rep2);
                     store.store(&[], 1, rlen);

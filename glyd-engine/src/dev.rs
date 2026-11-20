@@ -192,7 +192,11 @@ impl Dev {
         let mut f = std::ptr::null_mut();
         // SAFETY: a host out-pointer and a NUL-terminated name.
         unsafe { cu(name, (driver()?.cuModuleGetFunction)(&mut f, self.module, c.as_ptr()))? };
-        kprof_table().lock().map_err(|_| crate::ffi::Error("the kernel census is poisoned".into()))?.entry(f as usize).or_insert_with(|| (name.to_string(), 0, 0.0));
+        kprof_table()
+            .lock()
+            .map_err(|_| crate::ffi::Error("the kernel census is poisoned".into()))?
+            .entry(f as usize)
+            .or_insert_with(|| (name.to_string(), 0, 0.0));
         Ok(Kernel(f))
     }
 
@@ -244,7 +248,22 @@ impl Kernel {
     /// As `launch`.
     pub unsafe fn launch_smem(&self, grid: [u32; 3], block: [u32; 3], smem: u32, stream: Stream, args: &mut [*mut c_void]) -> Result<()> {
         let mut go = || {
-            let r = cu("cuLaunchKernel", (driver()?.cuLaunchKernel)(self.0, grid[0], grid[1], grid[2], block[0], block[1], block[2], smem, stream, args.as_mut_ptr(), std::ptr::null_mut()));
+            let r = cu(
+                "cuLaunchKernel",
+                (driver()?.cuLaunchKernel)(
+                    self.0,
+                    grid[0],
+                    grid[1],
+                    grid[2],
+                    block[0],
+                    block[1],
+                    block[2],
+                    smem,
+                    stream,
+                    args.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                ),
+            );
             // (a development build names the kernel and its launch where it fails)
             if cfg!(feature = "dev") {
                 if let Err(e) = r {
