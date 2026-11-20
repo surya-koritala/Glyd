@@ -8,7 +8,7 @@ installation or production activation profile in this repository.
 
 ## Start without a service or model
 
-From a checkout with the pinned Rust toolchain and locked dependencies already
+From the repository root, with the pinned Rust toolchain and locked dependencies already
 installed, build the default CLI and inspect its scope:
 
 ```sh

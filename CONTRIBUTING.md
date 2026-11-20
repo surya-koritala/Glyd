@@ -10,21 +10,21 @@ which files to start in. The labels are listed in [docs/labels.md](docs/labels.m
 ## Build
 
 ```bash
-cargo build --release --workspace                      # codec, store, packer, engine (no nvcc: engine without CUDA kernels)
+cargo build --release --workspace                      # codec, store, packer, engine (no nvcc: engine without CUDA kernels), Starlings
 NVCC=/usr/local/cuda/bin/nvcc GLYD_ENGINE_ARCHS="89" \
   cargo build --release -p glyd-engine                 # engine with kernels for one GPU arch (CUDA 12.8+)
 bash gpu/build_lib.sh target/gpu                       # GPU library (libglyd_gpu_cudaN.so)
 GLYD_HIP=1 cargo build --release -p glyd-engine        # AMD RDNA 3/4 (ROCm hipcc)
-(cd starlings && cargo build --release)                # cluster: own workspace and pinned toolchain
+cargo build --release -p starlings-cli                  # cluster: target/release/starlings (Starlings is in the workspace; edition 2024, rustfmt defaults)
 ```
 
 ## Test
 
 | What | Command | Needs |
 | :--- | :--- | :--- |
-| Codec, store, packer, engine host code | `cargo test --release --workspace` | CPU |
+| Codec, store, packer, engine host code, Starlings | `cargo test --release --workspace` | CPU; IPv6 loopback and `systemd-analyze` for a few of Starlings' tests |
 | Engine release feature set | `cargo test --release -p glyd-engine --no-default-features` | CPU |
-| Starlings | `cd starlings && cargo test --workspace --locked` | CPU; IPv6 loopback and `systemd-analyze` for a few tests |
+| Starlings alone | `cargo test --locked -p starlings-protocol -p starlings-core -p starlings-adapters -p starlings-cli -p starlings-security` | CPU; IPv6 loopback and `systemd-analyze` for a few tests |
 | Engine on a GPU | `glyd-engine check`, `kcheck`, `kvtest`, `stress`, `bench` (development build) | NVIDIA GPU |
 | GPU jobs on rented machines | `glyd-engine/jobs/*.sh`, `tools/runpod/` | see the scripts' headers |
 
