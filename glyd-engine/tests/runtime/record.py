@@ -1,0 +1,229 @@
+"""Records the transformers fixtures the runtime's CPU reference kinds are checked against (glyd-engine/src/runtime/reference).
+
+Each case builds one transformers module (an attention, a linear attention, ...) from a recent model's real config at reduced widths,
+fills every parameter and the input with values both sides generate from the tensor's name (xorshift64 from its FNV-1a hash; see
+reference/testing.rs), runs a causal prompt of a few tokens in float32 and writes the output. A fixture holds each tensor's name, shape
+and range, never its values, so it stays a few KB.
+
+    python glyd-engine/tests/runtime/record.py [CASE ...]
+
+Needs torch and transformers (the version is written into each fixture). Run with -I from a directory of its own.
+"""
+
+import json
+import math
+import os
+import sys
+
+import numpy as np
+import torch
+import transformers
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+T = 7  # tokens of the prompt
+
+
+def seed(name):
+    h = 0xCBF29CE484222325
+    for b in name.encode():
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h | 1
+
+
+def fill(name, n, lo, hi):
+    r = seed(name)
+    out = np.empty(n, dtype=np.float32)
+    lo32, span = np.float32(lo), np.float32(hi) - np.float32(lo)
+    for i in range(n):
+        r ^= (r << 13) & 0xFFFFFFFFFFFFFFFF
+        r ^= r >> 7
+        r ^= (r << 17) & 0xFFFFFFFFFFFFFFFF
+        out[i] = lo32 + span * np.float32((r >> 40) / float(1 << 24))
+    return out
+
+
+assert seed("input") == 0x1EBBAE8F5810B65B
+
+
+def ranges(name, shape):
+    """A tensor's range by what it is: norm weights near 1 (or near 0 for (1+w) norms), products by their fan-in, the rest small."""
+    leaf = name.split(".")[-1]
+    if leaf in ("A_log",):
+        return (-1.0, 0.5)
+    if leaf in ("dt_bias",):
+        return (-0.5, 0.5)
+    if "norm" in name and len(shape) == 1:
+        return (0.8, 1.2)
+    if len(shape) >= 2:
+        a = math.sqrt(3.0 / shape[-1])
+        return (-a, a)
+    return (-0.5, 0.5)
+
+
+def fill_module(m, plus_one_norms=False):
+    specs = {}
+    with torch.no_grad():
+        for name, p in m.named_parameters():
+            lo, hi = ranges(name, list(p.shape))
+            if plus_one_norms and "norm" in name and p.dim() == 1:
+                lo, hi = (-0.2, 0.2)
+            v = fill(name, p.numel(), lo, hi)
+            p.copy_(torch.from_numpy(v).view(p.shape))
+            specs[name] = {"shape": list(p.shape), "lo": lo, "hi": hi}
+    return specs
+
+
+def causal(window=None):
+    m = torch.full((T, T), float("-inf"))
+    for i in range(T):
+        for j in range(i + 1):
+            if window is None or i - j < window:
+                m[i, j] = 0.0
+    return m.view(1, 1, T, T)
+
+
+def inputs(hidden):
+    x = torch.from_numpy(fill("input", T * hidden, -1.0, 1.0)).view(1, T, hidden)
+    return x, torch.arange(T).view(1, T)
+
+
+def write(case, what, source, hidden, specs, out, extra=None):
+    j = {
+        "what": what,
+        "source": f"transformers {transformers.__version__}, torch {torch.__version__}: {source}",
+        "tokens": T,
+        "hidden": hidden,
+        "positions": list(range(T)),
+        "input": {"lo": -1.0, "hi": 1.0},
+        "tensors": specs,
+        "output": [float(v) for v in out.detach().reshape(-1).tolist()],
+    }
+    j.update(extra or {})
+    with open(os.path.join(HERE, f"{case}.json"), "w") as f:
+        json.dump(j, f, indent=1)
+        f.write("\n")
+    print(case, out.shape, f"{float(out.abs().max()):.3f}")
+
+
+def qwen38_config():
+    from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+
+    # Qwen3.8-27B's layout (Qwen3_5ForConditionalGeneration): gated GQA with head dim 256 and partial rope 64/256 at theta 1e7, (1+w)
+    # norms, Gated DeltaNet with 16 key and 48 value heads of 128 and a conv of 4; here at widths 64/32 and 2 key / 4 value heads of 16.
+    c = Qwen3_5TextConfig(
+        hidden_size=64, num_attention_heads=4, num_key_value_heads=2, head_dim=32, num_hidden_layers=4, intermediate_size=128,
+        vocab_size=256, rms_norm_eps=1e-6, linear_num_key_heads=2, linear_num_value_heads=4, linear_key_head_dim=16,
+        linear_value_head_dim=16, linear_conv_kernel_dim=4,
+        rope_parameters={"rope_type": "default", "rope_theta": 10_000_000.0, "partial_rotary_factor": 0.25},
+        layer_types=["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+    )
+    c._attn_implementation = "eager"
+    return c
+
+
+def qwen38_attention():
+    from transformers.models.qwen3_5 import modeling_qwen3_5 as M
+
+    c = qwen38_config()
+    m = M.Qwen3_5Attention(c, 3).eval()
+    specs = fill_module(m, plus_one_norms=True)
+    x, pos = inputs(c.hidden_size)
+    rot = M.Qwen3_5TextRotaryEmbedding(c)
+    cos, sin = rot(x, pos.expand(3, 1, T))  # M-RoPE: a text position is the same on all three axes
+    out, _ = m(x, (cos, sin), causal())
+    write("qwen38_attention", "Qwen3.8 dense full-attention layer: gated GQA, (1+w) q/k norm, partial rope 0.25 at theta 1e7",
+          "Qwen3_5Attention", c.hidden_size, specs, out)
+
+
+def qwen38_gdn():
+    from transformers.models.qwen3_5 import modeling_qwen3_5 as M
+
+    c = qwen38_config()
+    m = M.Qwen3_5GatedDeltaNet(c, 0).eval()
+    specs = fill_module(m)
+    x, _ = inputs(c.hidden_size)
+    out = m(x)
+    write("qwen38_gdn", "Qwen3.8 dense linear-attention layer: Gated DeltaNet, 2 key and 4 value heads, conv 4",
+          "Qwen3_5GatedDeltaNet (torch chunked path, chunk 64)", c.hidden_size, specs, out)
+
+
+def gemma4_config():
+    from transformers.models.gemma4.configuration_gemma4 import Gemma4TextConfig
+
+    # gemma-4-12B's layout: sliding layers of head dim 256 (window 1,024, rope theta 1e4) and global layers of head dim 512 with one K=V head
+    # and proportional rope 0.25 at theta 1e6, q/k norm with a weight, v norm without; scaling 1. Here head dims 16 and 32, window 4.
+    c = Gemma4TextConfig(
+        hidden_size=64, num_attention_heads=4, num_key_value_heads=2, head_dim=16, global_head_dim=32, num_global_key_value_heads=1,
+        attention_k_eq_v=True, num_hidden_layers=2, intermediate_size=128, vocab_size=256, rms_norm_eps=1e-6, sliding_window=4,
+        layer_types=["sliding_attention", "full_attention"], num_kv_shared_layers=0, hidden_size_per_layer_input=0,
+        rope_parameters={
+            "sliding_attention": {"rope_type": "default", "rope_theta": 10_000.0},
+            "full_attention": {"rope_type": "proportional", "rope_theta": 1_000_000.0, "partial_rotary_factor": 0.25},
+        },
+    )
+    c._attn_implementation = "eager"
+    return c
+
+
+def gemma4_attention(layer, case, what):
+    from transformers.models.gemma4 import modeling_gemma4 as M
+
+    c = gemma4_config()
+    m = M.Gemma4TextAttention(c, layer).eval()
+    specs = fill_module(m)
+    x, pos = inputs(c.hidden_size)
+    lt = c.layer_types[layer]
+    cos, sin = M.Gemma4TextRotaryEmbedding(c)(x, pos, lt)
+    window = m.sliding_window
+    out, _ = m(x, (cos, sin), causal(window), {})
+    write(case, what, f"Gemma4TextAttention layer {layer} ({lt}, window {window})", c.hidden_size, specs, out, {"window": window})
+
+
+def glm53flash_kda():
+    from transformers.models.glm5_next import modeling_glm5_next as M
+    from transformers.models.glm5_next.configuration_glm5_next import Glm5NextTextConfig
+
+    # GLM-5.3-Flash's KDA layers: 64 heads of 128, conv 4, decay bounded below by -5 (as Kimi-K3's), low-rank gate and decay. Here 4 heads of 16.
+    c = Glm5NextTextConfig(hidden_size=64, linear_num_heads=4, linear_head_dim=16, linear_conv_kernel_dim=4, linear_lower_bound=-5.0,
+                           num_hidden_layers=2, layer_types=["linear_attention", "full_attention"], rms_norm_eps=1e-5)
+    m = M.Glm5NextTextLinearAttention(c, 0).eval()
+    specs = fill_module(m)
+    x, _ = inputs(c.hidden_size)
+    out = m(x)
+    write("glm53flash_kda", "GLM-5.3-Flash linear-attention layer: Kimi delta attention, decay bound -5, 4 heads of 16",
+          "Glm5NextTextLinearAttention (torch chunked path)", c.hidden_size, specs, out)
+
+
+def glm53_mla():
+    from transformers.models.glm_moe_dsa import modeling_glm_moe_dsa as M
+    from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
+
+    # GLM-5.3's MLA (GlmMoeDsa): q_lora, kv_lora 512, nope 192 + rope 64 (interleaved), v 256; the DSA indexer keeps 2,048 tokens, so a
+    # prompt shorter than that attends to every token. Here q_lora 32, kv_lora 16, nope 8 + rope 8, v 8, 4 heads.
+    c = GlmMoeDsaConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=4, q_lora_rank=32, kv_lora_rank=16, qk_nope_head_dim=8,
+                        qk_rope_head_dim=8, v_head_dim=8, num_hidden_layers=1, index_topk=64, index_n_heads=2, index_head_dim=16,
+                        rope_parameters={"rope_type": "default", "rope_theta": 10_000.0}, rms_norm_eps=1e-6)
+    c._attn_implementation = "eager"
+    m = M.GlmMoeDsaAttention(c, 0).eval()
+    specs = fill_module(m)
+    x, pos = inputs(c.hidden_size)
+    cos, sin = M.GlmMoeDsaRotaryEmbedding(c)(x, pos)
+    out, _, _ = m(x, (cos, sin), causal(), position_ids=pos)
+    write("glm53_mla", "GLM-5.3 latent attention: q_lora 32, kv_lora 16, nope 8 + interleaved rope 8, v 8, 4 heads",
+          "GlmMoeDsaAttention (indexer top-k past the prompt)", c.hidden_size, specs, out)
+
+
+CASES = {
+    "qwen38_attention": qwen38_attention,
+    "qwen38_gdn": qwen38_gdn,
+    "gemma4_sliding": lambda: gemma4_attention(0, "gemma4_sliding", "gemma-4-12B sliding layer: GQA, head dim 16, window 4, rope theta 1e4, q/k/v norm"),
+    "gemma4_global": lambda: gemma4_attention(1, "gemma4_global", "gemma-4-12B global layer: one K=V head of 32, proportional rope 0.25 at theta 1e6"),
+    "glm53flash_kda": glm53flash_kda,
+    "glm53_mla": glm53_mla,
+}
+
+if __name__ == "__main__":
+    torch.manual_seed(0)
+    for name in sys.argv[1:] or list(CASES):
+        with torch.no_grad():
+            CASES[name]()

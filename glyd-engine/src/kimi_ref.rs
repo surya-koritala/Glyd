@@ -470,6 +470,18 @@ impl RefKimi {
     }
 }
 
+#[cfg(test)]
+impl RefKimi {
+    /// Layer `l`'s mixer on its normed input, its state carried (the runtime's kind tests, `runtime::reference::ref_tests`).
+    pub(crate) fn mixer_of(&mut self, l: usize, x: &[f32]) -> Vec<f32> {
+        let c = &self.c;
+        match &mut self.layers[l].mixer {
+            Mixer::Kda(k) => RefKimi::kda(c, k, x),
+            Mixer::Mla(m) => RefKimi::mla(c, m, x),
+        }
+    }
+}
+
 /// A small Kimi-K3 of the release's format in `out` (random weights; the experts MXFP4 with E8M0 scales, the rest bf16, A_log and dt_bias fp32): 8 layers in
 /// blocks of 3 (so that the depth mix sees up to four sources), the latent attention at layers 3 and 7 (1-based 4 and 8), the dense MLP in layer 0, 16 experts of
 /// 4 a token on a latent of 128; the delta and latent attention at the release's head widths (128; nope 128, rope 64, v 128).

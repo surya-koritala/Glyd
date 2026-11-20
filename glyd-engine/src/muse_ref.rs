@@ -230,6 +230,45 @@ impl RefMuse {
     }
 }
 
+#[cfg(test)]
+impl RefMuse {
+    /// A model of attention layers only, from each layer's q, k, v, gate and o weights (the runtime's kind tests,
+    /// `runtime::reference::ref_tests`).
+    pub(crate) fn attention_only(c: ConfigMuse, w: Vec<[Vec<f32>; 5]>) -> RefMuse {
+        let layers = w
+            .into_iter()
+            .map(|[q, k, v, g, o]| Layer {
+                w_in: Vec::new(),
+                q,
+                k,
+                v,
+                g,
+                o,
+                ga: (Vec::new(), Vec::new()),
+                w_ff: Vec::new(),
+                router: Vec::new(),
+                bias: Vec::new(),
+                pre: Vec::new(),
+                w_pre: Vec::new(),
+                gu: Vec::new(),
+                down: Vec::new(),
+                w_post_e: Vec::new(),
+                post: Vec::new(),
+                w_post_ff: Vec::new(),
+                gf: (Vec::new(), Vec::new()),
+                keys: Vec::new(),
+                vals: Vec::new(),
+            })
+            .collect();
+        RefMuse { c, embed: Vec::new(), head: Vec::new(), norm: Vec::new(), layers, pos: 0 }
+    }
+
+    /// Layer `l`'s attention on its normed input at `self.pos`.
+    pub(crate) fn attention_of(&mut self, l: usize, h: &[f32]) -> Vec<f32> {
+        self.attention(l, h)
+    }
+}
+
 /// A small Muse Spark of the release's layout in `out` (bf16, the routers fp32; random weights): four layers (the window's, every position's, the window's twice), a window of 32, 16 experts of which 4,
 /// a latent of 512.
 pub fn random(out: &Path) -> Result<()> {
