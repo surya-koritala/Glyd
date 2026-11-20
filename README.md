@@ -1,14 +1,25 @@
-<img src="docs/img/glyd-logo.svg" alt="Glyd" width="72">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/glyd-mark-white.svg">
+    <img src="docs/img/glyd-mark.svg" alt="Glyd" width="48">
+  </picture>
+</p>
 
-# Glyd
+<h1 align="center">Glyd</h1>
 
-Compress and run open LLMs on your GPUs, end to end.
+<p align="center"><strong>Compress and run open LLMs on your GPUs, end to end.</strong></p>
 
+<p align="center">
 Glyd packs a model's weights and KV cache losslessly, fits the model to the GPUs you have, and runs and serves it on its
 own Rust engine. It works from one consumer card to a multi-GPU server. Apache-2.0.
+</p>
 
-[Docs](https://surya-koritala.github.io/Glyd/) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) ·
-[Security](SECURITY.md)
+<p align="center">
+  <a href="https://surya-koritala.github.io/Glyd/">Docs</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="SECURITY.md">Security</a>
+</p>
 
 ## Features
 
