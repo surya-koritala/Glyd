@@ -1423,6 +1423,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The headers of real GGUF files (`GLYD_TEST_GGUF_HEADERS`: a directory of `NAME.head`, the file's first bytes, with `NAME.size`, its length): each parses and is described.
+    #[test]
+    #[ignore = "needs GLYD_TEST_GGUF_HEADERS"]
+    fn real_headers_parse_and_are_described() {
+        let dir = PathBuf::from(std::env::var_os("GLYD_TEST_GGUF_HEADERS").expect("set GLYD_TEST_GGUF_HEADERS"));
+        let mut heads: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "head")).collect();
+        heads.sort();
+        assert!(!heads.is_empty());
+        for p in &heads {
+            let len: u64 = std::fs::read_to_string(p.with_extension("size")).unwrap().trim().parse().unwrap();
+            let g = Gguf::parse_header(&std::fs::read(p).unwrap(), len).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            let d = g.description().unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            let types: Vec<String> = g.types().iter().map(|(t, n)| format!("{t}x{n}")).collect();
+            eprintln!(
+                "{:<70} v{} {:<10} layers {:?} hidden {:?} heads {:?}/{:?} experts {:?} vocab {:?} {:?}/{:?} tensors {} [{}]",
+                p.file_stem().unwrap().to_string_lossy().chars().take(70).collect::<String>(),
+                g.version,
+                d.arch,
+                d.layers,
+                d.hidden,
+                d.heads,
+                d.kv_heads,
+                d.experts,
+                d.vocab,
+                d.tokenizer,
+                d.tokenizer_pre,
+                g.tensors.len(),
+                types.join(" ")
+            );
+            assert!(d.layers.is_some() && d.hidden.is_some() && d.context.is_some(), "{}", p.display());
+        }
+    }
+
     #[test]
     fn a_level_after_the_model_is_kept_apart() {
         assert_eq!(split_level("m.gguf:kestrel"), ("m.gguf", ":kestrel"));

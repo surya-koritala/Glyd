@@ -18,6 +18,10 @@ every earlier format.
   for another computer (presets: rtx4060-laptop, rtx4080s, rtx4090, 2x3090, l4, a6000, a100-80g, h100, 8xh100, rx7900xtx,
   m4max-64g). Predictions are checked against measured runs (src/plan.rs tests).
 - The engine's five level tables and tag parsers are one module (src/levels.rs).
+- `glyd run` and `glyd serve` take a GGUF: a `.gguf` file, a directory of them, or a Hub repo that holds them and no safetensors. The engine reads the file's header, metadata and
+  tensors in place (src/gguf.rs; GGUF versions 2 and 3, every ggml type's size checked) and, for a Qwen3 model stored as BF16, makes the Hugging Face checkpoint it describes in the cache
+  (config, tokenizer and chat template from the file's own metadata, the weights as they are) and packs that as it packs any checkpoint. F32 and F16 tensors are read where every value is
+  a bf16 value exactly (llama.cpp keeps a BF16 model's norms in F32). A quantized GGUF (Q8_0, Q4_K_M, the IQ types ...) is refused, naming the types in it: its kernels are not in the engine yet.
 - Repository: concise developer docs (`docs/architecture.md`, `ROADMAP.md`, `CONTRIBUTING.md`); codec research records moved
   under `research/codec/`, engine design notes under `glyd-engine/docs/design/`. CI split by path (`ci.yml`, `python.yml`,
   `kernels.yml`); GPU tests on a self-hosted GPU machine (`gpu.yml`) or an ephemeral cloud instance (`gpu-cloud.yml`).
