@@ -352,13 +352,29 @@ impl Peak {
 struct Server {
     child: Child,
     url: String,
+    /// The directory of this run's server log (private to this run, removed with the server).
+    dir: std::path::PathBuf,
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
         self.child.kill().ok();
         self.child.wait().ok();
+        std::fs::remove_dir_all(&self.dir).ok();
     }
+}
+
+/// A directory of this run alone (the process and the time in its name, made new, 0700 where the system has modes): a name another user could have made first is an error, not a place to write.
+fn private_dir() -> Result<std::path::PathBuf> {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("glyd-bench-{}-{nanos}", std::process::id()));
+    std::fs::create_dir(&dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| Error(e.to_string()))?;
+    }
+    Ok(dir)
 }
 
 fn free_port() -> Result<u16> {
@@ -373,8 +389,9 @@ fn start_server(model: &str, a: &Args) -> Result<Server> {
         None => free_port()?,
     };
     let exe = std::env::current_exe().map_err(|e| Error(e.to_string()))?;
-    let log = std::env::temp_dir().join(format!("glyd-bench-server-{}.log", std::process::id()));
-    let out = std::fs::File::create(&log).map_err(|e| Error(format!("{}: {e}", log.display())))?;
+    let dir = private_dir()?;
+    let log = dir.join("server.log");
+    let out = std::fs::OpenOptions::new().write(true).create_new(true).open(&log).map_err(|e| Error(format!("{}: {e}", log.display())))?;
     let mut cmd = Command::new(exe);
     cmd.args(["serve", model, "--host", "127.0.0.1", "--port", &port.to_string()]);
     for f in ["ctx", "users", "layout", "chunk"] {
@@ -387,7 +404,7 @@ fn start_server(model: &str, a: &Args) -> Result<Server> {
         .stderr(Stdio::from(out))
         .spawn()
         .map_err(|e| Error(format!("serve: {e}")))?;
-    let mut server = Server { child, url: format!("http://127.0.0.1:{port}") };
+    let mut server = Server { child, url: format!("http://127.0.0.1:{port}"), dir };
     let up = Instant::now();
     loop {
         if let Ok(Some(status)) = server.child.try_wait() {
