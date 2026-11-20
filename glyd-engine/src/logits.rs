@@ -889,8 +889,36 @@ fn fixture_files(dir: &Path, id: &str) -> Result<Vec<PathBuf>> {
     Ok(v)
 }
 
-fn scratch_dir(a: &crate::args::Args) -> PathBuf {
-    a.flag("scratch").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("glyd-logits"))
+/// Where the random models are made: --scratch DIR (the caller's own, kept), else a directory of this run alone (the process and the time in its name, 0700 where the system has modes), removed
+/// when the run ends: a path another user could have made first, or one a stale run left, is never read back as a model.
+struct Scratch {
+    dir: PathBuf,
+    own: bool,
+}
+
+impl Scratch {
+    fn new(a: &crate::args::Args) -> Result<Scratch> {
+        if let Some(d) = a.flag("scratch") {
+            return Ok(Scratch { dir: PathBuf::from(d), own: false });
+        }
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!("glyd-logits-{}-{nanos}", std::process::id()));
+        io(std::fs::create_dir(&dir))?; // (an error where it exists)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            io(std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)))?;
+        }
+        Ok(Scratch { dir, own: true })
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if self.own {
+            std::fs::remove_dir_all(&self.dir).ok();
+        }
+    }
 }
 
 fn fixtures_dir(a: &crate::args::Args) -> PathBuf {
@@ -915,12 +943,12 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         return Ok(());
     }
     let (cpu, only_level) = (a.has("cpu-ref"), a.flag("level"));
-    let scratch = scratch_dir(a);
+    let scratch = Scratch::new(a)?;
     let (mut failed, mut ran) = (Vec::new(), 0usize);
     let t_all = std::time::Instant::now();
     let gpu = gpu_label().ok();
     for c in &all {
-        let dir = model_dir(c, &scratch)?;
+        let dir = model_dir(c, &scratch.dir)?;
         for path in fixture_files(&fixtures, c.id)? {
             let fx = Fixture::read(&path)?;
             if cpu && fx.gpu.is_some() {
@@ -981,6 +1009,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         Ok(())
     } else {
         println!("OFF: {}", failed.join(", "));
+        drop(scratch); // (the process exits next: the private directory is removed first)
         std::process::exit(1);
     }
 }
@@ -1029,8 +1058,8 @@ fn git_sha() -> String {
 pub fn record(a: &crate::args::Args) -> Result<()> {
     let c = find_case(a.need(1, "CASE")?)?;
     let from = a.flag("from").unwrap_or("engine");
-    let scratch = scratch_dir(a);
-    let dir = model_dir(&c, &scratch)?;
+    let scratch = Scratch::new(a)?;
+    let dir = model_dir(&c, &scratch.dir)?;
     let (prompt, decode, long) = match a.flag("tokens") {
         Some(f) => {
             let v: Value = serde_json::from_str(&io(std::fs::read_to_string(f))?).map_err(|e| Error(format!("{f}: {e}")))?;
