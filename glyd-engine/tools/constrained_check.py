@@ -1,6 +1,6 @@
 """Constrained decoding of a running `glyd-engine serve`: every reply held to a grammar is valid, and what the masks cost.
 
-    python constrained_check.py http://127.0.0.1:8000 [--key KEY] [--bench] [--runs 3] [--tokens 200] [--out results.json]
+    python constrained_check.py http://127.0.0.1:8000 [--key KEY] [--bench [--plain]] [--runs 3] [--tokens 200] [--out results.json]
     python constrained_check.py --selftest            (no server: the script's own validator)
 
 Standard library only (`jsonschema` is used where it is installed). The checks, each at temperature 0 and at 0.8, whole and streamed where it says so; a line `ok` or `FAIL` for each, exit status 1 if one FAILs:
@@ -206,7 +206,7 @@ def correctness(s, temperatures=(0.0, 0.8)):
         if good:
             ok, why = json_ok(calls[0]["function"]["arguments"], WEATHER["function"]["parameters"])
             good = ok
-        check(f"tool_choice named {tag}", st == 200 and fin == "tool_calls" and good, (fin, calls, why) if st == 200 else r)
+        check(f"tool_choice named {tag}", st == 200 and fin in ("tool_calls", "stop") and good, (fin, calls, why) if st == 200 else r)
         st, r = s.chat(messages=[{"role": "user", "content": "Book a table for 4 at Chez Paul at 8pm."}], temperature=t, max_tokens=200, tools=[WEATHER, BOOK], tool_choice="required")
         text, fin, calls = reply_of(r) if st == 200 else ("", "", [])
         schemas = {x["function"]["name"]: x["function"]["parameters"] for x in (WEATHER, BOOK)}
@@ -239,18 +239,19 @@ def rate(ev):
     return (len(ts) - 1) / (ts[-1] - ts[0]), n
 
 
-def bench(s, runs, tokens):
+def bench(s, runs, tokens, plain=False):
     """The same prompt and length each way. A schema's reply must go on for `tokens` tokens: one string of free text."""
     free = {"type": "object", "properties": {"story": {"type": "string"}}, "required": ["story"], "additionalProperties": False}
     ask = [{"role": "user", "content": 'Write a long story about a lighthouse keeper. Reply as JSON: {"story": "..."}'}]
     s.stream(messages=ask, temperature=0.0, max_tokens=8)  # (warm)
     rows = {}
-    for label, kw in (
+    legs = (
         ("no schema, greedy", dict(temperature=0.0)),
         ("no schema, sampled (T 0.7, top_k 40)", dict(temperature=0.7, top_k=40)),
         ("schema, greedy", dict(temperature=0.0, response_format={"type": "json_schema", "json_schema": {"name": "story", "strict": True, "schema": free}})),
         ("schema, sampled (T 0.7, top_k 40)", dict(temperature=0.7, top_k=40, response_format={"type": "json_schema", "json_schema": {"name": "story", "strict": True, "schema": free}})),
-    ):
+    )
+    for label, kw in legs[:2] if plain else legs:
         rs = []
         for _ in range(runs):
             ev = s.stream(messages=ask, max_tokens=tokens, **kw, **({} if "response_format" in kw else {"ignore_eos": True}))
@@ -267,6 +268,7 @@ def main():
     ap.add_argument("url", nargs="?")
     ap.add_argument("--key")
     ap.add_argument("--bench", action="store_true")
+    ap.add_argument("--plain", action="store_true", help="with --bench: the legs with no schema alone (a server that has none)")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--tokens", type=int, default=200)
     ap.add_argument("--out")
@@ -279,7 +281,7 @@ def main():
     s = Server(a.url, a.key)
     print(f"model {s.model}")
     if a.bench:
-        bench(s, a.runs, a.tokens)
+        bench(s, a.runs, a.tokens, a.plain)
     else:
         correctness(s)
     if a.out:

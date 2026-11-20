@@ -372,9 +372,9 @@ fn without_vllm(msg: &str) -> String {
 
 /// The instruction for JSON mode where the server runs alone and the request asks for it (`response_format` json_object, or json_schema with its schema; vLLM's `guided_json` and `structured_outputs` json): the grammar
 /// (`constraint_spec`) holds the reply to it, and the prompt says what it is, so that the model writes toward it.
-fn json_rule(v: &Value, standalone: bool) -> Option<String> {
+fn json_rule(v: &Value) -> Option<String> {
     let rule = "Reply with one JSON object and nothing else: no code fence, no text before or after it.";
-    match constraint_spec(v).ok().flatten().filter(|_| standalone)? {
+    match constraint_spec(v).ok().flatten()? {
         Spec::JsonObject => Some(rule.to_string()),
         Spec::JsonSchema(schema) => Some(format!("{rule} It must match this JSON schema: {schema}")),
         _ => None,
@@ -622,23 +622,10 @@ fn asked(v: &Value, name: &str, default: &str) -> bool {
 
 /// What a request asks for that this server does not do, said instead of ignored (a client that asks for a JSON schema, a beam search or the prompt's log-probabilities and gets none of them would go on as if it had).
 pub fn unsupported(v: &Value) -> Option<String> {
-    unsupported_with(v, STANDALONE.load(Ordering::Relaxed))
-}
-
-fn unsupported_with(v: &Value, standalone: bool) -> Option<String> {
     let yet = "is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)";
-    // (the grammars: where the server runs alone, with its own words for what is wrong with them; else they are vLLM's)
-    if standalone {
-        if let Err(why) = constraint_spec(v) {
-            return Some(why);
-        }
-    } else if let Some(t) = v.get("response_format").and_then(|r| r.get("type")).and_then(Value::as_str).filter(|t| *t != "text") {
-        return Some(format!("response_format of type {t} (constrained decoding) {yet}"));
-    } else if let Some(name) = ["structured_outputs", "guided_json", "guided_regex", "guided_choice", "guided_grammar", "guided_decoding_backend"]
-        .iter()
-        .find(|n| v.get(n).is_some_and(|x| *x != Value::Null))
-    {
-        return Some(format!("{name} (constrained decoding) {yet}"));
+    // (the grammars are done, on every model: what is wrong with one is said)
+    if let Err(why) = constraint_spec(v) {
+        return Some(why);
     }
     for name in CONSTRAINED {
         if v.get(name).is_some_and(|x| *x != Value::Null) {
@@ -662,29 +649,36 @@ fn now() -> u64 {
 const MAX_LOGPROBS: i64 = 20;
 
 /// The grammar the reply must follow, compiled: its form (`constraint_spec`), or, where the call is forced (`tool_choice` a function or required) and the model's call format is one the grammars know, the call.
-/// None where the request asks for neither, and where the server does not run alone (vLLM's own refusal stands).
+/// None where the request asks for neither.
 fn constraint_of(sh: &Shared, v: &Value, api: &Api) -> std::result::Result<Option<Arc<crate::constrain::Constraint>>, String> {
-    constraint_of_with(sh, v, api, STANDALONE.load(Ordering::Relaxed))
-}
-
-fn constraint_of_with(sh: &Shared, v: &Value, api: &Api, standalone: bool) -> std::result::Result<Option<Arc<crate::constrain::Constraint>>, String> {
-    if !standalone {
-        return Ok(None);
-    }
+    let standalone = STANDALONE.load(Ordering::Relaxed);
     let spec = constraint_spec(v)?;
     let forced = api.tools.as_ref().and_then(|t| {
         let named = match &t.choice {
             ToolChoice::Named(n) => Some(n.clone()),
-            ToolChoice::Required if t.list.len() == 1 => t.list[0].get("function").and_then(|f| f.get("name")).and_then(Value::as_str).map(str::to_string),
+            // (as `chat_text_of` has it: a call required of one tool is a call of that tool where the server runs alone)
+            ToolChoice::Required if standalone && t.list.len() == 1 => {
+                t.list[0].get("function").and_then(|f| f.get("name")).and_then(Value::as_str).map(str::to_string)
+            }
             ToolChoice::Required => None,
             _ => return None,
         };
         let c = sh.chat.as_ref().filter(|c| !c.is_xtml())?;
         crate::constrain::call_grammar(&t.list, named.as_deref(), Format::of(c)).map(Spec::Grammar)
     });
+    // (a form the request names is refused where it cannot be held; a forced call is opened by the prompt all the same, and goes without the grammar)
+    let call = spec.is_none();
     let Some(spec) = forced.or(spec) else { return Ok(None) };
-    let g = sh.tok.grammars(sh.vocab).map_err(|e| format!("constrained decoding is not available for this model: {e}"))?;
-    g.compile(&spec).map(Some).map_err(|e| format!("the reply's grammar: {e}"))
+    let g = match sh.tok.grammars(sh.vocab) {
+        Ok(g) => g,
+        Err(_) if call => return Ok(None),
+        Err(e) => return Err(format!("constrained decoding is not available for this model: {e}")),
+    };
+    match g.compile(&spec) {
+        Ok(c) => Ok(Some(c)),
+        Err(_) if call => Ok(None),
+        Err(e) => Err(format!("the reply's grammar: {e}")),
+    }
 }
 
 /// What a request asks for beside its sampling: whether it streams and what the stream carries, how many choices, the log-probabilities.
@@ -1026,7 +1020,7 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
     }
     // (a reply held to a grammar of its own, not a forced call's: it begins at once, so the thinking is closed)
     let grammar_reply = r.params.constraint.is_some() && api.tools.as_ref().map_or(true, |t| t.choice == ToolChoice::None || t.choice == ToolChoice::Auto);
-    if let Some(rule) = json_rule(v, standalone) {
+    if let Some(rule) = json_rule(v) {
         if api.tools.is_some() {
             return err("response_format with tools is not supported yet: send one or the other");
         }
@@ -2603,12 +2597,11 @@ mod tests {
         );
         assert_eq!(without_vllm("a (b) c"), "a (b) c");
         let v = |t: &str| json::parse(t).unwrap();
-        assert_eq!(json_rule(&v(r#"{"response_format":{"type":"json_object"}}"#), false), None);
-        assert!(json_rule(&v(r#"{"response_format":{"type":"json_object"}}"#), true).unwrap().starts_with("Reply with one JSON object"));
-        assert!(json_rule(&v(r#"{"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{"type":"object"}}}}"#), true)
+        assert!(json_rule(&v(r#"{"response_format":{"type":"json_object"}}"#)).unwrap().starts_with("Reply with one JSON object"));
+        assert!(json_rule(&v(r#"{"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{"type":"object"}}}}"#))
             .unwrap()
             .ends_with(r#"schema: {"type":"object"}"#));
-        assert_eq!(json_rule(&v(r#"{"response_format":{"type":"text"}}"#), true), None);
+        assert_eq!(json_rule(&v(r#"{"response_format":{"type":"text"}}"#)), None);
     }
 
     /// The forms of a reply a request asks for, as OpenAI's and vLLM's names give them.
@@ -2641,16 +2634,15 @@ mod tests {
         assert!(bad(r#"{"guided_regex":5}"#).contains("string"));
         assert!(bad(r#"{"structured_outputs":{"nonsense":1}}"#).contains("structured_outputs.nonsense"));
         assert!(bad(r#"{"guided_regex":"a","guided_choice":["b"]}"#).contains("one form"));
-        // where the server runs alone the grammars are done and what is wrong with them is said; else they are vLLM's
-        let u = |t: &str, standalone| unsupported_with(&json::parse(t).unwrap(), standalone);
+        // the grammars are done, and what is wrong with one is said
+        let u = |t: &str| unsupported(&json::parse(t).unwrap());
         for t in [r#"{"response_format":{"type":"json_object"}}"#, r#"{"guided_json":{}}"#, r#"{"structured_outputs":{"regex":"a"}}"#] {
-            assert_eq!(u(t, true), None, "{t}");
-            assert!(u(t, false).is_some(), "{t}");
+            assert_eq!(u(t), None, "{t}");
         }
-        assert!(u(r#"{"guided_choice":[]}"#, true).unwrap().contains("guided_choice"));
-        assert!(u(r#"{"guided_whitespace_pattern":"x"}"#, true).is_some());
+        assert!(u(r#"{"guided_choice":[]}"#).unwrap().contains("guided_choice"));
+        assert!(u(r#"{"guided_whitespace_pattern":"x"}"#).is_some());
         // (the prompt says what the reply is to be)
-        let r = |t: &str| json_rule(&json::parse(t).unwrap(), true);
+        let r = |t: &str| json_rule(&json::parse(t).unwrap());
         assert!(r(&format!(r#"{{"guided_json":{schema}}}"#)).unwrap().ends_with(schema));
         assert_eq!(r(r#"{"guided_regex":"a"}"#), None);
     }
@@ -2662,8 +2654,8 @@ mod tests {
         assert_eq!(u(r#"{"n":1,"logprobs":false,"tools":[],"response_format":{"type":"text"},"logit_bias":{}}"#), None);
         assert_eq!(u(r#"{"n":2}"#), None); // (several choices are done: see `several_choices_from_one_prompt`)
         assert_eq!(u(r#"{"tools":[{"type":"function"}]}"#), None); // (tools are done: see `tool_calls_through_the_api`; `invalid` says what is wrong in them)
-        assert!(u(r#"{"response_format":{"type":"json_object"}}"#).is_some());
-        // (log-probabilities are done: see `log_probabilities_through_the_api`)
+        assert_eq!(u(r#"{"response_format":{"type":"json_object"}}"#), None); // (grammars are done: see `the_forms_of_a_reply_a_request_asks_for`)
+                                                                              // (log-probabilities are done: see `log_probabilities_through_the_api`)
         assert_eq!(u(r#"{"logprobs":true}"#), None);
         // (a logit bias is done now: see `logit_bias_as_vllm_takes_it`)
         assert_eq!(u(r#"{"logit_bias":{"50256":-100}}"#), None);
@@ -3377,10 +3369,9 @@ mod tests {
         assert_eq!(prefix, "");
         // (the grammar of a request is the one the request names: forms that name none, and calls where the tools' format has no grammar, have none)
         let api = |b: &str| api_of(&json::parse(b).unwrap(), true, 2048).unwrap();
-        let g = |b: &str| constraint_of_with(&shared, &json::parse(b).unwrap(), &api(b), true).unwrap().is_some();
+        let g = |b: &str| constraint_of(&shared, &json::parse(b).unwrap(), &api(b)).unwrap().is_some();
         assert!(!g(&format!("{{{msgs}}}")));
         assert!(!g(&format!("{{{msgs},\"tools\":[{WEATHER}]}}")));
-        assert!(constraint_of_with(&shared, &json::parse("{}").unwrap(), &api(&format!("{{{msgs}}}")), false).unwrap().is_none());
     }
 
     /// What the model is shown: the tools in the template as vLLM's chat path gives them (`tojson` as Python writes it), a conversation with a call and its result, and the opening of a forced call at the end of the
@@ -4182,16 +4173,9 @@ mod tests {
             (",\"allowed_token_ids\":[]", "allowed_token_ids is not None and empty!"),
             (",\"allowed_token_ids\":[3000]", "in allowed_token_ids contain out-of-vocab"),
             (",\"seed\":1.5", "`seed` must be an integer."),
-            (
-                ",\"response_format\":{\"type\":\"json_object\"}",
-                "response_format of type json_object (constrained decoding) is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)",
-            ),
-            (
-                ",\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"x\",\"schema\":{}}}",
-                "response_format of type json_schema (constrained decoding) is not supported",
-            ),
-            (",\"structured_outputs\":{\"json\":{}}", "structured_outputs (constrained decoding) is not supported by this engine yet"),
-            (",\"guided_json\":{}", "guided_json (constrained decoding) is not supported"),
+            (",\"guided_whitespace_pattern\":\"x\"", "guided_whitespace_pattern (constrained decoding) is not supported"),
+            (",\"guided_choice\":[]", "guided_choice must be a list of strings"),
+            (",\"response_format\":{\"type\":\"xml\"}", "response_format of type xml is not supported"),
             (",\"bad_words\":[\"x\"]", "bad_words is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"),
             (",\"prompt_logprobs\":1", "prompt_logprobs is not supported"),
             (",\"suffix\":\"x\"", "suffix is not supported"),

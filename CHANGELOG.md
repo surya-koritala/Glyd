@@ -18,6 +18,8 @@ every earlier format.
   for another computer (presets: rtx4060-laptop, rtx4080s, rtx4090, 2x3090, l4, a6000, a100-80g, h100, 8xh100, rx7900xtx,
   m4max-64g). Predictions are checked against measured runs (src/plan.rs tests).
 - The engine's five level tables and tag parsers are one module (src/levels.rs).
+- Constrained decoding (llguidance): `response_format` `json_object` and `json_schema`, vLLM's `structured_outputs` and `guided_json`, `guided_regex`, `guided_choice` and `guided_grammar`, and
+  forced tool calls (`tool_choice` a function or `required`) are enforced at sampling time by token masks, on every model the server runs (`glyd-engine/src/constrain.rs`); they were refused before.
 - Repository: concise developer docs (`docs/architecture.md`, `ROADMAP.md`, `CONTRIBUTING.md`); codec research records moved
   under `research/codec/`, engine design notes under `glyd-engine/docs/design/`. CI split by path (`ci.yml`, `python.yml`,
   `kernels.yml`); GPU tests on a self-hosted GPU machine (`gpu.yml`) or an ephemeral cloud instance (`gpu-cloud.yml`).
