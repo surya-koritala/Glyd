@@ -480,6 +480,19 @@ impl RefKimi {
             Mixer::Mla(m) => RefKimi::mla(c, m, x),
         }
     }
+
+    /// The depth mix of `src` with a norm and a projection weight.
+    pub(crate) fn mix_of(src: &[&[f32]], w_n: &[f32], w_p: &[f32]) -> Vec<f32> {
+        mix(src, w_n, w_p)
+    }
+
+    /// Layer `l`'s MLP or MoE on its normed input.
+    pub(crate) fn ffn_of(&self, l: usize, x: &[f32]) -> Vec<f32> {
+        match &self.layers[l].ffn {
+            Ffn::Dense(w) => self.mlp(w, x),
+            Ffn::Moe(m) => self.moe(m, x),
+        }
+    }
 }
 
 /// A small Kimi-K3 of the release's format in `out` (random weights; the experts MXFP4 with E8M0 scales, the rest bf16, A_log and dt_bias fp32): 8 layers in
