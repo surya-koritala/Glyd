@@ -490,7 +490,10 @@ fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<st
     let local_only = !a.has("host");
     for p in port..=port.saturating_add(if explicit { 0 } else { 20 }) {
         match server::listen(&format!("{host}:{p}"), name, window, api_key(a), local_only, tx.clone()) {
-            Ok(addr) => return Ok(addr),
+            Ok(addr) => {
+                also_on_ollamas_port(a, &host, name, window, local_only, &tx);
+                return Ok(addr);
+            }
             Err(e) if e.0.to_lowercase().contains("in use") && !explicit => continue,
             Err(e) if e.0.to_lowercase().contains("in use") => {
                 return Err(Refusal::new(format!("port {p} is in use by another program"), format!("Choose another: --port {}", p + 1)))
@@ -499,6 +502,20 @@ fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<st
         }
     }
     Err(Refusal::new(format!("ports {port} to {} are all in use", port + 20), "Choose another: --port N"))
+}
+
+/// `--ollama-port PORT` (Ollama's own is 11434): the same server also listens there, for the programs that look for Ollama at its port. Only where the port is free: where it is not (Ollama runs there), that is said and
+/// the server goes on at its own port, where Ollama's API is too (`/api`). The address, the key and the checks of the Host and the Origin are the server's own.
+fn also_on_ollamas_port(a: &Args, host: &str, name: &str, window: usize, local_only: bool, tx: &mpsc::Sender<Job>) {
+    let Some(p) = a.flag("ollama-port") else { return };
+    let Some(port) = p.parse::<u16>().ok().filter(|&p| p > 0) else {
+        eprintln!("glyd: --ollama-port {p}: not a port (Ollama's is 11434)");
+        return;
+    };
+    match server::listen(&format!("{host}:{port}"), name, window, api_key(a), local_only, tx.clone()) {
+        Ok(addr) => eprintln!("glyd: Ollama's API is also at http://{addr}"),
+        Err(e) => eprintln!("glyd: --ollama-port {port}: {}: Ollama's API stays at the server's own port", e.0),
+    }
 }
 
 /// What the address and the key leave open, said where the server starts: an address the user chose turns the checks of the program's own off (a loopback one too), and one that is not this computer's own opens the model to the network.
@@ -2453,6 +2470,31 @@ mod tests {
         assert_eq!((status(own, "evil.example"), status(own, "localhost:8000"), status(own, "127.0.0.1")), (421, 200, 200));
         let chosen = listen(&args(&["serve", "m", "--host", "127.0.0.1", "--port", "0"]), "m", 4096, tx).map_err(|r| r.to_string()).unwrap();
         assert_eq!((status(chosen, "evil.example"), status(chosen, "localhost:8000")), (200, 200));
+    }
+
+    /// `--ollama-port N` makes the server listen on N too, where N is free, with the checks the server's own address has; a port in use is said and does not stop the server.
+    #[test]
+    fn ollamas_port_is_taken_only_where_it_is_free() {
+        let free = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let version = |port: u16, host: &str| -> String {
+            let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            c.write_all(format!("GET /api/version HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            let mut out = String::new();
+            c.read_to_string(&mut out).unwrap();
+            out.lines().next().unwrap_or("").to_string()
+        };
+        let (tx, _rx) = mpsc::channel();
+        let p = free();
+        let own = listen(&args(&["serve", "m", "--port", "0", "--ollama-port", &p.to_string()]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        assert_ne!(own.port(), p);
+        // (the engine's thread is not running here: a connection that is answered by the listener alone, the Host check, shows the port is the server's)
+        assert!(version(p, "evil.example").contains("421"), "the Host check is the server's own");
+        // a port in use: the server starts all the same
+        let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let q = busy.local_addr().unwrap().port();
+        assert!(listen(&args(&["serve", "m", "--port", "0", "--ollama-port", &q.to_string()]), "m", 4096, tx.clone()).is_ok());
+        // not a port: said, and the server starts
+        assert!(listen(&args(&["serve", "m", "--port", "0", "--ollama-port", "x"]), "m", 4096, tx).is_ok());
     }
 
     #[test]

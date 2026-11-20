@@ -1,0 +1,17 @@
+[book]
+title = "Glyd user guide"
+description = "Install, run, serve and connect Glyd's engine."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/surya-koritala/Glyd"
+edit-url-template = "https://github.com/surya-koritala/Glyd/edit/main/docs/guide/{path}"
+no-section-label = true
+
+[output.html.search]
+enable = true

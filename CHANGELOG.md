@@ -6,8 +6,9 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.33.0 — 2026-11-20
 
+- Server: Ollama's API under `/api` for the programs that talk to Ollama (Open WebUI, Continue, LangChain, the `ollama` libraries): `chat` and `generate` as JSON lines or one object (`options`, `format` with a JSON schema, `think`, tools, images, `suffix`), `tags`, `show` (with `capabilities` and `context_length`), `ps`, `version`, `pull` and `delete` for the one model a server holds; `--ollama-port N` listens on Ollama's port too where it is free. The key guards `/api`. Checked with the `ollama` Python library on Qwen3-8B.
 - Server: the Messages API (`/v1/messages`) is its own module and complete for the Anthropic SDKs and Claude Code: thinking blocks (`thinking_delta`, `signature_delta`), `stop_sequence`, `x-api-key`, Anthropic's error form, `max_tokens` required, tools Anthropic runs left out, `ping` after `message_start`; the request goes through the chat path, so its grammars and refusals apply. Checked with the `anthropic` SDK and with Claude Code 2.1 (Read and Write tools) on Qwen3-8B.
 - Server: `POST /v1/responses` (OpenAI's Responses API, stateless: input items, instructions, function tools, `text.format`, every stream event), `suffix` on `/v1/completions` for fill in the middle (a model with Qwen's, StarCoder's or DeepSeek-Coder's FIM tokens), `GET /v1/models/ID`, and every error in OpenAI's form (`error.type`, `param`, `code`; 401 says `invalid_api_key`, a prompt past the context `context_length_exceeded`); a stream that asks for its usage has `usage: null` in each chunk.
 - Engine: after a short prompt pass for requests that came in together, the round's decode step waits for the rest of them (first token with 4 short prompts at once 80 to 51 ms on an RTX 4080 SUPER, tokens unchanged), and the prompts of up to 8 requests that arrive together run in one pass (8 short prompts at once 162 to 65 ms on an RTX 4080 SUPER; a reply's last bits can then differ from the same prompt's alone, `GLYD_ENGINE_BATCH_PREFILL=0` keeps every reply identical to solo; `benchmarks/gpu/rtx4080s-batched-prefill-2026-11-20`).
@@ -35,6 +36,8 @@ every earlier format.
 - On Linux with an NVIDIA GPU, install.sh installs the Rust `glyd`, Glyd's engine and its GPU library in one folder: about 100 MB, no
   Python, no PyTorch. `GLYD_WITH_VLLM=1` installs the Python tool with vLLM as before (about 8 GB), for the bf16 models the engine does not
   run; a machine that already has the Python tool keeps it.
+- `install.sh` takes `GLYD_RELEASE_URL` (a mirror, or `file:///DIR`) in place of the GitHub release's download URL, for the compression program's and the engine's tarballs.
+- Every artifact of a release is built from this repository: `release.yml` (the CLI tarballs and wheels) and `release-gpu.yml` (the GPU libraries, the engine, the `glyd-gpu` wheels and the `glyd-engine-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` bundles with their `.sha256`).
 - `glyd run` and `glyd serve` run DeepSeek-V4-Flash, GLM-5.3-Flash, Muse Spark and Nemotron 3.5 Lightning on Glyd's engine at penguin:
   the release's weights exactly (an FP8 or FP4 release as it is, a bf16 one lossless). The layers are split over the machine's GPUs by
   their free memory (`--split CUTS --devices GPUS` chooses); where the GPUs do not hold the model, `run` says how much it needs and stops.
@@ -60,6 +63,14 @@ every earlier format.
 - `glyd run google/gemma-4-12B-it` (or `google/gemma-4-31B-it`, or their penguin repos) on a GPU without room for penguin names the wren repo and the memory
   it takes, where it fits (`glyd run glyd/gemma-4-12B-wren fits: ...`), and stops there; it handed the model to vLLM, whose bf16 needs more memory still, and
   which printed a second estimate and suggested a model Glyd does not run.
+- One program: `glyd` with the engine linked (the `engine` feature of the root crate, which the engine bundle of a release is built with). `glyd run`, `serve`, `pull`, `fit`, `doctor`,
+  `login`, `fetch`, `supports`, `preflight`, `prepare`, `costs`, `rates` and `rangeworker` are its own, with no `glyd-engine` on PATH; `glyd-engine` stays, as a link to `glyd` (or a copy named so), which
+  takes the engine's old command line, and as the cargo package. `fit` and `pull` reach the engine where they used to print "Unknown option"; with no engine here the answer says so. `glyd` with no words
+  explains the models first and the exit status (0 done, 1 an error, 3 not supported). install.sh puts the one program in place of the compression program and links `glyd-engine` to it.
+- Model names: `glyd run qwen3.5`, `glyd pull qwen3.5:27b:swift`, `glyd fit gemma4:31b`. A name is `NAME[:SIZE][:LEVEL]` from a versioned manifest (`glyd-engine/models.json`, in the program; `$GLYD_MODELS` or `<cache>/models.json` names another),
+  a tag of letters only is a level and `:27b` a size, a name with no size is the family's default, and a name that is none says the names and the nearest one. A Hub id, a directory and a GGUF file are taken as before.
+  `glyd pull` downloads a model (the level's pre-packed repo where there is one, else the release's own weights, which the first run packs); `glyd ls [--all] [--json]` lists what the Hub's cache holds with its level and size
+  on disk and the packed copies made for this GPU; `glyd rm NAME|ORG/NAME[:LEVEL]` takes a model out of the cache and its packed copies, and no other model's.
 
 ## v0.32.1 — 2026-10-17
 
