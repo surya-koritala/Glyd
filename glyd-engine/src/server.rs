@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod anthropic;
+mod ollama;
 mod responses;
 
 const PAGE: &str = include_str!("../data/chat.html");
@@ -66,6 +67,8 @@ pub enum Job {
 pub enum Endpoint {
     /// OpenAI's Responses API (stateless).
     Responses,
+    /// Ollama's REST API (`/api/...`): which of its calls is in the request's path.
+    Ollama,
 }
 
 pub enum Piece {
@@ -1281,20 +1284,25 @@ struct Prepared {
 }
 
 fn prepare(sh: &Shared, o: &Value) -> std::result::Result<Prepared, Refused> {
+    prepare_as(sh, o, true)
+}
+
+/// `prepare` for a chat (messages) or, where `chat` is false, a plain prompt (`prompt`, and `suffix` for a fill in the middle).
+fn prepare_as(sh: &Shared, o: &Value, chat: bool) -> std::result::Result<Prepared, Refused> {
     let bad = |m: String| (400u16, m);
     let not_here = || sh.refused.iter().find(|(n, d)| asked(o, n, d)).map(|(n, _)| format!("{n} is not supported by the engine this model runs on yet"));
-    if let Some(why) = unsupported(o).or_else(not_here).or_else(|| invalid(o, true, sh.vocab)) {
+    if let Some(why) = unsupported(o).or_else(not_here).or_else(|| invalid(o, chat, sh.vocab)) {
         return Err(bad(why));
     }
     let mut r = request_of(o, sh.window, &sh.defaults);
     r.thinking = r.thinking.or(sh.thinking);
     r.params.logit_bias = logit_bias_of(o, sh.vocab).unwrap_or_default();
-    let api = api_of(o, true, sh.vocab).map_err(bad)?;
+    let api = api_of(o, chat, sh.vocab).map_err(bad)?;
     r.params.constraint = constraint_of(sh, o, &api).map_err(bad)?;
     if api.n > 1 {
         return Err(bad("n must be 1: this API makes one choice".to_string()));
     }
-    let pr = prompts_of(sh, o, true, &api, &r).map_err(|e| bad(e.to_string()))?.remove(0);
+    let pr = prompts_of(sh, o, chat, &api, &r).map_err(|e| bad(e.to_string()))?.remove(0);
     if pr.ids.len() + 1 > sh.window {
         return Err(bad(format!(
             "This prompt has {} tokens, longer than the model's context of {} tokens: maximum context length (a longer one: --context N)",
@@ -1306,7 +1314,12 @@ fn prepare(sh: &Shared, o: &Value) -> std::result::Result<Prepared, Refused> {
 }
 
 fn start_chat(sh: &Shared, tx: &Sender<Job>, o: &Value, hide_reasoning: bool) -> std::result::Result<Started, Refused> {
-    let Prepared { pr, r, api } = prepare(sh, o)?;
+    start_as(sh, tx, o, true, hide_reasoning)
+}
+
+/// `start_chat` for a chat or, where `chat` is false, a plain prompt.
+fn start_as(sh: &Shared, tx: &Sender<Job>, o: &Value, chat: bool, hide_reasoning: bool) -> std::result::Result<Started, Refused> {
+    let Prepared { pr, r, api } = prepare_as(sh, o, chat)?;
     let reading = api.tools.as_ref().filter(|t| t.choice != ToolChoice::None);
     let tools_cfg = reading.map(|t| ToolsCfg {
         choice: t.choice.clone(),
@@ -1317,7 +1330,7 @@ fn start_chat(sh: &Shared, tx: &Sender<Job>, o: &Value, hide_reasoning: bool) ->
         stream: api.stream,
     });
     let cfg = Cfg {
-        chat: true,
+        chat,
         in_thinking: pr.in_thinking,
         stops: r.stop.clone(),
         include_stop: r.include_stop,
@@ -1867,10 +1880,12 @@ fn route(
     let path = req.path.split('?').next().unwrap_or("").to_string();
     let cors = req.cors.clone();
     // the API wants the key where there is one (the page and the health check do not; nor does an OPTIONS)
-    if path.starts_with("/v1") && req.method != "OPTIONS" && key.as_ref().is_some_and(|k| !key_matches(k, req.auth.as_deref())) {
+    if (path.starts_with("/v1") || path.starts_with("/api/")) && req.method != "OPTIONS" && key.as_ref().is_some_and(|k| !key_matches(k, req.auth.as_deref())) {
         // (the Messages API's clients, the Anthropic SDKs and Claude Code, read Anthropic's error: it says `invalid x-api-key`, and the key is `x-api-key` or a bearer token)
         let body = if path.starts_with("/v1/messages") {
             anthropic::anthropic_body(401, "invalid x-api-key: the server's key is needed as `x-api-key: <key>` or `Authorization: Bearer <key>`")
+        } else if path.starts_with("/api/") {
+            "{\"error\":\"unauthorized: the server's key is needed as `Authorization: Bearer <key>`\"}".to_string()
         } else {
             error_body("Incorrect API key provided: the server's key is needed as `Authorization: Bearer <key>`.", 401)
         };
@@ -1954,6 +1969,12 @@ fn route(
                 respond_with(&mut s, 200, "application/json", &cors, model_json(name, window).as_bytes());
             } else {
                 respond_with(&mut s, 404, "application/json", &cors, error_body(&format!("The model `{asked}` does not exist"), 404).as_bytes());
+            }
+        }
+        // (Ollama's API: the key guards it as it guards /v1; its errors are its own, `{"error": "..."}`)
+        (_, p) if p.starts_with("/api/") => {
+            if tx.send(Job::Api { s: s.try_clone().expect("a connection clones"), req, kind: Endpoint::Ollama, id }).is_err() {
+                respond_with(&mut s, 503, "application/json", &cors, b"{\"error\":\"the engine is not running\"}");
             }
         }
         ("POST", "/v1/responses") => {
@@ -2177,6 +2198,7 @@ pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
                 if !client_gone(&s) {
                     match kind {
                         Endpoint::Responses => responses::handle(&sh, &tx, &mut s, &req, id),
+                        Endpoint::Ollama => ollama::handle(&sh, &tx, &mut s, &req),
                     }
                 }
             });
