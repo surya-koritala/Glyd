@@ -3,13 +3,13 @@ name = "glyd"
 version = "0.33.1"
 edition = "2021"
 rust-version = "1.89"
-description = "Compression for the data that fills object storage: logs and dumps as typed columns, packs of small objects, a store that compresses across objects, versions against the last one, and the fastest reads at every ratio"
+description = "Glyd's file codec (the crate beside the inference engine, glyd-engine): compression for the data that fills object storage: logs and dumps as typed columns, packs of small objects, a store that compresses across objects, versions against the last one, and the fastest reads at every ratio"
 repository = "https://github.com/surya-koritala/Glyd"
 readme = "README.md"
 keywords = ["compression", "storage", "s3", "zstd", "deduplication"]
 categories = ["compression"]
 license = "Apache-2.0"
-exclude = ["corpus/", "benchmarks/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/", "glyd-engine/", "glyd-gpu-py/", "condor/", "starlings/", "fuzz/", "research/", "tools/", "cards/", "huggingface/", "ckpt/"]
+exclude = ["corpus/", "benchmarks/", "docs/codec/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/", "glyd-engine/", "glyd-gpu-py/", "condor/", "starlings/", "fuzz/", "research/", "tools/", "cards/", "huggingface/", "ckpt/"]
 
 [workspace]
 members = [

@@ -1,5 +1,5 @@
 //! Deflate streams taken apart and put back, bit for bit, with nothing
-//! outside this crate (`docs/design/deflate-reconstruction.md`).
+//! outside this crate (`docs/codec/design/deflate-reconstruction.md`).
 //!
 //! This is the first part: a parser that turns a stream into its blocks
 //! — stored bytes, or tokens under fixed or dynamic Huffman codes, with

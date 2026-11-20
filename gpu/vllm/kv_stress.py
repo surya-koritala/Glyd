@@ -47,7 +47,7 @@ def build_populations(tok, quick=False, vocab=False, rng=None):
     docs = kvcal.corpus()
     doc_ids = [(kind, name, kvcal.tokens(tok, kind, body)) for kind, name, body in docs]
     repo = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-    for f in ("README.md", "gpu/README.md", "CHANGELOG.md", "docs/engineering-notes.md", "gpu/vllm/README.md"):
+    for f in ("README.md", "gpu/README.md", "CHANGELOG.md", "docs/codec/engineering-notes.md", "gpu/vllm/README.md"):
         p = os.path.join(repo, f)
         if os.path.exists(p):
             doc_ids.append(("repo", f, tok.encode(open(p, encoding="utf-8").read())))

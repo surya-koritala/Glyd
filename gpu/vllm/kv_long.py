@@ -11,7 +11,7 @@ import os
 import sys
 import time
 
-DOCS = ("README.md", "CHANGELOG.md", "gpu/README.md", "gpu/vllm/README.md", "docs/spec.md", "docs/engineering-notes.md")
+DOCS = ("README.md", "CHANGELOG.md", "gpu/README.md", "gpu/vllm/README.md", "docs/codec/spec.md", "docs/codec/engineering-notes.md")
 
 
 def prompt_ids(tok, n):
