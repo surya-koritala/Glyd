@@ -866,8 +866,11 @@ impl Drop for Span<'_> {
         if self.0 {
             let end = self.3.elapsed().as_secs_f64() * 1e6;
             // (the thread as the system numbers its core: where the item ran)
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
             let cpu = unsafe { sched_getcpu() } as u64;
+            // (macOS has no sched_getcpu: the trace records core 0)
+            #[cfg(all(unix, not(target_os = "linux")))]
+            let cpu = 0u64;
             #[cfg(windows)]
             let cpu = unsafe { crate::os::win::GetCurrentProcessorNumber() } as u64;
             self.4.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((self.1, self.2, end, cpu));
@@ -875,7 +878,7 @@ impl Drop for Span<'_> {
     }
 }
 
-#[cfg(all(feature = "dev", unix))]
+#[cfg(all(feature = "dev", target_os = "linux"))]
 extern "C" {
     fn sched_getcpu() -> i32;
 }

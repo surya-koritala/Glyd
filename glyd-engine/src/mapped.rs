@@ -12,6 +12,11 @@ extern "C" {
     fn mmap(addr: *mut c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut c_void;
     fn munmap(addr: *mut c_void, len: usize) -> i32;
     fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
+}
+
+// (macOS has no posix_fadvise)
+#[cfg(target_os = "linux")]
+extern "C" {
     fn posix_fadvise(fd: i32, off: i64, len: i64, advice: i32) -> i32;
 }
 
@@ -67,10 +72,10 @@ impl Mapping {
 
     /// The system told it need not keep `path`'s pages in its cache (posix_fadvise DONTNEED): a file whose bytes were copied elsewhere is not held twice.
     pub fn drop_cache(path: &Path) {
-        // (Windows: no such advice; the cache manager gives the pages back under pressure)
-        #[cfg(windows)]
+        // (Windows and macOS: no such advice; the system gives the pages back under pressure)
+        #[cfg(not(target_os = "linux"))]
         let _ = path;
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Ok(f) = std::fs::File::open(path) {
             // SAFETY: an advice about a file we hold open; it changes no byte.
             unsafe { posix_fadvise(f.as_raw_fd(), 0, 0, 4) };

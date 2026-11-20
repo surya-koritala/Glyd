@@ -59,6 +59,13 @@ codegen-units = 1
 lto = "fat"
 overflow-checks = false
 
+# The profile the tests of CI build with (`cargo test --profile ci`): the release build's code (the codec's arithmetic wraps on purpose, so no
+# overflow checks) without fat LTO and one codegen unit, which only slow the build of a test binary.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 [[example]]
 name = "fuzz_repro"
 path = "examples/fuzz_repro.rs"

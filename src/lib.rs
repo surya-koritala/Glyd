@@ -14,6 +14,11 @@ pub mod huffman;
 pub mod jpeg;
 pub mod jpg;
 pub mod ldm;
+// (a file mapped into memory by libc's mmap; where there is none, the file's bytes held in memory: the same interface)
+#[cfg(unix)]
+pub mod mmap;
+#[cfg(not(unix))]
+#[path = "mmap_heap.rs"]
 pub mod mmap;
 #[cfg(target_arch = "aarch64")]
 pub mod neon_checksum;

@@ -1,0 +1,2 @@
+# Text files are checked out with LF on every system (Windows included): tests compare sources and templates against strings with "\n".
+* text=auto eol=lf
