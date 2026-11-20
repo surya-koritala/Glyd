@@ -9,12 +9,12 @@ readme = "README.md"
 keywords = ["compression", "storage", "s3", "zstd", "deduplication"]
 categories = ["compression"]
 license = "Apache-2.0"
-exclude = ["corpus/", "benchmarks/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/", "glyd-engine/", "glyd-gpu-py/", "condor/", "starlings/", "research/", "tools/", "cards/", "huggingface/", "ckpt/"]
+exclude = ["corpus/", "benchmarks/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/", "glyd-engine/", "glyd-gpu-py/", "condor/", "starlings/", "fuzz/", "research/", "tools/", "cards/", "huggingface/", "ckpt/"]
 
 [workspace]
 members = [".", "glyd-store", "glyd-gpu", "glyd-engine"]
 # starlings/ is its own workspace (edition 2024, its own pinned toolchain); condor/ has no Rust
-exclude = ["starlings", "condor"]
+exclude = ["starlings", "condor", "fuzz"]
 
 [features]
 default = ["deflate", "jpeg"]

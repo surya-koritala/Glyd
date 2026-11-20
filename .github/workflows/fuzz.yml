@@ -1,0 +1,183 @@
+name: Fuzz
+# The parsers that read what a stranger sends (fuzz/: libFuzzer through cargo-fuzz, one target for each of them) fuzzed on CI machines of GitHub's: a minute for each on a pull request that touches a parser or the
+# targets, ten minutes each every night, and by hand (gh workflow run fuzz.yml -f seconds=3600 -f targets="gguf json"). A target's corpus is cached from run to run and cut down to what adds coverage after a
+# long run. A crash fails its job, is kept as an artifact, and, on the nightly run, becomes an issue (label `fuzz-crash`) that names the run and holds no input.
+# Not in ci.yml: it builds with a nightly compiler and the sanitizers, and a pull request that touches no parser does not wait for it.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'fuzz/**'
+      - '.github/workflows/fuzz.yml'
+      - 'glyd-gpu/src/json.rs'
+      - 'glyd-gpu/src/safetensors.rs'
+      - 'glyd-engine/src/gguf.rs'
+      - 'glyd-engine/src/server.rs'
+      - 'glyd-engine/src/server/**'
+      - 'glyd-engine/src/chat.rs'
+      - 'glyd-engine/src/constrain.rs'
+      - 'glyd-engine/src/tok.rs'
+      - 'glyd-engine/src/tools.rs'
+      - 'glyd-engine/src/weights.rs'
+      - 'glyd-engine/src/plan.rs'
+      - 'glyd-engine/src/glm_cb.rs'
+      - 'glyd-engine/src/glm.rs'
+      - 'glyd-engine/src/kimi.rs'
+      - 'glyd-engine/src/muse.rs'
+      - 'glyd-engine/src/nemotron.rs'
+      - 'glyd-engine/src/qwen35.rs'
+      - 'glyd-engine/src/qwen4x.rs'
+      - 'glyd-engine/src/deepseek_v4.rs'
+      - 'glyd-engine/src/model_gemma4.rs'
+      - 'src/safetensors.rs'
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Seconds for each target'
+        default: '600'
+      targets:
+        description: 'Targets (space separated; empty: all)'
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # the compiler the sanitizers need, and the tool, both pinned
+  NIGHTLY: nightly-2026-07-20
+  CARGO_FUZZ: 0.13.2
+
+jobs:
+  build:
+    name: Build the targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: ${{ env.NIGHTLY }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+          shared-key: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'schedule' }}
+      - name: cargo-fuzz
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        id: tool
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ env.CARGO_FUZZ }}-${{ env.NIGHTLY }}
+      - if: steps.tool.outputs.cache-hit != 'true'
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ" --locked
+      - name: Build
+        run: cd fuzz && cargo fuzz build --release
+      - id: list
+        name: The targets
+        env:
+          ASKED: ${{ github.event.inputs.targets }}
+        run: |
+          all=$(cd fuzz && cargo fuzz list)
+          if [ -n "$ASKED" ]; then
+            for t in $ASKED; do echo "$all" | grep -qx "$t" || { echo "no target $t"; exit 1; }; done
+            all=$(echo "$ASKED" | tr ' ' '\n')
+          fi
+          echo "targets=$(echo "$all" | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+      - name: Binaries
+        run: |
+          mkdir -p bins
+          for t in $(cd fuzz && cargo fuzz list); do cp "fuzz/target/x86_64-unknown-linux-gnu/release/$t" bins/; done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-bins
+          path: bins
+          retention-days: 2
+
+  run:
+    name: Fuzz ${{ matrix.target }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.build.outputs.targets) }}
+    env:
+      TARGET: ${{ matrix.target }}
+      # a pull request: a minute each; the nightly: ten; by hand: as asked
+      SECONDS_EACH: ${{ github.event_name == 'pull_request' && '60' || github.event_name == 'workflow_dispatch' && github.event.inputs.seconds || '600' }}
+      # the scratch files of the targets that read a path: memory, not the runner's disk
+      TMPDIR: /dev/shm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fuzz-bins
+          path: bins
+      - name: Corpus
+        id: corpus
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Seeds
+        run: python3 fuzz/seed.py "$TARGET"
+      - name: Fuzz
+        run: |
+          chmod +x "bins/$TARGET"
+          mkdir -p "fuzz/corpus/$TARGET" "fuzz/artifacts/$TARGET"
+          # the engine's parsers are all bounded: an input past 64 KiB is no more than a longer one of the same kind; 10 s is a hang
+          ASAN_OPTIONS=detect_odr_violation=0:detect_leaks=0 "bins/$TARGET" "fuzz/corpus/$TARGET" \
+            -artifact_prefix="fuzz/artifacts/$TARGET/" -max_total_time="$SECONDS_EACH" -timeout=10 -rss_limit_mb=3072 -max_len=65536 -print_final_stats=1
+      - name: Cut the corpus down
+        if: success() && github.event_name != 'pull_request'
+        run: |
+          mkdir -p merged
+          ASAN_OPTIONS=detect_odr_violation=0:detect_leaks=0 "bins/$TARGET" -merge=1 merged "fuzz/corpus/$TARGET" -max_len=65536
+          rm -rf "fuzz/corpus/$TARGET"; mv merged "fuzz/corpus/$TARGET"
+      - name: Keep the corpus
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      - name: Crash
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+      - name: Issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Fuzz crash: $TARGET"
+          if [ -n "$(gh issue list --state open --label fuzz-crash --search "\"$title\" in:title" --json number --jq '.[0].number')" ]; then
+            echo "an issue is open already"; exit 0
+          fi
+          # (the input stays in the run's artifact: a public issue is no place for the bytes of a crash that is not fixed yet)
+          {
+            echo "The nightly fuzz run of \`$TARGET\` crashed: $RUN (the input is the run's artifact \`crash-$TARGET\`)."
+            echo; echo "Replay: \`cd fuzz && cargo +$NIGHTLY fuzz run $TARGET <file>\`."
+          } > body.md
+          gh label create fuzz-crash --color B60205 --description "A fuzz target crashed" 2>/dev/null || true
+          gh issue create --title "$title" --label fuzz-crash --label "area: security" --body-file body.md

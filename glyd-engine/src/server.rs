@@ -86,7 +86,7 @@ const MAX_HEAD: usize = 64 << 10;
 const MAX_HEADERS: usize = 256;
 
 /// What the request line and the headers of a request say that the server uses.
-struct Head {
+pub struct Head {
     method: String,
     path: String,
     len: usize,
@@ -112,7 +112,7 @@ fn head_line(r: &mut impl BufRead, budget: &mut usize, buf: &mut Vec<u8>) -> std
 }
 
 /// The request line and the headers from `r`, within MAX_HEAD bytes and MAX_HEADERS headers; None where the input ends before a request.
-fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Rejected> {
+pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Rejected> {
     let (mut budget, mut buf) = (MAX_HEAD, Vec::new());
     if !head_line(r, &mut budget, &mut buf)? {
         return Ok(None);
