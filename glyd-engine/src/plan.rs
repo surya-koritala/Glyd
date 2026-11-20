@@ -479,6 +479,36 @@ pub struct Candidate {
     pub tok_s: f64,
     /// Why it does not fit, where it does not.
     pub why: Option<String>,
+    /// The plan `run` loads, where this path is sized by the loader's own numbers (src/cli.rs `size`): the figures above are its. None: an
+    /// estimate from the model's parameters (a path not yet sized by its loader).
+    pub load: Option<LoadPlan>,
+}
+
+impl Candidate {
+    /// The plan as `fit --json` prints it (`glyd-plan/1`): the loader's own numbers where `load` has them (`exact`), else the planner's estimate.
+    pub fn json(&self, model: &str, m: &Machine) -> String {
+        if let Some(l) = &self.load {
+            let mut v: serde_json::Value = serde_json::from_str(&l.json(model)).unwrap_or_default();
+            v["exact"] = true.into();
+            v["tokens_per_second"] = serde_json::json!((self.tok_s * 10.0).round() / 10.0);
+            return v.to_string();
+        }
+        let placement = match &self.placement {
+            Some(Placement::Gpu(i)) => serde_json::json!({"kind": "gpu", "gpus": [i]}),
+            Some(Placement::Split(g)) => serde_json::json!({"kind": "split", "gpus": g}),
+            Some(Placement::ExpertsInRam { gpu, cache, hit }) => {
+                serde_json::json!({"kind": "experts_in_ram", "gpus": [gpu], "cache_bytes": cache, "hit_rate": hit})
+            }
+            None => serde_json::Value::Null,
+        };
+        let gpu = m.devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>();
+        serde_json::json!({
+            "schema": SCHEMA, "model": model, "exact": false, "level": self.level, "context": self.context,
+            "gpus": gpu, "weights_bytes": self.weights, "kv_bytes": self.kv, "placement": placement,
+            "tokens_per_second": (self.tok_s * 10.0).round() / 10.0,
+        })
+        .to_string()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -509,14 +539,44 @@ const HIT_EXPONENT: f64 = 0.23;
 /// Tokens a step makes with a draft head that proposes one and is accepted 80-90% of the time, after its cost.
 const MTP_GAIN: f64 = 1.7;
 
-/// What a GPU keeps for itself: the engine's workspace and the driver's, and a margin for other programs (1 GiB as llama.cpp's
-/// fitting keeps, and 4% of what is free). `run` still sizes with its own constants (cli.rs `rooms`) until the planner drives it.
-fn reserve(d: &Device) -> u64 {
-    (1.0 * GIB) as u64 + d.free / 25
+// ---- the reserve: one model for every path --------------------------------------------------------------------------------------------------------------------------------------------------
+
+/// What a GPU keeps free for itself: the driver's buffers and a margin for the memory other programs take between the plan and
+/// the load (768 MiB). Every path sizes with `reserve_of` (`run`, `serve`, `preflight`, `fit`); what an engine takes besides, its
+/// activations, workspaces and graphs, is its `work` (below, one constant a path, each measured). A path's reserve and work
+/// together are what its loader needed before the planner drove it: nothing that ran then is refused now.
+pub const CONTEXT_FLOOR: u64 = 768 << 20;
+
+/// The reserve of a GPU with `free` bytes free (the same on every GPU: other programs do not take more of a larger one).
+pub fn reserve_of(_free: u64) -> u64 {
+    CONTEXT_FLOOR
 }
 
+/// What a GPU has for the model's weights, its cache and the engine's `work`.
+pub fn room_of(free: u64) -> u64 {
+    free.saturating_sub(reserve_of(free))
+}
+
+/// The activations and workspaces of the lossy paths' engines (Qwen3.5, Qwen3.6, Qwen3.8, Nemotron-H, Gemma 4): 1.26 GiB measured for
+/// Qwen3.8-27B with prompts in chunks of 2,048, about 1 GiB for Nemotron 3 Super by the sizes of its buffers (not yet measured).
+pub const LOSSY_WORK: u64 = 1280 << 20;
+/// The Qwen3 path's fixed workspaces: the CUDA context and the library's own buffers, cuBLAS's and the pool's, 1,400 MiB (600 + 400 + 400) measured
+/// as the path's total before the reserve was one model, less that reserve; a prompt chunk's activations are on top (src/fit.rs `work`).
+pub const QWEN3_WORK: u64 = (1400 << 20) - CONTEXT_FLOOR;
+/// The context the lossy paths take where none is asked, if it fits, and the least a plan takes.
+pub const LOSSY_CTX: usize = 32768;
+pub const LOSSY_MIN_CTX: usize = 4096;
+/// The computer's memory kept for the system and the engine's own besides the experts pinned in it.
+pub const HOST_MARGIN: u64 = 6 << 30;
+/// GPU memory kept for a Gemma 4 draft model (an "-assistant" model at six bits, about 0.36 GiB for 31B, and its buffers).
+pub const GEMMA_DRAFT_BYTES: u64 = 640 << 20;
+/// A Gemma 4 prompt's chunk (rows a pass reads at once; a drafted round's k + 1 rows fit in it).
+pub const GEMMA_CHUNK: usize = 512;
+
+/// What a GPU has for the weights and the cache in the planner's estimates: its free memory less the reserve and the engine's work (the
+/// lossy engines'; the Qwen3 path's is the same to a few hundred MiB).
 fn room(d: &Device) -> u64 {
-    d.free.saturating_sub(reserve(d))
+    room_of(d.free).saturating_sub(LOSSY_WORK)
 }
 
 /// Bits a weight of each part takes at a level: (everything else, the routed experts). None: the level does not apply.
@@ -539,18 +599,9 @@ fn level_bits(level: &str, sh: &Shape, d: &Device) -> Option<(f64, f64)> {
     (b.0 < sh.release_bits).then_some(b).or((level == "penguin").then_some(b))
 }
 
-/// The plan for `sh` on `m`.
-pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
+/// The backend the machine's GPU `main` runs on, and what its generation or driver says against it.
+fn backend_of(m: &Machine, main: usize) -> (String, Vec<String>) {
     let mut notes = Vec::new();
-    // (the GPU with the most free memory; the first of equals)
-    let Some(main) = (0..m.devices.len()).min_by_key(|&i| (std::cmp::Reverse(m.devices[i].free), i)) else {
-        return Plan {
-            backend: "none".into(),
-            chosen: None,
-            options: vec![],
-            notes: vec!["no GPU found: the CPU backend is not built yet (ROADMAP V4)".into()],
-        };
-    };
     let d0 = &m.devices[main];
     let backend = match d0.vendor {
         Vendor::Nvidia if d0.driver >= crate::machine::DRIVER_MIN => format!("CUDA (driver CUDA {}.{})", d0.driver / 1000, d0.driver % 1000 / 10),
@@ -568,6 +619,22 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     if d0.vendor == Vendor::Nvidia && d0.cc.0 < 8 {
         notes.push(format!("{} is older than Ampere: Turing and Volta support is ROADMAP V5", d0.name));
     }
+    (backend, notes)
+}
+
+/// The plan for `sh` on `m`.
+pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
+    // (the GPU with the most free memory; the first of equals)
+    let Some(main) = (0..m.devices.len()).min_by_key(|&i| (std::cmp::Reverse(m.devices[i].free), i)) else {
+        return Plan {
+            backend: "none".into(),
+            chosen: None,
+            options: vec![],
+            notes: vec!["no GPU found: the CPU backend is not built yet (ROADMAP V4)".into()],
+        };
+    };
+    let d0 = &m.devices[main];
+    let (backend, mut notes) = backend_of(m, main);
     let users = ask.users.max(1) as f64;
     let fam = ask.family;
     let default_ctx = fam.and_then(|f| f.default_ctx).unwrap_or(TARGET_CTX).min(sh.max_ctx);
@@ -608,6 +675,7 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
             kv: kv_at(context) as u64,
             tok_s,
             why,
+            load: None,
         };
         // one GPU
         if let Some(ctx) = ctx_in(room(d0) as f64, weights) {
@@ -664,19 +732,207 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
             )),
         ));
     }
-    // in the levels' order: the first in GPU memory alone with at least PREFERRED_CTX of context, else the first with experts in
-    // RAM at that context; only then a shorter context (a model held in 4,096 tokens is a poorer run than one level down at 32,768)
-    let in_vram = |o: &&Candidate| matches!(o.placement, Some(Placement::Gpu(_) | Placement::Split(_)));
-    let roomy = |o: &&Candidate| o.placement.is_some() && o.context >= PREFERRED_CTX.min(max_ctx);
-    let chosen = (options.iter().find(|o| in_vram(o) && roomy(o)))
-        .or_else(|| options.iter().find(roomy))
-        .or_else(|| options.iter().find(in_vram))
-        .or_else(|| options.iter().find(|o| o.placement.is_some()))
-        .cloned();
+    let chosen = choose(&options, max_ctx);
     if chosen.is_none() {
         notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M5)".into());
     }
     Plan { backend, chosen, options, notes }
+}
+
+// ---- the plan that loads ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/// The GPU a plan is made for, and the computer's free memory: what `run` reads of the GPU it picked and `fit` of a machine's.
+#[derive(Clone, Debug)]
+pub struct Target {
+    pub name: String,
+    pub cc: (i32, i32),
+    pub total: u64,
+    pub free: u64,
+    /// The computer's memory the experts may take (None: it does not say, and is taken to have enough).
+    pub host: Option<u64>,
+}
+
+impl Target {
+    pub fn of(d: &Device, host: Option<u64>) -> Target {
+        Target { name: d.name.clone(), cc: d.cc, total: d.total, free: d.free, host }
+    }
+}
+
+/// `fit --json`'s schema: its `schema` member.
+pub const SCHEMA: &str = "glyd-plan/1";
+
+/// The engine path that loads a plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Qwen3 dense, lossless (src/model.rs).
+    Qwen3,
+    /// Qwen3.5, 3.6 and 3.8 dense at a lossy level.
+    Qwen35,
+    NemotronH,
+    Gemma4,
+}
+
+/// The one plan: what `fit` prints before anything is downloaded and what `run`, `serve` and `preflight` load. Every field is bytes
+/// or a count the loader uses; the engine reports what it allocated and the tests compare the two (`Loaded`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoadPlan {
+    pub kind: Kind,
+    /// The family as the table names it (src/support.rs).
+    pub family: &'static str,
+    pub level: &'static str,
+    pub layout: crate::weights::Layout,
+    pub context: usize,
+    /// Sequences the engine holds at once; the cache is `context` tokens of each.
+    pub users: usize,
+    /// Prompt tokens a pass takes at a time.
+    pub chunk: usize,
+    /// All the weights as loaded, wherever they go, and what they are in bf16.
+    pub weights: u64,
+    pub bf16: u64,
+    /// Keys, values, rings and states of `users` sequences of `context` tokens.
+    pub kv: u64,
+    /// Activations and workspaces of the engine, and a draft model's memory.
+    pub work: u64,
+    pub draft: u64,
+    /// What the GPU keeps free (`reserve_of`), and the free memory and the GPU the plan was made for.
+    pub reserve: u64,
+    pub free: u64,
+    pub gpu: String,
+    /// A mixture of experts' experts in the computer's memory (and the disk), a cache of them on the GPU.
+    pub experts: Option<crate::offload::CachePlan>,
+}
+
+impl LoadPlan {
+    /// The weights the GPU holds: all of them, or all but the experts the computer's memory holds, and the expert cache.
+    pub fn weights_on_gpu(&self) -> u64 {
+        self.experts.map_or(self.weights, |c| self.weights.saturating_sub(c.host_bytes()) + c.gpu_bytes())
+    }
+
+    /// Everything the plan puts on the GPU, and the reserve.
+    pub fn gpu_total(&self) -> u64 {
+        self.weights_on_gpu() + self.kv + self.work + self.draft + self.reserve
+    }
+
+    /// The experts in the computer's memory, and those read from the disk as the router asks.
+    pub fn ram_bytes(&self) -> u64 {
+        self.experts.map_or(0, |c| c.ram.min(c.host_bytes()))
+    }
+
+    pub fn disk_bytes(&self) -> u64 {
+        self.experts.map_or(0, |c| c.disk_bytes())
+    }
+
+    /// The plan as `fit --json` prints it (`glyd-plan/1`): the same numbers the terminal's text has.
+    pub fn json(&self, model: &str) -> String {
+        let experts = self.experts.map(|c| {
+            serde_json::json!({
+                "places_per_layer": c.slots, "experts_per_layer": c.experts, "layers": c.layers,
+                "gpu_bytes": c.gpu_bytes(), "ram_bytes": self.ram_bytes(), "disk_bytes": self.disk_bytes(),
+            })
+        });
+        serde_json::json!({
+            "schema": SCHEMA, "model": model, "family": self.family, "level": self.level,
+            "context": self.context, "users": self.users, "chunk": self.chunk,
+            "gpu": self.gpu, "free_bytes": self.free,
+            "weights_bytes": self.weights, "weights_on_gpu_bytes": self.weights_on_gpu(),
+            "kv_bytes": self.kv, "work_bytes": self.work, "draft_bytes": self.draft,
+            "reserve_bytes": self.reserve, "gpu_total_bytes": self.gpu_total(),
+            "experts": experts,
+        })
+        .to_string()
+    }
+
+    /// The plan and what the load took (`glyd-plan/1`'s `loaded`): the weights the engine counts and the GPU's memory the load used; for calibrating the
+    /// planner (`GLYD_PLAN_REPORT=FILE` in a development build writes it) and for the GPU check that the plan is what loaded.
+    pub fn report(&self, model: &str, weights_loaded: u64, gpu_used: u64) -> String {
+        let plan: serde_json::Value = serde_json::from_str(&self.json(model)).unwrap_or_default();
+        serde_json::json!({
+            "schema": SCHEMA, "plan": plan,
+            "loaded": {"weights_bytes": weights_loaded, "gpu_used_bytes": gpu_used, "planned_gpu_used_bytes": self.gpu_total() - self.reserve},
+        })
+        .to_string()
+    }
+
+    /// The plan in words, for the line `run` says before it loads and `fit` prints.
+    pub fn text(&self) -> String {
+        let mut s = format!(
+            "{} level, {} tokens of context{}: {} of weights on the GPU, {} of cache, {} for the engine's work{}, {} kept free; {} of the {}'s {} free",
+            self.level,
+            self.context,
+            if self.users > 1 { format!(" for each of {} users", self.users) } else { String::new() },
+            gb(self.weights_on_gpu()),
+            gb(self.kv),
+            gb(self.work),
+            if self.draft > 0 { format!(", {} for the draft model", gb(self.draft)) } else { String::new() },
+            gb(self.reserve),
+            gb(self.gpu_total()),
+            self.gpu,
+            gb(self.free),
+        );
+        if let Some(c) = &self.experts {
+            s += &format!(
+                "; experts: {} places a layer of {} on the GPU, {} in the computer's memory, {} on the disk",
+                c.slots,
+                c.experts,
+                gb(self.ram_bytes()),
+                gb(self.disk_bytes())
+            );
+        }
+        s
+    }
+}
+
+/// Decode tokens/s of a plan `run` loads, from the model's parameters and the machine's bandwidths (the planner's model, for a placement the
+/// loader chose).
+fn speed_of(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan) -> f64 {
+    let d0 = &m.devices[main];
+    let Some((bits, ebits)) = level_bits(lp.level, sh, d0) else { return 0.0 };
+    let eff = if lp.level == "penguin" && sh.release_bits > 8.0 { EFF_LOSSLESS } else { EFF_LOSSY };
+    let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
+    let read = ((sh.head.max(if sh.head == 0.0 { sh.embed } else { 0.0 }) + sh.dense) * bits + sh.routed_active() * ebits) / 8.0 + kv_read;
+    let gain = if sh.mtp { MTP_GAIN } else { 1.0 };
+    match &lp.experts {
+        None => gain * d0.bandwidth * GB * eff / read,
+        Some(c) => {
+            let hit = (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT);
+            let active = sh.routed_active() * ebits / 8.0;
+            let gpu_t = (read - active * (1.0 - hit)) / (d0.bandwidth * GB * eff);
+            let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
+            gain / (gpu_t.max(cpu_t) + SYNC_PER_MOE_LAYER * sh.moe_layers as f64)
+        }
+    }
+}
+
+/// An option of the ladder from the plan `run` loads at that level.
+fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize) -> Candidate {
+    let tok_s = speed_of(sh, m, main, &lp);
+    let placement = match &lp.experts {
+        None => Placement::Gpu(main),
+        Some(c) => Placement::ExpertsInRam { gpu: main, cache: c.gpu_bytes(), hit: (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT) },
+    };
+    Candidate {
+        level: lp.level,
+        bits: lp.weights as f64 * 8.0 / sh.params().max(1.0),
+        weights: lp.weights,
+        placement: Some(placement),
+        context: lp.context,
+        kv: lp.kv,
+        tok_s,
+        why: None,
+        load: Some(lp),
+    }
+}
+
+/// The option the ladder takes: in the levels' order, the first in GPU memory alone with at least `PREFERRED_CTX` of context, else the first with
+/// experts in RAM at that context; only then a shorter context (a model held in 4,096 tokens is a poorer run than one level down at 32,768).
+fn choose(options: &[Candidate], max_ctx: usize) -> Option<Candidate> {
+    let in_vram = |o: &&Candidate| matches!(o.placement, Some(Placement::Gpu(_) | Placement::Split(_)));
+    let roomy = |o: &&Candidate| o.placement.is_some() && o.context >= PREFERRED_CTX.min(max_ctx);
+    (options.iter().find(|o| in_vram(o) && roomy(o)))
+        .or_else(|| options.iter().find(roomy))
+        .or_else(|| options.iter().find(in_vram))
+        .or_else(|| options.iter().find(|o| o.placement.is_some()))
+        .cloned()
 }
 
 // ---- the command ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -717,7 +973,10 @@ pub fn text(model: &str, sh: &Shape, m: &Machine, p: &Plan) -> String {
                 where_(c.placement.as_ref().unwrap(), m),
                 c.context,
                 c.tok_s
-            )
+            );
+            if let Some(l) = &c.load {
+                s += &format!("  {}\n", l.text());
+            }
         }
         None => s += "Plan: none fits\n",
     }
@@ -758,7 +1017,18 @@ pub fn fit_cmd(a: &crate::args::Args) -> i32 {
     }
 }
 
-fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
+/// What `fit` works out of its arguments: the model, the machine, the plan, and the refusal `run` would give (its reason, after the plan is printed).
+pub struct Planned {
+    pub model: String,
+    pub name: String,
+    pub family: &'static crate::support::Support,
+    pub shape: Shape,
+    pub machine: Machine,
+    pub plan: Plan,
+    pub refusal: Option<crate::ui::Refusal>,
+}
+
+pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     use crate::ui::Refusal;
     let given = a.need(1, "MODEL").map_err(|e| Refusal::new(e.0, "glyd-engine fit MODEL[:LEVEL]"))?;
     let (model, layout) = levels::parse(given, a.has("lossy")).map_err(|e| Refusal::new(e.what, e.fix))?;
@@ -798,22 +1068,86 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
             ));
         }
     }
-    let ask = Ask { level, context, users: a.num("users", 1usize)?, family: Some(fam), qat: levels::is_qat(model) };
-    let p = plan(&sh, &machine, ask);
-    print!("{}", text(model, &sh, &machine, &p));
-    if fam.hummingbird_packed_only && p.chosen.as_ref().is_some_and(|c| c.level == "hummingbird") {
-        println!("note: the hummingbird level comes as a pre-packed download: glyd/{name}-hummingbird");
+    let users: usize = a.num("users", 1usize)?;
+    let ask = Ask { level, context, users, family: Some(fam), qat: levels::is_qat(model) };
+    let mut p = plan(&sh, &machine, ask);
+    let mut refusal = None;
+    // where run's own sizing covers the family: the plan `run` would load at each level, or the refusal it would give (the same functions: src/cli.rs `size`)
+    if let Some(main) = (0..machine.devices.len()).min_by_key(|&i| (std::cmp::Reverse(machine.devices[i].free), i)) {
+        let target = Target::of(&machine.devices[main], Some(machine.ram_free));
+        let tries: Vec<&'static str> = match level {
+            Some(l) => vec![l],
+            None => fam.levels_now(model),
+        };
+        let mut refusals = Vec::new();
+        let mut options = Vec::new();
+        let mut sized = false;
+        for l in tries {
+            match crate::cli::size(a, model, &config, l, &target, users) {
+                Ok(Some(lp)) => {
+                    sized = true;
+                    options.push(candidate_of(lp, &sh, &machine, main));
+                }
+                Ok(None) => {}
+                Err(r) => {
+                    sized = true;
+                    options.push(Candidate {
+                        level: l,
+                        bits: 0.0,
+                        weights: 0,
+                        placement: None,
+                        context: 0,
+                        kv: 0,
+                        tok_s: 0.0,
+                        why: Some(r.what.clone()),
+                        load: None,
+                    });
+                    refusals.push(r);
+                }
+            }
+        }
+        if sized {
+            let max_ctx = context.unwrap_or(fam.default_ctx.unwrap_or(TARGET_CTX).min(sh.max_ctx)).min(fam.max_ctx.unwrap_or(usize::MAX));
+            p.chosen = choose(&options, max_ctx);
+            p.options = options;
+            p.notes.retain(|n| !n.starts_with("nothing fits"));
+            if p.chosen.is_none() {
+                p.notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M5)".into());
+                // (what `run` says of the level it would take: the first one asked, else the lossless one)
+                refusal = refusals.into_iter().next();
+            }
+        }
     }
-    if let Some(r) = crate::support::machine(&machine) {
-        return Err(r);
+    // (the machine's refusal first: `run` checks the GPU before it sizes anything)
+    let refusal = crate::support::machine(&machine).or(refusal).or_else(|| {
+        p.chosen.is_none().then(|| {
+            Refusal::unsupported(
+                format!("{name} does not fit this machine at any level {} runs", fam.name),
+                "A smaller model, more memory, or less context: --context 4096",
+            )
+        })
+    });
+    Ok(Planned { model: model.to_string(), name, family: fam, shape: sh, machine, plan: p, refusal })
+}
+
+fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
+    let f = planned(a)?;
+    let (model, p) = (f.model.as_str(), &f.plan);
+    if a.has("json") {
+        match &p.chosen {
+            Some(c) => println!("{}", c.json(model, &f.machine)),
+            None => println!("{}", serde_json::json!({"schema": SCHEMA, "model": model, "plan": null, "notes": p.notes})),
+        }
+    } else {
+        print!("{}", text(model, &f.shape, &f.machine, p));
+        if f.family.hummingbird_packed_only && p.chosen.as_ref().is_some_and(|c| c.level == "hummingbird") {
+            println!("note: the hummingbird level comes as a pre-packed download: glyd/{}-hummingbird", f.name);
+        }
     }
-    if p.chosen.is_none() {
-        return Err(Refusal::unsupported(
-            format!("{name} does not fit this machine at any level {} runs", fam.name),
-            "A smaller model, more memory, or less context: --context 4096",
-        ));
+    match f.refusal {
+        Some(r) => Err(r),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// The checkpoint's bytes from model.safetensors.index.json, where it is here or on the Hub.
@@ -1061,5 +1395,193 @@ mod tests {
             (bandwidth_of("NVIDIA GeForce RTX 4080 SUPER"), bandwidth_of("NVIDIA GeForce RTX 4080"), bandwidth_of("NVIDIA L40S"), bandwidth_of("NVIDIA L4")),
             (Some(736.0), Some(717.0), Some(864.0), Some(300.0))
         );
+    }
+
+    // ---- the plan is what loads ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    fn args(v: &[&str]) -> crate::args::Args {
+        crate::args::Args::from(v.iter().map(|s| s.to_string()))
+    }
+
+    /// A directory holding only a config.json, named `name`, which `fit` reads as it reads a model on the disk.
+    fn model_dir(tag: &str, name: &str, config: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("glyd-plan-{tag}-{}", std::process::id())).join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), config).unwrap();
+        dir
+    }
+
+    /// The keys the Qwen3 path reads that the planner does not.
+    fn with_rope(config: &str) -> String {
+        config.replace("}", ", \"rms_norm_eps\": 1e-6, \"rope_theta\": 1000000}")
+    }
+
+    const QWEN3_8B: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "intermediate_size": 12288, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "tie_word_embeddings": false, "max_position_embeddings": 40960, "rms_norm_eps": 1e-6, "rope_theta": 1000000}"#;
+
+    fn gpu_of(d: &Device, ordinal: i32) -> crate::dev::Gpu {
+        crate::dev::Gpu { name: d.name.clone(), cc: d.cc, sms: 0, total: d.total, free: d.free, driver: d.driver, count: 1, ordinal }
+    }
+
+    /// What `fit` prints for each family at each level it runs at, on each NVIDIA preset, is the plan `run` builds from the same GPU (the functions
+    /// `run` calls: src/cli.rs `plan` for Qwen3, `lossy_plan_with` for the lossy families), or the refusal `run` gives; and what it plans fits the GPU.
+    #[test]
+    fn fit_is_the_plan_run_builds() {
+        let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let configs = [
+            ("Qwen3-32B", with_rope(QWEN3_32B)),
+            ("Qwen3.5-9B", json::to_compact(&q35.as_object().unwrap()[0].1)),
+            ("gemma-4-12B", fixture("gemma4_12b_config.json")),
+            ("NVIDIA-Nemotron-H", fixture("nemotron_h_config.json")),
+        ];
+        let mut sized = 0;
+        for (name, text) in &configs {
+            let dir = model_dir("run", name, text);
+            let model = dir.to_str().unwrap();
+            let row = crate::support::row(crate::support::family(text, name).unwrap());
+            for preset in Machine::PRESETS {
+                let m = Machine::preset(preset).unwrap();
+                if m.devices.iter().any(|d| d.vendor != Vendor::Nvidia) || m.devices.len() != 1 {
+                    continue;
+                }
+                let d = &m.devices[0];
+                let gpu = gpu_of(d, 0);
+                for level in row.levels_now(model) {
+                    let tag = format!("{model}:{level}");
+                    let a = args(&["fit", &tag, "--machine", preset]);
+                    let f = planned(&a).unwrap();
+                    let run = match row.family {
+                        crate::support::Family::Qwen3 => {
+                            let cfg = crate::weights::Config::parse(text, "config.json", None).unwrap();
+                            crate::cli::plan(&args(&["run", model]), &cfg, name, &gpu, None, 1).map(|p| p.2)
+                        }
+                        _ => {
+                            let layout = crate::levels::layout_for(model, crate::levels::layout_of(level).unwrap());
+                            if layout == crate::weights::Layout::Tiered && crate::nemotron::is_nemotron_h(text) {
+                                continue; // (the dynamic route's: not sized by `size` yet)
+                            }
+                            crate::cli::lossy_plan_with(&args(&["run", model]), model, layout, text, None, d.free, &d.name, None, Some(m.ram_free))
+                        }
+                    };
+                    match (run, f.plan.options.iter().find(|o| o.level == level)) {
+                        (Ok(want), Some(o)) => {
+                            let got = o.load.as_ref().unwrap_or_else(|| panic!("{name} {preset} {level}: no loader plan"));
+                            assert_eq!(*got, want, "{name} on {preset} at {level}");
+                            assert!(got.gpu_total() <= d.free, "{name} on {preset} at {level}: {} on {} free", got.gpu_total(), d.free);
+                            assert!(got.context >= MIN_CTX.min(row.max_ctx.unwrap_or(usize::MAX)), "{name} on {preset} at {level}: {}", got.context);
+                            sized += 1;
+                        }
+                        (Err(want), Some(o)) => {
+                            assert_eq!(o.why.as_deref(), Some(want.what.as_str()), "{name} on {preset} at {level}");
+                            // (the one level asked: fit refuses with the words run has)
+                            let r = f.refusal.as_ref().unwrap_or_else(|| panic!("{name} on {preset} at {level}: fit plans what run refuses"));
+                            // (`run` checks the GPU and its driver before it sizes anything)
+                            let want = crate::support::machine(&m).unwrap_or(want);
+                            assert_eq!(
+                                (r.what.as_str(), r.fix.as_str(), r.code),
+                                (want.what.as_str(), want.fix.as_str(), want.code),
+                                "{name} on {preset} at {level}"
+                            );
+                            sized += 1;
+                        }
+                        (_, None) => panic!("{name} on {preset} at {level}: no option"),
+                    }
+                }
+            }
+        }
+        assert!(sized > 60, "{sized}");
+    }
+
+    /// The plan holds `users` sequences of the context (a server's pool), which the Qwen3 path sized for one until the plan drove it: four users on a 24 GB card
+    /// keep four contexts of cache and still fit.
+    #[test]
+    fn users_are_in_the_plan() {
+        let dir = model_dir("users", "Qwen3-8B", QWEN3_8B);
+        let one = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "l4"])).unwrap().plan.chosen.unwrap().load.unwrap();
+        let four = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "l4", "--users", "4"])).unwrap().plan.chosen.unwrap().load.unwrap();
+        assert_eq!((one.users, four.users), (1, 4));
+        assert_eq!(four.kv, 4 * (four.kv / 4), "four whole contexts");
+        assert!(four.kv / four.context as u64 >= 3 * (one.kv / one.context as u64), "the cache of four users per token of context");
+        assert!(four.gpu_total() <= four.free && one.gpu_total() <= one.free);
+    }
+
+    /// `fit --json` is `glyd-plan/1`: the numbers the text has, under names that stay.
+    #[test]
+    fn fit_json_is_a_stable_schema() {
+        let dir = model_dir("json", "gemma-4-12B", &fixture("gemma4_12b_config.json"));
+        let f = planned(&args(&["fit", &format!("{}:kestrel", dir.to_str().unwrap()), "--machine", "rtx4080s"])).unwrap();
+        let c = f.plan.chosen.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&c.json("google/gemma-4-12B-it", &f.machine)).unwrap();
+        for k in [
+            "schema",
+            "model",
+            "family",
+            "level",
+            "context",
+            "users",
+            "chunk",
+            "gpu",
+            "free_bytes",
+            "weights_bytes",
+            "weights_on_gpu_bytes",
+            "kv_bytes",
+            "work_bytes",
+            "draft_bytes",
+            "reserve_bytes",
+            "gpu_total_bytes",
+            "experts",
+            "exact",
+            "tokens_per_second",
+        ] {
+            assert!(v.get(k).is_some(), "{k} is in glyd-plan/1: {v}");
+        }
+        assert_eq!((v["schema"].as_str(), v["level"].as_str(), v["exact"].as_bool()), (Some("glyd-plan/1"), Some("kestrel"), Some(true)));
+        assert_eq!(v["gpu_total_bytes"].as_u64(), Some(c.load.as_ref().unwrap().gpu_total()));
+    }
+
+    /// The bytes of a directory's weight files (the safetensors shards, as the engine reads them onto the GPU).
+    fn shard_bytes(dir: &std::path::Path) -> u64 {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "safetensors"))
+            .map(|e| e.metadata().unwrap().len())
+            .sum()
+    }
+
+    /// The plan's weights against what the loader makes of a model: a tiny Qwen3 and a tiny Qwen3.5-family model (random weights, the shapes of the real
+    /// ones: src/logits.rs) packed on the CPU at each layout the paths run, and the bytes the packed directory holds. The plan sizes a lossy level from the
+    /// config alone before anything is downloaded (within 3%: a pack's tail words and the small tensors) and from the directory's own bytes once it is packed.
+    #[test]
+    fn the_plan_weighs_what_the_packer_writes() {
+        use crate::weights::Layout;
+        let root = std::env::temp_dir().join(format!("glyd-plan-pack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (q3, q35) = (root.join("qwen3"), root.join("qwen35"));
+        crate::logits::qwen3_random(&q3).unwrap();
+        crate::logits::qwen35_random(&q35).unwrap();
+        let near = |got: u64, want: u64, what: &str| assert!((got as f64 / want as f64 - 1.0).abs() < 0.03, "{what}: planned {got}, written {want}");
+        // Qwen3 dense, lossless
+        let cfg = crate::weights::Config::load(&q3).unwrap();
+        let out = root.join("qwen3-packed");
+        crate::pack::run_with(q3.to_str().unwrap(), &out, 2, Layout::Tiered, true).unwrap();
+        // (the lossless layouts' bytes depend on the values: the plan takes 10.8 bits a weight as the real ones come to, and these random ones are smaller)
+        let (planned, written) = (crate::fit::weights(&cfg, Layout::Tiered), shard_bytes(&out));
+        assert!(written as f64 <= planned as f64 * 1.03 && written as f64 >= planned as f64 * 0.8, "Qwen3 tiered: planned {planned}, written {written}");
+        // Qwen3.5-family, each lossy level
+        let text = std::fs::read_to_string(q35.join("config.json")).unwrap();
+        let a = args(&["run", q35.to_str().unwrap()]);
+        for layout in [Layout::Int5, Layout::Int4] {
+            let out = root.join(format!("qwen35-{}", layout.name()));
+            crate::pack::run_with(q35.to_str().unwrap(), &out, 2, layout, true).unwrap();
+            let written = shard_bytes(&out);
+            let ask = |packed: Option<&std::path::Path>| {
+                crate::cli::lossy_plan_with(&a, q35.to_str().unwrap(), layout, &text, None, 24 << 30, "NVIDIA RTX 4090", packed, None).unwrap()
+            };
+            near(ask(None).weights, written, &format!("Qwen3.5-family {}", layout.name()));
+            let packed = ask(Some(&out));
+            near(packed.weights, written, &format!("Qwen3.5-family {} from its directory", layout.name()));
+            assert!(packed.gpu_total() <= packed.free);
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

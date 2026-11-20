@@ -87,7 +87,7 @@ pub fn run(a: &Args) -> Result<()> {
 }
 
 /// The draft model Google made for MODEL, a Gemma 4 model (google/gemma-4-12B-it: google/gemma-4-12B-it-assistant), else None.
-fn draft_repo(model: &str) -> Option<String> {
+pub(crate) fn draft_repo(model: &str) -> Option<String> {
     let name = model.rsplit('/').next().unwrap_or(model);
     name.to_ascii_lowercase().starts_with("gemma-4-").then(|| format!("google/{name}-assistant"))
 }
