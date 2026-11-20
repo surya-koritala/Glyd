@@ -32,12 +32,35 @@ fn stamp() -> String {
     format!("{}.{:06}Z", &t[..t.len() - 1], d.subsec_micros())
 }
 
-/// The name the model has in the list: the repo (`Qwen/Qwen3-8B`) of a Hub cache's directory, the last name of a path, and a tag (`:latest`) where it has none, as Ollama's names all have one.
+/// The manifest of the model names (`models.json`, `glyd pull`'s), read once.
+fn manifest() -> &'static crate::models::Manifest {
+    static M: std::sync::OnceLock<crate::models::Manifest> = std::sync::OnceLock::new();
+    M.get_or_init(crate::models::Manifest::load)
+}
+
+/// The Hub repo (`ORG/NAME`) a served model's name is: the repo of a Hub cache's directory, or a name that is one (a level's tag, `:swift`, cut); None for a path or a name that is neither.
+fn repo_of(name: &str) -> Option<String> {
+    if let Some(repo) = name.split('/').find_map(|p| p.strip_prefix("models--")) {
+        return Some(repo.replace("--", "/"));
+    }
+    let base = name.split(':').next().unwrap_or(name);
+    (base.matches('/').count() == 1 && !base.starts_with(['/', '.', '~']) && !base.ends_with('/')).then(|| base.to_string())
+}
+
+/// The name the model has in the list: its short name in the manifest as Ollama writes one (`qwen3:8b`), else the repo (`Qwen/Qwen3-8B`) of a Hub cache's directory or the last name of a path, with a tag
+/// (`:latest`) where it has none, as Ollama's names all have one.
 pub(super) fn listed_name(name: &str) -> String {
-    let base = match name.split('/').find_map(|p| p.strip_prefix("models--")) {
-        Some(repo) => repo.replace("--", "/"),
-        None if name.starts_with('/') || name.starts_with("./") => name.trim_end_matches('/').rsplit('/').next().unwrap_or(name).to_string(),
-        None => name.to_string(),
+    if let Some(repo) = repo_of(name) {
+        let found =
+            manifest().families.iter().find_map(|f| f.models.iter().find(|e| e.repo.eq_ignore_ascii_case(&repo)).map(|e| format!("{}:{}", f.name, e.size)));
+        if let Some(short) = found {
+            return short;
+        }
+    }
+    let base = match repo_of(name) {
+        Some(repo) if !name.contains(':') || name.starts_with('/') => repo,
+        _ if name.starts_with('/') || name.starts_with("./") => name.trim_end_matches('/').rsplit('/').next().unwrap_or(name).to_string(),
+        _ => name.to_string(),
     };
     if base.contains(':') {
         base
@@ -70,11 +93,19 @@ fn parameter_size(name: &str) -> String {
     String::new()
 }
 
-/// Whether a name asks for the model that is served: the same repo, with a tag or without, in any case, or a name that ends the served one's (`qwen3:8b` for `Qwen/Qwen3-8B` is not: only the names that are its own).
+/// Whether a name asks for the model that is served: the same repo, with a tag or without, in any case, a name that ends the served one's, or a short name of the manifest (`qwen3:8b`, `qwen3`) that is its repo.
 fn is_served(asked: &str, name: &str) -> bool {
-    let norm = |n: &str| listed_name(n).trim_end_matches(":latest").to_ascii_lowercase();
+    let norm = |n: &str| {
+        repo_of(n).unwrap_or_else(|| n.trim_end_matches('/').rsplit('/').next().unwrap_or(n).trim_end_matches(":latest").to_string()).to_ascii_lowercase()
+    };
     let (a, b) = (norm(asked), norm(name));
-    a == b || b.rsplit('/').next() == Some(a.as_str())
+    if a == b || b.rsplit('/').next() == Some(a.as_str()) {
+        return true;
+    }
+    match (crate::models::resolve(asked, manifest()), repo_of(name)) {
+        (Ok(Some(r)), Some(served)) => r.repo.eq_ignore_ascii_case(&served),
+        _ => false,
+    }
 }
 
 fn digest(name: &str) -> String {
@@ -642,14 +673,26 @@ mod tests {
 
     #[test]
     fn the_names_the_clients_see() {
-        assert_eq!(listed_name("Qwen/Qwen3-8B"), "Qwen/Qwen3-8B:latest");
-        assert_eq!(listed_name("Qwen/Qwen3.5-9B:swift"), "Qwen/Qwen3.5-9B:swift");
-        assert_eq!(listed_name("/home/u/glyd-demo/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d"), "Qwen/Qwen3-8B:latest");
+        // a model the manifest has is listed by its short name, as Ollama writes one; another by its repo or its directory's name with a tag
+        assert_eq!(listed_name("Qwen/Qwen3-8B"), "qwen3:8b");
+        assert_eq!(listed_name("qwen/qwen3-8b"), "qwen3:8b");
+        assert_eq!(listed_name("Qwen/Qwen3.5-9B:swift"), "qwen3.5:9b");
+        assert_eq!(listed_name("/home/u/glyd-demo/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d"), "qwen3:8b");
+        assert_eq!(listed_name("acme/Thing-1B"), "acme/Thing-1B:latest");
+        assert_eq!(listed_name("acme/Thing-1B:swift"), "acme/Thing-1B:swift");
+        assert_eq!(listed_name("/home/u/models--acme--Thing-1B/snapshots/abc"), "acme/Thing-1B:latest");
         assert_eq!(listed_name("/models/Qwen3-0.6B/"), "Qwen3-0.6B:latest");
         assert_eq!(
             (parameter_size("Qwen/Qwen3-8B"), parameter_size("Qwen3-0.6B"), parameter_size("x/Gemma-27b-it"), parameter_size("Kimi-K3")),
             ("8B".into(), "0.6B".into(), "27B".into(), String::new())
         );
+        assert!(
+            is_served("qwen3:8b", "Qwen/Qwen3-8B")
+                && is_served("qwen3", "Qwen/Qwen3-8B")
+                && is_served("Qwen-3:8B", "Qwen/Qwen3-8B")
+                && is_served("qwen3:8b", "/x/models--Qwen--Qwen3-8B/snapshots/abc")
+        );
+        assert!(!is_served("qwen3:32b", "Qwen/Qwen3-8B") && !is_served("qwen3.5:9b", "Qwen/Qwen3-8B") && !is_served("nosuchmodel:1b", "Qwen/Qwen3-8B"));
         assert_eq!(family("Qwen/Qwen3-8B"), "qwen3");
         assert_eq!(family("zai/GLM-5.3"), "glm");
         assert_eq!(family("acme/thing"), "glyd");

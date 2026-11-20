@@ -130,7 +130,7 @@ For the programs that talk to Ollama (Open WebUI, Continue, LangChain, the `olla
 `done`, `done_reason`, the durations (nanoseconds) and `prompt_eval_count` and `eval_count`; with `tools` the reply comes whole (a call is sent at once, its arguments an object). Read: `messages` (with `images` in base64, `tool_calls`,
 and `tool` messages by `tool_name`), `prompt`, `system`, `suffix` (fill in the middle) and `raw`, `tools`, `format` (`"json"` or a JSON schema), `think` (a boolean or a level; the thinking comes in `thinking`),
 and `options`: `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stop`, `num_predict`, `repeat_penalty`, `presence_penalty`, `frequency_penalty` (`num_ctx` is the server's `--context`; the others have no effect).
-`keep_alive` and `model` are read and ignored: the server holds one model and every request is answered by it; `/api/tags` and `/api/ps` list it as `NAME:latest` and `/api/show` says its `capabilities`
+`keep_alive` and `model` are read and ignored: the server holds one model and every request is answered by it; `/api/tags` and `/api/ps` list it by its short name in the model manifest, as Ollama writes one (`qwen3:8b`; the names `glyd pull` takes), or as `REPO:latest` where the manifest has none, and `/api/pull`, `/api/show` and `/api/delete` take those names and `/api/show` says its `capabilities`
 (`completion`, `tools`, `thinking`, `vision`, `insert`) and its `context_length`. `/api/pull` of that model says `success`, of another is 404 with what to run; `/api/delete` of the served model is refused.
 Errors are `{"error": "..."}`. The key guards `/api` as it guards `/v1`.
 
