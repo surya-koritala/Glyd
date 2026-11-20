@@ -1595,7 +1595,8 @@ mod tests {
                     let run = match row.family {
                         crate::support::Family::Qwen3 => {
                             let cfg = crate::weights::Config::parse(text, "config.json", None).unwrap();
-                            crate::cli::plan(&args(&["run", model]), &cfg, name, &gpu, None, 1).map(|p| p.2)
+                            crate::cli::plan(&args(&["run", model]), &cfg, &crate::cli::short_name(model), &gpu, None, 1).map(|p| p.2)
+                            // (on Windows the name of a path is the whole path)
                         }
                         _ => {
                             let layout = crate::levels::layout_for(model, crate::levels::layout_of(level).unwrap());
