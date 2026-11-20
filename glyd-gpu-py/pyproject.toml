@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glyd-gpu"
-version = "0.33.0"
+version = "0.33.1"
 description = "Glyd on the GPU: a bf16 model's weights held compressed in GPU memory, bit for bit, and multiplied from there. The GPU half of glyd (pip install \"glyd[gpu]\"), compiled."
 keywords = ["compression", "lossless", "llm", "gpu", "cuda", "bfloat16", "transformers", "pytorch", "vllm"]
 classifiers = [

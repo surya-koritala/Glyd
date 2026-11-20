@@ -9074,13 +9074,20 @@ __global__ void __launch_bounds__(LNT, C) f8h_lin3_kernel(const F8Lin P) {
 
 static int64_t tiles_for(int64_t n, int64_t tw) { return (n + tw - 1) / tw; }
 
-// Tuning variables: the library's thresholds and sizes, for measuring, read from the environment (GLYD_SPLIT_MIN turns the route off).
+// Tuning variables (the library's thresholds and sizes, for measuring) are read by a development build and by no release
+// build: its library holds no name of one, and takes the values the measurements chose. GLYD_SPLIT_MIN alone is read by both
+// (the changelog tells users to set it to turn the route off).
+#ifdef GLYD_RELEASE
+#define TUNING_ENV(name) ((const char*)nullptr)
+#define TUNING_INT(name, fallback) ((int64_t)(fallback))
+#else
 #define TUNING_ENV(name) std::getenv(name)
 static int64_t tuning_int(const char* name, int64_t fallback) {
     const char* v = std::getenv(name);
     return v ? atoll(v) : fallback;
 }
 #define TUNING_INT(name, fallback) tuning_int(name, fallback)
+#endif
 
 #define BY_V(V, CALL) do { if ((V) == 16) { constexpr int VV = 16; CALL; } else { constexpr int VV = 4; CALL; } } while (0)
 
@@ -9137,10 +9144,14 @@ GLYD_GPU_INTERNAL int glyd_gpu_cuda_version() { return CUDART_VERSION; }
 // caller checks it, as ctypes does not check arguments).
 GLYD_GPU_API int glyd_gpu_api_version() { return GLYD_GPU_API_VERSION; }
 GLYD_GPU_API const char* glyd_gpu_error_string(int status) {
+#ifdef GLYD_RELEASE  // (a release library's text for a status that is not the CUDA runtime's says nothing of the call: the status is the caller's)
+    if (status >= GLYD_GPU_BLAS_ERROR) return "a call the library makes failed";
+#else
     static const char* blas[] = {"cuBLAS: success", "cuBLAS: not initialized", "cuBLAS status 2", "cuBLAS: allocation failed", "cuBLAS status 4", "cuBLAS status 5", "cuBLAS status 6",
                                  "cuBLAS: invalid value", "cuBLAS: architecture mismatch", "cuBLAS status 9", "cuBLAS status 10", "cuBLAS: mapping error", "cuBLAS status 12",
                                  "cuBLAS: execution failed", "cuBLAS: internal error", "cuBLAS: not supported", "cuBLAS: license error"};
     if (status >= GLYD_GPU_BLAS_ERROR) return status - GLYD_GPU_BLAS_ERROR < 17 ? blas[status - GLYD_GPU_BLAS_ERROR] : "cuBLAS: an error";
+#endif
     return cudaGetErrorString((cudaError_t)status);
 }
 
@@ -10012,8 +10023,12 @@ static const RouteMins& route_mins() {
         while (isspace((unsigned char)*end)) end++;
         return number && !*end && errno != ERANGE ? (int64_t)x : fallback;
     };
+#ifdef GLYD_RELEASE
+    static const RouteMins t{17, 1024, 17, 0, get("GLYD_SPLIT_MIN", 0), 0, 0};
+#else
     static const RouteMins t{get("GLYD_WG_MIN", 17), get("GLYD_WG_MAX", 1024), get("GLYD_MID_MIN", 17), get("GLYD_DEC_MIN", 0),
                              get("GLYD_SPLIT_MIN", 0), get("GLYD_SPLIT_MAX", 0), get("GLYD_SPLIT_SMS", 0)};
+#endif
     return t;
 }
 
@@ -10843,10 +10858,12 @@ static void mma_moe_big_launch(Fmt f, int64_t E, int64_t O, int64_t K, const uin
 // loop's are asked for a step ahead); before the epilogues were shrunk it took 9-14% less at 512-1,024, the epilogue's cost being what a larger tile shared.
 template <class Fmt>
 static void mma_moe_big(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, uint16_t* y, float* y32, cudaStream_t cs) {
+#ifndef GLYD_RELEASE  // (a variant for measuring: a release library has no copy of its kernels)
     if (TUNING_INT("GLYD_GPU_BIG_TM", 128) == 256) {
         if (TUNING_INT("GLYD_GPU_BIG_NB", 2) == 3 && attribute(cudaDevAttrMaxSharedMemoryPerBlockOptin, current_device()) >= (int)Big<8, 4, 3, 2>::SHARED) return mma_moe_big_launch<Fmt, 8, 3>(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
         return mma_moe_big_launch<Fmt, 8, 2>(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
     }
+#endif
     mma_moe_big_launch<Fmt, 4, 3>(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
 }
 
@@ -11424,7 +11441,11 @@ static size_t f8_lin_shared(int64_t M, int dense, int a8) { return (size_t)f8c::
 // (GLYD_F8_SLOTS=3: the one-token product's three slots, f8_linear_kernel's S; being measured on HBM GPUs)
 static int f8_lin_slots(int64_t M, int a8, int ahead, int dense) { return !a8 && !ahead && !dense && M <= 8 && TUNING_INT("GLYD_F8_SLOTS", 2) == 3 ? 3 : 2; }
 static size_t f8_lin_xq(int64_t K, int64_t M) { return (size_t)M * f8c::f8_cdiv(K, f8c::PC) * (f8c::PC + 4); }  // (X's e4m3 copy and its scales)
+#ifdef GLYD_RELEASE
+constexpr bool F8_DEV_PLANS = false;  // (a release build compiles the default plan's kernels alone: ahead, dense and a8 are development builds')
+#else
 constexpr bool F8_DEV_PLANS = true;
+#endif
 // f.template operator()<NTL, KIND, AHEAD, DENSE>() for the plan's kernel
 template <int KIND, class F>
 static int f8_lin_with(int ntl, int ahead, int dense, F&& f) {

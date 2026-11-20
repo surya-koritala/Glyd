@@ -16,7 +16,7 @@ dependencies, under its milestone's epic; the epics are tracked in [#118](https:
 | v1.0.0 | [M6 Stable and operable](https://github.com/surya-koritala/Glyd/milestone/7) | [#125](https://github.com/surya-koritala/Glyd/issues/125) | 7 |
 | after 1.0 | [Later: datacenter scale](https://github.com/surya-koritala/Glyd/milestone/8) | [#210](https://github.com/surya-koritala/Glyd/issues/210) | 7 |
 
-## Where it stands (v0.33.0, 2026-11-20)
+## Where it stands (v0.33.1, 2026-11-20)
 
 Released, on main and planned are listed apart.
 
