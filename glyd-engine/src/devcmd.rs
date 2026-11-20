@@ -314,9 +314,13 @@ fn model_dir(a: &Args) -> Result<std::path::PathBuf> {
 /// The engine for the model of the command line: a packed directory with its tables beside it (or `--tables`) as it is, else the model made ready in the cache (store::prepare): packed for
 /// the GPU and its KV tables calibrated, each once. Also the directory the tokenizer is in.
 fn open_dir(a: &Args) -> Result<(Engine, f64, std::path::PathBuf)> {
+    open_dir_with(a, a.opts()?)
+}
+
+/// open_dir with these options in place of the command line's.
+fn open_dir_with(a: &Args, o: Opts) -> Result<(Engine, f64, std::path::PathBuf)> {
     let t0 = Instant::now();
     let m = a.need(1, "DIR")?;
-    let o = a.opts()?;
     let direct = Path::new(m);
     if o.tables.is_some() || (direct.join("glyd.json").exists() && direct.join("kv-tables.safetensors").exists()) {
         let dir = model_dir(a)?;
@@ -604,7 +608,8 @@ fn cmd_kvtest(a: &Args) -> Result<()> {
     let mut o = a.opts()?;
     o.users = 0;
     o.graph = false;
-    let mut e = Engine::new(&model_dir(a)?, &o)?;
+    // (as `run`: a repo id is made ready in the cache, its tables with it, not opened from its Hub snapshot)
+    let (mut e, _, _) = open_dir_with(a, o)?;
     if !glyd_engine::kvtest::run(&mut e)? {
         std::process::exit(1);
     }
