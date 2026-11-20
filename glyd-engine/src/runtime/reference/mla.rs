@@ -26,7 +26,7 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
     if q.len() != nh * qw || ckr.len() != kr + rd {
         return err(format!("MLA: {} query values for {nh} x {qw}, {} latent values for {kr} + {rd}", q.len(), ckr.len()));
     }
-    let rot = m.rope.as_ref().map(|r| (r, rope::inv_freq(r)));
+    let rot = m.rope.as_ref().map(|r| (r, rope::inv_freq_at(r, pos + 1)));
     let mut lat = norm(&m.kv_norm, &ckr[..kr], p.opt("kv_a_norm"), None);
     let mut kr_part = ckr[kr..].to_vec();
     if let Some((r, (inv, af))) = &rot {

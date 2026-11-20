@@ -293,3 +293,58 @@ fn qwen38_moe() {
     let p = moe_params(&f, "shared_expert", &[("shared_router", "shared_expert_gate.weight")]);
     check(&f, "Qwen3.8 MoE", |h, _| ffn::moe(&m, &p, h, 0).unwrap());
 }
+
+/// Each rope scaling's inverse frequencies and attention factor against transformers' `ROPE_INIT_FUNCTIONS`.
+#[test]
+fn rope_scaling() {
+    let f = Fixture::load("rope_scaling");
+    let cases = f.j["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 8);
+    for c in cases {
+        let rp = &c["rope_parameters"];
+        let num = |k: &str| rp[k].as_f64().unwrap();
+        let opt = |k: &str| rp[k].as_f64();
+        let orig = || rp["original_max_position_embeddings"].as_u64().unwrap() as u32;
+        let hd = c["head_dim"].as_u64().unwrap() as usize;
+        let dim = (hd as f64 * opt("partial_rotary_factor").unwrap_or(1.0)) as usize;
+        let max_pos = c["max_position_embeddings"].as_u64().unwrap() as u32;
+        let factors = |k: &str| rp[k].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+        let scaling = match rp["rope_type"].as_str().unwrap() {
+            "linear" => RopeScaling::Linear { factor: num("factor") },
+            "dynamic" => RopeScaling::DynamicNtk { factor: num("factor"), max_positions: max_pos },
+            "yarn" => RopeScaling::Yarn {
+                factor: num("factor"),
+                original_max: orig(),
+                beta_fast: num("beta_fast"),
+                beta_slow: num("beta_slow"),
+                mscale: opt("mscale"),
+                mscale_all_dim: opt("mscale_all_dim"),
+                attention_factor: None,
+                truncate: true,
+            },
+            "llama3" => RopeScaling::Llama3 {
+                factor: num("factor"),
+                low_freq_factor: num("low_freq_factor"),
+                high_freq_factor: num("high_freq_factor"),
+                original_max: orig(),
+            },
+            "longrope" => RopeScaling::LongRope {
+                short: factors("short_factor"),
+                long: factors("long_factor"),
+                original_max: orig(),
+                max_positions: max_pos,
+                attention_factor: None,
+            },
+            t => panic!("{t}"),
+        };
+        let r = Rope { scaling, ..Rope::plain(num("rope_theta"), dim) };
+        let (inv, af) = super::rope::inv_freq_at(&r, c["seq_len"].as_u64().unwrap_or(0) as u32);
+        let want: Vec<f32> = c["inv_freq"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+        let name = c["name"].as_str().unwrap();
+        assert_eq!(inv.len(), want.len(), "{name}");
+        for (i, (a, b)) in inv.iter().zip(&want).enumerate() {
+            assert!((a - b).abs() <= 2e-6 * b.abs(), "{name}: frequency {i}: {a} against {b}");
+        }
+        assert!((af - c["attention_factor"].as_f64().unwrap() as f32).abs() < 1e-6, "{name}: attention factor {af}");
+    }
+}

@@ -30,7 +30,7 @@ use super::backend::{
     Arenas, Backend, Captured, Collective, DeviceId, DeviceInfo, Format, HostTensor, KindRef, LayerDesc, LayerImpl, Placement, StepCx, StepShape, Support,
     WeightSource,
 };
-use super::kinds::{Act, Block, Body, Ffn, Mixer, Residual, RopeScaling};
+use super::kinds::{Act, Block, Body, Ffn, Mixer, Residual};
 use crate::ffi::{err, Error, Result};
 use std::collections::HashMap;
 
@@ -384,8 +384,8 @@ impl Backend for Ref {
             Body::Mixer(Mixer::Mla(m)) => m.rope.as_ref(),
             _ => None,
         };
-        if rope.is_some_and(|r| r.scaling != RopeScaling::None) {
-            return err(format!("layer {}: rope scaling is not in the reference yet", layer.index));
+        if rope.is_some_and(|r| r.mrope.is_some()) {
+            return err(format!("layer {}: M-RoPE (image positions) is not in the reference yet; text positions are plain rope", layer.index));
         }
         let mut p = Params::new();
         for r in roles(b) {

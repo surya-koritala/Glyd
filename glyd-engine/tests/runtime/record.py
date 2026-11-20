@@ -275,7 +275,39 @@ def qwen38_moe():
              M.Qwen3_5MoeSparseMoeBlock(c).eval(), c.hidden_size)
 
 
+def rope_scaling():
+    """Each rope_type's inverse frequencies and attention factor, from transformers' own ROPE_INIT_FUNCTIONS."""
+    from transformers import LlamaConfig
+    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+    short = [round(1.0 + 0.05 * i, 4) for i in range(36)]
+    long_ = [round(1.0 + 0.9 * i, 4) for i in range(36)]
+    cases = [
+        ("linear", 64, {"rope_type": "linear", "rope_theta": 10_000.0, "factor": 4.0}, None, 2048),
+        ("dynamic", 64, {"rope_type": "dynamic", "rope_theta": 10_000.0, "factor": 2.0}, 4096, 2048),
+        ("dynamic_short", 64, {"rope_type": "dynamic", "rope_theta": 10_000.0, "factor": 2.0}, 1000, 2048),
+        # DeepSeek-V4's compressed layers: YaRN factor 16 over 65,536 positions on the 64 rotated of 512
+        ("yarn", 64, {"rope_type": "yarn", "rope_theta": 10_000.0, "factor": 16.0, "original_max_position_embeddings": 65536, "beta_fast": 32, "beta_slow": 1}, None, 1048576),
+        ("yarn_mscale", 64, {"rope_type": "yarn", "rope_theta": 10_000.0, "factor": 40.0, "original_max_position_embeddings": 4096, "beta_fast": 32, "beta_slow": 1,
+                             "mscale": 1.0, "mscale_all_dim": 0.707}, None, 163840),
+        ("llama3", 128, {"rope_type": "llama3", "rope_theta": 500_000.0, "factor": 8.0, "low_freq_factor": 1.0, "high_freq_factor": 4.0, "original_max_position_embeddings": 8192}, None, 131072),
+        ("longrope_short", 96, {"rope_type": "longrope", "rope_theta": 10_000.0, "short_factor": short, "long_factor": long_, "original_max_position_embeddings": 4096, "partial_rotary_factor": 0.75}, 2048, 131072),
+        ("longrope_long", 96, {"rope_type": "longrope", "rope_theta": 10_000.0, "short_factor": short, "long_factor": long_, "original_max_position_embeddings": 4096, "partial_rotary_factor": 0.75}, 8192, 131072),
+    ]
+    out = []
+    for name, hd, rp, seq_len, max_pos in cases:
+        c = LlamaConfig(hidden_size=hd * 4, num_attention_heads=4, head_dim=hd, max_position_embeddings=max_pos, rope_parameters=dict(rp))
+        inv, af = ROPE_INIT_FUNCTIONS[rp["rope_type"]](c, None, seq_len=seq_len)
+        out.append({"name": name, "head_dim": hd, "rope_parameters": rp, "seq_len": seq_len, "max_position_embeddings": max_pos,
+                    "inv_freq": [float(v) for v in inv.tolist()], "attention_factor": float(af)})
+        print(name, len(inv), float(af))
+    with open(os.path.join(HERE, "rope_scaling.json"), "w") as f:
+        json.dump({"what": "rope scaling variants", "source": f"transformers {transformers.__version__}: ROPE_INIT_FUNCTIONS", "cases": out}, f, indent=1)
+        f.write("\n")
+
+
 CASES = {
+    "rope_scaling": rope_scaling,
     "gemma4_mlp": gemma4_mlp,
     "glm53_moe": glm53_moe,
     "dsv4_hash_moe": lambda: dsv4_moe(0, "dsv4_hash_moe"),
