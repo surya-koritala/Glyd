@@ -1,3 +1,0 @@
-08:18:32 (+0 s) downloads (background): 2 checkpoints
-08:18:32 (+0 s) vLLM 0.30.0, nvcc, the library (sm_120)
-08:19:45 (+73 s) the library did not build (log/build.txt)

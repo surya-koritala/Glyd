@@ -1,9 +1,0 @@
-16:43 created mugjzdrr1b1jtr (NVIDIA H100 80GB HBM3)
-ssh on pod mugjzdrr1b1jtr ready after 29s: ssh reachable at 103.207.149.57:10479
-16:43 ssh ready at 103.207.149.57:10479 after 39 s
-NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
-16:44 job started
-16:47 job done
-terminating mugjzdrr1b1jtr
-pods left: [('ura5eu8b3tk2bi', 'glyd-bench-f8a1', 'RUNNING')]
-4 min

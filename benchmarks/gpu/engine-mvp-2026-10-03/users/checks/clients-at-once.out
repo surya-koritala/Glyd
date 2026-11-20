@@ -1,8 +1,0 @@
-client 0: 128 of 128 tokens, first text 0.33 s, same text as alone
-client 1: 128 of 128 tokens, first text 0.24 s, same text as alone
-client 2: 128 of 128 tokens, first text 0.05 s, same text as alone
-client 3: 128 of 128 tokens, first text 0.14 s, same text as alone
-4 of 4 read what they read alone; 4 clients together 6.2 s (one at a time 23.5 s)
-stats: {'prompt_tokens': 1226, 'prefix_hit_tokens': 576, 'preemptions': 0, 'steps': 638, 'rows': 1016} since the start: {'preemptions': 0, 'steps': 638, 'rows': 1016}
-after a client left midway: 0 running, 0 waiting
-ok

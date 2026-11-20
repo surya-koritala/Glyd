@@ -1,9 +1,0 @@
-Avx2 kernel, 240 threads here, an expert 16.8 MB
-threads  16 pin true:  1 pairs      963 us a call (963 us a pair, 17.4 GB/s)
-threads  16 pin true:  3 pairs     2651 us a call (884 us a pair, 19.0 GB/s)
-threads  32 pin true:  1 pairs      728 us a call (728 us a pair, 23.1 GB/s)
-threads  32 pin true:  3 pairs     2131 us a call (710 us a pair, 23.6 GB/s)
-threads  64 pin true:  1 pairs      688 us a call (688 us a pair, 24.4 GB/s)
-threads  64 pin true:  3 pairs     1849 us a call (616 us a pair, 27.2 GB/s)
-threads 120 pin true:  1 pairs     1011 us a call (1011 us a pair, 16.6 GB/s)
-threads 120 pin true:  3 pairs     2444 us a call (815 us a pair, 20.6 GB/s)

@@ -1,9 +1,0 @@
-17:37 created hjcu800x8isfln (NVIDIA H100 80GB HBM3)
-ssh on pod hjcu800x8isfln ready after 33s: ssh reachable at 103.207.149.71:13421
-17:37 ssh ready at 103.207.149.71:13421 after 43 s
-NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
-17:38 job started
-17:42 job done
-terminating hjcu800x8isfln
-pods left: [('xryfeyyvonefgf', 'glyd-bench-f8a3', 'RUNNING')]
-5 min

@@ -1,9 +1,0 @@
-==> Installing glyd[vllm]==0.29.1 and Python 3.12 (PyTorch and vLLM: several GB, a few minutes)
-==> No C compiler found, and vLLM needs one: adding ziglang, a compiler from PyPI (no sudo)
-Downloading cpython-3.12.11-linux-x86_64-gnu (download) (31.1MiB)
- Downloading cpython-3.12.11-linux-x86_64-gnu (download)
-  × No solution found when resolving dependencies:
-  ╰─▶ Because there is no version of glyd[vllm]==0.29.1 and you require
-      glyd[vllm]==0.29.1, we can conclude that your requirements are
-      unsatisfiable.
-glyd install: the install did not finish (see above). Run the same command again: uv keeps what it downloaded. If uv reports that versions conflict, the list at the end of this script is for glyd 0.29.1; GLYD_CONSTRAINTS=none in front of sh resolves the packages fresh.

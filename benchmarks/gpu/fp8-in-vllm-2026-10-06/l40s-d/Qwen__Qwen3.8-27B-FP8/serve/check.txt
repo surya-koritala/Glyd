@@ -1,3 +1,0 @@
-  stock-serve: ok in 379 s; weights 28.9 GiB, KV 104740 tokens, concurrency (8192, 12.79)
-GPU NVIDIA L40S
-PASS: 0 failed; /root/results/Qwen__Qwen3.8-27B-FP8/serve/check_fp8_vllm.json

@@ -1,5 +1,0 @@
-cublas.h
-cublasLt.h
-cublasXt.h
-cublas_api.h
-cublas_v2.h

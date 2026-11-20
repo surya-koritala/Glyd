@@ -1,7 +1,0 @@
-B: C API 16
-check_f8 on GPU NVIDIA GeForce RTX 5090
-  f8_linear: 65 products within bf16's rounding of the exact ones; the worst error 3.70e-03 of the sum of |x w|
-  f8_linear W8A8: 39 products within bf16's rounding of the exact ones of X as e4m3; the worst error 2.73e-03
-case_linear ok (109.9 s)
-ALL BIT FOR BIT
-check B exit 0

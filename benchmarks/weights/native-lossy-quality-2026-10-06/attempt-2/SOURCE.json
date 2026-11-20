@@ -1,8 +1,0 @@
-{
-  "build_commit": "55f1dfa4cf6a388bcbde8847592134d2f05a6466",
-  "build_tree": "fe842aacfc45c0e10232ecd6192aa07ae31b8de4",
-  "branch_head": "23e0132ac988954b2312e9afc1de84ca8a2ed3cc",
-  "branch_tree": "fe842aacfc45c0e10232ecd6192aa07ae31b8de4",
-  "quality_ci": "https://github.com/surya-koritala/glyd-gpu-private/actions/runs/37551077382",
-  "evaluation_sha256": "be7307a4302f48ba1d82dde024f44de3f296fbc2980e49cabc9f698d138d744f"
-}

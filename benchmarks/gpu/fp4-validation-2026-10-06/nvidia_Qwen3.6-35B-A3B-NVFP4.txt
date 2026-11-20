@@ -1,9 +1,0 @@
-stock: ok (226 s) weights 20.37 GiB, KV 150,966 tokens, tok/s {"1": 257.51, "32": 2732.51}
-glyd: ok (223 s) weights 19.25 GiB, KV 181,394 tokens, tok/s {"1": 193.55, "32": 2286.6}, codes: 1 layers, 0.375 GiB in 0.328 GiB of packs + 384 MiB scratch, 2 packs verified at load
-glyd-b: ok (183 s) weights 19.25 GiB, KV 181,394 tokens, tok/s {"1": 184.33, "32": 2260.74}, codes: 1 layers, 0.375 GiB in 0.328 GiB of packs + 384 MiB scratch, 2 packs verified at load
-stock-b: ok (171 s) weights 20.37 GiB, KV 150,966 tokens, tok/s {"1": 251.94, "32": 2724.05}
-glyd-exact: ok (160 s) weights 19.39 GiB, KV 191,341 tokens, codes: 120 layers, 15.059 GiB in 15.113 GiB of packs + 385 MiB scratch, 160 packs verified at load
-PACKED: 111 layers (0 verified bit for bit as packed), 1.77 GiB bf16 held in 1.19 GiB (0.58 GiB saved); products of 4 against F.linear: worst relative error 3.19e-03; largest 16-bit left: Embedding / NoneType / weight / bfloat16 0.00 GiB; Conv3dLayer / NoneType / weight / bfloat16 0.00 GiB
-SCALES: 120 layers' scales, 1927.5 MiB held in 924.6 MiB of packs (48.0% of their bytes) + 48.1 MiB of scratch: 954.8 MiB saved; 160 packs (1927.5 MiB) verified bit for bit at load
-CODES: 1 layers' 4-bit codes, 0.375 GiB held in 0.328 GiB of packs (3.495 bits a code) + 384.0 MiB of scratch: -0.328 GiB saved; 2 packs (0.375 GiB) verified bit for bit at load
-STOCK -> GLYD: weights 20.37 -> 19.25 GiB; KV tokens 150966 -> 181394; 1 user 254.86 -> 187.71 tok/s (0.737x); 32 users 2728.28 -> 2273.77 tok/s (0.833x); greedy agreement 0.7051

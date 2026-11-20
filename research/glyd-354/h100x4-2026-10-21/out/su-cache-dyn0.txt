@@ -1,5 +1,0 @@
-NVIDIA-Nemotron-3-Super-120B-A12B-BF16: about 14.1 GiB on the GPU at the hummingbird level (about 3.2 bits per weight, not lossless), in place of 224.8 GiB of bf16.
-104 experts of 512 a layer are on the GPU, chosen as the router asks for them; all of them are in the computer's memory (39.2 GiB).
-The experts that are not on the GPU are computed by the CPU on 102 threads (--cpu-threads N changes the count), from the computer's memory they are held in.
-Ready in 57s: NVIDIA-Nemotron-3-Super-120B-A12B-BF16 on the NVIDIA H100 80GB HBM3, 14.1 GiB of weights, 32768 tokens of context, one user at a time.
-The user asks: "What is the capital of France? Answer in one sentence." So answer: "The capital of France is Paris." One sentence. Provide that.The capital of France is Paris.

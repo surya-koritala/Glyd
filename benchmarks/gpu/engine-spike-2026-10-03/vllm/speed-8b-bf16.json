@@ -1,1 +1,0 @@
-{"model": "Qwen/Qwen3-8B", "mode": "bf16", "prompt_tokens": 1024, "new_tokens": 256, "load_s": 34.6, "decode_ms": [60.443, 60.41, 60.434, 60.423, 60.454], "decode_ms_median": 60.434, "decode_tokens_per_s": 16.55, "prefill_ms": [314.5, 329.5, 335.2, 335.8, 336.5], "prefill_ms_median": 335.2}

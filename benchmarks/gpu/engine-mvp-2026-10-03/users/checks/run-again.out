@@ -1,9 +1,0 @@
-a sequence of 187 prompt tokens (run in one piece) and 40 tokens made by steps, run again as one prompt in pieces of the sizes below: values of the keys and values that differ from those the first run made
-  pieces of 227 tokens: the prompt's 13787136 values: 0 differ; the 40 tokens made by steps, 2949120 values: 2271335 differ
-  pieces of 128 tokens: the prompt's 13787136 values: 10789788 differ; the 40 tokens made by steps, 2949120 values: 2300855 differ
-  pieces of  96 tokens: the prompt's 13787136 values: 10789788 differ; the 40 tokens made by steps, 2949120 values: 2309640 differ
-  pieces of  80 tokens: the prompt's 13787136 values: 10789788 differ; the 40 tokens made by steps, 2949120 values: 2300855 differ
-  pieces of  65 tokens: the prompt's 13787136 values: 10789788 differ; the 40 tokens made by steps, 2949120 values: 2305631 differ
-  pieces of  64 tokens: the prompt's 13787136 values: 10812621 differ; the 40 tokens made by steps, 2949120 values: 2297910 differ
-  pieces of  48 tokens: the prompt's 13787136 values: 10812621 differ; the 40 tokens made by steps, 2949120 values: 2297910 differ
-  pieces of  16 tokens: the prompt's 13787136 values: 10814139 differ; the 40 tokens made by steps, 2949120 values: 2305032 differ

@@ -1,5 +1,0 @@
-11:03:21 (+0 s) downloads (background): 3 checkpoints
-11:03:21 (+0 s) vLLM 0.30.0, nvcc, the library (sm_120)
-11:06:36 (+195 s) environment: vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA GeForce RTX 5090
-11:07:52 (+271 s) plugin tests: 27 ok; 3 failed; 3 tracebacks
-11:07:52 (+271 s) test_vllm_quant.py failed: no GPU run (the pod's time is not spent on a plugin that fails its own checks)

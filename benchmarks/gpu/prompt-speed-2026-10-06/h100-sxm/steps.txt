@@ -1,4 +1,0 @@
-05:13:34 (+32 s) env
-05:15:20 (+138 s) build: real	1m42.310s; C API 15 | GPU code 7090
-05:15:24 (+142 s) self-test exit 0 (every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too))
-05:16:28 (+206 s) pass Qwen3.5-9B exit 0 (M= 8192   mma   glinear:    171.37 ms = 1.073x bf16, err 3.3e-03)

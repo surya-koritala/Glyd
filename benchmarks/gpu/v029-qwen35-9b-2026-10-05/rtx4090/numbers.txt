@@ -1,5 +1,0 @@
-glyd serve Qwen3.5-9B: 
-vllm bf16 Qwen3-8B: GPU KV cache size: 39,936 tokens;Maximum concurrency for 8,192 tokens per request: 4.88x;Model loading took 15.27 GiB;
-glyd serve Qwen3-8B: 
-glyd serve compiled Qwen3-8B: GPU KV cache size: 74,032 tokens;Model loading took 10.38 GiB;glyd: mma layout;
-glyd serve compiled Qwen3.5-9B: GPU KV cache size: 197,225 tokens;Model loading took 12.69 GiB;glyd: mma layout;

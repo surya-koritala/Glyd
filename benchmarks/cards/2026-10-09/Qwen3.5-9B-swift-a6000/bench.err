@@ -1,1 +1,0 @@
-loaded in 2.8 s: NVIDIA RTX A6000 (sm_86): weights 5.775 GiB (34.6% of the checkpoint's 16.678 GiB for the same tensors; 0 vision and MTP tensors not loaded; layout Int5), states 0.048 GiB, KV cache 4096 positions 0.125 GiB, workspaces 0.657 GiB, 6.87 of 47.40 GiB in use

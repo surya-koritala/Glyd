@@ -1,5 +1,0 @@
-venv: rc=0 161 s
-selftest: rc=0 115 s
-ref: rc=0 178 s
-score: rc=0 374 s
-done

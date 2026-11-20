@@ -1,3 +1,0 @@
-05:14:51 (+89 s) env
-05:17:20 (+238 s) build: real	2m24.113s; C API 15 | GPU code 1089
-05:17:26 (+244 s) self-test exit 0 (every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too))

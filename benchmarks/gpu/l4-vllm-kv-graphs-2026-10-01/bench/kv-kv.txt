@@ -1,4 +1,0 @@
-glyd: mma layout, 0 of 36 layers packed (fraction 0), the KV cache lossless (12 bits a value; tables /home/ubuntu/.cache/glyd/kv/kvtab-f05f0a87b40fbf8d.npz)
-Model loading took 15.36 GiB memory and 3.505349 seconds
-GPU KV cache size: 34,912 tokens, Maximum concurrency for 4,096 tokens per request: 8.52x
-20398 MiB, 23034 MiB

@@ -1,1 +1,0 @@
-/root/.local/share/uv/tools/glyd/lib/python3.12/site-packages/glyd_gpu/libglyd_gpu_cuda13.so

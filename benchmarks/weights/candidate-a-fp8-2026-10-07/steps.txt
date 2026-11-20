@@ -1,6 +1,0 @@
-2026-10-08T02:07:45Z start environment cap=120
-2026-10-08T02:07:47Z pass environment
-2026-10-08T02:07:47Z start matrices cap=2100
-2026-10-08T02:15:01Z pass matrices
-2026-10-08T02:15:01Z start fp8 cap=1200
-2026-10-08T02:18:13Z pass fp8

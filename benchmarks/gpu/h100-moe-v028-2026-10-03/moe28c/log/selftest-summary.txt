@@ -1,1 +1,0 @@
-sweep_summary: self-test passed

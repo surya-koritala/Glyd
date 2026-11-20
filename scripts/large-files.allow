@@ -1,0 +1,16 @@
+# Files that may exceed scripts/check_tree.sh's limits (a path, or a prefix ending in /), each with its reason.
+# expert routing traces the offload tests read (glyd-engine/src/offload.rs)
+benchmarks/moe-skew-2026-10-09/nemotron/
+# model and checkpoint inventories the engine's tests read
+research/models-2026/models.json
+research/inventory-2026/inventory.json
+# Condor's demo media (README)
+condor/docs/media/
+# codec test vectors
+tests/data/
+# vendored code under its own license
+third_party/
+# kernel tuning tables the GPU library and tools read
+benchmarks/gpu/autotune-2026-10-06/tables.json
+# the Qwen3.8 inventory the engine's tests include
+research/lossy-2026/qwen38-inventory.json

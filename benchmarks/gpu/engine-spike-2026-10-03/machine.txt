@@ -1,9 +1,0 @@
-name, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
-NVIDIA L4, 595.91.07, 23034 MiB, 2040 MHz, 72.00 W
-Cuda compilation tools, release 13.0, V13.0.88
-Build cuda_13.0.r13.0/compiler.36424714_0
-rustc 1.98.1 (48a229cea 2026-09-01)
-vllm 0.30.0 torch 2.13.0+cu130
-7.0.0-1013-aws
-16
-MemTotal:       63393244 kB

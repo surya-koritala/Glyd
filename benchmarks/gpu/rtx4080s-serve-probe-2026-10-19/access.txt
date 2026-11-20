@@ -1,4 +1,0 @@
-GET /health, no key: {"status":"ok"} HTTP 200
-GET /v1/models, no key: {"error":"Unauthorized"} HTTP 401
-GET /v1/glyd/info, no key: HTTP 401
-GET /v1/models, the key: {"object":"list","data":[{"id":"/home/surya-koritala/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d","object":"model","created":1792451404,"owned_by":"glyd","max_model_len":4096}]}

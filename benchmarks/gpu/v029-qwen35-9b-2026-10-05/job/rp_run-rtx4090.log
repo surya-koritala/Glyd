@@ -1,9 +1,0 @@
-01:31 created 3fswej1wxqjkxy (NVIDIA GeForce RTX 4090)
-ssh on pod 3fswej1wxqjkxy ready after 23s: ssh reachable at 81.27.69.179:33573
-01:31 ssh ready at 81.27.69.179:33573 after 29 s
-NVIDIA GeForce RTX 4090, 595.91.07, 24564 MiB
-01:32 job started
-02:05 job done
-terminating 3fswej1wxqjkxy
-pods left: []
-33 min

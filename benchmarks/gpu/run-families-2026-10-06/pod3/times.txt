@@ -1,1 +1,0 @@
-serve_gemma4_12b up in 145 s, GPU memory used 22416 MiB

@@ -1,1 +1,0 @@
-{"vocab": 262144, "rows_per_chunk": 255, "model": "qat-i4x", "chunks": 32, "engine": "glyd-engine g4score", "layout": "i4x"}

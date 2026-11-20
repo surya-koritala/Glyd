@@ -1,8 +1,0 @@
-glyd run: Qwen2.5-1.5B-Instruct is a Qwen2ForCausalLM model, and this engine runs Qwen3 models so far; using vLLM.
-Qwen2.5-1.5B-Instruct: 2.3 GB on the GPU with Glyd, instead of 3.1 GB; your GPU has 25.3 GB free.
-Qwen2.5-1.5B-Instruct is downloaded already.
-Settings: 32,768-token context (the model's own limit), eager mode, 20% of GPU memory (5.1 GB), tool calls (hermes).
-KV cache: vLLM's (GLYD_KV=auto for Glyd's lossless cache on supported GPUs)
-Loading Qwen2.5-1.5B-Instruct with Glyd: 2.3 GB instead of 3.1 GB...
-Ready in 33s. (The server's log: /root/.local/state/glyd/logs/run-20261005-224115.log)
-Stopping the server (a few seconds)...

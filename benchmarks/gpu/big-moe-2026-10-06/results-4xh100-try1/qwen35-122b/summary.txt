@@ -1,2 +1,0 @@
-[+1 s] 4 x NVIDIA H100 80GB HBM3; model Qwen/Qwen3.5-122B-A10B, TP 4, modes bf16 glyd, util 0.9, max-model-len 32768; 400G free
-[+4 s] FAIL: vLLM and glyd[vllm] did not install (log/env.txt)

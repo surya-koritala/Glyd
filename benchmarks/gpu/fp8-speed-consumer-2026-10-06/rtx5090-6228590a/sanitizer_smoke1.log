@@ -1,5 +1,0 @@
-Version 2025.3.1.0 (build 36400806) (public-release)
-========= COMPUTE-SANITIZER
-========= Error: Target application terminated before first instrumented API call
-========= Error: couldn't find exit code.
-exit 255

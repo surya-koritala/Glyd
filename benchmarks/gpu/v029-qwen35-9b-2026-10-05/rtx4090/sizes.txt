@@ -1,4 +1,0 @@
-tool env: 7.7G
-engine program: 8.3M
-glyd_gpu package: 86M
-engine idle GPU memory: 15572 MiB

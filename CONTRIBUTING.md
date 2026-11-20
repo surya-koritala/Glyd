@@ -44,6 +44,11 @@ a GPU runner is registered (`vars.GPU_RUNNER`); until then, run them locally as 
 3. Test logits against the reference and greedy tokens against the original checkpoint.
 4. Add the model to `glyd-engine supports` and measure it with `costs` and `bench`.
 
+## Results
+
+A benchmark or measurement goes in `benchmarks/<run>/` as a summary (`README.md`) and the scripts that made it. Raw outputs
+(logs, per-tensor JSON, CSV) stay out of git; CI refuses data files over 64 KB (`scripts/check_tree.sh`, `benchmarks/README.md`).
+
 ## Commits and licensing
 
 Every commit carries `Signed-off-by: Your Name <you@example.com>` (`git commit -s`), certifying the

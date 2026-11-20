@@ -1,1 +1,0 @@
-NVIDIA H100 80GB HBM3, compute 9.0 (sm_90a), top SM clock 1980 MHz

@@ -1,5 +1,0 @@
-NVIDIA H100 PCIe: copy 1932.3 GB/s; 48 layout mma, the first 12 layers' matrices, one row
-   q/k/v   8704 x 3840   43.0 MB     45.9 us   937.5 GB/s   48.5% of the copy rate
-       o   3840 x 8192   24.8 MB     30.8 us   807.6 GB/s   41.8% of the copy rate
- gate_up  30720 x 3840   159.6 MB    128.0 us  1246.4 GB/s   64.5% of the copy rate
-    down   3840 x 15360  79.8 MB     71.5 us  1116.5 GB/s   57.8% of the copy rate

@@ -1,4 +1,0 @@
-glyd: mma layout, 0 of 36 layers packed (fraction 0), the KV cache lossless (12 bits a value; tables /home/ubuntu/kvv/tables/qwen3-8b-16k.npz)
-Model loading took 15.34 GiB memory and 2.558114 seconds
-GPU KV cache size: 39,104 tokens, Maximum concurrency for 4,096 tokens per request: 9.55x
-20890 MiB, 23034 MiB

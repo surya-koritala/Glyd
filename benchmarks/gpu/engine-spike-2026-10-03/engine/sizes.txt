@@ -1,8 +1,0 @@
-5103656 /home/ubuntu/engine-out/final2/glyd-engine
-5495528 /home/ubuntu/engine/target-dev4/release/glyd-engine (a build from scratch with the kernels for sm_80, 86, 89 and 90a)
-28506672 /home/ubuntu/v027/venv/lib/python3.12/site-packages/glyd_gpu/libglyd_gpu_cuda13.so
-	linux-vdso.so.1 
-	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 
-	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 
-	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 
-	/lib64/ld-linux-x86-64.so.2 

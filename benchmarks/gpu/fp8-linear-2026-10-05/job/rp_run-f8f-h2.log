@@ -1,9 +1,0 @@
-18:16 created cm30g3ue3srtdm (NVIDIA H100 80GB HBM3)
-ssh on pod cm30g3ue3srtdm ready after 11s: ssh reachable at 216.243.220.226:16046
-18:16 ssh ready at 216.243.220.226:16046 after 14 s
-NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
-18:16 job started
-18:21 job done
-terminating cm30g3ue3srtdm
-pods left: [('xrysithauij0sh', 'glyd-bench-f8a5', 'RUNNING')]
-5 min

@@ -1,1 +1,0 @@
-vllm up in 117 s, GPU memory used 20874 MiB

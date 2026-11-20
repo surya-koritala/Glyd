@@ -1,5 +1,0 @@
-pyenv: rc=0 112 s
-selftest: rc=0 4 s
-download: rc=0 26 s
-ref: rc=0 76 s
-score: rc=0 43 s

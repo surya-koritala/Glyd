@@ -1,2 +1,0 @@
-glyd run: that is a command of Glyd's Python tool (the GPU half), which is not installed here. On Linux with an NVIDIA GPU: pip install "glyd[gpu]" (glyd run and glyd serve: "glyd[vllm]"), or curl -LsSf https://getglyd.com/install.sh | sh (a file named run is compressed as ./run)
-rc=127

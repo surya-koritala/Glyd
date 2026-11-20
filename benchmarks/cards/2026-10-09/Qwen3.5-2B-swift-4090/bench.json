@@ -1,1 +1,0 @@
-{"prompt_tokens":1024,"new_tokens":256,"prefill_ms":47.4,"prefill_ms_all":[47.7,47.5,47.4,45.4,44.2],"decode_ms_mean":2.260,"decode_ms_p50":2.260,"decode_ms_p99":2.270,"decode_tokens_per_s":442.55,"load_s":33.02,"weights_gib":1.214,"checkpoint_gib":3.505,"states_gib":0.018,"kv_gib":0.047,"gpu_mem_used_gib":2.003,"layout":"Int5","graph":true}

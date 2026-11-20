@@ -1,5 +1,0 @@
-score_int_5_32_mse_bf16 0.017 GPU-hours
-score_gptq_5_32_bf16_act 0.193 GPU-hours
-score_int_3_32_mse_bf16 0.016 GPU-hours
-score_gptq_3_32_bf16_act 0.192 GPU-hours
-score steps total 0.418 GPU-hours

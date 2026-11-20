@@ -4,7 +4,7 @@ The same gate as the release candidates', run against what was published: `glyd[
 build of this tree), `install.sh` as the v0.26.0 tag has it (fetched from its raw GitHub URL, and then, once the site was live, from
 getglyd.com), and the Rust `glyd` of the release's linux-x86_64 tarball. The machine is the first round's: the AWS L4 (24 GB, Ada, sm_89), driver
 595.91.07 (CUDA 13.2), clean Ubuntu 26.04 containers with no CUDA toolkit and no gcc, as a user that is not root. What the artifacts are, with
-hashes: [published-artifacts.txt](published-artifacts.txt).
+hashes: [published-artifacts.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/l4-onboarding-2026-10-01/v0.26.0/published-artifacts.txt).
 
 [gpu/vllm/acceptance.sh](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/vllm/acceptance.sh) of this branch is the script (v0.26.0's, with two options added for this: `--install-url`,
 a release's raw `install.sh` in place of the checkout's, and `--served`, the README's install line run as it is, from the network, with a copy of

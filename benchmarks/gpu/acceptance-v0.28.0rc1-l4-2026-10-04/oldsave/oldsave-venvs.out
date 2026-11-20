@@ -1,6 +1,0 @@
-pip install glyd[gpu]==0.27.0: rc=0 (Successfully installed MarkupSafe-3.0.3 accelerate-1.15.0 annotated-doc-0.0.5 anyio-4.15.1 certifi-2026.7.22 click-8.5.0 cuda-bindings-13.4.3 cuda-pat)
-accelerate==1.15.0 glyd==0.27.0 glyd-gpu==0.27.0 safetensors==0.8.0 torch==2.13.0 transformers==5.18.0 
-pip install glyd[gpu]==0.28.0rc1: rc=0 (Successfully installed MarkupSafe-3.0.3 accelerate-1.15.0 annotated-doc-0.0.5 anyio-4.15.1 certifi-2026.7.22 click-8.5.0 cuda-bindings-13.4.3 cuda-pat)
-accelerate==1.15.0 glyd==0.28.0rc1 glyd-gpu==0.28.0rc1 safetensors==0.8.0 torch==2.13.0 transformers==5.18.0 
-the two environments differ in glyd and glyd-gpu alone
-VENVS DONE

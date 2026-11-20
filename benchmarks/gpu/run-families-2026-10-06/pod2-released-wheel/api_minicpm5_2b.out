@@ -1,1 +1,0 @@
-{"model": "openbmb/MiniCPM5-2B", "max_model_len": 131072, "tool_call": false, "thinking": false, "long_prompt": true, "ok": false}

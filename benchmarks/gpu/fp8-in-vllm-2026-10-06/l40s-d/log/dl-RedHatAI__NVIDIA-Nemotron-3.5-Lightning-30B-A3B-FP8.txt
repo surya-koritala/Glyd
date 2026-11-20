@@ -1,5 +1,0 @@
-Fetching 11 files:   0%|          | 0/11 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 11 files:   9%|▉         | 1/11 [00:00<00:03,  2.62it/s]Fetching 11 files:  27%|██▋       | 3/11 [00:00<00:01,  5.83it/s]Fetching 11 files:  45%|████▌     | 5/11 [00:00<00:00,  8.97it/s]Fetching 11 files:  73%|███████▎  | 8/11 [00:00<00:00, 10.25it/s]Fetching 11 files:  82%|████████▏ | 9/11 [00:20<00:00, 10.25it/s]Fetching 11 files:  91%|█████████ | 10/11 [00:23<00:03,  3.79s/it]Fetching 11 files: 100%|██████████| 11/11 [00:36<00:00,  5.58s/it]Fetching 11 files: 100%|██████████| 11/11 [00:36<00:00,  3.31s/it]
-[32m✓ Downloaded[0m
-  path: /root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8
-exit 0 in 37 s, 31G

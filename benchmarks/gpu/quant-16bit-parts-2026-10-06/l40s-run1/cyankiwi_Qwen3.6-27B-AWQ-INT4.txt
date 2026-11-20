@@ -1,7 +1,0 @@
-stock-eager: ok (124 s) weights 19.2 GiB, KV 184,560 tokens
-glyd-exact: ok (121 s) weights 19.04 GiB, KV 186,488 tokens
-stock: ok (374 s) weights 19.2 GiB, KV 176,368 tokens, tok/s {"1": 38.69, "32": 520.55}
-glyd: ok (377 s) weights 18.27 GiB, KV 185,524 tokens, tok/s {"1": 40.18, "32": 531.0}
-EXACT PASS: Glyd exact eager against stock eager, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 707 tokens, one image chat; 83 of 83 packs verified bit for bit
-PACKED: 84 layers, 2.97 GiB bf16 held in 1.99 GiB (0.97 GiB saved); products of 4 against F.linear: worst relative error 3.13e-03; largest 16-bit left: VocabParallelEmbedding / UnquantizedEmbeddingMethod / weight / bfloat16 2.37 GiB; MergedColumnParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16 0.90 GiB; RowParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16 0.33 GiB
-STOCK -> GLYD: weights 19.2 -> 18.27 GiB; KV tokens 176368 -> 185524; 1 user 38.69 -> 40.18 tok/s (1.039x); 32 users 520.55 -> 531.0 tok/s (1.020x); greedy agreement 1.0

@@ -1,8 +1,0 @@
-23:15:01 (+0 s) machine
-23:15:47 (+46 s) env: in 46 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | GPU NVIDIA H100 80GB HBM3 (9, 0))
-23:16:42 (+101 s) build: sm_90a in 55 s
-23:17:00 (+119 s) test: test_vllm.py exit 1, the kernels' checks exit 0 (check_vllm --kv: all passed (81 checks)) in 18 s
-23:22:31 (+450 s) tps (graphs, 1x1024, 3 rounds): exit 0 in 331 s
-23:26:12 (+671 s) serve: exit skipped (1k), 0 (8k) in 221 s
-23:43:36 (+1715 s) check: exit 0 (check_vllm --kv: all passed (19 checks)) in 1044 s
-23:52:21 (+2240 s) ext: exit 1 (check_vllm --kv: 1 failed (11 checks)) in 525 s

@@ -1,1 +1,0 @@
-serve_nemotron3_4b up in 75 s, GPU memory used 17540 MiB

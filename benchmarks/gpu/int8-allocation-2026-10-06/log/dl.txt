@@ -1,4 +1,0 @@
-Fetching 9 files:   0%|          | 0/9 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 9 files:  11%|█         | 1/9 [00:00<00:01,  5.74it/s]Fetching 9 files:  44%|████▍     | 4/9 [00:00<00:00, 15.54it/s]Fetching 9 files:  67%|██████▋   | 6/9 [00:20<00:00, 15.54it/s]Fetching 9 files:  78%|███████▊  | 7/9 [00:26<00:09,  4.68s/it]Fetching 9 files:  89%|████████▉ | 8/9 [00:32<00:04,  4.96s/it]Fetching 9 files: 100%|██████████| 9/9 [01:08<00:00, 12.07s/it]Fetching 9 files: 100%|██████████| 9/9 [01:08<00:00,  7.65s/it]
-/root/w/hf/hub/models--RedHatAI--Qwen3.5-9B-quantized.w8a8/snapshots/4257ccf0e5c6f87246fd96ea2e4fb16817101558
-exit 0 after 69 s; 124K

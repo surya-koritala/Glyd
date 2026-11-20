@@ -1,1 +1,0 @@
-{"model": "ibm-granite/granite-4.2-8b", "max_model_len": 50176, "tool_call": true, "tool_result_turn": true, "thinking": true, "long_prompt": true, "ok": true}

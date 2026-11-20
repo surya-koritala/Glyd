@@ -1,7 +1,0 @@
-Tue Oct  6 04:30:55 UTC 2026
-NVIDIA H100 80GB HBM3, 81559 MiB, 580.126.09, 1980 MHz, 700.00 W
-x86_64
-208
-               total        used        free      shared  buff/cache   available
-Mem:            2015         116         604           8        1319        1899
-overlay         300G   88M  300G   1% /

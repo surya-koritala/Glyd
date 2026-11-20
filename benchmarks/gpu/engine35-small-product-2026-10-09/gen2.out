@@ -1,3 +1,0 @@
-loaded in 54.2 s: NVIDIA A100 80GB PCIe (sm_80): weights 21.160 GiB (42.2% of the checkpoint's 50.098 GiB for the same tensors; 348 vision and MTP tensors not loaded; layout Compact), states 0.143 GiB, KV cache 4096 positions 0.250 GiB, workspaces 1.275 GiB, 23.25 of 79.25 GiB in use
-The three primary colours of light are red, green, and blue. When these colours are combined in equal intensities, they produce white light. This principle
-7 prompt tokens, 24 generated in 1.03 s

@@ -1,9 +1,0 @@
-01:14:44 (+1 s) machine
-01:14:44 (+1 s) env: /home/ubuntu/v027/venv/bin/python
-01:14:50 (+7 s) build: sm_89 in 1 s (library: C API 14 | GPU code 3089)
-01:15:51 (+68 s) sweep: exit 0 in 61 s (Qwen/Qwen3-8B: lm_head.weight 151936 x 4096 bf16 on NVIDIA L4 (GPU code 3089), torch 2.13.0+cu130)
-01:18:16 (+213 s) tiny: exit 0 in 145 s (tables_check: all passed (8 checks))
-01:24:26 (+583 s) real: exit 0 in 370 s (check_vllm: all passed (7 checks))
-download dl-Qwen3-4B: exit 0: 8060899111 bytes in 1 s (at +2 s)
-download dl-Qwen3-8B: exit 0: 16397464165 bytes in 0 s (at +1 s)
-01:24:26 (+583 s) done

@@ -2,7 +2,7 @@
 
 What has to be true before Glyd's numbers are used for a storage
 decision, and how each point is checked. Results of each run are in
-[`../../benchmarks/suite/`](../../benchmarks/suite/) as JSON lines, one
+[`../../benchmarks/suite/`](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/suite) as JSON lines, one
 directory per machine, with the log of the run; the tables in
 [`suite-2026-09-20.md`](suite-2026-09-20.md) (and the earlier [`suite-2026-09.md`](suite-2026-09.md)) are generated from them by
 `scripts/report_suite.py`. Every codec on one machine against Glyd,

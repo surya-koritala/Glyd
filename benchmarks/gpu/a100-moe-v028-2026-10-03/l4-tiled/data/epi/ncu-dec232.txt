@@ -1,7 +1,0 @@
-==PROF== Connected to process 619207 (/usr/bin/python3.12)
-Qwen/Qwen3-30B-A3B layer 0: NVIDIA L4, layout mma12, 12.05 bits a weight (gate+up), 12.05 (down), an expert 4.74 + 2.37 MB packed, copy rate 230 GB/s (read + write), env GLYD_GPU_LIB=/home/ubuntu/dev/epil2/lib/libglyd_gpu_cuda13.so, GLYD_GPU_MOE_ROWS=17
-==PROF== Profiling "mma_moe_kernel": 0%....50%....100% - 44 passes
-==PROF== Profiling "mma_moe_rows_kernel": 0%....50%....100% - 44 passes
-T=  232          new: checked, 128 experts hit; gate+up 1.9e-03, down 5.9e-03 (against fp32)
-==PROF== Disconnected from process 619207
-==PROF== Report: /home/ubuntu/dev/out/epi/dec232.ncu-rep

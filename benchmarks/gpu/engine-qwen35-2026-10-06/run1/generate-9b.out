@@ -1,7 +1,0 @@
-loaded in 19.3 s: NVIDIA GeForce RTX 4090 (sm_89): weights 11.220 GiB (67.3% of the checkpoint's 16.678 GiB for the same tensors; 348 vision and MTP tensors not loaded; layout Tiered), states 0.048 GiB, KV cache 4096 positions 0.125 GiB, workspaces 0.681 GiB, 12.46 of 47.37 GiB in use
-The capital of France is Paris.
-The capital of France is Paris.
-The capital of France is Paris.
-The capital of France is Paris.
-The capital of France is
-5 prompt tokens, 32 generated in 0.41 s

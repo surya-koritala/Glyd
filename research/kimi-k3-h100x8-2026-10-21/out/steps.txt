@@ -1,7 +1,0 @@
-21:36:51 serve up (or gone)
-21:36:51 chat done
-21:36:51 stream done
-21:36:51 tools done
-21:36:52 toolsreq done
-21:36:52 tools_sys done
-21:46:36 start /home/ubuntu/w/out/kimi-run.txt

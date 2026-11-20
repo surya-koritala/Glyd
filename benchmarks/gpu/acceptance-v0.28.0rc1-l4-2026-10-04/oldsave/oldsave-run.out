@@ -1,100 +1,0 @@
-== 23:08:42: 43 GB free on /
-== 23:08:42 1-make-027: /opt/dlami/nvme/rel028/oldsave/v027/bin/python /opt/dlami/nvme/rel028/oldsave/oldsave_make.py /opt/dlami/nvme/rel028/oldsave
-== 1-make-027: exit 0
-    versions {'glyd': '0.27.0', 'glyd-gpu': '0.27.0'} torch 2.13.0+cu130 NVIDIA L4
-    Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-    Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   0%|          | 1/311 [00:01<07:06,  1.38s/it]Loading weights:   1%|          | 2/311 [00:03<10:06,  1.96s/it]Loading weights:   1%|▏         | 4/311 [00:03<04:08,  1.24it/s]L
-    Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 1870.37it/s]
-    saved: /opt/dlami/nvme/rel028/oldsave/save027: format glyd-v1, glyd 0.27.0, layout mma, 112 packs, files ['config.json', 'generation_config.json', 'glyd.json', 'merges.txt', 'model.safetensors', 'tokenizer.json', 'tokenizer_config.json', 'vocab.json']
-    Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 4677.26it/s]
-    0.27.0 loads its own save with verify=True: {'layout': 'mma', 'verify': True, 'verified': 198, 'hashed': 114, 'unhashed': 0}
-    0.27.0, packed in memory against its own save loaded: same: 'What is the capital of France? Answer in one word.' -> 'Paris' (2 tokens)
-    0.27.0, packed in memory against its own save loaded: same: 'What is 17 plus 25? Answer with the number only.' -> '17 + 25 = 42.' (12 tokens)
-    0.27.0, packed in memory against its own save loaded: same: 'Complete the sentence in at most ten words: The quick brown fox' -> 'The quick brown fox jumps over the fence.' (10 tokens)
-    0.27.0, packed in memory against its own save loaded: same: 'Write one sentence about the sea.' -> 'The sea is a vast and mysterious body of water that surrounds the world and reflects the beauty of its surroundings.' (23 tokens)
-== 23:10:56 2-load-028rc1: /opt/dlami/nvme/rel028/oldsave/v028rc1/bin/python /opt/dlami/nvme/rel028/oldsave/oldsave_load.py /opt/dlami/nvme/rel028/oldsave
-== 2-load-028rc1: exit 0
-    versions {'glyd': '0.28.0rc1', 'glyd-gpu': '0.28.0rc1'} torch 2.13.0+cu130 NVIDIA L4 | 0.27.0's answers by {'glyd': '0.27.0', 'glyd-gpu': '0.27.0'}
-    old save's format: glyd-v1
-    Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 4635.53it/s]
-    0.28.0rc1 loads the 0.27.0 save with verify=True: {'layout': 'mma', 'verify': True, 'verified': 198, 'hashed': 114, 'unhashed': 0}
-    0.27.0 save loaded by 0.28.0rc1 against 0.27.0's (memory): 4 of 4 answers token for token the same
-    0.27.0 save loaded by 0.28.0rc1 against 0.27.0's (loaded): 4 of 4 answers token for token the same
-        'What is the capital of France? Answer in one word.' -> 0.27.0: 'Paris' | now: 'Paris'
-        'What is 17 plus 25? Answer with the number only.' -> 0.27.0: '17 + 25 = 42.' | now: '17 + 25 = 42.'
-        'Complete the sentence in at most ten words: The quick brown fox' -> 0.27.0: 'The quick brown fox jumps over the fence.' | now: 'The quick brown fox jumps over the fence.'
-        'Write one sentence about the sea.' -> 0.27.0: 'The sea is a vast and mysterious body of water that surrounds the world and reflects the beauty of its surroundings.' | now: 'The sea is a vast and mysterious body of water that surrounds the world and re
-    Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-    Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   4%|▍         | 13/311 [00:00<00:02, 124.08it/s]Loading weights:  11%|█▏        | 35/311 [00:00<00:01, 170.82it/s]Loading weights:  18%|█▊        | 57/311 [00:00<00:01,
-    Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 1916.81it/s]
-    saved: /opt/dlami/nvme/rel028/oldsave/save028-v4: format glyd-v4, glyd 0.28.0rc1, layout mma, 112 packs
-    saved: /opt/dlami/nvme/rel028/oldsave/save028-v4-from-old: format glyd-v4, glyd 0.28.0rc1, layout mma, 112 packs
-    the glyd-v4 save of the Hub's model and of the old save as loaded: the shards are the same bytes {'model.safetensors': 'c30b9b8c2e41'}
-    Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 4820.78it/s]
-    0.28.0rc1 loads its own glyd-v4 save with verify=True: {'layout': 'mma', 'verify': True, 'verified': 198, 'hashed': 114, 'unhashed': 0}
-    glyd-v4 save loaded by 0.28.0rc1 against 0.27.0's (memory): 4 of 4 answers token for token the same
-    glyd-v4 save loaded by 0.28.0rc1 against 0.27.0's (loaded): 4 of 4 answers token for token the same
-        'What is the capital of France? Answer in one word.' -> 0.27.0: 'Paris' | now: 'Paris'
-        'What is 17 plus 25? Answer with the number only.' -> 0.27.0: '17 + 25 = 42.' | now: '17 + 25 = 42.'
-        'Complete the sentence in at most ten words: The quick brown fox' -> 0.27.0: 'The quick brown fox jumps over the fence.' | now: 'The quick brown fox jumps over the fence.'
-        'Write one sentence about the sea.' -> 0.27.0: 'The sea is a vast and mysterious body of water that surrounds the world and reflects the beauty of its surroundings.' | now: 'The sea is a vast and mysterious body of water that surrounds the world and re
-    RESULT PASS
-== 23:13:06 3-refuse-027: /opt/dlami/nvme/rel028/oldsave/v027/bin/python /opt/dlami/nvme/rel028/oldsave/oldsave_refuse.py /opt/dlami/nvme/rel028/oldsave/save028-v4
-== 3-refuse-027: exit 0
-    refused: ValueError: /opt/dlami/nvme/rel028/oldsave/save028-v4/glyd.json: format 'glyd-v4'; this glyd reads glyd-v1 and glyd-v2 and glyd-v3
-== 23:13:10 4-verify-027: /opt/dlami/nvme/rel028/oldsave/v027/bin/glyd verify /opt/dlami/nvme/rel028/oldsave/save028-v4
-== 4-verify-027: exit 1
-    Traceback (most recent call last):
-      File "/opt/dlami/nvme/rel028/oldsave/v027/bin/glyd", line 6, in <module>
-        sys.exit(main())
-                 ^^^^^^
-      File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/glyd/cli.py", line 73, in main
-        return _cli.main(args, prog="glyd")
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-      File "glyd_gpu/_cli.py", line 63, in glyd_gpu._cli.main
-      File "glyd_gpu/hf.py", line 74, in glyd_gpu.hf.from_pretrained
-      File "glyd_gpu/hf.py", line 71, in glyd_gpu.hf.from_pretrained
-      File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/transformers/models/auto/auto_factory.py", line 409, in from_pretrained
-        return model_class.from_pretrained(
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-      File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/transformers/modeling_utils.py", line 4296, in from_pretrained
-        hf_quantizer.preprocess_model(
-      File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/transformers/quantizers/base.py", line 175, in preprocess_model
-        self._process_model_before_weight_loading(model, **kwargs)
-      File "glyd_gpu/hf.py", line 208, in glyd_gpu.hf.GlydQuantizer._process_model_before_weight_loading
-      File "glyd_gpu/format.py", line 198, in glyd_gpu.format.read_manifest
-    ValueError: /opt/dlami/nvme/rel028/oldsave/save028-v4/glyd.json: format 'glyd-v4'; this glyd reads glyd-v1 and glyd-v2 and glyd-v3
-== 23:13:14 5-pack-028rc1: /opt/dlami/nvme/rel028/oldsave/v028rc1/bin/glyd pack Qwen/Qwen3-0.6B /opt/dlami/nvme/rel028/oldsave/save028-v4-cli
-== 5-pack-028rc1: exit 0
-    Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-    Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   1%|▏         | 4/311 [00:00<00:22, 13.36it/s]Loading weights:   8%|▊         | 26/311 [00:00<00:03, 78.26it/s]Loading weights:  15%|█▌        | 48/311 [00:00<00:02, 119.
-    Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 1963.78it/s]
-    Qwen/Qwen3-0.6B: 198 tensors packed and checked, saved in /opt/dlami/nvme/rel028/oldsave/save028-v4-cli
-== 23:13:23 6-verify-028rc1: /opt/dlami/nvme/rel028/oldsave/v028rc1/bin/glyd verify /opt/dlami/nvme/rel028/oldsave/save028-v4-cli
-== 6-verify-028rc1: exit 0
-    Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 4795.90it/s]
-    /opt/dlami/nvme/rel028/oldsave/save028-v4-cli: 198 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
-== 23:13:29 7-verify-027-cli-save: /opt/dlami/nvme/rel028/oldsave/v027/bin/glyd verify /opt/dlami/nvme/rel028/oldsave/save028-v4-cli
-== 7-verify-027-cli-save: exit 1
-    Traceback (most recent call last):
-      File "/opt/dlami/nvme/rel028/oldsave/v027/bin/glyd", line 6, in <module>
-        sys.exit(main())
-                 ^^^^^^
-      File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/glyd/cli.py", line 73, in main
-        return _cli.main(args, prog="glyd")
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-      File "glyd_gpu/_cli.py", line 63, in glyd_gpu._cli.main
-      File "glyd_gpu/hf.py", line 74, in glyd_gpu.hf.from_pretrained
-      File "glyd_gpu/hf.py", line 71, in glyd_gpu.hf.from_pretrained
-      File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/transformers/models/auto/auto_factory.py", line 409, in from_pretrained
-        return model_class.from_pretrained(
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-      File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/transformers/modeling_utils.py", line 4296, in from_pretrained
-        hf_quantizer.preprocess_model(
-      File "/opt/dlami/nvme/rel028/oldsave/v027/lib/python3.12/site-packages/transformers/quantizers/base.py", line 175, in preprocess_model
-        self._process_model_before_weight_loading(model, **kwargs)
-      File "glyd_gpu/hf.py", line 208, in glyd_gpu.hf.GlydQuantizer._process_model_before_weight_loading
-      File "glyd_gpu/format.py", line 198, in glyd_gpu.format.read_manifest
-    ValueError: /opt/dlami/nvme/rel028/oldsave/save028-v4-cli/glyd.json: format 'glyd-v4'; this glyd reads glyd-v1 and glyd-v2 and glyd-v3
-== exits: make-027=0 load-028rc1=0 refuse-027(python)=0 verify-027(glyd verify, an API save)=1 pack-028rc1=0 verify-028rc1=0 verify-027(a glyd pack save)=1
-OLDSAVE DONE

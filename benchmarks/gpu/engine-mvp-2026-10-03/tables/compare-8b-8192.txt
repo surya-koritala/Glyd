@@ -1,8 +1,0 @@
-windows k: (36, 8, 128), equal in 98.785% (448 of 36864 differ), differ by 1.00 on average, at most 1; layers with a difference: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-windows v: (36, 8, 128), equal in 96.753% (1197 of 36864 differ), differ by 1.00 on average, at most 2; layers with a difference: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
-meta positions: engine 8192, plugin 8192
-meta refused: engine False, plugin False
-meta layers: engine 36, plugin 36
-meta heads: engine 8, plugin 8
-meta channels: engine 128, plugin 128
-meta held_out_rate: engine {'k': 0.00013114200406020375, 'v': 0.00018675459755791558}, plugin {'k': 0.00013279325578239814, 'v': 0.00018488698535495333}

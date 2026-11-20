@@ -1,8 +1,0 @@
-glyd serve: the engine serves up to 8 users at once and vLLM more (GLYD_ENGINE=1 runs the engine); using vLLM.
-NVIDIA-Nemotron-3-Nano-4B-BF16: 5.7 GB on the GPU with Glyd, instead of 7.9 GB; your GPU has 25.2 GB free.
-NVIDIA-Nemotron-3-Nano-4B-BF16 is downloaded already.
-Settings: 84,992-token context (the most that fits), compiled mode (CUDA graphs), 92% of GPU memory (23.2 GB).
-Loading NVIDIA-Nemotron-3-Nano-4B-BF16 with Glyd: 5.7 GB instead of 7.9 GB...
-glyd: the server stopped while starting: RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}.
-  Report it at https://github.com/surya-koritala/Glyd/issues with the log if it persists
-  The server's log: /root/.local/state/glyd/logs/serve-20261006-050440.log

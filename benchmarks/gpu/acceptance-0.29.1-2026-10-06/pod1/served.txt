@@ -1,3 +1,0 @@
-getglyd.com does not serve the v0.29.1 tag's install.sh (GLYD_VERSION="${GLYD_VERSION:-0.29.0}"): the run installs from https://raw.githubusercontent.com/surya-koritala/Glyd/v0.29.1/scripts/install.sh, no --served
-f32be24522ff8c5891031442f53e560711a3ae7c18fd2ed3de9cf219abf0a156  /root/results/served-install.sh
-79ea9e3dbd25a71aee4dda61e265b9d63dc5c628e88ce0f3909f2fc06c96a152  /root/results/tag-install.sh

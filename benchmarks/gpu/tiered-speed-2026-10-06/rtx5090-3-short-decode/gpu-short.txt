@@ -1,1 +1,0 @@
-NVIDIA GeForce RTX 5090, compute 12.0 (sm_120), top SM clock 3150 MHz

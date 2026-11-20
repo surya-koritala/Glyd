@@ -1,4 +1,0 @@
-Fetching 15 files:   0%|          | 0/15 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 15 files:  13%|█▎        | 2/15 [00:00<00:00, 16.93it/s]Fetching 15 files:  47%|████▋     | 7/15 [00:00<00:00, 34.84it/s]Fetching 15 files:  73%|███████▎  | 11/15 [00:00<00:00, 11.58it/s]Fetching 15 files:  80%|████████  | 12/15 [00:20<00:00, 11.58it/s]Fetching 15 files:  87%|████████▋ | 13/15 [02:49<00:42, 21.32s/it]Fetching 15 files:  93%|█████████▎| 14/15 [05:22<00:41, 41.42s/it]Fetching 15 files: 100%|██████████| 15/15 [06:28<00:00, 45.77s/it]Fetching 15 files: 100%|██████████| 15/15 [06:28<00:00, 25.89s/it]
-/root/w/hf/hub/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/1355db6a052410cfd62085d94b58866fd0f2c3c5
-exit 0 after 389 s; 12M

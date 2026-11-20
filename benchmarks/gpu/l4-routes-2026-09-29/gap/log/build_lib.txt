@@ -1,1 +1,0 @@
-/home/ubuntu/gapwork/w/lib/libglyd_gpu_cuda13.so

@@ -1,6 +1,0 @@
-fp4_bits nvidia/Qwen3.6-35B-A3B-NVFP4: 21.82 GiB of safetensors; kind | tensors | code GiB | bits a code packed | order-0 | plain patches | option: GiB saved (smaller packs only) | of the checkpoint | kernel bit for bit
-  experts | 30720 | 15.000 | 4.0142 | 3.9565 | 100892 of 1966080 | 0.0486 | 0.22% | all
-  lm_head | 1 | 0.237 | 4.0292 | 3.9704 | 3621 of 31040 | 0.0000 | 0.00% | all
-  shared_experts | 120 | 0.059 | 4.0353 | 3.9738 | 7505 of 7680 | 0.0000 | 0.00% | all
-  all | 30841 | 15.295 | 4.0145 | 3.9568 | 112018 of 2004800 | 0.0486 | 0.22% | all
-fp4_bits: all bit for bit (39.8 s)

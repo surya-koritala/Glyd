@@ -1,6 +1,0 @@
-google/gemma-4-26B-A4B-it: 1013 tensors; the slice: 134 tensors of layers [0]..[5] and 3 outside the layers, 10.51 GiB (BF16 10.51)
-model-00001-of-00003.safetensors: 25 tensors, 3.37 GiB so far, 11 s
-model-00002-of-00003.safetensors: 48 tensors, 7.36 GiB so far, 55 s
-model-00003-of-00003.safetensors: 61 tensors, 10.51 GiB so far, 97 s
-/root/w/gemma: 134 tensors, 10.51 GiB, 4 small files, ends of a sample checked against the source: ok, 137 s
-exit 0

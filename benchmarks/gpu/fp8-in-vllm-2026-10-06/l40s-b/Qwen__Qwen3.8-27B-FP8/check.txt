@@ -1,6 +1,0 @@
-  glyd-graph: ok in 149 s; weights 27.04 GiB, KV 126390 tokens, concurrency (8192, 15.43)
-GPU NVIDIA L40S
-PASS: packed[graph]: 256 layers packed (0 of them experts' layers): 19.10 GiB held for 22.66 GiB of weights as vLLM's kernels are fed them (15.7% less, 6.745 bits a value), scratches 0.17 GiB; methods {'UnquantizedLinearMethod': 206, 'UnquantizedEmbeddingMethod': 2, 'Fp8LinearMethod': 256, 'Fp8KVCacheMethod': 16}; f8_linear for few tokens: 0 Linears
-INFO: glyd[graph]: weights 27.04 GiB, KV cache 126390 tokens (10.36 GiB), concurrency (8192, 15.43)
-INFO: stock[graph] not run
-PASS: 0 failed; /root/results/Qwen__Qwen3.8-27B-FP8/check_fp8_vllm.json

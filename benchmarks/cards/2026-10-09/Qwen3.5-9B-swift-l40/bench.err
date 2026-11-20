@@ -1,1 +1,0 @@
-loaded in 2.5 s: NVIDIA L40S (sm_89): weights 5.775 GiB (34.6% of the checkpoint's 16.678 GiB for the same tensors; 0 vision and MTP tensors not loaded; layout Int5), states 0.048 GiB, KV cache 4096 positions 0.125 GiB, workspaces 0.687 GiB, 7.06 of 44.39 GiB in use

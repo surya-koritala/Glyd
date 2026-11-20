@@ -1,1 +1,0 @@
-serve_minicpm5_2b up in 30 s, GPU memory used 22594 MiB

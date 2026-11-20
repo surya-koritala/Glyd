@@ -1,3 +1,0 @@
-F8_END=2520
-F8_PLAN="seeds minimax3:eager,graph mistral2:eager,graphq,graph"
-F8_SEEDS=0,1,2,3,4

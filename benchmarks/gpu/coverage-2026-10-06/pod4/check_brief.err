@@ -1,7 +1,0 @@
-Traceback (most recent call last):
-  File "/root/w/src/gpu/vllm/check_vllm.py", line 2501, in <module>
-    main()
-  File "/root/w/src/gpu/vllm/check_vllm.py", line 550, in main
-    long = {"long_ids": bf16["long_ids"]}
-                        ~~~~^^^^^^^^^^^^
-KeyError: 'long_ids'

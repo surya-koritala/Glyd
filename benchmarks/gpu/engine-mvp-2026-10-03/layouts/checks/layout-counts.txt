@@ -1,2 +1,0 @@
-Qwen3-8B: format glyd-v4; 139 packs in the tiered layout and 6 in the 12-bit layout; the embedding in the tiered layout; in the 12-bit layout: layer 1 down_proj, layer 1 gate_proj, layer 2 down_proj, layer 2 gate_proj, layer 3 down_proj, layer 3 gate_proj
-Qwen3-4B: format glyd-v4; 139 packs in the tiered layout and 5 in the 12-bit layout; the embedding in the tiered layout; in the 12-bit layout: layer 1 gate_proj, layer 2 down_proj, layer 2 gate_proj, layer 3 down_proj, layer 3 gate_proj

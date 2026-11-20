@@ -1,1 +1,0 @@
-1959f2728196ac82c3e51e1ff410da65544773d4 fp8: the allocator's free blocks given back before each pack (vLLM loads with max_split_size_mb 20: a pack took a freed weight's block whole, 1.5 GiB over Qwen3.8-27B-FP8's Linears)

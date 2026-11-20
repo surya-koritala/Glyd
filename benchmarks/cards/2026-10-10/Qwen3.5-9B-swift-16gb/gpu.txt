@@ -1,1 +1,0 @@
-NVIDIA RTX 2000 Ada Generation, 580.159.04, 16380 MiB

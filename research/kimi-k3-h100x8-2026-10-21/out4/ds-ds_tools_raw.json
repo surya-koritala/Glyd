@@ -1,1 +1,0 @@
-{"id":"cmpl-2","object":"text_completion","created":1792624151,"model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"text":"I will check the current weather in Paris for you.</think>{\"city\": \"Paris\"}","logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":301,"completion_tokens":19,"total_tokens":320}}

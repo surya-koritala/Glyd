@@ -203,7 +203,7 @@ Qwen3.8 27B end to end on an H100 PCIe (`e2e.py --baseline --ppl --mmlu 300 --fo
 15.1941 against bf16's 15.1946, the next token bf16's 98.82% of the time, MMLU (300) 80.00% against 79.67% (answers as
 bf16's: 99.67%); 41,071 MiB of GPU memory against bf16's 51,771 (nvidia-smi), under a 48 GB card's 49,140; GPU time a
 token 34.73 / 51.42 / 84.52 ms at 1 / 8 / 32 sequences against 40.21 / 50.60 / 85.19
-([lambda-gpu_1x_h100_pcie-20260926-213544](../benchmarks/gpu/lambda-gpu_1x_h100_pcie-20260926-213544)).
+([lambda-gpu_1x_h100_pcie-20260926-213544](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/lambda-gpu_1x_h100_pcie-20260926-213544)).
 
 ## The KV cache
 

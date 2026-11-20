@@ -1,1 +1,0 @@
-{"spec": {"model": "Qwen/Qwen3-8B", "plain": true, "r1": true}, "blocks": 1411, "block_size": 16, "cudagraph_mode": "FULL_AND_PIECEWISE", "graphs_captured": 1922, "num_layers": 36, "glyd": null}

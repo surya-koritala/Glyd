@@ -1,5 +1,0 @@
-Q8_END=6000
-Q8_BENCH=0
-Q8_RUN_TIMEOUT=1500
-Q8_SERVE=1
-Q8_MODELS="Qwen/Qwen3.6-35B-A3B-FP8|graph|--stock-brief,--poison Qwen/Qwen3.8-27B-FP8|graph|--stock-brief,--poison RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic|graphq|--stock-brief,--poison,--chat RedHatAI/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8|graphq|--stock-brief,--poison"

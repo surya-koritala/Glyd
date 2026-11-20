@@ -1,1 +1,0 @@
-{"error":{"message":"logprobs is not supported by the engine this model runs on yet","type":"invalid_request_error","code":400}}

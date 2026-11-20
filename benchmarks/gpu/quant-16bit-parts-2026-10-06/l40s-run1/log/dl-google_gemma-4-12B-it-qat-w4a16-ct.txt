@@ -1,4 +1,0 @@
-Fetching 7 files:   0%|          | 0/7 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 7 files:  14%|█▍        | 1/7 [00:00<00:01,  3.07it/s]Fetching 7 files:  29%|██▊       | 2/7 [00:00<00:01,  4.05it/s]Fetching 7 files:  57%|█████▋    | 4/7 [00:00<00:00,  7.22it/s]Fetching 7 files:  71%|███████▏  | 5/7 [00:00<00:00,  7.20it/s]Fetching 7 files:  86%|████████▌ | 6/7 [00:02<00:00,  2.01it/s]Fetching 7 files: 100%|██████████| 7/7 [00:55<00:00, 16.72s/it]Fetching 7 files: 100%|██████████| 7/7 [00:55<00:00,  7.98s/it]
-/root/w/hf/hub/models--google--gemma-4-12B-it-qat-w4a16-ct/snapshots/1d2c2d7f2466070e69d6fb3fd5ce9a7d75f2f6ee
-exit 0 after 57 s; 56K

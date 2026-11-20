@@ -1,1 +1,0 @@
-glyd: FAILED to start: RuntimeError: dispatch_scaled_mm, /workspace/csrc/libtorch_stable/quantization/w8a8/cutlass/c3x/scaled_mm_helper.hpp:34, Int8 not supported on SM120. Use FP8 quantization instead, or run on older arch (SM < 100). (62 s) weights 11.41 GiB

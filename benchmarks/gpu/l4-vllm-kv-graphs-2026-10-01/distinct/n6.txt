@@ -1,2 +1,0 @@
-{'prompt_logprobs_bitwise': 0, 'prompt_logprobs': 0, 'first_token_bitwise': 6, 'tokens_identical': 6, 'all_bitwise': 0, 'prefix': [64, 64, 64, 64, 64, 64], 'n': 6, 'cached': [(2048, 2048), (2048, 2048), (2048, 2048), (2048, 2048), (2048, 2048), (2048, 2048)]}
-[('distinct-0', 2198, 2048), ('distinct-1', 2238, 2048), ('distinct-2', 2278, 2048), ('distinct-3', 2318, 2048), ('distinct-4', 2358, 2048), ('distinct-5', 2398, 2048)]

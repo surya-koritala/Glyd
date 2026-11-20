@@ -1,2 +1,0 @@
-kvtab-acf7b9c03bd919a7.log
-kvtab-acf7b9c03bd919a7.npz

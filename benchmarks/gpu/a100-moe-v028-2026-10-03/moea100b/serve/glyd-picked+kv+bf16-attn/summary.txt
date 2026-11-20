@@ -1,7 +1,0 @@
-kv+glyd: weights 23.97 GiB, KV cache 138,336 tokens, max concurrency 33.77x at 4,096 tokens
-Prefix cache hit rate, at most (the servers' logs): kv+glyd 0.7%
-
-| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
-| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | kv+glyd | 0.95 | 243.7 | 119 / 195 | 12.3 / 16.2 | 64 | 1410 MHz, 48 C |
-| inf | kv+glyd | 5.44 | 1393.0 | 15933 / 40461 | 67.5 / 108.8 | 256 | 1410 MHz, 58 C |

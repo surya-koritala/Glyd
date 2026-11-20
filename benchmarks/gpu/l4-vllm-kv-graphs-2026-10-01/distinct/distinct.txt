@@ -1,2 +1,0 @@
-{'prompt_logprobs_bitwise': 0, 'prompt_logprobs': 0, 'first_token_bitwise': 4, 'tokens_identical': 1, 'all_bitwise': 0, 'prefix': [56, 8, 41, 64], 'n': 4, 'cached': [(1600, 1600), (1600, 1600), (1600, 1600), (1600, 1600)]}
-[('distinct-0', 1750, 1600), ('distinct-1', 1790, 1600), ('distinct-2', 1830, 1600), ('distinct-3', 1870, 1600)]

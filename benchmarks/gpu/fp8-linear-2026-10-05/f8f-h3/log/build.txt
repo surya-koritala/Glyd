@@ -1,5 +1,0 @@
-/root/f8w/lib/libglyd_gpu_cuda13.so
-
-real	1m50.145s
-user	9m1.504s
-sys	0m8.006s

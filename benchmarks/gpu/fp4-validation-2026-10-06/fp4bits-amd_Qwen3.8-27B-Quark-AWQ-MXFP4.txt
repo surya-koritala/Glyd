@@ -1,5 +1,0 @@
-fp4_bits amd/Qwen3.8-27B-Quark-AWQ-MXFP4: 18.44 GiB of safetensors; kind | tensors | code GiB | bits a code packed | order-0 | plain patches | option: GiB saved (smaller packs only) | of the checkpoint | kernel bit for bit
-  mlp | 192 | 7.969 | 3.8938 | 3.7967 | 0 of 1044480 | 0.2115 | 1.15% | all
-  attention | 304 | 3.370 | 3.8817 | 3.7859 | 0 of 441760 | 0.0996 | 0.54% | all
-  all | 496 | 11.339 | 3.8902 | 3.7935 | 0 of 1486240 | 0.3112 | 1.69% | all
-fp4_bits: all bit for bit (22.6 s)

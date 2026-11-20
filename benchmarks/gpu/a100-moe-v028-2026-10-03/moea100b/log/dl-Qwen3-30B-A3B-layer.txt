@@ -1,4 +1,0 @@
-Fetching 7 files:   0%|          | 0/7 [00:00<?, ?it/s]Fetching 7 files:  14%|█▍        | 1/7 [00:00<00:01,  4.40it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 7 files: 100%|██████████| 7/7 [00:01<00:00,  3.54it/s]Fetching 7 files: 100%|██████████| 7/7 [00:01<00:00,  3.57it/s]
-Fetching 7 files:   0%|          | 0/7 [00:00<?, ?it/s]Fetching 7 files: 100%|██████████| 7/7 [00:00<00:00, 1698.10it/s]
-exit 0: 4016999536 bytes in 15 s (at +42 s)

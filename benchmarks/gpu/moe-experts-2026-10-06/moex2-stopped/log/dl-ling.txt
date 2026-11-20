@@ -1,2 +1,0 @@
-inclusionAI/Ling-3.0-flash: 63783 tensors; the slice: 1552 tensors of layers [0]..[0] and 3 outside the layers, 7.20 GiB (BF16 7.20, F32 0.00)
-model-00001-of-00002.safetensors: 679 tensors, 4.00 GiB so far, 98 s

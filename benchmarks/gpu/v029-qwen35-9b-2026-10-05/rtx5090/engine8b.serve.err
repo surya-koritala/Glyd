@@ -1,3 +1,0 @@
-Qwen3-8B: 11.5 GiB on the GPU with Glyd, instead of 15.3 GiB; layout mma12: mma12, the faster layout, on this GPU (measured).
-Ready in 2s: Qwen3-8B on the NVIDIA GeForce RTX 5090, 11.5 GiB of weights, 8192 tokens of context, 4 users at once.
-Qwen/Qwen3-8B is served at http://127.0.0.1:8000: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it.

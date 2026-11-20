@@ -1,2 +1,0 @@
-glyd: ok (144 s) weights 21.29 GiB, KV 123,465 tokens, tok/s {"1": 215.36, "8": 1039.97, "32": 2357.23, "64": 2335.46}
-PACKED: 244 layers, 4.14 GiB bf16 held in 3.12 GiB (1.02 GiB saved); products of 4 against F.linear: worst relative error 3.19e-03; largest 16-bit left: RoutedExperts / UnquantizedFusedMoEMethod / w13_weight / bfloat16 1.00 GiB; VocabParallelEmbedding / UnquantizedEmbeddingMethod / weight / bfloat16 0.95 GiB; RoutedExperts / UnquantizedFusedMoEMethod / w2_weight / bfloat16 0.50 GiB

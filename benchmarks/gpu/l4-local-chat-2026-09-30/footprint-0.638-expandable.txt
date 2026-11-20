@@ -1,3 +1,0 @@
-pid, process_name, used_gpu_memory [MiB]
-6034, venv/bin/python, 6682 MiB
-24508, VLLM::EngineCore, 14918 MiB

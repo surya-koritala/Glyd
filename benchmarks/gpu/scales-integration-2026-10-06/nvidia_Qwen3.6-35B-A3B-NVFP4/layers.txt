@@ -1,3 +1,0 @@
-MOE: stock's mixture-of-experts blocks called again on the same input in the same step: 86 of 200 calls (40 blocks) gave other bits; e.g. language_model.model.layers.2.mlp (prompts, 111 rows): {"elements": 2, "of": 227328, "max_abs": 7.62939453125e-06}
-LAYERS PASS: 222 16-bit layers (111 packed by Glyd), 671 calls on stock's own inputs: Glyd's output stock's bit for bit in 671 of 671 (packed: 115 of 115); stock against itself 671 of 671; Glyd against itself 671 of 671; 0 packed layers not called
-WEIGHTS PASS: 111 of 111 packs decoded to stock's weight bit for bit (111 verified as packed); 1319 of 1319 other tensors stock's bit for bit

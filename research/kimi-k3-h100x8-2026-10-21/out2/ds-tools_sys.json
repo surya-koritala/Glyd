@@ -1,1 +1,0 @@
-{"id":"chatcmpl-6","object":"chat.completion","created":1792623044,"model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"message":{"role":"assistant","content":"{\"city\": \"Paris\", \"unit\": \"c\"}"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":306,"completion_tokens":13,"total_tokens":319}}

@@ -1,2 +1,0 @@
-{'prompt_logprobs_bitwise': 0, 'prompt_logprobs': 0, 'first_token_bitwise': 8, 'tokens_identical': 3, 'all_bitwise': 0, 'prefix': [64, 17, 51, 31, 7, 64, 21, 64], 'n': 8, 'cached': [(1600, 1600), (1600, 1600), (1600, 1600), (1600, 1600), (1600, 1600), (1600, 1600), (1600, 1600), (1600, 1600)]}
-[('shared-0', 1750, 1600), ('shared-1', 1790, 1600), ('shared-2', 1830, 1600), ('shared-3', 1870, 1600), ('shared-4', 1910, 1600), ('shared-5', 1950, 1600), ('shared-6', 1613, 1600), ('shared-7', 2030, 1600)]

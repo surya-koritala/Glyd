@@ -1,4 +1,0 @@
-glyd-exact-16: ok (223 s) weights 26.11 GiB, KV 5,478 tokens
-glyd-exact: ok (174 s) weights 25.68 GiB, KV 6,644 tokens, codes: 120 layers, 9.690 GiB in 9.761 GiB of packs + 110 MiB scratch, 120 packs verified at load
-glyd: FAILED to start: OutOfMemoryError: CUDA out of memory. Tried to allocate 336.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 321.69 MiB is free. Including non-PyTorch memory, this process has 31.04 GiB memory in use. Of the allocated memory 29.51 GiB is allocated by PyTorch, and 832.79 MiB is reserved by Py (322 s) weights 24.67 GiB, KV 8,794 tokens
-EXACT PASS: Glyd exact eager against Glyd exact eager without the option, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 725 tokens, one image chat; 120 of 120 packs verified bit for bit; codes: 120 layers held packed (every code tensor, smaller or not), 120 packs verified

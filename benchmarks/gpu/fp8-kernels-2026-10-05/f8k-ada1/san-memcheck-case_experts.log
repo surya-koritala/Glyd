@@ -1,5 +1,0 @@
-========= COMPUTE-SANITIZER
-check_f8 on GPU NVIDIA GeForce RTX 4090
-case_experts ok (0.3 s)
-ALL BIT FOR BIT
-========= ERROR SUMMARY: 0 errors

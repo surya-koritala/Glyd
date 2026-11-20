@@ -1,7 +1,0 @@
-11:23 created 57rl3rip3o6io7 (NVIDIA L40S)
-ssh on pod 57rl3rip3o6io7 ready after 25s: ssh reachable at 103.196.86.50:19585
-11:23 ssh ready at 103.196.86.50:19585 after 30 s
-NVIDIA L40S, 595.91.07, 46068 MiB
-11:23 job started
-Terminated: 15
-terminating 57rl3rip3o6io7

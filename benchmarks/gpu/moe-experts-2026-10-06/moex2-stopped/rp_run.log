@@ -1,7 +1,0 @@
-05:23 created 2btajoblj2qph4 (NVIDIA L40S)
-ssh on pod 2btajoblj2qph4 ready after 12s: ssh reachable at 195.26.232.152:55082
-05:23 ssh ready at 195.26.232.152:55082 after 15 s
-NVIDIA L40S, 595.91.07, 46068 MiB
-05:23 job started
-Terminated: 15
-terminating 2btajoblj2qph4
