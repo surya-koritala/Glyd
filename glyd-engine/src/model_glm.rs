@@ -550,6 +550,11 @@ pub trait GlmHost {
     fn mla_scratch(&self) -> &std::cell::OnceCell<crate::mla_glm::MlaScratch>;
     /// A development build's stage marker (a profile's).
     fn mark(&self, _what: &'static str) {}
+    /// The sequences a call's n rows belong to, in order: each one's first row, its rows, and which sequence it is (its caches: 0 to sched::MAX_USERS - 1). One sequence, 0, where the engine runs one at a time; several
+    /// in a step of several sequences (src/dynamic/rows.rs).
+    fn seq_rows(&self, n: usize) -> Vec<(usize, usize, usize)> {
+        vec![(0, n, 0)]
+    }
 }
 
 impl GlmHost for EngineGlm {
@@ -592,6 +597,10 @@ pub trait MlaBlock {
         false
     }
     fn bytes(&self) -> usize {
+        0
+    }
+    /// The caches one sequence takes at a context of `ctx` tokens (made at its first call).
+    fn seq_bytes(&self, _ctx: usize) -> usize {
         0
     }
     fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {

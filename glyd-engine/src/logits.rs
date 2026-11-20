@@ -1280,7 +1280,7 @@ mod tests {
     }
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T]` (gemma4, qwen35, muse): the case's random model on the description executor, each of N prompts replied to alone as `run` replies (the reference),
+/// `usercheck CASE [--level L] [--users N] [--tokens T]` (gemma4, qwen35, muse, kimi, glm): the case's random model on the description executor, each of N prompts replied to alone as `run` replies (the reference),
 /// then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts
 /// one a pass, decode steps of up to 8 rows: a step's sums). With prompts run together the replies that differ are counted, not refused (a product of more rows may take another route; a random
 /// model's near ties turn on its last bits).
@@ -1309,7 +1309,16 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             crate::muse_ref::random(&dir)?;
             crate::dynamic::muse::load(&dir, &o)?
         }
-        other => return err(format!("{other}: gemma4, qwen35 or muse")),
+        "kimi" => {
+            crate::kimi_ref::random(&dir, 1, true, 8)?;
+            crate::dynamic::kimi::load(&dir, &o)?
+        }
+        "glm" => {
+            // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
+            crate::kcheck_glm::random(&dir, false, None)?;
+            crate::dynamic::glm::load(&dir, &dyn_opts(Some(Layout::Tiered)), level_layout(level)?.unwrap_or(Layout::Int6))?
+        }
+        other => return err(format!("{other}: gemma4, qwen35, muse, kimi or glm")),
     };
     let _ = std::fs::remove_dir_all(&dir);
     let vocab = e.desc().vocab as u32;

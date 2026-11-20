@@ -83,7 +83,8 @@ pub struct GlmMla {
     ape: Buf,
     ix_gate: Buf,
     bytes: usize,
-    cache: OnceCell<Cache>,
+    /// Each sequence's caches (sched::MAX_USERS of them at most; made at its first call).
+    cache: Box<[OnceCell<Cache>]>,
     /// A development check's collector of the stages that live in the scratch of one block of rows (`collect_stages`).
     dump: RefCell<Option<Dump>>,
 }
@@ -201,7 +202,7 @@ impl GlmMla {
             ape: tensor(ck, &format!("{ixn}.index_kpool_compress_ape"), ix.kpool * ix.dim)?,
             ix_gate: tensor(ck, &format!("{ixn}.index_kpool_compress_gate"), ix.dim * h)?,
             bytes: 0,
-            cache: OnceCell::new(),
+            cache: (0..crate::sched::MAX_USERS).map(|_| OnceCell::new()).collect(),
             dump: RefCell::new(None),
         };
         let bytes = [&me.q_a, &me.q_b, &me.kv_a, &me.o].iter().map(|m| m.bytes()).sum::<usize>()
@@ -217,8 +218,20 @@ impl GlmMla {
         self.topk + self.kp - 1
     }
 
+    /// The bytes of one sequence's caches at `ctx` tokens.
+    fn cache_bytes(&self, ctx: usize) -> usize {
+        ctx * self.kr * 2 + 2 * ctx * self.id * 2 + (ctx / self.kp + 1) * self.id * 2
+    }
+
+    /// The first sequence's caches (the development checks').
     fn cache(&self, e: &dyn GlmHost) -> Result<&Cache> {
-        if self.cache.get().is_none() {
+        self.cache_of(e, 0)
+    }
+
+    /// Sequence `q`'s caches, made at its first call.
+    fn cache_of(&self, e: &dyn GlmHost, q: usize) -> Result<&Cache> {
+        let cell = self.cache.get(q).ok_or_else(|| Error(format!("sequence {q}: at most {} hold latent caches", self.cache.len())))?;
+        if cell.get().is_none() {
             let ctx = e.ctx();
             let c = Cache {
                 lat: Buf::zeroed(ctx * self.kr * 2)?,
@@ -226,9 +239,9 @@ impl GlmMla {
                 gsc: Buf::zeroed(ctx * self.id * 2)?,
                 pkc: Buf::zeroed((ctx / self.kp + 1) * self.id * 2)?,
             };
-            let _ = self.cache.set(c);
+            let _ = cell.set(c);
         }
-        self.cache.get().ok_or_else(|| Error("the latent attention cache is not made".into()))
+        cell.get().ok_or_else(|| Error("the latent attention cache is not made".into()))
     }
 
     fn scratch<'a>(&self, e: &'a dyn GlmHost) -> Result<&'a MlaScratch> {
@@ -294,7 +307,9 @@ impl MlaBlock for GlmMla {
     /// chosen latents and its values, and the o product.
     unsafe fn forward(&self, e: &dyn GlmHost, h: u64, n: usize, pos: u64, _start: usize, out: u64) -> Result<()> {
         let sc = self.scratch(e)?;
-        let ca = self.cache(e)?;
+        // (each sequence's caches its own: a call over several sequences writes and reads each one's rows in its own; the products run over every row)
+        let seqs = e.seq_rows(n);
+        let cas = seqs.iter().map(|&(_, _, q)| self.cache_of(e, q)).collect::<Result<Vec<&Cache>>>()?;
         let s = e.stream();
         let (nh, nope, vd, kr, qr, ih, id, kp) =
             (self.nh as i32, self.nope as i32, self.vd as i32, self.kr as i32, self.qr as i32, self.ih as i32, self.id as i32, self.kp as i32);
@@ -313,65 +328,80 @@ impl MlaBlock for GlmMla {
         mark!(e, "mla query (q_a, q_b)");
         // the token's latent into the cache
         e.lin(&self.kv_a, h, n, sc.t1.ptr)?;
-        e.kg().rms2(s, sc.t1.ptr, kr, self.kv_a_ln.ptr, ca.lat.ptr, kr, pos, kr, self.eps, nr)?;
+        for (&(r0, m, _), ca) in seqs.iter().zip(&cas) {
+            e.kg().rms2(s, sc.t1.ptr + (r0 * self.kr * 2) as u64, kr, self.kv_a_ln.ptr, ca.lat.ptr, kr, pos + (r0 * 4) as u64, kr, self.eps, m as u32)?;
+        }
         mark!(e, "mla latent (kv_a)");
         // the indexer: queries and head weights for the rows, keys and gate scores into the caches
         e.kg().small_linear(s, sc.qr.ptr, qr, self.wq_b.ptr, sc.iq.ptr, ih * id, nr, ih * id, qr)?;
         e.kg().small_linear(s, h, hid, self.wk.ptr, sc.t1.ptr, id, nr, id, hid)?;
-        e.kg().layernorm(s, sc.t1.ptr, id, self.k_norm_w.ptr, self.k_norm_b.ptr, ca.ikc.ptr, id, pos, id, 1e-6, nr)?;
+        for (&(r0, m, _), ca) in seqs.iter().zip(&cas) {
+            let t = sc.t1.ptr + (r0 * self.id * 2) as u64;
+            e.kg().layernorm(s, t, id, self.k_norm_w.ptr, self.k_norm_b.ptr, ca.ikc.ptr, id, pos + (r0 * 4) as u64, id, 1e-6, m as u32)?;
+        }
         e.kg().small_linear(s, h, hid, self.ix_gate.ptr, sc.t1.ptr, id, nr, id, hid)?;
-        e.kg().scatter(s, sc.t1.ptr, id, ca.gsc.ptr, id, pos, id, nr)?;
+        for (&(r0, m, _), ca) in seqs.iter().zip(&cas) {
+            e.kg().scatter(s, sc.t1.ptr + (r0 * self.id * 2) as u64, id, ca.gsc.ptr, id, pos + (r0 * 4) as u64, id, m as u32)?;
+        }
         e.kg().small_linear(s, h, hid, self.wproj.ptr, sc.wts.ptr, ih, nr, ih, hid)?;
-        e.kg().kp_keys(s, ca.ikc.ptr, ca.gsc.ptr, self.ape.ptr, ca.pkc.ptr, pos, n as i32, id, kp)?;
+        for (&(r0, m, _), ca) in seqs.iter().zip(&cas) {
+            e.kg().kp_keys(s, ca.ikc.ptr, ca.gsc.ptr, self.ape.ptr, ca.pkc.ptr, pos + (r0 * 4) as u64, m as i32, id, kp)?;
+        }
         mark!(e, "mla indexer products and key groups");
         // the attention, a block of rows at a time
         let (scale, iscale, wscale) = ((self.nope as f32).powf(-0.5), (self.id as f32).powf(-0.5), (self.ih as f32).powf(-0.5));
         let ksel = (self.topk / self.kp) as i32;
-        let mut r0 = 0usize;
-        while r0 < n {
-            let m = sc.sub.min(n - r0);
-            let mr = m as u32;
-            let (p0, q0) = (pos + (r0 * 4) as u64, sc.q.ptr + (r0 * self.nh * self.nope * 2) as u64);
-            e.kg().absorb(s, q0, nh * nope, self.kv_b.ptr, sc.qa.ptr, m as i32, nh, nope, vd, kr)?;
-            mark!(e, "mla absorb");
-            e.kg().idx_score(
-                s,
-                sc.iq.ptr + (r0 * self.ih * self.id * 2) as u64,
-                ih * id,
-                sc.wts.ptr + (r0 * self.ih * 2) as u64,
-                ih,
-                ca.pkc.ptr,
-                p0,
-                sc.scores.ptr,
-                sc.pmax as i32,
-                ih,
-                id,
-                kp,
-                ksel,
-                iscale,
-                wscale,
-                mr,
-            )?;
-            mark!(e, "mla indexer scores");
-            e.kg().select(s, sc.scores.ptr, sc.pmax as i32, p0, sc.sel.ptr, sc.cnt.ptr, sc.tmax as i32, kp, ksel, self.tail, mr)?;
-            mark!(e, "mla select");
-            e.kg().mla_attn(s, sc.qa.ptr, ca.lat.ptr, sc.sel.ptr, sc.cnt.ptr, sc.olat.ptr, sc.part.ptr, sc.tmax as i32, nh, kr, scale, mr)?;
-            mark!(e, "mla attention");
-            e.kg().expand_v(s, sc.olat.ptr, self.kv_b.ptr, sc.ov.ptr + (r0 * self.nh * self.vd * 2) as u64, m as i32, nh, nope, vd, kr)?;
-            mark!(e, "mla values");
-            if let (true, Some(d)) = (collecting, self.dump.borrow_mut().as_mut()) {
-                e.sync()?;
-                d.cnt.extend(read_rows(&sc.cnt, 0, m * 4)?);
-                d.sel.extend(read_rows(&sc.sel, 0, m * sc.tmax * 4)?);
-                d.olat.extend(read_rows(&sc.olat, 0, m * self.nh * self.kr * 4)?);
+        for (&(first, rows, _), ca) in seqs.iter().zip(&cas) {
+            let mut r0 = first;
+            while r0 < first + rows {
+                let m = sc.sub.min(first + rows - r0);
+                let mr = m as u32;
+                let (p0, q0) = (pos + (r0 * 4) as u64, sc.q.ptr + (r0 * self.nh * self.nope * 2) as u64);
+                e.kg().absorb(s, q0, nh * nope, self.kv_b.ptr, sc.qa.ptr, m as i32, nh, nope, vd, kr)?;
+                mark!(e, "mla absorb");
+                e.kg().idx_score(
+                    s,
+                    sc.iq.ptr + (r0 * self.ih * self.id * 2) as u64,
+                    ih * id,
+                    sc.wts.ptr + (r0 * self.ih * 2) as u64,
+                    ih,
+                    ca.pkc.ptr,
+                    p0,
+                    sc.scores.ptr,
+                    sc.pmax as i32,
+                    ih,
+                    id,
+                    kp,
+                    ksel,
+                    iscale,
+                    wscale,
+                    mr,
+                )?;
+                mark!(e, "mla indexer scores");
+                e.kg().select(s, sc.scores.ptr, sc.pmax as i32, p0, sc.sel.ptr, sc.cnt.ptr, sc.tmax as i32, kp, ksel, self.tail, mr)?;
+                mark!(e, "mla select");
+                e.kg().mla_attn(s, sc.qa.ptr, ca.lat.ptr, sc.sel.ptr, sc.cnt.ptr, sc.olat.ptr, sc.part.ptr, sc.tmax as i32, nh, kr, scale, mr)?;
+                mark!(e, "mla attention");
+                e.kg().expand_v(s, sc.olat.ptr, self.kv_b.ptr, sc.ov.ptr + (r0 * self.nh * self.vd * 2) as u64, m as i32, nh, nope, vd, kr)?;
+                mark!(e, "mla values");
+                if let (true, Some(d)) = (collecting, self.dump.borrow_mut().as_mut()) {
+                    e.sync()?;
+                    d.cnt.extend(read_rows(&sc.cnt, 0, m * 4)?);
+                    d.sel.extend(read_rows(&sc.sel, 0, m * sc.tmax * 4)?);
+                    d.olat.extend(read_rows(&sc.olat, 0, m * self.nh * self.kr * 4)?);
+                }
+                r0 += m;
             }
-            r0 += m;
         }
         e.lin(&self.o, sc.ov.ptr, n, out)
     }
 
     fn graphable(&self) -> bool {
         true
+    }
+
+    fn seq_bytes(&self, ctx: usize) -> usize {
+        self.cache_bytes(ctx)
     }
 
     fn bytes(&self) -> usize {

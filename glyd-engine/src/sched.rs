@@ -451,9 +451,10 @@ impl<B: ModelStep> Sched<B> {
 
     fn gauges(&self) {
         let st = &self.stats;
-        let pages = self.pager.pages();
+        // (a slot step's cache is its rooms: their count, and those in use)
+        let pages = self.be.slots().unwrap_or_else(|| self.pager.pages());
         crate::ops::KV_PAGES.store(pages as u64, Relaxed);
-        crate::ops::KV_PAGES_HELD.store(pages.saturating_sub(self.pager.available()) as u64, Relaxed);
+        crate::ops::KV_PAGES_HELD.store(pages.saturating_sub(self.available()) as u64, Relaxed);
         for (a, v) in SHARED.iter().zip([
             st.prompt,
             st.hit,
@@ -1299,7 +1300,12 @@ pub(crate) mod tests {
         let mut s = Sched::new(Fake::new(64, 32), 4);
         let (rx, _) = add(&mut s, prompt(2, 20), 6);
         s.tick().unwrap();
-        assert!(ops::KV_PAGES.load(Relaxed) >= 64 && ops::KV_PAGES_HELD.load(Relaxed) > 0, "the sequence holds pages while it runs");
+        // (the gauges are the process's, and the other tests' schedulers write them too: this one's written again just before it is read, until a read sees its own)
+        let seen = (0..1000).any(|_| {
+            s.gauges();
+            ops::KV_PAGES.load(Relaxed) >= 64 && ops::KV_PAGES_HELD.load(Relaxed) > 0
+        });
+        assert!(seen, "the sequence holds pages while it runs");
         run(&mut s);
         let (tokens, f) = collect(&rx);
         assert_eq!((tokens.len(), f), (6, Finish::Length));

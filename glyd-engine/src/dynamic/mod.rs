@@ -946,6 +946,13 @@ impl crate::model_glm::GlmHost for Dyn {
     fn mark(&self, what: &'static str) {
         let _ = Dyn::mark(self, what);
     }
+    fn seq_rows(&self, n: usize) -> Vec<(usize, usize, usize)> {
+        if self.parts.is_empty() {
+            vec![(0, n, self.seq)]
+        } else {
+            self.parts.iter().map(|p| (p.row0, p.rows, p.slot)).collect()
+        }
+    }
 }
 
 impl Dyn {
@@ -1705,20 +1712,23 @@ impl Dyn {
             }
             Op::GlmHead { norm } => self.kglm.hc_head(s, p.slot(Slot::S), p.small[norm].ptr, p.slot(Slot::H), nu, hid, eps),
             Op::KdaConv { w, state, c, row, w32 } => {
-                self.kglm.conv(s, p.slot(Slot::Mix), row as i32, p.small[w].ptr, w32, self.states[state].ptr, p.slot(Slot::Xc), n as i32, c as i32)?;
+                let (x, y) = (p.slot(Slot::Mix) + self.rows_before(row), p.slot(Slot::Xc) + self.rows_before(c));
+                self.kglm.conv(s, x, row as i32, p.small[w].ptr, w32, self.state(state), y, n as i32, c as i32)?;
                 self.mark("linear attention: convolution")
             }
             Op::KdaDelta { a_log, dt_bias, state, heads, bound, ba } => {
+                // (in a step of several sequences the gates' rows are the copied slot's (Op::KimiParts ran on all the rows), the sequence's at its offset)
+                let bb = if self.at.get().is_some() { p.slot(ba.slot) + self.rows_before(heads) } else { p.view(ba, n) };
                 self.kglm.delta(
                     s,
                     self.chunked && n > 1,
-                    p.slot(Slot::Xc),
-                    p.slot(Slot::Qo),
+                    p.slot(Slot::Xc) + self.rows_before(3 * heads * 128),
+                    p.slot(Slot::Qo) + self.rows_before(heads * 128),
                     p.small[dt_bias].ptr,
                     p.small[a_log].ptr,
-                    p.view(ba, n),
-                    self.states[state].ptr,
-                    p.slot(Slot::Core),
+                    bb,
+                    self.state(state),
+                    p.slot(Slot::Core) + self.rows_before(heads * 128),
                     n as i32,
                     heads as i32,
                     bound,
@@ -2376,8 +2386,11 @@ impl Dyn {
     /// Room for `k` more sequences beside the one in use (each its own keys and values for the context, its states, its graph captured on them; the
     /// activations and workspaces stay shared): `select` picks the one the next passes run on. Qwen3.5's stages; after `set_head_rows`.
     pub fn add_seqs(&mut self, k: usize) -> Result<()> {
-        if k > 0 && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark") || self.draft.is_some()) {
-            return err(format!("more sequences than one on {}: Qwen3.5's, Gemma 4's and Muse Spark's only, with no draft model", self.big.d.family));
+        if k > 0 && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash") || self.draft.is_some()) {
+            return err(format!(
+                "more sequences than one on {}: Qwen3.5's, Gemma 4's, Muse Spark's, Kimi-K3's and GLM-5.3-Flash's only, with no draft model",
+                self.big.d.family
+            ));
         }
         for _ in 0..k {
             let states = self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<_>>()?;

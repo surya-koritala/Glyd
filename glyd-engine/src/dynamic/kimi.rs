@@ -192,7 +192,8 @@ struct KimiMla {
     o: Mat,
     d: crate::kimi::KimiMla,
     eps: f32,
-    lat: OnceCell<Buf>,
+    /// Each sequence's cache (sched::MAX_USERS of them at most; made at its first call).
+    lat: Box<[OnceCell<Buf>]>,
     shared: Rc<MlaShared>,
 }
 
@@ -224,10 +225,16 @@ impl MlaBlock for KimiMla {
         let sc = self.scratch(e)?;
         let d = &self.d;
         let (nh, ks, qw) = (d.heads, d.kv_rank + d.rope, d.nope + d.rope);
-        if self.lat.get().is_none() {
-            let _ = self.lat.set(Buf::zeroed(e.ctx() * ks * 2)?);
+        // (each sequence's latents in a cache of its own; a call over several sequences writes and reads each one's rows in its own)
+        let seqs = e.seq_rows(n);
+        let mut lats = Vec::with_capacity(seqs.len());
+        for &(_, _, q) in &seqs {
+            let cell = self.lat.get(q).ok_or_else(|| Error(format!("sequence {q}: at most {} hold latent caches", self.lat.len())))?;
+            if cell.get().is_none() {
+                let _ = cell.set(Buf::zeroed(e.ctx() * ks * 2)?);
+            }
+            lats.push(cell.get().ok_or_else(|| Error("no latent cache".into()))?.ptr);
         }
-        let lat = self.lat.get().ok_or_else(|| Error("no latent cache".into()))?;
         let (s, k, kg) = (e.stream(), &self.shared.k, e.kg());
         let nr = n as u32;
         // (q_a, the gate and kv_a in one product, each read where it left them: rows `row` apart)
@@ -238,8 +245,11 @@ impl MlaBlock for KimiMla {
         e.mark("MLA: q norm");
         e.lin(&self.q_b, sc.qr.ptr, n, sc.q.ptr)?;
         e.mark("MLA: q_b product");
-        kg.rms2(s, kv, row as i32, self.kv_norm.ptr, lat.ptr, ks as i32, pos, d.kv_rank as i32, self.eps, nr)?;
-        kg.scatter(s, kv + (d.kv_rank * 2) as u64, row as i32, lat.ptr + (d.kv_rank * 2) as u64, ks as i32, pos, d.rope as i32, nr)?;
+        for (&(r0, m, _), &lat) in seqs.iter().zip(&lats) {
+            let (x, p0, mr) = (kv + (r0 * row * 2) as u64, pos + (r0 * 4) as u64, m as u32);
+            kg.rms2(s, x, row as i32, self.kv_norm.ptr, lat, ks as i32, p0, d.kv_rank as i32, self.eps, mr)?;
+            kg.scatter(s, x + (d.kv_rank * 2) as u64, row as i32, lat + (d.kv_rank * 2) as u64, ks as i32, p0, d.rope as i32, mr)?;
+        }
         e.mark("MLA: kv norm, cache");
         kg.absorb_with(
             s,
@@ -257,21 +267,23 @@ impl MlaBlock for KimiMla {
         )?;
         e.mark("MLA: absorb");
         k.dense_cnt(s, pos, sc.cnt.ptr, n)?;
-        kg.mla_attn_with(
-            s,
-            sc.qa.ptr,
-            lat.ptr,
-            0,
-            sc.cnt.ptr,
-            sc.olat.ptr,
-            sc.part.ptr,
-            e.ctx() as i32,
-            nh as i32,
-            d.kv_rank as i32,
-            ks as i32,
-            1.0 / (qw as f32).sqrt(),
-            nr,
-        )?;
+        for (&(r0, m, _), &lat) in seqs.iter().zip(&lats) {
+            kg.mla_attn_with(
+                s,
+                sc.qa.ptr + (r0 * nh * ks * 4) as u64,
+                lat,
+                0,
+                sc.cnt.ptr + (r0 * 4) as u64,
+                sc.olat.ptr + (r0 * nh * d.kv_rank * 4) as u64,
+                sc.part.ptr,
+                e.ctx() as i32,
+                nh as i32,
+                d.kv_rank as i32,
+                ks as i32,
+                1.0 / (qw as f32).sqrt(),
+                m as u32,
+            )?;
+        }
         e.mark("MLA: attention");
         kg.expand_v(s, sc.olat.ptr, self.wkv.ptr, sc.ov.ptr, n as i32, nh as i32, d.nope as i32, d.v as i32, d.kv_rank as i32)?;
         e.mark("MLA: v");
@@ -282,6 +294,10 @@ impl MlaBlock for KimiMla {
 
     fn graphable(&self) -> bool {
         true
+    }
+
+    fn seq_bytes(&self, ctx: usize) -> usize {
+        ctx * (self.d.kv_rank + self.d.rope) * 2
     }
 
     fn bytes(&self) -> usize {
@@ -855,7 +871,7 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
                     o: one(format!("{a}.o_proj"))?,
                     d: md.clone(),
                     eps: 1e-6,
-                    lat: OnceCell::new(),
+                    lat: (0..crate::sched::MAX_USERS).map(|_| OnceCell::new()).collect(),
                     shared: shared.clone(),
                 };
                 ops.push(Op::Mla { block: l_.mla.len() });
