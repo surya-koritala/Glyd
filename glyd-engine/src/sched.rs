@@ -287,6 +287,9 @@ impl<B: Backend> Sched<B> {
             let ends = if s.reply.ignore_eos { Vec::new() } else { self.eos.iter().map(|&t| t as u32).collect() };
             sampler.set_suppress(ends.into_iter().chain(s.reply.stop_ids.iter().copied()).collect());
         }
+        if self.trace {
+            eprintln!("sched {:.4} submit {} ({} tokens)", crate::monitor::clock(), self.next_id, s.prompt.len());
+        }
         self.waiting.push_back(Seq {
             id: self.next_id,
             out: s.out,
@@ -700,12 +703,15 @@ impl<B: Backend> Sched<B> {
             })
             .collect();
         let t = std::time::Instant::now();
+        let t0 = crate::monitor::clock();
         let samples = self.be.prefill_many(&jobs)?;
         if self.trace {
             eprintln!(
-                "sched {:.3} prefill pass of {} sequences, {} tokens, {:.1} ms; {} active, {} waiting",
+                "sched {:.4} pass from {:.4} of {} sequences {:?}, {} tokens, {:.1} ms; {} active, {} waiting",
                 crate::monitor::clock(),
+                t0,
                 jobs.len(),
+                picks.iter().map(|p| p.0).collect::<Vec<_>>(),
                 used,
                 t.elapsed().as_secs_f64() * 1e3,
                 self.active.len(),
