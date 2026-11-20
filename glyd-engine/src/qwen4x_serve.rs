@@ -559,11 +559,15 @@ pub fn http(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     let host = a.flag("host").unwrap_or("127.0.0.1");
     let port: u16 = a.num("port", 8080u16)?;
     let key = std::env::var("GLYD_API_KEY").ok().filter(|k| !k.is_empty());
+    if let Some(why) = server::bind_refusal(host, key.is_some(), a.has("insecure-no-auth")) {
+        return err(why);
+    }
+    server::set_access(server::parse_access(a.flag("allowed-origins"), a.flag("allowed-hosts")).map_err(Error)?);
     let (tx, rx) = std::sync::mpsc::channel();
     // (the address the program chooses is this computer's own: the checks that keep other web pages' scripts away are on; an address the user names is theirs)
     // (/health says "loading" until the model can serve: a script that waits for it does not send its first request into the load)
     let loading = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let addr = server::listen_loading(&format!("{host}:{port}"), &name, window, key, !a.has("host"), tx.clone(), loading.clone())?;
+    let addr = server::listen_loading(&format!("{host}:{port}"), &name, window, key, server::is_loopback_addr(host), tx.clone(), loading.clone())?;
     println!("Qwen3.8-Flash-Next on Glyd: the chat at http://{addr}/, the API at http://{addr}/v1 (OpenAI and Anthropic). Loading the model...");
     let (e, caches) = load(snap, pack_dir, a)?;
     tune(&e, a)?;

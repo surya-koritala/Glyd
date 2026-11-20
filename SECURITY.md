@@ -44,12 +44,18 @@ credited in the advisory unless they ask not to be.
 **The HTTP server** (`glyd serve`, `glyd-engine serve`). It reads requests from the network and runs on your machine.
 
 - By default it listens on `127.0.0.1` only (port 8000, or the next free port up to 8020), and refuses a `Host` that
-  is not a loopback name (421) and an `Origin` that is not its own page (403). `--host` turns these checks off.
+  is not a loopback or container name (421) and an `Origin` that is not its own page (403). CORS is off: no
+  `Access-Control-Allow-Origin` is sent to any page the user has not listed (`--allowed-origins`, never `*`). These checks
+  stay on for a loopback `--host` too. An address that is not loopback (`--host 0.0.0.0`) does not start without an API key
+  unless `--insecure-no-auth` says an open server is meant; the Origin check stays on there too, and `--allowed-hosts`
+  limits the names a request may use. The service (`glyd service`) and the `--ollama-port` listener follow the same rules.
+- Image URLs in a request are fetched only from public addresses: the address a name resolves to is checked where the
+  connection is made, so a name that answers a public address first and a private one next (DNS rebinding) is refused.
 - An API key (`GLYD_API_KEY`, or `--api-key`) guards the `/v1` routes. It is compared as SHA-256 digests in constant
   time. The chat page, `/health` and `/stats` do not need the key.
 - In scope: reading or using the model without the key where one is set; getting past the loopback checks on an
   address the server chose itself; a request that crashes, hangs or exhausts memory beyond the limits it sets
-  (request body 16 MiB, header block 64 KiB, 256 headers, 64 connections, 30 s read timeout); an out-of-bounds read or
+  (request body 16 MiB, header block 64 KiB, 256 headers, 64 connections, 30 s for the request line and headers, 120 s for the body, 60 s for a write to a client that reads nothing: a request that is too slow is answered 408); an out-of-bounds read or
   write while parsing a request; reading a file outside the chat page's own directory.
 - Image URLs in chat requests: the server fetches only `http(s)` URLs whose host resolves to a public address, at
   every redirect (up to 5), with a 64 MiB and 30 s limit. `file:` and other schemes are refused. A way to make it
@@ -92,8 +98,8 @@ protect against an enrolled machine that computes wrong answers or leaks what it
 
 ## What is not a vulnerability
 
-- Starting the server with `--host` on a non-loopback address, with no API key. It prints a warning that anyone who
-  can reach the machine can use the model, and that the traffic is plain HTTP. Use a VPN or an SSH tunnel, or put a
+- Starting the server with `--host` on a non-loopback address and `--insecure-no-auth` (it does not start without a key
+  or that flag). It prints a warning that anyone who can reach the machine can use the model, and that the traffic is plain HTTP. Use a VPN or an SSH tunnel, or put a
   TLS proxy in front. A key given as `--api-key` shows in `ps`: the warning says to use the environment variable.
 - The chat page, `/health` and `/stats` answering without a key when a key is set. The key guards `/v1`.
 - Plain HTTP on the server's own port. The server has no TLS.

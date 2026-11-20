@@ -638,7 +638,9 @@ impl Request {
 
 /// A request read from `s`: its head (capped), and its body by Content-Length (capped; a chunked body is refused).
 fn read_request(s: &mut TcpStream) -> Result<Request, (u16, String)> {
-    s.set_read_timeout(Some(Duration::from_secs(60))).ok();
+    // (the head within HEAD_TIMEOUT and the body within BODY_TIMEOUT of it, whole: a client that sends a byte a minute does not hold the connection; a write waits WRITE_TIMEOUT)
+    s.set_write_timeout(Some(crate::server::WRITE_TIMEOUT)).ok();
+    let head_until = std::time::Instant::now() + crate::server::HEAD_TIMEOUT;
     let mut buf = Vec::new();
     let mut byte = [0u8; 4096];
     let end = loop {
@@ -648,10 +650,10 @@ fn read_request(s: &mut TcpStream) -> Result<Request, (u16, String)> {
         if buf.len() > MAX_HEAD {
             return Err((431, "the request's head is too long".into()));
         }
-        match s.read(&mut byte) {
+        match crate::server::read_until_deadline(s, head_until, &mut byte) {
             Ok(0) => return Err((400, "the connection closed before the request was whole".into())),
             Ok(n) => buf.extend_from_slice(&byte[..n]),
-            Err(e) => return Err((400, e.to_string())),
+            Err(e) => return Err(crate::server::read_failure(&e)),
         }
     };
     let head = String::from_utf8_lossy(&buf[..end]).into_owned();
@@ -675,8 +677,9 @@ fn read_request(s: &mut TcpStream) -> Result<Request, (u16, String)> {
         return Err((413, format!("the request body is over {} MB", MAX_BODY >> 20)));
     }
     let mut body = buf[end + 4..].to_vec();
+    let body_until = std::time::Instant::now() + crate::server::BODY_TIMEOUT;
     while body.len() < len {
-        let n = s.read(&mut byte).map_err(|e| (400, e.to_string()))?;
+        let n = crate::server::read_until_deadline(s, body_until, &mut byte).map_err(|e| crate::server::read_failure(&e))?;
         if n == 0 {
             return Err((400, "the connection closed before the body was whole".into()));
         }
@@ -695,6 +698,7 @@ fn reason(code: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         411 => "Length Required",
+        408 => "Request Timeout",
         413 => "Payload Too Large",
         421 => "Misdirected Request",
         431 => "Request Header Fields Too Large",
@@ -824,10 +828,8 @@ impl Server {
         let (path, query) = req.path.split_once('?').map_or((req.path.as_str(), ""), |(p, q)| (p, q));
         let path = path.to_string();
         // a name that DNS points at this computer, and another web page's script, are refused as `glyd serve` refuses them (an address the user chose with --host turns this off)
-        if self.local_only {
-            if let Some((code, why)) = crate::server::refusal(req.header("host").unwrap_or(""), req.header("origin").unwrap_or("")) {
-                return error(&mut s, code, &why);
-            }
+        if let Some((code, why)) = crate::server::refusal(req.header("host").unwrap_or(""), req.header("origin").unwrap_or(""), self.local_only) {
+            return error(&mut s, code, &why);
         }
         let is_api = path.starts_with("/v1/");
         if is_api && !key_ok(&self.key, req.header("authorization")) {
@@ -1016,12 +1018,23 @@ pub fn run(a: &Args) -> i32 {
     };
     let host = a.flag("host").unwrap_or("127.0.0.1").to_string();
     // (the checks of Host and Origin stay on for any address of this computer's own, a loopback one the user names included: an address that is not is the user's word to open it)
-    let local_only = host == "localhost" || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    let local_only = crate::server::is_loopback_addr(&host);
+    let key = api_key();
+    if let Some(why) = crate::server::bind_refusal(&host, key.is_some(), a.has("insecure-no-auth")) {
+        eprintln!("glyd service: {why}");
+        return 1;
+    }
+    match crate::server::parse_access(a.flag("allowed-origins"), a.flag("allowed-hosts")) {
+        Ok(x) => crate::server::set_access(x),
+        Err(e) => {
+            eprintln!("glyd service: {e}");
+            return 1;
+        }
+    }
     let pool = Pool::new(
         Box::new(Processes { context: a.flag("context").map(str::to_string), users: a.flag("users").map(str::to_string) }),
         Config { keep_alive, max_loaded, wait_for_room: DEFAULT_WAIT_FOR_ROOM },
     );
-    let key = api_key();
     let secret = match ensure_secret() {
         Ok(s) => s,
         Err(e) => {
@@ -1044,13 +1057,11 @@ pub fn run(a: &Args) -> i32 {
             return 1;
         }
     };
-    if let Some(h) = a.flag("host") {
-        if !["127.0.0.1", "localhost", "[::1]"].contains(&h) {
-            eprintln!(
-                "glyd service: listening on {h}: anyone who can reach this computer's network address can send the models prompts, and the traffic is plain HTTP, not encrypted (use a VPN or an SSH tunnel). {}",
-                if key.is_some() { "The API key guards /v1 only." } else { "There is no API key: start it with GLYD_API_KEY=KEY (in the environment, not on the command line)." }
-            );
-        }
+    if let Some(h) = a.flag("host").filter(|h| !local_only && !h.is_empty()) {
+        eprintln!(
+            "glyd service: listening on {h}: anyone who can reach this computer's network address can send the models prompts, and the traffic is plain HTTP, not encrypted (use a VPN or an SSH tunnel). {}",
+            if key.is_some() { "The API key guards /v1 only." } else { "There is NO API key (--insecure-no-auth): set one with GLYD_API_KEY=KEY (in the environment, not on the command line)." }
+        );
     }
     eprintln!(
         "glyd service: listening on http://{bound} (models load on request, unload after {} idle, up to {max_loaded} held; log of each: {})",
@@ -1320,7 +1331,7 @@ fn install(a: &Args) -> i32 {
         }
     };
     // (a unit has no API key: it is for this computer's own address; an address the user chose is run by hand, with GLYD_API_KEY in that shell's environment)
-    if a.flag("host").is_some_and(|h| !["127.0.0.1", "localhost", "[::1]"].contains(&h)) {
+    if a.flag("host").is_some_and(|h| !crate::server::is_loopback_addr(h)) {
         eprintln!("glyd service install: not on {}: a unit started at login has no API key, and anyone who can reach that address could send the models prompts. Run it by hand there: GLYD_API_KEY=KEY glyd service --host ...", a.flag("host").unwrap_or(""));
         return 1;
     }

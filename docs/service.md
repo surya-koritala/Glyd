@@ -23,11 +23,11 @@ lossless KV cache) and leaves the GPU by its program ending, which frees all of 
 | `--keep-alive T` | How long a model stays loaded after its last request: `90s`, `5m` (the default), `2h`, `0` (unload at once), `never`. |
 | `--max-loaded N` | Models held at once (2). A request for another unloads the least recently used one that is idle; if every one is busy the request is answered 503. A load that fails (no room on the GPU) is tried again once with the idle models unloaded. |
 | `--context N`, `--users N` | Passed to each model's `glyd serve`. |
-| `--host H` | An address of your choice, with the warning `glyd serve` gives for one that is not this computer's own. |
+| `--host H` | An address of your choice. One that is not this computer's own needs `GLYD_API_KEY` or `--insecure-no-auth` (else the service does not start), and gives the warning `glyd serve` gives. `--allowed-origins` and `--allowed-hosts` as for `glyd serve`. |
 
 ## What is open
 
-- It listens on 127.0.0.1 unless `--host` says otherwise. On its own address it refuses a Host that is not a loopback name and an Origin that is not its own, as `glyd serve` does.
+- It listens on 127.0.0.1 unless `--host` says otherwise. On its own address, a loopback `--host` too, it refuses a Host that is not a loopback or container name and an Origin that is not its own, as `glyd serve` does; CORS is off. Requests are bounded as `glyd serve`'s are (headers 64 KiB and 30 s, body 128 MB and 120 s).
 - It loads only models that are downloaded already (`glyd pull`): a request cannot make it fetch a model, and it takes no path.
 - `GLYD_API_KEY` (in the unit's environment) guards `/v1`, as for `glyd serve`.
 - `glyd stop` and `glyd service stop` carry a MAC (HMAC-SHA256, good for one request and a minute) made with a secret in a file only your account can read
