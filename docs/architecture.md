@@ -1,24 +1,35 @@
 # Architecture
 
-Glyd is one Rust program that runs open LLMs on whatever hardware it finds. The user names a model; Glyd decides
-everything else from the model, the GPUs and the platform.
+Glyd is an LLM inference engine in Rust. The goal is that you name a model and it decides everything else from the model,
+the GPUs and the platform. This page keeps what exists apart from what is planned; the roadmap issue for each planned item
+is named in brackets ([ROADMAP.md](../ROADMAP.md)).
 
 ## The contract
 
 ```
-glyd run MODEL          # works on any supported machine, with no flags, or says in one line why not
+glyd run MODEL          # the goal: works on any supported machine, with no flags, or says in one line why not
 ```
 
-- No toolkit (CUDA, ROCm, Xcode), no Python, no environment. The GPU driver is the only dependency on consumer paths (on
-  AMD the HIP runtime ships inside the backend bundle); datacenter features load NCCL, RCCL or NIXL when present.
-- Nothing irreversible before the plan: the decision (level, placement, context, expected tokens/s) is printed before
-  any download.
-- Never fail at start for lack of memory; adapt at run time when other programs take GPU memory.
-- Every choice can be overridden (`MODEL:level`, `--context`, `--devices`, `--users`), none has to be.
+What holds today:
+
+- `glyd-engine fit MODEL` prints the plan (level, placement, context, predicted tokens/s) before any download.
+  `glyd-engine run` and `serve` do not yet load by that plan (P2a).
+- `glyd-engine run` refuses with one line and a fix where it cannot run a model (`machine.rs`, `support.rs`).
+- Every choice can be overridden: `MODEL:level`, `--context`, `--split`, `--devices`, `--users`.
+- At run time the engine needs only the GPU driver, which it opens itself (`glyd-engine/src/ffi.rs`); building it needs
+  nvcc, or hipcc for AMD. `glyd run` from the v0.32.1 release goes through the Python tool and needs Python.
+
+What is planned:
+
+- One `glyd` binary with the engine linked, no Python, no toolkit (P1). The AMD HIP runtime would ship in the backend bundle.
+- Adapting at run time when other programs take GPU memory, instead of refusing at start. Today an out-of-memory load is
+  refused with the numbers.
+- Datacenter transports (NCCL, RCCL, NIXL) loaded when present. The engine uses none of them today.
 
 ## Adaptation
 
-Model × hardware × platform → plan.
+Model × hardware × platform → plan. The diagram is the design. `plan.rs` implements the decision order below; only the CUDA backend
+(and HIP in development builds) exists behind it.
 
 ```
  probe                              describe                         decide                              run
@@ -44,6 +55,8 @@ Decision order (`glyd fit MODEL` prints every step; today `glyd-engine fit`):
    machines only when local tiers cannot hold the model.
 4. **Context and users**: the KV cache takes what is left, sized for the asked context, else the largest that fits.
 5. **Speed**: the cost profile against measured rates gives tokens/s; if below a floor, the next level down is offered.
+
+The flowchart is the target. Today `fit` prints a plan like it, and `run` follows `support.rs`'s table, not the plan.
 
 ```mermaid
 flowchart TD
@@ -176,7 +189,7 @@ sequenceDiagram
   A-->>C: stream
 ```
 
-- In one machine: layer split today (`--split`, `--devices`); tensor and expert parallel over P2P, NVLink or NCCL/RCCL
+- In one machine: layer split today (`--split`, `--devices`) for Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at their lossless level, and not for Qwen3, Qwen3.5 or Gemma 4 (`support.rs`); tensor and expert parallel over P2P, NVLink or NCCL/RCCL
   in M5.
 - Across machines (`starlings/`): enrollment with fingerprints, mutual TLS over TCP, the engine's `rangeworker` per
   stage (`docs/range-worker.md`); RDMA transports for datacenters.

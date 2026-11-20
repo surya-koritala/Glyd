@@ -1,8 +1,11 @@
-# Glyd: the long version
+# Glyd: measurements and the codec
 
-Everything about Glyd on one page: the GPU package, the codec, the store, and every measured result with
-its log. The short version is [README.md](README.md); the same text, for LLMs, is
-[getglyd.com/llms-full.txt](https://getglyd.com/llms-full.txt).
+The measured results for the GPU package and the file codec and store, each with the machine and a link to its log. The
+engine is described in [README.md](README.md) and [docs/architecture.md](docs/architecture.md). Everything under "AI models
+on fewer GPUs" and "Serving with vLLM" was measured on the Python package and the vLLM plugin (frozen), not on
+`glyd-engine`. Raw logs that left the tree in [#265](https://github.com/surya-koritala/Glyd/pull/265) are at commit
+[7d9e9be6](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks); a link to a path
+that is not here is there.
 
 ## AI models on fewer GPUs
 
@@ -57,7 +60,7 @@ The measurements the earlier releases were published with, kept as their record;
 
 <p align="center"><img src="docs/img/qwen3-32b-gpus.svg" width="100%" alt="nvidia-smi: Qwen3-32B in bf16 across two 48 GB GPUs (44,554 + 18,514 MiB), and with Glyd on one (43,338 MiB)"></p>
 
-<p align="center"><sub><code>nvidia-smi</code> during the runs: Lambda Cloud, 4x RTX A6000 (48 GB each), 2026-09-26. Raw output and every run's log: <a href="benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757">benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757</a>.</sub></p>
+<p align="center"><sub><code>nvidia-smi</code> during the runs: Lambda Cloud, 4x RTX A6000 (48 GB each), 2026-09-26. Raw output and every run's log: <a href="https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757">benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757</a> at 7d9e9be6.</sub></p>
 
 | The same runs | bf16 | ⚡&nbsp;**Glyd** |
 | :--- | ---: | ---: |

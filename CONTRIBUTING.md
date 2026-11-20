@@ -25,9 +25,26 @@ GLYD_HIP=1 cargo build --release -p glyd-engine        # AMD RDNA 3/4 (ROCm hipc
 | Engine on a GPU | `glyd-engine check`, `kcheck`, `kvtest`, `stress`, `bench` (development build) | NVIDIA GPU |
 | GPU jobs on rented machines | `glyd-engine/jobs/*.sh`, `tools/runpod/` | see the scripts' headers |
 
-CI runs the CPU suites on every pull request. The GPU suites (`.github/workflows/gpu.yml`) run on `main` and on request once
-a GPU runner is registered (`vars.GPU_RUNNER`; `tools/ci/setup-gpu-runner.sh` registers an Ubuntu machine's GPU); until then,
-run them locally as below.
+## What CI runs today
+
+On every pull request and push to main (`.github/workflows/`):
+
+- `ci.yml`, skipped when only docs, benchmarks, research, condor, starlings, cards or tools change: Build & Test (the codec
+  and store tests, regression floors, C ABI, a CLI round trip), Lint (`cargo fmt --check`, `cargo clippy -D warnings`
+  over the workspace and the engine's release feature set, cargo-deny), Versions agree, the `glyd-gpu` crate's tests, and
+  the engine's host tests as a development build and as the release build, with no nvcc and no GPU.
+- Only when their paths change: `python.yml` (the Python GPU package and vLLM plugin), `kernels.yml` (the engine's kernels
+  compile with nvcc 13 for sm_80 to sm_120, no GPU), `starlings-ci.yml`, `condor-ci.yml`, `cpu-pack.yml`.
+- Always: `tree.yml` (no large data files, `scripts/check_tree.sh`) and `dco.yml` (sign-off on every commit).
+
+CI runs on Linux only. Nothing builds or tests on Windows or macOS yet ([#213](https://github.com/surya-koritala/Glyd/issues/213)).
+
+GPU tests (`gpu.yml`) run on one self-hosted machine, the one `vars.GPU_RUNNER` names (`tools/ci/setup-gpu-runner.sh` registers
+an Ubuntu machine's GPU). They run on pushes to main that touch `glyd-engine/`, `gpu/`, `glyd-gpu/` or the lockfile, on a
+pull request from this repository labeled `gpu`, and by hand, never for a fork. They build the engine for sm_89 (set
+`vars.GPU_RUNNER_ARCHS` for another GPU), run its kernel checks and Qwen/Qwen3-0.6B end to end. That covers one GPU
+architecture and one small dense model: the other families, other GPUs and multi-GPU runs are tested by hand (the table
+above). `gpu-cloud.yml` starts a cloud instance for a run you ask for; it never runs by itself.
 
 ## What a change must show
 
