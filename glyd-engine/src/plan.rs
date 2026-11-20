@@ -563,6 +563,17 @@ pub const LOSSY_WORK: u64 = 1280 << 20;
 /// The Qwen3 path's fixed workspaces: the CUDA context and the library's own buffers, cuBLAS's and the pool's, 1,400 MiB (600 + 400 + 400) measured
 /// as the path's total before the reserve was one model, less that reserve; a prompt chunk's activations are on top (src/fit.rs `work`).
 pub const QWEN3_WORK: u64 = (1400 << 20) - CONTEXT_FLOOR;
+/// The dynamic route's work on each GPU: the activations, the scratch, the graphs and the KV cache of its context together, which this route has not
+/// split apart yet (3 GiB and 5% of the GPU's free memory in all with the reserve, as it kept before the planner drove it).
+pub fn dynamic_work_of(free: u64) -> u64 {
+    (3 << 30) - CONTEXT_FLOOR + free / 20
+}
+
+/// What a GPU has for the dynamic route's weights: its free memory less the reserve and the route's work.
+pub fn dynamic_room_of(free: u64) -> u64 {
+    room_of(free).saturating_sub(dynamic_work_of(free))
+}
+
 /// The context the lossy paths take where none is asked, if it fits, and the least a plan takes.
 pub const LOSSY_CTX: usize = 32768;
 pub const LOSSY_MIN_CTX: usize = 4096;
@@ -744,6 +755,8 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
 /// The GPU a plan is made for, and the computer's free memory: what `run` reads of the GPU it picked and `fit` of a machine's.
 #[derive(Clone, Debug)]
 pub struct Target {
+    /// The GPU's number in the driver's list.
+    pub ordinal: i32,
     pub name: String,
     pub cc: (i32, i32),
     pub total: u64,
@@ -753,8 +766,8 @@ pub struct Target {
 }
 
 impl Target {
-    pub fn of(d: &Device, host: Option<u64>) -> Target {
-        Target { name: d.name.clone(), cc: d.cc, total: d.total, free: d.free, host }
+    pub fn of(d: &Device, ordinal: i32, host: Option<u64>) -> Target {
+        Target { ordinal, name: d.name.clone(), cc: d.cc, total: d.total, free: d.free, host }
     }
 }
 
@@ -770,6 +783,27 @@ pub enum Kind {
     Qwen35,
     NemotronH,
     Gemma4,
+    /// The dynamic route (src/dynamic): Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark and Nemotron-H lossless, over one GPU or several.
+    Dynamic,
+}
+
+/// How a plan spreads a model over several GPUs, and the experts the GPUs do not hold (the dynamic route's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spread {
+    /// The layers cut before each of `cuts` (ascending), stage k on GPU `devices[k]`; every layer across all `devices` where `across`.
+    pub cuts: Vec<usize>,
+    pub devices: Vec<i32>,
+    pub across: bool,
+    /// An FP8 release's matrices held coded (about 7 bits of 8) to fit, and bf16 matrices in the 12-bit layout.
+    pub coded: bool,
+    pub twelve: bool,
+    /// Kimi-K3's expert cache: places of a layer's experts on each stage's GPU (one entry where `across`), the experts a layer has, and the bytes of
+    /// every expert, all of which are in the computer's memory.
+    pub places: Vec<usize>,
+    pub experts_per_layer: usize,
+    pub host_bytes: u64,
+    /// The bytes the GPUs hold of the model (its weights, and the places' experts).
+    pub gpu_bytes: u64,
 }
 
 /// The one plan: what `fit` prints before anything is downloaded and what `run`, `serve` and `preflight` load. Every field is bytes
@@ -800,11 +834,16 @@ pub struct LoadPlan {
     pub gpu: String,
     /// A mixture of experts' experts in the computer's memory (and the disk), a cache of them on the GPU.
     pub experts: Option<crate::offload::CachePlan>,
+    /// The GPUs a model on the dynamic route is spread over (`free`, `work` and `reserve` are then the sums over them).
+    pub spread: Option<Spread>,
 }
 
 impl LoadPlan {
     /// The weights the GPU holds: all of them, or all but the experts the computer's memory holds, and the expert cache.
     pub fn weights_on_gpu(&self) -> u64 {
+        if let Some(s) = &self.spread {
+            return s.gpu_bytes;
+        }
         self.experts.map_or(self.weights, |c| self.weights.saturating_sub(c.host_bytes()) + c.gpu_bytes())
     }
 
@@ -815,7 +854,7 @@ impl LoadPlan {
 
     /// The experts in the computer's memory, and those read from the disk as the router asks.
     pub fn ram_bytes(&self) -> u64 {
-        self.experts.map_or(0, |c| c.ram.min(c.host_bytes()))
+        self.spread.as_ref().map_or_else(|| self.experts.map_or(0, |c| c.ram.min(c.host_bytes())), |s| s.host_bytes)
     }
 
     pub fn disk_bytes(&self) -> u64 {
@@ -838,6 +877,10 @@ impl LoadPlan {
             "kv_bytes": self.kv, "work_bytes": self.work, "draft_bytes": self.draft,
             "reserve_bytes": self.reserve, "gpu_total_bytes": self.gpu_total(),
             "experts": experts,
+            "spread": self.spread.as_ref().map(|s| serde_json::json!({
+                "cuts": s.cuts, "devices": s.devices, "across": s.across, "coded": s.coded, "twelve": s.twelve,
+                "places": s.places, "experts_per_layer": s.experts_per_layer, "host_bytes": s.host_bytes,
+            })),
         })
         .to_string()
     }
@@ -869,6 +912,26 @@ impl LoadPlan {
             self.gpu,
             gb(self.free),
         );
+        if let Some(sp) = &self.spread {
+            s += &if sp.across {
+                format!("; every layer across GPUs {:?}", sp.devices)
+            } else {
+                let mut b = vec![0];
+                b.extend(&sp.cuts);
+                format!("; stages from layer {:?} on GPUs {:?}", b, sp.devices)
+            };
+            if sp.host_bytes > 0 {
+                s += &format!(
+                    ", {} experts a layer of {} on the GPUs, {} in the computer's memory",
+                    sp.places.iter().min().copied().unwrap_or(0),
+                    sp.experts_per_layer,
+                    gb(sp.host_bytes)
+                );
+            }
+            if sp.coded {
+                s += ", FP8 matrices coded";
+            }
+        }
         if let Some(c) = &self.experts {
             s += &format!(
                 "; experts: {} places a layer of {} on the GPU, {} in the computer's memory, {} on the disk",
@@ -891,6 +954,25 @@ fn speed_of(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan) -> f64 {
     let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
     let read = ((sh.head.max(if sh.head == 0.0 { sh.embed } else { 0.0 }) + sh.dense) * bits + sh.routed_active() * ebits) / 8.0 + kv_read;
     let gain = if sh.mtp { MTP_GAIN } else { 1.0 };
+    if let Some(sp) = &lp.spread {
+        // (the GPUs it is over: stages read in turn, a layer across them reads on all at once; the experts the GPUs do not hold are the CPU's)
+        let bw: Vec<f64> = sp.devices.iter().filter_map(|&d| m.devices.get(d as usize)).map(|d| d.bandwidth).collect();
+        let n = bw.len().max(1) as f64;
+        let active = sh.routed_active() * ebits / 8.0;
+        let hit = if sp.host_bytes > 0 {
+            (sp.places.iter().min().copied().unwrap_or(0) as f64 / sp.experts_per_layer.max(1) as f64).min(1.0).powf(HIT_EXPONENT)
+        } else {
+            1.0
+        };
+        let on_gpu = read - active * (1.0 - hit);
+        let gpu_t = if sp.across {
+            on_gpu / (n * bw.iter().copied().fold(f64::MAX, f64::min) * GB * eff)
+        } else {
+            bw.iter().map(|b| on_gpu / n / (b * GB * eff)).sum::<f64>()
+        } + 0.1e-3 * (n - 1.0);
+        let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
+        return gain / (gpu_t.max(cpu_t) + if sp.host_bytes > 0 { SYNC_PER_MOE_LAYER * sh.moe_layers as f64 } else { 0.0 });
+    }
     match &lp.experts {
         None => gain * d0.bandwidth * GB * eff / read,
         Some(c) => {
@@ -906,9 +988,18 @@ fn speed_of(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan) -> f64 {
 /// An option of the ladder from the plan `run` loads at that level.
 fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize) -> Candidate {
     let tok_s = speed_of(sh, m, main, &lp);
-    let placement = match &lp.experts {
-        None => Placement::Gpu(main),
-        Some(c) => Placement::ExpertsInRam { gpu: main, cache: c.gpu_bytes(), hit: (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT) },
+    let placement = match (&lp.spread, &lp.experts) {
+        (Some(sp), _) if sp.host_bytes > 0 => Placement::ExpertsInRam {
+            gpu: sp.devices.first().map_or(main, |&d| d as usize),
+            cache: sp.gpu_bytes,
+            hit: (sp.places.iter().min().copied().unwrap_or(0) as f64 / sp.experts_per_layer.max(1) as f64).min(1.0).powf(HIT_EXPONENT),
+        },
+        (Some(sp), _) if sp.devices.len() > 1 => Placement::Split(sp.devices.iter().map(|&d| d as usize).collect()),
+        (Some(sp), _) => Placement::Gpu(sp.devices.first().map_or(main, |&d| d as usize)),
+        (None, None) => Placement::Gpu(main),
+        (None, Some(c)) => {
+            Placement::ExpertsInRam { gpu: main, cache: c.gpu_bytes(), hit: (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT) }
+        }
     };
     Candidate {
         level: lp.level,
@@ -1074,7 +1165,13 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     let mut refusal = None;
     // where run's own sizing covers the family: the plan `run` would load at each level, or the refusal it would give (the same functions: src/cli.rs `size`)
     if let Some(main) = (0..machine.devices.len()).min_by_key(|&i| (std::cmp::Reverse(machine.devices[i].free), i)) {
-        let target = Target::of(&machine.devices[main], Some(machine.ram_free));
+        let target = Target::of(&machine.devices[main], main as i32, Some(machine.ram_free));
+        // (the GPUs the dynamic route uses: Ampere or newer; they reach each other directly where this computer says so, or as a datacenter machine's NVLink does)
+        let devs: Vec<Target> =
+            machine.devices.iter().enumerate().filter(|(_, d)| d.cc.0 >= 8).map(|(i, d)| Target::of(d, i as i32, Some(machine.ram_free))).collect();
+        let probed = a.flag("machine").is_none();
+        let linked = machine.devices.iter().all(|d| d.cc.1 == 0 && (8..=10).contains(&d.cc.0));
+        let reach = move |g: &[i32]| if probed { crate::dynamic::tp::reach(g) } else { linked };
         let tries: Vec<&'static str> = match level {
             Some(l) => vec![l],
             None => fam.levels_now(model),
@@ -1083,7 +1180,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         let mut options = Vec::new();
         let mut sized = false;
         for l in tries {
-            match crate::cli::size(a, model, &config, l, &target, users) {
+            match crate::cli::size(a, model, &config, l, &devs, &target, &reach, users) {
                 Ok(Some(lp)) => {
                     sized = true;
                     options.push(candidate_of(lp, &sh, &machine, main));
@@ -1295,7 +1392,12 @@ mod tests {
         let p = plan(&q9, &Machine::preset("rtx4090").unwrap(), Ask::default());
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("penguin", Some(Placement::Gpu(0))));
         let p = plan(&q9, &Machine::preset("rtx4060-laptop").unwrap(), Ask::default());
-        assert!(chosen(&p).level != "penguin" && p.options[0].why.is_some(), "{p:?}");
+        // (the lossy engines keep 2 GiB of an 8 GB card: swift's 5.8 GiB of weights do not fit beside them, so only wren does, which a release build runs on QAT checkpoints alone)
+        if levels::PREVIEW {
+            assert!(chosen(&p).level != "penguin" && p.options[0].why.is_some(), "{p:?}");
+        } else {
+            assert!(p.chosen.is_none() && p.options[0].why.is_some(), "{p:?}");
+        }
         assert!(p.notes.iter().any(|n| n.contains("CUDA 12 build")));
         // Qwen3-32B lossless on one 48 GB card (README: bf16 needs two); two 24 GB cards hold it at kestrel, split; one 24 GB card at a lower level
         let q32 = Shape::from_config(QWEN3_32B).unwrap();
@@ -1539,6 +1641,7 @@ mod tests {
     }
 
     /// The bytes of a directory's weight files (the safetensors shards, as the engine reads them onto the GPU).
+    #[cfg(feature = "dev")]
     fn shard_bytes(dir: &std::path::Path) -> u64 {
         std::fs::read_dir(dir)
             .unwrap()
@@ -1551,6 +1654,7 @@ mod tests {
     /// The plan's weights against what the loader makes of a model: a tiny Qwen3 and a tiny Qwen3.5-family model (random weights, the shapes of the real
     /// ones: src/logits.rs) packed on the CPU at each layout the paths run, and the bytes the packed directory holds. The plan sizes a lossy level from the
     /// config alone before anything is downloaded (within 3%: a pack's tail words and the small tensors) and from the directory's own bytes once it is packed.
+    #[cfg(feature = "dev")] // (the random models are a development build's: src/logits.rs)
     #[test]
     fn the_plan_weighs_what_the_packer_writes() {
         use crate::weights::Layout;
@@ -1583,5 +1687,91 @@ mod tests {
             assert!(packed.gpu_total() <= packed.free);
         }
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A checkpoint of the tensors of `fixture` (their names, types and shapes, from a real release's header: `tensors`) as a sparse file: the header the planner
+    /// reads, no bytes written.
+    fn header_only_checkpoint(dir: &std::path::Path, fixture: &str) {
+        let v = json::parse(fixture).unwrap();
+        let (mut header, mut at) = (String::from("{"), 0u64);
+        for (name, t) in v.get("tensors").and_then(Value::as_object).unwrap() {
+            let (dtype, shape) = (t.as_array().unwrap()[0].as_str().unwrap(), t.as_array().unwrap()[1].as_u64s().unwrap());
+            let width = match dtype {
+                "F32" => 4,
+                "F8_E4M3" | "I8" | "U8" => 1,
+                _ => 2,
+            };
+            let bytes = shape.iter().product::<u64>() * width;
+            header +=
+                &format!("{}\"{name}\":{{\"dtype\":\"{dtype}\",\"shape\":{shape:?},\"data_offsets\":[{at},{}]}}", if at == 0 { "" } else { "," }, at + bytes);
+            at += bytes;
+        }
+        header += "}";
+        let mut f = std::fs::File::create(dir.join("model.safetensors")).unwrap();
+        std::io::Write::write_all(&mut f, &(header.len() as u64).to_le_bytes()).unwrap();
+        std::io::Write::write_all(&mut f, header.as_bytes()).unwrap();
+        f.set_len(8 + header.len() as u64 + at).unwrap();
+    }
+
+    /// A model of the dynamic route whose files are here (GLM-5.3-Flash, from its real header): `fit` prints the plan `run` loads, with the layers cut over the
+    /// GPUs of each machine as their room holds them (each stage's bytes and the route's work and reserve inside its GPU's free memory, every layer in exactly
+    /// one stage), and refuses where `run` refuses, in its words.
+    #[test]
+    fn the_dynamic_route_is_planned_from_the_files() {
+        let dir = model_dir("dyn", "GLM-5.3-Flash", &fixture("glm5_next_config.json"));
+        header_only_checkpoint(&dir, &fixture("glm5_next_tensors.json"));
+        let nl = crate::dynamic::split::config_num(&fixture("glm5_next_config.json"), "num_hidden_layers").unwrap();
+        let mut planned_ok = 0;
+        for preset in ["rtx4080s", "rtx4090", "2x3090", "a100-80g", "8xh100"] {
+            let m = Machine::preset(preset).unwrap();
+            let f = planned(&args(&["fit", &format!("{}:penguin", dir.to_str().unwrap()), "--machine", preset])).unwrap();
+            let devs: Vec<Target> = m.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
+            let direct = crate::cli::size_dynamic(
+                &args(&["run", dir.to_str().unwrap()]),
+                &dir,
+                &fixture("glm5_next_config.json"),
+                "GLM-5.3-Flash",
+                &devs,
+                Some(m.ram_free),
+                &|_| false,
+            );
+            match (f.plan.chosen.as_ref().and_then(|c| c.load.clone()), direct) {
+                (Some(got), Ok(want)) => {
+                    assert_eq!(got, want, "{preset}");
+                    let sp = got.spread.as_ref().unwrap();
+                    assert_eq!(sp.devices.len(), sp.cuts.len() + 1, "{preset}: a GPU for each stage");
+                    assert!(sp.cuts.windows(2).all(|w| w[0] < w[1]) && sp.cuts.iter().all(|&c| 0 < c && c < nl), "{preset}: cuts {:?}", sp.cuts);
+                    // each stage's bytes (the layers' and its half of the rest) inside its GPU's room
+                    // (an HBM GPU's FP8 matrices are plain unless the plan codes them; elsewhere coded is their only layout)
+                    let hbm = m.devices.iter().any(|d| d.cc.1 == 0 && (8..=10).contains(&d.cc.0));
+                    let f8 = if sp.coded || !hbm { crate::dynamic::split::CODED_PCT } else { crate::dynamic::split::PLAIN_PCT };
+                    let bf16 = if sp.twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
+                    let (per, base) = crate::dynamic::split::layer_bytes_where(&dir, nl, f8, bf16, &|_| true).unwrap();
+                    let bounds: Vec<usize> = std::iter::once(0).chain(sp.cuts.iter().copied()).chain(std::iter::once(nl)).collect();
+                    let mut total = 0;
+                    for (k, w) in bounds.windows(2).enumerate() {
+                        let held = per[w[0]..w[1]].iter().sum::<u64>()
+                            + if k == 0 { base / 2 } else { 0 }
+                            + if k + 1 == sp.devices.len() { base - base / 2 } else { 0 };
+                        let d = &m.devices[sp.devices[k] as usize];
+                        assert!(
+                            held <= crate::plan::dynamic_room_of(d.free),
+                            "{preset}: stage {k} holds {held} of {} in room",
+                            crate::plan::dynamic_room_of(d.free)
+                        );
+                        total += held;
+                    }
+                    assert_eq!(total, got.weights_on_gpu(), "{preset}: the stages hold what the plan says");
+                    assert!(got.gpu_total() <= got.free, "{preset}");
+                    planned_ok += 1;
+                }
+                (None, Err(want)) => {
+                    let r = f.refusal.as_ref().unwrap_or_else(|| panic!("{preset}: fit plans what run refuses"));
+                    assert_eq!((r.what.as_str(), r.code), (want.what.as_str(), want.code), "{preset}");
+                }
+                (a, b) => panic!("{preset}: fit {a:?}, run {:?}", b.map(|p| p.level)),
+            }
+        }
+        assert!(planned_ok >= 3, "{planned_ok}");
     }
 }

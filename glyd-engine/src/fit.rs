@@ -111,6 +111,7 @@ pub fn plan(cfg: &Config, name: &str, gpu: &str, free: u64, layout: Layout, aske
         free,
         gpu: gpu.to_string(),
         experts: None,
+        spread: None,
     })
 }
 
