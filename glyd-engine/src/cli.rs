@@ -1414,11 +1414,11 @@ fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: 
         level: level_name(layout),
         layout,
         context: ctx,
-        users: 1,
+        users: users as usize,
         chunk: GEMMA_CHUNK,
         weights,
         bf16,
-        kv: rings + ctx as u64 * per,
+        kv: users * (rings + ctx as u64 * per),
         work: LOSSY_WORK,
         draft,
         reserve,
@@ -2925,13 +2925,16 @@ mod tests {
         let free = 14u64 << 30;
         let at = |argv: &[&str]| lossy_plan_with(&args(argv), model, Layout::Int4, text, None, free, "NVIDIA GeForce RTX 4080 SUPER", None, None).unwrap();
         let cfg = crate::model_gemma4::ConfigG4::parse(text, None, false).unwrap();
-        let (one, eight) = (at(&["run", model]), at(&["serve", model, "--users", "8"]));
-        assert_eq!(one.ctx, LOSSY_CTX);
-        assert!(eight.ctx >= LOSSY_MIN_CTX && eight.ctx < one.ctx, "{}", eight.ctx);
-        let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, eight.ctx);
-        assert!(eight.weights + LOSSY_WORK + 8 * (rings + eight.ctx as u64 * per) <= free, "8 users at {} tokens", eight.ctx);
-        assert_eq!(at(&["serve", model, "--users", "1"]).ctx, LOSSY_CTX);
-        assert_eq!(at(&["serve", model, "--users", "8", "--ctx", "8192"]).ctx, 8192);
+        let (one, eight) = (at(&["run", model, "--no-draft"]), at(&["serve", model, "--users", "8", "--no-draft"]));
+        assert_eq!((one.context, one.users), (LOSSY_CTX, 1));
+        assert!(eight.context >= LOSSY_MIN_CTX && eight.context < one.context && eight.users == 8, "{}", eight.context);
+        let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, eight.context);
+        assert_eq!(eight.kv, 8 * (rings + eight.context as u64 * per));
+        assert!(eight.weights + LOSSY_WORK + eight.reserve + eight.kv <= free, "8 users at {} tokens", eight.context);
+        assert_eq!(at(&["serve", model, "--users", "1", "--no-draft"]).context, LOSSY_CTX);
+        assert_eq!(at(&["serve", model, "--users", "8", "--no-draft", "--ctx", "8192"]).context, 8192);
+        // (a draft model to come with the download: drafted, one user at a time, the context of one)
+        assert_eq!(at(&["serve", model, "--users", "8"]).users, 1);
         // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; other models without one take the lossless route of old)
         assert_eq!(run_level(model, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(run_level(model, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
