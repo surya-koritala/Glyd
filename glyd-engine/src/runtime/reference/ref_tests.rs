@@ -1,0 +1,211 @@
+//! Each kind against the per-family references it replaces (`qwen35_ref.rs`, `kimi_ref.rs`, `muse_ref.rs`) on the same random weights.
+//! Those round to bf16 where vLLM or transformers hold bf16, so the tolerance is `BF16_TOL`.
+
+use super::testing::{assert_close, fill};
+use super::{attention, bf16, linear, mla, Params, BF16_TOL};
+use crate::runtime::kinds::*;
+use glyd_gpu::safetensors::Checkpoint;
+
+/// A checkpoint tensor as f32 (bf16 or f32): (shape, values).
+fn tensor(ck: &Checkpoint, name: &str) -> (Vec<usize>, Vec<f32>) {
+    let (_, t) = ck.get(name).unwrap_or_else(|| panic!("no tensor {name}"));
+    let (dtype, shape) = (t.dtype.clone(), t.shape.iter().map(|&d| d as usize).collect::<Vec<_>>());
+    let b = ck.read(name).unwrap();
+    let v = match dtype.as_str() {
+        "BF16" => b.chunks(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
+        "F32" => b.chunks(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+        d => panic!("{name}: {d}"),
+    };
+    (shape, v)
+}
+
+fn put(p: &mut Params, ck: &Checkpoint, role: &str, name: &str) {
+    let (shape, v) = tensor(ck, name);
+    p.put(role, &shape, v);
+}
+
+/// Gated DeltaNet's core against `qwen35_ref::mixer_step` (vLLM's decode step), on random products over a few tokens.
+#[test]
+fn gated_deltanet_against_qwen35_ref() {
+    use crate::qwen35_ref as q;
+    let d = q::Dims { nk: 2, nv: 4, dk: 16, dv: 8, kernel: 4 };
+    let n = d.conv_dim();
+    let l = Linear {
+        kind: LinearKind::GatedDeltaNet,
+        k_heads: 2,
+        v_heads: 4,
+        k_dim: 16,
+        v_dim: 8,
+        conv: 4,
+        decay: Decay::Softplus,
+        gate_act: Act::Silu,
+        norm_eps: 1e-6,
+        state_f32: true,
+    };
+    let bfv = |v: Vec<f32>| v.into_iter().map(bf16).collect::<Vec<_>>();
+    let conv = bfv(fill("conv", n * 4, -0.5, 0.5));
+    let (a_log, dt_bias, norm) = (fill("a_log", 4, -1.0, 0.5), fill("dt_bias", 4, -0.5, 0.5), fill("norm", 8, 0.8, 1.2));
+    let lp = q::LinearParams { conv: conv.clone(), a_log: a_log.clone(), dt_bias: dt_bias.clone(), norm: norm.clone(), eps: 1e-6 };
+    let mut p = Params::new();
+    p.put("conv", &[n, 4], conv);
+    p.put("a_log", &[4], a_log);
+    p.put("dt_bias", &[4], dt_bias);
+    p.put("norm", &[8], norm);
+    let (mut theirs, mut ours) = (q::LinearState::new(&d), linear::LinearState::new(&l));
+    let (mut want, mut got) = (Vec::new(), Vec::new());
+    for t in 0..6 {
+        let g = |what: &str, k: usize, lo: f32, hi: f32| bfv(fill(&format!("{what}{t}"), k, lo, hi));
+        let (qkv, z, b, a) = (g("qkv", n, -2.0, 2.0), g("z", 32, -2.0, 2.0), g("b", 4, -2.0, 2.0), g("a", 4, -2.0, 2.0));
+        want.extend(q::mixer_step(&d, &lp, &mut theirs, &qkv, &z, &b, &a));
+        got.extend(linear::core(&l, &p, &mut ours, &qkv, &b, &a, &z).unwrap());
+    }
+    assert_close(&got, &want, BF16_TOL, "GDN against qwen35_ref");
+}
+
+/// Kimi delta attention and Kimi-K3's gated NoPE MLA against `kimi_ref` on its random model (dense MLPs, so it stays small).
+#[test]
+fn kimi_k3_mixers_against_kimi_ref() {
+    use crate::kimi_ref::{random, RefKimi};
+    let dir = std::env::temp_dir().join(format!("glyd-runtime-kimi-{}", std::process::id()));
+    random(&dir, 8, true, 8).unwrap();
+    let mut theirs = RefKimi::load(&dir).unwrap();
+    let ck = Checkpoint::open(&dir).unwrap();
+    let hidden = theirs.c.hidden;
+    let kda = Linear {
+        kind: LinearKind::KimiDelta,
+        k_heads: 2,
+        v_heads: 2,
+        k_dim: 128,
+        v_dim: 128,
+        conv: 4,
+        decay: Decay::Bounded(-5.0),
+        gate_act: Act::Sigmoid,
+        norm_eps: 1e-5,
+        state_f32: true,
+    };
+    let twice = Norm { rounding: Rounding::Twice, ..Norm::rms(1e-6) };
+    let m = Mla {
+        heads: 2,
+        q_lora: Some(128),
+        kv_lora: 128,
+        nope: 128,
+        rope_dim: 64,
+        v_dim: 128,
+        rope: None,
+        q_norm: twice,
+        kv_norm: twice,
+        gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: None }),
+        scale: 192f32.powf(-0.5),
+        absorbed: false,
+        indexer: None,
+    };
+    for l in [0usize, 3] {
+        let a = format!("language_model.model.layers.{l}.self_attn");
+        let mut p = Params::new();
+        let is_mla = l == 3;
+        if is_mla {
+            for (role, n) in [("q_a", "q_a_proj"), ("q_b", "q_b_proj"), ("kv_a", "kv_a_proj_with_mqa"), ("kv_b", "kv_b_proj"), ("g", "g_proj"), ("o", "o_proj")]
+            {
+                put(&mut p, &ck, role, &format!("{a}.{n}.weight"));
+            }
+            put(&mut p, &ck, "q_a_norm", &format!("{a}.q_a_layernorm.weight"));
+            put(&mut p, &ck, "kv_a_norm", &format!("{a}.kv_a_layernorm.weight"));
+        } else {
+            for (role, n) in [
+                ("q", "q_proj"),
+                ("k", "k_proj"),
+                ("v", "v_proj"),
+                ("beta", "b_proj"),
+                ("decay_a", "f_a_proj"),
+                ("decay_b", "f_b_proj"),
+                ("gate", "g_proj"),
+                ("o", "o_proj"),
+            ] {
+                put(&mut p, &ck, role, &format!("{a}.{n}.weight"));
+            }
+            let conv: Vec<f32> = ["q", "k", "v"].iter().flat_map(|n| tensor(&ck, &format!("{a}.{n}_conv1d.weight")).1).collect();
+            p.put("conv", &[conv.len() / 4, 4], conv);
+            put(&mut p, &ck, "a_log", &format!("{a}.A_log"));
+            put(&mut p, &ck, "dt_bias", &format!("{a}.dt_bias"));
+            put(&mut p, &ck, "norm", &format!("{a}.o_norm.weight"));
+        }
+        let (mut st, mut cache) = (linear::LinearState::new(&kda), mla::LatentCache::default());
+        let (mut want, mut got) = (Vec::new(), Vec::new());
+        for t in 0..5u32 {
+            let x: Vec<f32> = fill(&format!("x{t}"), hidden, -1.0, 1.0).into_iter().map(bf16).collect();
+            want.extend(theirs.mixer_of(l, &x));
+            got.extend(if is_mla { mla::step(&m, &p, &mut cache, &x, t).unwrap() } else { linear::step(&kda, &p, &mut st, &x).unwrap() });
+        }
+        assert_close(&got, &want, BF16_TOL, if is_mla { "Kimi-K3 MLA against kimi_ref" } else { "KDA against kimi_ref" });
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Muse Spark's attention (weightless q/k norm, gated output with a per-head norm, rope and a window on sliding layers only) against
+/// `muse_ref`, a sliding and a global layer, past the window.
+#[test]
+fn muse_attention_against_muse_ref() {
+    use crate::muse::ConfigMuse;
+    use crate::muse_ref::RefMuse;
+    let text = r#"{"architectures": ["MuseSparkForConditionalGeneration"], "model_type": "muse_spark", "text_config": {"model_type": "muse_spark_text", "hidden_size": 128, "num_hidden_layers": 2,
+        "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 32, "intermediate_size": 256, "moe_hidden_size": 64, "moe_intermediate_size": 64, "num_local_experts": 4,
+        "num_experts_per_tok": 2, "num_shared_experts": 0, "vocab_size": 256, "max_position_embeddings": 4096, "sliding_window": 3, "hidden_act": "silu", "attention_bias": false,
+        "layer_types": ["sliding_attention", "full_attention"], "layer_rope_theta": [500000.0, 0],
+        "mlp_layer_types": ["sparse", "sparse"], "rope_parameters": {"rope_theta": 500000.0, "rope_type": "default"}, "rms_norm_eps": 1e-05, "post_norm_eps": 1e-08,
+        "qk_scale_factor": 5.4730064863875, "output_multiplier": 0.5, "final_logit_softcapping": 20.0, "residual_gate_temperature": 0.3, "routed_scaling_factor": 1.0,
+        "bos_token_id": 0, "eos_token_id": 1, "tie_word_embeddings": false}}"#;
+    let c = ConfigMuse::parse(text, "test", None).unwrap();
+    let (d, nh, nk, hd) = (c.hidden, c.heads, c.kv_heads, c.head_dim);
+    let a = (3.0 / d as f32).sqrt();
+    let bfv = |v: Vec<f32>| v.into_iter().map(bf16).collect::<Vec<_>>();
+    let w: Vec<[Vec<f32>; 5]> = (0..2)
+        .map(|l| {
+            let g = |n: &str, k: usize, s: f32| bfv(fill(&format!("{l}.{n}"), k, -s, s));
+            [
+                g("q", nh * hd * d, a),
+                g("k", nk * hd * d, a),
+                g("v", nk * hd * d, a),
+                g("g", nh * hd * d, a),
+                g("o", d * nh * hd, (3.0 / (nh * hd) as f32).sqrt()),
+            ]
+        })
+        .collect();
+    let mut theirs = RefMuse::attention_only(c.clone(), w.clone());
+    let bare = Norm::rms_bare(c.eps);
+    for l in 0..2 {
+        let sliding = c.sliding[l];
+        let at = Attn {
+            heads: nh,
+            kv_heads: nk,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: sliding.then_some(c.window),
+            sinks: false,
+            rope: sliding.then(|| Rope::plain(c.rope_theta, hd)),
+            q_norm: Some(bare),
+            k_norm: Some(bare),
+            v_norm: None,
+            gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: Some(bare) }),
+            softcap: None,
+            bias: false,
+            scale: c.qk_scale / (hd as f32).sqrt(),
+            k_eq_v: false,
+            indexer: None,
+        };
+        let mut p = Params::new();
+        for (i, (role, shape)) in
+            [("q", [nh * hd, d]), ("k", [nk * hd, d]), ("v", [nk * hd, d]), ("g", [nh * hd, d]), ("o", [d, nh * hd])].into_iter().enumerate()
+        {
+            p.put(role, &shape, w[l][i].clone());
+        }
+        let mut cache = attention::KvCache::default();
+        let (mut want, mut got) = (Vec::new(), Vec::new());
+        for t in 0..6u32 {
+            let h = bfv(fill(&format!("h{t}"), d, -1.0, 1.0));
+            theirs.pos = t as usize;
+            want.extend(theirs.attention_of(l, &h));
+            got.extend(attention::step(&at, &p, &mut cache, &h, t).unwrap());
+        }
+        assert_close(&got, &want, BF16_TOL, &format!("Muse attention layer {l} against muse_ref"));
+    }
+}
