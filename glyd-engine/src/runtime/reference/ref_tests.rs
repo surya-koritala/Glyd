@@ -360,3 +360,17 @@ fn muse_moe_against_muse_ref() {
     }
     assert_close(&got, &want, BF16_TOL, "Muse latent MoE against muse_ref");
 }
+
+/// Kimi-K3's depth mix against `kimi_ref`'s, over one to five sources.
+#[test]
+fn depth_mix_against_kimi_ref() {
+    use crate::kimi_ref::RefKimi;
+    let d = 64;
+    let bfv = |v: Vec<f32>| v.into_iter().map(bf16).collect::<Vec<_>>();
+    let (wn, wp) = (bfv(fill("w_n", d, 0.5, 1.5)), bfv(fill("w_p", d, -1.0, 1.0)));
+    let src: Vec<Vec<f32>> = (0..5).map(|i| bfv(fill(&format!("src{i}"), d, -2.0, 2.0))).collect();
+    for n in 1..=5 {
+        let s: Vec<&[f32]> = src[..n].iter().map(|v| &v[..]).collect();
+        assert_close(&super::depth_mix(&s, &wn, &wp), &RefKimi::mix_of(&s, &wn, &wp), BF16_TOL, &format!("depth mix of {n}"));
+    }
+}

@@ -296,6 +296,22 @@ pub fn hc_weights(s: &crate::runtime::kinds::StreamsP, p: &Params, x: &[f32]) ->
     Ok((pre, post, comb))
 }
 
+/// Kimi-K3's depth mix: each source (the embedding, the completed blocks' outputs, the partial sum) scored by the query
+/// w_norm * w_proj against the source normed by its RMS (eps 1e-5), the softmax of the scores weighing the sources' sum. A block's
+/// `DepthMix` residual needs the sources across blocks, which the executor (R4a) keeps; this is the function it applies.
+pub fn depth_mix(sources: &[&[f32]], w_norm: &[f32], w_proj: &[f32]) -> Vec<f32> {
+    let d = w_norm.len();
+    let mut s: Vec<f32> = sources
+        .iter()
+        .map(|v| {
+            let r = 1.0 / (v.iter().map(|x| x * x).sum::<f32>() / d as f32 + 1e-5).sqrt();
+            (0..d).map(|i| (w_norm[i] * w_proj[i]) as f64 * v[i] as f64).sum::<f64>() as f32 * r
+        })
+        .collect();
+    softmax(&mut s);
+    (0..d).map(|i| sources.iter().zip(&s).map(|(v, &a)| a as f64 * v[i] as f64).sum::<f64>() as f32).collect()
+}
+
 /// A sequence's state in one layer.
 pub enum SeqState {
     Attention(attention::KvCache),

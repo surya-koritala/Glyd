@@ -481,6 +481,11 @@ impl RefKimi {
         }
     }
 
+    /// The depth mix of `src` with a norm and a projection weight.
+    pub(crate) fn mix_of(src: &[&[f32]], w_n: &[f32], w_p: &[f32]) -> Vec<f32> {
+        mix(src, w_n, w_p)
+    }
+
     /// Layer `l`'s MLP or MoE on its normed input.
     pub(crate) fn ffn_of(&self, l: usize, x: &[f32]) -> Vec<f32> {
         match &self.layers[l].ffn {
