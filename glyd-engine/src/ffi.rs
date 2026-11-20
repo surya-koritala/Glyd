@@ -688,13 +688,18 @@ impl Lib {
 
     /// The workspace bytes of Y [m, o] = X W^T by the current GPU's route for m.
     pub fn linear_workspace(&self, twelve: bool, o: i64, k: i64, m: i64) -> Result<usize> {
+        self.linear_workspace_routed(twelve, o, k, m, -1)
+    }
+
+    /// The same by route `route` (glyd_gpu.h's GLYD_GPU_ROUTE_*; -1: the GPU's own for m).
+    pub fn linear_workspace_routed(&self, twelve: bool, o: i64, k: i64, m: i64, route: i64) -> Result<usize> {
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe {
             if twelve {
-                (self.api.glyd_gpu_mma12_linear_workspace)(o, k, m, -1, &mut b)
+                (self.api.glyd_gpu_mma12_linear_workspace)(o, k, m, route, &mut b)
             } else {
-                (self.api.glyd_gpu_mma_linear_workspace)(o, k, m, -1, &mut b)
+                (self.api.glyd_gpu_mma_linear_workspace)(o, k, m, route, &mut b)
             }
         };
         self.ck(call!("linear_workspace"), r)?;
@@ -707,6 +712,15 @@ impl Lib {
     /// Device addresses of live buffers of the sizes the C API asks for (glyd_gpu.h); `done` and the workspace serve one stream at a time.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn linear(&self, w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream) -> Result<()> {
+        self.linear_routed(w, x, m, y, ws, ws_bytes, done, cs, -1)
+    }
+
+    /// `linear` by route `route` (glyd_gpu.h's GLYD_GPU_ROUTE_*; -1: the GPU's own for m).
+    ///
+    /// # Safety
+    /// As `linear`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn linear_routed(&self, w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream, route: i64) -> Result<()> {
         let r = match w.words {
             Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_linear)(
                 w.data as *const u8,
@@ -719,7 +733,7 @@ impl Lib {
                 m,
                 std::ptr::null(),
                 y as *mut u16,
-                -1,
+                route,
                 ws as *mut c_void,
                 ws_bytes,
                 done as *mut c_int,
@@ -736,7 +750,7 @@ impl Lib {
                 m,
                 std::ptr::null(),
                 y as *mut u16,
-                -1,
+                route,
                 ws as *mut c_void,
                 ws_bytes,
                 done as *mut c_int,

@@ -1839,7 +1839,7 @@ __device__ __forceinline__ bool last_of(int* done, int64_t n, int& last) {
 #define GEMM1_BLOCKS 2
 #endif
 template <class Fmt, int MT, bool B = false, bool PF = false>
-__global__ void __launch_bounds__(256, MT == 1 ? GEMM1_BLOCKS : 1) mma_gemm_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done, int pf) {
+__global__ void __launch_bounds__(256, MT == 1 ? GEMM1_BLOCKS : 1) mma_gemm_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done, int pf, int S) {
     extern __shared__ __align__(128) float red[];  // [4 warps][16 MT rows][65], then (tiered) the warps' scratch [8][S2_BYTES]
     __shared__ int last;
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
@@ -1847,19 +1847,32 @@ __global__ void __launch_bounds__(256, MT == 1 ? GEMM1_BLOCKS : 1) mma_gemm_kern
     __syncthreads();
     int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
     uint32_t* s2 = (uint32_t*)(red + 4 * MT * 16 * 65) + warp * (S2_BYTES / 4);
-    int64_t KS = K / 16, total = O / 64 * KS, nb = gridDim.x;
-    int64_t B1 = (blockIdx.x + 1) * total / nb;
+    // S slices of up to 64 tokens (a prompt batch's tokens): block b of the grid is part b / S of the split of the steps, for slice b % S. Each slice is the product of its rows alone, with the same split of
+    // the steps (it depends on the grid's parts, not on the rows) and the same sums: the bits of a row are those it has in a product of 64 tokens or fewer by itself. Slices side by side read the same
+    // weights together, from the L2 cache; S = 1 is the product of M tokens.
+    const int sl = blockIdx.x % S;
+    const int64_t bx = blockIdx.x / S, nb = gridDim.x / S, rbs = O / 64;
+    {
+        const int64_t base = M / S, extra = M % S, r0 = sl * base + (sl < extra ? sl : extra), cap = base + (extra > 0);
+        parts += (int64_t)sl * (nb + rbs) * cap * 64;
+        done += sl * rbs;
+        X += r0 * K;
+        Y += r0 * O;
+        M = base + (sl < extra);
+    }
+    int64_t KS = K / 16, total = O / 64 * KS;
+    int64_t B1 = (bx + 1) * total / nb;
     // 12-bit: where the block's steps have more than an exception each on average (a few layers' matrices: 4-5),
     // they go through the warp's scratch, 1 KB of red (zero between steps; the warps' sums take red only after
     // every warp's steps), with decode_x; elsewhere decode as before (its code with decode_x's in it, or more
     // shared memory a block, had cost the other layers 1%).
     bool heavy = false;
     if constexpr (!Fmt::kTable) {
-        int64_t B0 = blockIdx.x * total / nb;
+        int64_t B0 = bx * total / nb;
         heavy = __ldg(f.exc_base + B1) - __ldg(f.exc_base + B0) > B1 - B0;
         s2 = heavy ? (uint32_t*)red + 256 * warp : nullptr;
     }
-    for (int64_t seg = blockIdx.x * total / nb; seg < B1;) {
+    for (int64_t seg = bx * total / nb; seg < B1;) {
         int64_t rb = seg / KS, sb = seg - rb * KS, se = min(B1, (rb + 1) * KS) - rb * KS;
         seg = rb * KS + se;
         int64_t per = (se - sb + 7) / 8;
@@ -1896,7 +1909,7 @@ __global__ void __launch_bounds__(256, MT == 1 ? GEMM1_BLOCKS : 1) mma_gemm_kern
 #pragma unroll
             for (int ww = 0; ww < 4; ww++) v += red[(ww * MT * 16 + r) * 65 + c];
             if (first == fin) Y[r * O + rb * 64 + c] = __float2bfloat16(v + (bias ? __bfloat162float(bias[rb * 64 + c]) : 0.f));
-            else parts[((blockIdx.x + rb) * M + r) * 64 + c] = v;  // slot b + rb: distinct for every (block, row block) pair
+            else parts[((bx + rb) * M + r) * 64 + c] = v;  // slot b + rb: distinct for every (block, row block) pair
         }
         if (first != fin && last_of(done + rb, fin - first + 1, last))
             for (int i = threadIdx.x; i < M * 64; i += 256) {
@@ -9325,6 +9338,9 @@ static StepOpts step_opts() {
 // The mma layouts (tiered: tiers[3]; 12-bit: sym[4], its base). Y [M, O] = X W^T (+ bias) for up to 64 tokens: as
 // many blocks as fit at once, but at least 32 steps (4 a warp) a block; the workspace: their parts,
 // [blocks + O / 64][M][64] floats; done: O / 64. need: set to the workspace's bytes, nothing launched.
+// The most slices of 64 tokens a product by mma_gemm_run takes in one launch (a prompt batch of eight sequences of up to 64 tokens).
+constexpr int MMA_GEMM_SLICES = 8;
+
 template <class Fmt, int MT, bool B, bool PF>
 static int mma_gemm_mt(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
     auto kernel = mma_gemm_kernel<Fmt, MT, B, PF>;
@@ -9333,13 +9349,16 @@ static int mma_gemm_mt(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M
     int dev = current_device();
     int64_t RB = O / 64, total = RB * (K / 16);
     int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, 256, (int)shared, known, dev) * sm_count(dev), total / 32));
-    size_t bytes = (size_t)((nb + RB) * M * 64) * sizeof(float);
+    // (more than 64 tokens: slices of M / S tokens, of 33 to 64, in one launch beside one another; their workspaces and counters side by side)
+    const int64_t S = M > 64 ? (M + 63) / 64 : 1, cap = (M + S - 1) / S;
+    if (S > 1 && MT != 4) return cudaErrorInvalidValue;
+    size_t bytes = (size_t)(S * (nb + RB) * cap * 64) * sizeof(float);
     if (need) {
         *need = bytes;
         return cudaGetLastError();
     }
     if (!fits(ws, ws_bytes, bytes) || !done) return cudaErrorInvalidValue;
-    kernel<<<nb, 256, shared, cs>>>(f, O, K, M, bf(x), bf(bias), bf(y), (float*)ws, done, step_opts().pfd);
+    kernel<<<nb * S, 256, shared, cs>>>(f, O, K, M, bf(x), bf(bias), bf(y), (float*)ws, done, step_opts().pfd, (int)S);
     return cudaGetLastError();
 }
 
@@ -9380,7 +9399,7 @@ static bool cc12_gpu(int dev) {
 
 template <class Fmt>
 static int mma_gemm_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need, [[maybe_unused]] bool cc12_asked = false) {
-    if (O % 64 || K % 16 || M < 0 || M > 64) return cudaErrorInvalidValue;
+    if (O % 64 || K % 16 || M < 0 || M > 64 * MMA_GEMM_SLICES) return cudaErrorInvalidValue;
     if constexpr (std::is_same_v<Fmt, Tiered>) {
         // Asked for (the route GEMM_CC12, opt-in until measured end to end), on compute capability 12 the tiered layout's products
         // of 9-32 tokens by the 2-m-tile product, and of 33-64, K a multiple of 64, by tiered_mid_run (a weight decoded by producer
@@ -9390,7 +9409,7 @@ static int mma_gemm_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t 
         // start on any GPU and route (dev builds; 0: never).
         const bool cc12 = cc12_asked && cc12_gpu(current_device());
         const int64_t mid = TUNING_INT("GLYD_GPU_TMID", cc12 ? 33 : 0), mt2 = TUNING_INT("GLYD_GPU_TMT2", cc12 ? 9 : 0);
-        if (mid > 0 && M >= mid && K % 64 == 0) {
+        if (mid > 0 && M >= mid && M <= 64 && K % 64 == 0) {
             if (need) {  // (its workspace, or the 4-m-tile product's where x is not 16-byte aligned: the larger)
                 size_t a = 0, b = 0;
                 if (int r = tiered_mid_run(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, &a)) return r;

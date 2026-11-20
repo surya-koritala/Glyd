@@ -595,6 +595,27 @@ fn cmd_batchcheck(a: &Args) -> Result<()> {
     o.users = 8;
     o.pool = o.pool.max(o.ctx);
     let (mut e, _, _) = open_dir_with(a, o)?;
+    if a.has("twelves") {
+        let (mut t, mut n, mut bytes12, mut bytes) = (0, 0, 0usize, 0usize);
+        for l in &e.w.layers {
+            for p in [&l.qkv, &l.o, &l.gate_up, &l.down] {
+                n += 1;
+                bytes += p.bytes;
+                if p.pack.is_twelve() {
+                    t += 1;
+                    bytes12 += p.bytes;
+                }
+            }
+        }
+        println!("{t} of {n} matrices in the 12-bit layout ({:.1}% of the bytes)", bytes12 as f64 * 100.0 / bytes as f64);
+    }
+    if a.has("routes") {
+        let l = &e.w.layers[0];
+        for (name, p) in [("qkv", &l.qkv), ("o", &l.o), ("gate_up", &l.gate_up), ("down", &l.down)] {
+            let rs: Vec<String> = [8i64, 16, 17, 33, 48, 64, 65, 128, 200].iter().map(|&m| format!("{m}:{}", e.lib_route(p, m).map_or(-1, |r| r))).collect();
+            println!("{name}: twelve {}, rows {} cols {}, routes {}", p.pack.is_twelve(), p.pack.rows, p.pack.cols, rs.join(" "));
+        }
+    }
     let per = 24usize;
     let lens = [35usize, 20, 48, 33, 64, 18, 50, 27];
     let starts = [0usize, 0, 0, 0, 0, 0, 0, 0];

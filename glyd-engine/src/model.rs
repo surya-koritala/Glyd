@@ -75,6 +75,9 @@ pub const MAX_ROWS: usize = 8;
 /// took: the logits differ in the last bits (a few hundredths of a logprob at most), as they do between any two routes.
 pub const FUSED_ROWS: usize = 64;
 
+/// glyd_gpu.h's GLYD_GPU_ROUTE_GEMM: the products of up to 64 tokens (and, past that, slices of them in one launch).
+const GEMM_ROUTE: i64 = 1;
+
 /// The fewest tokens a chunk has to run in a pass with others: the library multiplies 16 rows or fewer by another kernel (the step kernel), whose sums are not those of the kernels from 17 rows to FUSED_ROWS, which
 /// a pass of several chunks uses for every row.
 pub const JOIN_MIN: usize = 17;
@@ -334,6 +337,8 @@ pub struct Engine {
     parts: RefCell<Vec<Part>>,
     /// A prompt batch is running: every product is the library's own, 64 rows at a time (a row's bits are those it has in a pass of its own sequence alone, whatever the other rows).
     sliced: std::cell::Cell<bool>,
+    /// The library takes the slices of a prompt batch's products (see `prefill_batch`).
+    slice_ok: bool,
     picked: RefCell<Vec<usize>>,
     /// A row of the chunk being run whose residual stream is dumped after every layer (debugging: GLYD_ENGINE_DUMP=position, in `score`).
     dump_row: std::cell::Cell<Option<usize>>,
@@ -436,6 +441,18 @@ impl Engine {
             for &(oo, kk) in &shapes[..4] {
                 for twelve in [false, true] {
                     need = need.max(lib.linear_workspace(twelve, oo, kk, m_)?);
+                }
+            }
+        }
+        // (the products of a prompt batch, 65 to 8 x 64 rows, slices of the step kernel: a library that does not take them [one before this] leaves batches off)
+        let mut slice_ok = true;
+        for m_ in (FUSED_ROWS as i64 + 1)..=(FUSED_ROWS * MAX_ROWS) as i64 {
+            for &(oo, kk) in &shapes[..4] {
+                for twelve in [false, true] {
+                    match lib.linear_workspace_routed(twelve, oo, kk, m_, GEMM_ROUTE) {
+                        Ok(b) => need = need.max(b),
+                        Err(_) => slice_ok = false,
+                    }
                 }
             }
         }
@@ -594,6 +611,7 @@ impl Engine {
             marks: RefCell::new(None),
             parts: RefCell::new(Vec::new()),
             sliced: std::cell::Cell::new(false),
+            slice_ok,
             picked: RefCell::new(Vec::new()),
             dump_row: std::cell::Cell::new(None),
             dumped: RefCell::new(Vec::new()),
@@ -707,17 +725,70 @@ impl Engine {
             return self.kern.gemm(self.dev.stream, tile, x, self.scratch_w.ptr, y, m as i32, p.pack.rows as i32, p.pack.cols as i32);
         }
         if self.sliced.get() && m > FUSED_ROWS {
-            // (the library's product for each 64 rows: the route and the sums of a prompt of that many tokens, which is what each sequence of the batch would have had alone; the weights are read again for each
-            // slice, from the cache where the matrix is small)
-            let (k, o) = (p.pack.cols as u64 * 2, p.pack.rows as u64 * 2);
-            // (in slices of the same size or nearly, so that none is of 16 rows or fewer, which the library multiplies by another kernel, with other sums)
-            let (slices, mut at) = (m.div_ceil(FUSED_ROWS), 0);
-            for i in 0..slices {
-                let n = m / slices + (i < m % slices) as usize;
-                self.lib.linear(&p.pack, x + at as u64 * k, n as i64, y + at as u64 * o, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream)?;
-                at += n;
+            // (the library's step kernel in slices of up to 64 rows side by side in one launch: each row has the bits it has in a product of its own sequence alone, and the weights are read once)
+            if p.pack.is_twelve() {
+                // (a matrix in the 12-bit layout is multiplied by another kernel from 17 rows, the library's own route: in slices of 17 to 64 rows one after another, each as the rows of one sequence would be)
+                let (slices, mut at) = (m.div_ceil(FUSED_ROWS), 0);
+                let (k, o) = (p.pack.cols as u64 * 2, p.pack.rows as u64 * 2);
+                for i in 0..slices {
+                    let n = m / slices + (i < m % slices) as usize;
+                    self.lib.linear(&p.pack, x + at as u64 * k, n as i64, y + at as u64 * o, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream)?;
+                    at += n;
+                }
+                return Ok(());
             }
-            return Ok(());
+            let r = self.lib.linear_routed(&p.pack, x, m as i64, y, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream, GEMM_ROUTE);
+            if crate::tune!("GLYD_ENGINE_SLICE_CHECK").is_some() {
+                // (development: the same product in slices one after another into the scratch buffer, and the two compared)
+                if crate::tune!("GLYD_ENGINE_SLICE_CHECK").as_deref() == Some("cmp") {
+                    // (the library's own route against route GEMM asked for, the same rows, for several numbers of rows: the counts of differing values)
+                    let rows = p.pack.rows as usize;
+                    let mut said = Vec::new();
+                    for n in [17usize, 33, 48, 49, 55, 64] {
+                        if n > m {
+                            continue;
+                        }
+                        self.lib.linear(&p.pack, x, n as i64, y, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream)?;
+                        self.lib.linear(&p.pack, x, n as i64, self.scratch_w.ptr, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream)?;
+                        self.dev.sync()?;
+                        let (mut a, mut b) = (vec![0u16; n * rows], vec![0u16; n * rows]);
+                        self.scratch_w.read(0, &mut b)?;
+                        unsafe { copy_d2h_async(a.as_mut_ptr() as *mut _, y, a.len() * 2, self.dev.stream)? };
+                        self.dev.sync()?;
+                        said.push(format!("{n}:{}", (0..a.len()).filter(|&i| a[i] != b[i]).count()));
+                    }
+                    eprintln!("slice check cmp {rows}x{}: differing values by rows: {}", p.pack.cols, said.join(" "));
+                    return r;
+                } else if crate::tune!("GLYD_ENGINE_SLICE_CHECK").as_deref() == Some("again") {
+                    self.lib.linear_routed(&p.pack, x, m as i64, self.scratch_w.ptr, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream, GEMM_ROUTE)?;
+                } else {
+                    let (slices, mut at) = (m.div_ceil(FUSED_ROWS), 0);
+                    let (k, o) = (p.pack.cols as u64 * 2, p.pack.rows as u64 * 2);
+                    let routed = crate::tune!("GLYD_ENGINE_SLICE_CHECK").as_deref() == Some("routed");
+                    for i in 0..slices {
+                        let n = m / slices + (i < m % slices) as usize;
+                        let (xs, ys) = (x + at as u64 * k, self.scratch_w.ptr + at as u64 * o);
+                        if routed {
+                            self.lib.linear_routed(&p.pack, xs, n as i64, ys, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream, GEMM_ROUTE)?;
+                        } else {
+                            self.lib.linear(&p.pack, xs, n as i64, ys, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream)?;
+                        }
+                        at += n;
+                    }
+                }
+                self.dev.sync()?;
+                let (rows, mut a, mut b) = (p.pack.rows as usize, vec![0u16; m * p.pack.rows as usize], vec![0u16; m * p.pack.rows as usize]);
+                self.scratch_w.read(0, &mut b)?;
+                // SAFETY: y holds m rows of the product, as the library wrote them.
+                unsafe { copy_d2h_async(a.as_mut_ptr() as *mut _, y, a.len() * 2, self.dev.stream)? };
+                self.dev.sync()?;
+                let bad: Vec<usize> = (0..a.len()).filter(|&i| a[i] != b[i]).collect();
+                if !bad.is_empty() {
+                    let first = bad[0];
+                    eprintln!("slice check: {m} rows x {rows}: {} of {} differ; first at row {} column {} ({:04x} against {:04x}); rows differing: {}", bad.len(), a.len(), first / rows, first % rows, a[first], b[first], bad.iter().map(|i| i / rows).collect::<std::collections::BTreeSet<_>>().len());
+                }
+            }
+            return r;
         }
         self.lib.linear(&p.pack, x, m as i64, y, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream)
     }
@@ -1244,6 +1315,20 @@ impl Engine {
             }
         }
         Ok((checked, differ))
+    }
+
+    /// The library's route for a product of `m` rows by `p` on this GPU (a check's).
+    pub fn lib_route(&self, p: &PackBuf, m: i64) -> Result<i32> {
+        self.lib.route(self.gpu_code, p.pack.is_twelve(), p.pack.rows, p.pack.cols, m)
+    }
+
+    /// The most sequences whose prompt chunks `prefill_batch` runs in one pass: MAX_ROWS where the library takes the slices of their products, else 1.
+    pub fn batch_rows(&self) -> usize {
+        if self.slice_ok {
+            MAX_ROWS
+        } else {
+            1
+        }
     }
 
     /// Pages of the cache in all (the sequences' room together).

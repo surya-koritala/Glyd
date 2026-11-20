@@ -98,7 +98,7 @@ impl Backend for &mut Engine {
         // bits of its logits, and at a near tie in its tokens, from the one the sequence has alone; a server with one request at a time gives the same bits either way)
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "1")) {
-            MAX_ROWS
+            self.batch_rows()
         } else {
             1
         }
