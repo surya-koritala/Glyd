@@ -73,7 +73,7 @@ Exit 0: within the band. Exit 1: a regression (or failed requests). Exit 2: not 
 
 `.github/workflows/gpu-bench.yml` runs on the self-hosted GPU machine (the repository variable `GPU_RUNNER`): on a merge to main it measures the gate's loads on Gemma 4 12B at the wren level (released 2026-05-23; the model is a recent one, as every model we test or benchmark is) and keeps the result in the runner's volume as
 main's last on that GPU (`/cache/bench/main-GPU.json`, with the last 20 in `history-GPU/`); on a pull request labeled `gpu` it measures the same and runs `bench --compare` against main's last, then the synthetic
-slowdown. A result taken while the GPU was busy is taken again, up to three times a minute apart.
+slowdown. A result taken while the GPU was busy (other jobs of the runner do not wait for it) is taken again, up to 20 times 45 s apart.
 
 ### Where the noise band is
 

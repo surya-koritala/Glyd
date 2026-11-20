@@ -63,16 +63,16 @@ jobs:
         run: python3 scripts/ci_restore_mtimes.py "/cache/mtimes-sm${GLYD_ENGINE_ARCHS}.json"
       - name: Build the engine and the GPU library
         run: bash scripts/ci_gpu_build.sh
-      - name: Bench (the gate's loads, five runs each; again where the GPU was busy before it began)
+      - name: Bench (the gate's loads, five runs each; again where another job had the GPU)
         run: |
           gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr -c 'A-Za-z0-9\n' '-' | sed 's/-*$//')
           echo "GPU=$gpu" >> "$GITHUB_ENV"
-          for attempt in 1 2 3; do
+          for attempt in $(seq 1 20); do
             "$E" bench "$BENCH_MODEL" --suite gate --runs 5 --no-draft --weights-gib "$BENCH_WEIGHTS_GIB" --label "${GITHUB_REPOSITORY}@${GITHUB_SHA::10} ${GITHUB_EVENT_NAME}" --out result.json
             busy=$(python3 -c 'import json;print(json.load(open("result.json"))["contention"]["busy_before"])')
             [ "$busy" = "False" ] && break
-            echo "the GPU was busy before attempt $attempt: another job on it. Waiting a minute."
-            sleep 60
+            echo "the GPU was busy before attempt $attempt: another job on it. Waiting 45 s."
+            sleep 45
           done
           uptime
       - name: Held to main's last result on this GPU (a pull request)
