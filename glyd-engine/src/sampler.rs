@@ -282,6 +282,14 @@ impl Sampler {
                     *x = f32::NEG_INFINITY;
                 }
             }
+            // (a grammar that is whole and allows the end tokens alone, before the least length: the reply ends, as it cannot go on)
+            if let Some(g) = self.gram.as_ref().filter(|_| !l.iter().any(|&x| x > f32::NEG_INFINITY)) {
+                for &e in g.ends() {
+                    if let Some(x) = l.get_mut(e as usize) {
+                        *x = 0.0;
+                    }
+                }
+            }
         }
         if self.p.repetition_penalty != 1.0 {
             for &t in self.seen.keys() {

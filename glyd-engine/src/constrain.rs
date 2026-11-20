@@ -267,6 +267,11 @@ impl Gram {
         self.m.as_mut().is_some_and(|m| m.is_accepting().unwrap_or(false))
     }
 
+    /// The end tokens.
+    pub fn ends(&self) -> &[u32] {
+        &self.ends
+    }
+
     /// Masks made.
     pub fn masks(&self) -> u64 {
         self.masks
@@ -493,6 +498,22 @@ mod tests {
         }
         // a request with no grammar is as it was
         assert!(Params::default().greedy() && Sampler::new(Params::default(), &[]).top_need().is_none());
+    }
+
+    /// A least length does not hold a reply that the grammar has ended past its end: the end token is chosen where nothing else may be.
+    #[test]
+    fn a_least_length_does_not_outlast_the_grammar() {
+        use crate::sampler::{Params, Sampler};
+        let c = grammars().compile(&Spec::Choice(vec!["ab".into()])).unwrap();
+        let width = vocab().len() + 5;
+        let mut s = Sampler::new(Params { temperature: 0.0, min_tokens: 10, constraint: Some(c), ..Params::default() }, &[]);
+        s.set_suppress(vec![end()]);
+        let logits = vec![0.0f32; width];
+        let said: Vec<u32> = (0..4).map(|_| s.sample(&logits)).collect();
+        let at = said.iter().position(|&t| t == end()).expect("the reply ended");
+        let text: Vec<u8> = said[..at].iter().flat_map(|&t| vocab()[t as usize].clone()).collect();
+        assert_eq!(text, b"ab");
+        assert!(said[at..].iter().all(|&t| t == end()));
     }
 
     /// A draft token the grammar does not allow is never kept; one it does is.
