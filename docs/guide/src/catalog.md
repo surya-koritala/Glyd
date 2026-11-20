@@ -16,7 +16,7 @@ is for a new family, a new level of a family, or a pre-packed repo.
 ## What we test and showcase
 
 Models released in the last six months. The guide's examples, new measured runs and new cards use them; the cutoff moves with
-the date (on 2026-11-20 it is 2026-05-20). An older model that already runs keeps running and keeps its entry. It gets no new
+the date (on 2026-11-20 it is 2026-05-20, `RECENT_CUTOFF` in `glyd-engine/src/models.rs`). Short names default to models inside it. An older model that already runs keeps running and keeps its entry. It gets no new
 showcase.
 
 ## Who owns an entry
@@ -35,11 +35,11 @@ Every item is a file or a command in the pull request.
 
 | Needs | What counts |
 | :--- | :--- |
-| The kind runs | `glyd-engine supports MODEL` exits 0, and the family has a row in `support.rs` with its test (`every_family_is_told_apart` in the same file reads a fixture `config.json`). |
+| The kind runs | `glyd supports MODEL` exits 0, and the family has a row in `support.rs` with its test (`every_family_is_told_apart` in the same file reads a fixture `config.json`). |
 | A logits test | The engine's top-k logits and KL against a stored reference on a fixed prompt, for a small checkpoint of the family. The per-family harness is R7 ([#146](https://github.com/surya-koritala/Glyd/issues/146)) and is not merged. Until it is, attach the output of the family's check command (`glyd-engine kcheck`, `check`; [CONTRIBUTING.md](https://github.com/surya-koritala/Glyd/blob/main/CONTRIBUTING.md)) and say so. |
-| A measured run | `glyd-engine run` or `serve` on named hardware, in `benchmarks/gpu/MACHINE-MODEL-DATE/` with a README: the machine, the driver, the engine's commit, the command, the tokens/s, the memory in use, and the log. `benchmarks/gpu/rtx4080s-qwen3-8b-engine-2026-11-20` is the form to copy; the model in a new run is one from the last six months. |
+| A measured run | `glyd run` or `serve` on named hardware, in `benchmarks/gpu/MACHINE-MODEL-DATE/` with a README: the machine, the driver, the engine's commit, the command, the tokens/s, the memory in use, and the log. `benchmarks/gpu/rtx4080s-qwen3-8b-engine-2026-11-20` is the form to copy; the model in a new run is one from the last six months. |
 | Quality, for a lossy level | KL from bf16 and top-1 agreement on the pinned WikiText-2 text, by `research/lossy-2026/kld_study.py` as in `benchmarks/weights/kld-q56-2026-10-09`, with the FP8 checkpoint beside it where one exists. |
-| License and gating | The model's license, its link, and whether the Hub gates it, recorded in the pull request. If the license allows redistributing derived weights, a pre-packed repo may be published and its card carries the base license (as `cards/nemotron-3-hummingbird.LICENSE` does). If it does not, the model is listed as run-from-the-original-repo only. A gated model's message names the license page and `glyd-engine login`. |
+| License and gating | The model's license, its link, and whether the Hub gates it, recorded in the pull request. If the license allows redistributing derived weights, a pre-packed repo may be published and its card carries the base license (as `cards/nemotron-3-hummingbird.LICENSE` does). If it does not, the model is listed as run-from-the-original-repo only. A gated model's message names the license page and `glyd login`. |
 | A card | `cards/NAME-LEVEL.json` with `size_gb`, the speed on each GPU measured, `kl_bf16`, the date and the Glyd version and commit. A card has only what was measured. |
 
 The Models page needs no edit: it is generated from `support.rs`.
@@ -60,7 +60,7 @@ not fields yet. Adding them, with a check that refuses an entry without them, is
 ## Asking for a model
 
 Open a [Model request](https://github.com/surya-koritala/Glyd/issues/new?template=model_request.yml). Run
-`glyd-engine supports MODEL` first and paste what it says; the form also asks for the architecture, the license, whether the
+`glyd supports MODEL` first and paste what it says; the form also asks for the architecture, the license, whether the
 Hub gates it, the size you would run and the hardware.
 
 - If `supports` says the kind runs, the reply is the command to run it. A catalog entry is only needed for a pre-packed repo

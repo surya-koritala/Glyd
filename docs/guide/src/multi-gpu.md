@@ -5,12 +5,12 @@ model across machines.
 
 ## The engine, one machine
 
-`glyd-engine run` and `serve` use the GPU with the most free memory. A model too big for it (Kimi-K3, GLM-5.3-Flash,
+`glyd run` and `serve` use the GPU with the most free memory. A model too big for it (Kimi-K3, GLM-5.3-Flash,
 DeepSeek-V4, Muse Spark) is split over all the GPUs the process can see, by their free memory.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 glyd-engine serve MODEL                 # the GPUs to choose from
-glyd-engine serve MODEL --split CUTS --devices GPUS              # your own split, see below
+CUDA_VISIBLE_DEVICES=0,1 glyd serve MODEL                 # the GPUs to choose from
+glyd serve MODEL --split CUTS --devices GPUS              # your own split, see below
 ```
 
 - Which families split, and at which levels, is the [Models](models.md) table, column "Weights split over GPUs".
@@ -19,7 +19,7 @@ glyd-engine serve MODEL --split CUTS --devices GPUS              # your own spli
 - With layers split, one GPU works at a time. On datacenter GPUs that reach each other directly (A100, H100, B200), Kimi-K3
   and DeepSeek-V4 put every layer across all of them, so every GPU works on every token. The start checks two gathers of known
   values and refuses where the GPUs' writes to each other arrive wrong.
-- To see a split before you rent the machines: `glyd-engine fit zai-org/GLM-5.3-Flash --machine 8xh100` plans GLM-5.3-Flash at
+- To see a split before you rent the machines: `glyd fit zai-org/GLM-5.3-Flash --machine 8xh100` plans GLM-5.3-Flash at
   penguin over the eight GPUs of the preset. Measurements of the split are in
   [research/tp-8xa100-2026-10-22](https://github.com/surya-koritala/Glyd/tree/main/research/tp-8xa100-2026-10-22).
 

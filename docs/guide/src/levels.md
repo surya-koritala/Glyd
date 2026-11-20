@@ -1,6 +1,6 @@
 # Choosing a level
 
-A level is how a model's weights are stored on the GPU. You pick one with a tag: `glyd-engine run Qwen/Qwen3.8-27B:swift`.
+A level is how a model's weights are stored on the GPU. You pick one with a tag: `glyd run Qwen/Qwen3.8-27B:swift`.
 With no tag, `run` uses penguin, and refuses a model that has none. `fit` lists every level and picks the first that fits:
 lossless if it fits, then the highest lossy level that does, then experts in RAM for a mixture of experts. `--lossy` is the
 same as `:kestrel`.
@@ -17,7 +17,7 @@ Which families run at which level is on the [Models](models.md) page. A level a 
 
 ## How to choose
 
-1. Run `glyd-engine fit MODEL`. It lists every level with its size on your GPU and says which fit.
+1. Run `glyd fit MODEL`. It lists every level with its size on your GPU and says which fit.
 2. Take penguin if it fits. Nothing changes.
 3. If not, take the highest level that fits. Each step down changes more of the model's answers than the one above it.
 4. For code and long tool loops, stay at kestrel or above where you can.

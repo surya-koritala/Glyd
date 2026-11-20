@@ -1,7 +1,7 @@
 # Condor: a big MoE on one GPU
 
 Condor runs Qwen3.8-Flash-Next, a 180B mixture of experts, on one 12-16 GB NVIDIA GPU with 32-64 GB of RAM. It has its own
-setup script, its own server and chat page. `glyd-engine run` does not take this model yet: it refuses it and points here
+setup script, its own server and chat page. `glyd run` does not take this model yet: it refuses it and points here
 (ROADMAP P8 moves it into `run`).
 
 ## What you need
