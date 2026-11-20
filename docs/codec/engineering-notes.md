@@ -403,7 +403,7 @@ LD_LIBRARY_PATH=target/release ./target/release/test_c_abi
 ## License
 
 All of Glyd (the `glyd` crate, CLI, C ABI and bindings, the store, the
-GPU library, the engine) is under the [Apache License 2.0](../LICENSE).
+GPU library, the engine) is under the [Apache License 2.0](../../LICENSE).
 Releases v0.29.0 to v0.32.1 shipped under the Business Source License
 1.1; v0.28 and earlier: the codec BSD-3-Clause or GPL-2.0, the store
 BUSL-1.1.

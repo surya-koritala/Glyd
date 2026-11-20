@@ -1,5 +1,5 @@
 //! JPEGs taken apart into their coefficients and put back bit for bit,
-//! with nothing outside this crate (`docs/design/jpeg-recoding.md`).
+//! with nothing outside this crate (`docs/codec/design/jpeg-recoding.md`).
 //!
 //! This is the first part: a parser that keeps every marker segment as
 //! it is and decodes each baseline (sequential Huffman, 8-bit) scan to

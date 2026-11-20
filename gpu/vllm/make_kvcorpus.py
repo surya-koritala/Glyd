@@ -6,7 +6,7 @@ committed; this is how it was made, and every part of it is public domain or our
           (Arthur Conan Doyle, 1661), On the Origin of Species (Charles Darwin, 1228) and Pride and Prejudice (Jane
           Austen, 1342): public domain in the United States; tens of thousands of characters from each, unwrapped into
           paragraphs, without the Project Gutenberg header and licence text
-  docs    excerpts of this repository's own documents (docs/engineering-notes.md, gpu/vllm/README.md)
+  docs    excerpts of this repository's own documents (docs/codec/engineering-notes.md, gpu/vllm/README.md)
   code    short Python and C modules written for this file
   chat    short conversations written for this file
   table   a CSV table and JSON records generated from fixed seeds
@@ -325,11 +325,11 @@ def build():
         ("prose", "a-tale-of-two-cities-2", gutenberg(98, "A wonderful fact to reflect upon", 16000)),
         ("prose", "sherlock-holmes-2", gutenberg(1661, "II. THE RED-HEADED LEAGUE", 14000)),
         ("prose", "origin-of-species-2", gutenberg(1228, "CHAPTER III.", 14000)),
-        ("docs", "engineering-notes-1", docs("docs/engineering-notes.md", "## Format v7", 5200)),
-        ("docs", "engineering-notes-2", docs("docs/engineering-notes.md", "## Format v6 (current)", 2400)),
+        ("docs", "engineering-notes-1", docs("docs/codec/engineering-notes.md", "## Format v7", 5200)),
+        ("docs", "engineering-notes-2", docs("docs/codec/engineering-notes.md", "## Format v6 (current)", 2400)),
         ("docs", "vllm-readme", docs("gpu/vllm/README.md", "## Local chat, like Ollama", 5200)),
         ("docs", "gpu-readme", docs("gpu/README.md", "## ", 5200)),
-        ("docs", "spec", docs("docs/spec.md", "## 1. Block streams", 5200)),
+        ("docs", "spec", docs("docs/codec/spec.md", "## 1. Block streams", 5200)),
         ("code", CODE[0][0], CODE[0][1]),
         ("code", CODE[1][0], CODE[1][1]),
         ("code", CODE[2][0], CODE[2][1]),

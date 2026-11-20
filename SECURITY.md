@@ -6,7 +6,7 @@ This covers everything in this repository: the codec and store (`glyd`, `glyd-st
 ## Supported versions
 
 Fixes go into the latest release only. There are no long-term branches. Streams written by any earlier release keep
-decoding with the latest one (see [docs/spec.md](docs/spec.md)), so upgrading is the fix for every version.
+decoding with the latest one (see [docs/codec/spec.md](docs/codec/spec.md)), so upgrading is the fix for every version.
 
 Starlings is a beta. Report problems in it the same way, but expect the fix in the next release, not a backport.
 
