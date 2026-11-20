@@ -13,8 +13,10 @@
 //! match its bf16 kernel bit for bit.
 
 pub mod attention;
+pub mod ffn;
 pub mod linear;
 pub mod mla;
+pub mod mtp;
 pub mod norm;
 pub mod rope;
 
@@ -29,7 +31,7 @@ use super::backend::{
     Arenas, Backend, Captured, Collective, DeviceId, DeviceInfo, Format, HostTensor, KindRef, LayerDesc, LayerImpl, Placement, StepCx, StepShape, Support,
     WeightSource,
 };
-use super::kinds::{Act, Block, Body, Mixer, Residual, RopeScaling};
+use super::kinds::{Act, Block, Body, Ffn, Mixer, Residual};
 use crate::ffi::{err, Error, Result};
 use std::collections::HashMap;
 
@@ -75,6 +77,15 @@ pub fn act(a: Act, x: f32) -> f32 {
             let r = x.max(0.0);
             r * r
         }
+        Act::Situ { beta, .. } => beta * (x / beta).tanh() * sigmoid(x),
+    }
+}
+
+/// A gated pair: act(g) u, with situ's cap on the up (u -> linear tanh(u / linear)).
+pub fn gated(a: Act, g: f32, u: f32) -> f32 {
+    match a {
+        Act::Situ { linear, .. } => act(a, g) * linear * (u / linear).tanh(),
+        _ => act(a, g) * u,
     }
 }
 
@@ -194,6 +205,20 @@ fn roles(b: &Block) -> Vec<String> {
         Body::Mixer(Mixer::Attention(_)) => &["q", "k", "v", "o", "g"],
         Body::Mixer(Mixer::Mla(_)) => &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g"],
         Body::Mixer(Mixer::Linear(_)) => &["qkv", "q", "k", "v", "beta", "decay", "gate", "o"],
+        Body::Ffn(_) => &[
+            "gate",
+            "up",
+            "gate_up",
+            "down",
+            "router",
+            "shared_gate",
+            "shared_up",
+            "shared_gate_up",
+            "shared_down",
+            "shared_router",
+            "latent_down",
+            "latent_up",
+        ],
         _ => &[],
     };
     let vecs = [
@@ -234,6 +259,59 @@ pub fn residual_gate(g: &[f32], temperature: f32) -> (Vec<f32>, Vec<f32>) {
         .unzip()
 }
 
+/// mHC's weights for one token: the input's weights over the streams (pre), the output's (post) and the streams' mixing comb[j][k]
+/// (from stream j into stream k), from the streams x [n, hidden] (transformers' `DeepseekV4HyperConnection`).
+pub fn hc_weights(s: &crate::runtime::kinds::StreamsP, p: &Params, x: &[f32]) -> Result<(Vec<f32>, Vec<f32>, Vec<Vec<f32>>)> {
+    let n = s.streams;
+    let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + s.norm_eps).sqrt();
+    let xn: Vec<f32> = x.iter().map(|v| v * r).collect();
+    let (f, base, scale) = (p.vec("hc_fn")?, p.vec("hc_base")?, p.vec("hc_scale")?);
+    if f.len() != (2 + n) * n * x.len() || base.len() != (2 + n) * n || scale.len() != 3 {
+        return err(format!("mHC weights of {}, {} and {} values for {n} streams of {}", f.len(), base.len(), scale.len(), x.len() / n));
+    }
+    let w = matvec(f, x.len(), &xn);
+    let pre: Vec<f32> = (0..n).map(|i| sigmoid(w[i] * scale[0] + base[i]) + s.eps).collect();
+    let post: Vec<f32> = (0..n).map(|i| 2.0 * sigmoid(w[n + i] * scale[1] + base[n + i])).collect();
+    let mut comb: Vec<Vec<f32>> = (0..n)
+        .map(|j| {
+            let mut row: Vec<f32> = (0..n).map(|k| w[2 * n + j * n + k] * scale[2] + base[2 * n + j * n + k]).collect();
+            softmax(&mut row);
+            row.iter().map(|v| v + s.eps).collect()
+        })
+        .collect();
+    let cols = |c: &mut Vec<Vec<f32>>| {
+        for k in 0..n {
+            let z: f32 = (0..n).map(|j| c[j][k]).sum::<f32>() + s.eps;
+            (0..n).for_each(|j| c[j][k] /= z);
+        }
+    };
+    cols(&mut comb);
+    for _ in 1..s.sinkhorn_iters {
+        for row in comb.iter_mut() {
+            let z: f32 = row.iter().sum::<f32>() + s.eps;
+            row.iter_mut().for_each(|v| *v /= z);
+        }
+        cols(&mut comb);
+    }
+    Ok((pre, post, comb))
+}
+
+/// Kimi-K3's depth mix: each source (the embedding, the completed blocks' outputs, the partial sum) scored by the query
+/// w_norm * w_proj against the source normed by its RMS (eps 1e-5), the softmax of the scores weighing the sources' sum. A block's
+/// `DepthMix` residual needs the sources across blocks, which the executor (R4a) keeps; this is the function it applies.
+pub fn depth_mix(sources: &[&[f32]], w_norm: &[f32], w_proj: &[f32]) -> Vec<f32> {
+    let d = w_norm.len();
+    let mut s: Vec<f32> = sources
+        .iter()
+        .map(|v| {
+            let r = 1.0 / (v.iter().map(|x| x * x).sum::<f32>() / d as f32 + 1e-5).sqrt();
+            (0..d).map(|i| (w_norm[i] * w_proj[i]) as f64 * v[i] as f64).sum::<f64>() as f32 * r
+        })
+        .collect();
+    softmax(&mut s);
+    (0..d).map(|i| sources.iter().zip(&s).map(|(v, &a)| a as f64 * v[i] as f64).sum::<f64>() as f32).collect()
+}
+
 /// A sequence's state in one layer.
 pub enum SeqState {
     Attention(attention::KvCache),
@@ -255,7 +333,7 @@ impl RefLayer {
     }
 
     /// The body on the normed inputs of one token (the sequence's state advanced).
-    fn body(&mut self, seq: u32, pos: u32, h: &[f32]) -> Result<Vec<f32>> {
+    fn body(&mut self, seq: u32, pos: u32, token: u32, h: &[f32]) -> Result<Vec<f32>> {
         let p = &self.p;
         match &self.block.body {
             Body::Mixer(Mixer::Attention(a)) => {
@@ -273,19 +351,37 @@ impl RefLayer {
                 let SeqState::Linear(s) = st else { return err("a sequence's state is not a linear state") };
                 linear::step(l, p, s, h)
             }
+            Body::Ffn(Ffn::Mlp(m)) => ffn::mlp(m, p, "", h),
+            Body::Ffn(Ffn::Moe(m)) => ffn::moe(m, p, h, token),
             _ => err("the reference has no such kind yet"),
         }
     }
 
-    /// The block on the tokens of `x` ([tokens, hidden]), in order: pre-norm, body, post-norm, residual.
-    pub fn forward(&mut self, positions: &[u32], seqs: &[u32], x: &mut [f32]) -> Result<()> {
+    /// The block on the tokens of `x` ([tokens, hidden]), in order: pre-norm, body, post-norm, residual. `tokens` (the ids) may be empty
+    /// for a block that does not read them.
+    pub fn forward(&mut self, positions: &[u32], seqs: &[u32], tokens: &[u32], x: &mut [f32]) -> Result<()> {
         let d = self.hidden;
-        if x.len() != positions.len() * d || seqs.len() != positions.len() {
-            return err(format!("a step of {} values for {} tokens of width {d}", x.len(), positions.len()));
+        if seqs.len() != positions.len() {
+            return err(format!("{} sequence slots for {} tokens", seqs.len(), positions.len()));
         }
-        for (t, xt) in x.chunks_mut(d).enumerate() {
-            let h = norm::norm(&self.block.norm_in, xt, self.p.opt("norm_in"), self.p.opt("norm_in_bias"));
-            let mut o = self.body(seqs[t], positions[t], &h)?;
+        let width = match &self.block.residual {
+            Residual::Streams(s) => s.streams * d,
+            _ => d,
+        };
+        if x.len() != positions.len() * width {
+            return err(format!("a step of {} values for {} tokens of width {width}", x.len(), positions.len()));
+        }
+        for (t, xt) in x.chunks_mut(width).enumerate() {
+            let (input, hc) = match &self.block.residual {
+                Residual::Streams(s) => {
+                    let (pre, post, comb) = hc_weights(s, &self.p, xt)?;
+                    let input: Vec<f32> = (0..d).map(|i| (0..s.streams).map(|j| pre[j] * xt[j * d + i]).sum()).collect();
+                    (input, Some((post, comb)))
+                }
+                _ => (xt.to_vec(), None),
+            };
+            let h = norm::norm(&self.block.norm_in, &input, self.p.opt("norm_in"), self.p.opt("norm_in_bias"));
+            let mut o = self.body(seqs[t], positions[t], tokens.get(t).copied().unwrap_or(0), &h)?;
             if let Some(n) = self.block.norm_out {
                 o = norm::norm(&n, &o, self.p.opt("norm_out"), self.p.opt("norm_out_bias"));
             }
@@ -296,6 +392,15 @@ impl RefLayer {
                     let (a, b) = residual_gate(self.p.vec("res_gate")?, g.temperature);
                     for (i, x) in xt.iter_mut().enumerate() {
                         *x = a[i] * *x + b[i] * o[i];
+                    }
+                }
+                Residual::Streams(s) => {
+                    let (post, comb) = hc.expect("the streams' weights");
+                    let old = xt.to_vec();
+                    for k in 0..s.streams {
+                        for i in 0..d {
+                            xt[k * d + i] = post[k] * o[i] + (0..s.streams).map(|j| comb[j][k] * old[j * d + i]).sum::<f32>();
+                        }
                     }
                 }
                 r => return err(format!("the reference has no residual rule {r:?} yet")),
@@ -313,7 +418,7 @@ impl LayerImpl<Ref> for RefLayer {
         false
     }
     fn run(&mut self, cx: &mut StepCx<Ref>, x: &mut Vec<f32>) -> Result<()> {
-        self.forward(cx.positions, cx.seqs, x)
+        self.forward(cx.positions, cx.seqs, cx.tokens, x)
     }
 }
 
@@ -340,7 +445,7 @@ impl Backend for Ref {
     /// Every implemented kind in any format a source decodes to f32, at the speed of plain Rust.
     fn supports(&self, kind: &KindRef, _: &Format) -> Support {
         match kind {
-            KindRef::Attention | KindRef::SlidingAttention | KindRef::Mla | KindRef::GatedDeltaNet | KindRef::KimiDelta => {
+            KindRef::Attention | KindRef::SlidingAttention | KindRef::Mla | KindRef::GatedDeltaNet | KindRef::KimiDelta | KindRef::Mlp | KindRef::Moe => {
                 Support::Slower("the f32 reference".into())
             }
             k => Support::No(format!("no reference for {k:?} yet")),
@@ -357,8 +462,8 @@ impl Backend for Ref {
             Body::Mixer(Mixer::Mla(m)) => m.rope.as_ref(),
             _ => None,
         };
-        if rope.is_some_and(|r| r.scaling != RopeScaling::None) {
-            return err(format!("layer {}: rope scaling is not in the reference yet", layer.index));
+        if rope.is_some_and(|r| r.mrope.is_some()) {
+            return err(format!("layer {}: M-RoPE (image positions) is not in the reference yet; text positions are plain rope", layer.index));
         }
         let mut p = Params::new();
         for r in roles(b) {
