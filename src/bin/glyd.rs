@@ -12,6 +12,7 @@ Usage: glyd run MODEL[:LEVEL]       chat with a model in the terminal and at one
        glyd fit MODEL               what a run of MODEL would do on this computer, before anything is downloaded
        glyd doctor | login          what this computer has for it; save a Hugging Face token
        glyd supports | preflight | prepare | costs | rates | rangeworker   the engine's other commands (glyd run --help)
+       glyd cluster                 one model across computers (not yet: ROADMAP.md, M5)
        glyd pack MODEL OUT | glyd verify PATH   a model's weights for Glyd's GPU layouts, packed and checked on the CPU
        glyd [OPTIONS] [INPUT] [-o OUTPUT]       compress or decompress a file (the options below)
        (the store, which compresses across objects, is the glyd-store command)
@@ -261,6 +262,8 @@ enum Route {
     EngineProgram(PathBuf),
     /// An engine command and no engine here.
     NoEngine,
+    /// `glyd cluster`, which is a stub until C3 (ROADMAP M5).
+    Cluster,
 }
 
 /// `run`, `serve`, `doctor`, `login` and the engine's other commands about a model. Where there is a Python tool, `run` and `serve` are its: it asks the engine (the program found, never the linked
@@ -304,6 +307,9 @@ fn route(cmd: &str, f: &Facts) -> Route {
     }
     if is_model_command(cmd) && (f.python_tool || f.engine_here()) {
         return chat_route(cmd, f); // (a model's command: the Python tool's where there is one, else the engine's, as in the Rust-only install)
+    }
+    if cmd == "cluster" && !f.is_file {
+        return Route::Cluster;
     }
     if is_engine_command(cmd) {
         // (the Python tool has no such command: the engine runs it, or nothing does)
@@ -382,6 +388,10 @@ fn go(route: Route, args: &[String]) -> ! {
         Route::Python(extra) => {
             let extra: Vec<(&str, &str)> = extra.iter().map(|(k, v)| (*k, v.as_str())).collect();
             python_command(args, &extra)
+        }
+        Route::Cluster => {
+            eprintln!("glyd cluster: one model across computers is not in this program yet (ROADMAP.md, M5). Today it is the starlings program (starlings/README.md). A file named cluster is compressed as ./cluster.");
+            std::process::exit(3);
         }
         Route::NoEngine => {
             eprintln!(
@@ -1009,6 +1019,14 @@ mod tests {
         assert_eq!(route("run", &f), Route::EngineProgram(PathBuf::from("/x/my-engine")));
         f.external = None; // (not a file)
         assert_eq!(route("run", &f), Route::Python(vec![]));
+    }
+
+    #[test]
+    fn cluster_is_a_stub_that_says_where_it_is_going_unless_it_is_a_file() {
+        let mut f = bare();
+        assert_eq!(route("cluster", &f), Route::Cluster);
+        f.is_file = true;
+        assert_eq!(route("cluster", &f), Route::Codec);
     }
 
     #[test]
