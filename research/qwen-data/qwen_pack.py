@@ -25,7 +25,10 @@ from safetensors.torch import save_file
 SNAP = os.environ.get("QWEN_SNAP", "/home/surya-koritala/glyd-scratch/qwen/flash-next")
 LOCK = os.environ.get("QWEN_GPU_LOCK", "/home/surya-koritala/glyd-scratch/gpu.lock")
 HID, INTER, NE, NL = 2560, 640, 512, 48
-K_ENTRIES = {"cb2": 4, "cb3": 8, "cb4": 16}
+K_ENTRIES = {"tern": 3, "cb2": 4, "cb3": 8, "cb4": 16}
+# (a row's code bytes at each format, 2,560 codes: tern five base-3 digits a byte, code 5 b + d at digit d of byte b, as the engine's
+# kernels and its host path read it; then the row's codebook, K_ENTRIES bf16 values)
+ROW_BYTES = {"tern": 512, "cb2": 640, "cb3": 960, "cb4": 1280}
 # The names the pack is written with (format glyd-x/1, the engine's): neutral, so files and messages say what, not how. The plan and this
 # script keep their own names (cb2, cb3, cb4; downT, up; codes, codebook) and map them here.
 FORMAT = "glyd-x/1"
@@ -71,7 +74,7 @@ def _gauss_levels(k, iters=400):
     return c.float()
 
 
-GAUSS = {k: _gauss_levels(k) for k in (4, 8, 16)}
+GAUSS = {k: _gauss_levels(k) for k in (3, 4, 8, 16)}
 
 
 def fit_codebooks(x, k, iters=3):
@@ -110,6 +113,9 @@ def pack_bits(codes, fmt):
         c = c.view(rows, K // 8, 8)
         w = sum(c[..., m] << (3 * m) for m in range(8))
         return torch.stack([w & 255, (w >> 8) & 255, (w >> 16) & 255], -1).reshape(rows, K * 3 // 8).to(torch.uint8)
+    if fmt == "tern":
+        c = c.view(rows, K // 5, 5)
+        return sum(c[..., d] * 3 ** d for d in range(5)).to(torch.uint8)
     raise ValueError(fmt)
 
 
@@ -124,6 +130,8 @@ def unpack_bits(b, fmt, K=HID):
         x = x.view(rows, K // 8, 3)
         w = x[..., 0] | x[..., 1] << 8 | x[..., 2] << 16
         return torch.stack([(w >> (3 * m)) & 7 for m in range(8)], -1).reshape(rows, K)
+    if fmt == "tern":
+        return torch.stack([(x // 3 ** d) % 3 for d in range(5)], -1).reshape(rows, K)
     raise ValueError(fmt)
 
 
@@ -192,8 +200,7 @@ def cmd_plan(a):
             plan["layers"][str(l)][e] = "cb4" if rank < n4 else "cb3"
         plan["layer_weights"] = lw
     plan["layers"][str(NL)] = ["cb3"] * NE   # (the MTP layer: transformers does not run it, so it has no profile)
-    rb = {"cb2": 640, "cb3": 960, "cb4": 1280}
-    total = sum((1280 + 640) * (rb[f] + 2 * K_ENTRIES[f]) for fm in plan["layers"].values() for f in fm)
+    total = sum((1280 + 640) * (ROW_BYTES[f] + 2 * K_ENTRIES[f]) for fm in plan["layers"].values() for f in fm)
     plan["bytes"] = total
     json.dump(plan, open(a.out, "w"))
     share = {f: sum(fm.count(f) for fm in plan["layers"].values()) for f in K_ENTRIES}
