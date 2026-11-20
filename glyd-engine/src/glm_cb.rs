@@ -461,10 +461,13 @@ pub struct CbGroup {
 
 /// The groups of a layer by format (those that have experts), in the order of [`CbFmt::ALL`].
 pub fn groups_of(plan: &[Option<CbFmt>]) -> Vec<CbGroup> {
-    CbFmt::ALL.into_iter().filter_map(|f| {
-        let ids: Vec<u16> = plan.iter().enumerate().filter(|(_, p)| **p == Some(f)).map(|(e, _)| e as u16).collect();
-        (!ids.is_empty()).then_some(CbGroup { fmt: f, ids })
-    }).collect()
+    CbFmt::ALL
+        .into_iter()
+        .filter_map(|f| {
+            let ids: Vec<u16> = plan.iter().enumerate().filter(|(_, p)| **p == Some(f)).map(|(e, _)| e as u16).collect();
+            (!ids.is_empty()).then_some(CbGroup { fmt: f, ids })
+        })
+        .collect()
 }
 
 /// A directory's contents: the shape of the experts, the number of experts of the model, and for each layer its groups.
@@ -548,7 +551,12 @@ pub fn pack_dir(snap: &Path, plan: &[(usize, LayerPlan)], out: &Path, threads: u
     let ck = glyd_gpu::safetensors::Checkpoint::open(snap).map_err(|e| Error(e.to_string()))?;
     std::fs::create_dir_all(out).map_err(|e| Error(format!("{}: {e}", out.display())))?;
     let (hidden, inter, experts) = (cfg.hidden, cfg.experts.inter, cfg.experts.experts);
-    let mut manifest = CbManifest::read(out).ok().filter(|m| (m.hidden, m.inter, m.experts) == (hidden, inter, experts)).unwrap_or(CbManifest { hidden, inter, experts, layers: Vec::new() });
+    let mut manifest = CbManifest::read(out).ok().filter(|m| (m.hidden, m.inter, m.experts) == (hidden, inter, experts)).unwrap_or(CbManifest {
+        hidden,
+        inter,
+        experts,
+        layers: Vec::new(),
+    });
     for (l, lp) in plan.iter().filter(|(l, _)| only.is_none_or(|o| o.contains(l))) {
         if lp.len() != experts {
             return err(format!("layer {l}: a plan of {} experts, where the model has {experts}", lp.len()));
@@ -591,7 +599,13 @@ pub fn pack_dir(snap: &Path, plan: &[(usize, LayerPlan)], out: &Path, threads: u
         manifest.layers.push((*l, groups));
         manifest.layers.sort_by_key(|(x, _)| *x);
         std::fs::write(out.join(MANIFEST), manifest.to_json()).map_err(|e| Error(format!("{}: {e}", out.display())))?;
-        println!("layer {l}: {} experts in {} groups, {:.2} GB, {:.1} s", lp.iter().flatten().count(), manifest.layer(*l).map_or(0, |g| g.len()), bytes as f64 / 1e9, t0.elapsed().as_secs_f64());
+        println!(
+            "layer {l}: {} experts in {} groups, {:.2} GB, {:.1} s",
+            lp.iter().flatten().count(),
+            manifest.layer(*l).map_or(0, |g| g.len()),
+            bytes as f64 / 1e9,
+            t0.elapsed().as_secs_f64()
+        );
     }
     Ok(())
 }
@@ -671,7 +685,9 @@ mod tests {
             assert!((err - want).abs() < 0.02, "{}: error {err:.4}, expected about {want}", fmt.name());
             // (the codebook is ascending)
             for r in 0..rows {
-                let b: Vec<f32> = (0..fmt.entries()).map(|j| bf16_f32(u16::from_le_bytes([books[(r * fmt.entries() + j) * 2], books[(r * fmt.entries() + j) * 2 + 1]]))).collect();
+                let b: Vec<f32> = (0..fmt.entries())
+                    .map(|j| bf16_f32(u16::from_le_bytes([books[(r * fmt.entries() + j) * 2], books[(r * fmt.entries() + j) * 2 + 1]])))
+                    .collect();
                 assert!(b.windows(2).all(|p| p[0] <= p[1]), "{}", fmt.name());
             }
         }
@@ -690,7 +706,9 @@ mod tests {
             pack_expert(&place, &gate, &up, &down, &r1, &r2, &mut bytes);
             let [g, u, d] = unpack_expert(&place, &bytes, &r1, &r2);
             for (m, orig) in [(g, &gate), (u, &up), (d, &down)] {
-                let e = (m.iter().zip(orig.iter()).map(|(a, b)| ((a - bf16_f32(*b)) as f64).powi(2)).sum::<f64>() / orig.iter().map(|b| (bf16_f32(*b) as f64).powi(2)).sum::<f64>()).sqrt();
+                let e = (m.iter().zip(orig.iter()).map(|(a, b)| ((a - bf16_f32(*b)) as f64).powi(2)).sum::<f64>()
+                    / orig.iter().map(|b| (bf16_f32(*b) as f64).powi(2)).sum::<f64>())
+                .sqrt();
                 let bound = match fmt {
                     CbFmt::Tern => 0.5,
                     CbFmt::Cb2 => 0.4,

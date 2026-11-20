@@ -37,7 +37,16 @@ pub(crate) fn clock() -> f64 {
 
 fn with<T>(f: impl FnOnce(&mut Mon) -> T) -> T {
     let mut g = MON.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| Mon { state: "loading", since: clock(), stats: "{}".into(), places: "null".into(), now: vec![None; KEYS.len()], hist: vec![VecDeque::new(); KEYS.len()], fixed: String::new(), ..Mon::default() }))
+    f(g.get_or_insert_with(|| Mon {
+        state: "loading",
+        since: clock(),
+        stats: "{}".into(),
+        places: "null".into(),
+        now: vec![None; KEYS.len()],
+        hist: vec![VecDeque::new(); KEYS.len()],
+        fixed: String::new(),
+        ..Mon::default()
+    }))
 }
 
 /// Whether a server keeps these numbers (`start` was called).
@@ -106,7 +115,9 @@ pub fn end(stats: &str, row: &str) {
 }
 
 pub fn failed(prompt: usize, why: &str) {
-    with(|m| push(m, format!("{{\"t\":{:.0},\"status\":\"error\",\"prompt\":{prompt},\"error\":{}}}", clock(), jstr(&why.chars().take(200).collect::<String>()))));
+    with(|m| {
+        push(m, format!("{{\"t\":{:.0},\"status\":\"error\",\"prompt\":{prompt},\"error\":{}}}", clock(), jstr(&why.chars().take(200).collect::<String>())))
+    });
 }
 
 fn push(m: &mut Mon, row: String) {
@@ -128,7 +139,8 @@ pub fn json(name: &str) -> String {
         let progress = if m.state == "reading" { (secs * 4200.0 / (m.prompt_tokens.saturating_sub(m.reused)).max(1) as f64).min(0.99) } else { 0.0 };
         let now: Vec<String> = KEYS.iter().zip(&m.now).map(|(k, v)| format!("\"{k}\":{}", num(*v))).collect();
         let fixed = if m.fixed.is_empty() { String::new() } else { format!("{},", m.fixed) };
-        let hist: Vec<String> = KEYS.iter().zip(&m.hist).map(|(k, h)| format!("\"{k}\":[{}]", h.iter().map(|v| num(*v)).collect::<Vec<_>>().join(","))).collect();
+        let hist: Vec<String> =
+            KEYS.iter().zip(&m.hist).map(|(k, h)| format!("\"{k}\":[{}]", h.iter().map(|v| num(*v)).collect::<Vec<_>>().join(","))).collect();
         format!(
             "{{\"model\":{},\"mode\":{},\"ctx\":{},\"engine\":{{\"state\":\"{}\",\"seconds\":{secs},\"progress\":{progress:.3},\"prompt_tokens\":{},\"made\":{}}},\"waiting\":0,\"stats\":{},\"places\":{},\"machine\":{{{fixed}{}}},\"history\":{{{}}},\"requests\":[{}],\"live_tok_s\":{}}}",
             jstr(name),
@@ -166,7 +178,13 @@ impl Machine {
             if f.len() == 9 {
                 let n = |i: usize| f[i].parse::<f64>().ok();
                 (v[0], v[1], v[2], v[3]) = (n(1), n(2), n(4), n(5));
-                fixed.push(format!("\"gpu\":{},\"vram_total\":{},\"power_limit\":{},\"pcie\":{}", jstr(f[0]), num(n(3)), num(n(6)), jstr(&format!("Gen{} x{}", f[7], f[8]))));
+                fixed.push(format!(
+                    "\"gpu\":{},\"vram_total\":{},\"power_limit\":{},\"pcie\":{}",
+                    jstr(f[0]),
+                    num(n(3)),
+                    num(n(6)),
+                    jstr(&format!("Gen{} x{}", f[7], f[8]))
+                ));
             }
         }
         if let Some(line) = std::fs::read_to_string("/proc/stat").ok().and_then(|t| t.lines().next().map(str::to_string)) {
@@ -189,13 +207,18 @@ impl Machine {
         if let Ok(t) = std::fs::read_to_string("/proc/diskstats") {
             // (whole disks: nvme0n1, sda, vda; not their partitions)
             let whole = |d: &str| {
-                let nvme = d.strip_prefix("nvme").is_some_and(|r| r.split_once('n').is_some_and(|(a, b)| !a.is_empty() && !b.is_empty() && a.bytes().chain(b.bytes()).all(|c| c.is_ascii_digit())));
+                let nvme = d.strip_prefix("nvme").is_some_and(|r| {
+                    r.split_once('n').is_some_and(|(a, b)| !a.is_empty() && !b.is_empty() && a.bytes().chain(b.bytes()).all(|c| c.is_ascii_digit()))
+                });
                 nvme || (d.len() == 3 && (d.starts_with("sd") || d.starts_with("vd")) && d.as_bytes()[2].is_ascii_lowercase())
             };
-            let sectors: u64 = t.lines().filter_map(|l| {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                (f.len() > 5 && whole(f[2])).then(|| f[5].parse::<u64>().unwrap_or(0))
-            }).sum();
+            let sectors: u64 = t
+                .lines()
+                .filter_map(|l| {
+                    let f: Vec<&str> = l.split_whitespace().collect();
+                    (f.len() > 5 && whole(f[2])).then(|| f[5].parse::<u64>().unwrap_or(0))
+                })
+                .sum();
             let now = clock();
             if let Some((s0, t0)) = self.disk {
                 v[6] = Some((sectors.saturating_sub(s0) as f64 * 512.0 / 1e6 / (now - t0).max(1e-3) * 10.0).round() / 10.0);

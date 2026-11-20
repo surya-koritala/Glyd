@@ -1,4 +1,4 @@
-# The workspace is unpublished and its own license remains undecided.
+# Dependency policy for Starlings (cargo-deny): licenses compatible with Apache-2.0, no known advisories.
 [graph]
 all-features = true
 

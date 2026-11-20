@@ -50,13 +50,61 @@ pub struct Machine {
 
 /// Memory bandwidth (GB/s) of the GPUs the planner knows, by the words their names hold (most specific first).
 const BANDWIDTH: &[(&str, f64)] = &[
-    ("GH200", 4000.0), ("H200", 4800.0), ("H100 PCIe", 2000.0), ("H100", 3350.0), ("B200", 8000.0), ("A100-SXM4-80GB", 2039.0), ("A100 80GB", 1935.0), ("A100", 1555.0),
-    ("L40S", 864.0), ("L40", 864.0), ("L4", 300.0), ("A10G", 600.0), ("A10", 600.0), ("T4", 320.0), ("V100", 900.0), ("RTX 6000 Ada", 960.0), ("RTX PRO 6000", 1792.0),
-    ("A6000", 768.0), ("5090", 1792.0), ("5080", 960.0), ("5070 Ti", 896.0), ("5070", 672.0), ("5060 Ti", 448.0), ("4090", 1008.0), ("4080 SUPER", 736.0),
-    ("4080", 717.0), ("4070 Ti SUPER", 672.0), ("4070 Ti", 504.0), ("4070 SUPER", 504.0), ("4070", 504.0), ("4060 Ti", 288.0), ("4060", 272.0), ("3090 Ti", 1008.0),
-    ("3090", 936.0), ("3080 Ti", 912.0), ("3080", 760.0), ("3070", 448.0), ("3060", 360.0), ("MI355X", 8000.0), ("MI325X", 6000.0), ("MI300X", 5300.0),
-    ("7900 XTX", 960.0), ("7900 XT", 800.0), ("9070 XT", 640.0), ("M4 Max", 546.0), ("M4 Pro", 273.0), ("M3 Ultra", 819.0), ("M3 Max", 400.0), ("M2 Ultra", 800.0),
-    ("M2 Max", 400.0), ("M1 Max", 400.0), ("GB10", 273.0), ("Thor", 273.0), ("Orin", 204.8), ("8060S", 256.0),
+    ("GH200", 4000.0),
+    ("H200", 4800.0),
+    ("H100 PCIe", 2000.0),
+    ("H100", 3350.0),
+    ("B200", 8000.0),
+    ("A100-SXM4-80GB", 2039.0),
+    ("A100 80GB", 1935.0),
+    ("A100", 1555.0),
+    ("L40S", 864.0),
+    ("L40", 864.0),
+    ("L4", 300.0),
+    ("A10G", 600.0),
+    ("A10", 600.0),
+    ("T4", 320.0),
+    ("V100", 900.0),
+    ("RTX 6000 Ada", 960.0),
+    ("RTX PRO 6000", 1792.0),
+    ("A6000", 768.0),
+    ("5090", 1792.0),
+    ("5080", 960.0),
+    ("5070 Ti", 896.0),
+    ("5070", 672.0),
+    ("5060 Ti", 448.0),
+    ("4090", 1008.0),
+    ("4080 SUPER", 736.0),
+    ("4080", 717.0),
+    ("4070 Ti SUPER", 672.0),
+    ("4070 Ti", 504.0),
+    ("4070 SUPER", 504.0),
+    ("4070", 504.0),
+    ("4060 Ti", 288.0),
+    ("4060", 272.0),
+    ("3090 Ti", 1008.0),
+    ("3090", 936.0),
+    ("3080 Ti", 912.0),
+    ("3080", 760.0),
+    ("3070", 448.0),
+    ("3060", 360.0),
+    ("MI355X", 8000.0),
+    ("MI325X", 6000.0),
+    ("MI300X", 5300.0),
+    ("7900 XTX", 960.0),
+    ("7900 XT", 800.0),
+    ("9070 XT", 640.0),
+    ("M4 Max", 546.0),
+    ("M4 Pro", 273.0),
+    ("M3 Ultra", 819.0),
+    ("M3 Max", 400.0),
+    ("M2 Ultra", 800.0),
+    ("M2 Max", 400.0),
+    ("M1 Max", 400.0),
+    ("GB10", 273.0),
+    ("Thor", 273.0),
+    ("Orin", 204.8),
+    ("8060S", 256.0),
 ];
 
 /// GPUs that share the computer's memory, by the words their names hold.
@@ -74,7 +122,16 @@ pub fn bandwidth_of(name: &str) -> Option<f64> {
 
 fn gpu(name: &str, vendor: Vendor, cc: (i32, i32), total_gib: f64, free_gib: f64, driver: i32) -> Device {
     let gib = |g: f64| (g * GIB) as u64;
-    Device { name: name.into(), vendor, cc, total: gib(total_gib), free: gib(free_gib), bandwidth: bandwidth_of(name).unwrap_or(300.0), driver, unified: is_unified(name, vendor) }
+    Device {
+        name: name.into(),
+        vendor,
+        cc,
+        total: gib(total_gib),
+        free: gib(free_gib),
+        bandwidth: bandwidth_of(name).unwrap_or(300.0),
+        driver,
+        unified: is_unified(name, vendor),
+    }
 }
 
 impl Machine {
@@ -85,7 +142,12 @@ impl Machine {
             "rtx4060-laptop" => (vec![gpu("NVIDIA GeForce RTX 4060 Laptop GPU", nv, (8, 9), 8.0, 7.6, 12070)], 24.0, 60.0, 8),
             "rtx4080s" => (vec![gpu("NVIDIA GeForce RTX 4080 SUPER", nv, (8, 9), 16.0, 15.2, 13000)], 56.0, 70.0, 16),
             "rtx4090" => (vec![gpu("NVIDIA GeForce RTX 4090", nv, (8, 9), 24.0, 23.0, 13000)], 56.0, 70.0, 16),
-            "2x3090" => (vec![gpu("NVIDIA GeForce RTX 3090", nv, (8, 6), 24.0, 23.2, 13000), gpu("NVIDIA GeForce RTX 3090", nv, (8, 6), 24.0, 23.2, 13000)], 120.0, 60.0, 16),
+            "2x3090" => (
+                vec![gpu("NVIDIA GeForce RTX 3090", nv, (8, 6), 24.0, 23.2, 13000), gpu("NVIDIA GeForce RTX 3090", nv, (8, 6), 24.0, 23.2, 13000)],
+                120.0,
+                60.0,
+                16,
+            ),
             "l4" => (vec![gpu("NVIDIA L4", nv, (8, 9), 24.0, 22.0, 13000)], 14.0, 40.0, 4),
             "a6000" => (vec![gpu("NVIDIA RTX A6000", nv, (8, 6), 48.0, 47.0, 13000)], 120.0, 60.0, 16),
             "a100-80g" => (vec![gpu("NVIDIA A100-SXM4-80GB", nv, (8, 0), 80.0, 79.0, 13000)], 200.0, 100.0, 32),
@@ -100,8 +162,21 @@ impl Machine {
         Some(Machine { name: name.into(), devices, ram_free: (ram_gib * GIB) as u64, ram_bandwidth: ram_bw, cores })
     }
 
-    pub const PRESETS: [&'static str; 13] =
-        ["rtx4060-laptop", "rtx4080s", "rtx4090", "2x3090", "l4", "a6000", "a100-80g", "h100", "8xh100", "rx7900xtx", "m4max-64g", "dgx-spark", "strix-halo-128g"];
+    pub const PRESETS: [&'static str; 13] = [
+        "rtx4060-laptop",
+        "rtx4080s",
+        "rtx4090",
+        "2x3090",
+        "l4",
+        "a6000",
+        "a100-80g",
+        "h100",
+        "8xh100",
+        "rx7900xtx",
+        "m4max-64g",
+        "dgx-spark",
+        "strix-halo-128g",
+    ];
 
     /// A machine described in JSON: {"name", "ram_free_gib", "ram_bandwidth", "cores", "gpus": [{"name", "vendor", "cc": [8, 9], "total_gib", "free_gib", "bandwidth", "driver", "unified"}]}.
     pub fn from_json(text: &str) -> Result<Machine, String> {
@@ -141,7 +216,16 @@ impl Machine {
         let devices = crate::dev::Dev::probe_all()
             .map(|gs| {
                 gs.into_iter()
-                    .map(|g| Device { bandwidth: bandwidth_of(&g.name).unwrap_or(300.0), unified: is_unified(&g.name, vendor), name: g.name, vendor, cc: g.cc, total: g.total, free: g.free, driver: g.driver })
+                    .map(|g| Device {
+                        bandwidth: bandwidth_of(&g.name).unwrap_or(300.0),
+                        unified: is_unified(&g.name, vendor),
+                        name: g.name,
+                        vendor,
+                        cc: g.cc,
+                        total: g.total,
+                        free: g.free,
+                        driver: g.driver,
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -198,7 +282,11 @@ impl Shape {
 
     /// The routed experts' parameters a token reads (top-k of them in each MoE layer).
     pub fn routed_active(&self) -> f64 {
-        if self.experts == 0 { 0.0 } else { self.routed * self.topk as f64 / self.experts as f64 }
+        if self.experts == 0 {
+            0.0
+        } else {
+            self.routed * self.topk as f64 / self.experts as f64
+        }
     }
 
     /// From config.json's text (the text model's keys where it has a `text_config`).
@@ -221,7 +309,17 @@ impl Shape {
         // the layers' kinds: layer_types, Nemotron-H's pattern, else every layer full attention
         let pattern = s("hybrid_override_pattern");
         let kinds: Vec<String> = if let Some(p) = &pattern {
-            p.chars().map(|c| match c { 'M' => "mamba", 'E' => "moe", '*' => "full_attention", _ => "mlp" }.to_string()).collect()
+            p.chars()
+                .map(|c| {
+                    match c {
+                        'M' => "mamba",
+                        'E' => "moe",
+                        '*' => "full_attention",
+                        _ => "mlp",
+                    }
+                    .to_string()
+                })
+                .collect()
         } else if let Some(a) = t.get("layer_types").and_then(Value::as_array) {
             a.iter().map(|x| x.as_str().unwrap_or("full_attention").to_string()).collect()
         } else {
@@ -230,9 +328,11 @@ impl Shape {
         let experts = u("num_experts").max(u("num_local_experts")).max(u("n_routed_experts"));
         let topk = u("num_experts_per_tok");
         let moe_inter = n("moe_intermediate_size").unwrap_or(0.0);
-        let shared_inter = n("shared_expert_intermediate_size").or_else(|| n("moe_shared_expert_intermediate_size")).unwrap_or(moe_inter * n("n_shared_experts").unwrap_or(0.0));
+        let shared_inter = n("shared_expert_intermediate_size")
+            .or_else(|| n("moe_shared_expert_intermediate_size"))
+            .unwrap_or(moe_inter * n("n_shared_experts").unwrap_or(0.0));
         let gated = if model_type.contains("nemotron") { 2.0 } else { 3.0 }; // (Nemotron-H's MLPs are relu²: two matrices)
-        // (a latent mixture of experts, Nemotron 3 Super's: the experts work on a narrower vector, projected down and up around them)
+                                                                             // (a latent mixture of experts, Nemotron 3 Super's: the experts work on a narrower vector, projected down and up around them)
         let latent = n("moe_latent_size").unwrap_or(0.0);
         let expert_width = if latent > 0.0 { latent } else { hf };
         let first_dense = u("first_k_dense_replace");
@@ -251,15 +351,23 @@ impl Shape {
                 (hf * hq * d * gate + 2.0 * hf * kv * d + hq * d * hf, 2.0 * kv * d * 2.0)
             }
         };
-        let (lk, lv) = (n("linear_num_key_heads").unwrap_or(16.0) * n("linear_key_head_dim").unwrap_or(128.0), n("linear_num_value_heads").unwrap_or(32.0) * n("linear_value_head_dim").or_else(|| n("linear_key_head_dim")).unwrap_or(128.0));
-        let (m_heads, m_hd, m_state, m_groups) = (n("mamba_num_heads").unwrap_or(0.0), n("mamba_head_dim").unwrap_or(64.0), n("ssm_state_size").unwrap_or(128.0), n("n_groups").unwrap_or(8.0));
-        let mut sh = Shape { arch: if arch.is_empty() { model_type.clone() } else { arch }, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
+        let (lk, lv) = (
+            n("linear_num_key_heads").unwrap_or(16.0) * n("linear_key_head_dim").unwrap_or(128.0),
+            n("linear_num_value_heads").unwrap_or(32.0) * n("linear_value_head_dim").or_else(|| n("linear_key_head_dim")).unwrap_or(128.0),
+        );
+        let (m_heads, m_hd, m_state, m_groups) =
+            (n("mamba_num_heads").unwrap_or(0.0), n("mamba_head_dim").unwrap_or(64.0), n("ssm_state_size").unwrap_or(128.0), n("n_groups").unwrap_or(8.0));
+        let mut sh =
+            Shape { arch: if arch.is_empty() { model_type.clone() } else { arch }, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
         sh.window = u("sliding_window");
         for (i, kind) in kinds.iter().enumerate() {
             match kind.as_str() {
                 "linear_attention" => {
                     sh.dense += hf * 2.0 * lk + hf * 2.0 * lv + lv * hf;
-                    sh.state += n("linear_num_value_heads").unwrap_or(32.0) * n("linear_key_head_dim").unwrap_or(128.0) * n("linear_value_head_dim").unwrap_or(128.0) * 4.0;
+                    sh.state += n("linear_num_value_heads").unwrap_or(32.0)
+                        * n("linear_key_head_dim").unwrap_or(128.0)
+                        * n("linear_value_head_dim").unwrap_or(128.0)
+                        * 4.0;
                 }
                 "mamba" => {
                     let inner = m_heads * m_hd;
@@ -270,7 +378,11 @@ impl Shape {
                     let sliding = k.contains("sliding") && sh.window > 0;
                     let (p, kv) = attention(!sliding && pattern.is_none() && t.get("global_head_dim").is_some());
                     sh.dense += p;
-                    if sliding { sh.kv_sliding += kv } else { sh.kv_full += kv }
+                    if sliding {
+                        sh.kv_sliding += kv
+                    } else {
+                        sh.kv_full += kv
+                    }
                 }
                 _ => {}
             }
@@ -409,13 +521,22 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     let mut notes = Vec::new();
     // (the GPU with the most free memory; the first of equals)
     let Some(main) = (0..m.devices.len()).min_by_key(|&i| (std::cmp::Reverse(m.devices[i].free), i)) else {
-        return Plan { backend: "none".into(), chosen: None, options: vec![], notes: vec!["no GPU found: the CPU backend is not built yet (ROADMAP V4)".into()] };
+        return Plan {
+            backend: "none".into(),
+            chosen: None,
+            options: vec![],
+            notes: vec!["no GPU found: the CPU backend is not built yet (ROADMAP V4)".into()],
+        };
     };
     let d0 = &m.devices[main];
     let backend = match d0.vendor {
         Vendor::Nvidia if d0.driver >= crate::machine::DRIVER_MIN => format!("CUDA (driver CUDA {}.{})", d0.driver / 1000, d0.driver % 1000 / 10),
         Vendor::Nvidia => {
-            notes.push(format!("the driver supports CUDA {}.{}: the engine's kernels need 13.0 (driver 580) until the CUDA 12 build (ROADMAP P6)", d0.driver / 1000, d0.driver % 1000 / 10));
+            notes.push(format!(
+                "the driver supports CUDA {}.{}: the engine's kernels need 13.0 (driver 580) until the CUDA 12 build (ROADMAP P6)",
+                d0.driver / 1000,
+                d0.driver % 1000 / 10
+            ));
             "CUDA 12 (planned)".into()
         }
         Vendor::Amd => "ROCm/HIP (development build)".into(),
@@ -443,9 +564,21 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         // the largest context that fits in `budget` bytes once `fixed` are placed
         let ctx_in = |budget: f64, fixed: f64| -> Option<usize> {
             let fits: Vec<usize> = CONTEXTS.iter().copied().filter(|&c| c <= max_ctx && fixed + kv_at(c) <= budget).collect();
-            fits.last().copied().or_else(|| (ask.context.is_none() && fixed + kv_at(MIN_CTX) <= budget).then_some(MIN_CTX)).filter(|&c| c >= MIN_CTX.min(max_ctx))
+            fits.last()
+                .copied()
+                .or_else(|| (ask.context.is_none() && fixed + kv_at(MIN_CTX) <= budget).then_some(MIN_CTX))
+                .filter(|&c| c >= MIN_CTX.min(max_ctx))
         };
-        let option = |placement: Option<Placement>, context: usize, tok_s: f64, why: Option<String>| Candidate { level, bits: if experts > 0.0 && ebits != bits { (rest * 8.0 + experts * 8.0) / (sh.params()) } else { bits }, weights: weights as u64, placement, context, kv: kv_at(context) as u64, tok_s, why };
+        let option = |placement: Option<Placement>, context: usize, tok_s: f64, why: Option<String>| Candidate {
+            level,
+            bits: if experts > 0.0 && ebits != bits { (rest * 8.0 + experts * 8.0) / (sh.params()) } else { bits },
+            weights: weights as u64,
+            placement,
+            context,
+            kv: kv_at(context) as u64,
+            tok_s,
+            why,
+        };
         // one GPU
         if let Some(ctx) = ctx_in(room(d0) as f64, weights) {
             options.push(option(Some(Placement::Gpu(main)), ctx, gain * d0.bandwidth * GB * eff / read, None));
@@ -456,7 +589,8 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         if same.len() > 1 {
             if let Some(ctx) = ctx_in(total_room, weights) {
                 // (one GPU at a time: each reads its share, in proportion to its room)
-                let t: f64 = same.iter().map(|&i| read * room(&m.devices[i]) as f64 / total_room / (m.devices[i].bandwidth * GB * eff)).sum::<f64>() + 0.1e-3 * (same.len() - 1) as f64;
+                let t: f64 = same.iter().map(|&i| read * room(&m.devices[i]) as f64 / total_room / (m.devices[i].bandwidth * GB * eff)).sum::<f64>()
+                    + 0.1e-3 * (same.len() - 1) as f64;
                 options.push(option(Some(Placement::Split(same.clone())), ctx, gain / t, None));
                 continue;
             }
@@ -467,7 +601,12 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
             let ram = (m.ram_free as f64 - 4.0 * GIB) * 0.9;
             let min_cache = 0.05 * experts;
             if experts > ram {
-                options.push(option(None, 0, 0.0, Some(format!("its experts take {:.1} GiB and the computer has {:.1} GiB free", experts / GIB, m.ram_free as f64 / GIB))));
+                options.push(option(
+                    None,
+                    0,
+                    0.0,
+                    Some(format!("its experts take {:.1} GiB and the computer has {:.1} GiB free", experts / GIB, m.ram_free as f64 / GIB)),
+                ));
                 continue;
             }
             if let Some(ctx) = ctx_in(room(d0) as f64, rest + min_cache) {
@@ -482,7 +621,18 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
             }
         }
         let need = weights + kv_at(MIN_CTX.min(max_ctx));
-        options.push(option(None, 0, 0.0, Some(format!("needs {:.1} GiB with {} tokens of context; the GPU{} {:.1} GiB free for it", need / GIB, MIN_CTX.min(max_ctx), if same.len() > 1 { "s have" } else { " has" }, total_room.max(room(d0) as f64) / GIB))));
+        options.push(option(
+            None,
+            0,
+            0.0,
+            Some(format!(
+                "needs {:.1} GiB with {} tokens of context; the GPU{} {:.1} GiB free for it",
+                need / GIB,
+                MIN_CTX.min(max_ctx),
+                if same.len() > 1 { "s have" } else { " has" },
+                total_room.max(room(d0) as f64) / GIB
+            )),
+        ));
     }
     // in the levels' order: the first in GPU memory alone with at least PREFERRED_CTX of context, else the first with experts in
     // RAM at that context; only then a shorter context (a model held in 4,096 tokens is a poorer run than one level down at 32,768)
@@ -509,28 +659,52 @@ fn where_(p: &Placement, m: &Machine) -> String {
     match p {
         Placement::Gpu(i) => format!("GPU {i} ({})", m.devices[*i].name),
         Placement::Split(g) => format!("split over GPUs {}", g.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")),
-        Placement::ExpertsInRam { cache, hit, .. } => format!("experts in RAM, a {} cache on the GPU (~{:.0}% of expert reads), the CPU computes the rest", gb(*cache), hit * 100.0),
+        Placement::ExpertsInRam { cache, hit, .. } => {
+            format!("experts in RAM, a {} cache on the GPU (~{:.0}% of expert reads), the CPU computes the rest", gb(*cache), hit * 100.0)
+        }
     }
 }
 
 /// The plan as the terminal shows it.
 pub fn text(model: &str, sh: &Shape, m: &Machine, p: &Plan) -> String {
     let mut s = String::new();
-    let kind = if sh.is_moe() { format!("MoE, {:.1}B parameters, {:.1}B active", sh.params() / 1e9, (sh.params() - sh.routed + sh.routed_active()) / 1e9) } else { format!("dense, {:.1}B parameters", sh.params() / 1e9) };
+    let kind = if sh.is_moe() {
+        format!("MoE, {:.1}B parameters, {:.1}B active", sh.params() / 1e9, (sh.params() - sh.routed + sh.routed_active()) / 1e9)
+    } else {
+        format!("dense, {:.1}B parameters", sh.params() / 1e9)
+    };
     s += &format!("{model}: {} ({kind}; up to {} tokens of context)\n", sh.arch, sh.max_ctx);
     for (i, d) in m.devices.iter().enumerate() {
         s += &format!("GPU {i}: {} · {} free of {} · {:.0} GB/s\n", d.name, gb(d.free), gb(d.total), d.bandwidth);
     }
     s += &format!("RAM: {} free · {} cores · backend: {}\n", gb(m.ram_free), m.cores, p.backend);
     match &p.chosen {
-        Some(c) => s += &format!("Plan: {} ({:.1} bits) · {} · {} tokens of context · ~{:.0} tokens/s\n", c.level, c.bits, where_(c.placement.as_ref().unwrap(), m), c.context, c.tok_s),
+        Some(c) => {
+            s += &format!(
+                "Plan: {} ({:.1} bits) · {} · {} tokens of context · ~{:.0} tokens/s\n",
+                c.level,
+                c.bits,
+                where_(c.placement.as_ref().unwrap(), m),
+                c.context,
+                c.tok_s
+            )
+        }
         None => s += "Plan: none fits\n",
     }
     for o in &p.options {
         let mark = if p.chosen.as_ref().is_some_and(|c| c.level == o.level) { "  <- chosen" } else { "" };
         match &o.why {
             Some(w) => s += &format!("  {:<12} {:>9}  does not fit: {w}\n", o.level, gb(o.weights)),
-            None => s += &format!("  {:<12} {:>9}  {:>7} ctx  ~{:>4.0} tok/s  {}{mark}\n", o.level, gb(o.weights), o.context, o.tok_s, where_(o.placement.as_ref().unwrap(), m)),
+            None => {
+                s += &format!(
+                    "  {:<12} {:>9}  {:>7} ctx  ~{:>4.0} tok/s  {}{mark}\n",
+                    o.level,
+                    gb(o.weights),
+                    o.context,
+                    o.tok_s,
+                    where_(o.placement.as_ref().unwrap(), m)
+                )
+            }
         }
     }
     for n in &p.notes {
@@ -550,7 +724,10 @@ pub fn fit_cmd(a: &crate::args::Args) -> crate::ffi::Result<()> {
         None => Machine::probe(),
         Some(n) => match Machine::preset(n) {
             Some(m) => m,
-            None => Machine::from_json(&std::fs::read_to_string(n).map_err(|e| Error(format!("--machine {n}: not a preset ({}) and not a file: {e}", Machine::PRESETS.join(", "))))?).map_err(|e| Error(format!("{n}: {e}")))?,
+            None => Machine::from_json(
+                &std::fs::read_to_string(n).map_err(|e| Error(format!("--machine {n}: not a preset ({}) and not a file: {e}", Machine::PRESETS.join(", "))))?,
+            )
+            .map_err(|e| Error(format!("{n}: {e}")))?,
         },
     };
     let config = crate::cli::config_text(model).map_err(|r| Error(r.what))?;
@@ -558,7 +735,11 @@ pub fn fit_cmd(a: &crate::args::Args) -> crate::ffi::Result<()> {
     if let Some(total) = index_total(model) {
         sh = sh.scaled_to(total);
     }
-    let ask = Ask { level, context: a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Error("--context takes a number".into()))?, users: a.num("users", 1usize)? };
+    let ask = Ask {
+        level,
+        context: a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Error("--context takes a number".into()))?,
+        users: a.num("users", 1usize)?,
+    };
     let p = plan(&sh, &machine, ask);
     print!("{}", text(model, &sh, &machine, &p));
     if p.chosen.is_none() {
@@ -573,7 +754,9 @@ fn index_total(model: &str) -> Option<f64> {
     let text = std::fs::read_to_string(std::path::Path::new(model).join(file))
         .ok()
         .or_else(|| glyd_gpu::save::Source::find(model).ok().and_then(|s| std::fs::read_to_string(s.dir.join(file)).ok()))
-        .or_else(|| (!crate::hub::offline() && model.matches('/').count() == 1).then(|| crate::hub::Hub::from_env().text(model, "main", file).ok()).flatten())?;
+        .or_else(|| {
+            (!crate::hub::offline() && model.matches('/').count() == 1).then(|| crate::hub::Hub::from_env().text(model, "main", file).ok()).flatten()
+        })?;
     num(json::parse(&text).ok()?.get("metadata")?, "total_size")
 }
 
@@ -661,7 +844,11 @@ mod tests {
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("kestrel", Some(Placement::Split(vec![0, 1]))));
         // (one 24 GB card: only wren holds it, which a release build runs on QAT checkpoints alone)
         let p = plan(&q32, &Machine::preset("rtx4090").unwrap(), Ask::default());
-        if levels::PREVIEW { assert_eq!(chosen(&p).level, "wren") } else { assert!(p.chosen.is_none(), "{p:?}") }
+        if levels::PREVIEW {
+            assert_eq!(chosen(&p).level, "wren")
+        } else {
+            assert!(p.chosen.is_none(), "{p:?}")
+        }
         // the 180B MoE fits no 16 GB card at any level but in RAM; on eight H100s it is lossless, split
         let qx = Shape::from_config(&fixture("qwen4x_config.json")).unwrap();
         let p = plan(&qx, &Machine::preset("rtx4080s").unwrap(), Ask::default());
@@ -691,12 +878,18 @@ mod tests {
 
     #[test]
     fn a_machine_reads_from_json_and_presets_name_their_gpus() {
-        let m = Machine::from_json(r#"{"name": "mine", "ram_free_gib": 30, "gpus": [{"name": "NVIDIA GeForce RTX 3090", "cc": [8, 6], "total_gib": 24, "free_gib": 23}]}"#).unwrap();
+        let m = Machine::from_json(
+            r#"{"name": "mine", "ram_free_gib": 30, "gpus": [{"name": "NVIDIA GeForce RTX 3090", "cc": [8, 6], "total_gib": 24, "free_gib": 23}]}"#,
+        )
+        .unwrap();
         assert_eq!((m.devices.len(), m.devices[0].bandwidth, m.devices[0].cc), (1, 936.0, (8, 6)));
         for p in Machine::PRESETS {
             let m = Machine::preset(p).unwrap();
             assert!(m.devices.iter().all(|d| bandwidth_of(&d.name).is_some()), "{p}");
         }
-        assert_eq!((bandwidth_of("NVIDIA GeForce RTX 4080 SUPER"), bandwidth_of("NVIDIA GeForce RTX 4080"), bandwidth_of("NVIDIA L40S"), bandwidth_of("NVIDIA L4")), (Some(736.0), Some(717.0), Some(864.0), Some(300.0)));
+        assert_eq!(
+            (bandwidth_of("NVIDIA GeForce RTX 4080 SUPER"), bandwidth_of("NVIDIA GeForce RTX 4080"), bandwidth_of("NVIDIA L40S"), bandwidth_of("NVIDIA L4")),
+            (Some(736.0), Some(717.0), Some(864.0), Some(300.0))
+        );
     }
 }

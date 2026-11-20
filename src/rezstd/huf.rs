@@ -418,7 +418,15 @@ fn compress_streams(mut out: Vec<u8>, cap: usize, src: &[u8], four: bool, t: &Hu
 /// `table` is the previous block's table, replaced when a new one is
 /// written; `repeat` says whether it may be reused and comes back as
 /// `Repeat::None` when it was not.
-pub fn compress(cap: usize, src: &[u8], four: bool, table: &mut HufTable, repeat: &mut Repeat, prefer_repeat: bool, suspect_uncompressible: bool) -> Result<Vec<u8>, ()> {
+pub fn compress(
+    cap: usize,
+    src: &[u8],
+    four: bool,
+    table: &mut HufTable,
+    repeat: &mut Repeat,
+    prefer_repeat: bool,
+    suspect_uncompressible: bool,
+) -> Result<Vec<u8>, ()> {
     const HUFF_LOG: u32 = 11;
     let n = src.len();
     if n == 0 || cap == 0 {

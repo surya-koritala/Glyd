@@ -33,7 +33,12 @@ impl HostLayer {
         let v = |m: usize, rows: usize, cols: usize| {
             let (d, s) = (self.stride[m][0] as usize, self.stride[m][1] as usize);
             // SAFETY: every expert of the layer end to end (checked where the layer was made), never written after.
-            let (data, blocks) = unsafe { (std::slice::from_raw_parts((self.mats[m][0].0.ptr as *const u8).add(e * d), d), std::slice::from_raw_parts((self.mats[m][1].0.ptr as *const u8).add(e * s), s)) };
+            let (data, blocks) = unsafe {
+                (
+                    std::slice::from_raw_parts((self.mats[m][0].0.ptr as *const u8).add(e * d), d),
+                    std::slice::from_raw_parts((self.mats[m][1].0.ptr as *const u8).add(e * s), s),
+                )
+            };
             crate::cpu_fp4::Fp4View { data, blocks, rows, cols, packed: self.packed }
         };
         crate::cpu_fp4::Fp4Expert { up: v(0, 2 * self.inter, self.latent), down: v(1, self.latent, self.inter) }
@@ -187,13 +192,42 @@ impl Rank {
     pub fn new(cache: Arc<TpCache>, rank: usize, n: usize, chunk: usize, k: usize, latent: usize, off: Offload, expert_bytes: u64) -> Result<Rank> {
         let pairs = chunk * k;
         let few = chunk.min(CPU_TOKENS);
-        let leader = (rank == 0).then(|| RefCell::new(Leader { layers: HashMap::new(), off, costs: Costs::default(), kernel: crate::cpu_experts::checked_kernel(), batches: VecDeque::new(), spare: Vec::new(), stats: [0; 6], cpu_ms: 0.0 }));
+        let leader = (rank == 0).then(|| {
+            RefCell::new(Leader {
+                layers: HashMap::new(),
+                off,
+                costs: Costs::default(),
+                kernel: crate::cpu_experts::checked_kernel(),
+                batches: VecDeque::new(),
+                spare: Vec::new(),
+                stats: [0; 6],
+                cpu_ms: 0.0,
+            })
+        });
         let trace = match crate::tune!("GLYD_KIMI_TRACE").filter(|_| rank == 0) {
             Some(f) => Some(RefCell::new(std::io::LineWriter::new(std::fs::File::create(&f).map_err(|e| Error(format!("{f}: {e}")))?))),
             None => None,
         };
         let dev_stats = (rank == 0 && crate::tune!("GLYD_KIMI_STATS").is_some()).then(|| (RefCell::new(HashMap::new()), Cell::new([0; 3]), Cell::new(None)));
-        Ok(Rank { cache, rank, n, copy: Side::new()?, ids: Pinned::new(pairs * 8)?, wts: Pinned::new(pairs * 4)?, z: Pinned::new(few * latent * 2)?, way: Pinned::new(pairs * 8)?, sums: Pinned::new(few * latent * 4)?, sent: Ev::new()?, got: Ev::new()?, leader, expert_bytes, spans: Cell::new([0.0; 5]), calls: Cell::new(0), trace, dev_stats })
+        Ok(Rank {
+            cache,
+            rank,
+            n,
+            copy: Side::new()?,
+            ids: Pinned::new(pairs * 8)?,
+            wts: Pinned::new(pairs * 4)?,
+            z: Pinned::new(few * latent * 2)?,
+            way: Pinned::new(pairs * 8)?,
+            sums: Pinned::new(few * latent * 4)?,
+            sent: Ev::new()?,
+            got: Ev::new()?,
+            leader,
+            expert_bytes,
+            spans: Cell::new([0.0; 5]),
+            calls: Cell::new(0),
+            trace,
+            dev_stats,
+        })
     }
 
     /// The counts since the last call of it, in a line (the first GPU's), and them reset.
@@ -279,7 +313,8 @@ impl Leader {
     #[allow(clippy::too_many_arguments)]
     fn compute(&mut self, host: &HostLayer, z: &[u16], ids: &[i64], wts: &[f32], mine: &[usize], k: usize, tokens: usize) -> Result<Vec<f32>> {
         let latent = host.latent;
-        let pairs: Vec<crate::cpu_fp4::Fp4Pair> = mine.iter().map(|&j| crate::cpu_fp4::Fp4Pair { expert: host.view(ids[j] as usize), token: j / k, weight: wts[j] }).collect();
+        let pairs: Vec<crate::cpu_fp4::Fp4Pair> =
+            mine.iter().map(|&j| crate::cpu_fp4::Fp4Pair { expert: host.view(ids[j] as usize), token: j / k, weight: wts[j] }).collect();
         let mut out = vec![0f32; mine.len() * latent];
         let t0 = Instant::now();
         crate::cpu_fp4::experts(self.kernel, z, &pairs, &mut out, host.act, self.off.threads, self.off.pin)?;
@@ -470,7 +505,15 @@ impl Rank {
     ///
     /// # Safety
     /// The addresses of `call` are live device buffers of the sizes it names on this GPU, its stream `s`.
-    pub unsafe fn run(&self, index: usize, pl: &Places, call: &Call, s: Stream, early: &mut dyn FnMut() -> Result<()>, body: &mut dyn FnMut(Stage) -> Result<()>) -> Result<()> {
+    pub unsafe fn run(
+        &self,
+        index: usize,
+        pl: &Places,
+        call: &Call,
+        s: Stream,
+        early: &mut dyn FnMut() -> Result<()>,
+        body: &mut dyn FnMut(Stage) -> Result<()>,
+    ) -> Result<()> {
         let (pairs, tokens) = (call.pairs, call.tokens);
         if pairs * 8 > self.way.bytes || pairs % tokens.max(1) != 0 {
             return err(format!("a call of {tokens} tokens and {pairs} pairs, where the buffers are made for {}", self.way.bytes / 8));
@@ -501,7 +544,13 @@ impl Rank {
                 if first.get().is_none_or(|f| index <= f) {
                     let s = sum.replace([0; 3]);
                     if s[0] > 0 {
-                        eprintln!("device path, decode steps since the last prompt: {} choices, {} found in a place ({:.1}%), {} copied in", s[0], s[1], 100.0 * s[1] as f64 / s[0] as f64, s[2]);
+                        eprintln!(
+                            "device path, decode steps since the last prompt: {} choices, {} found in a place ({:.1}%), {} copied in",
+                            s[0],
+                            s[1],
+                            100.0 * s[1] as f64 / s[0] as f64,
+                            s[2]
+                        );
                     }
                     first.set(Some(index));
                 }
@@ -721,7 +770,8 @@ fn ideal(calls: &[Vec<usize>], experts: usize, slots: usize, warm: usize) -> (us
                 continue;
             }
             // (the held expert not chosen now that is used again last)
-            let (i, _) = held.iter().enumerate().filter(|(_, &h)| !ids.contains(&h)).max_by_key(|(_, &h)| next(h, &at)).expect("more places than a step's choices");
+            let (i, _) =
+                held.iter().enumerate().filter(|(_, &h)| !ids.contains(&h)).max_by_key(|(_, &h)| next(h, &at)).expect("more places than a step's choices");
             in_place[held[i]] = false;
             held[i] = e;
             in_place[e] = true;
@@ -752,7 +802,12 @@ pub fn replay_bench(a: &crate::args::Args) -> Result<()> {
     }
     let experts = a.num("experts", most + 1)?;
     let warm: usize = a.num("warm", 32usize)?;
-    let places: Vec<usize> = a.flag("places").unwrap_or("318,430").split(',').map(|x| x.trim().parse::<usize>().map_err(|_| Error(format!("--places {x}")))).collect::<Result<_>>()?;
+    let places: Vec<usize> = a
+        .flag("places")
+        .unwrap_or("318,430")
+        .split(',')
+        .map(|x| x.trim().parse::<usize>().map_err(|_| Error(format!("--places {x}"))))
+        .collect::<Result<_>>()?;
     let steps = layers.values().map(Vec::len).max().unwrap_or(0);
     println!("{path}: {} layers, {steps} tokens{}, {experts} experts; the first {warm} not counted", layers.len(), if decode { " (decode steps)" } else { "" });
     println!("{:>7} {:>10} {:>10} {:>18}", "places", "CLOCK", "ideal", "CLOCK's layers");

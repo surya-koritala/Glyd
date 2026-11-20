@@ -76,11 +76,28 @@ impl S3Backend {
             return Err(bad("an s3:// url with a bucket"));
         }
         let endpoint = std::env::var("AWS_ENDPOINT_URL_S3").or_else(|_| std::env::var("AWS_ENDPOINT_URL")).ok().map(|e| e.trim_end_matches('/').to_string());
-        let region = std::env::var("AWS_REGION").or_else(|_| std::env::var("AWS_DEFAULT_REGION")).ok().or_else(profile_region).unwrap_or_else(|| "us-east-1".to_string());
+        let region = std::env::var("AWS_REGION")
+            .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+            .ok()
+            .or_else(profile_region)
+            .unwrap_or_else(|| "us-east-1".to_string());
         let agent = ureq::Agent::new_with_config(
-            ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).timeout_connect(Some(Duration::from_secs(10))).timeout_await_100(Some(Duration::from_secs(3))).user_agent(concat!("glyd-store/", env!("CARGO_PKG_VERSION"))).build(),
+            ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .max_redirects(0)
+                .timeout_connect(Some(Duration::from_secs(10)))
+                .timeout_await_100(Some(Duration::from_secs(3)))
+                .user_agent(concat!("glyd-store/", env!("CARGO_PKG_VERSION")))
+                .build(),
         );
-        Ok(S3Backend { bucket: bucket.to_string(), prefix: prefix.trim_end_matches('/').to_string(), region: Mutex::new(region), endpoint, agent, creds: Mutex::new(None) })
+        Ok(S3Backend {
+            bucket: bucket.to_string(),
+            prefix: prefix.trim_end_matches('/').to_string(),
+            region: Mutex::new(region),
+            endpoint,
+            agent,
+            creds: Mutex::new(None),
+        })
     }
 
     pub fn bucket(&self) -> &str {
@@ -159,7 +176,9 @@ impl S3Backend {
         let mut xml = String::from("<CompleteMultipartUpload>");
         for (i, slot) in etags.iter().enumerate() {
             match slot.lock().unwrap().take() {
-                Some(Ok(etag)) => xml.push_str(&format!("<Part><PartNumber>{}</PartNumber><ETag>{}</ETag></Part>", i + 1, etag.replace('&', "&amp;").replace('<', "&lt;"))),
+                Some(Ok(etag)) => {
+                    xml.push_str(&format!("<Part><PartNumber>{}</PartNumber><ETag>{}</ETag></Part>", i + 1, etag.replace('&', "&amp;").replace('<', "&lt;")))
+                }
                 Some(Err(e)) => {
                     let _ = self.request("DELETE", key, &[("uploadId".to_string(), upload.clone())], &[]);
                     return Err(e);
@@ -179,7 +198,11 @@ impl S3Backend {
     }
 
     fn full_key(&self, key: &str) -> String {
-        if self.prefix.is_empty() { key.to_string() } else { format!("{}/{}", self.prefix, key) }
+        if self.prefix.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}/{}", self.prefix, key)
+        }
     }
 
     /// Host and path for `key` ("" for the bucket itself).
@@ -217,7 +240,13 @@ impl S3Backend {
             let creds = self.credentials()?;
             match self.send(method, key, query, body, &creds, extra) {
                 Ok(r) => {
-                    if let Some(region) = r.header("x-amz-bucket-region").map(str::to_string).or_else(|| if r.status == 400 || r.status == 301 { xml_text(&r.body, "Region") } else { None }) {
+                    if let Some(region) = r.header("x-amz-bucket-region").map(str::to_string).or_else(|| {
+                        if r.status == 400 || r.status == 301 {
+                            xml_text(&r.body, "Region")
+                        } else {
+                            None
+                        }
+                    }) {
                         if (r.status == 301 || r.status == 400) && !moved && region != *self.region.lock().unwrap() {
                             *self.region.lock().unwrap() = region;
                             moved = true;
@@ -249,13 +278,15 @@ impl S3Backend {
         let canonical_query = query.iter().map(|(k, v)| format!("{}={}", uri_encode(k, false), uri_encode(v, false))).collect::<Vec<_>>().join("&");
         let payload_hash = hex(&Sha256::digest(body));
         let (date, datetime) = amz_date(SystemTime::now());
-        let mut headers = vec![("host".to_string(), host.clone()), ("x-amz-content-sha256".to_string(), payload_hash.clone()), ("x-amz-date".to_string(), datetime.clone())];
+        let mut headers =
+            vec![("host".to_string(), host.clone()), ("x-amz-content-sha256".to_string(), payload_hash.clone()), ("x-amz-date".to_string(), datetime.clone())];
         if let Some(t) = &creds.token {
             headers.push(("x-amz-security-token".to_string(), t.clone()));
         }
         headers.sort();
         let signed = headers.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(";");
-        let canonical = format!("{method}\n{path}\n{canonical_query}\n{}\n{signed}\n{payload_hash}", headers.iter().map(|(k, v)| format!("{k}:{v}\n")).collect::<String>());
+        let canonical =
+            format!("{method}\n{path}\n{canonical_query}\n{}\n{signed}\n{payload_hash}", headers.iter().map(|(k, v)| format!("{k}:{v}\n")).collect::<String>());
         let region = self.region.lock().unwrap().clone();
         let scope = format!("{date}/{region}/s3/aws4_request");
         let to_sign = format!("AWS4-HMAC-SHA256\n{datetime}\n{scope}\n{}", hex(&Sha256::digest(canonical.as_bytes())));
@@ -293,7 +324,11 @@ impl S3Backend {
         let mut resp = result.map_err(|e| other(format!("S3 {method} {host}{path}: {e}")))?;
         let status = resp.status().as_u16();
         let headers = resp.headers().iter().map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string())).collect();
-        let body = if method == "HEAD" { Vec::new() } else { resp.body_mut().with_config().limit(u64::MAX).read_to_vec().map_err(|e| other(format!("S3 {method} {host}{path}: {e}")))? };
+        let body = if method == "HEAD" {
+            Vec::new()
+        } else {
+            resp.body_mut().with_config().limit(u64::MAX).read_to_vec().map_err(|e| other(format!("S3 {method} {host}{path}: {e}")))?
+        };
         Ok(Response { status, headers, body })
     }
 
@@ -323,7 +358,11 @@ impl Backend for S3Backend {
             416 => return Ok(Vec::new()),
             s => return Err(other(format!("S3 GET {}: {s} {}", self.full_key(key), r.code()))),
         }
-        let total = r.header("content-range").and_then(|v| v.rsplit('/').next()).and_then(|t| t.trim().parse::<usize>().ok()).ok_or_else(|| other(format!("S3 GET {}: a range without its size", self.full_key(key))))?;
+        let total = r
+            .header("content-range")
+            .and_then(|v| v.rsplit('/').next())
+            .and_then(|t| t.trim().parse::<usize>().ok())
+            .ok_or_else(|| other(format!("S3 GET {}: a range without its size", self.full_key(key))))?;
         if r.body.len() >= total {
             return Ok(r.body);
         }
@@ -366,18 +405,30 @@ impl Backend for S3Backend {
             return self.write_parts(key, data, PART);
         }
         let r = self.request("PUT", key, &[], data)?;
-        if r.status == 200 { Ok(()) } else { Err(other(format!("S3 PUT {}: {} {}", self.full_key(key), r.status, r.code()))) }
+        if r.status == 200 {
+            Ok(())
+        } else {
+            Err(other(format!("S3 PUT {}: {} {}", self.full_key(key), r.status, r.code())))
+        }
     }
     fn remove(&self, key: &str) -> Result<()> {
         let r = self.request("DELETE", key, &[], &[])?;
-        if r.status == 204 || r.status == 404 { Ok(()) } else { Err(other(format!("S3 DELETE {}: {} {}", self.full_key(key), r.status, r.code()))) }
+        if r.status == 204 || r.status == 404 {
+            Ok(())
+        } else {
+            Err(other(format!("S3 DELETE {}: {} {}", self.full_key(key), r.status, r.code())))
+        }
     }
     fn exists(&self, key: &str) -> bool {
         self.len(key).is_some()
     }
     fn len(&self, key: &str) -> Option<u64> {
         let r = self.request("HEAD", key, &[], &[]).ok()?;
-        if r.status == 200 { r.header("content-length")?.parse().ok() } else { None }
+        if r.status == 200 {
+            r.header("content-length")?.parse().ok()
+        } else {
+            None
+        }
     }
     fn list(&self) -> Result<Vec<(String, u64)>> {
         S3Backend::list(self)
@@ -437,12 +488,33 @@ fn profile_region() -> Option<String> {
 fn role_credentials() -> Result<Credentials> {
     let quick = ureq::Agent::new_with_config(ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(2))).build());
     let text = if let Ok(uri) = std::env::var("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") {
-        quick.get(format!("{ECS_CREDENTIALS}{uri}")).call().and_then(|mut r| r.body_mut().read_to_string()).map_err(|e| other(format!("container credentials: {e}")))?
+        quick
+            .get(format!("{ECS_CREDENTIALS}{uri}"))
+            .call()
+            .and_then(|mut r| r.body_mut().read_to_string())
+            .map_err(|e| other(format!("container credentials: {e}")))?
     } else {
-        let token = quick.put(format!("{IMDS}/latest/api/token")).header("x-aws-ec2-metadata-token-ttl-seconds", "21600").send_empty().and_then(|mut r| r.body_mut().read_to_string()).map_err(|_| other("no AWS credentials: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, a profile in ~/.aws/credentials, or run on an instance with a role"))?;
-        let role = quick.get(format!("{IMDS}/latest/meta-data/iam/security-credentials/")).header("x-aws-ec2-metadata-token", &token).call().and_then(|mut r| r.body_mut().read_to_string()).map_err(|e| other(format!("instance role: {e}")))?;
+        let token = quick
+            .put(format!("{IMDS}/latest/api/token"))
+            .header("x-aws-ec2-metadata-token-ttl-seconds", "21600")
+            .send_empty()
+            .and_then(|mut r| r.body_mut().read_to_string())
+            .map_err(|_| {
+                other("no AWS credentials: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, a profile in ~/.aws/credentials, or run on an instance with a role")
+            })?;
+        let role = quick
+            .get(format!("{IMDS}/latest/meta-data/iam/security-credentials/"))
+            .header("x-aws-ec2-metadata-token", &token)
+            .call()
+            .and_then(|mut r| r.body_mut().read_to_string())
+            .map_err(|e| other(format!("instance role: {e}")))?;
         let role = role.lines().next().unwrap_or("").trim().to_string();
-        quick.get(format!("{IMDS}/latest/meta-data/iam/security-credentials/{role}")).header("x-aws-ec2-metadata-token", &token).call().and_then(|mut r| r.body_mut().read_to_string()).map_err(|e| other(format!("instance role {role}: {e}")))?
+        quick
+            .get(format!("{IMDS}/latest/meta-data/iam/security-credentials/{role}"))
+            .header("x-aws-ec2-metadata-token", &token)
+            .call()
+            .and_then(|mut r| r.body_mut().read_to_string())
+            .map_err(|e| other(format!("instance role {role}: {e}")))?
     };
     let field = |name: &str| json_string(&text, name);
     let (Some(key), Some(secret), Some(token)) = (field("AccessKeyId"), field("SecretAccessKey"), field("Token")) else {
@@ -568,7 +640,10 @@ mod tests {
         let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
         let canonical = "GET\n/test.txt\n\nhost:examplebucket.s3.amazonaws.com\nrange:bytes=0-9\nx-amz-content-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nx-amz-date:20130524T000000Z\n\nhost;range;x-amz-content-sha256;x-amz-date\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let to_sign = format!("AWS4-HMAC-SHA256\n20130524T000000Z\n20130524/us-east-1/s3/aws4_request\n{}", hex(&Sha256::digest(canonical.as_bytes())));
-        assert_eq!(hex(&sign(&signing_key(secret, "20130524", "us-east-1"), to_sign.as_bytes())), "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41");
+        assert_eq!(
+            hex(&sign(&signing_key(secret, "20130524", "us-east-1"), to_sign.as_bytes())),
+            "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
+        );
     }
 
     #[test]

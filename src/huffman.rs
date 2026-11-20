@@ -337,10 +337,7 @@ pub struct DecodeTable {
 impl DecodeTable {
     pub fn build(lengths: &[u8; 256]) -> Option<Box<DecodeTable>> {
         let codes = build_codes(lengths);
-        let mut t = Box::new(DecodeTable {
-            sym: [0u8; TABLE_SIZE],
-            len: [0u8; TABLE_SIZE],
-        });
+        let mut t = Box::new(DecodeTable { sym: [0u8; TABLE_SIZE], len: [0u8; TABLE_SIZE] });
         for sym in 0..256usize {
             let l = lengths[sym] as u32;
             if l == 0 {

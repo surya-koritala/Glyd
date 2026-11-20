@@ -7,22 +7,22 @@
 
 use crate::args::Args;
 use crate::ffi::{err, Error, Result};
+use crate::model::{Finish, Reply};
 use crate::model_qwen4x::{EngineQx, MtpRun, OptsQx, SeqQx, SPEC_ROWS};
 use crate::moe_glm_cb::CbPack;
 use crate::moe_qwen4x::{factory, QxCbShared};
 use crate::offload::{ExpertStore, Mode, Offload, Stats};
 use crate::qwen4x::ConfigQx;
-use crate::weights::Layout;
-use glyd_gpu::json::{self, Value};
-use crate::model::{Finish, Reply};
 use crate::sched::{Ev, Submit};
 use crate::server::{self, Job, Shared};
+use crate::weights::Layout;
+use glyd_gpu::json::{self, Value};
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Instant;
 
 thread_local! {
@@ -57,9 +57,12 @@ fn cgroup_room_gib() -> Option<f64> {
     let num = |p: &str| std::fs::read_to_string(p).ok()?.trim().parse::<f64>().ok();
     let stat = |p: &str, key: &str| std::fs::read_to_string(p).ok()?.lines().find_map(|l| l.strip_prefix(key)?.trim().parse::<f64>().ok());
     // (v2: this process's cgroup, /proc/self/cgroup's "0::/path", and the nearest of it and its parents with a limit; in a container "/")
-    let own = std::fs::read_to_string("/proc/self/cgroup").ok().and_then(|t| t.lines().find_map(|l| l.strip_prefix("0::").map(str::to_string))).unwrap_or_default();
-    let v2 = std::iter::successors(Some(Path::new("/sys/fs/cgroup").join(own.trim_start_matches('/'))), |d| d.parent().filter(|p| p.starts_with("/sys/fs/cgroup")).map(Path::to_path_buf))
-        .find_map(|d| num(&d.join("memory.max").to_string_lossy()).map(|m| (m, d)));
+    let own =
+        std::fs::read_to_string("/proc/self/cgroup").ok().and_then(|t| t.lines().find_map(|l| l.strip_prefix("0::").map(str::to_string))).unwrap_or_default();
+    let v2 = std::iter::successors(Some(Path::new("/sys/fs/cgroup").join(own.trim_start_matches('/'))), |d| {
+        d.parent().filter(|p| p.starts_with("/sys/fs/cgroup")).map(Path::to_path_buf)
+    })
+    .find_map(|d| num(&d.join("memory.max").to_string_lossy()).map(|m| (m, d)));
     let (limit, used, cache) = if let Some((max, d)) = v2 {
         (max, num(&d.join("memory.current").to_string_lossy())?, stat(&d.join("memory.stat").to_string_lossy(), "file ").unwrap_or(0.0))
     } else {
@@ -71,7 +74,9 @@ fn cgroup_room_gib() -> Option<f64> {
 }
 
 fn mem_info_available_gib() -> Option<f64> {
-    crate::os::meminfo().and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemAvailable:")?.trim().trim_end_matches("kB").trim().parse::<f64>().ok())).map(|kb| kb / (1024.0 * 1024.0))
+    crate::os::meminfo()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemAvailable:")?.trim().trim_end_matches("kB").trim().parse::<f64>().ok()))
+        .map(|kb| kb / (1024.0 * 1024.0))
 }
 
 /// The decode's ceiling on this computer: the bytes a pass reads over the rates they can be read at, the GPU's streaming read for the always-on
@@ -153,7 +158,8 @@ impl Caches {
     pub fn stats(&self) -> Stats {
         let mut t = Stats::default();
         for s in self.stores.iter().filter_map(|s| s.stats().ok()) {
-            (t.reads, t.hits, t.cpu, t.cpu_pairs, t.cpu_ms, t.copied, t.copy_ms) = (t.reads + s.reads, t.hits + s.hits, t.cpu + s.cpu, t.cpu_pairs + s.cpu_pairs, t.cpu_ms + s.cpu_ms, t.copied + s.copied, t.copy_ms + s.copy_ms);
+            (t.reads, t.hits, t.cpu, t.cpu_pairs, t.cpu_ms, t.copied, t.copy_ms) =
+                (t.reads + s.reads, t.hits + s.hits, t.cpu + s.cpu, t.cpu_pairs + s.cpu_pairs, t.cpu_ms + s.cpu_ms, t.copied + s.copied, t.copy_ms + s.copy_ms);
         }
         t
     }
@@ -207,7 +213,12 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     let sides: Vec<std::path::PathBuf> = match a.flag("side") {
         Some(list) => list.split(',').filter(|x| !x.is_empty()).map(std::path::PathBuf::from).collect(),
         // (--precise: the pack's cb3hot (its cb3 and cb4 experts as they are, the hottest at three bits; KL to the bf16 model as the pack's own), fewer places, slower; else the fast mode's cb2side)
-        None => (if a.has("precise") { &["hot"][..] } else { &["fast", "hot"][..] }).iter().map(|x| pack_dir.join(x)).find(|d| d.join("meta.json").exists() && !a.has("no-side")).into_iter().collect(),
+        None => (if a.has("precise") { &["hot"][..] } else { &["fast", "hot"][..] })
+            .iter()
+            .map(|x| pack_dir.join(x))
+            .find(|d| d.join("meta.json").exists() && !a.has("no-side"))
+            .into_iter()
+            .collect(),
     };
     for d in sides {
         log(&format!("the GPU copies {}", d.display()));
@@ -221,12 +232,22 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     let gib = (1u64 << 30) as f64;
     // (--gpus 0,1: the layers split over those GPUs, each with its layers' matrices, states, caches and places, the streams of each pass going from one to the next through pinned host memory (--p2p: GPU to GPU); a GPU named
     // twice: the split's check on one GPU, each part after the first in a context of its own)
-    let gpus: Vec<i32> = a.flag("gpus").unwrap_or("0").split(',').map(|x| x.trim().parse::<i32>()).collect::<std::result::Result<_, _>>().map_err(|_| Error("--gpus: GPU numbers, comma-separated (0,1)".into()))?;
+    let gpus: Vec<i32> = a
+        .flag("gpus")
+        .unwrap_or("0")
+        .split(',')
+        .map(|x| x.trim().parse::<i32>())
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| Error("--gpus: GPU numbers, comma-separated (0,1)".into()))?;
     if gpus.is_empty() || gpus.len() > c.layers / 2 {
         return err("--gpus: one GPU or more, at most one for every two layers");
     }
     let free = if gpus.len() == 1 { crate::dev::Dev::new(gpus[0]).and_then(|d| d.mem_info()).map(|(f, _)| f as f64 / gib).unwrap_or(15.0) } else { 0.0 };
-    let frees: Vec<f64> = if gpus.len() > 1 { gpus.iter().map(|&g| crate::dev::Dev::probe(g).map(|p| p.free as f64 / gib / gpus.iter().filter(|&&h| h == g).count() as f64)).collect::<Result<_>>()? } else { Vec::new() };
+    let frees: Vec<f64> = if gpus.len() > 1 {
+        gpus.iter().map(|&g| crate::dev::Dev::probe(g).map(|p| p.free as f64 / gib / gpus.iter().filter(|&&h| h == g).count() as f64)).collect::<Result<_>>()?
+    } else {
+        Vec::new()
+    };
     // (the rates the decode's ceiling uses, measured before the load takes the GPU's memory: about a second)
     let threads = a.num("cpu-threads", 16usize)?.max(1);
     let (gpu_gbs, ram_gbs) = (gpu_read_gbs(512, 20).unwrap_or(0.0), ram_read_gbs(threads));
@@ -252,7 +273,8 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     // (a prompt layer by layer, `--whole` rows at most (0: in chunks through all the layers): each row's streams, position, n-gram row and stream weights, and the experts' set; the streaming prefill's ring and buffers)
     // (a prompt layer by layer by default, up to 32,768 rows a part: 32K tokens in under 10 s; --whole 0 for chunks through all the layers)
     let whole = a.num("whole", 32768usize)?.min(ctx);
-    let whole_gb = (whole * (c.hc * c.hidden * 2 + 4 + c.ple.as_ref().map_or(8, |p| p.dim) * 2 + c.hc * 4) + crate::moe_qwen4x::whole_bytes(whole, c.top_k)) as f64 / gib;
+    let whole_gb =
+        (whole * (c.hc * c.hidden * 2 + 4 + c.ple.as_ref().map_or(8, |p| p.dim) * 2 + c.hc * 4) + crate::moe_qwen4x::whole_bytes(whole, c.top_k)) as f64 / gib;
     // (a prompt's buffers taken layer by layer, and the streaming prefill's, are made for the prompt and freed after it, the last layers' places lent to them where the GPU has not the room: no reserve; a chunk's
     // streamed call (--whole 0) keeps its ring)
     let _ = whole_gb;
@@ -271,7 +293,12 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
         let fit = (free - reserve).max(0.5) * gib / 1e9;
         let gb: f64 = a.num("cache-gb", fit)?.min(fit);
         let slots = per_gb(gb, layers.len() + mtp as usize);
-        log(&format!("the pack: {:.1} GiB in {} layers; the GPU's places: {gb:.2} GB, {slots} a layer of {:.2} MB", pack.file_bytes() as f64 / gib, layers.len(), place as f64 / 1e6));
+        log(&format!(
+            "the pack: {:.1} GiB in {} layers; the GPU's places: {gb:.2} GB, {slots} a layer of {:.2} MB",
+            pack.file_bytes() as f64 / gib,
+            layers.len(),
+            place as f64 / 1e6
+        ));
         vec![(gpus[0], (0, c.layers), slots, gb)]
     } else {
         // (a part's room for places: its GPU's free memory (its share, where parts share a GPU) less the scratch of a part (a context of its own more), its layers' share of the always-on matrices and of the context's
@@ -279,12 +306,24 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
         let head = c.vocab as f64 * c.hidden as f64 * 0.75 / gib;
         let n_all = c.layers as f64;
         let last = gpus.len() - 1;
-        let room_gib = |p: usize, n: usize| frees[p] - fixed - if gpus[..p].contains(&gpus[p]) { 0.25 } else { 0.0 } - (always - head + ctx as f64 * 28e-6) * n as f64 / n_all - if p == last { head } else { 0.0 };
+        let room_gib = |p: usize, n: usize| {
+            frees[p]
+                - fixed
+                - if gpus[..p].contains(&gpus[p]) { 0.25 } else { 0.0 }
+                - (always - head + ctx as f64 * 28e-6) * n as f64 / n_all
+                - if p == last { head } else { 0.0 }
+        };
         let places = |p: usize, n: usize| room_gib(p, n).max(0.5) * gib / ((n + (p == last && mtp) as usize) as f64 * place as f64);
         let least = c.ple.as_ref().map_or(1, |x| x.layer + 1);
         let cuts: Vec<usize> = match a.flag("split") {
-            Some(s) => s.split(',').map(|x| x.trim().parse::<usize>()).collect::<std::result::Result<_, _>>().map_err(|_| Error("--split: the first layer of each GPU's part after the first, comma-separated".into()))?,
-            None => split_layers(c.layers, gpus.len(), least, &places).ok_or_else(|| Error(format!("--gpus {}: no split of the {} layers leaves every GPU a place a layer", a.flag("gpus").unwrap_or(""), c.layers)))?,
+            Some(s) => s
+                .split(',')
+                .map(|x| x.trim().parse::<usize>())
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|_| Error("--split: the first layer of each GPU's part after the first, comma-separated".into()))?,
+            None => split_layers(c.layers, gpus.len(), least, &places).ok_or_else(|| {
+                Error(format!("--gpus {}: no split of the {} layers leaves every GPU a place a layer", a.flag("gpus").unwrap_or(""), c.layers))
+            })?,
         };
         let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(c.layers)).collect();
         if cuts.len() != last || bounds.windows(2).any(|w| w[0] >= w[1]) || bounds[1] < least {
@@ -301,7 +340,12 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
             })
             .collect();
         for &(g, (lo, hi), slots, gb) in &parts {
-            log(&format!("GPU {g}: layers {lo}-{}{}, {gb:.2} GB of places, {slots} a layer of {:.2} MB", hi - 1, if hi == c.layers { " and the head" } else { "" }, place as f64 / 1e6));
+            log(&format!(
+                "GPU {g}: layers {lo}-{}{}, {gb:.2} GB of places, {slots} a layer of {:.2} MB",
+                hi - 1,
+                if hi == c.layers { " and the head" } else { "" },
+                place as f64 / 1e6
+            ));
         }
         parts
     };
@@ -313,8 +357,26 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     // (--skip-rank: 1 in precise mode, the most skipping that keeps its pack's numbers against the bf16 model (Strata's set: top-64 KL 0.137, top-1 88.1%, against
     // 0.152 and 87.0% at 3); 0 with best's experts (the folder qwenget --best makes): none skipped, its pack's 0.099 and 89.6% (0.105 at 1, 0.117 at 3); 3 elsewhere)
     let best = pack_dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("best"));
-    let skip_rank = a.num("skip-rank", if a.has("precise") { 1usize } else if best { 0 } else { 3 })?;
-    let offload = Offload { mode, threads: a.num("cpu-threads", 16usize)?.max(1), pin: !a.has("no-pin"), skip: a.num("skip", 0.0f32)?, skip_rank, skip_rank_later: a.num("skip-rank-later", 6usize)?, async_copies: !a.has("no-async-copies"), ..od };
+    let skip_rank = a.num(
+        "skip-rank",
+        if a.has("precise") {
+            1usize
+        } else if best {
+            0
+        } else {
+            3
+        },
+    )?;
+    let offload = Offload {
+        mode,
+        threads: a.num("cpu-threads", 16usize)?.max(1),
+        pin: !a.has("no-pin"),
+        skip: a.num("skip", 0.0f32)?,
+        skip_rank,
+        skip_rank_later: a.num("skip-rank-later", 6usize)?,
+        async_copies: !a.has("no-async-copies"),
+        ..od
+    };
     // (--pin-pack on|off|auto: the experts copied into pinned host memory at load, so that the prompt's copies are DMA; auto: where the computer has the pack and 12 GiB more free; off by default: 22 s more load
     // for 0.18 s at 2K and nothing at 8K or 32K, measured)
     let pack_gib = pack.expert_bytes() as f64 / gib;
@@ -324,7 +386,10 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
         "auto" => {
             let ok = avail.is_some_and(|g| g >= pack_gib + 12.0);
             if !ok {
-                log(&format!("the pack stays mapped, not pinned: {:.1} GiB free, where its {pack_gib:.1} GiB and 12 more are wanted (--pin-pack on to pin anyway)", avail.unwrap_or(0.0)));
+                log(&format!(
+                    "the pack stays mapped, not pinned: {:.1} GiB free, where its {pack_gib:.1} GiB and 12 more are wanted (--pin-pack on to pin anyway)",
+                    avail.unwrap_or(0.0)
+                ));
             }
             ok
         }
@@ -344,7 +409,21 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
         common.stream.set(!a.has("no-stream"));
         // (the read-ahead's room shared by the parts as their layers)
         common.read_ahead.set((room.max(0.0) * gib * (l1 - l0) as f64 / c.layers as f64) as u64);
-        let o = OptsQx { ctx, chunk, layout, chunked: true, mtp, spec: mtp, whole, hi, device: g, span: (parts.len() > 1).then_some((l0, l1)), own_ctx: gpus[..p].contains(&g), peer: a.has("p2p"), ..Default::default() };
+        let o = OptsQx {
+            ctx,
+            chunk,
+            layout,
+            chunked: true,
+            mtp,
+            spec: mtp,
+            whole,
+            hi,
+            device: g,
+            span: (parts.len() > 1).then_some((l0, l1)),
+            own_ctx: gpus[..p].contains(&g),
+            peer: a.has("p2p"),
+            ..Default::default()
+        };
         let part = {
             let make = factory(&pack, slots, &store, &common);
             EngineQx::new(snap, &o, Some(&make))?
@@ -370,7 +449,12 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     let always = weights.saturating_sub(caches.commons.iter().map(|c| c.places_bytes.get()).sum()) as f64;
     let mean = pack.expert_bytes() as f64 / ((layers.len() + mtp as usize) * c.experts).max(1) as f64;
     let _ = CEILING.set(Ceiling { gpu_gbs, ram_gbs, always, place: place as f64, mean });
-    log(&format!("a pass reads {:.2} GB of always-on matrices on the GPU; an expert is {:.2} MB in a place, {:.2} MB on average", always / 1e9, place as f64 / 1e6, mean / 1e6));
+    log(&format!(
+        "a pass reads {:.2} GB of always-on matrices on the GPU; an expert is {:.2} MB in a place, {:.2} MB on average",
+        always / 1e9,
+        place as f64 / 1e6,
+        mean / 1e6
+    ));
     for common in &caches.commons {
         common.fill_page_tables();
     }
@@ -408,7 +492,7 @@ pub fn serve(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
             continue;
         }
         #[cfg(feature = "dev")]
-        let lock = crate::kcheck_qwen4x::gpu_lock(a)?;  // (`--lock PATH`: the machine's GPU lock held for each request alone)
+        let lock = crate::kcheck_qwen4x::gpu_lock(a)?; // (`--lock PATH`: the machine's GPU lock held for each request alone)
         #[cfg(not(feature = "dev"))]
         let lock = ();
         let reply = one(&mut e, &caches, &line, &eos, &mut hist, tower.as_ref(), &mut held).unwrap_or_else(|x| {
@@ -419,6 +503,7 @@ pub fn serve(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
         });
         *e.emit.borrow_mut() = None;
         *e.sampler.borrow_mut() = None;
+        #[allow(dropping_copy_types)] // (a release build's lock is `()`)
         drop(lock);
         // (the GPU's free memory after each request where it changed: what the requests made beside the load, for the reserve)
         if let Ok((free, _)) = e.dev.mem_info() {
@@ -450,7 +535,13 @@ pub fn http(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     }
     let window = ctx - 2;
     // (the mode the Monitor and qwenbench name: best's experts are the folder qwenget --best makes)
-    let mode = if a.has("precise") { "precise" } else if pack_dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("best")) { "best" } else { "fast" };
+    let mode = if a.has("precise") {
+        "precise"
+    } else if pack_dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("best")) {
+        "best"
+    } else {
+        "fast"
+    };
     crate::monitor::start(mode, ctx);
     server::STANDALONE.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Some(d) = a.flag("page") {
@@ -541,7 +632,13 @@ pub fn get(repo: &str, dir: &Path, a: &Args) -> Result<()> {
     // (fast mode's experts are fast/ since v0.2.2 (format q); pack/ is the earlier engines' fast. precise-v2/ and best-v2/ (format q at 3 and 4 bits) are
     // this engine's precise and best, precise/ and best/ the earlier engines' (and ours where the repo has no -v2 yet))
     let has = |p: &str| remote.files.iter().any(|f| f.path.starts_with(&format!("{p}/")));
-    let experts = if a.has("best") { ["best-v2", "best"] } else if a.has("precise") { ["precise-v2", "precise"] } else { ["fast", "fast"] };
+    let experts = if a.has("best") {
+        ["best-v2", "best"]
+    } else if a.has("precise") {
+        ["precise-v2", "precise"]
+    } else {
+        ["fast", "fast"]
+    };
     let parts: &[&str] = &["model", experts.into_iter().find(|p| has(p)).unwrap_or(experts[1])];
     let wanted: Vec<crate::hub::Entry> = remote.files.iter().filter(|f| parts.iter().any(|p| f.path.starts_with(&format!("{p}/")))).cloned().collect();
     for p in parts {
@@ -553,7 +650,12 @@ pub fn get(repo: &str, dir: &Path, a: &Args) -> Result<()> {
     let at = crate::store::existing_ancestor(hub.cache());
     if let Some(free) = disk_free(&at) {
         if free < need + (2 << 30) {
-            return err(format!("{:.0} GB more to download and {:.0} GB free in {}: free some space (or set HF_HUB_CACHE to a disk with room)", need as f64 / 1e9, free as f64 / 1e9, at.display()));
+            return err(format!(
+                "{:.0} GB more to download and {:.0} GB free in {}: free some space (or set HF_HUB_CACHE to a disk with room)",
+                need as f64 / 1e9,
+                free as f64 / 1e9,
+                at.display()
+            ));
         }
     }
     let total: u64 = wanted.iter().map(|f| f.size).sum();
@@ -593,7 +695,12 @@ pub fn get(repo: &str, dir: &Path, a: &Args) -> Result<()> {
             if link.is_symlink() {
                 let _ = std::fs::remove_dir(&link);
             }
-            let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(snap.join(p)).output().map_err(|x| Error(format!("{}: {x}", link.display())))?;
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(snap.join(p))
+                .output()
+                .map_err(|x| Error(format!("{}: {x}", link.display())))?;
             if !made.status.success() {
                 return err(format!("{}: {}", link.display(), String::from_utf8_lossy(&made.stderr).trim()));
             }
@@ -642,14 +749,21 @@ fn see(e: &mut EngineQx, tower: Option<&crate::vision::Tower>, prompt: &[u32], i
             let lent = if e.dev.mem_info()?.0 < need + (64 << 20) { e.borrow_places(need)? } else { Vec::new() };
             let r = tw.run(&e.dev, &e.kern, img);
             e.return_places(&lent)?;
-            log(&format!("an image of {} x {} patches, {} tokens: the tower {:.0} ms in {:.0} MB of GPU memory{}", img.gh, img.gw, img.tokens(), t0.elapsed().as_secs_f64() * 1e3, need as f64 / 1e6, if lent.is_empty() { String::new() } else { format!(" (the places of {} layers lent)", lent.len()) }));
+            log(&format!(
+                "an image of {} x {} patches, {} tokens: the tower {:.0} ms in {:.0} MB of GPU memory{}",
+                img.gh,
+                img.gw,
+                img.tokens(),
+                t0.elapsed().as_secs_f64() * 1e3,
+                need as f64 / 1e6,
+                if lent.is_empty() { String::new() } else { format!(" (the places of {} layers lent)", lent.len()) }
+            ));
             Some(r?)
         };
         list.push((img.grid(), rows));
     }
     e.set_images(prompt, token, list)
 }
-
 
 /// A request being answered: its slot, its generation, its stop tokens, and what its log line needs (`shared`: another request ran beside it, so its times are not its alone).
 struct Live {
@@ -695,7 +809,20 @@ struct Qx {
 
 impl Qx {
     fn new(e: EngineQx, caches: Caches, eos: Vec<u32>, users: usize, tower: Option<crate::vision::Tower>) -> Qx {
-        Qx { e, caches, eos, hist: Vec::new(), tower, held: Vec::new(), slots: (0..users).map(|_| None).collect(), active: 0, live: Vec::new(), waiting: VecDeque::new(), headroom: 0, extra_at: Instant::now() }
+        Qx {
+            e,
+            caches,
+            eos,
+            hist: Vec::new(),
+            tower,
+            held: Vec::new(),
+            slots: (0..users).map(|_| None).collect(),
+            active: 0,
+            live: Vec::new(),
+            waiting: VecDeque::new(),
+            headroom: 0,
+            extra_at: Instant::now(),
+        }
     }
 
     fn idle(&self) -> bool {
@@ -759,7 +886,14 @@ impl Qx {
             self.e.resize_places(now - fewer)?;
         }
         self.slots[j] = Some(self.e.new_seq(ctx)?);
-        log(&format!("sequence {j}: {ctx} positions ({:.2} GB), {:.2} GB free before; the experts' places {now} -> {} a layer, {:.2} GB free now ({:.0} ms)", self.e.seq_bytes(ctx) as f64 / 1e9, free as f64 / 1e9, now - fewer, self.e.dev.mem_info()?.0 as f64 / 1e9, t.elapsed().as_secs_f64() * 1e3));
+        log(&format!(
+            "sequence {j}: {ctx} positions ({:.2} GB), {:.2} GB free before; the experts' places {now} -> {} a layer, {:.2} GB free now ({:.0} ms)",
+            self.e.seq_bytes(ctx) as f64 / 1e9,
+            free as f64 / 1e9,
+            now - fewer,
+            self.e.dev.mem_info()?.0 as f64 / 1e9,
+            t.elapsed().as_secs_f64() * 1e3
+        ));
         Ok(true)
     }
 
@@ -784,7 +918,14 @@ impl Qx {
         if more > 0 {
             self.e.resize_places(now + more)?;
         }
-        log(&format!("sequences {idle:?} freed: {:.2} GB free before, {:.2} after; the experts' places {now} -> {} a layer, {:.2} GB free now ({:.0} ms)", before as f64 / 1e9, free as f64 / 1e9, now + more, self.e.dev.mem_info()?.0 as f64 / 1e9, t.elapsed().as_secs_f64() * 1e3));
+        log(&format!(
+            "sequences {idle:?} freed: {:.2} GB free before, {:.2} after; the experts' places {now} -> {} a layer, {:.2} GB free now ({:.0} ms)",
+            before as f64 / 1e9,
+            free as f64 / 1e9,
+            now + more,
+            self.e.dev.mem_info()?.0 as f64 / 1e9,
+            t.elapsed().as_secs_f64() * 1e3
+        ));
         Ok(())
     }
 
@@ -891,7 +1032,11 @@ impl Qx {
         }
         // (slot 0's state reused where the prompt goes on from it and the images it holds are the prompt's first)
         let same = j == 0 && self.held.len() <= sub.images.len() && self.held.iter().zip(&sub.images).all(|(k, i)| *k == i.key);
-        let keep = if same && !self.hist.is_empty() && self.hist.len() == e.n && prompt.len() > self.hist.len() && prompt.starts_with(&self.hist) { self.hist.len() } else { 0 };
+        let keep = if same && !self.hist.is_empty() && self.hist.len() == e.n && prompt.len() > self.hist.len() && prompt.starts_with(&self.hist) {
+            self.hist.len()
+        } else {
+            0
+        };
         let held = if j == 0 {
             self.hist.clear();
             std::mem::take(&mut self.held).len()
@@ -960,9 +1105,14 @@ impl Qx {
                 let hits = 100.0 * (st1.hits - st0.hits) as f64 / ((st1.reads - st0.reads) as f64).max(1.0);
                 let per_pass = (made.len().max(1) - 1) as f64 / st.passes.max(1) as f64;
                 // (the ceiling of a request that ran alone: the store's counts are of every request's passes)
-                let ceil = CEILING.get().filter(|_| !l.shared).and_then(|c| c.of(made.len().saturating_sub(1), st.passes, ms - st.prompt_ms as f64, st1.hits - st0.hits, st1.cpu - st0.cpu));
+                let ceil = CEILING
+                    .get()
+                    .filter(|_| !l.shared)
+                    .and_then(|c| c.of(made.len().saturating_sub(1), st.passes, ms - st.prompt_ms as f64, st1.hits - st0.hits, st1.cpu - st0.cpu));
                 if let Some((tok_s, pct, gpu, ram)) = ceil {
-                    log(&format!("the ceiling here: {gpu:.2} GB a pass on the GPU, {ram:.2} GB from memory: {tok_s:.0} tokens a second, {pct:.0}% of it reached"));
+                    log(&format!(
+                        "the ceiling here: {gpu:.2} GB a pass on the GPU, {ram:.2} GB from memory: {tok_s:.0} tokens a second, {pct:.0}% of it reached"
+                    ));
                 }
                 let beside = if l.shared { format!(" (sequence {}, beside others)", l.slot) } else { String::new() };
                 log(&format!("{} prompt tokens ({} reused), {} made in {ms:.0} ms (the prompt {} ms, then {ms_tok:.1} ms a token): {} of {} guesses right, {per_pass:.2} tokens a pass; the cache: {hits:.1}% in places{beside}", prompt.len(), l.keep, made.len(), st.prompt_ms, st.accepted, st.drafted));
@@ -1010,7 +1160,15 @@ fn top_of(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
     best.into_iter().map(|i| (i, (((logits[i as usize] - m) as f64).exp() / z) as f32)).collect()
 }
 
-fn one(e: &mut EngineQx, caches: &Caches, line: &str, eos: &[u32], hist: &mut Vec<u32>, tower: Option<&crate::vision::Tower>, held: &mut Vec<u64>) -> Result<String> {
+fn one(
+    e: &mut EngineQx,
+    caches: &Caches,
+    line: &str,
+    eos: &[u32],
+    hist: &mut Vec<u32>,
+    tower: Option<&crate::vision::Tower>,
+    held: &mut Vec<u64>,
+) -> Result<String> {
     let v = json::parse(line).map_err(|x| Error(format!("a request: {x}")))?;
     // ("stream": true: each pass's new tokens as a line {"part": [ids]} before the reply's own line)
     if matches!(v.get("stream"), Some(Value::Bool(true))) {
@@ -1103,8 +1261,16 @@ fn one(e: &mut EngineQx, caches: &Caches, line: &str, eos: &[u32], hist: &mut Ve
     let imgs: Vec<Arc<crate::vision::Image>> = match v.get("images").and_then(Value::as_array) {
         Some(list) => {
             let prep = crate::vision::PREP.get().ok_or_else(|| Error("this model has no vision tower loaded".into()))?;
-            let read = |s: &str| if s.starts_with("data:") || s.contains("://") { crate::vision::fetch(s) } else { std::fs::read(s).map_err(|x| Error(format!("{s}: {x}"))) };
-            list.iter().map(|s| prep.image(&read(s.as_str().ok_or_else(|| Error("an image that is not a string".into()))?)?).map(Arc::new)).collect::<Result<_>>()?
+            let read = |s: &str| {
+                if s.starts_with("data:") || s.contains("://") {
+                    crate::vision::fetch(s)
+                } else {
+                    std::fs::read(s).map_err(|x| Error(format!("{s}: {x}")))
+                }
+            };
+            list.iter()
+                .map(|s| prep.image(&read(s.as_str().ok_or_else(|| Error("an image that is not a string".into()))?)?).map(Arc::new))
+                .collect::<Result<_>>()?
         }
         None => Vec::new(),
     };
@@ -1183,7 +1349,17 @@ fn one(e: &mut EngineQx, caches: &Caches, line: &str, eos: &[u32], hist: &mut Ve
     }
     // (a conversation's earlier turns reused: where these ids extend the tokens the engine's state holds, only the rest is read; "reuse": false: a fresh start)
     let same = held.len() <= imgs.len() && held.iter().zip(&imgs).all(|(k, i)| *k == i.key);
-    let keep = if same && !matches!(v.get("reuse"), Some(Value::Bool(false))) && !hist.is_empty() && hist.len() == e.n && ids.len() > hist.len() && ids.starts_with(hist) { hist.len() } else { 0 };
+    let keep = if same
+        && !matches!(v.get("reuse"), Some(Value::Bool(false)))
+        && !hist.is_empty()
+        && hist.len() == e.n
+        && ids.len() > hist.len()
+        && ids.starts_with(hist)
+    {
+        hist.len()
+    } else {
+        0
+    };
     hist.clear();
     let n_held = std::mem::take(held).len();
     see(e, tower, &ids, &imgs, keep, n_held)?;
@@ -1230,7 +1406,12 @@ fn one(e: &mut EngineQx, caches: &Caches, line: &str, eos: &[u32], hist: &mut Ve
             let tab = crate::dev::kprof_stop();
             let passes = st.passes.max(1) as f64;
             let total: f64 = tab.iter().map(|x| x.2).sum::<f64>() / passes;
-            log(&format!("kernel census: {} passes ({:.2} tokens a pass), {total:.0} us a pass in {:.0} launches a pass (each timed alone)", st.passes, out.len() as f64 / passes, tab.iter().map(|x| x.1).sum::<u64>() as f64 / passes));
+            log(&format!(
+                "kernel census: {} passes ({:.2} tokens a pass), {total:.0} us a pass in {:.0} launches a pass (each timed alone)",
+                st.passes,
+                out.len() as f64 / passes,
+                tab.iter().map(|x| x.1).sum::<u64>() as f64 / passes
+            ));
             for (name, calls, us) in tab.iter().take(30) {
                 log(&format!("  {name:<28} {:>6.1} a pass {:>7.2} us each {:>7.1} us a pass", *calls as f64 / passes, us / *calls as f64, us / passes));
             }
@@ -1258,7 +1439,10 @@ fn one(e: &mut EngineQx, caches: &Caches, line: &str, eos: &[u32], hist: &mut Ve
             (st1.cpu_ms - st0.cpu_ms) / st.passes.max(1) as f64
         ));
         let list = out.iter().map(|x| x.token.to_string()).collect::<Vec<_>>().join(",");
-        return Ok(format!("{{\"ids\":[{list}],\"passes\":{},\"drafted\":{},\"accepted\":{},\"ms\":{ms:.1},\"reused\":{keep}{prompt_json}}}", st.passes, st.drafted, st.accepted));
+        return Ok(format!(
+            "{{\"ids\":[{list}],\"passes\":{},\"drafted\":{},\"accepted\":{},\"ms\":{ms:.1},\"reused\":{keep}{prompt_json}}}",
+            st.passes, st.drafted, st.accepted
+        ));
     }
     if keep == 0 {
         e.reset()?;
@@ -1332,7 +1516,11 @@ fn one(e: &mut EngineQx, caches: &Caches, line: &str, eos: &[u32], hist: &mut Ve
         let tab = crate::dev::kprof_stop();
         let steps = times.len().max(1) as f64;
         let total: f64 = tab.iter().map(|x| x.2).sum::<f64>() / steps;
-        log(&format!("kernel census: {} steps, {total:.0} us a step in {} launches a step (each timed alone)", times.len(), tab.iter().map(|x| x.1).sum::<u64>() as f64 / steps));
+        log(&format!(
+            "kernel census: {} steps, {total:.0} us a step in {} launches a step (each timed alone)",
+            times.len(),
+            tab.iter().map(|x| x.1).sum::<u64>() as f64 / steps
+        ));
         for (name, calls, us) in &tab {
             log(&format!("  {name:<28} {:>6.1} a step {:>7.2} us each {:>7.1} us a step", *calls as f64 / steps, us / *calls as f64, us / steps));
         }

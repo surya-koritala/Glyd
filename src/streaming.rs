@@ -1,6 +1,6 @@
-use std::io::{self, Read, Write};
-use crate::format::{BlockHeader, HEADER_SIZE, MAGIC, CURRENT_VERSION, MAX_BLOCK_SIZE, PADDING};
+use crate::format::{BlockHeader, CURRENT_VERSION, HEADER_SIZE, MAGIC, MAX_BLOCK_SIZE, PADDING};
 use crate::{compress_block_into, decompress_into};
+use std::io::{self, Read, Write};
 
 /// A streaming compressor that wraps any `std::io::Write` sink.
 ///
@@ -14,11 +14,7 @@ pub struct GlydWriter<W: Write> {
 
 impl<W: Write> GlydWriter<W> {
     pub fn new(writer: W) -> Self {
-        Self {
-            writer: Some(writer),
-            buffer: Vec::with_capacity(MAX_BLOCK_SIZE),
-            scratch_compressed: Vec::with_capacity(MAX_BLOCK_SIZE + 512),
-        }
+        Self { writer: Some(writer), buffer: Vec::with_capacity(MAX_BLOCK_SIZE), scratch_compressed: Vec::with_capacity(MAX_BLOCK_SIZE + 512) }
     }
 
     /// Flush any remaining buffered uncompressed data into a final compressed block.

@@ -15,9 +15,25 @@ fn main() {
         f(&o.plain, &mut c);
         let mut raw = Vec::new();
         f(&d, &mut raw);
-        println!("  plain at {name}: {} B (+ recipe = {} B, {:.1}% of the object); the object as it is at {name}: {} B ({:.1}%)", c.len(), c.len() + o.recipe.len(), 100.0 * (c.len() + o.recipe.len()) as f64 / d.len() as f64, raw.len(), 100.0 * raw.len() as f64 / d.len() as f64);
+        println!(
+            "  plain at {name}: {} B (+ recipe = {} B, {:.1}% of the object); the object as it is at {name}: {} B ({:.1}%)",
+            c.len(),
+            c.len() + o.recipe.len(),
+            100.0 * (c.len() + o.recipe.len()) as f64 / d.len() as f64,
+            raw.len(),
+            100.0 * raw.len() as f64 / d.len() as f64
+        );
     };
-    println!("{}: {} B; zstd -19 as is {} B; opened: plain {} B ({:.2}x the object), recipe {} B ({:.1}% of the object)", f.rsplit('/').next().unwrap(), d.len(), z.len(), o.plain.len(), o.plain.len() as f64 / d.len() as f64, o.recipe.len(), 100.0 * o.recipe.len() as f64 / d.len() as f64);
+    println!(
+        "{}: {} B; zstd -19 as is {} B; opened: plain {} B ({:.2}x the object), recipe {} B ({:.1}% of the object)",
+        f.rsplit('/').next().unwrap(),
+        d.len(),
+        z.len(),
+        o.plain.len(),
+        o.plain.len() as f64 / d.len() as f64,
+        o.recipe.len(),
+        100.0 * o.recipe.len() as f64 / d.len() as f64
+    );
     // The levels on the plain text and on the raw bytes, the opener
     // switched off for the raw side by going through the plain
     // compressors' inner functions.

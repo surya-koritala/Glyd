@@ -110,7 +110,9 @@ mod more_tests {
         }
         let mut x = 0x9E37_79B9_7F4A_7C15u64;
         for _ in 0..100_000 {
-            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
             let v = x >> (x % 40);
             let got = log2_q16(v.max(1)) as f64 / 65536.0;
             let want = (v.max(1) as f64).log2();

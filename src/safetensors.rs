@@ -260,7 +260,10 @@ mod tests {
         let h = r#"{"__metadata__":{"format":"pt","a":"{\"x\":1}"},"b":{"dtype":"BF16","shape":[2],"data_offsets":[8,12]}, "a" : {"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#;
         let f = file(h, &[0u8; 12]);
         let at = 8 + h.len();
-        assert_eq!(tensors(&f).unwrap(), vec![Tensor { name: b"a".to_vec(), start: at, end: at + 8, width: 4 }, Tensor { name: b"b".to_vec(), start: at + 8, end: at + 12, width: 2 }]);
+        assert_eq!(
+            tensors(&f).unwrap(),
+            vec![Tensor { name: b"a".to_vec(), start: at, end: at + 8, width: 4 }, Tensor { name: b"b".to_vec(), start: at + 8, end: at + 12, width: 2 }]
+        );
     }
 
     #[test]

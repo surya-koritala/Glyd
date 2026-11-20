@@ -6,7 +6,9 @@ fn bits_roundtrip_mixed_widths() {
     let mut expect = Vec::new();
     let mut x = 0x2545F4914F6CDD1Du64;
     for i in 0..10_000u32 {
-        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
         let n = (i % 32) + 1; // 1..=32 bits
         let v = x & ((1u64 << n) - 1);
         w.put(v, n);
@@ -25,7 +27,9 @@ fn bits_roundtrip_mixed_widths() {
 fn bits_reader_clamps_at_end() {
     let bytes = BitWriter::new().finish(); // 8 pad bytes only
     let mut r = BitReader::new(&bytes);
-    for _ in 0..1000 { let _ = r.get(32); } // far past the end: must not fault
+    for _ in 0..1000 {
+        let _ = r.get(32);
+    } // far past the end: must not fault
     assert!(r.overrun());
 }
 
@@ -42,7 +46,21 @@ use glyd::huff8;
 
 fn skewed_bytes(n: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
-    (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; let r = x & 0xFFFF; if r < 40000 { b'e' } else if r < 55000 { (x >> 20) as u8 & 15 } else { (x >> 24) as u8 } }).collect()
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let r = x & 0xFFFF;
+            if r < 40000 {
+                b'e'
+            } else if r < 55000 {
+                (x >> 20) as u8 & 15
+            } else {
+                (x >> 24) as u8
+            }
+        })
+        .collect()
 }
 
 #[test]
@@ -50,7 +68,9 @@ fn huff8_roundtrip_and_size() {
     for n in [0usize, 1, 7, 8, 9, 31, 32, 33, 1000, 100_003] {
         let data = skewed_bytes(n, 99);
         let mut hist = [0u64; 256];
-        for &b in &data { hist[b as usize] += 1; }
+        for &b in &data {
+            hist[b as usize] += 1;
+        }
         let lengths = huff8::lengths_for(&hist);
         let streams = huff8::encode(&data, &lengths);
         assert_eq!(streams.len(), huff8::STREAMS);
@@ -62,7 +82,10 @@ fn huff8_roundtrip_and_size() {
         if n >= 1000 {
             let coded: usize = streams.iter().map(|s| s.len()).sum();
             assert!(coded < n * 8 / 10, "skewed data must compress: {} vs {}", coded, n);
-            assert_eq!(huff8::coded_size(&hist, &lengths), (0..256).map(|s| hist[s] as usize * lengths[s] as usize).sum::<usize>() / 8 + glyd::huffman::packed_lengths_v8_size(&lengths));
+            assert_eq!(
+                huff8::coded_size(&hist, &lengths),
+                (0..256).map(|s| hist[s] as usize * lengths[s] as usize).sum::<usize>() / 8 + glyd::huffman::packed_lengths_v8_size(&lengths)
+            );
         }
     }
 }
@@ -72,7 +95,8 @@ fn huff8_rejects_invalid_code() {
     let mut lengths = [1u8; 256]; // Kraft sum 128 > 1
     assert!(huff8::Table::build(&lengths).is_none());
     lengths = [0u8; 256];
-    lengths[0] = 1; lengths[1] = 1; // valid
+    lengths[0] = 1;
+    lengths[1] = 1; // valid
     assert!(huff8::Table::build(&lengths).is_some());
 }
 
@@ -80,7 +104,9 @@ fn huff8_rejects_invalid_code() {
 fn huff8_overrun_is_an_error() {
     let data = skewed_bytes(5000, 7);
     let mut hist = [0u64; 256];
-    for &b in &data { hist[b as usize] += 1; }
+    for &b in &data {
+        hist[b as usize] += 1;
+    }
     let lengths = huff8::lengths_for(&hist);
     let streams = huff8::encode(&data, &lengths);
     let refs: [Stream; 8] = std::array::from_fn(|k| Stream::whole(streams[k].as_slice()));
@@ -154,12 +180,7 @@ fn huff8_speed_silesia() {
         best = best.min(t.elapsed().as_secs_f64());
     }
     let ns_per_symbol = best * 1e9 / total as f64;
-    println!(
-        "huff8_speed_silesia: {} blocks, {} MB literals, {:.3} ns/symbol",
-        blks.len(),
-        total >> 20,
-        ns_per_symbol
-    );
+    println!("huff8_speed_silesia: {} blocks, {} MB literals, {:.3} ns/symbol", blks.len(), total >> 20, ns_per_symbol);
 }
 
 /// Exercises the outer loop's re-evaluation in huff8::decode's fast path:
@@ -200,7 +221,21 @@ use glyd::tans;
 
 fn skewed_codes(n: usize, nsym: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
-    (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; let r = (x >> 16) & 0xFF; (if r < 128 { 0 } else if r < 200 { 1 + (x & 3) } else { x % nsym as u64 }) as u8 }).collect()
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let r = (x >> 16) & 0xFF;
+            (if r < 128 {
+                0
+            } else if r < 200 {
+                1 + (x & 3)
+            } else {
+                x % nsym as u64
+            }) as u8
+        })
+        .collect()
 }
 
 #[test]
@@ -216,13 +251,19 @@ fn tans_single_stream_roundtrip() {
     for (n, nsym) in [(0usize, 4usize), (1, 4), (2, 36), (1000, 36), (77_777, 64)] {
         let data = skewed_codes(n, nsym, 5);
         let mut hist = vec![0u32; nsym];
-        for &s in &data { hist[s as usize] += 1; }
-        if n == 0 { hist[0] = 1; }
+        for &s in &data {
+            hist[s as usize] += 1;
+        }
+        if n == 0 {
+            hist[0] = 1;
+        }
         let counts = tans::normalize(&hist, nsym);
         let et = tans::EncodeTable::build(&counts).unwrap();
         let dt = tans::DecodeTable::build(&counts).unwrap();
         let mut enc = tans::Encoder::new(&et);
-        for &s in &data { enc.push(s); }
+        for &s in &data {
+            enc.push(s);
+        }
         let stream = enc.finish();
         let mut dec = tans::Decoder::new(&dt, &stream);
         let out: Vec<u8> = (0..n).map(|_| dec.next()).collect();
@@ -242,8 +283,12 @@ fn tans8_roundtrip() {
     for n in [0usize, 1, 5, 8, 9, 64, 65, 12_345] {
         let data = skewed_codes(n, 36, 11);
         let mut hist = vec![0u32; 36];
-        for &s in &data { hist[s as usize] += 1; }
-        if n == 0 { hist[0] = 1; }
+        for &s in &data {
+            hist[s as usize] += 1;
+        }
+        if n == 0 {
+            hist[0] = 1;
+        }
         let counts = tans::normalize(&hist, 36);
         let et = tans::EncodeTable::build(&counts).unwrap();
         let dt = tans::DecodeTable::build(&counts).unwrap();
@@ -266,7 +311,9 @@ fn tans8_streams_of_different_lengths() {
     let nsym = 36usize;
     let data: Vec<u8> = (0..n).map(|i| if i % 8 == 0 { (nsym - 1) as u8 } else { 0u8 }).collect();
     let mut hist = vec![0u32; nsym];
-    for &s in &data { hist[s as usize] += 1; }
+    for &s in &data {
+        hist[s as usize] += 1;
+    }
     let counts = tans::normalize(&hist, nsym);
     let et = tans::EncodeTable::build(&counts).unwrap();
     let dt = tans::DecodeTable::build(&counts).unwrap();
@@ -283,7 +330,9 @@ fn tans8_overrun_is_an_error() {
     let nsym = 36usize;
     let data = skewed_codes(n, nsym, 7);
     let mut hist = vec![0u32; nsym];
-    for &s in &data { hist[s as usize] += 1; }
+    for &s in &data {
+        hist[s as usize] += 1;
+    }
     let counts = tans::normalize(&hist, nsym);
     let et = tans::EncodeTable::build(&counts).unwrap();
     let dt = tans::DecodeTable::build(&counts).unwrap();
@@ -306,7 +355,9 @@ fn tans8_speed() {
     let nsym = 36usize;
     let data = skewed_codes(n, nsym, 42);
     let mut hist = vec![0u32; nsym];
-    for &s in &data { hist[s as usize] += 1; }
+    for &s in &data {
+        hist[s as usize] += 1;
+    }
     let counts = tans::normalize(&hist, nsym);
     let et = tans::EncodeTable::build(&counts).unwrap();
     let dt = tans::DecodeTable::build(&counts).unwrap();
@@ -360,7 +411,10 @@ fn v7_repeat_offsets_encoder_and_decoder_agree() {
         for (i, &o) in offsets.iter().enumerate() {
             let ll0 = ll0 && i % 2 == 1;
             let (code, nb, extra) = enc.code_for(o, ll0);
-            if code < 3 { rep_hits += 1; assert_eq!(nb, 0); }
+            if code < 3 {
+                rep_hits += 1;
+                assert_eq!(nb, 0);
+            }
             assert_eq!(dec.resolve(code, extra, ll0), o);
         }
         assert!(rep_hits >= 5, "repeats must be found: {}", rep_hits);

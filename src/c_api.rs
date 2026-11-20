@@ -1,5 +1,5 @@
-use std::slice;
 use crate::format::MAX_BLOCK_SIZE;
+use std::slice;
 
 /// Return safe upper bound for compressed destination buffer.
 #[no_mangle]
@@ -20,12 +20,7 @@ pub extern "C" fn glyd_version() -> *const std::ffi::c_char {
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn glyd_compress(
-    src: *const u8,
-    src_len: usize,
-    dst: *mut u8,
-    dst_capacity: usize,
-) -> isize {
+pub unsafe extern "C" fn glyd_compress(src: *const u8, src_len: usize, dst: *mut u8, dst_capacity: usize) -> isize {
     if src.is_null() || dst.is_null() {
         return -2;
     }
@@ -48,12 +43,7 @@ pub unsafe extern "C" fn glyd_compress(
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn glyd_compress_parallel(
-    src: *const u8,
-    src_len: usize,
-    dst: *mut u8,
-    dst_capacity: usize,
-) -> isize {
+pub unsafe extern "C" fn glyd_compress_parallel(src: *const u8, src_len: usize, dst: *mut u8, dst_capacity: usize) -> isize {
     if src.is_null() || dst.is_null() {
         return -2;
     }
@@ -76,12 +66,7 @@ pub unsafe extern "C" fn glyd_compress_parallel(
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn glyd_compress_max(
-    src: *const u8,
-    src_len: usize,
-    dst: *mut u8,
-    dst_capacity: usize,
-) -> isize {
+pub unsafe extern "C" fn glyd_compress_max(src: *const u8, src_len: usize, dst: *mut u8, dst_capacity: usize) -> isize {
     if src.is_null() || dst.is_null() {
         return -2;
     }
@@ -105,12 +90,7 @@ pub unsafe extern "C" fn glyd_compress_max(
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn glyd_compress_ultra(
-    src: *const u8,
-    src_len: usize,
-    dst: *mut u8,
-    dst_capacity: usize,
-) -> isize {
+pub unsafe extern "C" fn glyd_compress_ultra(src: *const u8, src_len: usize, dst: *mut u8, dst_capacity: usize) -> isize {
     if src.is_null() || dst.is_null() {
         return -2;
     }
@@ -133,12 +113,7 @@ pub unsafe extern "C" fn glyd_compress_ultra(
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn glyd_compress_ultra_parallel(
-    src: *const u8,
-    src_len: usize,
-    dst: *mut u8,
-    dst_capacity: usize,
-) -> isize {
+pub unsafe extern "C" fn glyd_compress_ultra_parallel(src: *const u8, src_len: usize, dst: *mut u8, dst_capacity: usize) -> isize {
     if src.is_null() || dst.is_null() {
         return -2;
     }
@@ -162,12 +137,7 @@ pub unsafe extern "C" fn glyd_compress_ultra_parallel(
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn glyd_compress_max_parallel(
-    src: *const u8,
-    src_len: usize,
-    dst: *mut u8,
-    dst_capacity: usize,
-) -> isize {
+pub unsafe extern "C" fn glyd_compress_max_parallel(src: *const u8, src_len: usize, dst: *mut u8, dst_capacity: usize) -> isize {
     if src.is_null() || dst.is_null() {
         return -2;
     }
@@ -221,12 +191,7 @@ pub unsafe extern "C" fn glyd_compress_turbo(src: *const u8, src_len: usize, dst
 ///   -2: Corrupted bitstream or checksum mismatch
 ///   -3: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn glyd_decompress(
-    src: *const u8,
-    src_len: usize,
-    dst: *mut u8,
-    dst_capacity: usize,
-) -> isize {
+pub unsafe extern "C" fn glyd_decompress(src: *const u8, src_len: usize, dst: *mut u8, dst_capacity: usize) -> isize {
     if src.is_null() || dst.is_null() {
         return -3;
     }
@@ -248,12 +213,7 @@ pub unsafe extern "C" fn glyd_decompress(
 ///   -2: Corrupted bitstream or checksum mismatch
 ///   -3: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn glyd_decompress_parallel(
-    src: *const u8,
-    src_len: usize,
-    dst: *mut u8,
-    dst_capacity: usize,
-) -> isize {
+pub unsafe extern "C" fn glyd_decompress_parallel(src: *const u8, src_len: usize, dst: *mut u8, dst_capacity: usize) -> isize {
     if src.is_null() || dst.is_null() {
         return -3;
     }
@@ -267,7 +227,6 @@ pub unsafe extern "C" fn glyd_decompress_parallel(
         Err(_) => -2,
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // The allocating API (v0.9.3): one call per operation, the output
@@ -375,7 +334,15 @@ pub unsafe extern "C" fn glyd_decompressed_len(src: *const u8, src_len: usize) -
 /// Base mode: `src` compressed against `base` (max level, or ultra when
 /// `ultra` is nonzero); decoding needs the same base.
 #[no_mangle]
-pub unsafe extern "C" fn glyd_compress_with_base(base: *const u8, base_len: usize, src: *const u8, src_len: usize, ultra: i32, out: *mut *mut u8, out_len: *mut usize) -> i32 {
+pub unsafe extern "C" fn glyd_compress_with_base(
+    base: *const u8,
+    base_len: usize,
+    src: *const u8,
+    src_len: usize,
+    ultra: i32,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
     if base.is_null() || src.is_null() || out.is_null() || out_len.is_null() {
         return -1;
     }
@@ -385,7 +352,14 @@ pub unsafe extern "C" fn glyd_compress_with_base(base: *const u8, base_len: usiz
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn glyd_decompress_with_base(base: *const u8, base_len: usize, src: *const u8, src_len: usize, out: *mut *mut u8, out_len: *mut usize) -> i32 {
+pub unsafe extern "C" fn glyd_decompress_with_base(
+    base: *const u8,
+    base_len: usize,
+    src: *const u8,
+    src_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
     if base.is_null() || src.is_null() || out.is_null() || out_len.is_null() {
         return -1;
     }

@@ -20,7 +20,6 @@
 //! tiered one's steps mostly take the general decode. The tiered layout of
 //! glyd 0.27 and before is [`crate::v1`]'s.
 
-
 /// Weights a step (64 rows by 16 columns).
 pub const STEP: usize = 1024;
 
@@ -411,7 +410,11 @@ pub fn round_a(w: u16) -> u16 {
         return w;
     }
     let r = ((w as u32 + 7 + ((w as u32 >> 4) & 1)) & 0xFFF0) as u16;
-    if r & 0x7FFF >= 0x7F80 { (w & 0x8000) | 0x7F70 } else { r }
+    if r & 0x7FFF >= 0x7F80 {
+        (w & 0x8000) | 0x7F70
+    } else {
+        r
+    }
 }
 
 fn nibble(byte: u8) -> u8 {
@@ -495,7 +498,13 @@ pub fn unpack_tiered(p: &Tiered, out: &mut [u16]) -> bool {
 /// decode then reads inside its buffers. Its counts alone, not its weights (a decode does that), nor its flag.
 pub fn tiered_blocks_hold(data: &[u8], blocks: &[u8], block_base: &[i32]) -> bool {
     let (n, b) = (data.len() / 1280, block_base);
-    if data.len() != n * 1280 || b.len() != n + 1 || b[n] < 0 || b[0] & 0x7FFF_FFFF < 128 || b.windows(2).any(|w| block_start(w[1]) < block_start(w[0])) || b[n] as usize + 256 > blocks.len() {
+    if data.len() != n * 1280
+        || b.len() != n + 1
+        || b[n] < 0
+        || b[0] & 0x7FFF_FFFF < 128
+        || b.windows(2).any(|w| block_start(w[1]) < block_start(w[0]))
+        || b[n] as usize + 256 > blocks.len()
+    {
         return false;
     }
     for s in 0..n {
@@ -503,10 +512,15 @@ pub fn tiered_blocks_hold(data: &[u8], blocks: &[u8], block_base: &[i32]) -> boo
         let (start, end) = (block_start(b[s]), block_start(b[s + 1]));
         let block = &blocks[start..end];
         let size = block.len();
-        let t1: usize = d.as_chunks::<4>().0.iter().map(|w| {
-            let w = u32::from_le_bytes(*w);
-            (w & (w >> 1) & 0x5555_5555).count_ones() as usize
-        }).sum();
+        let t1: usize = d
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| {
+                let w = u32::from_le_bytes(*w);
+                (w & (w >> 1) & 0x5555_5555).count_ones() as usize
+            })
+            .sum();
         let digits = 4 * t1.div_ceil(16);
         if digits > size {
             return false;
@@ -837,17 +851,26 @@ pub fn pack_int6_checked(w: &[u16], rows: usize, cols: usize) -> Option<Tiered> 
 
 fn int6_agrees(w: &[u16], p: &Tiered) -> bool {
     let mut back = vec![0u16; w.len()];
-    unpack_int6(p, &mut back) && w.chunks(32).zip(back.chunks(32)).all(|(run, got)| {
-        let (s, c) = int6_run(run);
-        got.iter().zip(&c).all(|(&g, &u)| g == int6_value(u, s))
-    })
+    unpack_int6(p, &mut back)
+        && w.chunks(32).zip(back.chunks(32)).all(|(run, got)| {
+            let (s, c) = int6_run(run);
+            got.iter().zip(&c).all(|(&g, &u)| g == int6_value(u, s))
+        })
 }
 
 /// W [rows, cols] given as its runs' codes and scales, not made by [`pack_int6`]'s fit (a calibration's: research/lossy-2026/calib.py's GPTQ): `code` the six-bit codes -31 to 31 (rows x cols), `scale` the bf16
 /// scales (rows x cols / 32), laid out as [`pack_int6`] lays out its own and kept bit for bit. Each weight becomes [`int6_value`] of its code and its run's scale, decoded back and compared with those (the check
 /// [`pack_int6_checked`] makes). None where a code is past 31, a scale is not finite, the sizes are not a six-bit layout's, or the decode is not those.
 pub fn pack_int6_runs_checked(code: &[i8], scale: &[u16], rows: usize, cols: usize) -> Option<Tiered> {
-    if rows == 0 || rows % 64 != 0 || cols == 0 || cols % 32 != 0 || code.len() != rows * cols || scale.len() != rows * cols / 32 || code.iter().any(|&c| c.unsigned_abs() > 31) || scale.iter().any(|&s| s & 0x7F80 == 0x7F80) {
+    if rows == 0
+        || rows % 64 != 0
+        || cols == 0
+        || cols % 32 != 0
+        || code.len() != rows * cols
+        || scale.len() != rows * cols / 32
+        || code.iter().any(|&c| c.unsigned_abs() > 31)
+        || scale.iter().any(|&s| s & 0x7F80 == 0x7F80)
+    {
         return None;
     }
     let u: Vec<u8> = code.iter().map(|&c| (c + 32) as u8).collect();
@@ -865,7 +888,13 @@ fn int6_holds(code: &[u8], scale: &[u16], p: &Tiered) -> bool {
 pub fn unpack_int6(p: &Tiered, out: &mut [u16]) -> bool {
     let (rows, cols) = (p.rows, p.cols);
     let (rbs, ks) = (rows / 64, cols / 16);
-    if p.tiers[0] >> 24 != INT6_TAG || rows % 64 != 0 || cols % 32 != 0 || out.len() != rows * cols || p.data.len() != rbs * ks * INT6_STEP_BYTES || p.blocks.len() != rbs * ks / 2 * 128 {
+    if p.tiers[0] >> 24 != INT6_TAG
+        || rows % 64 != 0
+        || cols % 32 != 0
+        || out.len() != rows * cols
+        || p.data.len() != rbs * ks * INT6_STEP_BYTES
+        || p.blocks.len() != rbs * ks / 2 * 128
+    {
         return false;
     }
     let word = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
@@ -1008,17 +1037,26 @@ pub fn pack_int5_checked(w: &[u16], rows: usize, cols: usize) -> Option<Tiered> 
 
 fn int5_agrees(w: &[u16], p: &Tiered) -> bool {
     let mut back = vec![0u16; w.len()];
-    unpack_int5(p, &mut back) && w.chunks(32).zip(back.chunks(32)).all(|(run, got)| {
-        let (s, c) = int5_run(run);
-        got.iter().zip(&c).all(|(&g, &u)| g == int5_value(u, s))
-    })
+    unpack_int5(p, &mut back)
+        && w.chunks(32).zip(back.chunks(32)).all(|(run, got)| {
+            let (s, c) = int5_run(run);
+            got.iter().zip(&c).all(|(&g, &u)| g == int5_value(u, s))
+        })
 }
 
 /// W [rows, cols] given as its runs' codes and scales, not made by [`pack_int5`]'s fit (a calibration's): `code` the five-bit codes -15 to 15 (rows x cols), `scale` the bf16 scales (rows x cols / 32), laid out as
 /// [`pack_int5`] lays out its own and kept bit for bit. Each weight becomes [`int5_value`] of its code and its run's scale, decoded back and compared with those (the check [`pack_int5_checked`] makes). None where
 /// a code is past 15, a scale is not finite, the sizes are not a five-bit layout's, or the decode is not those.
 pub fn pack_int5_runs_checked(code: &[i8], scale: &[u16], rows: usize, cols: usize) -> Option<Tiered> {
-    if rows == 0 || rows % 64 != 0 || cols == 0 || cols % 32 != 0 || code.len() != rows * cols || scale.len() != rows * cols / 32 || code.iter().any(|&c| c.unsigned_abs() > 15) || scale.iter().any(|&s| s & 0x7F80 == 0x7F80) {
+    if rows == 0
+        || rows % 64 != 0
+        || cols == 0
+        || cols % 32 != 0
+        || code.len() != rows * cols
+        || scale.len() != rows * cols / 32
+        || code.iter().any(|&c| c.unsigned_abs() > 15)
+        || scale.iter().any(|&s| s & 0x7F80 == 0x7F80)
+    {
         return None;
     }
     let u: Vec<u8> = code.iter().map(|&c| (c + 16) as u8).collect();
@@ -1036,7 +1074,13 @@ fn int5_holds(code: &[u8], scale: &[u16], p: &Tiered) -> bool {
 pub fn unpack_int5(p: &Tiered, out: &mut [u16]) -> bool {
     let (rows, cols) = (p.rows, p.cols);
     let (rbs, ks) = (rows / 64, cols / 16);
-    if p.tiers[0] >> 24 != INT5_TAG || rows % 64 != 0 || cols % 32 != 0 || out.len() != rows * cols || p.data.len() != rbs * ks * INT5_STEP_BYTES || p.blocks.len() != rbs * ks / 2 * 128 {
+    if p.tiers[0] >> 24 != INT5_TAG
+        || rows % 64 != 0
+        || cols % 32 != 0
+        || out.len() != rows * cols
+        || p.data.len() != rbs * ks * INT5_STEP_BYTES
+        || p.blocks.len() != rbs * ks / 2 * 128
+    {
         return false;
     }
     let word = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
@@ -1384,7 +1428,14 @@ pub fn fp4_value(c: u8, e: u8) -> u16 {
 pub fn pack_fp4_checked(q: &[u8], e: &[u8], rows: usize, cols: usize) -> Option<Tiered> {
     let (db, sb) = fp4_bytes(rows, cols, false);
     let (mut data, mut blocks) = (vec![0u8; db], vec![0u8; sb]);
-    pack_fp4_into(q, e, rows, cols, &mut data, &mut blocks).then(|| Tiered { rows, cols, data, blocks, block_base: vec![0; rows / 64 * (cols / 16) + 1], tiers: [FP4_TAG << 24, 0, 0] })
+    pack_fp4_into(q, e, rows, cols, &mut data, &mut blocks).then(|| Tiered {
+        rows,
+        cols,
+        data,
+        blocks,
+        block_base: vec![0; rows / 64 * (cols / 16) + 1],
+        tiers: [FP4_TAG << 24, 0, 0],
+    })
 }
 
 /// The bytes an exact FP4 matrix [rows, cols] takes: its steps and its scales (`packed`: the Fp4R layout's).
@@ -1396,7 +1447,15 @@ pub fn fp4_bytes(rows: usize, cols: usize, packed: bool) -> (usize, usize) {
 /// [`pack_fp4_checked`] into the caller's bytes (`data` and `blocks` of [`fp4_bytes`]' sizes, every byte written): where a matrix is held among others (an
 /// expert's place in a host tier), checked there; false where the layout does not hold it exactly or the shape is not one.
 pub fn pack_fp4_into(q: &[u8], e: &[u8], rows: usize, cols: usize, data: &mut [u8], blocks: &mut [u8]) -> bool {
-    if rows == 0 || rows % 64 != 0 || cols == 0 || cols % 32 != 0 || q.len() * 2 != rows * cols || e.len() * 32 != rows * cols || e.iter().any(|&x| !(2..=128).contains(&x)) || (data.len(), blocks.len()) != fp4_bytes(rows, cols, false) {
+    if rows == 0
+        || rows % 64 != 0
+        || cols == 0
+        || cols % 32 != 0
+        || q.len() * 2 != rows * cols
+        || e.len() * 32 != rows * cols
+        || e.iter().any(|&x| !(2..=128).contains(&x))
+        || (data.len(), blocks.len()) != fp4_bytes(rows, cols, false)
+    {
         return false;
     }
     let (runs, rbs, ks) = (cols / 32, rows / 64, cols / 16);
@@ -1420,12 +1479,27 @@ pub fn pack_fp4_into(q: &[u8], e: &[u8], rows: usize, cols: usize, data: &mut [u
 pub fn pack_fp4r_checked(q: &[u8], e: &[u8], rows: usize, cols: usize) -> Option<Tiered> {
     let (db, sb) = fp4_bytes(rows, cols, true);
     let (mut data, mut blocks) = (vec![0u8; db], vec![0u8; sb]);
-    pack_fp4r_into(q, e, rows, cols, &mut data, &mut blocks).then(|| Tiered { rows, cols, data, blocks, block_base: vec![0; rows / 64 * (cols / 16) + 1], tiers: [FP4R_TAG << 24, 0, 0] })
+    pack_fp4r_into(q, e, rows, cols, &mut data, &mut blocks).then(|| Tiered {
+        rows,
+        cols,
+        data,
+        blocks,
+        block_base: vec![0; rows / 64 * (cols / 16) + 1],
+        tiers: [FP4R_TAG << 24, 0, 0],
+    })
 }
 
 /// [`pack_fp4r_checked`] into the caller's bytes, as [`pack_fp4_into`].
 pub fn pack_fp4r_into(q: &[u8], e: &[u8], rows: usize, cols: usize, data: &mut [u8], blocks: &mut [u8]) -> bool {
-    if rows == 0 || rows % 64 != 0 || cols == 0 || cols % 32 != 0 || q.len() * 2 != rows * cols || e.len() * 32 != rows * cols || e.iter().any(|&x| !(2..=128).contains(&x)) || (data.len(), blocks.len()) != fp4_bytes(rows, cols, true) {
+    if rows == 0
+        || rows % 64 != 0
+        || cols == 0
+        || cols % 32 != 0
+        || q.len() * 2 != rows * cols
+        || e.len() * 32 != rows * cols
+        || e.iter().any(|&x| !(2..=128).contains(&x))
+        || (data.len(), blocks.len()) != fp4_bytes(rows, cols, true)
+    {
         return false;
     }
     let (runs, rbs, ks) = (cols / 32, rows / 64, cols / 16);
@@ -1463,6 +1537,7 @@ pub fn pack_fp4r_into(q: &[u8], e: &[u8], rows: usize, cols: usize, data: &mut [
 }
 
 /// Weight i's code of an MX FP4 matrix's bytes (two a byte, the first in the low nibble).
+#[cfg(test)]
 fn fp4_code(q: &[u8], i: usize) -> u8 {
     (q[i / 2] >> (4 * (i % 2))) & 15
 }
@@ -1552,10 +1627,11 @@ pub fn unpack_fp4(p: &Tiered, out: &mut [u16]) -> bool {
 
 fn int4_agrees(w: &[u16], p: &Tiered) -> bool {
     let mut back = vec![0u16; w.len()];
-    unpack_int4(p, &mut back) && w.chunks(32).zip(back.chunks(32)).all(|(run, got)| {
-        let (s, c) = int4_run(run);
-        got.iter().zip(&c).all(|(&g, &u)| g == int4_value(u, s))
-    })
+    unpack_int4(p, &mut back)
+        && w.chunks(32).zip(back.chunks(32)).all(|(run, got)| {
+            let (s, c) = int4_run(run);
+            got.iter().zip(&c).all(|(&g, &u)| g == int4_value(u, s))
+        })
 }
 
 /// A four-bit block pack (Int4 or Int4H) back to bf16 (row-major), as the GPU decodes it; false where the pack is not its shape's.
@@ -1563,7 +1639,13 @@ pub fn unpack_int4(p: &Tiered, out: &mut [u16]) -> bool {
     let (rows, cols) = (p.rows, p.cols);
     let (rbs, ks) = (rows / 64, cols / 16);
     let exact = p.tiers[0] >> 24 == INT4H_TAG;
-    if !(exact || p.tiers[0] >> 24 == INT4_TAG) || rows % 64 != 0 || cols % 32 != 0 || out.len() != rows * cols || p.data.len() != rbs * ks * INT4_STEP_BYTES || p.blocks.len() != rbs * ks / 2 * 128 {
+    if !(exact || p.tiers[0] >> 24 == INT4_TAG)
+        || rows % 64 != 0
+        || cols % 32 != 0
+        || out.len() != rows * cols
+        || p.data.len() != rbs * ks * INT4_STEP_BYTES
+        || p.blocks.len() != rbs * ks / 2 * 128
+    {
         return false;
     }
     let word = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
@@ -1652,17 +1734,24 @@ pub fn pack_int3_checked(w: &[u16], rows: usize, cols: usize) -> Option<Tiered> 
 
 fn int3_agrees(w: &[u16], p: &Tiered) -> bool {
     let mut back = vec![0u16; w.len()];
-    unpack_int3(p, &mut back) && w.chunks(32).zip(back.chunks(32)).all(|(run, got)| {
-        let (s, c) = int3_run(run);
-        got.iter().zip(&c).all(|(&g, &u)| g == int3_value(u, s))
-    })
+    unpack_int3(p, &mut back)
+        && w.chunks(32).zip(back.chunks(32)).all(|(run, got)| {
+            let (s, c) = int3_run(run);
+            got.iter().zip(&c).all(|(&g, &u)| g == int3_value(u, s))
+        })
 }
 
 /// A three-bit block pack back to bf16 (row-major), as the GPU's Int3 decodes it; false where the pack is not its shape's.
 pub fn unpack_int3(p: &Tiered, out: &mut [u16]) -> bool {
     let (rows, cols) = (p.rows, p.cols);
     let (rbs, ks) = (rows / 64, cols / 16);
-    if p.tiers[0] >> 24 != INT3_TAG || rows % 64 != 0 || cols % 32 != 0 || out.len() != rows * cols || p.data.len() != rbs * ks * INT3_STEP_BYTES || p.blocks.len() != rbs * ks / 2 * 128 {
+    if p.tiers[0] >> 24 != INT3_TAG
+        || rows % 64 != 0
+        || cols % 32 != 0
+        || out.len() != rows * cols
+        || p.data.len() != rbs * ks * INT3_STEP_BYTES
+        || p.blocks.len() != rbs * ks / 2 * 128
+    {
         return false;
     }
     let word = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
@@ -1759,7 +1848,14 @@ fn rows_place(bits: u32, c: &[u8; 32], k: usize, runs: usize, row: &mut [u8]) {
 /// 1 zeros (not read); tiers [tag << 24, 0, 0]. A row is read alone, by a kernel that takes the rows it needs (a matrix stored transposed, one neuron's weights a row: a down matrix whose zero activations are not read).
 /// None where a weight is not finite or the shape is not one.
 pub fn pack_rows(bits: u32, w: &[u16], rows: usize, cols: usize) -> Option<Tiered> {
-    if !(4..=6).contains(&bits) || rows == 0 || cols == 0 || !cols.is_multiple_of(32) || w.len() != rows * cols || !(rows * cols).is_multiple_of(STEP) || w.iter().any(|&x| x & 0x7F80 == 0x7F80) {
+    if !(4..=6).contains(&bits)
+        || rows == 0
+        || cols == 0
+        || !cols.is_multiple_of(32)
+        || w.len() != rows * cols
+        || !(rows * cols).is_multiple_of(STEP)
+        || w.iter().any(|&x| x & 0x7F80 == 0x7F80)
+    {
         return None;
     }
     let (fit, tag): (RunFit, u32) = match bits {
@@ -1962,7 +2058,10 @@ mod compact_tests {
     /// finite word packed compact and back, and a matrix of noise; 768 bytes a step; an unrounded weight refused.
     #[test]
     fn compact_round_trips_every_rounded_word() {
-        assert_eq!([round_a(0x3F88), round_a(0x3F98), round_a(0x3F87), round_a(0x7F7F), round_a(0xFF7F), round_a(0x7FC1), round_a(0x7F80)], [0x3F80, 0x3FA0, 0x3F80, 0x7F70, 0xFF70, 0x7FC1, 0x7F80]);
+        assert_eq!(
+            [round_a(0x3F88), round_a(0x3F98), round_a(0x3F87), round_a(0x7F7F), round_a(0xFF7F), round_a(0x7FC1), round_a(0x7F80)],
+            [0x3F80, 0x3FA0, 0x3F80, 0x7F70, 0xFF70, 0x7FC1, 0x7F80]
+        );
         let mut words: Vec<u16> = (0..=u16::MAX).map(round_a).filter(|w| w & 0x7F80 != 0x7F80).collect();
         words.truncate(words.len() / 1024 * 1024);
         for (rows, cols) in [(64, words.len() / 64), (words.len() / 16, 16)] {
@@ -1973,7 +2072,14 @@ mod compact_tests {
             assert!(unpack_tiered(&expand_compact(&p).unwrap(), &mut back) && back == w);
         }
         let mut seed = 11u64;
-        let noise: Vec<u16> = (0..256 * 512).map(|_| { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; round_a(((seed >> 20) as u16 & 0x80FF) | ((112 + (seed >> 40) % 16) as u16) << 7) }).collect();
+        let noise: Vec<u16> = (0..256 * 512)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                round_a(((seed >> 20) as u16 & 0x80FF) | ((112 + (seed >> 40) % 16) as u16) << 7)
+            })
+            .collect();
         let p = pack_compact_checked(&noise, 256, 512).unwrap();
         assert!(p.tiers[0] >> 24 == COMPACT_TAG && expand_compact(&p).is_some());
         assert!(pack_compact_checked(&[0x3F81; 1024], 64, 16).is_none());
@@ -2020,7 +2126,10 @@ mod int6_tests {
                     let got = bf16_f32(back[r * cols + 32 * k + c]);
                     let code = rne_clamp(bf16_f32(x) / s, 31.0);
                     assert_eq!(got, bf16_f32(f32_bf16(code * s)), "row {r} run {k} place {c}");
-                    assert!((got - bf16_f32(x)).abs() <= 0.5 * s * 1.0001 + (bf16_f32(x).abs() - 31.0 * s).max(0.0) + amax * 3.0 / 512.0, "row {r} run {k} place {c}");  // (half a step; a clamp at 31 and the bf16 rounding)
+                    assert!(
+                        (got - bf16_f32(x)).abs() <= 0.5 * s * 1.0001 + (bf16_f32(x).abs() - 31.0 * s).max(0.0) + amax * 3.0 / 512.0,
+                        "row {r} run {k} place {c}"
+                    ); // (half a step; a clamp at 31 and the bf16 rounding)
                 }
             }
         }
@@ -2089,7 +2198,10 @@ mod int5_tests {
                     let got = bf16_f32(back[r * cols + 32 * k + c]);
                     let code = rne_clamp(bf16_f32(x) / s, 15.0);
                     assert_eq!(got, bf16_f32(f32_bf16(code * s)), "row {r} run {k} place {c}");
-                    assert!((got - bf16_f32(x)).abs() <= 0.5 * s * 1.0001 + (bf16_f32(x).abs() - 15.0 * s).max(0.0) + amax * 3.0 / 512.0, "row {r} run {k} place {c}");  // (half a step; a clamp at 15 and the bf16 rounding)
+                    assert!(
+                        (got - bf16_f32(x)).abs() <= 0.5 * s * 1.0001 + (bf16_f32(x).abs() - 15.0 * s).max(0.0) + amax * 3.0 / 512.0,
+                        "row {r} run {k} place {c}"
+                    ); // (half a step; a clamp at 15 and the bf16 rounding)
                 }
             }
         }
@@ -2131,7 +2243,8 @@ mod int4_int3_tests {
     type Unpack = fn(&Tiered, &mut [u16]) -> bool;
     /// A layout: its packer, its decode, the value of a code, q (the codes run -q to q), its tag and a step's bytes.
     type Case = (Pack, Unpack, fn(u8, u16) -> u16, f32, u32, usize);
-    const LAYOUTS: [Case; 2] = [(pack_int4, unpack_int4, int4_value, 7.0, INT4_TAG, INT4_STEP_BYTES), (pack_int3, unpack_int3, int3_value, 3.0, INT3_TAG, INT3_STEP_BYTES)];
+    const LAYOUTS: [Case; 2] =
+        [(pack_int4, unpack_int4, int4_value, 7.0, INT4_TAG, INT4_STEP_BYTES), (pack_int3, unpack_int3, int3_value, 3.0, INT3_TAG, INT3_STEP_BYTES)];
 
     /// Every weight back as the value of its own code and its run's scale (the study's mse fit, computed here from the weights, apart from
     /// the packer: of the 16 ratios of torch.linspace(0.70, 1.0, 16) in float32, the first whose bf16 scale of amax r / q leaves the least
@@ -2170,7 +2283,10 @@ mod int4_int3_tests {
                         let got = bf16_f32(back[r * cols + 32 * k + c]);
                         let code = rne_clamp(bf16_f32(x) / s, q);
                         assert_eq!(got, bf16_f32(f32_bf16(code * s)), "q {q} row {r} run {k} place {c}");
-                        assert!((got - bf16_f32(x)).abs() <= 0.5 * s * 1.0001 + (bf16_f32(x).abs() - q * s).max(0.0) + amax * 3.0 / 512.0, "q {q} row {r} run {k} place {c}");  // (half a step; a clamp at q and the bf16 rounding)
+                        assert!(
+                            (got - bf16_f32(x)).abs() <= 0.5 * s * 1.0001 + (bf16_f32(x).abs() - q * s).max(0.0) + amax * 3.0 / 512.0,
+                            "q {q} row {r} run {k} place {c}"
+                        ); // (half a step; a clamp at q and the bf16 rounding)
                     }
                 }
             }
@@ -2209,7 +2325,10 @@ mod int4_int3_tests {
                 }
             }
         }
-        assert_eq!([int4_value(0, 0x3F80), int4_value(8, 0x3F80), int4_value(15, 0x3F80), int3_value(0, 0x3F80), int3_value(4, 0x3F80), int3_value(7, 0x3F80)], [0xC100, 0, 0x40E0, 0xC080, 0, 0x4040]);
+        assert_eq!(
+            [int4_value(0, 0x3F80), int4_value(8, 0x3F80), int4_value(15, 0x3F80), int3_value(0, 0x3F80), int3_value(4, 0x3F80), int3_value(7, 0x3F80)],
+            [0xC100, 0, 0x40E0, 0xC080, 0, 0x4040]
+        );
     }
 }
 
@@ -2272,7 +2391,9 @@ mod fit_tests {
     /// (weights of 2^97 and over, the squares overflow) has its first candidate's scale, the first of equals.
     #[test]
     fn the_fit_at_its_edges() {
-        for (fit, q, zero, small) in [(int6_run as fn(&[u16]) -> (u16, [u8; 32]), 31.0f32, 32u8, 18u16), (int5_run, 15.0, 16, 9), (int4_run, 7.0, 8, 4), (int3_run, 3.0, 4, 2)] {
+        for (fit, q, zero, small) in
+            [(int6_run as fn(&[u16]) -> (u16, [u8; 32]), 31.0f32, 32u8, 18u16), (int5_run, 15.0, 16, 9), (int4_run, 7.0, 8, 4), (int3_run, 3.0, 4, 2)]
+        {
             assert_eq!(fit(&[0; 32]), (0, [zero; 32]));
             assert_eq!(fit(&[1; 32]), (0, [zero; 32]));
             let (mut run, mut codes) = ([0u16; 32], [zero; 32]);
@@ -2442,7 +2563,9 @@ pub(crate) mod tests {
         let win: [u32; 32] = std::array::from_fn(|l| word((blk & !3) + 4 * l));
         let win_bits = |pos: usize| (((win[((pos >> 5) + 1) % 32] as u64) << 32 | win[(pos >> 5) % 32] as u64) >> (pos & 31)) as u32;
         let escapes = |x: u32| x & (x >> 1) & 0x5555_5555;
-        let pd: [[u32; 2]; 32] = std::array::from_fn(|l| [u32::from_le_bytes(d[l * 4..l * 4 + 4].try_into().unwrap()), u32::from_le_bytes(d[128 + l * 4..128 + l * 4 + 4].try_into().unwrap())]);
+        let pd: [[u32; 2]; 32] = std::array::from_fn(|l| {
+            [u32::from_le_bytes(d[l * 4..l * 4 + 4].try_into().unwrap()), u32::from_le_bytes(d[128 + l * 4..128 + l * 4 + 4].try_into().unwrap())]
+        });
         let n1: [usize; 32] = std::array::from_fn(|l| (escapes(pd[l][0]).count_ones() + escapes(pd[l][1]).count_ones()) as usize);
         let t1: usize = n1.iter().sum();
         assert!(t1 <= HOT_ESCAPES);
@@ -2497,10 +2620,15 @@ pub(crate) mod tests {
         let d = &p.data[s * 1280..s * 1280 + 256];
         let block = &p.blocks[block_start(p.block_base[s])..block_start(p.block_base[s + 1])];
         let size = block.len();
-        let t1: usize = d.as_chunks::<4>().0.iter().map(|w| {
-            let w = u32::from_le_bytes(*w);
-            (w & (w >> 1) & 0x5555_5555).count_ones() as usize
-        }).sum();
+        let t1: usize = d
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| {
+                let w = u32::from_le_bytes(*w);
+                (w & (w >> 1) & 0x5555_5555).count_ones() as usize
+            })
+            .sum();
         let t2 = (0..t1).filter(|&k| (block[size - 4 * ((k >> 4) + 1) + ((k & 15) >> 2)] >> (2 * (k & 3))) & 3 == 3).count();
         let list = size - 4 * t1.div_ceil(16) - ((2 * t2 + 7) >> 3);
         (t1, t2, 8 * list / 18)
@@ -2521,7 +2649,10 @@ pub(crate) mod tests {
             assert_eq!(p.block_base[s] < 0, is_cold(start, t1, t2, nl), "step {s}: the flag is is_cold's");
             if p.block_base[s] < 0 {
                 let r0 = (2 * t2 + 7) >> 3;
-                for (i, reason) in [t1 > HOT_ESCAPES, nl > HOT_LITERALS, o + 2 * t2 + 32 >= HOT_WINDOW, nl > 0 && o + 8 * r0 + 18 * (nl - 1) >= HOT_WINDOW].into_iter().enumerate() {
+                for (i, reason) in [t1 > HOT_ESCAPES, nl > HOT_LITERALS, o + 2 * t2 + 32 >= HOT_WINDOW, nl > 0 && o + 8 * r0 + 18 * (nl - 1) >= HOT_WINDOW]
+                    .into_iter()
+                    .enumerate()
+                {
                     why[i] += reason as usize;
                 }
                 continue;
@@ -2622,13 +2753,21 @@ pub(crate) mod tests {
         };
         let w = profile(4, 64, |_| 5, |_| 1, |_| 70, 0);
         let (tiered, bytes, cold) = which(&w, 256, 1024);
-        assert!(tiered && cold == 0 && bytes < twelve_bytes(&histogram(&w), 256, 1024), "a peaked spread of exponents: tiered ({bytes} bytes, {cold} steps with the flag)");
+        assert!(
+            tiered && cold == 0 && bytes < twelve_bytes(&histogram(&w), 256, 1024),
+            "a peaked spread of exponents: tiered ({bytes} bytes, {cold} steps with the flag)"
+        );
         let w = weights(256 * 1024, 1.0, 9);
         assert!(!which(&w, 256, 1024).0, "every exponent alike: the 12-bit layout takes fewer bytes");
         // 600 escapes in every step (ranks 3-5, with ballast for the six commonest), so a pack of it is under 12 bits: all of them take the flag
         let w = profile(4, 64, |_| 0, |_| 0, |_| 600, 3);
         let t = pack_tiered(&w, 448, 1024);
-        assert!(tiered_bytes(&t) < twelve_bytes(&histogram(&w), 448, 1024), "the tiered pack is the smaller ({} bytes against {})", tiered_bytes(&t), twelve_bytes(&histogram(&w), 448, 1024));
+        assert!(
+            tiered_bytes(&t) < twelve_bytes(&histogram(&w), 448, 1024),
+            "the tiered pack is the smaller ({} bytes against {})",
+            tiered_bytes(&t),
+            twelve_bytes(&histogram(&w), 448, 1024)
+        );
         assert!(cold_steps(&t.block_base) * 4 > 7 * 64, "and more than a quarter of its steps have the flag ({} of 448)", cold_steps(&t.block_base));
         assert!(!which(&w, 448, 1024).0, "and the 12-bit layout is the pick");
         // the 12-bit layout's size from the counts is the packer's
@@ -2649,7 +2788,10 @@ pub(crate) mod tests {
         use sha2::{Digest, Sha256};
         let every: Vec<u16> = (0..65536u32).map(|i| i as u16 ^ 0x8000).collect();
         let near = |f: fn(u16) -> u16| -> Vec<u16> { every.iter().enumerate().map(|(i, &v)| if i % 10 != 0 { f(v) } else { v }).collect() };
-        let mut cases: Vec<(Vec<u16>, usize, usize)> = [(64, 16, 0.0), (64, 64, 0.5), (128, 48, 0.02), (192, 1040, 0.001), (256, 4096, 0.1), (64, 16, 1.0)].iter().map(|&(o, k, wild)| (weights(o * k, wild, (o * k) as u64), o, k)).collect();
+        let mut cases: Vec<(Vec<u16>, usize, usize)> = [(64, 16, 0.0), (64, 64, 0.5), (128, 48, 0.02), (192, 1040, 0.001), (256, 4096, 0.1), (64, 16, 1.0)]
+            .iter()
+            .map(|&(o, k, wild)| (weights(o * k, wild, (o * k) as u64), o, k))
+            .collect();
         cases.push((every.clone(), 256, 256));
         cases.push((near(|v| v & 0x807F), 256, 256));
         cases.push((near(|v| v | 0x7F00), 256, 256));
@@ -2697,7 +2839,10 @@ pub(crate) mod tests {
         use sha2::{Digest, Sha256};
         let every: Vec<u16> = (0..65536u32).map(|i| i as u16 ^ 0x8000).collect();
         let near = |f: fn(u16) -> u16| -> Vec<u16> { every.iter().enumerate().map(|(i, &v)| if i % 10 != 0 { f(v) } else { v }).collect() };
-        let mut cases: Vec<(Vec<u16>, usize, usize)> = [(64, 16, 0.0), (64, 64, 0.5), (128, 48, 0.02), (192, 1040, 0.001), (256, 4096, 0.1), (64, 16, 1.0)].iter().map(|&(o, k, wild)| (weights(o * k, wild, (o * k) as u64), o, k)).collect();
+        let mut cases: Vec<(Vec<u16>, usize, usize)> = [(64, 16, 0.0), (64, 64, 0.5), (128, 48, 0.02), (192, 1040, 0.001), (256, 4096, 0.1), (64, 16, 1.0)]
+            .iter()
+            .map(|&(o, k, wild)| (weights(o * k, wild, (o * k) as u64), o, k))
+            .collect();
         cases.push((every.clone(), 256, 256));
         cases.push((near(|v| v & 0x807F), 256, 256));
         cases.push((near(|v| v | 0x7F00), 256, 256));
@@ -2791,7 +2936,14 @@ mod int_checked_tests {
             x
         };
         for (q, pack, unpack, value, fit, tag) in [
-            (31i8, pack_int6_runs_checked as Pack, unpack_int6 as fn(&Tiered, &mut [u16]) -> bool, int6_value as fn(u8, u16) -> u16, int6_run as fn(&[u16]) -> (u16, [u8; 32]), INT6_TAG),
+            (
+                31i8,
+                pack_int6_runs_checked as Pack,
+                unpack_int6 as fn(&Tiered, &mut [u16]) -> bool,
+                int6_value as fn(u8, u16) -> u16,
+                int6_run as fn(&[u16]) -> (u16, [u8; 32]),
+                INT6_TAG,
+            ),
             (15, pack_int5_runs_checked, unpack_int5, int5_value, int5_run, INT5_TAG),
         ] {
             let code: Vec<i8> = (0..rows * cols).map(|_| (next() % (2 * q as u64 + 1)) as i8 - q).collect();
@@ -2807,7 +2959,8 @@ mod int_checked_tests {
             }
             // the fit's own codes and scales are packed as pack_int packs the weights
             let fitted: Vec<(u16, [u8; 32])> = w.chunks(32).map(fit).collect();
-            let (c, s): (Vec<i8>, Vec<u16>) = (fitted.iter().flat_map(|f| f.1.iter().map(|&u| u as i8 - (q + 1))).collect(), fitted.iter().map(|f| f.0).collect());
+            let (c, s): (Vec<i8>, Vec<u16>) =
+                (fitted.iter().flat_map(|f| f.1.iter().map(|&u| u as i8 - (q + 1))).collect(), fitted.iter().map(|f| f.0).collect());
             assert_eq!(pack(&c, &s, rows, cols), if q == 31 { pack_int6(&w, rows, cols) } else { pack_int5(&w, rows, cols) });
             // refused
             for bad in [q + 1, -(q + 1), i8::MIN, i8::MAX] {
@@ -2840,7 +2993,8 @@ mod rows_tests {
 
     /// (bits, q, the block layout's packer and decode, its step's bytes, the row layout's tag)
     type Case = (u32, f32, fn(&[u16], usize, usize) -> Option<Tiered>, fn(&Tiered, &mut [u16]) -> bool, u32);
-    const CASES: [Case; 3] = [(6, 31.0, pack_int6, unpack_int6, INT6_ROW_TAG), (5, 15.0, pack_int5, unpack_int5, INT5_ROW_TAG), (4, 7.0, pack_int4, unpack_int4, INT4_ROW_TAG)];
+    const CASES: [Case; 3] =
+        [(6, 31.0, pack_int6, unpack_int6, INT6_ROW_TAG), (5, 15.0, pack_int5, unpack_int5, INT5_ROW_TAG), (4, 7.0, pack_int4, unpack_int4, INT4_ROW_TAG)];
 
     /// A row layout's codes (u) and scales read from its bytes as the layout's doc says, apart from the packer: a run's four words of low nibbles, then (five and six bits) its high bits' word or words.
     fn row_codes(bits: u32, p: &Tiered) -> (Vec<u8>, Vec<u16>) {
@@ -2920,7 +3074,11 @@ mod rows_tests {
         for (bits, q, pack, unpack, tag) in CASES {
             let rp = pack_rows(bits, &w, rows, cols).expect("rows pack");
             let bp = pack(&w, rows, cols).unwrap();
-            assert_eq!((rp.tiers, rp.data.len(), rp.blocks.len(), rp.block_base.len()), ([tag << 24, 0, 0], rows * rows_stride(bits, cols), rows * cols / 32 * 2, rows * cols / STEP + 1), "{bits} bits");
+            assert_eq!(
+                (rp.tiers, rp.data.len(), rp.blocks.len(), rp.block_base.len()),
+                ([tag << 24, 0, 0], rows * rows_stride(bits, cols), rows * cols / 32 * 2, rows * cols / STEP + 1),
+                "{bits} bits"
+            );
             assert_eq!(rows_bits(tag), Some(bits));
             let (ru, rs) = row_codes(bits, &rp);
             let (bu, bs) = block_codes(bits, &bp);
@@ -2947,7 +3105,14 @@ mod rows_tests {
         let wants: [(u32, Vec<u8>); 3] = [
             (4, vec![0x51, 0xd9, 0x73, 0xfb, 0x62, 0xea, 0x84, 0x1c, 0x73, 0xfb, 0x95, 0x2d, 0x84, 0x1c, 0xa6, 0x3e]),
             (5, [&lo[..], &[0xf0, 0xf0, 0xf0, 0x78], &[0u8; 12]].concat()),
-            (6, [0x51, 0xd9, 0x73, 0xfb, 0x51, 0xd9, 0x73, 0xfb, 0x51, 0xd9, 0x73, 0xfb, 0x51, 0xd9, 0x73, 0xfb, 0x00, 0x55, 0x00, 0x55, 0xaa, 0xff, 0xaa, 0xff, 0, 0, 0, 0, 0, 0, 0, 0].to_vec()),
+            (
+                6,
+                [
+                    0x51, 0xd9, 0x73, 0xfb, 0x51, 0xd9, 0x73, 0xfb, 0x51, 0xd9, 0x73, 0xfb, 0x51, 0xd9, 0x73, 0xfb, 0x00, 0x55, 0x00, 0x55, 0xaa, 0xff, 0xaa,
+                    0xff, 0, 0, 0, 0, 0, 0, 0, 0,
+                ]
+                .to_vec(),
+            ),
         ];
         for (bits, want) in wants {
             let q = (1i32 << (bits - 1)) - 1;
@@ -3008,7 +3173,13 @@ mod rows_tests {
             long.data.push(0);
             few.blocks.pop();
             base.cols = 32;
-            assert!(!unpack_rows(&other, &mut back) && !unpack_rows(&long, &mut back) && !unpack_rows(&few, &mut back) && !unpack_rows(&base, &mut back) && !unpack_rows(&p, &mut back[1..]));
+            assert!(
+                !unpack_rows(&other, &mut back)
+                    && !unpack_rows(&long, &mut back)
+                    && !unpack_rows(&few, &mut back)
+                    && !unpack_rows(&base, &mut back)
+                    && !unpack_rows(&p, &mut back[1..])
+            );
             let z = pack_rows(bits, &vec![0u16; 64 * 64], 64, 64).unwrap();
             let mut zb = vec![1u16; 64 * 64];
             assert!(unpack_rows(&z, &mut zb) && zb.iter().all(|&x| x == 0));

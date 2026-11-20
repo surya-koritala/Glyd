@@ -4,8 +4,12 @@ use glyd::format::{BlockHeader, FLAG_RAW_UNCOMPRESSED};
 use glyd::v7_encode::payload_layout_of;
 
 fn main() {
-    let mut files: Vec<_> = std::fs::read_dir("corpus").unwrap().filter_map(|e| e.ok()).map(|e| e.path())
-        .filter(|p| p.is_file() && !p.file_name().unwrap().to_string_lossy().starts_with("enwik")).collect();
+    let mut files: Vec<_> = std::fs::read_dir("corpus")
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && !p.file_name().unwrap().to_string_lossy().starts_with("enwik"))
+        .collect();
     files.sort();
     for p in files {
         let name = p.file_name().unwrap().to_string_lossy().to_string();
@@ -17,10 +21,20 @@ fn main() {
             let (h, hl) = BlockHeader::read(&c[cursor..]).unwrap();
             let len = h.payload_len();
             blocks += 1;
-            if h.flags & FLAG_RAW_UNCOMPRESSED != 0 { raw += 1; } else {
+            if h.flags & FLAG_RAW_UNCOMPRESSED != 0 {
+                raw += 1;
+            } else {
                 let l = payload_layout_of(&h, &c[cursor + hl..cursor + hl + len]).unwrap();
-                if l.sub.coded & 1 == 0 { lit_raw += 1; } else if l.sub.reuse & 1 == 0 { lit_new += 1; }
-                if l.sub.coded & 0b1110 != 0b1110 { seq_raw += 1; } else if l.sub.reuse & 2 == 0 { seq_new += 1; }
+                if l.sub.coded & 1 == 0 {
+                    lit_raw += 1;
+                } else if l.sub.reuse & 1 == 0 {
+                    lit_new += 1;
+                }
+                if l.sub.coded & 0b1110 != 0b1110 {
+                    seq_raw += 1;
+                } else if l.sub.reuse & 2 == 0 {
+                    seq_new += 1;
+                }
             }
             cursor += hl + len;
         }

@@ -41,14 +41,19 @@ fn run(args: &[String]) -> Result<()> {
     let t = e.get("tiers").and_then(json::Value::as_u64s).ok_or("no tiers")?;
     let (o, k) = (shape[0] as usize, shape[1] as usize);
     let saved = Checkpoint::open(dir)?;
-    let (data, blocks, base) = (read(&saved, &format!("{name}.glyd_data"))?, read(&saved, &format!("{name}.glyd_blocks"))?, read(&saved, &format!("{name}.glyd_block_base"))?);
+    let (data, blocks, base) =
+        (read(&saved, &format!("{name}.glyd_data"))?, read(&saved, &format!("{name}.glyd_blocks"))?, read(&saved, &format!("{name}.glyd_block_base"))?);
     if data.len() != o * k / 1024 * 1280 || base.len() != (o * k / 1024 + 1) * 4 {
         return Err(format!("{name}: its buffers are not its shape's").into());
     }
 
     let ctx = cuda::Context::new(0)?;
     let (d, b, bb) = (ctx.upload(&data)?, ctx.upload(&blocks)?, ctx.upload(&base)?);
-    let w = Matrix { pack: Pack::Tiered(Tiered { data: d.ptr(), blocks: b.ptr(), block_base: bb.ptr(), tiers: [t[0] as u32, t[1] as u32, t[2] as u32] }), rows: o as i64, cols: k as i64 };
+    let w = Matrix {
+        pack: Pack::Tiered(Tiered { data: d.ptr(), blocks: b.ptr(), block_base: bb.ptr(), tiers: [t[0] as u32, t[1] as u32, t[2] as u32] }),
+        rows: o as i64,
+        cols: k as i64,
+    };
     let gpu = lib.gpu()?;
     println!("{name} [{o}, {k}] on {} ({gpu}), the library's C API {}", ctx.name()?, lib.api_version());
 
@@ -85,7 +90,15 @@ fn run(args: &[String]) -> Result<()> {
             r => r?,
         };
         let ws = ctx.alloc(need.max(1))?;
-        let p = |y: &cuda::Buffer, bytes| Product { x: xg.ptr(), m: m as i64, bias: std::ptr::null(), y: y.ptr(), workspace: ws.ptr(), workspace_bytes: bytes, done: done.ptr() };
+        let p = |y: &cuda::Buffer, bytes| Product {
+            x: xg.ptr(),
+            m: m as i64,
+            bias: std::ptr::null(),
+            y: y.ptr(),
+            workspace: ws.ptr(),
+            workspace_bytes: bytes,
+            done: done.ptr(),
+        };
         // SAFETY: X [m, k] and Y [m, o] in device memory, the workspace of the query's bytes, the counters zeroed.
         unsafe { lib.linear(&w, &p(&y1, need), None, Stream::DEFAULT)? };
         // the route's kernel on its own (a prompt's DECODE and AHEAD by the prompt kernel, as linear takes them)

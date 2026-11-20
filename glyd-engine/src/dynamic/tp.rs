@@ -49,7 +49,13 @@ pub struct Group {
 impl Group {
     pub fn new(devices: &[i32]) -> Arc<Group> {
         let shared = devices.iter().enumerate().any(|(i, d)| devices[..i].contains(d));
-        Arc::new(Group { devices: devices.to_vec(), posted: Mutex::new(vec![None; devices.len()]), barrier: Meet::new(devices.len()), shared, extra: Mutex::new(None) })
+        Arc::new(Group {
+            devices: devices.to_vec(),
+            posted: Mutex::new(vec![None; devices.len()]),
+            barrier: Meet::new(devices.len()),
+            shared,
+            extra: Mutex::new(None),
+        })
     }
 
     /// A GPU's thread of the group has failed: every wait of the others' (now or later) fails too, instead of waiting for it.
@@ -86,7 +92,11 @@ impl Meet {
         while g.1 == round && !g.2 {
             g = self.cv.wait(g).map_err(|_| broken())?;
         }
-        if g.1 == round { Err(broken()) } else { Ok(()) }
+        if g.1 == round {
+            Err(broken())
+        } else {
+            Ok(())
+        }
     }
 
     fn fail(&self) {
@@ -157,7 +167,13 @@ impl Comm {
         dev.make_current()?;
         let mut ch = Vec::new();
         for _ in 0..CHANNELS {
-            ch.push(Chan { _stage: Buf::new(2 * n * CAP)?, flags: Buf::zeroed(n * BLOCKS * 4)?, ctr: Buf::zeroed(BLOCKS * 4)?, tab: Buf::new(2 * n * 8)?, temp: RefCell::new((Buf::new(16)?, Vec::new())) });
+            ch.push(Chan {
+                _stage: Buf::new(2 * n * CAP)?,
+                flags: Buf::zeroed(n * BLOCKS * 4)?,
+                ctr: Buf::zeroed(BLOCKS * 4)?,
+                tab: Buf::new(2 * n * 8)?,
+                temp: RefCell::new((Buf::new(16)?, Vec::new())),
+            });
         }
         let mine: [[u64; 2]; CHANNELS] = std::array::from_fn(|c| [ch[c]._stage.ptr, ch[c].flags.ptr]);
         g.posted.lock().map_err(|_| Error("the GPUs' group is poisoned".into()))?[rank] = Some(mine);
@@ -172,7 +188,17 @@ impl Comm {
             chan.tab.write(0, &tab)?;
         }
         let min_bytes = crate::tune!("GLYD_TP_MIN_MB").and_then(|v| v.parse::<usize>().ok()).map_or(MIN_BYTES, |m| m << 20);
-        Ok(Rc::new(Comm { rank, n, group: g.clone(), gather: dev.kernel(kname!("tp_gather"))?, ch, streams: RefCell::new(Vec::new()), min_bytes, emulated: false, seen: RefCell::new(Default::default()) }))
+        Ok(Rc::new(Comm {
+            rank,
+            n,
+            group: g.clone(),
+            gather: dev.kernel(kname!("tp_gather"))?,
+            ch,
+            streams: RefCell::new(Vec::new()),
+            min_bytes,
+            emulated: false,
+            seen: RefCell::new(Default::default()),
+        }))
     }
 
     /// This GPU (`dev`) as the first of `n` GPUs would load and run a model, alone: each sliced product its slice's alone, its gathers left out, the
@@ -648,7 +674,10 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
         }
         let ms = t0.elapsed().as_secs_f64() * 1e3 / steps as f64;
         let total: f64 = stages.iter().map(|x| x.1).sum::<f64>() / steps as f64;
-        println!("one GPU, {}: {ms:.3} ms a step, {total:.3} ms of it in the stages below (GPU time, {steps} steps)", if in_graph { "in the step graph" } else { "graphs off" });
+        println!(
+            "one GPU, {}: {ms:.3} ms a step, {total:.3} ms of it in the stages below (GPU time, {steps} steps)",
+            if in_graph { "in the step graph" } else { "graphs off" }
+        );
         for (k, v) in &stages {
             println!("{:>44} {:8.3} ms {:5.1}%", k, v / steps as f64, 100.0 * v / steps as f64 / total);
         }

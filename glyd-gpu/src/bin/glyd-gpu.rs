@@ -57,7 +57,16 @@ struct Args {
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
-    let mut a = Args { free: Vec::new(), threads: 0, device: "cpu".into(), layout: save::Layout::Tiered, no_merge: false, plan: None, codes: None, shard_bytes: save::SHARD_BYTES };
+    let mut a = Args {
+        free: Vec::new(),
+        threads: 0,
+        device: "cpu".into(),
+        layout: save::Layout::Tiered,
+        no_merge: false,
+        plan: None,
+        codes: None,
+        shard_bytes: save::SHARD_BYTES,
+    };
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -102,7 +111,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
         i += 1;
     }
     if a.threads == 0 {
-        a.threads = std::env::var("GLYD_THREADS").ok().and_then(|n| n.parse().ok()).filter(|&n| n > 0).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+        a.threads = std::env::var("GLYD_THREADS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
     }
     Ok(a)
 }
@@ -114,29 +127,63 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let t = Instant::now();
             let source = save::Source::find(model)?;
             let s = match (&a.plan, &a.codes) {
-                (Some(p), None) => save::save_planned(&source, Path::new(out), a.threads, a.shard_bytes, a.layout, &std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?)?,
-                (Some(p), Some(c)) => save::save_calibrated(&source, Path::new(out), a.threads, a.shard_bytes, a.layout, &std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?, Path::new(c))?,
+                (Some(p), None) => save::save_planned(
+                    &source,
+                    Path::new(out),
+                    a.threads,
+                    a.shard_bytes,
+                    a.layout,
+                    &std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
+                )?,
+                (Some(p), Some(c)) => save::save_calibrated(
+                    &source,
+                    Path::new(out),
+                    a.threads,
+                    a.shard_bytes,
+                    a.layout,
+                    &std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
+                    Path::new(c),
+                )?,
                 (None, None) => save::save(&source, Path::new(out), a.threads, a.shard_bytes, !a.no_merge, a.layout)?,
                 (None, Some(_)) => return Err("--codes goes with --plan".into()),
             };
             let secs = t.elapsed().as_secs_f64();
             let coded = if a.codes.is_some() { format!(", {} from calibrated codes, the rest from their weights", s.calibrated) } else { String::new() };
             println!("{model}: {} tensors packed and checked{coded}, saved in {out} ({} saved as they are, with their sha256)", s.checked, s.hashed);
-            eprintln!("{:.2} GB of bf16 in {secs:.1} s ({:.2} GB/s, {} threads), {} shard{}", s.bytes as f64 / 1e9, s.bytes as f64 / 1e9 / secs, a.threads, s.shards, if s.shards == 1 { "" } else { "s" });
+            eprintln!(
+                "{:.2} GB of bf16 in {secs:.1} s ({:.2} GB/s, {} threads), {} shard{}",
+                s.bytes as f64 / 1e9,
+                s.bytes as f64 / 1e9 / secs,
+                a.threads,
+                s.shards,
+                if s.shards == 1 { "" } else { "s" }
+            );
             Ok(())
         }
         (Some("verify"), [path]) => {
             let v = if a.device == "cpu" {
                 save::verify(Path::new(path), a.threads, &save::Decoder::Cpu)?
             } else {
-                let ordinal = a.device.strip_prefix("cuda:").or(if a.device == "cuda" { Some("0") } else { None }).and_then(|n| n.parse().ok()).ok_or("--device takes cpu or cuda:N")?;
+                let ordinal = a
+                    .device
+                    .strip_prefix("cuda:")
+                    .or(if a.device == "cuda" { Some("0") } else { None })
+                    .and_then(|n| n.parse().ok())
+                    .ok_or("--device takes cpu or cuda:N")?;
                 let (lib, ctx) = (Library::find()?, cuda::Context::new(ordinal)?);
                 save::verify(Path::new(path), a.threads, &save::Decoder::Gpu(&lib, &ctx))?
             };
             for k in &v.skipped {
-                eprintln!("glyd verify: warning: {path}/glyd.json: {k:?}, a key of a newer glyd's save than this one ({}): skipped, the rest checked", env!("CARGO_PKG_VERSION"));
+                eprintln!(
+                    "glyd verify: warning: {path}/glyd.json: {k:?}, a key of a newer glyd's save than this one ({}): skipped, the rest checked",
+                    env!("CARGO_PKG_VERSION")
+                );
             }
-            let rest = if v.unchecked > 0 { format!("{} saved as they are not checked (saved before glyd 0.25: no sha256 for them)", v.unchecked) } else { format!("{} saved as they are match theirs", v.hashed) };
+            let rest = if v.unchecked > 0 {
+                format!("{} saved as they are not checked (saved before glyd 0.25: no sha256 for them)", v.unchecked)
+            } else {
+                format!("{} saved as they are match theirs", v.hashed)
+            };
             println!("{path}: {} tensors decode to glyd.json's sha256, {rest}", v.packed);
             Ok(())
         }

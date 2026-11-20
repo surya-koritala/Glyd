@@ -135,7 +135,8 @@ impl RefLayer<'_> {
                 sc.spawn(move || {
                     for (i, row) in chunk.chunks_mut(d).enumerate() {
                         let tok = c * per + i;
-                        let (id, w): (Vec<usize>, Vec<f32>) = (0..k).filter(|&j| ids[tok * k + j] >= 0).map(|j| (ids[tok * k + j] as usize, wts[tok * k + j])).unzip();
+                        let (id, w): (Vec<usize>, Vec<f32>) =
+                            (0..k).filter(|&j| ids[tok * k + j] >= 0).map(|j| (ids[tok * k + j] as usize, wts[tok * k + j])).unzip();
                         row.copy_from_slice(&self.token(&x[tok * d..(tok + 1) * d], &id, &w));
                     }
                 });

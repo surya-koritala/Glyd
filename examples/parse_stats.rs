@@ -50,9 +50,31 @@ fn report(name: &str, n: usize, seqs: &[glyd::v7_encode::Sequence], lits: usize)
     let mut lhist = [0usize; 5];
     for q in &matches {
         let o = q.offset as usize;
-        hist[if o < 64 { 0 } else if o < 4096 { 1 } else if o < 65536 { 2 } else if o < 1 << 21 { 3 } else if o < 1 << 23 { 4 } else { 5 }] += 1;
+        hist[if o < 64 {
+            0
+        } else if o < 4096 {
+            1
+        } else if o < 65536 {
+            2
+        } else if o < 1 << 21 {
+            3
+        } else if o < 1 << 23 {
+            4
+        } else {
+            5
+        }] += 1;
         let l = q.match_len as usize;
-        lhist[if l < 6 { 0 } else if l < 10 { 1 } else if l < 20 { 2 } else if l < 50 { 3 } else { 4 }] += 1;
+        lhist[if l < 6 {
+            0
+        } else if l < 10 {
+            1
+        } else if l < 20 {
+            2
+        } else if l < 50 {
+            3
+        } else {
+            4
+        }] += 1;
     }
     println!("{name}: {} MB, {} matches ({} per KB), literals {:.1}%, mean match {:.1}; offsets <64 {:.0}% <4K {:.0}% <64K {:.0}% <2M {:.0}% <8M {:.0}% more {:.0}%; lengths <6 {:.0}% <10 {:.0}% <20 {:.0}% <50 {:.0}% more {:.0}%",
         n >> 20, matches.len(), matches.len() * 1024 / n, 100.0 * lits as f64 / n as f64, mlen as f64 / matches.len().max(1) as f64,

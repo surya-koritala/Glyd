@@ -55,6 +55,7 @@ const NEURONS: usize = 64;
 const OUTPUTS: usize = 128;
 
 /// Bytes of a row of 4,096 codes, and entries of its table, in the pack.
+#[cfg_attr(not(feature = "dev"), allow(dead_code))] // development tools only
 fn row_bytes(f: Fmt) -> usize {
     f.row_bytes(HID)
 }
@@ -98,13 +99,19 @@ pub struct ExpertDesc {
 impl ExpertDesc {
     /// The bytes of the expert's codes and of its books as the host holds them.
     pub fn bytes(&self) -> (usize, usize) {
-        (self.inter * self.down.row_bytes(self.hid) + 2 * self.inter * self.up.row_bytes(self.hid), (self.inter * self.down.entries() + 2 * self.inter * self.up.entries()) * 2)
+        (
+            self.inter * self.down.row_bytes(self.hid) + 2 * self.inter * self.up.row_bytes(self.hid),
+            (self.inter * self.down.entries() + 2 * self.inter * self.up.entries()) * 2,
+        )
     }
 
     /// The same in the kernels' form (ternary rows as two-bit ones), each rounded up to 256.
     fn kbytes(&self) -> (usize, usize) {
         let up = |x: usize| x.div_ceil(256) * 256;
-        (up(self.inter * kform(self.down).row_bytes(self.hid) + 2 * self.inter * kform(self.up).row_bytes(self.hid)), up((self.inter * kform(self.down).entries() + 2 * self.inter * kform(self.up).entries()) * 2))
+        (
+            up(self.inter * kform(self.down).row_bytes(self.hid) + 2 * self.inter * kform(self.up).row_bytes(self.hid)),
+            up((self.inter * kform(self.down).entries() + 2 * self.inter * kform(self.up).entries()) * 2),
+        )
     }
 }
 
@@ -121,7 +128,19 @@ pub struct Cb2Host {
 impl Cb2Host {
     pub fn descs(&self) -> Vec<ExpertDesc> {
         // SAFETY: pointer arithmetic inside the caller's arrays (the caller's word: `experts` strides of each).
-        (0..self.experts).map(|i| unsafe { ExpertDesc { codes: self.codes.add(i * self.cstride), books: self.books.add(i * self.bstride), up: Fmt::Cb2, down: Fmt::Cb2, resident: None, hid: HID, inter: INTER } }).collect()
+        (0..self.experts)
+            .map(|i| unsafe {
+                ExpertDesc {
+                    codes: self.codes.add(i * self.cstride),
+                    books: self.books.add(i * self.bstride),
+                    up: Fmt::Cb2,
+                    down: Fmt::Cb2,
+                    resident: None,
+                    hid: HID,
+                    inter: INTER,
+                }
+            })
+            .collect()
     }
 }
 
@@ -239,9 +258,13 @@ fn will_need(p: *const u8, len: usize) {
     let start = p as usize / 4096 * 4096;
     // SAFETY: an advice about a range of the caller's host memory; it changes no byte.
     #[cfg(unix)]
-    unsafe { madvise(start as *mut c_void, p as usize + len - start, 3) };
+    unsafe {
+        madvise(start as *mut c_void, p as usize + len - start, 3)
+    };
     #[cfg(windows)]
-    unsafe { crate::os::win::prefetch(start as *mut c_void, p as usize + len - start) };
+    unsafe {
+        crate::os::win::prefetch(start as *mut c_void, p as usize + len - start)
+    };
 }
 
 /// A micro-batch's copies to a ring slot made by threads of their own (each with a stream): a copy from memory that is not pinned holds its thread for the time of the transfer.
@@ -477,7 +500,35 @@ impl Cb2Kern {
         let workers = crate::tune!("GLYD_CB2_COPIERS").and_then(|v| v.parse().ok()).unwrap_or(3usize).min(8);
         let copiers = if workers > 0 { Some(Copiers::new(dev.ordinal, workers)?) } else { None };
         let nocopy = crate::tune!("GLYD_CB2_NOCOPY").is_some_and(|v| v == "1");
-        Ok(Cb2Kern { host: std::cell::Cell::new(None), took: std::cell::Cell::new(HostTook::default()), add: dev.kernel(kname!("c2_add_f32"))?, up, down, tern: dev.kernel(kname!("c2_tern_cb2"))?, tern_rows: dev.kernel(kname!("c2_tern_rows"))?, mixed, dout, up128, hid, inter, stages, limit, copiers, pinned: std::cell::Cell::new(false), nocopy, inner: RefCell::new(Inner { ring: None, scratch: None, act: None, copy: Side::new()?, sync: Ev::new()?, host_x: None, host_y: None, host_yd: None }) })
+        Ok(Cb2Kern {
+            host: std::cell::Cell::new(None),
+            took: std::cell::Cell::new(HostTook::default()),
+            add: dev.kernel(kname!("c2_add_f32"))?,
+            up,
+            down,
+            tern: dev.kernel(kname!("c2_tern_cb2"))?,
+            tern_rows: dev.kernel(kname!("c2_tern_rows"))?,
+            mixed,
+            dout,
+            up128,
+            hid,
+            inter,
+            stages,
+            limit,
+            copiers,
+            pinned: std::cell::Cell::new(false),
+            nocopy,
+            inner: RefCell::new(Inner {
+                ring: None,
+                scratch: None,
+                act: None,
+                copy: Side::new()?,
+                sync: Ev::new()?,
+                host_x: None,
+                host_y: None,
+                host_yd: None,
+            }),
+        })
     }
 
     /// The device and pinned memory the calls hold given back (the ring, the plan's, the activations, the host's share's); the next call makes them again. The caller has synchronized the stream: no kernel or copy
@@ -523,15 +574,30 @@ pub unsafe fn cb2_prefill(dev: &Dev, kern: &Cb2Kern, host: &Cb2Host, n: usize, k
 /// # Safety
 /// Live device buffers of the sizes above on this device; the experts hold the bytes they say until the stream has run the call; nothing else uses the call's buffers (`Cb2Kern` is one thread's).
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn cb2_prefill_experts(_dev: &Dev, kern: &Cb2Kern, experts: &[ExpertDesc], n: usize, k: usize, xrb: u64, ids: u64, wts: u64, yrot: u64, s: Stream) -> Result<()> {
+pub unsafe fn cb2_prefill_experts(
+    _dev: &Dev,
+    kern: &Cb2Kern,
+    experts: &[ExpertDesc],
+    n: usize,
+    k: usize,
+    xrb: u64,
+    ids: u64,
+    wts: u64,
+    yrot: u64,
+    s: Stream,
+) -> Result<()> {
     let pairs = n * k;
     if n == 0 || !(1..=16).contains(&k) || experts.is_empty() || xrb % 16 != 0 || yrot % 16 != 0 {
-        return err(format!("a prompt chunk of {n} tokens with {k} pairs each over {} experts: tokens, 1 to 16 pairs, experts, 16-byte aligned rows", experts.len()));
+        return err(format!(
+            "a prompt chunk of {n} tokens with {k} pairs each over {} experts: tokens, 1 to 16 pairs, experts, 16-byte aligned rows",
+            experts.len()
+        ));
     }
     let mut guard = kern.inner.borrow_mut();
     let g = &mut *guard;
     // the buffers: slots as big as the biggest expert, a set of ternary rows' bytes if the layer has any
-    let (slot_codes, slot_books) = (MICRO * experts.iter().map(|d| d.kbytes().0).max().unwrap_or(0), MICRO * experts.iter().map(|d| d.kbytes().1).max().unwrap_or(0));
+    let (slot_codes, slot_books) =
+        (MICRO * experts.iter().map(|d| d.kbytes().0).max().unwrap_or(0), MICRO * experts.iter().map(|d| d.kbytes().1).max().unwrap_or(0));
     let ring_n = crate::tune!("GLYD_CB2_DEPTH").and_then(|v| v.parse::<usize>().ok()).unwrap_or(RING_BYTES / slot_codes.max(1)).clamp(3, 16);
     if experts.iter().any(|d| (d.hid, d.inter) != (kern.hid, kern.inter)) {
         return err(format!("experts of other sizes than the kernels' {} x {}", kern.inter, kern.hid));
@@ -542,8 +608,10 @@ pub unsafe fn cb2_prefill_experts(_dev: &Dev, kern: &Cb2Kern, experts: &[ExpertD
         let (u, d) = (m(d.up, 2 * inter), m(d.down, inter));
         (u.0 + d.0, u.1 + d.1)
     };
-    let (raw_codes, raw_books) = (MICRO * experts.iter().map(|d| tern_bytes(d).0).max().unwrap_or(0), MICRO * experts.iter().map(|d| tern_bytes(d).1).max().unwrap_or(0));
-    let grown = |r: &Ring| r.n != ring_n || r.slot_codes < slot_codes || r.slot_books < slot_books || r.raw_slot_codes < raw_codes || r.raw_slot_books < raw_books;
+    let (raw_codes, raw_books) =
+        (MICRO * experts.iter().map(|d| tern_bytes(d).0).max().unwrap_or(0), MICRO * experts.iter().map(|d| tern_bytes(d).1).max().unwrap_or(0));
+    let grown =
+        |r: &Ring| r.n != ring_n || r.slot_codes < slot_codes || r.slot_books < slot_books || r.raw_slot_codes < raw_codes || r.raw_slot_books < raw_books;
     if g.ring.as_ref().map_or(true, grown) {
         // (the stream has run the last call's kernels: the wait for its pairs came after them)
         g.ring = None;
@@ -647,7 +715,8 @@ pub unsafe fn cb2_prefill_experts(_dev: &Dev, kern: &Cb2Kern, experts: &[ExpertD
         let started = if full { (issued.iter().take_while(|i| i.is_some()).count() * MICRO).min(copy_order.len()) } else { 0 };
         let kept: std::collections::HashSet<usize> = copy_order[..started].iter().copied().collect();
         for e in 0..experts.len() {
-            on_host[e] = count[e] > 0 && count[e] <= h.max_rows && !in_place(e) && !kept.contains(&e) && experts[e].up != Fmt::Tern && experts[e].down != Fmt::Tern;
+            on_host[e] =
+                count[e] > 0 && count[e] <= h.max_rows && !in_place(e) && !kept.contains(&e) && experts[e].up != Fmt::Tern && experts[e].down != Fmt::Tern;
         }
         if full {
             let rest: Vec<usize> = copy_order[started..].iter().copied().filter(|&e| !on_host[e]).collect();
@@ -718,7 +787,8 @@ pub unsafe fn cb2_prefill_experts(_dev: &Dev, kern: &Cb2Kern, experts: &[ExpertD
         Ok(())
     };
     // the host's share on a thread of its own (its pairs from the plan, x' from the readback), beside the GPU's loop; its sums go up and are added after the GPU's products
-    let (hx, hy, hyd) = (g.host_x.as_ref().map_or(0, |b| b.ptr as usize), g.host_y.as_ref().map_or(0, |b| b.ptr as usize), g.host_yd.as_ref().map_or(0, |b| b.ptr));
+    let (hx, hy, hyd) =
+        (g.host_x.as_ref().map_or(0, |b| b.ptr as usize), g.host_y.as_ref().map_or(0, |b| b.ptr as usize), g.host_yd.as_ref().map_or(0, |b| b.ptr));
     let (limit, ex) = (kern.limit, SendPtr((experts.as_ptr(), experts.len())));
     let t_loop = std::time::Instant::now();
     let (host_res, gpu_ms) = std::thread::scope(|scope| -> Result<(Option<(usize, usize, f64)>, f64)> {
@@ -734,62 +804,62 @@ pub unsafe fn cb2_prefill_experts(_dev: &Dev, kern: &Cb2Kern, experts: &[ExpertD
                 unsafe { host_part(experts, on_host, start, tok, wt, x, y, hid, limit, h.threads) }.map(|(e, p)| (e, p, t0.elapsed().as_secs_f64() * 1e3))
             })
         });
-            // the experts already on the GPU first: their products run while the first copies are under way
-            for chunk in res_order.chunks(MICRO) {
-                let members: Vec<usize> = chunk.iter().copied().filter(|&e| count[e] > 0).collect();
-                if members.is_empty() {
-                    continue;
+        // the experts already on the GPU first: their products run while the first copies are under way
+        for chunk in res_order.chunks(MICRO) {
+            let members: Vec<usize> = chunk.iter().copied().filter(|&e| count[e] > 0).collect();
+            if members.is_empty() {
+                continue;
+            }
+            let places: Vec<Place> = members
+                .iter()
+                .map(|&e| {
+                    let d = &experts[e];
+                    let (rc_dev, rb_dev) = d.resident.expect("a resident expert");
+                    let (dr, dbk) = (d.inter * d.down.row_bytes(d.hid), d.inter * d.down.entries() * 2);
+                    // (in the expert cache's place: offsets from the ring's start, which the kernels add to its address)
+                    Place {
+                        ucode: (rc_dev + dr as u64) as i64 - cp as i64,
+                        dcode: rc_dev as i64 - cp as i64,
+                        ubook: (rb_dev + dbk as u64) as i64 - bp as i64,
+                        dbook: rb_dev as i64 - bp as i64,
+                        ubits: bits_of(d.up) as u8,
+                        dbits: bits_of(d.down) as u8,
+                    }
+                })
+                .collect();
+            run(&members, &places)?;
+        }
+        crate::tmark!(s, "experts: resident");
+        for c in 0..copy_chunks.len() {
+            let chunk = copy_chunks[c];
+            advise(experts, copy_chunks.get(c + ring.n + 1).copied());
+            let iss = match issued[c].take() {
+                Some(i) => i,
+                None => issue(kern, ring, experts, cs, first, c, chunk)?,
+            };
+            match &iss.done {
+                Some(d) => d.wait()?,
+                None => ring.ready[iss.slot].wait(s)?,
+            }
+            for t in &iss.terns {
+                if hid == HID {
+                    launch!(kern.tern, [((t[4] * 205).div_ceil(256)) as u32, 1, 1], [256, 1, 1], s; t[0], t[1], t[2], t[3], t[4] as i32)?;
+                } else {
+                    launch!(kern.tern_rows, [((t[4] as usize * (hid / 20)).div_ceil(256)) as u32, 1, 1], [256, 1, 1], s; t[0], t[1], t[2], t[3], t[4] as i32, hid as i32)?;
                 }
-                let places: Vec<Place> = members
-                    .iter()
-                    .map(|&e| {
-                        let d = &experts[e];
-                        let (rc_dev, rb_dev) = d.resident.expect("a resident expert");
-                        let (dr, dbk) = (d.inter * d.down.row_bytes(d.hid), d.inter * d.down.entries() * 2);
-                        // (in the expert cache's place: offsets from the ring's start, which the kernels add to its address)
-                        Place {
-                            ucode: (rc_dev + dr as u64) as i64 - cp as i64,
-                            dcode: rc_dev as i64 - cp as i64,
-                            ubook: (rb_dev + dbk as u64) as i64 - bp as i64,
-                            dbook: rb_dev as i64 - bp as i64,
-                            ubits: bits_of(d.up) as u8,
-                            dbits: bits_of(d.down) as u8,
-                        }
-                    })
-                    .collect();
+            }
+            let have: Vec<usize> = (0..chunk.len()).filter(|&i| count[chunk[i]] > 0).collect();
+            if !have.is_empty() {
+                let members: Vec<usize> = have.iter().map(|&i| chunk[i]).collect();
+                let places: Vec<Place> = have.iter().map(|&i| iss.places[i]).collect();
                 run(&members, &places)?;
             }
-            crate::tmark!(s, "experts: resident");
-            for c in 0..copy_chunks.len() {
-                let chunk = copy_chunks[c];
-                advise(experts, copy_chunks.get(c + ring.n + 1).copied());
-                let iss = match issued[c].take() {
-                    Some(i) => i,
-                    None => issue(kern, ring, experts, cs, first, c, chunk)?,
-                };
-                match &iss.done {
-                    Some(d) => d.wait()?,
-                    None => ring.ready[iss.slot].wait(s)?,
-                }
-                for t in &iss.terns {
-                    if hid == HID {
-                        launch!(kern.tern, [((t[4] * 205).div_ceil(256)) as u32, 1, 1], [256, 1, 1], s; t[0], t[1], t[2], t[3], t[4] as i32)?;
-                    } else {
-                        launch!(kern.tern_rows, [((t[4] as usize * (hid / 20)).div_ceil(256)) as u32, 1, 1], [256, 1, 1], s; t[0], t[1], t[2], t[3], t[4] as i32, hid as i32)?;
-                    }
-                }
-                let have: Vec<usize> = (0..chunk.len()).filter(|&i| count[chunk[i]] > 0).collect();
-                if !have.is_empty() {
-                    let members: Vec<usize> = have.iter().map(|&i| chunk[i]).collect();
-                    let places: Vec<Place> = have.iter().map(|&i| iss.places[i]).collect();
-                    run(&members, &places)?;
-                }
-                ring.free[iss.slot].record(s)?;
-                // the slot is the next copy's once its kernels have run: the copier thread waits for that, and this thread goes on
-                if kern.copiers.is_some() && c + ring.n < copy_chunks.len() && issued[c + ring.n].is_none() {
-                    issued[c + ring.n] = Some(issue(kern, ring, experts, cs, first, c + ring.n, copy_chunks[c + ring.n])?);
-                }
+            ring.free[iss.slot].record(s)?;
+            // the slot is the next copy's once its kernels have run: the copier thread waits for that, and this thread goes on
+            if kern.copiers.is_some() && c + ring.n < copy_chunks.len() && issued[c + ring.n].is_none() {
+                issued[c + ring.n] = Some(issue(kern, ring, experts, cs, first, c + ring.n, copy_chunks[c + ring.n])?);
             }
+        }
         let gpu_ms = t_loop.elapsed().as_secs_f64() * 1e3;
         let r = match job {
             Some(j) => Some(j.join().map_err(|_| Error("the host's share of the experts panicked".into()))??),
@@ -804,7 +874,13 @@ pub unsafe fn cb2_prefill_experts(_dev: &Dev, kern: &Cb2Kern, experts: &[ExpertD
         if let Some(h) = share.filter(|h| h.auto) {
             // (the host's time against the GPU loop's: more rows where the host waited, fewer where the GPU did)
             let (ratio, r) = (host_ms / gpu_ms.max(1e-3), h.max_rows as f64);
-            let next = if ratio < 0.7 { r * 1.2 + 1.0 } else if ratio > 1.0 { r * 0.8 } else { r };
+            let next = if ratio < 0.7 {
+                r * 1.2 + 1.0
+            } else if ratio > 1.0 {
+                r * 0.8
+            } else {
+                r
+            };
             kern.host.set(Some(HostShare { max_rows: (next as usize).clamp(1, 64), ..h }));
         }
     }
@@ -835,7 +911,11 @@ unsafe fn host_view(d: &ExpertDesc, limit: f32) -> Result<crate::cpu_cb::GlmExpe
     let (codes, books) = (std::slice::from_raw_parts(d.codes, cb), std::slice::from_raw_parts(d.books, bb));
     let (dc, uc) = codes.split_at(d.inter * d.down.row_bytes(d.hid));
     let (db, ub) = books.split_at(d.inter * d.down.entries() * 2);
-    GlmExpert::mixed(GlmMat { fmt: d.up, rows: 2 * d.inter, cols: d.hid, codes: uc, book: ub }, GlmMat { fmt: d.down, rows: d.inter, cols: d.hid, codes: dc, book: db }, limit)
+    GlmExpert::mixed(
+        GlmMat { fmt: d.up, rows: 2 * d.inter, cols: d.hid, codes: uc, book: ub },
+        GlmMat { fmt: d.down, rows: d.inter, cols: d.hid, codes: dc, book: db },
+        limit,
+    )
 }
 
 /// The host's share of a call: the pairs of the experts `on_host` (the plan's tokens and weights, an expert's from `start`) computed from their bytes, the weighted rows added up by token into y [n, hid] (zeroed first).
@@ -844,7 +924,18 @@ unsafe fn host_view(d: &ExpertDesc, limit: f32) -> Result<crate::cpu_cb::GlmExpe
 /// # Safety
 /// As `host_view` for every expert taken.
 #[allow(clippy::too_many_arguments)]
-unsafe fn host_part(experts: &[ExpertDesc], on_host: &[bool], start: &[usize], tok: &[i32], wt: &[f32], x: &[u16], y: &mut [f32], hid: usize, limit: f32, threads: usize) -> Result<(usize, usize)> {
+unsafe fn host_part(
+    experts: &[ExpertDesc],
+    on_host: &[bool],
+    start: &[usize],
+    tok: &[i32],
+    wt: &[f32],
+    x: &[u16],
+    y: &mut [f32],
+    hid: usize,
+    limit: f32,
+    threads: usize,
+) -> Result<(usize, usize)> {
     use crate::cpu_cb::GlmPair;
     let which: Vec<usize> = (0..experts.len()).filter(|&e| on_host[e]).collect();
     let views = which.iter().map(|&e| host_view(&experts[e], limit)).collect::<Result<Vec<_>>>()?;
@@ -918,7 +1009,10 @@ fn advise(experts: &[ExpertDesc], batch: Option<&[usize]>) {
 /// and the ternary matrices to be made two-bit rows (raw codes, raw books, codes, books, rows).
 fn plan_batch(ring: &Ring, experts: &[ExpertDesc], slot: usize, members: &[usize]) -> (Vec<Place>, Vec<(u64, usize, usize)>, Vec<[u64; 5]>) {
     let (cbase, bbase) = (ring.codes.ptr + (slot * ring.slot_codes) as u64, ring.books.ptr + (slot * ring.slot_books) as u64);
-    let (mut rc, mut rb) = (ring.raw_codes.as_ref().map_or(0, |x| x.ptr) + (slot * ring.raw_slot_codes) as u64, ring.raw_books.as_ref().map_or(0, |x| x.ptr) + (slot * ring.raw_slot_books) as u64);
+    let (mut rc, mut rb) = (
+        ring.raw_codes.as_ref().map_or(0, |x| x.ptr) + (slot * ring.raw_slot_codes) as u64,
+        ring.raw_books.as_ref().map_or(0, |x| x.ptr) + (slot * ring.raw_slot_books) as u64,
+    );
     let (mut co, mut bo) = (0usize, 0usize);
     let (mut places, mut copies, mut terns) = (Vec::new(), Vec::new(), Vec::new());
     for &e in members {
@@ -941,7 +1035,10 @@ fn plan_batch(ring: &Ring, experts: &[ExpertDesc], slot: usize, members: &[usize
         } else {
             // per matrix: the downT rows come first in the host's bytes, the up rows after them
             let (dr, dbk) = (d.inter * d.down.row_bytes(d.hid), d.inter * d.down.entries() * 2);
-            for (fmt, rows, code_src, book_src, code_dst, book_dst) in [(d.down, d.inter, d.codes as usize, d.books as usize, dcode, dbook), (d.up, 2 * d.inter, d.codes as usize + dr, d.books as usize + dbk, ucode, ubook)] {
+            for (fmt, rows, code_src, book_src, code_dst, book_dst) in [
+                (d.down, d.inter, d.codes as usize, d.books as usize, dcode, dbook),
+                (d.up, 2 * d.inter, d.codes as usize + dr, d.books as usize + dbk, ucode, ubook),
+            ] {
                 let (cl, bl) = (rows * fmt.row_bytes(d.hid), rows * fmt.entries() * 2);
                 if fmt == Fmt::Tern {
                     copies.push((rc, code_src, cl));
@@ -1103,7 +1200,8 @@ mod tests {
         let copies = vec![(1000u64, 50usize, 10usize), (0, 0, 10), (10, 10, 30), (40, 41, 5), (1010, 60, 6)];
         let m = merged(copies.clone(), 16);
         assert_eq!(m, vec![(0, 0, 16), (16, 16, 16), (32, 32, 8), (40, 41, 5), (1000, 50, 16)]);
-        let bytes = |v: &[(u64, usize, usize)]| v.iter().flat_map(|&(d, s, l)| (0..l).map(move |i| (d + i as u64, s + i))).collect::<std::collections::BTreeSet<_>>();
+        let bytes =
+            |v: &[(u64, usize, usize)]| v.iter().flat_map(|&(d, s, l)| (0..l).map(move |i| (d + i as u64, s + i))).collect::<std::collections::BTreeSet<_>>();
         assert_eq!(bytes(&m), bytes(&copies));
     }
 
@@ -1117,7 +1215,14 @@ mod tests {
         let batch = [1usize, 2, 4, 5, 6, 7];
         // (a place for each expert of the batch: codes at 1,000 times its number, widths 2, 3 and 4 in turn)
         let places: Vec<Place> = (0..batch.len())
-            .map(|i| Place { ucode: 1000 * i as i64 + 7, dcode: 1000 * i as i64, ubook: 10 * i as i64 + 1, dbook: 10 * i as i64, ubits: 2 + (i % 3) as u8, dbits: 2 + ((i + 1) % 3) as u8 })
+            .map(|i| Place {
+                ucode: 1000 * i as i64 + 7,
+                dcode: 1000 * i as i64,
+                ubook: 10 * i as i64 + 1,
+                dbook: 10 * i as i64,
+                ubits: 2 + (i % 3) as u8,
+                dbits: 2 + ((i + 1) % 3) as u8,
+            })
             .collect();
         for cap in [64usize, 100, 300, 5000] {
             let ls = launches(&batch, &count, &start, &places, cap);
@@ -1145,7 +1250,10 @@ mod tests {
                 for bits in 2..=4 {
                     if let Some(part) = pick(sg, |i| widths[i].0 == bits) {
                         parts += part.n;
-                        assert_eq!(part.tiles[part.n as usize], (0..sg.n as usize).filter(|&i| widths[i].0 == bits).map(|i| sg.tiles[i + 1] - sg.tiles[i]).sum::<i32>());
+                        assert_eq!(
+                            part.tiles[part.n as usize],
+                            (0..sg.n as usize).filter(|&i| widths[i].0 == bits).map(|i| sg.tiles[i + 1] - sg.tiles[i]).sum::<i32>()
+                        );
                     }
                 }
                 assert_eq!(parts, sg.n);
@@ -1195,17 +1303,21 @@ mod bench {
 
     #[cfg(unix)]
     extern "C" {
-        fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
-        fn munmap(addr: *mut u8, len: usize) -> i32;
+        fn mmap(addr: *mut std::ffi::c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut std::ffi::c_void;
+        fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
     }
 
     impl Drop for Mapped {
         fn drop(&mut self) {
             // SAFETY: mapped in `map_layer`, unmapped once.
             #[cfg(unix)]
-            unsafe { munmap(self.ptr, self.len) };
+            unsafe {
+                munmap(self.ptr as *mut std::ffi::c_void, self.len)
+            };
             #[cfg(windows)]
-            unsafe { crate::os::win::unmap(self.ptr.cast()) };
+            unsafe {
+                crate::os::win::unmap(self.ptr.cast())
+            };
         }
     }
 
@@ -1215,13 +1327,20 @@ mod bench {
         use std::os::unix::io::AsRawFd;
         let path = std::path::Path::new(dir).join(format!("layer-{layer:03}.safetensors"));
         let f = File::open(&path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
-        let mut kept: Vec<usize> = f.tensors.iter().filter_map(|(n, _)| n.strip_suffix(".u.0").and_then(|e| e.strip_prefix('e')).and_then(|e| e.parse().ok())).collect();
+        let mut kept: Vec<usize> =
+            f.tensors.iter().filter_map(|(n, _)| n.strip_suffix(".u.0").and_then(|e| e.strip_prefix('e')).and_then(|e| e.parse().ok())).collect();
         kept.sort();
         let first = *kept.first().ok_or_else(|| Error("a layer file with no expert".into()))?;
-        let at = |e: usize, what: &str| -> Result<usize> { Ok(f.get(&format!("e{e:03}.{what}")).ok_or_else(|| Error(format!("no tensor e{e:03}.{what}")))?.offset as usize) };
+        let at = |e: usize, what: &str| -> Result<usize> {
+            Ok(f.get(&format!("e{e:03}.{what}")).ok_or_else(|| Error(format!("no tensor e{e:03}.{what}")))?.offset as usize)
+        };
         let (b0, c0) = (at(first, "d.1")?, at(first, "d.0")?);
         for (i, &e) in kept.iter().enumerate() {
-            if at(e, "d.1")? != b0 + i * BOOKS || at(e, "u.1")? != b0 + i * BOOKS + 2048 * 8 || at(e, "d.0")? != c0 + i * CODES || at(e, "u.0")? != c0 + i * CODES + 2048 * 1024 {
+            if at(e, "d.1")? != b0 + i * BOOKS
+                || at(e, "u.1")? != b0 + i * BOOKS + 2048 * 8
+                || at(e, "d.0")? != c0 + i * CODES
+                || at(e, "u.0")? != c0 + i * CODES + 2048 * 1024
+            {
                 return err(format!("expert {e}'s tensors are not where the {i}th of a run end to end are"));
             }
         }
@@ -1229,7 +1348,7 @@ mod bench {
         let len = file.metadata().map_err(|e| Error(format!("{}: {e}", path.display())))?.len() as usize;
         // SAFETY: a read-only private mapping of a file held open; it outlives the descriptor.
         #[cfg(unix)]
-        let ptr = unsafe { mmap(std::ptr::null_mut(), len, 1, 2, file.as_raw_fd(), 0) };
+        let ptr = unsafe { mmap(std::ptr::null_mut(), len, 1, 2, file.as_raw_fd(), 0) } as *mut u8;
         #[cfg(unix)]
         if ptr as usize == usize::MAX {
             return err(format!("{}: cannot be mapped", path.display()));
@@ -1264,7 +1383,13 @@ mod bench {
             }
         }
         t.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        println!("pageable, the caller's thread: {:.1} GB/s at the median of {} blocks of {} MB ({:.1} ms a block)", gbs(block, t[t.len() / 2]), t.len(), block >> 20, t[t.len() / 2] * 1e3);
+        println!(
+            "pageable, the caller's thread: {:.1} GB/s at the median of {} blocks of {} MB ({:.1} ms a block)",
+            gbs(block, t[t.len() / 2]),
+            t.len(),
+            block >> 20,
+            t[t.len() / 2] * 1e3
+        );
         // threads of their own
         for w in [1usize, 2, 3, 4] {
             let c = Copiers::new(dev.ordinal, w)?;
@@ -1275,7 +1400,8 @@ mod bench {
                     // the block's eight experts dealt round the threads
                     let done = Done::new(w);
                     for (i, tx) in c.tx.iter().enumerate() {
-                        let copies = (i..MICRO).step_by(w).map(|j| (bufs[i].ptr + (j * CODES) as u64, host.codes as usize + (b * MICRO + j) * CODES, CODES)).collect();
+                        let copies =
+                            (i..MICRO).step_by(w).map(|j| (bufs[i].ptr + (j * CODES) as u64, host.codes as usize + (b * MICRO + j) * CODES, CODES)).collect();
                         tx.send(Job { copies, after: Vec::new(), done: done.clone(), stage: false }).expect("a copier");
                     }
                     done.wait()?;
@@ -1334,7 +1460,12 @@ mod bench {
             match r {
                 Err(e) => println!("registering {} MB in place (flags {flags}): {}", (hi - lo) >> 20, e.0),
                 Ok(()) => {
-                    println!("registering {} MB in place (flags {flags}): {:.1} ms ({:.2} ms a GB)", (hi - lo) >> 20, reg * 1e3, reg * 1e3 / ((hi - lo) as f64 / 1e9));
+                    println!(
+                        "registering {} MB in place (flags {flags}): {:.1} ms ({:.2} ms a GB)",
+                        (hi - lo) >> 20,
+                        reg * 1e3,
+                        reg * 1e3 / ((hi - lo) as f64 / 1e9)
+                    );
                     let t0 = Instant::now();
                     let mut moved = 0usize;
                     let mut off = lo;
@@ -1523,7 +1654,15 @@ mod bench {
                     let (db, ub) = bp.split_at(2048 * d.down.entries() * 2);
                     let mat = |fmt: Fmt, rows: usize, codes: &[u8], book: &[u8]| -> crate::cpu_cb::GlmMat<'static> {
                         // SAFETY: as above.
-                        unsafe { crate::cpu_cb::GlmMat { fmt, rows, cols: HID, codes: std::mem::transmute::<&[u8], &'static [u8]>(codes), book: std::mem::transmute::<&[u8], &'static [u8]>(book) } }
+                        unsafe {
+                            crate::cpu_cb::GlmMat {
+                                fmt,
+                                rows,
+                                cols: HID,
+                                codes: std::mem::transmute::<&[u8], &'static [u8]>(codes),
+                                book: std::mem::transmute::<&[u8], &'static [u8]>(book),
+                            }
+                        }
                     };
                     GlmExpert::mixed(mat(d.up, 4096, uc, ub), mat(d.down, 2048, dc, db), 10.0)
                 })

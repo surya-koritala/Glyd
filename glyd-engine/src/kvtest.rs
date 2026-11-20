@@ -70,7 +70,10 @@ const BLOCKS: [(Content, Style); 15] = [
 ];
 
 /// Values of every special kind: both zeros, subnormals (the largest and the smallest of each sign), the smallest normal numbers, the largest, both infinities, NaNs of several payloads, 1 and -1.
-const SPECIALS: [u16; 20] = [0x0000, 0x8000, 0x0001, 0x8001, 0x007f, 0x807f, 0x0080, 0x8080, 0x7f7f, 0xff7f, 0x7f80, 0xff80, 0x7fc0, 0xffc0, 0x7f81, 0xff81, 0x7fff, 0xffff, 0x3f80, 0xbf80];
+const SPECIALS: [u16; 20] = [
+    0x0000, 0x8000, 0x0001, 0x8001, 0x007f, 0x807f, 0x0080, 0x8080, 0x7f7f, 0xff7f, 0x7f80, 0xff80, 0x7fc0, 0xffc0, 0x7f81, 0xff81, 0x7fff, 0xffff, 0x3f80,
+    0xbf80,
+];
 
 /// The first block of the test's blocks (they are 15 consecutive ones of the cache).
 const FIRST_BLOCK: i32 = 40;
@@ -113,7 +116,10 @@ impl Kinds {
     }
 
     fn describe(&self) -> String {
-        format!("{} values ({} zeros, {} negative zeros, {} subnormals, {} infinities, {} NaNs, {} outside their windows)", self.values, self.zeros, self.neg_zeros, self.subnormals, self.infinities, self.nans, self.outside)
+        format!(
+            "{} values ({} zeros, {} negative zeros, {} subnormals, {} infinities, {} NaNs, {} outside their windows)",
+            self.values, self.zeros, self.neg_zeros, self.subnormals, self.infinities, self.nans, self.outside
+        )
     }
 }
 
@@ -131,7 +137,8 @@ fn make_block(rng: &mut Rng, what: Content, kb: &[u8], vb: &[u8], h: usize, d: u
         Content::Patterns(half) => (0..2 * n).map(|i| all[(half * 2 * n + i) % all.len()]).collect(),
         Content::Window { exceptions, specials } => {
             // every value inside its window: a random sign, an exponent >> 1 of the window's 8, a random low byte
-            let mut v: Vec<u16> = (0..2 * n).map(|i| ((rng.next() & 1) as u16) << 15 | ((base_of(i) + rng.below(8)) as u16) << 8 | (rng.next() & 0xff) as u16).collect();
+            let mut v: Vec<u16> =
+                (0..2 * n).map(|i| ((rng.next() & 1) as u16) << 15 | ((base_of(i) + rng.below(8)) as u16) << 8 | (rng.next() & 0xff) as u16).collect();
             // `exceptions` of them moved out of their window (an exponent >> 1 of the other 120, any sign and low byte)
             for i in rng.pick(2 * n, exceptions) {
                 let base = base_of(i);
@@ -177,8 +184,22 @@ unsafe fn write_block(e: &Engine, l: usize, kd: &Buf, vd: &Buf, slots: &Buf, fro
     };
     for (t, m) in pieces {
         e.lib.kv_write(
-            &e.kv.geom, e.kv.pools[l].ptr, e.kv.kbase[l].ptr, e.kv.vbase[l].ptr, l as i64, kd.ptr + (t * hd * 2) as u64, hd as i64, vd.ptr + (t * hd * 2) as u64, hd as i64, slots.ptr + (t * 8) as u64, m as i64,
-            e.kv.status.ptr, e.kv.lost.ptr, e.kv.nlost, e.kv.ring, e.dev.stream,
+            &e.kv.geom,
+            e.kv.pools[l].ptr,
+            e.kv.kbase[l].ptr,
+            e.kv.vbase[l].ptr,
+            l as i64,
+            kd.ptr + (t * hd * 2) as u64,
+            hd as i64,
+            vd.ptr + (t * hd * 2) as u64,
+            hd as i64,
+            slots.ptr + (t * 8) as u64,
+            m as i64,
+            e.kv.status.ptr,
+            e.kv.lost.ptr,
+            e.kv.nlost,
+            e.kv.ring,
+            e.dev.stream,
         )?;
     }
     Ok(())
@@ -207,7 +228,19 @@ impl Probe {
     fn compare(&self, e: &Engine, l: usize, want: &[(Vec<u16>, Vec<u16>)], bases: (&[u8], &[u8]), t: &mut Tally, label: &str) -> Result<()> {
         let (h, d, nb) = (self.h, self.d, want.len());
         // SAFETY: live buffers of the engine; the stream is synchronized after.
-        unsafe { e.lib.kv_gather(&e.kv.geom, e.kv.pools[l].ptr, e.kv.kbase[l].ptr, e.kv.vbase[l].ptr, self.blocks.ptr, self.iota.ptr, nb as i64, self.out.ptr, e.dev.stream)? };
+        unsafe {
+            e.lib.kv_gather(
+                &e.kv.geom,
+                e.kv.pools[l].ptr,
+                e.kv.kbase[l].ptr,
+                e.kv.vbase[l].ptr,
+                self.blocks.ptr,
+                self.iota.ptr,
+                nb as i64,
+                self.out.ptr,
+                e.dev.stream,
+            )?
+        };
         e.dev.sync()?;
         let mut got = vec![0u16; nb * 16 * h * 2 * d];
         self.out.read(0, &mut got)?;

@@ -341,7 +341,39 @@ unsafe fn push_int_reserved(out: &mut Vec<u8>, v: i64) {
             *p = b'-';
             p = p.add(1);
         }
-        let digits = if u < 10 { 1 } else if u < 100 { 2 } else if u < 10_000 { if u < 1000 { 3 } else { 4 } } else if u < 100_000_000 { if u < 1_000_000 { if u < 100_000 { 5 } else { 6 } } else if u < 10_000_000 { 7 } else { 8 } } else { 8 + { let mut n = 0; let mut t = u / 100_000_000; while t > 0 { n += 1; t /= 10; } n } };
+        let digits = if u < 10 {
+            1
+        } else if u < 100 {
+            2
+        } else if u < 10_000 {
+            if u < 1000 {
+                3
+            } else {
+                4
+            }
+        } else if u < 100_000_000 {
+            if u < 1_000_000 {
+                if u < 100_000 {
+                    5
+                } else {
+                    6
+                }
+            } else if u < 10_000_000 {
+                7
+            } else {
+                8
+            }
+        } else {
+            8 + {
+                let mut n = 0;
+                let mut t = u / 100_000_000;
+                while t > 0 {
+                    n += 1;
+                    t /= 10;
+                }
+                n
+            }
+        };
         let mut i = digits;
         while i >= 2 {
             let q = u / 100;
@@ -654,7 +686,9 @@ pub fn detect(input: &[u8]) -> Option<Shape> {
         return None;
     }
     // A unit cut inside a dump's tuple list: lines `(...),`.
-    if lines.len() >= 2 && lines[..lines.len() - 1].iter().take(64).all(|l| l.starts_with(b"(") && (l.ends_with(b"),") || l.ends_with(b");") || l.ends_with(b")"))) {
+    if lines.len() >= 2
+        && lines[..lines.len() - 1].iter().take(64).all(|l| l.starts_with(b"(") && (l.ends_with(b"),") || l.ends_with(b");") || l.ends_with(b")")))
+    {
         return Some(Shape::Sql);
     }
     if lines.len() < 8 {
@@ -1601,7 +1635,6 @@ impl<'a> Decoded<'a> {
     }
 }
 
-
 /// A time column's values printed with the minute's prefix cached:
 /// consecutive values are mostly in one minute, and everything before
 /// the seconds field depends on the minute alone.
@@ -1765,7 +1798,6 @@ struct ColTable {
     ends: Vec<u32>,
 }
 
-
 /// `n` values of column `c` into `t`.
 fn decode_column(c: &mut Decoded, n: usize, t: &mut ColTable) -> Result<()> {
     t.bytes.clear();
@@ -1864,7 +1896,6 @@ fn decode_column(c: &mut Decoded, n: usize, t: &mut ColTable) -> Result<()> {
     out.resize(out.len() + 32, 0);
     Ok(())
 }
-
 
 /// The rows assembled into `out` through a raw pointer: the space is
 /// reserved once from the tables' sizes, so no write checks capacity.
@@ -2036,7 +2067,9 @@ pub fn inverse_into(image: &[u8], out: &mut Vec<u8>) -> Result<()> {
                 }
                 w.finish(out);
             }
-            if std::env::var_os("REC_TIMING").is_some() { eprintln!("decode {:?} assemble {:?}", t_dec, t1.elapsed()); }
+            if std::env::var_os("REC_TIMING").is_some() {
+                eprintln!("decode {:?} assemble {:?}", t_dec, t1.elapsed());
+            }
             return_tables(tables);
         }
         MODE_SQL => {
@@ -2332,7 +2365,10 @@ mod tests {
     fn delimited_log_round_trips() {
         let mut s = Vec::new();
         for i in 0..2000u32 {
-            s.extend_from_slice(format!("10.0.0.{} - - [19/Sep/2026:14:02:{:02}] \"GET /api/orders?page={} HTTP/1.1\" 200 {}\n", i % 7, i % 60, i, 5000 + (i % 13) * 7).as_bytes());
+            s.extend_from_slice(
+                format!("10.0.0.{} - - [19/Sep/2026:14:02:{:02}] \"GET /api/orders?page={} HTTP/1.1\" 200 {}\n", i % 7, i % 60, i, 5000 + (i % 13) * 7)
+                    .as_bytes(),
+            );
             if i % 97 == 0 {
                 s.extend_from_slice(b"a line that does not fit the shape at all\n");
             }
@@ -2347,7 +2383,9 @@ mod tests {
     fn tab_table_with_ints_and_dictionary() {
         let mut s = Vec::new();
         for i in 0..5000i64 {
-            s.extend_from_slice(format!("{}\t{}\t{}\t{}\n", ["en", "de", "fr"][(i % 3) as usize], i * 37 - 100000, i % 5, "title_".to_string() + &i.to_string()).as_bytes());
+            s.extend_from_slice(
+                format!("{}\t{}\t{}\t{}\n", ["en", "de", "fr"][(i % 3) as usize], i * 37 - 100000, i % 5, "title_".to_string() + &i.to_string()).as_bytes(),
+            );
         }
         let n = roundtrip(&s).unwrap();
         assert!(n < s.len(), "image {} of {}", n, s.len());
@@ -2360,19 +2398,22 @@ mod tests {
             if i > 0 {
                 s.push(b',');
             }
-            s.extend_from_slice(format!("({},'v{}',{})", i * 3, i % 17, if i % 2 == 0 { "NULL".to_string() } else { format!("'it''s {}, ok\\')'", i) }).as_bytes());
+            s.extend_from_slice(
+                format!("({},'v{}',{})", i * 3, i % 17, if i % 2 == 0 { "NULL".to_string() } else { format!("'it''s {}, ok\\')'", i) }).as_bytes(),
+            );
         }
         s.extend_from_slice(b";\nINSERT INTO `t` VALUES (1,'x'),(2,'y');\n/*!40000 ALTER TABLE `t` ENABLE KEYS */;\n");
         assert!(roundtrip(&s).is_some());
     }
-
 
     #[test]
     fn json_lines_round_trip() {
         let mut s = Vec::new();
         let mut x = 5u64;
         for i in 0..3000u32 {
-            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
             s.extend_from_slice(format!("{{\"ts\":\"2026-09-19T14:{:02}:{:02}Z\",\"host\":\"m_{}\",\"cpu\":{},\"mem\":{:.2},\"tags\":[\"a\",\"b{}\"],\"meta\":{{\"id\":{},\"ok\":{},\"note\":null,\"path\":\"/x\\\"y\\\\z\",\"list\":[{{\"n\":{}}},{{\"n\":{}}}]}},\"e\":\"\"}}\n",
                 (i / 60) % 60, i % 60, x % 40, x % 100, (x % 10000) as f64 / 100.0, x % 3, 1_000_000 + i, x % 2 == 0, x % 7, x % 11).as_bytes());
             if i % 500 == 0 {
@@ -2392,7 +2433,6 @@ mod tests {
         assert_eq!(inverse(&transform(&odd).unwrap()).unwrap(), odd);
     }
 
-
     #[test]
     fn empty_and_single_valued_columns_round_trip() {
         // A column that is always empty, one with one value, one mixed.
@@ -2403,20 +2443,27 @@ mod tests {
         assert!(roundtrip(&s).is_some());
     }
 
-
     #[test]
     fn decimal_column_round_trips() {
         // Prices with 0-3 places, negatives, nulls; ids with nulls.
         let mut s = Vec::new();
         let mut x = 11u64;
         for i in 0..5000u32 {
-            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
             let price = match x % 5 {
                 0 => format!("{}", (x >> 8) % 100000),
                 1 => format!("{}.{}", (x >> 8) % 1000, (x >> 20) % 10),
                 2 => format!("-{}.{:02}", (x >> 8) % 1000, (x >> 20) % 100),
                 3 => format!("{}.{:03}", (x >> 8) % 1000, (x >> 20) % 1000),
-                _ => if i % 20 == 0 { "null".to_string() } else { "0.50".to_string() },
+                _ => {
+                    if i % 20 == 0 {
+                        "null".to_string()
+                    } else {
+                        "0.50".to_string()
+                    }
+                }
             };
             let id = if i % 30 == 0 { "".to_string() } else { format!("{}", 1_000_000 + (x % 50_000)) };
             s.extend_from_slice(format!("{},{},{}\n", i, price, id).as_bytes());
@@ -2436,10 +2483,14 @@ mod tests {
         assert_eq!(parse_decimal(b"-7"), Some((-7, 0)));
     }
 
-
     #[test]
     fn fractional_second_patterns_round_trip() {
-        for (t, unit) in [("2024-02-01 00:04:45.000000", 1_000_000i64), ("2024-01-15T12:00:01.123Z", 1000), ("2024-01-15T12:00:01.123456Z", 1_000_000), ("2024-02-01 00:04:45.250", 1000)] {
+        for (t, unit) in [
+            ("2024-02-01 00:04:45.000000", 1_000_000i64),
+            ("2024-01-15T12:00:01.123Z", 1000),
+            ("2024-01-15T12:00:01.123456Z", 1_000_000),
+            ("2024-02-01 00:04:45.250", 1000),
+        ] {
             let pi = DATE_PATTERNS.iter().position(|p| parse_time(p, t.as_bytes()).is_some()).unwrap_or_else(|| panic!("{t}: no pattern"));
             let v = parse_time(DATE_PATTERNS[pi], t.as_bytes()).unwrap();
             assert_eq!(v.rem_euclid(unit), t.rsplit('.').next().unwrap().trim_end_matches('Z').parse::<i64>().unwrap(), "{t}");
@@ -2467,19 +2518,47 @@ mod tests {
         }
     }
 
-
     #[test]
     fn template_logs_round_trip() {
         // HDFS-style lines: a few templates, ids and addresses as variables.
         let mut s = Vec::new();
         let mut x = 3u64;
         for i in 0..20000u64 {
-            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
             let line = match x % 4 {
-                0 => format!("081109 {:06} {} INFO dfs.DataNode$DataXceiver: Receiving block blk_-{} src: /10.250.{}.{}:{} dest: /10.250.19.102:50010", 203518 + i, x % 900, x % 10_000_000_000_000, x % 200, x % 250, 40000 + x % 20000),
-                1 => format!("081109 {:06} {} INFO dfs.FSNamesystem: BLOCK* NameSystem.allocateBlock: /mnt/hadoop/job_{}_{:04}/part-{:05}. blk_{}", 203518 + i, x % 900, 200811092030 + i % 7, x % 100, x % 90, x % 10_000_000),
-                2 => format!("081109 {:06} {} INFO dfs.DataNode$PacketResponder: PacketResponder {} for block blk_{} terminating", 203518 + i, x % 900, x % 3, x % 10_000_000),
-                _ => format!("081109 {:06} {} WARN dfs.DataNode$DataXceiver: writeBlock blk_{} received exception java.io.IOException: Connection reset by peer", 203518 + i, x % 900, x % 10_000_000),
+                0 => format!(
+                    "081109 {:06} {} INFO dfs.DataNode$DataXceiver: Receiving block blk_-{} src: /10.250.{}.{}:{} dest: /10.250.19.102:50010",
+                    203518 + i,
+                    x % 900,
+                    x % 10_000_000_000_000,
+                    x % 200,
+                    x % 250,
+                    40000 + x % 20000
+                ),
+                1 => format!(
+                    "081109 {:06} {} INFO dfs.FSNamesystem: BLOCK* NameSystem.allocateBlock: /mnt/hadoop/job_{}_{:04}/part-{:05}. blk_{}",
+                    203518 + i,
+                    x % 900,
+                    200811092030 + i % 7,
+                    x % 100,
+                    x % 90,
+                    x % 10_000_000
+                ),
+                2 => format!(
+                    "081109 {:06} {} INFO dfs.DataNode$PacketResponder: PacketResponder {} for block blk_{} terminating",
+                    203518 + i,
+                    x % 900,
+                    x % 3,
+                    x % 10_000_000
+                ),
+                _ => format!(
+                    "081109 {:06} {} WARN dfs.DataNode$DataXceiver: writeBlock blk_{} received exception java.io.IOException: Connection reset by peer",
+                    203518 + i,
+                    x % 900,
+                    x % 10_000_000
+                ),
             };
             s.extend_from_slice(line.as_bytes());
             s.push(b'\n');

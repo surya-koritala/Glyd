@@ -60,7 +60,11 @@ fn stage(name: &str, got: &[f32], want: &[f32], tol: f64) -> bool {
     }
     let rel = (d2 / w2.max(1e-30)).sqrt();
     let ok = bad == 0 && rel <= tol;
-    println!("  {name:<28} max diff {dmax:.3e} (of {wmax:.3e})  rel {rel:.2e}{}  {}", if bad > 0 { format!("  {bad} not finite") } else { String::new() }, if ok { "ok" } else { "OFF" });
+    println!(
+        "  {name:<28} max diff {dmax:.3e} (of {wmax:.3e})  rel {rel:.2e}{}  {}",
+        if bad > 0 { format!("  {bad} not finite") } else { String::new() },
+        if ok { "ok" } else { "OFF" }
+    );
     ok
 }
 
@@ -134,9 +138,10 @@ pub fn layers(model: &Path, refd: &Path, a: &Args) -> Result<bool> {
         let t0 = std::time::Instant::now();
         let o = OptsQx { ctx: t + 64, chunk: t, layout, only: Some(vec![l]), chunked: true, ..Default::default() };
         let mut e = EngineQx::new(model, &o, Some(&make))?;
-        let _lock = gpu_lock(a)?;  // (the layer loaded: the GPU's work alone under the machine's lock)
+        let _lock = gpu_lock(a)?; // (the layer loaded: the GPU's work alone under the machine's lock)
         println!("layer {l} ({:?}): loaded in {:.1} s; {}", c.kinds[l], t0.elapsed().as_secs_f64(), e.describe());
-        let x_in: Vec<u16> = if l == 0 { words(refd, "embed.bin")?.chunks(hid).flat_map(|r| r.repeat(c.hc)).collect() } else { words(refd, &format!("L{}.out.bin", l - 1))? };
+        let x_in: Vec<u16> =
+            if l == 0 { words(refd, "embed.bin")?.chunks(hid).flat_map(|r| r.repeat(c.hc)).collect() } else { words(refd, &format!("L{}.out.bin", l - 1))? };
         let r = |stage: &str| words(refd, &format!("L{l}.{stage}.bin"));
         e.reset()?;
         put(&e, &e.pos, &(0..t as i32).collect::<Vec<_>>())?;
@@ -146,10 +151,21 @@ pub fn layers(model: &Path, refd: &Path, a: &Args) -> Result<bool> {
         let mut x0 = x_in.clone();
         if let Some(p) = &ly.ple {
             let g = e.w.ngram.as_ref().ok_or_else(|| Error("a PLE layer without its table".into()))?;
-            let want_ids: Vec<i64> = std::fs::read(refd.join(format!("L{l}.ng_ids.bin"))).map_err(|x| Error(x.to_string()))?.as_chunks::<8>().0.iter().map(|x| i64::from_le_bytes(*x)).collect();
+            let want_ids: Vec<i64> = std::fs::read(refd.join(format!("L{l}.ng_ids.bin")))
+                .map_err(|x| Error(x.to_string()))?
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|x| i64::from_le_bytes(*x))
+                .collect();
             let got_ids: Vec<i64> = g.contexts([c.eos_ngram; 2], &ids).into_iter().flat_map(|(t0, c1, c2)| g.ids(t0, c1, c2)).map(|x| x as i64).collect();
             let same = got_ids.iter().zip(&want_ids).filter(|(x, y)| x == y).count();
-            println!("  {:<28} {same} of {} the reference's{}", "n-gram rows (hashes)", want_ids.len(), if same == want_ids.len() && got_ids.len() == want_ids.len() { "  ok" } else { "  OFF" });
+            println!(
+                "  {:<28} {same} of {} the reference's{}",
+                "n-gram rows (hashes)",
+                want_ids.len(),
+                if same == want_ids.len() && got_ids.len() == want_ids.len() { "  ok" } else { "  OFF" }
+            );
             ok &= same == want_ids.len() && got_ids.len() == want_ids.len();
             let mut rows = vec![0u8; t * g.heads * g.row * 2];
             g.gather([c.eos_ngram; 2], &ids, &mut rows);
@@ -176,7 +192,12 @@ pub fn layers(model: &Path, refd: &Path, a: &Args) -> Result<bool> {
                 let m = t.min(8);
                 e.gr_mix(&ly.gr[0], e.x.ptr, m, e.h.ptr, e.inj[0].ptr)?;
                 ok &= stage("attn Gated Residual: fused, input", &read_bf16(&e, &e.h, m * hid)?, &widen(&r("a_in")?[..m * hid]), tol);
-                ok &= stage("attn Gated Residual: fused, weights", &read_f32(&e, &e.inj[0], m * c.hc)?, &f32s(refd, &format!("L{l}.a_inj.bin"))?[..m * c.hc], tol);
+                ok &= stage(
+                    "attn Gated Residual: fused, weights",
+                    &read_f32(&e, &e.inj[0], m * c.hc)?,
+                    &f32s(refd, &format!("L{l}.a_inj.bin"))?[..m * c.hc],
+                    tol,
+                );
             }
             // the token mixer on the reference's input
             put(&e, &e.h, &r("a_in")?)?;
@@ -193,10 +214,15 @@ pub fn layers(model: &Path, refd: &Path, a: &Args) -> Result<bool> {
                 e.cnt.read(0, &mut cnt)?;
                 let same = (0..t).filter(|&i| got[i * tm..i * tm + cnt[i] as usize].iter().eq(want[i * tm..(i + 1) * tm].iter().filter(|&&x| x >= 0))).count();
                 // (a block whose score is within the roundings of the next one's may be picked instead of it: the rows that pick other tokens are left out of the output's comparison)
-                let differ: Vec<usize> = (0..t).filter(|&i| !got[i * tm..i * tm + cnt[i] as usize].iter().eq(want[i * tm..(i + 1) * tm].iter().filter(|&&x| x >= 0))).collect();
+                let differ: Vec<usize> =
+                    (0..t).filter(|&i| !got[i * tm..i * tm + cnt[i] as usize].iter().eq(want[i * tm..(i + 1) * tm].iter().filter(|&&x| x >= 0))).collect();
                 println!("  {:<28} {same} of {t} rows pick the reference's tokens{}", "indexer", if same * 100 >= t * 95 { "  ok" } else { "  OFF" });
                 for &i in differ.iter().take(2) {
-                    println!("    row {i}: engine {:?}, reference {:?}", &got[i * tm..i * tm + cnt[i] as usize], want[i * tm..(i + 1) * tm].iter().filter(|&&x| x >= 0).collect::<Vec<_>>());
+                    println!(
+                        "    row {i}: engine {:?}, reference {:?}",
+                        &got[i * tm..i * tm + cnt[i] as usize],
+                        want[i * tm..(i + 1) * tm].iter().filter(|&&x| x >= 0).collect::<Vec<_>>()
+                    );
                 }
                 ok &= same * 100 >= t * 95;
                 let rows: Vec<usize> = (0..t).filter(|i| !differ.contains(i)).collect();
@@ -232,16 +258,22 @@ pub fn layers(model: &Path, refd: &Path, a: &Args) -> Result<bool> {
                     wd = a1.iter().zip(&b1).fold(wd, |m, (x, y)| m.max((x.1 - y.1).abs()));
                 }
             }
-            println!("  {:<28} {same} of {t} rows choose the reference's experts; their weights within {wd:.2e}{}", "router", if same * 100 >= t * 97 { "  ok" } else { "  OFF" });
+            println!(
+                "  {:<28} {same} of {t} rows choose the reference's experts; their weights within {wd:.2e}{}",
+                "router",
+                if same * 100 >= t * 97 { "  ok" } else { "  OFF" }
+            );
             ok &= same * 100 >= t * 97;
             let (go, wo) = (read_bf16(&e, &e.o, t * hid)?, widen(&r("m_out")?));
-            let keep: Vec<usize> = (0..t).filter(|&row| {
-                let mut a1: Vec<i64> = gi[row * k..(row + 1) * k].to_vec();
-                let mut b1: Vec<i64> = wi[row * k..(row + 1) * k].iter().map(|&x| x as i64).collect();
-                a1.sort_unstable();
-                b1.sort_unstable();
-                a1 == b1
-            }).collect();
+            let keep: Vec<usize> = (0..t)
+                .filter(|&row| {
+                    let mut a1: Vec<i64> = gi[row * k..(row + 1) * k].to_vec();
+                    let mut b1: Vec<i64> = wi[row * k..(row + 1) * k].iter().map(|&x| x as i64).collect();
+                    a1.sort_unstable();
+                    b1.sort_unstable();
+                    a1 == b1
+                })
+                .collect();
             let pick = |v: &[f32]| keep.iter().flat_map(|&row| v[row * hid..(row + 1) * hid].to_vec()).collect::<Vec<f32>>();
             ok &= stage("experts: output (same picks)", &pick(&go), &pick(&wo), tol_x);
             put(&e, &e.x, &r("mid")?)?;
@@ -282,10 +314,14 @@ fn kl_row(want: &[f32], got: &[f32]) -> (f64, Option<bool>) {
         m + v.iter().map(|&x| (x as f64 - m).exp()).sum::<f64>().ln()
     };
     let (lp, lq) = (lse(want), lse(got));
-    let kl = want.iter().zip(got).map(|(&p, &q)| {
-        let lpp = p as f64 - lp;
-        lpp.exp() * (lpp - (q as f64 - lq))
-    }).sum::<f64>();
+    let kl = want
+        .iter()
+        .zip(got)
+        .map(|(&p, &q)| {
+            let lpp = p as f64 - lp;
+            lpp.exp() * (lpp - (q as f64 - lq))
+        })
+        .sum::<f64>();
     let am = |v: &[f32]| v.iter().enumerate().fold((0, f32::NEG_INFINITY), |b, (i, &x)| if x > b.1 { (i, x) } else { b }).0;
     let best = am(want);
     let second = want.iter().enumerate().filter(|&(i, _)| i != best).fold(f32::NEG_INFINITY, |m, (_, &x)| m.max(x));
@@ -340,7 +376,15 @@ pub fn toy(model: &Path, refd: &Path, a: &Args) -> Result<bool> {
     let rows = [prefill, t - prefill];
     for (j, what) in ["prompt", "decode"].iter().enumerate() {
         let a = acc[j];
-        println!("{what} ({} positions{}): KL mean {:.2e} max {:.2e}; top-1 {} of the {} with a clear best token", rows[j], if j == 0 { format!(" in chunks of {chunk}") } else { String::new() }, a.0 / rows[j].max(1) as f64, a.1, a.2, a.3);
+        println!(
+            "{what} ({} positions{}): KL mean {:.2e} max {:.2e}; top-1 {} of the {} with a clear best token",
+            rows[j],
+            if j == 0 { format!(" in chunks of {chunk}") } else { String::new() },
+            a.0 / rows[j].max(1) as f64,
+            a.1,
+            a.2,
+            a.3
+        );
     }
     let ok = acc.iter().all(|a| a.1 < 0.02 && a.2 * 100 >= a.3 * 97);
     println!("{}", if ok { "the model is the reference's" } else { "OFF" });
@@ -355,7 +399,8 @@ pub fn cb(model: &Path, pack_dir: &Path, refd: &Path, a: &Args) -> Result<bool> 
     use crate::offload::{ExpertStore, Mode, Offload};
     let c = ConfigQx::load(model)?;
     let pack = CbPack::open_dims(pack_dir, c.hidden, c.inter)?;
-    let layers: Vec<usize> = a.flag("layers").unwrap_or("0").split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}")))).collect::<Result<_>>()?;
+    let layers: Vec<usize> =
+        a.flag("layers").unwrap_or("0").split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}")))).collect::<Result<_>>()?;
     let t_all = i32s(refd, "ids.bin")?.len();
     let t: usize = a.num("rows", 32usize)?.min(t_all);
     let hid = c.hidden;
@@ -378,7 +423,13 @@ pub fn cb(model: &Path, pack_dir: &Path, refd: &Path, a: &Args) -> Result<bool> 
             // SAFETY: live buffers of the engine sized for t rows; read after a synchronize.
             unsafe { ly.moe.as_ref().ok_or_else(|| Error("no experts".into()))?.forward(&e, e.h.ptr, t, e.o.ptr)? };
             e.dev.sync()?;
-            println!("layer {l}, {} rows, mode {}: {:.1} ms; {}", t, mode.name(), t0.elapsed().as_secs_f64() * 1e3, store.report().unwrap_or_default().replace('\n', " | "));
+            println!(
+                "layer {l}, {} rows, mode {}: {:.1} ms; {}",
+                t,
+                mode.name(),
+                t0.elapsed().as_secs_f64() * 1e3,
+                store.report().unwrap_or_default().replace('\n', " | ")
+            );
             outs.push(read_bf16(&e, &e.o, t * hid)?);
         }
         let mut ok = stage("experts: GPU against host", &outs[0], &outs[1], 1e-2);
@@ -401,7 +452,8 @@ pub fn bench_products(a: &Args) -> Result<()> {
     let dev = Dev::new(0)?;
     let kq = crate::moe_qwen4x::KernQc::load(&dev)?;
     let (fmt, overlap, reps): (usize, usize, usize) = (a.num("fmt", 0usize)?, a.num("overlap", 0usize)?, a.num("reps", 200usize)?);
-    let rows: Vec<usize> = a.flag("rows").unwrap_or("1,2,4,8").split(',').map(|x| x.parse::<usize>().map_err(|_| Error(format!("--rows {x}")))).collect::<Result<_>>()?;
+    let rows: Vec<usize> =
+        a.flag("rows").unwrap_or("1,2,4,8").split(',').map(|x| x.parse::<usize>().map_err(|_| Error(format!("--rows {x}")))).collect::<Result<_>>()?;
     let (h, i, k) = (2560usize, 640usize, 10usize);
     if ![0, 1, 2, 4].contains(&fmt) || overlap >= k || rows.iter().any(|&n| n == 0) {
         return err(format!("--fmt {fmt} --overlap {overlap} --rows {rows:?}: formats 0, 1, 2, 4, fewer than {k} shared, a row or more"));
@@ -427,7 +479,8 @@ pub fn bench_products(a: &Args) -> Result<()> {
         codes.write(pl * cstride, &rnd(cstride))?;
     }
     // codebooks of small bf16 values (format q: a row's scale), the place's formats in its last byte
-    let mut bk: Vec<u8> = (0..places * bstride / 2).flat_map(|j| half_bits(((j % 7) as f32 - 3.0) / 64.0 + if fmt == 4 { 0.1 } else { 0.0 }).to_le_bytes()).collect();
+    let mut bk: Vec<u8> =
+        (0..places * bstride / 2).flat_map(|j| half_bits(((j % 7) as f32 - 3.0) / 64.0 + if fmt == 4 { 0.1 } else { 0.0 }).to_le_bytes()).collect();
     for pl in 0..places {
         bk[pl * bstride + bstride - 1] = (fmt | fmt << 4) as u8;
     }
@@ -474,7 +527,12 @@ pub fn bench_products(a: &Args) -> Result<()> {
             )
         };
         let (mu, md) = ((span * 2 * i * rb) as f64 / 1e6, (span * i * rb) as f64 / 1e6);
-        println!("  {n} rows {span:>3} places  first products {up:>7.1} us {:>5.0} GB/s  second {down:>7.1} us {:>5.0} GB/s  both {:>5.0} GB/s", mu / up * 1e3, md / down * 1e3, (mu + md) / (up + down) * 1e3);
+        println!(
+            "  {n} rows {span:>3} places  first products {up:>7.1} us {:>5.0} GB/s  second {down:>7.1} us {:>5.0} GB/s  both {:>5.0} GB/s",
+            mu / up * 1e3,
+            md / down * 1e3,
+            (mu + md) / (up + down) * 1e3
+        );
         if a.has("dump") {
             // SAFETY: as above.
             unsafe {
@@ -510,7 +568,11 @@ pub fn bench_products(a: &Args) -> Result<()> {
                     n2 += want * want;
                 }
             }
-            println!("  {n} rows {span:>3} places  second on tensor cores {dt:>7.1} us {:>5.0} GB/s  (sums against qx_cb_down's: {:.2e} of their norm)", md / dt * 1e3, (d2 / n2.max(1e-30)).sqrt());
+            println!(
+                "  {n} rows {span:>3} places  second on tensor cores {dt:>7.1} us {:>5.0} GB/s  (sums against qx_cb_down's: {:.2e} of their norm)",
+                md / dt * 1e3,
+                (d2 / n2.max(1e-30)).sqrt()
+            );
         }
     }
     if let Some(path) = a.flag("dump") {
@@ -584,7 +646,26 @@ pub fn bench(a: &Args) -> Result<()> {
         };
         // SAFETY: live buffers of the sizes the kernels read and write.
         unsafe {
-            time("indexer scores", &mut || kg.idx_score(s, iq.ptr, (ixh * ixd) as i32, ones.ptr, 0, pk.ptr, pos.ptr, scores.ptr, pmax as i32, ixh as i32, ixd as i32, kp as i32, ksel as i32, 1.0 / (ixd as f32).sqrt(), 1.0, n as u32))?;
+            time("indexer scores", &mut || {
+                kg.idx_score(
+                    s,
+                    iq.ptr,
+                    (ixh * ixd) as i32,
+                    ones.ptr,
+                    0,
+                    pk.ptr,
+                    pos.ptr,
+                    scores.ptr,
+                    pmax as i32,
+                    ixh as i32,
+                    ixd as i32,
+                    kp as i32,
+                    ksel as i32,
+                    1.0 / (ixd as f32).sqrt(),
+                    1.0,
+                    n as u32,
+                )
+            })?;
             time("select", &mut || kg.select(s, scores.ptr, pmax as i32, pos.ptr, sel.ptr, cnt.ptr, tmax as i32, kp as i32, ksel as i32, true, n as u32))?;
             let sc2 = Buf::zeroed(n * pmax * 4)?;
             time("indexer scores (tc)", &mut || kq.ix_score(s, iq.ptr, pk.ptr, pos.ptr, sc2.ptr, n, pmax, ksel, pmax, 1.0 / (ixd as f32).sqrt()))?;
@@ -594,7 +675,9 @@ pub fn bench(a: &Args) -> Result<()> {
                 scores.read(0, &mut x)?;
                 sc2.read(0, &mut y)?;
                 let p_last = (at + 1) / kp;
-                let (worst, big) = (0..n).flat_map(|i| (0..p_last.min(pmax)).map(move |p| i * pmax + p)).fold((0f32, 0f32), |(w, b), k| (w.max((x[k] - y[k]).abs()), b.max(x[k].abs())));
+                let (worst, big) = (0..n)
+                    .flat_map(|i| (0..p_last.min(pmax)).map(move |p| i * pmax + p))
+                    .fold((0f32, 0f32), |(w, b), k| (w.max((x[k] - y[k]).abs()), b.max(x[k].abs())));
                 println!("  dec: the two indexers' scores differ by up to {worst:.3e} (scores up to {big:.3e})");
             }
             let (sel2, cnt2) = (Buf::zeroed(n * tmax * 4)?, Buf::zeroed(n * 4)?);
@@ -626,14 +709,18 @@ pub fn bench(a: &Args) -> Result<()> {
             kq.ix_score(s, iq.ptr, pk.ptr, pos.ptr, scores.ptr, n, pmax, ksel, pmax, 1.0 / (ixd as f32).sqrt())?;
             kq.select(s, scores.ptr, pmax, pos.ptr, sel.ptr, cnt.ptr, tmax, kp, ksel, n)?;
             for sp in [16usize, 32, 64] {
-                time(&format!("attention ({sp} splits)"), &mut || kq.attn_sel(s, qo.ptr, nq * hd, mix.ptr, qd, kc.ptr, vc.ptr, sel.ptr, cnt.ptr, tmax, core.ptr, nq * hd, nq, nk, part.ptr, sp, n))?;
+                time(&format!("attention ({sp} splits)"), &mut || {
+                    kq.attn_sel(s, qo.ptr, nq * hd, mix.ptr, qd, kc.ptr, vc.ptr, sel.ptr, cnt.ptr, tmax, core.ptr, nq * hd, nq, nk, part.ptr, sp, n)
+                })?;
             }
             dev.sync()?;
             let mut want = vec![0u16; n * nq * hd];
             core.read(0, &mut want)?;
             let f = |x: u16| f32::from_bits((x as u32) << 16);
             for wpb in [4usize, 8] {
-                time(&format!("attn tc ({wpb} warps)"), &mut || kq.attn_dec(s, qo.ptr, nq * hd, mix.ptr, qd, kc.ptr, vc.ptr, sel.ptr, cnt.ptr, tmax, core.ptr, nq * hd, part.ptr, wpb, n))?;
+                time(&format!("attn tc ({wpb} warps)"), &mut || {
+                    kq.attn_dec(s, qo.ptr, nq * hd, mix.ptr, qd, kc.ptr, vc.ptr, sel.ptr, cnt.ptr, tmax, core.ptr, nq * hd, part.ptr, wpb, n)
+                })?;
                 dev.sync()?;
                 let mut got = vec![0u16; n * nq * hd];
                 core.read(0, &mut got)?;
@@ -649,15 +736,31 @@ pub fn bench(a: &Args) -> Result<()> {
         use crate::moe::{Act, MoeCfg, Router, Scoring};
         let kc = crate::moe_qwen4x::KernQc::load(&dev)?;
         let (n, e, h) = (a.num("n", 4usize)?, a.num("e", 512usize)?, 2560usize);
-        let c = MoeCfg { experts: e, router_hidden: h, hidden: h, inter: 640, router: Router { scoring: Scoring::Softmax, top_k: a.num("k", 10usize)?, renorm: true, scale: 1.0, bf16_logits: true }, act: Act::SwiGlu { limit: None } };
+        let c = MoeCfg {
+            experts: e,
+            router_hidden: h,
+            hidden: h,
+            inter: 640,
+            router: Router { scoring: Scoring::Softmax, top_k: a.num("k", 10usize)?, renorm: true, scale: 1.0, bf16_logits: true },
+            act: Act::SwiGlu { limit: None },
+        };
         let ws: Vec<Buf> = (0..40).map(|_| up(&bf(rnd(e * h * 2)))).collect::<Result<_>>()?;
         let (x, sg) = (up(&bf(rnd(n * h * 2)))?, up(&rnd(h))?);
         let local = up(&(0..e as i32).flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>())?;
-        let (logits, ids, wts, xr, xrb, gids) = (Buf::zeroed(n * e * 4)?, Buf::zeroed(n * 10 * 8)?, Buf::zeroed(n * 10 * 4)?, Buf::zeroed(n * h * 4)?, Buf::zeroed(n * h * 2)?, Buf::zeroed(n * 10 * 8)?);
+        let (logits, ids, wts, xr, xrb, gids) = (
+            Buf::zeroed(n * e * 4)?,
+            Buf::zeroed(n * 10 * 8)?,
+            Buf::zeroed(n * 10 * 4)?,
+            Buf::zeroed(n * h * 4)?,
+            Buf::zeroed(n * h * 2)?,
+            Buf::zeroed(n * 10 * 8)?,
+        );
         let s = dev.stream;
         let (e0, e1) = (Ev::new()?, Ev::new()?);
         // SAFETY: live buffers of the sizes the kernel reads and writes.
-        let call = |i: usize| unsafe { kc.router_rot(s, x.ptr, h, ws[i].ptr, logits.ptr, n, &c, 0, ids.ptr, wts.ptr, sg.ptr, xr.ptr, xrb.ptr, local.ptr, gids.ptr, e, [0, 0, 0], 0, 0) };
+        let call = |i: usize| unsafe {
+            kc.router_rot(s, x.ptr, h, ws[i].ptr, logits.ptr, n, &c, 0, ids.ptr, wts.ptr, sg.ptr, xr.ptr, xrb.ptr, local.ptr, gids.ptr, e, [0, 0, 0], 0, 0)
+        };
         call(0)?;
         let gr = dev.capture(|| (0..40).try_for_each(call))?;
         gr.launch(s)?;
@@ -703,18 +806,40 @@ pub fn bench(a: &Args) -> Result<()> {
                     Ok(v)
                 }
             };
-            let rel = |x: &[f32], y: &[f32]| (x.iter().zip(y).map(|(p, q)| ((p - q) as f64).powi(2)).sum::<f64>() / y.iter().map(|q| (*q as f64).powi(2)).sum::<f64>().max(1e-30)).sqrt();
+            let rel = |x: &[f32], y: &[f32]| {
+                (x.iter().zip(y).map(|(p, q)| ((p - q) as f64).powi(2)).sum::<f64>() / y.iter().map(|q| (*q as f64).powi(2)).sum::<f64>().max(1e-30)).sqrt()
+            };
             let (o_ref, s_ref) = (read(&out_r, true)?, read(&st_r, false)?);
             let mut runs = Vec::new();
             for _ in 0..2 {
                 let (st, out) = (Buf::zeroed(nv * 128 * 128 * 4)?, Buf::zeroed(m * nv * 128 * 2)?);
                 for i in (0..m).step_by(n) {
                     // SAFETY: as above.
-                    unsafe { kq.delta2(s, xc4.ptr + (i * cd * 2) as u64, cd, ba4.ptr + (i * 2 * nv * 2) as u64, 2 * nv, alog.ptr, dtb.ptr, st.ptr, out.ptr + (i * nv * 128 * 2) as u64, n, nk, nv)? };
+                    unsafe {
+                        kq.delta2(
+                            s,
+                            xc4.ptr + (i * cd * 2) as u64,
+                            cd,
+                            ba4.ptr + (i * 2 * nv * 2) as u64,
+                            2 * nv,
+                            alog.ptr,
+                            dtb.ptr,
+                            st.ptr,
+                            out.ptr + (i * nv * 128 * 2) as u64,
+                            n,
+                            nk,
+                            nv,
+                        )?
+                    };
                 }
                 runs.push((read(&out, true)?, read(&st, false)?));
             }
-            println!("  gdn check, {m} rows in slices of {n}: outputs relative {:.3e}, state relative {:.3e}; two runs alike: {}", rel(&runs[0].0, &o_ref), rel(&runs[0].1, &s_ref), runs[0] == runs[1]);
+            println!(
+                "  gdn check, {m} rows in slices of {n}: outputs relative {:.3e}, state relative {:.3e}; two runs alike: {}",
+                rel(&runs[0].0, &o_ref),
+                rel(&runs[0].1, &s_ref),
+                runs[0] == runs[1]
+            );
         }
         for (what, parts) in [("chunks' part", 1u8), ("scan", 2), ("both", 3)] {
             // SAFETY: live buffers of the sizes the kernels read and write.
@@ -773,9 +898,15 @@ pub fn bench(a: &Args) -> Result<()> {
         };
         // SAFETY: live buffers of the sizes the kernels read and write.
         unsafe {
-            time("gated residual: norm, down", r * w4, &mut |i| kq.gr1(s, x.ptr, wn.ptr, dq[i].ptr, ds.ptr, injw.ptr, rs.ptr, lo.ptr, inj.ptr, n, d, r, 1e-6, post))?;
-            time("  the same by rows", r * w4, &mut |i| kq.gr1_rows(s, x.ptr, wn.ptr, dq[i].ptr, ds.ptr, injw.ptr, rs.ptr, lo.ptr, inj.ptr, n, d, r, 1e-6, post))?;
-            time("  the same by streams", r * w4, &mut |i| kq.gr1q(s, x.ptr, wn.ptr, dq[i].ptr, ds.ptr, injw.ptr, rs.ptr, lo.ptr, inj.ptr, n, d, r, 1e-6, post))?;
+            time("gated residual: norm, down", r * w4, &mut |i| {
+                kq.gr1(s, x.ptr, wn.ptr, dq[i].ptr, ds.ptr, injw.ptr, rs.ptr, lo.ptr, inj.ptr, n, d, r, 1e-6, post)
+            })?;
+            time("  the same by rows", r * w4, &mut |i| {
+                kq.gr1_rows(s, x.ptr, wn.ptr, dq[i].ptr, ds.ptr, injw.ptr, rs.ptr, lo.ptr, inj.ptr, n, d, r, 1e-6, post)
+            })?;
+            time("  the same by streams", r * w4, &mut |i| {
+                kq.gr1q(s, x.ptr, wn.ptr, dq[i].ptr, ds.ptr, injw.ptr, rs.ptr, lo.ptr, inj.ptr, n, d, r, 1e-6, post)
+            })?;
             // (the others against the slices of rows, on the same inputs)
             let get = |f: &mut dyn FnMut() -> Result<()>| -> Result<(Vec<u16>, Vec<f32>, Vec<f32>)> {
                 f()?;
@@ -801,9 +932,17 @@ pub fn bench(a: &Args) -> Result<()> {
             println!("  {n} rows  by streams twice alike: {}", a3 == a4);
             time("gated residual: up, mix", w4 * r, &mut |i| kq.gr2(s, x.ptr, wn.ptr, rs.ptr, lo.ptr, uq[i].ptr, us.ptr, h.ptr, n, d, r, post))?;
             let k1 = &sh1[pick(n)];
-            time("shared expert: gate, up", 2 * si * hs, &mut |i| launch!(k1, [(si / 8) as u32 + 1, 1, 1], [256, 1, 1], s; x.ptr, shq[i].ptr, shs.ptr, gw.ptr, act.ptr, sg.ptr, n as i32, hs as i32, si as i32))?;
+            time(
+                "shared expert: gate, up",
+                2 * si * hs,
+                &mut |i| launch!(k1, [(si / 8) as u32 + 1, 1, 1], [256, 1, 1], s; x.ptr, shq[i].ptr, shs.ptr, gw.ptr, act.ptr, sg.ptr, n as i32, hs as i32, si as i32),
+            )?;
             let k2 = &sh2[pick(n)];
-            time("shared expert: down", hs * si, &mut |i| launch!(k2, [(hs as u32).div_ceil(32), 1, 1], [256, 1, 1], s; act.ptr, sdq[i].ptr, sds.ptr, sg.ptr, sh.ptr, n as i32, hs as i32, si as i32))?;
+            time(
+                "shared expert: down",
+                hs * si,
+                &mut |i| launch!(k2, [(hs as u32).div_ceil(32), 1, 1], [256, 1, 1], s; act.ptr, sdq[i].ptr, sds.ptr, sg.ptr, sh.ptr, n as i32, hs as i32, si as i32),
+            )?;
         }
     }
     Ok(())
@@ -839,7 +978,11 @@ pub fn host_bench(pack_dir: &Path, a: &Args) -> Result<()> {
             let (codes, books) = unsafe { (std::slice::from_raw_parts(d.codes, cl), std::slice::from_raw_parts(d.books, bl)) };
             let (dc, uc) = codes.split_at(inter * d.down.row_bytes(hid));
             let (db, ub) = books.split_at(inter * d.down.entries() * 2);
-            GlmExpert::mixed(GlmMat { fmt: d.up, rows: 2 * inter, cols: hid, codes: uc, book: ub }, GlmMat { fmt: d.down, rows: inter, cols: hid, codes: dc, book: db }, f32::MAX)
+            GlmExpert::mixed(
+                GlmMat { fmt: d.up, rows: 2 * inter, cols: hid, codes: uc, book: ub },
+                GlmMat { fmt: d.down, rows: inter, cols: hid, codes: dc, book: db },
+                f32::MAX,
+            )
         })
         .collect::<Result<_>>()?;
     let bytes_of = |i: usize| -> usize {

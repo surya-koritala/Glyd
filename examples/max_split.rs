@@ -21,7 +21,8 @@ fn main() {
     let mut off = 0usize;
     while off < n {
         let len = (n - off).min(glyd::format::MAX_BLOCK_SIZE);
-        seqs.clear(); lits.clear();
+        seqs.clear();
+        lits.clear();
         let mut reps = [1u32, 4, 8];
         let t = Instant::now();
         glyd::v7_encode::find_sequences_dfast_far(&d, off, len, &mut tables, &far, &mut reps, &mut seqs, &mut lits, &mut scratch);
@@ -35,6 +36,20 @@ fn main() {
     }
     let t_all = t_ldm + t_parse + t_enc;
     let c = vec![0u8; out];
-    println!("{}: {} MB, --max {} B ({:.2}x) in {:.2} s = {:.0} MB/s; split: ldm {:.2} s ({:.0}%), parse {:.2} s ({:.0}%), entropy {:.2} s ({:.0}%); far matches {}",
-        f.rsplit('/').next().unwrap(), n >> 20, c.len(), n as f64 / c.len() as f64, t_all, n as f64 / t_all / 1e6, t_ldm, t_ldm / t_all * 100.0, t_parse, t_parse / t_all * 100.0, t_enc, t_enc / t_all * 100.0, far.list.len());
+    println!(
+        "{}: {} MB, --max {} B ({:.2}x) in {:.2} s = {:.0} MB/s; split: ldm {:.2} s ({:.0}%), parse {:.2} s ({:.0}%), entropy {:.2} s ({:.0}%); far matches {}",
+        f.rsplit('/').next().unwrap(),
+        n >> 20,
+        c.len(),
+        n as f64 / c.len() as f64,
+        t_all,
+        n as f64 / t_all / 1e6,
+        t_ldm,
+        t_ldm / t_all * 100.0,
+        t_parse,
+        t_parse / t_all * 100.0,
+        t_enc,
+        t_enc / t_all * 100.0,
+        far.list.len()
+    );
 }

@@ -5,11 +5,10 @@
 //! Wide copies use two 16-byte NEON loads/stores; rustc emits ldp/stp q for
 //! them. `movemask` has no NEON equivalent: lanes are ANDed with a bit-select
 //! pattern and folded with three pairwise adds into a 32-bit mask.
-use std::arch::aarch64::*;
 use crate::error::{CodecError, Result};
 use crate::fallback::read_escape;
-use crate::format::{ESCAPE_BASE_LIT, ESCAPE_CONT, OFFSET_BYTES,
-    TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_OFF_SHIFT};
+use crate::format::{ESCAPE_BASE_LIT, ESCAPE_CONT, OFFSET_BYTES, TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_OFF_SHIFT};
+use std::arch::aarch64::*;
 
 /// A wild copy runs past its run's end: `copy_run`'s fixed 3x32 tails
 /// store 128 bytes for a 33-byte run, 95 past its end, and read as far
@@ -129,10 +128,7 @@ impl Prepass {
         let il1 = vorrq_u8(x1, vmvnq_u8(lit_esc1));
         let im0 = vorrq_u8(vsubq_u8(x0, lit_esc0), vmvnq_u8(m_esc0));
         let im1 = vorrq_u8(vsubq_u8(x1, lit_esc1), vmvnq_u8(m_esc1));
-        let tab = uint8x16x4_t(
-            vld1q_u8(extras.add(e)), vld1q_u8(extras.add(e + 16)),
-            vld1q_u8(extras.add(e + 32)), vld1q_u8(extras.add(e + 48)),
-        );
+        let tab = uint8x16x4_t(vld1q_u8(extras.add(e)), vld1q_u8(extras.add(e + 16)), vld1q_u8(extras.add(e + 32)), vld1q_u8(extras.add(e + 48)));
         let vl0 = vqtbl4q_u8(tab, il0);
         let vl1 = vqtbl4q_u8(tab, il1);
         let vm0 = vqtbl4q_u8(tab, im0);
@@ -223,10 +219,7 @@ pub unsafe fn decompress_neon(
     esc_base_match: usize,
 ) -> Result<usize> {
     if uncompressed_len > dst.len() {
-        return Err(CodecError::OutputBufferTooSmall {
-            required: uncompressed_len,
-            provided: dst.len(),
-        });
+        return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }
     let mut dst_ptr = dst.as_mut_ptr();
     let block_start = dst_ptr;
@@ -241,7 +234,11 @@ pub unsafe fn decompress_neon(
 
     const CHUNK: usize = 32;
     let pp = Prepass {
-        tokens, extras, extras_len, extras_readable, esc_base_match,
+        tokens,
+        extras,
+        extras_len,
+        extras_readable,
+        esc_base_match,
         seven: vdupq_n_u8(7),
         fifteen: vdupq_n_u8(15),
         v_bias: vdupq_n_u8((esc_base_match - 15) as u8),
@@ -281,10 +278,7 @@ pub unsafe fn decompress_neon(
             let (mut ls, mut ms, mut nm) = (0usize, 0usize, 0usize);
             while n + CHUNK <= SUPER && token_idx + n + CHUNK <= num_tokens {
                 let Some((l, m, k, e2)) = pp.run(token_idx + n, e, litl.as_mut_ptr().add(n), mll.as_mut_ptr().add(n)) else { break };
-                if ls + l + ms + m + WILD_MARGIN > remaining
-                    || ls + l + WILD_MARGIN > lit_room
-                    || off_pos + (nm + k) * OFFSET_BYTES > offsets_len
-                {
+                if ls + l + ms + m + WILD_MARGIN > remaining || ls + l + WILD_MARGIN > lit_room || off_pos + (nm + k) * OFFSET_BYTES > offsets_len {
                     break;
                 }
                 ls += l;
@@ -298,9 +292,7 @@ pub unsafe fn decompress_neon(
                 break 'fast;
             }
             // Pass 2.
-            let (nl, nd, no) = copy_run(
-                litl.as_ptr(), mll.as_ptr(), n, tokens.add(token_idx), lit_ptr, dst_ptr, offsets, off_pos, buffer_start,
-            )?;
+            let (nl, nd, no) = copy_run(litl.as_ptr(), mll.as_ptr(), n, tokens.add(token_idx), lit_ptr, dst_ptr, offsets, off_pos, buffer_start)?;
             lit_ptr = nl;
             dst_ptr = nd;
             off_pos = no;
@@ -325,15 +317,9 @@ pub unsafe fn decompress_neon(
             match_len = read_escape(extras, extras_len, &mut extra_idx, esc_base_match)?;
         }
 
-        let remaining = if dst_ptr <= block_end {
-            block_end.offset_from(dst_ptr) as usize
-        } else {
-            0
-        };
+        let remaining = if dst_ptr <= block_end { block_end.offset_from(dst_ptr) as usize } else { 0 };
         if lit_len + match_len > remaining {
-            return Err(CodecError::CorruptedBitstream(
-                "Token output exceeds declared block length",
-            ));
+            return Err(CodecError::CorruptedBitstream("Token output exceeds declared block length"));
         }
 
         if lit_len > 0 {
@@ -417,10 +403,18 @@ pub(crate) unsafe fn short_match(s: *const u8, d: *mut u8, offset: usize, ml: us
     let end = d.add(ml);
     if offset >= 16 {
         let (mut s, mut d) = (s, d);
-        while d < end { copy16(s, d); s = s.add(16); d = d.add(16); }
+        while d < end {
+            copy16(s, d);
+            s = s.add(16);
+            d = d.add(16);
+        }
     } else if offset >= 8 {
         let (mut s, mut d) = (s, d);
-        while d < end { std::ptr::copy_nonoverlapping(s, d, 8); s = s.add(8); d = d.add(8); }
+        while d < end {
+            std::ptr::copy_nonoverlapping(s, d, 8);
+            s = s.add(8);
+            d = d.add(8);
+        }
     } else {
         // Period-`offset` pattern: eight byte stores lay it down, then
         // 8-byte copies continue from the same pattern at a distance that
@@ -431,7 +425,11 @@ pub(crate) unsafe fn short_match(s: *const u8, d: *mut u8, offset: usize, ml: us
         let stride = offset * ((8 + offset - 1) / offset);
         let mut dd = d.add(8);
         let mut ss = dd.sub(stride);
-        while dd < end { std::ptr::copy_nonoverlapping(ss, dd, 8); ss = ss.add(8); dd = dd.add(8); }
+        while dd < end {
+            std::ptr::copy_nonoverlapping(ss, dd, 8);
+            ss = ss.add(8);
+            dd = dd.add(8);
+        }
     }
 }
 

@@ -6,7 +6,67 @@ use crate::weights::Layout;
 
 /// Flags that take no value.
 #[cfg(feature = "dev")]
-const SWITCHES: &[&str] = &["no-graph", "p2p", "ignore-eos", "logprobs", "profile", "profile-prefill", "attn-decode", "no-think", "help", "quiet", "chat", "version", "lossy", "speed", "no-check", "cpu-pin", "hb", "glm", "pin", "compare", "twice", "renorm", "huge", "cb2", "copy", "async-copies", "segmented", "skinny", "no-pin", "mtp", "spec", "no-read-ahead", "inventory", "stream", "no-side", "no-mtp", "populate", "no-segmented", "no-skinny", "no-async-copies", "no-stream", "precise", "public", "dynamic", "prof", "plain", "encode", "gpu", "old", "fp8", "real", "predict", "load", "no-gpu", "costs", "workers", "by-layers", "one", "decode"];
+const SWITCHES: &[&str] = &[
+    "no-graph",
+    "p2p",
+    "ignore-eos",
+    "logprobs",
+    "profile",
+    "profile-prefill",
+    "attn-decode",
+    "no-think",
+    "help",
+    "quiet",
+    "chat",
+    "version",
+    "lossy",
+    "speed",
+    "no-check",
+    "cpu-pin",
+    "hb",
+    "glm",
+    "pin",
+    "compare",
+    "twice",
+    "renorm",
+    "huge",
+    "cb2",
+    "copy",
+    "async-copies",
+    "segmented",
+    "skinny",
+    "no-pin",
+    "mtp",
+    "spec",
+    "no-read-ahead",
+    "inventory",
+    "stream",
+    "no-side",
+    "no-mtp",
+    "populate",
+    "no-segmented",
+    "no-skinny",
+    "no-async-copies",
+    "no-stream",
+    "precise",
+    "public",
+    "dynamic",
+    "prof",
+    "plain",
+    "encode",
+    "gpu",
+    "old",
+    "fp8",
+    "real",
+    "predict",
+    "load",
+    "no-gpu",
+    "costs",
+    "workers",
+    "by-layers",
+    "one",
+    "decode",
+];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &["no-think", "help", "quiet", "chat", "version", "lossy", "precise", "predict", "load", "no-gpu", "costs"];
 
@@ -118,7 +178,15 @@ mod tests {
         assert_eq!(Args::from(["x", "--ctx", "2048"].map(String::from)).opts().unwrap().ctx, 2048);
         assert!(Args::from(["x", "--layout", "tiny"].map(String::from)).opts().is_err());
         // (the layouts by name: the block ones are the lossy levels')
-        for (name, layout) in [("mma", Layout::Tiered), ("mma12", Layout::Twelve), ("a", Layout::Compact), ("i6", Layout::Int6), ("i5", Layout::Int5), ("i4", Layout::Int4), ("i3", Layout::Int3)] {
+        for (name, layout) in [
+            ("mma", Layout::Tiered),
+            ("mma12", Layout::Twelve),
+            ("a", Layout::Compact),
+            ("i6", Layout::Int6),
+            ("i5", Layout::Int5),
+            ("i4", Layout::Int4),
+            ("i3", Layout::Int3),
+        ] {
             assert_eq!(Args::from(["x", "--layout", name].map(String::from)).layout().unwrap(), Some(layout), "{name}");
             assert_eq!(layout.name(), if layout == Layout::Compact { "mma" } else { name }, "{name}");
         }

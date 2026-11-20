@@ -42,8 +42,8 @@
 
 use crate::record::{get_varint, put_varint};
 use preflate_rs::{chunked, preflate_whole_deflate_stream, recreate_whole_deflate_stream, PreflateConfig};
-use std::collections::HashMap;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub(crate) const MAGIC: &[u8; 8] = b"GLYDDEF3";
@@ -114,7 +114,15 @@ pub fn is_container(input: &[u8]) -> bool {
     if crate::jpeg::is_jpeg(input) {
         return true;
     }
-    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_tar(input) || is_zlib(input) || crate::parquet::is_parquet(input) || is_zstd(input) || crate::weights::is_model_file(input)
+    is_gzip(input)
+        || is_zip(input)
+        || is_png(input)
+        || is_pdf(input)
+        || is_tar(input)
+        || is_zlib(input)
+        || crate::parquet::is_parquet(input)
+        || is_zstd(input)
+        || crate::weights::is_model_file(input)
 }
 
 /// A zstd build as one recipe byte: its index among `rezstd::BUILDS`
@@ -397,7 +405,8 @@ impl Builder {
         }
         let params = chunked::parameters(&corrections[0]).ok()?;
         let text = parsed.plain.text();
-        let pieces = each(chunks.len(), true, |i| chunked::recreate(&params, text, chunks[i].plain.clone(), &corrections[i], i == 0, chunks[i].bit_start as u32).ok());
+        let pieces =
+            each(chunks.len(), true, |i| chunked::recreate(&params, text, chunks[i].plain.clone(), &corrections[i], i == 0, chunks[i].bit_start as u32).ok());
         let pieces: Vec<(Vec<u8>, u32)> = pieces.into_iter().collect::<Option<_>>()?;
         if chunked::join(&pieces) != &data[..n] {
             return None;
@@ -733,22 +742,27 @@ fn open_parquet(input: &[u8], mut b: Builder) -> Option<Parts> {
     pages.sort_unstable_by_key(|p| p.0);
     // Every page on its own core: reproduced, then its values modeled
     // when a model beats the page as it is.
-    let opened: Vec<Option<(bool, u8, Option<(Vec<u8>, Vec<u8>)>, Vec<u8>)>> = each_sized(pages.len(), b.depth == 0, |i| pages[i].1 - pages[i].0, |i| {
-        let (at, end, chunk, page) = &pages[i];
-        if *end > input.len() || at >= end {
-            return None;
-        }
-        let zstd = chunks[*chunk].codec == crate::parquet::Codec::Zstd;
-        let (plain, build) = if zstd {
-            let (plain, build) = crate::rezstd::reproduce(&input[*at..*end])?;
-            (plain, zstd_build_byte(build)?)
-        } else {
-            let (plain, build) = crate::resnappy::reproduce(&input[*at..*end])?;
-            (plain, crate::resnappy::BUILDS.iter().position(|&x| x == build)? as u8)
-        };
-        let modeled = crate::parquet::model(&plain, &chunks[*chunk], page).filter(|(recipe, _)| recipe[0] != 0);
-        Some((zstd, build, modeled, plain))
-    });
+    let opened: Vec<Option<(bool, u8, Option<(Vec<u8>, Vec<u8>)>, Vec<u8>)>> = each_sized(
+        pages.len(),
+        b.depth == 0,
+        |i| pages[i].1 - pages[i].0,
+        |i| {
+            let (at, end, chunk, page) = &pages[i];
+            if *end > input.len() || at >= end {
+                return None;
+            }
+            let zstd = chunks[*chunk].codec == crate::parquet::Codec::Zstd;
+            let (plain, build) = if zstd {
+                let (plain, build) = crate::rezstd::reproduce(&input[*at..*end])?;
+                (plain, zstd_build_byte(build)?)
+            } else {
+                let (plain, build) = crate::resnappy::reproduce(&input[*at..*end])?;
+                (plain, crate::resnappy::BUILDS.iter().position(|&x| x == build)? as u8)
+            };
+            let modeled = crate::parquet::model(&plain, &chunks[*chunk], page).filter(|(recipe, _)| recipe[0] != 0);
+            Some((zstd, build, modeled, plain))
+        },
+    );
     for (i, (at, end, _, _)) in pages.iter().enumerate() {
         if *at < b.keep.1 {
             continue;
@@ -791,7 +805,11 @@ fn gzip_header_end(input: &[u8], at: usize) -> Option<usize> {
     if flg & 2 != 0 {
         p += 2;
     }
-    if p <= input.len() { Some(p) } else { None }
+    if p <= input.len() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 /// Members back to back, each a header, a deflate stream and an 8-byte
@@ -952,36 +970,42 @@ fn open_zip_against(input: &[u8], base: Option<&[u8]>, mut b: Builder) -> Option
         Planes(u8, Vec<u8>),
         Delta(u8, usize, Vec<u8>),
     }
-    let pieces = each_sized(entries.len(), depth == 0, |i| entries[i].1 - entries[i].0, |i| {
-        let (data, end, method, flags, na, nl) = entries[i];
-        let w = widths.as_ref().map_or(0, |w| w[i]);
-        if w >= 2 {
-            let name = crate::torchzip::inner_name(&input[na..na + nl]);
-            let mut out = Vec::with_capacity(end - data);
-            return match (base, theirs.get(name).filter(|t| t.0 == w && t.2 - t.1 == end - data)) {
-                (Some(base), Some(&(_, bs, be))) if {
-                    let x: Vec<u8> = input[data..end].iter().zip(&base[bs..be]).map(|(a, b)| a ^ b).collect();
-                    let pays = crate::safetensors::plane_bits(&x, w) < crate::safetensors::plane_bits(&input[data..end], w);
-                    if pays {
-                        crate::safetensors::split(&x, w, &mut out);
+    let pieces = each_sized(
+        entries.len(),
+        depth == 0,
+        |i| entries[i].1 - entries[i].0,
+        |i| {
+            let (data, end, method, flags, na, nl) = entries[i];
+            let w = widths.as_ref().map_or(0, |w| w[i]);
+            if w >= 2 {
+                let name = crate::torchzip::inner_name(&input[na..na + nl]);
+                let mut out = Vec::with_capacity(end - data);
+                return match (base, theirs.get(name).filter(|t| t.0 == w && t.2 - t.1 == end - data)) {
+                    (Some(base), Some(&(_, bs, be)))
+                        if {
+                            let x: Vec<u8> = input[data..end].iter().zip(&base[bs..be]).map(|(a, b)| a ^ b).collect();
+                            let pays = crate::safetensors::plane_bits(&x, w) < crate::safetensors::plane_bits(&input[data..end], w);
+                            if pays {
+                                crate::safetensors::split(&x, w, &mut out);
+                            }
+                            pays
+                        } =>
+                    {
+                        Some(Piece::Delta(w as u8, bs, out))
                     }
-                    pays
-                } =>
-                {
-                    Some(Piece::Delta(w as u8, bs, out))
-                }
-                _ => {
-                    crate::safetensors::split(&input[data..end], w, &mut out);
-                    Some(Piece::Planes(w as u8, out))
-                }
-            };
-        }
-        match method {
-            8 if flags & 1 == 0 => deflate_parts(input, data, end, depth, engine).map(|(p, _)| Piece::Parts(p)),
-            0 if is_container(&input[data..end]) => stored_parts(input, data, end, depth, engine).map(Piece::Parts),
-            _ => None,
-        }
-    });
+                    _ => {
+                        crate::safetensors::split(&input[data..end], w, &mut out);
+                        Some(Piece::Planes(w as u8, out))
+                    }
+                };
+            }
+            match method {
+                8 if flags & 1 == 0 => deflate_parts(input, data, end, depth, engine).map(|(p, _)| Piece::Parts(p)),
+                0 if is_container(&input[data..end]) => stored_parts(input, data, end, depth, engine).map(Piece::Parts),
+                _ => None,
+            }
+        },
+    );
     for (&(data, end, _, _, _, _), piece) in entries.iter().zip(pieces) {
         match piece {
             Some(Piece::Parts(p)) => b.lay(input, p, data, end),
@@ -1016,7 +1040,11 @@ fn open_zip_walk(input: &[u8], mut b: Builder) -> Option<Parts> {
     let next_signature = |from: usize| (from..input.len().saturating_sub(3)).find(|&p| &input[p..p + 4] == b"PK\x03\x04").unwrap_or(input.len());
     let mut at = 0usize;
     while input.get(at..at + 4) == Some(b"PK\x03\x04") {
-        let (Some(flags), Some(method), Some(mut csize), Some(usize), Some(nlen), Some(xlen)) = (le16(at + 6), le16(at + 8), le32(at + 18), le32(at + 22), le16(at + 26), le16(at + 28)) else { break };
+        let (Some(flags), Some(method), Some(mut csize), Some(usize), Some(nlen), Some(xlen)) =
+            (le16(at + 6), le16(at + 8), le32(at + 18), le32(at + 22), le16(at + 26), le16(at + 28))
+        else {
+            break;
+        };
         let data = at + 30 + nlen + xlen;
         if data > input.len() {
             break;
@@ -1086,12 +1114,17 @@ fn open_pdf(input: &[u8], mut b: Builder) -> Option<Parts> {
     }
     let depth = b.depth;
     let engine = b.engine;
-    let pieces = each_sized(candidates.len(), depth == 0, |i| candidates[i].1 - candidates[i].0, |i| {
-        let (data, stop) = candidates[i];
-        let (parts, end) = deflate_parts(input, data + 2, stop, depth, engine)?;
-        let tail = input.get(end..stop)?;
-        (tail.len() >= 4 && tail[4..].iter().all(|c| matches!(c, b'\r' | b'\n' | b' ' | b'\t'))).then_some(parts)
-    });
+    let pieces = each_sized(
+        candidates.len(),
+        depth == 0,
+        |i| candidates[i].1 - candidates[i].0,
+        |i| {
+            let (data, stop) = candidates[i];
+            let (parts, end) = deflate_parts(input, data + 2, stop, depth, engine)?;
+            let tail = input.get(end..stop)?;
+            (tail.len() >= 4 && tail[4..].iter().all(|c| matches!(c, b'\r' | b'\n' | b' ' | b'\t'))).then_some(parts)
+        },
+    );
     for (&(data, stop), piece) in candidates.iter().zip(pieces) {
         if let Some(p) = piece {
             b.lay(input, p, data + 2, stop);
@@ -1111,26 +1144,86 @@ struct Inner<'a> {
 /// A recipe's segment, parsed; its work not yet done.
 enum Seg<'a> {
     Bytes(&'a [u8]),
-    Deflate { corrections: &'a [u8], text: &'a [u8] },
-    DeflateJpeg { corrections: &'a [u8], lepton: &'a [u8] },
-    DeflateNested { corrections: &'a [u8], inner: Inner<'a> },
+    Deflate {
+        corrections: &'a [u8],
+        text: &'a [u8],
+    },
+    DeflateJpeg {
+        corrections: &'a [u8],
+        lepton: &'a [u8],
+    },
+    DeflateNested {
+        corrections: &'a [u8],
+        inner: Inner<'a>,
+    },
     /// (plain length, corrections, bit offset) per chunk
-    DeflateChunked { chunks: Vec<(usize, &'a [u8], u8)>, text: &'a [u8] },
-    DeflateNestedChunked { chunks: Vec<(usize, &'a [u8], u8)>, inner: Inner<'a> },
-    Reflate { recipe: &'a [u8], text: &'a [u8] },
-    ReflateNested { recipe: &'a [u8], inner: Inner<'a> },
-    Snappy { build: u8, text: &'a [u8] },
-    SnappyModeled { build: u8, recipe: &'a [u8], text: &'a [u8] },
-    Zstd { build: u8, text: &'a [u8] },
-    ZstdModeled { build: u8, recipe: &'a [u8], text: &'a [u8] },
-    ZstdNested { build: u8, inner: Inner<'a> },
-    Planes { width: u8, text: &'a [u8] },
-    Delta { width: u8, base: &'a [u8], text: &'a [u8] },
+    DeflateChunked {
+        chunks: Vec<(usize, &'a [u8], u8)>,
+        text: &'a [u8],
+    },
+    DeflateNestedChunked {
+        chunks: Vec<(usize, &'a [u8], u8)>,
+        inner: Inner<'a>,
+    },
+    Reflate {
+        recipe: &'a [u8],
+        text: &'a [u8],
+    },
+    ReflateNested {
+        recipe: &'a [u8],
+        inner: Inner<'a>,
+    },
+    Snappy {
+        build: u8,
+        text: &'a [u8],
+    },
+    SnappyModeled {
+        build: u8,
+        recipe: &'a [u8],
+        text: &'a [u8],
+    },
+    Zstd {
+        build: u8,
+        text: &'a [u8],
+    },
+    ZstdModeled {
+        build: u8,
+        recipe: &'a [u8],
+        text: &'a [u8],
+    },
+    ZstdNested {
+        build: u8,
+        inner: Inner<'a>,
+    },
+    Planes {
+        width: u8,
+        text: &'a [u8],
+    },
+    Delta {
+        width: u8,
+        base: &'a [u8],
+        text: &'a [u8],
+    },
     /// `Png` with a recipe in place of the corrections
-    PngReflate { header: &'a [u8], recipe: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
-    ReflateJpeg { recipe: &'a [u8], lepton: &'a [u8] },
+    PngReflate {
+        header: &'a [u8],
+        recipe: &'a [u8],
+        text: &'a [u8],
+        adler: &'a [u8],
+        chunks: Vec<(usize, &'a [u8])>,
+    },
+    ReflateJpeg {
+        recipe: &'a [u8],
+        lepton: &'a [u8],
+    },
     Nested(Inner<'a>),
-    Png { header: &'a [u8], corrections: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
+    Png {
+        header: &'a [u8],
+        corrections: &'a [u8],
+        text: &'a [u8],
+        adler: &'a [u8],
+        chunks: Vec<(usize, &'a [u8])>,
+    },
     Jpeg(&'a [u8]),
 }
 
@@ -1307,13 +1400,17 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         Seg::DeflateNestedChunked { chunks, inner } => Cow::Owned(recreate_chunked(chunks, &close_inner(inner, false)?)?),
         Seg::Reflate { recipe, text } => Cow::Owned(crate::reflate::close(text, recipe)?),
         Seg::Snappy { build, text } => Cow::Owned(crate::resnappy::compress(text, *crate::resnappy::BUILDS.get(*build as usize)?)),
-        Seg::SnappyModeled { build, recipe, text } => Cow::Owned(crate::resnappy::compress(&crate::parquet::unmodel(recipe, text)?, *crate::resnappy::BUILDS.get(*build as usize)?)),
+        Seg::SnappyModeled { build, recipe, text } => {
+            Cow::Owned(crate::resnappy::compress(&crate::parquet::unmodel(recipe, text)?, *crate::resnappy::BUILDS.get(*build as usize)?))
+        }
         Seg::Zstd { build, text } => Cow::Owned(crate::rezstd::compress(text, zstd_build(*build)?)),
         Seg::ZstdModeled { build, recipe, text } => Cow::Owned(crate::rezstd::compress(&crate::parquet::unmodel(recipe, text)?, zstd_build(*build)?)),
         Seg::ZstdNested { build, inner } => Cow::Owned(crate::rezstd::compress(&close_inner(inner, false)?, zstd_build(*build)?)),
         Seg::ReflateNested { recipe, inner } => Cow::Owned(crate::reflate::close(&close_inner(inner, false)?, recipe)?),
         Seg::Nested(inner) => Cow::Owned(close_inner(inner, false)?),
-        Seg::Png { header, corrections, text, adler, chunks } => Cow::Owned(png_chunks(header, &recreate_whole_deflate_stream(text, corrections).ok()?, adler, chunks)?),
+        Seg::Png { header, corrections, text, adler, chunks } => {
+            Cow::Owned(png_chunks(header, &recreate_whole_deflate_stream(text, corrections).ok()?, adler, chunks)?)
+        }
         Seg::PngReflate { header, recipe, text, adler, chunks } => Cow::Owned(png_chunks(header, &crate::reflate::close(text, recipe)?, adler, chunks)?),
         Seg::Jpeg(lepton) => Cow::Owned(crate::jpeg::restore(lepton)?),
         Seg::Planes { width, text } => Cow::Owned(crate::safetensors::join(text, *width as usize)?),
@@ -1374,8 +1471,22 @@ fn close_inner(inner: &Inner<'_>, parallel: bool) -> Option<Vec<u8>> {
 fn close_inner_with(inner: &Inner<'_>, parallel: bool, base: &[u8]) -> Option<Vec<u8>> {
     let segs = segments_with(inner, base)?;
     let size = |i: usize| match &segs[i] {
-        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::SnappyModeled { text, .. } | Seg::Zstd { text, .. } | Seg::ZstdModeled { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } | Seg::Planes { text, .. } | Seg::Delta { text, .. } => text.len(),
-        Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } | Seg::Nested(inner) => inner.content.len(),
+        Seg::Deflate { text, .. }
+        | Seg::DeflateChunked { text, .. }
+        | Seg::Reflate { text, .. }
+        | Seg::Snappy { text, .. }
+        | Seg::SnappyModeled { text, .. }
+        | Seg::Zstd { text, .. }
+        | Seg::ZstdModeled { text, .. }
+        | Seg::Png { text, .. }
+        | Seg::PngReflate { text, .. }
+        | Seg::Planes { text, .. }
+        | Seg::Delta { text, .. } => text.len(),
+        Seg::DeflateNested { inner, .. }
+        | Seg::DeflateNestedChunked { inner, .. }
+        | Seg::ReflateNested { inner, .. }
+        | Seg::ZstdNested { inner, .. }
+        | Seg::Nested(inner) => inner.content.len(),
         _ => 0,
     };
     let parts = each_sized(segs.len(), parallel, size, |i| produce(&segs[i]));
@@ -1418,7 +1529,9 @@ fn content_of(inner: &Inner<'_>) -> Option<Vec<u8>> {
         match s {
             Seg::Bytes(_) => {}
             Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Zstd { text, .. } => out.extend_from_slice(text),
-            Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } => out.extend_from_slice(&close_inner(inner, true)?),
+            Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } => {
+                out.extend_from_slice(&close_inner(inner, true)?)
+            }
             Seg::DeflateJpeg { lepton, .. } | Seg::ReflateJpeg { lepton, .. } => out.extend_from_slice(&crate::jpeg::restore(lepton)?),
             _ => return None,
         }
@@ -1835,11 +1948,30 @@ mod legacy {
         let weights = |inner: &Inner<'_>| segments(inner).is_some_and(|s| s.iter().any(|s| matches!(s, Seg::Planes { .. })));
         for seg in segments(inner)? {
             match seg {
-                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::SnappyModeled { text, .. } | Seg::Zstd { text, .. } | Seg::ZstdModeled { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => out.extend_from_slice(text),
+                Seg::Deflate { text, .. }
+                | Seg::DeflateChunked { text, .. }
+                | Seg::Reflate { text, .. }
+                | Seg::Snappy { text, .. }
+                | Seg::SnappyModeled { text, .. }
+                | Seg::Zstd { text, .. }
+                | Seg::ZstdModeled { text, .. }
+                | Seg::Png { text, .. }
+                | Seg::PngReflate { text, .. } => out.extend_from_slice(text),
                 Seg::DeflateJpeg { lepton, .. } | Seg::ReflateJpeg { lepton, .. } => out.extend_from_slice(lepton),
-                Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } if weights(&inner) => out.extend_from_slice(&close_inner(&inner, false)?),
+                Seg::DeflateNested { inner, .. }
+                | Seg::DeflateNestedChunked { inner, .. }
+                | Seg::ReflateNested { inner, .. }
+                | Seg::ZstdNested { inner, .. }
+                    if weights(&inner) =>
+                {
+                    out.extend_from_slice(&close_inner(&inner, false)?)
+                }
                 Seg::Nested(inner) if weights(&inner) => {}
-                Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
+                Seg::DeflateNested { inner, .. }
+                | Seg::DeflateNestedChunked { inner, .. }
+                | Seg::ReflateNested { inner, .. }
+                | Seg::ZstdNested { inner, .. }
+                | Seg::Nested(inner) => collect_v013(&inner, out)?,
                 Seg::Bytes(_) | Seg::Jpeg(_) | Seg::Planes { .. } | Seg::Delta { .. } => {}
             }
         }
@@ -1898,7 +2030,17 @@ mod tests {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
-            v.extend_from_slice(format!("2026-09-21T10:{:02}:{:02}Z host{} GET /api/v1/items/{} 200 {}\n", (x >> 8) % 60, (x >> 16) % 60, x % 40, (x >> 24) % 5000, (x >> 40) % 9000).as_bytes());
+            v.extend_from_slice(
+                format!(
+                    "2026-09-21T10:{:02}:{:02}Z host{} GET /api/v1/items/{} 200 {}\n",
+                    (x >> 8) % 60,
+                    (x >> 16) % 60,
+                    x % 40,
+                    (x >> 24) % 5000,
+                    (x >> 40) % 9000
+                )
+                .as_bytes(),
+            );
         }
         v.truncate(n);
         v
@@ -1982,7 +2124,11 @@ mod tests {
         assert_eq!(crate::decompress_into(&c, &mut dst).unwrap(), object.len());
         assert_eq!(crate::decompress_parallel(&c).unwrap(), object);
         let mut streamed = Vec::new();
-        crate::decompress_stream(&c, |b| { streamed.extend_from_slice(b); Ok(()) }).unwrap();
+        crate::decompress_stream(&c, |b| {
+            streamed.extend_from_slice(b);
+            Ok(())
+        })
+        .unwrap();
         assert_eq!(streamed, object);
         opened.plain
     }
@@ -2218,7 +2364,9 @@ mod tests {
                 sizes[i] = changed.len();
             }
             let spec: Vec<String> = sizes.iter().map(|n| n.to_string()).collect();
-            python(&format!(r#"
+            python(
+                &format!(
+                    r#"
 import sys, tarfile, io
 blob = sys.stdin.buffer.read()
 sizes = [{}]
@@ -2230,7 +2378,11 @@ with tarfile.open(fileobj=buf, mode="w") as t:
         info.size = n; info.mtime = 0
         t.addfile(info, io.BytesIO(blob[at:at + n])); at += n
 sys.stdout.buffer.write(buf.getvalue())
-"#, spec.join(",")), &blob)
+"#,
+                    spec.join(",")
+                ),
+                &blob,
+            )
         };
         let (a, b) = (make(0), make(1));
         let mut alone = Vec::new();
@@ -2248,7 +2400,15 @@ sys.stdout.buffer.write(buf.getvalue())
     fn earlier_envelopes_still_decode() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/legacy/");
         let read = |f: &str| std::fs::read(format!("{dir}{f}")).unwrap();
-        for (glyd, original) in [("log.gz.v0120.glyd", "log.gz"), ("log.gz.v0130.glyd", "log.gz"), ("doc.zip.v0130.glyd", "doc.zip"), ("base.tar.v0130.glyd", "base.tar"), ("log.gz.v0133.glyd", "log.gz"), ("doc.zip.v0133.glyd", "doc.zip"), ("base.tar.v0133.glyd", "base.tar")] {
+        for (glyd, original) in [
+            ("log.gz.v0120.glyd", "log.gz"),
+            ("log.gz.v0130.glyd", "log.gz"),
+            ("doc.zip.v0130.glyd", "doc.zip"),
+            ("base.tar.v0130.glyd", "base.tar"),
+            ("log.gz.v0133.glyd", "log.gz"),
+            ("doc.zip.v0133.glyd", "doc.zip"),
+            ("base.tar.v0133.glyd", "base.tar"),
+        ] {
             assert!(crate::decompress(&read(glyd)).unwrap() == read(original), "{glyd}");
         }
         // v0.14.0's JPEG stream (GJPG): the model's contexts and
@@ -2261,7 +2421,13 @@ sys.stdout.buffer.write(buf.getvalue())
         // v0.13.3's content view too, and its deltas: their bases open
         // the preflate way, as they were made.
         assert!(crate::decompress_content(&read("log.gz.v0133.glyd")).is_ok(), "content of a GLYDDEF2 object");
-        for (glyd, base, original) in [("next.gz.v0120.base.glyd", "base.gz", "next.gz"), ("next.gz.v0130.base.glyd", "base.gz", "next.gz"), ("next.tar.v0130.base.glyd", "base.tar", "next.tar"), ("next.gz.v0133.base.glyd", "base.gz", "next.gz"), ("next.tar.v0133.base.glyd", "base.tar", "next.tar")] {
+        for (glyd, base, original) in [
+            ("next.gz.v0120.base.glyd", "base.gz", "next.gz"),
+            ("next.gz.v0130.base.glyd", "base.gz", "next.gz"),
+            ("next.tar.v0130.base.glyd", "base.tar", "next.tar"),
+            ("next.gz.v0133.base.glyd", "base.gz", "next.gz"),
+            ("next.tar.v0133.base.glyd", "base.tar", "next.tar"),
+        ] {
             assert!(crate::decompress_with_base(&read(base), &read(glyd)).unwrap() == read(original), "{glyd}");
         }
     }
@@ -2297,7 +2463,8 @@ sys.stdout.buffer.write(buf.getvalue())
         let plain = text(1 << 20);
         // A zip of three entries: deflated, stored, deflated with a data
         // descriptor (as streaming writers make them), and a comment.
-        let zip = python(r#"
+        let zip = python(
+            r#"
 import sys, zipfile, io
 data = sys.stdin.buffer.read()
 buf = io.BytesIO()
@@ -2313,7 +2480,9 @@ with zipfile.ZipFile(buf, "w") as z:
     z.writestr("e.log", data[:100000], compress_type=zipfile.ZIP_DEFLATED)
     z.comment = b"a comment"
 sys.stdout.buffer.write(buf.getvalue())
-"#, &plain);
+"#,
+            &plain,
+        );
         assert!(is_zip(&zip));
         let opened_plain = round_trip(&zip, "zip");
         assert!(opened_plain.len() >= plain.len() + 100000 - 1, "the three deflated entries opened: {} of {}", opened_plain.len(), plain.len() + 100000);
@@ -2322,7 +2491,8 @@ sys.stdout.buffer.write(buf.getvalue())
         let zlib = python("import sys, zlib; sys.stdout.buffer.write(zlib.compress(sys.stdin.buffer.read(), 6))", &plain);
         assert!(is_zlib(&zlib));
         assert!(holds(&round_trip(&zlib, "zlib"), &plain));
-        let png = python(r#"
+        let png = python(
+            r#"
 import sys, zlib, struct
 raw = sys.stdin.buffer.read()
 def chunk(kind, data): return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
@@ -2332,12 +2502,15 @@ cuts = [0, 7777, 7777 + 100000, len(z)]
 for i in range(3): out += chunk(b"IDAT", z[cuts[i]:cuts[i+1]])
 out += chunk(b"IEND", b"")
 sys.stdout.buffer.write(out)
-"#, &plain);
+"#,
+            &plain,
+        );
         assert!(is_png(&png));
         assert!(holds(&round_trip(&png, "png"), &plain));
         // A PDF: two Flate streams (one with a /Length by reference),
         // one uncompressed stream, an object stream.
-        let pdf = python(r#"
+        let pdf = python(
+            r#"
 import sys, zlib
 raw = sys.stdin.buffer.read()
 a, b, c = raw[:300000], raw[300000:600000], raw[600000:]
@@ -2356,14 +2529,18 @@ zc = zlib.compress(b"8 0 9 20 << /A 1 >> << /B 2 >>", 6)
 obj(10, b"<< /Type /ObjStm /N 2 /First 8 /Length " + str(len(zc)).encode() + b" /Filter /FlateDecode >>\nstream\n" + zc + b"\nendstream")
 parts.append(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n")
 sys.stdout.buffer.write(b"".join(parts))
-"#, &plain);
+"#,
+            &plain,
+        );
         // A zip with pictures stored (as Office documents hold them): a
         // PNG opened and a JPEG transcoded inside.
         let jpeg = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/tiny.jpg")).unwrap();
         let mut pictures = png.clone();
         pictures.push(0);
         pictures.extend_from_slice(&jpeg);
-        let picture_zip = python(&format!(r#"
+        let picture_zip = python(
+            &format!(
+                r#"
 import sys, zipfile, io
 blob = sys.stdin.buffer.read()
 png, jpeg = blob[:{}], blob[{}:]
@@ -2375,7 +2552,12 @@ with zipfile.ZipFile(buf, "w") as z:
     z.writestr("word/media/image3.jpeg", jpeg, compress_type=zipfile.ZIP_DEFLATED)
     z.writestr("word/media/image4.png", png, compress_type=zipfile.ZIP_DEFLATED)
 sys.stdout.buffer.write(buf.getvalue())
-"#, png.len(), png.len() + 1), &pictures);
+"#,
+                png.len(),
+                png.len() + 1
+            ),
+            &pictures,
+        );
         let opened_pictures = round_trip(&picture_zip, "zip with pictures");
         assert!(opened_pictures.len() > plain.len(), "the PNG inside opened: {}", opened_pictures.len());
         let recipe = open(&picture_zip).unwrap().recipe;
@@ -2390,7 +2572,9 @@ sys.stdout.buffer.write(buf.getvalue())
         members.extend_from_slice(&png);
         members.extend_from_slice(&jpeg);
         members.extend_from_slice(&plain[..50000]);
-        let tar = python(&format!(r#"
+        let tar = python(
+            &format!(
+                r#"
 import sys, tarfile, io
 blob = sys.stdin.buffer.read()
 parts = [("log.gz", blob[:{gz}]), ("shot.png", blob[{gz}:{gz}+{png}]), ("photo.jpg", blob[{gz}+{png}:-50000]), ("notes.txt", blob[-50000:])]
@@ -2400,7 +2584,12 @@ with tarfile.open(fileobj=buf, mode="w") as t:
         info = tarfile.TarInfo(name); info.size = len(data)
         t.addfile(info, io.BytesIO(data))
 sys.stdout.buffer.write(buf.getvalue())
-"#, gz=gz_len, png=png_len), &members);
+"#,
+                gz = gz_len,
+                png = png_len
+            ),
+            &members,
+        );
         assert!(is_tar(&tar));
         let opened_tar = round_trip(&tar, "tar");
         assert!(opened_tar.len() >= 200000 + plain.len(), "the gzip member and the PNG opened inside the tar: {}", opened_tar.len());

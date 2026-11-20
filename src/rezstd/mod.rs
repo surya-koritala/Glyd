@@ -317,59 +317,59 @@ fn run(input: &[u8], n: usize, b: &Build, p: &CParams, r: Run, out: &mut Vec<u8>
         let call_out = out.len();
         let mut pos = call_start;
         while pos < call_end {
-        let size = block_size_at(&s[pos..], call_end - pos, block_size, &rules, p.strategy, savings);
-        let last = r.base + pos + size == n;
-        window.enforce_max_dist(pos, p.window_log);
-        // ZSTD_compressBlock_internal: 0 is a raw block, 1 an RLE one.
-        let src = &s[pos..pos + size];
-        let mut coded = Vec::new();
-        let mut c_size = 0usize;
-        if size >= 7 {
-            next.rep = prev.rep;
-            let store = match (p.strategy, window.has_ext_dict()) {
-                (Strategy::Fast, false) => fast::compress_block(s, pos, pos + size, &mut table, p, &window, &mut next.rep, &rules),
-                (Strategy::Fast, true) => fast::compress_block_ext(s, pos, pos + size, &mut table, p, &window, &mut next.rep, &rules),
-                (Strategy::DoubleFast, false) => dfast::compress_block(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, &rules),
-                (Strategy::DoubleFast, true) => dfast::compress_block_ext(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, &rules),
+            let size = block_size_at(&s[pos..], call_end - pos, block_size, &rules, p.strategy, savings);
+            let last = r.base + pos + size == n;
+            window.enforce_max_dist(pos, p.window_log);
+            // ZSTD_compressBlock_internal: 0 is a raw block, 1 an RLE one.
+            let src = &s[pos..pos + size];
+            let mut coded = Vec::new();
+            let mut c_size = 0usize;
+            if size >= 7 {
+                next.rep = prev.rep;
+                let store = match (p.strategy, window.has_ext_dict()) {
+                    (Strategy::Fast, false) => fast::compress_block(s, pos, pos + size, &mut table, p, &window, &mut next.rep, &rules),
+                    (Strategy::Fast, true) => fast::compress_block_ext(s, pos, pos + size, &mut table, p, &window, &mut next.rep, &rules),
+                    (Strategy::DoubleFast, false) => dfast::compress_block(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, &rules),
+                    (Strategy::DoubleFast, true) => dfast::compress_block_ext(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, &rules),
+                };
+                if let Some(c) = block::compress(&store, &prev.entropy, &mut next.entropy, cap - 3, size, p.strategy) {
+                    c_size = c.len();
+                    coded = c;
+                }
+                if !first && c_size < 25 && is_rle(src) {
+                    c_size = 1;
+                }
+                if c_size > 1 {
+                    std::mem::swap(&mut prev, &mut next);
+                }
+                if prev.entropy.fse.of_repeat == fse::Repeat::Valid {
+                    prev.entropy.fse.of_repeat = fse::Repeat::Check;
+                }
+            }
+            let header = |kind: u32, size: usize| (last as u32 + (kind << 1) + ((size as u32) << 3)).to_le_bytes();
+            match c_size {
+                0 => {
+                    out.extend_from_slice(&header(0, size)[..3]);
+                    out.extend_from_slice(src);
+                }
+                1 => {
+                    out.extend_from_slice(&header(1, size)[..3]);
+                    out.push(src[0]);
+                }
+                _ => {
+                    out.extend_from_slice(&header(2, c_size)[..3]);
+                    out.extend_from_slice(&coded);
+                }
+            }
+            let written = match c_size {
+                0 => 3 + size,
+                1 => 4,
+                c => 3 + c,
             };
-            if let Some(c) = block::compress(&store, &prev.entropy, &mut next.entropy, cap - 3, size, p.strategy) {
-                c_size = c.len();
-                coded = c;
-            }
-            if !first && c_size < 25 && is_rle(src) {
-                c_size = 1;
-            }
-            if c_size > 1 {
-                std::mem::swap(&mut prev, &mut next);
-            }
-            if prev.entropy.fse.of_repeat == fse::Repeat::Valid {
-                prev.entropy.fse.of_repeat = fse::Repeat::Check;
-            }
-        }
-        let header = |kind: u32, size: usize| (last as u32 + (kind << 1) + ((size as u32) << 3)).to_le_bytes();
-        match c_size {
-            0 => {
-                out.extend_from_slice(&header(0, size)[..3]);
-                out.extend_from_slice(src);
-            }
-            1 => {
-                out.extend_from_slice(&header(1, size)[..3]);
-                out.push(src[0]);
-            }
-            _ => {
-                out.extend_from_slice(&header(2, c_size)[..3]);
-                out.extend_from_slice(&coded);
-            }
-        }
-        let written = match c_size {
-            0 => 3 + size,
-            1 => 4,
-            c => 3 + c,
-        };
-        cap -= written;
-        savings += size as i64 - written as i64;
-        pos += size;
-        first = false;
+            cap -= written;
+            savings += size as i64 - written as i64;
+            pos += size;
+            first = false;
         }
         consumed += (call_end - call_start) as i64;
         produced += (out.len() - call_out) as i64 + if call_start == start { r.header as i64 } else { 0 };
@@ -389,7 +389,24 @@ fn stream(input: &[u8], n: usize, b: &Build, p: &CParams, fh_size: usize, out: &
     let block_size = BLOCK_SIZE_MAX.min(window_size);
     // An input of one block takes the one-shot shortcut: a single call.
     let chunk = if n <= BLOCK_SIZE_MAX { n } else { block_size };
-    run(input, n, b, p, Run { base: 0, start: 0, end: n, chunk, cap: CSTREAM_OUT_SIZE - fh_size, per_chunk: true, ring: Some(window_size + block_size), reps: [1, 4, 8], header: fh_size }, out);
+    run(
+        input,
+        n,
+        b,
+        p,
+        Run {
+            base: 0,
+            start: 0,
+            end: n,
+            chunk,
+            cap: CSTREAM_OUT_SIZE - fh_size,
+            per_chunk: true,
+            ring: Some(window_size + block_size),
+            reps: [1, 4, 8],
+            header: fh_size,
+        },
+        out,
+    );
 }
 
 /// `input` as the reference compressor of `build` writes it.
@@ -421,7 +438,14 @@ pub fn compress(input: &[u8], build: Build) -> Vec<u8> {
         out.extend_from_slice(&[1, 0, 0]);
     } else {
         match build.writer {
-            Writer::OneShot => run(input, n, &build, &p, Run { base: 0, start: 0, end: n, chunk: n, cap: compress_bound(n) - fh_size, per_chunk: false, ring: None, reps: [1, 4, 8], header: fh_size }, &mut out),
+            Writer::OneShot => run(
+                input,
+                n,
+                &build,
+                &p,
+                Run { base: 0, start: 0, end: n, chunk: n, cap: compress_bound(n) - fh_size, per_chunk: false, ring: None, reps: [1, 4, 8], header: fh_size },
+                &mut out,
+            ),
             Writer::Stream => stream(input, n, &build, &p, fh_size, &mut out),
             Writer::Cli if n <= JOB_SIZE_MIN => stream(input, n, &build, &p, fh_size, &mut out),
             Writer::Cli => {
@@ -436,7 +460,24 @@ pub fn compress(input: &[u8], build: Build) -> Vec<u8> {
                     let base = if first { 0 } else { start - overlap };
                     let cap = compress_bound(job) - if first { fh_size } else { 0 };
                     // ZSTDMT_compressionJob feeds its context four blocks at a time.
-                    run(input, n, &build, &p, Run { base, start, end, chunk: 4 * BLOCK_SIZE_MAX, cap, per_chunk: false, ring: None, reps: if first { [1, 4, 8] } else { [0, 0, 0] }, header: if first { fh_size } else { 0 } }, &mut out);
+                    run(
+                        input,
+                        n,
+                        &build,
+                        &p,
+                        Run {
+                            base,
+                            start,
+                            end,
+                            chunk: 4 * BLOCK_SIZE_MAX,
+                            cap,
+                            per_chunk: false,
+                            ring: None,
+                            reps: if first { [1, 4, 8] } else { [0, 0, 0] },
+                            header: if first { fh_size } else { 0 },
+                        },
+                        &mut out,
+                    );
                     start = end;
                 }
             }

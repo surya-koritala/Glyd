@@ -109,7 +109,11 @@ impl Tally {
     fn ulp(&mut self, name: &str, gpu: &[f32], cpu: &[f32], bound: u32) {
         let (w, same) = ulps(gpu, cpu);
         let v = self.keep(w <= bound && gpu.iter().all(|x| x.is_finite()), name);
-        println!("{v} {name}: {} values, {same} equal ({:.2}%), at most {w} bf16 places apart (bound {bound})", gpu.len(), 100.0 * same as f64 / gpu.len().max(1) as f64);
+        println!(
+            "{v} {name}: {} values, {same} equal ({:.2}%), at most {w} bf16 places apart (bound {bound})",
+            gpu.len(),
+            100.0 * same as f64 / gpu.len().max(1) as f64
+        );
     }
 
     /// The largest difference within `bound` of the largest value; for bf16 outputs (`bf16_out`) the places are shown too, not bounded.
@@ -147,7 +151,16 @@ struct Delta {
 impl Delta {
     fn new(r: &mut Rng, n: usize, nk: usize, nv: usize) -> Delta {
         let c = 2 * nk * 128 + nv * 128;
-        Delta { n, nk, nv, xc: r.v(n * c, -1.0, 1.0), ba: r.v(n * 2 * nv, -3.0, 3.0), a_log: (0..nv).map(|_| r.f(-1.0, 1.0)).collect(), dt_bias: r.v(nv, -1.0, 1.0), s0: (0..nv * 128 * 128).map(|_| r.f(-0.1, 0.1)).collect() }
+        Delta {
+            n,
+            nk,
+            nv,
+            xc: r.v(n * c, -1.0, 1.0),
+            ba: r.v(n * 2 * nv, -3.0, 3.0),
+            a_log: (0..nv).map(|_| r.f(-1.0, 1.0)).collect(),
+            dt_bias: r.v(nv, -1.0, 1.0),
+            s0: (0..nv * 128 * 128).map(|_| r.f(-0.1, 0.1)).collect(),
+        }
     }
 
     fn c(&self) -> usize {
@@ -190,7 +203,23 @@ impl Delta {
         let (xc, ba, al, dt, st) = (up(&self.xc)?, up(&self.ba)?, up32(&self.a_log)?, up(&self.dt_bias)?, up32(&self.s0)?);
         let core = Buf::zeroed(self.n * self.nv * 128 * 2)?;
         // SAFETY: buffers made here of the sizes the kernel reads and writes; read after a synchronize.
-        unsafe { k.delta(dev.stream, chunked, xc.ptr, self.c() as i32, ba.ptr, 2 * self.nv as i32, al.ptr, dt.ptr, st.ptr, core.ptr, self.n as i32, self.nk as i32, self.nv as i32)? };
+        unsafe {
+            k.delta(
+                dev.stream,
+                chunked,
+                xc.ptr,
+                self.c() as i32,
+                ba.ptr,
+                2 * self.nv as i32,
+                al.ptr,
+                dt.ptr,
+                st.ptr,
+                core.ptr,
+                self.n as i32,
+                self.nk as i32,
+                self.nv as i32,
+            )?
+        };
         dev.sync()?;
         Ok((down(&core, self.n * self.nv * 128)?, down32(&st, self.s0.len())?))
     }
@@ -211,7 +240,8 @@ fn attn_case(t: &mut Tally, k: &Kern35, dev: &Dev, r: &mut Rng, p0: usize, n: us
         for h in 0..nq {
             let kvh = h / g;
             let qr = &q[(i * nq + h) * 256..][..256];
-            let sc: Vec<f64> = (0..=p0 + i).map(|j| qr.iter().zip(&keys[(j * nk + kvh) * 256..][..256]).map(|(a, b)| (*a as f64) * (*b as f64)).sum::<f64>() / 16.0).collect();
+            let sc: Vec<f64> =
+                (0..=p0 + i).map(|j| qr.iter().zip(&keys[(j * nk + kvh) * 256..][..256]).map(|(a, b)| (*a as f64) * (*b as f64)).sum::<f64>() / 16.0).collect();
             let m = sc.iter().cloned().fold(f64::MIN, f64::max);
             let e: Vec<f64> = sc.iter().map(|x| (x - m).exp()).collect();
             let l: f64 = e.iter().sum();
@@ -233,7 +263,13 @@ fn attn_case(t: &mut Tally, k: &Kern35, dev: &Dev, r: &mut Rng, p0: usize, n: us
     }
     dev.sync()?;
     t.rel(&format!("attention {what}: a prompt's rows, times sigmoid(gate), against the CPU"), &down(&ob, want.len())?, &want, 1e-2, true);
-    t.rel(&format!("attention {what}: each row a decode step (the keys in {ATTN_SPLITS} parts, combined: not the prompt kernel's bits), against the CPU"), &down(&ob1, want.len())?, &want, 1e-2, true);
+    t.rel(
+        &format!("attention {what}: each row a decode step (the keys in {ATTN_SPLITS} parts, combined: not the prompt kernel's bits), against the CPU"),
+        &down(&ob1, want.len())?,
+        &want,
+        1e-2,
+        true,
+    );
     Ok(())
 }
 
@@ -337,7 +373,26 @@ pub fn run() -> Result<bool> {
         pb.write(0, &pos)?;
         let (qo, kc, vc) = (Buf::zeroed(n * nq * 256 * 2)?, Buf::zeroed(wk.len() * 2)?, Buf::zeroed(wv.len() * 2)?);
         // SAFETY: as above.
-        unsafe { k.prep(s, qb.ptr, stride as i32, qwb.ptr, kwb.ptr, cb.ptr, sb.ptr, half as i32, pb.ptr, qo.ptr, kc.ptr, vc.ptr, n as u32, nq as i32, nk as i32, eps)? };
+        unsafe {
+            k.prep(
+                s,
+                qb.ptr,
+                stride as i32,
+                qwb.ptr,
+                kwb.ptr,
+                cb.ptr,
+                sb.ptr,
+                half as i32,
+                pb.ptr,
+                qo.ptr,
+                kc.ptr,
+                vc.ptr,
+                n as u32,
+                nq as i32,
+                nk as i32,
+                eps,
+            )?
+        };
         dev.sync()?;
         t.ulp("query norm and rotary (64 of 256 dims)", &down(&qo, wq.len())?, &wq, 1);
         t.ulp("key norm and rotary into the cache", &down(&kc, wk.len())?, &wk, 1);

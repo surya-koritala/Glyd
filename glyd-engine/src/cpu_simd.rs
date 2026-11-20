@@ -80,6 +80,7 @@ pub(crate) fn tq_value(s: u32) -> f32 {
 
 /// The state of weight t of a format q row of `k` bits a weight (`words`: the row's `k cols / 32` little-endian words, a circular stream, most significant bit first): its 14 bits from bit k t
 /// (q, q3, q4: k 2, 3, 4), the value as `tq_value`.
+#[cfg_attr(not(feature = "dev"), allow(dead_code))] // development tools only
 #[inline(always)]
 pub(crate) fn tq_state_k(words: &[u32], k: usize, t: usize) -> u32 {
     let (p, w) = (k * t, words.len());
@@ -182,7 +183,11 @@ unsafe fn tq_values512v(w: __m512i) -> __m512 {
 unsafe fn tqk_windows512<const K: usize, const R: u32>(x: *const u32) -> (__m512i, __m512i, __m512i) {
     let t = tqk_tabs::<K, R>();
     let m: __mmask16 = (0..16).fold(0u16, |m, i| m | (((R as usize + K * i >= 32) as u16) << i));
-    let (b0, b1, b2) = (_mm512_set1_epi32(x.read_unaligned() as i32), _mm512_set1_epi32(x.add(1).read_unaligned() as i32), _mm512_set1_epi32(x.add(2).read_unaligned() as i32));
+    let (b0, b1, b2) = (
+        _mm512_set1_epi32(x.read_unaligned() as i32),
+        _mm512_set1_epi32(x.add(1).read_unaligned() as i32),
+        _mm512_set1_epi32(x.add(2).read_unaligned() as i32),
+    );
     (_mm512_mask_blend_epi32(m, b0, b1), _mm512_mask_blend_epi32(m, b1, b2), _mm512_loadu_si512(t[1].as_ptr().cast()))
 }
 
@@ -585,7 +590,13 @@ entries!(up_avx512, down_avx512, Avx512, 4, "avx512f,avx2,fma");
 
 /// The first-product sums of rows r0 to r1 of `rows` against `zp` (z in the kernels' order, `rows.cols` values) into `sums[0..r1 - r0]`, by `kernel` (which this computer runs: `Kernel::runs_here`).
 pub(crate) fn up(kernel: Kernel, rows: &RowsView, zp: &[f32], r0: usize, r1: usize, sums: &mut [f32]) {
-    assert!(rows.is_valid() && r0 <= r1 && r1 <= rows.rows && zp.len() >= rows.cols && sums.len() >= r1 - r0, "rows {r0} to {r1} of {}, z of {} values, {} sums", rows.rows, zp.len(), sums.len());
+    assert!(
+        rows.is_valid() && r0 <= r1 && r1 <= rows.rows && zp.len() >= rows.cols && sums.len() >= r1 - r0,
+        "rows {r0} to {r1} of {}, z of {} values, {} sums",
+        rows.rows,
+        zp.len(),
+        sums.len()
+    );
     let (z, s) = (zp.as_ptr(), sums.as_mut_ptr());
     // SAFETY: the reads and writes are inside the slices (checked above), and the kernel's instructions are ones this computer has.
     unsafe {
@@ -604,7 +615,13 @@ pub(crate) fn up(kernel: Kernel, rows: &RowsView, zp: &[f32], r0: usize, r1: usi
 
 /// The outputs `acc[0..cols]` (in the kernels' order) of the active neurons (row, activation) of `rows`, by `kernel`.
 pub(crate) fn down(kernel: Kernel, rows: &RowsView, active: &[(u32, f32)], acc: &mut [f32]) {
-    assert!(rows.is_valid() && acc.len() >= rows.cols && active.iter().all(|&(j, _)| (j as usize) < rows.rows), "{} outputs of {} and a neuron past the {} rows", acc.len(), rows.cols, rows.rows);
+    assert!(
+        rows.is_valid() && acc.len() >= rows.cols && active.iter().all(|&(j, _)| (j as usize) < rows.rows),
+        "{} outputs of {} and a neuron past the {} rows",
+        acc.len(),
+        rows.cols,
+        rows.rows
+    );
     let a = acc.as_mut_ptr();
     // SAFETY: as in `up`.
     unsafe {
@@ -1110,7 +1127,12 @@ entries_glm_t!(glmt_avx512, Avx512, "avx512f,avx2,fma");
 
 /// The first-product sums of rows r0 to r1 of the codebook matrix `m` (two to four bits) for up to four tokens at once (`zs`, natural order), into `sums[t][0..r1 - r0]`: each token's sums as `dot_glm` makes them.
 pub(crate) fn dot_glm_multi(kernel: Kernel, m: &GlmMat, zs: &[&[f32]], r0: usize, r1: usize, sums: &mut [&mut [f32]]) {
-    assert!(m.is_valid() && m.fmt != Fmt::Tern && (1..=4).contains(&zs.len()) && zs.len() == sums.len() && r0 <= r1 && r1 <= m.rows, "rows {r0} to {r1} of {}, {} tokens", m.rows, zs.len());
+    assert!(
+        m.is_valid() && m.fmt != Fmt::Tern && (1..=4).contains(&zs.len()) && zs.len() == sums.len() && r0 <= r1 && r1 <= m.rows,
+        "rows {r0} to {r1} of {}, {} tokens",
+        m.rows,
+        zs.len()
+    );
     assert!(zs.iter().all(|z| z.len() >= m.cols) && sums.iter().all(|s| s.len() >= r1 - r0), "the tokens' values or sums are short");
     if let Some(k @ 3..=4) = m.fmt.tq_bits() {
         macro_rules! tqk {
@@ -1120,8 +1142,20 @@ pub(crate) fn dot_glm_multi(kernel: Kernel, m: &GlmMat, zs: &[&[f32]], r0: usize
                     match zs.len() {
                         1 => $md::dot::<$k, 1>(m, [zs[0].as_ptr()], r0, r1, [sums[0].as_mut_ptr()]),
                         2 => $md::dot::<$k, 2>(m, [zs[0].as_ptr(), zs[1].as_ptr()], r0, r1, [sums[0].as_mut_ptr(), sums[1].as_mut_ptr()]),
-                        3 => $md::dot::<$k, 3>(m, [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr()], r0, r1, [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr()]),
-                        _ => $md::dot::<$k, 4>(m, [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr(), zs[3].as_ptr()], r0, r1, [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr(), sums[3].as_mut_ptr()]),
+                        3 => $md::dot::<$k, 3>(
+                            m,
+                            [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr()],
+                            r0,
+                            r1,
+                            [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr()],
+                        ),
+                        _ => $md::dot::<$k, 4>(
+                            m,
+                            [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr(), zs[3].as_ptr()],
+                            r0,
+                            r1,
+                            [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr(), sums[3].as_mut_ptr()],
+                        ),
                     }
                 }
             }};
@@ -1157,8 +1191,20 @@ pub(crate) fn dot_glm_multi(kernel: Kernel, m: &GlmMat, zs: &[&[f32]], r0: usize
                     match zs.len() {
                         1 => $md::dot::<1>(m, [zs[0].as_ptr()], r0, r1, [sums[0].as_mut_ptr()]),
                         2 => $md::dot::<2>(m, [zs[0].as_ptr(), zs[1].as_ptr()], r0, r1, [sums[0].as_mut_ptr(), sums[1].as_mut_ptr()]),
-                        3 => $md::dot::<3>(m, [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr()], r0, r1, [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr()]),
-                        _ => $md::dot::<4>(m, [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr(), zs[3].as_ptr()], r0, r1, [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr(), sums[3].as_mut_ptr()]),
+                        3 => $md::dot::<3>(
+                            m,
+                            [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr()],
+                            r0,
+                            r1,
+                            [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr()],
+                        ),
+                        _ => $md::dot::<4>(
+                            m,
+                            [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr(), zs[3].as_ptr()],
+                            r0,
+                            r1,
+                            [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr(), sums[3].as_mut_ptr()],
+                        ),
                     }
                 }
             }};
@@ -1190,7 +1236,13 @@ pub(crate) fn dot_glm_multi(kernel: Kernel, m: &GlmMat, zs: &[&[f32]], r0: usize
                         $md::dot::<$b, 2>(m, [zs[0].as_ptr(), zs[1].as_ptr()], r0, r1, [a[0].as_mut_ptr(), b[0].as_mut_ptr()]);
                         $md::dot::<$b, 1>(m, [zs[2].as_ptr()], r0, r1, [c[0].as_mut_ptr()])
                     }
-                    _ => $md::dot::<$b, 4>(m, [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr(), zs[3].as_ptr()], r0, r1, [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr(), sums[3].as_mut_ptr()]),
+                    _ => $md::dot::<$b, 4>(
+                        m,
+                        [zs[0].as_ptr(), zs[1].as_ptr(), zs[2].as_ptr(), zs[3].as_ptr()],
+                        r0,
+                        r1,
+                        [sums[0].as_mut_ptr(), sums[1].as_mut_ptr(), sums[2].as_mut_ptr(), sums[3].as_mut_ptr()],
+                    ),
                 }
             }
         }};
@@ -1218,7 +1270,12 @@ pub(crate) fn dot_glm_multi(kernel: Kernel, m: &GlmMat, zs: &[&[f32]], r0: usize
 
 /// Outputs `o0` to `o0 + 128` (o0 a multiple of 128) of the second product of the codebook matrix `m` (two to four bits) for one or two tokens at once (`acts`), into `outs[t][0..128]`: each token's as `down_glm` makes them.
 pub(crate) fn down_glm_multi(kernel: Kernel, m: &GlmMat, acts: &[&[f32]], o0: usize, outs: &mut [&mut [f32]]) {
-    assert!(m.is_valid() && m.fmt != Fmt::Tern && (1..=2).contains(&acts.len()) && acts.len() == outs.len() && o0 % 128 == 0 && o0 + 128 <= m.cols, "outputs {o0} of {}, {} tokens", m.cols, acts.len());
+    assert!(
+        m.is_valid() && m.fmt != Fmt::Tern && (1..=2).contains(&acts.len()) && acts.len() == outs.len() && o0 % 128 == 0 && o0 + 128 <= m.cols,
+        "outputs {o0} of {}, {} tokens",
+        m.cols,
+        acts.len()
+    );
     assert!(acts.iter().all(|a| a.len() >= m.rows) && outs.iter().all(|o| o.len() >= 128), "the activations or outputs are short");
     if let Some(k @ 3..=4) = m.fmt.tq_bits() {
         macro_rules! tqk {
@@ -1605,7 +1662,9 @@ mod glm_avx512v {
 #[cfg(target_arch = "x86_64")]
 fn tq_vnni() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| is_x86_feature_detected!("avx512vnni") && is_x86_feature_detected!("avx512vbmi2") && is_x86_feature_detected!("avx512bw") && Kernel::Avx512.runs_here())
+    *V.get_or_init(|| {
+        is_x86_feature_detected!("avx512vnni") && is_x86_feature_detected!("avx512vbmi2") && is_x86_feature_detected!("avx512bw") && Kernel::Avx512.runs_here()
+    })
 }
 
 fn glm_fns(kernel: Kernel, fmt: Fmt) -> (DotFn, DownFn) {
@@ -1645,7 +1704,13 @@ fn glm_fns(kernel: Kernel, fmt: Fmt) -> (DotFn, DownFn) {
 
 /// The sums of rows r0 to r1 of the matrix `m` (no run scales) against `z` (`m.z_len()` values: natural order, or for ternary rows `tern_permute`d) into `sums[0..r1 - r0]`, by `kernel` (which this computer runs).
 pub(crate) fn dot_glm(kernel: Kernel, m: &GlmMat, z: &[f32], r0: usize, r1: usize, sums: &mut [f32]) {
-    assert!(m.is_valid() && r0 <= r1 && r1 <= m.rows && z.len() >= m.z_len() && sums.len() >= r1 - r0, "rows {r0} to {r1} of {}, z of {} values, {} sums", m.rows, z.len(), sums.len());
+    assert!(
+        m.is_valid() && r0 <= r1 && r1 <= m.rows && z.len() >= m.z_len() && sums.len() >= r1 - r0,
+        "rows {r0} to {r1} of {}, z of {} values, {} sums",
+        m.rows,
+        z.len(),
+        sums.len()
+    );
     let (f, _) = glm_fns(kernel, m.fmt);
     // SAFETY: the reads and writes are inside the slices (checked above: the arrays have the layout's sizes, a ternary group's loads are of copies where it is partial), and the kernel's instructions are ones this computer has.
     unsafe { f(m, z.as_ptr(), r0, r1, sums.as_mut_ptr()) }
@@ -1654,7 +1719,14 @@ pub(crate) fn dot_glm(kernel: Kernel, m: &GlmMat, z: &[f32], r0: usize, r1: usiz
 /// Outputs `o0` (a multiple of `m.fmt.slice()`) to `o0 + slice` (cut at the width) of the sum over the rows n of the matrix `m` of `act[n]` times row n, into `out[0..]`, by `kernel`.
 pub(crate) fn down_glm(kernel: Kernel, m: &GlmMat, act: &[f32], o0: usize, out: &mut [f32]) {
     let slice = m.fmt.slice();
-    assert!(m.is_valid() && act.len() >= m.rows && o0 % slice == 0 && o0 < m.cols && out.len() >= slice.min(m.cols - o0), "{} neurons of {} outputs, {} activations, outputs {o0} on, room for {}", m.rows, m.cols, act.len(), out.len());
+    assert!(
+        m.is_valid() && act.len() >= m.rows && o0 % slice == 0 && o0 < m.cols && out.len() >= slice.min(m.cols - o0),
+        "{} neurons of {} outputs, {} activations, outputs {o0} on, room for {}",
+        m.rows,
+        m.cols,
+        act.len(),
+        out.len()
+    );
     assert!(m.fmt == Fmt::Tern || o0 + slice <= m.cols, "a slice of {slice} outputs at {o0} of {}", m.cols);
     let (_, f) = glm_fns(kernel, m.fmt);
     // SAFETY: as in `dot_glm`.
@@ -1663,7 +1735,13 @@ pub(crate) fn down_glm(kernel: Kernel, m: &GlmMat, act: &[f32], o0: usize, out: 
 
 /// The first-product sums of rows r0 to r1 of the codebook matrix `m` against `z` (natural order, `m.cols` values) into `sums[0..r1 - r0]`, by `kernel` (which this computer runs: `Kernel::runs_here`).
 pub(crate) fn up_cb(kernel: Kernel, m: &CbView, z: &[f32], r0: usize, r1: usize, sums: &mut [f32]) {
-    assert!(m.is_valid() && r0 <= r1 && r1 <= m.rows && z.len() >= m.cols && sums.len() >= r1 - r0, "rows {r0} to {r1} of {}, z of {} values, {} sums", m.rows, z.len(), sums.len());
+    assert!(
+        m.is_valid() && r0 <= r1 && r1 <= m.rows && z.len() >= m.cols && sums.len() >= r1 - r0,
+        "rows {r0} to {r1} of {}, z of {} values, {} sums",
+        m.rows,
+        z.len(),
+        sums.len()
+    );
     let (z, s) = (z.as_ptr(), sums.as_mut_ptr());
     // SAFETY: the reads and writes are inside the slices (checked above: `is_valid` gives each row its bytes, a run's loads stop at its 4 B bytes), and the kernel's instructions are ones this computer has.
     unsafe {
@@ -1682,7 +1760,13 @@ pub(crate) fn up_cb(kernel: Kernel, m: &CbView, z: &[f32], r0: usize, r1: usize,
 
 /// The outputs `acc[0..cols]` (natural order) of the active neurons (row, activation) of the codebook matrix `m`, by `kernel`.
 pub(crate) fn down_cb(kernel: Kernel, m: &CbView, active: &[(u32, f32)], acc: &mut [f32]) {
-    assert!(m.is_valid() && acc.len() >= m.cols && active.iter().all(|&(j, _)| (j as usize) < m.rows), "{} outputs of {} and a neuron past the {} rows", acc.len(), m.cols, m.rows);
+    assert!(
+        m.is_valid() && acc.len() >= m.cols && active.iter().all(|&(j, _)| (j as usize) < m.rows),
+        "{} outputs of {} and a neuron past the {} rows",
+        acc.len(),
+        m.cols,
+        m.rows
+    );
     let a = acc.as_mut_ptr();
     // SAFETY: as in `up_cb`.
     unsafe {
@@ -1799,7 +1883,9 @@ impl Isa for Scalar {
 
     #[inline(always)]
     unsafe fn decode_tern(t: [f32; 16], bytes: *const u8) -> [([f32; 16], [f32; 16]); 5] {
-        core::array::from_fn(|d| (core::array::from_fn(|l| t[tern_digit(bytes.add(l).read(), d)]), core::array::from_fn(|l| t[tern_digit(bytes.add(16 + l).read(), d)])))
+        core::array::from_fn(|d| {
+            (core::array::from_fn(|l| t[tern_digit(bytes.add(l).read(), d)]), core::array::from_fn(|l| t[tern_digit(bytes.add(16 + l).read(), d)]))
+        })
     }
 
     #[inline(always)]
@@ -1929,7 +2015,12 @@ impl Neon {
     unsafe fn widen<const B: u32>(u: uint8x16_t) -> [float32x4_t; 4] {
         let s = vsubq_s8(vreinterpretq_s8_u8(u), vdupq_n_s8(1 << (B - 1)));
         let (w0, w1) = (vmovl_s8(vget_low_s8(s)), vmovl_high_s8(s));
-        [vcvtq_f32_s32(vmovl_s16(vget_low_s16(w0))), vcvtq_f32_s32(vmovl_high_s16(w0)), vcvtq_f32_s32(vmovl_s16(vget_low_s16(w1))), vcvtq_f32_s32(vmovl_high_s16(w1))]
+        [
+            vcvtq_f32_s32(vmovl_s16(vget_low_s16(w0))),
+            vcvtq_f32_s32(vmovl_high_s16(w0)),
+            vcvtq_f32_s32(vmovl_s16(vget_low_s16(w1))),
+            vcvtq_f32_s32(vmovl_high_s16(w1)),
+        ]
     }
 }
 
@@ -2241,9 +2332,12 @@ impl Isa for Avx2 {
         }
         let g = [digits!(bytes), digits!(bytes.add(8)), digits!(bytes.add(16)), digits!(bytes.add(24))];
         let z = _mm256_setzero_ps();
-        let mut out = [(( z, z), (z, z)); 5];
+        let mut out = [((z, z), (z, z)); 5];
         for d in 0..5 {
-            out[d] = ((_mm256_permutevar8x32_ps(t.0, g[0][d]), _mm256_permutevar8x32_ps(t.0, g[1][d])), (_mm256_permutevar8x32_ps(t.0, g[2][d]), _mm256_permutevar8x32_ps(t.0, g[3][d])));
+            out[d] = (
+                (_mm256_permutevar8x32_ps(t.0, g[0][d]), _mm256_permutevar8x32_ps(t.0, g[1][d])),
+                (_mm256_permutevar8x32_ps(t.0, g[2][d]), _mm256_permutevar8x32_ps(t.0, g[3][d])),
+            );
         }
         out
     }
@@ -2481,7 +2575,11 @@ mod tq_tests {
         let z: Vec<f32> = (0..cols).map(|_| (next() % 2001) as f32 / 1000.0 - 1.0).collect();
         let act: Vec<f32> = (0..rows).map(|_| (next() % 2001) as f32 / 1000.0 - 1.0).collect();
         let words: Vec<Vec<u32>> = (0..rows).map(|r| (0..w).map(|j| u32::from_le_bytes(codes[4 * (r * w + j)..][..4].try_into().unwrap())).collect()).collect();
-        let weight = |r: usize, t: usize| tq_value(tq_state_k(&words[r], k, t)) as f64 * TQ_K as f64 * f32::from_bits((u16::from_le_bytes([book[2 * r], book[2 * r + 1]]) as u32) << 16) as f64;
+        let weight = |r: usize, t: usize| {
+            tq_value(tq_state_k(&words[r], k, t)) as f64
+                * TQ_K as f64
+                * f32::from_bits((u16::from_le_bytes([book[2 * r], book[2 * r + 1]]) as u32) << 16) as f64
+        };
         if fmt == Fmt::Tq {
             // (the two-bit lanes as `tq_lane` reads them)
             assert!((0..cols).all(|t| tq_lane(words[3][t / 16], words[3][(t / 16 + 1) % w], t % 16) == tq_value(tq_state_k(&words[3], 2, t))));
@@ -2510,7 +2608,11 @@ mod tq_tests {
             let mut alone_o2 = vec![0f32; 128];
             down_glm_multi(kernel, &m, &[&act2], 128, &mut [&mut alone_o2]);
             let same = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
-            assert!(same(&s1, &dot) && same(&s2, &alone2) && same(&o1, &down128[128..256]) && same(&o2, &alone_o2), "{}: tokens together differ from alone", kernel.name());
+            assert!(
+                same(&s1, &dot) && same(&s2, &alone2) && same(&o1, &down128[128..256]) && same(&o2, &alone_o2),
+                "{}: tokens together differ from alone",
+                kernel.name()
+            );
             for (g, want) in dot.iter().zip(&want_dot).chain(down.iter().zip(&want_down)).chain(down128.iter().zip(&want_down)) {
                 assert!((*g as f64 - want).abs() <= 1e-4 * (1.0 + want.abs()), "{}: {g} vs {want}", kernel.name());
             }
@@ -2537,7 +2639,13 @@ mod tq_tests {
                 None => first = Some((kernel, dot, down, down128)),
                 Some((k0, d0, w0, x0)) => {
                     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-                    assert!(bits(d0) == bits(&dot) && bits(w0) == bits(&down) && bits(x0) == bits(&down128), "{} and {} differ ({})", k0.name(), kernel.name(), fmt.name());
+                    assert!(
+                        bits(d0) == bits(&dot) && bits(w0) == bits(&down) && bits(x0) == bits(&down128),
+                        "{} and {} differ ({})",
+                        k0.name(),
+                        kernel.name(),
+                        fmt.name()
+                    );
                 }
             }
         }

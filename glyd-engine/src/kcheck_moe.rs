@@ -17,7 +17,9 @@ use crate::moe_ref::{plan_of, read_plan, route, scores, RefLayer, RefShared};
 use crate::moe_rows::{row_strides, Down, RowStack, RowsJoined};
 use crate::qwen35_ref::bf16;
 use crate::weights::upload_tiered;
-use glyd_gpu::pack::{pack_int4, pack_int5, pack_int6, pack_rows, transpose, unpack_int4, unpack_int5, unpack_int6, unpack_rows, Tiered, INT4_TAG, INT5_TAG, INT6_TAG};
+use glyd_gpu::pack::{
+    pack_int4, pack_int5, pack_int6, pack_rows, transpose, unpack_int4, unpack_int5, unpack_int6, unpack_rows, Tiered, INT4_TAG, INT5_TAG, INT6_TAG,
+};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -127,8 +129,22 @@ const FMTS: [Fmt; 3] = [
 const LOSSLESS: Fmt = Fmt { name: "tiered (lossless)", tag: INT5_TAG, bits: 5, pack: pack_int5, unpack: unpack_int5, lossless: true };
 
 /// The exact FP4 layout, timed alone (`--speed`: its packs are an MX FP4 checkpoint's, made of no bf16 weights).
-const FP4: Fmt = Fmt { name: "fp4 (exact)", tag: glyd_gpu::pack::FP4_TAG, bits: 4, pack: |w, r, c| mx_fp4(w, r, c, false), unpack: glyd_gpu::pack::unpack_fp4, lossless: false };
-const FP4R: Fmt = Fmt { name: "fp4 (exact, packed scales)", tag: glyd_gpu::pack::FP4R_TAG, bits: 4, pack: |w, r, c| mx_fp4(w, r, c, true), unpack: glyd_gpu::pack::unpack_fp4, lossless: false };
+const FP4: Fmt = Fmt {
+    name: "fp4 (exact)",
+    tag: glyd_gpu::pack::FP4_TAG,
+    bits: 4,
+    pack: |w, r, c| mx_fp4(w, r, c, false),
+    unpack: glyd_gpu::pack::unpack_fp4,
+    lossless: false,
+};
+const FP4R: Fmt = Fmt {
+    name: "fp4 (exact, packed scales)",
+    tag: glyd_gpu::pack::FP4R_TAG,
+    bits: 4,
+    pack: |w, r, c| mx_fp4(w, r, c, true),
+    unpack: glyd_gpu::pack::unpack_fp4,
+    lossless: false,
+};
 
 /// bf16 weights [rows, cols] as an MX FP4 checkpoint holds them (each run of 32 of a row: E2M1 codes, two a byte, the first in the low four bits, and its power-of-two scale, the
 /// smallest that holds the run's largest value), packed in the FP4 layout (`packed`: with packed scales). The case's reference reads the pack's own values back.
@@ -151,7 +167,11 @@ fn mx_fp4(w: &[u16], rows: usize, cols: usize, packed: bool) -> Option<Tiered> {
             q[i / 2] |= if i % 2 == 0 { code } else { code << 4 };
         }
     }
-    if packed { glyd_gpu::pack::pack_fp4r_checked(&q, &e, rows, cols) } else { glyd_gpu::pack::pack_fp4_checked(&q, &e, rows, cols) }
+    if packed {
+        glyd_gpu::pack::pack_fp4r_checked(&q, &e, rows, cols)
+    } else {
+        glyd_gpu::pack::pack_fp4_checked(&q, &e, rows, cols)
+    }
 }
 
 /// A case: a layer's config, whether its router has a selection bias and a per-expert scale, its shared expert (intermediate size, gate), the counts of tokens to run, and the one whose inputs `--dump` writes.
@@ -171,17 +191,78 @@ fn cases() -> Vec<Case> {
     let swiglu = Act::SwiGlu { limit: None };
     vec![
         // Qwen3.5/3.6's router and experts: softmax over bf16 logits, SwiGLU fused into the product, a shared expert with a sigmoid gate; the counts reach the prompt kernel (8 pairs a token: 8,800 of 128 experts)
-        Case { name: "swiglu-8of128", cfg: MoeCfg { experts: 128, router_hidden: 512, hidden: 512, inter: 256, router: Router::softmax(8), act: swiglu }, bias: false, escale: false, shared: Some((256, true)), tokens: &[1, 2, 5, 17, 33, 64, 200, 1100], dump_t: 33, rows: false },
+        Case {
+            name: "swiglu-8of128",
+            cfg: MoeCfg { experts: 128, router_hidden: 512, hidden: 512, inter: 256, router: Router::softmax(8), act: swiglu },
+            bias: false,
+            escale: false,
+            shared: Some((256, true)),
+            tokens: &[1, 2, 5, 17, 33, 64, 200, 1100],
+            dump_t: 33,
+            rows: false,
+        },
         // Gemma 4's: GELU fused, the per-expert scale, the dense MLP beside as the shared expert without a gate
-        Case { name: "geglu-8of128", cfg: MoeCfg { experts: 128, router_hidden: 512, hidden: 512, inter: 192, router: Router::softmax(8), act: Act::GeGlu }, bias: false, escale: true, shared: Some((192, false)), tokens: &[1, 9, 40, 300], dump_t: 40, rows: false },
+        Case {
+            name: "geglu-8of128",
+            cfg: MoeCfg { experts: 128, router_hidden: 512, hidden: 512, inter: 192, router: Router::softmax(8), act: Act::GeGlu },
+            bias: false,
+            escale: true,
+            shared: Some((192, false)),
+            tokens: &[1, 9, 40, 300],
+            dump_t: 40,
+            rows: false,
+        },
         // GLM-5.x's: sigmoid scores picked with a bias, x2.5, SwiGLU clamped (at 0.5 here, so that it bites; GLM's is 10) so that the activation is the kernel's, a shared expert without a gate
-        Case { name: "clamp-8of288", cfg: MoeCfg { experts: 288, router_hidden: 512, hidden: 512, inter: 256, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(0.5) } }, bias: true, escale: false, shared: Some((256, false)), tokens: &[1, 4, 33, 150], dump_t: 33, rows: false },
+        Case {
+            name: "clamp-8of288",
+            cfg: MoeCfg { experts: 288, router_hidden: 512, hidden: 512, inter: 256, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(0.5) } },
+            bias: true,
+            escale: false,
+            shared: Some((256, false)),
+            tokens: &[1, 4, 33, 150],
+            dump_t: 33,
+            rows: false,
+        },
         // Nemotron 3's: sigmoid with the bias, x5, 22 of 512, relu squared without a gate, the router over a width twice the experts' (the latent), the shared expert reading the router's width
-        Case { name: "relu2-22of512", cfg: MoeCfg { experts: 512, router_hidden: 512, hidden: 256, inter: 384, router: Router::sigmoid(22, 5.0), act: Act::Relu2 }, bias: true, escale: false, shared: Some((384, false)), tokens: &[1, 3, 16, 40, 128, 1600], dump_t: 40, rows: false },
+        Case {
+            name: "relu2-22of512",
+            cfg: MoeCfg { experts: 512, router_hidden: 512, hidden: 256, inter: 384, router: Router::sigmoid(22, 5.0), act: Act::Relu2 },
+            bias: true,
+            escale: false,
+            shared: Some((384, false)),
+            tokens: &[1, 3, 16, 40, 128, 1600],
+            dump_t: 40,
+            rows: false,
+        },
         // the same with the second matrices in the row layout: the sparse product (src/moe_rows.rs), every count of tokens
         // Kimi-K3's kind: situ, 16 a token, sigmoid scores with a bias, experts on a latent narrower than the router's input
-        Case { name: "situ-16of128", cfg: MoeCfg { experts: 128, router_hidden: 512, hidden: 256, inter: 256, router: Router::sigmoid(16, 1.0), act: Act::Situ { beta: 4.0, linear: 25.0 } }, bias: true, escale: false, shared: Some((512, false)), tokens: &[1, 3, 17, 40], dump_t: 17, rows: false },
-        Case { name: "relu2-rows-22of512", cfg: MoeCfg { experts: 512, router_hidden: 512, hidden: 256, inter: 384, router: Router::sigmoid(22, 5.0), act: Act::Relu2 }, bias: true, escale: false, shared: Some((384, false)), tokens: &[1, 3, 16, 40, 128, 1600], dump_t: 40, rows: true },
+        Case {
+            name: "situ-16of128",
+            cfg: MoeCfg {
+                experts: 128,
+                router_hidden: 512,
+                hidden: 256,
+                inter: 256,
+                router: Router::sigmoid(16, 1.0),
+                act: Act::Situ { beta: 4.0, linear: 25.0 },
+            },
+            bias: true,
+            escale: false,
+            shared: Some((512, false)),
+            tokens: &[1, 3, 17, 40],
+            dump_t: 17,
+            rows: false,
+        },
+        Case {
+            name: "relu2-rows-22of512",
+            cfg: MoeCfg { experts: 512, router_hidden: 512, hidden: 256, inter: 384, router: Router::sigmoid(22, 5.0), act: Act::Relu2 },
+            bias: true,
+            escale: false,
+            shared: Some((384, false)),
+            tokens: &[1, 3, 16, 40, 128, 1600],
+            dump_t: 40,
+            rows: true,
+        },
     ]
 }
 
@@ -222,7 +303,8 @@ fn pack_one(f: &Fmt, w: &[u16], rows: usize, cols: usize) -> Result<(Tiered, Vec
 fn pack_host_rows(f: &Fmt, w: &[u16], experts: usize, rows: usize, cols: usize) -> Result<(RowsJoined, Vec<f32>)> {
     let per = rows * cols;
     let packs: Vec<Option<Tiered>> = par(experts, &|e| pack_rows(f.bits, &transpose(&w[e * per..(e + 1) * per], rows, cols), cols, rows));
-    let packs: Vec<Tiered> = packs.into_iter().collect::<Option<_>>().ok_or_else(|| Error(format!("{}: a matrix of {rows} x {cols} did not pack in the row layout", f.name)))?;
+    let packs: Vec<Tiered> =
+        packs.into_iter().collect::<Option<_>>().ok_or_else(|| Error(format!("{}: a matrix of {rows} x {cols} did not pack in the row layout", f.name)))?;
     let deq: Vec<Vec<f32>> = par(experts, &|e| {
         let mut out = vec![0u16; per];
         assert!(unpack_rows(&packs[e], &mut out));
@@ -293,7 +375,9 @@ fn upload(c: &Case, b: Built, lossless: bool) -> Result<(MoeLayer, Host)> {
         },
     };
     let shared = match (c.shared, &b.shared) {
-        (Some((si, _)), Some((u, d))) => Some(Shared { inter: si, up: upload_tiered(u)?, down: upload_tiered(d)?, gate: h.s_gate.as_ref().map(|g| up_bf(g)).transpose()? }),
+        (Some((si, _)), Some((u, d))) => {
+            Some(Shared { inter: si, up: upload_tiered(u)?, down: upload_tiered(d)?, gate: h.s_gate.as_ref().map(|g| up_bf(g)).transpose()? })
+        }
         _ => None,
     };
     Ok((MoeLayer::new(c.cfg, w, shared)?, b.host))
@@ -432,7 +516,15 @@ fn judge(c: &Case, cfg: &MoeCfg, h: &Host, name: &str, t: usize, xr: &[f32], xe:
     let (e, k, hr, hid, inter, pairs) = (cfg.experts, cfg.router.top_k, cfg.router_hidden, cfg.hidden, cfg.inter, t * cfg.router.top_k);
     // (stages of the sizes they have, and experts that are experts or none: else nothing below can be read against the CPU's)
     if st.ids.len() != pairs || st.plan.len() != 2 + 2 * e + pairs || st.ids.iter().any(|&x| x < -1 || x >= e as i64) {
-        return (false, format!("FAIL {name}: the experts the router chose ({} of {pairs} values, ids from {} to {}) are not experts of {e}", st.ids.len(), st.ids.iter().min().unwrap_or(&0), st.ids.iter().max().unwrap_or(&0)));
+        return (
+            false,
+            format!(
+                "FAIL {name}: the experts the router chose ({} of {pairs} values, ids from {} to {}) are not experts of {e}",
+                st.ids.len(),
+                st.ids.iter().min().unwrap_or(&0),
+                st.ids.iter().max().unwrap_or(&0)
+            ),
+        );
     }
     let refl = RefLayer { cfg, router: &h.router, bias: h.bias.as_deref(), escale: h.escale.as_deref(), up: &h.up, down: &h.down };
     // the router
@@ -465,7 +557,14 @@ fn judge(c: &Case, cfg: &MoeCfg, h: &Host, name: &str, t: usize, xr: &[f32], xe:
         shown = format!(", with the shared expert ({si}{}) {r_final:.1e}", if gate { ", gated" } else { "" });
     }
     let (b_logits, b_wts, b_rows, b_sum) = (2e-5, 1e-5, 1.5e-2, 1e-2);
-    let ok = r_logits <= b_logits && bad_ids == 0 && r_wts <= b_wts && plan_ok && r_rows <= b_rows && r_routed <= b_sum && r_final <= b_sum && st.fin.iter().all(|x| x.is_finite());
+    let ok = r_logits <= b_logits
+        && bad_ids == 0
+        && r_wts <= b_wts
+        && plan_ok
+        && r_rows <= b_rows
+        && r_routed <= b_sum
+        && r_final <= b_sum
+        && st.fin.iter().all(|x| x.is_finite());
     let line = format!(
         "{} {name}: logits {r_logits:.1e}, experts {}/{} tokens equal{}, weights {r_wts:.1e}, plan {}, intermediate rows {r_rows:.1e}, routed sum {r_routed:.1e}{shown} (bounds {b_logits:.0e}, -, {b_wts:.0e}, exact, {b_rows:.1e}, {b_sum:.0e}, {b_sum:.0e})",
         if ok { "ok  " } else { "FAIL" },
@@ -479,7 +578,19 @@ fn judge(c: &Case, cfg: &MoeCfg, h: &Host, name: &str, t: usize, xr: &[f32], xe:
 
 /// One count of tokens through the layer: every stage against the CPU, one line.
 #[allow(clippy::too_many_arguments)]
-fn check_t(dev: &Dev, lib: &Lib, layer: &MoeLayer, sc: &MoeScratch, h: &Host, c: &Case, f: &Fmt, t: usize, r: &mut Rng, tally: &mut Tally, dump: Option<&Path>) -> Result<()> {
+fn check_t(
+    dev: &Dev,
+    lib: &Lib,
+    layer: &MoeLayer,
+    sc: &MoeScratch,
+    h: &Host,
+    c: &Case,
+    f: &Fmt,
+    t: usize,
+    r: &mut Rng,
+    tally: &mut Tally,
+    dump: Option<&Path>,
+) -> Result<()> {
     let (hr, hid) = (layer.cfg.router_hidden, layer.cfg.hidden);
     let xr = r.uni(t * hr, -2.0, 2.0);
     let xe = if hr == hid { xr.clone() } else { r.uni(t * hid, -2.0, 2.0) };
@@ -667,11 +778,60 @@ struct Preset {
 
 fn presets() -> Vec<Preset> {
     vec![
-        Preset { name: "qwen36", layers: 40, cfg: MoeCfg { experts: 256, router_hidden: 2048, hidden: 2048, inter: 512, router: Router::softmax(8), act: Act::SwiGlu { limit: None } }, bias: false, escale: false, shared: Some((512, true)) },
-        Preset { name: "gemma4", layers: 30, cfg: MoeCfg { experts: 128, router_hidden: 2816, hidden: 2816, inter: 704, router: Router::softmax(8), act: Act::GeGlu }, bias: false, escale: true, shared: Some((2112, false)) },
-        Preset { name: "dsv4", layers: 43, cfg: MoeCfg { experts: 256, router_hidden: 4096, hidden: 4096, inter: 2048, router: Router::sigmoid(6, 1.5), act: Act::SwiGlu { limit: Some(10.0) } }, bias: true, escale: false, shared: Some((2048, false)) },
-        Preset { name: "glm53", layers: 42, cfg: MoeCfg { experts: 288, router_hidden: 4096, hidden: 4096, inter: 2048, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(10.0) } }, bias: true, escale: false, shared: Some((2048, false)) },
-        Preset { name: "nemotron3", layers: 40, cfg: MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 }, bias: true, escale: false, shared: Some((5376, false)) },
+        Preset {
+            name: "qwen36",
+            layers: 40,
+            cfg: MoeCfg { experts: 256, router_hidden: 2048, hidden: 2048, inter: 512, router: Router::softmax(8), act: Act::SwiGlu { limit: None } },
+            bias: false,
+            escale: false,
+            shared: Some((512, true)),
+        },
+        Preset {
+            name: "gemma4",
+            layers: 30,
+            cfg: MoeCfg { experts: 128, router_hidden: 2816, hidden: 2816, inter: 704, router: Router::softmax(8), act: Act::GeGlu },
+            bias: false,
+            escale: true,
+            shared: Some((2112, false)),
+        },
+        Preset {
+            name: "dsv4",
+            layers: 43,
+            cfg: MoeCfg {
+                experts: 256,
+                router_hidden: 4096,
+                hidden: 4096,
+                inter: 2048,
+                router: Router::sigmoid(6, 1.5),
+                act: Act::SwiGlu { limit: Some(10.0) },
+            },
+            bias: true,
+            escale: false,
+            shared: Some((2048, false)),
+        },
+        Preset {
+            name: "glm53",
+            layers: 42,
+            cfg: MoeCfg {
+                experts: 288,
+                router_hidden: 4096,
+                hidden: 4096,
+                inter: 2048,
+                router: Router::sigmoid(8, 2.5),
+                act: Act::SwiGlu { limit: Some(10.0) },
+            },
+            bias: true,
+            escale: false,
+            shared: Some((2048, false)),
+        },
+        Preset {
+            name: "nemotron3",
+            layers: 40,
+            cfg: MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 },
+            bias: true,
+            escale: false,
+            shared: Some((5376, false)),
+        },
     ]
 }
 
@@ -687,7 +847,14 @@ fn arbitrary_stack(dev: &Dev, tag: u32, experts: usize, rows: usize, cols: usize
 
 fn arbitrary_pack(tag: u32, rows: usize, cols: usize) -> Result<crate::weights::PackBuf> {
     let (d, sc) = expert_strides(tag, rows, cols)?;
-    upload_tiered(&Tiered { rows, cols, data: vec![0xA5; d as usize], blocks: vec![0x3C; sc as usize], block_base: vec![0; rows / 64 * (cols / 16) + 1], tiers: [tag << 24, 0, 0] })
+    upload_tiered(&Tiered {
+        rows,
+        cols,
+        data: vec![0xA5; d as usize],
+        blocks: vec![0x3C; sc as usize],
+        block_base: vec![0; rows / 64 * (cols / 16) + 1],
+        tiers: [tag << 24, 0, 0],
+    })
 }
 
 fn speed(dev: &Dev, lib: &Lib, want: &[&str]) -> Vec<String> {
@@ -736,13 +903,31 @@ fn speed_one(dev: &Dev, lib: &Lib, p: &Preset, f: &Fmt, r: &mut Rng) -> Result<(
     let shared = match p.shared {
         Some((si, gate)) => {
             let rows = if c.act.gated() { 2 * si } else { si };
-            Some(Shared { inter: si, up: arbitrary_pack(f.tag, rows, hr)?, down: arbitrary_pack(f.tag, out_w, si)?, gate: gate.then(|| Buf::zeroed(hr * 2)).transpose()? })
+            Some(Shared {
+                inter: si,
+                up: arbitrary_pack(f.tag, rows, hr)?,
+                down: arbitrary_pack(f.tag, out_w, si)?,
+                gate: gate.then(|| Buf::zeroed(hr * 2)).transpose()?,
+            })
         }
         None => None,
     };
     let layer = MoeLayer::new(*c, w, shared)?;
     let sc = MoeScratch::new(dev, lib, &[&layer], *counts.last().expect("counts"))?;
-    println!("{} {} ({} layers; {} experts, {} a token; router over {}, experts over {}, intermediate {}, {:?}): weights {:.2} GB a layer, scratch {:.2} GB for all", p.name, f.name, p.layers, e, c.router.top_k, hr, h, i, c.act, layer.weights_bytes() as f64 / 1e9, sc.bytes() as f64 / 1e9);
+    println!(
+        "{} {} ({} layers; {} experts, {} a token; router over {}, experts over {}, intermediate {}, {:?}): weights {:.2} GB a layer, scratch {:.2} GB for all",
+        p.name,
+        f.name,
+        p.layers,
+        e,
+        c.router.top_k,
+        hr,
+        h,
+        i,
+        c.act,
+        layer.weights_bytes() as f64 / 1e9,
+        sc.bytes() as f64 / 1e9
+    );
     for &t in &counts {
         let reps = match t {
             1..=16 => 16,
@@ -813,7 +998,8 @@ fn speed_sparse(dev: &Dev, lib: &Lib, p: &Preset, f: &Fmt, r: &mut Rng) -> Resul
     let distinct = 4usize;
     let up_w = bits(&floats(&r.bell(distinct * u * h, 0.05)).iter().map(|x| x - 0.0013).collect::<Vec<_>>());
     let (j, _) = pack_host(f, &up_w, distinct, u, h)?;
-    let tiled = Joined { tag: j.tag, tiers: j.tiers, experts: e, rows: j.rows, cols: j.cols, data: j.data.repeat(e / distinct), scales: j.scales.repeat(e / distinct) };
+    let tiled =
+        Joined { tag: j.tag, tiers: j.tiers, experts: e, rows: j.rows, cols: j.cols, data: j.data.repeat(e / distinct), scales: j.scales.repeat(e / distinct) };
     let router = r.bell(e * hr, 0.09);
     let make = |down: Down| -> Result<MoeLayer> {
         let w = MoeWeights {
@@ -957,7 +1143,16 @@ mod tests {
     }
 
     fn small(act: Act, router: Router, bias: bool, escale: bool, shared: Option<(usize, bool)>) -> Case {
-        Case { name: "small", cfg: MoeCfg { experts: 16, router_hidden: 32, hidden: 32, inter: 16, router, act }, bias, escale, shared, tokens: &[1], dump_t: 1, rows: false }
+        Case {
+            name: "small",
+            cfg: MoeCfg { experts: 16, router_hidden: 32, hidden: 32, inter: 16, router, act },
+            bias,
+            escale,
+            shared,
+            tokens: &[1],
+            dump_t: 1,
+            rows: false,
+        }
     }
 
     /// What the check says of a GPU that is right, and of one that is wrong in each stage (a stage corrupted by a tenth of the largest value, a pair of the plan swapped, an expert changed, a weight a thousandth off).
@@ -1077,8 +1272,14 @@ mod tests {
         let w = r.bell(e * rows * cols, 0.05);
         for f in &FMTS {
             let (j, deq) = pack_host_rows(f, &w, e, rows, cols).unwrap();
-            let packs: Vec<Tiered> = (0..e).map(|x| pack_rows(f.bits, &transpose(&w[x * rows * cols..(x + 1) * rows * cols], rows, cols), cols, rows).unwrap()).collect();
-            assert_eq!((&j.data, &j.scales), (&packs.iter().flat_map(|p| p.data.clone()).collect::<Vec<_>>(), &packs.iter().flat_map(|p| p.blocks.clone()).collect::<Vec<_>>()), "{}", f.name);
+            let packs: Vec<Tiered> =
+                (0..e).map(|x| pack_rows(f.bits, &transpose(&w[x * rows * cols..(x + 1) * rows * cols], rows, cols), cols, rows).unwrap()).collect();
+            assert_eq!(
+                (&j.data, &j.scales),
+                (&packs.iter().flat_map(|p| p.data.clone()).collect::<Vec<_>>(), &packs.iter().flat_map(|p| p.blocks.clone()).collect::<Vec<_>>()),
+                "{}",
+                f.name
+            );
             assert_eq!((j.experts, j.rows, j.cols), (e, cols, rows), "{}: the pack's rows are the weight's columns", f.name);
             let mut want = Vec::new();
             for p in &packs {

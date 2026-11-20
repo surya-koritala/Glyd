@@ -5,16 +5,16 @@
 //! memory); the GPU holds `slots` of a layer's experts in places, copied in as the router chooses them (least recently used out), and the misses are copied over PCIe. The router's choices are read on the host to place
 //! them, so a decode step is not captured in a CUDA graph.
 
+use crate::cb2_prefill::{cb2_prefill_experts, Cb2Kern, ExpertDesc};
+use crate::cpu_cb::Fmt;
 use crate::dev::Buf;
 use crate::ffi::{err, Error, Result};
 use crate::glm::ConfigGlm;
 use crate::launch;
+use crate::mapped::Mapping;
 use crate::model_glm::{f32_bytes, EngineGlm, MoeBlock};
 use crate::moe::{route_with, shared_add_with, shared_mlp_with, MoeCfg, MoeScratch, Shape, Shared};
 use crate::moe_glm::moe_cfg;
-use crate::cb2_prefill::{cb2_prefill_experts, Cb2Kern, ExpertDesc};
-use crate::cpu_cb::Fmt;
-use crate::mapped::Mapping;
 use crate::offload::{Call, ExpertStore, HostMem, Placement, Stage, CPU_TOKENS};
 use crate::weights::{read_pack, upload_bytes, upload_packed, v7_manifest, Layout};
 use glyd_gpu::json::{self, Value};
@@ -130,13 +130,25 @@ impl CbPack {
         }
         let entries: Vec<(usize, &Value)> = match v.get("layers") {
             Some(Value::Object(o)) => o.iter().filter_map(|(k, v)| Some((k.parse().ok()?, v))).collect(),
-            Some(Value::Array(a)) => a.iter().filter_map(|v| { let n = v.get("layer")?; Some((n.as_u64().map(|x| x as usize).or_else(|| n.as_str()?.parse().ok())?, v)) }).collect(),
+            Some(Value::Array(a)) => a
+                .iter()
+                .filter_map(|v| {
+                    let n = v.get("layer")?;
+                    Some((n.as_u64().map(|x| x as usize).or_else(|| n.as_str()?.parse().ok())?, v))
+                })
+                .collect(),
             _ => return err(format!("{}: no layers", path.display())),
         };
         let mut layers = Vec::new();
         for (l, m) in entries {
             let file = m.get("file").and_then(Value::as_str).map(String::from).unwrap_or_else(|| format!("layer-{l:03}.safetensors"));
-            let signs: Vec<i8> = m.get("s").and_then(Value::as_u64s).ok_or_else(|| Error(format!("{}: layer {l}: no s", path.display())))?.into_iter().map(|b| if b == 1 { 1 } else { -1 }).collect();
+            let signs: Vec<i8> = m
+                .get("s")
+                .and_then(Value::as_u64s)
+                .ok_or_else(|| Error(format!("{}: layer {l}: no s", path.display())))?
+                .into_iter()
+                .map(|b| if b == 1 { 1 } else { -1 })
+                .collect();
             let fmt = m.get("f").and_then(Value::as_array).ok_or_else(|| Error(format!("{}: layer {l}: no f", path.display())))?;
             let (mut kept, mut fmts) = (Vec::new(), Vec::new());
             for (e, f) in fmt.iter().enumerate() {
@@ -189,13 +201,19 @@ impl CbPack {
             let file = m.get("file").and_then(Value::as_str).ok_or_else(|| Error(format!("{}: layer {l}: no file", path.display())))?.to_string();
             let experts = m.get("experts").and_then(Value::as_u64s).ok_or_else(|| Error(format!("{}: layer {l}: no experts", path.display())))?;
             let fmts: Option<Vec<&str>> = m.get("fmts").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect());
-            let Some((_, meta)) = self.layers.iter_mut().find(|(x, _)| *x == l) else { return err(format!("{}: layer {l}, which the pack does not hold", path.display())) };
+            let Some((_, meta)) = self.layers.iter_mut().find(|(x, _)| *x == l) else {
+                return err(format!("{}: layer {l}, which the pack does not hold", path.display()));
+            };
             let kept = meta.kept.len();
             let (files, of) = meta.side.get_or_insert_with(|| (Vec::new(), vec![None; kept]));
             files.resize(which + 1, None);
             files[which] = Some(file);
             for (j, e) in experts.into_iter().enumerate() {
-                let i = meta.kept.iter().position(|&x| x == e as usize).ok_or_else(|| Error(format!("{}: layer {l}: expert {e}, which the pack does not keep", path.display())))?;
+                let i = meta
+                    .kept
+                    .iter()
+                    .position(|&x| x == e as usize)
+                    .ok_or_else(|| Error(format!("{}: layer {l}: expert {e}, which the pack does not keep", path.display())))?;
                 let f = match &fmts {
                     Some(list) => list.get(j).and_then(|x| parse_fmts(x)),
                     None => fmt,
@@ -226,7 +244,14 @@ impl CbPack {
     /// The bytes of a place of layer `l` on the GPU (codes and codebooks together): the biggest of its experts' (two-bit experts alone: `CODES + BOOKS`), and a byte for the formats where the layer is not all two-bit.
     pub fn place_bytes(&self, l: usize) -> usize {
         let (codes, books) = self.uniform_bytes();
-        self.layer(l).map_or(codes + books, |m| if m.uniform() { codes + books } else { let (c, b) = m.biggest(self.hidden, self.inter); c.next_multiple_of(256) + (b + 16).next_multiple_of(16) })
+        self.layer(l).map_or(codes + books, |m| {
+            if m.uniform() {
+                codes + books
+            } else {
+                let (c, b) = m.biggest(self.hidden, self.inter);
+                c.next_multiple_of(256) + (b + 16).next_multiple_of(16)
+            }
+        })
     }
 
     /// The bytes of a two-bit expert's codes and codebooks (GLM's `CODES` and `BOOKS`).
@@ -273,9 +298,16 @@ impl CbPack {
             let (b0, c0) = (off(first, "d.1", "BF16", [n, 4])?, off(first, "d.0", "U8", [n, row])?);
             for (i, &e) in m.kept.iter().enumerate() {
                 let (b, c) = (b0 + (i * books_b) as u64, c0 + (i * codes_b) as u64);
-                let ok = off(e, "d.1", "BF16", [n, 4])? == b && off(e, "u.1", "BF16", [n2, 4])? == b + n * 8 && off(e, "d.0", "U8", [n, row])? == c && off(e, "u.0", "U8", [n2, row])? == c + n * row;
+                let ok = off(e, "d.1", "BF16", [n, 4])? == b
+                    && off(e, "u.1", "BF16", [n2, 4])? == b + n * 8
+                    && off(e, "d.0", "U8", [n, row])? == c
+                    && off(e, "u.0", "U8", [n2, row])? == c + n * row;
                 if !ok {
-                    return err(format!("{}: expert {e}'s tensors are not where the {}th expert's are in a run of the kept experts end to end", path.display(), i));
+                    return err(format!(
+                        "{}: expert {e}'s tensors are not where the {}th expert's are in a run of the kept experts end to end",
+                        path.display(),
+                        i
+                    ));
                 }
             }
             let map = Arc::new(Mapping::open(&path)?);
@@ -283,7 +315,19 @@ impl CbPack {
                 return err(format!("{}: the tensors reach past the end of the file", path.display()));
             }
             // SAFETY: pointer arithmetic inside the mapping (checked above).
-            let descs = (0..m.kept.len()).map(|i| unsafe { ExpertDesc { codes: (map.ptr as *const u8).add(c0 as usize + i * codes_b), books: (map.ptr as *const u8).add(b0 as usize + i * books_b), up: Fmt::Cb2, down: Fmt::Cb2, resident: None, hid, inter } }).collect();
+            let descs = (0..m.kept.len())
+                .map(|i| unsafe {
+                    ExpertDesc {
+                        codes: (map.ptr as *const u8).add(c0 as usize + i * codes_b),
+                        books: (map.ptr as *const u8).add(b0 as usize + i * books_b),
+                        up: Fmt::Cb2,
+                        down: Fmt::Cb2,
+                        resident: None,
+                        hid,
+                        inter,
+                    }
+                })
+                .collect();
             return Ok(LayerMap { map, place: None, strides: [codes_b, books_b], starts: (c0 as usize, b0 as usize), descs });
         }
         let map = Arc::new(Mapping::open(&path)?);
@@ -318,7 +362,8 @@ impl CbPack {
             };
             let off = |what: &str, dtype: &str, shape: [u64; 2]| -> Result<u64> {
                 let name = format!("e{e:03}.{what}");
-                let t = file.get(&name).or_else(|| file.get(&format!("e{e:04}.{what}"))).ok_or_else(|| Error(format!("{}: no tensor {name}", fpath.display())))?;
+                let t =
+                    file.get(&name).or_else(|| file.get(&format!("e{e:04}.{what}"))).ok_or_else(|| Error(format!("{}: no tensor {name}", fpath.display())))?;
                 if t.dtype != dtype || t.shape != shape {
                     return err(format!("{}: {name} is {} {:?}, where {dtype} {shape:?} is wanted", fpath.display(), t.dtype, t.shape));
                 }
@@ -327,7 +372,12 @@ impl CbPack {
             let (dc, uc) = (off("d.0", "U8", [n, rbd])?, off("u.0", "U8", [n2, rbu])?);
             let (db, ub) = (off("d.1", "BF16", [n, kd])?, off("u.1", "BF16", [n2, ku])?);
             if uc != dc + n * rbd || ub != db + n * kd * 2 {
-                return err(format!("{}: expert {e}: the up's tensors do not follow the down's ({} + {}): an expert's parts are each copied as one range", fpath.display(), fd.name(), fu.name()));
+                return err(format!(
+                    "{}: expert {e}: the up's tensors do not follow the down's ({} + {}): an expert's parts are each copied as one range",
+                    fpath.display(),
+                    fd.name(),
+                    fu.name()
+                ));
             }
             let (cl, bl) = (n * rbd + n2 * rbu, (n * kd + n2 * ku) * 2);
             if (dc + cl) as usize > fmap.len || (db + bl) as usize > fmap.len {
@@ -339,7 +389,17 @@ impl CbPack {
             len[0].push(cl as u32);
             len[1].push(bl as u32);
             // SAFETY: inside the mapping (checked above).
-            descs.push(unsafe { ExpertDesc { codes: (fmap.ptr as *const u8).add(dc as usize), books: (fmap.ptr as *const u8).add(db as usize), up: fu, down: fd, resident: None, hid, inter } });
+            descs.push(unsafe {
+                ExpertDesc {
+                    codes: (fmap.ptr as *const u8).add(dc as usize),
+                    books: (fmap.ptr as *const u8).add(db as usize),
+                    up: fu,
+                    down: fd,
+                    resident: None,
+                    hid,
+                    inter,
+                }
+            });
         }
         let (cmax, bmax) = (len[0].iter().copied().max().unwrap_or(0) as usize, len[1].iter().copied().max().unwrap_or(0) as usize);
         let strides = [cmax.next_multiple_of(256), (bmax + 16).next_multiple_of(16)];
@@ -356,7 +416,8 @@ impl CbPack {
         let Some(place) = lm.place.as_ref() else { return Ok(lm) };
         let n = place.len[0].len();
         let up = |x: usize| x.next_multiple_of(64);
-        let (codes_total, books_total): (usize, usize) = (place.len[0].iter().map(|&x| up(x as usize)).sum(), place.len[1].iter().map(|&x| up(x as usize)).sum());
+        let (codes_total, books_total): (usize, usize) =
+            (place.len[0].iter().map(|&x| up(x as usize)).sum(), place.len[1].iter().map(|&x| up(x as usize)).sum());
         let blob = Arc::new(Mapping::pinned(codes_total + books_total)?);
         // each expert's source (an offset in the layer's file, or an address where the placement holds addresses) and destination
         let abs = !place.maps.is_empty();
@@ -385,7 +446,12 @@ impl CbPack {
                 });
             }
         });
-        let descs = lm.descs.iter().enumerate().map(|(i, d)| ExpertDesc { codes: at[0][i] as usize as *const u8, books: at[1][i] as usize as *const u8, ..*d }).collect();
+        let descs = lm
+            .descs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| ExpertDesc { codes: at[0][i] as usize as *const u8, books: at[1][i] as usize as *const u8, ..*d })
+            .collect();
         let placed = Placement { at, len: place.len.clone(), fmts: place.fmts.clone(), marks: place.marks.clone(), maps: vec![blob.clone()] };
         let strides = lm.strides;
         // the files' pages given back (the bytes are in the blob now)
@@ -408,7 +474,15 @@ impl CbPack {
         let (hid, inter) = (self.hidden, self.inter);
         self.layers
             .iter()
-            .map(|(_, m)| m.fmts.iter().map(|&(u, d)| (inter * d.row_bytes(hid) + 2 * inter * u.row_bytes(hid)).next_multiple_of(64) + ((inter * d.entries() + 2 * inter * u.entries()) * 2).next_multiple_of(64)).sum::<usize>())
+            .map(|(_, m)| {
+                m.fmts
+                    .iter()
+                    .map(|&(u, d)| {
+                        (inter * d.row_bytes(hid) + 2 * inter * u.row_bytes(hid)).next_multiple_of(64)
+                            + ((inter * d.entries() + 2 * inter * u.entries()) * 2).next_multiple_of(64)
+                    })
+                    .sum::<usize>()
+            })
             .sum()
     }
 }
@@ -459,7 +533,20 @@ impl KernCb {
     /// # Safety
     /// As `rot_in`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn up(&self, s: crate::ffi::Stream, codes: u64, cstride: u64, books: u64, bstride: u64, way: u64, xr: u64, gu: u64, k: i32, pairs: usize, mixed: bool) -> Result<()> {
+    pub unsafe fn up(
+        &self,
+        s: crate::ffi::Stream,
+        codes: u64,
+        cstride: u64,
+        books: u64,
+        bstride: u64,
+        way: u64,
+        xr: u64,
+        gu: u64,
+        k: i32,
+        pairs: usize,
+        mixed: bool,
+    ) -> Result<()> {
         if mixed {
             return launch!(self.upx, [128, pairs as u32, 1], [256, 1, 1], s; codes, cstride, books, bstride, way, xr, gu, k);
         }
@@ -471,7 +558,21 @@ impl KernCb {
     /// # Safety
     /// As `rot_in`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn down(&self, s: crate::ffi::Stream, codes: u64, cstride: u64, books: u64, bstride: u64, way: u64, gu: u64, part: u64, split: i32, limit: f32, pairs: usize, mixed: bool) -> Result<()> {
+    pub unsafe fn down(
+        &self,
+        s: crate::ffi::Stream,
+        codes: u64,
+        cstride: u64,
+        books: u64,
+        bstride: u64,
+        way: u64,
+        gu: u64,
+        part: u64,
+        split: i32,
+        limit: f32,
+        pairs: usize,
+        mixed: bool,
+    ) -> Result<()> {
         if mixed {
             return launch!(self.downx, [4, split as u32, pairs as u32], [256, 1, 1], s; codes, cstride, books, bstride, way, gu, part, split, limit);
         }
@@ -483,7 +584,19 @@ impl KernCb {
     /// # Safety
     /// As `rot_in`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn sum_rot(&self, s: crate::ffi::Stream, part: u64, wts: u64, extra: u64, skip: u64, sg: u64, y: u64, k: i32, split: i32, n: usize) -> Result<()> {
+    pub unsafe fn sum_rot(
+        &self,
+        s: crate::ffi::Stream,
+        part: u64,
+        wts: u64,
+        extra: u64,
+        skip: u64,
+        sg: u64,
+        y: u64,
+        k: i32,
+        split: i32,
+        n: usize,
+    ) -> Result<()> {
         launch!(self.sum_rot, [n as u32, 1, 1], [1024, 1, 1], s; part, wts, extra, skip, sg, y, k, split)
     }
 }
@@ -520,7 +633,13 @@ pub fn stream_default() -> bool {
 
 impl CbShared {
     pub fn new() -> Rc<CbShared> {
-        Rc::new(CbShared { scratch: OnceCell::new(), topk: std::cell::Cell::new(0), stream: std::cell::Cell::new(stream_default()), read_ahead: std::cell::Cell::new(u64::MAX), trace: std::cell::Cell::new(0) })
+        Rc::new(CbShared {
+            scratch: OnceCell::new(),
+            topk: std::cell::Cell::new(0),
+            stream: std::cell::Cell::new(stream_default()),
+            read_ahead: std::cell::Cell::new(u64::MAX),
+            trace: std::cell::Cell::new(0),
+        })
     }
 }
 
@@ -541,6 +660,7 @@ pub struct GlmMoeCb {
     descs: Vec<ExpertDesc>,
     strides: [usize; 2],
     mixed: bool,
+    #[allow(dead_code)] // the GLM development engine (R13 retires or moves it)
     kept: usize,
     store: Rc<ExpertStore>,
     layer: usize,
@@ -550,7 +670,17 @@ pub struct GlmMoeCb {
 impl GlmMoeCb {
     /// Layer `l`: the router (a pruned expert's bias -1e30, so that it is never among the best eight), the shared expert at `level`, the layer's rotation, and the experts: read from `pack` into the cache's host tier, with
     /// `slots` places on the GPU.
-    pub fn load(l: usize, c: &ConfigGlm, ck: &Checkpoint, level: Layout, pack: &CbPack, store: &Rc<ExpertStore>, slots: usize, topk: usize, common: &Rc<CbShared>) -> Result<GlmMoeCb> {
+    pub fn load(
+        l: usize,
+        c: &ConfigGlm,
+        ck: &Checkpoint,
+        level: Layout,
+        pack: &CbPack,
+        store: &Rc<ExpertStore>,
+        slots: usize,
+        topk: usize,
+        common: &Rc<CbShared>,
+    ) -> Result<GlmMoeCb> {
         if !c.moe_of(l) {
             return err(format!("layer {l} is not a mixture-of-experts layer"));
         }
@@ -580,7 +710,9 @@ impl GlmMoeCb {
         }
         let v7 = v7_manifest(&ck.dir)?;
         let packs = c.layer_packs(l);
-        let [s_up, s_down] = &packs[packs.len() - 2..] else { return err(format!("layer {l}: a mixture-of-experts layer has two matrices besides its experts and its attention's")) };
+        let [s_up, s_down] = &packs[packs.len() - 2..] else {
+            return err(format!("layer {l}: a mixture-of-experts layer has two matrices besides its experts and its attention's"));
+        };
         let (s_up, s_down) = (read_pack(ck, v7.as_ref(), s_up, level)?, read_pack(ck, v7.as_ref(), s_down, level)?);
         let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(s_up)?, down: upload_packed(s_down)?, gate: None };
         let kept = meta.kept.len();
@@ -598,7 +730,16 @@ impl GlmMoeCb {
                 crate::moe::Act::SwiGlu { limit: Some(l) } => l,
                 _ => return err("the experts take a clamped SwiGLU"),
             };
-            store.add_layer_mapped(l, kept, slots, [HostMem::mapped(&map, starts.0), HostMem::mapped(&map, starts.1)], place, [strides[0] as u64, strides[1] as u64], [places[0].ptr, places[1].ptr], Some((limit, HIDDEN, INTER)))?;
+            store.add_layer_mapped(
+                l,
+                kept,
+                slots,
+                [HostMem::mapped(&map, starts.0), HostMem::mapped(&map, starts.1)],
+                place,
+                [strides[0] as u64, strides[1] as u64],
+                [places[0].ptr, places[1].ptr],
+                Some((limit, HIDDEN, INTER)),
+            )?;
         }
         let mut cfg = moe_cfg(c);
         if topk != 0 {
@@ -630,7 +771,14 @@ impl GlmMoeCb {
     /// The MoE scratch every layer shares, and this module's beside it, made by the first call.
     fn scratch<'a>(&'a self, e: &'a EngineGlm) -> Result<(&'a MoeScratch, &'a CbScratch)> {
         if e.moe_scratch.get().is_none() {
-            let shape = Shape { cfg: self.cfg, twelve: false, shared: Some((self.shared.inter, self.shared.up.pack.cols as usize, self.shared.down.pack.rows as usize)), expert_rows: self.cfg.inter, sparse: true, slice: 1 };
+            let shape = Shape {
+                cfg: self.cfg,
+                twelve: false,
+                shared: Some((self.shared.inter, self.shared.up.pack.cols as usize, self.shared.down.pack.rows as usize)),
+                expert_rows: self.cfg.inter,
+                sparse: true,
+                slice: 1,
+            };
             let _ = e.moe_scratch.set(MoeScratch::for_shapes(&e.dev, &e.lib, &[shape], e.chunk())?);
         }
         let sc = e.moe_scratch.get().ok_or_else(|| Error("the mixture-of-experts scratch is not made".into()))?;
@@ -652,7 +800,14 @@ impl GlmMoeCb {
                 },
                 pre: OnceCell::new(),
             };
-            for (b, need, what) in [(&made.xr, z.xr, "x' in f32"), (&made.xrb, z.xrb, "x' in bf16"), (&made.gids, z.gids, "ids"), (&made.gu, z.gu, "first products"), (&made.part, z.part, "partial sums"), (&made.neg, z.neg, "skip ids")] {
+            for (b, need, what) in [
+                (&made.xr, z.xr, "x' in f32"),
+                (&made.xrb, z.xrb, "x' in bf16"),
+                (&made.gids, z.gids, "ids"),
+                (&made.gu, z.gu, "first products"),
+                (&made.part, z.part, "partial sums"),
+                (&made.neg, z.neg, "skip ids"),
+            ] {
                 holds(b, need, what, n, k)?;
             }
             let _ = self.common.scratch.set(made);
@@ -718,7 +873,11 @@ impl GlmMoeCb {
         let (k, pairs) = (c.router.top_k, n * c.router.top_k);
         // (a call is within what the buffers were made for: a chunk's rows, and for the per-pair products a pass of PAIR_TOKENS rows)
         if n == 0 || n > e.chunk() || (!stream && n > PAIR_TOKENS) || k > self.cfg.router.top_k {
-            return err(format!("the block on {n} rows of {k} pairs, where a chunk is {} rows of {} and a pass of the per-pair products {PAIR_TOKENS}", e.chunk(), self.cfg.router.top_k));
+            return err(format!(
+                "the block on {n} rows of {k} pairs, where a chunk is {} rows of {} and a pass of the per-pair products {PAIR_TOKENS}",
+                e.chunk(),
+                self.cfg.router.top_k
+            ));
         }
         let z = CbBytes::of(n, k);
         holds(&cs.xr, z.xr, "x' in f32", n, k)?;
@@ -776,8 +935,33 @@ impl GlmMoeCb {
                 if !hy.gpu {
                     return Ok(());
                 }
-                cs.kern.up(s, self.places[0].ptr, self.strides[0] as u64, self.places[1].ptr, self.strides[1] as u64, sc.way.ptr, cs.xr.ptr, cs.gu.ptr, k as i32, pairs, self.mixed)?;
-                cs.kern.down(s, self.places[0].ptr, self.strides[0] as u64, self.places[1].ptr, self.strides[1] as u64, sc.way.ptr, cs.gu.ptr, cs.part.ptr, split as i32, limit, pairs, self.mixed)
+                cs.kern.up(
+                    s,
+                    self.places[0].ptr,
+                    self.strides[0] as u64,
+                    self.places[1].ptr,
+                    self.strides[1] as u64,
+                    sc.way.ptr,
+                    cs.xr.ptr,
+                    cs.gu.ptr,
+                    k as i32,
+                    pairs,
+                    self.mixed,
+                )?;
+                cs.kern.down(
+                    s,
+                    self.places[0].ptr,
+                    self.strides[0] as u64,
+                    self.places[1].ptr,
+                    self.strides[1] as u64,
+                    sc.way.ptr,
+                    cs.gu.ptr,
+                    cs.part.ptr,
+                    split as i32,
+                    limit,
+                    pairs,
+                    self.mixed,
+                )
             }
             Stage::Sum => {
                 if wave + 1 == waves {
@@ -846,8 +1030,33 @@ impl MoeBlock for GlmMoeCb {
             if !hy.gpu {
                 return Ok(());
             }
-            cs.kern.up(s, self.places[0].ptr, self.strides[0] as u64, self.places[1].ptr, self.strides[1] as u64, sc.way.ptr, cs.xr.ptr, cs.gu.ptr, k as i32, pairs, self.mixed)?;
-            cs.kern.down(s, self.places[0].ptr, self.strides[0] as u64, self.places[1].ptr, self.strides[1] as u64, sc.way.ptr, cs.gu.ptr, cs.part.ptr, split as i32, limit, pairs, self.mixed)
+            cs.kern.up(
+                s,
+                self.places[0].ptr,
+                self.strides[0] as u64,
+                self.places[1].ptr,
+                self.strides[1] as u64,
+                sc.way.ptr,
+                cs.xr.ptr,
+                cs.gu.ptr,
+                k as i32,
+                pairs,
+                self.mixed,
+            )?;
+            cs.kern.down(
+                s,
+                self.places[0].ptr,
+                self.strides[0] as u64,
+                self.places[1].ptr,
+                self.strides[1] as u64,
+                sc.way.ptr,
+                cs.gu.ptr,
+                cs.part.ptr,
+                split as i32,
+                limit,
+                pairs,
+                self.mixed,
+            )
         })
     }
 
@@ -859,13 +1068,26 @@ impl MoeBlock for GlmMoeCb {
     }
 
     fn bytes(&self) -> usize {
-        self.router.bytes + self.bias.bytes + self.shared.up.bytes + self.shared.down.bytes + self.signs.bytes + self.local_of.bytes + self.places[0].bytes + self.places[1].bytes
+        self.router.bytes
+            + self.bias.bytes
+            + self.shared.up.bytes
+            + self.shared.down.bytes
+            + self.signs.bytes
+            + self.local_of.bytes
+            + self.places[0].bytes
+            + self.places[1].bytes
     }
 }
 
 /// The factory `EngineGlm::new` takes for a model whose routed experts are in `pack`: each mixture-of-experts layer the directory holds is a `GlmMoeCb` with `slots` places on the GPU, all of them sharing `store`; the
 /// shared expert and the matrices of the router are read from the checkpoint at the layout the engine chose. `topk`: experts a token (0: the model's).
-pub fn factory<'a>(pack: &'a CbPack, slots: usize, topk: usize, store: &'a Rc<ExpertStore>, common: &'a Rc<CbShared>) -> impl Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> + 'a {
+pub fn factory<'a>(
+    pack: &'a CbPack,
+    slots: usize,
+    topk: usize,
+    store: &'a Rc<ExpertStore>,
+    common: &'a Rc<CbShared>,
+) -> impl Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> + 'a {
     move |l, c, ck, level| {
         crate::status::STATUS.beat();
         Ok(Box::new(GlmMoeCb::load(l, c, ck, level, pack, store, slots, topk, common)?))
@@ -885,7 +1107,11 @@ mod tests {
                 for kk in 1..=k {
                     let pairs = n * kk;
                     assert!(pairs * HIDDEN * 4 <= z.gu, "first products: chunk {chunk} top-k {k}, {n} rows of {kk}");
-                    assert!(pairs * runs_for(pairs) * HIDDEN * 4 <= z.part, "partial sums: chunk {chunk} top-k {k}, {n} rows of {kk}: {} runs", runs_for(pairs));
+                    assert!(
+                        pairs * runs_for(pairs) * HIDDEN * 4 <= z.part,
+                        "partial sums: chunk {chunk} top-k {k}, {n} rows of {kk}: {} runs",
+                        runs_for(pairs)
+                    );
                 }
             }
         }

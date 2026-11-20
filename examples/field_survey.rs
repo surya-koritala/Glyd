@@ -52,26 +52,33 @@ struct Totals {
 }
 
 impl Totals {
-    fn ratio(&self) -> f64 { self.orig as f64 / self.comp as f64 }
-    fn comp_gb(&self) -> f64 { (self.orig as f64 / GB) / self.comp_time }
-    fn decomp_gb(&self) -> f64 { (self.orig as f64 / GB) / self.decomp_time }
+    fn ratio(&self) -> f64 {
+        self.orig as f64 / self.comp as f64
+    }
+    fn comp_gb(&self) -> f64 {
+        (self.orig as f64 / GB) / self.comp_time
+    }
+    fn decomp_gb(&self) -> f64 {
+        (self.orig as f64 / GB) / self.decomp_time
+    }
 }
 
 fn main() {
     let runs: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
     let min_secs: f64 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(0.5);
 
-    let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
-                 "reymont","samba","sao","webster","xml","x-ray"];
+    let files = ["dickens", "mozilla", "mr", "nci", "ooffice", "osdb", "reymont", "samba", "sao", "webster", "xml", "x-ray"];
     let dir = Path::new("corpus");
 
-    let names = ["Glyd", "liblz4", "lz4_flex", "LZAV", "LZAV-hi",
-                 "zstd--5", "zstd--3", "zstd--1", "zstd-1", "zstd-3", "snappy", "Glyd-fast", "Glyd-turbo", "Glyd-max"];
+    let names =
+        ["Glyd", "liblz4", "lz4_flex", "LZAV", "LZAV-hi", "zstd--5", "zstd--3", "zstd--1", "zstd-1", "zstd-3", "snappy", "Glyd-fast", "Glyd-turbo", "Glyd-max"];
     let mut tot: Vec<Totals> = names.iter().map(|n| Totals { name: n.to_string(), ..Default::default() }).collect();
 
     for f in &files {
         let p = dir.join(f);
-        if !p.exists() { continue; }
+        if !p.exists() {
+            continue;
+        }
         let data = std::fs::read(&p).unwrap();
         let len = data.len();
         eprintln!("measuring {} ({:.1} MB)...", f, len as f64 / 1048576.0);
@@ -82,45 +89,79 @@ fn main() {
         pin_to_core(4);
         let mut c0 = Vec::with_capacity(len);
         glyd::compress_into(&data, &mut c0);
-        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); glyd::compress_into(&data, &mut b); });
-        let d = timed(runs, min_secs, 3, || { let _ = glyd::decompress_into_raw(&c0, &mut dst); });
-        acc(&mut tot[0], len, c0.len(), t, d); log_row(f, "Glyd", len, c0.len(), t, d);
+        let t = timed(runs, min_secs, 3, || {
+            let mut b = Vec::with_capacity(len);
+            glyd::compress_into(&data, &mut b);
+        });
+        let d = timed(runs, min_secs, 3, || {
+            let _ = glyd::decompress_into_raw(&c0, &mut dst);
+        });
+        acc(&mut tot[0], len, c0.len(), t, d);
+        log_row(f, "Glyd", len, c0.len(), t, d);
 
         // ---- Glyd fast level ----
         let mut c1 = Vec::with_capacity(len);
         glyd::compress_into_fast(&data, &mut c1);
-        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); glyd::compress_into_fast(&data, &mut b); });
-        let d = timed(runs, min_secs, 3, || { let _ = glyd::decompress_into_raw(&c1, &mut dst); });
-        acc(&mut tot[11], len, c1.len(), t, d); log_row(f, "Glyd-fast", len, c1.len(), t, d);
+        let t = timed(runs, min_secs, 3, || {
+            let mut b = Vec::with_capacity(len);
+            glyd::compress_into_fast(&data, &mut b);
+        });
+        let d = timed(runs, min_secs, 3, || {
+            let _ = glyd::decompress_into_raw(&c1, &mut dst);
+        });
+        acc(&mut tot[11], len, c1.len(), t, d);
+        log_row(f, "Glyd-fast", len, c1.len(), t, d);
 
         // ---- Glyd turbo level ----
         let mut c2 = Vec::with_capacity(len);
         glyd::compress_into_turbo(&data, &mut c2);
-        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); glyd::compress_into_turbo(&data, &mut b); });
-        let d = timed(runs, min_secs, 3, || { let _ = glyd::decompress_into_raw(&c2, &mut dst); });
-        acc(&mut tot[12], len, c2.len(), t, d); log_row(f, "Glyd-turbo", len, c2.len(), t, d);
+        let t = timed(runs, min_secs, 3, || {
+            let mut b = Vec::with_capacity(len);
+            glyd::compress_into_turbo(&data, &mut b);
+        });
+        let d = timed(runs, min_secs, 3, || {
+            let _ = glyd::decompress_into_raw(&c2, &mut dst);
+        });
+        acc(&mut tot[12], len, c2.len(), t, d);
+        log_row(f, "Glyd-turbo", len, c2.len(), t, d);
 
         // ---- Glyd max level (format v7, entropy coded) ----
         let mut c3 = Vec::with_capacity(len);
         glyd::compress_into_max(&data, &mut c3);
-        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); glyd::compress_into_max(&data, &mut b); });
-        let d = timed(runs, min_secs, 3, || { let _ = glyd::decompress_into_raw(&c3, &mut dst); });
-        acc(&mut tot[13], len, c3.len(), t, d); log_row(f, "Glyd-max", len, c3.len(), t, d);
+        let t = timed(runs, min_secs, 3, || {
+            let mut b = Vec::with_capacity(len);
+            glyd::compress_into_max(&data, &mut b);
+        });
+        let d = timed(runs, min_secs, 3, || {
+            let _ = glyd::decompress_into_raw(&c3, &mut dst);
+        });
+        acc(&mut tot[13], len, c3.len(), t, d);
+        log_row(f, "Glyd-max", len, c3.len(), t, d);
 
         // ---- liblz4 (reference C) ----
         let bound = lz4::block::compress_bound(len).unwrap_or(len * 2 + 64);
         let mut lb = vec![0u8; bound];
         let n = lz4::block::compress_to_buffer(&data, None, false, &mut lb).unwrap();
         let lz4c = lb[..n].to_vec();
-        let t = timed(runs, min_secs, 3, || { let _ = lz4::block::compress_to_buffer(&data, None, false, &mut lb); });
-        let d = timed(runs, min_secs, 3, || { let _ = lz4::block::decompress_to_buffer(&lz4c, Some(len as i32), &mut dst); });
-        acc(&mut tot[1], len, lz4c.len(), t, d); log_row(f, "liblz4", len, lz4c.len(), t, d);
+        let t = timed(runs, min_secs, 3, || {
+            let _ = lz4::block::compress_to_buffer(&data, None, false, &mut lb);
+        });
+        let d = timed(runs, min_secs, 3, || {
+            let _ = lz4::block::decompress_to_buffer(&lz4c, Some(len as i32), &mut dst);
+        });
+        acc(&mut tot[1], len, lz4c.len(), t, d);
+        log_row(f, "liblz4", len, lz4c.len(), t, d);
 
         // ---- lz4_flex ----
         let fc = lz4_flex::compress(&data);
-        let t = timed(runs, min_secs, 3, || { let _ = lz4_flex::compress(&data); });
-        let d = timed(runs, min_secs, 3, || { let _ = lz4_flex::decompress_into(&fc, &mut dst); });
-        acc(&mut tot[2], len, fc.len(), t, d); log_row(f, "lz4_flex", len, fc.len(), t, d);
+        let t = timed(runs, min_secs, 3, || {
+            let _ = lz4_flex::compress(&data);
+        });
+        let d = timed(runs, min_secs, 3, || {
+            let _ = lz4_flex::decompress_into(&fc, &mut dst);
+        });
+        acc(&mut tot[2], len, fc.len(), t, d);
+        log_row(f, "lz4_flex", len, fc.len(), t, d);
 
         // ---- LZAV default and hi ----
         for (idx, hi) in [(3usize, false), (4usize, true)] {
@@ -135,8 +176,11 @@ fn main() {
                 assert!(n > 0, "lzav compress failed");
                 let cbuf = buf[..n as usize].to_vec();
                 let t = timed(runs, min_secs, 3, || {
-                    if hi { lzav::compress_hi(data.as_ptr() as *const _, buf.as_mut_ptr() as *mut _, len as i32, b as i32); }
-                    else { lzav::compress_default(data.as_ptr() as *const _, buf.as_mut_ptr() as *mut _, len as i32, b as i32); }
+                    if hi {
+                        lzav::compress_hi(data.as_ptr() as *const _, buf.as_mut_ptr() as *mut _, len as i32, b as i32);
+                    } else {
+                        lzav::compress_default(data.as_ptr() as *const _, buf.as_mut_ptr() as *mut _, len as i32, b as i32);
+                    }
                 });
                 let d = timed(runs, min_secs, 3, || {
                     lzav::decompress(cbuf.as_ptr() as *const _, dst.as_mut_ptr() as *mut _, cbuf.len() as i32, len as i32);
@@ -145,16 +189,22 @@ fn main() {
                 let r = lzav::decompress(cbuf.as_ptr() as *const _, dst.as_mut_ptr() as *mut _, cbuf.len() as i32, len as i32);
                 assert_eq!(r, len as i32, "lzav roundtrip length mismatch");
                 assert_eq!(&dst[..len], &data[..], "lzav roundtrip mismatch");
-                acc(&mut tot[idx], len, cbuf.len(), t, d); log_row(f, if hi {"LZAV-hi"} else {"LZAV"}, len, cbuf.len(), t, d);
+                acc(&mut tot[idx], len, cbuf.len(), t, d);
+                log_row(f, if hi { "LZAV-hi" } else { "LZAV" }, len, cbuf.len(), t, d);
             }
         }
 
         // ---- zstd levels ----
         for (idx, lvl) in [(5usize, -5i32), (6, -3), (7, -1), (8, 1), (9, 3)] {
             let zc = zstd::bulk::compress(&data, lvl).unwrap();
-            let t = timed(runs, min_secs, 2, || { let _ = zstd::bulk::compress(&data, lvl); });
-            let d = timed(runs, min_secs, 2, || { let _ = zstd::bulk::decompress_to_buffer(&zc, &mut dst); });
-            acc(&mut tot[idx], len, zc.len(), t, d); log_row(f, &format!("zstd{}", lvl), len, zc.len(), t, d);
+            let t = timed(runs, min_secs, 2, || {
+                let _ = zstd::bulk::compress(&data, lvl);
+            });
+            let d = timed(runs, min_secs, 2, || {
+                let _ = zstd::bulk::decompress_to_buffer(&zc, &mut dst);
+            });
+            acc(&mut tot[idx], len, zc.len(), t, d);
+            log_row(f, &format!("zstd{}", lvl), len, zc.len(), t, d);
         }
 
         // ---- snappy ----
@@ -162,9 +212,14 @@ fn main() {
         let sc = enc.compress_vec(&data).unwrap();
         let mut sbuf = vec![0u8; snap::raw::max_compress_len(len)];
         let mut dec = snap::raw::Decoder::new();
-        let t = timed(runs, min_secs, 3, || { let _ = enc.compress(&data, &mut sbuf[..]); });
-        let d = timed(runs, min_secs, 3, || { let _ = dec.decompress(&sc, &mut dst); });
-        acc(&mut tot[10], len, sc.len(), t, d); log_row(f, "snappy", len, sc.len(), t, d);
+        let t = timed(runs, min_secs, 3, || {
+            let _ = enc.compress(&data, &mut sbuf[..]);
+        });
+        let d = timed(runs, min_secs, 3, || {
+            let _ = dec.decompress(&sc, &mut dst);
+        });
+        acc(&mut tot[10], len, sc.len(), t, d);
+        log_row(f, "snappy", len, sc.len(), t, d);
     }
 
     report(&tot);
@@ -198,8 +253,10 @@ fn report(tot: &[Totals]) {
     println!("  PHASE 0 FIELD SURVEY - Silesia, single core, this machine");
     println!("  Question: does any codec dominate liblz4 on ratio AND comp AND decomp?");
     println!("=================================================================================");
-    println!("{:<10} | {:>7} {:>7} | {:>9} {:>7} | {:>9} {:>7} | {}",
-             "codec", "ratio", "vs lz4", "comp GB/s", "vs lz4", "dec GB/s", "vs lz4", "dominates lz4?");
+    println!(
+        "{:<10} | {:>7} {:>7} | {:>9} {:>7} | {:>9} {:>7} | {}",
+        "codec", "ratio", "vs lz4", "comp GB/s", "vs lz4", "dec GB/s", "vs lz4", "dominates lz4?"
+    );
     println!("{}", "-".repeat(97));
 
     let mut rows: Vec<&Totals> = tot.iter().filter(|t| t.orig > 0).collect();
@@ -209,18 +266,31 @@ fn report(tot: &[Totals]) {
     for t in &rows {
         let (r, c, d) = (t.ratio(), t.comp_gb(), t.decomp_gb());
         let dom = r > br && c > bc && d > bd;
-        if dom && t.name != "liblz4" { dominators.push(t.name.clone()); }
-        let mark = if t.name == "liblz4" { "(baseline)".to_string() }
-                   else if dom { "YES - ALL THREE".to_string() }
-                   else {
-                       let mut w = Vec::new();
-                       if r > br { w.push("ratio"); }
-                       if c > bc { w.push("comp"); }
-                       if d > bd { w.push("dec"); }
-                       if w.is_empty() { "no".to_string() } else { format!("wins: {}", w.join("+")) }
-                   };
-        println!("{:<10} | {:>7.4} {:>6.3}x | {:>9.3} {:>6.3}x | {:>9.3} {:>6.3}x | {}",
-                 t.name, r, r/br, c, c/bc, d, d/bd, mark);
+        if dom && t.name != "liblz4" {
+            dominators.push(t.name.clone());
+        }
+        let mark = if t.name == "liblz4" {
+            "(baseline)".to_string()
+        } else if dom {
+            "YES - ALL THREE".to_string()
+        } else {
+            let mut w = Vec::new();
+            if r > br {
+                w.push("ratio");
+            }
+            if c > bc {
+                w.push("comp");
+            }
+            if d > bd {
+                w.push("dec");
+            }
+            if w.is_empty() {
+                "no".to_string()
+            } else {
+                format!("wins: {}", w.join("+"))
+            }
+        };
+        println!("{:<10} | {:>7.4} {:>6.3}x | {:>9.3} {:>6.3}x | {:>9.3} {:>6.3}x | {}", t.name, r, r / br, c, c / bc, d, d / bd, mark);
     }
     println!("{}", "-".repeat(97));
     println!();

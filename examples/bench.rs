@@ -44,20 +44,12 @@ pub struct TimingConfig {
 impl TimingConfig {
     /// Strict Section 1 timing policy: 5 measurements of >= 1.0s and >= 5 iters, reporting median.
     pub fn strict() -> Self {
-        Self {
-            min_secs: 1.0,
-            min_iters: 5,
-            runs: 5,
-        }
+        Self { min_secs: 1.0, min_iters: 5, runs: 5 }
     }
 
     /// Fast development mode for quick checks.
     pub fn fast() -> Self {
-        Self {
-            min_secs: 0.1,
-            min_iters: 2,
-            runs: 1,
-        }
+        Self { min_secs: 0.1, min_iters: 2, runs: 1 }
     }
 }
 
@@ -138,12 +130,7 @@ pub struct BenchRecord {
     pub zstd_decomp_1c_gb: f64,
 }
 
-fn benchmark_file(
-    category: &str,
-    name: &str,
-    data: &[u8],
-    config: TimingConfig,
-) -> BenchRecord {
+fn benchmark_file(category: &str, name: &str, data: &[u8], config: TimingConfig) -> BenchRecord {
     let len = data.len();
 
     // Prepare compressed buffers for decompression benchmark
@@ -155,8 +142,7 @@ fn benchmark_file(
 
     let lz4_bound = lz4::block::compress_bound(len).unwrap_or(len * 2 + 64);
     let mut lz4_comp = vec![0u8; lz4_bound];
-    let lz4_sz = lz4::block::compress_to_buffer(data, None, false, &mut lz4_comp)
-        .expect("liblz4 compress failed");
+    let lz4_sz = lz4::block::compress_to_buffer(data, None, false, &mut lz4_comp).expect("liblz4 compress failed");
     lz4_comp.truncate(lz4_sz);
 
     let lz4_flex_comp = lz4_flex::compress(data);
@@ -347,10 +333,7 @@ pub fn run_silesia_bench(records: &mut Vec<BenchRecord>, config: TimingConfig) {
         return;
     }
 
-    let files = [
-        "dickens", "mozilla", "mr", "nci", "ooffice", "osdb",
-        "reymont", "samba", "sao", "webster", "xml", "x-ray",
-    ];
+    let files = ["dickens", "mozilla", "mr", "nci", "ooffice", "osdb", "reymont", "samba", "sao", "webster", "xml", "x-ray"];
 
     for file_name in &files {
         let path = corpus_dir.join(file_name);
@@ -506,21 +489,25 @@ fn print_summary_tables(records: &[BenchRecord]) {
     println!("\n=========================================================================================================");
     println!("                                   COMPRESSION RATIO COMPARISON");
     println!("=========================================================================================================");
-    println!("{:<12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>12}",
-             "File", "Orig Size", "Glyd", "C liblz4", "lz4_flex", "Snappy", "Zstd-1", "vs liblz4");
+    println!(
+        "{:<12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>12}",
+        "File", "Orig Size", "Glyd", "C liblz4", "lz4_flex", "Snappy", "Zstd-1", "vs liblz4"
+    );
     println!("-------------+------------+------------+------------+------------+------------+------------+-------------");
 
     let silesia_records: Vec<&BenchRecord> = records.iter().filter(|r| r.category == "silesia").collect();
     for r in &silesia_records {
-        println!("{:<12} | {:>7.2} MB | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>11.2}x",
-                 r.name,
-                 r.orig_size as f64 / (1024.0 * 1024.0),
-                 r.simd_ratio,
-                 r.lz4_ratio,
-                 r.lz4_flex_ratio,
-                 r.snap_ratio,
-                 r.zstd_ratio,
-                 r.ratio_vs_lz4);
+        println!(
+            "{:<12} | {:>7.2} MB | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>11.2}x",
+            r.name,
+            r.orig_size as f64 / (1024.0 * 1024.0),
+            r.simd_ratio,
+            r.lz4_ratio,
+            r.lz4_flex_ratio,
+            r.snap_ratio,
+            r.zstd_ratio,
+            r.ratio_vs_lz4
+        );
     }
 
     if !silesia_records.is_empty() {
@@ -538,26 +525,32 @@ fn print_summary_tables(records: &[BenchRecord]) {
         let tot_zstd_r = tot_orig as f64 / tot_zstd as f64;
 
         println!("-------------+------------+------------+------------+------------+------------+------------+-------------");
-        println!("{:<12} | {:>7.2} MB | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>11.2}x",
-                 "TOTAL SILESIA",
-                 tot_orig as f64 / (1024.0 * 1024.0),
-                 tot_simd_r,
-                 tot_lz4_r,
-                 tot_flex_r,
-                 tot_snap_r,
-                 tot_zstd_r,
-                 tot_simd_r / tot_lz4_r);
+        println!(
+            "{:<12} | {:>7.2} MB | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>8.2}x | {:>11.2}x",
+            "TOTAL SILESIA",
+            tot_orig as f64 / (1024.0 * 1024.0),
+            tot_simd_r,
+            tot_lz4_r,
+            tot_flex_r,
+            tot_snap_r,
+            tot_zstd_r,
+            tot_simd_r / tot_lz4_r
+        );
     }
 
     println!("\n=================================================================================================================================");
     println!("                                     COMPRESSION THROUGHPUT (GB/s) - SINGLE VS MULTI-CORE");
     println!("=================================================================================================================================");
-    println!("{:<10} | {:>14} | {:>14} | {:>12} | {:>11} | {:>11} | {:>11}",
-             "File", "Glyd 1C", "Glyd 16C", "C liblz4 1C", "lz4_flex 1C", "Snap (1C)", "Zstd-1 (1C)");
+    println!(
+        "{:<10} | {:>14} | {:>14} | {:>12} | {:>11} | {:>11} | {:>11}",
+        "File", "Glyd 1C", "Glyd 16C", "C liblz4 1C", "lz4_flex 1C", "Snap (1C)", "Zstd-1 (1C)"
+    );
     println!("-----------+----------------+----------------+--------------+-------------+-------------+------------");
     for r in &silesia_records {
-        println!("{:<10} | {:>11.2} GB/s | {:>11.2} GB/s | {:>9.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s",
-                 r.name, r.simd_comp_1c_gb, r.simd_comp_16c_gb, r.lz4_comp_1c_gb, r.lz4_flex_comp_1c_gb, r.snap_comp_1c_gb, r.zstd_comp_1c_gb);
+        println!(
+            "{:<10} | {:>11.2} GB/s | {:>11.2} GB/s | {:>9.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s",
+            r.name, r.simd_comp_1c_gb, r.simd_comp_16c_gb, r.lz4_comp_1c_gb, r.lz4_flex_comp_1c_gb, r.snap_comp_1c_gb, r.zstd_comp_1c_gb
+        );
     }
 
     if !silesia_records.is_empty() {
@@ -570,33 +563,43 @@ fn print_summary_tables(records: &[BenchRecord]) {
         let tot_zstd_c_time: f64 = silesia_records.iter().map(|r| r.zstd_comp_1c_time).sum();
 
         println!("-----------+----------------+----------------+--------------+-------------+-------------+------------");
-        println!("{:<10} | {:>11.2} GB/s | {:>11.2} GB/s | {:>9.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s",
-                 "TOTAL SILESIA",
-                 throughput_gb(tot_orig, tot_simd_c_time),
-                 throughput_gb(tot_orig, tot_simd_16c_time),
-                 throughput_gb(tot_orig, tot_lz4_c_time),
-                 throughput_gb(tot_orig, tot_flex_c_time),
-                 throughput_gb(tot_orig, tot_snap_c_time),
-                 throughput_gb(tot_orig, tot_zstd_c_time));
+        println!(
+            "{:<10} | {:>11.2} GB/s | {:>11.2} GB/s | {:>9.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s",
+            "TOTAL SILESIA",
+            throughput_gb(tot_orig, tot_simd_c_time),
+            throughput_gb(tot_orig, tot_simd_16c_time),
+            throughput_gb(tot_orig, tot_lz4_c_time),
+            throughput_gb(tot_orig, tot_flex_c_time),
+            throughput_gb(tot_orig, tot_snap_c_time),
+            throughput_gb(tot_orig, tot_zstd_c_time)
+        );
     }
 
-    println!("\n=================================================================================================================================================");
+    println!(
+        "\n================================================================================================================================================="
+    );
     println!("                                     DECOMPRESSION THROUGHPUT (GB/s) - SINGLE VS MULTI-CORE");
-    println!("=================================================================================================================================================");
-    println!("{:<10} | {:>13} | {:>13} | {:>14} | {:>14} | {:>12} | {:>11} | {:>11} | {:>11}",
-             "File", "Alat 1C Raw", "Alat 1C Ver", "Alat 16C Raw", "Alat 16C Ver", "C liblz4 1C", "lz4_flex 1C", "Snap (1C)", "Zstd-1 (1C)");
+    println!(
+        "================================================================================================================================================="
+    );
+    println!(
+        "{:<10} | {:>13} | {:>13} | {:>14} | {:>14} | {:>12} | {:>11} | {:>11} | {:>11}",
+        "File", "Alat 1C Raw", "Alat 1C Ver", "Alat 16C Raw", "Alat 16C Ver", "C liblz4 1C", "lz4_flex 1C", "Snap (1C)", "Zstd-1 (1C)"
+    );
     println!("-----------+---------------+---------------+----------------+----------------+--------------+-------------+-------------+------------");
     for r in &silesia_records {
-        println!("{:<10} | {:>10.2} GB/s | {:>10.2} GB/s | {:>11.2} GB/s | {:>11.2} GB/s | {:>9.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s",
-                 r.name,
-                 r.simd_decomp_1c_raw_gb,
-                 r.simd_decomp_1c_ver_gb,
-                 r.simd_decomp_16c_raw_gb,
-                 r.simd_decomp_16c_ver_gb,
-                 r.lz4_decomp_1c_gb,
-                 r.lz4_flex_decomp_1c_gb,
-                 r.snap_decomp_1c_gb,
-                 r.zstd_decomp_1c_gb);
+        println!(
+            "{:<10} | {:>10.2} GB/s | {:>10.2} GB/s | {:>11.2} GB/s | {:>11.2} GB/s | {:>9.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s",
+            r.name,
+            r.simd_decomp_1c_raw_gb,
+            r.simd_decomp_1c_ver_gb,
+            r.simd_decomp_16c_raw_gb,
+            r.simd_decomp_16c_ver_gb,
+            r.lz4_decomp_1c_gb,
+            r.lz4_flex_decomp_1c_gb,
+            r.snap_decomp_1c_gb,
+            r.zstd_decomp_1c_gb
+        );
     }
 
     if !silesia_records.is_empty() {
@@ -611,18 +614,22 @@ fn print_summary_tables(records: &[BenchRecord]) {
         let tot_zstd_d_time: f64 = silesia_records.iter().map(|r| r.zstd_decomp_1c_time).sum();
 
         println!("-----------+---------------+---------------+----------------+----------------+--------------+-------------+-------------+------------");
-        println!("{:<10} | {:>10.2} GB/s | {:>10.2} GB/s | {:>11.2} GB/s | {:>11.2} GB/s | {:>9.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s",
-                 "TOTAL SILESIA",
-                 throughput_gb(tot_orig, tot_simd_d_raw_time),
-                 throughput_gb(tot_orig, tot_simd_d_ver_time),
-                 throughput_gb(tot_orig, tot_simd_d16_raw_time),
-                 throughput_gb(tot_orig, tot_simd_d16_ver_time),
-                 throughput_gb(tot_orig, tot_lz4_d_time),
-                 throughput_gb(tot_orig, tot_flex_d_time),
-                 throughput_gb(tot_orig, tot_snap_d_time),
-                 throughput_gb(tot_orig, tot_zstd_d_time));
+        println!(
+            "{:<10} | {:>10.2} GB/s | {:>10.2} GB/s | {:>11.2} GB/s | {:>11.2} GB/s | {:>9.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s",
+            "TOTAL SILESIA",
+            throughput_gb(tot_orig, tot_simd_d_raw_time),
+            throughput_gb(tot_orig, tot_simd_d_ver_time),
+            throughput_gb(tot_orig, tot_simd_d16_raw_time),
+            throughput_gb(tot_orig, tot_simd_d16_ver_time),
+            throughput_gb(tot_orig, tot_lz4_d_time),
+            throughput_gb(tot_orig, tot_flex_d_time),
+            throughput_gb(tot_orig, tot_snap_d_time),
+            throughput_gb(tot_orig, tot_zstd_d_time)
+        );
     }
-    println!("=================================================================================================================================================");
+    println!(
+        "================================================================================================================================================="
+    );
 }
 
 pub struct GateResult {
@@ -650,26 +657,15 @@ pub fn evaluate_gates(records: &[BenchRecord]) -> Vec<GateResult> {
                 txt.split(&format!("\"{}\"", key))
                     .nth(1)
                     .and_then(|rest| rest.split(|c: char| c == ',' || c == '}').next())
-                    .and_then(|v| {
-                        v.trim_start_matches(|c: char| c == ':' || c.is_whitespace())
-                            .trim()
-                            .parse::<u64>()
-                            .ok()
-                    })
+                    .and_then(|v| v.trim_start_matches(|c: char| c == ':' || c.is_whitespace()).trim().parse::<u64>().ok())
                     .unwrap_or(0)
             };
             let muts = field("mutations");
             let required = field("required").max(1_000_000);
             let ok = txt.contains("\"status\": \"pass\"") && muts >= required;
-            (
-                ok,
-                format!("{} mutations, 0 panics", muts),
-            )
+            (ok, format!("{} mutations, 0 panics", muts))
         }
-        Err(_) => (
-            false,
-            "no .g1-status.json (run: cargo test --release --test fuzz_safety)".to_string(),
-        ),
+        Err(_) => (false, "no .g1-status.json (run: cargo test --release --test fuzz_safety)".to_string()),
     };
     gates.push(GateResult {
         gate: "G1".to_string(),
@@ -735,7 +731,12 @@ pub fn evaluate_gates(records: &[BenchRecord]) -> Vec<GateResult> {
     gates.push(GateResult {
         gate: "G4".to_string(),
         metric: "Comp 1C, Silesia".to_string(),
-        measured: format!("{:.2} GB/s ({:.2}x LZ4, min {:.2}x)", tot_simd_c_gb, c_mult, silesia.iter().map(|r| r.simd_comp_1c_gb / r.lz4_comp_1c_gb).fold(f64::INFINITY, f64::min)),
+        measured: format!(
+            "{:.2} GB/s ({:.2}x LZ4, min {:.2}x)",
+            tot_simd_c_gb,
+            c_mult,
+            silesia.iter().map(|r| r.simd_comp_1c_gb / r.lz4_comp_1c_gb).fold(f64::INFINITY, f64::min)
+        ),
         threshold: "Total >= 1.00x LZ4, each >= 0.80x (incl x-ray, sao)".to_string(),
         lz4_value: format!("{:.2} GB/s", tot_lz4_c_gb),
         passed: g4_pass,
@@ -843,9 +844,7 @@ pub fn print_gates_table(gates: &[GateResult]) {
     println!("| Gate | Metric | Measured | Threshold | LZ4 Value | Status |");
     println!("|---|---|---|---|---|---|");
     for g in gates {
-        println!("| **{}** | {} | {} | {} | {} | **{}** |",
-                 g.gate, g.metric, g.measured, g.threshold, g.lz4_value,
-                 if g.passed { "PASS" } else { "FAIL" });
+        println!("| **{}** | {} | {} | {} | {} | **{}** |", g.gate, g.metric, g.measured, g.threshold, g.lz4_value, if g.passed { "PASS" } else { "FAIL" });
     }
     println!("=================================================================================================================================\n");
 }
@@ -894,10 +893,7 @@ pub fn write_csv(path: &str, records: &[BenchRecord]) -> std::io::Result<()> {
 
 fn main() {
     // Configure Rayon to use exactly 16 threads for multi-core runs as specified in research/codec/history/GOAL.md
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(16)
-        .build_global()
-        .ok();
+    rayon::ThreadPoolBuilder::new().num_threads(16).build_global().ok();
 
     let args: Vec<String> = env::args().collect();
     let mut csv_path = None;

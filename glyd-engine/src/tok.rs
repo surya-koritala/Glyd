@@ -64,7 +64,12 @@ fn byte_chars() -> [char; 256] {
     let mut extra = 0u32;
     for b in 0..256u32 {
         let printable = (33..=126).contains(&b) || (161..=172).contains(&b) || (174..=255).contains(&b);
-        out[b as usize] = if printable { char::from_u32(b).unwrap_or('?') } else { extra += 1; char::from_u32(255 + extra).unwrap_or('?') };
+        out[b as usize] = if printable {
+            char::from_u32(b).unwrap_or('?')
+        } else {
+            extra += 1;
+            char::from_u32(255 + extra).unwrap_or('?')
+        };
     }
     out
 }
@@ -102,7 +107,9 @@ fn tiktoken_json(dir: &Path) -> Result<String> {
     let mut ranks: Vec<Vec<u8>> = Vec::new();
     for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
         let mut it = line.split_whitespace();
-        let (Some(b), Some(r)) = (it.next().and_then(base64), it.next().and_then(|r| r.parse::<usize>().ok())) else { return Err(Error(format!("{} line {}: not a token and its rank", p.display(), n + 1))) };
+        let (Some(b), Some(r)) = (it.next().and_then(base64), it.next().and_then(|r| r.parse::<usize>().ok())) else {
+            return Err(Error(format!("{} line {}: not a token and its rank", p.display(), n + 1)));
+        };
         if r != ranks.len() {
             return Err(Error(format!("{} line {}: rank {r}, where {} comes next", p.display(), n + 1, ranks.len())));
         }
@@ -127,13 +134,24 @@ fn tiktoken_json(dir: &Path) -> Result<String> {
         .ok()
         .and_then(|t| glyd_gpu::json::parse(&t).ok())
         .and_then(|v| {
-            v.get("added_tokens_decoder").and_then(|d| d.as_object().map(|o| o.iter().filter_map(|(k, x)| Some((k.parse().ok()?, (x.get("content")?.as_str()?.to_string(), x.get("special").and_then(|s| s.as_bool()).unwrap_or(true))))).collect()))
+            v.get("added_tokens_decoder").and_then(|d| {
+                d.as_object().map(|o| {
+                    o.iter()
+                        .filter_map(|(k, x)| {
+                            Some((k.parse().ok()?, (x.get("content")?.as_str()?.to_string(), x.get("special").and_then(|s| s.as_bool()).unwrap_or(true))))
+                        })
+                        .collect()
+                })
+            })
         })
         .unwrap_or_default();
     let added: Vec<String> = (ranks.len()..ranks.len() + 256)
         .map(|i| {
             let (name, special) = named.get(&i).cloned().unwrap_or_else(|| (format!("<|reserved_token_{i}|>"), true));
-            format!(r#"{{"id":{i},"content":{},"single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":{special}}}"#, crate::server::jstr(&name))
+            format!(
+                r#"{{"id":{i},"content":{},"single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":{special}}}"#,
+                crate::server::jstr(&name)
+            )
         })
         .collect();
     Ok(format!(
@@ -168,11 +186,17 @@ pub(crate) mod tests {
         for (i, w) in words.iter().enumerate() {
             vocab.push_str(&format!(",{}:{}", crate::server::jstr(w), i + 1));
             if w.starts_with("<|") && w.ends_with("|>") {
-                added.push(format!("{{\"id\":{},\"content\":{},\"single_word\":false,\"lstrip\":false,\"rstrip\":false,\"normalized\":false,\"special\":true}}", i + 1, crate::server::jstr(w)));
+                added.push(format!(
+                    "{{\"id\":{},\"content\":{},\"single_word\":false,\"lstrip\":false,\"rstrip\":false,\"normalized\":false,\"special\":true}}",
+                    i + 1,
+                    crate::server::jstr(w)
+                ));
             }
         }
         let added = added.join(",");
-        let json = format!(r#"{{"version":"1.0","truncation":null,"padding":null,"added_tokens":[{added}],"normalizer":null,"pre_tokenizer":{{"type":"Whitespace"}},"post_processor":null,"decoder":{{"type":"Fuse"}},"model":{{"type":"WordLevel","vocab":{{{vocab}}},"unk_token":"<unk>"}}}}"#);
+        let json = format!(
+            r#"{{"version":"1.0","truncation":null,"padding":null,"added_tokens":[{added}],"normalizer":null,"pre_tokenizer":{{"type":"Whitespace"}},"post_processor":null,"decoder":{{"type":"Fuse"}},"model":{{"type":"WordLevel","vocab":{{{vocab}}},"unk_token":"<unk>"}}}}"#
+        );
         Tok { t: Tokenizer::from_bytes(json.as_bytes()).unwrap() }
     }
 
@@ -222,7 +246,11 @@ pub(crate) mod tests {
         let toks: [&[u8]; 7] = [b"a", b"b", b"c", b" ", b"ab", b" a", b"abc"];
         let lines: Vec<String> = toks.iter().enumerate().map(|(i, t)| format!("{} {i}", b64(t))).collect();
         std::fs::write(dir.join("tiktoken.model"), lines.join("\n")).unwrap();
-        std::fs::write(dir.join("tokenizer_config.json"), r#"{"added_tokens_decoder": {"7": {"content": "<|open|>", "special": false}, "8": {"content": "<|end|>", "special": true}}}"#).unwrap();
+        std::fs::write(
+            dir.join("tokenizer_config.json"),
+            r#"{"added_tokens_decoder": {"7": {"content": "<|open|>", "special": false}, "8": {"content": "<|end|>", "special": true}}}"#,
+        )
+        .unwrap();
         let t = Tok::load(&dir).unwrap();
         // ("abc" whole; " ab": ab (rank 4) before " a" (5), then no " ab")
         assert_eq!(t.encode_with("abc ab", false).unwrap(), vec![6, 3, 4]);
@@ -242,8 +270,21 @@ pub(crate) mod tests {
         let dir = std::path::PathBuf::from(std::env::var("KIMI_DIR").expect("KIMI_DIR"));
         let t = Tok::load(&dir).unwrap();
         let text = std::fs::read_to_string(dir.join("tiktoken.model")).unwrap();
-        let rank: std::collections::HashMap<Vec<u8>, u32> = text.lines().filter_map(|l| { let mut i = l.split_whitespace(); Some((super::base64(i.next()?)?, i.next()?.parse().ok()?)) }).collect();
-        let samples = ["Hello, world! It's 2026; we're testing 1234567 tokens.", "北京是中国的首都。东京也是。", "  spaces\n\n\ttabs\r\n  end ", "emoji 😀👍🏽 and café naïve", "fn main() { let x = vec![1, 2, 3]; }", "MixedCASE wordsWithCaps HTTPServer"];
+        let rank: std::collections::HashMap<Vec<u8>, u32> = text
+            .lines()
+            .filter_map(|l| {
+                let mut i = l.split_whitespace();
+                Some((super::base64(i.next()?)?, i.next()?.parse().ok()?))
+            })
+            .collect();
+        let samples = [
+            "Hello, world! It's 2026; we're testing 1234567 tokens.",
+            "北京是中国的首都。东京也是。",
+            "  spaces\n\n\ttabs\r\n  end ",
+            "emoji 😀👍🏽 and café naïve",
+            "fn main() { let x = vec![1, 2, 3]; }",
+            "MixedCASE wordsWithCaps HTTPServer",
+        ];
         for s in samples {
             let got = t.encode_with(s, false).unwrap();
             let pre = t.t.get_pre_tokenizer().unwrap();
@@ -271,6 +312,10 @@ pub(crate) mod tests {
         assert_eq!(t.encode("hello world").unwrap(), vec![0, 1, 2], "a plain prompt gets the BOS from the tokenizer");
         assert_eq!(t.encode_with("hello world", false).unwrap(), vec![1, 2], "a chat template's text gets none from the tokenizer");
         assert_eq!(t.encode_with("<begin>hello world", false).unwrap(), vec![0, 1, 2], "the template's own BOS is one id");
-        assert_eq!(t.encode_with("<begin>hello world", true).unwrap(), vec![0, 0, 1, 2], "(what the engine did with a template that has a bos_token: two BOS, had it passed the token)");
+        assert_eq!(
+            t.encode_with("<begin>hello world", true).unwrap(),
+            vec![0, 0, 1, 2],
+            "(what the engine did with a template that has a bos_token: two BOS, had it passed the token)"
+        );
     }
 }

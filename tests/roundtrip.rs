@@ -47,8 +47,7 @@ fn test_roundtrip_multiblock() {
         input.extend_from_slice(base);
     }
     let compressed = compress(&input);
-    println!("Multiblock 200KB: compressed to {} bytes (ratio: {:.2}x)", 
-             compressed.len(), input.len() as f64 / compressed.len() as f64);
+    println!("Multiblock 200KB: compressed to {} bytes (ratio: {:.2}x)", compressed.len(), input.len() as f64 / compressed.len() as f64);
     let decompressed = decompress(&compressed).unwrap();
     assert_eq!(decompressed, input);
 
@@ -100,13 +99,12 @@ fn test_roundtrip_all_silesia_corpus() {
     if !corpus_dir.exists() {
         return;
     }
-    let files = [
-        "dickens", "mozilla", "mr", "nci", "ooffice", "osdb",
-        "reymont", "samba", "sao", "webster", "xml", "x-ray",
-    ];
+    let files = ["dickens", "mozilla", "mr", "nci", "ooffice", "osdb", "reymont", "samba", "sao", "webster", "xml", "x-ray"];
     for file_name in &files {
         let p = corpus_dir.join(file_name);
-        if !p.exists() { continue; }
+        if !p.exists() {
+            continue;
+        }
         let data = std::fs::read(&p).unwrap();
         println!("Testing corpus file: {}", file_name);
 
@@ -212,9 +210,6 @@ fn test_parallel_pipeline_256k_chunking_and_chaining() {
     assert_eq!(decomp_par_fallback, input);
 }
 
-
-
-
 /// A literal run at the format's maximum (MAX_LIT_LEN = 65797) inside a
 /// compressed block. The chunked AVX2 decoder keeps lengths in u16 arrays and
 /// once wrapped this to 261; the parallel Silesia stream happened to contain
@@ -240,12 +235,21 @@ fn test_roundtrip_literal_run_at_max_len() {
 #[test]
 fn test_roundtrip_fast_and_turbo_levels() {
     let mut x = 0x9E3779B97F4A7C15u64;
-    let mut rnd = |n: usize| -> Vec<u8> { (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect() };
+    let mut rnd = |n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    };
     let mut inputs: Vec<Vec<u8>> = vec![
         Vec::new(),
         b"Hello, World!".to_vec(),
         vec![b'A'; 2048],
-        rnd(300_000),                      // incompressible: raw blocks
+        rnd(300_000),                                       // incompressible: raw blocks
         (0..2_000_000u32).map(|i| (i / 7) as u8).collect(), // long runs, long matches
     ];
     for period in [1usize, 3, 7, 13, 64, 300, 5000, 70_000] {
@@ -253,7 +257,10 @@ fn test_roundtrip_fast_and_turbo_levels() {
         inputs.push(pat.iter().cycle().take(700_000).copied().collect());
     }
     let mut text = Vec::new();
-    while text.len() < 1_500_000 { text.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); text.extend_from_slice(&rnd(3)); }
+    while text.len() < 1_500_000 {
+        text.extend_from_slice(b"the quick brown fox jumps over the lazy dog ");
+        text.extend_from_slice(&rnd(3));
+    }
     inputs.push(text);
     for input in &inputs {
         let mut c = Vec::new();

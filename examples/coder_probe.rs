@@ -68,27 +68,41 @@ fn greedy(hist: &[u64], n: usize) -> Vec<u16> {
     let l = glyd::tans::L;
     let total: u64 = hist[..n].iter().sum();
     let mut c = vec![0u32; n];
-    if total == 0 { c[0] = l as u32; return c.iter().map(|&x| x as u16).collect(); }
+    if total == 0 {
+        c[0] = l as u32;
+        return c.iter().map(|&x| x as u16).collect();
+    }
     let mut sum = 0u32;
     for s in 0..n {
-        if hist[s] > 0 { c[s] = (((hist[s] * l as u64) / total) as u32).max(1); sum += c[s]; }
+        if hist[s] > 0 {
+            c[s] = (((hist[s] * l as u64) / total) as u32).max(1);
+            sum += c[s];
+        }
     }
     while sum > l as u32 {
         // Too many (rare-symbol bumps): take from the symbol losing least.
-        let s = (0..n).filter(|&s| c[s] > 1).min_by(|&a, &b| {
-            let ga = hist[a] as f64 * ((c[a] as f64) / (c[a] as f64 - 1.0)).log2();
-            let gb = hist[b] as f64 * ((c[b] as f64) / (c[b] as f64 - 1.0)).log2();
-            ga.partial_cmp(&gb).unwrap()
-        }).unwrap();
-        c[s] -= 1; sum -= 1;
+        let s = (0..n)
+            .filter(|&s| c[s] > 1)
+            .min_by(|&a, &b| {
+                let ga = hist[a] as f64 * ((c[a] as f64) / (c[a] as f64 - 1.0)).log2();
+                let gb = hist[b] as f64 * ((c[b] as f64) / (c[b] as f64 - 1.0)).log2();
+                ga.partial_cmp(&gb).unwrap()
+            })
+            .unwrap();
+        c[s] -= 1;
+        sum -= 1;
     }
     while sum < l as u32 {
-        let s = (0..n).filter(|&s| c[s] > 0).max_by(|&a, &b| {
-            let ga = hist[a] as f64 * ((c[a] as f64 + 1.0) / c[a] as f64).log2();
-            let gb = hist[b] as f64 * ((c[b] as f64 + 1.0) / c[b] as f64).log2();
-            ga.partial_cmp(&gb).unwrap()
-        }).unwrap();
-        c[s] += 1; sum += 1;
+        let s = (0..n)
+            .filter(|&s| c[s] > 0)
+            .max_by(|&a, &b| {
+                let ga = hist[a] as f64 * ((c[a] as f64 + 1.0) / c[a] as f64).log2();
+                let gb = hist[b] as f64 * ((c[b] as f64 + 1.0) / c[b] as f64).log2();
+                ga.partial_cmp(&gb).unwrap()
+            })
+            .unwrap();
+        c[s] += 1;
+        sum += 1;
     }
     c.iter().map(|&x| x as u16).collect()
 }
@@ -112,10 +126,30 @@ fn main() {
             raw += block.len() as u64;
             ent += entropy_bits(&h) / 8.0;
             // The coder's rule: coded only when it saves 2%.
-            if (ours_b as usize) + block.len() / 50 < block.len() { ours += ours_b } else { ours += block.len() as u64; ours_raw += 1 }
-            if (opt_b as usize) < block.len() { opt += opt_b } else { opt += block.len() as u64; opt_raw += 1 }
+            if (ours_b as usize) + block.len() / 50 < block.len() {
+                ours += ours_b
+            } else {
+                ours += block.len() as u64;
+                ours_raw += 1
+            }
+            if (opt_b as usize) < block.len() {
+                opt += opt_b
+            } else {
+                opt += block.len() as u64;
+                opt_raw += 1
+            }
         }
-        println!("{}: raw {} B, entropy {:.0} B, our lengths {} B ({} blocks raw), package-merge {} B ({} blocks raw): ours {:+.2}% vs optimal", f.rsplit('/').next().unwrap(), raw, ent, ours, ours_raw, opt, opt_raw, (ours as f64 / opt as f64 - 1.0) * 100.0);
+        println!(
+            "{}: raw {} B, entropy {:.0} B, our lengths {} B ({} blocks raw), package-merge {} B ({} blocks raw): ours {:+.2}% vs optimal",
+            f.rsplit('/').next().unwrap(),
+            raw,
+            ent,
+            ours,
+            ours_raw,
+            opt,
+            opt_raw,
+            (ours as f64 / opt as f64 - 1.0) * 100.0
+        );
         return;
     }
     // Sequences: our sections against their entropy bounds, per section.
@@ -132,7 +166,11 @@ fn main() {
     let (mut one_table, mut two_tables) = (0u64, 0u64);
     let (mut norm_ours, mut norm_greedy) = ([0f64; 3], [0f64; 3]);
     for t in sq.chunks_exact(16) {
-        let (ll, ml, off) = (u32::from_le_bytes(t[0..4].try_into().unwrap()), u32::from_le_bytes(t[4..8].try_into().unwrap()), u32::from_le_bytes(t[8..12].try_into().unwrap()));
+        let (ll, ml, off) = (
+            u32::from_le_bytes(t[0..4].try_into().unwrap()),
+            u32::from_le_bytes(t[4..8].try_into().unwrap()),
+            u32::from_le_bytes(t[8..12].try_into().unwrap()),
+        );
         lits.extend_from_slice(&d[pos..pos + ll as usize]);
         pos += (ll + ml) as usize;
         if ml == 0 {
@@ -171,12 +209,17 @@ fn main() {
             // literal table per block, summed in `two_tables`.
             {
                 let one = glyd::huff8::lengths_for(&hlit);
-                let cost = |h: &[u64; 256], l: &[u8; 256]| (0..256).map(|s| h[s] * l[s] as u64).sum::<u64>() / 8 + glyd::huffman::packed_lengths_v8_size(l) as u64;
+                let cost =
+                    |h: &[u64; 256], l: &[u8; 256]| (0..256).map(|s| h[s] * l[s] as u64).sum::<u64>() / 8 + glyd::huffman::packed_lengths_v8_size(l) as u64;
                 let c1 = cost(&hlit, &one);
                 let mid = lits.len() / 2;
                 let (mut ha, mut hb) = ([0u64; 256], [0u64; 256]);
-                for &b in &lits[..mid] { ha[b as usize] += 1; }
-                for &b in &lits[mid..] { hb[b as usize] += 1; }
+                for &b in &lits[..mid] {
+                    ha[b as usize] += 1;
+                }
+                for &b in &lits[mid..] {
+                    hb[b as usize] += 1;
+                }
                 let c2 = cost(&ha, &glyd::huff8::lengths_for(&ha)) + cost(&hb, &glyd::huff8::lengths_for(&hb));
                 two_tables += c1.saturating_sub(c2.min(c1));
                 one_table += c1;
@@ -185,14 +228,27 @@ fn main() {
             ideal[2] += entropy_bits(&hm) / 8.0;
             ideal[3] += entropy_bits(&ho) / 8.0;
             // The tables' fit: our normalizer against a greedy slot allocation.
-            for (i, (h, n)) in [(&hl, glyd::v7_format::LL_SYMBOLS), (&hm, glyd::v7_format::ML_SYMBOLS), (&ho, glyd::v7_format::OFF_SYMBOLS)].into_iter().enumerate() {
+            for (i, (h, n)) in
+                [(&hl, glyd::v7_format::LL_SYMBOLS), (&hm, glyd::v7_format::ML_SYMBOLS), (&ho, glyd::v7_format::OFF_SYMBOLS)].into_iter().enumerate()
+            {
                 norm_ours[i] += tans_bits(&h[..n], &ours(&h[..n], n)) / 8.0;
                 norm_greedy[i] += tans_bits(&h[..n], &greedy(&h[..n], n)) / 8.0;
             }
             ideal[4] += extra as f64 / 8.0;
             payload.clear();
             encode_block_with(&seqs, &lits, 0, &mut prev, &mut scratch, false, &mut payload);
-            let h = glyd::format::BlockHeader { magic: glyd::format::MAGIC, version: glyd::format::VERSION_V8, flags: glyd::format::FLAG_COMPRESSED, checksum: 0, uncompressed_len: 0, token_count: seqs.len() as u32, token_bytes: payload.len() as u32, offset_bytes: 0, extras_bytes: 0, literal_len: lits.len() as u32 };
+            let h = glyd::format::BlockHeader {
+                magic: glyd::format::MAGIC,
+                version: glyd::format::VERSION_V8,
+                flags: glyd::format::FLAG_COMPRESSED,
+                checksum: 0,
+                uncompressed_len: 0,
+                token_count: seqs.len() as u32,
+                token_bytes: payload.len() as u32,
+                offset_bytes: 0,
+                extras_bytes: 0,
+                literal_len: lits.len() as u32,
+            };
             if let Some(l) = payload_layout_of(&h, &payload) {
                 for (a, b) in actual.iter_mut().zip(l.sub.sizes.iter()) {
                     *a += *b as u64;
@@ -205,13 +261,27 @@ fn main() {
         }
     }
     let names = ["lit", "ll", "ml", "off", "extras"];
-    print!("{}: {} blocks, total {} B (sections {} B, framing {} B);", f.rsplit('/').next().unwrap(), blocks, total, actual.iter().sum::<u64>(), total - actual.iter().sum::<u64>());
+    print!(
+        "{}: {} blocks, total {} B (sections {} B, framing {} B);",
+        f.rsplit('/').next().unwrap(),
+        blocks,
+        total,
+        actual.iter().sum::<u64>(),
+        total - actual.iter().sum::<u64>()
+    );
     for i in 0..5 {
         print!(" {} {} B vs ideal {:.0} ({:+.1}%);", names[i], actual[i], ideal[i], (actual[i] as f64 / ideal[i] - 1.0) * 100.0);
     }
     println!();
     println!("  a second literal table per block would save {} B of {} ({:.2}%)", two_tables, one_table, two_tables as f64 * 100.0 / one_table.max(1) as f64);
     for i in 0..3 {
-        println!("  {} table fit: ours {:.0} B, greedy {:.0} B ({:+.2}%), entropy {:.0} B", names[i + 1], norm_ours[i], norm_greedy[i], (norm_greedy[i] / norm_ours[i] - 1.0) * 100.0, ideal[i + 1]);
+        println!(
+            "  {} table fit: ours {:.0} B, greedy {:.0} B ({:+.2}%), entropy {:.0} B",
+            names[i + 1],
+            norm_ours[i],
+            norm_greedy[i],
+            (norm_greedy[i] / norm_ours[i] - 1.0) * 100.0,
+            ideal[i + 1]
+        );
     }
 }

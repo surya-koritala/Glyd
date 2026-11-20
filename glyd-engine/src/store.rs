@@ -202,13 +202,22 @@ pub fn check_dtypes(model: &str, weights: u64, dtypes: &[(String, u64)], packed:
     let bf16 = 2 * (n("BF16") + n("F16"));
     if weights > bf16 && (weights - bf16) as f64 >= 0.05 * weights as f64 {
         if n("F32") * 4 > weights / 2 {
-            return Some(Refusal::unsupported(format!("{model} is stored in 32-bit floats, and Glyd packs bf16 weights"), "Run a bf16 version of the model if there is one (most models publish one)"));
+            return Some(Refusal::unsupported(
+                format!("{model} is stored in 32-bit floats, and Glyd packs bf16 weights"),
+                "Run a bf16 version of the model if there is one (most models publish one)",
+            ));
         }
         let kind = if n("F8_E4M3") > n("U8").max(n("I8")) { "FP8" } else { "4-bit" };
-        return Some(Refusal::unsupported(format!("{model} is already quantized ({kind}), and Glyd packs bf16 weights"), "Run the model's bf16 version: usually the same name without -FP8, -AWQ or -GPTQ"));
+        return Some(Refusal::unsupported(
+            format!("{model} is already quantized ({kind}), and Glyd packs bf16 weights"),
+            "Run the model's bf16 version: usually the same name without -FP8, -AWQ or -GPTQ",
+        ));
     }
     if n("F16") > n("BF16") {
-        return Some(Refusal::unsupported(format!("{model} is stored in float16, and Glyd packs bfloat16 weights"), "Use the model's bf16 version if it has one"));
+        return Some(Refusal::unsupported(
+            format!("{model} is stored in float16, and Glyd packs bfloat16 weights"),
+            "Use the model's bf16 version if it has one",
+        ));
     }
     None
 }
@@ -221,7 +230,10 @@ pub fn hub_plan(model: &str, ui: &RefCell<Ui>) -> Done<(Hub, Remote, Vec<Entry>)
 /// `hub_plan` of a release the dynamic engine runs as it is (`exact`: an FP8 or FP4 checkpoint is not refused; GLY-354).
 pub fn hub_plan_as(model: &str, ui: &RefCell<Ui>, exact: bool) -> Done<(Hub, Remote, Vec<Entry>)> {
     if !looks_like_repo(model) {
-        return Err(Refusal::new(format!("{model}: no such directory, and not a Hugging Face name"), "Give a directory with the model, or its Hub name (ORG/NAME, as in Qwen/Qwen3.5-9B)"));
+        return Err(Refusal::new(
+            format!("{model}: no such directory, and not a Hugging Face name"),
+            "Give a directory with the model, or its Hub name (ORG/NAME, as in Qwen/Qwen3.5-9B)",
+        ));
     }
     if hub::offline() {
         return Err(Refusal::new(format!("{model} is not downloaded, and HF_HUB_OFFLINE is set"), "Unset HF_HUB_OFFLINE to download it"));
@@ -236,7 +248,10 @@ pub fn hub_plan_as(model: &str, ui: &RefCell<Ui>, exact: bool) -> Done<(Hub, Rem
     let wanted = hub::wanted(&remote);
     let weights: u64 = wanted.iter().filter(|e| e.path.ends_with(".safetensors")).map(|e| e.size).sum();
     if weights == 0 {
-        return Err(Refusal::unsupported(format!("{model} has no safetensors weights"), "Glyd reads .safetensors checkpoints, which most models on the Hub have"));
+        return Err(Refusal::unsupported(
+            format!("{model} has no safetensors weights"),
+            "Glyd reads .safetensors checkpoints, which most models on the Hub have",
+        ));
     }
     let packed = remote.files.iter().any(|e| e.path == "glyd.json") && hub.text(model, "main", "glyd.json").ok().is_some_and(|t| glyd_v7_level(&t).is_some());
     if let Some(r) = check_dtypes(model, weights, &remote.dtypes, packed || exact) {
@@ -301,7 +316,12 @@ pub fn download(hub: &Hub, remote: &Remote, entries: &[Entry], model: &str, ui: 
     match r {
         Ok(_) => {}
         Err(HubError::Denied(_)) => return Err(hub_refusal(model)),
-        Err(HubError::Network(e)) => return Err(Refusal::new(format!("the download of {model} stopped ({e})"), "Check the network connection and run the same command again: it resumes where it stopped")),
+        Err(HubError::Network(e)) => {
+            return Err(Refusal::new(
+                format!("the download of {model} stopped ({e})"),
+                "Check the network connection and run the same command again: it resumes where it stopped",
+            ))
+        }
         Err(HubError::Other(e)) => return Err(Refusal::new(e, "")),
     }
     hub.pin(remote)?;
@@ -357,7 +377,9 @@ fn cannot(e: impl std::fmt::Display) -> Refusal {
 /// `source` packed for this GPU into the cache (once; a run that stops leaves nothing half made), with a bar by the bytes written. `expect`: about what it comes to.
 pub fn pack(source: &Source, model: &str, layout: Layout, expect: u64, ui: &RefCell<Ui>) -> Done<PathBuf> {
     let root = packed_root();
-    let io = |r: std::io::Result<()>| r.map_err(|e| Refusal::unsupported(format!("{}: {e}", root.display()), "Check that the folder can be written, or set GLYD_CACHE to another"));
+    let io = |r: std::io::Result<()>| {
+        r.map_err(|e| Refusal::unsupported(format!("{}: {e}", root.display()), "Check that the folder can be written, or set GLYD_CACHE to another"))
+    };
     io(std::fs::create_dir_all(&root))?;
     let dir = packed_dir(source, layout);
     // (a packed copy of the layout of glyd 0.27 and before is made again, once; a lossy level's is a glyd-v7 directory, which a rename puts in its place whole)
@@ -368,7 +390,10 @@ pub fn pack(source: &Source, model: &str, layout: Layout, expect: u64, ui: &RefC
     }
     if let Some(free) = hub::disk_free(&root) {
         if free < expect + (1 << 30) {
-            return Err(Refusal::unsupported(format!("the disk holding {} has {} left, and the packed model takes {}", root.display(), gb(free), gb(expect)), "Free some space, or put the cache on another drive: GLYD_CACHE=/path/on/that/drive"));
+            return Err(Refusal::unsupported(
+                format!("the disk holding {} has {} left, and the packed model takes {}", root.display(), gb(free), gb(expect)),
+                "Free some space, or put the cache on another drive: GLYD_CACHE=/path/on/that/drive",
+            ));
         }
     }
     // one process makes it at a time
@@ -380,7 +405,11 @@ pub fn pack(source: &Source, model: &str, layout: Layout, expect: u64, ui: &RefC
     let old = !lossy && dir.join("engine.safetensors").exists();
     let name = model.rsplit('/').next().unwrap_or(model);
     if old {
-        ui.borrow_mut().line(&format!("The packed copy of {name} is of the layout of glyd 0.27 and before, which this glyd does not read: packing it again for this GPU ({}), once: {}", layout.name(), dir.display()));
+        ui.borrow_mut().line(&format!(
+            "The packed copy of {name} is of the layout of glyd 0.27 and before, which this glyd does not read: packing it again for this GPU ({}), once: {}",
+            layout.name(),
+            dir.display()
+        ));
     } else {
         ui.borrow_mut().line(&format!("Packing {name} for this GPU ({}), once: {}", layout.name(), dir.display()));
     }
@@ -447,7 +476,8 @@ pub fn tables(packed: &Path, model: &str, ctx: usize, device: i32, ui: &RefCell<
     let e = Engine::for_calibration(packed, &o).map_err(cannot)?;
     let tok = Tok::load(packed).map_err(cannot)?;
     let chat = Chat::load(packed).map_err(cannot)?;
-    let t = calib::calibrate(&e, &tok, chat.as_ref(), &calib::Options { positions: tier, model: model.to_string() }, &|s| ui.borrow_mut().status(s)).map_err(cannot)?;
+    let t = calib::calibrate(&e, &tok, chat.as_ref(), &calib::Options { positions: tier, model: model.to_string() }, &|s| ui.borrow_mut().status(s))
+        .map_err(cannot)?;
     let tmp = packed.join(format!(".tables-{}", std::process::id()));
     calib::save(&tmp, &t).map_err(cannot)?;
     if let Some(why) = t.refused {
@@ -513,7 +543,13 @@ mod tests {
         remove_stale(&dir, ".tables-");
         assert!(!dir.join(".tables-77").exists());
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(looks_like_repo("Qwen/Qwen3-8B") && looks_like_repo("a-b/c_d.e") && !looks_like_repo("Qwen3-8B") && !looks_like_repo("a/b/c") && !looks_like_repo("/models/x"));
+        assert!(
+            looks_like_repo("Qwen/Qwen3-8B")
+                && looks_like_repo("a-b/c_d.e")
+                && !looks_like_repo("Qwen3-8B")
+                && !looks_like_repo("a/b/c")
+                && !looks_like_repo("/models/x")
+        );
     }
 
     #[test]
@@ -523,7 +559,10 @@ mod tests {
         let d = glyd_gpu::save::Source { dir: "/models/mine".into(), repo: "/models/mine".into(), revision: None };
         assert_eq!(packed_name(&d, Layout::Twelve), "models--mine-mma12");
         // each layout its own directory: the compact one is not the tiered one's, and the lossy levels have theirs
-        let names: Vec<String> = [Layout::Tiered, Layout::Twelve, Layout::Compact, Layout::Int6, Layout::Int5, Layout::Int4, Layout::Int3].iter().map(|&l| packed_name(&s, l)).collect();
+        let names: Vec<String> = [Layout::Tiered, Layout::Twelve, Layout::Compact, Layout::Int6, Layout::Int5, Layout::Int4, Layout::Int3]
+            .iter()
+            .map(|&l| packed_name(&s, l))
+            .collect();
         let want = ["mma", "mma12", "a", "i6", "i5", "i4", "i3"].map(|l| format!("Qwen--Qwen3-8B-b968826d-{l}"));
         assert_eq!(names, want);
     }
@@ -541,7 +580,10 @@ mod tests {
         let files = vec![e("glyd.json", 9), e("config.json", 9), e("model-00001-of-00002.safetensors", 100), e("sub/x.safetensors", 5)];
         let v7 = |level: &str| format!("{{\"format\": \"glyd-v7\", \"layout\": \"i5\", \"level\": \"{level}\"}}");
         let paths = |w: Option<Vec<Entry>>| w.map(|w| w.iter().map(|e| e.path.clone()).collect::<Vec<_>>());
-        assert_eq!(paths(packed_files(&remote(files.clone()), Some(&v7("swift")), "swift")), Some(vec!["glyd.json".to_string(), "config.json".into(), "model-00001-of-00002.safetensors".into()]));
+        assert_eq!(
+            paths(packed_files(&remote(files.clone()), Some(&v7("swift")), "swift")),
+            Some(vec!["glyd.json".to_string(), "config.json".into(), "model-00001-of-00002.safetensors".into()])
+        );
         // the Hub's repo falls back to the bf16 model: another level, another format, no glyd.json, one that cannot be read
         assert!(packed_files(&remote(files.clone()), Some(&v7("kestrel")), "swift").is_none());
         assert!(packed_files(&remote(files.clone()), Some("{\"format\": \"glyd-v4\", \"level\": \"swift\"}"), "swift").is_none());
@@ -586,7 +628,7 @@ mod tests {
         note_refusal(&dir, 4096, why);
         assert_eq!(known_refusal(&dir, 4096).as_deref(), Some(why));
         assert_eq!(known_refusal(&dir, 8192), None); // (another tier is a table of its own)
-        // tables the rule would make now: the model is not known by what an earlier version said
+                                                     // tables the rule would make now: the model is not known by what an earlier version said
         std::fs::write(dir.join("kv-refused-16384"), format!("{}\n{why}\n", crate::kvcal::VERSION - 1)).unwrap();
         assert_eq!(known_refusal(&dir, 16384), None);
         // asking for the tables: the refusal, with no GPU touched
@@ -596,7 +638,12 @@ mod tests {
         // where the tables exist, they are the answer
         std::fs::remove_file(dir.join("kv-refused-4096")).unwrap();
         std::fs::write(dir.join("kv-tables-4096.safetensors"), b"x").unwrap();
-        crate::pack::write_safetensors(&dir.join("kv-tables-4096.safetensors"), &[("format", "glyd-kv-tables-v0".to_string()), ("meta", format!("{{\"version\":{}}}", crate::kvcal::VERSION))], &[("k", "U8", vec![1, 1, 1], &[0u8][..])]).unwrap();
+        crate::pack::write_safetensors(
+            &dir.join("kv-tables-4096.safetensors"),
+            &[("format", "glyd-kv-tables-v0".to_string()), ("meta", format!("{{\"version\":{}}}", crate::kvcal::VERSION))],
+            &[("k", "U8", vec![1, 1, 1], &[0u8][..])],
+        )
+        .unwrap();
         assert_eq!(tables(&dir, "org/model", 3000, 0, &ui).unwrap(), dir.join("kv-tables-4096.safetensors"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -630,7 +677,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let write = |name: &str, version: u32| {
             let meta = format!("{{\"positions\":4096,\"model\":\"m\",\"version\":{version}}}");
-            crate::pack::write_safetensors(&dir.join(name), &[("format", "glyd-kv-tables-v0".to_string()), ("meta", meta)], &[("k", "U8", vec![1, 1, 1], &[0u8][..])]).unwrap();
+            crate::pack::write_safetensors(
+                &dir.join(name),
+                &[("format", "glyd-kv-tables-v0".to_string()), ("meta", meta)],
+                &[("k", "U8", vec![1, 1, 1], &[0u8][..])],
+            )
+            .unwrap();
         };
         write("kv-tables-4096.safetensors", crate::kvcal::VERSION - 1);
         write("kv-tables-16384.safetensors", crate::kvcal::VERSION);
@@ -647,7 +699,12 @@ mod tests {
         std::fs::write(dir.join("glyd.json"), format!("{{\"format\": \"{format}\", \"layout\": \"mma\", \"packs\": {{\"model.layers.0.self_attn.q_proj\": {{\"layout\": \"mma\", \"shape\": [64, 16], \"tiers\": [{tiers0}, 0, 0]}}}}}}")).unwrap();
         let (a, b): (Vec<u8>, Vec<u8>) = (vec![0u8; 4], vec![0u8; 4]);
         let meta = format!("{{\"shape\":[64,16],\"tiers\":[{tiers0},0,0]}}");
-        crate::pack::write_safetensors(&dir.join("engine.safetensors"), &[("format", "x".to_string()), ("embed", meta)], &[("embed.glyd_data", "U8", vec![4], &a[..]), ("embed.glyd_blocks", "U8", vec![4], &b[..])]).unwrap();
+        crate::pack::write_safetensors(
+            &dir.join("engine.safetensors"),
+            &[("format", "x".to_string()), ("embed", meta)],
+            &[("embed.glyd_data", "U8", vec![4], &a[..]), ("embed.glyd_blocks", "U8", vec![4], &b[..])],
+        )
+        .unwrap();
         for (name, text) in extra {
             std::fs::write(dir.join(name), text).unwrap();
         }
@@ -670,7 +727,11 @@ mod tests {
         };
         let log = |s: &str| said.borrow_mut().push(s.to_string());
         // an earlier run's copy, of the earlier layout, with the tables it made
-        fake_packed(&dir, 0xFF << 24 | 5, &[("kv-tables-4096.safetensors", "the tables"), ("kv-tables-16384.safetensors", "more tables"), ("notes.txt", "not carried")]);
+        fake_packed(
+            &dir,
+            0xFF << 24 | 5,
+            &[("kv-tables-4096.safetensors", "the tables"), ("kv-tables-16384.safetensors", "more tables"), ("notes.txt", "not carried")],
+        );
         assert!(crate::weights::earlier_format(&dir).is_some());
         ensure_packed(&root, &dir, "m", "mma", &log, &make).unwrap();
         assert_eq!(calls.get(), 1);

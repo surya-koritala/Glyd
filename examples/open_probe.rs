@@ -7,7 +7,13 @@ fn main() {
     let o = glyd::deflate::open(&d);
     let secs = t.elapsed().as_secs_f64();
     match o {
-        Some(o) => println!("{}: container {is}; opened in {secs:.2} s: plain {} B (input {} B), recipe {} B", f.rsplit('/').next().unwrap(), o.plain.len(), d.len(), o.recipe.len()),
+        Some(o) => println!(
+            "{}: container {is}; opened in {secs:.2} s: plain {} B (input {} B), recipe {} B",
+            f.rsplit('/').next().unwrap(),
+            o.plain.len(),
+            d.len(),
+            o.recipe.len()
+        ),
         None => println!("{}: container {is}; open returned None in {secs:.2} s", f.rsplit('/').next().unwrap()),
     }
 }

@@ -189,7 +189,11 @@ pub fn unpack(p: &Tiered, out: &mut [u16]) -> bool {
     let mut esc = Vec::with_capacity(STEP);
     for (s, at) in steps(p.cols, 0, n) {
         let (start, end) = (p.block_base[s] as usize, p.block_base[s + 1] as usize);
-        if p.block_base[s] < 0 || start > end || end > p.blocks.len() || tiered_unstep(&p.data[s * 1280..(s + 1) * 1280], &p.blocks[start..end], &sym, &mut u, &mut esc).is_none() {
+        if p.block_base[s] < 0
+            || start > end
+            || end > p.blocks.len()
+            || tiered_unstep(&p.data[s * 1280..(s + 1) * 1280], &p.blocks[start..end], &sym, &mut u, &mut esc).is_none()
+        {
             return false;
         }
         for (q, &v) in u.iter().enumerate() {
@@ -215,10 +219,15 @@ pub fn blocks_hold(data: &[u8], blocks: &[u8], block_base: &[i32]) -> bool {
         let (start, end) = (b[s] as usize, b[s + 1] as usize);
         let block = &blocks[start..end];
         let size = block.len();
-        let t1: usize = d.as_chunks::<4>().0.iter().map(|w| {
-            let w = u32::from_le_bytes(*w);
-            (w & (w >> 1) & 0x5555_5555).count_ones() as usize
-        }).sum();
+        let t1: usize = d
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| {
+                let w = u32::from_le_bytes(*w);
+                (w & (w >> 1) & 0x5555_5555).count_ones() as usize
+            })
+            .sum();
         let digits = 4 * t1.div_ceil(16);
         if digits > size {
             return false;

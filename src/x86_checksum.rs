@@ -43,8 +43,7 @@ pub unsafe fn checksum_avx2(data: &[u8]) -> u32 {
         let d5 = _mm256_extract_epi32(dot, 5) as u32;
         let d6 = _mm256_extract_epi32(dot, 6) as u32;
         let d7 = _mm256_extract_epi32(dot, 7) as u32;
-        let weighted_sum = d0.wrapping_add(d1).wrapping_add(d2).wrapping_add(d3)
-            .wrapping_add(d4).wrapping_add(d5).wrapping_add(d6).wrapping_add(d7);
+        let weighted_sum = d0.wrapping_add(d1).wrapping_add(d2).wrapping_add(d3).wrapping_add(d4).wrapping_add(d5).wrapping_add(d6).wrapping_add(d7);
 
         b = b.wrapping_add(a.wrapping_mul(32)).wrapping_add(weighted_sum);
         a = a.wrapping_add(chunk_sum);

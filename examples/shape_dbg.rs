@@ -12,11 +12,19 @@ fn main() {
         let end = d[end..].iter().position(|&b| b == b'\n').map_or(d.len(), |p| end + p + 1);
         let o = &d[at..end];
         let i = shape.image_bytes(o);
-        let mut c = Vec::new(); shape.compress(o, &mut c);
-        raw += o.len(); img += i.len(); comp += c.len(); n += 1;
+        let mut c = Vec::new();
+        shape.compress(o, &mut c);
+        raw += o.len();
+        img += i.len();
+        comp += c.len();
+        n += 1;
         let cb = shape.column_bytes(o);
-        if cols.is_empty() { cols = vec![0; cb.len()]; }
-        for (k, v) in cb.iter().enumerate() { cols[k] += v; }
+        if cols.is_empty() {
+            cols = vec![0; cb.len()];
+        }
+        for (k, v) in cb.iter().enumerate() {
+            cols[k] += v;
+        }
         at = end;
     }
     println!("{} objects: raw {} -> image {} ({:.2}x) -> compressed {} ({:.2}x)", n, raw, img, raw as f64 / img as f64, comp, raw as f64 / comp as f64);

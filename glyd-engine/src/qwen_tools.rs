@@ -36,7 +36,12 @@ fn chat(url: &str, content: &str, max_tokens: usize) -> Result<(f64, f64, u64, u
             made = u.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0);
             prompt = u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
         }
-        let wrote = v.get("choices").and_then(Value::as_array).unwrap_or(&[]).iter().any(|c| c.get("delta").and_then(|d| d.get("content")).and_then(Value::as_str).is_some_and(|t| !t.is_empty()));
+        let wrote = v
+            .get("choices")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .any(|c| c.get("delta").and_then(|d| d.get("content")).and_then(Value::as_str).is_some_and(|t| !t.is_empty()));
         if wrote && first.is_none() {
             first = Some(t0.elapsed().as_secs_f64());
         }
@@ -54,12 +59,17 @@ const FILLER: &str = "The history of the printing press is a story of many hands
 
 /// This computer's CPU, as /proc/cpuinfo names it.
 pub fn cpu_name() -> String {
-    std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|t| t.lines().find_map(|l| l.strip_prefix("model name").and_then(|r| r.split_once(':')).map(|x| x.1.trim().to_string()))).unwrap_or("?".into())
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("model name").and_then(|r| r.split_once(':')).map(|x| x.1.trim().to_string())))
+        .unwrap_or("?".into())
 }
 
 /// This computer's memory, in GiB.
 pub fn ram() -> String {
-    crate::os::meminfo().and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemTotal:").map(|r| r.trim().trim_end_matches("kB").trim().parse::<f64>().unwrap_or(0.0)))).map_or("?".into(), |kb| format!("{:.0} GiB", kb / 1048576.0))
+    crate::os::meminfo()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemTotal:").map(|r| r.trim().trim_end_matches("kB").trim().parse::<f64>().unwrap_or(0.0))))
+        .map_or("?".into(), |kb| format!("{:.0} GiB", kb / 1048576.0))
 }
 
 /// A server's speed: a warm-up, a short chat of 512 tokens, then a prompt of about each of `lengths` tokens summarised in up to 256 (asked for about 300 words, so the rate is over all 256): (test, prompt tokens, seconds to the first word, tokens a second after it,
@@ -67,7 +77,8 @@ pub fn ram() -> String {
 pub fn speed(url: &str, lengths: &[usize]) -> Result<Vec<(String, u64, f64, f64, u64)>> {
     chat(url, "Say hello.", 16)?; // (a warm-up)
     let mut rows = Vec::new();
-    let (first, rate, made, prompt) = chat(url, "Explain, step by step, how a hash table handles collisions, then compare open addressing with chaining.", 512)?;
+    let (first, rate, made, prompt) =
+        chat(url, "Explain, step by step, how a hash table handles collisions, then compare open addressing with chaining.", 512)?;
     println!("chat: {rate:.1} tokens/s");
     rows.push(("Chat (short prompt)".to_string(), prompt, first, rate, made));
     for &want in lengths {
@@ -158,12 +169,17 @@ impl Mcp {
                 cmd.process_group(0);
                 #[cfg(windows)]
                 cmd.creation_flags(0x200);
-                let mut child = cmd.stdout(f.try_clone().map_err(|e| e.to_string())?).stderr(f).stdin(std::process::Stdio::null()).spawn().map_err(|e| e.to_string())?;
+                let mut child =
+                    cmd.stdout(f.try_clone().map_err(|e| e.to_string())?).stderr(f).stdin(std::process::Stdio::null()).spawn().map_err(|e| e.to_string())?;
                 let _ = std::fs::write(&pidfile, child.id().to_string());
                 for _ in 0..600 {
                     if self.healthy() {
                         // (the server answers while the model loads: wait for it to be ready)
-                        let ready = ureq::get(format!("{url}/v1/glyd/status")).call().ok().and_then(|mut r| r.body_mut().read_to_string().ok()).is_some_and(|t| !t.contains("\"loading\""));
+                        let ready = ureq::get(format!("{url}/v1/glyd/status"))
+                            .call()
+                            .ok()
+                            .and_then(|mut r| r.body_mut().read_to_string().ok())
+                            .is_some_and(|t| !t.contains("\"loading\""));
                         if ready {
                             return Ok(format!("started at {url}"));
                         }
@@ -195,7 +211,14 @@ impl Mcp {
                 let mut text = String::new();
                 post(&format!("{url}/v1/chat/completions"), &body).map_err(|e| e.0)?.read_to_string(&mut text).map_err(|e| e.to_string())?;
                 let v = json::parse(&text)?;
-                v.get("choices").and_then(Value::as_array).and_then(|c| c.first()).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(Value::as_str).map(str::to_string).ok_or(text)
+                v.get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|c| c.first())
+                    .and_then(|c| c.get("message"))
+                    .and_then(|m| m.get("content"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or(text)
             }
             _ => Err(format!("no tool {name}")),
         }

@@ -106,14 +106,22 @@ pub(crate) enum CtxSpec {
     Aux(u8),
     /// A bf16 mantissa: the mantissa before (halved), if `prev`, times 8, and the exponent's
     /// distance from `emode` (0 to 6), if `exp`.
-    Bf16 { emode: u8, prev: bool, exp: bool },
+    Bf16 {
+        emode: u8,
+        prev: bool,
+        exp: bool,
+    },
     /// Q8_0's codes: whether a code of the extreme magnitude (127) has come in this block of 32.
     Q8Max,
     /// A quantiser puts the extremes (the codes 0 and 15) of every group of `period` weights in
     /// it: bytes of two 4-bit codes, whether each of them has come yet (`period` bytes, 16 or 32).
     Nibbles(u8),
     /// The same for codes of one a symbol: `period` symbols to a group, the codes `lo` and `hi`.
-    Extremes { period: u8, lo: u8, hi: u8 },
+    Extremes {
+        period: u8,
+        lo: u8,
+        hi: u8,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,11 +202,15 @@ pub(crate) fn layout(spec: &Spec) -> Option<Vec<StreamSpec>> {
         }
         Kind::Q8_0 => {
             scale16(&mut v);
-            v.push(st(QS, 32, match spec.variant {
-                1 => CtxSpec::Aux(5),
-                2 => CtxSpec::Q8Max,
-                _ => CtxSpec::None,
-            }));
+            v.push(st(
+                QS,
+                32,
+                match spec.variant {
+                    1 => CtxSpec::Aux(5),
+                    2 => CtxSpec::Q8Max,
+                    _ => CtxSpec::None,
+                },
+            ));
         }
         Kind::Q4_0 | Kind::Iq4Nl => {
             scale16(&mut v);

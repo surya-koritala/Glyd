@@ -55,18 +55,53 @@ fn main() {
         child(&args[2], &args[3], args[4].parse().unwrap(), args[5].parse().unwrap());
         return;
     }
-    let mut o = Opts { threads: 1, repeats: 3, slow_repeats: 1, out: "bench_suite.jsonl".into(), large: false, small: false, codecs: Vec::new(), files: Vec::new(), max_bytes: usize::MAX, dir: "corpus/bench".into() };
+    let mut o = Opts {
+        threads: 1,
+        repeats: 3,
+        slow_repeats: 1,
+        out: "bench_suite.jsonl".into(),
+        large: false,
+        small: false,
+        codecs: Vec::new(),
+        files: Vec::new(),
+        max_bytes: usize::MAX,
+        dir: "corpus/bench".into(),
+    };
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--threads" => { o.threads = args[i + 1].parse().unwrap(); i += 1; }
-            "--repeats" => { o.repeats = args[i + 1].parse().unwrap(); i += 1; }
-            "--slow-repeats" => { o.slow_repeats = args[i + 1].parse().unwrap(); i += 1; }
-            "--out" => { o.out = args[i + 1].clone(); i += 1; }
-            "--codecs" => { o.codecs = args[i + 1].split(',').map(String::from).collect(); i += 1; }
-            "--files" => { o.files = args[i + 1].split(',').map(String::from).collect(); i += 1; }
-            "--max-bytes" => { o.max_bytes = args[i + 1].parse().unwrap(); i += 1; }
-            "--dir" => { o.dir = args[i + 1].clone(); i += 1; }
+            "--threads" => {
+                o.threads = args[i + 1].parse().unwrap();
+                i += 1;
+            }
+            "--repeats" => {
+                o.repeats = args[i + 1].parse().unwrap();
+                i += 1;
+            }
+            "--slow-repeats" => {
+                o.slow_repeats = args[i + 1].parse().unwrap();
+                i += 1;
+            }
+            "--out" => {
+                o.out = args[i + 1].clone();
+                i += 1;
+            }
+            "--codecs" => {
+                o.codecs = args[i + 1].split(',').map(String::from).collect();
+                i += 1;
+            }
+            "--files" => {
+                o.files = args[i + 1].split(',').map(String::from).collect();
+                i += 1;
+            }
+            "--max-bytes" => {
+                o.max_bytes = args[i + 1].parse().unwrap();
+                i += 1;
+            }
+            "--dir" => {
+                o.dir = args[i + 1].clone();
+                i += 1;
+            }
             "--large" => o.large = true,
             "--small" => o.small = true,
             a => panic!("unknown argument {a}"),
@@ -93,13 +128,26 @@ fn main() {
 
 fn machine() -> String {
     let cpu = if cfg!(target_os = "macos") {
-        std::process::Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     } else {
-        std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|s| s.lines().find(|l| l.starts_with("model name")).map(|l| l.split(':').nth(1).unwrap_or("").trim().to_string()))
+        std::fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|s| s.lines().find(|l| l.starts_with("model name")).map(|l| l.split(':').nth(1).unwrap_or("").trim().to_string()))
     }
     .unwrap_or_else(|| "unknown".into());
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
-    format!("\"cpu\":\"{}\",\"cores\":{},\"arch\":\"{}\",\"os\":\"{}\",\"date\":\"{}\"", cpu.replace('"', ""), cores, std::env::consts::ARCH, std::env::consts::OS, date())
+    format!(
+        "\"cpu\":\"{}\",\"cores\":{},\"arch\":\"{}\",\"os\":\"{}\",\"date\":\"{}\"",
+        cpu.replace('"', ""),
+        cores,
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        date()
+    )
 }
 
 fn date() -> String {
@@ -116,13 +164,25 @@ struct Codec {
 }
 
 fn glyd_default(input: &[u8], threads: usize, out: &mut Vec<u8>) {
-    if threads > 1 { glyd::compress_parallel_into(input, out) } else { glyd::compress_into(input, out) }
+    if threads > 1 {
+        glyd::compress_parallel_into(input, out)
+    } else {
+        glyd::compress_into(input, out)
+    }
 }
 fn glyd_max(input: &[u8], threads: usize, out: &mut Vec<u8>) {
-    if threads > 1 { glyd::compress_parallel_into_max(input, out) } else { glyd::compress_into_max(input, out) }
+    if threads > 1 {
+        glyd::compress_parallel_into_max(input, out)
+    } else {
+        glyd::compress_into_max(input, out)
+    }
 }
 fn glyd_ultra(input: &[u8], threads: usize, out: &mut Vec<u8>) {
-    if threads > 1 { glyd::compress_parallel_into_ultra(input, out) } else { glyd::compress_into_ultra(input, out) }
+    if threads > 1 {
+        glyd::compress_parallel_into_ultra(input, out)
+    } else {
+        glyd::compress_into_ultra(input, out)
+    }
 }
 // Record mode runs its units in parallel itself; the level inside a unit
 // is sequential (the unit is the parallel granule and the window).
@@ -219,7 +279,13 @@ fn bench_files(o: &Opts) -> Vec<String> {
     if !o.files.is_empty() {
         return o.files.clone();
     }
-    let mut v: Vec<String> = std::fs::read_dir(&o.dir).unwrap_or_else(|e| panic!("{}: {e} (run scripts/download_bench_corpus.sh)", o.dir)).filter_map(|e| e.ok()).filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false)).map(|e| e.path().to_string_lossy().to_string()).filter(|p| !p.ends_with(".part")).collect();
+    let mut v: Vec<String> = std::fs::read_dir(&o.dir)
+        .unwrap_or_else(|e| panic!("{}: {e} (run scripts/download_bench_corpus.sh)", o.dir))
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|e| e.path().to_string_lossy().to_string())
+        .filter(|p| !p.ends_with(".part"))
+        .collect();
     v.sort();
     v
 }
@@ -261,7 +327,14 @@ fn large(o: &Opts, out: &mut std::fs::File) {
             let row = format!("{{\"kind\":\"large\",\"file\":\"{name}\",\"bytes\":{},\"codec\":\"{}\",\"threads\":{},\"compressed\":{},\"ratio\":{:.4},\"compress_s\":{:.4},\"compress_min_s\":{:.4},\"decompress_s\":{:.4},\"decompress_min_s\":{:.4},\"compress_mb_s\":{:.1},\"decompress_mb_s\":{:.1},\"peak_rss_bytes_64mb\":{},\"repeats\":{},\"verified\":true}}",
                 input.len(), c.name, o.threads, comp.len(), input.len() as f64 / comp.len() as f64, cmed, ct[0], dmed, dt[0], input.len() as f64 / cmed / 1e6, input.len() as f64 / dmed / 1e6, rss, repeats);
             writeln!(out, "{row}").unwrap();
-            eprintln!("  {:<13} ratio {:>7.3}  comp {:>8.1} MB/s  decomp {:>8.1} MB/s  peak rss {:>6} MB", c.name, input.len() as f64 / comp.len() as f64, input.len() as f64 / cmed / 1e6, input.len() as f64 / dmed / 1e6, rss >> 20);
+            eprintln!(
+                "  {:<13} ratio {:>7.3}  comp {:>8.1} MB/s  decomp {:>8.1} MB/s  peak rss {:>6} MB",
+                c.name,
+                input.len() as f64 / comp.len() as f64,
+                input.len() as f64 / cmed / 1e6,
+                input.len() as f64 / dmed / 1e6,
+                rss >> 20
+            );
             let t = &mut totals[ci];
             t.1 += input.len();
             t.2 += comp.len();
@@ -272,7 +345,14 @@ fn large(o: &Opts, out: &mut std::fs::File) {
     eprintln!("\nlarge files, {} threads, {} bytes in:", o.threads, totals.first().map(|t| t.1).unwrap_or(0));
     for (name, raw, comp, cs, ds) in &totals {
         if *raw > 0 {
-            eprintln!("  {:<13} ratio {:>7.3}  compressed {:>12} B  compress {:>8.1} MB/s  decompress {:>8.1} MB/s", name, *raw as f64 / *comp as f64, comp, *raw as f64 / cs / 1e6, *raw as f64 / ds / 1e6);
+            eprintln!(
+                "  {:<13} ratio {:>7.3}  compressed {:>12} B  compress {:>8.1} MB/s  decompress {:>8.1} MB/s",
+                name,
+                *raw as f64 / *comp as f64,
+                comp,
+                *raw as f64 / cs / 1e6,
+                *raw as f64 / ds / 1e6
+            );
             writeln!(out, "{{\"kind\":\"large-total\",\"codec\":\"{name}\",\"threads\":{},\"bytes\":{raw},\"compressed\":{comp},\"compress_s\":{cs:.4},\"decompress_s\":{ds:.4}}}", o.threads).unwrap();
         }
     }
@@ -314,7 +394,11 @@ fn max_rss() -> u64 {
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
     // ru_maxrss is bytes on macOS, kilobytes elsewhere.
-    if cfg!(target_os = "macos") { ru.ru_maxrss as u64 } else { ru.ru_maxrss as u64 * 1024 }
+    if cfg!(target_os = "macos") {
+        ru.ru_maxrss as u64
+    } else {
+        ru.ru_maxrss as u64 * 1024
+    }
 }
 
 // ----------------------------------------------------------- small objects
@@ -358,7 +442,10 @@ fn small_sets(o: &Opts) -> Vec<SmallSet> {
         }
         v
     };
-    for (label, file, train) in [("nasa access log", "nasa-access-jul95.log", "train/nasa-access-aug95.log"), ("wikipedia pageviews", "pageviews-20240115-10.log", "train/pageviews-20240114-10.log")] {
+    for (label, file, train) in [
+        ("nasa access log", "nasa-access-jul95.log", "train/nasa-access-aug95.log"),
+        ("wikipedia pageviews", "pageviews-20240115-10.log", "train/pageviews-20240114-10.log"),
+    ] {
         let (f, t) = (format!("{dir}/{file}"), format!("{dir}/{train}"));
         if std::path::Path::new(&f).exists() && std::path::Path::new(&t).exists() {
             for size in [1024usize, 4096] {
@@ -421,15 +508,39 @@ fn small(o: &Opts, out: &mut std::fs::File) {
         };
         // Glyd --max + Dict
         if want("glyd-max") {
-            let (cl, comp_total) = latencies(&set.objects, o.repeats, |x| { buf.clear(); glyd::compress_with_dict(&gdict, x, &mut buf); buf.len() });
-            let comp: Vec<Vec<u8>> = set.objects.iter().map(|x| { let mut b = Vec::new(); glyd::compress_with_dict(&gdict, x, &mut b); b }).collect();
+            let (cl, comp_total) = latencies(&set.objects, o.repeats, |x| {
+                buf.clear();
+                glyd::compress_with_dict(&gdict, x, &mut buf);
+                buf.len()
+            });
+            let comp: Vec<Vec<u8>> = set
+                .objects
+                .iter()
+                .map(|x| {
+                    let mut b = Vec::new();
+                    glyd::compress_with_dict(&gdict, x, &mut b);
+                    b
+                })
+                .collect();
             check("glyd-max", &comp, &mut |c, d| glyd::decompress_with_dict_into(&gdict, c, d).unwrap());
             let (dl, _) = latencies(&comp, o.repeats, |c| glyd::decompress_with_dict_into(&gdict, c, &mut dst).unwrap());
             rows.push(("glyd-max+dict".into(), comp_total, gdict_bytes, cl, dl));
         }
         if want("glyd-ultra") {
-            let (cl, comp_total) = latencies(&set.objects, 1, |x| { buf.clear(); glyd::compress_with_dict_ultra(&gdict, x, &mut buf); buf.len() });
-            let comp: Vec<Vec<u8>> = set.objects.iter().map(|x| { let mut b = Vec::new(); glyd::compress_with_dict_ultra(&gdict, x, &mut b); b }).collect();
+            let (cl, comp_total) = latencies(&set.objects, 1, |x| {
+                buf.clear();
+                glyd::compress_with_dict_ultra(&gdict, x, &mut buf);
+                buf.len()
+            });
+            let comp: Vec<Vec<u8>> = set
+                .objects
+                .iter()
+                .map(|x| {
+                    let mut b = Vec::new();
+                    glyd::compress_with_dict_ultra(&gdict, x, &mut b);
+                    b
+                })
+                .collect();
             check("glyd-ultra", &comp, &mut |c, d| glyd::decompress_with_dict_into(&gdict, c, d).unwrap());
             let (dl, _) = latencies(&comp, o.repeats, |c| glyd::decompress_with_dict_into(&gdict, c, &mut dst).unwrap());
             rows.push(("glyd-ultra+dict".into(), comp_total, gdict_bytes, cl, dl));
@@ -441,14 +552,21 @@ fn small(o: &Opts, out: &mut std::fs::File) {
             let mut zc = zstd::bulk::Compressor::with_dictionary(level, &zdict).unwrap();
             let mut zd = zstd::bulk::Decompressor::with_dictionary(&zdict).unwrap();
             let reps = if level == 19 { 1 } else { o.repeats };
-            let (cl, comp_total) = latencies(&set.objects, reps, |x| { buf.clear(); zc.compress_to_buffer(x, &mut buf).unwrap() });
+            let (cl, comp_total) = latencies(&set.objects, reps, |x| {
+                buf.clear();
+                zc.compress_to_buffer(x, &mut buf).unwrap()
+            });
             let comp: Vec<Vec<u8>> = set.objects.iter().map(|x| zc.compress(x).unwrap()).collect();
             check(name, &comp, &mut |c, d| zd.decompress_to_buffer(c, d).unwrap());
             let (dl, _) = latencies(&comp, o.repeats, |c| zd.decompress_to_buffer(c, &mut dst[..]).unwrap());
             rows.push((format!("{name}+dict"), comp_total, zdict.len(), cl, dl));
         }
         if want("lz4") {
-            let (cl, comp_total) = latencies(&set.objects, o.repeats, |x| { buf.clear(); buf.resize(lz4_flex::block::get_maximum_output_size(x.len()), 0); lz4_flex::block::compress_into_with_dict(x, &mut buf, &lz4_dict).unwrap() });
+            let (cl, comp_total) = latencies(&set.objects, o.repeats, |x| {
+                buf.clear();
+                buf.resize(lz4_flex::block::get_maximum_output_size(x.len()), 0);
+                lz4_flex::block::compress_into_with_dict(x, &mut buf, &lz4_dict).unwrap()
+            });
             let comp: Vec<Vec<u8>> = set.objects.iter().map(|x| lz4_flex::block::compress_with_dict(x, &lz4_dict)).collect();
             check("lz4", &comp, &mut |c, d| lz4_flex::block::decompress_into_with_dict(c, d, &lz4_dict).unwrap());
             let (dl, _) = latencies(&comp, o.repeats, |c| lz4_flex::block::decompress_into_with_dict(c, &mut dst, &lz4_dict).unwrap());
@@ -458,7 +576,19 @@ fn small(o: &Opts, out: &mut std::fs::File) {
         }
         eprintln!("  {:<16} {:>8} {:>10} {:>9}  {:>26}  {:>26}", "codec", "ratio", "bytes", "+dict", "compress us p50/p90/p99", "decompress us p50/p90/p99");
         for (name, comp, dict, cl, dl) in &rows {
-            eprintln!("  {:<16} {:>8.3} {:>10} {:>9}  {:>8.2}/{:>7.2}/{:>7.2}  {:>8.2}/{:>7.2}/{:>7.2}", name, raw as f64 / *comp as f64, comp, comp + dict, cl[0], cl[1], cl[2], dl[0], dl[1], dl[2]);
+            eprintln!(
+                "  {:<16} {:>8.3} {:>10} {:>9}  {:>8.2}/{:>7.2}/{:>7.2}  {:>8.2}/{:>7.2}/{:>7.2}",
+                name,
+                raw as f64 / *comp as f64,
+                comp,
+                comp + dict,
+                cl[0],
+                cl[1],
+                cl[2],
+                dl[0],
+                dl[1],
+                dl[2]
+            );
             writeln!(out, "{{\"kind\":\"small\",\"set\":\"{}\",\"objects\":{n},\"bytes\":{raw},\"codec\":\"{name}\",\"compressed\":{comp},\"dict_bytes\":{dict},\"ratio\":{:.4},\"compress_us_p50\":{:.3},\"compress_us_p90\":{:.3},\"compress_us_p99\":{:.3},\"compress_us_mean\":{:.3},\"decompress_us_p50\":{:.3},\"decompress_us_p90\":{:.3},\"decompress_us_p99\":{:.3},\"decompress_us_mean\":{:.3},\"verified\":true}}",
                 set.name, raw as f64 / *comp as f64, cl[0], cl[1], cl[2], cl[3], dl[0], dl[1], dl[2], dl[3]).unwrap();
         }

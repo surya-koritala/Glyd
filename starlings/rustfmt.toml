@@ -1,0 +1,1 @@
+# rustfmt's defaults: this workspace's own style (without this file rustfmt would read the root's rustfmt.toml).

@@ -21,7 +21,12 @@ impl Fp4View<'_> {
     pub fn is_valid(&self) -> bool {
         let (rbs, ks) = (self.rows / 64, self.cols / 16);
         let scales = if self.packed { rbs * (64 + ks * 8) } else { rbs * ks / 2 * 64 };
-        self.rows > 0 && self.rows % 64 == 0 && self.cols > 0 && self.cols % 32 == 0 && self.data.len() >= rbs * ks * INT4_STEP_BYTES && self.blocks.len() >= scales
+        self.rows > 0
+            && self.rows % 64 == 0
+            && self.cols > 0
+            && self.cols % 32 == 0
+            && self.data.len() >= rbs * ks * INT4_STEP_BYTES
+            && self.blocks.len() >= scales
     }
 
     /// Row r's scale for step k: 2^(e - 127) of its E8M0 byte.
@@ -159,7 +164,18 @@ unsafe fn x_vectors(x: &[f32], ks: usize) -> Vec<[std::arch::x86_64::__m256; 4]>
     (0..ks)
         .map(|k| {
             let xs = &x[16 * k..16 * k + 16];
-            let xp = |jh: usize, h: usize| _mm256_setr_ps(xs[8 * jh + h], xs[8 * jh + 2 + h], xs[8 * jh + 4 + h], xs[8 * jh + 6 + h], xs[8 * jh + h], xs[8 * jh + 2 + h], xs[8 * jh + 4 + h], xs[8 * jh + 6 + h]);
+            let xp = |jh: usize, h: usize| {
+                _mm256_setr_ps(
+                    xs[8 * jh + h],
+                    xs[8 * jh + 2 + h],
+                    xs[8 * jh + 4 + h],
+                    xs[8 * jh + 6 + h],
+                    xs[8 * jh + h],
+                    xs[8 * jh + 2 + h],
+                    xs[8 * jh + 4 + h],
+                    xs[8 * jh + 6 + h],
+                )
+            };
             [xp(0, 0), xp(0, 1), xp(1, 0), xp(1, 1)]
         })
         .collect()
@@ -212,14 +228,23 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
     let inter = two / 2;
     for (p, pair) in pairs.iter().enumerate() {
         let e = pair.expert;
-        if !e.up.is_valid() || !e.down.is_valid() || (e.up.rows, e.up.cols, e.down.rows, e.down.cols) != (two, latent, latent, inter) || inter % 64 != 0 || (pair.token + 1) * latent > z.len() {
-            return err(format!("pair {p}: an expert of {} x {} and {} x {} for token {}, where {two} x {latent}, {latent} x {inter} and rows of z are wanted", e.up.rows, e.up.cols, e.down.rows, e.down.cols, pair.token));
+        if !e.up.is_valid()
+            || !e.down.is_valid()
+            || (e.up.rows, e.up.cols, e.down.rows, e.down.cols) != (two, latent, latent, inter)
+            || inter % 64 != 0
+            || (pair.token + 1) * latent > z.len()
+        {
+            return err(format!(
+                "pair {p}: an expert of {} x {} and {} x {} for token {}, where {two} x {latent}, {latent} x {inter} and rows of z are wanted",
+                e.up.rows, e.up.cols, e.down.rows, e.down.cols, pair.token
+            ));
         }
     }
     if out.len() != pairs.len() * latent {
         return err(format!("{} values for the host's sums, where {} pairs of {latent} are wanted", out.len(), pairs.len()));
     }
-    let zf: Vec<Vec<f32>> = pairs.iter().map(|p| z[p.token * latent..(p.token + 1) * latent].iter().map(|&h| f32::from_bits((h as u32) << 16)).collect()).collect();
+    let zf: Vec<Vec<f32>> =
+        pairs.iter().map(|p| z[p.token * latent..(p.token + 1) * latent].iter().map(|&h| f32::from_bits((h as u32) << 16)).collect()).collect();
     // the first products: each pair's rows in blocks of 64
     let mut gu = vec![0f32; pairs.len() * two];
     let (gp, ub) = (Out(gu.as_mut_ptr()), two / 64);
@@ -229,7 +254,8 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
         let y = unsafe { gp.part(p * two + 64 * b, 64) };
         rows(kernel, &pairs[p].expert.up, &zf[p], 64 * b, 64 * b + 64, y);
     });
-    let a: Vec<f32> = (0..pairs.len()).flat_map(|p| (0..inter).map(move |i| (p, i))).map(|(p, i)| situ(bf16(gu[p * two + i]), bf16(gu[p * two + inter + i]), act)).collect();
+    let a: Vec<f32> =
+        (0..pairs.len()).flat_map(|p| (0..inter).map(move |i| (p, i))).map(|(p, i)| situ(bf16(gu[p * two + i]), bf16(gu[p * two + inter + i]), act)).collect();
     // the second products
     let (op, db) = (Out(out.as_mut_ptr()), latent / 64);
     crate::cpu_experts::run(threads, pin, pairs.len() * db, &|item| {
@@ -250,7 +276,9 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
 /// (0 threads: all of them).
 #[cfg(feature = "dev")]
 pub fn bench(a: &crate::args::Args) -> Result<()> {
-    let list = |k: &str, d: &str| -> Result<Vec<usize>> { a.flag(k).unwrap_or(d).split(',').map(|x| x.trim().parse::<usize>().map_err(|_| crate::ffi::Error(format!("--{k} {x}: not a number")))).collect() };
+    let list = |k: &str, d: &str| -> Result<Vec<usize>> {
+        a.flag(k).unwrap_or(d).split(',').map(|x| x.trim().parse::<usize>().map_err(|_| crate::ffi::Error(format!("--{k} {x}: not a number")))).collect()
+    };
     let (pairs_l, threads_l, reps, pin) = (list("pairs", "1,3,16")?, list("threads", "8,32,64,0")?, a.num("reps", 20usize)?, a.has("pin"));
     let (latent, inter) = (3584, 3072);
     let most = pairs_l.iter().copied().max().unwrap_or(1);
@@ -277,7 +305,9 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
     println!("{:?} kernel, {} threads here, an expert {:.1} MB", kernel, std::thread::available_parallelism().map_or(1, |n| n.get()), bytes as f64 / 1e6);
     for &t in &threads_l {
         for &np in &pairs_l {
-            let pairs: Vec<Fp4Pair> = (0..np).map(|i| Fp4Pair { expert: Fp4Expert { up: view(&ups[i], 2 * inter, latent), down: view(&downs[i], latent, inter) }, token: 0, weight: 0.1 }).collect();
+            let pairs: Vec<Fp4Pair> = (0..np)
+                .map(|i| Fp4Pair { expert: Fp4Expert { up: view(&ups[i], 2 * inter, latent), down: view(&downs[i], latent, inter) }, token: 0, weight: 0.1 })
+                .collect();
             let mut out = vec![0f32; np * latent];
             let mut us: Vec<f64> = (0..reps)
                 .map(|_| {
@@ -345,7 +375,9 @@ mod tests {
             Fp4View { data: &p.data, blocks: &p.blocks, rows: r, cols: c, packed: true }
         }
         let z: Vec<u16> = (0..latent).map(|i| (bf16(((i * 13 % 29) as f32 - 14.0) / 64.0).to_bits() >> 16) as u16).collect();
-        let pairs: Vec<Fp4Pair> = (0..16).map(|i| Fp4Pair { expert: Fp4Expert { up: view(&ups[i], 2 * inter, latent), down: view(&downs[i], latent, inter) }, token: 0, weight: 0.1 }).collect();
+        let pairs: Vec<Fp4Pair> = (0..16)
+            .map(|i| Fp4Pair { expert: Fp4Expert { up: view(&ups[i], 2 * inter, latent), down: view(&downs[i], latent, inter) }, token: 0, weight: 0.1 })
+            .collect();
         let bytes = 16 * (ups[0].data.len() + ups[0].blocks.len() + downs[0].data.len() + downs[0].blocks.len());
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
         for k in Kernel::ALL.into_iter().filter(|k| k.runs_here()) {
@@ -355,7 +387,12 @@ mod tests {
                 experts(k, &z, &pairs[..if t == 1 { 2 } else { 16 }], &mut out[..if t == 1 { 2 } else { 16 } * latent], (4.0, 25.0), t, false).unwrap();
                 let s = t0.elapsed().as_secs_f64();
                 let n = if t == 1 { 2 } else { 16 };
-                println!("{k:?} on {t} threads: {n} experts in {:.2} ms, {:.2} ms an expert, {:.1} GB/s", s * 1e3, s * 1e3 / n as f64, (bytes / 16 * n) as f64 / s / 1e9);
+                println!(
+                    "{k:?} on {t} threads: {n} experts in {:.2} ms, {:.2} ms an expert, {:.1} GB/s",
+                    s * 1e3,
+                    s * 1e3 / n as f64,
+                    (bytes / 16 * n) as f64 / s / 1e9
+                );
             }
         }
     }
@@ -365,7 +402,10 @@ mod tests {
     fn a_pair_is_its_two_products_and_situ() {
         let (latent, inter) = (128, 64);
         let (up, down) = (random_pack(2 * inter, latent, true, 7), random_pack(latent, inter, true, 9));
-        let ex = Fp4Expert { up: Fp4View { data: &up.data, blocks: &up.blocks, rows: 2 * inter, cols: latent, packed: true }, down: Fp4View { data: &down.data, blocks: &down.blocks, rows: latent, cols: inter, packed: true } };
+        let ex = Fp4Expert {
+            up: Fp4View { data: &up.data, blocks: &up.blocks, rows: 2 * inter, cols: latent, packed: true },
+            down: Fp4View { data: &down.data, blocks: &down.blocks, rows: latent, cols: inter, packed: true },
+        };
         let z: Vec<u16> = (0..2 * latent).map(|i| (bf16(((i * 13 % 29) as f32 - 14.0) / 64.0).to_bits() >> 16) as u16).collect();
         let pairs = [Fp4Pair { expert: ex, token: 1, weight: 0.25 }, Fp4Pair { expert: ex, token: 0, weight: 0.5 }];
         let act = (4.0, 25.0);

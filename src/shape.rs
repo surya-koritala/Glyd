@@ -291,14 +291,27 @@ impl ShapeDict {
                 }
             }
         }
-        m.columns.iter().zip(&per_col).map(|(c, vals)| { let mut out = Vec::new(); encode_values(input, c, vals, &mut out); out.len() }).collect()
+        m.columns
+            .iter()
+            .zip(&per_col)
+            .map(|(c, vals)| {
+                let mut out = Vec::new();
+                encode_values(input, c, vals, &mut out);
+                out.len()
+            })
+            .collect()
     }
 
     /// One line per column: its kind and seed count, for measurement.
     pub fn describe(&self) -> String {
         let mut s = format!("{} frames; columns:", self.model.frames.len());
         for (i, c) in self.model.columns.iter().enumerate() {
-            s += &format!(" {}:{}{}", i, ["text", "int", "time", "dec", "dict", "const"][c.kind as usize], if c.kind == C_DICT { format!("({})", c.seeds.len()) } else { String::new() });
+            s += &format!(
+                " {}:{}{}",
+                i,
+                ["text", "int", "time", "dec", "dict", "const"][c.kind as usize],
+                if c.kind == C_DICT { format!("({})", c.seeds.len()) } else { String::new() }
+            );
         }
         s
     }
@@ -394,7 +407,12 @@ impl ShapeDict {
             let param = *bytes.get(pos + 1)?;
             pos += 2;
             let k = varint(&mut pos)? as usize;
-            if k > MAX_SEEDS || kind > C_CONST || (kind == C_CONST && k != 1) || (kind == C_TIME && param as usize >= record::DATE_PATTERNS.len()) || (kind == C_DEC && param > 18) {
+            if k > MAX_SEEDS
+                || kind > C_CONST
+                || (kind == C_CONST && k != 1)
+                || (kind == C_TIME && param as usize >= record::DATE_PATTERNS.len())
+                || (kind == C_DEC && param > 18)
+            {
                 return None;
             }
             let mut seeds = Vec::with_capacity(k);
@@ -509,7 +527,6 @@ impl Model {
         }
         Ok(out)
     }
-
 }
 
 /// A canonical integer of up to 19 digits (record mode stops at 18):
@@ -992,7 +1009,19 @@ mod tests {
             x ^= x >> 7;
             x ^= x << 17;
             t += x % 7;
-            v.extend_from_slice(format!("host{},{},/item/{}/page{}.html,{},{}.{:02}\n", x % 40, t, (x >> 8) % 5000, (x >> 20) % 9, if x % 11 == 0 { 404 } else { 200 }, (x >> 30) % 1000, (x >> 40) % 100).as_bytes());
+            v.extend_from_slice(
+                format!(
+                    "host{},{},/item/{}/page{}.html,{},{}.{:02}\n",
+                    x % 40,
+                    t,
+                    (x >> 8) % 5000,
+                    (x >> 20) % 9,
+                    if x % 11 == 0 { 404 } else { 200 },
+                    (x >> 30) % 1000,
+                    (x >> 40) % 100
+                )
+                .as_bytes(),
+            );
         }
         v
     }
@@ -1029,7 +1058,9 @@ mod tests {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
-            json.extend_from_slice(format!("{{\"id\": {}, \"host\": \"h{}\", \"ok\": {}, \"v\": {}.{}}}\n", i * 3, x % 50, x % 3 == 0, x % 100, x % 10).as_bytes());
+            json.extend_from_slice(
+                format!("{{\"id\": {}, \"host\": \"h{}\", \"ok\": {}, \"v\": {}.{}}}\n", i * 3, x % 50, x % 3 == 0, x % 100, x % 10).as_bytes(),
+            );
             match x % 3 {
                 0 => log.extend_from_slice(format!("081109 {:06} {} INFO dfs.DataNode$DataXceiver: Receiving block blk_-{} src: /10.250.{}.{}:{}\n", i, x % 200, 1000000000000000000 + (x >> 4) % 1000, x % 256, x % 200, x % 65536).as_bytes()),
                 1 => log.extend_from_slice(format!("081109 {:06} {} INFO dfs.DataNode$PacketResponder: PacketResponder {} for block blk_{} terminating\n", i, x % 200, x % 3, 1000000000000000000 + (x >> 4) % 1000).as_bytes()),

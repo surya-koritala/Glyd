@@ -3,10 +3,10 @@
 //! goes on from there) and is checked by size and, where the Hub gives it, by SHA-256. The token (HF_TOKEN, or the file `hf login` wrote) goes to the Hub's own host only, never to the
 //! storage a file redirects to.
 
+use crate::os::FileExt;
 use glyd_gpu::json::Value;
 use sha2::{Digest, Sha256};
 use std::io::Read;
-use crate::os::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -122,7 +122,11 @@ pub fn token() -> Option<String> {
         Some(p) => PathBuf::from(p),
         None => {
             let home = std::env::var_os("HF_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| {
-                std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| Path::new(&crate::os::home()).join(".cache")).join("huggingface")
+                std::env::var_os("XDG_CACHE_HOME")
+                    .filter(|v| !v.is_empty())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| Path::new(&crate::os::home()).join(".cache"))
+                    .join("huggingface")
             });
             home.join("token")
         }
@@ -192,7 +196,13 @@ impl Hub {
     /// The Hub as the environment names it (HF_ENDPOINT, the token, the cache); `GLYD_DOWNLOAD_THREADS` connections for a large file (8); GLYD_IPV4=1 for IPv4 alone.
     pub fn from_env() -> Hub {
         let threads = crate::tune!("GLYD_DOWNLOAD_THREADS").and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(8usize);
-        let hub = Hub::new(&std::env::var("HF_ENDPOINT").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "https://huggingface.co".to_string()), token(), hub_cache(), RANGE, threads);
+        let hub = Hub::new(
+            &std::env::var("HF_ENDPOINT").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "https://huggingface.co".to_string()),
+            token(),
+            hub_cache(),
+            RANGE,
+            threads,
+        );
         hub.v4.store(env_on("GLYD_IPV4"), Ordering::Relaxed);
         hub
     }
@@ -305,10 +315,18 @@ impl Hub {
             let lfs = f.get("lfs");
             let sha256 = lfs.and_then(|l| l.get("sha256")).and_then(Value::as_str).map(str::to_string);
             let size = lfs.and_then(|l| l.get("size")).and_then(Value::as_u64).or_else(|| f.get("size").and_then(Value::as_u64)).unwrap_or(0);
-            let blob = sha256.clone().or_else(|| f.get("blobId").and_then(Value::as_str).map(str::to_string)).ok_or_else(|| other(format!("{repo}: {path} has no id")))?;
+            let blob = sha256
+                .clone()
+                .or_else(|| f.get("blobId").and_then(Value::as_str).map(str::to_string))
+                .ok_or_else(|| other(format!("{repo}: {path} has no id")))?;
             files.push(Entry { path: path.to_string(), size, blob, sha256 });
         }
-        let dtypes = v.get("safetensors").and_then(|s| s.get("parameters")).and_then(Value::as_object).map(|o| o.iter().filter_map(|(k, n)| n.as_u64().map(|n| (k.clone(), n))).collect()).unwrap_or_default();
+        let dtypes = v
+            .get("safetensors")
+            .and_then(|s| s.get("parameters"))
+            .and_then(Value::as_object)
+            .map(|o| o.iter().filter_map(|(k, n)| n.as_u64().map(|n| (k.clone(), n))).collect())
+            .unwrap_or_default();
         Ok(Remote { repo: repo.to_string(), revision: revision.to_string(), commit, files, dtypes })
     }
 
@@ -401,7 +419,7 @@ impl Hub {
         format!("{}/{}/resolve/{}/{path}", self.endpoint, remote.repo, remote.commit)
     }
 
-    #[allow(clippy::chunks_exact_to_as_chunks)] // (as_chunks needs a newer compiler than some machines have)
+    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)] // (as_chunks needs a newer compiler than some machines have)
     fn fetch_blob(&self, remote: &Remote, e: &Entry, blobs: &Path, done: &AtomicU64, total: u64, progress: &dyn Fn(u64, u64)) -> Res<PathBuf> {
         let blob = blobs.join(&e.blob);
         if std::fs::metadata(&blob).is_ok_and(|m| m.len() == e.size) {
@@ -465,7 +483,10 @@ impl Hub {
             if &got != want {
                 let _ = std::fs::remove_file(&part);
                 let _ = std::fs::remove_file(&map_path);
-                return Err(other(format!("{}: the download does not match the Hub's checksum (SHA-256 {got}, wanted {want}); it will be fetched again on the next run", e.path)));
+                return Err(other(format!(
+                    "{}: the download does not match the Hub's checksum (SHA-256 {got}, wanted {want}); it will be fetched again on the next run",
+                    e.path
+                )));
             }
         }
         std::fs::rename(&part, &blob).map_err(other)?;
@@ -505,7 +526,17 @@ impl Hub {
 
     /// Bytes `a .. a + len` of a file into `file` from offset `at` on; a failed try is made again (a new address for the storage where its was refused).
     #[allow(clippy::too_many_arguments)]
-    fn range_to(&self, remote: &Remote, e: &Entry, url: &Mutex<(String, std::time::Instant)>, file: &std::fs::File, a: u64, len: u64, at: u64, done: &AtomicU64) -> Res<()> {
+    fn range_to(
+        &self,
+        remote: &Remote,
+        e: &Entry,
+        url: &Mutex<(String, std::time::Instant)>,
+        file: &std::fs::File,
+        a: u64,
+        len: u64,
+        at: u64,
+        done: &AtomicU64,
+    ) -> Res<()> {
         let mut last = net("no try");
         for attempt in 0..TRIES {
             if attempt > 0 {
@@ -523,7 +554,13 @@ impl Hub {
                 let mut resp = self.get(&target, Some((a, a + len - 1)))?;
                 let s = resp.status().as_u16();
                 if !(s == 206 || (s == 200 && a == 0 && len == e.size)) {
-                    return Err(if matches!(s, 401 | 403) { HubError::Denied(s) } else if s == 200 { other("the server does not do ranges") } else { net(format!("{}: {s}", e.path)) });
+                    return Err(if matches!(s, 401 | 403) {
+                        HubError::Denied(s)
+                    } else if s == 200 {
+                        other("the server does not do ranges")
+                    } else {
+                        net(format!("{}: {s}", e.path))
+                    });
                 }
                 let mut r = resp.body_mut().as_reader();
                 let mut buf = vec![0u8; 1 << 20];
@@ -533,7 +570,8 @@ impl Hub {
                     if n == 0 {
                         return Err(net(format!("{}: the connection ended {} bytes short", e.path, len - got)));
                     }
-                    file.write_all_at(&buf[..n], at + got).map_err(|err| if err.raw_os_error() == Some(28) { other("the disk is full") } else { other(err) })?;
+                    file.write_all_at(&buf[..n], at + got)
+                        .map_err(|err| if err.raw_os_error() == Some(28) { other("the disk is full") } else { other(err) })?;
                     got += n as u64;
                     done.fetch_add(n as u64, Ordering::Relaxed);
                 }
@@ -572,7 +610,8 @@ impl Hub {
             if name == "__metadata__" {
                 continue;
             }
-            let (dtype, shape, off) = (t.get("dtype").and_then(Value::as_str), t.get("shape").and_then(Value::as_u64s), t.get("data_offsets").and_then(Value::as_u64s));
+            let (dtype, shape, off) =
+                (t.get("dtype").and_then(Value::as_str), t.get("shape").and_then(Value::as_u64s), t.get("data_offsets").and_then(Value::as_u64s));
             match (dtype, shape, off) {
                 (Some(d), Some(sh), Some(o)) if o.len() == 2 => out.push((name.clone(), d.to_string(), sh, o[0], o[1])),
                 _ => return Err(other(format!("{}: {name}: not a tensor's entry", e.path))),
@@ -603,7 +642,12 @@ impl Hub {
         let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
         let (mut at, mut parts) = (0u64, Vec::new());
         for (_, name, d, sh, _, len) in &ts {
-            parts.push(format!("\"{}\":{{\"dtype\":\"{d}\",\"shape\":[{}],\"data_offsets\":[{at},{}]}}", esc(name), sh.iter().map(u64::to_string).collect::<Vec<_>>().join(","), at + len));
+            parts.push(format!(
+                "\"{}\":{{\"dtype\":\"{d}\",\"shape\":[{}],\"data_offsets\":[{at},{}]}}",
+                esc(name),
+                sh.iter().map(u64::to_string).collect::<Vec<_>>().join(","),
+                at + len
+            ));
             at += len;
         }
         let mut h = format!("{{\"__metadata__\":{{\"format\":\"pt\"}},{}}}", parts.join(","));
@@ -629,7 +673,8 @@ impl Hub {
             }
             dst += t.5;
         }
-        let urls: Vec<Mutex<(String, std::time::Instant)>> = files.iter().map(|e| Ok(Mutex::new((self.resolve(remote, e)?, std::time::Instant::now())))).collect::<Res<_>>()?;
+        let urls: Vec<Mutex<(String, std::time::Instant)>> =
+            files.iter().map(|e| Ok(Mutex::new((self.resolve(remote, e)?, std::time::Instant::now())))).collect::<Res<_>>()?;
         let (next, done, failed) = (AtomicUsize::new(0), AtomicU64::new(0), Mutex::new(None::<HubError>));
         let work = || loop {
             let k = next.fetch_add(1, Ordering::SeqCst);
@@ -658,7 +703,12 @@ impl Hub {
 pub fn rate_cmd(a: &crate::args::Args) -> crate::ffi::Result<()> {
     let url = a.need(1, "URL")?.to_string();
     let (mb, buf) = (a.num("mb", 256u64)?, a.num("buf", 1024usize)? << 10);
-    let conns: Vec<usize> = a.flag("conns").unwrap_or("1,8").split(',').map(|x| x.trim().parse().map_err(|_| crate::ffi::Error(format!("--conns {x}: not a number")))).collect::<crate::ffi::Result<_>>()?;
+    let conns: Vec<usize> = a
+        .flag("conns")
+        .unwrap_or("1,8")
+        .split(',')
+        .map(|x| x.trim().parse().map_err(|_| crate::ffi::Error(format!("--conns {x}: not a number"))))
+        .collect::<crate::ffi::Result<_>>()?;
     let hub = Hub::from_env();
     for k in conns {
         let t0 = std::time::Instant::now();
@@ -686,7 +736,13 @@ pub fn rate_cmd(a: &crate::args::Args) -> crate::ffi::Result<()> {
         });
         let total: u64 = each.iter().map(|x| x.0).sum();
         let per: Vec<String> = each.iter().map(|(g, s)| format!("{:.1}", *g as f64 / s.max(1e-9) / 1e6)).collect();
-        println!("{k} connections: {:.0} MB in {:.1} s, {:.1} MB/s in all; each {} MB/s", total as f64 / 1e6, t0.elapsed().as_secs_f64(), total as f64 / t0.elapsed().as_secs_f64() / 1e6, per.join(", "));
+        println!(
+            "{k} connections: {:.0} MB in {:.1} s, {:.1} MB/s in all; each {} MB/s",
+            total as f64 / 1e6,
+            t0.elapsed().as_secs_f64(),
+            total as f64 / t0.elapsed().as_secs_f64() / 1e6,
+            per.join(", ")
+        );
     }
     Ok(())
 }
@@ -702,7 +758,13 @@ pub fn slice_cmd(a: &crate::args::Args) -> crate::ffi::Result<()> {
     let remote = hub.list(repo, rev)?;
     let cfg = glyd_gpu::json::parse(&hub.text(repo, &remote.commit, "config.json")?).map_err(|e| crate::ffi::Error(format!("config.json: {e}")))?;
     let names = hub.text(repo, &remote.commit, "model.safetensors.index.json").unwrap_or_default();
-    let prefix = a.flag("prefix").map(str::to_string).unwrap_or_else(|| if names.contains("\"model.language_model.") { "model.language_model.".into() } else { "model.".into() });
+    let prefix = a.flag("prefix").map(str::to_string).unwrap_or_else(|| {
+        if names.contains("\"model.language_model.") {
+            "model.language_model.".into()
+        } else {
+            "model.".into()
+        }
+    });
     let experts = a.flag("experts").map(|v| v.parse::<u64>().map_err(|_| crate::ffi::Error(format!("--experts {v}: a number")))).transpose()?;
     let take = |name: &str| -> bool {
         // (Kimi-K3's head is language_model.lm_head)
@@ -766,7 +828,13 @@ pub fn slice_cmd(a: &crate::args::Args) -> crate::ffi::Result<()> {
     let t0 = std::time::Instant::now();
     let (count, bytes) = hub.slice(&remote, &keep, out, &|d, t| eprint!("\r{:.1} of {:.1} GB", d as f64 / 1e9, t as f64 / 1e9))?;
     eprintln!();
-    println!("{repo}@{}: {count} tensors of its first {n} layers and the rest ({prefix}*, lm_head), {:.2} GB in {:.0} s, into {}", remote.commit, bytes as f64 / 1e9, t0.elapsed().as_secs_f64(), out.display());
+    println!(
+        "{repo}@{}: {count} tensors of its first {n} layers and the rest ({prefix}*, lm_head), {:.2} GB in {:.0} s, into {}",
+        remote.commit,
+        bytes as f64 / 1e9,
+        t0.elapsed().as_secs_f64(),
+        out.display()
+    );
     Ok(())
 }
 
@@ -781,7 +849,13 @@ pub fn wanted(remote: &Remote) -> Vec<Entry> {
         .filter(|e| {
             let top = !e.path.contains('/');
             let weight = e.path.ends_with(".safetensors") && top && (all_consolidated || !e.path.starts_with("consolidated"));
-            let small = top && !e.path.ends_with(".safetensors") && (e.path.ends_with(".json") || e.path.ends_with(".txt") || e.path.ends_with(".model") || e.path.ends_with(".jinja") || e.path.starts_with("tokenizer"));
+            let small = top
+                && !e.path.ends_with(".safetensors")
+                && (e.path.ends_with(".json")
+                    || e.path.ends_with(".txt")
+                    || e.path.ends_with(".model")
+                    || e.path.ends_with(".jinja")
+                    || e.path.starts_with("tokenizer"));
             // (a draft model a pre-packed repo carries in draft/: Gemma 4's "-assistant", which the engine drafts with)
             let draft = e.path.starts_with("draft/") && !e.path[6..].contains('/');
             weight || small || draft
@@ -968,7 +1042,11 @@ mod tests {
     fn mock() -> (Mock, Hub, PathBuf) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let files = vec![("config.json".to_string(), b"{\"a\": 1}".to_vec()), ("model.safetensors".to_string(), bytes_of(1, 10_000)), ("sub/tokenizer.json".to_string(), bytes_of(2, 900))];
+        let files = vec![
+            ("config.json".to_string(), b"{\"a\": 1}".to_vec()),
+            ("model.safetensors".to_string(), bytes_of(1, 10_000)),
+            ("sub/tokenizer.json".to_string(), bytes_of(2, 900)),
+        ];
         let m = Mock { port, log: Arc::new(Mutex::new(Vec::new())), files: Arc::new(files), corrupt: Arc::new(Mutex::new(false)) };
         let (log, files, corrupt) = (m.log.clone(), m.files.clone(), m.corrupt.clone());
         std::thread::spawn(move || {
@@ -1008,7 +1086,14 @@ mod tests {
             // the token went to the Hub's host and not to the storage; the file came as ranges
             assert!(log.iter().filter(|(p, _, _)| p.starts_with("/store/")).all(|(_, _, auth)| !auth));
             assert!(log.iter().filter(|(p, _, _)| p.starts_with("/api/") || p.contains("/resolve/")).all(|(_, _, auth)| *auth));
-            assert_eq!(log.iter().filter(|(p, r, _)| p == "/store/model.safetensors" && r.as_ref().is_some_and(|r| r.starts_with("bytes=")) && r.as_deref() != Some("bytes=0-0")).count(), 10);
+            assert_eq!(
+                log.iter()
+                    .filter(|(p, r, _)| p == "/store/model.safetensors"
+                        && r.as_ref().is_some_and(|r| r.starts_with("bytes="))
+                        && r.as_deref() != Some("bytes=0-0"))
+                    .count(),
+                10
+            );
         }
         // a second fetch asks for nothing
         let n = m.log.lock().unwrap().len();
@@ -1030,9 +1115,20 @@ mod tests {
         m.log.lock().unwrap().clear();
         let snap = hub.fetch(&remote, std::slice::from_ref(big), &|_, _| {}).unwrap();
         assert_eq!(std::fs::read(snap.join("model.safetensors")).unwrap(), m.files[1].1);
-        let asked: Vec<String> = m.log.lock().unwrap().iter().filter(|(p, _, _)| p == "/store/model.safetensors").filter_map(|(_, r, _)| r.clone()).filter(|r| r != "bytes=0-0").collect();
+        let asked: Vec<String> = m
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/store/model.safetensors")
+            .filter_map(|(_, r, _)| r.clone())
+            .filter(|r| r != "bytes=0-0")
+            .collect();
         assert_eq!(asked.len(), 6, "{asked:?}");
-        assert!(asked.iter().all(|r| !r.starts_with("bytes=0-") && !r.starts_with("bytes=1024-") && !r.starts_with("bytes=2048-") && !r.starts_with("bytes=3072-")), "{asked:?}");
+        assert!(
+            asked.iter().all(|r| !r.starts_with("bytes=0-") && !r.starts_with("bytes=1024-") && !r.starts_with("bytes=2048-") && !r.starts_with("bytes=3072-")),
+            "{asked:?}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
         // a file that does not match its checksum is not kept
         *m.corrupt.lock().unwrap() = true;
@@ -1047,7 +1143,9 @@ mod tests {
     #[test]
     fn a_failed_ipv6_request_is_made_again_over_ipv4_and_ipv4_stays() {
         let (m, mut hub, dir) = mock();
-        hub.agent = ureq::Agent::new_with_config(ureq::Agent::config_builder().ip_family(ureq::config::IpFamily::Ipv6Only).http_status_as_error(false).max_redirects(0).build());
+        hub.agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder().ip_family(ureq::config::IpFamily::Ipv6Only).http_status_as_error(false).max_redirects(0).build(),
+        );
         assert!(!hub.v4.load(Ordering::Relaxed));
         let remote = hub.list("org/model", "main").unwrap();
         assert!(hub.v4.load(Ordering::Relaxed), "a request that failed over the system's route and worked over IPv4 makes IPv4 the way");

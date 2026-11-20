@@ -71,7 +71,13 @@ pub fn rows_of_experts(tag: u32, experts: usize, rows: usize, cols: usize, data:
     let (ds, ss) = crate::moe::expert_strides(tag, rows, cols)?;
     let (ds, ss) = (ds as usize, ss as usize);
     if experts == 0 || cols % RUN != 0 || data.len() != experts * ds || scales.len() != experts * ss {
-        return err(format!("{experts} experts of {rows} x {cols} in the layout of tag {tag} take {} + {} bytes: {} + {} are given", experts * ds, experts * ss, data.len(), scales.len()));
+        return err(format!(
+            "{experts} experts of {rows} x {cols} in the layout of tag {tag} take {} + {} bytes: {} + {} are given",
+            experts * ds,
+            experts * ss,
+            data.len(),
+            scales.len()
+        ));
     }
     let bits = match tag {
         INT6_TAG => 6,
@@ -132,7 +138,13 @@ impl Rows {
         }
         let (stride, runs) = (row_stride(bits, cols), cols / RUN);
         if data.len() != rows * stride || scales.len() != rows * runs * 2 {
-            return err(format!("{rows} rows of {cols} at {bits} bits take {} + {} bytes: {} + {} are given", rows * stride, rows * runs * 2, data.len(), scales.len()));
+            return err(format!(
+                "{rows} rows of {cols} at {bits} bits take {} + {} bytes: {} + {} are given",
+                rows * stride,
+                rows * runs * 2,
+                data.len(),
+                scales.len()
+            ));
         }
         Ok(Rows { bits, rows, cols, data, scales })
     }
@@ -186,8 +198,18 @@ impl Rows {
             t => return err(format!("a pack of layout {t}: the kestrel, swift and wren layouts are read")),
         };
         let (rbs, ks, runs) = (rows / 64, cols / 16, cols / RUN);
-        if rows == 0 || !rows.is_multiple_of(64) || cols == 0 || !cols.is_multiple_of(RUN) || data.len() != rbs * ks * step_bytes || blocks.len() != rbs * ks / 2 * 128 {
-            return err(format!("a block pack of {rows} x {cols} with {} + {} bytes is not one of the kestrel, swift and wren layouts", data.len(), blocks.len()));
+        if rows == 0
+            || !rows.is_multiple_of(64)
+            || cols == 0
+            || !cols.is_multiple_of(RUN)
+            || data.len() != rbs * ks * step_bytes
+            || blocks.len() != rbs * ks / 2 * 128
+        {
+            return err(format!(
+                "a block pack of {rows} x {cols} with {} + {} bytes is not one of the kestrel, swift and wren layouts",
+                data.len(),
+                blocks.len()
+            ));
         }
         let (mut codes, mut scales) = (vec![0u8; rows * cols], vec![0u16; rows * runs]);
         let word = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
@@ -231,7 +253,12 @@ impl Rows {
 
     /// Whether the fields are a layout's (`new` makes sure of it; the fields are public, and the kernels read raw memory).
     pub fn is_valid(&self) -> bool {
-        (4..=6).contains(&self.bits) && self.rows > 0 && self.cols > 0 && self.cols.is_multiple_of(RUN) && self.data.len() == self.rows * self.stride() && self.scales.len() == self.rows * self.runs() * 2
+        (4..=6).contains(&self.bits)
+            && self.rows > 0
+            && self.cols > 0
+            && self.cols.is_multiple_of(RUN)
+            && self.data.len() == self.rows * self.stride()
+            && self.scales.len() == self.rows * self.runs() * 2
     }
 
     /// Runs in a row.
@@ -304,7 +331,12 @@ pub struct RowsView<'a> {
 impl RowsView<'_> {
     /// Whether the fields are a layout's (the kernels read raw memory).
     pub fn is_valid(&self) -> bool {
-        (4..=6).contains(&self.bits) && self.rows > 0 && self.cols > 0 && self.cols.is_multiple_of(RUN) && self.data.len() == self.rows * self.stride() && self.scales.len() == self.rows * self.runs() * 2
+        (4..=6).contains(&self.bits)
+            && self.rows > 0
+            && self.cols > 0
+            && self.cols.is_multiple_of(RUN)
+            && self.data.len() == self.rows * self.stride()
+            && self.scales.len() == self.rows * self.runs() * 2
     }
 
     /// Runs in a row.
@@ -347,7 +379,10 @@ impl ExpertView<'_> {
 impl Expert {
     pub fn new(up: Rows, down: Rows) -> Result<Expert> {
         if (up.rows, up.cols) != (down.rows, down.cols) {
-            return err(format!("an expert's up is {} x {} and its transposed down {} x {}: both are [neurons, hidden]", up.rows, up.cols, down.rows, down.cols));
+            return err(format!(
+                "an expert's up is {} x {} and its transposed down {} x {}: both are [neurons, hidden]",
+                up.rows, up.cols, down.rows, down.cols
+            ));
         }
         Ok(Expert { up, down })
     }
@@ -539,7 +574,12 @@ pub fn experts_views(kernel: Kernel, z: Z, pairs: &[PairView], out: &mut [f32], 
     for (p, pair) in pairs.iter().enumerate() {
         let e = pair.expert;
         if !e.up.is_valid() || !e.down.is_valid() || (e.up.rows, e.up.cols) != (e.down.rows, e.down.cols) || e.hidden() != hidden || pair.token >= tokens {
-            return err(format!("pair {p}: an expert of width {} and token {}, where {hidden} and 0 to {} are wanted", e.hidden(), pair.token, tokens.saturating_sub(1)));
+            return err(format!(
+                "pair {p}: an expert of width {} and token {}, where {hidden} and 0 to {} are wanted",
+                e.hidden(),
+                pair.token,
+                tokens.saturating_sub(1)
+            ));
         }
         if at[pair.token] == usize::MAX {
             at[pair.token] = used.len();
@@ -1013,7 +1053,16 @@ mod tests {
 
     #[test]
     fn rounding_to_bf16() {
-        for (x, want) in [(0x3F80_8000u32, 0x3F80_0000u32), (0x3F81_8000, 0x3F82_0000), (0x3F80_8001, 0x3F81_0000), (0xBF80_8000, 0xBF80_0000), (0x7F80_0000, 0x7F80_0000), (0x7F7F_FFFF, 0x7F80_0000), (0x0000_8000, 0), (0x0000_8001, 0x0001_0000)] {
+        for (x, want) in [
+            (0x3F80_8000u32, 0x3F80_0000u32),
+            (0x3F81_8000, 0x3F82_0000),
+            (0x3F80_8001, 0x3F81_0000),
+            (0xBF80_8000, 0xBF80_0000),
+            (0x7F80_0000, 0x7F80_0000),
+            (0x7F7F_FFFF, 0x7F80_0000),
+            (0x0000_8000, 0),
+            (0x0000_8001, 0x0001_0000),
+        ] {
             assert_eq!(bf16_round(f32::from_bits(x)).to_bits(), want, "{x:#x}");
         }
         assert!(bf16_round(f32::NAN).is_nan() && bf16_round(f32::from_bits(0x7F80_0001)).is_nan() && bf16_round(f32::from_bits(0xFFFF_FFFF)).is_nan());
@@ -1033,7 +1082,8 @@ mod tests {
     }
 
     fn make(bits: u32, rng: &mut Rng, inter: usize, hidden: usize, up_rows_on: Option<&[bool]>, down_rows_on: Option<&[bool]>) -> Made {
-        let (pu, pd) = (pack(bits, &weights(rng, inter, hidden, up_rows_on), inter, hidden), pack(bits, &weights(rng, inter, hidden, down_rows_on), inter, hidden));
+        let (pu, pd) =
+            (pack(bits, &weights(rng, inter, hidden, up_rows_on), inter, hidden), pack(bits, &weights(rng, inter, hidden, down_rows_on), inter, hidden));
         let f = |p: &Tiered| unpack(p).into_iter().map(|b| bf16_to_f32(b) as f64).collect();
         Made { up: f(&pu), down: f(&pd), expert: Expert::new(Rows::from_block(&pu).unwrap(), Rows::from_block(&pd).unwrap()).unwrap() }
     }
@@ -1252,7 +1302,8 @@ mod tests {
         let (n, rows, cols) = (5, 128, 96);
         for bits in 4..=6u32 {
             let packs: Vec<Tiered> = (0..n).map(|_| pack(bits, &weights(&mut rng, rows, cols, None), rows, cols)).collect();
-            let (data, scales): (Vec<u8>, Vec<u8>) = (packs.iter().flat_map(|p| p.data.clone()).collect(), packs.iter().flat_map(|p| p.blocks.clone()).collect());
+            let (data, scales): (Vec<u8>, Vec<u8>) =
+                (packs.iter().flat_map(|p| p.data.clone()).collect(), packs.iter().flat_map(|p| p.blocks.clone()).collect());
             let tag = packs[0].tiers[0] >> 24;
             let own: Vec<Rows> = packs.iter().map(|p| Rows::from_block(p).unwrap()).collect();
             for threads in [1, 2, 7, 0] {
@@ -1288,7 +1339,9 @@ mod tests {
         let made: Vec<Made> = (0..4).map(|e| make_sparse(4, &mut rng, inter, hidden, 0.05 + 0.25 * e as f32)).collect();
         let z: Vec<u16> = (0..3 * hidden).map(|_| bits_of(2.0 * (rng.f() - 0.1))).collect();
         // the experts' matrices end to end in one buffer each, as the cache's host memory holds them
-        let cat = |f: &dyn Fn(&Expert) -> &Rows| -> (Vec<u8>, Vec<u8>) { (made.iter().flat_map(|m| f(&m.expert).data.clone()).collect(), made.iter().flat_map(|m| f(&m.expert).scales.clone()).collect()) };
+        let cat = |f: &dyn Fn(&Expert) -> &Rows| -> (Vec<u8>, Vec<u8>) {
+            (made.iter().flat_map(|m| f(&m.expert).data.clone()).collect(), made.iter().flat_map(|m| f(&m.expert).scales.clone()).collect())
+        };
         let (ud, us) = cat(&|e| &e.up);
         let (dd, ds) = cat(&|e| &e.down);
         let rd = made[0].expert.up.data.len();
@@ -1299,7 +1352,11 @@ mod tests {
         let views: Vec<PairView> = (0..9)
             .map(|i| {
                 let e = (i * 5) % 4;
-                PairView { expert: ExpertView { up: view(&made[e].expert.up, &ud, &us, e), down: view(&made[e].expert.down, &dd, &ds, e) }, token: (i * 2) % 3, weight: 0.5 + 0.25 * i as f32 }
+                PairView {
+                    expert: ExpertView { up: view(&made[e].expert.up, &ud, &us, e), down: view(&made[e].expert.down, &dd, &ds, e) },
+                    token: (i * 2) % 3,
+                    weight: 0.5 + 0.25 * i as f32,
+                }
             })
             .collect();
         let owned: Vec<Pair> = views.iter().enumerate().map(|(i, v)| Pair { expert: &made[(i * 5) % 4].expert, token: v.token, weight: v.weight }).collect();

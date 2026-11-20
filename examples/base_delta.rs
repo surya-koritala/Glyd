@@ -15,5 +15,17 @@ fn main() {
     assert!(back == new, "round trip differs");
     let mut plain = Vec::new();
     glyd::compress_parallel_into_max(&new, &mut plain);
-    println!("{} -> {}: base {}: {} B ({:.1}x; plain --max {} B) compress {:.2} s ({:.0} MB/s) decompress {:.2} s ({:.0} MB/s), exact", a[1].rsplit('/').next().unwrap(), a[2].rsplit('/').next().unwrap(), if ultra { "ultra" } else { "max" }, c.len(), new.len() as f64 / c.len() as f64, plain.len(), ct, new.len() as f64 / ct / 1e6, dt, new.len() as f64 / dt / 1e6);
+    println!(
+        "{} -> {}: base {}: {} B ({:.1}x; plain --max {} B) compress {:.2} s ({:.0} MB/s) decompress {:.2} s ({:.0} MB/s), exact",
+        a[1].rsplit('/').next().unwrap(),
+        a[2].rsplit('/').next().unwrap(),
+        if ultra { "ultra" } else { "max" },
+        c.len(),
+        new.len() as f64 / c.len() as f64,
+        plain.len(),
+        ct,
+        new.len() as f64 / ct / 1e6,
+        dt,
+        new.len() as f64 / dt / 1e6
+    );
 }

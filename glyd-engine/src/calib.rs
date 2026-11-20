@@ -156,7 +156,18 @@ impl Cal<'_> {
                 _ => {
                     let layer_stage = self.stage.ptr + (l * self.stage_tokens * kvh * 256 * 2) as u64;
                     e.lib.kv_stage_put(&e.kv.geom, k, c as i64, v, qkv_w as i64, e.slots.ptr, n as i64, layer_stage, (self.stage_tokens / 16) as i64, s)?;
-                    e.kern.prefill_attn(s, e.qo.ptr, (heads * hd) as i32, layer_stage, e.attn.ptr, (heads * hd) as i32, n as i32, self.off as i32, heads as i32, kvh as i32)?;
+                    e.kern.prefill_attn(
+                        s,
+                        e.qo.ptr,
+                        (heads * hd) as i32,
+                        layer_stage,
+                        e.attn.ptr,
+                        (heads * hd) as i32,
+                        n as i32,
+                        self.off as i32,
+                        heads as i32,
+                        kvh as i32,
+                    )?;
                 }
             }
             match self.mode {
@@ -188,7 +199,19 @@ impl Cal<'_> {
                         let (j0, j1) = (a.div_ceil(kvcal::PT), b / kvcal::PT);
                         if j1 > j0 {
                             let rows = j0 * kvcal::PT - self.off;
-                            e.kern.kv_leaf_hp(s, k + (rows * c * 2) as u64, c as i32, v + (rows * qkv_w * 2) as u64, qkv_w as i32, self.base_at(ki, 0, l), self.base_at(ki, 1, l), kvh as i32, (j1 - j0) as u32, j0 as i32, self.hp_at(self.seq, l))?;
+                            e.kern.kv_leaf_hp(
+                                s,
+                                k + (rows * c * 2) as u64,
+                                c as i32,
+                                v + (rows * qkv_w * 2) as u64,
+                                qkv_w as i32,
+                                self.base_at(ki, 0, l),
+                                self.base_at(ki, 1, l),
+                                kvh as i32,
+                                (j1 - j0) as u32,
+                                j0 as i32,
+                                self.hp_at(self.seq, l),
+                            )?;
                             if l == 0 {
                                 self.pages_done.push((self.seq, ki, j0, j1));
                             }
@@ -196,7 +219,22 @@ impl Cal<'_> {
                     }
                 }
                 Mode::Sweep { row0 } => {
-                    e.kern.kv_sweep(s, k, c as i32, v, qkv_w as i32, self.base_at(0, 0, l), self.base_at(0, 1, l), kvh as i32, l as i32, self.layers as i32, row0 as i32, n as u32, self.need.ptr, self.exc.ptr)?;
+                    e.kern.kv_sweep(
+                        s,
+                        k,
+                        c as i32,
+                        v,
+                        qkv_w as i32,
+                        self.base_at(0, 0, l),
+                        self.base_at(0, 1, l),
+                        kvh as i32,
+                        l as i32,
+                        self.layers as i32,
+                        row0 as i32,
+                        n as u32,
+                        self.need.ptr,
+                        self.exc.ptr,
+                    )?;
                 }
             }
         }
@@ -251,7 +289,11 @@ pub fn calibrate(e: &Engine, tok: &Tok, chat: Option<&Chat>, o: &Options, log: &
     kinds.dedup();
     let nk = kinds.len();
     let stage_tokens = length.div_ceil(16) * 16;
-    log(&if cfg!(feature = "dev") { format!("glyd kvcal: {} documents, sequences of {positions} tokens, {layers} layers", docs.len()) } else { format!("setting up for this model: {layers} layers") });
+    log(&if cfg!(feature = "dev") {
+        format!("glyd kvcal: {} documents, sequences of {positions} tokens, {layers} layers", docs.len())
+    } else {
+        format!("setting up for this model: {layers} layers")
+    });
     let max_pages = stage_tokens / 16;
     let mut cal = Cal {
         e,
@@ -282,7 +324,11 @@ pub fn calibrate(e: &Engine, tok: &Tok, chat: Option<&Chat>, o: &Options, log: &
         cal.segs = segs.clone();
         run_sequence(&mut cal, ids)?;
     }
-    log(&if cfg!(feature = "dev") { format!("glyd kvcal: pass 1 of 3 ({:.0} s)", t.elapsed().as_secs_f64()) } else { format!("setting up: {:.0} s", t.elapsed().as_secs_f64()) });
+    log(&if cfg!(feature = "dev") {
+        format!("glyd kvcal: pass 1 of 3 ({:.0} s)", t.elapsed().as_secs_f64())
+    } else {
+        format!("setting up: {:.0} s", t.elapsed().as_secs_f64())
+    });
     // the windows from the histograms: all kinds' (the tables), and each kind left out
     let mut hist = vec![0i32; nk * 2 * layers * c * 128];
     cal.hist.read(0, &mut hist)?;
@@ -318,7 +364,11 @@ pub fn calibrate(e: &Engine, tok: &Tok, chat: Option<&Chat>, o: &Options, log: &
         cal.segs = segs.clone();
         run_sequence(&mut cal, ids)?;
     }
-    log(&if cfg!(feature = "dev") { format!("glyd kvcal: pass 2 of 3 ({:.0} s)", t.elapsed().as_secs_f64()) } else { format!("setting up: {:.0} s", t.elapsed().as_secs_f64()) });
+    log(&if cfg!(feature = "dev") {
+        format!("glyd kvcal: pass 2 of 3 ({:.0} s)", t.elapsed().as_secs_f64())
+    } else {
+        format!("setting up: {:.0} s", t.elapsed().as_secs_f64())
+    });
     let mut total = vec![0u64; nk * 2 * layers];
     cal.total.read(0, &mut total)?;
     let hp = read_i32(&cal.hp, 2 * layers * max_pages * heads)?;
@@ -360,7 +410,11 @@ pub fn calibrate(e: &Engine, tok: &Tok, chat: Option<&Chat>, o: &Options, log: &
     let mut exc = vec![0i16; rows * layers];
     cal.exc.read(0, &mut exc)?;
     let (chunks, over, maxneed) = kvcal::sweep_stats(&need, layers, free_arena, capacity);
-    log(&if cfg!(feature = "dev") { format!("glyd kvcal: pass 3 of 3 ({:.0} s)", t1.elapsed().as_secs_f64()) } else { format!("setting up: {:.0} s", t0.elapsed().as_secs_f64()) });
+    log(&if cfg!(feature = "dev") {
+        format!("glyd kvcal: pass 3 of 3 ({:.0} s)", t1.elapsed().as_secs_f64())
+    } else {
+        format!("setting up: {:.0} s", t0.elapsed().as_secs_f64())
+    });
 
     // what the passes counted, as the plugin's meta
     let mut per_kind: Vec<(String, Json)> = Vec::new();
@@ -445,7 +499,13 @@ pub fn calibrate(e: &Engine, tok: &Tok, chat: Option<&Chat>, o: &Options, log: &
             ]),
         ),
         ("by_depth".into(), Json::Arr(by_depth)),
-        ("per_tensor".into(), Json::obj(vec![("k".into(), Json::obj(vec![("rate".into(), Json::Num(per_tensor[0].0)), ("worst".into(), Json::Str(per_tensor[0].1.clone()))])), ("v".into(), Json::obj(vec![("rate".into(), Json::Num(per_tensor[1].0)), ("worst".into(), Json::Str(per_tensor[1].1.clone()))]))])),
+        (
+            "per_tensor".into(),
+            Json::obj(vec![
+                ("k".into(), Json::obj(vec![("rate".into(), Json::Num(per_tensor[0].0)), ("worst".into(), Json::Str(per_tensor[0].1.clone()))])),
+                ("v".into(), Json::obj(vec![("rate".into(), Json::Num(per_tensor[1].0)), ("worst".into(), Json::Str(per_tensor[1].1.clone()))])),
+            ]),
+        ),
         ("store".into(), pool_json),
         ("refused".into(), Json::Bool(refused)),
         ("model".into(), Json::Str(o.model.clone())),
@@ -578,7 +638,11 @@ pub fn kernel_check(dev: &crate::dev::Dev) -> Result<()> {
     exc.read(0, &mut eg)?;
     let mut sw_ok = true;
     for r in 0..t {
-        let per_head: Vec<i64> = (0..h).map(|hh| (0..d).map(|dd| (outside(k[r * cc + hh * d + dd], base[hh * d + dd]) as i64) + outside(v[r * cc + hh * d + dd], base[hh * d + dd]) as i64).sum()).collect();
+        let per_head: Vec<i64> = (0..h)
+            .map(|hh| {
+                (0..d).map(|dd| (outside(k[r * cc + hh * d + dd], base[hh * d + dd]) as i64) + outside(v[r * cc + hh * d + dd], base[hh * d + dd]) as i64).sum()
+            })
+            .collect();
         sw_ok &= ng[r * layers + 2] == kvcal::sweep_need(&per_head) && eg[r * layers + 2] as i64 == per_head.iter().sum::<i64>() && ng[r * layers + 1] == 0;
     }
     println!("kv_sweep: {t} rows {}", if sw_ok { "equal to the host's" } else { "DIFFERENT" });
@@ -612,7 +676,8 @@ pub fn kernel_check(dev: &crate::dev::Dev) -> Result<()> {
             let hk = hh / (qh / kvh);
             let pos = start + i;
             let qv: Vec<f64> = (0..128).map(|dd| tof(q[i * qh * 128 + hh * 128 + dd]) as f64).collect();
-            let sc: Vec<f64> = (0..=pos).map(|j| (0..128).map(|dd| qv[dd] * tof(kvs[(j * kvh + hk) * 256 + dd]) as f64).sum::<f64>() / (128f64).sqrt()).collect();
+            let sc: Vec<f64> =
+                (0..=pos).map(|j| (0..128).map(|dd| qv[dd] * tof(kvs[(j * kvh + hk) * 256 + dd]) as f64).sum::<f64>() / (128f64).sqrt()).collect();
             let mx = sc.iter().cloned().fold(f64::MIN, f64::max);
             let ps: Vec<f64> = sc.iter().map(|x| (x - mx).exp()).collect();
             let l: f64 = ps.iter().sum();
@@ -626,7 +691,10 @@ pub fn kernel_check(dev: &crate::dev::Dev) -> Result<()> {
         }
     }
     let rel = (se / sr).sqrt();
-    println!("prefill_attn: {n} tokens after {start}: relative L2 error {rel:.2e} against a plain attention in f64, largest difference {mxd:.2e} {}", if rel < 3e-3 { "(within bf16's rounding)" } else { "TOO LARGE" });
+    println!(
+        "prefill_attn: {n} tokens after {start}: relative L2 error {rel:.2e} against a plain attention in f64, largest difference {mxd:.2e} {}",
+        if rel < 3e-3 { "(within bf16's rounding)" } else { "TOO LARGE" }
+    );
     ok &= rel < 3e-3;
     if ok {
         Ok(())
@@ -651,7 +719,17 @@ mod tests {
             ("store".into(), Json::obj(store)),
             ("version".into(), Json::Num(kvcal::VERSION as f64)),
         ]);
-        let t = Tables { k: vec![3; layers * heads * 128], v: vec![4; layers * heads * 128], exc: vec![0; 3 * layers], rows: 3, layers, heads, channels: 128, meta, refused: None };
+        let t = Tables {
+            k: vec![3; layers * heads * 128],
+            v: vec![4; layers * heads * 128],
+            exc: vec![0; 3 * layers],
+            rows: 3,
+            layers,
+            heads,
+            channels: 128,
+            meta,
+            refused: None,
+        };
         let dir = std::env::temp_dir().join(format!("glyd-engine-calib-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("kv-tables-4096.safetensors");

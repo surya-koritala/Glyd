@@ -153,7 +153,8 @@ impl GlmMla {
             }
         }
         let packs = c.layer_packs(l);
-        let find = |suffix: &str| -> Result<&Pack35> { packs.iter().find(|p| p.key.ends_with(suffix)).ok_or_else(|| Error(format!("layer {l}: no pack {suffix}"))) };
+        let find =
+            |suffix: &str| -> Result<&Pack35> { packs.iter().find(|p| p.key.ends_with(suffix)).ok_or_else(|| Error(format!("layer {l}: no pack {suffix}"))) };
         let a = format!("{}layers.{l}.self_attn", c.prefix);
         let (q_a, q_b, kv_a, o) = (
             load_mat(ck, v7.as_ref(), find(".q_a_proj")?, layout)?,
@@ -204,7 +205,10 @@ impl GlmMla {
             dump: RefCell::new(None),
         };
         let bytes = [&me.q_a, &me.q_b, &me.kv_a, &me.o].iter().map(|m| m.bytes()).sum::<usize>()
-            + [&me.q_a_ln, &me.kv_a_ln, &me.kv_b, &me.wq_b, &me.wk, &me.k_norm_w, &me.k_norm_b, &me.wproj, &me.ape, &me.ix_gate].iter().map(|b| b.bytes).sum::<usize>();
+            + [&me.q_a_ln, &me.kv_a_ln, &me.kv_b, &me.wq_b, &me.wk, &me.k_norm_w, &me.k_norm_b, &me.wproj, &me.ape, &me.ix_gate]
+                .iter()
+                .map(|b| b.bytes)
+                .sum::<usize>();
         Ok(GlmMla { bytes, ..me })
     }
 
@@ -216,7 +220,12 @@ impl GlmMla {
     fn cache(&self, e: &dyn GlmHost) -> Result<&Cache> {
         if self.cache.get().is_none() {
             let ctx = e.ctx();
-            let c = Cache { lat: Buf::zeroed(ctx * self.kr * 2)?, ikc: Buf::zeroed(ctx * self.id * 2)?, gsc: Buf::zeroed(ctx * self.id * 2)?, pkc: Buf::zeroed((ctx / self.kp + 1) * self.id * 2)? };
+            let c = Cache {
+                lat: Buf::zeroed(ctx * self.kr * 2)?,
+                ikc: Buf::zeroed(ctx * self.id * 2)?,
+                gsc: Buf::zeroed(ctx * self.id * 2)?,
+                pkc: Buf::zeroed((ctx / self.kp + 1) * self.id * 2)?,
+            };
             let _ = self.cache.set(c);
         }
         self.cache.get().ok_or_else(|| Error("the latent attention cache is not made".into()))
@@ -287,7 +296,8 @@ impl MlaBlock for GlmMla {
         let sc = self.scratch(e)?;
         let ca = self.cache(e)?;
         let s = e.stream();
-        let (nh, nope, vd, kr, qr, ih, id, kp) = (self.nh as i32, self.nope as i32, self.vd as i32, self.kr as i32, self.qr as i32, self.ih as i32, self.id as i32, self.kp as i32);
+        let (nh, nope, vd, kr, qr, ih, id, kp) =
+            (self.nh as i32, self.nope as i32, self.vd as i32, self.kr as i32, self.qr as i32, self.ih as i32, self.id as i32, self.kp as i32);
         let hid = e.hidden() as i32;
         let nr = n as u32;
         // (a development check's call of more rows than a block: the stages of each block are kept; never in a graph's capture, whose calls are single rows)
@@ -324,7 +334,24 @@ impl MlaBlock for GlmMla {
             let (p0, q0) = (pos + (r0 * 4) as u64, sc.q.ptr + (r0 * self.nh * self.nope * 2) as u64);
             e.kg().absorb(s, q0, nh * nope, self.kv_b.ptr, sc.qa.ptr, m as i32, nh, nope, vd, kr)?;
             mark!(e, "mla absorb");
-            e.kg().idx_score(s, sc.iq.ptr + (r0 * self.ih * self.id * 2) as u64, ih * id, sc.wts.ptr + (r0 * self.ih * 2) as u64, ih, ca.pkc.ptr, p0, sc.scores.ptr, sc.pmax as i32, ih, id, kp, ksel, iscale, wscale, mr)?;
+            e.kg().idx_score(
+                s,
+                sc.iq.ptr + (r0 * self.ih * self.id * 2) as u64,
+                ih * id,
+                sc.wts.ptr + (r0 * self.ih * 2) as u64,
+                ih,
+                ca.pkc.ptr,
+                p0,
+                sc.scores.ptr,
+                sc.pmax as i32,
+                ih,
+                id,
+                kp,
+                ksel,
+                iscale,
+                wscale,
+                mr,
+            )?;
             mark!(e, "mla indexer scores");
             e.kg().select(s, sc.scores.ptr, sc.pmax as i32, p0, sc.sel.ptr, sc.cnt.ptr, sc.tmax as i32, kp, ksel, self.tail, mr)?;
             mark!(e, "mla select");
@@ -352,7 +379,10 @@ impl MlaBlock for GlmMla {
     }
 
     fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
-        [&self.q_a, &self.q_b, &self.kv_a, &self.o].iter().filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None }).collect()
+        [&self.q_a, &self.q_b, &self.kv_a, &self.o]
+            .iter()
+            .filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None })
+            .collect()
     }
 
     /// The call's rows of the stages: `qr`, `q`, `iq`, `iw` (the indexer's head weights), `ov` (bf16), `c`, `ik`, `gs` (the caches' rows at the call's positions, bf16), `cnt` (int32), `sel` (int32 [rows, tokens at most]), `olat` (fp32). The

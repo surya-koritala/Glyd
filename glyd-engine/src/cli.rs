@@ -17,13 +17,13 @@ use crate::model_nh::{EngineNh, OptsNh};
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::offload::{CachePlan, ExpertStore};
 use crate::qwen35::Config35;
+use crate::qwen35::Pack35;
 use crate::sampler::{self, Params};
 use crate::server::{self, Job, Piece};
 use crate::status::{Status, STATUS};
 use crate::store;
 use crate::tok::Tok;
 use crate::ui::{fmt_time, gb, gib, Done, Refusal, Ui};
-use crate::qwen35::Pack35;
 use crate::weights::{best_layout, choose_layout, packed_bytes, packed_layout, v7_manifest, Config, Layout};
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::save::Source;
@@ -81,7 +81,6 @@ fn dim(s: &str, on: bool) -> String {
     }
 }
 
-
 /// The level MODEL asks for, as a refusal where its tag is no level this build runs (src/levels.rs has the table and the rules).
 fn level(model: &str, lossy: bool) -> Done<(&str, Option<Layout>)> {
     levels::parse(model, lossy).map_err(|e| Refusal::new(e.what, e.fix))
@@ -118,7 +117,9 @@ fn v7_layout(model: &str) -> Done<Option<Layout>> {
 /// The level a run takes where MODEL is a glyd-v7 directory (`have`: its layout): its own where none is asked, else the one asked if it is the same, or refused naming both.
 fn v7_level(model: &str, have: Option<Layout>, asked: Option<Layout>) -> Done<Option<Layout>> {
     match (have, asked) {
-        (Some(h), Some(a)) if h != a && !(h == Layout::Int4H && a == Layout::Int4) => Err(Refusal::new(format!("{model} is packed at the {} level, not :{}", level_name(h), level_name(a)), format!("Run it as it is: glyd run {model}"))),
+        (Some(h), Some(a)) if h != a && !(h == Layout::Int4H && a == Layout::Int4) => {
+            Err(Refusal::new(format!("{model} is packed at the {} level, not :{}", level_name(h), level_name(a)), format!("Run it as it is: glyd run {model}")))
+        }
         (Some(h), _) => Ok(Some(h)),
         (None, a) => Ok(a),
     }
@@ -179,11 +180,16 @@ fn engine_refusal(e: crate::ffi::Error, name: &str, fit: &fit::Fit, gpu: &Gpu) -
     if t.contains("out of memory") || t.contains("no room for a kv cache") || status == Some(2) {
         return Refusal::unsupported(
             format!("the GPU ran out of memory loading {name} (about {} are needed; {} were free at the start)", gib(fit.total()), gib(gpu.free)),
-            format!("Close programs that use the GPU (nvidia-smi lists them), or ask for less context: --context {}, or run a smaller model", (fit.ctx / 2).max(2048) / 256 * 256),
+            format!(
+                "Close programs that use the GPU (nvidia-smi lists them), or ask for less context: --context {}, or run a smaller model",
+                (fit.ctx / 2).max(2048) / 256 * 256
+            ),
         );
     }
     // (the images the driver cannot read: 200 and 218, one for no machine code for this GPU: 209, and one for a toolchain newer than the driver: 222)
-    if ["no kernel image", "kernel image is invalid", "unsupported toolchain", "unsupported_ptx", "invalid_image"].iter().any(|w| t.contains(w)) || matches!(status, Some(200 | 209 | 218 | 222)) {
+    if ["no kernel image", "kernel image is invalid", "unsupported toolchain", "unsupported_ptx", "invalid_image"].iter().any(|w| t.contains(w))
+        || matches!(status, Some(200 | 209 | 218 | 222))
+    {
         return Refusal::unsupported(
             format!("the GPU's driver cannot run the engine's kernels ({})", e.0),
             "Update the NVIDIA driver (the engine's kernels are built for CUDA 13: driver 580 or newer), or use the vLLM-based glyd",
@@ -240,13 +246,22 @@ fn supported(name: &str, cfg_text: &str) -> Done<()> {
         ));
     }
     if arch != "Qwen3ForCausalLM" {
-        return Err(Refusal::unsupported(format!("{name} is a {arch} model, and this engine runs Qwen3 models so far"), "Other models run with the vLLM-based glyd: pip install \"glyd[vllm]\" (https://getglyd.com)"));
+        return Err(Refusal::unsupported(
+            format!("{name} is a {arch} model, and this engine runs Qwen3 models so far"),
+            "Other models run with the vLLM-based glyd: pip install \"glyd[vllm]\" (https://getglyd.com)",
+        ));
     }
     if scaled {
-        return Err(Refusal::unsupported(format!("{name} uses rope scaling, which this engine does not run yet"), "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\""));
+        return Err(Refusal::unsupported(
+            format!("{name} uses rope scaling, which this engine does not run yet"),
+            "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\"",
+        ));
     }
     if let Some(what) = unsupported_setting(cfg_text) {
-        return Err(Refusal::unsupported(format!("{name} has {what}, which this engine does not run yet"), "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\""));
+        return Err(Refusal::unsupported(
+            format!("{name} has {what}, which this engine does not run yet"),
+            "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\"",
+        ));
     }
     Ok(())
 }
@@ -337,12 +352,20 @@ fn prepare(a: &Args, gpu: &Gpu, ui: &RefCell<Ui>, with_tables: bool) -> Done<Pre
             Source::find(model).map_err(cannot)?
         }
     };
-    supported(&name, &std::fs::read_to_string(source.dir.join("config.json")).map_err(|e| Refusal::unsupported(format!("{}: {e}", source.dir.display()), ""))?)?;
+    supported(
+        &name,
+        &std::fs::read_to_string(source.dir.join("config.json")).map_err(|e| Refusal::unsupported(format!("{}: {e}", source.dir.display()), ""))?,
+    )?;
     let cfg = Config::load(&source.dir).map_err(cannot)?;
     let (layout, why, fit) = plan(a, &cfg, &name, gpu, None)?;
     shape_checks(&name, &cfg, &fit)?;
     first_run_checks(&name, &cfg, &fit, layout, Some(&source), 0)?;
-    ui.borrow_mut().line(&format!("{name}: {} on the GPU with Glyd, instead of {}; layout {}: {why}.", gib(fit.weights), gib(cfg.matrix_bytes()), layout.name()));
+    ui.borrow_mut().line(&format!(
+        "{name}: {} on the GPU with Glyd, instead of {}; layout {}: {why}.",
+        gib(fit.weights),
+        gib(cfg.matrix_bytes()),
+        layout.name()
+    ));
     let expect = (cfg.matrix_bytes() as f64 * fit::bits(layout) / 16.0) as u64;
     let dir = store::pack(&source, model, layout, expect, ui)?;
     let tables = if with_tables { store::tables(&dir, model, fit.ctx, gpu.ordinal, ui)? } else { PathBuf::new() };
@@ -379,7 +402,16 @@ fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
     let name = short_name(&model);
     let p = prepare(a, &gpu, ui, true)?;
     ui.borrow_mut().status(&format!("Loading {name} onto the GPU..."));
-    let o = Opts { ctx: p.ctx, chunk: p.fit.chunk, tables: Some(p.tables.clone()), graph: !(cfg!(feature = "dev") && a.has("no-graph")), pool: if several { crate::tune!("GLYD_ENGINE_POOL").and_then(|v| v.parse().ok()).unwrap_or(p.ctx * users) } else { 0 }, users: if several { users } else { 0 }, device: gpu.ordinal, ..Opts::default() };
+    let o = Opts {
+        ctx: p.ctx,
+        chunk: p.fit.chunk,
+        tables: Some(p.tables.clone()),
+        graph: !(cfg!(feature = "dev") && a.has("no-graph")),
+        pool: if several { crate::tune!("GLYD_ENGINE_POOL").and_then(|v| v.parse().ok()).unwrap_or(p.ctx * users) } else { 0 },
+        users: if several { users } else { 0 },
+        device: gpu.ordinal,
+        ..Opts::default()
+    };
     let engine = Engine::new(&p.dir, &o).map_err(|e| engine_refusal(e, &name, &p.fit, &gpu))?;
     let tok = Tok::load(&p.dir).map_err(cannot)?;
     let chat = Chat::load(&p.dir).map_err(cannot)?;
@@ -387,7 +419,14 @@ fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
     if let Some(t) = a.flag("temp") {
         defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
     }
-    ui.borrow_mut().line(&format!("Ready in {}: {name} on the {}, {} of weights, {} tokens of context{}.", fmt_time(t0.elapsed().as_secs_f64()), gpu.name, gib(engine.w.bytes as u64), engine.capacity(), if several { format!(", {users} users at once") } else { String::new() }));
+    ui.borrow_mut().line(&format!(
+        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context{}.",
+        fmt_time(t0.elapsed().as_secs_f64()),
+        gpu.name,
+        gib(engine.w.bytes as u64),
+        engine.capacity(),
+        if several { format!(", {users} users at once") } else { String::new() }
+    ));
     if crate::tune!("GLYD_ENGINE_VERBOSE").is_some() {
         ui.borrow_mut().line(&engine.describe());
     }
@@ -441,7 +480,9 @@ fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<st
         match server::listen(&format!("{host}:{p}"), name, window, api_key(a), local_only, tx.clone()) {
             Ok(addr) => return Ok(addr),
             Err(e) if e.0.to_lowercase().contains("in use") && !explicit => continue,
-            Err(e) if e.0.to_lowercase().contains("in use") => return Err(Refusal::new(format!("port {p} is in use by another program"), format!("Choose another: --port {}", p + 1))),
+            Err(e) if e.0.to_lowercase().contains("in use") => {
+                return Err(Refusal::new(format!("port {p} is in use by another program"), format!("Choose another: --port {}", p + 1)))
+            }
             Err(e) => return Err(Refusal::new(e.0, "")),
         }
     }
@@ -484,26 +525,75 @@ fn nv_version(text: &str) -> Option<String> {
 /// the model it was made from and the Glyd that made it (glyd.json); each file's size and SHA-256 (a large one's the cache's blob name, which the download checked; one of up to 64 MiB read now; else null); the level
 /// asked for and the one that runs; the precision of the weights, the activations, the sums, the keys and values and the states; and the GPU.
 #[allow(clippy::too_many_arguments)]
-fn about(served: &str, dir: &Path, asked: Option<&str>, level: &str, lossless: bool, weights: &str, held: Option<&crate::dev::Held>, gpu: &Gpu) -> Vec<(&'static str, Value)> {
+fn about(
+    served: &str,
+    dir: &Path,
+    asked: Option<&str>,
+    level: &str,
+    lossless: bool,
+    weights: &str,
+    held: Option<&crate::dev::Held>,
+    gpu: &Gpu,
+) -> Vec<(&'static str, Value)> {
     use crate::tools::obj;
     let (s, opt) = (|t: &str| Value::from(t), |t: Option<String>| t.map_or(Value::Null, Value::String));
     let manifest = std::fs::read_to_string(dir.join("glyd.json")).ok().and_then(|t| json::parse(&t).ok());
-    let repo = dir.parent().filter(|p| p.file_name().is_some_and(|n| n == "snapshots")).and_then(Path::parent).and_then(|p| p.file_name()?.to_str()?.strip_prefix("models--").map(|r| r.replacen("--", "/", 1)));
+    let repo = dir
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|n| n == "snapshots"))
+        .and_then(Path::parent)
+        .and_then(|p| p.file_name()?.to_str()?.strip_prefix("models--").map(|r| r.replacen("--", "/", 1)));
     let revision = repo.as_ref().and(dir.file_name().and_then(|n| n.to_str()).map(str::to_string));
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir).map(|r| r.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()).collect()).unwrap_or_default();
+    let mut paths: Vec<PathBuf> =
+        std::fs::read_dir(dir).map(|r| r.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()).collect()).unwrap_or_default();
     paths.sort();
     let files = paths.iter().map(|p| {
         let bytes = p.metadata().map_or(0, |m| m.len());
-        let blob = std::fs::read_link(p).ok().and_then(|t| t.file_name()?.to_str().map(str::to_string)).filter(|b| b.len() == 64 && b.bytes().all(|c| c.is_ascii_hexdigit()));
+        let blob = std::fs::read_link(p)
+            .ok()
+            .and_then(|t| t.file_name()?.to_str().map(str::to_string))
+            .filter(|b| b.len() == 64 && b.bytes().all(|c| c.is_ascii_hexdigit()));
         let sha256 = blob.or_else(|| (bytes <= 64 << 20).then(|| hub::sha256_of(p).ok()).flatten());
-        obj(vec![("name", Value::String(p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())), ("bytes", Value::from(bytes)), ("sha256", opt(sha256))])
+        obj(vec![
+            ("name", Value::String(p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
+            ("bytes", Value::from(bytes)),
+            ("sha256", opt(sha256)),
+        ])
     });
     let made_by = manifest.as_ref().and_then(|m| m.get("glyd")).and_then(Value::as_str).map(|v| format!("glyd {v}"));
     vec![
-        ("model", obj(vec![("id", s(served)), ("repo", opt(repo)), ("revision", opt(revision)), ("source", manifest.as_ref().and_then(|m| m.get("source")).cloned().unwrap_or(Value::Null)), ("made_by", opt(made_by)), ("files", Value::Array(files.collect()))])),
+        (
+            "model",
+            obj(vec![
+                ("id", s(served)),
+                ("repo", opt(repo)),
+                ("revision", opt(revision)),
+                ("source", manifest.as_ref().and_then(|m| m.get("source")).cloned().unwrap_or(Value::Null)),
+                ("made_by", opt(made_by)),
+                ("files", Value::Array(files.collect())),
+            ]),
+        ),
         ("level", obj(vec![("requested", asked.map_or(Value::Null, s)), ("effective", s(level)), ("lossless", Value::Bool(lossless))])),
-        ("precision", obj(vec![("weights", s(weights)), ("activations", s("bf16")), ("sums", s("fp32")), ("kv", held.map_or(Value::Null, |h| s(h.kv_type))), ("state", held.map_or(Value::Null, |h| s(h.state_type)))])),
-        ("device", obj(vec![("ordinal", Value::from(gpu.ordinal.max(0) as u64)), ("name", s(&gpu.name)), ("compute_capability", s(&format!("{}.{}", gpu.cc.0, gpu.cc.1))), ("cuda", s(&format!("{}.{}", gpu.driver / 1000, gpu.driver % 1000 / 10))), ("driver", opt(driver_version()))])),
+        (
+            "precision",
+            obj(vec![
+                ("weights", s(weights)),
+                ("activations", s("bf16")),
+                ("sums", s("fp32")),
+                ("kv", held.map_or(Value::Null, |h| s(h.kv_type))),
+                ("state", held.map_or(Value::Null, |h| s(h.state_type))),
+            ]),
+        ),
+        (
+            "device",
+            obj(vec![
+                ("ordinal", Value::from(gpu.ordinal.max(0) as u64)),
+                ("name", s(&gpu.name)),
+                ("compute_capability", s(&format!("{}.{}", gpu.cc.0, gpu.cc.1))),
+                ("cuda", s(&format!("{}.{}", gpu.driver / 1000, gpu.driver % 1000 / 10))),
+                ("driver", opt(driver_version())),
+            ]),
+        ),
     ]
 }
 
@@ -715,7 +805,11 @@ fn once(talk: &mut Talk, defaults: &Params, prompt: &str, thinking: Option<bool>
         Ok(o) => {
             out("\n");
             if !answered {
-                let why = if o.finish == crate::model::Finish::Length && thought { "The model was still thinking when it ran out of room: ask again with --no-think" } else { "The model sent no answer" };
+                let why = if o.finish == crate::model::Finish::Length && thought {
+                    "The model was still thinking when it ran out of room: ask again with --no-think"
+                } else {
+                    "The model sent no answer"
+                };
                 ui.borrow_mut().line(why);
                 return 1;
             }
@@ -829,17 +923,36 @@ fn chat_loop(tx: mpsc::Sender<Job>, defaults: Params, mut thinking: Option<bool>
         match ended {
             Some(Ok(o)) => {
                 let secs = t0.elapsed().as_secs_f64();
-                eprintln!("({} tokens, {:.1} tokens/s{})", o.completion_tokens, o.completion_tokens as f64 / secs, if abort.load(Ordering::Relaxed) { ", stopped" } else { "" });
+                eprintln!(
+                    "({} tokens, {:.1} tokens/s{})",
+                    o.completion_tokens,
+                    o.completion_tokens as f64 / secs,
+                    if abort.load(Ordering::Relaxed) { ", stopped" } else { "" }
+                );
                 if said.trim().is_empty() {
                     messages.pop();
-                    eprintln!("{}", if o.finish == crate::model::Finish::Length { "The model was still thinking when it ran out of room: turn thinking off with /think, or start a new chat with /clear" } else { "The model sent no answer" });
+                    eprintln!(
+                        "{}",
+                        if o.finish == crate::model::Finish::Length {
+                            "The model was still thinking when it ran out of room: turn thinking off with /think, or start a new chat with /clear"
+                        } else {
+                            "The model sent no answer"
+                        }
+                    );
                 } else {
                     messages.push(Message::new("assistant", said.trim()));
                 }
             }
             Some(Err(e)) => {
                 messages.pop();
-                eprintln!("{}", if e.contains("maximum context length") { "This conversation is longer than the model's window. Start a new chat with /clear.".to_string() } else { e });
+                eprintln!(
+                    "{}",
+                    if e.contains("maximum context length") {
+                        "This conversation is longer than the model's window. Start a new chat with /clear.".to_string()
+                    } else {
+                        e
+                    }
+                );
             }
             None => break,
         }
@@ -900,7 +1013,10 @@ pub fn host_flag(a: &Args) -> Done<Option<u64>> {
         None | Some("auto") => Ok(None),
         Some(v) => match v.parse::<f64>() {
             Ok(g) if g.is_finite() && g > 0.0 => Ok(Some((g * (1u64 << 30) as f64) as u64)),
-            _ => Err(Refusal::new(format!("--host-memory {v}: not a number of GiB"), "Give the computer's memory the experts may take, in GiB: --host-memory 20 (auto: what the computer has free, less 6 GiB for the system)")),
+            _ => Err(Refusal::new(
+                format!("--host-memory {v}: not a number of GiB"),
+                "Give the computer's memory the experts may take, in GiB: --host-memory 20 (auto: what the computer has free, less 6 GiB for the system)",
+            )),
         },
     }
 }
@@ -930,7 +1046,19 @@ pub fn expert_cache_for(dir: &Path, layout: Layout, free: u64, gpu: &str, host: 
 /// an asked cache), or the computer cannot hold the experts. At the Hummingbird level a computer that cannot hold them all (or `--host-memory`, `asked_host`, that gives it less) keeps the rest in the packed directory:
 /// `CachePlan::ram` is what it holds, refused where that is less than a step's choices in each width of each layer.
 #[allow(clippy::too_many_arguments)]
-fn offloaded(cfg: &ConfigNemotronH, layout: Layout, weights: u64, state: u64, per: u64, free: u64, host: Option<u64>, ctx: Option<usize>, asked: Option<u64>, asked_host: Option<u64>, gpu: &str) -> Result<(usize, CachePlan), String> {
+fn offloaded(
+    cfg: &ConfigNemotronH,
+    layout: Layout,
+    weights: u64,
+    state: u64,
+    per: u64,
+    free: u64,
+    host: Option<u64>,
+    ctx: Option<usize>,
+    asked: Option<u64>,
+    asked_host: Option<u64>,
+    gpu: &str,
+) -> Result<(usize, CachePlan), String> {
     let (layers, experts, k) = (cfg.layers_of(NhKind::Moe), cfg.moe.experts, cfg.moe.top_k);
     let each = crate::moe_nh::expert_bytes(cfg, layout).map_err(|e| e.0)?;
     let experts_bytes = (layers * experts) as u64 * each;
@@ -941,7 +1069,12 @@ fn offloaded(cfg: &ConfigNemotronH, layout: Layout, weights: u64, state: u64, pe
     let need = rest + (layers * least) as u64 * each;
     let budget = asked.unwrap_or_else(|| free.saturating_sub(rest));
     if asked.is_some_and(|b| rest.saturating_add(b) > free) {
-        return Err(format!("a cache of {} for the experts and the {} the rest of the model takes are more than the {gpu}'s {} free", gib(budget), gib(rest), gib(free)));
+        return Err(format!(
+            "a cache of {} for the experts and the {} the rest of the model takes are more than the {gpu}'s {} free",
+            gib(budget),
+            gib(rest),
+            gib(free)
+        ));
     }
     let host_need = experts_bytes + HOST_MARGIN;
     // (the Hummingbird level's experts can stay in the packed directory: it needs only the memory for what it holds, and a step's choices in each of a layer's two widths)
@@ -949,7 +1082,11 @@ fn offloaded(cfg: &ConfigNemotronH, layout: Layout, weights: u64, state: u64, pe
     let ram = held_in_memory(experts_bytes, asked_host, host);
     let least_ram = if disk { (layers * 2 * k) as u64 * each } else { experts_bytes };
     let Some(plan) = crate::moe_nh::cache_plan(cfg, layout, budget, least).map_err(|e| e.0)?.filter(|p| p.gpu_bytes() + rest <= free) else {
-        return Err(format!("with its experts in the computer's memory it needs at least {} of GPU memory (and {} of the computer's)", gib(need), gib(if disk { least_ram + HOST_MARGIN } else { host_need })));
+        return Err(format!(
+            "with its experts in the computer's memory it needs at least {} of GPU memory (and {} of the computer's)",
+            gib(need),
+            gib(if disk { least_ram + HOST_MARGIN } else { host_need })
+        ));
     };
     if !disk {
         if let Some(h) = host.filter(|&h| h < host_need) {
@@ -976,7 +1113,17 @@ fn lossy_plan(a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&st
 /// `lossy_plan` for a computer that has `host` bytes of memory to give (None: it does not say). A Nemotron model that does not fit the GPU whole, or that `--expert-cache GIB` asks for, keeps its experts in the
 /// computer's memory and a cache of them on the GPU (`offloaded`); it is refused, with the memory it needs of each, where the GPU or the computer has too little for that.
 #[allow(clippy::too_many_arguments)]
-fn lossy_plan_with(a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&str>, free: u64, gpu: &str, packed: Option<&Path>, host: Option<u64>) -> Done<Lossy> {
+fn lossy_plan_with(
+    a: &Args,
+    model: &str,
+    layout: Layout,
+    text: &str,
+    gen: Option<&str>,
+    free: u64,
+    gpu: &str,
+    packed: Option<&Path>,
+    host: Option<u64>,
+) -> Done<Lossy> {
     let name = short_name(model);
     let tag = level_name(layout);
     if crate::model_gemma4::is_gemma4(text) {
@@ -988,16 +1135,26 @@ fn lossy_plan_with(a: &Args, model: &str, layout: Layout, text: &str, gen: Optio
         if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
             return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
         }
-        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\""))?;
+        let cfg = ConfigNemotronH::parse(text, "config.json", gen)
+            .map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\""))?;
         (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos)
     } else {
         if layout == Layout::Hummingbird {
-            return Err(Refusal::unsupported(format!("{name}: the hummingbird level is built for Nemotron 3 Super alone"), "Run it at the kestrel, swift or wren level: glyd run MODEL:swift"));
+            return Err(Refusal::unsupported(
+                format!("{name}: the hummingbird level is built for Nemotron 3 Super alone"),
+                "Run it at the kestrel, swift or wren level: glyd run MODEL:swift",
+            ));
         }
         let cfg = Config35::parse(text, "config.json", gen).map_err(|e| {
-            Refusal::unsupported(format!("{name}: the {tag} level runs {} models so far ({})", "Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 Super", e.0), format!("Run it lossless: glyd run {model}"))
+            Refusal::unsupported(
+                format!("{name}: the {tag} level runs {} models so far ({})", "Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 Super", e.0),
+                format!("Run it lossless: glyd run {model}"),
+            )
         })?;
-        let cfg = match packed { Some(d) => cfg.as_saved(d), None => cfg };
+        let cfg = match packed {
+            Some(d) => cfg.as_saved(d),
+            None => cfg,
+        };
         (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos)
     };
     let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
@@ -1008,7 +1165,13 @@ fn lossy_plan_with(a: &Args, model: &str, layout: Layout, text: &str, gen: Optio
         // (a matrix the directory holds as bf16 is packed as it loads: sized as without one, in the layout it is packed in)
         let saved = ck.as_ref().map_or(0, |ck| p.parts.iter().filter_map(|x| packed_bytes(ck, Pack35::saved(&x.0))).sum::<u64>());
         let own = if nemotron { pack_layout(layout, &p.key) } else { layout };
-        weights += if saved > 0 { saved } else if p.packable() { (b as f64 * fit::bits(own) / 16.0) as u64 } else { b };
+        weights += if saved > 0 {
+            saved
+        } else if p.packable() {
+            (b as f64 * fit::bits(own) / 16.0) as u64
+        } else {
+            b
+        };
     }
     for t in kept {
         let b = t.shape.iter().product::<u64>() * if t.dtype == "F32" { 4 } else { 2 };
@@ -1031,17 +1194,32 @@ fn lossy_plan_with(a: &Args, model: &str, layout: Layout, text: &str, gen: Optio
     }
     let mut also = String::new();
     if nemotron && (!fits || cache.is_some()) {
-        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\""))?;
+        let cfg = ConfigNemotronH::parse(text, "config.json", gen)
+            .map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\""))?;
         match offloaded(&cfg, layout, weights, state, per, free, host, asked, cache, host_asked, gpu) {
             Ok((ctx, plan)) => return Ok(Lossy { weights, bf16, ctx, nemotron, gemma: false, cache: Some(plan) }),
-            Err(why) if cache.is_some() => return Err(Refusal::unsupported(format!("{name} at the {tag} level with --expert-cache: {why}"), "Close programs that use the GPU (nvidia-smi lists them), ask for a smaller cache, or use a GPU or a computer with more memory")),
+            Err(why) if cache.is_some() => {
+                return Err(Refusal::unsupported(
+                    format!("{name} at the {tag} level with --expert-cache: {why}"),
+                    "Close programs that use the GPU (nvidia-smi lists them), ask for a smaller cache, or use a GPU or a computer with more memory",
+                ))
+            }
             Err(why) => also = format!("; {why}"),
         }
     }
     if !fits {
         return Err(Refusal::unsupported(
-            format!("{name} at the {tag} level takes about {} of GPU memory at {} tokens of context, and the {gpu} has {} free{also}", gib(fixed + ctx.max(LOSSY_MIN_CTX) as u64 * per), ctx.max(LOSSY_MIN_CTX), gib(free)),
-            if also.is_empty() { "Close programs that use the GPU (nvidia-smi lists them), ask for less context (--context 4096), or use a GPU with more memory" } else { "Close programs that use the GPU (nvidia-smi lists them) or the computer's memory, or use a GPU or a computer with more memory" },
+            format!(
+                "{name} at the {tag} level takes about {} of GPU memory at {} tokens of context, and the {gpu} has {} free{also}",
+                gib(fixed + ctx.max(LOSSY_MIN_CTX) as u64 * per),
+                ctx.max(LOSSY_MIN_CTX),
+                gib(free)
+            ),
+            if also.is_empty() {
+                "Close programs that use the GPU (nvidia-smi lists them), ask for less context (--context 4096), or use a GPU with more memory"
+            } else {
+                "Close programs that use the GPU (nvidia-smi lists them) or the computer's memory, or use a GPU or a computer with more memory"
+            },
         ));
     }
     Ok(Lossy { weights, bf16, ctx, nemotron, gemma: false, cache: None })
@@ -1052,7 +1230,10 @@ fn lossy_plan_with(a: &Args, model: &str, layout: Layout, text: &str, gen: Optio
 #[allow(clippy::too_many_arguments)]
 fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: Option<&str>, free: u64, gpu: &str, packed: Option<&Path>) -> Done<Lossy> {
     if !matches!(layout, Layout::Tiered | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H) {
-        return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Gemma 4"), format!("Run it lossless (penguin) or at the kestrel or swift level: glyd run {name}:kestrel")));
+        return Err(Refusal::unsupported(
+            format!("{name}: the {tag} level is not built for Gemma 4"),
+            format!("Run it lossless (penguin) or at the kestrel or swift level: glyd run {name}:kestrel"),
+        ));
     }
     let cfg = crate::model_gemma4::ConfigG4::parse(text, gen, false).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), ""))?;
     let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
@@ -1069,10 +1250,20 @@ fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: 
         let typed = a.pos.get(1).map_or(name, |m| level(m, false).map_or(m.as_str(), |(m, _)| m));
         let wren = gemma_wren(typed).filter(|_| layout == Layout::Tiered).and_then(|repo| {
             let need = cfg.weight_bytes(Layout::Int4H, None).0 + rings + GEMMA_DRAFT_BYTES + LOSSY_WORK + LOSSY_MIN_CTX as u64 * per;
-            (need <= free).then(|| format!("glyd run {repo} fits: the wren level, about {} at {LOSSY_MIN_CTX} tokens of context (Google's QAT checkpoint, bit for bit)\nOr c{fix}", gib(need)))
+            (need <= free).then(|| {
+                format!(
+                    "glyd run {repo} fits: the wren level, about {} at {LOSSY_MIN_CTX} tokens of context (Google's QAT checkpoint, bit for bit)\nOr c{fix}",
+                    gib(need)
+                )
+            })
         });
         return Err(Refusal::unsupported(
-            format!("{name} at the {tag} level takes about {} of GPU memory at {} tokens of context, and the {gpu} has {} free", gib(fixed + ctx.max(LOSSY_MIN_CTX) as u64 * per), ctx.max(LOSSY_MIN_CTX), gib(free)),
+            format!(
+                "{name} at the {tag} level takes about {} of GPU memory at {} tokens of context, and the {gpu} has {} free",
+                gib(fixed + ctx.max(LOSSY_MIN_CTX) as u64 * per),
+                ctx.max(LOSSY_MIN_CTX),
+                gib(free)
+            ),
             wren.unwrap_or_else(|| format!("C{fix}")),
         ));
     }
@@ -1114,7 +1305,8 @@ fn pre_packed(model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<Option<Path
         return Ok(Some(d));
     }
     let Some((hub, remote, wanted)) = store::hub_plan_packed(&repo, level, ui)? else {
-        ui.borrow_mut().line(&format!("There is no pre-packed download of {} at the {level} level: downloading the model and packing it here, once.", short_name(model)));
+        ui.borrow_mut()
+            .line(&format!("There is no pre-packed download of {} at the {level} level: downloading the model and packing it here, once.", short_name(model)));
         return Ok(None);
     };
     store::download(&hub, &remote, &wanted, &repo, ui)?;
@@ -1124,7 +1316,12 @@ fn pre_packed(model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<Option<Path
 /// The lossy level's engine as `run` loads it (Qwen3.5's or Nemotron 3 Super's), with its tokenizer, chat template and sampling defaults, the size of its vocabulary, the line that says it is ready, and what
 /// /v1/glyd/info says of it served as `served` (MODEL as typed).
 #[allow(clippy::type_complexity)]
-fn load_lossy(a: &Args, layout: Layout, served: &str, ui: &RefCell<Ui>) -> Done<(Box<dyn Gen>, Tok, Option<Chat>, Params, usize, String, Option<server::Info>)> {
+fn load_lossy(
+    a: &Args,
+    layout: Layout,
+    served: &str,
+    ui: &RefCell<Ui>,
+) -> Done<(Box<dyn Gen>, Tok, Option<Chat>, Params, usize, String, Option<server::Info>)> {
     let (t0, started) = (Instant::now(), crate::monitor::clock());
     let model = a.need(1, "MODEL")?.to_string();
     match dynamic_family(&model) {
@@ -1167,13 +1364,25 @@ fn load_lossy(a: &Args, layout: Layout, served: &str, ui: &RefCell<Ui>) -> Done<
         layout = v7_level(&model, v7_manifest(d).map_err(cannot)?.map(|m| m.0), Some(layout))?.unwrap_or(layout);
     } else if let Some(first) = first {
         if layout == Layout::Hummingbird {
-            return Err(Refusal::unsupported(format!("{name} at the hummingbird level comes as a finished download or directory only: its experts' codes are made apart"), format!("Download the pre-packed model: glyd/{name}-hummingbird")));
+            return Err(Refusal::unsupported(
+                format!("{name} at the hummingbird level comes as a finished download or directory only: its experts' codes are made apart"),
+                format!("Download the pre-packed model: glyd/{name}-hummingbird"),
+            ));
         }
         dir = store::pack(&Source::find(&model).map_err(cannot)?, &model, layout, first.weights, ui)?;
         packed = Some(dir.clone());
     }
     let read = |f: &str| std::fs::read_to_string(dir.join(f)).ok();
-    let plan = lossy_plan(a, &model, layout, &read("config.json").ok_or_else(|| cannot(format!("{}: no config.json", dir.display())))?, read("generation_config.json").as_deref(), gpu.free, &gpu.name, packed.as_deref())?;
+    let plan = lossy_plan(
+        a,
+        &model,
+        layout,
+        &read("config.json").ok_or_else(|| cannot(format!("{}: no config.json", dir.display())))?,
+        read("generation_config.json").as_deref(),
+        gpu.free,
+        &gpu.name,
+        packed.as_deref(),
+    )?;
     // (a Nemotron-H model's layouts differ by pack: the bits a weight are what its bytes come to)
     let bits = if plan.nemotron { plan.weights as f64 * 16.0 / plan.bf16 as f64 } else { fit::bits(layout) };
     let on_gpu = plan.cache.map_or(plan.weights, |c| plan.weights.saturating_sub(c.host_bytes()) + c.gpu_bytes());
@@ -1182,15 +1391,27 @@ fn load_lossy(a: &Args, layout: Layout, served: &str, ui: &RefCell<Ui>) -> Done<
         Layout::Int4H => "the QAT checkpoint's weights bit for bit",
         _ => "not lossless",
     };
-    ui.borrow_mut().line(&format!("{name}: about {} on the GPU at the {} level (about {bits:.1} bits per weight, {exact}), in place of {} of bf16.", gib(on_gpu), level_name(layout), gib(plan.bf16)));
+    ui.borrow_mut().line(&format!(
+        "{name}: about {} on the GPU at the {} level (about {bits:.1} bits per weight, {exact}), in place of {} of bf16.",
+        gib(on_gpu),
+        level_name(layout),
+        gib(plan.bf16)
+    ));
     if let Some(c) = plan.cache {
-        let held = if c.ram < c.host_bytes() { format!("{} of experts in the computer's memory, {} read from the disk as needed", gib(c.ram), gib(c.disk_bytes())) } else { format!("all of them are in the computer's memory ({})", gib(c.host_bytes())) };
+        let held = if c.ram < c.host_bytes() {
+            format!("{} of experts in the computer's memory, {} read from the disk as needed", gib(c.ram), gib(c.disk_bytes()))
+        } else {
+            format!("all of them are in the computer's memory ({})", gib(c.host_bytes()))
+        };
         ui.borrow_mut().line(&format!("{} experts of {} a layer are on the GPU, chosen as the router asks for them; {held}.", c.slots, c.experts));
     }
     ui.borrow_mut().status(&format!("{} {name} and loading it onto the GPU...", if packed.is_some() { "Reading" } else { "Packing" }));
     let oom = |e: crate::ffi::Error| {
         if e.0.to_lowercase().contains("out of memory") {
-            Refusal::unsupported(format!("the GPU ran out of memory loading {name} ({} were free at the start)", gib(gpu.free)), "Close programs that use the GPU (nvidia-smi lists them), or ask for less context: --context 4096")
+            Refusal::unsupported(
+                format!("the GPU ran out of memory loading {name} ({} were free at the start)", gib(gpu.free)),
+                "Close programs that use the GPU (nvidia-smi lists them), or ask for less context: --context 4096",
+            )
         } else {
             cannot(e.0)
         }
@@ -1237,11 +1458,18 @@ fn load_lossy(a: &Args, layout: Layout, served: &str, ui: &RefCell<Ui>) -> Done<
                 ui.borrow_mut().line(&format!("The computer's memory holds the experts but not the {} more that the CPU needs to compute the experts that are not on the GPU: they are copied in as the router asks for them.", gib(c.host_half_bytes())));
             } else if offload.mode != crate::offload::Mode::Copy {
                 let more = if c.host_half_bytes() == 0 {
-                    if c.ram < c.host_bytes() { "from the computer's memory (read from the disk first where they are not in it)".to_string() } else { "from the computer's memory they are held in".to_string() }
+                    if c.ram < c.host_bytes() {
+                        "from the computer's memory (read from the disk first where they are not in it)".to_string()
+                    } else {
+                        "from the computer's memory they are held in".to_string()
+                    }
                 } else {
                     format!("{} more of the computer's memory", gib(c.host_half_bytes()))
                 };
-                ui.borrow_mut().line(&format!("The experts that are not on the GPU are computed by the CPU on {} threads (--cpu-threads N changes the count), {more}.", offload.threads));
+                ui.borrow_mut().line(&format!(
+                    "The experts that are not on the GPU are computed by the CPU on {} threads (--cpu-threads N changes the count), {more}.",
+                    offload.threads
+                ));
             }
         }
         store.set_offload(offload);
@@ -1282,13 +1510,22 @@ fn load_lossy(a: &Args, layout: Layout, served: &str, ui: &RefCell<Ui>) -> Done<
     if let Some(t) = a.flag("temp") {
         defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
     }
-    let line = format!("Ready in {}: {name} on the {}, {} of weights, {} tokens of context, one user at a time.", fmt_time(t0.elapsed().as_secs_f64()), gpu.name, gib(bytes as u64), plan.ctx);
+    let line = format!(
+        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context, one user at a time.",
+        fmt_time(t0.elapsed().as_secs_f64()),
+        gpu.name,
+        gib(bytes as u64),
+        plan.ctx
+    );
     // (what /v1/glyd/info says of it, where it is served)
     let info = (!served.is_empty()).then(|| {
         let (held, lossless) = (e.held(), matches!(layout, Layout::Tiered | Layout::Int4H));
         let weights = format!("{} level: about {bits:.1} bits per weight, {exact}", level_name(layout));
         let mut about = about(served, &dir, requested(served, a.has("lossy")), level_name(layout), lossless, &weights, held.as_ref(), &gpu);
-        about.push(("costs", crate::costs::served(&dir, served, requested(served, a.has("lossy")), e.capacity(), if plan.gemma { GEMMA_CHUNK } else { 2048 }, held)));
+        about.push((
+            "costs",
+            crate::costs::served(&dir, served, requested(served, a.has("lossy")), e.capacity(), if plan.gemma { GEMMA_CHUNK } else { 2048 }, held),
+        ));
         server::Info { about, gpu: Some(gpu.ordinal), held, concurrency: 1, window: e.capacity(), refused: server::ONE_AT_A_TIME, started }
     });
     Ok((e, tok, chat, defaults, vocab, line, info))
@@ -1296,8 +1533,15 @@ fn load_lossy(a: &Args, layout: Layout, served: &str, ui: &RefCell<Ui>) -> Done<
 
 /// The GPUs the dynamic route uses (Ampere or newer, as the driver lists them) and the first, which the machine's checks are of.
 fn dynamic_gpus() -> Done<(Vec<Gpu>, Gpu)> {
-    let gpus: Vec<Gpu> = Dev::probe_all().map_err(|e| Refusal::unsupported(format!("the GPU cannot be used: {}", e.0), "Check that nvidia-smi shows it"))?.into_iter().filter(|g| g.cc.0 >= 8).collect();
-    let first = gpus.first().cloned().ok_or_else(|| Refusal::unsupported("the driver shows no GPU of the Ampere generation or newer", "Check that nvidia-smi shows it"))?;
+    let gpus: Vec<Gpu> = Dev::probe_all()
+        .map_err(|e| Refusal::unsupported(format!("the GPU cannot be used: {}", e.0), "Check that nvidia-smi shows it"))?
+        .into_iter()
+        .filter(|g| g.cc.0 >= 8)
+        .collect();
+    let first = gpus
+        .first()
+        .cloned()
+        .ok_or_else(|| Refusal::unsupported("the driver shows no GPU of the Ampere generation or newer", "Check that nvidia-smi shows it"))?;
     if let Some(r) = machine::gpu_refusal(&first, std::env::consts::ARCH, true) {
         return Err(r);
     }
@@ -1310,7 +1554,9 @@ fn kimi_cache(dir: &Path, nl: usize, room: &[(i32, u64)], name: &str, ctx: usize
     let c = crate::kimi::ConfigKimi::load(dir).map_err(cannot)?;
     // (its bf16 matrices in the 12-bit layout where `twelve`: an HBM GPU's faster product, a few hundred places fewer)
     let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-    let (mut dense, base) = crate::dynamic::split::layer_bytes_where(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts.")).map_err(cannot)?;
+    let (mut dense, base) =
+        crate::dynamic::split::layer_bytes_where(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts."))
+            .map_err(cannot)?;
     // (each layer's cache for the context too: a latent attention's latents, ctx of kv_rank + rope bf16; a delta attention's state, heads 128 x 128 fp32, and its convolution's tail)
     let qd = c.kda.heads * c.kda.dim;
     for (l, d) in dense.iter_mut().enumerate() {
@@ -1325,13 +1571,29 @@ fn kimi_cache(dir: &Path, nl: usize, room: &[(i32, u64)], name: &str, ctx: usize
     let all = (layers * e.experts) as u64 * expert;
     let host = crate::offload::host_memory().unwrap_or(0);
     if all + HOST_MARGIN > host {
-        return Err(Refusal::unsupported(format!("{name} keeps the {} experts the GPUs do not hold in the computer's memory: they take {}, and {} is free", layers * e.experts, gib(all), gib(host)), "A machine with that much memory runs it"));
+        return Err(Refusal::unsupported(
+            format!(
+                "{name} keeps the {} experts the GPUs do not hold in the computer's memory: they take {}, and {} is free",
+                layers * e.experts,
+                gib(all),
+                gib(host)
+            ),
+            "A machine with that much memory runs it",
+        ));
     }
     let Some((cuts, devices, places)) = crate::dynamic::split::places_plan(&dense, base, &c.moe, room, expert, e.experts, e.top_k) else {
-        return Err(Refusal::unsupported(format!("{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts", gib(dense.iter().sum::<u64>() + base)), "A machine whose GPUs have more memory free runs it"));
+        return Err(Refusal::unsupported(
+            format!(
+                "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
+                gib(dense.iter().sum::<u64>() + base)
+            ),
+            "A machine whose GPUs have more memory free runs it",
+        ));
     };
     let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-    let on_gpus = dense.iter().sum::<u64>() + base + bounds.windows(2).zip(&places).map(|(w, &p)| c.moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * expert).sum::<u64>();
+    let on_gpus = dense.iter().sum::<u64>()
+        + base
+        + bounds.windows(2).zip(&places).map(|(w, &p)| c.moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * expert).sum::<u64>();
     Ok((cuts, devices, places, on_gpus, all, e.experts))
 }
 
@@ -1356,22 +1618,37 @@ fn kimi_cache_tp(dir: &Path, room: &[(i32, u64)], name: &str, ctx: usize, twelve
         }
     }
     let qd = c.kda.heads * c.kda.dim;
-    held += c.kinds.iter().map(|k| match k {
-        crate::glm::GlmKind::Mla => (ctx * (c.mla.kv_rank + c.mla.rope) * 2) as u64,
-        _ => (c.kda.heads * c.kda.dim * c.kda.dim * 4 + 3 * 3 * qd * 2) as u64,
-    }).sum::<u64>();
+    held += c
+        .kinds
+        .iter()
+        .map(|k| match k {
+            crate::glm::GlmKind::Mla => (ctx * (c.mla.kv_rank + c.mla.rope) * 2) as u64,
+            _ => (c.kda.heads * c.kda.dim * c.kda.dim * 4 + 3 * 3 * qd * 2) as u64,
+        })
+        .sum::<u64>();
     let e = &c.experts;
     let layers = c.moe.iter().filter(|&&m| m).count() as u64;
     let expert = crate::dynamic::kimi::expert_bytes(&c).map_err(cannot)?;
     let all = layers * e.experts as u64 * expert;
     let host = crate::offload::host_memory().unwrap_or(0);
     if all + HOST_MARGIN > host {
-        return Err(Refusal::unsupported(format!("{name} keeps the {} experts the GPUs do not hold in the computer's memory: they take {}, and {} is free", layers as usize * e.experts, gib(all), gib(host)), "A machine with that much memory runs it"));
+        return Err(Refusal::unsupported(
+            format!(
+                "{name} keeps the {} experts the GPUs do not hold in the computer's memory: they take {}, and {} is free",
+                layers as usize * e.experts,
+                gib(all),
+                gib(host)
+            ),
+            "A machine with that much memory runs it",
+        ));
     }
     let least = room.iter().map(|r| r.1).min().unwrap_or(0);
     let places = ((least.saturating_sub(held)) / (layers.max(1) * (expert / n)).max(1)).min(e.experts as u64) as usize;
     if places < e.top_k {
-        return Err(Refusal::unsupported(format!("{name}: its weights besides the experts take {} a GPU across {n} GPUs, and they leave too little room for its experts", gib(held)), "A machine whose GPUs have more memory free runs it"));
+        return Err(Refusal::unsupported(
+            format!("{name}: its weights besides the experts take {} a GPU across {n} GPUs, and they leave too little room for its experts", gib(held)),
+            "A machine whose GPUs have more memory free runs it",
+        ));
     }
     let on_gpus = n * (held + layers * places as u64 * (expert / n));
     Ok((Vec::new(), room.iter().map(|r| r.0).collect(), vec![places; room.len()], on_gpus, all, e.experts))
@@ -1415,7 +1692,12 @@ fn check_dynamic(model: &str, family: &str, layout: Layout, ui: &RefCell<Ui>) ->
             // (Kimi-K3 where the GPUs do not hold its experts: run's expert cache, refused as run refuses it)
             if kimi && cut.is_none() {
                 let k = kimi_cache(dir, nl, &room, &name, 8192, hbm(&gpus))?;
-                return Ok(format!("{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory", gib(k.3), k.1.len(), gib(k.4)));
+                return Ok(format!(
+                    "{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory",
+                    gib(k.3),
+                    k.1.len(),
+                    gib(k.4)
+                ));
             }
             (per.iter().sum::<u64>() + base, cut.map(|c| c.1.len()))
         }
@@ -1426,7 +1708,10 @@ fn check_dynamic(model: &str, family: &str, layout: Layout, ui: &RefCell<Ui>) ->
             let models = store::existing_ancestor(&hub::hub_cache());
             if let Some(free) = hub::disk_free(&models) {
                 if free < need + (1 << 30) {
-                    return Err(Refusal::unsupported(format!("the disk holding {} has {} left, and {} are to be downloaded", models.display(), gb(free), gb(need)), "Free some space, or set HF_HOME to a disk with room"));
+                    return Err(Refusal::unsupported(
+                        format!("the disk holding {} has {} left, and {} are to be downloaded", models.display(), gb(free), gb(need)),
+                        "Free some space, or set HF_HOME to a disk with room",
+                    ));
                 }
             }
             // (a bf16 release at penguin's 72% at most; an FP8 or FP4 one as it is; the cut is made once it is here)
@@ -1437,15 +1722,27 @@ fn check_dynamic(model: &str, family: &str, layout: Layout, ui: &RefCell<Ui>) ->
                 if bytes * 93 / 100 + HOST_MARGIN > host || bytes * 7 / 100 > all {
                     return Err(Refusal::unsupported(format!("{name} keeps the experts its GPUs do not hold in the computer's memory: about {} of experts, {} free, and about {} for the GPUs, {} free", gib(bytes * 93 / 100), gib(host), gib(bytes * 7 / 100), gib(all)), "A machine with that much memory runs it"));
                 }
-                return Ok(format!("{name} ({family}): about {} on the GPUs at the penguin level, about {} of experts in the computer's memory", gib(bytes * 7 / 100), gib(bytes * 93 / 100)));
+                return Ok(format!(
+                    "{name} ({family}): about {} on the GPUs at the penguin level, about {} of experts in the computer's memory",
+                    gib(bytes * 7 / 100),
+                    gib(bytes * 93 / 100)
+                ));
             }
             (bytes, (bytes <= all).then_some(gpus.len()))
         }
     };
     match gpus_used {
-        Some(n) => Ok(format!("{name} ({family}): about {} on {} at the penguin level", gib(bytes), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") })),
+        Some(n) => {
+            Ok(format!("{name} ({family}): about {} on {} at the penguin level", gib(bytes), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") }))
+        }
         None => Err(Refusal::unsupported(
-            format!("{name} needs about {} of GPU memory at penguin, and the {} GPU{} here have {} free", gib(bytes), gpus.len(), if gpus.len() == 1 { "" } else { "s" }, gib(gpus.iter().map(|g| g.free).sum::<u64>())),
+            format!(
+                "{name} needs about {} of GPU memory at penguin, and the {} GPU{} here have {} free",
+                gib(bytes),
+                gpus.len(),
+                if gpus.len() == 1 { "" } else { "s" },
+                gib(gpus.iter().map(|g| g.free).sum::<u64>())
+            ),
             "A machine whose GPUs have that much memory free runs it (nvidia-smi lists what uses them)",
         )),
     }
@@ -1454,7 +1751,14 @@ fn check_dynamic(model: &str, family: &str, layout: Layout, ui: &RefCell<Ui>) ->
 /// `run`/`serve` of a model the dynamic engine runs from its release's directory (`dynamic_family`), at penguin: the release's weights exactly (an FP8 or
 /// FP4 release's as it has them, a bf16 one's lossless). The directory is the model's own, the cache's copy, else downloaded; its layers are cut over the
 /// machine's GPUs as their free memory holds them (`--split CUTS --devices GPUS` chooses), and `--context N` (8,192) is the KV's. What load_lossy gives.
-fn load_dynamic(a: &Args, model: &str, family: &str, layout: Layout, served: &str, ui: &RefCell<Ui>) -> Done<(Box<dyn Gen>, Tok, Option<Chat>, Params, usize, String, Option<server::Info>)> {
+fn load_dynamic(
+    a: &Args,
+    model: &str,
+    family: &str,
+    layout: Layout,
+    served: &str,
+    ui: &RefCell<Ui>,
+) -> Done<(Box<dyn Gen>, Tok, Option<Chat>, Params, usize, String, Option<server::Info>)> {
     let (t0, started) = (Instant::now(), crate::monitor::clock());
     let name = short_name(model);
     if layout != Layout::Tiered {
@@ -1486,8 +1790,13 @@ fn load_dynamic(a: &Args, model: &str, family: &str, layout: Layout, served: &st
         Some(v) => room.iter().copied().filter(|r| v.split(',').any(|x| x.trim().parse::<i32>().ok() == Some(r.0))).collect(),
         None => room.clone(),
     };
-    let across = matches!(family, "Kimi-K3" | "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") && tp_room.len() > 1 && crate::tune!("GLYD_TP").as_deref() == Some("1");
-    let cache = if family == "Kimi-K3" && cut.is_none() && !chosen { Some(if across { kimi_cache_tp(&dir, &tp_room, &name, ctx, hbm(&gpus))? } else { kimi_cache(&dir, nl, &room, &name, ctx, hbm(&gpus))? }) } else { None };
+    let across =
+        matches!(family, "Kimi-K3" | "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") && tp_room.len() > 1 && crate::tune!("GLYD_TP").as_deref() == Some("1");
+    let cache = if family == "Kimi-K3" && cut.is_none() && !chosen {
+        Some(if across { kimi_cache_tp(&dir, &tp_room, &name, ctx, hbm(&gpus))? } else { kimi_cache(&dir, nl, &room, &name, ctx, hbm(&gpus))? })
+    } else {
+        None
+    };
     if let Some(k) = &cache {
         total = k.3;
         twelve = hbm(&gpus);
@@ -1503,7 +1812,13 @@ fn load_dynamic(a: &Args, model: &str, family: &str, layout: Layout, served: &st
     } else {
         cut.ok_or_else(|| {
             Refusal::unsupported(
-                format!("{name} needs about {} of GPU memory at penguin, and the {} GPU{} here have {} free", gib(total), gpus.len(), if gpus.len() == 1 { "" } else { "s" }, gib(gpus.iter().map(|g| g.free).sum::<u64>())),
+                format!(
+                    "{name} needs about {} of GPU memory at penguin, and the {} GPU{} here have {} free",
+                    gib(total),
+                    gpus.len(),
+                    if gpus.len() == 1 { "" } else { "s" },
+                    gib(gpus.iter().map(|g| g.free).sum::<u64>())
+                ),
                 "A machine whose GPUs have that much memory free runs it (nvidia-smi lists what uses them)",
             )
         })?
@@ -1511,12 +1826,25 @@ fn load_dynamic(a: &Args, model: &str, family: &str, layout: Layout, served: &st
     let gpu_name = |d: i32| gpus.iter().find(|g| g.ordinal == d).map_or_else(|| format!("GPU {d}"), |g| g.name.clone());
     let mut bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
     bounds.dedup();
-    let stages: Vec<String> = if across { vec![format!("every layer across GPUs {devices:?}")] } else { devices.iter().zip(bounds.windows(2)).map(|(&d, w)| format!("layers {}..{} on GPU {d} ({})", w[0], w[1], gpu_name(d))).collect() };
-    ui.borrow_mut().line(&format!("{name} ({family}): about {} on the GPU{} at the penguin level (lossless: the release's weights exactly); {}.", gib(total), if devices.len() == 1 { "" } else { "s" }, stages.join(", ")));
+    let stages: Vec<String> = if across {
+        vec![format!("every layer across GPUs {devices:?}")]
+    } else {
+        devices.iter().zip(bounds.windows(2)).map(|(&d, w)| format!("layers {}..{} on GPU {d} ({})", w[0], w[1], gpu_name(d))).collect()
+    };
+    ui.borrow_mut().line(&format!(
+        "{name} ({family}): about {} on the GPU{} at the penguin level (lossless: the release's weights exactly); {}.",
+        gib(total),
+        if devices.len() == 1 { "" } else { "s" },
+        stages.join(", ")
+    ));
     if let Some(k) = &cache {
         let (lo, hi) = (k.2.iter().min().copied().unwrap_or(0), k.2.iter().max().copied().unwrap_or(0));
         let n = if lo == hi { lo.to_string() } else { format!("{lo} to {hi}") };
-        ui.borrow_mut().line(&format!("{n} experts of {} a layer are on the GPUs, chosen as the router asks for them; all of them are in the computer's memory ({}).", k.5, gib(k.4)));
+        ui.borrow_mut().line(&format!(
+            "{n} experts of {} a layer are on the GPUs, chosen as the router asks for them; all of them are in the computer's memory ({}).",
+            k.5,
+            gib(k.4)
+        ));
     }
     if coded {
         // (the release's FP8 bytes plain do not fit these GPUs: coded, exactly the same values, in about 7 of 8 bits)
@@ -1534,7 +1862,10 @@ fn load_dynamic(a: &Args, model: &str, family: &str, layout: Layout, served: &st
     };
     let e = opened.map_err(|e| {
         if e.0.to_lowercase().contains("out of memory") {
-            Refusal::unsupported(format!("a GPU ran out of memory loading {name} ({})", stages.join(", ")), "Ask for less context (--context 4096), or cut the layers yourself: --split CUTS --devices GPUS")
+            Refusal::unsupported(
+                format!("a GPU ran out of memory loading {name} ({})", stages.join(", ")),
+                "Ask for less context (--context 4096), or cut the layers yourself: --split CUTS --devices GPUS",
+            )
         } else {
             cannot(e.0)
         }
@@ -1553,7 +1884,12 @@ fn load_dynamic(a: &Args, model: &str, family: &str, layout: Layout, served: &st
     }
     let distinct = devices.iter().collect::<std::collections::BTreeSet<_>>().len();
     let on = if distinct == 1 { format!("the {}", gpu_name(devices[0])) } else { format!("{distinct} GPUs") };
-    let line = format!("Ready in {}: {name} on {on}, {} of weights, {} tokens of context, one user at a time.", fmt_time(t0.elapsed().as_secs_f64()), gib(total), e.capacity());
+    let line = format!(
+        "Ready in {}: {name} on {on}, {} of weights, {} tokens of context, one user at a time.",
+        fmt_time(t0.elapsed().as_secs_f64()),
+        gib(total),
+        e.capacity()
+    );
     let info = (!served.is_empty()).then(|| {
         let held = e.held();
         let gpu = gpus.iter().find(|g| g.ordinal == devices[0]).unwrap_or(&first);
@@ -1612,7 +1948,10 @@ pub(crate) fn config_text(model: &str) -> Done<String> {
             e => Refusal::new(format!("cannot read {model} from the Hugging Face Hub ({e})"), "Check the network connection"),
         });
     }
-    Err(Refusal::new(format!("{model}: no such directory, and not a model on the Hugging Face Hub"), "Give a directory with the model, or its Hub name (ORG/NAME)"))
+    Err(Refusal::new(
+        format!("{model}: no such directory, and not a model on the Hugging Face Hub"),
+        "Give a directory with the model, or its Hub name (ORG/NAME)",
+    ))
 }
 
 /// Whether the engine runs MODEL: exit 0 where it does, 3 (with the reason on stderr) where it does not, 1 where that cannot be told. The kind of model alone: no GPU is looked at (`preflight` looks at the computer).
@@ -1737,7 +2076,10 @@ fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<
         let models = store::existing_ancestor(&hub::hub_cache());
         if let Some(free) = hub::disk_free(&models) {
             if free < need + (1 << 30) {
-                return Err(Refusal::unsupported(format!("the disk holding {} has {} left, and {} are to be downloaded", models.display(), gb(free), gb(need)), format!("Free some space, or keep the models on another drive: HF_HOME=/path/on/that/drive glyd run {model}:{}", level_name(layout))));
+                return Err(Refusal::unsupported(
+                    format!("the disk holding {} has {} left, and {} are to be downloaded", models.display(), gb(free), gb(need)),
+                    format!("Free some space, or keep the models on another drive: HF_HOME=/path/on/that/drive glyd run {model}:{}", level_name(layout)),
+                ));
             }
         }
     }
@@ -1815,8 +2157,22 @@ pub fn verify(a: &Args) -> i32 {
             let level = field("level").unwrap_or_else(|| "penguin".into());
             // (the exact four-bit layout is wren of a QAT checkpoint: its packs refuse anything but its source's weights)
             let exact = level == "penguin" || field("layout").as_deref() == Some(Layout::Int4H.name());
-            println!("{}: {} packed tensors decode to their sha256, {} kept as they are match theirs{} ({:.0} s, {threads} threads)", dir.display(), v.packed, v.hashed, if v.unchecked > 0 { format!(", {} with no sha256 (saved before glyd 0.25)", v.unchecked) } else { String::new() }, t.elapsed().as_secs_f64());
-            println!("{}", if exact { format!("level {level}: every weight is {source}'s, bit for bit") } else { format!("level {level}: the save is intact (its weights are rounded from {source}'s, as the level says)") });
+            println!(
+                "{}: {} packed tensors decode to their sha256, {} kept as they are match theirs{} ({:.0} s, {threads} threads)",
+                dir.display(),
+                v.packed,
+                v.hashed,
+                if v.unchecked > 0 { format!(", {} with no sha256 (saved before glyd 0.25)", v.unchecked) } else { String::new() },
+                t.elapsed().as_secs_f64()
+            );
+            println!(
+                "{}",
+                if exact {
+                    format!("level {level}: every weight is {source}'s, bit for bit")
+                } else {
+                    format!("level {level}: the save is intact (its weights are rounded from {source}'s, as the level says)")
+                }
+            );
             for k in &v.skipped {
                 eprintln!("glyd verify: {k:?}: a key of a newer glyd's save than this one ({VERSION}), skipped");
             }
@@ -1835,7 +2191,19 @@ pub fn doctor(_a: &Args) -> i32 {
     let mut bad = 0;
     match Dev::probe_all().ok().and_then(|all| machine::pick(&all).cloned().map(|g| (all.len(), g))) {
         Some((n, g)) => {
-            say("GPU", format!("{} (compute capability {}.{}), {} free of {}; the driver runs CUDA {}.{}", g.name, g.cc.0, g.cc.1, gib(g.free), gib(g.total), g.driver / 1000, g.driver % 1000 / 10));
+            say(
+                "GPU",
+                format!(
+                    "{} (compute capability {}.{}), {} free of {}; the driver runs CUDA {}.{}",
+                    g.name,
+                    g.cc.0,
+                    g.cc.1,
+                    gib(g.free),
+                    gib(g.total),
+                    g.driver / 1000,
+                    g.driver % 1000 / 10
+                ),
+            );
             if g.cc.0 < 8 {
                 say("", "older than the engine runs on (Ampere or newer)".to_string());
                 bad += 1;
@@ -1981,7 +2349,9 @@ pub fn login(_a: &Args) -> i32 {
             }
             Err(e) => fail(&ui, &Refusal::new(format!("cannot save the token: {e}"), "Set HF_TOKEN=TOKEN in the environment instead")),
         },
-        Err(hub::HubError::Denied(_)) => fail(&ui, &Refusal::new("the Hub did not accept that token", "Make a new one at https://huggingface.co/settings/tokens and run glyd login again")),
+        Err(hub::HubError::Denied(_)) => {
+            fail(&ui, &Refusal::new("the Hub did not accept that token", "Make a new one at https://huggingface.co/settings/tokens and run glyd login again"))
+        }
         Err(e) => fail(&ui, &Refusal::new(format!("cannot reach the Hugging Face Hub ({e})"), "Check the network connection and run this again")),
     }
 }
@@ -2076,7 +2446,14 @@ mod tests {
         // Nemotron-H is known by name and refused lossless with its own reason (exit 3, as any other model the engine does not run), in a release build as in a development one: its levels are named
         let nemo = supported("NVIDIA-Nemotron-3-Super-120B-A12B-BF16", r#"{"architectures": ["NemotronHForCausalLM"]}"#).unwrap_err();
         assert_eq!(nemo.code, 3);
-        assert!(nemo.what.contains("Nemotron-H model") && nemo.what.contains("hummingbird, swift and kestrel levels, not lossless") && nemo.fix.contains("MODEL:hummingbird on a 16 to 32 GB card") && !nemo.fix.contains("wren"), "{}", nemo.what);
+        assert!(
+            nemo.what.contains("Nemotron-H model")
+                && nemo.what.contains("hummingbird, swift and kestrel levels, not lossless")
+                && nemo.fix.contains("MODEL:hummingbird on a 16 to 32 GB card")
+                && !nemo.fix.contains("wren"),
+            "{}",
+            nemo.what
+        );
         assert_eq!(short_name("Qwen/Qwen3-8B"), "Qwen3-8B");
         assert_eq!(short_name("/models/mine/"), "mine");
     }
@@ -2085,8 +2462,14 @@ mod tests {
     #[test]
     fn a_qwen3_that_sets_what_the_engine_does_not_do_goes_to_vllm() {
         let with = |extra: &str| format!(r#"{{"architectures": ["Qwen3ForCausalLM"], {extra}}}"#);
-        for fine in [r#""sliding_window": null, "use_sliding_window": false"#, r#""sliding_window": 4096, "use_sliding_window": false"#, r#""sliding_window": 4096"#, r#""use_sliding_window": true"#,
-                     r#""layer_types": ["full_attention", "full_attention"]"#, r#""attention_bias": false, "hidden_act": "silu""#] {
+        for fine in [
+            r#""sliding_window": null, "use_sliding_window": false"#,
+            r#""sliding_window": 4096, "use_sliding_window": false"#,
+            r#""sliding_window": 4096"#,
+            r#""use_sliding_window": true"#,
+            r#""layer_types": ["full_attention", "full_attention"]"#,
+            r#""attention_bias": false, "hidden_act": "silu""#,
+        ] {
             assert!(supported("m", &with(fine)).is_ok(), "{fine}");
         }
         for (setting, said) in [
@@ -2123,7 +2506,13 @@ mod tests {
     /// The Hub repo of a model at a level is `glyd/NAME-LEVEL` (glyd-gpu-py's test_engine_packed.py pins the same examples), and a pre-packed repo's own name is its level.
     #[test]
     fn a_pre_packed_repo_is_named_by_its_model_and_level() {
-        for (model, level, repo) in [("Qwen/Qwen3.5-9B", "swift", "glyd/Qwen3.5-9B-swift"), ("Qwen/Qwen3.8-27B", "kestrel", "glyd/Qwen3.8-27B-kestrel"), ("Qwen/Qwen3.5-9B", "penguin", "glyd/Qwen3.5-9B-penguin"), ("Qwen/Qwen3.5-9B", "wren", "glyd/Qwen3.5-9B-wren"), ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "hummingbird", "glyd/nemotron-3-hummingbird")] {
+        for (model, level, repo) in [
+            ("Qwen/Qwen3.5-9B", "swift", "glyd/Qwen3.5-9B-swift"),
+            ("Qwen/Qwen3.8-27B", "kestrel", "glyd/Qwen3.8-27B-kestrel"),
+            ("Qwen/Qwen3.5-9B", "penguin", "glyd/Qwen3.5-9B-penguin"),
+            ("Qwen/Qwen3.5-9B", "wren", "glyd/Qwen3.5-9B-wren"),
+            ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "hummingbird", "glyd/nemotron-3-hummingbird"),
+        ] {
             assert_eq!(packed_repo(model, level), repo);
         }
         assert_eq!(level("glyd/Qwen3.5-9B-swift", false).unwrap(), ("glyd/Qwen3.5-9B-swift", Some(Layout::Int5)));
@@ -2138,28 +2527,64 @@ mod tests {
     fn a_level_is_the_tag_after_the_models_last_colon() {
         let m = "Qwen/Qwen3.8-27B";
         // the tags, in any case: the model without them, and the layout the level packs in (none: lossless)
-        for (tag, layout) in [("penguin", None), ("kestrel", Some(Layout::Int6)), ("swift", Some(Layout::Int5)), ("wren", Some(Layout::Int4)), ("hummingbird", Some(Layout::Hummingbird)), ("Penguin", None), ("KESTREL", Some(Layout::Int6)), ("sWiFt", Some(Layout::Int5)), ("Wren", Some(Layout::Int4)), ("HUMMINGBIRD", Some(Layout::Hummingbird))] {
+        for (tag, layout) in [
+            ("penguin", None),
+            ("kestrel", Some(Layout::Int6)),
+            ("swift", Some(Layout::Int5)),
+            ("wren", Some(Layout::Int4)),
+            ("hummingbird", Some(Layout::Hummingbird)),
+            ("Penguin", None),
+            ("KESTREL", Some(Layout::Int6)),
+            ("sWiFt", Some(Layout::Int5)),
+            ("Wren", Some(Layout::Int4)),
+            ("HUMMINGBIRD", Some(Layout::Hummingbird)),
+        ] {
             if !levels::PREVIEW && tag.eq_ignore_ascii_case("wren") {
                 // (a release build: wren is not built; hummingbird is)
                 let r = level(&format!("{m}:{tag}"), false).unwrap_err();
-                assert!(r.code == 1 && r.what == format!(":{} is not built yet", tag.to_lowercase()) && r.fix == "The levels available now: penguin, kestrel, swift, hummingbird", "{tag}: {r}");
+                assert!(
+                    r.code == 1
+                        && r.what == format!(":{} is not built yet", tag.to_lowercase())
+                        && r.fix == "The levels available now: penguin, kestrel, swift, hummingbird",
+                    "{tag}: {r}"
+                );
                 continue;
             }
             assert_eq!(level(&format!("{m}:{tag}"), false).unwrap(), (m, layout), "{tag}");
         }
         assert_eq!(level("/models/mine:swift", false).unwrap(), ("/models/mine", Some(Layout::Int5)));
         assert_eq!(level("a:b:kestrel", false).unwrap(), ("a:b", Some(Layout::Int6))); // (the last ':' only)
-        // no tag: as it was; --lossy is kestrel, with its tag or without
+                                                                                       // no tag: as it was; --lossy is kestrel, with its tag or without
         assert_eq!(level(m, false).unwrap(), (m, None));
         assert_eq!(level(m, true).unwrap(), (m, Some(Layout::Int6)));
         assert_eq!(level(&format!("{m}:Kestrel"), true).unwrap(), (m, Some(Layout::Int6)));
         // a name that is no level: refused with the levels there are (sparrow, once proposed, is no level)
         for (tag, said) in [("sparrow", "not a level"), ("falcon", "not a level"), ("x", "not a level"), ("mma", "not a level")] {
             let r = level(&format!("{m}:{tag}"), false).unwrap_err();
-            assert!(r.code == 1 && r.what == format!(":{} is {said}", tag.to_lowercase()) && r.fix == format!("The levels available now: {}", levels::names_now().join(", ")), "{tag}: {r}");
+            assert!(
+                r.code == 1
+                    && r.what == format!(":{} is {said}", tag.to_lowercase())
+                    && r.fix == format!("The levels available now: {}", levels::names_now().join(", ")),
+                "{tag}: {r}"
+            );
         }
         // what is not all letters after the last ':' is no tag: the model is left alone, --lossy or not
-        for plain in ["Qwen/Qwen3-8B", "/models/mine/", "mine", "/mnt/disk:1/Qwen3", "./a:b/c", "/data/x:kestrel/model", "C:\\models\\Qwen", "Qwen/Qwen3-8B:", "m:v2", "m:4bit", "m:ké", "m: swift", ":", ""] {
+        for plain in [
+            "Qwen/Qwen3-8B",
+            "/models/mine/",
+            "mine",
+            "/mnt/disk:1/Qwen3",
+            "./a:b/c",
+            "/data/x:kestrel/model",
+            "C:\\models\\Qwen",
+            "Qwen/Qwen3-8B:",
+            "m:v2",
+            "m:4bit",
+            "m:ké",
+            "m: swift",
+            ":",
+            "",
+        ] {
             assert_eq!(level(plain, false).unwrap(), (plain, None), "{plain}");
             assert_eq!(level(plain, true).unwrap(), (plain, Some(Layout::Int6)), "{plain}");
         }
@@ -2171,8 +2596,14 @@ mod tests {
         assert_eq!(level(&format!("{m}:sparrow"), true).unwrap_err().what, ":sparrow is not a level");
         assert_eq!(level(&format!("{m}:hello"), true).unwrap_err().what, ":hello is not a level");
         // the names the messages use, and the bits they say
-        assert_eq!((level_name(Layout::Int6), level_name(Layout::Int5), level_name(Layout::Int4), level_name(Layout::Int3), level_name(Layout::Hummingbird)), ("kestrel", "swift", "wren", "i3", "hummingbird"));
-        assert_eq!((format!("{:.1}", fit::bits(Layout::Int6)), format!("{:.1}", fit::bits(Layout::Int5)), format!("{:.1}", fit::bits(Layout::Int4))), ("6.5".to_string(), "5.5".to_string(), "4.5".to_string()));
+        assert_eq!(
+            (level_name(Layout::Int6), level_name(Layout::Int5), level_name(Layout::Int4), level_name(Layout::Int3), level_name(Layout::Hummingbird)),
+            ("kestrel", "swift", "wren", "i3", "hummingbird")
+        );
+        assert_eq!(
+            (format!("{:.1}", fit::bits(Layout::Int6)), format!("{:.1}", fit::bits(Layout::Int5)), format!("{:.1}", fit::bits(Layout::Int4))),
+            ("6.5".to_string(), "5.5".to_string(), "4.5".to_string())
+        );
     }
 
     /// `run` and `preflight` read the level before they look at the model, the GPU or standard input; the model they look up is the one without its tag. `serve` reads it the same way.
@@ -2231,7 +2662,12 @@ mod tests {
             let r = plan(layout, 8).err().unwrap();
             assert!(r.code == CANNOT && r.what.starts_with(&format!("Qwen3.8-27B at the {level} level takes about ")), "{r}");
             let r = lossy_plan(&a, "Qwen/Qwen3-8B", layout, QWEN3, None, 80 << 30, "NVIDIA A100", None).err().unwrap();
-            assert!(r.code == CANNOT && r.what.starts_with(&format!("Qwen3-8B: the {level} level runs Qwen3.5")) && r.fix == "Run it lossless: glyd run Qwen/Qwen3-8B", "{r}");
+            assert!(
+                r.code == CANNOT
+                    && r.what.starts_with(&format!("Qwen3-8B: the {level} level runs Qwen3.5"))
+                    && r.fix == "Run it lossless: glyd run Qwen/Qwen3-8B",
+                "{r}"
+            );
         }
     }
 
@@ -2252,13 +2688,21 @@ mod tests {
         let r = plan(Layout::Int3).err().unwrap();
         assert!(r.code == CANNOT && r.what.contains("the i3 level is not built for Gemma 4"), "{r}");
         // (penguin short of room on a 16 GB card: the wren repo, which fits, is named first; at 6 GiB nothing fits and the fix is the plain one; the base model has no wren)
-        let small = |m: &str, free_gib: u64| lossy_plan_with(&args(&["run", m]), m, Layout::Tiered, text, None, free_gib << 30, "NVIDIA GeForce RTX 4080 SUPER", None, None).err().unwrap();
+        let small = |m: &str, free_gib: u64| {
+            lossy_plan_with(&args(&["run", m]), m, Layout::Tiered, text, None, free_gib << 30, "NVIDIA GeForce RTX 4080 SUPER", None, None).err().unwrap()
+        };
         for m in [model, "google/gemma-4-12B-it:penguin", "glyd/gemma-4-12B-penguin"] {
             let r = small(m, 15);
-            assert!(r.code == CANNOT && r.fix.starts_with("glyd run glyd/gemma-4-12B-wren fits: the wren level, about ") && r.fix.contains("\nOr close programs"), "{m}: {r}");
+            assert!(
+                r.code == CANNOT && r.fix.starts_with("glyd run glyd/gemma-4-12B-wren fits: the wren level, about ") && r.fix.contains("\nOr close programs"),
+                "{m}: {r}"
+            );
         }
         assert!(small(model, 6).fix.starts_with("Close programs") && small("google/gemma-4-12B", 15).fix.starts_with("Close programs"));
-        assert_eq!((gemma_wren("google/gemma-4-31B-it").as_deref(), gemma_wren("glyd/gemma-4-31B-penguin").as_deref()), (Some("glyd/gemma-4-31B-wren"), Some("glyd/gemma-4-31B-wren")));
+        assert_eq!(
+            (gemma_wren("google/gemma-4-31B-it").as_deref(), gemma_wren("glyd/gemma-4-31B-penguin").as_deref()),
+            (Some("glyd/gemma-4-31B-wren"), Some("glyd/gemma-4-31B-wren"))
+        );
         assert_eq!((gemma_wren("glyd/gemma-4-12B-base-penguin"), gemma_wren("Qwen/Qwen3.8-27B")), (None, None));
         // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; other models without one take the lossless route of old)
         assert_eq!(run_level(model, None).unwrap(), Some(Layout::Tiered));
@@ -2271,7 +2715,9 @@ mod tests {
         let text = include_str!("../tests/fixtures/nemotron_h_config.json");
         let (a, model) = (args(&["run", "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"]), "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16");
         // (a computer of 8 GiB cannot take the experts in its memory: the GPU has to hold the model whole)
-        let lossy_plan = |a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&str>, free: u64, gpu: &str, packed: Option<&Path>| lossy_plan_with(a, model, layout, text, gen, free, gpu, packed, Some(8 << 30));
+        let lossy_plan = |a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&str>, free: u64, gpu: &str, packed: Option<&Path>| {
+            lossy_plan_with(a, model, layout, text, gen, free, gpu, packed, Some(8 << 30))
+        };
         let plan = |layout, free_gib: u64| lossy_plan(&a, model, layout, text, None, free_gib << 30, "NVIDIA H200", None);
         let (six, five, four) = (plan(Layout::Int6, 140).unwrap(), plan(Layout::Int5, 140).unwrap(), plan(Layout::Int4, 140).unwrap());
         assert!(six.nemotron && five.nemotron && four.nemotron && six.bf16 == five.bf16 && five.bf16 == four.bf16);
@@ -2286,7 +2732,12 @@ mod tests {
         assert_eq!((six.ctx, five.ctx, four.ctx), (LOSSY_CTX, LOSSY_CTX, LOSSY_CTX));
         for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "swift")] {
             let r = plan(layout, 70).err().unwrap();
-            assert!(r.code == CANNOT && r.what.starts_with(&format!("NVIDIA-Nemotron-3-Super-120B-A12B-BF16 at the {level} level takes about ")) && r.what.contains("NVIDIA H200 has 70.0 GiB free"), "{r}");
+            assert!(
+                r.code == CANNOT
+                    && r.what.starts_with(&format!("NVIDIA-Nemotron-3-Super-120B-A12B-BF16 at the {level} level takes about "))
+                    && r.what.contains("NVIDIA H200 has 70.0 GiB free"),
+                "{r}"
+            );
         }
         assert!(plan(Layout::Int5, 78).is_err() && plan(Layout::Int5, 82).is_ok(), "swift takes about 80 GiB");
         assert!(plan(Layout::Int6, 92).is_err() && plan(Layout::Int6, 96).is_ok(), "kestrel takes about 94 GiB");
@@ -2294,7 +2745,12 @@ mod tests {
         let a100 = lossy_plan(&a, model, Layout::Int4, text, None, 79 << 30, "NVIDIA A100-SXM4-80GB", None).unwrap();
         assert!(a100.nemotron && a100.ctx >= LOSSY_MIN_CTX.max(4096) && a100.ctx == LOSSY_CTX, "{}", a100.ctx);
         let r = lossy_plan(&a, model, Layout::Int4, text, None, 60 << 30, "NVIDIA A100-SXM4-80GB", None).err().unwrap();
-        assert!(r.code == CANNOT && r.what.starts_with("NVIDIA-Nemotron-3-Super-120B-A12B-BF16 at the wren level takes about 6") && r.what.contains("NVIDIA A100-SXM4-80GB has 60.0 GiB free"), "{r}");
+        assert!(
+            r.code == CANNOT
+                && r.what.starts_with("NVIDIA-Nemotron-3-Super-120B-A12B-BF16 at the wren level takes about 6")
+                && r.what.contains("NVIDIA A100-SXM4-80GB has 60.0 GiB free"),
+            "{r}"
+        );
         assert!(plan(Layout::Int4, 66).is_err() && plan(Layout::Int4, 68).is_ok(), "wren takes about 67 GiB");
         // (a context asked for is taken where it fits and refused where it does not: 4,096 tokens at 68 GiB, not the model's 262,144)
         let asked = |ctx: &str| lossy_plan(&args(&["run", model, "--context", ctx]), model, Layout::Int4, text, None, 68 << 30, "NVIDIA A100-SXM4-80GB", None);
@@ -2315,7 +2771,9 @@ mod tests {
     fn a_nemotron_that_does_not_fit_the_gpu_keeps_its_experts_in_the_computers_memory() {
         let text = include_str!("../tests/fixtures/nemotron_h_config.json");
         let (a, model) = (args(&["run", "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"]), "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16");
-        let plan = |layout, free_gib: f64, host_gib: u64| lossy_plan_with(&a, model, layout, text, None, (free_gib * (1u64 << 30) as f64) as u64, "NVIDIA RTX 4090", None, Some(host_gib << 30));
+        let plan = |layout, free_gib: f64, host_gib: u64| {
+            lossy_plan_with(&a, model, layout, text, None, (free_gib * (1u64 << 30) as f64) as u64, "NVIDIA RTX 4090", None, Some(host_gib << 30))
+        };
         for (free, slots) in [(16.0, 56), (23.0, 106), (31.0, 163), (47.0, 276)] {
             let p = plan(Layout::Int5, free, 128).unwrap();
             let c = p.cache.expect("a cache");
@@ -2333,7 +2791,11 @@ mod tests {
         assert!(plan(Layout::Int6, 16.0, 128).is_err() && plan(Layout::Int6, 17.0, 128).is_ok());
         // the computer: 78 GiB of memory (72.2 of experts and 6 of margin) is the least
         let r = plan(Layout::Int5, 23.0, 64).err().unwrap();
-        assert!(r.code == CANNOT && r.what.contains("it needs 78.2 GiB of the computer's memory besides at least 14.2 GiB of GPU memory, and this computer has 64.0 GiB free"), "{r}");
+        assert!(
+            r.code == CANNOT
+                && r.what.contains("it needs 78.2 GiB of the computer's memory besides at least 14.2 GiB of GPU memory, and this computer has 64.0 GiB free"),
+            "{r}"
+        );
         assert!(plan(Layout::Int5, 23.0, 78).is_err() && plan(Layout::Int5, 23.0, 79).is_ok());
         // a computer that does not say how much it has is taken to have enough (the allocation says if it has not)
         assert!(lossy_plan_with(&a, model, Layout::Int5, text, None, 23 << 30, "NVIDIA RTX 4090", None, None).unwrap().cache.is_some());
@@ -2365,7 +2827,10 @@ mod tests {
         assert_eq!((c.expert_bytes, c.host_bytes(), c.host_half_bytes(), c.in_place), (2_056_068, 40 * 512 * 2_056_068, 0, true));
         // the pod job asks for these (tools/cards/nh_offload_job.sh): a 48 GB card at swift holds the caches of a 24 GB and a 32 GB card, the 24 and 32 GB cards their own at wren
         let job = include_str!("../../tools/cards/nh_offload_job.sh");
-        assert!(job.contains("CAPS=\"24g:auto:23 32g:auto:31 48g:auto\"") && job.contains("CAPS=\"card:auto\"") && job.contains("CAP16=\"16g:auto:15\""), "the job's caches");
+        assert!(
+            job.contains("CAPS=\"24g:auto:23 32g:auto:31 48g:auto\"") && job.contains("CAPS=\"card:auto\"") && job.contains("CAP16=\"16g:auto:15\""),
+            "the job's caches"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2375,19 +2840,52 @@ mod tests {
     fn an_expert_cache_is_asked_for_in_gib() {
         let text = include_str!("../tests/fixtures/nemotron_h_config.json");
         let model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16";
-        let plan = |cache: &str, free_gib: u64| lossy_plan_with(&args(&["run", model, "--expert-cache", cache]), model, Layout::Int5, text, None, free_gib << 30, "NVIDIA L40S", None, Some(128 << 30));
+        let plan = |cache: &str, free_gib: u64| {
+            lossy_plan_with(
+                &args(&["run", model, "--expert-cache", cache]),
+                model,
+                Layout::Int5,
+                text,
+                None,
+                free_gib << 30,
+                "NVIDIA L40S",
+                None,
+                Some(128 << 30),
+            )
+        };
         let c = plan("12", 46).unwrap().cache.unwrap();
         assert_eq!(c.slots, 85);
-        assert_eq!(plan("12", 140).unwrap().cache.unwrap().slots, 85, "a cache is asked for of a GPU that would hold the model: the experts are in the computer's memory all the same");
+        assert_eq!(
+            plan("12", 140).unwrap().cache.unwrap().slots,
+            85,
+            "a cache is asked for of a GPU that would hold the model: the experts are in the computer's memory all the same"
+        );
         let r = plan("40", 46).err().unwrap();
-        assert!(r.code == CANNOT && r.what.contains("a cache of 40.0 GiB for the experts and the 8.0 GiB the rest of the model takes are more than the NVIDIA L40S's 46.0 GiB free"), "{r}");
+        assert!(
+            r.code == CANNOT
+                && r.what
+                    .contains("a cache of 40.0 GiB for the experts and the 8.0 GiB the rest of the model takes are more than the NVIDIA L40S's 46.0 GiB free"),
+            "{r}"
+        );
         assert!(plan("3", 46).is_err() && plan("3.5", 46).is_ok(), "22 experts a layer are 3.1 GiB");
         for bad in ["abc", "0", "-2", "nan"] {
             let r = plan(bad, 46).err().unwrap();
             assert!(r.code == 1 && r.what.contains(&format!("--expert-cache {bad}: not a number of GiB")), "{r}");
         }
         let qwen = include_str!("../../research/lossy-2026/qwen38-config.json");
-        let r = lossy_plan_with(&args(&["run", "Qwen/Qwen3.8-27B", "--expert-cache", "8"]), "Qwen/Qwen3.8-27B", Layout::Int5, qwen, None, 80 << 30, "NVIDIA A100", None, Some(128 << 30)).err().unwrap();
+        let r = lossy_plan_with(
+            &args(&["run", "Qwen/Qwen3.8-27B", "--expert-cache", "8"]),
+            "Qwen/Qwen3.8-27B",
+            Layout::Int5,
+            qwen,
+            None,
+            80 << 30,
+            "NVIDIA A100",
+            None,
+            Some(128 << 30),
+        )
+        .err()
+        .unwrap();
         assert!(r.code == 1 && r.what.contains("has no experts to keep in the computer's memory"), "{r}");
     }
 
@@ -2433,10 +2931,30 @@ mod tests {
         let r = plan(&[], Layout::Int4, 40.0).err().unwrap();
         assert!(r.code == CANNOT && r.what.contains("this computer has 40.0 GiB free"), "wren keeps its experts in memory or is refused: {r}");
         let qwen = include_str!("../../research/lossy-2026/qwen38-config.json");
-        let r = lossy_plan_with(&args(&["run", "Qwen/Qwen3.8-27B", "--host-memory", "8"]), "Qwen/Qwen3.8-27B", Layout::Int5, qwen, None, 80 << 30, "NVIDIA A100", None, Some(128 << 30)).err().unwrap();
+        let r = lossy_plan_with(
+            &args(&["run", "Qwen/Qwen3.8-27B", "--host-memory", "8"]),
+            "Qwen/Qwen3.8-27B",
+            Layout::Int5,
+            qwen,
+            None,
+            80 << 30,
+            "NVIDIA A100",
+            None,
+            Some(128 << 30),
+        )
+        .err()
+        .unwrap();
         assert!(r.code == 1 && r.what.contains("has no experts to keep in the computer's memory"), "{r}");
         // (the share of the experts held, in bytes, for a 128 GiB computer and 32 GiB: what `held_in_memory` says)
-        assert_eq!((held_in_memory(all, None, Some(128 * gib)), held_in_memory(all, None, Some(32 * gib)), held_in_memory(all, None, None), held_in_memory(all, Some(gib), None)), (all, 26 * gib, all, gib));
+        assert_eq!(
+            (
+                held_in_memory(all, None, Some(128 * gib)),
+                held_in_memory(all, None, Some(32 * gib)),
+                held_in_memory(all, None, None),
+                held_in_memory(all, Some(gib), None)
+            ),
+            (all, 26 * gib, all, gib)
+        );
     }
 
     fn plan_of(a: &Args, model: &str, text: String) -> Done<Lossy> {
@@ -2546,7 +3064,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "ready\n");
         // the flag, as the program that starts the engine gives it, among the user's own
         let a = args(&["run", "--status-file", file.to_str().unwrap(), "Qwen/Qwen3-8B", "--prompt", "hi"]);
-        assert_eq!((a.pos.clone(), a.flag("status-file"), a.flag("prompt")), (vec!["run".to_string(), "Qwen/Qwen3-8B".to_string()], Some(file.to_str().unwrap()), Some("hi")));
+        assert_eq!(
+            (a.pos.clone(), a.flag("status-file"), a.flag("prompt")),
+            (vec!["run".to_string(), "Qwen/Qwen3-8B".to_string()], Some(file.to_str().unwrap()), Some("hi"))
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2579,26 +3100,59 @@ mod tests {
         std::fs::write(root.join("models--glyd--Qwen3.5-9B-swift").join("blobs").join(blob), b"weights").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(format!("../../blobs/{blob}"), snap.join("model-00001-of-00001.safetensors")).unwrap();
-        std::fs::write(snap.join("glyd.json"), r#"{"format":"glyd-v7","glyd":"0.29.3","source":{"repo":"Qwen/Qwen3.5-9B","revision":"c202236"},"layout":"i5","level":"swift"}"#).unwrap();
+        std::fs::write(
+            snap.join("glyd.json"),
+            r#"{"format":"glyd-v7","glyd":"0.29.3","source":{"repo":"Qwen/Qwen3.5-9B","revision":"c202236"},"layout":"i5","level":"swift"}"#,
+        )
+        .unwrap();
         std::fs::write(snap.join("config.json"), "{}").unwrap();
         let held = crate::dev::Held { kv_type: "bf16", state_type: "fp32", ..Default::default() };
-        let v = crate::tools::obj(about("Qwen/Qwen3.5-9B:swift", &snap, Some("swift"), "swift", false, "swift level: about 5.5 bits per weight, not lossless", Some(&held), &gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 15)));
+        let v = crate::tools::obj(about(
+            "Qwen/Qwen3.5-9B:swift",
+            &snap,
+            Some("swift"),
+            "swift",
+            false,
+            "swift level: about 5.5 bits per weight, not lossless",
+            Some(&held),
+            &gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 15),
+        ));
         let get = |path: &[&str]| path.iter().fold(&v, |v, k| v.get(k).unwrap_or_else(|| panic!("no {k}"))).clone();
-        assert_eq!((get(&["model", "id"]), get(&["model", "repo"]), get(&["model", "revision"])), (Value::from("Qwen/Qwen3.5-9B:swift"), Value::from("glyd/Qwen3.5-9B-swift"), Value::from("073a2132")));
+        assert_eq!(
+            (get(&["model", "id"]), get(&["model", "repo"]), get(&["model", "revision"])),
+            (Value::from("Qwen/Qwen3.5-9B:swift"), Value::from("glyd/Qwen3.5-9B-swift"), Value::from("073a2132"))
+        );
         assert_eq!((get(&["model", "source", "revision"]), get(&["model", "made_by"])), (Value::from("c202236"), Value::from("glyd 0.29.3")));
         let files = get(&["model", "files"]);
-        let sha = |name: &str| files.as_array().unwrap().iter().find(|f| f.get("name").and_then(Value::as_str) == Some(name)).and_then(|f| f.get("sha256")).cloned();
+        let sha =
+            |name: &str| files.as_array().unwrap().iter().find(|f| f.get("name").and_then(Value::as_str) == Some(name)).and_then(|f| f.get("sha256")).cloned();
         assert_eq!(sha("config.json"), Some(Value::from("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"))); // (SHA-256 of "{}")
         #[cfg(unix)]
         assert_eq!(sha("model-00001-of-00001.safetensors"), Some(Value::from(blob)));
-        assert_eq!((get(&["level", "requested"]), get(&["level", "effective"]), get(&["level", "lossless"])), (Value::from("swift"), Value::from("swift"), Value::Bool(false)));
-        assert_eq!((get(&["precision", "kv"]), get(&["precision", "state"]), get(&["device", "compute_capability"]), get(&["device", "cuda"])), (Value::from("bf16"), Value::from("fp32"), Value::from("8.9"), Value::from("13.0")));
+        assert_eq!(
+            (get(&["level", "requested"]), get(&["level", "effective"]), get(&["level", "lossless"])),
+            (Value::from("swift"), Value::from("swift"), Value::Bool(false))
+        );
+        assert_eq!(
+            (get(&["precision", "kv"]), get(&["precision", "state"]), get(&["device", "compute_capability"]), get(&["device", "cuda"])),
+            (Value::from("bf16"), Value::from("fp32"), Value::from("8.9"), Value::from("13.0"))
+        );
         // a directory out of the Hub's cache has no repo or revision
         let plain = crate::tools::obj(about("m", &root, None, "swift", false, "w", None, &gpu("g", (8, 9), 15)));
-        assert_eq!((plain.get("model").and_then(|m| m.get("repo")), plain.get("level").and_then(|l| l.get("requested"))), (Some(&Value::Null), Some(&Value::Null)));
+        assert_eq!(
+            (plain.get("model").and_then(|m| m.get("repo")), plain.get("level").and_then(|l| l.get("requested"))),
+            (Some(&Value::Null), Some(&Value::Null))
+        );
         std::fs::remove_dir_all(&root).unwrap();
         // the level asked for
-        for (given, lossy, want) in [("Qwen/Qwen3.5-9B:swift", false, Some("swift")), ("Qwen/Qwen3.5-9B:PENGUIN", false, Some("penguin")), ("Qwen/Qwen3.5-9B", true, Some("kestrel")), ("glyd/Qwen3.5-9B-swift", false, Some("swift")), ("/models/q-swift", false, None), ("Qwen/Qwen3.5-9B:sparrow", false, None)] {
+        for (given, lossy, want) in [
+            ("Qwen/Qwen3.5-9B:swift", false, Some("swift")),
+            ("Qwen/Qwen3.5-9B:PENGUIN", false, Some("penguin")),
+            ("Qwen/Qwen3.5-9B", true, Some("kestrel")),
+            ("glyd/Qwen3.5-9B-swift", false, Some("swift")),
+            ("/models/q-swift", false, None),
+            ("Qwen/Qwen3.5-9B:sparrow", false, None),
+        ] {
             assert_eq!(requested(given, lossy), want, "{given}");
         }
         // the driver's version, from /proc/driver/nvidia/version's first line

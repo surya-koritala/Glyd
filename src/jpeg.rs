@@ -96,7 +96,8 @@ mod tests {
     #[test]
     fn a_lepton_stream_still_restores() {
         let jpeg = crate::jpg::tests::fixture("q75-420.jpg");
-        let (lepton, _) = lepton_jpeg::encode_lepton_verify(&jpeg, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_write(), &lepton_jpeg::SingleThreadPool {}).unwrap();
+        let (lepton, _) =
+            lepton_jpeg::encode_lepton_verify(&jpeg, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_write(), &lepton_jpeg::SingleThreadPool {}).unwrap();
         assert_eq!(restore(&lepton).unwrap(), jpeg);
     }
 }

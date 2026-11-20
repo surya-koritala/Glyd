@@ -195,7 +195,13 @@ fn main() {
                     fixed[i] += (n as f64) * k as f64 + (n - covered) as f64 * 8.0;
                 }
             }
-            println!("{}: {:.0}M bf16 weights; exponent entropy {:.2} bits, so {:.2} bits a weight", a[2].rsplit('/').next().unwrap(), n_all / 1e6, ent / n_all, 8.0 + ent / n_all);
+            println!(
+                "{}: {:.0}M bf16 weights; exponent entropy {:.2} bits, so {:.2} bits a weight",
+                a[2].rsplit('/').next().unwrap(),
+                n_all / 1e6,
+                ent / n_all,
+                8.0 + ent / n_all
+            );
             for (i, k) in (2..=8).enumerate() {
                 println!("  fixed {k}-bit exponent code + escape: {:.2} bits a weight", 8.0 + fixed[i] / n_all);
             }
@@ -224,7 +230,13 @@ fn main() {
                     for i in 0..n {
                         let b = d[i * w + j] as usize;
                         c0[b] += 1;
-                        let ctx = if j + 1 < w { d[i * w + j + 1] as usize } else if i > 0 { d[(i - 1) * w + j] as usize } else { 0 };
+                        let ctx = if j + 1 < w {
+                            d[i * w + j + 1] as usize
+                        } else if i > 0 {
+                            d[(i - 1) * w + j] as usize
+                        } else {
+                            0
+                        };
                         c1[ctx * 256 + b] += 1;
                     }
                     o0[j] += h(&c0);
@@ -233,8 +245,15 @@ fn main() {
             }
             let t0: f64 = o0.iter().sum();
             let t1: f64 = cond.iter().sum();
-            println!("{}: {} B; order-0 per plane {:.0} B ({:?}); conditioned {:.0} B ({:?})", a[2].rsplit('/').next().unwrap(), f.len(), t0,
-                o0[..w_all].iter().map(|x| (*x / 1e6).round() as u64).collect::<Vec<_>>(), t1, cond[..w_all].iter().map(|x| (*x / 1e6).round() as u64).collect::<Vec<_>>());
+            println!(
+                "{}: {} B; order-0 per plane {:.0} B ({:?}); conditioned {:.0} B ({:?})",
+                a[2].rsplit('/').next().unwrap(),
+                f.len(),
+                t0,
+                o0[..w_all].iter().map(|x| (*x / 1e6).round() as u64).collect::<Vec<_>>(),
+                t1,
+                cond[..w_all].iter().map(|x| (*x / 1e6).round() as u64).collect::<Vec<_>>()
+            );
         }
         _ => panic!("info | planes | entropy | xor"),
     }

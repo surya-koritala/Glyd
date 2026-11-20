@@ -102,7 +102,9 @@ fn run() -> Result<()> {
         Some("qwenbench") => glyd_engine::qwen_tools::bench(&a),
         Some("qwenmcp") => glyd_engine::qwen_tools::mcp(&a),
         Some("qwenget") => glyd_engine::qwen4x_serve::get(a.need(1, "REPO")?, std::path::Path::new(a.need(2, "DIR")?), &a),
-        Some("qwenserve") if a.has("port") || a.has("host") => glyd_engine::qwen4x_serve::http(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a),
+        Some("qwenserve") if a.has("port") || a.has("host") => {
+            glyd_engine::qwen4x_serve::http(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a)
+        }
         Some("qwenserve") => glyd_engine::qwen4x_serve::serve(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a),
         #[cfg(feature = "dev")]
         Some(c) => devcmd::run(c, &a),

@@ -111,7 +111,8 @@ fn sh(cmd: &str, args: &[&str]) -> String {
 
 /// The GPU's name as a file name: "NVIDIA GeForce RTX 4090" is rtx-4090.
 fn slug(gpu: &str) -> String {
-    let s: String = gpu.replace("NVIDIA", "").replace("GeForce", "").chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    let s: String =
+        gpu.replace("NVIDIA", "").replace("GeForce", "").chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
     s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-")
 }
 
@@ -125,7 +126,13 @@ fn measure(a: &Args, repo: &Path, out: &Path) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}");
     let exe = std::env::current_exe().map_err(|e| Error(e.to_string()))?;
     let logf = std::fs::File::create(&log).map_err(|e| Error(format!("{}: {e}", log.display())))?;
-    let mut child = Command::new(exe).args(["serve", &repo.display().to_string(), "--port", &port.to_string()]).env_remove("GLYD_API_KEY").stdout(Stdio::from(logf.try_clone().map_err(|e| Error(e.to_string()))?)).stderr(Stdio::from(logf)).spawn().map_err(|e| Error(e.to_string()))?;
+    let mut child = Command::new(exe)
+        .args(["serve", &repo.display().to_string(), "--port", &port.to_string()])
+        .env_remove("GLYD_API_KEY")
+        .stdout(Stdio::from(logf.try_clone().map_err(|e| Error(e.to_string()))?))
+        .stderr(Stdio::from(logf))
+        .spawn()
+        .map_err(|e| Error(e.to_string()))?;
     let result = (|| -> Result<String> {
         let t0 = Instant::now();
         while ureq::get(&format!("{url}/health")).call().map_or(true, |r| r.status() != 200) {
@@ -138,7 +145,14 @@ fn measure(a: &Args, repo: &Path, out: &Path) -> Result<()> {
             std::thread::sleep(Duration::from_secs(5));
         }
         let lengths: Vec<usize> = a.flag("lengths").unwrap_or("4000,30000").split(',').filter_map(|x| x.trim().parse().ok()).collect();
-        let mut t = format!("gpu={}\ncpu={}\nram={}\nwhen={}\nglyd={}\n", sh("nvidia-smi", &["--query-gpu=name,memory.total,driver_version", "--format=csv,noheader"]), crate::qwen_tools::cpu_name(), crate::qwen_tools::ram(), sh("date", &["+%Y-%m-%d"]), env!("CARGO_PKG_VERSION"));
+        let mut t = format!(
+            "gpu={}\ncpu={}\nram={}\nwhen={}\nglyd={}\n",
+            sh("nvidia-smi", &["--query-gpu=name,memory.total,driver_version", "--format=csv,noheader"]),
+            crate::qwen_tools::cpu_name(),
+            crate::qwen_tools::ram(),
+            sh("date", &["+%Y-%m-%d"]),
+            env!("CARGO_PKG_VERSION")
+        );
         let served = std::fs::read_to_string(&log).unwrap_or_default();
         for l in served.lines() {
             if l.contains(" on the GPU at the ") {
@@ -156,7 +170,11 @@ fn measure(a: &Args, repo: &Path, out: &Path) -> Result<()> {
             let dir = out.join(format!("{}-evals", slug(&gpu)));
             let script = a.flag("evals-script").unwrap_or("tools/cards/eval_run.py");
             // (Inspect's openai-api provider reads GLYD_API_KEY for the service "glyd"; the server here has no key, and takes any)
-            let s = Command::new("python3").env("GLYD_API_KEY", "none").args([script, &format!("{url}/v1"), "model", "1/2", &n.to_string(), &dir.display().to_string()]).status().map_err(|e| Error(format!("python3 {script}: {e}")))?;
+            let s = Command::new("python3")
+                .env("GLYD_API_KEY", "none")
+                .args([script, &format!("{url}/v1"), "model", "1/2", &n.to_string(), &dir.display().to_string()])
+                .status()
+                .map_err(|e| Error(format!("python3 {script}: {e}")))?;
             if !s.success() {
                 return Err(Error(format!("python3 {script}: {s}")));
             }
@@ -198,7 +216,11 @@ fn gb(dir: &Path, skip: Option<&str>) -> f64 {
 
 /// The source's license as the Hub's model page has it (`cardData.license`, which a gated model shows too), else as its README's front matter says, else "other".
 fn license(model: &str) -> String {
-    let hub = ureq::get(&format!("https://huggingface.co/api/models/{model}")).call().ok().and_then(|r| r.into_body().read_to_string().ok()).and_then(|t| json::parse(&t).ok());
+    let hub = ureq::get(&format!("https://huggingface.co/api/models/{model}"))
+        .call()
+        .ok()
+        .and_then(|r| r.into_body().read_to_string().ok())
+        .and_then(|t| json::parse(&t).ok());
     if let Some(l) = hub.as_ref().and_then(|v| v.get("cardData")).and_then(|c| c.get("license")).and_then(Value::as_str) {
         return l.to_string();
     }
@@ -216,10 +238,20 @@ fn machine(text: &str) -> minijinja::Value {
             rows.push(format!("{name:<22}{prompt:>8}{:>14}{:>16}", format!("{first} s"), format!("{rate} tok/s")));
         }
     }
-    let evals: Vec<String> = text.lines().filter_map(|l| l.strip_prefix("eval=")).map(|e| {
-        let f: Vec<&str> = e.split('|').collect();
-        format!("{:<10}{} / {}     (every second question, the first {}; greedy, thinking off)", f[0], f.get(1).unwrap_or(&"?"), f.get(2).unwrap_or(&"?"), f.get(2).unwrap_or(&"?"))
-    }).collect();
+    let evals: Vec<String> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("eval="))
+        .map(|e| {
+            let f: Vec<&str> = e.split('|').collect();
+            format!(
+                "{:<10}{} / {}     (every second question, the first {}; greedy, thinking off)",
+                f[0],
+                f.get(1).unwrap_or(&"?"),
+                f.get(2).unwrap_or(&"?"),
+                f.get(2).unwrap_or(&"?")
+            )
+        })
+        .collect();
     let gpu = get("gpu");
     minijinja::Value::from_iter([
         ("gpu", minijinja::Value::from(gpu.split(',').next().unwrap_or("?").trim().to_string())),
@@ -239,7 +271,8 @@ fn machine(text: &str) -> minijinja::Value {
 /// README.md of the repo: the card, from ship_card.md.j2 and every machine measured.
 fn card(a: &Args, model: &str, level: &str, draft: Option<&str>, repo: &Path, measured: &Path) -> Result<()> {
     let mut machines = Vec::new();
-    let mut files: Vec<PathBuf> = std::fs::read_dir(measured).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "txt")).collect();
+    let mut files: Vec<PathBuf> =
+        std::fs::read_dir(measured).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "txt")).collect();
     files.sort();
     for f in files {
         machines.push(machine(&std::fs::read_to_string(&f).map_err(|e| Error(format!("{}: {e}", f.display())))?));
@@ -300,7 +333,15 @@ mod tests {
         env.add_template("card", CARD).unwrap();
         let t = env.get_template("card").unwrap().render(ctx).unwrap();
         assert!(t.starts_with("---\nlicense: apache-2.0\n"), "{t}");
-        for want in ["# Gemma 4 12B · Glyd Penguin", "glyd run glyd/gemma-4-12B-penguin", "89.8 tok/s", "GSM8K     72 / 75", "RTX 4090", "in draft/", "About 14.9 GiB on the GPU at the penguin level (about 10.8 bits per weight, lossless: every weight is the original's)"] {
+        for want in [
+            "# Gemma 4 12B · Glyd Penguin",
+            "glyd run glyd/gemma-4-12B-penguin",
+            "89.8 tok/s",
+            "GSM8K     72 / 75",
+            "RTX 4090",
+            "in draft/",
+            "About 14.9 GiB on the GPU at the penguin level (about 10.8 bits per weight, lossless: every weight is the original's)",
+        ] {
             assert!(t.contains(want), "{want} not in:\n{t}");
         }
     }

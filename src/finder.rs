@@ -23,8 +23,8 @@
 //! and the portable build run the same parse.
 
 use crate::format::{
-    Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, LIT_DIRECT_MAX, MATCH_CODE_ESCAPE,
-    MAX_LIT_LEN, MIN_MATCH_LEN, MIN_MATCH_LEN_DENSE, MIN_MATCH_LEN_TURBO, WINDOW_SIZE,
+    Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, LIT_DIRECT_MAX, MATCH_CODE_ESCAPE, MAX_LIT_LEN, MIN_MATCH_LEN, MIN_MATCH_LEN_DENSE,
+    MIN_MATCH_LEN_TURBO, WINDOW_SIZE,
 };
 
 /// Default finder window; see `window_size`. The v6 format holds 17-bit
@@ -73,11 +73,7 @@ pub fn new_table() -> Box<HashTable> {
 /// 4-byte match without reading the source, so a zeroed table would claim
 /// the source starts with four zero bytes.
 pub fn init_table(table: &mut HashTable, src: &[u8]) {
-    let w = if src.len() >= 4 {
-        u32::from_le_bytes([src[0], src[1], src[2], src[3]])
-    } else {
-        0
-    };
+    let w = if src.len() >= 4 { u32::from_le_bytes([src[0], src[1], src[2], src[3]]) } else { 0 };
     table.fill(Bucket { w1: w, p1: 0, w2: w, p2: 0 });
 }
 
@@ -92,13 +88,7 @@ pub fn init_table(table: &mut HashTable, src: &[u8]) {
 fn window_size() -> usize {
     use std::sync::OnceLock;
     static W: OnceLock<usize> = OnceLock::new();
-    *W.get_or_init(|| {
-        std::env::var("GLYD_WINDOW")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .map(|w| w.clamp(1, WINDOW_SIZE))
-            .unwrap_or(FINDER_WINDOW)
-    })
+    *W.get_or_init(|| std::env::var("GLYD_WINDOW").ok().and_then(|v| v.parse::<usize>().ok()).map(|w| w.clamp(1, WINDOW_SIZE)).unwrap_or(FINDER_WINDOW))
 }
 
 /// komihash-style 6-byte hash, as in LZAV.
@@ -345,13 +335,7 @@ impl Cursors {
 /// (or a prefix of it) and every position it holds must be below
 /// `block_start + block_len`.
 #[inline(always)]
-pub unsafe fn find_matches<M: MatchLen, P: Mode>(
-    full_input: &[u8],
-    block_start: usize,
-    block_len: usize,
-    table: &mut HashTable,
-    out: &mut Streams,
-) {
+pub unsafe fn find_matches<M: MatchLen, P: Mode>(full_input: &[u8], block_start: usize, block_len: usize, table: &mut HashTable, out: &mut Streams) {
     let src = full_input.as_ptr();
     let src_end = src.add(full_input.len());
     let block_end = block_start + block_len;
@@ -523,13 +507,7 @@ unsafe fn hash5(p: *const u8) -> usize {
 ///
 /// # Safety
 /// Every position in `table` must be below `block_start + block_len`.
-pub unsafe fn find_matches_fast<P: Mode>(
-    full_input: &[u8],
-    block_start: usize,
-    block_len: usize,
-    table: &mut FastTable,
-    out: &mut Streams,
-) {
+pub unsafe fn find_matches_fast<P: Mode>(full_input: &[u8], block_start: usize, block_len: usize, table: &mut FastTable, out: &mut Streams) {
     const { assert!(P::MIN_MATCH <= 8) };
     let min = P::MIN_MATCH;
     const SKIP_STRENGTH: u32 = 6;
@@ -559,8 +537,7 @@ pub unsafe fn find_matches_fast<P: Mode>(
             search_nb += 1;
             let d = pos.wrapping_sub(c);
             if d >= 1 && d < window {
-                let x = std::ptr::read_unaligned(src.add(pos) as *const u64)
-                    ^ std::ptr::read_unaligned(src.add(c) as *const u64);
+                let x = std::ptr::read_unaligned(src.add(pos) as *const u64) ^ std::ptr::read_unaligned(src.add(c) as *const u64);
                 let len = if x == 0 { 8 } else { (x.trailing_zeros() / 8) as usize };
                 if len >= min {
                     cand = c;

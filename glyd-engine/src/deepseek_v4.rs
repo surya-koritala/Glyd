@@ -63,7 +63,10 @@ pub struct Yarn {
 }
 
 pub fn is_v4(text: &str) -> bool {
-    json::parse(text).ok().and_then(|v| v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "DeepseekV4ForCausalLM"))).unwrap_or(false)
+    json::parse(text)
+        .ok()
+        .and_then(|v| v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "DeepseekV4ForCausalLM")))
+        .unwrap_or(false)
 }
 
 impl ConfigV4 {
@@ -83,8 +86,20 @@ impl ConfigV4 {
         let get = |k: &str| v.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
         let f = |k: &str| -> Result<f64> { num(get(k)?, k) };
-        let u_or = |k: &str, d: usize| -> Result<usize> { if v.get(k).is_some_and(|x| *x != Value::Null) { u(k) } else { Ok(d) } };
-        let f_or = |k: &str, d: f64| -> Result<f64> { if v.get(k).is_some_and(|x| *x != Value::Null) { f(k) } else { Ok(d) } };
+        let u_or = |k: &str, d: usize| -> Result<usize> {
+            if v.get(k).is_some_and(|x| *x != Value::Null) {
+                u(k)
+            } else {
+                Ok(d)
+            }
+        };
+        let f_or = |k: &str, d: f64| -> Result<f64> {
+            if v.get(k).is_some_and(|x| *x != Value::Null) {
+                f(k)
+            } else {
+                Ok(d)
+            }
+        };
         let text_is = |k: &str, want: &str| v.get(k).and_then(Value::as_str).is_none_or(|a| a == want);
         let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
         if !text_is("hidden_act", "silu") {
@@ -128,7 +143,9 @@ impl ConfigV4 {
             let sfmt = q.get("scale_fmt").and_then(Value::as_str).unwrap_or("");
             let block = q.get("weight_block_size").and_then(Value::as_u64s);
             if method != "fp8" || fmt != "e4m3" || sfmt != "ue8m0" || block.as_deref() != Some(&[128, 128]) {
-                return refuse(&format!("a quantization of {method} {fmt}, scales {sfmt:?}, blocks {block:?} (the release's is fp8 e4m3, ue8m0 scales of 128 x 128 blocks)"));
+                return refuse(&format!(
+                    "a quantization of {method} {fmt}, scales {sfmt:?}, blocks {block:?} (the release's is fp8 e4m3, ue8m0 scales of 128 x 128 blocks)"
+                ));
             }
         }
         if v.get("expert_dtype").and_then(Value::as_str).is_some_and(|d| d != "fp4") {
@@ -139,7 +156,12 @@ impl ConfigV4 {
         if rs.and_then(|r| r.get("type").or_else(|| r.get("rope_type"))).and_then(Value::as_str).is_some_and(|t| t != "yarn") {
             return refuse("a rotary scaling other than yarn");
         }
-        let yarn = Yarn { factor: rsf("factor", 1.0)?, orig: rsf("original_max_position_embeddings", 0.0)? as usize, beta_fast: rsf("beta_fast", 32.0)?, beta_slow: rsf("beta_slow", 1.0)? };
+        let yarn = Yarn {
+            factor: rsf("factor", 1.0)?,
+            orig: rsf("original_max_position_embeddings", 0.0)? as usize,
+            beta_fast: rsf("beta_fast", 32.0)?,
+            beta_slow: rsf("beta_slow", 1.0)?,
+        };
         let (heads, head_dim, rope_dim) = (u("num_attention_heads")?, u("head_dim")?, u("qk_rope_head_dim")?);
         let (o_groups, idx_dim) = (u("o_groups")?, u("index_head_dim")?);
         if heads % o_groups != 0 || rope_dim % 2 != 0 || rope_dim > head_dim || rope_dim > idx_dim || head_dim % 64 != 0 || !idx_dim.is_power_of_two() {

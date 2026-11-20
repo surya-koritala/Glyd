@@ -137,7 +137,9 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "musecheck" => glyd_engine::muse_ref::check(&a),
         "hubslice" => glyd_engine::hub::slice_cmd(&a),
         "dlrate" => glyd_engine::hub::rate_cmd(&a),
-        "dsv4random" => glyd_engine::dsv4_ref::random(Path::new(a.need(1, "OUT")?), if a.has("real") { Some((a.num("layers", 3)?, a.num("experts", 32)?)) } else { None }),
+        "dsv4random" => {
+            glyd_engine::dsv4_ref::random(Path::new(a.need(1, "OUT")?), if a.has("real") { Some((a.num("layers", 3)?, a.num("experts", 32)?)) } else { None })
+        }
         "dsv4prof" => glyd_engine::dsv4_ref::prof(&a),
         "dsv4ref" => glyd_engine::dsv4_ref::cmd(&a),
         "dsv4check" => glyd_engine::dsv4_ref::check(&a),
@@ -166,10 +168,25 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         }
         "diskcheck" => glyd_engine::kcheck_nh::disk(Path::new(a.need(1, "DIR")?), a.num("reads", 400usize)?, a.num("depth", 16usize)?),
         "nhoffload" => {
-            let slots: Vec<usize> = a.flag("slots").unwrap_or("3,5,8").split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--slots {x}: not a number")))).collect::<Result<_>>()?;
+            let slots: Vec<usize> = a
+                .flag("slots")
+                .unwrap_or("3,5,8")
+                .split(',')
+                .map(|x| x.trim().parse().map_err(|_| Error(format!("--slots {x}: not a number"))))
+                .collect::<Result<_>>()?;
             // --host-memory GIB,GIB,...: budgets of the computer's memory for the experts, each run against the tiny model with every expert in memory
             let memory: Vec<u64> = match a.flag("host-memory") {
-                Some(v) => v.split(',').map(|x| x.trim().parse::<f64>().ok().filter(|g| g.is_finite() && *g > 0.0).map(|g| (g * (1u64 << 30) as f64) as u64).ok_or_else(|| Error(format!("--host-memory {x}: not a number of GiB")))).collect::<Result<_>>()?,
+                Some(v) => v
+                    .split(',')
+                    .map(|x| {
+                        x.trim()
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|g| g.is_finite() && *g > 0.0)
+                            .map(|g| (g * (1u64 << 30) as f64) as u64)
+                            .ok_or_else(|| Error(format!("--host-memory {x}: not a number of GiB")))
+                    })
+                    .collect::<Result<_>>()?,
                 None => Vec::new(),
             };
             // --offload-mode copy|cpu|split|auto (one), --cpu-threads and --cpu-pin: how the cache serves a miss (the default, copy, is held to the bit; the others to `logits_within`)
@@ -184,16 +201,28 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         }
         "nhdecode" => {
             let layers = a.flag("layers").ok_or_else(|| Error("nhdecode needs --layers L,L,...".into()))?;
-            let layers: Vec<usize> = layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
+            let layers: Vec<usize> =
+                layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
             glyd_engine::kcheck_nh::decode(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), &layers, a.num("tokens", 333usize)?)
         }
         "glmkernels" => glyd_engine::kcheck_glm::kernels(Path::new(a.need(1, "IN_DIR")?), Path::new(a.need(2, "OUT_DIR")?)),
         "glmlayers" => glyd_engine::kcheck_glm::layers(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
         "glmdyn" => {
             let (cuts, devices) = glyd_engine::dynamic::split::split_args(&a)?;
-            glyd_engine::kcheck_glm::dyn_check(Path::new(a.need(1, "DIR")?), a.num("tokens", 48)?, a.has("old"), a.layout()?.unwrap_or(glyd_engine::weights::Layout::Int6), &cuts, &devices)
+            glyd_engine::kcheck_glm::dyn_check(
+                Path::new(a.need(1, "DIR")?),
+                a.num("tokens", 48)?,
+                a.has("old"),
+                a.layout()?.unwrap_or(glyd_engine::weights::Layout::Int6),
+                &cuts,
+                &devices,
+            )
         }
-        "glmrandom" => glyd_engine::kcheck_glm::random(Path::new(a.need(1, "OUT")?), a.has("fp8"), if a.has("real") { Some((a.num("layers", 4)?, a.num("experts", 32)?)) } else { None }),
+        "glmrandom" => glyd_engine::kcheck_glm::random(
+            Path::new(a.need(1, "OUT")?),
+            a.has("fp8"),
+            if a.has("real") { Some((a.num("layers", 4)?, a.num("experts", 32)?)) } else { None },
+        ),
         "glmtoy" => glyd_engine::kcheck_glm::toy(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
         "glmmtpreal" => {
             let level = a.layout()?.ok_or_else(|| Error("glmmtpreal needs --layout i6, i5 or i4".into()))?;
@@ -201,9 +230,20 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         }
         "glmreal" => {
             let range = a.flag("layers").ok_or_else(|| Error("glmreal needs --layers FIRST:END".into()))?;
-            let (first, end) = range.split_once(':').and_then(|(x, y)| Some((x.parse::<usize>().ok()?, y.parse::<usize>().ok()?))).ok_or_else(|| Error(format!("--layers {range}: not FIRST:END")))?;
+            let (first, end) = range
+                .split_once(':')
+                .and_then(|(x, y)| Some((x.parse::<usize>().ok()?, y.parse::<usize>().ok()?)))
+                .ok_or_else(|| Error(format!("--layers {range}: not FIRST:END")))?;
             let level = a.layout()?.ok_or_else(|| Error("glmreal needs --layout i6, i5 or i4".into()))?;
-            glyd_engine::kcheck_glm::real(Path::new(a.need(1, "SNAPSHOT")?), Path::new(a.need(2, "REF_DIR")?), Path::new(a.need(3, "OUT_DIR")?), first, end, level, a.flag("teacher").is_some())
+            glyd_engine::kcheck_glm::real(
+                Path::new(a.need(1, "SNAPSHOT")?),
+                Path::new(a.need(2, "REF_DIR")?),
+                Path::new(a.need(3, "OUT_DIR")?),
+                first,
+                end,
+                level,
+                a.flag("teacher").is_some(),
+            )
         }
         "qxlayers" => {
             if !glyd_engine::kcheck_qwen4x::layers(Path::new(a.need(1, "MODEL")?), Path::new(a.need(2, "REF")?), a)? {
@@ -242,14 +282,16 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "glmspec" => glyd_engine::kcheck_glm::spec(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
         "glmprof" => {
             let layers = a.flag("layers").ok_or_else(|| Error("glmprof needs --layers L,L,...".into()))?;
-            let layers: Vec<usize> = layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
+            let layers: Vec<usize> =
+                layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
             let num = |k: &str, d: usize| -> Result<usize> { a.flag(k).map_or(Ok(d), |v| v.parse().map_err(|_| Error(format!("--{k} {v}: not a number")))) };
             glyd_engine::kcheck_glm::prof(Path::new(a.need(1, "DIR")?), &layers, num("ctx", 2600)?, num("reps", 20)?)
         }
         "glmdequant" => glyd_engine::kcheck_glm::fp8(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), a.flag("match")),
         "glmdecode" => {
             let layers = a.flag("layers").ok_or_else(|| Error("glmdecode needs --layers L,L,...".into()))?;
-            let layers: Vec<usize> = layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
+            let layers: Vec<usize> =
+                layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
             let level = a.layout()?.ok_or_else(|| Error("glmdecode needs --layout i6, i5 or i4".into()))?;
             glyd_engine::kcheck_glm::decode(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), &layers, level)
         }
@@ -372,7 +414,8 @@ fn cmd_score(a: &Args) -> Result<()> {
     let pf = a.need(2, "REF.json")?;
     let of = a.need(3, "OUT.json")?;
     let v = json::parse(&std::fs::read_to_string(pf).map_err(|e| Error(format!("{pf}: {e}")))?).map_err(|e| Error(format!("{pf}: {e}")))?;
-    let ids: Vec<u32> = v.get("score_ids").and_then(Value::as_u64s).ok_or_else(|| Error(format!("{pf}: no score_ids")))?.into_iter().map(|x| x as u32).collect();
+    let ids: Vec<u32> =
+        v.get("score_ids").and_then(Value::as_u64s).ok_or_else(|| Error(format!("{pf}: no score_ids")))?.into_iter().map(|x| x as u32).collect();
     let (mut e, load) = open(a)?;
     eprintln!("loaded in {load:.1} s: {}", e.describe());
     let t0 = Instant::now();
@@ -391,7 +434,12 @@ fn cmd_bench(a: &Args) -> Result<()> {
     if let Some(dir) = qwen35_dir(a) {
         return cmd_bench35(a, &dir);
     }
-    let ns: Vec<usize> = a.flag("prompt").unwrap_or("1024").split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--prompt {x}: not a number")))).collect::<Result<_>>()?;
+    let ns: Vec<usize> = a
+        .flag("prompt")
+        .unwrap_or("1024")
+        .split(',')
+        .map(|x| x.trim().parse().map_err(|_| Error(format!("--prompt {x}: not a number"))))
+        .collect::<Result<_>>()?;
     let new = a.num("new", 256usize)?;
     let (mut e, load) = open(a)?;
     eprintln!("loaded in {load:.1} s: {}", e.describe());
@@ -451,7 +499,12 @@ fn cmd_rowcheck(a: &Args) -> Result<()> {
             }
         }
         let all: Vec<i32> = (0..8usize).flat_map(|k| (0..lens[k] / 16).map(move |j| (k * per + j) as i32)).collect();
-        let count = || (glyd_engine::model::VERIFY_CHECKED.load(std::sync::atomic::Ordering::Relaxed), glyd_engine::model::VERIFY_DIFFER.load(std::sync::atomic::Ordering::Relaxed));
+        let count = || {
+            (
+                glyd_engine::model::VERIFY_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
+                glyd_engine::model::VERIFY_DIFFER.load(std::sync::atomic::Ordering::Relaxed),
+            )
+        };
         let before = count();
         // (the first rounds: the full pages compared right after the prompts, before any decode step)
         e.verify_pages(&all)?;
@@ -467,9 +520,15 @@ fn cmd_rowcheck(a: &Args) -> Result<()> {
             println!("round {round}: after a decode step {} values checked, {} differing", c.0 - after_prompts.0, c.1 - after_prompts.1);
         }
     }
-    let (checked, differ) = (glyd_engine::model::VERIFY_CHECKED.load(std::sync::atomic::Ordering::Relaxed), glyd_engine::model::VERIFY_DIFFER.load(std::sync::atomic::Ordering::Relaxed));
+    let (checked, differ) = (
+        glyd_engine::model::VERIFY_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
+        glyd_engine::model::VERIFY_DIFFER.load(std::sync::atomic::Ordering::Relaxed),
+    );
     if churn > 0 {
-        println!("differing by head (keys, values): {:?}", glyd_engine::model::VERIFY_BY.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect::<Vec<_>>());
+        println!(
+            "differing by head (keys, values): {:?}",
+            glyd_engine::model::VERIFY_BY.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect::<Vec<_>>()
+        );
     }
     let lost = glyd_engine::model::VERIFY_LOST.load(std::sync::atomic::Ordering::Relaxed);
     println!("{churn} rounds of churn first; values checked against the bf16 copy {checked}, differing {differ}, values in blocks the cache had named lost (not compared) {lost}");
@@ -509,7 +568,14 @@ fn cmd_rowcheck(a: &Args) -> Result<()> {
         }
     }
     let all = seen.iter().all(|x| x.2 == seen[0].2);
-    println!("{}", if all { "the sequence's logits are the same bit for bit at every number of rows and in either row" } else { "the sequence's logits differ between some numbers of rows (see above)" });
+    println!(
+        "{}",
+        if all {
+            "the sequence's logits are the same bit for bit at every number of rows and in either row"
+        } else {
+            "the sequence's logits differ between some numbers of rows (see above)"
+        }
+    );
     if bad {
         std::process::exit(1);
     }
@@ -612,7 +678,9 @@ fn cmd_pack(a: &Args) -> Result<()> {
     }
     let src = glyd_gpu::save::Source::find(model).map_err(|e| Error(e.to_string()))?;
     // (a lossy level's layout is the one asked: the model, a Qwen3.5, a Nemotron 3 Super or a GLM-5.3-Flash, has no Qwen3 config to choose a layout by; GLM-5.3-Flash is packed at the lossy levels alone)
-    if glyd_engine::glm::is_glm(&std::fs::read_to_string(src.dir.join("config.json")).unwrap_or_default()) && !matches!(a.layout()?, Some(Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int3)) {
+    if glyd_engine::glm::is_glm(&std::fs::read_to_string(src.dir.join("config.json")).unwrap_or_default())
+        && !matches!(a.layout()?, Some(Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int3))
+    {
         return err("GLM-5.3-Flash is packed at a lossy level: --layout i6 or i5");
     }
     // (a Gemma 4 model has no Qwen3 config either: its layout is the one asked, penguin's where none is)
@@ -689,21 +757,37 @@ fn offload_variants(a: &Args) -> Result<Vec<glyd_engine::offload::Offload>> {
     plain.flags.retain(|(k, _)| k != "offload-mode");
     let base = offload_args(&plain)?;
     let list = a.flag("offload-mode").unwrap_or(Mode::Auto.name());
-    list.split(',').map(|v| parse_variant(v.trim(), &base).ok_or_else(|| Error(format!("--offload-mode {v}: copy, cpu, split or auto, then :THREADS and :pin (cpu:16:pin)")))).collect()
+    list.split(',')
+        .map(|v| {
+            parse_variant(v.trim(), &base).ok_or_else(|| Error(format!("--offload-mode {v}: copy, cpu, split or auto, then :THREADS and :pin (cpu:16:pin)")))
+        })
+        .collect()
 }
 
 /// The engine of a Nemotron-H model: a glyd-v7 directory at its own level, else a Hub-format one packed as it loads at the level of `--layout i6`, `i5` or `i4`. `--expert-cache GIB`: every expert in the computer's memory and
 /// the GPU's `GIB` GiB for a cache of them (`auto`: what `run` would give this GPU, `auto:GIB`: what a GPU with GIB GiB free would get; src/offload.rs; the store is returned for its counts) and the variants of
 /// `--offload-mode` (the first is set; a computer that cannot hold the host's half besides the experts has its `auto` copy, and is refused `cpu` and `split`).
-fn open_nh(a: &Args, dir: &Path) -> Result<(glyd_engine::model_nh::EngineNh, f64, Option<std::rc::Rc<glyd_engine::offload::ExpertStore>>, Vec<glyd_engine::offload::Offload>)> {
+fn open_nh(
+    a: &Args,
+    dir: &Path,
+) -> Result<(glyd_engine::model_nh::EngineNh, f64, Option<std::rc::Rc<glyd_engine::offload::ExpertStore>>, Vec<glyd_engine::offload::Offload>)> {
     use glyd_engine::offload::Mode;
     use glyd_engine::weights::Layout;
     let t0 = Instant::now();
     let level = match glyd_engine::weights::v7_manifest(dir)? {
         Some((l, _)) => l,
-        None => a.layout()?.filter(|l| matches!(l, Layout::Int6 | Layout::Int5 | Layout::Int4)).ok_or_else(|| Error("a Nemotron-H model runs in six-, five- or four-bit codes: --layout i6, i5 or i4, or a directory `pack` made".into()))?,
+        None => a
+            .layout()?
+            .filter(|l| matches!(l, Layout::Int6 | Layout::Int5 | Layout::Int4))
+            .ok_or_else(|| Error("a Nemotron-H model runs in six-, five- or four-bit codes: --layout i6, i5 or i4, or a directory `pack` made".into()))?,
     };
-    let o = glyd_engine::model_nh::OptsNh { ctx: a.num("ctx", 4096usize)?, chunk: a.num("chunk", 2048usize)?, graph: !a.has("no-graph"), layout: Some(level), ..Default::default() };
+    let o = glyd_engine::model_nh::OptsNh {
+        ctx: a.num("ctx", 4096usize)?,
+        chunk: a.num("chunk", 2048usize)?,
+        graph: !a.has("no-graph"),
+        layout: Some(level),
+        ..Default::default()
+    };
     let cfg = glyd_engine::nemotron::ConfigNemotronH::load(dir)?;
     let mut variants = offload_variants(a)?;
     let mut places = glyd_engine::kcheck_nh::cache_for(a.flag("expert-cache"), dir, level, &cfg)?;
@@ -773,7 +857,13 @@ fn time_replies<E: Gen>(e: &mut E, host_row: fn(&mut E, bool), ids: &[u32], defa
     let (host_tokens, host_speed) = timed_reply(e, ids, sampled, new)?;
     host_row(e, false);
     let ms = |tps: f64| 1e3 / tps;
-    println!("decode of {new} tokens after a prompt of {} (sampled: temperature {}, top-k {}, top-p {}):", ids.len(), defaults.temperature, defaults.top_k, defaults.top_p);
+    println!(
+        "decode of {new} tokens after a prompt of {} (sampled: temperature {}, top-k {}, top-p {}):",
+        ids.len(),
+        defaults.temperature,
+        defaults.top_k,
+        defaults.top_p
+    );
     println!("  greedy steps                              {greedy_speed:7.1} tokens/s  ({:.2} ms a token)", ms(greedy_speed));
     println!(
         "  sampled, from the GPU's 64 largest logits {top_speed:7.1} tokens/s  ({:.2} ms a token; {} of {} draws from them, {} read the row)",
@@ -783,7 +873,11 @@ fn time_replies<E: Gen>(e: &mut E, host_row: fn(&mut E, bool), ids: &[u32], defa
         after[0] - before[0]
     );
     println!("  sampled, from the row on the host         {host_speed:7.1} tokens/s  ({:.2} ms a token)", ms(host_speed));
-    let apart = top_tokens.iter().zip(&host_tokens).position(|(x, y)| x != y).or((top_tokens.len() != host_tokens.len()).then_some(top_tokens.len().min(host_tokens.len())));
+    let apart = top_tokens
+        .iter()
+        .zip(&host_tokens)
+        .position(|(x, y)| x != y)
+        .or((top_tokens.len() != host_tokens.len()).then_some(top_tokens.len().min(host_tokens.len())));
     match apart {
         None => println!("  the two sampled replies: the same {} tokens", top_tokens.len()),
         Some(i) => {
@@ -850,7 +944,14 @@ fn cmd_run_nh(a: &Args, dir: &Path) -> Result<()> {
         if vi == 0 {
             println!("{prompt}{}", tok.decode(&toks)?);
         }
-        eprintln!("{label}{} prompt tokens in {prefill:.2} s ({:.1} a second); {} generated, {} by decode steps in {decode:.2} s ({:.2} tokens a second)", ids.len(), ids.len() as f64 / prefill, out.len(), out.len() - 1, (out.len() - 1) as f64 / decode.max(1e-9));
+        eprintln!(
+            "{label}{} prompt tokens in {prefill:.2} s ({:.1} a second); {} generated, {} by decode steps in {decode:.2} s ({:.2} tokens a second)",
+            ids.len(),
+            ids.len() as f64 / prefill,
+            out.len(),
+            out.len() - 1,
+            (out.len() - 1) as f64 / decode.max(1e-9)
+        );
         if let Some(st) = &store {
             eprintln!("{label}decode: {}", st.report()?);
             let (c, n) = (st.stats()?, (out.len() - 1).max(1) as f64);
@@ -911,7 +1012,13 @@ fn cmd_run_nh(a: &Args, dir: &Path) -> Result<()> {
             None => first = Some(toks),
             Some(f) => {
                 let at = f.iter().zip(&toks).position(|(x, y)| x != y);
-                eprintln!("{label}tokens against the first variant's: {}", at.map_or_else(|| format!("the same {}", f.len().min(toks.len())), |i| format!("the first differs at token {i} of {}", f.len().min(toks.len()))));
+                eprintln!(
+                    "{label}tokens against the first variant's: {}",
+                    at.map_or_else(
+                        || format!("the same {}", f.len().min(toks.len())),
+                        |i| format!("the first differs at token {i} of {}", f.len().min(toks.len()))
+                    )
+                );
             }
         }
     }
@@ -1010,7 +1117,9 @@ fn cmd_check_nh(a: &Args, dir: &Path) -> Result<()> {
         };
         let c = glyd_engine::nemotron::ConfigNemotronH::load(dir)?;
         let d = dir.to_path_buf();
-        let make = std::sync::Arc::new(move |st: glyd_engine::dynamic::Stage, o: &glyd_engine::dynamic::Opts| glyd_engine::dynamic::nemotron::load_stage(&d, o, level, st));
+        let make = std::sync::Arc::new(move |st: glyd_engine::dynamic::Stage, o: &glyd_engine::dynamic::Opts| {
+            glyd_engine::dynamic::nemotron::load_stage(&d, o, level, st)
+        });
         NhRun::Split(Box::new(glyd_engine::dynamic::split::Split::with(c.layers, c.eos.clone(), &cuts, &devices, &o, make)?))
     } else if a.has("dynamic") {
         let o = glyd_engine::dynamic::Opts { ctx, chunk, graph: !a.has("no-graph"), device: 0, layout: Some(level) };
@@ -1021,7 +1130,14 @@ fn cmd_check_nh(a: &Args, dir: &Path) -> Result<()> {
         NhRun::Old(Box::new(glyd_engine::model_nh::EngineNh::new(dir, &o, Some(&make))?))
     };
     let load = t0.elapsed().as_secs_f64();
-    eprintln!("loaded in {load:.1} s: {}", match &e { NhRun::Old(x) => x.describe(), NhRun::New(x) => x.describe(), NhRun::Split(x) => x.describe() });
+    eprintln!(
+        "loaded in {load:.1} s: {}",
+        match &e {
+            NhRun::Old(x) => x.describe(),
+            NhRun::New(x) => x.describe(),
+            NhRun::Split(x) => x.describe(),
+        }
+    );
     let eos = glyd_engine::nemotron::ConfigNemotronH::load(dir)?.eos;
     let (mut steps, mut step_s) = (0usize, 0.0f64);
     let mut body = String::from("{");
@@ -1129,7 +1245,13 @@ fn cmd_check35_dyn(a: &Args, dir: &Path) -> Result<()> {
     let v = json::parse(&std::fs::read_to_string(pf).map_err(|e| Error(format!("{pf}: {e}")))?).map_err(|e| Error(format!("{pf}: {e}")))?;
     let new = a.num("new", 64usize)?;
     let t0 = Instant::now();
-    let o = glyd_engine::dynamic::Opts { ctx: a.num("ctx", 4096usize)?, chunk: a.num("chunk", 2048usize)?, graph: !a.has("no-graph"), device: 0, layout: a.layout()? };
+    let o = glyd_engine::dynamic::Opts {
+        ctx: a.num("ctx", 4096usize)?,
+        chunk: a.num("chunk", 2048usize)?,
+        graph: !a.has("no-graph"),
+        device: 0,
+        layout: a.layout()?,
+    };
     // --split 32[,48] [--devices 0,1]: the stages on those GPUs (all on GPU 0 where none is given)
     let mut e: Box<dyn Q35Run> = match a.flag("split") {
         Some(cuts) => {
@@ -1141,7 +1263,8 @@ fn cmd_check35_dyn(a: &Args, dir: &Path) -> Result<()> {
             };
             let c = glyd_engine::qwen35::Config35::load(dir)?;
             let d = dir.to_path_buf();
-            let make = std::sync::Arc::new(move |st: glyd_engine::dynamic::Stage, o: &glyd_engine::dynamic::Opts| glyd_engine::dynamic::qwen35::load_stage(&d, o, st));
+            let make =
+                std::sync::Arc::new(move |st: glyd_engine::dynamic::Stage, o: &glyd_engine::dynamic::Opts| glyd_engine::dynamic::qwen35::load_stage(&d, o, st));
             Box::new(glyd_engine::dynamic::split::Split::with(c.layers, c.eos.clone(), &cuts, &devices, &o, make)?)
         }
         None => Box::new(glyd_engine::dynamic::qwen35::load(dir, &o)?),
@@ -1220,7 +1343,12 @@ fn cmd_check35(a: &Args, dir: &Path) -> Result<()> {
         ));
         eprintln!("{} {key} of up to {} tokens, {} new tokens each", prompts.len(), prompts.iter().map(Vec::len).max().unwrap_or(0), new);
     }
-    body.push_str(&format!("\"load_s\":{load:.2},\"weights_bytes\":{},\"checkpoint_bytes\":{},\"gpu_mem_used\":{}}}\n", e.w.bytes, e.w.ckpt_bytes, e.mem_used()));
+    body.push_str(&format!(
+        "\"load_s\":{load:.2},\"weights_bytes\":{},\"checkpoint_bytes\":{},\"gpu_mem_used\":{}}}\n",
+        e.w.bytes,
+        e.w.ckpt_bytes,
+        e.mem_used()
+    ));
     std::fs::write(of, body).map_err(|e| Error(format!("{of}: {e}")))?;
     eprintln!("{of}");
     Ok(())
@@ -1228,7 +1356,12 @@ fn cmd_check35(a: &Args, dir: &Path) -> Result<()> {
 
 /// One user on a Qwen3.5 model: a prompt of N random tokens (report::random_prompt, as tools/ref_speed.py's), timed `reps` times (the median), then `new` tokens a step at a time.
 fn cmd_bench35(a: &Args, dir: &Path) -> Result<()> {
-    let ns: Vec<usize> = a.flag("prompt").unwrap_or("1024").split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--prompt {x}: not a number")))).collect::<Result<_>>()?;
+    let ns: Vec<usize> = a
+        .flag("prompt")
+        .unwrap_or("1024")
+        .split(',')
+        .map(|x| x.trim().parse().map_err(|_| Error(format!("--prompt {x}: not a number"))))
+        .collect::<Result<_>>()?;
     let new = a.num("new", 256usize)?;
     let reps = a.num("reps", 5usize)?.max(1);
     let (mut e, load) = open35(a, dir)?;
@@ -1296,6 +1429,8 @@ fn cmd_dump35(a: &Args) -> Result<()> {
     e.reset()?;
     let mut layers = Vec::new();
     let s = e.prefill_dump(&ids, true, Some(&mut layers))?;
-    let rows: Vec<String> = layers.iter().map(|l| format!("[{}]", l.iter().map(|&b| format!("{}", f32::from_bits((b as u32) << 16))).collect::<Vec<_>>().join(","))).collect();
-    std::fs::write(of, format!("{{\"token\":{},\"logprob\":{},\"layers\":[{}]}}\n", s.token, s.logprob.unwrap_or(f32::NAN), rows.join(","))).map_err(|e| Error(format!("{of}: {e}")))
+    let rows: Vec<String> =
+        layers.iter().map(|l| format!("[{}]", l.iter().map(|&b| format!("{}", f32::from_bits((b as u32) << 16))).collect::<Vec<_>>().join(","))).collect();
+    std::fs::write(of, format!("{{\"token\":{},\"logprob\":{},\"layers\":[{}]}}\n", s.token, s.logprob.unwrap_or(f32::NAN), rows.join(",")))
+        .map_err(|e| Error(format!("{of}: {e}")))
 }

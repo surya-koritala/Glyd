@@ -58,7 +58,14 @@ fn rig(host: &HbLayerHost, disk: Option<(&Arc<HbDisk>, &crate::moe_hb::HbIndex, 
         *place = (dev, stride);
         match disk {
             None => store.add_layer(layer, h.experts, gpu[g], &[PackIn { bytes: [&h.data, &h.meta], stride, dev }], Some(HostHalf::Hb(h.place))).unwrap(),
-            Some((d, ix, _)) => store.add_layer_on_disk(layer, h.experts, gpu[g], DiskIn { place: h.place, dev, ram: store.host_slots(h.experts, h.place.bytes()).unwrap(), read: d.reader(ix.members[g].clone()) }).unwrap(),
+            Some((d, ix, _)) => store
+                .add_layer_on_disk(
+                    layer,
+                    h.experts,
+                    gpu[g],
+                    DiskIn { place: h.place, dev, ram: store.host_slots(h.experts, h.place.bytes()).unwrap(), read: d.reader(ix.members[g].clone()) },
+                )
+                .unwrap(),
         }
         stacks.push(stack);
     }
@@ -104,7 +111,16 @@ fn call(rig: &Rig, dev: &Dev, host: &HbLayerHost, b: &Buffers, base: usize, (ids
     b.wts.write(0, wts).unwrap();
     b.z.write(0, z).unwrap();
     let groups = Groups { layers: [Some(base), Some(base + 1)], group_of: &host.group_of, local_of: &host.local_of };
-    let c = GroupsCall { ids: b.ids.ptr, wts: b.wts.ptr, z: b.z.ptr, ways: [b.ways[0].ptr, b.ways[1].ptr], sum_ids: b.sum_ids.ptr, part: b.part.ptr, tokens, pairs };
+    let c = GroupsCall {
+        ids: b.ids.ptr,
+        wts: b.wts.ptr,
+        z: b.z.ptr,
+        ways: [b.ways[0].ptr, b.ways[1].ptr],
+        sum_ids: b.sum_ids.ptr,
+        part: b.part.ptr,
+        tokens,
+        pairs,
+    };
     assert!(rig.store.serves_groups(&groups, tokens, pairs));
     let mut shown = Shown { ways: [vec![-1; pairs], vec![-1; pairs]], sum_ids: None, part: None };
     let mut body = |stage: Stage, g: usize, hy: &Hybrid| -> Result<()> {
@@ -190,7 +206,11 @@ fn copy_call(rig: &Rig, dev: &Dev, host: &HbLayerHost, b: &Buffers, base: usize,
                     assert_eq!(eg, g);
                     let (dev_at, stride) = rig.places[base + g];
                     let p = way[j] as u64;
-                    assert!(at(dev_at[0] + p * stride[0], h.place.data) == data && at(dev_at[1] + p * stride[1], h.place.meta) == meta, "the place {p} of group {g} does not hold the bytes of expert {} when the wave's products would run", ids[j]);
+                    assert!(
+                        at(dev_at[0] + p * stride[0], h.place.data) == data && at(dev_at[1] + p * stride[1], h.place.meta) == meta,
+                        "the place {p} of group {g} does not hold the bytes of expert {} when the wave's products would run",
+                        ids[j]
+                    );
                 } else {
                     assert!(local[j] < 0 || waves > 1, "a pair of the group has no place in a call of one wave");
                 }
@@ -277,7 +297,11 @@ fn fake_gpu_the_expert_cache_with_experts_on_the_disk_is_the_expert_cache_with_a
                         }
                     }
                     let st = few.store.stats().unwrap();
-                    assert!(st.disk_reads > 0 && all.store.stats().unwrap().disk_reads == 0, "{label}, {mode:?}, {share}: {} experts read from the disk", st.disk_reads);
+                    assert!(
+                        st.disk_reads > 0 && all.store.stats().unwrap().disk_reads == 0,
+                        "{label}, {mode:?}, {share}: {} experts read from the disk",
+                        st.disk_reads
+                    );
                     if mode == Mode::Cpu {
                         assert!(hosted > 20, "{label}: the host computed pairs in only {hosted} of 120 calls");
                     }

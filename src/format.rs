@@ -103,7 +103,8 @@ impl BlockHeader {
     /// Bytes this header takes on disk.
     pub fn header_len(&self) -> usize {
         if self.version == VERSION_V9 {
-            coded_header_len(true, self.uncompressed_len as usize, self.token_bytes as usize, self.token_count as usize, self.literal_len as usize) - if self.flags & FLAG_RAW_UNCOMPRESSED != 0 { varint_len(self.token_count) + varint_len(self.literal_len) } else { 0 }
+            coded_header_len(true, self.uncompressed_len as usize, self.token_bytes as usize, self.token_count as usize, self.literal_len as usize)
+                - if self.flags & FLAG_RAW_UNCOMPRESSED != 0 { varint_len(self.token_count) + varint_len(self.literal_len) } else { 0 }
         } else {
             HEADER_SIZE
         }
@@ -122,7 +123,18 @@ impl BlockHeader {
         let (token_count, literal_len) = if flags & FLAG_RAW_UNCOMPRESSED == 0 { (get_varint(src, &mut pos)?, get_varint(src, &mut pos)?) } else { (0, 0) };
         let c = src.get(pos..pos + 4)?;
         let checksum = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-        let header = BlockHeader { magic: MAGIC, version: VERSION_V9, flags, uncompressed_len, token_count, token_bytes, literal_len, checksum, offset_bytes: 0, extras_bytes: 0 };
+        let header = BlockHeader {
+            magic: MAGIC,
+            version: VERSION_V9,
+            flags,
+            uncompressed_len,
+            token_count,
+            token_bytes,
+            literal_len,
+            checksum,
+            offset_bytes: 0,
+            extras_bytes: 0,
+        };
         Some((header, pos + 4))
     }
 }
@@ -397,10 +409,7 @@ impl BlockHeader {
         } else if is_coded_version(self.version) {
             self.token_bytes as usize
         } else {
-            self.token_bytes as usize
-                + self.offset_bytes as usize
-                + self.extras_bytes as usize
-                + self.literal_len as usize
+            self.token_bytes as usize + self.offset_bytes as usize + self.extras_bytes as usize + self.literal_len as usize
         }
     }
 
@@ -429,7 +438,11 @@ impl BlockHeader {
 /// The checksum a block's flags say it carries.
 #[inline]
 pub fn block_checksum(flags: u16, data: &[u8]) -> u32 {
-    if flags & FLAG_CRC32C != 0 { crc32c(data) } else { compute_checksum(data) }
+    if flags & FLAG_CRC32C != 0 {
+        crc32c(data)
+    } else {
+        compute_checksum(data)
+    }
 }
 
 /// CRC-32C (Castagnoli), the hardware instruction on aarch64 and
@@ -603,7 +616,14 @@ mod crc_tests {
     #[test]
     fn three_lane_crc_matches_the_table_at_every_length() {
         let mut x = 3u64;
-        let data: Vec<u8> = (0..20_000).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect();
+        let data: Vec<u8> = (0..20_000)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
         for len in [0usize, 1, 7, 8, 9, 3071, 3072, 3073, 4096, 6143, 6144, 6145, 9216, 9217, 12345, 20_000] {
             assert_eq!(crc32c(&data[..len]), crc32c_table(&data[..len]), "len {len}");
         }

@@ -95,7 +95,11 @@ fn fp8_bits(f: f32, e4m3: bool) -> u8 {
 fn e4m3_value(b: u8) -> f32 {
     let (e, m) = (((b >> 3) & 15) as i32, (b & 7) as f32);
     let v = if e == 0 { m / 8.0 * 2f32.powi(-6) } else { (1.0 + m / 8.0) * 2f32.powi(e - 7) };
-    if b & 0x80 != 0 { -v } else { v }
+    if b & 0x80 != 0 {
+        -v
+    } else {
+        v
+    }
 }
 
 fn as_bf16(v: &[f32]) -> Vec<u8> {
@@ -167,10 +171,8 @@ fn q5(v: &[f32], with_min: bool) -> Vec<u8> {
             let d = big / -16.0;
             (d, if d != 0.0 { 1.0 / d } else { 0.0 }, 0.0)
         };
-        let q: Vec<u8> = c
-            .iter()
-            .map(|&x| if with_min { (((x - off) * id + 0.5) as i32).min(31) as u8 } else { ((x * id + 16.5) as i32).min(31) as u8 })
-            .collect();
+        let q: Vec<u8> =
+            c.iter().map(|&x| if with_min { (((x - off) * id + 0.5) as i32).min(31) as u8 } else { ((x * id + 16.5) as i32).min(31) as u8 }).collect();
         let mut b = f16_bits(d).to_le_bytes().to_vec();
         if with_min {
             b.extend(f16_bits(min).to_le_bytes());
@@ -603,7 +605,19 @@ fn random_model_file(r: &mut Rng) -> Vec<u8> {
         safetensors(&t)
     } else {
         // (type, bytes per block, elements per block)
-        let types = [(0u32, 4usize, 1u64), (1, 2, 1), (30, 2, 1), (8, 34, 32), (2, 18, 32), (12, 144, 256), (14, 210, 256), (39, 17, 32), (3, 20, 32), (6, 22, 32), (23, 136, 256)];
+        let types = [
+            (0u32, 4usize, 1u64),
+            (1, 2, 1),
+            (30, 2, 1),
+            (8, 34, 32),
+            (2, 18, 32),
+            (12, 144, 256),
+            (14, 210, 256),
+            (39, 17, 32),
+            (3, 20, 32),
+            (6, 22, 32),
+            (23, 136, 256),
+        ];
         let t: Vec<(String, u32, u64, u64, Vec<u8>)> = (0..kinds)
             .map(|i| {
                 let (ty, bytes, elems) = types[r.below(types.len())];
@@ -637,7 +651,11 @@ fn random_model_files_come_back() {
 fn damaged_streams_are_refused_or_read_never_trusted() {
     let mut r = Rng::new(11);
     let w = gauss(&mut r, 80_000, 0.02);
-    let f = gguf(&[("a", 8, 1024, 78, q8_0(&w[..78 * 1024])), ("b", 30, 1024, 78, as_bf16(&w[..78 * 1024])), ("c", 12, 1024, 40, blocks(&mut Rng::new(4), 144, 160, &[0, 2]))]);
+    let f = gguf(&[
+        ("a", 8, 1024, 78, q8_0(&w[..78 * 1024])),
+        ("b", 30, 1024, 78, as_bf16(&w[..78 * 1024])),
+        ("c", 12, 1024, 40, blocks(&mut Rng::new(4), 144, 160, &[0, 2])),
+    ]);
     let mut c = Vec::new();
     glyd::compress_into_max(&f, &mut c);
     assert!(c.starts_with(MAGIC));
@@ -682,7 +700,8 @@ fn a_file_of_many_small_tensors_comes_back() {
     let mut r = Rng::new(12);
     let w = gauss(&mut r, 1 << 14, 0.02);
     let names: Vec<String> = (0..600).map(|i| format!("model.layers.{i}.weight")).collect();
-    let t: Vec<(&str, &str, Vec<usize>, Vec<u8>)> = names.iter().enumerate().map(|(i, n)| (n.as_str(), "BF16", vec![5000 + i], as_bf16(&w[..5000 + i]))).collect();
+    let t: Vec<(&str, &str, Vec<usize>, Vec<u8>)> =
+        names.iter().enumerate().map(|(i, n)| (n.as_str(), "BF16", vec![5000 + i], as_bf16(&w[..5000 + i]))).collect();
     let f = safetensors(&t);
     let c = round_trip(&f, "many tensors");
     assert!(c.starts_with(MAGIC));
@@ -694,7 +713,11 @@ fn the_corpus_comes_back() {
         eprintln!("GLYD_WEIGHTS_CORPUS not set: the real files of the corpus are not read");
         return;
     };
-    let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).filter(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("safetensors") | Some("gguf"))).collect();
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("safetensors") | Some("gguf")))
+        .collect();
     files.sort();
     assert!(!files.is_empty());
     for p in files {
@@ -728,8 +751,16 @@ fn write_fixtures() {
     let dir = std::env::var("GLYD_WRITE_FIXTURES").expect("GLYD_WRITE_FIXTURES names the directory");
     let mut r = Rng::new(28);
     let w = gauss(&mut r, 24_000, 0.02);
-    let st = safetensors(&[("small.weight", "BF16", vec![12_000], as_bf16(&w[..12_000])), ("small.norm", "F32", vec![6_000], as_f32(&w[12_000..18_000])), ("small.q", "F8_E4M3", vec![6_000], as_fp8(&w[18_000..].iter().map(|x| x * 80.0).collect::<Vec<_>>(), true))]);
+    let st = safetensors(&[
+        ("small.weight", "BF16", vec![12_000], as_bf16(&w[..12_000])),
+        ("small.norm", "F32", vec![6_000], as_f32(&w[12_000..18_000])),
+        ("small.q", "F8_E4M3", vec![6_000], as_fp8(&w[18_000..].iter().map(|x| x * 80.0).collect::<Vec<_>>(), true)),
+    ]);
     std::fs::write(format!("{dir}/small.safetensors"), st).unwrap();
-    let gg = gguf(&[("blk.0.attn_q.weight", 8, 1024, 8, q8_0(&w[..8 * 1024])), ("blk.0.ffn.weight", 30, 1024, 8, as_bf16(&w[8 * 1024..16 * 1024])), ("output_norm.weight", 0, 1024, 1, as_f32(&w[16 * 1024..17 * 1024]))]);
+    let gg = gguf(&[
+        ("blk.0.attn_q.weight", 8, 1024, 8, q8_0(&w[..8 * 1024])),
+        ("blk.0.ffn.weight", 30, 1024, 8, as_bf16(&w[8 * 1024..16 * 1024])),
+        ("output_norm.weight", 0, 1024, 1, as_f32(&w[16 * 1024..17 * 1024])),
+    ]);
     std::fs::write(format!("{dir}/small.gguf"), gg).unwrap();
 }

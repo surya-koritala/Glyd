@@ -299,7 +299,11 @@ pub fn decompress(s: &[u8]) -> Option<Vec<u8>> {
                     2 => (1 + (tag >> 2) as usize, u16::from_le_bytes([*s.get(p)?, *s.get(p + 1)?]) as usize),
                     _ => (1 + (tag >> 2) as usize, u32::from_le_bytes([*s.get(p)?, *s.get(p + 1)?, *s.get(p + 2)?, *s.get(p + 3)?]) as usize),
                 };
-                p += match kind { 1 => 1, 2 => 2, _ => 4 };
+                p += match kind {
+                    1 => 1,
+                    2 => 2,
+                    _ => 4,
+                };
                 if offset == 0 || offset > out.len() {
                     return None;
                 }
@@ -372,12 +376,21 @@ mod tests {
     #[test]
     fn round_trips_with_every_build_and_long_runs() {
         let mut x = 7u64;
-        let mut rnd = || { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x };
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
         let words: Vec<&[u8]> = vec![b"the ", b"quick ", b"brown ", b"fox ", b"jumps ", b"over ", b"lazy ", b"dogs ", b"and ", b"cats "];
         let mut d = Vec::new();
-        while d.len() < 40_000 { d.extend_from_slice(words[(rnd() % 10) as usize]); }
+        while d.len() < 40_000 {
+            d.extend_from_slice(words[(rnd() % 10) as usize]);
+        }
         d.extend(std::iter::repeat(0u8).take(70_000));
-        for _ in 0..30_000 { d.push(rnd() as u8); }
+        for _ in 0..30_000 {
+            d.push(rnd() as u8);
+        }
         let head = d[..50_000].to_vec();
         d.extend_from_slice(&head);
         for build in BUILDS {

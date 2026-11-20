@@ -36,7 +36,11 @@ struct Found {
 fn find(model: &str) -> Result<Found> {
     let (name, tag) = split_tag(model);
     let snapshot = |dir: &Path| -> (Option<String>, Option<String>) {
-        let repo = dir.parent().filter(|p| p.file_name().is_some_and(|n| n == "snapshots")).and_then(Path::parent).and_then(|p| p.file_name()?.to_str()?.strip_prefix("models--").map(|r| r.replacen("--", "/", 1)));
+        let repo = dir
+            .parent()
+            .filter(|p| p.file_name().is_some_and(|n| n == "snapshots"))
+            .and_then(Path::parent)
+            .and_then(|p| p.file_name()?.to_str()?.strip_prefix("models--").map(|r| r.replacen("--", "/", 1)));
         let rev = repo.as_ref().and(dir.file_name().and_then(|n| n.to_str()).map(str::to_string));
         (repo, rev)
     };
@@ -134,7 +138,8 @@ impl Family {
         if crate::model_gemma4::is_gemma4(text) {
             return err("a Gemma 4 model: its cost profile is not described yet (Qwen3.5-family and Nemotron-H models are)");
         }
-        let mut c = Config35::parse(text, "config.json", generation).map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.0)))?;
+        let mut c = Config35::parse(text, "config.json", generation)
+            .map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.0)))?;
         if saved_causal {
             // (a glyd-v7 save holds the text model under the causal LM's names, whatever its config.json says of the checkpoint it came from, and no vision tower)
             (c.prefix, c.vision) = ("model.", false);
@@ -280,7 +285,13 @@ fn classify(name: &str) -> (Option<usize>, Comp) {
         Comp::Router
     } else if rest.starts_with("mlp.") {
         Comp::Mlp
-    } else if rest.contains("conv1d") || rest.ends_with("A_log") || rest.ends_with("dt_bias") || rest == "mixer.D" || rest == "linear_attn.norm.weight" || rest == "mixer.norm.weight" {
+    } else if rest.contains("conv1d")
+        || rest.ends_with("A_log")
+        || rest.ends_with("dt_bias")
+        || rest == "mixer.D"
+        || rest == "linear_attn.norm.weight"
+        || rest == "mixer.norm.weight"
+    {
         Comp::Recurrent
     } else if rest.ends_with("layernorm.weight") || rest == "norm.weight" || rest.ends_with("q_norm.weight") || rest.ends_with("k_norm.weight") {
         Comp::Norm
@@ -320,7 +331,11 @@ impl LayerCost {
     }
 
     pub fn expert_mean(&self) -> u64 {
-        if self.experts.is_empty() { 0 } else { self.experts_all() / self.experts.len() as u64 }
+        if self.experts.is_empty() {
+            0
+        } else {
+            self.experts_all() / self.experts.len() as u64
+        }
     }
 
     pub fn resident(&self) -> u64 {
@@ -406,7 +421,9 @@ impl Profile {
         let generation = f.text("generation_config.json");
         let manifest = f.text("glyd.json").and_then(|t| json::parse(&t).ok());
         let m_str = |k: &str| manifest.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).map(str::to_string);
-        let causal = |k: &str| manifest.as_ref().and_then(|m| m.get(k)).and_then(Value::as_object).is_some_and(|o| o.iter().any(|(n, _)| n.starts_with("model.layers.")));
+        let causal = |k: &str| {
+            manifest.as_ref().and_then(|m| m.get(k)).and_then(Value::as_object).is_some_and(|o| o.iter().any(|(n, _)| n.starts_with("model.layers.")))
+        };
         let saved = m_str("format").as_deref().is_some_and(|x| x.starts_with("glyd-v")) && (causal("packs") || causal("tensors"));
         let fam = Family::parse(&config, generation.as_deref(), saved)?;
         // the level: the save's, else the tag's, else lossless
@@ -512,7 +529,8 @@ impl Profile {
             for k in packs {
                 p.add(k, by_pack[k]);
             }
-            let mut names: Vec<&String> = t.keys().filter(|n| !n.contains(".glyd_") && !known.contains(n.as_str()) && !seen.contains(Pack35::saved(n))).collect();
+            let mut names: Vec<&String> =
+                t.keys().filter(|n| !n.contains(".glyd_") && !known.contains(n.as_str()) && !seen.contains(Pack35::saved(n))).collect();
             names.sort();
             for n in names {
                 p.add(n, t[n]);
@@ -602,10 +620,18 @@ impl Profile {
         let (kv_at_ctx, state) = (self.kv_per_token() * work.ctx as u64, self.state());
         let working = alloc.map_or(Value::Null, |a| num(a.working));
         let engine_at_ctx = self.resident() + kv_at_ctx + state + alloc.map_or(0, |a| a.working);
-        let sizes_basis = if self.estimated == 0 { "file" } else if self.from_files == 0 { "estimated" } else { "mixed" };
+        let sizes_basis = if self.estimated == 0 {
+            "file"
+        } else if self.from_files == 0 {
+            "estimated"
+        } else {
+            "mixed"
+        };
         let (prediction_rows, tiers) = predictions.map_or((Value::Null, Value::Null), |(p, t)| (p, t));
         let decode = match &prediction_rows {
-            Value::Array(rows) => rows.first().and_then(|r| r.get("tok_s")).cloned().map_or(Value::Null, |v| obj(vec![("value", v), ("basis", s("estimated")), ("placement", rows[0].get("placement").cloned().unwrap_or(Value::Null))])),
+            Value::Array(rows) => rows.first().and_then(|r| r.get("tok_s")).cloned().map_or(Value::Null, |v| {
+                obj(vec![("value", v), ("basis", s("estimated")), ("placement", rows[0].get("placement").cloned().unwrap_or(Value::Null))])
+            }),
             _ => Value::Null,
         };
         obj(vec![
@@ -708,7 +734,6 @@ impl Profile {
     }
 }
 
-
 /// The workload the context-dependent numbers are given at.
 pub struct Workload {
     pub ctx: usize,
@@ -719,7 +744,13 @@ pub struct Workload {
 
 impl Workload {
     fn json(&self) -> Value {
-        obj(vec![("context_tokens", num(self.ctx as u64)), ("prompt_tokens", num(self.prompt as u64)), ("output_tokens", num(self.output as u64)), ("prefill_chunk_tokens", num(self.chunk as u64)), ("sessions", num(1))])
+        obj(vec![
+            ("context_tokens", num(self.ctx as u64)),
+            ("prompt_tokens", num(self.prompt as u64)),
+            ("output_tokens", num(self.output as u64)),
+            ("prefill_chunk_tokens", num(self.chunk as u64)),
+            ("sessions", num(1)),
+        ])
     }
 
     /// The positions a decode step's attention reads, on average over the reply: the prompt and half the output.
@@ -789,8 +820,16 @@ fn device_json() -> Value {
 
 fn host_json() -> Value {
     let mem = crate::os::meminfo();
-    let kb = |key: &str| mem.as_ref().and_then(|m| m.lines().find(|l| l.starts_with(key))).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<u64>().ok()).map(|v| v * 1024);
-    let cpu = std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|t| t.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split_once(':')).map(|x| x.1.trim().to_string()));
+    let kb = |key: &str| {
+        mem.as_ref()
+            .and_then(|m| m.lines().find(|l| l.starts_with(key)))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|v| v * 1024)
+    };
+    let cpu = std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|t| t.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split_once(':')).map(|x| x.1.trim().to_string()));
     obj(vec![
         ("cpu", cpu.map_or(Value::Null, |c| Value::from(c.as_str()))),
         ("threads", num(std::thread::available_parallelism().map_or(0, |n| n.get() as u64))),
@@ -815,7 +854,9 @@ impl Rates {
     /// The rates of a `tiers` JSON (its `rates` object: the GPU's memory as the engine's products read it where that was measured, else the streaming read).
     pub fn from_json(v: &Value) -> Rates {
         let r = v.get("rates").unwrap_or(v);
-        let gbs = |k: &str| r.get(k).and_then(|x| x.get("gbs")).and_then(|x| if let Value::Number(n) = x { n.parse::<f64>().ok() } else { None }).unwrap_or(0.0) * 1e9;
+        let gbs = |k: &str| {
+            r.get(k).and_then(|x| x.get("gbs")).and_then(|x| if let Value::Number(n) = x { n.parse::<f64>().ok() } else { None }).unwrap_or(0.0) * 1e9
+        };
         let vram = match gbs("vram_product") {
             x if x > 0.0 => x,
             _ => gbs("vram_read"),
@@ -824,7 +865,12 @@ impl Rates {
     }
 
     fn json(&self) -> Value {
-        obj(vec![("vram_gbs", numf(self.vram / 1e9, 1)), ("link_gbs", numf(self.link / 1e9, 1)), ("ram_gbs", numf(self.ram / 1e9, 1)), ("ssd_gbs", numf(self.ssd / 1e9, 2))])
+        obj(vec![
+            ("vram_gbs", numf(self.vram / 1e9, 1)),
+            ("link_gbs", numf(self.link / 1e9, 1)),
+            ("ram_gbs", numf(self.ram / 1e9, 1)),
+            ("ssd_gbs", numf(self.ssd / 1e9, 2)),
+        ])
     }
 }
 
@@ -837,7 +883,9 @@ pub fn tiers_cmd(a: &crate::args::Args) -> Result<()> {
     let dir = a.flag("dir").map(PathBuf::from);
     let bytes = mib << 20;
     let mut rates = Vec::new();
-    let row = |gbs: f64, moved: u64, secs: f64, samples: usize, how: &str| obj(vec![("gbs", numf(gbs, 2)), ("bytes", num(moved)), ("seconds", numf(secs, 4)), ("samples", num(samples as u64)), ("how", Value::from(how))]);
+    let row = |gbs: f64, moved: u64, secs: f64, samples: usize, how: &str| {
+        obj(vec![("gbs", numf(gbs, 2)), ("bytes", num(moved)), ("seconds", numf(secs, 4)), ("samples", num(samples as u64)), ("how", Value::from(how))])
+    };
     if !a.has("no-gpu") {
         use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Pinned};
         let dev = Dev::new(0)?;
@@ -857,18 +905,49 @@ pub fn tiers_cmd(a: &crate::args::Args) -> Result<()> {
         };
         // SAFETY: live buffers of the sizes given, on the device's stream, synchronized by `timed`.
         let secs = timed(&|| unsafe { k.read_stream(dev.stream, buf.ptr, (bytes / 16) as u64, out.ptr, blocks) })?;
-        rates.push(("vram_read", row(bytes as f64 * reps as f64 / secs / 1e9, (bytes * reps) as u64, secs, reps, "a kernel that reads the buffer and sums it (the ceiling a memory-bound decode step has)")));
+        rates.push((
+            "vram_read",
+            row(
+                bytes as f64 * reps as f64 / secs / 1e9,
+                (bytes * reps) as u64,
+                secs,
+                reps,
+                "a kernel that reads the buffer and sums it (the ceiling a memory-bound decode step has)",
+            ),
+        ));
         let buf2 = Buf::zeroed(bytes)?;
         let secs = timed(&|| unsafe { copy_d2d_async(buf2.ptr, buf.ptr, bytes, dev.stream) })?;
-        rates.push(("vram_copy", row(bytes as f64 * reps as f64 / secs / 1e9, (bytes * reps) as u64, secs, reps, "cuMemcpyDtoD of the buffer: bytes copied a second (read and written both)")));
+        rates.push((
+            "vram_copy",
+            row(
+                bytes as f64 * reps as f64 / secs / 1e9,
+                (bytes * reps) as u64,
+                secs,
+                reps,
+                "cuMemcpyDtoD of the buffer: bytes copied a second (read and written both)",
+            ),
+        ));
         let pinned = Pinned::new(bytes)?;
         let secs = timed(&|| unsafe { copy_h2d_async(buf.ptr, pinned.ptr, bytes, dev.stream) })?;
-        rates.push(("link_h2d_pinned", row(bytes as f64 * reps as f64 / secs / 1e9, (bytes * reps) as u64, secs, reps, "cuMemcpyHtoD from pinned host memory (what the expert cache's copies use)")));
+        rates.push((
+            "link_h2d_pinned",
+            row(
+                bytes as f64 * reps as f64 / secs / 1e9,
+                (bytes * reps) as u64,
+                secs,
+                reps,
+                "cuMemcpyHtoD from pinned host memory (what the expert cache's copies use)",
+            ),
+        ));
         let secs = timed(&|| unsafe { copy_d2h_async(pinned.ptr, buf.ptr, bytes, dev.stream) })?;
-        rates.push(("link_d2h_pinned", row(bytes as f64 * reps as f64 / secs / 1e9, (bytes * reps) as u64, secs, reps, "cuMemcpyDtoH into pinned host memory")));
+        rates
+            .push(("link_d2h_pinned", row(bytes as f64 * reps as f64 / secs / 1e9, (bytes * reps) as u64, secs, reps, "cuMemcpyDtoH into pinned host memory")));
         let pageable = vec![1u8; bytes];
         let secs = timed(&|| unsafe { copy_h2d_async(buf.ptr, pageable.as_ptr() as *const std::ffi::c_void, bytes, dev.stream) })?;
-        rates.push(("link_h2d_pageable", row(bytes as f64 * reps as f64 / secs / 1e9, (bytes * reps) as u64, secs, reps, "cuMemcpyHtoD from pageable memory (the driver stages it)")));
+        rates.push((
+            "link_h2d_pageable",
+            row(bytes as f64 * reps as f64 / secs / 1e9, (bytes * reps) as u64, secs, reps, "cuMemcpyHtoD from pageable memory (the driver stages it)"),
+        ));
         drop(pageable);
         if let Some(d) = dir.as_deref().filter(|d| d.join("glyd.json").exists()) {
             match product_rate(&dev, d, reps) {
@@ -896,13 +975,23 @@ pub fn tiers_cmd(a: &crate::args::Args) -> Result<()> {
             std::hint::black_box(sum_once(t));
         }
         let secs = t0.elapsed().as_secs_f64();
-        rates.push((name, row(bytes as f64 * reps as f64 / secs / 1e9, (bytes * reps) as u64, secs, reps, &format!("{t} thread(s) summing a buffer of u64")))); // (the sum keeps the reads honest)
+        rates.push((name, row(bytes as f64 * reps as f64 / secs / 1e9, (bytes * reps) as u64, secs, reps, &format!("{t} thread(s) summing a buffer of u64"))));
+        // (the sum keeps the reads honest)
     }
     drop(host);
     if let Some(d) = &dir {
         for (name, depth, reads, r) in [("ssd_read_16", 16usize, 256usize, reps), ("ssd_read_1", 1, 32, 1)] {
             match disk_rate(d, depth, reads, r) {
-                Ok((gbs, moved, secs, mode)) => rates.push((name, row(gbs, moved, secs, r, &format!("random 2 MiB spans of the directory's safetensors files, {depth} at a time, {mode} reads (src/disk.rs, the disk's reader)")))),
+                Ok((gbs, moved, secs, mode)) => rates.push((
+                    name,
+                    row(
+                        gbs,
+                        moved,
+                        secs,
+                        r,
+                        &format!("random 2 MiB spans of the directory's safetensors files, {depth} at a time, {mode} reads (src/disk.rs, the disk's reader)"),
+                    ),
+                )),
                 Err(e) => eprintln!("rates: the disk under {}: {e}", d.display()),
             }
         }
@@ -945,11 +1034,13 @@ fn product_rate(dev: &crate::dev::Dev, dir: &Path, reps: usize) -> Result<Option
     if keys.is_empty() {
         return Ok(None);
     }
-    let mats: Vec<PackBuf> = keys.iter().map(|&(k, rows, cols)| upload_packed(read_v7(&ck, &manifest, layout, &[(k, rows as usize)], cols as usize)?)).collect::<Result<_>>()?;
+    let mats: Vec<PackBuf> =
+        keys.iter().map(|&(k, rows, cols)| upload_packed(read_v7(&ck, &manifest, layout, &[(k, rows as usize)], cols as usize)?)).collect::<Result<_>>()?;
     let bytes: u64 = mats.iter().map(|m| m.bytes as u64).sum();
     let (rows, cols) = (keys.iter().map(|k| k.1).max().unwrap_or(1) as usize, keys.iter().map(|k| k.2).max().unwrap_or(1) as usize);
     let (x, y) = (crate::dev::Buf::zeroed(cols * 2)?, crate::dev::Buf::zeroed(rows * 2)?);
-    let need = mats.iter().map(|m| lib.linear_workspace(m.pack.is_twelve(), m.pack.rows, m.pack.cols, 1)).collect::<Result<Vec<_>>>()?.into_iter().max().unwrap_or(16);
+    let need =
+        mats.iter().map(|m| lib.linear_workspace(m.pack.is_twelve(), m.pack.rows, m.pack.cols, 1)).collect::<Result<Vec<_>>>()?.into_iter().max().unwrap_or(16);
     let (ws, done) = (crate::dev::Buf::zeroed(need.max(16))?, crate::dev::Buf::zeroed(4 << 18)?);
     let run = || -> Result<()> {
         for m in &mats {
@@ -977,7 +1068,11 @@ fn disk_rate(dir: &Path, depth: usize, reads: usize, reps: usize) -> Result<(f64
     use std::sync::Arc;
     const SPAN: u64 = 2 << 20;
     let mut files: Vec<(Arc<DirectFile>, u64)> = Vec::new();
-    let mut names: Vec<PathBuf> = std::fs::read_dir(dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "safetensors")).collect();
+    let mut names: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| Error(format!("{}: {e}", dir.display())))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "safetensors"))
+        .collect();
     names.sort();
     for p in names {
         let len = std::fs::metadata(&p).map_err(|e| Error(e.to_string()))?.len();
@@ -1103,9 +1198,20 @@ pub fn prediction_json(p: &Profile, w: &Workload, pl: Placement, rates: Rates, f
                     ("tok_s", tok_s.map_or(Value::Null, |x| numf(x, 2))),
                     ("ms_per_token", tok_s.map_or(Value::Null, |x| numf(1000.0 / x, 3))),
                     ("tok_s_overlapped", over.map_or(Value::Null, |x| numf(x, 2))),
-                    ("bytes_per_token", obj(vec![("vram", num(t.vram as u64)), ("link", num(t.link as u64)), ("ram", num(t.ram as u64)), ("ssd", num(t.ssd as u64))])),
+                    (
+                        "bytes_per_token",
+                        obj(vec![("vram", num(t.vram as u64)), ("link", num(t.link as u64)), ("ram", num(t.ram as u64)), ("ssd", num(t.ssd as u64))]),
+                    ),
                     ("basis", Value::from("estimated")),
-                    ("assumes", obj(vec![("positions_read", num(w.positions())), ("gpu_share_of_experts", numf(pl.gpu_share, 3)), ("hit", numf(pl.hit, 3)), ("ram_share_of_experts", numf(pl.ram_share, 3))])),
+                    (
+                        "assumes",
+                        obj(vec![
+                            ("positions_read", num(w.positions())),
+                            ("gpu_share_of_experts", numf(pl.gpu_share, 3)),
+                            ("hit", numf(pl.hit, 3)),
+                            ("ram_share_of_experts", numf(pl.ram_share, 3)),
+                        ]),
+                    ),
                 ])
             })
             .collect(),
@@ -1129,7 +1235,12 @@ static NO_GPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 pub fn costs_json(model: &str, a: &crate::args::Args) -> Result<Value> {
     NO_GPU.store(a.has("no-gpu"), std::sync::atomic::Ordering::Relaxed);
     let p = Profile::of(model)?;
-    let w = Workload { ctx: a.either("context", "ctx", 4096usize)?, prompt: a.num("prompt", 1024usize)?, output: a.num("new", 256usize)?, chunk: a.num("chunk", 2048usize)? };
+    let w = Workload {
+        ctx: a.either("context", "ctx", 4096usize)?,
+        prompt: a.num("prompt", 1024usize)?,
+        output: a.num("new", 256usize)?,
+        chunk: a.num("chunk", 2048usize)?,
+    };
     let alloc = if a.has("load") {
         let f = find(model)?;
         let dir = f.dir.ok_or_else(|| Error(format!("{model}: --load needs the model's directory")))?;
@@ -1145,7 +1256,9 @@ pub fn costs_json(model: &str, a: &crate::args::Args) -> Result<Value> {
     };
     let predictions = if a.has("predict") {
         let rates = match a.flag("rates") {
-            Some(f) => Rates::from_json(&json::parse(&std::fs::read_to_string(f).map_err(|e| Error(format!("{f}: {e}")))?).map_err(|e| Error(format!("{f}: {e}")))?),
+            Some(f) => {
+                Rates::from_json(&json::parse(&std::fs::read_to_string(f).map_err(|e| Error(format!("{f}: {e}")))?).map_err(|e| Error(format!("{f}: {e}")))?)
+            }
             None => quick_rates()?,
         };
         let gpu_share = a.num("gpu-experts", 1.0f64)?;
@@ -1182,7 +1295,16 @@ fn quick_rates() -> Result<Rates> {
     let link = timed(&|| unsafe { copy_h2d_async(buf.ptr, pinned.ptr, bytes, dev.stream) })?;
     let host: Vec<u64> = (0..(bytes / 8) as u64).collect();
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let sum = || std::thread::scope(|s| host.chunks((bytes / 8).div_ceil(threads).max(1)).map(|c| s.spawn(move || c.iter().fold(0u64, |a, &x| a.wrapping_add(x)))).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap_or(0)).fold(0u64, |a, x| a.wrapping_add(x)));
+    let sum = || {
+        std::thread::scope(|s| {
+            host.chunks((bytes / 8).div_ceil(threads).max(1))
+                .map(|c| s.spawn(move || c.iter().fold(0u64, |a, &x| a.wrapping_add(x))))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap_or(0))
+                .fold(0u64, |a, x| a.wrapping_add(x))
+        })
+    };
     std::hint::black_box(sum());
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
@@ -1289,7 +1411,10 @@ mod tests {
         let l1 = &p.layers[1];
         assert_eq!((l1.proj, l1.recurrent, l1.mlp, l1.resident()), (400, 18, 600, 1018));
         let l2 = &p.layers[2];
-        assert_eq!((l2.experts.clone(), l2.experts_all(), l2.expert_mean(), l2.shared, l2.router, l2.proj, l2.norm), (vec![100, 120, 140, 160], 520, 130, 30, 10, 20, 2));
+        assert_eq!(
+            (l2.experts.clone(), l2.experts_all(), l2.expert_mean(), l2.shared, l2.router, l2.proj, l2.norm),
+            (vec![100, 120, 140, 160], 520, 130, 30, 10, 20, 2)
+        );
         // a token takes two experts of the mean size, and everything dense
         assert_eq!((l2.dense(), l2.active(), l2.resident()), (62, 62 + 2 * 130, 582));
         assert_eq!((p.embed, p.head, p.final_norm, p.non_layer()), (1000, 1000, 2, 2002));
@@ -1371,13 +1496,22 @@ mod tests {
         assert_eq!(rows[4].1, Traffic { vram: fixed + experts as f64, link: p.active() as f64, ssd: p.active() as f64, ram: 0.0 });
         // a dense model has the GPU and the disk placements alone
         let dense_only = Profile { layers: p.layers[..2].to_vec(), ..tiny() };
-        assert_eq!(placements(&dense_only, &w, Placement { gpu_share: 1.0, hit: 1.0, ram_share: 1.0 }).iter().map(|r| r.0).collect::<Vec<_>>(), ["vram", "stream_ssd"]);
+        assert_eq!(
+            placements(&dense_only, &w, Placement { gpu_share: 1.0, hit: 1.0, ram_share: 1.0 }).iter().map(|r| r.0).collect::<Vec<_>>(),
+            ["vram", "stream_ssd"]
+        );
     }
 
     #[test]
     fn levels_tags_and_rates() {
-        assert_eq!((level_of(Layout::Int5), level_of(Layout::Int6), level_of(Layout::Int4H), level_of(Layout::Hummingbird), level_of(Layout::Tiered)), ("swift", "kestrel", "wren", "hummingbird", "penguin"));
-        assert_eq!((layout_of("swift"), layout_of("i6"), layout_of("hb"), layout_of("mma"), layout_of("x")), (Some(Layout::Int5), Some(Layout::Int6), Some(Layout::Hummingbird), Some(Layout::Tiered), None));
+        assert_eq!(
+            (level_of(Layout::Int5), level_of(Layout::Int6), level_of(Layout::Int4H), level_of(Layout::Hummingbird), level_of(Layout::Tiered)),
+            ("swift", "kestrel", "wren", "hummingbird", "penguin")
+        );
+        assert_eq!(
+            (layout_of("swift"), layout_of("i6"), layout_of("hb"), layout_of("mma"), layout_of("x")),
+            (Some(Layout::Int5), Some(Layout::Int6), Some(Layout::Hummingbird), Some(Layout::Tiered), None)
+        );
         assert_eq!(split_tag("Qwen/Qwen3.5-9B:swift"), ("Qwen/Qwen3.5-9B", Some("swift".to_string())));
         assert_eq!(split_tag("/a/b:c/d"), ("/a/b:c/d", None));
         assert_eq!(split_tag("glyd/Qwen3.5-9B-swift"), ("glyd/Qwen3.5-9B-swift", None));
@@ -1403,7 +1537,10 @@ mod tests {
         assert_eq!(at(&["basis", "sizes"]).and_then(|x| x.as_str().map(str::to_string)), Some("file".to_string()));
         let layers = at(&["layers"]).and_then(|x| x.as_array().map(|a| a.len()));
         assert_eq!(layers, Some(3));
-        assert_eq!(v.get("layers").and_then(Value::as_array).and_then(|a| a[2].get("resident_bytes")).and_then(|r| r.get("expert_mean")).and_then(Value::as_u64), Some(130));
+        assert_eq!(
+            v.get("layers").and_then(Value::as_array).and_then(|a| a[2].get("resident_bytes")).and_then(|r| r.get("expert_mean")).and_then(Value::as_u64),
+            Some(130)
+        );
         // with an allocation: the working memory is measured and the engine's bytes at the context include it
         let a = Allocated { weights: 4607, kv: 1024, state: 1000, working: 500, engine: 7131, ctx: 64 };
         let v = p.json(&Workload { ctx: 64, prompt: 32, output: 16, chunk: 8 }, Some(&a), None);

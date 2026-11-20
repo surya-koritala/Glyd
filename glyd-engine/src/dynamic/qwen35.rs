@@ -20,10 +20,22 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     let dev = Dev::new(o.device)?;
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
     let whole = st.first && st.last;
-    let w = Weights35::load_stage(dir, o.ctx + 16, threads, o.layout, dev.cc_pair(), dev.total_mem as u64, None, (!whole).then_some((st.layers, st.first, st.last)))?;
+    let w = Weights35::load_stage(
+        dir,
+        o.ctx + 16,
+        threads,
+        o.layout,
+        dev.cc_pair(),
+        dev.total_mem as u64,
+        None,
+        (!whole).then_some((st.layers, st.first, st.last)),
+    )?;
     let Weights35 { cfg: c, layout, layers: lys, embed, head, norm, cos, sin, .. } = w;
     if c.head_dim != 256 || c.lin_k_dim != 128 || c.lin_v_dim != 128 || c.conv_kernel != 4 {
-        return err(format!("head {}, linear heads {}/{}, convolution {}: this engine runs head 256, linear heads of 128 and a convolution of 4", c.head_dim, c.lin_k_dim, c.lin_v_dim, c.conv_kernel));
+        return err(format!(
+            "head {}, linear heads {}/{}, convolution {}: this engine runs head 256, linear heads of 128 and a convolution of 4",
+            c.head_dim, c.lin_k_dim, c.lin_v_dim, c.conv_kernel
+        ));
     }
     let (nq, nk, nv) = (c.heads, c.kv_heads, c.lin_v_heads);
     let (cd, vd) = (c.conv_dim(), c.value_dim());
@@ -96,7 +108,21 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     };
     let mut widths = [0usize; super::SLOTS];
     let q_w = nq * 256;
-    for (s, w) in [(Slot::X, c.hidden), (Slot::H, c.hidden), (Slot::Mix, row.max(full_w)), (Slot::Ba, 2 * nv), (Slot::Xc, cd), (Slot::Core, vd), (Slot::Qo, q_w), (Slot::Att, q_w), (Slot::O, c.hidden), (Slot::Gu, 2 * c.inter), (Slot::M, c.inter), (Slot::D, c.hidden), (Slot::Hlast, c.hidden)] {
+    for (s, w) in [
+        (Slot::X, c.hidden),
+        (Slot::H, c.hidden),
+        (Slot::Mix, row.max(full_w)),
+        (Slot::Ba, 2 * nv),
+        (Slot::Xc, cd),
+        (Slot::Core, vd),
+        (Slot::Qo, q_w),
+        (Slot::Att, q_w),
+        (Slot::O, c.hidden),
+        (Slot::Gu, 2 * c.inter),
+        (Slot::M, c.inter),
+        (Slot::D, c.hidden),
+        (Slot::Hlast, c.hidden),
+    ] {
         widths[s as usize] = w;
     }
     let d = ModelDesc {

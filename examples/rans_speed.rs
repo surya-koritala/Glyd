@@ -14,11 +14,14 @@ use glyd::format::*;
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
-fn pin(c: usize) { unsafe {
-    let mut s: libc::cpu_set_t = std::mem::zeroed();
-    libc::CPU_ZERO(&mut s); libc::CPU_SET(c, &mut s);
-    libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &s);
-}}
+fn pin(c: usize) {
+    unsafe {
+        let mut s: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut s);
+        libc::CPU_SET(c, &mut s);
+        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &s);
+    }
+}
 #[cfg(not(target_os = "linux"))]
 fn pin(_c: usize) {}
 
@@ -46,14 +49,25 @@ fn normalize(hist: &[u64; 256]) -> ([u32; 256], [u32; 256]) {
         // Move one unit onto or off of the current largest frequency.
         let (mut bi, mut bf) = (0usize, 0u32);
         for i in 0..256 {
-            if freq[i] > bf { bf = freq[i]; bi = i; }
+            if freq[i] > bf {
+                bf = freq[i];
+                bi = i;
+            }
         }
-        if sum < target { freq[bi] += 1; sum += 1; }
-        else if freq[bi] > 1 { freq[bi] -= 1; sum -= 1; }
+        if sum < target {
+            freq[bi] += 1;
+            sum += 1;
+        } else if freq[bi] > 1 {
+            freq[bi] -= 1;
+            sum -= 1;
+        }
     }
     let mut cum = [0u32; 256];
     let mut c = 0u32;
-    for i in 0..256 { cum[i] = c; c += freq[i]; }
+    for i in 0..256 {
+        cum[i] = c;
+        c += freq[i];
+    }
     (freq, cum)
 }
 
@@ -62,7 +76,9 @@ fn encode_stream(syms: &[u8], which: &[bool], freq: &[u32; 256], cum: &[u32; 256
     let mut buf = Vec::new();
     let mut state = RANS_L;
     for i in (0..syms.len()).rev() {
-        if !which[i] { continue; }
+        if !which[i] {
+            continue;
+        }
         let s = syms[i] as usize;
         let f = freq[s];
         let x_max = ((RANS_L >> SCALE_BITS) << 8) * f;
@@ -72,16 +88,26 @@ fn encode_stream(syms: &[u8], which: &[bool], freq: &[u32; 256], cum: &[u32; 256
         }
         state = ((state / f) << SCALE_BITS) + (state % f) + cum[s];
     }
-    for _ in 0..4 { buf.push((state & 0xff) as u8); state >>= 8; }
+    for _ in 0..4 {
+        buf.push((state & 0xff) as u8);
+        state >>= 8;
+    }
     buf
 }
 
-struct Decoder<'a> { buf: &'a [u8], pos: usize, state: u32 }
+struct Decoder<'a> {
+    buf: &'a [u8],
+    pos: usize,
+    state: u32,
+}
 impl<'a> Decoder<'a> {
     fn new(buf: &'a [u8]) -> Self {
         let mut pos = buf.len();
         let mut state = 0u32;
-        for _ in 0..4 { pos -= 1; state = (state << 8) | buf[pos] as u32; }
+        for _ in 0..4 {
+            pos -= 1;
+            state = (state << 8) | buf[pos] as u32;
+        }
         Decoder { buf, pos, state }
     }
     #[inline(always)]
@@ -98,13 +124,14 @@ impl<'a> Decoder<'a> {
 }
 
 fn main() {
-    let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
-                 "reymont","samba","sao","webster","xml","x-ray"];
+    let files = ["dickens", "mozilla", "mr", "nci", "ooffice", "osdb", "reymont", "samba", "sao", "webster", "xml", "x-ray"];
     let dir = std::path::Path::new("corpus");
     let mut tokens: Vec<u8> = Vec::new();
     for f in &files {
         let p = dir.join(f);
-        if !p.exists() { continue; }
+        if !p.exists() {
+            continue;
+        }
         let d = std::fs::read(&p).unwrap();
         let c = glyd::compress(&d);
         let mut cur = 0usize;
@@ -119,11 +146,15 @@ fn main() {
     }
     let n = tokens.len();
     let mut hist = [0u64; 256];
-    for &b in &tokens { hist[b as usize] += 1; }
+    for &b in &tokens {
+        hist[b as usize] += 1;
+    }
     let (freq, cum) = normalize(&hist);
     let mut slot2sym = [0u8; M as usize];
     for s in 0..256 {
-        for k in 0..freq[s] { slot2sym[(cum[s] + k) as usize] = s as u8; }
+        for k in 0..freq[s] {
+            slot2sym[(cum[s] + k) as usize] = s as u8;
+        }
     }
     // Entropy achieved by this frequency table.
     let total: f64 = hist.iter().sum::<u64>() as f64;
@@ -134,8 +165,7 @@ fn main() {
             bits += hist[s] as f64 * -p.log2();
         }
     }
-    println!("token stream {} symbols, rANS {:.3} bits/sym ({:.0} bytes, {:.1}%)",
-             n, bits / total, bits / 8.0, 100.0 * (bits / 8.0) / n as f64);
+    println!("token stream {} symbols, rANS {:.3} bits/sym ({:.0} bytes, {:.1}%)", n, bits / total, bits / 8.0, 100.0 * (bits / 8.0) / n as f64);
 
     pin(4);
     let mut out = vec![0u8; n];
@@ -143,10 +173,12 @@ fn main() {
     println!("{:>4}  {:>10}  {:>9}  {:>10}", "N", "ms", "ns/sym", "GB/s tok");
     for &nstreams in &[1usize, 2, 4, 8, 16, 32] {
         // Assign symbol i to coder i % nstreams.
-        let bufs: Vec<Vec<u8>> = (0..nstreams).map(|j| {
-            let which: Vec<bool> = (0..n).map(|i| i % nstreams == j).collect();
-            encode_stream(&tokens, &which, &freq, &cum)
-        }).collect();
+        let bufs: Vec<Vec<u8>> = (0..nstreams)
+            .map(|j| {
+                let which: Vec<bool> = (0..n).map(|i| i % nstreams == j).collect();
+                encode_stream(&tokens, &which, &freq, &cum)
+            })
+            .collect();
         // Decode round-robin.
         let decode = |out: &mut [u8]| {
             let mut decs: Vec<Decoder> = bufs.iter().map(|b| Decoder::new(b)).collect();
@@ -158,7 +190,11 @@ fn main() {
                 }
             }
             let mut j = 0;
-            while i < n { out[i] = decs[j].decode(&slot2sym, &freq, &cum); i += 1; j += 1; }
+            while i < n {
+                out[i] = decs[j].decode(&slot2sym, &freq, &cum);
+                i += 1;
+                j += 1;
+            }
         };
         decode(&mut out);
         assert_eq!(&out[..], &tokens[..], "rANS N={} roundtrip mismatch", nstreams);
@@ -167,10 +203,11 @@ fn main() {
             let t = Instant::now();
             decode(&mut out);
             let e = t.elapsed().as_secs_f64();
-            if e < best { best = e; }
+            if e < best {
+                best = e;
+            }
         }
-        println!("{:>4}  {:>10.2}  {:>9.3}  {:>10.3}",
-                 nstreams, best * 1e3, best * 1e9 / n as f64, (n as f64 / gb) / best);
+        println!("{:>4}  {:>10.2}  {:>9.3}  {:>10.3}", nstreams, best * 1e3, best * 1e9 / n as f64, (n as f64 / gb) / best);
     }
     println!("(need ~10+ GB/s on tokens to add little to the 3.130 GB/s output decode)");
 }

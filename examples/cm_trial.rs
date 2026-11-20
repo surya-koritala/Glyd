@@ -15,5 +15,16 @@ fn main() {
     assert!(back == d, "round trip differs");
     let mut z = Vec::new();
     glyd::compress_into_ultra(d, &mut z);
-    println!("{}: {} B -> cm {} B ({:.2}x) {:.2} MB/s enc, {:.2} MB/s dec; --ultra {} B ({:.2}x); cm/ultra {:.3}", f.rsplit('/').next().unwrap(), d.len(), c.len(), d.len() as f64 / c.len() as f64, d.len() as f64 / ct / 1e6, d.len() as f64 / dt / 1e6, z.len(), d.len() as f64 / z.len() as f64, c.len() as f64 / z.len() as f64);
+    println!(
+        "{}: {} B -> cm {} B ({:.2}x) {:.2} MB/s enc, {:.2} MB/s dec; --ultra {} B ({:.2}x); cm/ultra {:.3}",
+        f.rsplit('/').next().unwrap(),
+        d.len(),
+        c.len(),
+        d.len() as f64 / c.len() as f64,
+        d.len() as f64 / ct / 1e6,
+        d.len() as f64 / dt / 1e6,
+        z.len(),
+        d.len() as f64 / z.len() as f64,
+        c.len() as f64 / z.len() as f64
+    );
 }

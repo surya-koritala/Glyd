@@ -1,9 +1,6 @@
 // Deterministic replay of the G1 fuzz sequence that isolates the exact
 // mutation and decode path that corrupts memory.
-use glyd::{
-    compress, compress_parallel, decompress, decompress_into_raw, decompress_parallel,
-    decompress_parallel_into_raw,
-};
+use glyd::{compress, compress_parallel, decompress, decompress_into_raw, decompress_parallel, decompress_parallel_into_raw};
 use std::io::Write;
 
 struct Rng(u64);
@@ -59,10 +56,7 @@ fn dump(case: &str, stream_idx: usize, iter: u64, buf: &[u8]) {
 fn main() {
     // Optional: only run the named path, to isolate which one corrupts memory.
     let only: Option<String> = std::env::args().nth(1);
-    let limit: u64 = std::env::args()
-        .nth(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1_000_000);
+    let limit: u64 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
 
     let seeds = seed_inputs();
     let mut streams: Vec<(Vec<u8>, usize)> = Vec::new();

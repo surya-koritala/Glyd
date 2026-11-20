@@ -47,7 +47,8 @@ pub unsafe fn checksum_neon(data: &[u8]) -> u32 {
         let sum_s = vaddvq_u32(acc_s);
         let sum_ks = vaddvq_u32(acc_ks);
         let cross = (k - 1).wrapping_mul(sum_s).wrapping_sub(sum_ks);
-        b = b.wrapping_add(k.wrapping_mul(32).wrapping_mul(a))
+        b = b
+            .wrapping_add(k.wrapping_mul(32).wrapping_mul(a))
             .wrapping_add(cross.wrapping_mul(32))
             .wrapping_add(vaddvq_u32(vaddq_u32(vaddq_u32(acc_w0, acc_w1), vaddq_u32(acc_w2, acc_w3))));
         a = a.wrapping_add(sum_s);
@@ -66,7 +67,14 @@ mod tests {
     fn matches_scalar() {
         let mut x = 12345u64;
         for len in [0usize, 1, 31, 32, 33, 100, 4096, 65537, 1 << 20] {
-            let v: Vec<u8> = (0..len).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect();
+            let v: Vec<u8> = (0..len)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    x as u8
+                })
+                .collect();
             assert_eq!(unsafe { super::checksum_neon(&v) }, crate::format::compute_checksum_scalar(&v), "len {}", len);
         }
     }

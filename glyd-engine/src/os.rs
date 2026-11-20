@@ -118,7 +118,16 @@ pub mod win {
         fn PrefetchVirtualMemory(process: *mut c_void, entries: usize, ranges: *const MemoryRange, flags: u32) -> i32;
         fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
         pub fn GetCurrentProcessorNumber() -> u32;
-        fn DeviceIoControl(device: *mut c_void, code: u32, input: *mut c_void, in_bytes: u32, output: *mut c_void, out_bytes: u32, returned: *mut u32, overlapped: *mut c_void) -> i32;
+        fn DeviceIoControl(
+            device: *mut c_void,
+            code: u32,
+            input: *mut c_void,
+            in_bytes: u32,
+            output: *mut c_void,
+            out_bytes: u32,
+            returned: *mut u32,
+            overlapped: *mut c_void,
+        ) -> i32;
         fn K32GetProcessMemoryInfo(process: *mut c_void, counters: *mut [usize; 10], bytes: u32) -> i32;
     }
 
@@ -205,10 +214,23 @@ pub mod win {
 
     /// The local time's offset from UTC now, in seconds (east positive), as `localtime_r`'s tm_gmtoff on Unix.
     pub fn utc_offset() -> i64 {
-        let mut z = TimeZoneInformation { bias: 0, standard_name: [0; 32], standard_date: [0; 8], standard_bias: 0, daylight_name: [0; 32], daylight_date: [0; 8], daylight_bias: 0 };
+        let mut z = TimeZoneInformation {
+            bias: 0,
+            standard_name: [0; 32],
+            standard_date: [0; 8],
+            standard_bias: 0,
+            daylight_name: [0; 32],
+            daylight_date: [0; 8],
+            daylight_bias: 0,
+        };
         // SAFETY: a struct of TIME_ZONE_INFORMATION's layout, filled by the call.
         let state = unsafe { GetTimeZoneInformation(&mut z) };
-        let bias = z.bias + match state { 1 => z.standard_bias, 2 => z.daylight_bias, _ => 0 };
+        let bias = z.bias
+            + match state {
+                1 => z.standard_bias,
+                2 => z.daylight_bias,
+                _ => 0,
+            };
         -(bias as i64) * 60
     }
 
@@ -222,7 +244,17 @@ pub mod win {
 
     /// Physical memory: the total and what is available, in bytes.
     pub fn memory() -> Option<(u64, u64)> {
-        let mut s = MemoryStatusEx { length: std::mem::size_of::<MemoryStatusEx>() as u32, load: 0, total_phys: 0, avail_phys: 0, total_page_file: 0, avail_page_file: 0, total_virtual: 0, avail_virtual: 0, avail_extended_virtual: 0 };
+        let mut s = MemoryStatusEx {
+            length: std::mem::size_of::<MemoryStatusEx>() as u32,
+            load: 0,
+            total_phys: 0,
+            avail_phys: 0,
+            total_page_file: 0,
+            avail_page_file: 0,
+            total_virtual: 0,
+            avail_virtual: 0,
+            avail_extended_virtual: 0,
+        };
         // SAFETY: a struct of the size its length says.
         (unsafe { GlobalMemoryStatusEx(&mut s) } != 0).then_some((s.total_phys, s.avail_phys))
     }

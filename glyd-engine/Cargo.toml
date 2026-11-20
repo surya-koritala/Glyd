@@ -25,3 +25,6 @@ ureq = "3"
 [[bin]]
 name = "glyd-engine"
 path = "src/main.rs"
+
+[lints]
+workspace = true

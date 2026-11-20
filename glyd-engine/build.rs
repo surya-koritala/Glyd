@@ -23,7 +23,8 @@ fn hip(out: &Path) {
     for a in archs.split_whitespace() {
         cmd.arg(format!("--offload-arch={a}"));
     }
-    let ok = cmd.arg("kernels/engine.cu").status().unwrap_or_else(|e| panic!("{}: {e} (GLYD_HIP=1 builds the AMD kernels with hipcc: set HIPCC)", hipcc.display()));
+    let ok =
+        cmd.arg("kernels/engine.cu").status().unwrap_or_else(|e| panic!("{}: {e} (GLYD_HIP=1 builds the AMD kernels with hipcc: set HIPCC)", hipcc.display()));
     assert!(ok.success(), "{} failed on kernels/engine.cu", hipcc.display());
     println!("cargo:rustc-cfg=glyd_hip");
 }

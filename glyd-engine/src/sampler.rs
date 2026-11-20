@@ -28,14 +28,32 @@ pub struct Params {
 
 impl Default for Params {
     fn default() -> Params {
-        Params { temperature: 0.0, top_k: 0, top_p: 1.0, min_p: 0.0, repetition_penalty: 1.0, presence_penalty: 0.0, frequency_penalty: 0.0, logit_bias: Vec::new(), allowed: Vec::new(), min_tokens: 0, seed: 0 }
+        Params {
+            temperature: 0.0,
+            top_k: 0,
+            top_p: 1.0,
+            min_p: 0.0,
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            logit_bias: Vec::new(),
+            allowed: Vec::new(),
+            min_tokens: 0,
+            seed: 0,
+        }
     }
 }
 
 impl Params {
     /// Whether a step needs no more than the largest logit.
     pub fn greedy(&self) -> bool {
-        self.temperature <= 0.0 && self.repetition_penalty == 1.0 && self.presence_penalty == 0.0 && self.frequency_penalty == 0.0 && self.logit_bias.is_empty() && self.allowed.is_empty() && self.min_tokens == 0
+        self.temperature <= 0.0
+            && self.repetition_penalty == 1.0
+            && self.presence_penalty == 0.0
+            && self.frequency_penalty == 0.0
+            && self.logit_bias.is_empty()
+            && self.allowed.is_empty()
+            && self.min_tokens == 0
     }
 }
 
@@ -202,7 +220,11 @@ impl Sampler {
             } else {
                 // (the rest, renormalized by walk: the draft's share taken out)
                 let (idx, probs): (Vec<u32>, Vec<f64>) = idx.iter().zip(&probs).filter(|(t, _)| **t != draft).map(|(t, p)| (*t, *p)).unzip();
-                if idx.is_empty() { draft } else { self.walk(&idx, &probs) }
+                if idx.is_empty() {
+                    draft
+                } else {
+                    self.walk(&idx, &probs)
+                }
             }
         };
         self.note(tok);
@@ -269,7 +291,15 @@ impl Sampler {
     /// either a top-k of at most `n` or, with no top-k, a top-p below 1 and no min-p (the cut is then of the row's probabilities: their sum is asked for).
     fn need(&self, n: usize) -> Option<Need> {
         let p = &self.p;
-        if n == 0 || p.temperature <= 0.0 || p.repetition_penalty != 1.0 || p.presence_penalty != 0.0 || p.frequency_penalty != 0.0 || !p.logit_bias.is_empty() || !p.allowed.is_empty() || self.suppressing() {
+        if n == 0
+            || p.temperature <= 0.0
+            || p.repetition_penalty != 1.0
+            || p.presence_penalty != 0.0
+            || p.frequency_penalty != 0.0
+            || !p.logit_bias.is_empty()
+            || !p.allowed.is_empty()
+            || self.suppressing()
+        {
             return None;
         }
         match p.top_k {
@@ -675,7 +705,12 @@ mod tests {
         let (k, m) = (Some(Need { temperature: 0.7, mass: false }), Some(Need { temperature: 0.7, mass: true }));
         assert_eq!((ask(Params { top_k: 20, ..Params::default() }), ask(Params { top_k: 64, top_p: 0.9, min_p: 0.1, ..Params::default() })), (k, k));
         assert_eq!((ask(Params { top_p: 0.95, ..Params::default() }), ask(Params { top_k: 0, top_p: 0.01, ..Params::default() })), (m, m));
-        for none in [Params::default(), Params { top_k: 65, ..Params::default() }, Params { top_p: 0.95, min_p: 0.05, ..Params::default() }, Params { min_p: 0.05, ..Params::default() }] {
+        for none in [
+            Params::default(),
+            Params { top_k: 65, ..Params::default() },
+            Params { top_p: 0.95, min_p: 0.05, ..Params::default() },
+            Params { min_p: 0.05, ..Params::default() },
+        ] {
             assert_eq!(ask(none.clone()), None, "{none:?}");
         }
         assert_eq!(Sampler::new(Params { temperature: 0.0, top_k: 20, ..Params::default() }, &[]).top_need(), None);
@@ -795,7 +830,10 @@ mod tests {
         let mut s = Sampler::new(Params { temperature: 0.0, allowed: vec![7], logit_bias: vec![(3, 100.0)], ..Params::default() }, &[]);
         assert_eq!(s.sample(&row), 7, "a bias does not bring back a token that is not allowed");
         assert!(!Params { allowed: vec![1], ..Params::default() }.greedy() && !Params { min_tokens: 1, ..Params::default() }.greedy());
-        assert_eq!(Sampler::new(Params { temperature: 1.0, top_k: 3, allowed: vec![1], ..Params::default() }, &[]).sample_top(&[(3, 4.0), (1, 3.0), (7, 2.0)], None), None);
+        assert_eq!(
+            Sampler::new(Params { temperature: 1.0, top_k: 3, allowed: vec![1], ..Params::default() }, &[]).sample_top(&[(3, 4.0), (1, 3.0), (7, 2.0)], None),
+            None
+        );
         // min_tokens: the end token (3, the largest) is out for the first two choices and back after
         let mut s = Sampler::new(Params { temperature: 0.0, min_tokens: 2, ..Params::default() }, &[]);
         s.set_suppress(vec![3]);

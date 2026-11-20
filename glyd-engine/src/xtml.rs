@@ -150,9 +150,15 @@ impl Xtml {
                 if let Some((name, args)) = self.call.take() {
                     let args = match self.raw.take() {
                         Some(raw) => raw.trim().to_string(),
-                        None => format!("{{{}}}", args.iter().map(|(k, v)| format!("{}: {v}", crate::chat::py_dumps(&Value::from(k.as_str())))).collect::<Vec<_>>().join(", ")),
+                        None => format!(
+                            "{{{}}}",
+                            args.iter().map(|(k, v)| format!("{}: {v}", crate::chat::py_dumps(&Value::from(k.as_str())))).collect::<Vec<_>>().join(", ")
+                        ),
                     };
-                    out.push_str(&format!("<tool_call>{{\"name\": {}, \"arguments\": {args}}}</tool_call>", crate::chat::py_dumps(&Value::from(name.as_str()))));
+                    out.push_str(&format!(
+                        "<tool_call>{{\"name\": {}, \"arguments\": {args}}}</tool_call>",
+                        crate::chat::py_dumps(&Value::from(name.as_str()))
+                    ));
                 }
             }
             _ => {}
@@ -186,7 +192,10 @@ mod tests {
         // (thinking off: the prompt opened the response)
         assert_eq!(read("Paris.<|close|>response<|sep|><|close|>message<|sep|>", 3, false), "Paris.");
         // (a value with a quote, an argument of no JSON, a call's arguments as raw JSON)
-        assert_eq!(tag(r#"call tool="a&quot;b" index="2""#), ("call".to_string(), vec![("tool".to_string(), "a\"b".to_string()), ("index".to_string(), "2".to_string())]));
+        assert_eq!(
+            tag(r#"call tool="a&quot;b" index="2""#),
+            ("call".to_string(), vec![("tool".to_string(), "a\"b".to_string()), ("index".to_string(), "2".to_string())])
+        );
         let raw = "<|open|>tools<|sep|><|open|>call tool=\"f\" index=\"1\"<|sep|><|open|>json type=\"object\"<|sep|>{\"a\": 1}<|close|>json<|sep|><|close|>call<|sep|><|close|>tools<|sep|>";
         assert_eq!(read(raw, 4, false), "<tool_call>{\"name\": \"f\", \"arguments\": {\"a\": 1}}</tool_call>");
     }
@@ -194,9 +203,13 @@ mod tests {
     /// A forced call: the reader primed with the opening the prompt ends with reads the model's rest as the call, by name or naming it.
     #[test]
     fn a_forced_call_reads_from_its_opening() {
-        assert_eq!(forced(true, Some("get_weather")), "<|close|>think<|sep|><|open|>response<|sep|><|close|>response<|sep|><|open|>tools<|sep|><|open|>call tool=\"get_weather\" index=\"1\"<|sep|>");
+        assert_eq!(
+            forced(true, Some("get_weather")),
+            "<|close|>think<|sep|><|open|>response<|sep|><|close|>response<|sep|><|open|>tools<|sep|><|open|>call tool=\"get_weather\" index=\"1\"<|sep|>"
+        );
         assert_eq!(forced(false, None), "<|close|>response<|sep|><|open|>tools<|sep|><|open|>call tool=\"");
-        let rest = "<|open|>argument key=\"city\" type=\"string\"<|sep|>Paris<|close|>argument<|sep|><|close|>call<|sep|><|close|>tools<|sep|><|close|>message<|sep|>";
+        let rest =
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Paris<|close|>argument<|sep|><|close|>call<|sep|><|close|>tools<|sep|><|close|>message<|sep|>";
         let want = "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}</tool_call>";
         for (open, text) in [(forced(true, Some("get_weather")), rest.to_string()), (forced(true, None), format!("get_weather\" index=\"1\"<|sep|>{rest}"))] {
             let mut x = Xtml::new(false);

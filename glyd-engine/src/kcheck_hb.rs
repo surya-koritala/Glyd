@@ -268,7 +268,17 @@ fn group_ids_case(dev: &Dev, kern: &HbKern, failed: &mut Vec<String>) -> Result<
             seen[g as usize] - 1
         })
         .collect();
-    let ids: Vec<i64> = (0..1000).map(|i| if i % 97 == 0 { -1 } else if i % 89 == 0 { experts as i64 + 3 } else { r.below(experts) as i64 }).collect();
+    let ids: Vec<i64> = (0..1000)
+        .map(|i| {
+            if i % 97 == 0 {
+                -1
+            } else if i % 89 == 0 {
+                experts as i64 + 3
+            } else {
+                r.below(experts) as i64
+            }
+        })
+        .collect();
     let (ib, gb, lb) = (upload(&ids)?, upload(&group_of)?, upload(&local_of.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?);
     let mut ok = true;
     for g in 0..2usize {
@@ -278,7 +288,10 @@ fn group_ids_case(dev: &Dev, kern: &HbKern, failed: &mut Vec<String>) -> Result<
         dev.sync()?;
         let mut got = vec![0i64; ids.len()];
         out.read(0, &mut got)?;
-        let want: Vec<i64> = ids.iter().map(|&e| if e >= 0 && (e as usize) < experts && group_of[e as usize] as usize == g { local_of[e as usize] as i64 } else { -1 }).collect();
+        let want: Vec<i64> = ids
+            .iter()
+            .map(|&e| if e >= 0 && (e as usize) < experts && group_of[e as usize] as usize == g { local_of[e as usize] as i64 } else { -1 })
+            .collect();
         ok &= got == want;
     }
     println!("{} hb_group_ids: 1,000 choices (some below zero and past the experts) sent to the numbers of two groups", if ok { "ok  " } else { "FAIL" });
@@ -321,7 +334,10 @@ fn speed(dev: &Dev, lib: &Lib, kern: &HbKern, bits: u32, tokens: usize, experts:
         unsafe { launches(dev, lib, kern, &c, &st, &zb, &sb, &ib, &ib, &wb)? };
     }
     let ms = t.stop(dev.stream)? as f64 / reps as f64;
-    println!("speed {bits} bits, {tokens} tokens of 22 of {experts} experts: {ms:.3} ms a layer (with the buffers made and read each time), {:.1} us a pair", ms * 1e3 / pairs as f64);
+    println!(
+        "speed {bits} bits, {tokens} tokens of 22 of {experts} experts: {ms:.3} ms a layer (with the buffers made and read each time), {:.1} us a pair",
+        ms * 1e3 / pairs as f64
+    );
     Ok(())
 }
 

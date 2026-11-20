@@ -114,7 +114,23 @@ impl KernNh {
     /// # Safety
     /// As `conv`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn ssm(&self, s: Stream, xc: u64, cs: i32, dtr: u64, dts: i32, dt_bias: u64, a_log: u64, d: u64, state: u64, y: u64, n: i32, nh: i32, ng: i32, dt_min: f32) -> Result<()> {
+    pub unsafe fn ssm(
+        &self,
+        s: Stream,
+        xc: u64,
+        cs: i32,
+        dtr: u64,
+        dts: i32,
+        dt_bias: u64,
+        a_log: u64,
+        d: u64,
+        state: u64,
+        y: u64,
+        n: i32,
+        nh: i32,
+        ng: i32,
+        dt_min: f32,
+    ) -> Result<()> {
         launch!(self.ssm, [nh as u32, (NH_P / 8) as u32, 1], [256, 1, 1], s; xc, cs, dtr, dts, dt_bias, a_log, d, state, y, n, nh, ng, dt_min)
     }
 
@@ -123,7 +139,24 @@ impl KernNh {
     /// # Safety
     /// As `conv`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn ssd(&self, s: Stream, ws: &SsdWs, xc: u64, cs: i32, dtr: u64, dts: i32, dt_bias: u64, a_log: u64, d: u64, state: u64, y: u64, n: i32, nh: i32, ng: i32, dt_min: f32) -> Result<()> {
+    pub unsafe fn ssd(
+        &self,
+        s: Stream,
+        ws: &SsdWs,
+        xc: u64,
+        cs: i32,
+        dtr: u64,
+        dts: i32,
+        dt_bias: u64,
+        a_log: u64,
+        d: u64,
+        state: u64,
+        y: u64,
+        n: i32,
+        nh: i32,
+        ng: i32,
+        dt_min: f32,
+    ) -> Result<()> {
         if n as usize > ws.rows {
             return err(format!("{n} rows in a scan that has buffers for {}", ws.rows));
         }
@@ -308,7 +341,15 @@ impl WeightsNh {
     /// six-bit ones) and copied to the GPU as they are done. A glyd-v7 directory is at one level (`layout` None, or the same): the packs it holds saved are read as they are, each in the layout its entry names, the rest
     /// (a matrix the packer does not take, kept bf16) as the Hub's. A mixture-of-experts layer holds its norm and
     /// its block, which is `moe`'s (else `NoMoe`): the block gets the checkpoint and the layout and loads what it needs of the layer's tensors.
-    pub fn load(dir: &Path, threads: usize, layout: Option<Layout>, cc: (i32, i32), total_mem: u64, only: Option<&[usize]>, moe: Option<MoeFactory<'_>>) -> Result<WeightsNh> {
+    pub fn load(
+        dir: &Path,
+        threads: usize,
+        layout: Option<Layout>,
+        cc: (i32, i32),
+        total_mem: u64,
+        only: Option<&[usize]>,
+        moe: Option<MoeFactory<'_>>,
+    ) -> Result<WeightsNh> {
         let whole = only.is_none();
         WeightsNh::load_ends(dir, threads, layout, cc, total_mem, only, (whole, whole), moe)
     }
@@ -316,7 +357,16 @@ impl WeightsNh {
     /// As `load`, the embedding loaded where `ends.0` and the final norm and LM head where `ends.1` (a stage of a model split across GPUs: the
     /// first stage takes the embedding, the last the head).
     #[allow(clippy::too_many_arguments)]
-    pub fn load_ends(dir: &Path, threads: usize, layout: Option<Layout>, cc: (i32, i32), total_mem: u64, only: Option<&[usize]>, ends: (bool, bool), moe: Option<MoeFactory<'_>>) -> Result<WeightsNh> {
+    pub fn load_ends(
+        dir: &Path,
+        threads: usize,
+        layout: Option<Layout>,
+        cc: (i32, i32),
+        total_mem: u64,
+        only: Option<&[usize]>,
+        ends: (bool, bool),
+        moe: Option<MoeFactory<'_>>,
+    ) -> Result<WeightsNh> {
         let cfg = ConfigNemotronH::load(dir)?;
         let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
         let have: Vec<(String, String, Vec<u64>)> = ck
@@ -403,7 +453,10 @@ impl WeightsNh {
             } else {
                 None
             };
-            bytes += norm.bytes + mats.iter().map(Mat::bytes).sum::<usize>() + small.iter().map(|b| b.bytes).sum::<usize>() + block.as_ref().map_or(0, |b| b.bytes());
+            bytes += norm.bytes
+                + mats.iter().map(Mat::bytes).sum::<usize>()
+                + small.iter().map(|b| b.bytes).sum::<usize>()
+                + block.as_ref().map_or(0, |b| b.bytes());
             layers[l] = Some(LayerNh { kind, idx, norm, mats, small, moe: block });
         }
         let embed = packed.remove("embed");
@@ -512,7 +565,14 @@ impl EngineNh {
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
         let w = WeightsNh::load(dir, threads, o.layout, dev.cc_pair(), dev.total_mem as u64, o.only.as_deref(), moe)?;
         let c = &w.cfg;
-        if c.m_head_dim != NH_P || c.m_state != NH_N || c.conv_kernel != 4 || c.head_dim != 128 || c.inner() / c.m_groups > 1024 || c.heads / c.kv_heads > 16 || c.hidden > 8192 {
+        if c.m_head_dim != NH_P
+            || c.m_state != NH_N
+            || c.conv_kernel != 4
+            || c.head_dim != 128
+            || c.inner() / c.m_groups > 1024
+            || c.heads / c.kv_heads > 16
+            || c.hidden > 8192
+        {
             return err(format!(
                 "Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {}: this engine runs heads of {NH_P} channels, a state of {NH_N}, a convolution of 4 and attention heads of 128",
                 c.m_head_dim, c.m_state, c.conv_kernel, c.head_dim
@@ -538,7 +598,13 @@ impl EngineNh {
         let blas = if ch > 64 && (want == "blas" || (want.is_empty() && dev.cc != (8, 9))) { crate::ffi::Blas::find() } else { None };
         let own = want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9));
         let gpu_code = lib.gpu()? as i64;
-        let mut shapes: Vec<(i64, i64, bool)> = w.layers.iter().flatten().flat_map(|l| l.mats.iter()).filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None }).collect();
+        let mut shapes: Vec<(i64, i64, bool)> = w
+            .layers
+            .iter()
+            .flatten()
+            .flat_map(|l| l.mats.iter())
+            .filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None })
+            .collect();
         shapes.extend(w.layers.iter().flatten().filter_map(|l| l.moe.as_ref()).flat_map(|b| b.pack_shapes()));
         let scratch_w = if blas.is_some() || own { Buf::new(shapes.iter().map(|s| (s.0 * s.1) as usize * 2).max().unwrap_or(16))? } else { Buf::new(16)? };
         shapes.sort_unstable();
@@ -562,8 +628,47 @@ impl EngineNh {
         let used = free0.saturating_sub(dev.mem_info()?.0);
         let work_bytes = used.saturating_sub(w.bytes + kv.bytes + ssm.bytes + convst.bytes);
         let mut e = EngineNh {
-            dev, lib, kern, k, w, chunk: ch, ctx, chunked: o.chunked, x, h, o: o_, mix, xc, core, att, hlast, logits, scratch, embed_groups, embed_pairs, pos, st, tok, val, top, attn_part, ssd, ws, done, blas, own, scratch_w,
-            gpu_code, kv, ssm, convst, graph: None, host, n: 0, work_bytes, moe_scratch: std::cell::OnceCell::new(),
+            dev,
+            lib,
+            kern,
+            k,
+            w,
+            chunk: ch,
+            ctx,
+            chunked: o.chunked,
+            x,
+            h,
+            o: o_,
+            mix,
+            xc,
+            core,
+            att,
+            hlast,
+            logits,
+            scratch,
+            embed_groups,
+            embed_pairs,
+            pos,
+            st,
+            tok,
+            val,
+            top,
+            attn_part,
+            ssd,
+            ws,
+            done,
+            blas,
+            own,
+            scratch_w,
+            gpu_code,
+            kv,
+            ssm,
+            convst,
+            graph: None,
+            host,
+            n: 0,
+            work_bytes,
+            moe_scratch: std::cell::OnceCell::new(),
         };
         if o.graph && e.w.whole() && e.w.layers.iter().flatten().all(|l| l.moe.as_ref().is_none_or(|b| b.graphable())) {
             e.capture_graph()?;
@@ -576,7 +681,17 @@ impl EngineNh {
         let (free, total) = self.dev.mem_info().unwrap_or((0, 0));
         format!(
             "{} (sm_{}{}): weights {:.3} GiB (layout {}), states {:.3} GiB, KV cache {} positions {:.3} GiB, workspaces {:.3} GiB, {:.2} of {:.2} GiB in use",
-            self.dev.name, self.dev.cc.0, self.dev.cc.1, gib(self.w.bytes), self.w.layout.name(), gib(self.ssm.bytes + self.convst.bytes), self.ctx, gib(self.kv.bytes), gib(self.work_bytes), gib(total - free), gib(total)
+            self.dev.name,
+            self.dev.cc.0,
+            self.dev.cc.1,
+            gib(self.w.bytes),
+            self.w.layout.name(),
+            gib(self.ssm.bytes + self.convst.bytes),
+            self.ctx,
+            gib(self.kv.bytes),
+            gib(self.work_bytes),
+            gib(total - free),
+            gib(total)
         )
     }
 

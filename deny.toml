@@ -1,0 +1,23 @@
+# Dependency policy for the main workspace (cargo-deny): licenses compatible with Apache-2.0, no known advisories,
+# crates.io only. Starlings has its own (starlings/deny.toml).
+[graph]
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "0BSD", "MIT-0", "Unlicense"]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

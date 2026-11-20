@@ -48,7 +48,9 @@ pub fn split_for(sms: usize, pairs: usize) -> usize {
 
 /// A row layout's bytes for an expert of `rows` neurons of `cols` outputs: its codes and its scales.
 pub fn row_strides(tag: u32, rows: usize, cols: usize) -> Result<(u64, u64)> {
-    let Some(bits) = rows_bits(tag) else { return err(format!("a layout of tag {tag}: sparse experts are held in the row layouts (six, five and four bits) alone")) };
+    let Some(bits) = rows_bits(tag) else {
+        return err(format!("a layout of tag {tag}: sparse experts are held in the row layouts (six, five and four bits) alone"));
+    };
     if rows == 0 || cols == 0 || !cols.is_multiple_of(32) {
         return err(format!("an expert of {rows} neurons of {cols} outputs: outputs in runs of 32 are wanted"));
     }
@@ -75,7 +77,17 @@ impl RowsJoined {
         let (mut data, mut scales) = (Vec::with_capacity(packs.len() * data_bytes as usize), Vec::with_capacity(packs.len() * scale_bytes as usize));
         for (i, p) in packs.iter().enumerate() {
             if p.tiers != p0.tiers || (p.rows, p.cols) != (p0.rows, p0.cols) || p.data.len() as u64 != data_bytes || p.blocks.len() as u64 != scale_bytes {
-                return err(format!("expert {i}: a pack of {} x {} (words {:x?}, {} + {} bytes), where expert 0's is {} x {} ({:x?}, {data_bytes} + {scale_bytes})", p.rows, p.cols, p.tiers, p.data.len(), p.blocks.len(), p0.rows, p0.cols, p0.tiers));
+                return err(format!(
+                    "expert {i}: a pack of {} x {} (words {:x?}, {} + {} bytes), where expert 0's is {} x {} ({:x?}, {data_bytes} + {scale_bytes})",
+                    p.rows,
+                    p.cols,
+                    p.tiers,
+                    p.data.len(),
+                    p.blocks.len(),
+                    p0.rows,
+                    p0.cols,
+                    p0.tiers
+                ));
             }
             data.extend_from_slice(&p.data);
             scales.extend_from_slice(&p.blocks);
@@ -113,7 +125,13 @@ impl RowStack {
     pub fn from_buffers(tag: u32, experts: usize, rows: usize, cols: usize, data: Buf, scales: Buf) -> Result<RowStack> {
         let (data_stride, scale_stride) = row_strides(tag, rows, cols)?;
         if data.bytes as u64 != data_stride * experts as u64 || scales.bytes as u64 != scale_stride * experts as u64 {
-            return err(format!("{experts} experts of {rows} neurons of {cols} outputs in the layout of tag {tag} take {} + {} bytes: {} + {} are given", data_stride * experts as u64, scale_stride * experts as u64, data.bytes, scales.bytes));
+            return err(format!(
+                "{experts} experts of {rows} neurons of {cols} outputs in the layout of tag {tag} take {} + {} bytes: {} + {} are given",
+                data_stride * experts as u64,
+                scale_stride * experts as u64,
+                data.bytes,
+                scales.bytes
+            ));
         }
         let bits = rows_bits(tag).expect("row_strides took the tag");
         let bytes = data.bytes + scales.bytes;
@@ -273,7 +291,21 @@ impl RowsKern {
     /// # Safety
     /// As `down`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn run(&self, s: Stream, cfg: &MoeCfg, w: &RowStack, a: u64, plan: u64, ids: u64, via: u64, wts: u64, part: u64, part_room: usize, y: u64, t: usize) -> Result<()> {
+    pub unsafe fn run(
+        &self,
+        s: Stream,
+        cfg: &MoeCfg,
+        w: &RowStack,
+        a: u64,
+        plan: u64,
+        ids: u64,
+        via: u64,
+        wts: u64,
+        part: u64,
+        part_room: usize,
+        y: u64,
+        t: usize,
+    ) -> Result<()> {
         self.down(s, cfg, w, a, plan, via, part, part_room, t)?;
         self.sum(s, cfg, ids, wts, part, part_room, y, t, 0)
     }
@@ -318,7 +350,9 @@ mod tests {
         for name in ["moe_down_rows4", "moe_down_rows5", "moe_down_rows6", "moe_rows_sum"] {
             assert!(SRC.contains(&format!("extern \"C\" __global__ void __launch_bounds__(256) {name}(")), "no kernel {name} in kernels/moe_rows.cu");
         }
-        let define = |n: &str| -> Option<usize> { SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok()) };
+        let define = |n: &str| -> Option<usize> {
+            SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok())
+        };
         assert_eq!((define("MOE_ROWS_OUT"), define("MOE_ROWS_MAX_INTER"), define("MOE_ROWS_WARPS")), (Some(ROWS_OUT), Some(ROWS_MAX_INTER), Some(8)));
     }
 
@@ -482,6 +516,9 @@ mod tests {
         says(rows_fit(512, 2688, 1040, &odd), "runs of 32");
         assert!(RowsKern::part_bytes(22, 1024) >= 22 * 8 * 1024 * 4, "a decode step's 22 pairs can all be cut in 8");
         let chunk = RowsKern::part_bytes(2048 * 22, 1024);
-        assert!((2048 * 22 * 1024 * 4..2048 * 22 * 1024 * 4 * 102 / 100).contains(&chunk), "a prompt chunk of 2,048 tokens takes about the dense product's partial sums: {chunk} bytes");
+        assert!(
+            (2048 * 22 * 1024 * 4..2048 * 22 * 1024 * 4 * 102 / 100).contains(&chunk),
+            "a prompt chunk of 2,048 tokens takes about the dense product's partial sums: {chunk} bytes"
+        );
     }
 }

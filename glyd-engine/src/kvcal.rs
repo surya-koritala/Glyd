@@ -48,10 +48,8 @@ pub fn sequences(docs: &[(String, String, Vec<u32>)], length: usize) -> Vec<(Vec
     for (order, shift) in [(names.clone(), 0usize), (names.iter().rev().cloned().collect::<Vec<_>>(), CHUNK / 2)] {
         let (mut seq, mut segs, mut lap) = (Vec::new(), Vec::new(), 0usize);
         while seq.len() < length {
-            let mut ptr: Vec<(String, usize)> = names
-                .iter()
-                .map(|k| (k.clone(), if lap == 0 { shift } else { (shift + lap * LAP) % stream(k).len().max(1) }))
-                .collect();
+            let mut ptr: Vec<(String, usize)> =
+                names.iter().map(|k| (k.clone(), if lap == 0 { shift } else { (shift + lap * LAP) % stream(k).len().max(1) })).collect();
             let had = seq.len();
             while seq.len() < length && ptr.iter().any(|(k, p)| *p < stream(k).len()) {
                 for kind in &order {
@@ -144,7 +142,16 @@ pub fn quantile_int(x: &[i64], p: f32) -> i64 {
 /// The store's meta from the sweep's figures (chunks, over, maxneed per row): the plugin's `store_meta` (without its `top` list). `reach(i)`: the tokenizer makes token i from text;
 /// `decode(i)`: its string.
 #[allow(clippy::too_many_arguments)]
-pub fn store_meta(chunks: &[f32], over: &[i32], maxneed: &[i32], arena: i64, capacity: i64, rows: usize, reach: &dyn Fn(usize) -> bool, decode: &dyn Fn(usize) -> String) -> Vec<(String, Json)> {
+pub fn store_meta(
+    chunks: &[f32],
+    over: &[i32],
+    maxneed: &[i32],
+    arena: i64,
+    capacity: i64,
+    rows: usize,
+    reach: &dyn Fn(usize) -> bool,
+    decode: &dyn Fn(usize) -> String,
+) -> Vec<(String, Json)> {
     let heavy: Vec<usize> = (0..over.len()).filter(|&i| over[i] > 0).collect();
     let text: Vec<usize> = heavy.iter().copied().filter(|&i| reach(i)).collect();
     let ids: Vec<usize> = heavy.iter().copied().filter(|i| !text.contains(i)).collect();
@@ -248,7 +255,6 @@ impl Json {
             }
         }
     }
-
 }
 
 impl std::fmt::Display for Json {
@@ -267,14 +273,25 @@ pub fn free_arena(page_bytes_no_arena: i64, h: i64) -> i64 {
 /// Why a model's tables refuse it: its values fall outside 12 bits too often.
 pub fn refusal(k: f64, v: f64) -> String {
     if cfg!(feature = "dev") {
-        format!("the model's values compress too poorly (worst kind of text left out: K {:.3}%, V {:.3}%, the limit {:.2}%)", k * 100.0, v * 100.0, REFUSED * 100.0)
+        format!(
+            "the model's values compress too poorly (worst kind of text left out: K {:.3}%, V {:.3}%, the limit {:.2}%)",
+            k * 100.0,
+            v * 100.0,
+            REFUSED * 100.0
+        )
     } else {
         "this model's values do not suit the engine's cache, so the engine does not run it".to_string()
     }
 }
 
 pub fn check_positions(p: usize) -> Result<usize> {
-    TIERS.iter().copied().find(|&t| t >= p).ok_or_else(|| Error(format!("{p} positions: the tables cover up to {}", TIERS[TIERS.len() - 1]))).or_else(|e| if p == 0 { err("0 positions") } else { Err(e) })
+    TIERS.iter().copied().find(|&t| t >= p).ok_or_else(|| Error(format!("{p} positions: the tables cover up to {}", TIERS[TIERS.len() - 1]))).or_else(|e| {
+        if p == 0 {
+            err("0 positions")
+        } else {
+            Err(e)
+        }
+    })
 }
 
 #[cfg(test)]
@@ -361,10 +378,17 @@ mod tests {
     fn the_sequences_of_a_calibration() {
         let f = fixtures();
         let s = f.get("sequences").unwrap();
-        let docs: Vec<(String, String, Vec<u32>)> = s.get("docs").unwrap().as_array().unwrap().iter().map(|d| {
-            let d = d.as_array().unwrap();
-            (d[0].as_str().unwrap().to_string(), d[1].as_str().unwrap().to_string(), ints(&d[2]).into_iter().map(|x| x as u32).collect())
-        }).collect();
+        let docs: Vec<(String, String, Vec<u32>)> = s
+            .get("docs")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                let d = d.as_array().unwrap();
+                (d[0].as_str().unwrap().to_string(), d[1].as_str().unwrap().to_string(), ints(&d[2]).into_iter().map(|x| x as u32).collect())
+            })
+            .collect();
         for (len, want) in s.get("by_length").unwrap().as_object().unwrap() {
             let got = sequences(&docs, len.parse().unwrap());
             let want = want.as_array().unwrap();
@@ -372,10 +396,15 @@ mod tests {
             for ((ids, segs), w) in got.iter().zip(want) {
                 let w = w.as_array().unwrap();
                 assert_eq!(ids.iter().map(|&x| x as i64).collect::<Vec<_>>(), ints(&w[0]), "ids at {len}");
-                let ws: Vec<(String, i64, i64)> = w[1].as_array().unwrap().iter().map(|s| {
-                    let s = s.as_array().unwrap();
-                    (s[0].as_str().unwrap().to_string(), s[1].as_i64().unwrap(), s[2].as_i64().unwrap())
-                }).collect();
+                let ws: Vec<(String, i64, i64)> = w[1]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| {
+                        let s = s.as_array().unwrap();
+                        (s[0].as_str().unwrap().to_string(), s[1].as_i64().unwrap(), s[2].as_i64().unwrap())
+                    })
+                    .collect();
                 assert_eq!(segs.iter().map(|(k, a, b)| (k.clone(), *a as i64, *b as i64)).collect::<Vec<_>>(), ws, "segments at {len}");
             }
         }

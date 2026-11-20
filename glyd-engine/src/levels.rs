@@ -108,7 +108,15 @@ pub fn short_name(model: &str) -> String {
 
 /// A model's Hub name and the shorter one its pre-packed repos have (glyd-gpu-py's engine.REPO_NAMES is the same table).
 /// Gemma 4: the instruction-tuned model is the plain name (its wren packed from Google's QAT checkpoint), the base model "-base".
-const REPO_NAMES: [(&str, &str); 7] = [("NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "nemotron-3"), ("gemma-4-31B-it-qat-q4_0-unquantized", "gemma-4-31B"), ("gemma-4-31B-it", "gemma-4-31B"), ("gemma-4-31B", "gemma-4-31B-base"), ("gemma-4-12B-it-qat-q4_0-unquantized", "gemma-4-12B"), ("gemma-4-12B-it", "gemma-4-12B"), ("gemma-4-12B", "gemma-4-12B-base")];
+const REPO_NAMES: [(&str, &str); 7] = [
+    ("NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "nemotron-3"),
+    ("gemma-4-31B-it-qat-q4_0-unquantized", "gemma-4-31B"),
+    ("gemma-4-31B-it", "gemma-4-31B"),
+    ("gemma-4-31B", "gemma-4-31B-base"),
+    ("gemma-4-12B-it-qat-q4_0-unquantized", "gemma-4-12B"),
+    ("gemma-4-12B-it", "gemma-4-12B"),
+    ("gemma-4-12B", "gemma-4-12B-base"),
+];
 
 /// The Hub repo of MODEL (`Qwen/Qwen3.8-27B`) at `level` (`swift`) packed ahead: `glyd/Qwen3.8-27B-swift`, under a shorter name
 /// where `REPO_NAMES` gives one (`glyd/nemotron-3-hummingbird`). A pre-packed repo's own name is its repo.
@@ -139,7 +147,11 @@ pub fn is_qat(model: &str) -> bool {
 
 /// The layout `layout` takes for MODEL: wren on a QAT checkpoint is the exact four-bit layout.
 pub fn layout_for(model: &str, layout: Layout) -> Layout {
-    if layout == Layout::Int4 && is_qat(model) { Layout::Int4H } else { layout }
+    if layout == Layout::Int4 && is_qat(model) {
+        Layout::Int4H
+    } else {
+        layout
+    }
 }
 
 /// The layout `ship` packs MODEL at for `level` (penguin, kestrel, swift or wren), else None (hummingbird comes from a calibration).
@@ -197,6 +209,9 @@ mod tests {
         assert_eq!(packed_repo("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "hummingbird"), "glyd/nemotron-3-hummingbird");
         assert_eq!(repo_level("glyd/Qwen3.8-27B-kestrel"), Some(Layout::Int6));
         assert_eq!(repo_level("glyd/a/b-swift"), None);
-        assert_eq!((ship_layout("m", "penguin"), ship_layout("m", "hummingbird"), ship_layout("google/gemma-4-12B-it", "wren")), (Some(Layout::Tiered), None, Some(Layout::Int4H)));
+        assert_eq!(
+            (ship_layout("m", "penguin"), ship_layout("m", "hummingbird"), ship_layout("google/gemma-4-12B-it", "wren")),
+            (Some(Layout::Tiered), None, Some(Layout::Int4H))
+        );
     }
 }

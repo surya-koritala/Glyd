@@ -34,7 +34,11 @@ pub struct MoeDims {
 impl MoeDims {
     /// The width the experts read: the latent, or the model's (`hidden`) where there is none.
     pub fn width(&self, hidden: usize) -> usize {
-        if self.latent > 0 { self.latent } else { hidden }
+        if self.latent > 0 {
+            self.latent
+        } else {
+            hidden
+        }
     }
 }
 
@@ -92,7 +96,10 @@ pub fn pack_layout(level: Layout, key: &str) -> Layout {
 
 /// Whether a config.json is a NemotronH model's (what the dispatcher asks first).
 pub fn is_nemotron_h(text: &str) -> bool {
-    json::parse(text).ok().and_then(|v| v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "NemotronHForCausalLM"))).unwrap_or(false)
+    json::parse(text)
+        .ok()
+        .and_then(|v| v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "NemotronHForCausalLM")))
+        .unwrap_or(false)
 }
 
 impl ConfigNemotronH {
@@ -154,7 +161,9 @@ impl ConfigNemotronH {
                     Some("linear_attention" | "mamba") => Ok(NhKind::Mamba),
                     Some("full_attention" | "attention") => Ok(NhKind::Attention),
                     Some("moe") => Ok(NhKind::Moe),
-                    other => err(format!("{label}: a layer of type {other:?}, where this model has mamba (linear_attention), attention (full_attention) and moe")),
+                    other => {
+                        err(format!("{label}: a layer of type {other:?}, where this model has mamba (linear_attention), attention (full_attention) and moe"))
+                    }
                 })
                 .collect::<Result<_>>()?
         } else {
@@ -279,7 +288,11 @@ impl ConfigNemotronH {
         let (h, p) = (self.hidden, format!("{}.mixer", self.layer_name(l)));
         let mut out = Vec::new();
         let mut pack = |module: &str, parts: &[(&str, usize)], cols: usize| {
-            out.push(Pack35 { parts: parts.iter().map(|&(n, r)| (format!("{module}.{n}.weight"), r)).collect(), key: format!("{module}.{}", parts[0].0), cols });
+            out.push(Pack35 {
+                parts: parts.iter().map(|&(n, r)| (format!("{module}.{n}.weight"), r)).collect(),
+                key: format!("{module}.{}", parts[0].0),
+                cols,
+            });
         };
         match self.kinds[l] {
             NhKind::Mamba => {
@@ -382,7 +395,9 @@ impl ConfigNemotronH {
         for w in want {
             match by.get(w.name.as_str()) {
                 None => bad.push(format!("no {}", w.name)),
-                Some((d, s)) if !(*d == w.dtype || (w.dtype == "F32" && *d == "BF16")) || *s != w.shape.as_slice() => bad.push(format!("{}: {d} {s:?}, where {} {:?} is wanted", w.name, w.dtype, w.shape)),
+                Some((d, s)) if !(*d == w.dtype || (w.dtype == "F32" && *d == "BF16")) || *s != w.shape.as_slice() => {
+                    bad.push(format!("{}: {d} {s:?}, where {} {:?} is wanted", w.name, w.dtype, w.shape))
+                }
                 _ => {}
             }
         }
@@ -398,7 +413,11 @@ impl ConfigNemotronH {
     }
 
     fn wanted_matrices(packs: Vec<Pack35>, packed: &HashSet<String>) -> Vec<Tensor35> {
-        packs.into_iter().flat_map(|p| p.parts.into_iter().map(move |(n, r)| Tensor35 { name: n, dtype: "BF16", shape: vec![r as u64, p.cols as u64] })).filter(|t| !packed.contains(Pack35::saved(&t.name))).collect()
+        packs
+            .into_iter()
+            .flat_map(|p| p.parts.into_iter().map(move |(n, r)| Tensor35 { name: n, dtype: "BF16", shape: vec![r as u64, p.cols as u64] }))
+            .filter(|t| !packed.contains(Pack35::saved(&t.name)))
+            .collect()
     }
 
     /// The matrices `ck` holds as saved packs (a glyd-v7 directory's), by their parts' names (`Pack35::saved`): what `check` and `check_layers` take as held in their three buffers.
@@ -415,7 +434,8 @@ impl ConfigNemotronH {
         let wanted: HashSet<&str> = want.iter().map(|w| w.name.as_str()).collect();
         let buffers: HashSet<String> = packed.iter().flat_map(|k| ["data", "blocks", "block_base", "codebook"].map(|s| format!("{k}.glyd_{s}"))).collect();
         // (a Hummingbird directory also holds the signs of each mixture-of-experts layer's rotation: `glyd_rot_signs`, saved beside the codebook rows)
-        let signs: HashSet<String> = (0..self.layers).filter(|&l| self.kinds[l] == NhKind::Moe).map(|l| format!("{}.mixer.glyd_rot_signs", self.layer_name(l))).collect();
+        let signs: HashSet<String> =
+            (0..self.layers).filter(|&l| self.kinds[l] == NhKind::Moe).map(|l| format!("{}.mixer.glyd_rot_signs", self.layer_name(l))).collect();
         let (mut left_out, mut bad) = (0, Vec::new());
         for (n, _, _) in have {
             if wanted.contains(n.as_str()) || buffers.contains(n) || signs.contains(n) {
@@ -548,7 +568,10 @@ pub(crate) mod tests {
         assert_eq!((c.hidden, c.layers, c.vocab, c.eps, c.max_pos, c.tie, c.eos.clone()), (4096, 88, 131072, 1e-5, 262144, false, vec![2]));
         assert_eq!((c.m_heads, c.m_head_dim, c.m_state, c.m_groups, c.conv_kernel, c.chunk), (128, 64, 128, 8, 4, 128));
         assert_eq!((c.heads, c.kv_heads, c.head_dim), (32, 2, 128));
-        assert_eq!((c.moe.experts, c.moe.top_k, c.moe.inter, c.moe.shared_inter, c.moe.latent, c.moe.scale, c.moe.norm_topk), (512, 22, 2688, 5376, 1024, 5.0, true));
+        assert_eq!(
+            (c.moe.experts, c.moe.top_k, c.moe.inter, c.moe.shared_inter, c.moe.latent, c.moe.scale, c.moe.norm_topk),
+            (512, 22, 2688, 5376, 1024, 5.0, true)
+        );
         assert_eq!((c.mtp_layers, c.prefix), (1, "backbone."));
         assert_eq!((c.inner(), c.conv_dim(), c.in_rows()), (8192, 10240, 18560));
         // generation_config.json's end tokens win over the config's
@@ -556,7 +579,19 @@ pub(crate) mod tests {
         assert_eq!(c.eos, vec![2, 11]);
         // the layer types as the list transformers names them, for the same model
         let kinds = parse().kinds;
-        let list: Vec<String> = kinds.iter().map(|k| format!("\"{}\"", ["linear_attention", "full_attention", "moe"][match k { NhKind::Mamba => 0, NhKind::Attention => 1, NhKind::Moe => 2 }])).collect();
+        let list: Vec<String> = kinds
+            .iter()
+            .map(|k| {
+                format!(
+                    "\"{}\"",
+                    ["linear_attention", "full_attention", "moe"][match k {
+                        NhKind::Mamba => 0,
+                        NhKind::Attention => 1,
+                        NhKind::Moe => 2,
+                    }]
+                )
+            })
+            .collect();
         let t = edited(|t| {
             t.retain(|(k, _)| k != "hybrid_override_pattern");
             set(t, "layers_block_type", &format!("[{}]", list.join(",")));
@@ -574,7 +609,10 @@ pub(crate) mod tests {
         assert_eq!((c.layers_of(NhKind::Mamba), c.layers_of(NhKind::Moe), c.layers_of(NhKind::Attention)), (40, 40, 8));
         let attn: Vec<usize> = (0..88).filter(|&l| s[l].0 == NhKind::Attention).collect();
         assert_eq!(attn, [7, 16, 25, 36, 47, 58, 69, 78]);
-        assert_eq!((s[0], s[1], s[2], s[7], s[8], s[16], s[87]), ((NhKind::Mamba, 0), (NhKind::Moe, 0), (NhKind::Mamba, 1), (NhKind::Attention, 0), (NhKind::Moe, 3), (NhKind::Attention, 1), (NhKind::Moe, 39)));
+        assert_eq!(
+            (s[0], s[1], s[2], s[7], s[8], s[16], s[87]),
+            ((NhKind::Mamba, 0), (NhKind::Moe, 0), (NhKind::Mamba, 1), (NhKind::Attention, 0), (NhKind::Moe, 3), (NhKind::Attention, 1), (NhKind::Moe, 39))
+        );
         // each kind's indices run 0, 1, 2, ... in order
         for kind in [NhKind::Mamba, NhKind::Attention, NhKind::Moe] {
             let idx: Vec<usize> = s.iter().filter(|x| x.0 == kind).map(|x| x.1).collect();
@@ -616,7 +654,17 @@ pub(crate) mod tests {
         refused(&edited(|t| t.retain(|(k, _)| k != "hybrid_override_pattern")), "no hybrid_override_pattern");
         refused(&edited(|t| t.retain(|(k, _)| k != "hidden_size")), "no hidden_size");
         // what is not refused: the rope fields the modeling code never reads, and a pattern of attention and Mamba-2 alone (no experts, so no router settings)
-        assert!(ConfigNemotronH::parse(&edited(|t| { set(t, "rope_theta", "5"); set(t, "hybrid_override_pattern", r#""M*M""#); set(t, "moe_latent_size", "null"); set(t, "num_hidden_layers", "3") }), "x", None).is_ok());
+        assert!(ConfigNemotronH::parse(
+            &edited(|t| {
+                set(t, "rope_theta", "5");
+                set(t, "hybrid_override_pattern", r#""M*M""#);
+                set(t, "moe_latent_size", "null");
+                set(t, "num_hidden_layers", "3")
+            }),
+            "x",
+            None
+        )
+        .is_ok());
     }
 
     /// The weight map against the pinned checkpoint's 42,683 tensors: every tensor the engine wants is there with its dtype and shape, and the only ones it does not take are the MTP head's.
@@ -628,7 +676,10 @@ pub(crate) mod tests {
         assert_eq!(c.check(&have, &HashSet::new()).unwrap(), 1040);
         // the dtype of the small tensors is the checkpoint's own: A_log, D and dt_bias are bf16 there, the score-correction bias fp32
         let dtype = |n: &str| have.iter().find(|t| t.0 == n).unwrap().1.clone();
-        assert_eq!((dtype("backbone.layers.0.mixer.A_log"), dtype("backbone.layers.1.mixer.gate.e_score_correction_bias")), ("BF16".to_string(), "F32".to_string()));
+        assert_eq!(
+            (dtype("backbone.layers.0.mixer.A_log"), dtype("backbone.layers.1.mixer.gate.e_score_correction_bias")),
+            ("BF16".to_string(), "F32".to_string())
+        );
     }
 
     #[test]
@@ -693,7 +744,18 @@ pub(crate) mod tests {
         let (mut weights, mut packs) = (HashMap::new(), HashMap::new());
         for p in c.packs() {
             let layout = pack_layout(Layout::Int4, &p.key);
-            assert_eq!(layout, if down(&p.key) { Layout::Int4Row } else if experts.contains(&p.key) { Layout::Int4 } else { Layout::Int6 }, "{}", p.key);
+            assert_eq!(
+                layout,
+                if down(&p.key) {
+                    Layout::Int4Row
+                } else if experts.contains(&p.key) {
+                    Layout::Int4
+                } else {
+                    Layout::Int6
+                },
+                "{}",
+                p.key
+            );
             // (the weights and packs of each bit width: a row layout's are its block layout's)
             let bits = layout.name().trim_end_matches('r').to_string();
             *weights.entry(bits.clone()).or_insert(0u64) += (p.rows() * p.cols) as u64;
@@ -718,10 +780,34 @@ pub(crate) mod tests {
         };
         let at = |h: &Index, n: &str| h.iter().position(|t| t.0 == n).unwrap();
         let conv = "backbone.layers.0.mixer.conv1d.weight";
-        says(&|h| { let i = at(h, conv); h.remove(i); }, &format!("no {conv}"));
-        says(&|h| { let i = at(h, conv); h[i].2 = vec![10240, 1, 3]; }, "[10240, 1, 3], where BF16 [10240, 1, 4]");
-        says(&|h| { let i = at(h, "backbone.layers.1.mixer.gate.e_score_correction_bias"); h[i].1 = "F16".into(); }, "where F32 [512]");
-        says(&|h| { let i = at(h, "backbone.layers.1.mixer.experts.300.up_proj.weight"); h.remove(i); }, "no backbone.layers.1.mixer.experts.300.up_proj.weight");
+        says(
+            &|h| {
+                let i = at(h, conv);
+                h.remove(i);
+            },
+            &format!("no {conv}"),
+        );
+        says(
+            &|h| {
+                let i = at(h, conv);
+                h[i].2 = vec![10240, 1, 3];
+            },
+            "[10240, 1, 3], where BF16 [10240, 1, 4]",
+        );
+        says(
+            &|h| {
+                let i = at(h, "backbone.layers.1.mixer.gate.e_score_correction_bias");
+                h[i].1 = "F16".into();
+            },
+            "where F32 [512]",
+        );
+        says(
+            &|h| {
+                let i = at(h, "backbone.layers.1.mixer.experts.300.up_proj.weight");
+                h.remove(i);
+            },
+            "no backbone.layers.1.mixer.experts.300.up_proj.weight",
+        );
         says(&|h| h.push(("model.embed_tokens.weight".into(), "BF16".into(), vec![131072, 4096])), "model.embed_tokens.weight: not a tensor of this model");
         // a config with more layers than the checkpoint
         let more = ConfigNemotronH { layers: 89, kinds: [c.kinds.clone(), vec![NhKind::Mamba]].concat(), ..c.clone() };
@@ -773,7 +859,8 @@ pub(crate) mod tests {
         assert!(c.check_layers(&have, &[0, 1], &none).unwrap_err().0.contains("no backbone.layers.1.norm.weight"));
         assert!(c.check_layers(&have, &[88], &none).unwrap_err().0.contains("layer 88"));
         // a layer's matrix held as its saved buffers (a glyd-v7 directory's) is not wanted as a bf16 tensor
-        let held: HashSet<String> = ["backbone.layers.7.mixer.q_proj", "backbone.layers.7.mixer.k_proj", "backbone.layers.7.mixer.v_proj"].map(String::from).into();
+        let held: HashSet<String> =
+            ["backbone.layers.7.mixer.q_proj", "backbone.layers.7.mixer.k_proj", "backbone.layers.7.mixer.v_proj"].map(String::from).into();
         have.retain(|t| t.0 != "backbone.layers.7.mixer.v_proj.weight");
         assert!(c.check_layers(&have, &[0, 7], &none).unwrap_err().0.contains("no backbone.layers.7.mixer.v_proj.weight"));
         have.retain(|t| !held.contains(Pack35::saved(&t.0)));

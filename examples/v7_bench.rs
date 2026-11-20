@@ -13,9 +13,15 @@ fn timed<F: FnMut()>(runs: usize, min_s: f64, mut op: F) -> f64 {
         op();
         let t = Instant::now();
         let mut n = 0;
-        loop { op(); n += 1;
+        loop {
+            op();
+            n += 1;
             let e = t.elapsed().as_secs_f64();
-            if e >= min_s && n >= 2 { v.push(e / n as f64); break; } }
+            if e >= min_s && n >= 2 {
+                v.push(e / n as f64);
+                break;
+            }
+        }
     }
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     v[v.len() / 2]
@@ -24,34 +30,49 @@ fn timed<F: FnMut()>(runs: usize, min_s: f64, mut op: F) -> f64 {
 /// One codec's running totals: input bytes, output bytes, compress and
 /// decompress seconds.
 #[derive(Default, Clone, Copy)]
-struct Tot { o: usize, c: usize, ct: f64, dt: f64 }
+struct Tot {
+    o: usize,
+    c: usize,
+    ct: f64,
+    dt: f64,
+}
 
 impl Tot {
-    fn add(&mut self, o: usize, c: usize, ct: f64, dt: f64) { self.o += o; self.c += c; self.ct += ct; self.dt += dt; }
+    fn add(&mut self, o: usize, c: usize, ct: f64, dt: f64) {
+        self.o += o;
+        self.c += c;
+        self.ct += ct;
+        self.dt += dt;
+    }
     fn line(&self) -> String {
-        format!("ratio {:.4} comp {:.3} GB/s decomp {:.3} GB/s",
-                self.o as f64 / self.c as f64, (self.o as f64 / GB) / self.ct, (self.o as f64 / GB) / self.dt)
+        format!("ratio {:.4} comp {:.3} GB/s decomp {:.3} GB/s", self.o as f64 / self.c as f64, (self.o as f64 / GB) / self.ct, (self.o as f64 / GB) / self.dt)
     }
 }
 
 fn main() {
     let runs: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(3);
     let min_s: f64 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(0.3);
-    let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
-                 "reymont","samba","sao","webster","xml","x-ray"];
+    let files = ["dickens", "mozilla", "mr", "nci", "ooffice", "osdb", "reymont", "samba", "sao", "webster", "xml", "x-ray"];
     let dir = std::path::Path::new("corpus");
     let (mut v7, mut z3, mut z1) = (Tot::default(), Tot::default(), Tot::default());
     for f in &files {
         let p = dir.join(f);
-        if !p.exists() { continue; }
+        if !p.exists() {
+            continue;
+        }
         let d = std::fs::read(&p).unwrap();
         let mut dst = vec![0u8; d.len() + 1024];
 
         let mut b = Vec::with_capacity(d.len());
         glyd::compress_into_max(&d, &mut b);
         assert_eq!(glyd::decompress(&b).expect("v7 decode failed"), d, "v7 roundtrip mismatch on {}", f);
-        let fc = timed(runs, min_s, || { b.clear(); glyd::compress_into_max(&d, &mut b); });
-        let fd = timed(runs, min_s, || { let _ = glyd::decompress_into_raw(&b, &mut dst); });
+        let fc = timed(runs, min_s, || {
+            b.clear();
+            glyd::compress_into_max(&d, &mut b);
+        });
+        let fd = timed(runs, min_s, || {
+            let _ = glyd::decompress_into_raw(&b, &mut dst);
+        });
         v7.add(d.len(), b.len(), fc, fd);
         print!("  {:<8} v7 {:<50}", f, Tot { o: d.len(), c: b.len(), ct: fc, dt: fd }.line());
 
@@ -61,8 +82,12 @@ fn main() {
             let mut zb = vec![0u8; zstd::zstd_safe::compress_bound(d.len())];
             let n = comp.compress_to_buffer(&d, &mut zb[..]).unwrap();
             let z = zb[..n].to_vec();
-            let zc = timed(runs, min_s, || { let _ = comp.compress_to_buffer(&d, &mut zb[..]); });
-            let zd = timed(runs, min_s, || { let _ = dec.decompress_to_buffer(&z, &mut dst[..]); });
+            let zc = timed(runs, min_s, || {
+                let _ = comp.compress_to_buffer(&d, &mut zb[..]);
+            });
+            let zd = timed(runs, min_s, || {
+                let _ = dec.decompress_to_buffer(&z, &mut dst[..]);
+            });
             tot.add(d.len(), z.len(), zc, zd);
             print!(" | zstd-{} {:<50}", level, Tot { o: d.len(), c: z.len(), ct: zc, dt: zd }.line());
         }
@@ -76,7 +101,8 @@ fn main() {
     // so one weak file does not hide the rest of the picture.
     let ext_dir = std::path::Path::new("corpus/ext");
     if ext_dir.is_dir() {
-        let mut names: Vec<String> = std::fs::read_dir(ext_dir).unwrap()
+        let mut names: Vec<String> = std::fs::read_dir(ext_dir)
+            .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
             .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -87,14 +113,21 @@ fn main() {
         let mut g2_pass = true;
         for name in &names {
             let d = std::fs::read(ext_dir.join(name)).unwrap();
-            if d.is_empty() { continue; }
+            if d.is_empty() {
+                continue;
+            }
             let mut dst = vec![0u8; d.len() + 1024];
 
             let mut b = Vec::with_capacity(d.len());
             glyd::compress_into_max(&d, &mut b);
             assert_eq!(glyd::decompress(&b).expect("v7 decode failed"), d, "v7 roundtrip mismatch on {}", name);
-            let fc = timed(runs, min_s, || { b.clear(); glyd::compress_into_max(&d, &mut b); });
-            let fd = timed(runs, min_s, || { let _ = glyd::decompress_into_raw(&b, &mut dst); });
+            let fc = timed(runs, min_s, || {
+                b.clear();
+                glyd::compress_into_max(&d, &mut b);
+            });
+            let fd = timed(runs, min_s, || {
+                let _ = glyd::decompress_into_raw(&b, &mut dst);
+            });
             ev7.add(d.len(), b.len(), fc, fd);
             let v7_ratio = d.len() as f64 / b.len() as f64;
             print!("  {:<24} v7 {:<50}", name, Tot { o: d.len(), c: b.len(), ct: fc, dt: fd }.line());
@@ -106,14 +139,22 @@ fn main() {
                 let mut zb = vec![0u8; zstd::zstd_safe::compress_bound(d.len())];
                 let n = comp.compress_to_buffer(&d, &mut zb[..]).unwrap();
                 let z = zb[..n].to_vec();
-                let zc = timed(runs, min_s, || { let _ = comp.compress_to_buffer(&d, &mut zb[..]); });
-                let zd = timed(runs, min_s, || { let _ = dec.decompress_to_buffer(&z, &mut dst[..]); });
+                let zc = timed(runs, min_s, || {
+                    let _ = comp.compress_to_buffer(&d, &mut zb[..]);
+                });
+                let zd = timed(runs, min_s, || {
+                    let _ = dec.decompress_to_buffer(&z, &mut dst[..]);
+                });
                 tot.add(d.len(), z.len(), zc, zd);
-                if level == 3 { z3_ratio = d.len() as f64 / z.len() as f64; }
+                if level == 3 {
+                    z3_ratio = d.len() as f64 / z.len() as f64;
+                }
                 print!(" | zstd-{} {:<50}", level, Tot { o: d.len(), c: z.len(), ct: zc, dt: zd }.line());
             }
             let pass = v7_ratio >= z3_ratio;
-            if !pass { g2_pass = false; }
+            if !pass {
+                g2_pass = false;
+            }
             println!(" | G2 {}", if pass { "PASS" } else { "FAIL" });
         }
         if !names.is_empty() {

@@ -1,0 +1,2 @@
+# Vendored as upstream ships it: not reformatted here.
+disable_all_formatting = true

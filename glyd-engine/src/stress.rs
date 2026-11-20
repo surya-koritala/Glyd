@@ -135,7 +135,14 @@ pub fn drive(sched: &mut Sched<&mut Engine>, reqs: &[Req], concurrency: usize) -
         while live.len() < concurrency.max(1) && next < reqs.len() {
             let (tx, rx) = channel();
             let (abort, resumed) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
-            sched.submit(Submit { prompt: reqs[next].prompt.clone(), reply: reply(reqs[next].max_new), out: tx, abort: abort.clone(), resumed: resumed.clone(), images: Vec::new() });
+            sched.submit(Submit {
+                prompt: reqs[next].prompt.clone(),
+                reply: reply(reqs[next].max_new),
+                out: tx,
+                abort: abort.clone(),
+                resumed: resumed.clone(),
+                images: Vec::new(),
+            });
             live.push(Live { i: next, rx, tokens: Vec::new(), resumed, _abort: abort });
             next += 1;
         }
@@ -158,7 +165,11 @@ pub fn drive(sched: &mut Sched<&mut Engine>, reqs: &[Req], concurrency: usize) -
                 }
                 Err(TryRecvError::Empty) => return true,
                 Err(TryRecvError::Disconnected) => {
-                    done[l.i] = Some(Done { tokens: std::mem::take(&mut l.tokens), end: Err("the scheduler dropped the request".into()), resumed: l.resumed.load(Relaxed) });
+                    done[l.i] = Some(Done {
+                        tokens: std::mem::take(&mut l.tokens),
+                        end: Err("the scheduler dropped the request".into()),
+                        resumed: l.resumed.load(Relaxed),
+                    });
                     return false;
                 }
             }
@@ -203,7 +214,12 @@ fn read_ref(path: &str, reqs: &[Req]) -> Result<Vec<Option<Vec<u32>>>> {
         .map(|l| {
             let f: Vec<&str> = l.splitn(3, '\t').collect();
             match f.get(1) {
-                Some(&"ok") => Ok(Some(f[2].split(',').filter(|x| !x.is_empty()).map(|x| x.parse().map_err(|_| Error(format!("{path}: a bad token {x}")))).collect::<Result<Vec<u32>>>()?)),
+                Some(&"ok") => Ok(Some(
+                    f[2].split(',')
+                        .filter(|x| !x.is_empty())
+                        .map(|x| x.parse().map_err(|_| Error(format!("{path}: a bad token {x}"))))
+                        .collect::<Result<Vec<u32>>>()?,
+                )),
                 Some(&"err") => Ok(None),
                 _ => err(format!("{path}: a bad line")),
             }
@@ -328,7 +344,12 @@ pub fn run(e: &mut Engine, tok: &Tok, a: &crate::args::Args) -> Result<bool> {
         );
         for (k, &i) in failed.iter().enumerate() {
             if again[k].end.is_ok() {
-                println!("  request {i}: {} tokens of prompt, {} tokens made before it ended, sent back {} times, served alone from its prompt", reqs[i].prompt.len(), done[i].tokens.len(), done[i].resumed);
+                println!(
+                    "  request {i}: {} tokens of prompt, {} tokens made before it ended, sent back {} times, served alone from its prompt",
+                    reqs[i].prompt.len(),
+                    done[i].tokens.len(),
+                    done[i].resumed
+                );
             }
         }
         ok &= spurious == 0;
@@ -338,7 +359,12 @@ pub fn run(e: &mut Engine, tok: &Tok, a: &crate::args::Args) -> Result<bool> {
         stats.prompt, stats.hit, stats.preempted, stats.taken_back, stats.lost_blocks, stats.heavy_blocks, stats.ended_lost
     );
     if stats.ended_lost > 0 {
-        println!("ended: {} alone with nothing kept for later prompts to give up, {} after being taken back {} times", stats.ended_alone, stats.ended_tries, crate::sched::MAX_TRIES + 1);
+        println!(
+            "ended: {} alone with nothing kept for later prompts to give up, {} after being taken back {} times",
+            stats.ended_alone,
+            stats.ended_tries,
+            crate::sched::MAX_TRIES + 1
+        );
     }
     let (checked, differ, lost) = (VERIFY_CHECKED.load(Relaxed), VERIFY_DIFFER.load(Relaxed), VERIFY_LOST.load(Relaxed));
     if std::env::var_os("GLYD_ENGINE_VERIFY").is_some() {

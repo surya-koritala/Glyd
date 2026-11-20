@@ -16,7 +16,16 @@ fn the_worker_answers_without_a_gpu() {
     let ranks = ["YQ==", "Yg==", "Yw==", "IA==", "YWI=", "IGE=", "YWJj"];
     std::fs::write(dir.join("tiktoken.model"), ranks.iter().enumerate().map(|(i, t)| format!("{t} {i}\n")).collect::<String>()).unwrap();
     let exe = std::env::var("RANGEWORKER_EXE").unwrap_or_else(|_| env!("CARGO_BIN_EXE_glyd-engine").to_string());
-    let mut child = Command::new(&exe).arg("rangeworker").arg("--model").arg(&dir).args(["--layers", "32..64"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut child = Command::new(&exe)
+        .arg("rangeworker")
+        .arg("--model")
+        .arg(&dir)
+        .args(["--layers", "32..64"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let mut inp = child.stdin.take().unwrap();
     let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
     let mut call = |head: &str| -> Value {
@@ -27,7 +36,10 @@ fn the_worker_answers_without_a_gpu() {
 
     let d = call(r#"{"op":"describe","id":"d1"}"#);
     assert_eq!(s(&d, &["protocol"]), r#""glyd-range/1""#, "{}", json::to_compact(&d));
-    assert_eq!((s(&d, &["model", "layers"]), s(&d, &["model", "hidden"]), s(&d, &["stage", "last"]), s(&d, &["limits", "head_rows"])), ("64".into(), "5120".into(), "true".into(), "1".into()));
+    assert_eq!(
+        (s(&d, &["model", "layers"]), s(&d, &["model", "hidden"]), s(&d, &["stage", "last"]), s(&d, &["limits", "head_rows"])),
+        ("64".into(), "5120".into(), "true".into(), "1".into())
+    );
     assert!(s(&d, &["ops"]).contains(r#""tokenize","detokenize""#));
     // A config-only model is penguin, where verify chunks are not checked yet: none.
     assert_eq!((s(&d, &["limits", "verify_rows"]), s(&d, &["limits", "sessions"])), ("0".into(), "1".into()));
@@ -42,7 +54,16 @@ fn the_worker_answers_without_a_gpu() {
     assert_eq!(s(&call(r#"{"op":"exit","id":"e1"}"#), &["bye"]), "true");
     assert!(child.wait().unwrap().success());
     // --sessions 2: describe says it; past 2 the worker does not start
-    let mut two = Command::new(&exe).arg("rangeworker").arg("--model").arg(&dir).args(["--layers", "0..32", "--sessions", "2"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut two = Command::new(&exe)
+        .arg("rangeworker")
+        .arg("--model")
+        .arg(&dir)
+        .args(["--layers", "0..32", "--sessions", "2"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let mut inp = two.stdin.take().unwrap();
     let mut out = std::io::BufReader::new(two.stdout.take().unwrap());
     write_frame(&mut inp, &Frame { head: json::parse(r#"{"op":"describe","id":"d2"}"#).unwrap(), body: Vec::new() }).unwrap();
@@ -50,7 +71,16 @@ fn the_worker_answers_without_a_gpu() {
     assert_eq!(s(&d, &["limits", "sessions"]), "2", "{}", json::to_compact(&d));
     drop(inp);
     assert!(two.wait().unwrap().success());
-    let three = Command::new(&exe).arg("rangeworker").arg("--model").arg(&dir).args(["--sessions", "3"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+    let three = Command::new(&exe)
+        .arg("rangeworker")
+        .arg("--model")
+        .arg(&dir)
+        .args(["--sessions", "3"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
     assert!(!three.success());
     let _ = std::fs::remove_dir_all(&dir);
 }

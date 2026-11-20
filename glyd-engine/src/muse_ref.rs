@@ -164,7 +164,8 @@ impl RefMuse {
         for hh in 0..nh {
             let kv = hh / (nh / nk);
             let qh = &q[hh * hd..][..hd];
-            let s: Vec<f32> = (first..=pos).map(|j| (qh.iter().zip(&ly.keys[j][kv * hd..][..hd]).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32) * scale).collect();
+            let s: Vec<f32> =
+                (first..=pos).map(|j| (qh.iter().zip(&ly.keys[j][kv * hd..][..hd]).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32) * scale).collect();
             let mx = s.iter().fold(f32::NEG_INFINITY, |m, &x| m.max(x));
             let e: Vec<f32> = s.iter().map(|&x| (x - mx).exp()).collect();
             let sum: f32 = e.iter().sum();
@@ -211,7 +212,9 @@ impl RefMuse {
     pub fn step(&mut self, token: u32) -> Vec<f32> {
         let (d, eps, pe) = (self.c.hidden, self.c.eps, self.c.post_eps);
         let mut x = rms(&self.embed[token as usize * d..][..d], eps);
-        let gate = |x: &[f32], o: &[f32], (a, b): &(Vec<f32>, Vec<f32>)| -> Vec<f32> { x.iter().zip(o).zip(a.iter().zip(b)).map(|((&r, &h), (&al, &be))| bf(bf(al * r) + bf(be * h))).collect() };
+        let gate = |x: &[f32], o: &[f32], (a, b): &(Vec<f32>, Vec<f32>)| -> Vec<f32> {
+            x.iter().zip(o).zip(a.iter().zip(b)).map(|((&r, &h), (&al, &be))| bf(bf(al * r) + bf(be * h))).collect()
+        };
         for l in 0..self.layers.len() {
             let h = rms_w(&x, &self.layers[l].w_in, eps);
             let a = rms(&self.attention(l, &h), pe);
@@ -250,12 +253,15 @@ pub fn random(out: &Path) -> Result<()> {
         ((b + 0x7fff + ((b >> 16) & 1)) >> 16) as u16
     };
     let mut t: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
-    let put = |t: &mut Vec<(String, &str, Vec<u64>, Vec<u8>)>, name: String, shape: Vec<u64>, lo: f32, hi: f32, f32_: bool, uni: &mut dyn FnMut(f32, f32) -> f32| {
-        let n: u64 = shape.iter().product();
-        let bytes = if f32_ { (0..n).flat_map(|_| uni(lo, hi).to_le_bytes()).collect() } else { (0..n).flat_map(|_| bfw(uni(lo, hi)).to_le_bytes()).collect() };
-        t.push((name, if f32_ { "F32" } else { "BF16" }, shape, bytes));
-    };
-    let (d, nh, nk, hd, lat, inter, e, v) = (c.hidden as u64, c.heads as u64, c.kv_heads as u64, c.head_dim as u64, c.latent as u64, c.inter as u64, c.experts as u64, c.vocab as u64);
+    let put =
+        |t: &mut Vec<(String, &str, Vec<u64>, Vec<u8>)>, name: String, shape: Vec<u64>, lo: f32, hi: f32, f32_: bool, uni: &mut dyn FnMut(f32, f32) -> f32| {
+            let n: u64 = shape.iter().product();
+            let bytes =
+                if f32_ { (0..n).flat_map(|_| uni(lo, hi).to_le_bytes()).collect() } else { (0..n).flat_map(|_| bfw(uni(lo, hi)).to_le_bytes()).collect() };
+            t.push((name, if f32_ { "F32" } else { "BF16" }, shape, bytes));
+        };
+    let (d, nh, nk, hd, lat, inter, e, v) =
+        (c.hidden as u64, c.heads as u64, c.kv_heads as u64, c.head_dim as u64, c.latent as u64, c.inter as u64, c.experts as u64, c.vocab as u64);
     let a = |cols: u64| (3.0 / cols as f32).sqrt();
     let p0 = c.prefix.clone();
     put(&mut t, format!("{p0}embed_tokens.weight"), vec![v, d], -1.0, 1.0, false, &mut uni);

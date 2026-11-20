@@ -84,7 +84,11 @@ pub unsafe extern "C" fn glyd_store_delete(store: *mut GlydStore, id: u32) -> i3
     if store.is_null() {
         return -1;
     }
-    if (*store).0.delete(id).is_ok() { 0 } else { -2 }
+    if (*store).0.delete(id).is_ok() {
+        0
+    } else {
+        -2
+    }
 }
 
 /// Bytes freed, or -1.
@@ -101,7 +105,11 @@ pub unsafe extern "C" fn glyd_store_flush(store: *mut GlydStore) -> i32 {
     if store.is_null() {
         return -1;
     }
-    if (*store).0.flush().is_ok() { 0 } else { -2 }
+    if (*store).0.flush().is_ok() {
+        0
+    } else {
+        -2
+    }
 }
 
 #[no_mangle]
@@ -109,7 +117,11 @@ pub unsafe extern "C" fn glyd_store_rebase(store: *mut GlydStore, id: u32) -> i3
     if store.is_null() {
         return -1;
     }
-    if (*store).0.rebase(id).is_ok() { 0 } else { -2 }
+    if (*store).0.rebase(id).is_ok() {
+        0
+    } else {
+        -2
+    }
 }
 
 /// Objects that failed verification (every live object read back), or -1.

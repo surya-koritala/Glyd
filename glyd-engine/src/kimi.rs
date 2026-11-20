@@ -121,7 +121,9 @@ impl ConfigKimi {
         if full_l != mla_n || kda_l.iter().any(|&n| n == 0 || n > layers as u64) {
             return err(format!("{label}: linear_attn_config's kda_layers and full_attn_layers are not the {layers} layers (1-based) split in two"));
         }
-        let ka = |k: &str| -> Result<usize> { attn.get(k).and_then(Value::as_u64).map(|x| x as usize).ok_or_else(|| Error(format!("{label}: linear_attn_config.{k}"))) };
+        let ka = |k: &str| -> Result<usize> {
+            attn.get(k).and_then(Value::as_u64).map(|x| x as usize).ok_or_else(|| Error(format!("{label}: linear_attn_config.{k}")))
+        };
         if attn.get("use_full_rank_gate").and_then(Value::as_bool) != Some(true) {
             return refuse("a low-rank output gate in the delta attention");
         }
@@ -132,7 +134,14 @@ impl ConfigKimi {
             return refuse("experts every other layer");
         }
         let moe: Vec<bool> = (0..layers).map(|l| l >= dense).collect();
-        let mla = KimiMla { heads, q_rank: u("q_lora_rank")?, kv_rank: u("kv_lora_rank")?, nope: u("qk_nope_head_dim")?, rope: u("qk_rope_head_dim")?, v: u("v_head_dim")? };
+        let mla = KimiMla {
+            heads,
+            q_rank: u("q_lora_rank")?,
+            kv_rank: u("kv_lora_rank")?,
+            nope: u("qk_nope_head_dim")?,
+            rope: u("qk_rope_head_dim")?,
+            v: u("v_head_dim")?,
+        };
         let inter_e = u("moe_intermediate_size")?;
         let experts = KimiMoe {
             experts: u("num_experts")?,
@@ -189,7 +198,10 @@ mod tests {
     fn the_releases_config() {
         assert!(is_kimi(K3));
         let c = ConfigKimi::parse(K3, "config.json", None).unwrap();
-        assert_eq!((c.hidden, c.layers, c.vocab, c.eps, c.max_pos, c.eos.clone(), c.bos, c.inter, c.res_block, c.situ, c.vision), (7168, 93, 163840, 1e-5, 1_048_576, vec![163586], Some(163584), 33792, 12, (4.0, 25.0), true));
+        assert_eq!(
+            (c.hidden, c.layers, c.vocab, c.eps, c.max_pos, c.eos.clone(), c.bos, c.inter, c.res_block, c.situ, c.vision),
+            (7168, 93, 163840, 1e-5, 1_048_576, vec![163586], Some(163584), 33792, 12, (4.0, 25.0), true)
+        );
         // (1-based lists: the latent attention at 0-based 3, 7, ..., 91 and 92; the 69 others delta attention; the dense MLP in layer 0 alone)
         let mla: Vec<usize> = (0..93).filter(|&l| c.kinds[l] == GlmKind::Mla).collect();
         assert_eq!(mla, (3..92).step_by(4).chain([92]).collect::<Vec<_>>());

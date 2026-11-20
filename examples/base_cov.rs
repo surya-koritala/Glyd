@@ -16,12 +16,33 @@ fn main() {
     let mut last_end = start;
     for f in &m.list {
         let (st, len, off) = (f.start as usize, f.len as usize, f.off as usize);
-        if st < start { continue; }
-        if st > last_end { gaps.push(st - last_end); }
+        if st < start {
+            continue;
+        }
+        if st > last_end {
+            gaps.push(st - last_end);
+        }
         last_end = st + len;
-        if st - off < start { cov_base += len; n_base += 1; } else { cov_self += len; }
+        if st - off < start {
+            cov_base += len;
+            n_base += 1;
+        } else {
+            cov_self += len;
+        }
     }
     gaps.sort_unstable();
     let med = gaps.get(gaps.len() / 2).copied().unwrap_or(0);
-    println!("unit {} ({} B): far matches into the base cover {:.1}% ({} matches, mean {} B), into itself {:.1}%; {} gaps, median {} B, p90 {} B; pass {:.2} s", unit, ub - ua, 100.0 * cov_base as f64 / (ub - ua) as f64, n_base, cov_base / n_base.max(1), 100.0 * cov_self as f64 / (ub - ua) as f64, gaps.len(), med, gaps.get(gaps.len() * 9 / 10).copied().unwrap_or(0), s);
+    println!(
+        "unit {} ({} B): far matches into the base cover {:.1}% ({} matches, mean {} B), into itself {:.1}%; {} gaps, median {} B, p90 {} B; pass {:.2} s",
+        unit,
+        ub - ua,
+        100.0 * cov_base as f64 / (ub - ua) as f64,
+        n_base,
+        cov_base / n_base.max(1),
+        100.0 * cov_self as f64 / (ub - ua) as f64,
+        gaps.len(),
+        med,
+        gaps.get(gaps.len() * 9 / 10).copied().unwrap_or(0),
+        s
+    );
 }

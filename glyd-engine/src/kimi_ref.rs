@@ -46,7 +46,11 @@ impl Mat {
         let dot = |r: &[f32]| bf16(r.iter().zip(x).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32);
         match &self.fp4 {
             None => self.w.chunks(self.cols).map(dot).collect(),
-            Some((q, e)) => q.chunks(self.cols / 2).zip(e.chunks(self.cols / 32)).map(|(q, e)| dot(&mxfp4(q, e, 1, self.cols).expect("a row of the matrix's shape"))).collect(),
+            Some((q, e)) => q
+                .chunks(self.cols / 2)
+                .zip(e.chunks(self.cols / 32))
+                .map(|(q, e)| dot(&mxfp4(q, e, 1, self.cols).expect("a row of the matrix's shape")))
+                .collect(),
         }
     }
 }
@@ -74,7 +78,8 @@ fn tensor(ck: &Checkpoint, name: &str) -> Result<(Vec<u64>, Vec<f32>)> {
 
 fn mat(ck: &Checkpoint, name: &str) -> Result<Mat> {
     if ck.get(&format!("{name}.weight_packed")).is_some() {
-        let read = |n: String| -> Result<(Vec<u64>, Vec<u8>)> { Ok((ck.get(&n).ok_or_else(|| Error(format!("no tensor {n}")))?.1.shape.clone(), io(ck.read(&n))?)) };
+        let read =
+            |n: String| -> Result<(Vec<u64>, Vec<u8>)> { Ok((ck.get(&n).ok_or_else(|| Error(format!("no tensor {n}")))?.1.shape.clone(), io(ck.read(&n))?)) };
         let ((sh, q), (_, e)) = (read(format!("{name}.weight_packed"))?, read(format!("{name}.weight_scale"))?);
         let (rows, cols) = (sh[0] as usize, sh[1] as usize * 2);
         if cols % 32 != 0 || q.len() != rows * cols / 2 || e.len() != rows * cols / 32 {
@@ -203,7 +208,9 @@ impl RefKimi {
         let c = ConfigKimi::load(dir)?;
         let ck = io(Checkpoint::open(dir))?;
         let p = c.prefix;
-        let mlp = |q: &str, names: [&str; 3]| -> Result<[Mat; 3]> { Ok([mat(&ck, &format!("{q}.{}", names[0]))?, mat(&ck, &format!("{q}.{}", names[1]))?, mat(&ck, &format!("{q}.{}", names[2]))?]) };
+        let mlp = |q: &str, names: [&str; 3]| -> Result<[Mat; 3]> {
+            Ok([mat(&ck, &format!("{q}.{}", names[0]))?, mat(&ck, &format!("{q}.{}", names[1]))?, mat(&ck, &format!("{q}.{}", names[2]))?])
+        };
         let mut layers = Vec::new();
         for l in 0..c.layers {
             let q = format!("{p}layers.{l}");
@@ -258,7 +265,9 @@ impl RefKimi {
             } else {
                 Ffn::Dense(mlp(&format!("{q}.mlp"), ["gate_proj", "up_proj", "down_proj"])?)
             };
-            let res = |n: &str| -> Result<(Vec<f32>, Vec<f32>)> { Ok((vector(&ck, &format!("{q}.{n}_res_norm.weight"))?, vector(&ck, &format!("{q}.{n}_res_proj.weight"))?)) };
+            let res = |n: &str| -> Result<(Vec<f32>, Vec<f32>)> {
+                Ok((vector(&ck, &format!("{q}.{n}_res_norm.weight"))?, vector(&ck, &format!("{q}.{n}_res_proj.weight"))?))
+            };
             layers.push(Layer {
                 in_norm: vector(&ck, &format!("{q}.input_layernorm.weight"))?,
                 post_norm: vector(&ck, &format!("{q}.post_attention_layernorm.weight"))?,
@@ -426,7 +435,11 @@ impl RefKimi {
             let pv = p.clone().expect("a partial sum before the attention");
             let x = {
                 let ly = &self.layers[l];
-                if blocks.is_empty() { pv.clone() } else { mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.attn_res.0, &ly.attn_res.1) }
+                if blocks.is_empty() {
+                    pv.clone()
+                } else {
+                    mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.attn_res.0, &ly.attn_res.1)
+                }
             };
             if l % self.c.res_block == 0 {
                 blocks.push(pv);
@@ -473,11 +486,20 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
         "num_key_value_heads": 2, "num_shared_experts": 1, "q_lora_rank": 128, "qk_nope_head_dim": 128, "qk_rope_head_dim": 64, "rms_norm_eps": 1e-05, "routed_expert_hidden_size": 128,
         "routed_scaling_factor": 1.0, "topk_group": 1, "topk_method": "noaux_tc", "v_head_dim": 128, "vocab_size": 4096}}"#;
     let text = text.replace(r#""first_k_dense_replace": 1"#, &format!(r#""first_k_dense_replace": {dense}"#));
-    let text = if mla { text } else { text.replace(r#""full_attn_layers": [4, 8]"#, r#""full_attn_layers": []"#).replace(r#""kda_layers": [1, 2, 3, 5, 6, 7]"#, r#""kda_layers": [1, 2, 3, 4, 5, 6, 7, 8]"#) };
+    let text = if mla {
+        text
+    } else {
+        text.replace(r#""full_attn_layers": [4, 8]"#, r#""full_attn_layers": []"#)
+            .replace(r#""kda_layers": [1, 2, 3, 5, 6, 7]"#, r#""kda_layers": [1, 2, 3, 4, 5, 6, 7, 8]"#)
+    };
     // (fewer layers: delta attention alone, the first `layers` of the list)
     let text = if layers < 8 {
         let kda: Vec<String> = (1..=layers).map(|n| n.to_string()).collect();
-        text.replace(r#""num_hidden_layers": 8"#, &format!(r#""num_hidden_layers": {layers}"#)).replace(r#""full_attn_layers": [4, 8]"#, r#""full_attn_layers": []"#).replace(r#""full_attn_layers": []"#, r#""full_attn_layers": []"#).replace(r#""kda_layers": [1, 2, 3, 5, 6, 7]"#, &format!(r#""kda_layers": [{}]"#, kda.join(", "))).replace(r#""kda_layers": [1, 2, 3, 4, 5, 6, 7, 8]"#, &format!(r#""kda_layers": [{}]"#, kda.join(", ")))
+        text.replace(r#""num_hidden_layers": 8"#, &format!(r#""num_hidden_layers": {layers}"#))
+            .replace(r#""full_attn_layers": [4, 8]"#, r#""full_attn_layers": []"#)
+            .replace(r#""full_attn_layers": []"#, r#""full_attn_layers": []"#)
+            .replace(r#""kda_layers": [1, 2, 3, 5, 6, 7]"#, &format!(r#""kda_layers": [{}]"#, kda.join(", ")))
+            .replace(r#""kda_layers": [1, 2, 3, 4, 5, 6, 7, 8]"#, &format!(r#""kda_layers": [{}]"#, kda.join(", ")))
     } else {
         text
     };
@@ -529,7 +551,12 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
                 // (the convolutions' and the gated norm's weights fp32, values no bf16 holds, as Kimi-K3 releases them)
                 for n in ["q", "k", "v"] {
                     let len = w * c.kda.conv_kernel;
-                    t.push((format!("{a}.{n}_conv1d.weight"), "F32", vec![w as u64, 1, c.kda.conv_kernel as u64], (0..len).flat_map(|_| uni(-0.5, 0.5).to_le_bytes()).collect()));
+                    t.push((
+                        format!("{a}.{n}_conv1d.weight"),
+                        "F32",
+                        vec![w as u64, 1, c.kda.conv_kernel as u64],
+                        (0..len).flat_map(|_| uni(-0.5, 0.5).to_le_bytes()).collect(),
+                    ));
                 }
                 m(&mut t, format!("{a}.f_a_proj"), dd, c.hidden, &mut uni);
                 m(&mut t, format!("{a}.f_b_proj"), w, dd, &mut uni);
@@ -568,7 +595,12 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
         for i in (1..order.len()).rev() {
             order.swap(i, (uni(0.0, (i + 1) as f32) as usize).min(i));
         }
-        t.push((format!("{f}.gate.e_score_correction_bias"), "F32", vec![e.experts as u64], order.iter().flat_map(|&k| (k as f32 * 0.05).to_le_bytes()).collect()));
+        t.push((
+            format!("{f}.gate.e_score_correction_bias"),
+            "F32",
+            vec![e.experts as u64],
+            order.iter().flat_map(|&k| (k as f32 * 0.05).to_le_bytes()).collect(),
+        ));
         m(&mut t, format!("{f}.routed_expert_down_proj"), e.latent, c.hidden, &mut uni);
         m(&mut t, format!("{f}.routed_expert_up_proj"), c.hidden, e.latent, &mut uni);
         bf(&mut t, format!("{f}.routed_expert_norm.weight"), vec![e.latent as u64], 0.9, 1.1, &mut uni);
@@ -651,7 +683,10 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             }
         }
         if i < 6 || i % 16 == 15 || br.0 != bg.0 || diff > 0.3 {
-            println!("{i:4} token {tok:5}: reference {:5} ({:.4}), engine {:5} ({:.4}), largest difference {diff:.4}; closest expert choice {mg:.5}", br.0, br.1, bg.0, bg.1);
+            println!(
+                "{i:4} token {tok:5}: reference {:5} ({:.4}), engine {:5} ({:.4}), largest difference {diff:.4}; closest expert choice {mg:.5}",
+                br.0, br.1, bg.0, bg.1
+            );
         }
         margins.push((diff, mg));
         tok = if i < n / 2 { (i as u32 * 37 + 11) % r.c.vocab as u32 } else { br.0 as u32 };
@@ -663,7 +698,13 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         v.sort_by(f32::total_cmp);
         v.get(v.len() / 2).copied().unwrap_or(f32::NAN)
     };
-    println!("steps differing past 0.3: {} (median closest choice {:.5}); the others {} ({:.5})", big.len(), median(big.iter().map(|m| m.1).collect()), small.len(), median(small.iter().map(|m| m.1).collect()));
+    println!(
+        "steps differing past 0.3: {} (median closest choice {:.5}); the others {} ({:.5})",
+        big.len(),
+        median(big.iter().map(|m| m.1).collect()),
+        small.len(),
+        median(small.iter().map(|m| m.1).collect())
+    );
     e.reset()?;
     e.prefill(&toks)?;
     let lg = e.logits()?;
@@ -711,7 +752,15 @@ pub fn layers(a: &crate::args::Args) -> Result<()> {
                 let lg = e.logits()?;
                 let hh: Vec<f32> = io[io.len() - h..].iter().map(|&w| f32::from_bits((w as u32) << 16)).collect();
                 let want = r.head.mul(&hh);
-                println!("token {i}: {} of {} logits not finite; H {} not finite, largest {:.3}; the head on it {:?} against {:?}", lg.iter().filter(|v| !v.is_finite()).count(), lg.len(), hh.iter().filter(|v| !v.is_finite()).count(), hh.iter().fold(0f32, |m, v| m.max(v.abs())), &want[..3], &lg[..3]);
+                println!(
+                    "token {i}: {} of {} logits not finite; H {} not finite, largest {:.3}; the head on it {:?} against {:?}",
+                    lg.iter().filter(|v| !v.is_finite()).count(),
+                    lg.len(),
+                    hh.iter().filter(|v| !v.is_finite()).count(),
+                    hh.iter().fold(0f32, |m, v| m.max(v.abs())),
+                    &want[..3],
+                    &lg[..3]
+                );
             }
             // (io: X then Blk of the row)
             let f: Vec<f32> = io.iter().map(|&w| f32::from_bits((w as u32) << 16)).collect();

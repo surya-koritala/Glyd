@@ -17,7 +17,18 @@ fn logs(n: usize, seed: u64) -> Vec<u8> {
     while v.len() < n {
         let r = rnd(&mut x);
         t += r % 7;
-        v.extend_from_slice(format!("host{} - - [{}] \"GET /item/{}/page{}.html HTTP/1.0\" {} {}\n", r % 40, t, (r >> 8) % 5000, (r >> 20) % 9, if r % 11 == 0 { 404 } else { 200 }, (r >> 30) % 100_000).as_bytes());
+        v.extend_from_slice(
+            format!(
+                "host{} - - [{}] \"GET /item/{}/page{}.html HTTP/1.0\" {} {}\n",
+                r % 40,
+                t,
+                (r >> 8) % 5000,
+                (r >> 20) % 9,
+                if r % 11 == 0 { 404 } else { 200 },
+                (r >> 30) % 100_000
+            )
+            .as_bytes(),
+        );
     }
     v.truncate(n);
     v
@@ -32,7 +43,11 @@ fn round_trips_every_way() {
     assert_eq!(glyd::decompressed_len(&c).unwrap(), data.len());
     assert!(glyd::decompress_parallel(&c).unwrap() == data);
     let mut streamed = Vec::new();
-    glyd::decompress_stream(&c, |b| { streamed.extend_from_slice(b); Ok(()) }).unwrap();
+    glyd::decompress_stream(&c, |b| {
+        streamed.extend_from_slice(b);
+        Ok(())
+    })
+    .unwrap();
     assert!(streamed == data);
     // The sequential encoder writes the same bytes; the sequential
     // decoders read them; record mode over the cold level pays on logs.

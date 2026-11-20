@@ -228,14 +228,16 @@ impl Bar {
                 " finishing...".to_string()
             } else {
                 let speed = if rate > 1e5 { format!(" {:.0} MB/s", rate / 1e6) } else { String::new() };
-                let left = if rate > 1e5 && self.done < self.total { format!(" {} left", fmt_time((self.total - self.done) as f64 / rate)) } else { String::new() };
+                let left =
+                    if rate > 1e5 && self.done < self.total { format!(" {} left", fmt_time((self.total - self.done) as f64 / rate)) } else { String::new() };
                 speed + &left
             };
             let hashes = ((frac * width as f64) as usize).min(width);
             let rest = format!(" [{}{}] {:3.0}% {}{tail}", "#".repeat(hashes), " ".repeat(width - hashes), frac * 100.0, of_short(self.done, self.total));
             // the title gives way where the line would be wider than the terminal
             let room = columns().saturating_sub(1).saturating_sub(rest.chars().count());
-            let title: String = if self.title.chars().count() > room { self.title.chars().take(room.saturating_sub(1)).collect::<String>() + "~" } else { self.title.clone() };
+            let title: String =
+                if self.title.chars().count() > room { self.title.chars().take(room.saturating_sub(1)).collect::<String>() + "~" } else { self.title.clone() };
             ui.status(&format!("{title}{rest}"));
         } else if (frac * 10.0) as u64 > self.tenth {
             self.tenth = (frac * 10.0) as u64;

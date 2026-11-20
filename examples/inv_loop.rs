@@ -7,5 +7,7 @@ fn main() {
     let img = glyd::record::transform(d).unwrap();
     let mut out = Vec::new();
     let t = std::time::Instant::now();
-    while t.elapsed().as_secs_f64() < 12.0 { glyd::record::inverse_into(&img, &mut out).unwrap(); }
+    while t.elapsed().as_secs_f64() < 12.0 {
+        glyd::record::inverse_into(&img, &mut out).unwrap();
+    }
 }

@@ -58,7 +58,11 @@ fn main() {
                 let base = std::fs::read(&args[o as usize]).unwrap();
                 let mut d = Vec::new();
                 glyd::compress_with_base(&base, &data, &mut d, false);
-                if d.len() * 5 < c.len() * 4 { (d.len(), Some((o, share))) } else { (c.len(), None) }
+                if d.len() * 5 < c.len() * 4 {
+                    (d.len(), Some((o, share)))
+                } else {
+                    (c.len(), None)
+                }
             }
             _ => (c.len(), None),
         };
@@ -73,9 +77,22 @@ fn main() {
         }
         depth.push(base.map_or(0, |(o, _)| depth[o as usize] + 1));
         parent.push(base.map(|(o, _)| o));
-        println!("{:<36} {:>9.1} {:>9.1} {:>9.1} {:>9.1} {:>8.0}%  {}", name, data.len() as f64 / 1e6, z as f64 / 1e6, c.len() as f64 / 1e6, stored as f64 / 1e6, base.map_or(0.0, |(_, s)| s * 100.0), base.map_or("-".to_string(), |(o, _)| format!("{} (depth {})", names[o as usize], depth[id as usize])));
+        println!(
+            "{:<36} {:>9.1} {:>9.1} {:>9.1} {:>9.1} {:>8.0}%  {}",
+            name,
+            data.len() as f64 / 1e6,
+            z as f64 / 1e6,
+            c.len() as f64 / 1e6,
+            stored as f64 / 1e6,
+            base.map_or(0.0, |(_, s)| s * 100.0),
+            base.map_or("-".to_string(), |(o, _)| format!("{} (depth {})", names[o as usize], depth[id as usize]))
+        );
         names.push(name);
-        raw += data.len(); z3 += z; z19 += z9; alone += c.len(); bucket += stored;
+        raw += data.len();
+        z3 += z;
+        z19 += z9;
+        alone += c.len();
+        bucket += stored;
     }
     println!("\n{} objects, {:.2} GB raw: zstd -3 per object {:.1} MB ({:.2}x){}; Glyd --max per object {:.1} MB ({:.2}x, {:.0} MB/s); Glyd across the bucket {:.1} MB ({:.2}x, {:.0} MB/s) = {:.2}x over zstd -3, {:.2}x over Glyd alone",
         names.len(), raw as f64 / 1e9, z3 as f64 / 1e6, raw as f64 / z3 as f64, if with_19 { format!("; zstd -19 {:.1} MB ({:.2}x)", z19 as f64 / 1e6, raw as f64 / z19 as f64) } else { String::new() }, alone as f64 / 1e6, raw as f64 / alone as f64, raw as f64 / t_alone / 1e6, bucket as f64 / 1e6, raw as f64 / bucket as f64, raw as f64 / t_bucket / 1e6, z3 as f64 / bucket as f64, alone as f64 / bucket as f64);

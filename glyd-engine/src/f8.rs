@@ -80,14 +80,48 @@ impl F8Mat {
     /// # Safety
     /// As `linear`; `done` at least `experts.min(t k)` ceil(n / experts / 128) zeroed counters, `ws` `moe_workspace`'s bytes.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn moe(&self, lib: &Lib, experts: usize, x: u64, plan: u64, t: usize, k: usize, gather: bool, y: u64, ws: u64, ws_bytes: usize, done: u64, s: crate::ffi::Stream) -> Result<()> {
+    pub unsafe fn moe(
+        &self,
+        lib: &Lib,
+        experts: usize,
+        x: u64,
+        plan: u64,
+        t: usize,
+        k: usize,
+        gather: bool,
+        y: u64,
+        ws: u64,
+        ws_bytes: usize,
+        done: u64,
+        s: crate::ffi::Stream,
+    ) -> Result<()> {
         if t > ROWS {
             return err(format!("{t} tokens in one experts' product: at most {ROWS}"));
         }
         let (slots, rows) = (experts.min(t * k) as i64, self.n / experts);
         // (this GPU's slice of each expert's rows: its products, then every GPU's gathered into y)
         let (c, out) = self.tp(s, t * k * rows)?;
-        lib.f8_moe(self.h, self.core.ptr, self.heads.ptr, self.var.ptr, experts as i64, rows as i64, self.k as i64, self.scale.ptr, x, plan, k as i64, gather, t as i64, slots, out.unwrap_or(y), ws, ws_bytes, done, s)?;
+        lib.f8_moe(
+            self.h,
+            self.core.ptr,
+            self.heads.ptr,
+            self.var.ptr,
+            experts as i64,
+            rows as i64,
+            self.k as i64,
+            self.scale.ptr,
+            x,
+            plan,
+            k as i64,
+            gather,
+            t as i64,
+            slots,
+            out.unwrap_or(y),
+            ws,
+            ws_bytes,
+            done,
+            s,
+        )?;
         match (c, out) {
             (Some(c), Some(o)) => c.gather(s, o, t * k, rows, y, self.tp_rows),
             _ => Ok(()),
@@ -96,7 +130,11 @@ impl F8Mat {
 
     /// The whole matrix's rows: `tp_rows` where it is a slice of them, else its own.
     pub fn whole_n(&self) -> usize {
-        if self.tp_rows > 0 { self.tp_rows } else { self.n }
+        if self.tp_rows > 0 {
+            self.tp_rows
+        } else {
+            self.n
+        }
     }
 
     /// Where a slice's product of `values` bf16 goes before its gather (this GPU's group and room), or nothing for a whole matrix.
@@ -135,7 +173,24 @@ impl F8Mat {
         let yy = out.unwrap_or(y);
         for r0 in (0..m).step_by(ROWS) {
             let mm = (m - r0).min(ROWS) as i64;
-            lib.f8_linear(self.h, self.core.ptr, self.heads.ptr, self.var.ptr, n, k, 0, self.scale.ptr, (k + 127) / 128, x + (r0 as i64 * k * 2) as u64, mm, yy + (r0 as i64 * n * 2) as u64, ws, ws_bytes, done, s)?;
+            lib.f8_linear(
+                self.h,
+                self.core.ptr,
+                self.heads.ptr,
+                self.var.ptr,
+                n,
+                k,
+                0,
+                self.scale.ptr,
+                (k + 127) / 128,
+                x + (r0 as i64 * k * 2) as u64,
+                mm,
+                yy + (r0 as i64 * n * 2) as u64,
+                ws,
+                ws_bytes,
+                done,
+                s,
+            )?;
         }
         match (c, out) {
             (Some(c), Some(o)) => c.gather(s, o, m, self.n, y, self.tp_rows),

@@ -7,7 +7,18 @@ fn main() {
     glyd::compress_with_base(&old, &new, &mut c, false);
     // parse the envelope: magic 8, id 8, n varint, then per unit 4 varints
     let mut pos = 16usize;
-    let rd = |pos: &mut usize| -> u64 { let (mut v, mut sh) = (0u64, 0); loop { let b = c[*pos]; *pos += 1; v |= ((b & 127) as u64) << sh; if b < 128 { return v; } sh += 7; } };
+    let rd = |pos: &mut usize| -> u64 {
+        let (mut v, mut sh) = (0u64, 0);
+        loop {
+            let b = c[*pos];
+            *pos += 1;
+            v |= ((b & 127) as u64) << sh;
+            if b < 128 {
+                return v;
+            }
+            sh += 7;
+        }
+    };
     let n = rd(&mut pos) as usize;
     let mut worst = Vec::new();
     for i in 0..n {

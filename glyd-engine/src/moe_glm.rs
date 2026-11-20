@@ -24,7 +24,14 @@ use glyd_gpu::safetensors::Checkpoint;
 /// scores divided by their sum where the config says so, times `routed_scaling_factor`), SwiGLU with the config's clamp.
 pub fn moe_cfg(c: &ConfigGlm) -> MoeCfg {
     let m = &c.experts;
-    MoeCfg { experts: m.experts, router_hidden: c.hidden, hidden: c.hidden, inter: m.inter, router: Router { renorm: m.norm_topk, ..Router::sigmoid(m.top_k, m.scale) }, act: Act::SwiGlu { limit: Some(m.limit) } }
+    MoeCfg {
+        experts: m.experts,
+        router_hidden: c.hidden,
+        hidden: c.hidden,
+        inter: m.inter,
+        router: Router { renorm: m.norm_topk, ..Router::sigmoid(m.top_k, m.scale) },
+        act: Act::SwiGlu { limit: Some(m.limit) },
+    }
 }
 
 /// A layer's experts, the first matrices (gate and up as one) and the second ones (down) of all of them joined as the library's grouped products read them: each expert's two packs read (or packed) on as many threads as
@@ -77,7 +84,11 @@ fn read_experts_lossless(ck: &Checkpoint, c: &ConfigGlm, l: usize, level: Layout
     let packs = c.expert_packs(l);
     let stack = |k: usize| -> Result<Packed> {
         let of: Vec<&crate::qwen35::Pack35> = packs.iter().skip(k).step_by(2).collect();
-        let it = Item { members: of.iter().flat_map(|p| p.parts.iter().map(|(n, _)| n.clone())).collect(), rows: of.iter().map(|p| p.rows()).sum(), cols: of[0].cols };
+        let it = Item {
+            members: of.iter().flat_map(|p| p.parts.iter().map(|(n, _)| n.clone())).collect(),
+            rows: of.iter().map(|p| p.rows()).sum(),
+            cols: of[0].cols,
+        };
         pack_item_map(ck, &it, level, &|_| {})
     };
     Ok(Experts::Lossless(stack(0)?, stack(1)?))
@@ -86,7 +97,10 @@ fn read_experts_lossless(ck: &Checkpoint, c: &ConfigGlm, l: usize, level: Layout
 /// Whether layer `l`'s experts are FP8 as `read_experts_f8` reads them: E4M3 with 128 x 128 block scales, the intermediate size and the width multiples of 128.
 fn f8_experts(ck: &Checkpoint, c: &ConfigGlm, l: usize) -> bool {
     let name = format!("{}layers.{l}.mlp.experts.0.gate_proj.weight", c.prefix);
-    c.fp8_block == Some([128, 128]) && c.experts.inter.is_multiple_of(128) && c.hidden.is_multiple_of(128) && ck.get(&name).is_some_and(|(_, t)| t.dtype == "F8_E4M3")
+    c.fp8_block == Some([128, 128])
+        && c.experts.inter.is_multiple_of(128)
+        && c.hidden.is_multiple_of(128)
+        && ck.get(&name).is_some_and(|(_, t)| t.dtype == "F8_E4M3")
 }
 
 /// Whether layer `l`'s shared expert is FP8 (`read_shared_f8` reads it so).
@@ -168,6 +182,7 @@ fn read_shared_f8(ck: &Checkpoint, c: &ConfigGlm, l: usize, dev: &Dev, lib: &Lib
 }
 
 /// Layer `l`'s tensors from `ck` at `level` (Int6, Int5 or Int4). A glyd-v7 directory is read where `ck` is one of them and at `level`: what it holds saved is read as it is, the rest packed (from FP8 or bf16).
+#[allow(dead_code)] // the GLM development engine (R13 retires or moves it)
 fn read_layer(l: usize, c: &ConfigGlm, ck: &Checkpoint, level: Layout) -> Result<Host> {
     read_layer_with(l, c, ck, level, false)
 }
@@ -197,10 +212,23 @@ fn read_layer_with(l: usize, c: &ConfigGlm, ck: &Checkpoint, level: Layout, f8: 
     let bias = f32_bytes(ck, &format!("{p}.gate.e_score_correction_bias"))?;
     // (the layer's matrices besides the experts: the shared expert's gate and up as one, its down)
     let packs = c.layer_packs(l);
-    let [s_up, s_down] = &packs[packs.len() - 2..] else { return err(format!("layer {l}: a mixture-of-experts layer has two matrices besides its experts and its attention's")) };
+    let [s_up, s_down] = &packs[packs.len() - 2..] else {
+        return err(format!("layer {l}: a mixture-of-experts layer has two matrices besides its experts and its attention's"));
+    };
     // (with the FP8 experts, the shared expert's FP8 matrices are read on the GPU too: their shapes alone here)
-    let shape = |p: &crate::qwen35::Pack35| Packed { data: Vec::new(), b1: Vec::new(), b2: Vec::new(), words: Words::Tiered { blocks: 0, block_base: 0, tiers: [0; 3] }, rows: p.rows(), cols: p.cols };
-    let (s_up, s_down) = if f8 && f8_shared(ck, c, l) { (shape(s_up), shape(s_down)) } else { (read_pack(ck, v7.as_ref(), s_up, level)?, read_pack(ck, v7.as_ref(), s_down, level)?) };
+    let shape = |p: &crate::qwen35::Pack35| Packed {
+        data: Vec::new(),
+        b1: Vec::new(),
+        b2: Vec::new(),
+        words: Words::Tiered { blocks: 0, block_base: 0, tiers: [0; 3] },
+        rows: p.rows(),
+        cols: p.cols,
+    };
+    let (s_up, s_down) = if f8 && f8_shared(ck, c, l) {
+        (shape(s_up), shape(s_down))
+    } else {
+        (read_pack(ck, v7.as_ref(), s_up, level)?, read_pack(ck, v7.as_ref(), s_down, level)?)
+    };
     let experts = if f8 {
         Experts::F8
     } else if lossless {
@@ -226,7 +254,9 @@ impl GlmMoe {
         let (router, bias) = (upload_bytes(&h.router)?, Some(upload_bytes(&h.bias)?));
         let (up, down) = match h.experts {
             Experts::Block(u, d) => (ExpertStack::upload(&u)?, ExpertStack::upload(&d)?),
-            Experts::Lossless(u, d) => (ExpertStack::lossless(upload_packed(u)?, c.experts.experts)?, ExpertStack::lossless(upload_packed(d)?, c.experts.experts)?),
+            Experts::Lossless(u, d) => {
+                (ExpertStack::lossless(upload_packed(u)?, c.experts.experts)?, ExpertStack::lossless(upload_packed(d)?, c.experts.experts)?)
+            }
             Experts::F8 => {
                 let (dev, lib) = f8.expect("FP8 experts are read with a device");
                 let experts = read_experts_f8(ck, c, l, dev, lib)?;
@@ -234,7 +264,12 @@ impl GlmMoe {
                     let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
                     return Ok(GlmMoe { layer: MoeLayer::new_f8(moe_cfg(c), router, bias, experts, Some(shared))? });
                 }
-                let shared = Shared { inter: c.experts.shared_inter, up: PackBuf::shape_only(h.s_up.rows, h.s_up.cols)?, down: PackBuf::shape_only(h.s_down.rows, h.s_down.cols)?, gate: None };
+                let shared = Shared {
+                    inter: c.experts.shared_inter,
+                    up: PackBuf::shape_only(h.s_up.rows, h.s_up.cols)?,
+                    down: PackBuf::shape_only(h.s_down.rows, h.s_down.cols)?,
+                    gate: None,
+                };
                 let (su, sd) = read_shared_f8(ck, c, l, dev, lib)?;
                 return Ok(GlmMoe { layer: MoeLayer::new_f8(moe_cfg(c), router, bias, experts, Some(shared))?.with_shared8(su, sd)? });
             }
@@ -306,7 +341,10 @@ mod tests {
     fn the_layer_of_the_flash_config() {
         let c = crate::glm::tests::parse();
         let cfg = moe_cfg(&c);
-        assert_eq!(cfg, MoeCfg { experts: 288, router_hidden: 4096, hidden: 4096, inter: 2048, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(10.0) } });
+        assert_eq!(
+            cfg,
+            MoeCfg { experts: 288, router_hidden: 4096, hidden: 4096, inter: 2048, router: Router::sigmoid(8, 2.5), act: Act::SwiGlu { limit: Some(10.0) } }
+        );
         cfg.check().unwrap();
         assert_eq!((cfg.up_rows(), cfg.fused()), (4096, 0));
         assert!(!moe_cfg(&ConfigGlm { experts: crate::glm::GlmMoeDims { norm_topk: false, ..c.experts.clone() }, ..c }).router.renorm);
@@ -316,11 +354,16 @@ mod tests {
     #[test]
     fn the_layers_matrices_in_the_order_they_are_read() {
         let c = crate::glm::tests::parse();
-        let keys: Vec<(String, usize, usize)> = c.layer_packs(4).into_iter().skip(7).map(|p| (p.key.rsplit("layers.4.").next().unwrap().to_string(), p.rows(), p.cols)).collect();
+        let keys: Vec<(String, usize, usize)> =
+            c.layer_packs(4).into_iter().skip(7).map(|p| (p.key.rsplit("layers.4.").next().unwrap().to_string(), p.rows(), p.cols)).collect();
         assert_eq!(keys, [("mlp.shared_experts.gate_proj".to_string(), 4096, 4096), ("mlp.shared_experts.down_proj".to_string(), 4096, 2048)]);
         let experts = c.expert_packs(4);
         assert_eq!(experts.len(), 576);
-        assert!(experts[0].key.ends_with("experts.0.gate_proj") && experts[1].key.ends_with("experts.0.down_proj") && experts[575].key.ends_with("experts.287.down_proj"));
+        assert!(
+            experts[0].key.ends_with("experts.0.gate_proj")
+                && experts[1].key.ends_with("experts.0.down_proj")
+                && experts[575].key.ends_with("experts.287.down_proj")
+        );
         assert_eq!((experts[0].rows(), experts[0].cols, experts[1].rows(), experts[1].cols), (4096, 4096, 4096, 2048));
         assert!(c.expert_packs(0).is_empty() && c.kinds[3] == GlmKind::Mla && c.moe[3]);
     }
@@ -357,7 +400,13 @@ mod tests {
             let (a, b) = (read_layer(l, &c, &fp8, level).unwrap(), read_layer(l, &c, &bf16, level).unwrap());
             let same = |x: &Packed, y: &Packed| x.data == y.data && x.b1 == y.b1 && (x.rows, x.cols) == (y.rows, y.cols);
             assert!(same(&a.s_up, &b.s_up) && same(&a.s_down, &b.s_down), "{level:?}: the shared expert");
-            assert!(a.block().0.data == b.block().0.data && a.block().0.scales == b.block().0.scales && a.block().1.data == b.block().1.data && a.block().1.scales == b.block().1.scales, "{level:?}: the experts");
+            assert!(
+                a.block().0.data == b.block().0.data
+                    && a.block().0.scales == b.block().0.scales
+                    && a.block().1.data == b.block().1.data
+                    && a.block().1.scales == b.block().1.scales,
+                "{level:?}: the experts"
+            );
             assert_eq!((a.block().0.experts, a.block().0.rows, a.block().0.cols, a.block().1.rows, a.block().1.cols), (4, 384, 256, 256, 192));
             assert_eq!((a.s_up.rows, a.s_up.cols, a.s_down.rows, a.s_down.cols), (384, 256, 256, 192));
             assert!(a.router == b.router && a.bias == b.bias && a.router.len() == 4 * 256 * 2 && a.bias.len() == 4 * 4);
@@ -367,10 +416,19 @@ mod tests {
             let out = dir.join(level.name());
             crate::pack::run_with(dir.join("fp8").to_str().unwrap(), &out, 2, level, true).unwrap();
             let saved = Checkpoint::open(&out).unwrap();
-            assert!(saved.get("model.language_model.layers.1.mlp.experts.3.down_proj.glyd_data").is_some() && saved.get("model.language_model.layers.1.mlp.experts.3.down_proj.weight").is_none());
+            assert!(
+                saved.get("model.language_model.layers.1.mlp.experts.3.down_proj.glyd_data").is_some()
+                    && saved.get("model.language_model.layers.1.mlp.experts.3.down_proj.weight").is_none()
+            );
             let s = read_layer(l, &c, &saved, level).unwrap();
             assert!(same(&s.s_up, &a.s_up) && same(&s.s_down, &a.s_down), "{level:?}: the shared expert of the saved directory");
-            assert!(s.block().0.data == a.block().0.data && s.block().0.scales == a.block().0.scales && s.block().1.data == a.block().1.data && s.block().1.scales == a.block().1.scales, "{level:?}: the experts of the saved directory");
+            assert!(
+                s.block().0.data == a.block().0.data
+                    && s.block().0.scales == a.block().0.scales
+                    && s.block().1.data == a.block().1.data
+                    && s.block().1.scales == a.block().1.scales,
+                "{level:?}: the experts of the saved directory"
+            );
             assert!(s.router == a.router && s.bias == a.bias);
             // a directory in the other level
             let other = if level == Layout::Int6 { Layout::Int5 } else { Layout::Int6 };

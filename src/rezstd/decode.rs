@@ -6,7 +6,9 @@
 //! stream ends by running out of bits), the reference decoder's
 //! bit-reader is followed.
 
-use super::block::{LL_BITS, LL_DEFAULT_NORM, LL_DEFAULT_NORM_LOG, MAX_LL, MAX_ML, MAX_OFF, ML_BITS, ML_DEFAULT_NORM, ML_DEFAULT_NORM_LOG, OF_DEFAULT_NORM, OF_DEFAULT_NORM_LOG};
+use super::block::{
+    LL_BITS, LL_DEFAULT_NORM, LL_DEFAULT_NORM_LOG, MAX_LL, MAX_ML, MAX_OFF, ML_BITS, ML_DEFAULT_NORM, ML_DEFAULT_NORM_LOG, OF_DEFAULT_NORM, OF_DEFAULT_NORM_LOG,
+};
 use super::fse::highbit;
 use super::xxh64::xxh64;
 use super::{BLOCK_SIZE_MAX, MAGIC};
@@ -361,11 +363,7 @@ fn literals<'a>(src: &'a [u8], t: &mut Tables) -> Option<(Vec<u8>, &'a [u8])> {
         if size > BLOCK_SIZE_MAX {
             return None;
         }
-        return if kind == 0 {
-            Some((src.get(hdr..hdr + size)?.to_vec(), &src[hdr + size..]))
-        } else {
-            Some((vec![*src.get(hdr)?; size], &src[hdr + 1..]))
-        };
+        return if kind == 0 { Some((src.get(hdr..hdr + size)?.to_vec(), &src[hdr + size..])) } else { Some((vec![*src.get(hdr)?; size], &src[hdr + 1..])) };
     }
     let mut v = [0u8; 8];
     let hdr = [3, 3, 4, 5][size_format];
@@ -509,7 +507,9 @@ fn block(src: &[u8], out: &mut Vec<u8>, t: &mut Tables) -> Option<()> {
                 o
             }
         } as usize;
-        if std::env::var("REZSTD_DUMP").is_ok() { eprintln!("seq {} ll {} off {} ml {} at {}", i, lit_len, offset, match_len, out.len() + lit_len); }
+        if std::env::var("REZSTD_DUMP").is_ok() {
+            eprintln!("seq {} ll {} off {} ml {} at {}", i, lit_len, offset, match_len, out.len() + lit_len);
+        }
         out.extend_from_slice(lits.get(lit_at..lit_at + lit_len)?);
         lit_at += lit_len;
         if offset == 0 || offset > out.len() {

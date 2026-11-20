@@ -1,5 +1,5 @@
-use std::io::{Read, Write};
 use glyd::{GlydReader, GlydWriter};
+use std::io::{Read, Write};
 
 #[test]
 fn test_streaming_roundtrip_large() {

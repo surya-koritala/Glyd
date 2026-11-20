@@ -1,58 +1,58 @@
-pub mod error;
-pub mod format;
-pub mod huffman;
-pub mod finder;
-pub mod fallback;
-#[cfg(target_arch = "x86_64")]
-pub mod x86_decompress;
-#[cfg(target_arch = "x86_64")]
-pub mod x86_compress;
-#[cfg(target_arch = "x86_64")]
-pub mod x86_checksum;
-#[cfg(target_arch = "aarch64")]
-pub mod neon_decompress;
-#[cfg(target_arch = "aarch64")]
-pub mod neon_checksum;
-pub mod streaming;
-pub mod c_api;
 pub mod bits;
-pub mod huff8;
-pub mod tans;
-pub mod v7_format;
-pub mod v7_encode;
-pub mod v7_decode;
-pub mod v7_ultra;
+pub mod c_api;
 pub mod cm;
-pub mod shape;
-pub mod mmap;
 #[cfg(feature = "deflate")]
 pub mod deflate;
-#[cfg(feature = "deflate")]
-pub mod weights;
+pub mod dict;
+pub mod error;
+pub mod fallback;
+pub mod finder;
+pub mod fixlog;
+pub mod format;
+pub mod huff8;
+pub mod huffman;
+pub mod jpeg;
+pub mod jpg;
+pub mod ldm;
+pub mod mmap;
+#[cfg(target_arch = "aarch64")]
+pub mod neon_checksum;
+#[cfg(target_arch = "aarch64")]
+pub mod neon_decompress;
+pub mod parquet;
+pub mod record;
 pub mod reflate;
 pub mod resnappy;
 pub mod rezstd;
-pub mod parquet;
 pub mod safetensors;
-pub mod torchzip;
-pub mod jpg;
-pub mod jpeg;
-pub mod fixlog;
+pub mod shape;
 pub mod split;
-pub mod record;
-pub mod ldm;
-pub mod dict;
+pub mod streaming;
+pub mod tans;
+pub mod torchzip;
+pub mod v7_decode;
+pub mod v7_encode;
+pub mod v7_format;
+pub mod v7_ultra;
+#[cfg(feature = "deflate")]
+pub mod weights;
+#[cfg(target_arch = "x86_64")]
+pub mod x86_checksum;
+#[cfg(target_arch = "x86_64")]
+pub mod x86_compress;
+#[cfg(target_arch = "x86_64")]
+pub mod x86_decompress;
 pub use dict::Dict;
 pub use shape::ShapeDict;
 
-pub use streaming::{GlydReader, GlydWriter};
 pub use format::compute_checksum;
+pub use streaming::{GlydReader, GlydWriter};
 
 use error::{CodecError, Result};
 use finder::{new_table, Dense, HashTable, Lzav, Mode, Turbo};
 use format::*;
-use v7_format::LOCAL_WINDOW;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use v7_format::LOCAL_WINDOW;
 
 /// Threads the parallel paths use: `set_threads`, else the machine's.
 static THREADS: AtomicUsize = AtomicUsize::new(0);
@@ -185,16 +185,12 @@ fn find_block<P: Mode>(
     {
         if has_avx2() {
             unsafe {
-                x86_compress::compress_chained_avx2::<P>(
-                    full_input, block_start, block_len, table, tokens, offsets, extras, literals,
-                );
+                x86_compress::compress_chained_avx2::<P>(full_input, block_start, block_len, table, tokens, offsets, extras, literals);
             }
             return;
         }
     }
-    fallback::compress_chained_fallback::<P>(
-        full_input, block_start, block_len, table, tokens, offsets, extras, literals,
-    );
+    fallback::compress_chained_fallback::<P>(full_input, block_start, block_len, table, tokens, offsets, extras, literals);
 }
 
 /// The dense retry is opt-in (GLYD_DENSE=1). GOAL3 section 3: it bought
@@ -248,16 +244,7 @@ fn parse_block(
 
 /// Append one block (header plus payload) for `chunk`, given its streams and
 /// the parse result flags (raw, ordinary or dense).
-fn write_block(
-    chunk: &[u8],
-    parse_flags: u16,
-    chain_flag: u16,
-    tokens: &[u8],
-    offsets: &[u8],
-    extras: &[u8],
-    literals: &[u8],
-    output: &mut Vec<u8>,
-) {
+fn write_block(chunk: &[u8], parse_flags: u16, chain_flag: u16, tokens: &[u8], offsets: &[u8], extras: &[u8], literals: &[u8], output: &mut Vec<u8>) {
     let checksum = format::crc32c(chunk);
 
     if (parse_flags & FLAG_RAW_UNCOMPRESSED) != 0 {
@@ -338,13 +325,7 @@ pub fn compress_block_into(chunk: &[u8], output: &mut Vec<u8>) {
     assert!(chunk.len() <= MAX_BLOCK_SIZE, "block exceeds MAX_BLOCK_SIZE");
     COMPRESS_SCRATCH.with(|scratch_cell| {
         let mut scratch = scratch_cell.borrow_mut();
-        let CompressScratch {
-            ref mut tokens,
-            ref mut offsets,
-            ref mut extras,
-            ref mut literals,
-            ref mut table,
-        } = *scratch;
+        let CompressScratch { ref mut tokens, ref mut offsets, ref mut extras, ref mut literals, ref mut table } = *scratch;
 
         tokens.clear();
         offsets.clear();
@@ -411,11 +392,7 @@ pub fn compress_into_turbo(input: &[u8], output: &mut Vec<u8>) {
         extras.clear();
         literals.clear();
         find_block::<Turbo>(input, offset, chunk_len, &mut table, &mut tokens, &mut offsets, &mut extras, &mut literals);
-        let flags = if not_worth_it(chunk_len, &tokens, &offsets, &extras, &literals) {
-            FLAG_RAW_UNCOMPRESSED
-        } else {
-            FLAG_TURBO
-        };
+        let flags = if not_worth_it(chunk_len, &tokens, &offsets, &extras, &literals) { FLAG_RAW_UNCOMPRESSED } else { FLAG_TURBO };
         let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
         write_block(chunk, flags, chain_flag, &tokens, &offsets, &extras, &literals, output);
         offset += chunk_len;
@@ -431,8 +408,7 @@ pub fn compress_parallel_into_turbo(input: &[u8], output: &mut Vec<u8>) {
 /// blocks), same container. Blocks the finder cannot shrink by 4% are
 /// stored raw.
 pub fn compress_into_fast(input: &[u8], output: &mut Vec<u8>) {
-    let mut table: Box<finder::FastTable> =
-        vec![0u32; finder::FAST_HASH_SIZE].into_boxed_slice().try_into().unwrap();
+    let mut table: Box<finder::FastTable> = vec![0u32; finder::FAST_HASH_SIZE].into_boxed_slice().try_into().unwrap();
     let mut tokens = Vec::new();
     let mut offsets = Vec::new();
     let mut extras = Vec::new();
@@ -450,11 +426,7 @@ pub fn compress_into_fast(input: &[u8], output: &mut Vec<u8>) {
             let mut out = finder::Streams::new(Dense::MIN_MATCH, &mut tokens, &mut offsets, &mut extras, &mut literals);
             unsafe { finder::find_matches_fast::<Dense>(input, offset, chunk_len, &mut table, &mut out) };
         }
-        let flags = if not_worth_it(chunk_len, &tokens, &offsets, &extras, &literals) {
-            FLAG_RAW_UNCOMPRESSED
-        } else {
-            FLAG_DENSE
-        };
+        let flags = if not_worth_it(chunk_len, &tokens, &offsets, &extras, &literals) { FLAG_RAW_UNCOMPRESSED } else { FLAG_DENSE };
         let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
         write_block(chunk, flags, chain_flag, &tokens, &offsets, &extras, &literals, output);
         offset += chunk_len;
@@ -501,7 +473,11 @@ const FLUSH_BYTES: usize = 1 << 20;
 pub fn compress_max_to(input: &[u8], long: bool, mut sink: impl FnMut(Vec<u8>)) {
     if deflate::is_container(input) && !in_part() {
         let mut out = Vec::new();
-        if long { compress_into_max_long(input, &mut out) } else { compress_into_max(input, &mut out) }
+        if long {
+            compress_into_max_long(input, &mut out)
+        } else {
+            compress_into_max(input, &mut out)
+        }
         return sink(out);
     }
     let mut out = Vec::with_capacity(2 * FLUSH_BYTES);
@@ -544,7 +520,11 @@ enum Parse {
 /// checksum, with 0 (no dictionary) reserved.
 pub fn dict_id(dict: &[u8]) -> u32 {
     let id = compute_checksum(dict);
-    if id == 0 { 1 } else { id }
+    if id == 0 {
+        1
+    } else {
+        id
+    }
 }
 
 /// Max level with a prepared dictionary (`Dict`): its content is the
@@ -563,7 +543,16 @@ pub fn compress_with_dict(dict: &Dict, input: &[u8], output: &mut Vec<u8>) {
 /// The max level over `full[start..]`, with `full[..start]` (a dictionary
 /// named `dict_id`, or nothing) as history: indexed before the first
 /// block, so the parse's window reaches into it.
-fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict: Option<&Dict>, long: bool, output: &mut Vec<u8>, mut flush: Option<&mut dyn FnMut(&mut Vec<u8>)>) {
+fn compress_max_from(
+    full: &[u8],
+    start: usize,
+    dict_id: u32,
+    parse: Parse,
+    dict: Option<&Dict>,
+    long: bool,
+    output: &mut Vec<u8>,
+    mut flush: Option<&mut dyn FnMut(&mut Vec<u8>)>,
+) {
     thread_local! {
         /// The parse's 2 MB of tables, allocated once per thread and
         /// cleared at the start of every call (the parallel path makes
@@ -633,7 +622,14 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     let mut first = true;
     let mut splitter = split::Splitter::new();
     // One block: the chunk at `offset`, its parse, and the header flags.
-    let emit = |chunk: &[u8], seqs: &[v7_encode::Sequence], literals: &[u8], first: bool, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, payload: &mut Vec<u8>, output: &mut Vec<u8>| {
+    let emit = |chunk: &[u8],
+                seqs: &[v7_encode::Sequence],
+                literals: &[u8],
+                first: bool,
+                prev: &mut v7_encode::Tables,
+                scratch: &mut v7_encode::EncScratch,
+                payload: &mut Vec<u8>,
+                output: &mut Vec<u8>| {
         payload.clear();
         let compact = compact_block(chunk.len());
         let before = prev.clone();
@@ -734,7 +730,16 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
 /// made from tables `before`) came out poor and the bytes' order-0 size
 /// is under it, the block is coded as literals alone too, and the
 /// smaller kept. Whether the literals were kept.
-fn literals_only_if_smaller(chunk: &[u8], dict_id: u32, before: v7_encode::Tables, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, compact: bool, payload: &mut Vec<u8>, n_seq: usize) -> bool {
+fn literals_only_if_smaller(
+    chunk: &[u8],
+    dict_id: u32,
+    before: v7_encode::Tables,
+    prev: &mut v7_encode::Tables,
+    scratch: &mut v7_encode::EncScratch,
+    compact: bool,
+    payload: &mut Vec<u8>,
+    n_seq: usize,
+) -> bool {
     if n_seq <= 1 || payload.len() * 4 <= chunk.len() || order0_bytes(chunk) + 64 >= payload.len() {
         return false;
     }
@@ -981,7 +986,12 @@ fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &
 /// compressing) instead of gathered into one buffer: the CLI's memory
 /// is a few units of output, not the file's. `level` is a sequential
 /// level (`compress_into_max`, ...).
-pub fn compress_stream(input: &[u8], level: fn(&[u8], &mut Vec<u8>), smallest: usize, mut sink: impl FnMut(&[u8]) -> std::io::Result<()> + Send) -> std::io::Result<()> {
+pub fn compress_stream(
+    input: &[u8],
+    level: fn(&[u8], &mut Vec<u8>),
+    smallest: usize,
+    mut sink: impl FnMut(&[u8]) -> std::io::Result<()> + Send,
+) -> std::io::Result<()> {
     let unit = parallel_unit(input.len(), smallest);
     let chunks: Vec<&[u8]> = if input.is_empty() { vec![input] } else { input.chunks(unit).collect() };
     let n = chunks.len();
@@ -1046,7 +1056,9 @@ fn parse_header_at(compressed: &[u8], cursor: usize) -> Result<(BlockHeader, usi
     let head = &compressed[cursor..];
     let (header, used) = match BlockHeader::read(head) {
         Some(h) => h,
-        None if head[0] != COMPACT_MARKER && head.len() >= 4 && u32::from_le_bytes([head[0], head[1], head[2], head[3]]) != MAGIC => return Err(CodecError::InvalidMagic),
+        None if head[0] != COMPACT_MARKER && head.len() >= 4 && u32::from_le_bytes([head[0], head[1], head[2], head[3]]) != MAGIC => {
+            return Err(CodecError::InvalidMagic)
+        }
         None => return Err(CodecError::CorruptedBitstream("Truncated block header")),
     };
     if header.version != CURRENT_VERSION && !is_coded_version(header.version) {
@@ -1129,7 +1141,13 @@ unsafe fn decode_block(
     let literals = &payload[c..c + header.literal_len as usize];
     let dense = (header.flags & FLAG_DENSE) != 0;
     let turbo = (header.flags & FLAG_TURBO) != 0;
-    let min_match = if dense { MIN_MATCH_LEN_DENSE } else if turbo { MIN_MATCH_LEN_TURBO } else { MIN_MATCH_LEN };
+    let min_match = if dense {
+        MIN_MATCH_LEN_DENSE
+    } else if turbo {
+        MIN_MATCH_LEN_TURBO
+    } else {
+        MIN_MATCH_LEN
+    };
     // Each machine takes its own decoder below; the others' inputs go unused.
     let _ = (avx2, min_match);
     let (table, esc): (&[u32; 256], usize) = if dense {
@@ -1144,8 +1162,18 @@ unsafe fn decode_block(
     {
         if avx2 {
             x86_decompress::decompress_avx2(
-                tokens, token_count, offsets, offsets_len, extras, extras_len,
-                literals, dst, buffer_start, uncomp_len, table, esc,
+                tokens,
+                token_count,
+                offsets,
+                offsets_len,
+                extras,
+                extras_len,
+                literals,
+                dst,
+                buffer_start,
+                uncomp_len,
+                table,
+                esc,
             )?;
             return Ok(());
         }
@@ -1153,18 +1181,26 @@ unsafe fn decode_block(
     #[cfg(target_arch = "aarch64")]
     {
         neon_decompress::decompress_neon(
-            tokens, token_count, offsets, offsets_len, extras, extras_len,
-            payload.len() - (c - extras_len), literals, dst, buffer_start, uncomp_len, table, esc,
+            tokens,
+            token_count,
+            offsets,
+            offsets_len,
+            extras,
+            extras_len,
+            payload.len() - (c - extras_len),
+            literals,
+            dst,
+            buffer_start,
+            uncomp_len,
+            table,
+            esc,
         )?;
         return Ok(());
     }
     #[allow(unreachable_code)]
     let _ = (table, esc);
     #[allow(unreachable_code)]
-    fallback::decompress_fallback_raw(
-        tokens, token_count, offsets, offsets_len, extras, extras_len,
-        literals, dst, buffer_start, uncomp_len, min_match,
-    )?;
+    fallback::decompress_fallback_raw(tokens, token_count, offsets, offsets_len, extras, extras_len, literals, dst, buffer_start, uncomp_len, min_match)?;
     Ok(())
 }
 
@@ -1242,7 +1278,9 @@ fn pack_envelope(compressed: &[u8]) -> Result<(Vec<usize>, &[u8])> {
     let mut pos = 8usize;
     let n = get_varint(compressed, &mut pos).ok_or(CodecError::CorruptedBitstream("pack: count"))? as usize;
     let index_len = get_varint(compressed, &mut pos).ok_or(CodecError::CorruptedBitstream("pack: index"))? as usize;
-    let index = compressed.get(pos..pos.checked_add(index_len).ok_or(CodecError::CorruptedBitstream("pack: index"))?).ok_or(CodecError::CorruptedBitstream("pack: index"))?;
+    let index = compressed
+        .get(pos..pos.checked_add(index_len).ok_or(CodecError::CorruptedBitstream("pack: index"))?)
+        .ok_or(CodecError::CorruptedBitstream("pack: index"))?;
     pos += index_len;
     if n > index.len() * 64 + 64 {
         return Err(CodecError::CorruptedBitstream("pack: count"));
@@ -1685,7 +1723,15 @@ impl BaseIndex {
 /// once and kept), else the input as it is against `base` and its
 /// index. Opening a base of thousands of gzip members on every put
 /// against it was half of such a put.
-pub fn compress_with_base_plain(base: &[u8], base_index: &BaseIndex, base_plain: Option<(&[u8], &BaseIndex)>, input: &[u8], anchors: Option<&[(u64, u64)]>, output: &mut Vec<u8>, ultra: bool) {
+pub fn compress_with_base_plain(
+    base: &[u8],
+    base_index: &BaseIndex,
+    base_plain: Option<(&[u8], &BaseIndex)>,
+    input: &[u8],
+    anchors: Option<&[(u64, u64)]>,
+    output: &mut Vec<u8>,
+    ultra: bool,
+) {
     #[cfg(feature = "deflate")]
     if !in_part() && deflate::is_container(input) {
         if let Some(opened) = deflate::open_against(input, base) {
@@ -2031,13 +2077,14 @@ fn records_units(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u
     let _ = par_units::<()>(units.len(), |i| {
         let unit = units[i];
         let mut out = Vec::with_capacity(unit.len() / 3 + 1024);
-        let image = records_pay(records_trial(unit), level) && match record::transform(unit) {
-            Some(image) => {
-                as_part(|| level(&image, &mut out));
-                true
-            }
-            None => false,
-        };
+        let image = records_pay(records_trial(unit), level)
+            && match record::transform(unit) {
+                Some(image) => {
+                    as_part(|| level(&image, &mut out));
+                    true
+                }
+                None => false,
+            };
         if !image {
             as_part(|| level(unit, &mut out));
         }
@@ -2158,7 +2205,6 @@ fn decompress_records(units: &[RecordUnit<'_>]) -> Result<Vec<u8>> {
     records_into(units, &mut out)?;
     Ok(out)
 }
-
 
 /// Walk every header, validating framing, and return the total output size.
 fn total_uncompressed_len(compressed: &[u8]) -> Result<usize> {
@@ -2315,10 +2361,7 @@ fn decompress_sequential_impl(compressed: &[u8], dst: &mut [u8], dst_offset0: us
         let (header, start, next) = parse_header_at(compressed, cursor)?;
         let uncomp_len = header.uncompressed_len as usize;
         if dst_offset + uncomp_len > dst.len() {
-            return Err(CodecError::OutputBufferTooSmall {
-                required: dst_offset + uncomp_len,
-                provided: dst.len(),
-            });
+            return Err(CodecError::OutputBufferTooSmall { required: dst_offset + uncomp_len, provided: dst.len() });
         }
         // The slice runs up to `PAD` bytes past the payload when the
         // buffer has them: a compact block is then decoded in place.
@@ -2456,19 +2499,9 @@ fn scan_units(compressed: &[u8]) -> Result<(Vec<BlockInfo>, Vec<ParallelUnit>, u
         }
         let uncomp_len = header.uncompressed_len as usize;
         let block_idx = blocks.len();
-        blocks.push(BlockInfo {
-            block_offset: cursor,
-            block_size: next - cursor,
-            uncomp_offset: total_uncomp,
-            uncomp_len,
-        });
+        blocks.push(BlockInfo { block_offset: cursor, block_size: next - cursor, uncomp_offset: total_uncomp, uncomp_len });
         if (header.flags & FLAG_CHAIN_RESET) != 0 || units.is_empty() {
-            units.push(ParallelUnit {
-                first_block_idx: block_idx,
-                block_count: 1,
-                uncomp_offset: total_uncomp,
-                uncomp_len,
-            });
+            units.push(ParallelUnit { first_block_idx: block_idx, block_count: 1, uncomp_offset: total_uncomp, uncomp_len });
         } else {
             let u = units.last_mut().unwrap();
             u.block_count += 1;
@@ -2508,7 +2541,15 @@ impl From<CodecError> for StreamError {
 /// soon as it is decoded, by the thread that decoded it while the
 /// others go on: the write of a unit overlaps the decode of the next
 /// ones and copies from a buffer still in cache.
-fn decode_units_to(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUnit], base: usize, dst: &mut [u8], verify: bool, sink: Option<&std::sync::Mutex<&mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send)>>) -> std::result::Result<(), StreamError> {
+fn decode_units_to(
+    compressed: &[u8],
+    blocks: &[BlockInfo],
+    units: &[ParallelUnit],
+    base: usize,
+    dst: &mut [u8],
+    verify: bool,
+    sink: Option<&std::sync::Mutex<&mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send)>>,
+) -> std::result::Result<(), StreamError> {
     let output_ptr = dst.as_mut_ptr() as usize;
     let avx2 = has_avx2();
     // The next unit to hand to the sink and which units are decoded: a
@@ -2596,7 +2637,12 @@ const STREAM_BATCH: usize = 256 << 20;
 /// the write of a batch (a page-cache copy, a socket) overlaps the
 /// decode instead of following it. `decode` fills the buffer, sized
 /// `len + 2 * PADDING`, and says how many bytes are the batch's.
-fn stream_batches<B>(batches: Vec<B>, decode: impl Fn(&B, &mut Vec<u8>) -> Result<usize>, len: impl Fn(&B) -> usize, mut sink: impl FnMut(&[u8]) -> std::io::Result<()> + Send) -> std::io::Result<()>
+fn stream_batches<B>(
+    batches: Vec<B>,
+    decode: impl Fn(&B, &mut Vec<u8>) -> Result<usize>,
+    len: impl Fn(&B) -> usize,
+    mut sink: impl FnMut(&[u8]) -> std::io::Result<()> + Send,
+) -> std::io::Result<()>
 where
     B: Sync,
 {
@@ -2697,7 +2743,15 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
             batches.push((at, end, total));
             at = end;
         }
-        return stream_batches(batches, |&(at, end, total), buf| { buf.truncate(total); cold_into(&units[at..end], buf).map(|_| total) }, |b| b.2, sink);
+        return stream_batches(
+            batches,
+            |&(at, end, total), buf| {
+                buf.truncate(total);
+                cold_into(&units[at..end], buf).map(|_| total)
+            },
+            |b| b.2,
+            sink,
+        );
     }
     #[cfg(feature = "deflate")]
     if let Some(r) = embedded_envelopes(compressed) {

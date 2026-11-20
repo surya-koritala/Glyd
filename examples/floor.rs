@@ -17,9 +17,10 @@
 //   ptrchain   no memory traffic: just dst += lit + ml and one byte store
 //              per token, i.e. the serial pointer chain
 //   memcpy     the output, copied once
-use std::time::Instant;
 use glyd::format::*;
+use std::time::Instant;
 
+#[allow(dead_code)] // the whole block as parsed, read in part
 struct Block {
     tokens: Vec<u8>,
     extras: Vec<u8>,
@@ -48,12 +49,15 @@ fn predecode(tokens: &[u8], offsets: &[u8], extras: &[u8]) -> (Vec<u32>, Vec<u32
         let tv = TOKEN_TABLE[t as usize];
         let mut l = (tv & 0xFF) as usize;
         let mut m = ((tv >> 8) & 0xFF) as usize;
-        if tv & TOKEN_LIT_ESCAPE != 0 { l = rd(&mut e, ESCAPE_BASE_LIT); }
-        if tv & TOKEN_MATCH_ESCAPE != 0 { m = rd(&mut e, ESCAPE_BASE_MATCH); }
+        if tv & TOKEN_LIT_ESCAPE != 0 {
+            l = rd(&mut e, ESCAPE_BASE_LIT);
+        }
+        if tv & TOKEN_MATCH_ESCAPE != 0 {
+            m = rd(&mut e, ESCAPE_BASE_MATCH);
+        }
         let mut of = 0usize;
         if m != 0 {
-            of = u16::from_le_bytes([offsets[o], offsets[o + 1]]) as usize
-                | ((((tv >> TOKEN_OFF_SHIFT) & 1) as usize) << 16);
+            of = u16::from_le_bytes([offsets[o], offsets[o + 1]]) as usize | ((((tv >> TOKEN_OFF_SHIFT) & 1) as usize) << 16);
             o += 2;
         }
         lit.push(l as u32);
@@ -76,13 +80,18 @@ unsafe fn copy_real(b: &Block, dst: *mut u8) -> usize {
     let n = b.lit.len();
     let end = dst.add(b.out_len.saturating_sub(64));
     for i in 0..n {
-        if d > end { break; }
+        if d > end {
+            break;
+        }
         let lit = *b.lit.get_unchecked(i) as usize;
         let ml = *b.ml.get_unchecked(i) as usize;
         cp32(lp, d);
         if lit > 32 {
             let mut k = 32;
-            while k < lit { cp32(lp.add(k), d.add(k)); k += 32; }
+            while k < lit {
+                cp32(lp.add(k), d.add(k));
+                k += 32;
+            }
         }
         lp = lp.add(lit);
         d = d.add(lit);
@@ -93,20 +102,35 @@ unsafe fn copy_real(b: &Block, dst: *mut u8) -> usize {
                 cp32(s, d);
                 if ml > 32 {
                     let mut k = 32;
-                    while k < ml { cp32(s.add(k), d.add(k)); k += 32; }
+                    while k < ml {
+                        cp32(s.add(k), d.add(k));
+                        k += 32;
+                    }
                 }
             } else if off >= 16 {
                 let e = d.add(ml);
                 let (mut s, mut dd) = (s, d);
-                while dd < e { std::ptr::copy_nonoverlapping(s, dd, 16); s = s.add(16); dd = dd.add(16); }
+                while dd < e {
+                    std::ptr::copy_nonoverlapping(s, dd, 16);
+                    s = s.add(16);
+                    dd = dd.add(16);
+                }
             } else if off >= 8 {
                 let e = d.add(ml);
                 let (mut s, mut dd) = (s, d);
-                while dd < e { std::ptr::copy_nonoverlapping(s, dd, 8); s = s.add(8); dd = dd.add(8); }
+                while dd < e {
+                    std::ptr::copy_nonoverlapping(s, dd, 8);
+                    s = s.add(8);
+                    dd = dd.add(8);
+                }
             } else {
                 let e = d.add(ml);
                 let (mut s, mut dd) = (s, d);
-                while dd < e { *dd = *s; s = s.add(1); dd = dd.add(1); }
+                while dd < e {
+                    *dd = *s;
+                    s = s.add(1);
+                    dd = dd.add(1);
+                }
             }
             d = d.add(ml);
         }
@@ -124,13 +148,41 @@ unsafe fn copy_var<const V: u8>(b: &Block, dst: *mut u8) -> usize {
     let n = b.lit.len();
     let end = dst.add(b.out_len.saturating_sub(256));
     for i in 0..n {
-        if d > end { break; }
+        if d > end {
+            break;
+        }
         let lit = *b.lit.get_unchecked(i) as usize;
         let ml = *b.ml.get_unchecked(i) as usize;
         cp32(lp, d);
-        if V == 5 { if lit > 32 { cp32(lp.add(32), d.add(32)); cp32(lp.add(64), d.add(64)); cp32(lp.add(96), d.add(96)); if lit > 128 { let mut k = 128; while k < lit { cp32(lp.add(k), d.add(k)); k += 32; } } } }
-        else if V == 3 { cp32(lp.add(32), d.add(32)); if lit > 64 { let mut k = 64; while k < lit { cp32(lp.add(k), d.add(k)); k += 32; } } }
-        else if lit > 32 { let mut k = 32; while k < lit { cp32(lp.add(k), d.add(k)); k += 32; } }
+        if V == 5 {
+            if lit > 32 {
+                cp32(lp.add(32), d.add(32));
+                cp32(lp.add(64), d.add(64));
+                cp32(lp.add(96), d.add(96));
+                if lit > 128 {
+                    let mut k = 128;
+                    while k < lit {
+                        cp32(lp.add(k), d.add(k));
+                        k += 32;
+                    }
+                }
+            }
+        } else if V == 3 {
+            cp32(lp.add(32), d.add(32));
+            if lit > 64 {
+                let mut k = 64;
+                while k < lit {
+                    cp32(lp.add(k), d.add(k));
+                    k += 32;
+                }
+            }
+        } else if lit > 32 {
+            let mut k = 32;
+            while k < lit {
+                cp32(lp.add(k), d.add(k));
+                k += 32;
+            }
+        }
         lp = lp.add(lit);
         d = d.add(lit);
         let off = *b.off.get_unchecked(i) as usize;
@@ -144,7 +196,13 @@ unsafe fn copy_var<const V: u8>(b: &Block, dst: *mut u8) -> usize {
                     cp32(s.add(32), d.add(32));
                     cp32(s.add(64), d.add(64));
                     cp32(s.add(96), d.add(96));
-                    if ml > 128 { let mut k = 128; while k < ml { cp32(s.add(k), d.add(k)); k += 32; } }
+                    if ml > 128 {
+                        let mut k = 128;
+                        while k < ml {
+                            cp32(s.add(k), d.add(k));
+                            k += 32;
+                        }
+                    }
                 }
             }
         } else if V == 5 {
@@ -157,7 +215,13 @@ unsafe fn copy_var<const V: u8>(b: &Block, dst: *mut u8) -> usize {
                     cp32(s.add(32), d.add(32));
                     cp32(s.add(64), d.add(64));
                     cp32(s.add(96), d.add(96));
-                    if ml > 128 { let mut k = 128; while k < ml { cp32(s.add(k), d.add(k)); k += 32; } }
+                    if ml > 128 {
+                        let mut k = 128;
+                        while k < ml {
+                            cp32(s.add(k), d.add(k));
+                            k += 32;
+                        }
+                    }
                 }
             }
         } else if V == 1 {
@@ -172,7 +236,13 @@ unsafe fn copy_var<const V: u8>(b: &Block, dst: *mut u8) -> usize {
             } else {
                 cp32(s, d);
                 cp32(s.add(32), d.add(32));
-                if ml > 64 { let mut k = 64; while k < ml { cp32(s.add(k), d.add(k)); k += 32; } }
+                if ml > 64 {
+                    let mut k = 64;
+                    while k < ml {
+                        cp32(s.add(k), d.add(k));
+                        k += 32;
+                    }
+                }
             }
         }
         d = d.add(ml);
@@ -184,13 +254,27 @@ unsafe fn copy_var<const V: u8>(b: &Block, dst: *mut u8) -> usize {
 #[cold]
 unsafe fn slow_match(s: *const u8, d: *mut u8, off: usize, ml: usize) {
     if off >= 32 {
-        let mut k = 0; while k < ml { cp32(s.add(k), d.add(k)); k += 32; }
+        let mut k = 0;
+        while k < ml {
+            cp32(s.add(k), d.add(k));
+            k += 32;
+        }
     } else if off >= 16 {
-        let mut k = 0; while k < ml { std::ptr::copy_nonoverlapping(s.add(k), d.add(k), 16); k += 16; }
+        let mut k = 0;
+        while k < ml {
+            std::ptr::copy_nonoverlapping(s.add(k), d.add(k), 16);
+            k += 16;
+        }
     } else if off >= 8 {
-        let mut k = 0; while k < ml { std::ptr::copy_nonoverlapping(s.add(k), d.add(k), 8); k += 8; }
+        let mut k = 0;
+        while k < ml {
+            std::ptr::copy_nonoverlapping(s.add(k), d.add(k), 8);
+            k += 8;
+        }
     } else {
-        for k in 0..ml { *d.add(k) = *s.add(k); }
+        for k in 0..ml {
+            *d.add(k) = *s.add(k);
+        }
     }
 }
 
@@ -203,13 +287,38 @@ unsafe fn copy_dual(a: &Block, da: *mut u8, b: &Block, db: *mut u8) -> usize {
         let lit = *bk.lit.get_unchecked(i) as usize;
         let ml = *bk.ml.get_unchecked(i) as usize;
         cp32(*lp, *d);
-        if lit > 32 { cp32(lp.add(32), d.add(32)); cp32(lp.add(64), d.add(64)); cp32(lp.add(96), d.add(96)); if lit > 128 { let mut k = 128; while k < lit { cp32(lp.add(k), d.add(k)); k += 32; } } }
-        *lp = lp.add(lit); *d = d.add(lit);
+        if lit > 32 {
+            cp32(lp.add(32), d.add(32));
+            cp32(lp.add(64), d.add(64));
+            cp32(lp.add(96), d.add(96));
+            if lit > 128 {
+                let mut k = 128;
+                while k < lit {
+                    cp32(lp.add(k), d.add(k));
+                    k += 32;
+                }
+            }
+        }
+        *lp = lp.add(lit);
+        *d = d.add(lit);
         let off = *bk.off.get_unchecked(i) as usize;
         let s = d.sub(off);
-        if off < 32 { slow_match(s, *d, off, ml); } else {
+        if off < 32 {
+            slow_match(s, *d, off, ml);
+        } else {
             cp32(s, *d);
-            if ml > 32 { cp32(s.add(32), d.add(32)); cp32(s.add(64), d.add(64)); cp32(s.add(96), d.add(96)); if ml > 128 { let mut k = 128; while k < ml { cp32(s.add(k), d.add(k)); k += 32; } } }
+            if ml > 32 {
+                cp32(s.add(32), d.add(32));
+                cp32(s.add(64), d.add(64));
+                cp32(s.add(96), d.add(96));
+                if ml > 128 {
+                    let mut k = 128;
+                    while k < ml {
+                        cp32(s.add(k), d.add(k));
+                        k += 32;
+                    }
+                }
+            }
         }
         *d = d.add(ml);
     }
@@ -220,15 +329,29 @@ unsafe fn copy_dual(a: &Block, da: *mut u8, b: &Block, db: *mut u8) -> usize {
     let n = a.lit.len().min(b.lit.len());
     let mut i = 0;
     while i < n {
-        if pa > enda || pb > endb { break; }
+        if pa > enda || pb > endb {
+            break;
+        }
         step(a, i, &mut lpa, &mut pa);
         step(b, i, &mut lpb, &mut pb);
         i += 1;
     }
     let mut j = i;
-    while j < a.lit.len() { if pa > enda { break; } step(a, j, &mut lpa, &mut pa); j += 1; }
+    while j < a.lit.len() {
+        if pa > enda {
+            break;
+        }
+        step(a, j, &mut lpa, &mut pa);
+        j += 1;
+    }
     let mut j = i;
-    while j < b.lit.len() { if pb > endb { break; } step(b, j, &mut lpb, &mut pb); j += 1; }
+    while j < b.lit.len() {
+        if pb > endb {
+            break;
+        }
+        step(b, j, &mut lpb, &mut pb);
+        j += 1;
+    }
     (pa.offset_from(da) + pb.offset_from(db)) as usize
 }
 
@@ -240,26 +363,68 @@ unsafe fn copy_iso<const W: u8>(b: &Block, dst: *mut u8) -> usize {
     let n = b.lit.len();
     let end = dst.add(b.out_len.saturating_sub(256));
     for i in 0..n {
-        if d > end { break; }
+        if d > end {
+            break;
+        }
         let lit = *b.lit.get_unchecked(i) as usize;
         let ml = *b.ml.get_unchecked(i) as usize;
         cp32(lp, d);
-        if W == 1 && lit > 32 { let mut k = 32; while k < lit { cp32(lp.add(k), d.add(k)); k += 32; } }
+        if W == 1 && lit > 32 {
+            let mut k = 32;
+            while k < lit {
+                cp32(lp.add(k), d.add(k));
+                k += 32;
+            }
+        }
         lp = lp.add(lit);
         d = d.add(lit);
         let off = *b.off.get_unchecked(i) as usize;
         let s = d.sub(off);
-        if W == 2 && off < 32 { slow_match(s, d, off, ml); } else {
+        if W == 2 && off < 32 {
+            slow_match(s, d, off, ml);
+        } else {
             cp32(s, d);
-            if W == 3 && ml > 32 { cp32(s.add(32), d.add(32)); cp32(s.add(64), d.add(64)); cp32(s.add(96), d.add(96)); if ml > 128 { let mut k = 128; while k < ml { cp32(s.add(k), d.add(k)); k += 32; } } }
-            if W == 4 && ml > 32 { let mut k = 32; while k < ml { cp32(s.add(k), d.add(k)); k += 32; } }
-            if W == 5 { let r = ml.saturating_sub(32); let mut k = 32; while k < ml { cp32(s.add(k), d.add(k)); k += 32; } let _ = r; }
-            if W == 6 { // branchless: always copy 32 more from a valid address (dst itself when short)
+            if W == 3 && ml > 32 {
+                cp32(s.add(32), d.add(32));
+                cp32(s.add(64), d.add(64));
+                cp32(s.add(96), d.add(96));
+                if ml > 128 {
+                    let mut k = 128;
+                    while k < ml {
+                        cp32(s.add(k), d.add(k));
+                        k += 32;
+                    }
+                }
+            }
+            if W == 4 && ml > 32 {
+                let mut k = 32;
+                while k < ml {
+                    cp32(s.add(k), d.add(k));
+                    k += 32;
+                }
+            }
+            if W == 5 {
+                let r = ml.saturating_sub(32);
+                let mut k = 32;
+                while k < ml {
+                    cp32(s.add(k), d.add(k));
+                    k += 32;
+                }
+                let _ = r;
+            }
+            if W == 6 {
+                // branchless: always copy 32 more from a valid address (dst itself when short)
                 let extra = (ml > 32) as usize;
                 let src2 = if extra != 0 { s.add(32) } else { s };
                 let dst2 = if extra != 0 { d.add(32) } else { d };
                 cp32(src2, dst2);
-                if ml > 64 { let mut k = 64; while k < ml { cp32(s.add(k), d.add(k)); k += 32; } }
+                if ml > 64 {
+                    let mut k = 64;
+                    while k < ml {
+                        cp32(s.add(k), d.add(k));
+                        k += 32;
+                    }
+                }
             }
         }
         d = d.add(ml);
@@ -276,7 +441,9 @@ unsafe fn copy_flat<const FAR: bool, const LOAD: bool, const VFAR: bool>(b: &Blo
     let n = b.lit.len();
     let end = dst.add(b.out_len.saturating_sub(64));
     for i in 0..n {
-        if d > end { break; }
+        if d > end {
+            break;
+        }
         let lit = *b.lit.get_unchecked(i) as usize;
         let ml = *b.ml.get_unchecked(i) as usize;
         cp32(lp, d);
@@ -284,8 +451,12 @@ unsafe fn copy_flat<const FAR: bool, const LOAD: bool, const VFAR: bool>(b: &Blo
         d = d.add(lit);
         if LOAD {
             let mut off = *b.off.get_unchecked(i) as usize;
-            if FAR { off |= 32; }
-            if FAR && VFAR { off |= 65536; }
+            if FAR {
+                off |= 32;
+            }
+            if FAR && VFAR {
+                off |= 65536;
+            }
             let s = d.sub(off);
             cp32(s, d);
         }
@@ -301,7 +472,9 @@ unsafe fn ptrchain(b: &Block, dst: *mut u8) -> usize {
     let n = b.lit.len();
     let end = dst.add(b.out_len.saturating_sub(64));
     for i in 0..n {
-        if d > end { break; }
+        if d > end {
+            break;
+        }
         let lit = *b.lit.get_unchecked(i) as usize;
         let ml = *b.ml.get_unchecked(i) as usize;
         *d = lit as u8;
@@ -372,13 +545,21 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                 let i = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
                 if (lit_esc_mask >> i) & 1 != 0 {
-                    let mut v = *ex.add(e) as usize; e += 1;
-                    if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
+                    let mut v = *ex.add(e) as usize;
+                    e += 1;
+                    if v == 255 {
+                        v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                        e += 2;
+                    }
                     *l.add(i) = (ESCAPE_BASE_LIT + v) as u16;
                 }
                 if (m_esc_mask >> i) & 1 != 0 {
-                    let mut v = *ex.add(e) as usize; e += 1;
-                    if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
+                    let mut v = *ex.add(e) as usize;
+                    e += 1;
+                    if v == 255 {
+                        v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                        e += 2;
+                    }
                     *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16;
                 }
             }
@@ -395,16 +576,29 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                 let vl = *ex.add(e) as usize;
                 let vm = *ex.add(e + nl) as usize;
                 if ((vl == 255) & (nl != 0)) | ((vm == 255) & (nm != 0)) {
-                    if nl != 0 { let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
-                        *l.add(i) = (ESCAPE_BASE_LIT + v) as u16; }
-                    if nm != 0 { let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
-                        *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16; }
+                    if nl != 0 {
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
+                        *l.add(i) = (ESCAPE_BASE_LIT + v) as u16;
+                    }
+                    if nm != 0 {
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
+                        *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16;
+                    }
                     continue;
                 }
                 e += nl + nm;
-                let cl = *l.add(i) as usize; let cm = *m.add(i) as usize;
+                let cl = *l.add(i) as usize;
+                let cm = *m.add(i) as usize;
                 *l.add(i) = (if nl != 0 { ESCAPE_BASE_LIT + vl } else { cl }) as u16;
                 *m.add(i) = (if nm != 0 { ESCAPE_BASE_MATCH + vm } else { cm }) as u16;
             }
@@ -421,12 +615,24 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                 let vl = *ex.add(e) as usize;
                 let vm = *ex.add(e + nl) as usize;
                 if ((vl == 255) & (nl != 0)) | ((vm == 255) & (nm != 0)) {
-                    if nl != 0 { let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
-                        *l.add(i) = (ESCAPE_BASE_LIT + v) as u16; }
-                    if nm != 0 { let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
-                        *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16; }
+                    if nl != 0 {
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
+                        *l.add(i) = (ESCAPE_BASE_LIT + v) as u16;
+                    }
+                    if nm != 0 {
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
+                        *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16;
+                    }
                     continue;
                 }
                 e += nl + nm;
@@ -446,12 +652,24 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                 let vl = *ex.add(e) as usize;
                 let vm = *ex.add(e + nl) as usize;
                 if ((vl == 255) & (nl != 0)) | ((vm == 255) & (nm != 0)) {
-                    if nl != 0 { let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
-                        *l.add(i) = (ESCAPE_BASE_LIT + v) as u16; }
-                    if nm != 0 { let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
-                        *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16; }
+                    if nl != 0 {
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
+                        *l.add(i) = (ESCAPE_BASE_LIT + v) as u16;
+                    }
+                    if nm != 0 {
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
+                        *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16;
+                    }
                     continue;
                 }
                 e += nl + nm;
@@ -535,8 +753,10 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
             let vm0 = vqtbl4q_u8(tab, im0);
             let vm1 = vqtbl4q_u8(tab, im1);
             let ff = vdupq_n_u8(255);
-            let cont = vorrq_u8(vorrq_u8(vandq_u8(vceqq_u8(vl0, ff), lit_esc0), vandq_u8(vceqq_u8(vl1, ff), lit_esc1)),
-                                vorrq_u8(vandq_u8(vceqq_u8(vm0, ff), m_esc0), vandq_u8(vceqq_u8(vm1, ff), m_esc1)));
+            let cont = vorrq_u8(
+                vorrq_u8(vandq_u8(vceqq_u8(vl0, ff), lit_esc0), vandq_u8(vceqq_u8(vl1, ff), lit_esc1)),
+                vorrq_u8(vandq_u8(vceqq_u8(vm0, ff), m_esc0), vandq_u8(vceqq_u8(vm1, ff), m_esc1)),
+            );
             if vmaxvq_u8(cont) != 0 {
                 // scalar path for this chunk (variant 1's loop)
                 let mut bits = esc_mask;
@@ -544,13 +764,21 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                     let i = bits.trailing_zeros() as usize;
                     bits &= bits - 1;
                     if (lit_esc_mask >> i) & 1 != 0 {
-                        let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
                         *l.add(i) = (ESCAPE_BASE_LIT + v) as u16;
                     }
                     if (m_esc_mask >> i) & 1 != 0 {
-                        let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
                         *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16;
                     }
                 }
@@ -560,10 +788,14 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                 let bm = vdupq_n_u16(ESCAPE_BASE_MATCH as u16);
                 // widen and blend
                 let w = |esc: uint8x16_t, v: uint8x16_t, base: uint16x8_t, cur: uint8x16_t, out: *mut u16| {
-                    let e_lo = vmovl_u8(vget_low_u8(esc)); let e_hi = vmovl_high_u8(esc);
-                    let e_lo = vceqq_u16(e_lo, vdupq_n_u16(0xFF)); let e_hi = vceqq_u16(e_hi, vdupq_n_u16(0xFF));
-                    let v_lo = vaddq_u16(vmovl_u8(vget_low_u8(v)), base); let v_hi = vaddq_u16(vmovl_high_u8(v), base);
-                    let c_lo = vmovl_u8(vget_low_u8(cur)); let c_hi = vmovl_high_u8(cur);
+                    let e_lo = vmovl_u8(vget_low_u8(esc));
+                    let e_hi = vmovl_high_u8(esc);
+                    let e_lo = vceqq_u16(e_lo, vdupq_n_u16(0xFF));
+                    let e_hi = vceqq_u16(e_hi, vdupq_n_u16(0xFF));
+                    let v_lo = vaddq_u16(vmovl_u8(vget_low_u8(v)), base);
+                    let v_hi = vaddq_u16(vmovl_high_u8(v), base);
+                    let c_lo = vmovl_u8(vget_low_u8(cur));
+                    let c_hi = vmovl_high_u8(cur);
                     vst1q_u16(out, vbslq_u16(e_lo, v_lo, c_lo));
                     vst1q_u16(out.add(8), vbslq_u16(e_hi, v_hi, c_hi));
                 };
@@ -607,8 +839,10 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
             let vm0 = vqtbl4q_u8(tab, im0);
             let vm1 = vqtbl4q_u8(tab, im1);
             let ff = vdupq_n_u8(255);
-            let cont = vorrq_u8(vorrq_u8(vandq_u8(vceqq_u8(vl0, ff), lit_esc0), vandq_u8(vceqq_u8(vl1, ff), lit_esc1)),
-                                vorrq_u8(vandq_u8(vceqq_u8(vm0, ff), m_esc0), vandq_u8(vceqq_u8(vm1, ff), m_esc1)));
+            let cont = vorrq_u8(
+                vorrq_u8(vandq_u8(vceqq_u8(vl0, ff), lit_esc0), vandq_u8(vceqq_u8(vl1, ff), lit_esc1)),
+                vorrq_u8(vandq_u8(vceqq_u8(vm0, ff), m_esc0), vandq_u8(vceqq_u8(vm1, ff), m_esc1)),
+            );
             if ESC == 10 && false && vmaxvq_u8(cont) != 0 {
                 // scalar path for this chunk (variant 1's loop)
                 let mut bits = esc_mask;
@@ -616,13 +850,21 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                     let i = bits.trailing_zeros() as usize;
                     bits &= bits - 1;
                     if (lit_esc_mask >> i) & 1 != 0 {
-                        let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
                         *l.add(i) = (ESCAPE_BASE_LIT + v) as u16;
                     }
                     if (m_esc_mask >> i) & 1 != 0 {
-                        let mut v = *ex.add(e) as usize; e += 1;
-                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
+                        let mut v = *ex.add(e) as usize;
+                        e += 1;
+                        if v == 255 {
+                            v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
                         *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16;
                     }
                 }
@@ -632,10 +874,14 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                 let bm = vdupq_n_u16(ESCAPE_BASE_MATCH as u16);
                 // widen and blend
                 let w = |esc: uint8x16_t, v: uint8x16_t, base: uint16x8_t, cur: uint8x16_t, out: *mut u16| {
-                    let e_lo = vmovl_u8(vget_low_u8(esc)); let e_hi = vmovl_high_u8(esc);
-                    let e_lo = vceqq_u16(e_lo, vdupq_n_u16(0xFF)); let e_hi = vceqq_u16(e_hi, vdupq_n_u16(0xFF));
-                    let v_lo = vaddq_u16(vmovl_u8(vget_low_u8(v)), base); let v_hi = vaddq_u16(vmovl_high_u8(v), base);
-                    let c_lo = vmovl_u8(vget_low_u8(cur)); let c_hi = vmovl_high_u8(cur);
+                    let e_lo = vmovl_u8(vget_low_u8(esc));
+                    let e_hi = vmovl_high_u8(esc);
+                    let e_lo = vceqq_u16(e_lo, vdupq_n_u16(0xFF));
+                    let e_hi = vceqq_u16(e_hi, vdupq_n_u16(0xFF));
+                    let v_lo = vaddq_u16(vmovl_u8(vget_low_u8(v)), base);
+                    let v_hi = vaddq_u16(vmovl_high_u8(v), base);
+                    let c_lo = vmovl_u8(vget_low_u8(cur));
+                    let c_hi = vmovl_high_u8(cur);
                     vst1q_u16(out, vbslq_u16(e_lo, v_lo, c_lo));
                     vst1q_u16(out.add(8), vbslq_u16(e_hi, v_hi, c_hi));
                 };
@@ -656,17 +902,33 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                     let vl = *ex.add(e) as usize;
                     let vm = *ex.add(e + nl) as usize;
                     if ((vl == 255) & (nl != 0)) | ((vm == 255) & (nm != 0)) {
-                        if nl != 0 { let mut v = *ex.add(e) as usize; e += 1;
-                            if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
-                            *l.add(i) = (ESCAPE_BASE_LIT + v) as u16; }
-                        if nm != 0 { let mut v = *ex.add(e) as usize; e += 1;
-                            if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
-                            *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16; }
+                        if nl != 0 {
+                            let mut v = *ex.add(e) as usize;
+                            e += 1;
+                            if v == 255 {
+                                v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                                e += 2;
+                            }
+                            *l.add(i) = (ESCAPE_BASE_LIT + v) as u16;
+                        }
+                        if nm != 0 {
+                            let mut v = *ex.add(e) as usize;
+                            e += 1;
+                            if v == 255 {
+                                v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize;
+                                e += 2;
+                            }
+                            *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16;
+                        }
                         continue;
                     }
                     e += nl + nm;
-                    if nl != 0 { *l.add(i) = (ESCAPE_BASE_LIT + vl) as u16; }
-                    if nm != 0 { *m.add(i) = (ESCAPE_BASE_MATCH + vm) as u16; }
+                    if nl != 0 {
+                        *l.add(i) = (ESCAPE_BASE_LIT + vl) as u16;
+                    }
+                    if nm != 0 {
+                        *m.add(i) = (ESCAPE_BASE_MATCH + vm) as u16;
+                    }
                 }
             }
         }
@@ -677,15 +939,16 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
 }
 
 fn main() {
-    let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
-                 "reymont","samba","sao","webster","xml","x-ray"];
+    let files = ["dickens", "mozilla", "mr", "nci", "ooffice", "osdb", "reymont", "samba", "sao", "webster", "xml", "x-ray"];
     let dir = std::path::Path::new("corpus");
     let mut blocks: Vec<Block> = Vec::new();
     let mut raw: Vec<(Vec<u8>, usize)> = Vec::new(); // compressed bytes per file, base
     let mut total_out = 0usize;
     for f in &files {
         let p = dir.join(f);
-        if !p.exists() { continue; }
+        if !p.exists() {
+            continue;
+        }
         let d = std::fs::read(&p).unwrap();
         let c = glyd::compress(&d);
         let file_base = total_out;
@@ -700,7 +963,8 @@ fn main() {
                 let (lit, ml, off) = predecode(&c[tb..ob], &c[ob..eb], &c[eb..lb]);
                 let mut literals = c[lb..lb + h.literal_len as usize].to_vec();
                 literals.resize(literals.len() + 64, 0);
-                let mut extras = c[eb..lb].to_vec(); extras.resize(extras.len() + 64, 0);
+                let mut extras = c[eb..lb].to_vec();
+                extras.resize(extras.len() + 64, 0);
                 blocks.push(Block { tokens: c[tb..ob].to_vec(), extras, lit, ml, off, literals, out_len: h.uncompressed_len as usize, dst_pos: total_out });
             }
             total_out += h.uncompressed_len as usize;
@@ -711,126 +975,437 @@ fn main() {
     let ntok: usize = blocks.iter().map(|b| b.lit.len()).sum();
     let nmatch: usize = blocks.iter().map(|b| b.ml.iter().filter(|&&m| m != 0).count()).sum();
     let mut offhist = [0usize; 4]; // <8, <16, <32, >=32
-    let mut long_lit = 0usize; let mut long_ml = 0usize;
+    let mut long_lit = 0usize;
+    let mut long_ml = 0usize;
     let (mut tail_bytes, mut tail_iters, mut near) = (0usize, 0usize, 0usize);
     let (mut esc_l, mut esc_m, mut esc_both, mut cont) = (0usize, 0usize, 0usize, 0usize);
     for b in &blocks {
         for i in 0..b.lit.len() {
             if b.ml[i] != 0 {
                 let o = b.off[i];
-                offhist[if o < 8 { 0 } else if o < 16 { 1 } else if o < 32 { 2 } else { 3 }] += 1;
-                if b.ml[i] > 32 { long_ml += 1; }
+                offhist[if o < 8 {
+                    0
+                } else if o < 16 {
+                    1
+                } else if o < 32 {
+                    2
+                } else {
+                    3
+                }] += 1;
+                if b.ml[i] > 32 {
+                    long_ml += 1;
+                }
             }
-            if b.lit[i] > 32 { long_lit += 1; tail_bytes += b.lit[i] as usize - 32; tail_iters += (b.lit[i] as usize - 1) / 32; }
-            if b.ml[i] > 32 { tail_bytes += b.ml[i] as usize - 32; tail_iters += (b.ml[i] as usize - 1) / 32; }
-            if b.ml[i] != 0 && b.off[i] < 256 { near += 1; }
-            let el = b.lit[i] as usize >= ESCAPE_BASE_LIT; let em = b.ml[i] as usize >= ESCAPE_BASE_MATCH;
-            if el { esc_l += 1; } if em { esc_m += 1; } if el && em { esc_both += 1; }
-            if b.lit[i] as usize >= ESCAPE_BASE_LIT + 255 || b.ml[i] as usize >= ESCAPE_BASE_MATCH + 255 { cont += 1; }
+            if b.lit[i] > 32 {
+                long_lit += 1;
+                tail_bytes += b.lit[i] as usize - 32;
+                tail_iters += (b.lit[i] as usize - 1) / 32;
+            }
+            if b.ml[i] > 32 {
+                tail_bytes += b.ml[i] as usize - 32;
+                tail_iters += (b.ml[i] as usize - 1) / 32;
+            }
+            if b.ml[i] != 0 && b.off[i] < 256 {
+                near += 1;
+            }
+            let el = b.lit[i] as usize >= ESCAPE_BASE_LIT;
+            let em = b.ml[i] as usize >= ESCAPE_BASE_MATCH;
+            if el {
+                esc_l += 1;
+            }
+            if em {
+                esc_m += 1;
+            }
+            if el && em {
+                esc_both += 1;
+            }
+            if b.lit[i] as usize >= ESCAPE_BASE_LIT + 255 || b.ml[i] as usize >= ESCAPE_BASE_MATCH + 255 {
+                cont += 1;
+            }
         }
     }
-    println!("{} blocks, {} tokens ({} matches), {} MB output, {:.1} bytes/token",
-        blocks.len(), ntok, nmatch, total_out >> 20, total_out as f64 / ntok as f64);
-    println!("escapes: lit {:.1}%  match {:.1}%  both {:.1}%  any {:.1}%  cont {:.2}% of tokens",
-        100.0*esc_l as f64/ntok as f64, 100.0*esc_m as f64/ntok as f64, 100.0*esc_both as f64/ntok as f64,
-        100.0*(esc_l+esc_m-esc_both) as f64/ntok as f64, 100.0*cont as f64/ntok as f64);
-    let mut mh = [0usize; 5]; let mut lh = [0usize; 5];
-    for b in &blocks { for i in 0..b.lit.len() {
-        let m = b.ml[i] as usize; if m > 32 { mh[if m <= 64 {0} else if m <= 96 {1} else if m <= 128 {2} else if m <= 256 {3} else {4}] += 1; }
-        let l = b.lit[i] as usize; if l > 32 { lh[if l <= 64 {0} else if l <= 96 {1} else if l <= 128 {2} else if l <= 256 {3} else {4}] += 1; }
-    } }
-    println!("ml  33-64 {:.2}%  65-96 {:.2}%  97-128 {:.2}%  129-256 {:.2}%  >256 {:.2}%  (of tokens)", 100.0*mh[0] as f64/ntok as f64, 100.0*mh[1] as f64/ntok as f64, 100.0*mh[2] as f64/ntok as f64, 100.0*mh[3] as f64/ntok as f64, 100.0*mh[4] as f64/ntok as f64);
-    println!("lit 33-64 {:.2}%  65-96 {:.2}%  97-128 {:.2}%  129-256 {:.2}%  >256 {:.2}%  (of tokens)", 100.0*lh[0] as f64/ntok as f64, 100.0*lh[1] as f64/ntok as f64, 100.0*lh[2] as f64/ntok as f64, 100.0*lh[3] as f64/ntok as f64, 100.0*lh[4] as f64/ntok as f64);
-    println!("bytes beyond the first 32 of a run: {:.1}% of output, {:.2} extra copy32 per token; offsets < 256: {:.1}% of matches",
-        100.0*tail_bytes as f64/total_out as f64, tail_iters as f64/ntok as f64, 100.0*near as f64/nmatch as f64);
-    println!("offset <8: {:.1}%  8..15: {:.1}%  16..31: {:.1}%  >=32: {:.1}%   lit>32: {:.1}% of tokens  ml>32: {:.1}% of matches",
-        100.0 * offhist[0] as f64 / nmatch as f64, 100.0 * offhist[1] as f64 / nmatch as f64,
-        100.0 * offhist[2] as f64 / nmatch as f64, 100.0 * offhist[3] as f64 / nmatch as f64,
-        100.0 * long_lit as f64 / ntok as f64, 100.0 * long_ml as f64 / nmatch as f64);
+    println!("{} blocks, {} tokens ({} matches), {} MB output, {:.1} bytes/token", blocks.len(), ntok, nmatch, total_out >> 20, total_out as f64 / ntok as f64);
+    println!(
+        "escapes: lit {:.1}%  match {:.1}%  both {:.1}%  any {:.1}%  cont {:.2}% of tokens",
+        100.0 * esc_l as f64 / ntok as f64,
+        100.0 * esc_m as f64 / ntok as f64,
+        100.0 * esc_both as f64 / ntok as f64,
+        100.0 * (esc_l + esc_m - esc_both) as f64 / ntok as f64,
+        100.0 * cont as f64 / ntok as f64
+    );
+    let mut mh = [0usize; 5];
+    let mut lh = [0usize; 5];
+    for b in &blocks {
+        for i in 0..b.lit.len() {
+            let m = b.ml[i] as usize;
+            if m > 32 {
+                mh[if m <= 64 {
+                    0
+                } else if m <= 96 {
+                    1
+                } else if m <= 128 {
+                    2
+                } else if m <= 256 {
+                    3
+                } else {
+                    4
+                }] += 1;
+            }
+            let l = b.lit[i] as usize;
+            if l > 32 {
+                lh[if l <= 64 {
+                    0
+                } else if l <= 96 {
+                    1
+                } else if l <= 128 {
+                    2
+                } else if l <= 256 {
+                    3
+                } else {
+                    4
+                }] += 1;
+            }
+        }
+    }
+    println!(
+        "ml  33-64 {:.2}%  65-96 {:.2}%  97-128 {:.2}%  129-256 {:.2}%  >256 {:.2}%  (of tokens)",
+        100.0 * mh[0] as f64 / ntok as f64,
+        100.0 * mh[1] as f64 / ntok as f64,
+        100.0 * mh[2] as f64 / ntok as f64,
+        100.0 * mh[3] as f64 / ntok as f64,
+        100.0 * mh[4] as f64 / ntok as f64
+    );
+    println!(
+        "lit 33-64 {:.2}%  65-96 {:.2}%  97-128 {:.2}%  129-256 {:.2}%  >256 {:.2}%  (of tokens)",
+        100.0 * lh[0] as f64 / ntok as f64,
+        100.0 * lh[1] as f64 / ntok as f64,
+        100.0 * lh[2] as f64 / ntok as f64,
+        100.0 * lh[3] as f64 / ntok as f64,
+        100.0 * lh[4] as f64 / ntok as f64
+    );
+    println!(
+        "bytes beyond the first 32 of a run: {:.1}% of output, {:.2} extra copy32 per token; offsets < 256: {:.1}% of matches",
+        100.0 * tail_bytes as f64 / total_out as f64,
+        tail_iters as f64 / ntok as f64,
+        100.0 * near as f64 / nmatch as f64
+    );
+    println!(
+        "offset <8: {:.1}%  8..15: {:.1}%  16..31: {:.1}%  >=32: {:.1}%   lit>32: {:.1}% of tokens  ml>32: {:.1}% of matches",
+        100.0 * offhist[0] as f64 / nmatch as f64,
+        100.0 * offhist[1] as f64 / nmatch as f64,
+        100.0 * offhist[2] as f64 / nmatch as f64,
+        100.0 * offhist[3] as f64 / nmatch as f64,
+        100.0 * long_lit as f64 / ntok as f64,
+        100.0 * long_ml as f64 / nmatch as f64
+    );
 
     let mut dst = vec![0u8; total_out + 4096];
     let gb = 1024.0f64 * 1024.0 * 1024.0;
     let report = |name: &str, best: f64| {
-        println!("{:<9} {:>8.2} ms  {:>6.2} ns/token  {:>6.1} GB/s  {:>5.1}% of memcpy", name, best * 1e3,
-            best * 1e9 / ntok as f64, (total_out as f64 / gb) / best, 0.0);
+        println!(
+            "{:<9} {:>8.2} ms  {:>6.2} ns/token  {:>6.1} GB/s  {:>5.1}% of memcpy",
+            name,
+            best * 1e3,
+            best * 1e9 / ntok as f64,
+            (total_out as f64 / gb) / best,
+            0.0
+        );
     };
     let time = |f: &mut dyn FnMut()| -> f64 {
         let mut best = f64::MAX;
-        for _ in 0..5 { let t = Instant::now(); f(); let e = t.elapsed().as_secs_f64(); if e < best { best = e; } }
+        for _ in 0..5 {
+            let t = Instant::now();
+            f();
+            let e = t.elapsed().as_secs_f64();
+            if e < best {
+                best = e;
+            }
+        }
         best
     };
     let src = dst.clone();
-    let t_memcpy = time(&mut || { dst.copy_from_slice(&src); std::hint::black_box(&dst); });
-    let t_lib = time(&mut || { for (c, base) in &raw { let _ = glyd::decompress_into_raw(c, &mut dst[*base..]); } });
+    let t_memcpy = time(&mut || {
+        dst.copy_from_slice(&src);
+        std::hint::black_box(&dst);
+    });
+    let t_lib = time(&mut || {
+        for (c, base) in &raw {
+            let _ = glyd::decompress_into_raw(c, &mut dst[*base..]);
+        }
+    });
     let base = dst.as_mut_ptr();
-    let t_copy = time(&mut || { for b in &blocks { unsafe { copy_real(b, base.add(b.dst_pos)); } } });
-    let t_v1 = time(&mut || { for b in &blocks { unsafe { copy_var::<1>(b, base.add(b.dst_pos)); } } });
-    let t_v2 = time(&mut || { for b in &blocks { unsafe { copy_var::<2>(b, base.add(b.dst_pos)); } } });
-    let t_v4 = time(&mut || { for b in &blocks { unsafe { copy_var::<4>(b, base.add(b.dst_pos)); } } });
-    let t_v5 = time(&mut || { for b in &blocks { unsafe { copy_var::<5>(b, base.add(b.dst_pos)); } } });
-    let t_i1 = time(&mut || { for b in &blocks { unsafe { copy_iso::<1>(b, base.add(b.dst_pos)); } } });
-    let t_i2 = time(&mut || { for b in &blocks { unsafe { copy_iso::<2>(b, base.add(b.dst_pos)); } } });
-    let t_i3 = time(&mut || { for b in &blocks { unsafe { copy_iso::<3>(b, base.add(b.dst_pos)); } } });
-    let t_i4 = time(&mut || { for b in &blocks { unsafe { copy_iso::<4>(b, base.add(b.dst_pos)); } } });
-    let t_i6 = time(&mut || { for b in &blocks { unsafe { copy_iso::<6>(b, base.add(b.dst_pos)); } } });
-    let t_i0 = time(&mut || { for b in &blocks { unsafe { copy_iso::<0>(b, base.add(b.dst_pos)); } } });
+    let t_copy = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_real(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_v1 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_var::<1>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_v2 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_var::<2>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_v4 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_var::<4>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_v5 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_var::<5>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_i1 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_iso::<1>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_i2 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_iso::<2>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_i3 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_iso::<3>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_i4 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_iso::<4>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_i6 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_iso::<6>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_i0 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_iso::<0>(b, base.add(b.dst_pos));
+            }
+        }
+    });
     let t_dual = time(&mut || {
         let mut k = 0;
         while k + 1 < blocks.len() {
             let (a, b) = (&blocks[k], &blocks[k + 1]);
-            unsafe { copy_dual(a, base.add(a.dst_pos), b, base.add(b.dst_pos)); }
+            unsafe {
+                copy_dual(a, base.add(a.dst_pos), b, base.add(b.dst_pos));
+            }
             k += 2;
         }
-        if k < blocks.len() { let b = &blocks[k]; unsafe { copy_var::<5>(b, base.add(b.dst_pos)); } }
+        if k < blocks.len() {
+            let b = &blocks[k];
+            unsafe {
+                copy_var::<5>(b, base.add(b.dst_pos));
+            }
+        }
     });
-    let t_v3 = time(&mut || { for b in &blocks { unsafe { copy_var::<3>(b, base.add(b.dst_pos)); } } });
+    let t_v3 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_var::<3>(b, base.add(b.dst_pos));
+            }
+        }
+    });
     // correctness of the variants against the real decoder on every block
     {
         let mut refbuf = vec![0u8; total_out + 4096];
-        for (c, base) in &raw { glyd::decompress_into_raw(c, &mut refbuf[*base..]).unwrap(); }
+        for (c, base) in &raw {
+            glyd::decompress_into_raw(c, &mut refbuf[*base..]).unwrap();
+        }
         dst.copy_from_slice(&refbuf);
         for v in 1..6u8 {
             for b in &blocks {
-                let n = unsafe { match v { 1 => copy_var::<1>(b, base.add(b.dst_pos)), 2 => copy_var::<2>(b, base.add(b.dst_pos)), 4 => copy_var::<4>(b, base.add(b.dst_pos)), 5 => copy_var::<5>(b, base.add(b.dst_pos)), _ => copy_var::<3>(b, base.add(b.dst_pos)) } };
+                let n = unsafe {
+                    match v {
+                        1 => copy_var::<1>(b, base.add(b.dst_pos)),
+                        2 => copy_var::<2>(b, base.add(b.dst_pos)),
+                        4 => copy_var::<4>(b, base.add(b.dst_pos)),
+                        5 => copy_var::<5>(b, base.add(b.dst_pos)),
+                        _ => copy_var::<3>(b, base.add(b.dst_pos)),
+                    }
+                };
                 let bad = (0..n).find(|&k| dst[b.dst_pos + k] != refbuf[b.dst_pos + k]);
                 assert!(bad.is_none(), "copy_var {} mismatch at byte {:?} of {}", v, bad, n);
                 dst[b.dst_pos..b.dst_pos + b.out_len].copy_from_slice(&refbuf[b.dst_pos..b.dst_pos + b.out_len]);
             }
         }
     }
-    let t_copy32 = time(&mut || { for b in &blocks { unsafe { copy_flat::<false, true, false>(b, base.add(b.dst_pos)); } } });
-    let t_far = time(&mut || { for b in &blocks { unsafe { copy_flat::<true, true, false>(b, base.add(b.dst_pos)); } } });
-    let t_vfar = time(&mut || { for b in &blocks { unsafe { copy_flat::<true, true, true>(b, base.add(b.dst_pos)); } } });
-    let t_noload = time(&mut || { for b in &blocks { unsafe { copy_flat::<false, false, false>(b, base.add(b.dst_pos)); } } });
-    let t_chain = time(&mut || { for b in &blocks { unsafe { ptrchain(b, base.add(b.dst_pos)); } } });
+    let t_copy32 = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_flat::<false, true, false>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_far = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_flat::<true, true, false>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_vfar = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_flat::<true, true, true>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_noload = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                copy_flat::<false, false, false>(b, base.add(b.dst_pos));
+            }
+        }
+    });
+    let t_chain = time(&mut || {
+        for b in &blocks {
+            unsafe {
+                ptrchain(b, base.add(b.dst_pos));
+            }
+        }
+    });
     let _ = report;
     let pr = |name: &str, best: f64| {
-        println!("{:<9} {:>8.2} ms  {:>6.2} ns/token  {:>6.1} GB/s  {:>5.1}% of memcpy", name, best * 1e3,
-            best * 1e9 / ntok as f64, (total_out as f64 / gb) / best, 100.0 * t_memcpy / best);
+        println!(
+            "{:<9} {:>8.2} ms  {:>6.2} ns/token  {:>6.1} GB/s  {:>5.1}% of memcpy",
+            name,
+            best * 1e3,
+            best * 1e9 / ntok as f64,
+            (total_out as f64 / gb) / best,
+            100.0 * t_memcpy / best
+        );
     };
     #[cfg(target_arch = "aarch64")]
     {
-        let mut la = vec![0u16; 262144]; let mut ma = vec![0u16; 262144];
-        let t0 = time(&mut || { for b in &blocks { unsafe { pass1::<0>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t1 = time(&mut || { for b in &blocks { unsafe { pass1::<1>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t2 = time(&mut || { for b in &blocks { unsafe { pass1::<2>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t3 = time(&mut || { for b in &blocks { unsafe { pass1::<3>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t4 = time(&mut || { for b in &blocks { unsafe { pass1::<4>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t6 = time(&mut || { for b in &blocks { unsafe { pass1::<6>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t7 = time(&mut || { for b in &blocks { unsafe { pass1::<7>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t8 = time(&mut || { for b in &blocks { unsafe { pass1::<8>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t9 = time(&mut || { for b in &blocks { unsafe { pass1::<9>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t10 = time(&mut || { for b in &blocks { unsafe { pass1::<10>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
-        let t5 = time(&mut || { for b in &blocks { unsafe { pass1::<5>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
+        let mut la = vec![0u16; 262144];
+        let mut ma = vec![0u16; 262144];
+        let t0 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<0>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t1 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<1>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t2 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<2>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t3 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<3>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t4 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<4>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t6 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<6>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t7 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<7>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t8 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<8>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t9 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<9>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t10 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<10>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
+        let t5 = time(&mut || {
+            for b in &blocks {
+                unsafe {
+                    pass1::<5>(&b.tokens, &b.extras, &mut la, &mut ma);
+                }
+            }
+        });
         // verify variant 1..3 agree with predecode on the first block
         for b in &blocks {
             let n = unsafe { pass1::<9>(&b.tokens, &b.extras, &mut la, &mut ma) };
-            for i in 0..n { assert_eq!((la[i] as u32, ma[i] as u32), (b.lit[i], b.ml[i]), "pass1 v9 lane {}", i); }
+            for i in 0..n {
+                assert_eq!((la[i] as u32, ma[i] as u32), (b.lit[i], b.ml[i]), "pass1 v9 lane {}", i);
+            }
         }
         for v in 1..6u8 {
             let b = &blocks[0];
-            let n = unsafe { match v { 1 => pass1::<1>(&b.tokens, &b.extras, &mut la, &mut ma), 2 => pass1::<2>(&b.tokens, &b.extras, &mut la, &mut ma), 4 => pass1::<4>(&b.tokens, &b.extras, &mut la, &mut ma), 5 => pass1::<5>(&b.tokens, &b.extras, &mut la, &mut ma), _ => pass1::<3>(&b.tokens, &b.extras, &mut la, &mut ma) } };
-            for i in 0..n { assert_eq!((la[i] as u32, ma[i] as u32), (b.lit[i], b.ml[i]), "pass1 v{} lane {}", v, i); }
+            let n = unsafe {
+                match v {
+                    1 => pass1::<1>(&b.tokens, &b.extras, &mut la, &mut ma),
+                    2 => pass1::<2>(&b.tokens, &b.extras, &mut la, &mut ma),
+                    4 => pass1::<4>(&b.tokens, &b.extras, &mut la, &mut ma),
+                    5 => pass1::<5>(&b.tokens, &b.extras, &mut la, &mut ma),
+                    _ => pass1::<3>(&b.tokens, &b.extras, &mut la, &mut ma),
+                }
+            };
+            for i in 0..n {
+                assert_eq!((la[i] as u32, ma[i] as u32), (b.lit[i], b.ml[i]), "pass1 v{} lane {}", v, i);
+            }
         }
         pr("p1_noesc", t0);
         pr("p1_cur", t1);

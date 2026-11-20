@@ -108,7 +108,16 @@ pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Resul
         None => e,
     };
     let mut widths = [0usize; super::SLOTS];
-    for (s, w) in [(Slot::X, hid), (Slot::H, hid), (Slot::O, hid), (Slot::Mix, row.max(qkv_w)), (Slot::Xc, cd), (Slot::Core, di), (Slot::Att, c.heads * c.head_dim), (Slot::Hlast, hid)] {
+    for (s, w) in [
+        (Slot::X, hid),
+        (Slot::H, hid),
+        (Slot::O, hid),
+        (Slot::Mix, row.max(qkv_w)),
+        (Slot::Xc, cd),
+        (Slot::Core, di),
+        (Slot::Att, c.heads * c.head_dim),
+        (Slot::Hlast, hid),
+    ] {
         widths[s as usize] = w;
     }
     let d = ModelDesc {

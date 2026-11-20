@@ -7,11 +7,11 @@
 //!    WITHOUT decompressing the surrounding object.
 //! 4. AVX2 checksum validation on the wire.
 
+use glyd::compute_checksum;
+use glyd::streaming::{GlydReader, GlydWriter};
+use glyd::{compress_parallel, decompress_parallel};
 use std::io::{Cursor, Read, Write};
 use std::time::Instant;
-use glyd::streaming::{GlydWriter, GlydReader};
-use glyd::{compress_parallel, decompress_parallel};
-use glyd::compute_checksum;
 
 /// Metadata for an indexed chunk stored in a cloud object (S3 / GCS).
 #[derive(Debug, Clone)]
@@ -41,7 +41,7 @@ impl CloudObjectStore {
 
         for (i, chunk) in raw_data.chunks(chunk_size).enumerate() {
             let comp_start = storage_buffer.len() as u64;
-            
+
             // Compress chunk
             let compressed = glyd::compress(chunk);
             let checksum = compute_checksum(chunk);
@@ -60,11 +60,7 @@ impl CloudObjectStore {
             uncompressed_offset += chunk.len() as u64;
         }
 
-        Self {
-            data: storage_buffer,
-            index,
-            total_uncompressed_bytes: raw_data.len() as u64,
-        }
+        Self { data: storage_buffer, index, total_uncompressed_bytes: raw_data.len() as u64 }
     }
 
     /// Random-access seek: Read a specific byte range from the cloud object
@@ -173,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n[Scenario C] Indexed Chunk Storage & Random-Access Query");
     let cloud_store = CloudObjectStore::ingest_stream(&payload, 64 * 1024);
     println!("  Total Chunks in S3 Index: {}", cloud_store.index.len());
-    
+
     // Seek to record in the middle (byte offset 12,500,000, 2000 bytes)
     let seek_offset = 12_500_000u64;
     let seek_len = 2048usize;
@@ -182,10 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query_dur = t4.elapsed();
 
     println!("  Seeking byte range [{}..{}]:", seek_offset, seek_offset + seek_len as u64);
-    println!("  Time to fetch & decode target range: {:.2} microseconds ({:.4} ms)", 
-        query_dur.as_secs_f64() * 1_000_000.0, 
-        query_dur.as_secs_f64() * 1000.0
-    );
+    println!("  Time to fetch & decode target range: {:.2} microseconds ({:.4} ms)", query_dur.as_secs_f64() * 1_000_000.0, query_dur.as_secs_f64() * 1000.0);
     assert_eq!(&query_result[..], &payload[seek_offset as usize..(seek_offset as usize + seek_len)]);
     println!("  Random-Access Seek: PASS (Retrieved middle logs in sub-millisecond time)");
 

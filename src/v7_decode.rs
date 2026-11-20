@@ -127,7 +127,12 @@ impl<'d> DecTables<'d> {
 
     /// Tables that borrow `d`'s (a dictionary's, built once).
     pub fn borrowing(d: &'d DecTables<'static>) -> Self {
-        DecTables { lit: d.lit.get().map_or(Slot::None, Slot::Ref), ll: d.ll.get().map_or(Slot::None, Slot::Ref), ml: d.ml.get().map_or(Slot::None, Slot::Ref), off: d.off.get().map_or(Slot::None, Slot::Ref) }
+        DecTables {
+            lit: d.lit.get().map_or(Slot::None, Slot::Ref),
+            ll: d.ll.get().map_or(Slot::None, Slot::Ref),
+            ml: d.ml.get().map_or(Slot::None, Slot::Ref),
+            off: d.off.get().map_or(Slot::None, Slot::Ref),
+        }
     }
 }
 
@@ -257,7 +262,17 @@ fn tans_counts(sec: &[u8], v8: bool, n_symbols: usize, counts: &mut [u16; tans::
 #[cfg_attr(target_arch = "x86_64", inline(always))]
 /// A code stream's raw codes copied into `codes`, or, for a coded one,
 /// its table (built here unless reused) and its sub-streams.
-fn code_stream_open<'a, 'p, 'd>(sec: Section<'a>, v8: bool, compact: bool, coded: bool, reuse: bool, n_symbols: usize, n: usize, prev: &'p mut Slot<'d, tans::DecodeTable>, codes: &mut [u8]) -> Result<Option<(&'p tans::DecodeTable, [Stream<'a>; 8], bool)>> {
+fn code_stream_open<'a, 'p, 'd>(
+    sec: Section<'a>,
+    v8: bool,
+    compact: bool,
+    coded: bool,
+    reuse: bool,
+    n_symbols: usize,
+    n: usize,
+    prev: &'p mut Slot<'d, tans::DecodeTable>,
+    codes: &mut [u8],
+) -> Result<Option<(&'p tans::DecodeTable, [Stream<'a>; 8], bool)>> {
     if !coded {
         let sec = sec.own();
         if sec.len() != n {
@@ -289,6 +304,7 @@ fn code_stream_open<'a, 'p, 'd>(sec: Section<'a>, v8: bool, compact: bool, coded
 /// One field of the walk: `e` is a `*_WALK` entry, `base << 36 | mask <<
 /// 8 | nb`; the value is `base` plus the low `nb` bits of `w`. Returns
 /// the value, `w` shifted past them, and `nb`.
+#[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
 fn field(w: u64, e: u64) -> (u32, u64, u32) {
     let nb = e as u32 & 0xff;
@@ -359,7 +375,13 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, ll0: boo
     let v8 = V8;
     let compact = layout.compact;
     let (ll_symbols, ml_symbols) = if v8 { (LL_SYMBOLS, ML_SYMBOLS) } else { (LL_SYMBOLS_V7, ML_SYMBOLS_V7) };
-    let off_symbols = if compact { OFF_SYMBOLS } else if v8 { OFF_SYMBOLS_V8 } else { OFF_SYMBOLS_V7 };
+    let off_symbols = if compact {
+        OFF_SYMBOLS
+    } else if v8 {
+        OFF_SYMBOLS_V8
+    } else {
+        OFF_SYMBOLS_V7
+    };
     let ll = code_stream_open(Section::of(payload, layout, S_LL), v8, compact, coded(S_LL), reuse, ll_symbols, n, &mut prev.ll, &mut s.codes)?;
     let ml = code_stream_open(Section::of(payload, layout, S_ML), v8, compact, coded(S_ML), reuse, ml_symbols, n, &mut prev.ml, &mut s.codes[8..])?;
     let off = code_stream_open(Section::of(payload, layout, S_OFF), v8, compact, coded(S_OFF), reuse, off_symbols, n, &mut prev.off, &mut s.codes[16..])?;
@@ -378,7 +400,9 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, ll0: boo
         }
     }
     // A table built from `n_symbols` counts only ever yields those symbols.
-    debug_assert!((0..n).all(|i| (s.codes[at(i)] as usize) < ll_symbols && (s.codes[at(i) + 8] as usize) < ml_symbols && (s.codes[at(i) + 16] as usize) < off_symbols));
+    debug_assert!(
+        (0..n).all(|i| (s.codes[at(i)] as usize) < ll_symbols && (s.codes[at(i) + 8] as usize) < ml_symbols && (s.codes[at(i) + 16] as usize) < off_symbols)
+    );
     if !(coded(S_LL) && coded(S_ML) && coded(S_OFF)) {
         // The encoder drops its tables whenever any stream went raw.
         prev.ll = Slot::None;
@@ -491,36 +515,38 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, ll0: boo
     // short of the last sequence (the same bound as a batch above; the
     // margin is by the widest sequence, so it is retaken as the stream
     // is read).
-    while single {
-        let iters = (n - o).saturating_sub(1).min(safe_seqs((b0 >> 3) as usize, lasts[0]));
-        if iters == 0 {
-            break;
+    if single {
+        loop {
+            let iters = (n - o).saturating_sub(1).min(safe_seqs((b0 >> 3) as usize, lasts[0]));
+            if iters == 0 {
+                break;
+            }
+            for i in o..o + iters {
+                let j = at(i);
+                // SAFETY: as in the batch loop: at most `iters` loads, each
+                // at most SEQ_BYTES past the last, all starting at or before
+                // lasts[0].
+                let w = unsafe { std::ptr::read_unaligned((b0 >> 3) as *const u64) } >> (b0 & 7);
+                let offc = s.codes[16 + j];
+                #[cfg(not(target_arch = "x86_64"))]
+                let (ll, w, n1) = field(w, llw[s.codes[j] as usize]);
+                #[cfg(not(target_arch = "x86_64"))]
+                let (ml, w, n2) = field(w, mlw[s.codes[8 + j] as usize]);
+                #[cfg(not(target_arch = "x86_64"))]
+                let (ov, _, n3) = field(w, OFF_WALK[offc as usize]);
+                #[cfg(target_arch = "x86_64")]
+                let (ll, w, n1) = field2::<0>(w, split, s.codes[j]);
+                #[cfg(target_arch = "x86_64")]
+                let (ml, w, n2) = field2::<1>(w, split, s.codes[8 + j]);
+                #[cfg(target_arch = "x86_64")]
+                let (ov, _, n3) = field2::<2>(w, split, offc);
+                b0 += (n1 + n2 + n3) as u64;
+                s.seq[j] = ll;
+                s.seq[8 + j] = ml;
+                s.seq[16 + j] = reps.update(rep_of_symbol(offc, ll0 & (ll == 0)), ov);
+            }
+            o += iters;
         }
-        for i in o..o + iters {
-            let j = at(i);
-            // SAFETY: as in the batch loop: at most `iters` loads, each
-            // at most SEQ_BYTES past the last, all starting at or before
-            // lasts[0].
-            let w = unsafe { std::ptr::read_unaligned((b0 >> 3) as *const u64) } >> (b0 & 7);
-            let offc = s.codes[16 + j];
-            #[cfg(not(target_arch = "x86_64"))]
-            let (ll, w, n1) = field(w, llw[s.codes[j] as usize]);
-            #[cfg(not(target_arch = "x86_64"))]
-            let (ml, w, n2) = field(w, mlw[s.codes[8 + j] as usize]);
-            #[cfg(not(target_arch = "x86_64"))]
-            let (ov, _, n3) = field(w, OFF_WALK[offc as usize]);
-            #[cfg(target_arch = "x86_64")]
-            let (ll, w, n1) = field2::<0>(w, split, s.codes[j]);
-            #[cfg(target_arch = "x86_64")]
-            let (ml, w, n2) = field2::<1>(w, split, s.codes[8 + j]);
-            #[cfg(target_arch = "x86_64")]
-            let (ov, _, n3) = field2::<2>(w, split, offc);
-            b0 += (n1 + n2 + n3) as u64;
-            s.seq[j] = ll;
-            s.seq[8 + j] = ml;
-            s.seq[16 + j] = reps.update(rep_of_symbol(offc, ll0 & (ll == 0)), ov);
-        }
-        o += iters;
     }
     let rd = |k: usize, b: u64| BitReader::new_at(extra[k], (b - start(k)) as usize);
     let mut ers: [BitReader; 8] = [rd(0, b0), rd(1, b1), rd(2, b2), rd(3, b3), rd(4, b4), rd(5, b5), rd(6, b6), rd(7, b7)];
@@ -935,7 +961,21 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
 /// `buffer_start` must point into the same allocation as `dst`, at or
 /// before `dst.as_ptr()`, with every byte between them initialised: that
 /// is the match window (the previous blocks of the same chain).
-pub unsafe fn decode_block(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
+pub unsafe fn decode_block(
+    payload: &[u8],
+    v8: bool,
+    compact: bool,
+    prepadded: bool,
+    n_seq: usize,
+    n_lit: usize,
+    dst: &mut [u8],
+    buffer_start: *const u8,
+    uncompressed_len: usize,
+    prev: &mut DecTables,
+    scratch: &mut Scratch,
+    ext: Option<&[u8]>,
+    ll0: bool,
+) -> Result<usize> {
     #[cfg(target_arch = "x86_64")]
     {
         if crate::has_avx2() {
@@ -949,12 +989,40 @@ pub unsafe fn decode_block(payload: &[u8], v8: bool, compact: bool, prepadded: b
 /// copies and single-uop variable shifts (`shrx`) in the bit loops.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,bmi2")]
-unsafe fn decode_block_avx2(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
+unsafe fn decode_block_avx2(
+    payload: &[u8],
+    v8: bool,
+    compact: bool,
+    prepadded: bool,
+    n_seq: usize,
+    n_lit: usize,
+    dst: &mut [u8],
+    buffer_start: *const u8,
+    uncompressed_len: usize,
+    prev: &mut DecTables,
+    scratch: &mut Scratch,
+    ext: Option<&[u8]>,
+    ll0: bool,
+) -> Result<usize> {
     decode_block_impl(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext, ll0)
 }
 
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
+unsafe fn decode_block_impl(
+    payload: &[u8],
+    v8: bool,
+    compact: bool,
+    prepadded: bool,
+    n_seq: usize,
+    n_lit: usize,
+    dst: &mut [u8],
+    buffer_start: *const u8,
+    uncompressed_len: usize,
+    prev: &mut DecTables,
+    scratch: &mut Scratch,
+    ext: Option<&[u8]>,
+    ll0: bool,
+) -> Result<usize> {
     if uncompressed_len > dst.len() {
         return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }
@@ -983,7 +1051,20 @@ unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, prepadded: 
 /// The passes over a payload whose streams may be read `PAD` bytes past
 /// their ends.
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-unsafe fn decode_padded(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
+unsafe fn decode_padded(
+    payload: &[u8],
+    v8: bool,
+    compact: bool,
+    n_seq: usize,
+    n_lit: usize,
+    dst: &mut [u8],
+    buffer_start: *const u8,
+    uncompressed_len: usize,
+    prev: &mut DecTables,
+    scratch: &mut Scratch,
+    ext: Option<&[u8]>,
+    ll0: bool,
+) -> Result<usize> {
     let mut layout = if compact { payload_layout_compact(payload, true) } else { payload_layout(payload) }.ok_or(corrupt("v7: payload layout"))?;
     layout.v8 = v8;
     let sub = &layout.sub;
@@ -991,7 +1072,8 @@ unsafe fn decode_padded(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n
     if (sub.reuse & 1 != 0 && !coded(S_LIT)) || (sub.reuse & 2 != 0 && !(coded(S_LL) && coded(S_ML) && coded(S_OFF))) {
         return Err(corrupt("v7: table reuse on a raw stream"));
     }
-    let (lit_total, match_total) = if v8 { sequences::<true>(payload, &layout, n_seq, ll0, prev, scratch)? } else { sequences::<false>(payload, &layout, n_seq, ll0, prev, scratch)? };
+    let (lit_total, match_total) =
+        if v8 { sequences::<true>(payload, &layout, n_seq, ll0, prev, scratch)? } else { sequences::<false>(payload, &layout, n_seq, ll0, prev, scratch)? };
     if lit_total != n_lit || lit_total + match_total != uncompressed_len {
         return Err(corrupt("v7: sequence totals disagree with header"));
     }

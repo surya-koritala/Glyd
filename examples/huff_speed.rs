@@ -15,11 +15,14 @@ use glyd::huffman::*;
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
-fn pin(c: usize) { unsafe {
-    let mut s: libc::cpu_set_t = std::mem::zeroed();
-    libc::CPU_ZERO(&mut s); libc::CPU_SET(c, &mut s);
-    libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &s);
-}}
+fn pin(c: usize) {
+    unsafe {
+        let mut s: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut s);
+        libc::CPU_SET(c, &mut s);
+        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &s);
+    }
+}
 #[cfg(not(target_os = "linux"))]
 fn pin(_c: usize) {}
 
@@ -31,12 +34,25 @@ fn encode_interleaved(data: &[u8], codes: &[u16; 256], lengths: &[u8; 256], n: u
         let (w, out) = &mut writers[i % n];
         w.put(codes[b as usize], lengths[b as usize], out);
     }
-    writers.into_iter().map(|(mut w, mut out)| { w.finish(&mut out); out }).collect()
+    writers
+        .into_iter()
+        .map(|(mut w, mut out)| {
+            w.finish(&mut out);
+            out
+        })
+        .collect()
 }
 
-struct Acc<'a> { src: &'a [u8], pos: usize, bits: u64, nbits: u32 }
+struct Acc<'a> {
+    src: &'a [u8],
+    pos: usize,
+    bits: u64,
+    nbits: u32,
+}
 impl<'a> Acc<'a> {
-    fn new(src: &'a [u8]) -> Self { Acc { src, pos: 0, bits: 0, nbits: 0 } }
+    fn new(src: &'a [u8]) -> Self {
+        Acc { src, pos: 0, bits: 0, nbits: 0 }
+    }
     #[inline(always)]
     fn refill(&mut self) {
         while self.nbits <= 56 {
@@ -63,7 +79,9 @@ fn decode_interleaved(streams: &[Vec<u8>], table: &DecodeTable, n_syms: usize, o
     // Process one symbol from each stream per round; refill all first so the
     // decodes have no inter-stream dependency.
     while i + n <= n_syms {
-        for a in accs.iter_mut() { a.refill(); }
+        for a in accs.iter_mut() {
+            a.refill();
+        }
         for (s, a) in accs.iter_mut().enumerate() {
             out[i + s] = a.decode(table);
         }
@@ -83,20 +101,23 @@ fn timed(runs: usize, mut op: impl FnMut()) -> f64 {
         let t = Instant::now();
         op();
         let e = t.elapsed().as_secs_f64();
-        if e < best { best = e; }
+        if e < best {
+            best = e;
+        }
     }
     best
 }
 
 fn main() {
-    let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
-                 "reymont","samba","sao","webster","xml","x-ray"];
+    let files = ["dickens", "mozilla", "mr", "nci", "ooffice", "osdb", "reymont", "samba", "sao", "webster", "xml", "x-ray"];
     let dir = std::path::Path::new("corpus");
     // Gather the whole token stream across all blocks.
     let mut tokens: Vec<u8> = Vec::new();
     for f in &files {
         let p = dir.join(f);
-        if !p.exists() { continue; }
+        if !p.exists() {
+            continue;
+        }
         let d = std::fs::read(&p).unwrap();
         let c = glyd::compress(&d);
         let mut cur = 0usize;
@@ -111,13 +132,20 @@ fn main() {
     }
     let n = tokens.len();
     let mut hist = [0u64; 256];
-    for &b in &tokens { hist[b as usize] += 1; }
+    for &b in &tokens {
+        hist[b as usize] += 1;
+    }
     let lengths = build_lengths(&hist);
     let codes = build_codes(&lengths);
     let coded_bits: u64 = (0..256).map(|i| hist[i] * lengths[i] as u64).sum();
-    println!("token stream {} symbols, huffman {:.3} bits/sym ({} -> {} bytes, {:.1}%)",
-             n, coded_bits as f64 / n as f64, n, coded_bits / 8,
-             100.0 * (coded_bits as f64 / 8.0) / n as f64);
+    println!(
+        "token stream {} symbols, huffman {:.3} bits/sym ({} -> {} bytes, {:.1}%)",
+        n,
+        coded_bits as f64 / n as f64,
+        n,
+        coded_bits / 8,
+        100.0 * (coded_bits as f64 / 8.0) / n as f64
+    );
 
     pin(4);
     let table = DecodeTable::build(&lengths).unwrap();
@@ -132,8 +160,7 @@ fn main() {
         decode_interleaved(&streams, &table, n, &mut out);
         assert_eq!(&out[..], &tokens[..], "interleaved N={} roundtrip mismatch", nstreams);
         let t = timed(7, || decode_interleaved(&streams, &table, n, &mut out));
-        println!("{:>4}  {:>10.2}  {:>9.3}  {:>10.3}",
-                 nstreams, t * 1e3, t * 1e9 / n as f64, (n as f64 / gb) / t);
+        println!("{:>4}  {:>10.2}  {:>9.3}  {:>10.3}", nstreams, t * 1e3, t * 1e9 / n as f64, (n as f64 / gb) / t);
     }
     // For reference: the whole-corpus decode budget at the T1.4 floor is set by
     // OUTPUT bytes, not token bytes. Tokens are ~7% of output, so token decode

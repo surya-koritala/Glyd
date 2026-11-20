@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn print_usage() {
-    eprintln!(r#"Glyd: compression for cloud storage
+    eprintln!(
+        r#"Glyd: compression for cloud storage
 Usage: glyd [OPTIONS] [INPUT] [-o OUTPUT]
        glyd pack MODEL OUT | glyd verify PATH   (a model's weights for Glyd's GPU layouts:
        packed and checked on the CPU by the glyd-gpu command; glyd pack --help)
@@ -59,7 +60,8 @@ Examples:
     cat large.json | glyd -c > large.json.glyd
     cat large.json.glyd | glyd -d > large.json
     glyd -b dataset.bin
-"#);
+"#
+    );
 }
 
 fn print_version() {
@@ -81,7 +83,11 @@ fn gpu_command(args: &[String]) -> ! {
     match std::process::Command::new(&exe).args(args).status() {
         Ok(s) => std::process::exit(s.code().unwrap_or(1)),
         Err(e) => {
-            eprintln!("glyd {}: the glyd-gpu command ({}): {e}; it ships beside glyd (cargo install --git https://github.com/surya-koritala/Glyd glyd-gpu)", args[0], exe.display());
+            eprintln!(
+                "glyd {}: the glyd-gpu command ({}): {e}; it ships beside glyd (cargo install --git https://github.com/surya-koritala/Glyd glyd-gpu)",
+                args[0],
+                exe.display()
+            );
             std::process::exit(1);
         }
     }
@@ -192,7 +198,8 @@ fn gpu_tool_beside() -> bool {
 
 /// The model of `glyd run MODEL ...`: the first word that is not a flag or a flag's value.
 fn model_arg(args: &[String]) -> Option<&str> {
-    const WITH_VALUE: [&str; 12] = ["--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables", "--api-key", "--hf-token"];
+    const WITH_VALUE: [&str; 12] =
+        ["--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables", "--api-key", "--hf-token"];
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
         if a == "--" {
@@ -271,7 +278,9 @@ fn local_chat(args: &[String]) -> ! {
     let mut c = std::process::Command::new(&engine);
     // an API key or a token given as a flag goes to the engine in its environment, not on its command line (where `ps` and a log show it)
     let mut run_args = args.to_vec();
-    for (names, var, what) in [(&["--api-key", "--api_key"][..], "GLYD_API_KEY", "API key"), (&["--hf-token", "--hf_token"][..], "HF_TOKEN", "Hugging Face token")] {
+    for (names, var, what) in
+        [(&["--api-key", "--api_key"][..], "GLYD_API_KEY", "API key"), (&["--hf-token", "--hf_token"][..], "HF_TOKEN", "Hugging Face token")]
+    {
         if let Some(v) = take_secret(&mut run_args, names) {
             c.env(var, v);
             eprintln!("glyd {cmd}: the {what} goes to the engine in {var}, not on its command line (next time set {var} yourself: a shell's history keeps what you type).");
@@ -432,7 +441,13 @@ fn main() -> io::Result<()> {
     if pack {
         let files: Vec<Vec<u8>> = inputs.iter().map(std::fs::read).collect::<io::Result<_>>()?;
         let refs: Vec<&[u8]> = files.iter().map(|v| v.as_slice()).collect();
-        let level: fn(&[u8], &mut Vec<u8>) = if cold { glyd::compress_into_cold } else if ultra { glyd::compress_into_ultra } else { glyd::compress_into_max };
+        let level: fn(&[u8], &mut Vec<u8>) = if cold {
+            glyd::compress_into_cold
+        } else if ultra {
+            glyd::compress_into_ultra
+        } else {
+            glyd::compress_into_max
+        };
         let mut out = Vec::new();
         glyd::compress_pack(&refs, &mut out, level);
         return write_out(&output_path, &out);
@@ -480,13 +495,7 @@ fn main() -> io::Result<()> {
     };
 
     // Determine compress vs decompress
-    let should_compress = mode_compress.unwrap_or_else(|| {
-        if let Some(ref p) = input_path {
-            !p.ends_with(".glyd")
-        } else {
-            true
-        }
-    });
+    let should_compress = mode_compress.unwrap_or_else(|| if let Some(ref p) = input_path { !p.ends_with(".glyd") } else { true });
 
     let base = match base_path {
         Some(ref p) => Some(std::fs::read(p)?),
@@ -556,7 +565,9 @@ fn main() -> io::Result<()> {
             (false, _, _, _) => glyd::compress_into,
         };
         let stream_level: Option<(fn(&[u8], &mut Vec<u8>), usize)> = match (mc, records, cold, ultra, max, fast, turbo) {
-            (true, false, false, false, true, _, _) => Some((if long { glyd::compress_into_max_long } else { glyd::compress_into_max }, glyd::format::PARALLEL_UNIT_MAX)),
+            (true, false, false, false, true, _, _) => {
+                Some((if long { glyd::compress_into_max_long } else { glyd::compress_into_max }, glyd::format::PARALLEL_UNIT_MAX))
+            }
             (true, false, false, true, _, _, _) => Some((glyd::compress_into_ultra, glyd::format::PARALLEL_UNIT_ULTRA)),
             _ => None,
         };
@@ -725,8 +736,7 @@ fn run_benchmark(path_str: &str) {
     let par_comp_gb = (len as f64 / (1024.0 * 1024.0 * 1024.0)) / par_comp_sec;
 
     let ratio = len as f64 / comp_seq.len() as f64;
-    println!("  Compression ratio: {:.2}x ({:.2} MB -> {:.2} MB)",
-             ratio, len as f64 / (1024.0 * 1024.0), comp_seq.len() as f64 / (1024.0 * 1024.0));
+    println!("  Compression ratio: {:.2}x ({:.2} MB -> {:.2} MB)", ratio, len as f64 / (1024.0 * 1024.0), comp_seq.len() as f64 / (1024.0 * 1024.0));
     println!("  1-Core Compression:   {:>7.2} GB/s", seq_comp_gb);
     println!("  Multi-Core Compress:  {:>7.2} GB/s", par_comp_gb);
 

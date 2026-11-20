@@ -49,13 +49,23 @@ impl<'a> GlmExpert<'a> {
         };
         match (mat(up), mat(down)) {
             (Some(u), Some(d)) => GlmExpert::mixed(u, d, limit),
-            _ => err(format!("an expert's up is {} x {} at {} bits and its transposed down {} x {} at {} (two to four bits and no run scales are wanted)", up.rows, up.cols, up.bits, down.rows, down.cols, down.bits)),
+            _ => err(format!(
+                "an expert's up is {} x {} at {} bits and its transposed down {} x {} at {} (two to four bits and no run scales are wanted)",
+                up.rows, up.cols, up.bits, down.rows, down.cols, down.bits
+            )),
         }
     }
 
     /// An expert whose matrices have formats of their own (the pack names a mixed expert 'X+Y': X for the gate and the up, Y for the down).
     pub fn mixed(up: GlmMat<'a>, down: GlmMat<'a>, limit: f32) -> Result<GlmExpert<'a>> {
-        if !up.is_valid() || !down.is_valid() || up.rows != 2 * down.rows || up.cols != down.cols || down.rows % NEURON_BLOCK != 0 || !limit.is_finite() || limit <= 0.0 {
+        if !up.is_valid()
+            || !down.is_valid()
+            || up.rows != 2 * down.rows
+            || up.cols != down.cols
+            || down.rows % NEURON_BLOCK != 0
+            || !limit.is_finite()
+            || limit <= 0.0
+        {
             return err(format!(
                 "an expert's up is {} x {} ({}) and its transposed down {} x {} ({}) (not a shape this engine reads), with a clamp of {limit}",
                 up.rows,
@@ -122,7 +132,13 @@ pub fn experts_pinned(kernel: Kernel, z: Z, pairs: &[GlmPair], out: &mut [f32], 
     for (p, pair) in pairs.iter().enumerate() {
         let e = pair.expert;
         if !e.up.is_valid() || !e.down.is_valid() || e.hidden() != hidden || e.inter() != inter || e.up.rows != 2 * inter || pair.token >= tokens {
-            return err(format!("pair {p}: an expert of {} neurons and width {} and token {}, where {inter}, {hidden} and 0 to {} are wanted", e.inter(), e.hidden(), pair.token, tokens.saturating_sub(1)));
+            return err(format!(
+                "pair {p}: an expert of {} neurons and width {} and token {}, where {inter}, {hidden} and 0 to {} are wanted",
+                e.inter(),
+                e.hidden(),
+                pair.token,
+                tokens.saturating_sub(1)
+            ));
         }
         if at[pair.token] == usize::MAX {
             at[pair.token] = used.len();
@@ -177,7 +193,8 @@ pub fn experts_pinned(kernel: Kernel, z: Z, pairs: &[GlmPair], out: &mut [f32], 
     let rows = OutRows(out.as_mut_ptr(), out.len());
     // (a development build's GLYD_HOST_TRACE=1: each item's start and end on the call's clock and the thread that ran it, printed after the call)
     #[cfg(feature = "dev")]
-    let (tracing, t_call, spans) = (std::env::var("GLYD_HOST_TRACE").is_ok_and(|v| v == "1"), std::time::Instant::now(), Mutex::new(Vec::<(usize, f64, f64, u64)>::new()));
+    let (tracing, t_call, spans) =
+        (std::env::var("GLYD_HOST_TRACE").is_ok_and(|v| v == "1"), std::time::Instant::now(), Mutex::new(Vec::<(usize, f64, f64, u64)>::new()));
     let work = |item: usize| {
         #[cfg(feature = "dev")]
         let t_item = t_call.elapsed().as_secs_f64() * 1e6;
@@ -201,7 +218,14 @@ pub fn experts_pinned(kernel: Kernel, z: Z, pairs: &[GlmPair], out: &mut [f32], 
                         let [g0, g1, g2, g3] = &mut gs;
                         simd::dot_glm_multi(kernel, &e.up, &zs[..n], n0, n0 + NEURON_BLOCK, &mut [&mut g0[..], &mut g1[..], &mut g2[..], &mut g3[..]][..n]);
                         let [u0, u1, u2, u3] = &mut u;
-                        simd::dot_glm_multi(kernel, &e.up, &zs[..n], inter + n0, inter + n0 + NEURON_BLOCK, &mut [&mut u0[..], &mut u1[..], &mut u2[..], &mut u3[..]][..n]);
+                        simd::dot_glm_multi(
+                            kernel,
+                            &e.up,
+                            &zs[..n],
+                            inter + n0,
+                            inter + n0 + NEURON_BLOCK,
+                            &mut [&mut u0[..], &mut u1[..], &mut u2[..], &mut u3[..]][..n],
+                        );
                     } else {
                         let t = at[pairs[chunk[0]].token];
                         let zt = if e.up.fmt == Fmt::Tern { &zq[t * zlen..(t + 1) * zlen] } else { &zp[t * hidden..(t + 1) * hidden] };
@@ -299,7 +323,15 @@ pub fn experts_grouped(kernel: Kernel, z: Z, pairs: &[GlmPair], out: &mut [f32],
     for (p, pair) in pairs.iter().enumerate() {
         let e = pair.expert;
         if e.up.fmt == Fmt::Tern || e.down.fmt == Fmt::Tern || e.hidden() != hidden || e.inter() != inter || e.up.rows != 2 * inter || pair.token >= tokens {
-            return err(format!("pair {p}: an expert of {} neurons, width {} ({} and {}) and token {}, where {inter}, {hidden}, the pack's format and 0 to {} are wanted", e.inter(), e.hidden(), e.up.fmt.name(), e.down.fmt.name(), pair.token, tokens.saturating_sub(1)));
+            return err(format!(
+                "pair {p}: an expert of {} neurons, width {} ({} and {}) and token {}, where {inter}, {hidden}, the pack's format and 0 to {} are wanted",
+                e.inter(),
+                e.hidden(),
+                e.up.fmt.name(),
+                e.down.fmt.name(),
+                pair.token,
+                tokens.saturating_sub(1)
+            ));
         }
         if at[pair.token] == usize::MAX {
             at[pair.token] = used.len();
@@ -378,7 +410,8 @@ pub fn experts_grouped(kernel: Kernel, z: Z, pairs: &[GlmPair], out: &mut [f32],
             let e = pairs[groups[g][0]].expert;
             for batch in groups[g].chunks(2) {
                 // SAFETY: the pairs' activations were written before the group's `ready` was set (released and acquired above), and an AtomicU32 has the layout of the u32 whose bits are the f32.
-                let acts: Vec<&[f32]> = batch.iter().map(|&p| unsafe { std::slice::from_raw_parts(act.as_ptr().add(p * inter) as *const f32, inter) }).collect();
+                let acts: Vec<&[f32]> =
+                    batch.iter().map(|&p| unsafe { std::slice::from_raw_parts(act.as_ptr().add(p * inter) as *const f32, inter) }).collect();
                 let mut bufs = vec![[0f32; 128]; batch.len()];
                 {
                     let mut o: Vec<&mut [f32]> = bufs.iter_mut().map(|x| &mut x[..]).collect();
@@ -406,7 +439,10 @@ pub fn experts_grouped(kernel: Kernel, z: Z, pairs: &[GlmPair], out: &mut [f32],
 pub fn check_pack(dir: &std::path::Path, layer: usize, expert: usize) -> Result<()> {
     use crate::ffi::Error;
     use glyd_gpu::safetensors::File;
-    let (lf, tv) = (File::open(&dir.join(format!("layer-{layer:03}.safetensors"))).map_err(|e| Error(format!("layer {layer}: {e}")))?, File::open(&dir.join("testvec.safetensors")).map_err(|e| Error(format!("testvec: {e}")))?);
+    let (lf, tv) = (
+        File::open(&dir.join(format!("layer-{layer:03}.safetensors"))).map_err(|e| Error(format!("layer {layer}: {e}")))?,
+        File::open(&dir.join("testvec.safetensors")).map_err(|e| Error(format!("testvec: {e}")))?,
+    );
     let read = |f: &File, name: &str| -> Result<Vec<u8>> {
         let t = f.get(name).ok_or_else(|| Error(format!("{name}: not in the file")))?;
         f.read(t).map_err(|e| Error(format!("{name}: {e}")))
@@ -419,7 +455,8 @@ pub fn check_pack(dir: &std::path::Path, layer: usize, expert: usize) -> Result<
     let e = GlmExpert::new(view(4096, &up_codes, &up_book), view(2048, &down_codes, &down_book), 10.0)?;
     let f32s = |b: Vec<u8>| -> Vec<f32> { b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect() };
     let bf16s = |b: Vec<u8>| -> Vec<u16> { b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect() };
-    let (x_rot, gate_up, act, act_bf16, y_rot, y, signs) = (bf16s(vec("x_rot_bf16")?), f32s(vec("gate_up")?), f32s(vec("act")?), bf16s(vec("act_bf16")?), f32s(vec("y_rot")?), f32s(vec("y")?), vec("signs")?);
+    let (x_rot, gate_up, act, act_bf16, y_rot, y, signs) =
+        (bf16s(vec("x_rot_bf16")?), f32s(vec("gate_up")?), f32s(vec("act")?), bf16s(vec("act_bf16")?), f32s(vec("y_rot")?), f32s(vec("y")?), vec("signs")?);
     let rel = |got: &[f32], want: &[f32]| -> f64 {
         let (mut e2, mut n2) = (0f64, 0f64);
         got.iter().zip(want).for_each(|(&a, &b)| {
@@ -448,7 +485,12 @@ pub fn check_pack(dir: &std::path::Path, layer: usize, expert: usize) -> Result<
     }
     back.iter_mut().zip(&signs).for_each(|(v, &s)| *v *= (4096f32).powf(-0.5) * (if s as i8 > 0 { 1.0 } else { -1.0 }));
     let act_want: Vec<f32> = act_bf16.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect();
-    let rows = [("the first product (gate_up)", rel(&sums, &gate_up), 2e-4), ("the activations (act)", rel(&a, &act), 5e-4), ("the pair's row (y_rot)", rel(&out, &y_rot), 6e-3), ("the row (y)", rel(&back, &y), 6e-3)];
+    let rows = [
+        ("the first product (gate_up)", rel(&sums, &gate_up), 2e-4),
+        ("the activations (act)", rel(&a, &act), 5e-4),
+        ("the pair's row (y_rot)", rel(&out, &y_rot), 6e-3),
+        ("the row (y)", rel(&back, &y), 6e-3),
+    ];
     let mut ok = true;
     for (what, r, bound) in rows {
         println!("{} {what}: {r:.2e} of the vector's norm (bound {bound:.0e}), the {} kernel", if r < bound { "ok  " } else { "FAIL" }, kernel.name());
@@ -473,12 +515,21 @@ pub fn check_formats(dir: &std::path::Path) -> Result<()> {
     for fmt in [Fmt::Tern, Fmt::Cb2, Fmt::Cb3, Fmt::Cb4] {
         let path = dir.join(format!("fmt-{}.safetensors", fmt.name()));
         let f = File::open(&path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
-        let read = |name: &str| -> Result<Vec<u8>> { f.read(f.get(name).ok_or_else(|| Error(format!("{}: no tensor {name}", path.display())))?).map_err(|e| Error(format!("{name}: {e}"))) };
+        let read = |name: &str| -> Result<Vec<u8>> {
+            f.read(f.get(name).ok_or_else(|| Error(format!("{}: no tensor {name}", path.display())))?).map_err(|e| Error(format!("{name}: {e}")))
+        };
         let (codes, book, idx) = (read("codes")?, read("codebook")?, read("idx")?);
         let rows = idx.len() / 4096;
         let m = GlmMat { fmt, rows, cols: 4096, codes: &codes, book: &book };
         if !m.is_valid() {
-            return err(format!("{}: {} rows of {} bytes and {} bytes of tables are not the {} layout", path.display(), rows, codes.len() / rows, book.len(), fmt.name()));
+            return err(format!(
+                "{}: {} rows of {} bytes and {} bytes of tables are not the {} layout",
+                path.display(),
+                rows,
+                codes.len() / rows,
+                book.len(),
+                fmt.name()
+            ));
         }
         let k = fmt.entries();
         let weight = |row: usize, c: usize| -> f64 {
@@ -632,7 +683,11 @@ mod tests {
             let mats: Vec<(Mat, Mat)> = (0..3).map(|_| (matrix(fu, 2 * inter, hidden, 0.7, &mut r), matrix(fd, inter, hidden, 0.5, &mut r))).collect();
             let es: Vec<GlmExpert> = mats.iter().map(|(u, d)| GlmExpert::mixed(u.view(), d.view(), 10.0).unwrap()).collect();
             let z: Vec<f32> = (0..9 * hidden).map(|_| r.f(-2.0, 2.0)).collect();
-            let pairs: Vec<GlmPair> = es.iter().enumerate().flat_map(|(i, e)| (0..1 + 3 * i).map(move |t| GlmPair { expert: e, token: (t * 2 + i) % 9, weight: 0.25 + t as f32 })).collect();
+            let pairs: Vec<GlmPair> = es
+                .iter()
+                .enumerate()
+                .flat_map(|(i, e)| (0..1 + 3 * i).map(move |t| GlmPair { expert: e, token: (t * 2 + i) % 9, weight: 0.25 + t as f32 }))
+                .collect();
             let mut want = vec![0f32; pairs.len() * hidden];
             experts_pinned(Kernel::best(), Z::F32(&z), &pairs, &mut want, 1, false).unwrap();
             for threads in [1usize, 4] {
@@ -679,7 +734,11 @@ mod tests {
                 for threads in [1, 3, 8] {
                     let mut got = vec![0f32; want.len()];
                     experts_pinned(kernel, Z::F32(&z), &pairs, &mut got, threads, false).unwrap();
-                    assert!(got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()), "{fu:?}+{fd:?}: the {} kernel on {threads} threads is not the scalar kernel's bits", kernel.name());
+                    assert!(
+                        got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()),
+                        "{fu:?}+{fd:?}: the {} kernel on {threads} threads is not the scalar kernel's bits",
+                        kernel.name()
+                    );
                 }
             }
         }
@@ -690,7 +749,10 @@ mod tests {
     fn a_call_of_experts_of_different_formats() {
         let mut r = Rng(77);
         let (hidden, inter) = (256usize, 64usize);
-        let ms: Vec<(Mat, Mat)> = [(Fmt::Cb2, Fmt::Cb2), (Fmt::Tern, Fmt::Cb3), (Fmt::Cb4, Fmt::Tern)].into_iter().map(|(a, b)| (matrix(a, 2 * inter, hidden, 0.7, &mut r), matrix(b, inter, hidden, 0.5, &mut r))).collect();
+        let ms: Vec<(Mat, Mat)> = [(Fmt::Cb2, Fmt::Cb2), (Fmt::Tern, Fmt::Cb3), (Fmt::Cb4, Fmt::Tern)]
+            .into_iter()
+            .map(|(a, b)| (matrix(a, 2 * inter, hidden, 0.7, &mut r), matrix(b, inter, hidden, 0.5, &mut r)))
+            .collect();
         let es: Vec<GlmExpert> = ms.iter().map(|(u, d)| GlmExpert::mixed(u.view(), d.view(), 10.0).unwrap()).collect();
         let z: Vec<f32> = (0..hidden).map(|_| r.f(-2.0, 2.0)).collect();
         let pairs: Vec<GlmPair> = es.iter().enumerate().map(|(i, e)| GlmPair { expert: e, token: 0, weight: 1.0 + i as f32 }).collect();
@@ -747,7 +809,11 @@ mod tests {
                 for kernel in Kernel::ALL.into_iter().filter(|k| k.runs_here()) {
                     let mut got = [0f32; 256];
                     simd::down_glm(kernel, &m.view(), &act, o0, &mut got);
-                    assert!(got.iter().zip(&want).take(slice.min(4096 - o0)).all(|(a, b)| a.to_bits() == b.to_bits()), "{fmt:?} outputs {o0}: the {} kernel", kernel.name());
+                    assert!(
+                        got.iter().zip(&want).take(slice.min(4096 - o0)).all(|(a, b)| a.to_bits() == b.to_bits()),
+                        "{fmt:?} outputs {o0}: the {} kernel",
+                        kernel.name()
+                    );
                 }
             }
         }
@@ -854,7 +920,12 @@ mod tq_tests {
                 (codes, book)
             };
             let ((uc, ub), (dc, db)) = (mat(2 * inter), mat(inter));
-            let e = GlmExpert::mixed(GlmMat { fmt, rows: 2 * inter, cols: hidden, codes: &uc, book: &ub }, GlmMat { fmt, rows: inter, cols: hidden, codes: &dc, book: &db }, f32::MAX).unwrap();
+            let e = GlmExpert::mixed(
+                GlmMat { fmt, rows: 2 * inter, cols: hidden, codes: &uc, book: &ub },
+                GlmMat { fmt, rows: inter, cols: hidden, codes: &dc, book: &db },
+                f32::MAX,
+            )
+            .unwrap();
             let z: Vec<f32> = (0..3 * hidden).map(|_| (next() % 2001) as f32 / 500.0 - 2.0).collect();
             let weights = [0.5f32, 0.25, 0.125];
             for kernel in Kernel::ALL.into_iter().filter(|k| k.runs_here()) {

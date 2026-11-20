@@ -70,9 +70,14 @@ struct Prices {
 /// without that, a block parsed on prices from a sparse block gets
 /// sparser (an unused code costs log2(total) bits) and never recovers.
 /// Weight 2 measured 0.13% over 1 on Silesia, 4 the same as 2, 1/4 -0.5%.
-const PRIOR_LL: [u32; LL_SYMBOLS] = [1863, 1245, 423, 186, 91, 84, 58, 26, 25, 24, 16, 7, 3, 6, 14, 9, 4, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-const PRIOR_ML: [u32; ML_SYMBOLS] = [339, 204, 630, 279, 409, 379, 123, 231, 200, 169, 52, 137, 198, 24, 32, 54, 28, 17, 64, 20, 40, 10, 24, 28, 24, 12, 8, 61, 9, 7, 4, 18, 9, 28, 9, 9, 37, 12, 33, 55, 21, 11, 11, 13, 11, 2, 1, 1, 1, 1, 1, 1, 1, 1];
-const PRIOR_OFF: [u32; OFF_SYMBOLS] = [554, 178, 82, 10, 2, 4, 19, 76, 89, 102, 107, 106, 108, 109, 132, 139, 158, 184, 213, 238, 267, 308, 305, 263, 204, 137, 40, 40, 40, 40];
+const PRIOR_LL: [u32; LL_SYMBOLS] =
+    [1863, 1245, 423, 186, 91, 84, 58, 26, 25, 24, 16, 7, 3, 6, 14, 9, 4, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+const PRIOR_ML: [u32; ML_SYMBOLS] = [
+    339, 204, 630, 279, 409, 379, 123, 231, 200, 169, 52, 137, 198, 24, 32, 54, 28, 17, 64, 20, 40, 10, 24, 28, 24, 12, 8, 61, 9, 7, 4, 18, 9, 28, 9, 9, 37,
+    12, 33, 55, 21, 11, 11, 13, 11, 2, 1, 1, 1, 1, 1, 1, 1, 1,
+];
+const PRIOR_OFF: [u32; OFF_SYMBOLS] =
+    [554, 178, 82, 10, 2, 4, 19, 76, 89, 102, 107, 106, 108, 109, 132, 139, 158, 184, 213, 238, 267, 308, 305, 263, 204, 137, 40, 40, 40, 40];
 
 impl Prices {
     /// Prices from the prior plus `s` (the recent blocks' counts), with
@@ -523,7 +528,15 @@ impl UltraState {
 /// Parse `input[block_start..block_start + block_len]` into `seqs` (the
 /// last one literal-only) and `literals`, with `input[..block_start]` as
 /// the window. `reps` is the block's initial repeat-offset state.
-pub fn find_sequences_ultra(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState, reps: [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
+pub fn find_sequences_ultra(
+    input: &[u8],
+    block_start: usize,
+    block_len: usize,
+    st: &mut UltraState,
+    reps: [u32; 3],
+    seqs: &mut Vec<Sequence>,
+    literals: &mut Vec<u8>,
+) {
     find_sequences_ultra_far(input, block_start, block_len, st, reps, &NO_FAR, seqs, literals)
 }
 
@@ -531,7 +544,16 @@ static NO_FAR: crate::ldm::Matches = crate::ldm::Matches { list: Vec::new() };
 
 /// `find_sequences_ultra` with the input's far matches (`ldm::Matches`)
 /// on offer as candidates.
-pub fn find_sequences_ultra_far(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState, reps: [u32; 3], far: &crate::ldm::Matches, seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
+pub fn find_sequences_ultra_far(
+    input: &[u8],
+    block_start: usize,
+    block_len: usize,
+    st: &mut UltraState,
+    reps: [u32; 3],
+    far: &crate::ldm::Matches,
+    seqs: &mut Vec<Sequence>,
+    literals: &mut Vec<u8>,
+) {
     assert!(block_len <= MAX_BLOCK_SIZE && block_start + block_len <= input.len());
     let block = &input[block_start..block_start + block_len];
     match st.stats.take() {
@@ -557,7 +579,18 @@ pub fn find_sequences_ultra_far(input: &[u8], block_start: usize, block_len: usi
     }
 }
 
-fn parse(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState, reps: [u32; 3], prices: &Prices, log: bool, far: &crate::ldm::Matches, seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
+fn parse(
+    input: &[u8],
+    block_start: usize,
+    block_len: usize,
+    st: &mut UltraState,
+    reps: [u32; 3],
+    prices: &Prices,
+    log: bool,
+    far: &crate::ldm::Matches,
+    seqs: &mut Vec<Sequence>,
+    literals: &mut Vec<u8>,
+) {
     let block_end = block_start + block_len;
     let mut far_cursor = far.cursor(block_start);
     st.opt.clear();
@@ -572,7 +605,8 @@ fn parse(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState
         // One more literal.
         {
             let litlen = if n.mlen == 0 { n.litlen + 1 } else { 1 };
-            let price = (n.price as i64 + prices.lit[input[block_start + cur] as usize] as i64 + prices.ll(litlen) as i64 - prices.ll(litlen - 1) as i64).max(0) as u32;
+            let price =
+                (n.price as i64 + prices.lit[input[block_start + cur] as usize] as i64 + prices.ll(litlen) as i64 - prices.ll(litlen - 1) as i64).max(0) as u32;
             if price < st.opt[cur + 1].price {
                 st.opt[cur + 1] = Node { price, mlen: 0, off: 0, litlen, reps: n.reps };
             }

@@ -9,13 +9,13 @@
 //! directory has them so or the checkpoint is packed here (`pack_layout`): the layer then runs the sparse product (src/moe_rows.rs); a directory saved with them in the block layout runs the library's dense
 //! one. The rest of the model is at the same level where the directory is a glyd-v7 one, else in the engine's layout.
 
+use crate::cpu_experts::rows_of_experts;
 use crate::ffi::{err, Error, Result, Words};
 use crate::model35::Mat;
 use crate::model_nh::{MoeBlock, NhHost};
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
 use crate::moe_rows::{Down, RowStack, RowsJoined};
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
-use crate::cpu_experts::rows_of_experts;
 use crate::offload::{places_for, CachePlan, Call, CpuRows, ExpertStore, HostHalf, PackIn, Stage};
 use crate::weights::{ordered, pack_item_map, read_pack, upload_bytes, upload_packed, v7_manifest, Item, Layout, Packed};
 use glyd_gpu::json::Value;
@@ -27,7 +27,14 @@ use std::rc::Rc;
 /// divided by their sum where the config says so, times `routed_scaling_factor`), experts of the latent width with relu squared and no gate.
 pub fn moe_cfg(c: &ConfigNemotronH) -> MoeCfg {
     let m = &c.moe;
-    MoeCfg { experts: m.experts, router_hidden: c.hidden, hidden: m.width(c.hidden), inter: m.inter, router: Router { renorm: m.norm_topk, ..Router::sigmoid(m.top_k, m.scale) }, act: Act::Relu2 }
+    MoeCfg {
+        experts: m.experts,
+        router_hidden: c.hidden,
+        hidden: m.width(c.hidden),
+        inter: m.inter,
+        router: Router { renorm: m.norm_topk, ..Router::sigmoid(m.top_k, m.scale) },
+        act: Act::Relu2,
+    }
 }
 
 /// A router bias as the kernels read it, fp32 bytes: from an fp32 tensor as it is, from a bf16 one (a glyd-v7 directory's) widened exactly.
@@ -186,7 +193,10 @@ fn fc_bytes(fc: &Option<(Mat, Mat)>) -> usize {
 }
 
 fn fc_shapes(fc: &Option<(Mat, Mat)>) -> Vec<(i64, i64, bool)> {
-    fc.iter().flat_map(|(a, b)| [a, b]).filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None }).collect()
+    fc.iter()
+        .flat_map(|(a, b)| [a, b])
+        .filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None })
+        .collect()
 }
 
 impl NhMoe {
@@ -195,7 +205,9 @@ impl NhMoe {
         let h = read_layer(l, c, ck, level)?;
         let (up, down) = match h.experts {
             Experts::Block(up, down) => (ExpertStack::upload(&up)?, down.upload()?),
-            Experts::Lossless(up, down) => (ExpertStack::lossless(upload_packed(up)?, c.moe.experts)?, Down::Block(ExpertStack::lossless(upload_packed(down)?, c.moe.experts)?)),
+            Experts::Lossless(up, down) => {
+                (ExpertStack::lossless(upload_packed(up)?, c.moe.experts)?, Down::Block(ExpertStack::lossless(upload_packed(down)?, c.moe.experts)?))
+            }
         };
         let w = MoeWeights { router: upload_bytes(&h.router)?, bias: Some(upload_bytes(&h.bias)?), escale: None, up, down };
         let shared = Shared { inter: c.moe.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
@@ -274,19 +286,30 @@ impl NhMoeCached {
     /// Layer `l` of the model `c` from the checkpoint `ck` at `level`: its experts into `store` (pinned host memory), places for `slots` of them on the GPU, the rest of its matrices copied to the GPU as `NhMoe::load` does.
     pub fn load(l: usize, c: &ConfigNemotronH, ck: &Checkpoint, level: Layout, store: &Rc<ExpertStore>, slots: usize) -> Result<NhMoeCached> {
         let h = read_layer(l, c, ck, level)?;
-        let Experts::Block(h_up, h_down) = &h.experts else { return err("the expert cache's places are in block layouts: a lossless level's experts are all on the GPU") };
+        let Experts::Block(h_up, h_down) = &h.experts else {
+            return err("the expert cache's places are in block layouts: a lossless level's experts are all on the GPU");
+        };
         let cfg = moe_cfg(c);
         let index = c.kinds[..l].iter().filter(|&&k| k == NhKind::Moe).count();
         let up = ExpertStack::pooled(h_up.tag, h_up.tiers, h_up.experts, slots, h_up.rows, h_up.cols)?;
         let down = h_down.pooled(slots)?;
         // (each matrix of the layer's experts: every expert's codes and scales end to end, and the places made for them)
         let (dev, stride) = down.places();
-        let packs = [PackIn { bytes: [&h_up.data, &h_up.scales], stride: [up.data_stride, up.scale_stride], dev: up.buffers() }, PackIn { bytes: h_down.bytes(), stride, dev }];
+        let packs = [
+            PackIn { bytes: [&h_up.data, &h_up.scales], stride: [up.data_stride, up.scale_stride], dev: up.buffers() },
+            PackIn { bytes: h_down.bytes(), stride, dev },
+        ];
         // the host's half where the store will use it and the second matrices are in the row layout (the host reads rows alone): the first matrices placed in rows too
         let cpu = match (h_down, store.wants_cpu()) {
             (DownHost::Rows(j), true) => {
                 let (data, scales) = rows_of_experts(h_up.tag, h_up.experts, h_up.rows, h_up.cols, &h_up.data, &h_up.scales, 0)?;
-                Some(HostHalf::Rows(CpuRows { bits: rows_bits(j.tag).ok_or_else(|| Error(format!("a second matrix of tag {}: not a row layout", j.tag)))?, inter: h_up.rows, hidden: h_up.cols, data, scales }))
+                Some(HostHalf::Rows(CpuRows {
+                    bits: rows_bits(j.tag).ok_or_else(|| Error(format!("a second matrix of tag {}: not a row layout", j.tag)))?,
+                    inter: h_up.rows,
+                    hidden: h_up.cols,
+                    data,
+                    scales,
+                }))
             }
             _ => None,
         };
@@ -299,7 +322,11 @@ impl NhMoeCached {
 
 /// The factory `EngineNh::new` and the dynamic engine take for a model whose experts do not all fit in the GPU's memory: each mixture-of-experts layer is an `NhMoeCached` with places for `slots` experts, all of them sharing `store` (whose
 /// counts and hints the caller keeps); a layer of no more experts than places is an `NhMoe`.
-pub fn factory_cached(level: Layout, slots: usize, store: &Rc<ExpertStore>) -> impl Fn(usize, &ConfigNemotronH, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> {
+pub fn factory_cached(
+    level: Layout,
+    slots: usize,
+    store: &Rc<ExpertStore>,
+) -> impl Fn(usize, &ConfigNemotronH, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> {
     let (store, common) = (store.clone(), Rc::new(crate::moe_hb::HbShared::default()));
     move |l, c, ck, _| {
         if level == Layout::Hummingbird {
@@ -340,7 +367,14 @@ pub fn expert_bytes(c: &ConfigNemotronH, level: Layout) -> Result<u64> {
 /// fewer than `least` fit.
 pub fn cache_plan(c: &ConfigNemotronH, level: Layout, budget: u64, least: usize) -> Result<Option<CachePlan>> {
     let (layers, experts, expert_bytes) = (c.layers_of(NhKind::Moe), c.moe.experts, expert_bytes(c, level)?);
-    Ok(places_for(budget, layers, expert_bytes, experts, least).map(|slots| CachePlan { layers, experts, slots, expert_bytes, in_place: level == Layout::Hummingbird, ram: (layers * experts) as u64 * expert_bytes }))
+    Ok(places_for(budget, layers, expert_bytes, experts, least).map(|slots| CachePlan {
+        layers,
+        experts,
+        slots,
+        expert_bytes,
+        in_place: level == Layout::Hummingbird,
+        ram: (layers * experts) as u64 * expert_bytes,
+    }))
 }
 
 impl MoeBlock for NhMoeCached {
@@ -404,8 +438,8 @@ mod tests {
     }
 
     use super::*;
-    use crate::moe::expert_strides;
     use crate::model_nh::{NH_N, NH_P};
+    use crate::moe::expert_strides;
     use crate::nemotron::tests::{bf16_bytes, checkpoint};
     use crate::pack::nemotron_plan;
     use crate::qwen35::Pack35;
@@ -454,7 +488,10 @@ mod tests {
     #[test]
     fn an_expert_is_a_few_megabytes_and_a_budget_buys_places() {
         let c = crate::nemotron::tests::parse();
-        assert_eq!((expert_bytes(&c, Layout::Int5).unwrap(), expert_bytes(&c, Layout::Int6).unwrap(), expert_bytes(&c, Layout::Int4).unwrap()), (3_784_704, 4_472_832, 3_096_576));
+        assert_eq!(
+            (expert_bytes(&c, Layout::Int5).unwrap(), expert_bytes(&c, Layout::Int6).unwrap(), expert_bytes(&c, Layout::Int4).unwrap()),
+            (3_784_704, 4_472_832, 3_096_576)
+        );
         assert!(expert_bytes(&c, Layout::Twelve).is_err() && expert_bytes(&c, Layout::Int3).is_err());
         let gib = |g: f64| (g * (1u64 << 30) as f64) as u64;
         for (cap, places) in [(14.95, 106), (22.99, 163), (34.0, 241)] {
@@ -482,14 +519,24 @@ mod tests {
     #[test]
     fn the_layers_matrices_in_the_order_they_are_read() {
         let c = crate::nemotron::tests::parse();
-        let keys: Vec<(String, usize, usize)> = c.layer_packs(1).into_iter().map(|p| (p.key.rsplit("mixer.").next().unwrap().to_string(), p.rows(), p.cols)).collect();
+        let keys: Vec<(String, usize, usize)> =
+            c.layer_packs(1).into_iter().map(|p| (p.key.rsplit("mixer.").next().unwrap().to_string(), p.rows(), p.cols)).collect();
         assert_eq!(
             keys,
-            [("fc1_latent_proj".to_string(), 1024, 4096), ("fc2_latent_proj".to_string(), 4096, 1024), ("shared_experts.up_proj".to_string(), 5376, 4096), ("shared_experts.down_proj".to_string(), 4096, 5376)]
+            [
+                ("fc1_latent_proj".to_string(), 1024, 4096),
+                ("fc2_latent_proj".to_string(), 4096, 1024),
+                ("shared_experts.up_proj".to_string(), 5376, 4096),
+                ("shared_experts.down_proj".to_string(), 4096, 5376)
+            ]
         );
         let experts = c.expert_packs(1);
         assert_eq!(experts.len(), 1024);
-        assert!(experts[0].key.ends_with("experts.0.up_proj") && experts[1].key.ends_with("experts.0.down_proj") && experts[1023].key.ends_with("experts.511.down_proj"));
+        assert!(
+            experts[0].key.ends_with("experts.0.up_proj")
+                && experts[1].key.ends_with("experts.0.down_proj")
+                && experts[1023].key.ends_with("experts.511.down_proj")
+        );
         assert_eq!((experts[0].rows(), experts[0].cols, experts[1].rows(), experts[1].cols), (2688, 1024, 1024, 2688));
     }
 
@@ -499,8 +546,19 @@ mod tests {
     fn the_random_tiny_model_is_one_the_engine_takes() {
         let c = ConfigNemotronH::parse(include_str!("../tests/fixtures/nemotron_h_moetoy_config.json"), "moetoy", None).unwrap();
         assert_eq!(c.kinds, [NhKind::Mamba, NhKind::Moe, NhKind::Attention, NhKind::Moe, NhKind::Mamba, NhKind::Moe]);
-        assert!(c.m_head_dim == NH_P && c.m_state == NH_N && c.conv_kernel == 4 && c.head_dim == 128 && c.inner() / c.m_groups <= 1024 && c.heads / c.kv_heads <= 16 && c.hidden <= 8192);
-        assert_eq!((c.moe.experts, c.moe.top_k, c.moe.latent, c.moe.inter, c.moe.shared_inter, c.moe.scale, c.moe.norm_topk), (16, 4, 128, 128, 256, 5.0, true));
+        assert!(
+            c.m_head_dim == NH_P
+                && c.m_state == NH_N
+                && c.conv_kernel == 4
+                && c.head_dim == 128
+                && c.inner() / c.m_groups <= 1024
+                && c.heads / c.kv_heads <= 16
+                && c.hidden <= 8192
+        );
+        assert_eq!(
+            (c.moe.experts, c.moe.top_k, c.moe.latent, c.moe.inter, c.moe.shared_inter, c.moe.scale, c.moe.norm_topk),
+            (16, 4, 128, 128, 256, 5.0, true)
+        );
         moe_cfg(&c).check().unwrap();
         for l in 0..c.layers {
             assert!(c.layer_packs(l).iter().all(Pack35::packable), "layer {l}'s matrices are packed");
@@ -527,10 +585,22 @@ mod tests {
         };
         type Pack = fn(&[u16], usize, usize) -> Option<Tiered>;
         type Unpack = fn(&Tiered, &mut [u16]) -> bool;
-        for (kmax, pack, unpack, power) in [(31i32, pack_int6 as Pack, unpack_int6 as Unpack, -8), (15, pack_int5 as Pack, unpack_int5 as Unpack, -7), (7, pack_int4 as Pack, unpack_int4 as Unpack, -6)] {
+        for (kmax, pack, unpack, power) in [
+            (31i32, pack_int6 as Pack, unpack_int6 as Unpack, -8),
+            (15, pack_int5 as Pack, unpack_int5 as Unpack, -7),
+            (7, pack_int4 as Pack, unpack_int4 as Unpack, -6),
+        ] {
             let w: Vec<u16> = (0..rows * cols)
                 .map(|i| {
-                    let k = if i % 32 == 0 { if next() & 1 == 0 { kmax } else { -kmax } } else { (next() % (2 * kmax as u64 + 1)) as i32 - kmax };
+                    let k = if i % 32 == 0 {
+                        if next() & 1 == 0 {
+                            kmax
+                        } else {
+                            -kmax
+                        }
+                    } else {
+                        (next() % (2 * kmax as u64 + 1)) as i32 - kmax
+                    };
                     let v = k as f32 * 2f32.powi(power);
                     (v.to_bits() >> 16) as u16 // (a code of at most 5 bits times a power of two: bf16 holds it)
                 })
@@ -576,19 +646,32 @@ mod tests {
         let stacked = |name: &dyn Fn(usize) -> String| -> Vec<u16> { (0..e).flat_map(|i| w[&name(i)].clone()).collect() };
         let (up_w, down_w) = (stacked(&|i| format!("{p}.experts.{i}.up_proj.weight")), stacked(&|i| format!("{p}.experts.{i}.down_proj.weight")));
         type Pack = fn(&[u16], usize, usize) -> Option<Tiered>;
-        for (level, pack, dense_pack, tags) in [(Layout::Int6, pack_int6 as Pack, pack_int6 as Pack, (INT6_TAG, INT6_TAG)), (Layout::Int5, pack_int5 as Pack, pack_int5 as Pack, (INT5_TAG, INT5_TAG)), (Layout::Int4, pack_int4 as Pack, pack_int6 as Pack, (INT4_TAG, INT6_TAG))] {
+        for (level, pack, dense_pack, tags) in [
+            (Layout::Int6, pack_int6 as Pack, pack_int6 as Pack, (INT6_TAG, INT6_TAG)),
+            (Layout::Int5, pack_int5 as Pack, pack_int5 as Pack, (INT5_TAG, INT5_TAG)),
+            (Layout::Int4, pack_int4 as Pack, pack_int6 as Pack, (INT4_TAG, INT6_TAG)),
+        ] {
             let h = read_layer(0, &c, &ck, level).unwrap();
             // the experts: the stacked pack of the packer, the codes and the scales; the second matrices as the row layout of each one's transpose
             let bits = level.row_of().unwrap().row_bits().unwrap();
             let up = pack(&up_w, e * inter, lat).unwrap();
-            let rows_packs: Vec<Tiered> = (0..e).map(|i| pack_rows(bits, &transpose(&down_w[i * lat * inter..(i + 1) * lat * inter], lat, inter), inter, lat).unwrap()).collect();
+            let rows_packs: Vec<Tiered> =
+                (0..e).map(|i| pack_rows(bits, &transpose(&down_w[i * lat * inter..(i + 1) * lat * inter], lat, inter), inter, lat).unwrap()).collect();
             let want_down = RowsJoined::of(&rows_packs.iter().collect::<Vec<_>>()).unwrap();
             assert_eq!((h.block().0.tag, tag_of(&h.fc.as_ref().unwrap().0), tag_of(&h.s_up)), (tags.0, tags.1, tags.1), "{level:?}: the layouts");
-            assert!(h.block().0.data == up.data && h.block().0.scales == up.blocks && (h.block().0.experts, h.block().0.rows, h.block().0.cols) == (e, inter, lat), "{level:?}: the first matrices");
+            assert!(
+                h.block().0.data == up.data && h.block().0.scales == up.blocks && (h.block().0.experts, h.block().0.rows, h.block().0.cols) == (e, inter, lat),
+                "{level:?}: the first matrices"
+            );
             assert!(matches!(h.block().1, DownHost::Rows(_)), "{level:?}: the second matrices are in the row layout");
             assert_eq!(down_parts(h.block().1), (want_down.tag, e, inter, lat, &want_down.data[..], &want_down.scales[..]), "{level:?}: the second matrices");
             // the dense matrices and the router
-            for (got, name, rows, cols) in [(&h.fc.as_ref().unwrap().0, "fc1_latent_proj", lat, hid), (&h.fc.as_ref().unwrap().1, "fc2_latent_proj", hid, lat), (&h.s_up, "shared_experts.up_proj", sh, hid), (&h.s_down, "shared_experts.down_proj", hid, sh)] {
+            for (got, name, rows, cols) in [
+                (&h.fc.as_ref().unwrap().0, "fc1_latent_proj", lat, hid),
+                (&h.fc.as_ref().unwrap().1, "fc2_latent_proj", hid, lat),
+                (&h.s_up, "shared_experts.up_proj", sh, hid),
+                (&h.s_down, "shared_experts.down_proj", hid, sh),
+            ] {
                 let want = dense_pack(&w[&format!("{p}.{name}.weight")], rows, cols).unwrap();
                 assert!(got.data == want.data && got.b1 == want.blocks && (got.rows, got.cols) == (rows, cols), "{level:?}: {name}");
             }
@@ -602,8 +685,16 @@ mod tests {
             let saved = Checkpoint::open(&out).unwrap();
             assert!(saved.get(&format!("{p}.experts.7.down_proj.glyd_data")).is_some() && saved.get(&format!("{p}.experts.7.down_proj.weight")).is_none());
             let s = read_layer(0, &c, &saved, level).unwrap();
-            assert!(s.block().0.data == h.block().0.data && s.block().0.scales == h.block().0.scales && down_parts(s.block().1) == down_parts(h.block().1), "{level:?}: the experts of the saved directory");
-            for (a, b) in [(&s.fc.as_ref().unwrap().0, &h.fc.as_ref().unwrap().0), (&s.fc.as_ref().unwrap().1, &h.fc.as_ref().unwrap().1), (&s.s_up, &h.s_up), (&s.s_down, &h.s_down)] {
+            assert!(
+                s.block().0.data == h.block().0.data && s.block().0.scales == h.block().0.scales && down_parts(s.block().1) == down_parts(h.block().1),
+                "{level:?}: the experts of the saved directory"
+            );
+            for (a, b) in [
+                (&s.fc.as_ref().unwrap().0, &h.fc.as_ref().unwrap().0),
+                (&s.fc.as_ref().unwrap().1, &h.fc.as_ref().unwrap().1),
+                (&s.s_up, &h.s_up),
+                (&s.s_down, &h.s_down),
+            ] {
                 assert!(a.data == b.data && a.b1 == b.b1 && (a.rows, a.cols) == (b.rows, b.cols), "{level:?}: a dense matrix of the saved directory");
             }
             assert_eq!((&s.router, &s.bias), (&h.router, &h.bias));
@@ -617,7 +708,11 @@ mod tests {
             let b = read_layer(0, &c, &Checkpoint::open(&before).unwrap(), level).unwrap();
             let down = pack(&down_w, e * lat, inter).unwrap();
             assert!(matches!(b.block().1, DownHost::Block(_)), "{level:?}: the second matrices of a directory of before are in the block layout");
-            assert_eq!(down_parts(b.block().1), (tags.0, e, lat, inter, &down.data[..], &down.blocks[..]), "{level:?}: the second matrices of a directory of before");
+            assert_eq!(
+                down_parts(b.block().1),
+                (tags.0, e, lat, inter, &down.data[..], &down.blocks[..]),
+                "{level:?}: the second matrices of a directory of before"
+            );
             assert!(b.block().0.data == h.block().0.data, "{level:?}: and the first");
             // a directory in the other level, and the levels there are none of
             let other = if level == Layout::Int6 { Layout::Int5 } else { Layout::Int6 };

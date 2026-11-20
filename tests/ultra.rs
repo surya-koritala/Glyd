@@ -196,10 +196,17 @@ fn streamed_max_matches_buffered() {
     }
     for long in [false, true] {
         let mut whole = Vec::new();
-        if long { glyd::compress_into_max_long(&data, &mut whole) } else { glyd::compress_into_max(&data, &mut whole) }
+        if long {
+            glyd::compress_into_max_long(&data, &mut whole)
+        } else {
+            glyd::compress_into_max(&data, &mut whole)
+        }
         let mut pieces = 0;
         let mut streamed = Vec::new();
-        glyd::compress_max_to(&data, long, |chunk| { pieces += 1; streamed.extend_from_slice(&chunk); });
+        glyd::compress_max_to(&data, long, |chunk| {
+            pieces += 1;
+            streamed.extend_from_slice(&chunk);
+        });
         assert!(streamed == whole, "long={long}: streamed bytes differ");
         assert!(pieces >= 3, "long={long}: {pieces} pieces for {} bytes", whole.len());
         assert!(glyd::decompress(&streamed).unwrap() == data);

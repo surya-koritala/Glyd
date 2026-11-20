@@ -129,7 +129,9 @@ impl Tq {
     /// n rows back from their streams and scales: the rotated values to `xr` (0: not wanted).
     fn decode(&self, codes: &Buf, scale: &Buf, n: usize, xr: u64) -> Result<()> {
         // SAFETY: codes holds n rows of the format's words, scale n floats; xr n rows of T.
-        unsafe { launch!(self.dequant, [n as u32, (T / 512) as u32, 1], [512, 1, 1], Stream::DEFAULT; codes.ptr, scale.ptr, T as i32, self.a, self.b, 0u64, xr, 0u64) }
+        unsafe {
+            launch!(self.dequant, [n as u32, (T / 512) as u32, 1], [512, 1, 1], Stream::DEFAULT; codes.ptr, scale.ptr, T as i32, self.a, self.b, 0u64, xr, 0u64)
+        }
     }
 }
 
@@ -189,7 +191,12 @@ fn meta(pack: &Path) -> Result<Value> {
 /// Layer l's rotation signs (+1 / -1) from a pack's meta.json, as i8.
 fn signs(pack: &Path, l: usize) -> Result<Vec<i8>> {
     let v = meta(pack)?;
-    let s = v.get("layers").and_then(|x| x.get(&l.to_string())).and_then(|x| x.get("s")).and_then(Value::as_u64s).ok_or_else(|| Error(format!("{}: layer {l}: no s", pack.display())))?;
+    let s = v
+        .get("layers")
+        .and_then(|x| x.get(&l.to_string()))
+        .and_then(|x| x.get("s"))
+        .and_then(Value::as_u64s)
+        .ok_or_else(|| Error(format!("{}: layer {l}: no s", pack.display())))?;
     if s.len() != T {
         return err(format!("{}: layer {l}: {} signs", pack.display(), s.len()));
     }
@@ -404,7 +411,10 @@ fn plan_of(a: &Args, l: usize) -> Result<Vec<Fmt>> {
 fn encode(a: &Args, gain: f32) -> Result<()> {
     let (snap, pack, out) = (Path::new(a.need(2, "SNAPSHOT")?), Path::new(a.need(3, "PACK (its meta.json's signs)")?), Path::new(a.need(4, "OUT")?));
     let range = a.flag("layers").ok_or_else(|| Error("qxtq encode needs --layers A:B".into()))?;
-    let (first, end) = range.split_once(':').and_then(|(x, y)| Some((x.parse::<usize>().ok()?, y.parse::<usize>().ok()?))).ok_or_else(|| Error(format!("--layers {range}: not A:B")))?;
+    let (first, end) = range
+        .split_once(':')
+        .and_then(|(x, y)| Some((x.parse::<usize>().ok()?, y.parse::<usize>().ok()?)))
+        .ok_or_else(|| Error(format!("--layers {range}: not A:B")))?;
     std::fs::create_dir_all(out).map_err(|e| Error(format!("{}: {e}", out.display())))?;
     let dev = Dev::new(0)?;
     let ck = Checkpoint::open(snap).map_err(|e| Error(format!("{}: {e}", snap.display())))?;
@@ -429,7 +439,13 @@ fn encode(a: &Args, gain: f32) -> Result<()> {
                     return err(format!("--reuse {}: layer {l}'s rotation is not PACK's", d.display()));
                 }
                 let lm = meta(d)?;
-                let theirs: Vec<Option<Fmt>> = lm.get("layers").and_then(|x| x.get(&l.to_string())).and_then(|x| x.get("f")).and_then(Value::as_array).map(|v| v.iter().map(|x| x.as_str().and_then(Fmt::parse)).collect()).unwrap_or_default();
+                let theirs: Vec<Option<Fmt>> = lm
+                    .get("layers")
+                    .and_then(|x| x.get(&l.to_string()))
+                    .and_then(|x| x.get("f"))
+                    .and_then(Value::as_array)
+                    .map(|v| v.iter().map(|x| x.as_str().and_then(Fmt::parse)).collect())
+                    .unwrap_or_default();
                 Some((File::open(&d.join(format!("layer-{l:03}.safetensors"))).map_err(|x| Error(format!("--reuse layer {l}: {x}")))?, theirs))
             }
             _ => None,
@@ -443,8 +459,15 @@ fn encode(a: &Args, gain: f32) -> Result<()> {
             let rb = (tq.sh.words() * 4) as u64;
             let rows = |n: usize, w: u64| vec![n as u64, w];
             if let Some((rf, _)) = reuse.as_ref().filter(|(_, t)| t.get(e) == Some(&Some(*f))) {
-                let get = |name: String| -> Result<Vec<u8>> { rf.read(rf.get(&name).ok_or_else(|| Error(format!("--reuse layer {l}: no {name}")))?).map_err(|x| Error(format!("--reuse layer {l}: {x}"))) };
-                parts.push([(format!("e{e:04}.d.0"), "U8", rows(DN, rb), get(format!("e{e:04}.d.0"))?), (format!("e{e:04}.u.0"), "U8", rows(UP, rb), get(format!("e{e:04}.u.0"))?), (format!("e{e:04}.d.1"), "BF16", rows(DN, 1), get(format!("e{e:04}.d.1"))?), (format!("e{e:04}.u.1"), "BF16", rows(UP, 1), get(format!("e{e:04}.u.1"))?)]);
+                let get = |name: String| -> Result<Vec<u8>> {
+                    rf.read(rf.get(&name).ok_or_else(|| Error(format!("--reuse layer {l}: no {name}")))?).map_err(|x| Error(format!("--reuse layer {l}: {x}")))
+                };
+                parts.push([
+                    (format!("e{e:04}.d.0"), "U8", rows(DN, rb), get(format!("e{e:04}.d.0"))?),
+                    (format!("e{e:04}.u.0"), "U8", rows(UP, rb), get(format!("e{e:04}.u.0"))?),
+                    (format!("e{e:04}.d.1"), "BF16", rows(DN, 1), get(format!("e{e:04}.d.1"))?),
+                    (format!("e{e:04}.u.1"), "BF16", rows(UP, 1), get(format!("e{e:04}.u.1"))?),
+                ]);
                 reused += 1;
                 continue;
             }
@@ -460,10 +483,16 @@ fn encode(a: &Args, gain: f32) -> Result<()> {
                 got.push((as_bytes(&c.codes).to_vec(), as_bytes(&scales).to_vec()));
             }
             let [(dc, ds), (uc, us)]: [(Vec<u8>, Vec<u8>); 2] = got.try_into().map_err(|_| Error("two matrices an expert".into()))?;
-            parts.push([(format!("e{e:04}.d.0"), "U8", rows(DN, rb), dc), (format!("e{e:04}.u.0"), "U8", rows(UP, rb), uc), (format!("e{e:04}.d.1"), "BF16", rows(DN, 1), ds), (format!("e{e:04}.u.1"), "BF16", rows(UP, 1), us)]);
+            parts.push([
+                (format!("e{e:04}.d.0"), "U8", rows(DN, rb), dc),
+                (format!("e{e:04}.u.0"), "U8", rows(UP, rb), uc),
+                (format!("e{e:04}.d.1"), "BF16", rows(DN, 1), ds),
+                (format!("e{e:04}.u.1"), "BF16", rows(UP, 1), us),
+            ]);
         }
         let fname = format!("layer-{l:03}.safetensors");
-        let tensors: Vec<(&str, &str, Vec<u64>, &[u8])> = parts.iter().flat_map(|p| p.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), b.as_slice()))).collect();
+        let tensors: Vec<(&str, &str, Vec<u64>, &[u8])> =
+            parts.iter().flat_map(|p| p.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), b.as_slice()))).collect();
         let tmp = out.join(format!("{fname}.part"));
         crate::pack::write_safetensors(&tmp, &[("format", "pt".to_string())], &tensors)?;
         std::fs::rename(&tmp, out.join(&fname)).map_err(|e| Error(format!("{fname}: {e}")))?;
@@ -507,7 +536,8 @@ fn write_meta(out: &Path) -> Result<()> {
 }
 
 fn decode(a: &Args) -> Result<()> {
-    let (pack, l, out) = (Path::new(a.need(2, "PACK")?), a.need(3, "LAYER")?.parse::<usize>().map_err(|_| Error("LAYER: not a number".into()))?, Path::new(a.need(4, "OUT")?));
+    let (pack, l, out) =
+        (Path::new(a.need(2, "PACK")?), a.need(3, "LAYER")?.parse::<usize>().map_err(|_| Error("LAYER: not a number".into()))?, Path::new(a.need(4, "OUT")?));
     let v = meta(pack)?;
     let entry = v.get("layers").and_then(|x| x.get(&l.to_string())).ok_or_else(|| Error(format!("{}: no layer {l}", pack.display())))?;
     let fmts: Vec<Fmt> = entry
@@ -527,7 +557,9 @@ fn decode(a: &Args) -> Result<()> {
     let file = entry.get("file").and_then(Value::as_str).map(String::from).unwrap_or_else(|| format!("layer-{l:03}.safetensors"));
     let sg = signs(pack, l)?;
     let f = File::open(&pack.join(&file)).map_err(|e| Error(format!("layer {l}: {e}")))?;
-    let read = |name: &str| -> Result<Vec<u8>> { f.read(f.get(name).ok_or_else(|| Error(format!("layer {l}: no {name}")))?).map_err(|e| Error(format!("layer {l}: {name}: {e}"))) };
+    let read = |name: &str| -> Result<Vec<u8>> {
+        f.read(f.get(name).ok_or_else(|| Error(format!("layer {l}: no {name}")))?).map_err(|e| Error(format!("layer {l}: {name}: {e}")))
+    };
     let (mut gu, mut dn) = (vec![0u16; NE * UP * T], vec![0u16; NE * T * DN]);
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
     let per = NE.div_ceil(threads);
@@ -569,14 +601,21 @@ fn decode(a: &Args) -> Result<()> {
         }
         hs.into_iter().try_for_each(|h| h.join().map_err(|_| Error("a decode thread panicked".into()))?)
     })?;
-    let tensors: [(&str, &str, Vec<u64>, &[u8]); 2] = [("gate_up_proj", "BF16", vec![NE as u64, UP as u64, T as u64], as_bytes(&gu)), ("down_proj", "BF16", vec![NE as u64, T as u64, DN as u64], as_bytes(&dn))];
+    let tensors: [(&str, &str, Vec<u64>, &[u8]); 2] = [
+        ("gate_up_proj", "BF16", vec![NE as u64, UP as u64, T as u64], as_bytes(&gu)),
+        ("down_proj", "BF16", vec![NE as u64, T as u64, DN as u64], as_bytes(&dn)),
+    ];
     crate::pack::write_safetensors(out, &[("format", "pt".to_string())], &tensors)?;
     eprintln!("layer {l}: decoded in {:.1} s", t0.elapsed().as_secs_f64());
     // --snap SNAPSHOT: the decoded weights' relative error against the checkpoint's
     if let Some(snap) = a.flag("snap") {
         let ck = Checkpoint::open(Path::new(snap)).map_err(|e| Error(format!("{snap}: {e}")))?;
         let (wu, wd) = experts(&ck, l)?;
-        let rel = |x: &[u16], y: &[u16]| (x.iter().zip(y).map(|(&p, &q)| (f32_of(p) as f64 - f32_of(q) as f64).powi(2)).sum::<f64>() / y.iter().map(|&q| (f32_of(q) as f64).powi(2)).sum::<f64>()).sqrt();
+        let rel = |x: &[u16], y: &[u16]| {
+            (x.iter().zip(y).map(|(&p, &q)| (f32_of(p) as f64 - f32_of(q) as f64).powi(2)).sum::<f64>()
+                / y.iter().map(|&q| (f32_of(q) as f64).powi(2)).sum::<f64>())
+            .sqrt()
+        };
         println!("layer {l}: relative error gate-up {:.4}, down {:.4}", rel(&gu, &wu), rel(&dn, &wd));
     }
     Ok(())
@@ -584,9 +623,12 @@ fn decode(a: &Args) -> Result<()> {
 
 fn gpucheck(a: &Args) -> Result<()> {
     use crate::cpu_simd::{dot_glm, down_glm, GlmMat};
-    let (pack, l, e) = (Path::new(a.need(2, "PACK")?), a.need(3, "LAYER")?.parse::<usize>().map_err(|_| Error("LAYER: not a number".into()))?, a.num("expert", 0usize)?);
+    let (pack, l, e) =
+        (Path::new(a.need(2, "PACK")?), a.need(3, "LAYER")?.parse::<usize>().map_err(|_| Error("LAYER: not a number".into()))?, a.num("expert", 0usize)?);
     let f = File::open(&pack.join(format!("layer-{l:03}.safetensors"))).map_err(|x| Error(format!("layer {l}: {x}")))?;
-    let read = |name: String| -> Result<Vec<u8>> { f.read(f.get(&name).ok_or_else(|| Error(format!("layer {l}: no {name}")))?).map_err(|x| Error(format!("layer {l}: {name}: {x}"))) };
+    let read = |name: String| -> Result<Vec<u8>> {
+        f.read(f.get(&name).ok_or_else(|| Error(format!("layer {l}: no {name}")))?).map_err(|x| Error(format!("layer {l}: {name}: {x}")))
+    };
     let (dc, uc, ds, us) = (read(format!("e{e:04}.d.0"))?, read(format!("e{e:04}.u.0"))?, read(format!("e{e:04}.d.1"))?, read(format!("e{e:04}.u.1"))?);
     // the expert's format from its rows' bytes
     let fmt = match uc.len() / UP {
@@ -635,7 +677,9 @@ fn gpucheck(a: &Args) -> Result<()> {
     for o0 in (0..T).step_by(256) {
         down_glm(kernel, &dm, &act, o0, &mut c_out[o0..]);
     }
-    let rel = |g: &[f32], c: &[f32]| (g.iter().zip(c).map(|(a, b)| (*a as f64 - *b as f64).powi(2)).sum::<f64>() / c.iter().map(|b| (*b as f64).powi(2)).sum::<f64>().max(1e-30)).sqrt();
+    let rel = |g: &[f32], c: &[f32]| {
+        (g.iter().zip(c).map(|(a, b)| (*a as f64 - *b as f64).powi(2)).sum::<f64>() / c.iter().map(|b| (*b as f64).powi(2)).sum::<f64>().max(1e-30)).sqrt()
+    };
     let (ru, rd) = (rel(&g_gu, &c_gu), rel(&g_out, &c_out));
     println!("layer {l} expert {e} ({}): GPU against CPU ({}), relative difference gate-up {ru:.2e}, down {rd:.2e}", fmt.name(), kernel.name());
     if ru > 1e-4 || rd > 1e-4 {
