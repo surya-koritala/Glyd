@@ -41,7 +41,7 @@ CANNOT = 3  # the engine's status for a model it will not run on this computer, 
 PANIC = 101  # a Rust program's status where it panics
 LEVELS = ("penguin", "kestrel", "swift", "hummingbird")  # the levels built, as a tag on the model names them; kestrel (which --lossy is), swift and hummingbird are lossy, which the engine alone runs
 NOT_BUILT = ("wren",)  # named, not built yet (Glyd's levels are penguin, kestrel, swift, wren and hummingbird), but for Gemma 4: its wren is Google's QAT weights, which the engine says where it has
-WITH_VALUE = ("--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables", "--api-key", "--hf-token", "--allowed-origins", "--allowed-hosts")
+WITH_VALUE = ("--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables", "--api-key", "--hf-token", "--allowed-origins", "--allowed-hosts", "--drain-timeout")
 # the flags that carry a secret, which go to the engine in its environment (a command line is in `ps` and in a log): (the flag's names, the variable, what it is)
 SECRETS = ((("--api-key", "--api_key"), "GLYD_API_KEY", "API key"), (("--hf-token", "--hf_token"), "HF_TOKEN", "Hugging Face token"))
 VLLM_SETTINGS = {"GLYD_KV": ("", "auto"), "GLYD_LAYOUT": ("", "auto"), "GLYD_FRACTION": ("", "1", "1.0"), "GLYD_EXACT": ("", "0", "false", "no", "off"), "GLYD_VERIFY": ("", "0", "false", "no", "off")}
