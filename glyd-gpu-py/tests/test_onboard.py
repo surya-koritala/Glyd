@@ -2324,7 +2324,7 @@ def test_install_sh_on_a_gpu_machine():
                 assert re.fullmatch(rf"uv tool install --managed-python --python 3\.12 --constraints \S+/constraints\.txt glyd\[vllm\]=={re.escape(V)}", install), install
                 assert "--force" not in install and "--prerelease" not in install  # (uv itself refuses to replace what it did not make; a new pin is a reinstall)
                 assert "uv tool dir --bin" in r.calls and r.calls[-1] == "glyd doctor" and not r.err.strip(), (r.calls, r.err)
-                assert "Next: glyd run Qwen/Qwen3.5-9B" in r.out
+                assert "Next: glyd run google/gemma-4-12B-it" in r.out
                 assert not glob.glob(os.path.join(i.tmpdir, "*"))  # (the temporary folder is gone)
                 assert not [f for f in os.listdir(i.home) if f in (".bashrc", ".zshenv", ".zshrc", ".profile", ".bash_profile")]  # (no startup file of its own)
     with Inst(nvidia="595.91.07") as i:  # the constraints uv was given are the list in the script, which is the acceptance run's
