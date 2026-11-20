@@ -149,7 +149,7 @@ and streamed (a call's name when it is complete, its arguments as they are writt
 | Gemma 4 | `<|tool_call>call:NAME{key:<|"|>text<|"|>,...}<tool_call|>` (`reader::Gemma`) | `<|channel>thought\n...<channel|>` | the prompt opens the call |
 | Muse | ATEM `<atem:function_calls>` blocks in a message to the tool (`reader::Muse`), typed by the schema | a message to `self` | the prompt opens the message and the block |
 
-A family's test (`src/families.rs`) renders a conversation with a call and a reasoning through its real chat template and reads both back, whole and in pieces of every size. Where a call is forced by the prompt, the
+Qwen3.8-27B and Qwen3.8-Flash-Next ship the same chat template. A family's test (`src/families.rs`) renders a conversation with a call and a reasoning through its real chat template and reads both back, whole and in pieces of every size, and again token by token through the server's reader, reasoning split and tool parser with the deltas a client sees; the GPU job serves Gemma 4 at kestrel and runs the client checks against it. Where a call is forced by the prompt, the
 model's own arguments are not held to the tool's schema by a grammar.
 
 ## Fill in the middle
