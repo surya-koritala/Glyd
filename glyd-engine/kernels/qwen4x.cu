@@ -2624,7 +2624,6 @@ extern "C" __global__ void qx_gate_rows(bf16* sh, const bf16* logit, int n, int 
     sh[i] = f2b(qx_r(qx_sig(b2f(logit[i / H]))) * b2f(sh[i]));
 }
 
-#ifndef GLYD_RELEASE  // (the encoder's kernels: a development build's; a release build ships the decode alone)
 // The Viterbi search of one row a block (1024 threads; dynamic shared memory (TQ_S + T) floats): the row (fp32 [n, T] in w) over its RMS
 // against gain times the states' values, the cost of every state kept in shared memory and updated in place a step at a time (all reads,
 // a sync, all writes). A step's choice for group q (its successors 4q .. 4q + 3; its predecessors q + j TQ_Q) is 2 bits of dec
@@ -2989,4 +2988,3 @@ __device__ __forceinline__ void tq_deq_k(const unsigned* codes, const float* sca
     }
 TQ_ENC(3)
 TQ_ENC(4)
-#endif
