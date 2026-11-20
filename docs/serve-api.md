@@ -137,9 +137,16 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
 
 ## Requests
 
-- A field a request sets that `fields.refused` lists is refused, 400, in words. So are: `response_format` other than text,
-  `echo` of a chat, `best_of` over `n`, `n` over 8, prompts times `n` over 64, `n` over 1 at temperature 0,
+- A field a request sets that `fields.refused` lists is refused, 400, in words. So are: `response_format` of a type other than
+  text, json_object and json_schema, `echo` of a chat, `best_of` over `n`, `n` over 8, prompts times `n` over 64, `n` over 1 at temperature 0,
   `stream_options` without `stream`, `continuous_usage_stats`, tools where the template has none.
+- A reply can be held to a grammar, on every model the server runs: `response_format` (`json_object`, `json_schema`; the schema holds
+  whether or not `strict` is set), vLLM's `structured_outputs` (`json`, `regex`, `choice`, `grammar`, `json_object`) and its
+  `guided_json`, `guided_regex`, `guided_choice` and `guided_grammar` (a Lark grammar, or llguidance's grammar list as JSON), and a
+  forced tool call (`tool_choice` naming a function, or `required`) for the models whose calls are hermes-style JSON or XML
+  (Qwen, Kimi-style hermes, Nemotron): the arguments follow the tool's schema. The tokens the grammar does not allow are taken out of
+  each step's row of logits (llguidance), so the reply is valid or ends with `finish_reason` `length`. A schema or grammar that cannot
+  be compiled, and two forms at once, are 400 in words. A request with none is sampled as before. `guided_whitespace_pattern` is refused.
 - On a level's engine (`concurrency: 1`), `logprobs` and `min_tokens` are refused: it gives no log-probabilities and has no
   least length. `fields.refused` says so.
 - A field this server does not know is answered without it, and said once on stderr.

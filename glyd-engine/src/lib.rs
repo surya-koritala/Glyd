@@ -31,6 +31,7 @@ pub mod ceiling;
 pub mod chat;
 pub mod choice;
 pub mod cli;
+pub mod constrain;
 pub mod conv;
 pub mod costs;
 #[cfg(feature = "dev")]

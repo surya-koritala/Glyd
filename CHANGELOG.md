@@ -18,6 +18,8 @@ every earlier format.
   for another computer (presets: rtx4060-laptop, rtx4080s, rtx4090, 2x3090, l4, a6000, a100-80g, h100, 8xh100, rx7900xtx,
   m4max-64g). Predictions are checked against measured runs (src/plan.rs tests).
 - The engine's five level tables and tag parsers are one module (src/levels.rs).
+- Constrained decoding (llguidance): `response_format` `json_object` and `json_schema`, vLLM's `structured_outputs` and `guided_json`, `guided_regex`, `guided_choice` and `guided_grammar`, and
+  forced tool calls (`tool_choice` a function or `required`) are enforced at sampling time by token masks, on every model the server runs (`glyd-engine/src/constrain.rs`); they were refused before.
 - `glyd run` and `glyd serve` take a GGUF: a `.gguf` file, a directory of them, or a Hub repo that holds them and no safetensors. The engine reads the file's header, metadata and
   tensors in place (src/gguf.rs; GGUF versions 2 and 3, every ggml type's size checked) and, for a Qwen3 model stored as BF16, makes the Hugging Face checkpoint it describes in the cache
   (config, tokenizer and chat template from the file's own metadata, the weights as they are) and packs that as it packs any checkpoint. F32 and F16 tensors are read where every value is

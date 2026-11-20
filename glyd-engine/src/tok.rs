@@ -6,6 +6,10 @@ use tokenizers::Tokenizer;
 
 pub struct Tok {
     t: Tokenizer,
+    /// The end-of-sequence ids of the model's generation_config.json and config.json (empty where the directory has none).
+    ends: Vec<u32>,
+    /// What constrained decoding needs of the tokenizer, made at the first request that asks (see `grammars`).
+    grammars: std::sync::OnceLock<std::result::Result<std::sync::Arc<crate::constrain::Grammars>, String>>,
 }
 
 impl Tok {
@@ -14,10 +18,118 @@ impl Tok {
         if !p.exists() && dir.join("tiktoken.model").exists() {
             let json = tiktoken_json(dir)?;
             let t = Tokenizer::from_bytes(json.as_bytes()).map_err(|e| Error(format!("{}: {e}", dir.join("tiktoken.model").display())))?;
-            return Ok(Tok { t });
+            return Ok(Tok::of(t, dir));
         }
         let t = Tokenizer::from_file(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        Ok(Tok { t })
+        Ok(Tok::of(t, dir))
+    }
+
+    fn of(t: Tokenizer, dir: &Path) -> Tok {
+        let mut ends = ends_of(dir);
+        if ends.is_empty() {
+            // (the tokenizer's own end token, as tokenizer_config.json names it)
+            let name = std::fs::read_to_string(dir.join("tokenizer_config.json")).ok().and_then(|t| glyd_gpu::json::parse(&t).ok()).and_then(|c| {
+                match c.get("eos_token") {
+                    Some(glyd_gpu::json::Value::String(s)) => Some(s.clone()),
+                    Some(o) => o.get("content").and_then(glyd_gpu::json::Value::as_str).map(str::to_string),
+                    None => None,
+                }
+            });
+            ends.extend(name.and_then(|n| t.token_to_id(&n)));
+        }
+        Tok { t, ends, grammars: std::sync::OnceLock::new() }
+    }
+
+    /// The token grammars are compiled against: the byte strings of the tokenizer's tokens, as wide as the model's rows of logits (`vocab`: the padding after the tokenizer's tokens is never chosen), and the end
+    /// tokens. Made once.
+    pub fn grammars(&self, vocab: usize) -> std::result::Result<std::sync::Arc<crate::constrain::Grammars>, String> {
+        self.grammars
+            .get_or_init(|| {
+                let bytes = self.token_bytes(vocab)?;
+                let t = plain(&self.t);
+                let tokenize: crate::constrain::Tokenize = Box::new(move |text| t.encode(text, false).ok().map(|e| e.get_ids().to_vec()));
+                crate::constrain::Grammars::with_tokenizer(bytes, &self.ends, vocab, tokenize).map(std::sync::Arc::new)
+            })
+            .clone()
+    }
+
+    /// Each token's bytes (as the text a model that chose it writes has them), the special tokens (the ones marked so, `<|im_end|>`) with the marker toktrie puts before their names: they are not text, and no grammar
+    /// but one that names them allows them. Tokens the tokenizer has no name for (the rows are wider than its vocabulary) have the marker and a name of their own.
+    fn token_bytes(&self, vocab: usize) -> std::result::Result<Vec<Vec<u8>>, String> {
+        use tokenizers::DecoderWrapper;
+        fn kinds(d: &DecoderWrapper, byte_level: &mut bool, space: &mut char) {
+            match d {
+                DecoderWrapper::ByteLevel(_) => *byte_level = true,
+                DecoderWrapper::Metaspace(m) => {
+                    *space = m.get_replacement();
+                }
+                DecoderWrapper::Replace(r) if r.content == " " => {
+                    if let Some(c) = serde_json::to_value(r).ok().and_then(|v| v["pattern"]["String"].as_str().and_then(|p| p.chars().next())) {
+                        *space = c;
+                    }
+                }
+                DecoderWrapper::Sequence(l) => l.get_decoders().iter().for_each(|d| kinds(d, byte_level, space)),
+                _ => {}
+            }
+        }
+        let (mut byte_level, mut space) = (false, '\u{2581}');
+        if let Some(d) = self.t.get_decoder() {
+            kinds(d, &mut byte_level, &mut space);
+        }
+        let added = self.t.get_added_tokens_decoder();
+        // (a tokenizer whose decoder says nothing of bytes: by the letters its tokens are written in, GPT-2's `\u{0120}` for a space or SentencePiece's `\u{2581}`)
+        if !byte_level && !matches!(self.t.get_decoder(), Some(DecoderWrapper::Sequence(_) | DecoderWrapper::Metaspace(_) | DecoderWrapper::ByteFallback(_))) {
+            byte_level = ["\u{0120}", "\u{010a}"].iter().any(|c| self.t.token_to_id(c).is_some());
+        }
+        let mut map = std::collections::HashMap::new();
+        let mut k = 0x100u32;
+        for b in 0..=255u8 {
+            let c = b as char;
+            if matches!(c, '!'..='~' | '\u{A1}'..='\u{AC}' | '\u{AE}'..='\u{FF}') {
+                map.insert(c, b);
+            } else {
+                map.insert(char::from_u32(k).unwrap_or('\u{FFFD}'), b);
+                k += 1;
+            }
+        }
+        let n = self.t.get_vocab_size(true).max(added.keys().map(|&i| i as usize + 1).max().unwrap_or(0));
+        let mut out: Vec<Vec<u8>> = Vec::with_capacity(vocab.max(n));
+        for id in 0..vocab.max(n) as u32 {
+            let special = |name: &str| {
+                let mut b = name.as_bytes().to_vec();
+                b.insert(0, toktrie::TokTrie::SPECIAL_TOKEN_MARKER);
+                b
+            };
+            let a = added.get(&id);
+            let name = self.t.id_to_token(id);
+            let bytes = match (a, name) {
+                (Some(a), _) if a.special => special(&a.content),
+                (Some(a), _) => a.content.as_bytes().to_vec(),
+                (None, None) => special(&format!(".<[{id}]>")),
+                (None, Some(name)) if byte_level => {
+                    let b: Option<Vec<u8>> = name.chars().map(|c| map.get(&c).copied()).collect();
+                    match b {
+                        Some(b) => b,
+                        None => special(&name),
+                    }
+                }
+                (None, Some(name)) => {
+                    let hex = name.strip_prefix("<0x").and_then(|h| h.strip_suffix('>')).filter(|h| h.len() == 2).and_then(|h| u8::from_str_radix(h, 16).ok());
+                    match hex {
+                        Some(b) => vec![b],
+                        None => name.replace(space, " ").into_bytes(),
+                    }
+                }
+            };
+            out.push(bytes);
+        }
+        out.truncate(vocab.max(n));
+        Ok(out)
+    }
+
+    /// The tokens the tokenizer names, the added ones with them.
+    pub fn vocab_size(&self) -> usize {
+        self.t.get_vocab_size(true)
     }
 
     pub fn encode(&self, text: &str) -> Result<Vec<u32>> {
@@ -43,6 +155,62 @@ impl Tok {
     pub fn decode_with(&self, ids: &[u32], skip_special: bool) -> Result<String> {
         self.t.decode(ids, skip_special).map_err(|e| Error(e.to_string()))
     }
+}
+
+/// The tokenizer as it tokenizes a piece of text that is not the start of one: no space put before it (SentencePiece's `Prepend` normalizer and `Metaspace` prefix), as toktrie_hf_tokenizers has it.
+fn plain(t: &Tokenizer) -> Tokenizer {
+    use tokenizers::{normalizers, pre_tokenizers, NormalizerWrapper, PreTokenizerWrapper};
+    fn no_prepend(n: NormalizerWrapper) -> Option<NormalizerWrapper> {
+        match n {
+            NormalizerWrapper::Prepend(_) => None,
+            NormalizerWrapper::Sequence(l) => {
+                let kept: Vec<_> = l.as_ref().iter().filter_map(|n| no_prepend(n.clone())).collect();
+                (!kept.is_empty()).then(|| NormalizerWrapper::Sequence(normalizers::Sequence::new(kept)))
+            }
+            n => Some(n),
+        }
+    }
+    fn no_prefix(p: PreTokenizerWrapper) -> PreTokenizerWrapper {
+        match p {
+            PreTokenizerWrapper::Metaspace(mut m) => {
+                m.prepend_scheme = pre_tokenizers::metaspace::PrependScheme::Never;
+                PreTokenizerWrapper::Metaspace(m)
+            }
+            PreTokenizerWrapper::Sequence(l) => {
+                PreTokenizerWrapper::Sequence(pre_tokenizers::sequence::Sequence::new(l.as_ref().iter().map(|p| no_prefix(p.clone())).collect()))
+            }
+            p => p,
+        }
+    }
+    let mut t = t.clone();
+    let n = t.get_normalizer().cloned();
+    if let Some(n) = n {
+        t.with_normalizer(no_prepend(n));
+    }
+    let p = t.get_pre_tokenizer().cloned();
+    if let Some(p) = p {
+        t.with_pre_tokenizer(Some(no_prefix(p)));
+    }
+    t
+}
+
+/// The end-of-sequence ids of the model's directory: generation_config.json's where it gives any, else config.json's (or its text_config's).
+fn ends_of(dir: &Path) -> Vec<u32> {
+    let read = |f: &str| std::fs::read_to_string(dir.join(f)).ok().and_then(|t| glyd_gpu::json::parse(&t).ok());
+    let Some(config) = read("config.json") else { return Vec::new() };
+    let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
+    let mut ends = crate::weights::eos_ids(&config, generation.as_deref());
+    // (the config's own end tokens, a number or a list; or its text model's)
+    for c in [Some(&config), config.get("text_config")].into_iter().flatten() {
+        if ends.is_empty() {
+            match c.get("eos_token_id") {
+                Some(glyd_gpu::json::Value::Number(n)) => ends.extend(n.parse::<i64>().ok()),
+                Some(glyd_gpu::json::Value::Array(a)) => ends.extend(a.iter().filter_map(glyd_gpu::json::Value::as_i64)),
+                _ => {}
+            }
+        }
+    }
+    ends.into_iter().filter_map(|e| u32::try_from(e).ok()).collect()
 }
 
 /// Kimi-K3's split of a text before its byte pairs are merged (tokenization_kimi.py's `pat_str`: runs of Han; words, their case and a contraction; up to three digits;
@@ -175,7 +343,7 @@ pub(crate) mod tests {
         "decoder":null,"model":{"type":"WordLevel","vocab":{"<begin>":0,"hello":1,"world":2,"<unk>":3},"unk_token":"<unk>"}}"#;
 
     fn tok() -> Tok {
-        Tok { t: Tokenizer::from_bytes(BOS_TOKENIZER.as_bytes()).unwrap() }
+        Tok::of(Tokenizer::from_bytes(BOS_TOKENIZER.as_bytes()).unwrap(), Path::new("."))
     }
 
     /// A tokenizer for the tests of what is made of a model's tokens: `words` are the ids 1, 2, ... (0 is `<unk>`; a word of the form `<|name|>` is a special token), a text is read by its whitespace, and ids decode to
@@ -197,7 +365,7 @@ pub(crate) mod tests {
         let json = format!(
             r#"{{"version":"1.0","truncation":null,"padding":null,"added_tokens":[{added}],"normalizer":null,"pre_tokenizer":{{"type":"Whitespace"}},"post_processor":null,"decoder":{{"type":"Fuse"}},"model":{{"type":"WordLevel","vocab":{{{vocab}}},"unk_token":"<unk>"}}}}"#
         );
-        Tok { t: Tokenizer::from_bytes(json.as_bytes()).unwrap() }
+        Tok::of(Tokenizer::from_bytes(json.as_bytes()).unwrap(), Path::new("."))
     }
 
     #[test]
@@ -317,5 +485,37 @@ pub(crate) mod tests {
             vec![0, 0, 1, 2],
             "(what the engine did with a template that has a bos_token: two BOS, had it passed the token)"
         );
+    }
+
+    /// The bytes of each token, as the families' tokenizers write them: SentencePiece's (`\u{2581}` for a space, `<0xNN>` for a byte, Gemma's), byte-level BPE's (GPT-2's letters for bytes, Qwen's and DeepSeek's), and a
+    /// token that is added and not special (`<tool_call>`) as the text it is; a special one is marked, and one the tokenizer has no name for is.
+    #[test]
+    fn the_bytes_of_the_tokens_of_each_kind_of_tokenizer() {
+        let marker = toktrie::TokTrie::SPECIAL_TOKEN_MARKER;
+        let spm = r#"{"version":"1.0","truncation":null,"padding":null,
+            "added_tokens":[{"id":0,"content":"<pad>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true},{"id":5,"content":"<tool_call>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":false}],
+            "normalizer":null,"pre_tokenizer":null,"post_processor":null,
+            "decoder":{"type":"Sequence","decoders":[{"type":"Replace","pattern":{"String":"\u2581"},"content":" "},{"type":"ByteFallback"},{"type":"Fuse"}]},
+            "model":{"type":"BPE","dropout":null,"unk_token":null,"continuing_subword_prefix":null,"end_of_word_suffix":null,"fuse_unk":false,"byte_fallback":true,
+              "vocab":{"<pad>":0,"\u2581hello":1,"<0x0A>":2,"\u2581":3,"\u00e9":4,"<tool_call>":5},"merges":[]}}"#;
+        let t = Tok::of(Tokenizer::from_bytes(spm.as_bytes()).unwrap(), Path::new("."));
+        let b = t.token_bytes(8).unwrap();
+        assert_eq!(b[1], b" hello");
+        assert_eq!(b[2], vec![10]);
+        assert_eq!(b[3], b" ");
+        assert_eq!(b[4], "é".as_bytes());
+        assert_eq!(b[5], b"<tool_call>");
+        assert_eq!(b[0], [&[marker][..], b"<pad>"].concat());
+        // (the rows are wider than the tokenizer: the extra tokens are named, special)
+        assert_eq!(b[6][0], marker);
+        assert_eq!(b.len(), 8);
+        // byte-level BPE: the letter for a space is \u0120, for a new line \u010a, and two bytes of a letter are two letters
+        let bl = r#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":{"type":"ByteLevel","add_prefix_space":false,"trim_offsets":true,"use_regex":true},
+            "post_processor":null,"decoder":{"type":"ByteLevel","add_prefix_space":true,"trim_offsets":true,"use_regex":true},
+            "model":{"type":"BPE","dropout":null,"unk_token":null,"continuing_subword_prefix":null,"end_of_word_suffix":null,"fuse_unk":false,"byte_fallback":false,
+              "vocab":{"a":0,"\u0120a":1,"\u010a":2,"\u00c3\u00a9":3},"merges":[]}}"#;
+        let t = Tok::of(Tokenizer::from_bytes(bl.as_bytes()).unwrap(), Path::new("."));
+        let b = t.token_bytes(4).unwrap();
+        assert_eq!((b[0].as_slice(), b[1].as_slice(), b[2].as_slice(), b[3].as_slice()), (&b"a"[..], &b" a"[..], &b"\n"[..], "é".as_bytes()));
     }
 }
