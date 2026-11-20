@@ -60,12 +60,13 @@ def ranges(name, shape):
     return (-0.5, 0.5)
 
 
-def fill_module(m, plus_one_norms=False):
+def fill_module(m, plus_one_norms=False, prefix=""):
     specs = {}
     with torch.no_grad():
         # (the routers' choice biases are buffers)
         params = list(m.named_parameters()) + [(n, b) for n, b in m.named_buffers() if n.endswith("e_score_correction_bias")]
         for name, p in params:
+            name = prefix + name
             lo, hi = ranges(name, list(p.shape))
             if plus_one_norms and "norm" in name and p.dim() == 1:
                 lo, hi = (-0.2, 0.2)
@@ -306,7 +307,45 @@ def rope_scaling():
         f.write("\n")
 
 
+def glm53_mtp():
+    """GLM-5.3's MTP head as tools/glm_ref.py's `mtp_forward` computes it (bf16 between steps), its latent attention and MoE being
+    transformers' GLM-5.3 modules (checked on their own by glm53_mla and glm53_moe)."""
+    import importlib.util
+
+    from transformers.models.glm_moe_dsa import modeling_glm_moe_dsa as M
+    from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
+
+    spec = importlib.util.spec_from_file_location("glm_ref", os.path.join(HERE, "..", "..", "tools", "glm_ref.py"))
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    c = GlmMoeDsaConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=4, q_lora_rank=32, kv_lora_rank=16, qk_nope_head_dim=8,
+                        qk_rope_head_dim=8, v_head_dim=8, num_hidden_layers=1, index_topk=64, index_n_heads=2, index_head_dim=16,
+                        rope_parameters={"rope_type": "default", "rope_theta": 10_000.0}, rms_norm_eps=1e-5, n_routed_experts=8,
+                        num_experts_per_tok=2, n_group=4, topk_group=2, routed_scaling_factor=2.5, norm_topk_prob=True, n_shared_experts=1,
+                        moe_intermediate_size=32, hidden_act="silu")
+    c._attn_implementation = "eager"
+    attn, moe = M.GlmMoeDsaAttention(c, 0).eval(), M.GlmMoeDsaMoE(c).eval()
+    specs = fill_module(attn, prefix="attn.")
+    specs.update(fill_module(moe, prefix="moe."))
+    d, vocab = c.hidden_size, 32
+    W = {}
+    for name, shape, lo, hi in [("enorm", [d], 0.8, 1.2), ("hnorm", [d], 0.8, 1.2), ("eh_proj", [d, 2 * d], -math.sqrt(1.5 / d), math.sqrt(1.5 / d)),
+                                ("norm_a", [d], 0.8, 1.2), ("norm_f", [d], 0.8, 1.2), ("head_norm", [d], 0.8, 1.2), ("embed", [vocab, d], -1.0, 1.0)]:
+        W[name] = torch.from_numpy(fill(name, int(np.prod(shape)), lo, hi)).view(*shape)
+        specs[name] = {"shape": shape, "lo": lo, "hi": hi}
+    pos = torch.arange(T).view(1, T)
+    cos, sin = M.GlmMoeDsaRotaryEmbedding(c)(torch.zeros(1, T, d), pos)
+    g.mla_mixer = lambda h, W, cfg, stages=None, sel=None: g.bf(attn(g.f32(h).view(1, T, d), (cos, sin), causal(), position_ids=pos)[0].view(T, d))
+    g.moe_mixer = lambda h, W, cfg, stages=None: g.bf(moe(g.f32(h).view(1, T, d)).view(T, d))
+    toks = [(t * 7 + 2) % vocab for t in range(T)]
+    prev = g.bf(torch.from_numpy(fill("input", T * d, -1.0, 1.0)).view(T, d))
+    out = g.mtp_forward(prev, torch.tensor(toks), g.bf(W["embed"]), {k: g.bf(v) for k, v in W.items()}, {"eps": 1e-5})
+    write("glm53_mtp", "GLM-5.3 MTP head: eh_proj of the normed embedding and hidden state, an MLA + MoE layer, the head norm",
+          "tools/glm_ref.py mtp_forward with GlmMoeDsaAttention and GlmMoeDsaMoE inside", d, specs, g.f32(out), {"token_ids": toks})
+
+
 CASES = {
+    "glm53_mtp": glm53_mtp,
     "rope_scaling": rope_scaling,
     "gemma4_mlp": gemma4_mlp,
     "glm53_moe": glm53_moe,

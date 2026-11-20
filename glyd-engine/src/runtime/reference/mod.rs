@@ -16,6 +16,7 @@ pub mod attention;
 pub mod ffn;
 pub mod linear;
 pub mod mla;
+pub mod mtp;
 pub mod norm;
 pub mod rope;
 

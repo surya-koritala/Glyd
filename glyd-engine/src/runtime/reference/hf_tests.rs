@@ -348,3 +348,80 @@ fn rope_scaling() {
         assert!((af - c["attention_factor"].as_f64().unwrap() as f32).abs() < 1e-6, "{name}: attention factor {af}");
     }
 }
+
+/// GLM-5.3's MTP head against `tools/glm_ref.py`'s `mtp_forward` (which rounds to bf16 between steps, hence `BF16_TOL`), its blocks the
+/// transformers modules of `glm53_latent_attention` and `glm53_moe`.
+#[test]
+fn glm53_mtp_head() {
+    use super::{mtp::RefMtp, RefLayer, BF16_TOL};
+    let f = Fixture::load("glm53_mtp");
+    let mla_kind = Mla {
+        heads: 4,
+        q_lora: Some(32),
+        kv_lora: 16,
+        nope: 8,
+        rope_dim: 8,
+        v_dim: 8,
+        rope: Some(Rope { style: RopeStyle::Interleaved, ..Rope::plain(1e4, 8) }),
+        q_norm: Norm::rms(1e-6),
+        kv_norm: Norm::rms(1e-6),
+        gate: None,
+        scale: 16f32.powf(-0.5),
+        absorbed: false,
+        indexer: None,
+    };
+    let moe_kind = Moe {
+        router: Router { score: RouterScore::Sigmoid, logit_scale: 1.0, bias: true, groups: Some((4, 2)), top_k: 2, renorm: true, scale: 2.5, hash: false },
+        experts: 8,
+        expert: silu_mlp(None),
+        shared: Some(silu_mlp(None)),
+        shared_gate: false,
+        latent: None,
+    };
+    let block = |body: Body| Block { norm_in: Norm::rms(1e-5), body, norm_out: None, residual: Residual::Add };
+    let twice = Norm { rounding: Rounding::Twice, ..Norm::rms(1e-5) };
+    let head = MtpHead {
+        blocks: vec![block(Body::Mixer(Mixer::Mla(mla_kind))), block(Body::Ffn(Ffn::Moe(moe_kind)))],
+        norm_embed: twice,
+        norm_hidden: twice,
+        final_norm: Norm::rms(1e-5),
+    };
+    let pa = params(
+        &f,
+        &[
+            ("q_a", "attn.q_a_proj.weight"),
+            ("q_a_norm", "attn.q_a_layernorm.weight"),
+            ("q_b", "attn.q_b_proj.weight"),
+            ("kv_a", "attn.kv_a_proj_with_mqa.weight"),
+            ("kv_a_norm", "attn.kv_a_layernorm.weight"),
+            ("kv_b", "attn.kv_b_proj.weight"),
+            ("o", "attn.o_proj.weight"),
+            ("norm_in", "norm_a"),
+        ],
+    );
+    let pm = params(
+        &f,
+        &[
+            ("router", "moe.gate.weight"),
+            ("choice_bias", "moe.gate.e_score_correction_bias"),
+            ("experts_gate_up", "moe.experts.gate_up_proj"),
+            ("experts_down", "moe.experts.down_proj"),
+            ("shared_gate", "moe.shared_experts.gate_proj.weight"),
+            ("shared_up", "moe.shared_experts.up_proj.weight"),
+            ("shared_down", "moe.shared_experts.down_proj.weight"),
+            ("norm_in", "norm_f"),
+        ],
+    );
+    let ph = params(&f, &[("eh_proj", "eh_proj"), ("norm_embed", "enorm"), ("norm_hidden", "hnorm"), ("final_norm", "head_norm")]);
+    let layers = vec![RefLayer::new(head.blocks[0].clone(), 64, pa), RefLayer::new(head.blocks[1].clone(), 64, pm)];
+    let mut m = RefMtp::new(head, 64, ph, layers).unwrap();
+    let (_, embed) = f.tensor("embed");
+    let toks: Vec<usize> = f.j["token_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+    let prev: Vec<f32> = f.input().into_iter().map(super::bf16).collect();
+    let got: Vec<f32> = prev
+        .chunks(64)
+        .enumerate()
+        .flat_map(|(j, h)| m.step(0, j as u32, &embed[toks[j] * 64..][..64].iter().map(|&v| super::bf16(v)).collect::<Vec<_>>(), h).unwrap())
+        .collect();
+    assert_close(&got, &f.f32s("output"), BF16_TOL, "GLM-5.3 MTP head against glm_ref.py");
+}
