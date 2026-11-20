@@ -129,6 +129,7 @@ pub mod qx_trellis;
 pub mod reader;
 #[cfg(feature = "dev")]
 pub mod report;
+pub mod runtime;
 pub mod sampler;
 pub mod sched;
 pub mod server;
