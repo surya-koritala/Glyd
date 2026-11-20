@@ -28,7 +28,7 @@ jobs:
     container:
       image: nvidia/cuda:13.0.3-devel-ubuntu24.04
       # (a named volume keeps the Hub cache, cargo's registry and the build between runs on a persistent machine)
-      options: --gpus all -v glyd-ci-cache:/cache
+      options: --gpus all -v glyd-ci-cache:/cache --memory=28g --memory-swap=28g
     env:
       HF_HOME: /cache/hf
       CARGO_HOME: /cache/cargo

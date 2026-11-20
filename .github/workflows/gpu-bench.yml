@@ -36,7 +36,7 @@ jobs:
         shell: bash
     container:
       image: nvidia/cuda:13.0.3-devel-ubuntu24.04
-      options: --gpus all -v glyd-ci-cache:/cache
+      options: --gpus all -v glyd-ci-cache:/cache --memory=28g --memory-swap=28g
     env:
       HF_HOME: /cache/hf
       GLYD_CACHE: /cache/glyd                      # (the packed model, kept between runs: its first start packs it)
