@@ -5,7 +5,8 @@ name: CI
 # module is), the vLLM plugin's with vLLM installed, the Rust crate, and the engine's (its tests as a development build and as the release build, the strings
 # of the release build's sources, the Rust glyd's hand-off), and the Rust workspace compiled and unit-tested on Windows x86_64 and macOS arm64 (no
 # kernels, no GPU; only when a pull request touches Rust code). The wheels' own build, with the CUDA libraries and the engine, and their
-# publishing are release.yml's. This repository is private: a run is billed, so a newer push to a pull request stops its older run.
+# publishing are release.yml's. A newer push to a pull request stops its older run.
+# The Rust jobs build with `--profile ci` (Cargo.toml: the release build's code without fat LTO) and keep their build in Swatinem/rust-cache, saved from main's runs.
 # A run on main or by hand always runs to the end, each in its own group: release.yml needs CI's success on a release's exact commit.
 on:
   push:
@@ -44,24 +45,28 @@ jobs:
       - uses: ./.github/actions/pc-job
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          toolchain: stable
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: codec
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/cache@v4
         with:
           path: corpus
           key: corpus-${{ hashFiles('scripts/download_corpus.sh') }}
       - run: bash scripts/download_corpus.sh
-      - run: cargo test --release --all-targets -p glyd -p glyd-store
-      - run: cargo test --release -p glyd --test regression_floors -- --nocapture
+      - run: cargo test --profile ci --all-targets -p glyd -p glyd-store
+      - run: cargo test --profile ci -p glyd --test regression_floors -- --nocapture
       - name: C ABI
         run: |
-          cargo build --release -p glyd --lib
-          cc -O2 -o target/c_abi tests/test_c_abi.c -Ltarget/release -lglyd -Wl,-rpath,$PWD/target/release
+          cargo build --profile ci -p glyd --lib
+          cc -O2 -o target/c_abi tests/test_c_abi.c -Ltarget/ci -lglyd -Wl,-rpath,$PWD/target/ci
           ./target/c_abi
       - name: CLI round trip and corruption
         run: |
-          cargo build --release -p glyd --bin glyd
+          cargo build --profile ci -p glyd --bin glyd
           head -c 3000000 corpus/dickens > /tmp/sample.bin
-          scripts/verify_roundtrip.sh /tmp/sample.bin
+          GLYD_BIN=target/ci/glyd scripts/verify_roundtrip.sh /tmp/sample.bin
 
   # Which of the platform jobs a change needs: a pull request that touches no Rust code (workflows other than this one, scripts, Python, benchmarks) skips them.
   # A skipped job counts as passed for a required check, which a path filter on the whole workflow would not. A push to main and a manual run always build.
@@ -118,7 +123,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: platform-${{ matrix.os }}
-          cache-targets: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the CLIs
         shell: bash
         run: cargo build --profile ci -p glyd --bin glyd -p glyd-store -p glyd-engine
@@ -161,6 +166,10 @@ jobs:
         with:
           toolchain: "1.97.1"
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p glyd-engine --no-default-features --all-targets -- -D warnings
@@ -199,8 +208,12 @@ jobs:
       - uses: ./.github/actions/pc-job
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          toolchain: stable
-      - run: cargo test --release --all-targets -p glyd-gpu
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: gpu
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --profile ci --all-targets -p glyd-gpu
 
   engine:
     # glyd-engine (glyd-engine/) as a development build (the default features) and as the release build (--no-default-features): its host-side tests, with no nvcc (the crate
@@ -215,10 +228,14 @@ jobs:
       - uses: ./.github/actions/pc-job
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          toolchain: stable
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: engine
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: The engine's tests (the development build, the release build)
         run: |
-          cargo test --release -p glyd-engine
-          cargo test --release -p glyd-engine --no-default-features
+          cargo test --profile ci -p glyd-engine
+          cargo test --profile ci -p glyd-engine --no-default-features
       - name: The Rust glyd's hand-off (the engine, the Python tool, GLYD_ENGINE=0)
-        run: cargo test --release -p glyd --test cli_python_tool
+        run: cargo test --profile ci -p glyd --test cli_python_tool
