@@ -383,7 +383,7 @@ fn free_port() -> Result<u16> {
 }
 
 /// `serve MODEL` of this program on a port of its own, up when /v1/models answers (the first start downloads and packs the model).
-fn start_server(model: &str, a: &Args) -> Result<Server> {
+fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     let port = match a.flag("port") {
         Some(p) => p.parse::<u16>().map_err(|_| Error(format!("--port {p}: not a port")))?,
         None => free_port()?,
@@ -394,11 +394,13 @@ fn start_server(model: &str, a: &Args) -> Result<Server> {
     let out = std::fs::OpenOptions::new().write(true).create_new(true).open(&log).map_err(|e| Error(format!("{}: {e}", log.display())))?;
     let mut cmd = Command::new(exe);
     cmd.args(["serve", model, "--host", "127.0.0.1", "--port", &port.to_string()]);
-    for f in ["ctx", "users", "layout", "chunk"] {
+    for f in ["ctx", "layout", "chunk"] {
         if let Some(v) = a.flag(f) {
             cmd.args([format!("--{f}"), v.to_string()]);
         }
     }
+    // (the server's places for requests at once: its default of 4 would make 8 at once 4 and 4 waiting; the most the loads ask for, at most the 8 it takes)
+    cmd.args(["--users".to_string(), a.flag("users").map_or(users.to_string(), str::to_string)]);
     let child = cmd
         .stdout(Stdio::from(out.try_clone().map_err(|e| Error(e.to_string()))?))
         .stderr(Stdio::from(out))
@@ -472,7 +474,7 @@ pub fn measure(a: &Args) -> Result<()> {
     let peak = Peak::start();
     let server = match &against {
         Some(_) => None,
-        None => Some(start_server(model_arg.unwrap_or(""), a)?),
+        None => Some(start_server(model_arg.unwrap_or(""), a, loads.iter().map(|l| l.1).max().unwrap_or(1).min(8))?),
     };
     let url = against.clone().unwrap_or_else(|| server.as_ref().map(|s| s.url.clone()).unwrap_or_default());
     let models = get_json(&format!("{url}/v1/models")).ok_or_else(|| Error(format!("{url}/v1/models: no answer")))?;
@@ -563,7 +565,7 @@ pub fn measure(a: &Args) -> Result<()> {
             "weights_source": if a.flag("weights-gib").is_some() { "flag" } else if weights.is_some() { "/v1/glyd/info" } else { "unknown" }},
         "bandwidth": {"gbs": bandwidth, "source": if a.flag("bandwidth-gbs").is_some() { "flag" } else if bandwidth.is_some() { "spec sheet" } else { "unknown" }},
         "versions": {"glyd_engine": env!("CARGO_PKG_VERSION"), "git": git_sha(), "server": info.as_ref().and_then(|i| i["build"]["version"].as_str())},
-        "server": {"against": against, "started_by_bench": server.is_some()},
+        "server": {"against": against, "started_by_bench": server.is_some(), "users": server.as_ref().map(|_| a.flag("users").and_then(|u| u.parse::<usize>().ok()).unwrap_or_else(|| loads.iter().map(|l| l.1).max().unwrap_or(1).min(8)))},
         "config": {"suite": a.flag("suite").unwrap_or(if a.flag("loads").is_some() { "loads" } else { "gate" }), "loads": loads.iter().map(|(k, n)| format!("{k}:{n}")).collect::<Vec<_>>(),
             "runs": runs, "warmup": warmup, "max_tokens": max_tokens},
         "contention": {"busy_before": busy, "utilization_median_pct": util, "before": before, "after": after},
