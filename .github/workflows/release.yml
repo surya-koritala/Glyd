@@ -170,7 +170,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --exclude 'starlings-*'  # (Starlings' own binary is not in these packages)
       - name: Package binaries
         env:
           TAG: ${{ needs.plan.outputs.label }}

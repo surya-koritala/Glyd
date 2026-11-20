@@ -92,8 +92,13 @@ pub const GPUS: &[Entry] = &[
     ("RTX 4080 SUPER", (8, 9), &["Qwen3"]),
 ];
 
-/// The architectures of the computers the engine has run on (`std::env::consts::ARCH`): a GH200 is a Grace computer, and the engine has not run on one.
+/// The architectures of the computers the engine has run a model on (`std::env::consts::ARCH`): a GH200 is a Grace computer, and the engine has not run on one. Adding one takes a run on its GPU
+/// (a GH200, a DGX Spark, a Jetson Thor), which CI has none of.
 pub const ARCHS: &[&str] = &["x86_64"];
+
+/// The architectures CI builds the engine on and runs its host-side unit tests on, with no GPU (ci.yml: `ubuntu-24.04-arm` for aarch64): what a refusal by `ARCHS` says is proven there, and
+/// what is not. It proves the build and the tests; it is not a run on a GPU, so it adds nothing to `ARCHS`.
+pub const ARCHS_BUILT: &[&str] = &["x86_64", "aarch64"];
 
 /// The most positions the KV cache's tables cover.
 pub const MAX_CONTEXT: usize = crate::kvcal::TIERS[crate::kvcal::TIERS.len() - 1];
@@ -185,8 +190,13 @@ fn refusal_on(table: &[Entry], archs: &[&str], g: &Gpu, arch: &str, asked: bool,
         ));
     }
     if !archs.contains(&arch) {
+        let what = if ARCHS_BUILT.contains(&arch) {
+            format!("this engine builds and passes its unit tests on {arch} computers (CI, without a GPU), but has not run a model on one yet ({})", g.name)
+        } else {
+            format!("this engine has not run on {arch} computers yet ({})", g.name)
+        };
         return Some(cannot(
-            format!("this engine has not run on {arch} computers yet ({})", g.name),
+            what,
             instead(
                 &format!("It runs on {} computers so far; vLLM runs the model here", archs.join(" and ")),
                 &format!("It runs on {} computers so far; {FULL_TOOL}", archs.join(" and ")),
@@ -496,6 +506,10 @@ mod tests {
         // a computer that is not x86-64 (a GH200 is a Grace and a Hopper: it has not run there)
         let arm = said(gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "aarch64").unwrap();
         assert!(arm.0 == 3 && arm.1.contains("aarch64") && arm.1.contains("GH200"), "{arm:?}");
+        // what CI proves of aarch64 is said (the build and the unit tests), and what it does not (a run on a GPU); a computer CI does not build on is only "not run"
+        assert!(arm.1.contains("builds and passes its unit tests") && arm.1.contains("has not run a model"), "{arm:?}");
+        let other = said(gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "riscv64").unwrap();
+        assert!(other.1.contains("has not run on riscv64 computers yet") && !other.1.contains("unit tests"), "{other:?}");
         // Blackwell, Ampere's A10, Turing are not among the capabilities it has run on
         for (name, cc) in [("NVIDIA B200", (10, 0)), ("NVIDIA GeForce RTX 5090", (12, 0)), ("NVIDIA A10", (8, 6))] {
             let r = said(gpu(name, cc, 24, 13000), "x86_64").unwrap();
