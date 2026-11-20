@@ -56,7 +56,6 @@ def main():
         assert {"ollama", "openai"} <= {m.get("owned_by") for m in models.values()}, json.dumps(list(models.values()))[:2000]
 
     for owner in ("ollama", "openai"):
-        @check
         def chat_through(owner=owner):
             ms = [m for m in models.values() if m.get("owned_by") == owner]
             assert ms, owner
@@ -67,6 +66,7 @@ def main():
             assert m and m.strip(), r.text
 
         chat_through.__name__ = f"chat_through_{owner}"
+        check(chat_through)
 
     @check
     def a_streamed_chat():
