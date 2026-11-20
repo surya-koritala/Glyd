@@ -10,9 +10,10 @@
 //!       the regression gate: each metric of each load of CAND against BASE's, a regression where it is worse by more than the noise band: z times the measured spread of the runs of both files
 //!       (the standard error of two medians) and, where DIR holds earlier results on the same machine, of the medians from one session to another. Exit 0 within the band, 1 a regression, 2 not
 //!       decided (a result taken while the GPU was busy). --synthetic F: CAND's speeds scaled by F first (the gate's own test: 0.9 is a 10% slowdown).
-//!   glyd-engine bench --bar ENGINE.json[,MORE] OTHER.json[,MORE] [--gpu-name NAME --cc M.m] [--noise 0.03]
+//!   glyd-engine bench --bar ENGINE.json[,MORE] OTHER.json[,MORE] [--gpu-name NAME --cc M.m] [--family NAME] [--released DATE] [--stale-ok] [--noise 0.03]
 //!       the speed bar of src/machine.rs (`GPUS`): at every load the first server's decode tokens/s (a user and in all) and its time to first token at least the second's (within the noise), its peak
-//!       memory lower; a pass prints the line for `GPUS`. Exit 0 or 1 (docs/adding-a-gpu.md).
+//!       memory lower; a pass prints the line for `GPUS` (per (GPU, family): `--family`, default the file's, else Qwen3). The model measured must have been released within 6 months (`--released`, or the file's):
+//!       exit 2 for an older one, unless `--stale-ok`. Exit 0, 1 or 2 (docs/adding-a-gpu.md).
 
 use crate::args::Args;
 use crate::ffi::{err, Error, Result};
@@ -696,7 +697,8 @@ fn from_summary(v: &Value) -> Value {
         .flatten()
         .map(|c| json!({"prompt": c["prompt"], "conc": c["conc"], "errors": c["errors"].as_u64().unwrap_or(0), "decode_tps_per_user": one(c, "decode_tps_per_user"), "agg_tps": one(c, "agg_tps"), "ttft_s": one(c, "ttft_s")}))
         .collect();
-    json!({"schema": SCHEMA, "peak_mib": v["peak_mib"], "config": {"runs": n}, "legacy_summary": true, "cells": cells, "machine": {}, "model": {}, "contention": {"busy_before": false}})
+    // (the model it was measured on, when that model was released and its family, where the file says: `gpu_bar.py --summarize ... --model ID --released DATE --family NAME`)
+    json!({"schema": SCHEMA, "peak_mib": v["peak_mib"], "config": {"runs": n}, "legacy_summary": true, "cells": cells, "machine": {}, "model": {"id": v["model"], "released": v["released"], "family": v["family"]}, "contention": {"busy_before": false}})
 }
 
 /// (metric, higher is better)
@@ -869,6 +871,25 @@ fn merged(paths: &str) -> Result<Value> {
     Ok(first)
 }
 
+/// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+}
+
+/// The days between a release date ("2025-04-27", or the Hub's "2025-04-27T03:42:21.000Z") and `today` (days since the epoch); None where it does not parse.
+pub fn age_days(released: &str, today: i64) -> Option<i64> {
+    let mut p = released.get(..10)?.split('-').map(|x| x.parse::<i64>());
+    let (y, m, d) = (p.next()?.ok()?, p.next()?.ok()?, p.next()?.ok()?);
+    ((1..=12).contains(&m) && (1..=31).contains(&d)).then(|| today - days_from_civil(y, m, d))
+}
+
+/// The owner's rule: a measurement's model was released within the last 6 months.
+pub const MAX_MODEL_AGE_DAYS: i64 = 183;
+
 /// `bench --bar ENGINE OTHER`: see the top of this file.
 pub fn bar(a: &Args) -> Result<i32> {
     let (e, v) = (merged(a.need(1, "ENGINE.json")?)?, merged(a.need(2, "OTHER.json")?)?);
@@ -876,6 +897,21 @@ pub fn bar(a: &Args) -> Result<i32> {
     let name = a.flag("gpu-name").map(str::to_string).or_else(|| e["machine"]["gpu"].as_str().map(str::to_string)).unwrap_or_default();
     let cc =
         a.flag("cc").map(str::to_string).or_else(|| e["machine"]["compute_capability"].as_str().map(str::to_string)).ok_or_else(|| Error("--cc M.m".into()))?;
+    let family =
+        a.flag("family").map(str::to_string).or_else(|| e["model"]["family"].as_str().map(str::to_string)).unwrap_or_else(|| crate::machine::QWEN3.to_string());
+    let released = a.flag("released").map(str::to_string).or_else(|| e["model"]["released"].as_str().map(str::to_string));
+    let model = e["model"]["id"].as_str().map(str::to_string);
+    let today = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64 / 86_400);
+    let old = match released.as_deref().and_then(|r| age_days(r, today)) {
+        Some(age) => {
+            println!("measured on {} (family {family}), released {} days ago", model.as_deref().unwrap_or("a model the file does not name"), age);
+            age > MAX_MODEL_AGE_DAYS
+        }
+        None => {
+            println!("NOTE: the file does not say when its model was released (--released DATE, or `--summarize ... --released DATE` / the Hub's createdAt)");
+            !a.has("stale-ok")
+        }
+    };
     let n = |x: &Value| x["config"]["runs"].as_u64().unwrap_or(0);
     println!("{} runs of the first server, {} of the second: medians (the first's standard deviation as a percent of its mean in brackets)", n(&e), n(&v));
     println!("{:<14}{:>30}{:>30}{:>30}", "load", "decode/user", "decode total", "first token (s)");
@@ -912,8 +948,15 @@ pub fn bar(a: &Args) -> Result<i32> {
         println!("\nFAILS the bar:\n  {}", fails.join("\n  "));
         return Ok(1);
     }
+    if old && !a.has("stale-ok") {
+        println!("\nPasses the bar, but its model is older than {MAX_MODEL_AGE_DAYS} days (6 months): no line. --stale-ok keeps it, for a family with no newer model.");
+        return Ok(2);
+    }
+    if old {
+        println!("\nNOTE: --stale-ok: the model is older than 6 months (or its date is not given); the family has no newer one.");
+    }
     let (major, minor) = cc.split_once('.').unwrap_or((&cc, "0"));
-    println!("\nPASSES the bar. For GPUS in glyd-engine/src/machine.rs:\n    (\"{}\", ({major}, {minor})),", gpu_word(&name));
+    println!("\nPASSES the bar for {family} models. For GPUS in glyd-engine/src/machine.rs (a GPU already there: add the family to its line):\n    (\"{}\", ({major}, {minor}), &[\"{family}\"]),", gpu_word(&name));
     Ok(0)
 }
 
@@ -994,6 +1037,20 @@ mod tests {
         assert!(worse > tight);
         let (_, _, _, wide, source) = judge(&b, &c, &[60.0, 58.5, 61.5, 59.0, 60.5], 3.0, 0.003, true).unwrap();
         assert!(wide > tight && source == "the sessions' spread", "{wide}");
+    }
+
+    /// The owner's rule: a measurement's model was released within the last 6 months; dates are read as the Hub's createdAt gives them.
+    #[test]
+    fn a_models_age_is_counted_in_days_from_its_release() {
+        let today = days_from_civil(2026, 11, 20);
+        assert_eq!(age_days("2026-11-20", today), Some(0));
+        assert_eq!(age_days("2026-05-23T01:17:15.000Z", today), Some(181));
+        assert_eq!(age_days("2025-04-27T03:42:21.000Z", today), Some(572));
+        assert!(age_days("2026-05-23", today).unwrap() <= MAX_MODEL_AGE_DAYS && age_days("2026-05-19", today).unwrap() > MAX_MODEL_AGE_DAYS);
+        assert_eq!(age_days("not a date", today), None);
+        assert_eq!(age_days("2026-13-01", today), None);
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
     }
 
     #[test]

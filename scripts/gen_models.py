@@ -132,11 +132,11 @@ def main():
     mach = read("machine.rs")
     drv = const_int(mach.replace("pub const DRIVER_MIN: i32", "pub const DRIVER_MIN: usize"), "DRIVER_MIN")
     archs = re.search(r"pub const ARCHS: &\[&str\] = &\[(.*?)\];", mach)
-    gpus = re.search(r"pub const GPUS: &\[\(&str, \(i32, i32\)\)\] = &\[(.*?)\n\];", mach, re.S)
+    gpus = re.search(r"pub const GPUS: &\[Entry\] = &\[(.*?)\n\];", mach, re.S)
     if not archs or not gpus:
         die("ARCHS or GPUS not found in machine.rs")
     arch_list = re.findall(r'"([^"]+)"', archs.group(1))
-    gpu_list = re.findall(r'\("([^"]+)", \((\d+), (\d+)\)\)', gpus.group(1))
+    gpu_list = re.findall(r'\("([^"]+)", \((\d+), (\d+)\), &\[([^\]]*)\]\)', gpus.group(1))
     kv = read("kvcal.rs")
     tiers = re.search(r"pub const TIERS: \[usize; \d+\] = \[([0-9_, ]+)\]", kv)
     if not tiers:
@@ -184,9 +184,9 @@ def main():
     o.append("## The machine\n")
     o.append(f"- NVIDIA, compute capability 8.0 or newer (Ampere and later), a driver for CUDA {drv // 1000} (driver 580 or newer).")
     o.append("- Computer architecture: " + ", ".join(arch_list) + ".")
-    o.append("- `glyd run` hands a model to the engine by default only on the GPUs below, which are the ones the engine was measured on against vLLM (`machine.rs`, `GPUS`). `glyd-engine` itself runs on any GPU that fits the first rule.")
-    for name, a, b in gpu_list:
-        o.append(f"  - {name} (compute capability {a}.{b})")
+    o.append("- `glyd run` hands a model to the engine by default only on the GPUs below, which are the (GPU, model family) pairs the engine was measured on against vLLM (`machine.rs`, `GPUS`; the lossy levels are the engine's wherever it runs). `glyd-engine` itself runs on any GPU that fits the first rule.")
+    for name, a, b, fams in gpu_list:
+        o.append(f"  - {name} (compute capability {a}.{b}): " + ", ".join(re.findall(r'"([^"]+)"', fams)) + " models")
     o.append("- AMD GPUs run in development builds only (`GLYD_HIP=1`). Apple GPUs and a machine with no GPU are refused with the reason. Nothing is built or tested for Windows or macOS.")
     o.append("")
     text = "\n".join(o) + "\n"

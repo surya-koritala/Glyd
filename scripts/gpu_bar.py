@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The speed bar of glyd-engine/src/machine.rs (GPUS), now the harness's: `glyd-engine bench --bar`.
 
-    python3 scripts/gpu_bar.py ENGINE.json VLLM.json "NVIDIA GeForce RTX 4080 SUPER" 8.9
+    python3 scripts/gpu_bar.py ENGINE.json VLLM.json "NVIDIA GeForce RTX 4080 SUPER" 8.9 [--family Qwen3] [--released YYYY-MM-DD] [--stale-ok]
     python3 scripts/gpu_bar.py e1.json,e2.json,... v1.json,v2.json,... "NVIDIA GeForce RTX 4080 SUPER" 8.9   # the runs of several files together
 
 ENGINE.json and VLLM.json are results of `glyd-engine bench --against URL --suite bar` (glyd-bench/1, docs/bench.md), one for each server, measured by the one program: the same prompts, loads and
@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
-if len(sys.argv) not in (3, 5):
+if len(sys.argv) < 3:
     sys.exit(__doc__)
 candidates = [os.environ.get("GLYD_ENGINE_BIN"), os.path.join(here, "..", "target", "release", "glyd-engine"), shutil.which("glyd-engine")]
 engine = next((c for c in candidates if c and os.path.isfile(c)), None)
@@ -26,6 +26,9 @@ if engine is None and shutil.which("glyd"):
 if engine is None:
     sys.exit("gpu_bar.py: no glyd-engine (set GLYD_ENGINE_BIN, build it with cargo build --release -p glyd-engine, or install it)")
 cmd = [engine, "bench", "--bar", sys.argv[1], sys.argv[2]]
-if len(sys.argv) == 5:
-    cmd += ["--gpu-name", sys.argv[3], "--cc", sys.argv[4]]
+rest = sys.argv[3:]
+if len(rest) >= 2 and not rest[0].startswith("--"):
+    cmd += ["--gpu-name", rest[0], "--cc", rest[1]]
+    rest = rest[2:]
+cmd += rest  # (--family NAME, --released DATE, --stale-ok, --noise X: glyd-engine bench --bar)
 sys.exit(subprocess.call(cmd))
