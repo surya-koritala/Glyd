@@ -25,7 +25,19 @@ impl Tok {
     }
 
     fn of(t: Tokenizer, dir: &Path) -> Tok {
-        Tok { t, ends: ends_of(dir), grammars: std::sync::OnceLock::new() }
+        let mut ends = ends_of(dir);
+        if ends.is_empty() {
+            // (the tokenizer's own end token, as tokenizer_config.json names it)
+            let name = std::fs::read_to_string(dir.join("tokenizer_config.json")).ok().and_then(|t| glyd_gpu::json::parse(&t).ok()).and_then(|c| {
+                match c.get("eos_token") {
+                    Some(glyd_gpu::json::Value::String(s)) => Some(s.clone()),
+                    Some(o) => o.get("content").and_then(glyd_gpu::json::Value::as_str).map(str::to_string),
+                    None => None,
+                }
+            });
+            ends.extend(name.and_then(|n| t.token_to_id(&n)));
+        }
+        Tok { t, ends, grammars: std::sync::OnceLock::new() }
     }
 
     /// The token grammars are compiled against: the byte strings of the tokenizer's tokens, as wide as the model's rows of logits (`vocab`: the padding after the tokenizer's tokens is never chosen), and the end
@@ -149,9 +161,14 @@ fn ends_of(dir: &Path) -> Vec<u32> {
     let Some(config) = read("config.json") else { return Vec::new() };
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
     let mut ends = crate::weights::eos_ids(&config, generation.as_deref());
-    if ends.is_empty() {
-        if let Some(t) = config.get("text_config") {
-            ends = crate::weights::eos_ids(t, None);
+    // (the config's own end tokens, a number or a list; or its text model's)
+    for c in [Some(&config), config.get("text_config")].into_iter().flatten() {
+        if ends.is_empty() {
+            match c.get("eos_token_id") {
+                Some(glyd_gpu::json::Value::Number(n)) => ends.extend(n.parse::<i64>().ok()),
+                Some(glyd_gpu::json::Value::Array(a)) => ends.extend(a.iter().filter_map(glyd_gpu::json::Value::as_i64)),
+                _ => {}
+            }
         }
     }
     ends.into_iter().filter_map(|e| u32::try_from(e).ok()).collect()

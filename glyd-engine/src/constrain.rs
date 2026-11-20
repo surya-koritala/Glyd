@@ -579,8 +579,12 @@ mod tests {
             for text in [doc, compact.as_str()] {
                 let ids = tok.encode_with(text, false).unwrap();
                 let mut gram = c.start();
+                let (mut total, mut worst) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
                 for (i, &t) in ids.iter().enumerate() {
+                    let began = std::time::Instant::now();
                     let ok = gram.allowed();
+                    total += began.elapsed();
+                    worst = worst.max(began.elapsed());
                     assert!(
                         ok[t as usize],
                         "{}: token {i} ({:?}, after {:?}) is not allowed",
@@ -590,6 +594,8 @@ mod tests {
                     );
                     gram.consume(t);
                 }
+                // (what the draw waits for, the allowed tokens as a list included, in a build with no optimization: more than the masks)
+                eprintln!("{}: {} tokens, a step waits {:?} on average, {:?} at most", dir.display(), ids.len(), total / ids.len() as u32, worst);
                 assert!(gram.accepting(), "{}: the document is not whole", dir.display());
                 assert!(gram.allowed().iter().filter(|&&x| x).count() <= 8, "{}: after the document only the end (and white space) may follow", dir.display());
             }
