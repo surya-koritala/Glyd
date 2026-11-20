@@ -4,6 +4,9 @@ Two rules above all: nothing may fail to read back what an earlier version wrote
 quality is a measurement someone can repeat. Open an issue before anything beyond a small fix. Security problems go to
 [SECURITY.md](SECURITY.md), not a public issue.
 
+New here? Issues labeled [good first issue](https://github.com/surya-koritala/Glyd/labels/good%20first%20issue) are small and say
+which files to start in. The labels are listed in [docs/labels.md](docs/labels.md). Questions about an issue go in the issue.
+
 ## Build
 
 ```bash
