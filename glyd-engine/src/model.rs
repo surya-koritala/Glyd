@@ -67,6 +67,9 @@ struct Verify {
     count: Buf,
 }
 
+/// The scheduler's types (src/sched.rs owns them; this engine is one `ModelStep` of several).
+pub use crate::sched::{Finish, PrefillJob, Reply, Row, Sample};
+
 /// Sequences a decode step takes at most.
 pub const MAX_ROWS: usize = 8;
 
@@ -112,35 +115,12 @@ struct Part {
     gather_off: usize,
 }
 
-/// One sequence's prompt chunk in a batch of them: `tokens` at positions `start` on, into `pages`; where `last`, the token after the chunk is wanted.
-pub struct PrefillJob<'a> {
-    pub pages: &'a [i32],
-    pub start: usize,
-    pub tokens: &'a [u32],
-    pub last: bool,
-}
-
 /// A prompt chunk's attention: the chunk starts at `start` in its sequence; the earlier pages are the list at `gather` (int32 on the device), the chunk's own keys go to the staging cache at the slots `lslots`.
 #[derive(Clone, Copy)]
 pub(crate) struct Flash {
     pub start: usize,
     pub gather: u64,
     pub lslots: u64,
-}
-
-/// One sequence's row of a decode step: the token whose keys and values are written at `pos` (the sequence's next position) and the pages of the sequence (at least pos / 16 + 1).
-pub struct Row<'a> {
-    pub token: u32,
-    pub pos: usize,
-    pub pages: &'a [i32],
-}
-
-/// A sampled token with its logit and, where asked, its logprob.
-#[derive(Clone, Copy, Debug)]
-pub struct Sample {
-    pub token: u32,
-    pub logit: f32,
-    pub logprob: Option<f32>,
 }
 
 /// Row `row`'s TOPK candidates (token, logit) from the pinned bytes at `p`: the token indices (int32) from byte `tok` on and the logits (f32) from byte `val` on, each row's TOPK after the row before's.
@@ -206,26 +186,6 @@ impl TopGpu {
         // SAFETY: the pinned bytes were copied behind the step (the stream synchronized since): TOPK tokens (int32), TOPK logits (f32), then the sum (f64) where asked.
         unsafe { Some(Top { cands: read_candidates(p, 0, 4 * TOPK, 0), mass: need.mass.then(|| *(p.add(8 * TOPK) as *const f64)) }) }
     }
-}
-
-/// What a reply is asked to be: sampling, length, and whether the end-of-sequence token ends it.
-#[derive(Clone, Debug, Default)]
-pub struct Reply {
-    pub params: crate::sampler::Params,
-    pub max_new: usize,
-    pub ignore_eos: bool,
-    /// Log-probabilities asked for: the number of likeliest tokens with each (0: the chosen token's alone).
-    pub logprobs: Option<usize>,
-    /// Tokens besides the end-of-sequence tokens that end the reply (vLLM's `stop_token_ids`); not part of its text.
-    pub stop_ids: Vec<u32>,
-}
-
-/// How a reply ended: the model ended it, `max_new` or the context was reached, or the caller stopped it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Finish {
-    Stop,
-    Length,
-    Stopped,
 }
 
 /// 64-row groups of the embedding decoded at once for a prompt chunk.
