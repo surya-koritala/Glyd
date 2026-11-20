@@ -204,6 +204,14 @@ REQUESTS = [
     {"model": "m", "prompt": "Once upon a time", "max_tokens": 16, "logit_bias": {"50256": -100, "11": 5}, "allowed_token_ids": [1, 2, 3], "suffix": " the end", "echo": True, "best_of": 1},
     {"model": "m", "messages": [{"role": "user", "content": "Think"}], "chat_template_kwargs": {"enable_thinking": False, "x": [1, {"y": None}]}, "reasoning_effort": "low", "documents": [{"title": "t", "text": "x"}], "min_tokens": 2, "top_k": 40, "min_p": 0.05, "repetition_penalty": 1.1},
     # Anthropic Messages
+    # OpenAI Responses
+    {"model": "m", "instructions": "Be brief.", "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}], "max_output_tokens": 50, "temperature": 0.3, "text": {"format": {"type": "json_schema", "name": "p", "schema": SCHEMA, "strict": True}}},
+    {"model": "m", "input": "Weather in Paris?", "tools": [{"type": "function", "name": "get_weather", "description": "w", "parameters": TOOL["function"]["parameters"]}], "tool_choice": "auto", "reasoning": {"effort": "low"}},
+    {"model": "m", "input": [{"type": "message", "role": "user", "content": "Go"}, {"type": "function_call", "call_id": "c1", "name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}, {"type": "function_call_output", "call_id": "c1", "output": "12C"}]},
+    # Ollama
+    {"model": "m", "messages": [{"role": "user", "content": "Hi", "images": []}], "stream": False, "options": {"temperature": 0.5, "num_predict": 50, "num_ctx": 4096, "stop": ["x"], "seed": 3}, "format": "json", "think": False},
+    {"model": "m", "messages": [{"role": "user", "content": "Go"}], "tools": [TOOL], "format": SCHEMA, "keep_alive": "5m"},
+    {"model": "m", "prompt": "Why is the sky blue?", "system": "Be brief.", "stream": True, "raw": False, "options": {"top_k": 20, "repeat_penalty": 1.1}},
     {"model": "m", "max_tokens": 100, "system": [{"type": "text", "text": "Be brief."}], "messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}], "stop_sequences": ["x"], "temperature": 0.5},
     {"model": "m", "max_tokens": 100, "messages": [{"role": "user", "content": "Weather?"}, {"role": "assistant", "content": [{"type": "text", "text": "Checking."}, {"type": "tool_use", "id": "tu_1", "name": "get_weather", "input": {"city": "Paris"}}]}, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": [{"type": "text", "text": "12C"}]}]}],
      "tools": [{"name": "get_weather", "description": "w", "input_schema": TOOL["function"]["parameters"]}], "tool_choice": {"type": "tool", "name": "get_weather"}, "thinking": {"type": "enabled", "budget_tokens": 1024}},

@@ -4561,3 +4561,25 @@ pub(crate) mod tests {
         assert_eq!(c.0, 1, "the sequence asked to end was not run");
     }
 }
+
+/// The translations of the other APIs' request bodies into the completions form, as the fuzz targets (fuzz/) call them: Anthropic's Messages, OpenAI's Responses, Ollama's chat and generate.
+#[doc(hidden)]
+pub mod fuzzing {
+    use glyd_gpu::json::Value;
+
+    pub fn anthropic(v: &Value) -> Result<Value, String> {
+        super::anthropic::openai_of_with(v, false)
+    }
+
+    pub fn responses(v: &Value) -> Result<Value, String> {
+        super::responses::chat_of(v)
+    }
+
+    pub fn ollama_chat(v: &Value) -> Result<Value, String> {
+        super::ollama::chat_of(v)
+    }
+
+    pub fn ollama_generate(v: &Value) -> Result<(Value, bool), String> {
+        super::ollama::generate_of(v)
+    }
+}
