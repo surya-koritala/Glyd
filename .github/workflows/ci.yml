@@ -123,9 +123,11 @@ jobs:
         shell: bash
         run: cargo build --profile ci -p glyd --bin glyd -p glyd-store -p glyd-engine
       - name: Unit tests of the codec, the store and glyd-gpu
+        timeout-minutes: 15
         shell: bash
         run: cargo test --profile ci -p glyd -p glyd-store -p glyd-gpu --lib --bins
       - name: The engine's tests (the development build, the release build)
+        timeout-minutes: 20
         shell: bash
         run: |
           cargo test --profile ci -p glyd-engine
