@@ -1,7 +1,7 @@
 # Serving and the APIs
 
 ```bash
-glyd-engine serve Qwen/Qwen3-8B
+glyd-engine serve google/gemma-4-12B-it
 ```
 
 `serve` loads the model and answers on `http://127.0.0.1:8000`. The chat page is at `/`. `run` starts the same server.
@@ -13,14 +13,14 @@ glyd-engine serve Qwen/Qwen3-8B
 | `--port N` | The port. Without it, 8000, then each next port up to 8020 that is free. With it, that port or a refusal. |
 | `--host H` | Listen on H. Without it, only this computer, and a request whose Host or Origin is not this computer's is refused (421, 403). With it, those checks are off. |
 | `--context N` | The context in tokens (`--ctx` is the same). Without it, what fits: [Models](models.md) has each family's default. |
-| `--users N` | How many requests run at once, 1 to 8, 4 by default. Qwen3 at penguin batches them; other families take one at a time and the rest wait in order. |
+| `--users N` | How many requests run at once, 1 to 8, 4 by default. Batching runs on the Qwen3 path only; other families take one request at a time and the rest wait in order. |
 | `--host-memory GIB` | The computer's memory a mixture of experts may use for its experts. |
 | `MODEL:LEVEL` | A level: [Choosing a level](levels.md). |
 
 ## The key
 
 ```bash
-GLYD_API_KEY=secret glyd-engine serve Qwen/Qwen3-8B
+GLYD_API_KEY=secret glyd-engine serve google/gemma-4-12B-it
 ```
 
 With a key, every path under `/v1` needs `Authorization: Bearer secret`. `/`, `/health` and `/stats` stay open. Put the key in
@@ -47,7 +47,7 @@ curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/
   -d '{"messages":[{"role":"user","content":"Say pong."}],"max_tokens":64}'
 ```
 
-A Qwen3 model thinks before it answers. To turn that off for a request, send
+A thinking model thinks before it answers. To turn that off for a request, send
 `"chat_template_kwargs": {"enable_thinking": false}`; `run` takes `--no-think`.
 
 Errors are OpenAI's shape: `{"error": {"message", "type", "param", "code"}}`. A prompt past the context is 400 with the code
