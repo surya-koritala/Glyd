@@ -282,6 +282,7 @@ impl Gguf {
             None => 32,
         };
         let mut tensors: Vec<Tensor> = Vec::with_capacity(n_tensors as usize);
+        let mut seen = std::collections::HashSet::with_capacity(n_tensors as usize);
         for _ in 0..n_tensors {
             let name = r.string()?;
             let nd = r.u32()?;
@@ -303,7 +304,7 @@ impl Gguf {
                 }
                 None => None,
             };
-            if tensors.iter().any(|t| t.name == name) {
+            if !seen.insert(name.clone()) {
                 return err(format!("{name}: twice in the tensor table"));
             }
             if offset % alignment != 0 {
@@ -367,7 +368,7 @@ impl Gguf {
             context: k("context_length"),
             layers: k("block_count"),
             ffn: k("feed_forward_length"),
-            head_dim: k("attention.key_length").or_else(|| Some(hidden? / heads?)),
+            head_dim: k("attention.key_length").or_else(|| hidden?.checked_div(heads?)),
             eps: self.f64(&format!("{arch}.attention.layer_norm_rms_epsilon")),
             rope_theta: self.f64(&format!("{arch}.rope.freq_base")),
             rope_scaling: self.str(&format!("{arch}.rope.scaling.type")).filter(|s| *s != "none").map(str::to_string),
@@ -773,8 +774,22 @@ pub fn materialize(path: &Path, root: &Path, log: &dyn Fn(&str)) -> Done<PathBuf
     let stem = file.strip_suffix(".gguf").unwrap_or(&file);
     let stem: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '.') { c } else { '_' }).collect();
     let dir = root.join(format!("{stem}-{key}"));
+    // (the directory is the file's own while its length and modification time are the ones it was made from: the key is the header's, which a rewrite of the weights in place leaves as it was)
+    let mtime =
+        std::fs::metadata(path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+    let source = json::to_python(
+        &J::Object(vec![
+            ("file".into(), J::String(file.clone())),
+            ("size".into(), J::Number(g.file_len.to_string())),
+            ("mtime_ns".into(), J::Number(mtime.to_string())),
+        ]),
+        2,
+    );
     if dir.join("model.safetensors").exists() && dir.join("config.json").exists() {
-        return Ok(dir);
+        if std::fs::read_to_string(dir.join("gguf-source.json")).is_ok_and(|t| t == source) {
+            return Ok(dir);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
     let io = |e: std::io::Error| Refusal::new(format!("{}: {e}", root.display()), "");
     std::fs::create_dir_all(root).map_err(io)?;
@@ -795,11 +810,7 @@ pub fn materialize(path: &Path, root: &Path, log: &dyn Fn(&str)) -> Done<PathBuf
         ] {
             std::fs::write(tmp.join(name), text).map_err(io)?;
         }
-        std::fs::write(
-            tmp.join("gguf-source.json"),
-            json::to_python(&J::Object(vec![("file".into(), J::String(file.clone())), ("size".into(), J::Number(g.file_len.to_string()))]), 2),
-        )
-        .map_err(io)?;
+        std::fs::write(tmp.join("gguf-source.json"), &source).map_err(io)?;
         write_safetensors(&f, &tmp.join("model.safetensors"))
     })();
     if let Err(e) = made {
@@ -1454,6 +1465,81 @@ mod tests {
                 types.join(" ")
             );
             assert!(d.layers.is_some() && d.hidden.is_some() && d.context.is_some(), "{}", p.display());
+        }
+    }
+
+    #[test]
+    fn hostile_metadata_and_tables_are_errors_or_nothing() {
+        // a head count of 0 with no key length: no head dimension, not a division by zero
+        let mut b = Build::new();
+        b.s("general.architecture", "llama").u32("llama.embedding_length", 64).u32("llama.attention.head_count", 0);
+        assert_eq!(Gguf::parse(&b.bytes()).unwrap().description().unwrap().head_dim, None);
+        // many tensors of the same name: refused at the second, in time linear in their number
+        let mut c = Build::new();
+        for _ in 0..20_000 {
+            c.tensor("same", &[1], 0, &[0; 4]);
+        }
+        let t = std::time::Instant::now();
+        assert!(Gguf::parse(&c.bytes()).unwrap_err().to_string().contains("twice"));
+        assert!(t.elapsed().as_secs() < 5);
+        let mut d = Build::new();
+        for i in 0..20_000 {
+            d.tensor(&format!("t{i}"), &[1], 0, &[0; 4]);
+        }
+        let t = std::time::Instant::now();
+        assert_eq!(Gguf::parse(&d.bytes()).unwrap().tensors.len(), 20_000);
+        assert!(t.elapsed().as_secs() < 5);
+    }
+
+    /// The directory made from a file is made again where the file changed under its header (same length and key, other weights).
+    #[test]
+    fn a_file_changed_in_place_is_read_again() {
+        let dir = temp("again");
+        let file = dir.join("tiny-BF16.gguf");
+        let bytes = tiny_qwen3(BF16, F32);
+        std::fs::write(&file, &bytes).unwrap();
+        let first = materialize(&file, &dir.join("cache"), &|_| {}).unwrap();
+        let weights = |d: &Path| glyd_gpu::safetensors::Checkpoint::open(d).unwrap().read("model.layers.0.self_attn.q_proj.weight").unwrap();
+        let before = weights(&first);
+        let g = Gguf::parse(&bytes).unwrap();
+        let mut changed = bytes.clone();
+        let at = (g.data_offset + g.tensor("blk.0.attn_q.weight").unwrap().offset) as usize;
+        changed[at..at + 2].copy_from_slice(&[0x80, 0x3f]);
+        std::fs::write(&file, &changed).unwrap();
+        // (a later modification time)
+        let t = std::fs::File::options().write(true).open(&file).unwrap();
+        t.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+        let second = materialize(&file, &dir.join("cache"), &|_| {}).unwrap();
+        assert_eq!(second, first);
+        assert_ne!(weights(&second), before);
+        assert_eq!(&weights(&second)[..2], &[0x80, 0x3f]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file with bytes of its header changed at random is read or refused, whatever it holds: never a panic, and what is read is checked against the bytes there are.
+    #[test]
+    fn a_header_with_random_bytes_changed_never_panics() {
+        let good = tiny_qwen3(BF16, F32);
+        let header = Gguf::parse(&good).unwrap().data_offset as usize;
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for _ in 0..20_000 {
+            let mut v = good.clone();
+            for _ in 0..1 + next() % 4 {
+                let at = (next() % header as u64) as usize;
+                v[at] = next() as u8;
+            }
+            if let Ok(g) = Gguf::parse(&v) {
+                let _ = g.description();
+                for t in &g.tensors {
+                    assert!(t.bytes.is_none_or(|b| g.data_offset + t.offset + b <= v.len() as u64));
+                }
+            }
         }
     }
 
