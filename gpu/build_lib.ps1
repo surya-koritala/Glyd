@@ -3,8 +3,7 @@
 # is linked in, so the DLL needs only the driver. The name carries the CUDA major version: libglyd_gpu_cuda13.dll (the .so's name).
 #   powershell -ExecutionPolicy Bypass -File gpu\build_lib.ps1 [OUT_DIR]      (default: next to this script)
 # GLYD_GPU_RELEASE=1: machine code for sm_80/86/89/90a/100/120 and Ampere's PTX, an nvcc without Blackwell refused; kernel
-# names are the source's in every build. The DLL always exports the nine
-# functions the Linux release keeps (exports.def below); the rest are reached through glyd_gpu_table.
+# names are the source's in every build. The DLL exports the functions of glyd_gpu.h by their names (__declspec(dllexport) in glyd_gpu.cu).
 param([string]$Out = $PSScriptRoot)
 $ErrorActionPreference = 'Stop'
 $nvcc = (Get-Command nvcc.exe).Source
@@ -23,12 +22,10 @@ $flags = @('-O3', '-std=c++20', '--expt-relaxed-constexpr',
     '-D__CUDA_NO_HALF_OPERATORS__', '-D__CUDA_NO_HALF_CONVERSIONS__', '-D__CUDA_NO_BFLOAT16_CONVERSIONS__', '-D__CUDA_NO_HALF2_OPERATORS__',
     '-gencode', 'arch=compute_80,code=sm_80', '-gencode', 'arch=compute_86,code=sm_86', '-gencode', 'arch=compute_89,code=sm_89',
     '-gencode', 'arch=compute_90a,code=sm_90a') + $blackwell + $ptx + $release
-@('EXPORTS', 'glyd_gpu_api_version', 'glyd_gpu_error_string', 'glyd_gpu_mma_linear_workspace', 'glyd_gpu_mma_linear', 'glyd_gpu_mma12_linear_workspace',
-    'glyd_gpu_mma12_linear', 'glyd_gpu_mma_unpack', 'glyd_gpu_mma12_unpack', 'glyd_gpu_table') | Set-Content -Encoding ascii "$tmp\exports.def"
 $threads = if ($env:GLYD_GPU_NVCC_THREADS) { $env:GLYD_GPU_NVCC_THREADS } else { '0' }
 & $nvcc @flags --threads $threads -c -o "$tmp\glyd_gpu.obj" "$PSScriptRoot\glyd_gpu.cu"
 if ($LASTEXITCODE) { throw 'nvcc: the compile failed' }
-& $nvcc @flags -shared -cudart static -Xlinker "/DEF:$tmp\exports.def" -o "$Out\libglyd_gpu_cuda$major.dll" "$tmp\glyd_gpu.obj"
+& $nvcc @flags -shared -cudart static -o "$Out\libglyd_gpu_cuda$major.dll" "$tmp\glyd_gpu.obj"
 if ($LASTEXITCODE) { throw 'nvcc: the link failed' }
 Remove-Item -Recurse -Force $tmp
 "$Out\libglyd_gpu_cuda$major.dll"

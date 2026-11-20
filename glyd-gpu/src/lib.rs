@@ -200,30 +200,6 @@ macro_rules! api {
 }
 pub(crate) use api;
 
-/// A function's id in a library's table (`glyd_gpu_table`): the 32-bit FNV-1a hash of its name without `glyd_gpu_`
-/// (an id of 0 made 1), so that no name of a function is in the library.
-pub(crate) fn table_id(name: &str) -> u32 {
-    let name = name.strip_prefix("glyd_gpu_").unwrap_or(name);
-    let mut h: u32 = 2166136261;
-    for b in name.bytes() {
-        h = (h ^ b as u32).wrapping_mul(16777619);
-    }
-    if h == 0 {
-        1
-    } else {
-        h
-    }
-}
-
-/// One pair of a library's table: a function's id and address (ending with id 0).
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Entry {
-    id: u32,
-    reserved: u32,
-    function: *const c_void,
-}
-
 api! { Api, DECLARED;
     fn glyd_gpu_api_version() -> c_int;
     fn glyd_gpu_cuda_version() -> c_int;
@@ -529,26 +505,7 @@ impl Library {
         // SAFETY: the library's C API is the one declared above (its version checked); a library refused is closed
         // before any other of its functions is called (none of its runtime left in the process).
         let api = match v == API_VERSION {
-            true => unsafe {
-                let t = dl::sym(h, "glyd_gpu_table\0");
-                if t.is_null() {
-                    Err(format!("{path}: no table of functions"))
-                } else {
-                    let table = std::mem::transmute::<*mut c_void, unsafe extern "C" fn(c_int) -> *const Entry>(t)(API_VERSION);
-                    if table.is_null() {
-                        Err(format!("{path}: its table is for another version of the C API"))
-                    } else {
-                        let mut entries = Vec::new();
-                        let mut i = 0;
-                        while (*table.add(i)).id != 0 {
-                            entries.push(*table.add(i));
-                            i += 1;
-                        }
-                        Api::load(&|name| entries.iter().find(|e| e.id == table_id(name)).map_or(std::ptr::null_mut(), |e| e.function as *mut c_void))
-                            .map_err(|name| format!("{path}: no {name}"))
-                    }
-                }
-            },
+            true => unsafe { Api::load(&|name| dl::sym(h, &format!("{name}\0"))).map_err(|name| format!("{path}: no {name}")) },
             false => Err(format!("{path}: its C API is version {v}, this crate's {API_VERSION}: take the library of this crate's release (gpu/build_lib.sh)")),
         };
         match api {
