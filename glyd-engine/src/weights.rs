@@ -76,6 +76,9 @@ impl Config {
         }
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
         let heads = u("num_attention_heads")?;
+        if heads == 0 {
+            return err(format!("{label}: num_attention_heads: 0"));
+        }
         let head_dim = v.get("head_dim").and_then(Value::as_u64).map(|x| x as usize).unwrap_or(u("hidden_size")? / heads);
         if v.get("rope_scaling").is_some_and(|r| *r != Value::Null) {
             return err(format!("{label}: rope_scaling: not supported yet"));
@@ -1363,6 +1366,18 @@ mod tests {
         std::fs::write(dir.join("config.json"), r#"{"architectures":["LlamaForCausalLM"]}"#).unwrap();
         assert!(Config::load(&dir).unwrap_err().to_string().contains("Qwen3 dense"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A config.json with no attention heads was a division by zero (the head's width is the hidden size over them).
+    #[test]
+    fn a_qwen3_config_with_no_heads_is_an_error() {
+        let c = |heads: &str| {
+            format!(
+                r#"{{"architectures":["Qwen3ForCausalLM"],"hidden_size":1024,"num_hidden_layers":28,"num_attention_heads":{heads},"num_key_value_heads":8,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960}}"#
+            )
+        };
+        assert!(Config::parse(&c("0"), "config.json", None).unwrap_err().to_string().contains("num_attention_heads"));
+        assert_eq!(Config::parse(&c("16"), "config.json", None).unwrap().head_dim, 64);
     }
 
     /// bf16 weights from a fixed seed: most near 2^-6 (a trained matrix's exponents), `wild` of them (a share 0 to 1) any bit pattern at all.
