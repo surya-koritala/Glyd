@@ -94,7 +94,7 @@ fn run() -> Result<()> {
         Some("costs") => glyd_engine::costs::costs_cmd(&a),
         Some("rates") => glyd_engine::costs::tiers_cmd(&a),
         // what a run of MODEL would do on this machine (or a described one), before anything is downloaded
-        Some("fit") => glyd_engine::plan::fit_cmd(&a),
+        Some("fit") => std::process::exit(glyd_engine::plan::fit_cmd(&a)),
         // a range of a model's layers as a process: glyd-range/1 on the standard input and output (docs/range-worker.md)
         Some("rangeworker") => glyd_engine::dynamic::range::worker(&a),
         // Qwen3.8-Flash-Next behind glyd-hummingbird's tools/qwen_shim.py: one JSON request a line on stdin, one answer a line on stdout
