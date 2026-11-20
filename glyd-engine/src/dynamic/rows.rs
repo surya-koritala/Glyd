@@ -112,15 +112,17 @@ impl Dyn {
         pg.tabs[slot][pg.group[ring]].ptr
     }
 
-    /// Whether this description's keys and values can be paged: every operation that touches a ring reads it through a block table (Gemma 4's), with no draft model, the whole model on one GPU.
+    /// Whether this description's keys and values can be paged: every operation that touches a ring reads it through a block table (Gemma 4's, the Qwen3.5 layout's, Muse Spark's), with no draft
+    /// model, the whole model on one GPU.
     fn pageable(&self) -> bool {
         let d = &self.big.d;
         self.draft.is_none()
             && self.stage.first
             && self.stage.last
-            && std::iter::once(&d.first)
-                .chain(d.layers.iter().flatten())
-                .all(|op| op.ring().is_none() || matches!(op, Op::QkvPrep { .. } | Op::Attention { .. }))
+            && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| {
+                op.ring().is_none()
+                    || matches!(op, Op::QkvPrep { .. } | Op::Attention { .. } | Op::Prep35 { .. } | Op::Attn35 { .. } | Op::MuseQk { .. } | Op::MuseAttn { .. })
+            })
             && d.layers.iter().flatten().any(|op| op.ring().is_some())
             && crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
     }
