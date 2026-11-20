@@ -8,6 +8,10 @@ every earlier format.
 
 ## Unreleased
 
+- Model names: `glyd run qwen3.5`, `glyd pull qwen3.5:27b:swift`, `glyd fit gemma4:31b`. A name is `NAME[:SIZE][:LEVEL]` from a versioned manifest (`glyd-engine/models.json`, in the program; `$GLYD_MODELS` or `<cache>/models.json` names another),
+  a tag of letters only is a level and `:27b` a size, a name with no size is the family's default, and a name that is none says the names and the nearest one. A Hub id, a directory and a GGUF file are taken as before.
+  `glyd pull` downloads a model (the level's pre-packed repo where there is one, else the release's own weights, which the first run packs); `glyd ls [--all] [--json]` lists what the Hub's cache holds with its level and size
+  on disk and the packed copies made for this GPU; `glyd rm NAME|ORG/NAME[:LEVEL]` takes a model out of the cache and its packed copies, and no other model's.
 - One program: `glyd` with the engine linked (the `engine` feature of the root crate, which the engine bundle of a release is built with). `glyd run`, `serve`, `pull`, `fit`, `doctor`,
   `login`, `fetch`, `supports`, `preflight`, `prepare`, `costs`, `rates` and `rangeworker` are its own, with no `glyd-engine` on PATH; `glyd-engine` stays, as a link to `glyd` (or a copy named so), which
   takes the engine's old command line, and as the cargo package. `fit` and `pull` reach the engine where they used to print "Unknown option"; with no engine here the answer says so. `glyd` with no words
