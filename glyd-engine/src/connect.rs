@@ -43,16 +43,40 @@ fn get(addr: SocketAddr, host: &str, path: &str, key: Option<&str>) -> Option<(u
     Some((head.split_whitespace().nth(1)?.parse().ok()?, body.to_string()))
 }
 
-/// The server on `host`: at `port`, or where none is given at the first of 8000 to 8020, then 11434, that answers as Glyd does (`/v1/models` with `owned_by` glyd). `None` where there is none.
+/// What the server's refusal of a missing key says (`server::error_body`'s 401): the mark of a Glyd server among the programs on these ports.
+const KEY_REFUSAL: &str = "the server's key is needed as";
+
+/// Whether `host` is this computer's own (the only place a key is sent).
+fn is_loopback(host: &str) -> bool {
+    ["127.0.0.1", "localhost", "::1", "[::1]"].contains(&host)
+}
+
+/// A model name that is safe to write into a shell line: letters, digits and `. _ : / - @ +` (a repo's or a path's name); else it is not used.
+fn plain_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 200 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:/-@+".contains(&b))
+}
+
+/// The server on `host`: at `port`, or where none is given at the first of 8000 to 8020, then 11434, that answers as Glyd does (`/v1/models` with `owned_by` glyd). `None` where there is none. Each port is asked without
+/// the key first, and the key goes only to a port whose refusal is a Glyd server's, on this computer's own address: another program on these ports is never sent it.
 pub fn find(host: &str, port: Option<u16>, key: Option<&str>) -> Option<Found> {
     let ports: Vec<u16> = port.map_or((DEFAULT_PORT..=DEFAULT_PORT + 20).chain([OLLAMA_PORT]).collect(), |p| vec![p]);
     for p in ports {
         let Some(addr) = (host, p).to_socket_addrs().ok().and_then(|mut a| a.next()) else { continue };
-        let Some((200, body)) = get(addr, &format!("{host}:{p}"), "/v1/models", key) else { continue };
+        let at = format!("{host}:{p}");
+        let body = match get(addr, &at, "/v1/models", None) {
+            Some((200, body)) => body,
+            Some((401, refusal)) if refusal.contains(KEY_REFUSAL) && is_loopback(host) => match key.and_then(|k| get(addr, &at, "/v1/models", Some(k))) {
+                Some((200, body)) => body,
+                _ => continue,
+            },
+            _ => continue,
+        };
         let Ok(v) = glyd_gpu::json::parse(&body) else { continue };
         let first = v.get("data").and_then(|d| d.as_array()).and_then(|d| d.first());
         if let Some(m) = first.filter(|m| m.get("owned_by").and_then(|o| o.as_str()) == Some("glyd")) {
-            return Some(Found { host: host.to_string(), port: p, model: m.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string() });
+            // (a name that is not plain is the server's to say, not a shell's to read: the lines then say MODEL)
+            let model = m.get("id").and_then(|i| i.as_str()).filter(|n| plain_name(n)).unwrap_or("").to_string();
+            return Some(Found { host: host.to_string(), port: p, model });
         }
     }
     None
@@ -105,6 +129,10 @@ pub fn settings(tool: &str, f: &Found, key: bool, linux: bool) -> Option<String>
 /// `glyd connect [TOOL] [--port N] [--host H]`: where a server runs on this computer and what each tool is given; the lines of TOOL alone where one is named.
 pub fn connect(a: &Args) -> i32 {
     let host = a.flag("host").unwrap_or("127.0.0.1").to_string();
+    if host.is_empty() || !host.bytes().all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b)) {
+        eprintln!("glyd: --host {host}: not an address");
+        return 1;
+    }
     let port = match a.flag("port").map(str::parse::<u16>) {
         None => None,
         Some(Ok(p)) => Some(p),
@@ -200,9 +228,45 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let addr = crate::server::listen("127.0.0.1:0", "Qwen/Qwen3-8B", 4096, Some("k".to_string()), true, tx).unwrap();
         assert_eq!(find("127.0.0.1", Some(addr.port()), Some("k")), Some(Found { host: "127.0.0.1".into(), port: addr.port(), model: "Qwen/Qwen3-8B".into() }));
-        // wrong key, or nothing there: none
+        // wrong key, none given, or nothing there: none
         assert_eq!(find("127.0.0.1", Some(addr.port()), Some("wrong")), None);
+        assert_eq!(find("127.0.0.1", Some(addr.port()), None), None);
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         assert_eq!(find("127.0.0.1", Some(free), None), None);
+    }
+
+    /// The key goes only to a server that says it is Glyd's: a program on a port `connect` looks at that answers with another refusal (or any answer) never sees it.
+    #[test]
+    fn the_key_is_not_sent_to_another_program() {
+        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = other.local_addr().unwrap().port();
+        let seen = std::thread::spawn(move || {
+            let mut all = String::new();
+            for _ in 0..3 {
+                let Ok((mut c, _)) = other.accept() else { break };
+                let mut buf = [0u8; 2048];
+                let n = c.read(&mut buf).unwrap_or(0);
+                all.push_str(&String::from_utf8_lossy(&buf[..n]));
+                let _ = c.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 12\r\nConnection: close\r\n\r\nUnauthorized");
+            }
+            all
+        });
+        assert_eq!(find("127.0.0.1", Some(port), Some("sk-secret-key")), None);
+        // (a connection that ends the accepting loop)
+        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+        let all = seen.join().unwrap();
+        assert!(all.contains("GET /v1/models") && !all.contains("sk-secret-key") && !all.to_ascii_lowercase().contains("authorization"), "{all}");
+    }
+
+    #[test]
+    fn only_plain_names_reach_a_shell_line() {
+        for ok in ["Qwen/Qwen3-8B", "Qwen/Qwen3.5-9B:swift", "/home/u/models/Qwen3-8B", "a_b@c+d"] {
+            assert!(plain_name(ok), "{ok}");
+        }
+        for bad in ["", "x'; rm -rf ~ #", "a b", "$(id)", "`id`", "a\nb", "x\"y", "a;b", "a|b", "a&b", "a>b"] {
+            assert!(!plain_name(bad), "{bad:?}");
+        }
+        assert!(is_loopback("127.0.0.1") && is_loopback("localhost") && !is_loopback("192.168.1.5") && !is_loopback("example.com"));
     }
 }
