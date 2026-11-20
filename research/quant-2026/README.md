@@ -1,6 +1,6 @@
 # Quantized checkpoints of 2026, losslessly: how much VRAM is left to save
 
-Private research (glyd-gpu-private). A measurement, no product code: 17 quantized checkpoints released in 2026 (NVFP4, MXFP4,
+Research from the former private repo glyd-gpu-private (now part of this repository). A measurement, no product code: 17 quantized checkpoints released in 2026 (NVFP4, MXFP4,
 FP8 with a scale a tensor, a row or a block, INT4 from GPTQ, AWQ and compressed-tensors, INT8 W8A8), their real tensors read by
 HTTP range from the public Hugging Face repos on a Runpod pod's CPU (2026-10-06). For each: the order-0 floor and the best of a few
 contexts, for codes and scales apart; a fixed-rate layout (a few integer operations a value to decode); and the whole checkpoint

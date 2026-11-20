@@ -80,5 +80,5 @@ On 64 chunks the same engine (with Google's 12B QAT weights) measured 0.109 agai
 [Gemma 4 12B-it](https://huggingface.co/google/gemma-4-12B-it) by Google DeepMind, Apache 2.0.
 Draft model (in draft/, unchanged): [gemma-4-12B-it-assistant](https://huggingface.co/google/gemma-4-12B-it-assistant).
 
-The weights here are Google's, under Google's license. Glyd's engine is under BUSL-1.1, free for personal, research and
-non-commercial use: [github.com/surya-koritala/Glyd](https://github.com/surya-koritala/Glyd).
+The weights here are Google's, under Google's license. Glyd's engine is open source under Apache-2.0:
+[github.com/surya-koritala/Glyd](https://github.com/surya-koritala/Glyd).

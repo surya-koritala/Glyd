@@ -1,7 +1,7 @@
 //! The binding: the CUDA driver and Glyd's GPU library (the C API of gpu/glyd_gpu.h, version 16), both loaded at run
 //! time; nothing is linked at build time. This is the only module that names a symbol: the library's functions are
 //! resolved in `Lib::load` through the library's table (`glyd_gpu_table`: a function's id is the FNV-1a hash of its name),
-//! the way a release library offers them.
+//! which every build of the library offers. The declarations are held to gpu/glyd_gpu.h by a test (`declarations_are_the_header`).
 //!
 //! Device memory is a `u64` address (the driver's CUdeviceptr); the library takes it as a pointer. Every call returns
 //! a `Result` with the status text of the driver or the library.
@@ -410,7 +410,7 @@ struct TableEntry {
     function: *const c_void,
 }
 
-/// A table of the library's functions, each found by its id in the library's table: `table_id` of its field's name, worked out when this is compiled, so that the binary holds the ids and not the names.
+/// A table of the library's functions, each found by its id in the library's table: `table_id` of its field's name, worked out when this is compiled. (Tests) `Api::DECLARED`: each function's name and its arguments' and result's Rust types as declared here, which a test holds to the C header.
 macro_rules! id_table {
     ($vis:vis struct $name:ident { $( fn $f:ident ( $($arg:ty),* ) $(-> $ret:ty)? ; )* }) => {
         #[allow(non_snake_case, dead_code)]
@@ -422,22 +422,21 @@ macro_rules! id_table {
                 Ok($name { $( $f: {
                     const ID: u32 = table_id(stringify!($f));
                     let p = find(ID);
-                    if p.is_null() { return Err(format!("no function {ID:08x}")); }
+                    if p.is_null() { return Err(format!("no function {} ({ID:08x})", stringify!($f))); }
                     std::mem::transmute::<*mut c_void, unsafe extern "C" fn($($arg),*) $(-> $ret)?>(p)
                 } ),* })
             }
+            #[cfg(test)]
+            pub(crate) const DECLARED: &'static [(&'static str, &'static [&'static str], &'static str)] =
+                &[$((stringify!($f), &[$(stringify!($arg)),*], concat!("" $(, stringify!($ret))?)),)*];
         }
     };
 }
 
-/// The name a library call goes by in an error: its own in a development build, "the GPU library" in a release one (whose binary holds no name of the library's functions).
+/// The name a library call goes by in an error: the function's own.
 macro_rules! call {
     ($n:literal) => {
-        if cfg!(feature = "dev") {
-            $n
-        } else {
-            "the GPU library"
-        }
+        $n
     };
 }
 
@@ -1392,5 +1391,96 @@ mod tests {
         assert_eq!(table_id("glyd_gpu_kv_work_put"), 0x361d7e3a);
         assert_eq!(table_id("glyd_gpu_mma_way"), 0xd92d1b36);
         assert_eq!(table_id("glyd_gpu_gpu"), 0x473bf115);
+    }
+
+    /// A C parameter's or result's type as `Api` declares it, without spaces: `const uint8_t* data` *constu8,
+    /// `const uint32_t tiers[3]` *constu32, `int* done` *mutc_int, `cudaStream_t cs` Stream.
+    fn rust_type(c: &str) -> String {
+        let c = c.split_whitespace().collect::<Vec<_>>().join(" ").replace(" *", "*");
+        let (mut ty, name) = match c.rsplit_once(' ') {
+            Some((t, n)) if !n.ends_with('*') => (t.to_string(), n.to_string()),
+            _ => (c.clone(), String::new()),
+        };
+        if name.ends_with(']') {
+            ty.push('*'); // an array of host words: a pointer to them
+        }
+        let konst = ty.starts_with("const ");
+        let ty = ty.trim_start_matches("const ");
+        let (base, ptr) = match ty.strip_suffix('*') {
+            Some(b) => (b, true),
+            None => (ty, false),
+        };
+        let (base, ptr2) = match base.strip_suffix('*') {
+            Some(b) => (b, true), // a pointer to a pointer
+            None => (base, false),
+        };
+        let base = match base {
+            "int64_t" => "i64",
+            "uint64_t" => "u64",
+            "size_t" => "usize",
+            "double" => "f64",
+            "int" => "c_int",
+            "void" => "c_void",
+            "char" => "c_char",
+            "uint8_t" => "u8",
+            "uint16_t" => "u16",
+            "int32_t" => "i32",
+            "uint32_t" => "u32",
+            "float" => "f32",
+            "cudaStream_t" => "Stream",
+            "glyd_gpu_ring" | "glyd_gpu_blas" => "c_void", // (opaque here)
+            other => panic!("a C type this test does not know: {other}"),
+        };
+        let base = if ptr2 { format!("*mut {base}") } else { base.to_string() };
+        let ty = match (ptr, konst) {
+            (true, true) => format!("*const {base}"),
+            (true, false) => format!("*mut {base}"),
+            _ => base,
+        };
+        ty.replace(' ', "")
+    }
+
+    /// Every function `Api` declares is in gpu/glyd_gpu.h with the same arguments and result, and the header's
+    /// GLYD_GPU_API_VERSION is `API_VERSION` (the header is the library's C API: a signature changed there fails here).
+    #[test]
+    fn declarations_are_the_header() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../gpu/glyd_gpu.h");
+        let h = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let mut text = String::new();
+        let mut rest = h.as_str();
+        while let Some(i) = rest.find("/*") {
+            text.push_str(&rest[..i]);
+            rest = &rest[i + rest[i..].find("*/").expect("a comment of the header is not closed") + 2..];
+        }
+        text.push_str(rest);
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut header = Vec::new();
+        for part in text.split(';') {
+            let Some(at) = part.find("glyd_gpu_") else { continue };
+            let Some(open) = part[at..].find('(').map(|i| at + i) else { continue };
+            let ret = part[..at].trim();
+            if !(ret == "int" || ret.ends_with(" int") || ret.ends_with("const char*")) {
+                continue;
+            }
+            let ret = if ret.ends_with("const char*") { "*constc_char".to_string() } else { "c_int".to_string() };
+            let args = part[open + 1..part.rfind(')').unwrap()].trim();
+            let args: Vec<String> = if args == "void" { vec![] } else { args.split(',').map(rust_type).collect() };
+            header.push((part[at..open].to_string(), args, ret));
+        }
+        assert!(Api::DECLARED.len() > 40, "Api::DECLARED lists {} functions", Api::DECLARED.len());
+        for (name, args, ret) in Api::DECLARED {
+            let ours = (name.to_string(), args.iter().map(|a| a.replace(' ', "")).collect::<Vec<_>>(), ret.replace(' ', ""));
+            match header.iter().find(|d| d.0 == *name) {
+                None => panic!("{name} is declared in ffi.rs, not in gpu/glyd_gpu.h"),
+                Some(d) => assert_eq!(*d, ours, "{name}: the header's declaration (left) is not ffi.rs's (right)"),
+            }
+        }
+        let version = h
+            .split("#define GLYD_GPU_API_VERSION ")
+            .nth(1)
+            .and_then(|v| v.split_whitespace().next())
+            .and_then(|v| v.parse::<c_int>().ok())
+            .expect("glyd_gpu.h has no GLYD_GPU_API_VERSION");
+        assert_eq!(version, API_VERSION, "GLYD_GPU_API_VERSION is not API_VERSION");
     }
 }

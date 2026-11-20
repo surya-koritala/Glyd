@@ -92,5 +92,5 @@ and this repo is 0.200 from one of them. The weights themselves are identical.
 [Gemma 4 31B-it](https://huggingface.co/google/gemma-4-31B-it) by Google DeepMind, Apache 2.0.
 Draft model (in draft/, unchanged): [gemma-4-31B-it-assistant](https://huggingface.co/google/gemma-4-31B-it-assistant).
 
-The weights here are Google's, under Google's license. Glyd's engine is under BUSL-1.1, free for personal, research and
-non-commercial use: [github.com/surya-koritala/Glyd](https://github.com/surya-koritala/Glyd).
+The weights here are Google's, under Google's license. Glyd's engine is open source under Apache-2.0:
+[github.com/surya-koritala/Glyd](https://github.com/surya-koritala/Glyd).
