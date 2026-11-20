@@ -67,6 +67,13 @@ inherits = "release"
 lto = false
 codegen-units = 16
 
+# The engine's tests (`cargo test --profile ci-light -p glyd-engine`): a development build (overflow checks and assertions on) at opt-level 1, which compiles the
+# engine's crate in a fraction of the time `ci` takes and runs its host-side tests as fast.
+[profile.ci-light]
+inherits = "dev"
+opt-level = 1
+debug = false
+
 [[example]]
 name = "fuzz_repro"
 path = "examples/fuzz_repro.rs"
