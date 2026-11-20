@@ -348,6 +348,13 @@ impl crate::conv::Gen for Run {
             Run::Split(_) | Run::Tp(_) => None,
         }
     }
+    /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs run one sequence at a time.
+    fn as_step(&mut self, users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
+        match self {
+            Run::One(e) => crate::conv::Gen::as_step(e, users),
+            Run::Split(_) | Run::Tp(_) => Ok(None),
+        }
+    }
 }
 
 /// The families the dynamic engine runs from their release's directory through `open`, by the config's text (None: another path's model).
