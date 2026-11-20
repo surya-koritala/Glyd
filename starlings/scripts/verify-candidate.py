@@ -151,9 +151,9 @@ def verify(output, context):
     artifact = artifacts[0]
     root = context["root"]
     require(artifact.get("package_id") == context["package"]
-            and artifact.get("manifest_path") == str(root / "crates/starlings-cli/Cargo.toml")
+            and artifact.get("manifest_path") == str(root / "starlings/crates/starlings-cli/Cargo.toml")
             and artifact.get("target", {}).get("kind") == ["bin"]
-            and artifact["target"].get("src_path") == str(root / "crates/starlings-cli/src/main.rs")
+            and artifact["target"].get("src_path") == str(root / "starlings/crates/starlings-cli/src/main.rs")
             and artifact.get("executable") == str(context["executable"])
             and artifact.get("features") == []
             and artifact.get("profile", {}).get("opt_level") == "3"
@@ -176,9 +176,9 @@ def self_test():
                    "compiler": b"synthetic compiler\n", "lock": b"synthetic lock\n",
                    "executable": executable}
         artifact = {"reason": "compiler-artifact", "package_id": context["package"],
-                    "manifest_path": str(root / "crates/starlings-cli/Cargo.toml"),
+                    "manifest_path": str(root / "starlings/crates/starlings-cli/Cargo.toml"),
                     "target": {"name": "starlings", "kind": ["bin"],
-                               "src_path": str(root / "crates/starlings-cli/src/main.rs")},
+                               "src_path": str(root / "starlings/crates/starlings-cli/src/main.rs")},
                     "executable": str(executable), "features": [],
                     "profile": {"opt_level": "3", "test": False}}
         original = {"starlings": executable.read_bytes(),
@@ -262,7 +262,7 @@ def main():
         self_test()
         return
     require(len(sys.argv) == 2 and not sys.argv[1].startswith("-"), "CANDIDATE_DIRECTORY_REQUIRED")
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent.parent  # the repository root: the workspace, its Cargo.lock and target directory
     context = context_for(root)
     verify(Path(sys.argv[1]), context)
     require(not command(root, "git", "status", "--porcelain")
