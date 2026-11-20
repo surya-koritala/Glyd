@@ -238,3 +238,163 @@ fn which_reader() {
     assert_eq!(kind(QWEN38, "<think>\n"), None);
     assert_eq!(kind(GLM53, "<|assistant|><think>"), None);
 }
+
+// ---- Kimi-K3 and DeepSeek-V4 (their formats as the engine's own templates write them: both releases keep their chat format in Python code, not a template) ----
+
+/// Kimi-K3: the think channel, a response, and calls as `<|open|>call tool=...<|sep|><|open|>argument key=... type=...<|sep|>VALUE<|close|>argument<|sep|>`, read through its reader (a call is written when it closes).
+#[test]
+fn kimi_k3() {
+    use crate::reader::Reader;
+    let t = rendered(crate::chat::KIMI_CHAT, vec![]);
+    let chat = Chat::from_template(crate::chat::KIMI_CHAT).unwrap();
+    assert!(chat.is_xtml());
+    // the reply as the model writes it, from inside the think channel the prompt opened, to the end of its calls
+    let turn = &t[t.find("Plan a trip.").unwrap()..];
+    let reply = {
+        let a = turn.find("<|open|>think<|sep|>").unwrap() + "<|open|>think<|sep|>".len();
+        let b = turn.find("<|close|>tools<|sep|>").unwrap() + "<|close|>tools<|sep|>".len();
+        &turn[a..b]
+    };
+    for n in [1, 4, 1000] {
+        let mut x = crate::xtml::Xtml::new(true);
+        let chars: Vec<char> = reply.chars().collect();
+        let mut read: String = chars.chunks(n).map(|c| Reader::feed(&mut x, &c.iter().collect::<String>())).collect();
+        read.push_str(&Reader::finish(&mut x));
+        let (think, answer) = crate::conv::Splitter::split(&read, false);
+        assert_eq!(think.trim(), THOUGHT, "pieces of {n}");
+        for c in whole(&answer, Format::Hermes) {
+            assert_eq!(c.name, "plan_trip");
+            same_json(&c.arguments, ARGS);
+        }
+    }
+}
+
+/// DeepSeek-V4: the thinking in `<think>`, and calls in DSML blocks (`<｜DSML｜tool_calls>`), a string by `string="true"`, any other value as JSON.
+#[test]
+fn deepseek_v4() {
+    let t = rendered(crate::chat::DSV4_CHAT, vec![]);
+    assert_eq!(Format::of(&Chat::from_template(crate::chat::DSV4_CHAT).unwrap()), Format::Dsml);
+    let block = cut(&t, "<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>");
+    round_trip(block, Format::Dsml);
+    // (its template drops the reasoning of an earlier turn: the reply that opens the think block, as the prompt ends with `<think>`)
+    reasoning(&format!("{THOUGHT}</think>\n\n"), None, true);
+}
+
+// ---- the whole path: a recorded reply, token by token, as the server's choice reads it ----
+
+/// What a client sees of a reply made of tokens: the reasoning's deltas, the content, each call's name and its arguments' pieces, and how the reply ended.
+struct Seen {
+    reasoning: Vec<String>,
+    content: String,
+    calls: Vec<(String, Vec<String>)>,
+    finish: &'static str,
+}
+
+/// `reply` (the text a family's model writes, from where its generation prompt ends) as tokens of `n` characters, through the choice the server makes (its reader, its reasoning split, its tool parser, streaming).
+fn seen(kind: Option<crate::reader::ReaderKind>, format: Format, in_thinking: bool, reply: &str, n: usize) -> Seen {
+    use crate::choice::{Cfg, Choice, ToolsCfg};
+    use crate::model::Finish;
+    use crate::tools::ToolChoice;
+    let chars: Vec<char> = reply.chars().collect();
+    let pieces: Vec<String> = chars.chunks(n).map(|c| c.iter().collect()).collect();
+    let mut words: Vec<&str> = Vec::new();
+    for p in &pieces {
+        if !words.contains(&p.as_str()) {
+            words.push(p);
+        }
+    }
+    let tok = crate::tok::tests::toy(&words);
+    let tools = ToolsCfg { choice: ToolChoice::Auto, parallel: true, format, list: tools(), prefix: String::new(), stream: true };
+    let mut c = Choice::new(Cfg { chat: true, in_thinking, tools: Some(tools), reader: kind, ..Cfg::default() });
+    let mut seen = Seen { reasoning: Vec::new(), content: String::new(), calls: Vec::new(), finish: "" };
+    let take = |d: crate::choice::Delta, seen: &mut Seen| {
+        if !d.reasoning.is_empty() {
+            seen.reasoning.push(d.reasoning);
+        }
+        seen.content.push_str(&d.content);
+        for e in d.calls {
+            match e {
+                ToolEv::Start { index, name, .. } => {
+                    assert_eq!(index, seen.calls.len());
+                    seen.calls.push((name, Vec::new()));
+                }
+                ToolEv::Args { index, args } => seen.calls[index].1.push(args),
+                ToolEv::Content(_) => {}
+            }
+        }
+    };
+    for p in &pieces {
+        let id = words.iter().position(|w| w == p).unwrap() as u32 + 1;
+        let d = c.token(&tok, id).unwrap();
+        take(d, &mut seen);
+    }
+    let (d, done) = c.end(&tok, Finish::Stop).unwrap();
+    take(d, &mut seen);
+    seen.finish = done.finish_reason;
+    seen
+}
+
+/// The recorded reply of a family: its assistant turn as its template writes it, from where the generation prompt ends to the end of the call.
+fn recorded(family: &str) -> (Option<crate::reader::ReaderKind>, Format, bool, String) {
+    use crate::reader::ReaderKind;
+    let turn_of = |t: &str| t[t.find("Plan a trip.").unwrap()..].to_string();
+    let upto = |turn: &str, from: &str, to: &str| {
+        let a = turn.find(from).unwrap_or_else(|| panic!("no {from} in {turn}")) + from.len();
+        let b = a + turn[a..].find(to).unwrap_or_else(|| panic!("no {to} in {turn}")) + to.len();
+        turn[a..b].to_string()
+    };
+    match family {
+        "qwen" | "glm" => {
+            let (src, format) = if family == "qwen" { (QWEN38, Format::Xml) } else { (GLM53, Format::Glm) };
+            let turn = turn_of(&rendered(src, vec![]));
+            // (the prompt ends with `<think>`: the reply is the thinking, its end and the call)
+            (None, format, true, upto(&turn, "<think>", "</tool_call>").trim_start_matches('\n').to_string())
+        }
+        "gemma" => {
+            let turn = turn_of(&rendered(GEMMA4, vec![("preserve_thinking", Value::Bool(true))]));
+            let a = turn.find("<|channel>thought\n").unwrap();
+            let b = turn.find("<tool_call|>").unwrap() + "<tool_call|>".len();
+            (Some(ReaderKind::Gemma { in_think: false }), Format::Hermes, false, turn[a..b].to_string())
+        }
+        "muse" => {
+            let turn = turn_of(&rendered(MUSE, vec![]));
+            (Some(ReaderKind::Muse), Format::Atem, false, upto(&turn, "<|start|>assistant", "</atem:function_calls>"))
+        }
+        "kimi" => {
+            let turn = turn_of(&rendered(crate::chat::KIMI_CHAT, vec![]));
+            (Some(ReaderKind::Kimi { in_think: true }), Format::Hermes, false, upto(&turn, "<|open|>think<|sep|>", "<|close|>tools<|sep|>"))
+        }
+        "dsv4" => {
+            let turn = turn_of(&rendered(crate::chat::DSV4_CHAT, vec![]));
+            let block =
+                turn[turn.find("<｜DSML｜tool_calls>").unwrap()..turn.find("</｜DSML｜tool_calls>").unwrap() + "</｜DSML｜tool_calls>".len()].to_string();
+            (None, Format::Dsml, true, format!("{THOUGHT}</think>\n\n{block}"))
+        }
+        other => panic!("{other}"),
+    }
+}
+
+/// Each family's reply, token by token: the reasoning arrives as deltas and is the reasoning, the answer is empty, the call is `plan_trip` with the arguments it was written with, and the reply ends as a call's does.
+/// Where a family writes its arguments as it goes (XML, DSML, ATEM, Gemma's), they arrive in pieces that make the arguments; where it writes a call whole (GLM's, Kimi's), in one.
+#[test]
+fn every_family_token_by_token() {
+    // (family, its arguments arrive in pieces)
+    for (family, in_pieces) in [("qwen", true), ("glm", false), ("gemma", true), ("muse", true), ("kimi", false), ("dsv4", true)] {
+        let (kind, format, in_thinking, reply) = recorded(family);
+        for n in [1, 3, 7, 1000] {
+            let s = seen(kind, format, in_thinking, &reply, n);
+            assert_eq!(s.reasoning.concat().trim(), THOUGHT, "{family}, tokens of {n}");
+            if n == 1 {
+                assert!(s.reasoning.len() > 5, "{family}: the reasoning comes as it is written: {:?}", s.reasoning);
+            }
+            assert!(s.content.trim().is_empty(), "{family}, tokens of {n}: {:?}", s.content);
+            assert_eq!(s.calls.len(), 1, "{family}, tokens of {n}: {:?}", s.calls);
+            assert_eq!(s.calls[0].0, "plan_trip", "{family}");
+            same_json(&s.calls[0].1.concat(), ARGS);
+            if n == 1 {
+                assert_eq!(s.calls[0].1.len() > 1, in_pieces, "{family}: {:?}", s.calls[0].1);
+            }
+            assert_eq!(s.finish, "tool_calls", "{family}, tokens of {n}");
+        }
+    }
+}
