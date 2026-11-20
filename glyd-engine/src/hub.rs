@@ -1075,6 +1075,8 @@ mod tests {
         let snap = hub.fetch(&remote, &want, &|d, t| seen.lock().unwrap().push((d, t))).unwrap();
         assert_eq!(std::fs::read(snap.join("model.safetensors")).unwrap(), m.files[1].1);
         assert_eq!(std::fs::read(snap.join("config.json")).unwrap(), b"{\"a\": 1}");
+        // (a symbolic link; on Windows a hard link)
+        #[cfg(unix)]
         assert!(std::fs::symlink_metadata(snap.join("config.json")).unwrap().file_type().is_symlink());
         assert_eq!(seen.lock().unwrap().last().copied(), Some((10_008, 10_008)));
         assert_eq!(hub.missing(&remote, &want), 0);
