@@ -23,6 +23,8 @@ pub struct Params {
     pub allowed: Vec<u32>,
     /// The end tokens (and the request's stop tokens) may not be chosen until this many tokens have been (vLLM's `min_tokens`).
     pub min_tokens: usize,
+    /// A grammar the answer must follow (a JSON schema, a regular expression ...): the tokens it does not allow are taken out of each row, as `allowed` does (constrain.rs).
+    pub constraint: Option<std::sync::Arc<crate::constrain::Constraint>>,
     pub seed: u64,
 }
 
@@ -39,6 +41,7 @@ impl Default for Params {
             logit_bias: Vec::new(),
             allowed: Vec::new(),
             min_tokens: 0,
+            constraint: None,
             seed: 0,
         }
     }
@@ -54,6 +57,7 @@ impl Params {
             && self.logit_bias.is_empty()
             && self.allowed.is_empty()
             && self.min_tokens == 0
+            && self.constraint.is_none()
     }
 }
 
@@ -160,6 +164,8 @@ pub struct Sampler {
     suppress: Vec<u32>,
     /// Whether each token of the row is allowed (made at the first row, from `allowed`).
     mask: Vec<bool>,
+    /// Where the answer is in the request's grammar, if it has one.
+    gram: Option<crate::constrain::Gram>,
 }
 
 impl Sampler {
@@ -172,7 +178,8 @@ impl Sampler {
             }
         }
         let rng = Rng::new(p.seed);
-        Sampler { p, rng, seen, said: std::collections::HashMap::new(), n_said: 0, suppress: Vec::new(), mask: Vec::new() }
+        let gram = p.constraint.as_ref().map(|c| c.start());
+        Sampler { p, rng, seen, said: std::collections::HashMap::new(), n_said: 0, suppress: Vec::new(), mask: Vec::new(), gram }
     }
 
     pub fn params(&self) -> &Params {
@@ -233,6 +240,9 @@ impl Sampler {
 
     /// The token chosen, held by the answer (the penalties' counts).
     fn note(&mut self, tok: u32) {
+        if let Some(g) = &mut self.gram {
+            g.consume(tok);
+        }
         self.n_said += 1;
         *self.said.entry(tok).or_insert(0) += 1;
         if self.p.repetition_penalty != 1.0 {
@@ -262,6 +272,9 @@ impl Sampler {
                     *x = f32::NEG_INFINITY;
                 }
             }
+        }
+        if let Some(g) = &mut self.gram {
+            g.apply(&mut l);
         }
         if self.suppressing() {
             for &t in &self.suppress {
@@ -298,6 +311,7 @@ impl Sampler {
             || p.frequency_penalty != 0.0
             || !p.logit_bias.is_empty()
             || !p.allowed.is_empty()
+            || self.gram.is_some()
             || self.suppressing()
         {
             return None;
@@ -372,6 +386,13 @@ impl Sampler {
     fn dist(&self, l: &mut [f32]) -> (Vec<u32>, Vec<f64>) {
         // the candidates by probability, largest first, cut by top-k, then min-p, then top-p
         let mut idx: Vec<u32> = (0..l.len() as u32).collect();
+        if self.gram.is_some() {
+            // (a grammar leaves a few tokens of the row: the rest are not sorted)
+            idx.retain(|&i| l[i as usize] > f32::NEG_INFINITY);
+            if idx.is_empty() {
+                idx.push(0);
+            }
+        }
         let by_logit = |a: &u32, b: &u32| l[*b as usize].partial_cmp(&l[*a as usize]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(b));
         if self.p.top_k > 0 && self.p.top_k < idx.len() {
             idx.select_nth_unstable_by(self.p.top_k - 1, by_logit);

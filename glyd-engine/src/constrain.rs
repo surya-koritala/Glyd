@@ -1,0 +1,494 @@
+//! Constrained decoding: a grammar (a JSON schema, a regular expression, a Lark grammar, a choice among strings) that the reply must follow, enforced at sampling time by llguidance's token masks.
+//!
+//! One hook serves every family: `Params::constraint` names the grammar, `Sampler::new` takes a matcher of it, and the sampler takes the tokens the matcher does not allow out of each row of logits
+//! before anything else looks at it (sampler.rs). The tokens are the tokenizer's, as bytes (`Tok::grammars`); the rows may be wider than the vocabulary (the padding is never allowed).
+
+use llguidance::api::TopLevelGrammar;
+use llguidance::{Matcher, ParserFactory};
+use std::sync::{Arc, Mutex};
+use toktrie::{TokEnv, TokRxInfo, TokTrie, TokenizerEnv};
+
+/// What a reply must be.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Spec {
+    /// Any JSON object (`response_format: json_object`).
+    JsonObject,
+    /// JSON that matches this schema, written as compact JSON text (`response_format: json_schema`, `guided_json`).
+    JsonSchema(String),
+    /// Text that matches this regular expression, whole (`guided_regex`).
+    Regex(String),
+    /// A Lark grammar, or llguidance's own grammar list in JSON (`guided_grammar`).
+    Grammar(String),
+    /// One of these strings (`guided_choice`).
+    Choice(Vec<String>),
+}
+
+/// The tokenizer as llguidance wants it: the trie of the tokens' bytes.
+struct Env(TokTrie);
+
+impl TokenizerEnv for Env {
+    fn tok_trie(&self) -> &TokTrie {
+        &self.0
+    }
+
+    fn tokenize_bytes(&self, s: &[u8]) -> Vec<u32> {
+        self.0.greedy_tokenize(s)
+    }
+}
+
+/// The names the end token goes by, where the model's directory does not say which it is.
+const END_NAMES: &[&str] =
+    &["<|im_end|>", "<|end|>", "<|eot_id|>", "<end_of_turn>", "<|endoftext|>", "<|end_of_text|>", "</s>", "<eos>", "<｜end▁of▁sentence｜>"];
+
+/// What compiling a grammar needs of the model: its tokens and its end tokens. Made once, by `Tok::grammars`.
+pub struct Grammars {
+    factory: ParserFactory,
+    ends: Vec<u32>,
+    vocab: usize,
+    /// Grammars compiled, by what asked for them (a client sends one schema again and again): the last `KEPT`.
+    kept: Mutex<Vec<(Spec, Arc<Constraint>)>>,
+}
+
+/// How many compiled grammars are kept.
+const KEPT: usize = 32;
+
+impl Grammars {
+    /// `bytes`: every token's bytes, special tokens marked (tok.rs); `ends`: the model's end tokens, or none (a token named like one is then taken); `vocab`: the width of a row of logits.
+    pub fn new(mut bytes: Vec<Vec<u8>>, ends: &[u32], vocab: usize) -> Result<Grammars, String> {
+        bytes.resize(vocab.max(bytes.len()), Vec::new());
+        let mut ends: Vec<u32> = ends.iter().copied().filter(|&e| (e as usize) < bytes.len()).collect();
+        if ends.is_empty() {
+            let name = |b: &Vec<u8>| b.first() == Some(&TokTrie::SPECIAL_TOKEN_MARKER) && END_NAMES.iter().any(|n| b[1..] == *n.as_bytes());
+            ends.extend(END_NAMES.iter().filter_map(|n| bytes.iter().position(|b| name(b) && b[1..] == *n.as_bytes()).map(|i| i as u32)).take(1));
+        }
+        let Some(&first) = ends.first() else { return Err("constrained decoding needs the model's end token, and its directory names none".to_string()) };
+        let info = TokRxInfo::new(bytes.len() as u32, first);
+        let trie = TokTrie::from(&info, &bytes).with_eos_tokens(&ends);
+        let env: TokEnv = Arc::new(Env(trie));
+        let factory = ParserFactory::new_simple(&env).map_err(|e| e.to_string())?;
+        Ok(Grammars { factory, ends, vocab: bytes.len(), kept: Mutex::new(Vec::new()) })
+    }
+
+    /// The grammar `spec` compiled; an error in words where it cannot be (a schema with a feature llguidance does not do, a regular expression that does not parse).
+    pub fn compile(&self, spec: &Spec) -> Result<Arc<Constraint>, String> {
+        if let Some((_, c)) = self.kept.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(s, _)| s == spec) {
+            return Ok(c.clone());
+        }
+        let c = self.compile_new(spec)?;
+        let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+        if kept.len() >= KEPT {
+            kept.remove(0);
+        }
+        kept.push((spec.clone(), c.clone()));
+        Ok(c)
+    }
+
+    fn compile_new(&self, spec: &Spec) -> Result<Arc<Constraint>, String> {
+        let top = match spec {
+            Spec::JsonObject => TopLevelGrammar::from_json_schema(serde_json::json!({"type": "object"})),
+            Spec::JsonSchema(s) => TopLevelGrammar::from_json_schema(serde_json::from_str(s).map_err(|e| format!("the JSON schema: {e}"))?),
+            Spec::Regex(r) => TopLevelGrammar::from_regex(r),
+            Spec::Grammar(g) => TopLevelGrammar::from_lark_or_grammar_list(g).map_err(|e| e.to_string())?,
+            Spec::Choice(c) => {
+                if c.is_empty() {
+                    return Err("guided_choice: no choices".to_string());
+                }
+                TopLevelGrammar::from_lark(format!("start: {}", c.iter().map(|s| lark_str(s)).collect::<Vec<_>>().join(" | ")))
+            }
+        };
+        let mut m = Matcher::new(self.factory.create_parser(top));
+        if let Some(e) = m.get_error() {
+            return Err(e);
+        }
+        // (the grammar's first mask is made here: a grammar that has no token to begin with is no grammar for this model)
+        if let Err(e) = m.compute_mask() {
+            return Err(e.to_string());
+        }
+        m.reset().map_err(|e| e.to_string())?;
+        Ok(Arc::new(Constraint { matcher: Mutex::new(m), ends: self.ends.clone(), vocab: self.vocab }))
+    }
+}
+
+/// A compiled grammar: what a request holds, and what each of its sequences takes a matcher of.
+pub struct Constraint {
+    matcher: Mutex<Matcher>,
+    ends: Vec<u32>,
+    vocab: usize,
+}
+
+impl std::fmt::Debug for Constraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Constraint(vocab {})", self.vocab)
+    }
+}
+
+impl Constraint {
+    /// A matcher at the start of the grammar, independent of the others.
+    pub fn start(&self) -> Gram {
+        let m = self.matcher.lock().unwrap_or_else(|e| e.into_inner()).deep_clone();
+        Gram { m, ends: self.ends.clone(), vocab: self.vocab, masks: 0 }
+    }
+}
+
+/// A sequence's place in its grammar.
+pub struct Gram {
+    m: Matcher,
+    ends: Vec<u32>,
+    vocab: usize,
+    /// Masks made so far.
+    masks: u64,
+}
+
+impl Gram {
+    /// The tokens that may be chosen next: a row of `vocab` flags. Where the grammar is complete the end tokens may be chosen (and where nothing more can follow, they alone); where it has gone wrong
+    /// (the matcher cannot say) they alone, so that the reply ends and does not go on past the grammar.
+    pub fn allowed(&mut self) -> Vec<bool> {
+        self.masks += 1;
+        let mut ok = vec![false; self.vocab];
+        let mask = if self.m.is_stopped() { None } else { self.m.compute_mask().ok() };
+        let mut ends = mask.is_none();
+        if let Some(mask) = mask {
+            mask.iter_set_entries(|i| {
+                if let Some(x) = ok.get_mut(i) {
+                    *x = true;
+                }
+            });
+            ends = self.ends.iter().any(|&e| ok.get(e as usize) == Some(&true));
+        }
+        if ends {
+            for &e in &self.ends {
+                if let Some(x) = ok.get_mut(e as usize) {
+                    *x = true;
+                }
+            }
+        }
+        ok
+    }
+
+    /// Takes the logits of the tokens the grammar does not allow out of `logits` (negative infinity).
+    pub fn apply(&mut self, logits: &mut [f32]) {
+        let ok = self.allowed();
+        for (x, &ok) in logits.iter_mut().zip(ok.iter().chain(std::iter::repeat(&false))) {
+            if !ok {
+                *x = f32::NEG_INFINITY;
+            }
+        }
+    }
+
+    /// The token chosen, which the grammar then holds (an end token is not part of it).
+    pub fn consume(&mut self, tok: u32) {
+        if !self.ends.contains(&tok) {
+            let _ = self.m.consume_token(tok);
+        }
+    }
+
+    /// Whether the text so far is a whole of the grammar.
+    pub fn accepting(&mut self) -> bool {
+        self.m.is_accepting().unwrap_or(false)
+    }
+
+    /// Masks made.
+    pub fn masks(&self) -> u64 {
+        self.masks
+    }
+}
+
+/// A string as a Lark literal.
+pub fn lark_str(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 2);
+    o.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// The JSON schema of a tool's parameters (an object with any properties where the tool names none).
+fn parameters_of(tool: &glyd_gpu::json::Value) -> String {
+    tool.get("function")
+        .and_then(|f| f.get("parameters"))
+        .filter(|p| matches!(p, glyd_gpu::json::Value::Object(_)))
+        .map_or_else(|| "{\"type\":\"object\"}".to_string(), glyd_gpu::json::to_compact)
+}
+
+fn name_of(tool: &glyd_gpu::json::Value) -> Option<&str> {
+    tool.get("function").and_then(|f| f.get("name")).and_then(glyd_gpu::json::Value::as_str)
+}
+
+/// The Lark grammar of what a forced call's reply holds after the opening the prompt ends with (`tools::forced_prefix`), where its format is one the grammar knows: hermes (the arguments are JSON of the tool's
+/// schema) and XML (each parameter written as `<parameter=NAME>`, a string as it is, any other value as JSON). `named`: the function, where the call is of one (else the reply names it, among `tools`).
+pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format: crate::tools::Format) -> Option<String> {
+    use crate::tools::Format;
+    let pick: Vec<&glyd_gpu::json::Value> = match named {
+        Some(n) => vec![tools.iter().find(|t| name_of(t) == Some(n))?],
+        None => tools.iter().collect(),
+    };
+    if pick.is_empty() {
+        return None;
+    }
+    let mut rules = Vec::new();
+    let mut alts = Vec::new();
+    match format {
+        Format::Hermes => {
+            for (i, t) in pick.iter().enumerate() {
+                let body = format!("%json{}", parameters_of(t));
+                // (named: the prompt holds the name, and the reply begins at the arguments)
+                alts.push(match named {
+                    Some(_) => body,
+                    None => format!("{} {}", lark_str(&format!("{}\", \"arguments\": ", name_of(t)?)), body),
+                });
+                let _ = i;
+            }
+            rules.push(format!("start: ({}) \"}}\" \"\\n\" \"</tool_call>\"", alts.join(" | ")));
+        }
+        Format::Xml => {
+            for (i, t) in pick.iter().enumerate() {
+                let props = t.get("function").and_then(|f| f.get("parameters")).and_then(|p| p.get("properties"));
+                let mut params = Vec::new();
+                if let Some(glyd_gpu::json::Value::Object(o)) = props {
+                    for (k, p) in o {
+                        let string = p.get("type").and_then(glyd_gpu::json::Value::as_str) == Some("string");
+                        let value = if string { "/(?s:.)*/".to_string() } else { format!("%json{}", glyd_gpu::json::to_compact(p)) };
+                        params.push(format!("{} {} {}", lark_str(&format!("<parameter={k}>\n")), value, lark_str("\n</parameter>\n")));
+                    }
+                }
+                let rule = format!("params{i}");
+                rules.push(if params.is_empty() { format!("{rule}: \"\"") } else { format!("{rule}: ({})*", params.join(" | ")) });
+                let end = lark_str("</function>\n</tool_call>");
+                alts.push(match named {
+                    Some(_) => format!("{rule} {end}"),
+                    None => format!("{} {rule} {end}", lark_str(&format!("{}>\n", name_of(t)?))),
+                });
+            }
+            rules.insert(0, format!("start: {}", alts.join(" | ")));
+        }
+        _ => return None,
+    }
+    Some(rules.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A vocabulary of the 256 bytes, some words and punctuation, a space-led word, and `<|end|>` (the end token): every grammar is checked against it on the CPU.
+    fn vocab() -> Vec<Vec<u8>> {
+        let mut v: Vec<Vec<u8>> = (0..=255u8).map(|b| vec![b]).collect();
+        for w in ["{\"", "\":", "\"}", "true", "false", "null", "name", "age", " the", "ab", "abc", "yes", "no", ", \"", "\n", "</tool_call>", "{}"] {
+            v.push(w.as_bytes().to_vec());
+        }
+        v.push([&[TokTrie::SPECIAL_TOKEN_MARKER][..], b"<|end|>"].concat());
+        v
+    }
+
+    fn end() -> u32 {
+        vocab().len() as u32 - 1
+    }
+
+    fn grammars() -> Grammars {
+        Grammars::new(vocab(), &[end()], vocab().len() + 5).unwrap()
+    }
+
+    fn id(s: &str) -> u32 {
+        vocab().iter().position(|b| b == s.as_bytes()).unwrap() as u32
+    }
+
+    /// Greedy decoding from logits that prefer `want`'s tokens in order and, where the grammar does not allow one, the first token it allows: the text of what the mask lets through.
+    fn walk(c: &Constraint, want: &[u32], steps: usize) -> (String, bool) {
+        let mut g = c.start();
+        let mut out = Vec::new();
+        for i in 0..steps {
+            // (a model with no mind of its own: a fixed liking for each token, none for white space, and a wish to end where it may)
+            let mut logits: Vec<f32> = (0..vocab().len() + 5)
+                .map(|t| {
+                    let b = vocab().get(t).cloned().unwrap_or_default();
+                    if !b.is_empty() && b.iter().all(|c| c.is_ascii_whitespace()) {
+                        -5.0
+                    } else if b == b"\"" {
+                        4.0
+                    } else if b == b"}" {
+                        3.5
+                    } else if b == b"," {
+                        3.0
+                    } else {
+                        ((t * 2654435761usize + i * 40503) % 1000) as f32 / 1000.0
+                    }
+                })
+                .collect();
+            logits[end() as usize] = 5.0;
+            if let Some(&w) = want.get(i) {
+                logits[w as usize] = 10.0;
+            }
+            // (a token past the vocabulary is the model's biggest wish at each step: the padding is never allowed)
+            logits[vocab().len() + 2] = 100.0;
+            g.apply(&mut logits);
+            let (best, _) = logits.iter().enumerate().fold((0, f32::NEG_INFINITY), |a, (i, &x)| if x > a.1 { (i, x) } else { a });
+            assert!(best < vocab().len(), "the padding was chosen");
+            if best as u32 == end() {
+                return (String::from_utf8_lossy(&out).into_owned(), true);
+            }
+            g.consume(best as u32);
+            out.extend_from_slice(&vocab()[best]);
+        }
+        (String::from_utf8_lossy(&out).into_owned(), false)
+    }
+
+    #[test]
+    fn a_schema_gives_json_that_matches_it() {
+        let g = grammars();
+        let c = g
+            .compile(&Spec::JsonSchema(
+                r#"{"type":"object","properties":{"age":{"type":"integer"},"ok":{"type":"boolean"}},"required":["age","ok"],"additionalProperties":false}"#
+                    .into(),
+            ))
+            .unwrap();
+        // the model wants `yes` and `no`; the mask makes it write the schema's JSON, and then end
+        let (text, ended) = walk(&c, &[id("yes"), id("no"), id("yes")], 200);
+        assert!(ended, "{text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"));
+        assert!(v["age"].is_i64() && v["ok"].is_boolean(), "{text}");
+        assert_eq!(v.as_object().unwrap().len(), 2, "{text}");
+    }
+
+    #[test]
+    fn json_object_is_an_object() {
+        let c = grammars().compile(&Spec::JsonObject).unwrap();
+        let (text, ended) = walk(&c, &[id("abc"), id("no")], 200);
+        assert!(ended, "{text}");
+        assert!(serde_json::from_str::<serde_json::Value>(&text).unwrap().is_object(), "{text}");
+    }
+
+    #[test]
+    fn a_regex_a_choice_and_a_grammar_are_followed() {
+        let g = grammars();
+        let (text, ended) = walk(&g.compile(&Spec::Regex("[a-c]{3}-[0-9]{2}".into())).unwrap(), &[id("yes")], 50);
+        assert!(ended && regex_like(&text), "{text}");
+        let (text, ended) = walk(&g.compile(&Spec::Choice(vec!["yes".into(), "maybe \"so\"".into()])).unwrap(), &[id("no"), id("abc")], 50);
+        assert!(ended && (text == "yes" || text == "maybe \"so\""), "{text}");
+        let (text, ended) = walk(&g.compile(&Spec::Grammar("start: \"a\" (\"b\" | \"c\")+".into())).unwrap(), &[id("yes")], 50);
+        assert!(ended && text.starts_with('a') && text.len() >= 2, "{text}");
+    }
+
+    fn regex_like(t: &str) -> bool {
+        let b = t.as_bytes();
+        b.len() == 6 && b[..3].iter().all(|c| (b'a'..=b'c').contains(c)) && b[3] == b'-' && b[4..].iter().all(u8::is_ascii_digit)
+    }
+
+    /// The sampler as the engines use it: a request's params with a grammar, and the rows of a model that likes the padding best, at every temperature.
+    #[test]
+    fn the_sampler_holds_an_answer_to_its_grammar() {
+        use crate::sampler::{Params, Sampler};
+        let c = grammars().compile(&Spec::Regex("[a-c]{3}-[0-9]{2}".into())).unwrap();
+        let width = vocab().len() + 5;
+        for (temperature, top_k, top_p) in [(0.0, 0, 1.0), (1.0, 0, 1.0), (0.8, 40, 0.9), (1.5, 5, 1.0)] {
+            for seed in 0..8 {
+                let p = Params { temperature, top_k, top_p, seed, constraint: Some(c.clone()), ..Params::default() };
+                // (a grammar is no greedy step: the GPU's largest logit is not the choice, nor are its largest logits the draw's whole)
+                assert!(!p.greedy());
+                let mut s = Sampler::new(p, &[]);
+                assert!(s.top_need().is_none());
+                let mut out = Vec::new();
+                for step in 0..20 {
+                    let logits: Vec<f32> =
+                        (0..width).map(|t| if t == width - 3 { 50.0 } else { ((t * 7919 + step * 31 + seed as usize) % 97) as f32 / 10.0 }).collect();
+                    let t = s.sample(&logits);
+                    assert!((t as usize) < vocab().len(), "the padding was chosen");
+                    if t == end() {
+                        break;
+                    }
+                    out.extend_from_slice(&vocab()[t as usize]);
+                }
+                let text = String::from_utf8(out).unwrap();
+                assert!(regex_like(&text), "temperature {temperature} seed {seed}: {text:?}");
+            }
+        }
+        // a request with no grammar is as it was
+        assert!(Params::default().greedy() && Sampler::new(Params::default(), &[]).top_need().is_none());
+    }
+
+    /// A draft token the grammar does not allow is never kept; one it does is.
+    #[test]
+    fn a_draft_is_kept_only_where_the_grammar_allows_it() {
+        use crate::sampler::{Params, Sampler};
+        let c = grammars().compile(&Spec::Choice(vec!["abc".into()])).unwrap();
+        let width = vocab().len() + 5;
+        let mut s = Sampler::new(Params { temperature: 1.0, constraint: Some(c), seed: 3, ..Params::default() }, &[]);
+        let logits = vec![0.0f32; width];
+        let (t, same) = s.check_draft(&logits, id("yes"));
+        assert!(!same && t != id("yes"));
+        assert_eq!(vocab()[t as usize][0], b'a');
+    }
+
+    #[test]
+    fn a_bad_grammar_is_said() {
+        let g = grammars();
+        assert!(g.compile(&Spec::JsonSchema("{".into())).is_err());
+        assert!(g.compile(&Spec::Regex("(".into())).is_err());
+        assert!(g.compile(&Spec::Grammar("start: nothing".into())).is_err());
+        assert!(g.compile(&Spec::Choice(Vec::new())).is_err());
+        assert!(g.compile(&Spec::JsonSchema(r##"{"type":"object","properties":{"a":{"$ref":"#/nowhere"}}}"##.into())).is_err());
+    }
+
+    #[test]
+    fn the_end_tokens_are_allowed_where_the_grammar_is_whole_and_not_before() {
+        let c = grammars().compile(&Spec::Choice(vec!["ab".into()])).unwrap();
+        let mut g = c.start();
+        let before = g.allowed();
+        assert!(!before[end() as usize]);
+        assert!(!g.accepting());
+        g.consume(id("ab"));
+        let after = g.allowed();
+        assert!(g.accepting());
+        assert_eq!(after.iter().filter(|&&x| x).count(), 1);
+        assert!(after[end() as usize]);
+    }
+
+    #[test]
+    fn matchers_of_one_grammar_are_apart() {
+        let c = grammars().compile(&Spec::Choice(vec!["ab".into(), "no".into()])).unwrap();
+        let (mut a, mut b) = (c.start(), c.start());
+        a.consume(id("ab"));
+        assert!(a.accepting() && !b.accepting());
+        b.consume(id("no"));
+        assert!(b.accepting());
+    }
+
+    #[test]
+    fn forced_calls_have_grammars_of_their_tools() {
+        let tools = glyd_gpu::json::parse(
+            r#"[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"}},"required":["city"]}}},
+                {"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{}}}}]"#,
+        )
+        .unwrap();
+        let tools = tools.as_array().unwrap();
+        let g = grammars();
+        for (format, named) in [
+            (crate::tools::Format::Hermes, Some("get_weather")),
+            (crate::tools::Format::Hermes, None),
+            (crate::tools::Format::Xml, Some("get_weather")),
+            (crate::tools::Format::Xml, None),
+        ] {
+            let lark = call_grammar(tools, named, format).unwrap();
+            g.compile(&Spec::Grammar(lark.clone())).unwrap_or_else(|e| panic!("{format:?} {named:?}: {e}\n{lark}"));
+        }
+        assert!(call_grammar(tools, Some("nope"), crate::tools::Format::Hermes).is_none());
+        assert!(call_grammar(tools, None, crate::tools::Format::Glm).is_none());
+        // a named hermes call, after its opening: the arguments, as the schema says, and the close
+        let lark = call_grammar(tools, Some("get_weather"), crate::tools::Format::Hermes).unwrap();
+        let c = g.compile(&Spec::Grammar(lark)).unwrap();
+        let (text, ended) = walk(&c, &[id("yes")], 300);
+        assert!(ended, "{text}");
+        let body = text.strip_suffix("}\n</tool_call>").unwrap_or_else(|| panic!("{text}"));
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert!(v["city"].is_string(), "{text}");
+    }
+}
