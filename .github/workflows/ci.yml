@@ -79,6 +79,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      versions: ${{ steps.diff.outputs.versions }}
       rust: ${{ steps.diff.outputs.rust }}
       hip: ${{ steps.diff.outputs.hip }}
     steps:
@@ -90,17 +91,28 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "versions=true" >> "$GITHUB_OUTPUT"
             echo "rust=true" >> "$GITHUB_OUTPUT"
             echo "hip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # (the pull request's merge commit against its first parent, the base)
-          git diff --name-only HEAD^1 HEAD | tee "$RUNNER_TEMP/changed"
+          git diff --no-renames --name-only HEAD^1 HEAD | tee "$RUNNER_TEMP/changed"
           # Anything but docs, benchmarks, research, condor, starlings, cards, tools and the other workflows (each has its own, or none): the heavy jobs run.
-          if { grep -Ev '^(.*\.md|docs/|benchmarks/|research/|condor/|starlings/|cards/|tools/)' "$RUNNER_TEMP/changed" || true; } | grep -Evq '^\.github/workflows/' || grep -Eq '^\.github/workflows/ci\.yml$' "$RUNNER_TEMP/changed"; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
+          code=false
+          while IFS= read -r f; do
+            case "$f" in
+              .github/workflows/ci.yml) code=true ;;
+              *.md | docs/* | benchmarks/* | research/* | condor/* | starlings/* | cards/* | tools/* | .github/workflows/*) ;;
+              *) code=true ;;
+            esac
+          done < "$RUNNER_TEMP/changed"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # (the Versions agree job also runs tools/report/report.py's self-test)
+          if [ "$code" = true ] || grep -Eq '^tools/report/' "$RUNNER_TEMP/changed"; then
+            echo "versions=true" >> "$GITHUB_OUTPUT"
           else
-            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "versions=false" >> "$GITHUB_OUTPUT"
           fi
           if grep -Eq '^(Cargo\.(toml|lock)|rust-toolchain\.toml|rustfmt\.toml|src/|glyd-(store|gpu|engine)/|third_party/|include/|tests/|examples/|\.github/workflows/ci\.yml|\.github/actions/)' "$RUNNER_TEMP/changed"; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
@@ -318,7 +330,7 @@ jobs:
   versions:
     name: Versions agree
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.versions == 'true'
     runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
     timeout-minutes: 10
     steps:
