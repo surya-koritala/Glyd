@@ -20,7 +20,7 @@ tags:
 **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) (180B parameters) compressed to run on one 16 GB NVIDIA graphics
 card with 64 GB of RAM**, with [Glyd](https://getglyd.com)'s own engine. Hummingbird is Glyd's most compact level.
 
-**Run it:** [github.com/surya-koritala/condor](https://github.com/surya-koritala/condor)
+**Run it:** [github.com/surya-koritala/Glyd/condor](https://github.com/surya-koritala/Glyd/tree/main/condor)
 
 ![Star Drift, a space shooter the model wrote in one prompt](assets/star-drift.gif)
 
@@ -38,7 +38,7 @@ Linux or Windows on x86-64, an NVIDIA RTX 30, 40 or 50 series card (or newer) wi
 newer, 32 GB of RAM or more (64 GB for precise and best), about 90 GB of free disk. On Windows, run `setup.ps1` in PowerShell instead:
 
 ```sh
-git clone https://github.com/surya-koritala/condor && cd condor
+git clone https://github.com/surya-koritala/Glyd && cd Glyd/condor
 ./setup.sh
 ```
 
@@ -93,7 +93,7 @@ v0.2.4's build, 2026-10-21, the median of three runs each. Contexts up to 262,14
 |---|--:|--:|--:|
 | GSM8K | 148 / 150 | 147 / 150 | 149 / 150 |
 | MMLU-Pro | 127 / 150 | 131 / 150 | 121 / 150 |
-| A full game in one prompt ([Star Drift](https://github.com/surya-koritala/condor/tree/main/examples/star-drift)) | 3 of 6 playable (v0.1) | not run | 1 of 6 (v0.1) |
+| A full game in one prompt ([Star Drift](https://github.com/surya-koritala/Glyd/tree/main/condor/examples/star-drift)) | 3 of 6 playable (v0.1) | not run | 1 of 6 (v0.1) |
 
 The logs and the scripts that produced them are in the GitHub repository (`results/`, `bench/`).
 

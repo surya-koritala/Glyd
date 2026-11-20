@@ -30,7 +30,7 @@ to GLY-235/236; a whole-request package cannot satisfy them implicitly.
 ## Delivered glyd-range/1 adapter
 
 The mapping follows the provider's
-[API contract at d0e389c](https://github.com/Sigbound/glyd-gpu-private/blob/d0e389cbcedbc177935a8b19c6ae78cae03e6127/docs/range-worker.md),
+[API contract](../../docs/range-worker.md),
 read as documentation only. No backend implementation is imported. The public
 `starlings_adapters::partial::glyd::Worker<R, W>` accepts exclusive `Read`/`Write`
 pipe halves from an approved, separately owned process. Its caller must maintain

@@ -74,7 +74,7 @@ RTX 3090   0.51 s / 72 tok/s
 ```
 
 Those machines' RAM read 27-65 GB/s (this 4080 desktop: 70), which shows on long prompts; full table in
-[#3](https://github.com/surya-koritala/condor/issues/3). Your card's numbers are welcome there.
+[#3](https://github.com/surya-koritala/Glyd/issues/284). Your card's numbers are welcome there.
 
 ## Install
 

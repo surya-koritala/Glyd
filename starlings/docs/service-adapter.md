@@ -53,7 +53,7 @@ No service is automatically advertised as an eligible inference backend.
 
 ## Explicit glyd-serve/1 request mapping
 
-The merged provider [PR168](https://github.com/Sigbound/glyd-gpu-private/pull/168)
+The provider's [API document](../../docs/serve-api.md)
 documents `glyd-serve/1` at revision `8552912684394e49566564f49902997299be15e0`.
 An operator-approved `ServiceConfig` may explicitly select `"api":"glyd-serve/1"`.
 The adapter maps counting, JSON/SSE reasoning, approved identity, owned request
