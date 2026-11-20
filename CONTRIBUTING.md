@@ -42,10 +42,10 @@ On every pull request and push to main (`.github/workflows/`):
   engine's sources change, `HIP kernels compile (AMD)` (ROCm's compiler, no GPU). The tests build with `--profile ci`
   (`Cargo.toml`: release code, no fat LTO) and keep their build in a cache saved from main.
   **`CI result` is the one check to require** on main: it waits for all of them and passes when each succeeded or was skipped.
-  Main is protected: `CI result`, `Tree size` and `signoff` must pass and the branch must be up to date with main, and the rules apply to admins too (no `--admin`
-  bypass). Merge with `gh pr update-branch <N>` when the pull request is behind, then `gh pr merge <N> --merge --auto` (or `--merge` once the checks are green): it
-  lands when the required checks pass. (`ci.yml`, `tree.yml` and `dco.yml` also run for a GitHub merge queue, `merge_group`, which main would use if the repository
-  moved to an organization; a queue needs one.)
+  Main is protected: `CI result`, `Tree size` and `signoff` must pass, and the rules apply to admins too (no `--admin` bypass). Merge with
+  `gh pr merge <N> --merge --auto`: it lands when the required checks pass, with no need to bring the branch up to date first. If main breaks after a merge,
+  fixing it comes first. (`ci.yml`, `tree.yml` and `dco.yml` also run for a GitHub merge queue, `merge_group`, which main would use if the repository moved to an
+  organization; a queue needs one.)
 - Only when their paths change: `python.yml` (the Python GPU package and vLLM plugin), `kernels.yml` (the engine's kernels
   compile with nvcc 13 for sm_80 to sm_120, no GPU), `starlings-ci.yml` (Linux on a pull request and a push; the full matrix, macOS and Windows included, nightly), `condor-ci.yml`, `cpu-pack.yml`.
 - Always: `tree.yml` (no large data files, `scripts/check_tree.sh`) and `dco.yml` (sign-off on every commit).
