@@ -612,6 +612,7 @@ fn redact_keyed(s: &str) -> String {
                     continue;
                 }
                 let sep_start = j;
+                let mut plist = false;
                 // (a property list's `<key>NAME</key>` and its `<string>VALUE</string>`)
                 if s[j..].starts_with("</key>") {
                     j += 6;
@@ -620,6 +621,7 @@ fn redact_keyed(s: &str) -> String {
                     }
                     if s[j..].starts_with("<string>") {
                         j += 8;
+                        plist = true;
                     }
                 }
                 while j < s.len() && matches!(bytes[j], b'=' | b':' | b' ' | b'"' | b'\'' | b'\\') {
@@ -627,14 +629,14 @@ fn redact_keyed(s: &str) -> String {
                 }
                 let value = s[j..]
                     .chars()
-                    .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | '\'' | ',' | '\\' | '}' | ']' | ';' | '&' | '<'))
+                    .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | '\'' | ',' | '\\' | '}' | ']' | ';' | '&') && !(plist && *c == '<'))
                     .map(char::len_utf8)
                     .sum::<usize>();
                 let v = &s[j..j + value];
                 let plain = v.is_empty()
                     || v.starts_with('<')
                     || v.contains("<redacted>")
-                    || s[j + value..].starts_with("<redacted>")
+                    || (TOKEN_PREFIXES.contains(&v) && s[j + value..].starts_with("<redacted>"))
                     || matches!(v, "null" | "true" | "false" | "none" | "found")
                     || v.eq_ignore_ascii_case("bearer")
                     || v.eq_ignore_ascii_case("basic")
@@ -963,6 +965,7 @@ mod tests {
             ("sk-1234567890abcdefghij is a key", "sk-<redacted> is a key"),
             ("/Users/alice/.cache/glyd and /Users/alice/models", "~/.cache/glyd and ~/models"),
             ("password=hunter2", "password=<redacted>"),
+            ("password=pa<ss>word123 next", "password=<redacted> next"),
             ("GLYD_API_KEY=<set>", "GLYD_API_KEY=<set>"),
             ("GLYD_API_KEY=abcdefghijkl in the log", "GLYD_API_KEY=<redacted> in the log"),
             ("Environment=VLLM_API_KEY=s3cr3tvalue", "Environment=VLLM_API_KEY=<redacted>"),
