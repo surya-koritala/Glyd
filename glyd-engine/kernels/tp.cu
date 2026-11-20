@@ -72,3 +72,51 @@ extern "C" __global__ void __launch_bounds__(256) tp_gather(const uint4* src, in
         }
     }
 }
+
+// tp_gather_ll: tp_gather for a gather small enough (a decode step's: a few KB a GPU) that its time is the protocol's, not the bytes'. Each 8-byte word a
+// GPU writes into another's staging is 4 bytes of the slice and the gather's sequence number, so the receiver waits on the words themselves: no system
+// fence and no flag words after the data. tab: [n] the regular staging, [n] the flags, [n] this staging (u64 words: [2 parities][n senders][TP_BLOCKS
+// blocks][sub words]); ctr as tp_gather's (the two take turns on a stream's sequence). A word of this staging is written only by gathers of this kind, with
+// sequence numbers below the current one, and the staging starts at zero, so a word from before never reads as this gather's.
+extern "C" __global__ void __launch_bounds__(256) tp_gather_ll(const uint4* src, int rows, int sl8, uint4* dst, long long ld8, int rank, int n, const unsigned long long* tab, unsigned int* ctr, long long sub) {
+    const int b = blockIdx.x, nb = gridDim.x, tid = threadIdx.x;
+    const unsigned int s = ctr[b] + 1;
+    __syncthreads();
+    if (tid == 0) ctr[b] = s;  // (read by the next gather on this stream, after this one has ended)
+    const unsigned long long tag = (unsigned long long)s << 32;
+    const long long par = s & 1, total = (long long)rows * sl8, per = (total + nb - 1) / nb, lo = b * per, hi = min(total, lo + per);
+    const auto region = [&](int sender) { return ((par * n + sender) * TP_BLOCKS + b) * sub - 4 * lo; };  // (vector v of block b's share: words region + 4 v on)
+    for (long long v = lo + tid; v < hi; v += blockDim.x) {
+        const uint4 x = src[v];
+        const long long r = v / sl8, c = v % sl8;
+        dst[r * ld8 + (long long)rank * sl8 + c] = x;
+        for (int q = 0; q < n; q++) {
+            if (q == rank) continue;
+            volatile unsigned long long* w = reinterpret_cast<unsigned long long*>(tab[2 * n + q]) + region(rank) + 4 * v;
+            w[0] = tag | x.x;
+            w[1] = tag | x.y;
+            w[2] = tag | x.z;
+            w[3] = tag | x.w;
+        }
+    }
+    const volatile unsigned long long* mine = reinterpret_cast<const unsigned long long*>(tab[2 * n + rank]);
+    const unsigned long long t0 = tp_ns();
+    for (int q = 0; q < n; q++) {
+        if (q == rank) continue;
+        for (long long v = lo + tid; v < hi; v += blockDim.x) {
+            const volatile unsigned long long* w = mine + region(q) + 4 * v;
+            unsigned long long a, bb, c2, d;
+            for (unsigned int spin = 1;; spin++) {
+                a = w[0], bb = w[1], c2 = w[2], d = w[3];
+                if ((a >> 32) == s && (bb >> 32) == s && (c2 >> 32) == s && (d >> 32) == s) break;
+                // (a GPU that has not come to this gather in 10 s: the group is broken, said and stopped)
+                if ((spin & 1023) == 0 && tp_ns() - t0 > 10000000000ull) {
+                    printf("tp_gather_ll: GPU %d block %d waited 10 s for GPU %d at gather %u (%d rows of %d vectors)\n", rank, b, q, s, rows, sl8);
+                    __trap();
+                }
+            }
+            const long long r = v / sl8, c = v % sl8;
+            dst[r * ld8 + (long long)q * sl8 + c] = make_uint4((unsigned int)a, (unsigned int)bb, (unsigned int)c2, (unsigned int)d);
+        }
+    }
+}

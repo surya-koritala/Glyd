@@ -28,6 +28,12 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
 - The GPU is the one with the most free memory of those CUDA_VISIBLE_DEVICES shows. The context is `--ctx N` (`--context`);
   without it, what fits, up to 32,768 at a level. A level's engine runs one request at a time (the others wait in order);
   the lossless engine runs `--users N` at once (1 to 8, 4 if not given).
+- A model too big for one GPU (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark) uses all the GPUs shown. On datacenter
+  GPUs (A100, H100, B200) that reach each other directly, Kimi-K3 and DeepSeek-V4 put every layer across all of them:
+  each GPU holds a slice of every big matrix and the slices are gathered GPU to GPU, so every GPU works on every token.
+  The start checks two gathers of known values and refuses (exit 3) where the GPUs' writes to each other arrive wrong.
+  Elsewhere, or with `--split CUTS --devices GPUS`, the layers are split between the GPUs (one at work at a time). The
+  numbers: [research/tp-8xa100-2026-10-22](../research/tp-8xa100-2026-10-22/README.md).
 - The environment it reads: GLYD_API_KEY (or VLLM_API_KEY; `--api-key` works but `ps` shows it), GLYD_GPU_LIB where the
   GPU library is not beside the program, HF_HUB_CACHE or HF_HOME for a Hub name, HF_HUB_OFFLINE=1. A directory needs
   nothing else.
