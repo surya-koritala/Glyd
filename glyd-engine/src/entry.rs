@@ -10,8 +10,27 @@ pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [-
 pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
 
 /// The commands of the engine that `glyd` takes as its own where the engine is linked (the same words as `glyd-engine`'s): what a model is run, served, fetched, packed-for-this-GPU, checked or costed with.
-pub const COMMANDS: &[&str] =
-    &["run", "serve", "doctor", "login", "supports", "preflight", "fetch", "pull", "ls", "rm", "verify", "prepare", "costs", "rates", "fit", "rangeworker"];
+pub const COMMANDS: &[&str] = &[
+    "run",
+    "serve",
+    "doctor",
+    "login",
+    "supports",
+    "preflight",
+    "fetch",
+    "pull",
+    "ls",
+    "rm",
+    "service",
+    "ps",
+    "stop",
+    "verify",
+    "prepare",
+    "costs",
+    "rates",
+    "fit",
+    "rangeworker",
+];
 
 /// glibc's allocator told to keep freed buffers up to 32 MB (its largest such setting) in the heap and not hand freed memory back: a load's threads (one a GPU,
 /// each with its packers) free buffers of a few MB to tens of MB by the thousand, and every unmapping stops every CPU the process runs on to flush its TLB (the
@@ -71,7 +90,8 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         return Ok(());
     }
     match cmd {
-        Some("run") => std::process::exit(crate::cli::run(&a)),
+        // where the service is running, the chat goes through it (src/service.rs); else a process of its own as before
+        Some("run") => std::process::exit(crate::service::attach(&a).unwrap_or_else(|| crate::cli::run(&a))),
         Some("serve") => std::process::exit(crate::cli::serve(&a)),
         Some("doctor") => std::process::exit(crate::cli::doctor(&a)),
         Some("login") => std::process::exit(crate::cli::login(&a)),
@@ -82,6 +102,10 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("pull") => std::process::exit(crate::models::pull(&a)),
         Some("ls" | "list") => std::process::exit(crate::models::ls(&a)),
         Some("rm") => std::process::exit(crate::models::rm(&a)),
+        // the background service: models loaded on request and unloaded when idle; what it holds; a model unloaded (src/service.rs)
+        Some("service") => std::process::exit(crate::service::run(&a)),
+        Some("ps") => std::process::exit(crate::service::ps(&a)),
+        Some("stop") => std::process::exit(crate::service::stop(&a)),
         Some("verify") => std::process::exit(crate::cli::verify(&a)),
         Some("prepare") => std::process::exit(crate::cli::prepare_cmd(&a)),
         // the cost profile of a model at a level, and this machine's memory tiers (docs/cost-profile.md)

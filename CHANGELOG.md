@@ -69,6 +69,10 @@ every earlier format.
   a tag of letters only is a level and `:27b` a size, a name with no size is the family's default, and a name that is none says the names and the nearest one. A Hub id, a directory and a GGUF file are taken as before.
   `glyd pull` downloads a model (the level's pre-packed repo where there is one, else the release's own weights, which the first run packs); `glyd ls [--all] [--json]` lists what the Hub's cache holds with its level and size
   on disk and the packed copies made for this GPU; `glyd rm NAME|ORG/NAME[:LEVEL]` takes a model out of the cache and its packed copies, and no other model's.
+- The background service (docs/service.md): `glyd service` owns the API port (127.0.0.1:11434, fixed: a port in use is an error that names the program), loads a model when a request names it, unloads it after
+  `--keep-alive` idle (5 minutes) and holds `--max-loaded` models (2; the least recently used idle one makes room, and a load that fails is tried again with the idle ones unloaded). Each model is a `glyd serve` of its own,
+  so the server's behaviour is unchanged. `glyd ps` shows what is loaded, `glyd stop MODEL|--all` unloads, `glyd run MODEL` chats through the service where it runs, and `glyd service install` makes it a user unit
+  (systemd, launchd; install.sh does it on Linux with an NVIDIA GPU, `GLYD_NO_SERVICE=1` leaves it out). It loads only downloaded models, refuses a foreign Host or Origin, and its stop and unload need a secret only the account can read.
 
 ## v0.32.1 — 2026-10-17
 
