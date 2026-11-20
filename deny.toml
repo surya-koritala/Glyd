@@ -2,6 +2,9 @@
 # crates.io only. Starlings has its own (starlings/deny.toml).
 [graph]
 all-features = true
+# glyd-engine (publish = false) was never in this policy: its dependencies (ureq, rustls) are not checked here. glyd lists it as an optional dependency (the `engine`
+# feature), which would bring them in; they stay out as before, so this file says the same as it did.
+exclude = ["glyd-engine"]
 
 [advisories]
 ignore = []

@@ -1,14 +1,25 @@
-<img src="docs/img/glyd-logo.svg" alt="Glyd" width="72">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/glyd-mark-white.svg">
+    <img src="docs/img/glyd-mark.svg" alt="Glyd" width="48">
+  </picture>
+</p>
 
-# Glyd
+<h1 align="center">Glyd</h1>
 
-Compress and run open LLMs on your GPUs, end to end.
+<p align="center"><strong>Compress and run open LLMs on your GPUs, end to end.</strong></p>
 
+<p align="center">
 Glyd packs a model's weights and KV cache losslessly, fits the model to the GPUs you have, and runs and serves it on its
 own Rust engine. It works from one consumer card to a multi-GPU server. Apache-2.0.
+</p>
 
-[Docs](https://surya-koritala.github.io/Glyd/) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) ·
-[Security](SECURITY.md)
+<p align="center">
+  <a href="https://surya-koritala.github.io/Glyd/">Docs</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="SECURITY.md">Security</a>
+</p>
 
 ## Features
 
@@ -48,7 +59,16 @@ target/release/glyd-engine fit google/gemma-4-12B-it:kestrel    # the plan for t
 target/release/glyd-engine run google/gemma-4-12B-it:kestrel    # chat in the terminal and at http://localhost:8000
 ```
 
-A one-line installer with no Python arrives with v0.33.0 ([#129](https://github.com/surya-koritala/Glyd/issues/129)).
+Or install a release, with no Python and no toolkit (about 100 MB):
+
+```bash
+curl -LsSf https://getglyd.com/install.sh | sh
+```
+
+On the engine alone, `glyd run MODEL` is the engine's. With the Python tool installed (`GLYD_WITH_VLLM=1`), `glyd run` goes to
+the engine only on the GPU it has been measured on, the RTX 4080 SUPER ([#214](https://github.com/surya-koritala/Glyd/issues/214)),
+and to the frozen vLLM path on the others, or for a model the engine does not run; `GLYD_ENGINE=1` forces the engine,
+`GLYD_ENGINE=0` keeps vLLM.
 
 ## Status
 

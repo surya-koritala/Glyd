@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.33.0 — 2026-11-20
 
 - `glyd connect [TOOL]` finds the server that runs here and prints what OpenAI and Anthropic SDKs, Claude Code, Ollama's libraries, Open WebUI (container) and Continue need to talk to it; the Host check answers `host.docker.internal` and `host.containers.internal` (Docker Desktop's and Podman's names for this computer); the client checks are in `tests/clients/` (docs/serve-api.md, Connecting tools).
 - Server: Ollama's API under `/api` for the programs that talk to Ollama (Open WebUI, Continue, LangChain, the `ollama` libraries): `chat` and `generate` as JSON lines or one object (`options`, `format` with a JSON schema, `think`, tools, images, `suffix`), `tags`, `show` (with `capabilities` and `context_length`), `ps`, `version`, `pull` and `delete` for the one model a server holds; `--ollama-port N` listens on Ollama's port too where it is free. The key guards `/api`. Checked with the `ollama` Python library on Qwen3-8B.
@@ -37,6 +37,8 @@ every earlier format.
 - On Linux with an NVIDIA GPU, install.sh installs the Rust `glyd`, Glyd's engine and its GPU library in one folder: about 100 MB, no
   Python, no PyTorch. `GLYD_WITH_VLLM=1` installs the Python tool with vLLM as before (about 8 GB), for the bf16 models the engine does not
   run; a machine that already has the Python tool keeps it.
+- `install.sh` takes `GLYD_RELEASE_URL` (a mirror, or `file:///DIR`) in place of the GitHub release's download URL, for the compression program's and the engine's tarballs.
+- Every artifact of a release is built from this repository: `release.yml` (the CLI tarballs and wheels) and `release-gpu.yml` (the GPU libraries, the engine, the `glyd-gpu` wheels and the `glyd-engine-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` bundles with their `.sha256`).
 - `glyd run` and `glyd serve` run DeepSeek-V4-Flash, GLM-5.3-Flash, Muse Spark and Nemotron 3.5 Lightning on Glyd's engine at penguin:
   the release's weights exactly (an FP8 or FP4 release as it is, a bf16 one lossless). The layers are split over the machine's GPUs by
   their free memory (`--split CUTS --devices GPUS` chooses); where the GPUs do not hold the model, `run` says how much it needs and stops.
@@ -62,6 +64,10 @@ every earlier format.
 - `glyd run google/gemma-4-12B-it` (or `google/gemma-4-31B-it`, or their penguin repos) on a GPU without room for penguin names the wren repo and the memory
   it takes, where it fits (`glyd run glyd/gemma-4-12B-wren fits: ...`), and stops there; it handed the model to vLLM, whose bf16 needs more memory still, and
   which printed a second estimate and suggested a model Glyd does not run.
+- One program: `glyd` with the engine linked (the `engine` feature of the root crate, which the engine bundle of a release is built with). `glyd run`, `serve`, `pull`, `fit`, `doctor`,
+  `login`, `fetch`, `supports`, `preflight`, `prepare`, `costs`, `rates` and `rangeworker` are its own, with no `glyd-engine` on PATH; `glyd-engine` stays, as a link to `glyd` (or a copy named so), which
+  takes the engine's old command line, and as the cargo package. `fit` and `pull` reach the engine where they used to print "Unknown option"; with no engine here the answer says so. `glyd` with no words
+  explains the models first and the exit status (0 done, 1 an error, 3 not supported). install.sh puts the one program in place of the compression program and links `glyd-engine` to it.
 
 ## v0.32.1 — 2026-10-17
 

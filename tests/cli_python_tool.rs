@@ -1,3 +1,5 @@
+//! The routing of the model commands in the Rust `glyd` (src/bin/glyd.rs), as a program started: where the engine is a program of its own (this test's build has
+//! the codec's `glyd` alone; the `engine` feature's build, where the engine is linked, is tests/cli_linked_engine.rs and the unit tests of the routing in the program).
 //! `glyd run`, `glyd serve`, `glyd doctor` and `glyd login` reach Glyd's Python tool from the Rust `glyd` (src/bin/glyd.rs), whichever of
 //! the two programs is first on PATH; where there is no tool, the answer says so, in place of the usage text of a file named run. Where
 //! there is a tool, `glyd run` and `glyd serve` are its to decide (it asks the engine before anything is downloaded, runs it as its child,
@@ -311,4 +313,40 @@ fn a_rust_only_install_passes_a_models_commands_to_the_engine() {
     // no engine and no tool: a file named fetch is still a file to compress, not a command
     let o = glyd(&["fetch"], "/nonexistent", &t, &[]);
     assert!(!text(&o.stdout).starts_with("engine:"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn fit_and_pull_are_the_engines_with_or_without_the_tool_and_say_so_where_there_is_none() {
+    let t = tmp("fit-pull");
+    let en = t.join("enbin");
+    engine(&en);
+    let py = t.join("pybin");
+    python_tool(&py, STUB);
+    // the engine's, though the Python tool is installed: it has no `fit` (or `pull`) to run
+    for path in [en.display().to_string(), format!("{}:{}", py.display(), en.display())] {
+        for args in [&["fit", "Qwen/Qwen3-8B", "--context", "4096"][..], &["pull", "Qwen/Qwen3-0.6B"][..], &["rangeworker", "--layers", "0..4"][..]] {
+            let o = glyd(args, &path, &t, &[]);
+            assert_eq!(text(&o.stdout).trim(), format!("engine: {}", args.join(" ")), "{args:?}: {}", text(&o.stderr));
+        }
+    }
+    // no engine: a name that is no file says what is missing (it was "Unknown option" or a read error), a file of that name is compressed
+    let o = glyd(&["fit", "Qwen/Qwen3-8B"], "/nonexistent", &t, &[]);
+    assert_eq!(o.status.code(), Some(127), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("the engine is not here") && !text(&o.stderr).contains("Unknown option"), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).is_empty());
+    // GLYD_ENGINE=0 keeps the engine out of it
+    let o = glyd(&["pull", "m"], &en.display().to_string(), &t, &[("GLYD_ENGINE", "0")]);
+    assert_eq!(o.status.code(), Some(127), "{}", text(&o.stderr));
+}
+
+#[test]
+fn glyd_alone_explains_the_models_first_and_documents_its_exit_status() {
+    let t = tmp("usage");
+    let o = glyd(&[], "/nonexistent", &t, &[]);
+    let err = text(&o.stderr);
+    let (models, files) = (err.find("glyd run MODEL").expect("run"), err.find("compress or decompress a file").expect("files"));
+    assert!(models < files, "{err}");
+    for cmd in ["glyd serve", "glyd pull", "glyd fit", "glyd doctor", "Exit status: 0 done, 1 an error, 3 not supported"] {
+        assert!(err.contains(cmd), "{cmd}: {err}");
+    }
 }

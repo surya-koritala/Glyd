@@ -3,7 +3,26 @@
 Design for #230 (R9), the first issue of M2 (#121). It covers the model step the scheduler drives, the layer-kind interface the model
 descriptions compose, the seam where vendors plug in, the scheduler and KV cache, expert tiering, the order in which the per-family
 pipelines move onto it, and the per-step ceiling it is measured against. Numbers are measured where a record is named, derived where the
-formula is given. Written 2026-11-20 against main ea26239f.
+formula is given. Written 2026-11-20 against main ea26239f; revised the same day for the owner's scope rule below.
+
+**Scope.** What M2 tests and optimises for are the models released in the last six months (cutoff 2026-05-20): Qwen3.8 (27B dense,
+Flash-Next, 2.4T-A95B), GLM-5.3 (and -Flash), Muse-Spark-Open-816B-A42B, Kimi-K3 (and K3.1-Pro), gemma-4-12B, DeepSeek-V4 (Flash and Pro,
+with their DSpark drafters). Qwen3 (2025), Qwen3.5/3.6, Nemotron-3-Super and gemma-4-31B are legacy: they move onto the runtime so their
+pipelines can be deleted, with parity and nothing more. Batching and paged KV exist today only on the legacy Qwen3 path; giving them to
+the recent families is the first priority.
+
+## Top gaps for the recent families
+
+1. **Qwen3.8 dense (27B) has no lossless level on the engine.** The Qwen3.5 code path it runs on accepts kestrel, swift and wren only
+   (`support.rs`, the `Qwen3.5` row: `levels: LOSSY`); penguin runs only through the frozen vLLM plugin. Its penguin pack is ~38 GiB
+   (51.7 GiB bf16), so it needs the 40-80 GB cards or a split (#331).
+2. **No recent family batches or pages its KV.** Every one runs one sequence per engine: the description executor refuses more than one
+   for every family but Qwen3.5 (`dynamic/mod.rs:2352`), and Condor swaps sequences rather than batching them (R4a #138, R4b #141,
+   #329).
+3. **The lossless KV format covers none of them.** `kv.rs` takes head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`); the recent
+   families use head dims 256 and 512 (Qwen3.8, Gemma 4), 64 (Muse), MLA latents (Kimi-K3, GLM-5.3) and DeepSeek-V4's compressed entries (#332).
+4. **Recent releases the engine does not load yet:** GLM-5.3 (the full `GlmMoeDsa` model; -Flash runs), Qwen3.8-2.4T-A95B (refused as a
+   Qwen3.5 MoE, `qwen35.rs:492`), Kimi-K3.1-Pro, DeepSeek-V4.1-Flash, and the DSpark drafters (parsed MTP is unused on DeepSeek-V4) (#333).
 
 ## Decisions
 
@@ -42,8 +61,10 @@ formula is given. Written 2026-11-20 against main ea26239f.
     for all the tokens routed to it. The routing stays on the device where the store has a device path, so the step stays in a graph.
     Dense layers in RAM use the same store as an expert every row routes to.
 13. **Migration moves one family at a time** behind R7's logits test and R8's bench gate, no regression beyond the measured noise band,
-    and deletes the old pipeline in the PR after the parity record. Order: the trait rename on Qwen3 dense, the description path
-    for one user, Qwen3.5/Gemma 4/Nemotron-H, the standard families, Qwen3 dense batched, the large MoE families, Condor last.
+    and deletes the old pipeline in the PR after the parity record. Order: the foundation (trait rename, context, kinds, the executor
+    behind `ModelStep`), then the recent families with batching and paged KV (gemma-4-12B and Qwen3.8 dense with its lossless level,
+    then DeepSeek-V4, Kimi-K3, GLM-5.3, Muse with expert tiering, Condor last of them), then the standard families, then the legacy
+    pipelines (Qwen3 dense, Qwen3.5/3.6, Nemotron-H, gemma-4-31B) at parity only.
 
 ## 1. Inventory
 
@@ -75,15 +96,17 @@ and the whole lossless KV cache (`kv_write`, `kv_gather`, `kv_decode`, ...) are 
 
 | family (code) | attention | position | norm and residual | FFN | other | KV and state | weights |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| Qwen3 dense (`model.rs`) | GQA, hd 128, q/k norm fused with rope (`qk_norm_rope`) | rope, full, no scaling (refused) | RMSNorm pre-norm, residual fused in `rmsnorm_add` | SiLU-gated | tied allowed | paged 12-bit lossless, 16-token pages, 8 rows | `mma`/`mma12` decoded in the library product; long prompts unpack then GEMM |
-| Qwen3.5/3.8 dense (`model35.rs`, `dynamic/qwen35.rs`) | 3 of 4 layers Gated DeltaNet (conv 4, fp32 state [nv,128,128], chunk 64); 1 of 4 GQA hd 256 with sigmoid output gate | partial rope 64/256, θ 1e7; mrope read as plain for text | (1+w) RMSNorm | SiLU-gated (MoE refused) | MTP and vision not loaded | bf16 contiguous, 1 sequence (Qwen3.5 can hold several and select) | library layouts |
-| Gemma 4 dense (`model_gemma4.rs`, `dynamic/gemma4.rs`) | 5 of 6 sliding (hd 256, ring window+chunk); global hd 512, K=V option; q/k norm, weightless v norm | full θ 1e4 (sliding); proportional 64/256, θ 1e6 (global) | sandwich RMSNorm, per-layer scalar | GELU-tanh-gated | embed x sqrt(hidden), tied head, softcap 30, separate "assistant" draft model | bf16 contiguous, ring for sliding | library layouts; Int4-6 via `skinny.cu` for 1-16 rows |
-| Nemotron-H (`model_nh.rs`, `dynamic/nemotron.rs`) | pattern of Mamba-2 (SSD chunk 128, fp32 state [heads,64,128]) and GQA hd 128 | none | RMSNorm, `x + mixer(norm(x))` | MoE: sigmoid + bias, top-22 of 512, renorm, x5; latent 1024 (Super); relu^2, no gate; full-width shared expert | MTP not loaded | bf16 contiguous plus SSM and conv state | Int6/5/4, hb40 codebook; expert cache with CPU misses (`moe_nh.rs:273-319`) |
-| Condor, Qwen3.8-Flash-Next (`model_qwen4x.rs`) | 36 GDN layers; 12 sparse attention layers (24 q / 2 kv heads, hd 256; indexer picks 2,048 tokens by 4-token blocks; sigmoid gate) | partial rope 64/256, θ 1e7; M-RoPE for images | four residual streams joined by gated residuals, (1+w); n-gram embedding at layer 1 | MoE: softmax top-10 of 512, SwiGLU, Hadamard-rotated input; gated shared expert 640 | 1 MTP layer (verifies up to 8 rows); vision tower (27 blocks) | bf16 KV, indexer keys, GDN state; sequences swapped, not batched | Int6/5/4 dense, int8 shared and residual, codebook experts cb2/3/4/ternary decoded in `qx_cb_*` |
-| Kimi-K3 (`dynamic/kimi.rs`) | 69 of 93 layers Kimi delta attention (KDA, fp32 state 96x128x128, conv 4); 24 MLA (q 1536, kv 512, nope 128 + 64 shared, v 128, absorbed, sigmoid gate) | none (no rope anywhere) | KimiRMSNorm (two roundings); depth mix: each block's input is a softmax over the embedding and completed 12-layer blocks | layer 0 dense (situ); MoE: sigmoid + bias, top-16 of 896, latent 3584, situ; 2 shared experts as one MLP | - | MLA latent [ctx, 576] bf16 plus KDA state, contiguous | experts MXFP4 as released; rest lossless `Tiered`; expert cache with device-side plan (`dc_plan`, `dc_fill`) |
-| GLM-5.3-Flash (`dynamic/glm.rs`, `model_glm.rs`) | 34 of 45 KDA; 11 MLA (nope 256, v 256) with pooled-key indexer (top 2,048) | none (refused) | mHC: 4 streams, Sinkhorn mixing (20 iterations) | layers 0-2 dense SwiGLU clamp 10; MoE: sigmoid + bias, top-8 of 288, x2.5, 1 shared | 1 MTP head (hand-written engine only) | latent 512 + indexer keys + KDA state, contiguous | FP8 128x128 blocks as released; Int6/5/4 or codebook experts on the hand-written path |
-| DeepSeek-V4 (`dynamic/deepseek_v4.rs`) | one shared KV head of 512; window 128 ring plus a per-layer compressed cache (ratio 4 with an FP4-simulated indexer, or every entry); learned sink; grouped low-rank output | partial rope 64/512; YaRN on compressed layers | mHC, 4 streams; FP8 quantized product inputs | every layer MoE: sqrt-softplus + bias, hash routing (token id) in the first layers, SwiGLU limit, 1 FP8 shared | MTP parsed, unused | window ring (E4M3-simulated) + compressed caches + fp32 pooling state | FP8 large matrices kept, FP4 experts exact |
-| Muse Spark (`dynamic/muse.rs`) | GQA hd 64, sliding (rope) and global (no rope); weightless q/k norm, gated output with per-head norm | full rope on sliding layers only | centred (1+w) RMSNorm; learned residual gates X = aX + bO; sandwich | every layer MoE in a latent, sigmoid + bias, per-expert output norm, no shared | logit softcap with multiplier | bf16 rings | bf16, lossless `Tiered` |
+| **Qwen3.8 dense 27B** (also legacy Qwen3.5/3.6) (`model35.rs`, `dynamic/qwen35.rs`) | 3 of 4 layers Gated DeltaNet (conv 4, fp32 state [nv,128,128], chunk 64); 1 of 4 GQA hd 256 with sigmoid output gate | partial rope 64/256, θ 1e7; mrope read as plain for text | (1+w) RMSNorm | SiLU-gated (MoE refused) | MTP and vision not loaded | bf16 contiguous, 1 sequence (Qwen3.5 can hold several and select) | library layouts; **lossy levels only** (no penguin on the engine) |
+| **Qwen3.8-Flash-Next** (Condor, `model_qwen4x.rs`) | 36 GDN layers; 12 sparse attention layers (24 q / 2 kv heads, hd 256; indexer picks 2,048 tokens by 4-token blocks; sigmoid gate) | partial rope 64/256, θ 1e7; M-RoPE for images | four residual streams joined by gated residuals, (1+w); n-gram embedding at layer 1 | MoE: softmax top-10 of 512, SwiGLU, Hadamard-rotated input; gated shared expert 640 | 1 MTP layer (verifies up to 8 rows); vision tower (27 blocks) | bf16 KV, indexer keys, GDN state; sequences swapped, not batched | Int6/5/4 dense, int8 shared and residual, codebook experts cb2/3/4/ternary decoded in `qx_cb_*` |
+| **gemma-4-12B** (also legacy 31B) (`model_gemma4.rs`, `dynamic/gemma4.rs`) | 5 of 6 sliding (hd 256, ring window+chunk); global hd 512, K=V option; q/k norm, weightless v norm | full θ 1e4 (sliding); proportional 64/256, θ 1e6 (global) | sandwich RMSNorm, per-layer scalar | GELU-tanh-gated | embed x sqrt(hidden), tied head, softcap 30, separate "assistant" draft model | bf16 contiguous, ring for sliding | library layouts; Int4-6 via `skinny.cu` for 1-16 rows |
+| **Kimi-K3** (`dynamic/kimi.rs`) | 69 of 93 layers Kimi delta attention (KDA, fp32 state 96x128x128, conv 4); 24 MLA (q 1536, kv 512, nope 128 + 64 shared, v 128, absorbed, sigmoid gate) | none (no rope anywhere) | KimiRMSNorm (two roundings); depth mix: each block's input is a softmax over the embedding and completed 12-layer blocks | layer 0 dense (situ); MoE: sigmoid + bias, top-16 of 896, latent 3584, situ; 2 shared experts as one MLP | - | MLA latent [ctx, 576] bf16 plus KDA state, contiguous | experts MXFP4 as released; rest lossless `Tiered`; expert cache with device-side plan (`dc_plan`, `dc_fill`) |
+| **GLM-5.3-Flash** (`dynamic/glm.rs`, `model_glm.rs`) | 34 of 45 KDA; 11 MLA (nope 256, v 256) with pooled-key indexer (top 2,048) | none (refused) | mHC: 4 streams, Sinkhorn mixing (20 iterations) | layers 0-2 dense SwiGLU clamp 10; MoE: sigmoid + bias, top-8 of 288, x2.5, 1 shared | 1 MTP head (hand-written engine only) | latent 512 + indexer keys + KDA state, contiguous | FP8 128x128 blocks as released; Int6/5/4 or codebook experts on the hand-written path |
+| **DeepSeek-V4** Flash, Pro (`dynamic/deepseek_v4.rs`) | one shared KV head of 512; window 128 ring plus a per-layer compressed cache (ratio 4 with an FP4-simulated indexer, or every entry); learned sink; grouped low-rank output | partial rope 64/512; YaRN on compressed layers | mHC, 4 streams; FP8 quantized product inputs | every layer MoE: sqrt-softplus + bias, hash routing (token id) in the first layers, SwiGLU limit, 1 FP8 shared | MTP parsed, unused | window ring (E4M3-simulated) + compressed caches + fp32 pooling state | FP8 large matrices kept, FP4 experts exact |
+| **Muse Spark** 816B-A42B (`dynamic/muse.rs`) | GQA hd 64, sliding (rope) and global (no rope); weightless q/k norm, gated output with per-head norm | full rope on sliding layers only | centred (1+w) RMSNorm; learned residual gates X = aX + bO; sandwich | every layer MoE in a latent, sigmoid + bias, per-expert output norm, no shared | logit softcap with multiplier | bf16 rings | bf16, lossless `Tiered` |
+| legacy: Qwen3 dense (`model.rs`) | GQA, hd 128, q/k norm fused with rope (`qk_norm_rope`) | rope, full, no scaling (refused) | RMSNorm pre-norm, residual fused in `rmsnorm_add` | SiLU-gated | tied allowed | paged 12-bit lossless, 16-token pages, 8 rows | `mma`/`mma12` decoded in the library product; long prompts unpack then GEMM |
+| legacy: Nemotron-3-Super / Nemotron-H (`model_nh.rs`, `dynamic/nemotron.rs`) | pattern of Mamba-2 (SSD chunk 128, fp32 state [heads,64,128]) and GQA hd 128 | none | RMSNorm, `x + mixer(norm(x))` | MoE: sigmoid + bias, top-22 of 512, renorm, x5; latent 1024 (Super); relu^2, no gate; full-width shared expert | MTP not loaded | bf16 contiguous plus SSM and conv state | Int6/5/4, hb40 codebook; expert cache with CPU misses (`moe_nh.rs:273-319`) |
+
+Recent families first, in bold; legacy rows last.
 
 The M2 standard families need fewer kinds than the seven above (from their `config.json` fields):
 
@@ -99,30 +122,31 @@ The M2 standard families need fewer kinds than the seven above (from their `conf
 
 ### Layer kinds by family
 
-Families: Q3 Qwen3 dense, Q35 Qwen3.5/3.8, G4 Gemma 4, NH Nemotron-H, CO Condor, KI Kimi-K3, GL GLM-5.3, DS DeepSeek-V4, MU Muse
-Spark, STD the M2 standard families. "x" uses the kind; a word names the variant.
+Recent: Q38 Qwen3.8 dense (and legacy Qwen3.5/3.6, same code), CO Qwen3.8-Flash-Next (Condor), G4 gemma-4-12B, KI Kimi-K3, GL GLM-5.3-Flash,
+DS DeepSeek-V4, MU Muse Spark. Then STD, the M2 standard families, and the legacy Q3 Qwen3 dense and NH Nemotron-H. "x" uses the kind; a
+word names the variant.
 
-| kind | Q3 | Q35 | G4 | NH | CO | KI | GL | DS | MU | STD |
+| kind | Q38 | CO | G4 | KI | GL | DS | MU | STD | Q3 | NH |
 | :--- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| GQA / MHA / MQA attention | x | gated | global | x | - | - | - | - | x | x |
-| sliding-window attention | - | - | x | - | - | - | - | window 128 | x | Mistral, Ministral |
-| sparse attention (indexer) | - | - | - | - | x | - | on MLA | on compressed | - | - |
-| MLA (latent KV) | - | - | - | - | - | x | x | single-head latent | - | - |
-| compressed KV entries | - | - | - | - | - | - | pooled keys | x | - | - |
-| Gated DeltaNet | - | x | - | - | x | - | - | - | - | - |
-| Kimi delta attention | - | - | - | - | - | x | x | - | - | - |
-| Mamba-2 | - | - | - | x | - | - | - | - | - | Granite 4 (M3) |
-| rope: full / partial / mrope / scaled | full | partial | full, proportional | - | partial, mrope | - | - | partial, YaRN | full | llama3, YaRN, longrope, partial |
-| RMSNorm / (1+w) / LayerNorm | x | 1+w | x | x | 1+w | two roundings | x | x | centred 1+w | x (vision: LayerNorm) |
-| norm placement: pre / sandwich / post | pre | pre | sandwich | pre | pre | pre | pre | pre | sandwich | pre; OLMo 2 post |
-| residual: add / multi-stream / depth mix / gated | add | add | add, scalar | add | 4 streams, gated | depth mix | mHC 4 | mHC 4 | gated a, b | add; Granite scaled |
-| dense MLP (SiLU, GELU, relu^2, situ) | SiLU | SiLU | GELU | - | - | situ (layer 0) | SiLU clamp | - | - | SiLU |
-| MoE router: softmax / sigmoid+bias / hash | - | - | - | sigmoid | softmax | sigmoid | sigmoid | sqrt-softplus, hash | sigmoid | Qwen3 MoE softmax |
-| shared experts | - | - | - | x | gated | x | x | x | - | - |
-| latent MoE | - | - | - | Super | - | x | - | - | x | - |
-| MTP / draft head | - | not loaded | draft model | not loaded | x | - | x | parsed | - | - |
-| vision tower | - | not loaded | - | - | x | - | - | - | - | - |
-| logit softcap / scale | - | - | softcap | - | - | - | - | - | softcap | Granite scale |
+| GQA / MHA / MQA attention | gated | - | global | - | - | - | x | x | x | x |
+| sliding-window attention | - | - | x | - | - | window 128 | x | Mistral, Ministral | - | - |
+| sparse attention (indexer) | - | x | - | - | on MLA | on compressed | - | - | - | - |
+| MLA (latent KV) | - | - | - | x | x | single-head latent | - | - | - | - |
+| compressed KV entries | - | - | - | - | pooled keys | x | - | - | - | - |
+| Gated DeltaNet | x | x | - | - | - | - | - | - | - | - |
+| Kimi delta attention | - | - | - | x | x | - | - | - | - | - |
+| Mamba-2 | - | - | - | - | - | - | - | Granite 4 (M3) | - | x |
+| rope: full / partial / mrope / scaled | partial | partial, mrope | full, proportional | - | - | partial, YaRN | full | llama3, YaRN, longrope, partial | full | - |
+| RMSNorm / (1+w) / LayerNorm | 1+w | 1+w | x | two roundings | x | x | centred 1+w | x (vision: LayerNorm) | x | x |
+| norm placement: pre / sandwich / post | pre | pre | sandwich | pre | pre | pre | sandwich | pre; OLMo 2 post | pre | pre |
+| residual: add / multi-stream / depth mix / gated | add | 4 streams, gated | add, scalar | depth mix | mHC 4 | mHC 4 | gated a, b | add; Granite scaled | add | add |
+| dense MLP (SiLU, GELU, relu^2, situ) | SiLU | - | GELU | situ (layer 0) | SiLU clamp | - | - | SiLU | SiLU | - |
+| MoE router: softmax / sigmoid+bias / hash | - | softmax | - | sigmoid | sigmoid | sqrt-softplus, hash | sigmoid | Qwen3 MoE softmax | - | sigmoid |
+| shared experts | - | gated | - | x | x | x | - | - | - | x |
+| latent MoE | - | - | - | x | - | - | x | - | - | Super |
+| MTP / draft head | not loaded | x | draft model | - | x | parsed | - | - | - | not loaded |
+| vision tower | not loaded | x | - | - | - | - | - | - | - | - |
+| logit softcap / scale | - | - | softcap | - | - | - | softcap | Granite scale | - | - |
 
 Read across, the interface needs four mixers (attention with variants, MLA, linear attention, Mamba-2), two feed-forward kinds (MLP and
 MoE with router variants), four residual rules (add, multi-stream mixing, depth mix, gated), and a handful of extras (draft heads,
@@ -343,8 +367,8 @@ R1 and R15 carry the detail; the design fixes these points.
 
 ### Why dynamic dispatch at the block and nothing generic above it
 
-A Qwen3-8B decode step on the 4080 is a few hundred kernels in one graph; a dyn call per block (36 x 2 per step) costs well under a
-microsecond against a 15 ms step, and nothing at replay. Generics over the backend in the scheduler, server and planner would multiply
+A gemma-4-12B decode step on the 4080 is a few hundred kernels in one graph; a dyn call per block (48 x 2 per step) costs well under a
+microsecond against a 9.6 ms step, and nothing at replay. Generics over the backend in the scheduler, server and planner would multiply
 compile time by the backend count and buy no measurable time. #134's "static dispatch on hot paths" holds where it matters: within a
 CUDA kind every launch is a direct call on `Device`.
 
@@ -360,8 +384,9 @@ then one decode step". R4a moves it into `runtime::sched` with its own types and
 
 ### A round is one step
 
-The 4080 SUPER records of 2026-11-20 measured what the round structure costs (Qwen3-8B, `benchmarks/gpu/rtx4080s-batched-prefill-2026-11-20`,
-`rtx4080s-bar-2026-11-20`):
+The only batched path today is the legacy Qwen3 one, and its 4080 SUPER records of 2026-11-20 measured what the round structure costs
+(Qwen3-8B, `benchmarks/gpu/rtx4080s-batched-prefill-2026-11-20`, `rtx4080s-bar-2026-11-20`). The recent families get the rule these
+measurements lead to, not the old round:
 
 - A short prompt's pass takes 19-20 ms and a decode step 17 ms, both mostly the 15 ms weight read. Eight short prompts one per round
   cost 8 weight passes and the k-th waited about k x 37 ms: first token 162 ms at 8 users against vLLM's 68.
@@ -379,9 +404,9 @@ budget = rows_decoding * (1 + drafts)                    -- always in, oldest fi
 ```
 
 `T_itl` is the inter-token latency target (a setting, default from the plan: the decode step's own time x 3), `peak / flops_per_token`
-the tokens a millisecond the GPU computes (P2c measures it per GPU). On the 4080 SUPER with Qwen3-8B, 15.1 GFLOP a token at ~100
-TFLOPS is ~6.6 tokens a millisecond: a 50 ms target admits a ~320-token chunk beside 8 decode rows, and decoding users see one 50 ms
-step instead of a 350 ms stall. With no decode rows (a burst of new prompts) the budget is the largest chunk that fits the
+the tokens a millisecond the GPU computes (P2c measures it per GPU). On the 4080 SUPER with gemma-4-12B, 23.8 GFLOP a token at ~104
+TFLOPS is ~4.4 tokens a millisecond: a 50 ms target admits a ~210-token chunk beside 8 decode rows, and decoding users see one 50 ms
+step instead of a ~470 ms stall for a 2,000-token prompt. With no decode rows (a burst of new prompts) the budget is the largest chunk that fits the
 workspace, and several prompts share it (batched prompts). This is Sarathi-Serve's stall-free batching; the record above is the
 measurement that sets its constants on our kernels.
 
@@ -398,8 +423,10 @@ Two details the records found that the policy keeps:
 
 `max_rows` comes from the plan: KV pages and state slots that fit after weights and workspace, not a constant. Graphs are captured at row
 buckets 1, 2, 4, ..., up to the bucket past `max_rows`; a step pads its decode rows to the bucket (padding costs no weight reads). The
-M2 gate is 64 concurrent requests on the 4080 SUPER and the L4; for Qwen3-8B on the 4080 that is 4.2 GiB of KV, 40,972 tokens at 12
-bits (30,729 at bf16), so 64 users average 640 tokens of context each, and more users than that queue or preempt.
+M2 gate is 64 concurrent requests on the 4080 SUPER and the L4. For gemma-4-12B at wren on the 4080 that is ~7.4 GiB of bf16 KV after
+6.28 GiB of weights. A token costs 327,680 bytes in the 40 sliding layers (until the 1,024-token window is full) and 8,192 in the 8
+global ones, so 64 users get ~370 tokens each, and a user past the window costs only 8 KB a token more: 21 users of 4,096 tokens fit.
+Lossless 12-bit KV for head dims 256 and 512 would add a third.
 
 ### Paged blocks for every attention kind
 
@@ -432,7 +459,9 @@ design keeps it, with two changes:
 - **Lost blocks become impossible, not rare.** With reservations, `Lost` remains only as a checked invariant: the kernel still writes the
   status word, and a lost block is a bug reported as an error, not a retry.
 
-Models without tables get bf16 pages; FP8 KV (as released or as a lossy level) is a third page format. The page format is a property of
+Today's kernels take head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`), which covers no recent family; widening them to head
+dims 256 and 512 and to MLA latents (576 values a token for Kimi-K3) is its own piece of work (#332), and until it lands those families
+use bf16 pages. Models without tables get bf16 pages; FP8 KV (as released or as a lossy level) is a third page format. The page format is a property of
 the pool; attention kinds read pages through the pool's decode, as today's `kv_decode` does.
 
 ### Content-addressed blocks and the radix index (R4c)
@@ -460,8 +489,9 @@ When pages run out the scheduler preempts the newest sequence. Two ways to give 
 - **Swap**: copy the sequence's pages (and state slot) to pinned host memory, copy back later. Cost: bytes over PCIe twice. Compressed
   pages make swap 25% cheaper than bf16.
 
-The scheduler chooses per sequence by cost: 2,000 tokens of Qwen3-8B are 30 TFLOP (~300 ms on the 4080) to recompute against 221 MB of
-12-bit KV (~9 ms each way at 25 GB/s). Swap needs host memory the expert store may want; the plan gives the swap area a size.
+The scheduler chooses per sequence by cost: 2,000 tokens of gemma-4-12B are ~49 TFLOP (~470 ms on the 4080) to recompute against 352 MB
+of bf16 KV (the sliding layers hold only the last 1,024 tokens; ~14 ms each way at 25 GB/s). For a GDN or KDA model recompute also
+replays the whole prefix through the recurrent layers, so swap wins by more. Swap needs host memory the expert store may want; the plan gives the swap area a size.
 
 ## 6. Expert tiering for every MoE
 
@@ -547,22 +577,27 @@ the store's copy-or-compute choice applies to it unchanged.
 
 ### Order
 
+Recent families first; the legacy pipelines move last, at parity, so they can be deleted.
+
 | step | what moves | issues | why here | deleted after |
 | :--- | :--- | :--- | :--- | :--- |
 | 0 | spikes: one kind (RMSNorm + GQA attention) on CUDA, `Ref` and MLX through `mlx-c` | #230 | proves the seam before anything depends on it | - |
 | 1 | `sched::Backend` renamed `ModelStep`, scheduler types moved out of `model.rs`; `model::Engine` implements it unchanged | R4a #138 | no behaviour change; every later step uses the new names | - |
 | 2 | runtime context, typed errors, arenas, typed launches for the kernels the executor uses | R16 #237, R15 #236, R1 #134 (CUDA part) | mechanical, benched per PR, needed by the executor | 56 globals, untyped launches |
 | 3 | layer-kind library and `Ref`; CUDA kinds wrap today's kernels (no new kernels) | R2 #135 | the vocabulary the descriptions need | the family-named `Op` variants, as kinds replace them |
-| 4 | the executor implements `ModelStep` for one sequence; `work_gen` replaced | R4a #138 | the dynamic families reach the scheduler | `work_gen` |
-| 5 | Qwen3.5, Gemma 4, Nemotron-H described from `config.json`; batched rows; paged KV for GQA, sliding and Mamba state | R3a #136, R3b #137, R4b #141 | already on the description path; smallest step to many rows | `model35.rs`, `model_gemma4.rs`, `model_nh.rs` |
-| 6 | the standard families: Llama 3, Mistral, Qwen 2/2.5, Phi-4, Granite, OLMo, SmolLM | F1a #166, F1b #167, F1d #169, F1e #170, F1h #173 | one GQA + SwiGLU kind with parameters; proves "config only" | the vLLM plugin path for them (F7, later) |
-| 7 | Qwen3 dense on the executor with the lossless paged KV | R3c #139 | the batched path must keep its numbers (59.9 tok/s at 1 user, 452.7 at 8) | `model.rs` |
-| 8 | content-addressed blocks and the radix index | R4c #142 | needs paged KV on every family first | `Pager`'s 64-bit chain |
-| 9 | expert tiering on the MoE kind; Qwen3 MoE, then DeepSeek-V4, Kimi-K3, Muse, GLM | R12 #232, R13 #234 | the large families keep single-user parity on their reference boxes | `tp_cache.rs` special cases, the GLM engine |
-| 10 | Condor (Qwen3.8-Flash-Next) | R3d #140 | the shipping consumer path; within 3% of v0.33.0 | `model_qwen4x.rs`, `Qx`, `qwen4x_serve.rs` sizing |
+| 4 | the executor implements `ModelStep` (one sequence first); `work_gen` replaced | R4a #138 | every description reaches the scheduler | `work_gen` |
+| 5 | **gemma-4-12B and Qwen3.8 dense**: descriptions from `config.json`, batched rows, paged KV (sliding ring, GQA, GDN state slots), graphs per row bucket; Qwen3.8 dense gains its lossless level | R3a #136, R4b #141, #329; Qwen3.8 penguin (#331) | the recent dense models; the first batched paths besides legacy Qwen3 | - |
+| 6 | lossless KV for head dims 256/512 and MLA latents | #332 | the 12-bit format reaches the recent families | - |
+| 7 | **DeepSeek-V4, Kimi-K3, GLM-5.3-Flash, Muse Spark**: batched rows, paged MLA latent and compressed-entry groups, KDA state slots, expert tiering on the MoE kind | R12 #232, #327, R13 #234 | the large recent families; single-user parity on their reference boxes first, then rows | `tp_cache.rs` special cases, the GLM development engine |
+| 8 | content-addressed blocks and the radix index; state snapshots for GDN/KDA | R4c #142 | needs paged KV on the recent families first | `Pager`'s 64-bit chain |
+| 9 | **Qwen3.8-Flash-Next (Condor)** | R3d #140 | the shipping consumer path; within 3% of v0.33.0 | `model_qwen4x.rs`, `Qx`, `qwen4x_serve.rs` sizing |
+| 10 | recent releases not loaded yet: GLM-5.3, Qwen3.8-2.4T-A95B, Kimi-K3.1-Pro, DeepSeek-V4.1, DSpark drafters | #333 | descriptions on the kinds steps 5-9 built | - |
+| 11 | the standard families: Llama 3, Mistral, Qwen 2/2.5, Phi-4, Granite, OLMo, SmolLM (the M2 gate's list) | F1a #166, F1b #167, F1d #169, F1e #170, F1h #173 | one GQA + SwiGLU kind with parameters; proves "config only" | the vLLM plugin path for them (F7, later) |
+| 12 | legacy at parity: Qwen3.5/3.6 and gemma-4-31B (same code as step 5), Nemotron-3-Super/Nemotron-H, Qwen3 dense with its lossless paged KV | R3b #137, R3c #139 | pipelines deleted; no optimisation beyond parity | `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model.rs` |
 
-Steps 5 and 6 can run in parallel once step 4 has landed; 8 and 9 too. Step 7 waits for 5 because the batched rows and paged KV must
-already hold on hybrid models before the one fast path moves.
+Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The legacy Qwen3 path keeps serving until step 12;
+its measured numbers (59.9 tok/s at 1 user, 452.7 at 8 on the 4080 SUPER) are the parity bar there and the reference for what batching
+must give the recent families in step 5.
 
 ## 8. Prior art
 
@@ -681,29 +716,35 @@ The target is the hardware's limit for the step, not another engine. Each refere
 time each takes at the hardware's rate, and what the design adds on top. The formulas are `docs/ceiling.md`'s, and each row
 shows its arithmetic.
 
-### Qwen3-8B, lossless, on the RTX 4080 SUPER
+### gemma-4-12B at wren on the RTX 4080 SUPER
 
-Inputs: 36 layers, hidden 4096, 32 query and 8 KV heads of 128, MLP 12,288, vocab 151,936, untied; 6.95 B body parameters and a 0.62 B
-head. The engine reads 11.06 GB of weights a token (10.3 GiB held, `rtx4080s-qwen3-8b-engine-2026-11-20`). The card: 736 GB/s, ~104 TFLOPS
-bf16 with fp32 accumulation at 2,550 MHz (the record's "~100"). Flops a token: 2 x 7.57 B = 15.1 GFLOP, plus 4 x 36 x 32 x 128 = 0.59
-MFLOP per token of context for attention. KV a token: 147,456 bytes at bf16, 110,592 at 12 bits.
+Its lossless pack (~18 GiB) does not fit 16 GB, so the 4080 runs the wren level: 6.28 GiB of weights on the GPU. Inputs: 48 layers (40
+sliding with 16 query and 8 KV heads of 256, window 1,024; 8 global with one K=V head of 512), hidden 3,840, MLP 15,360, vocab 262,144
+tied; 10.9 B body parameters and a 1.0 B head. A token reads 6.74 GB (the tied embedding once, by the head). The card: 702 GB/s measured
+copy rate (736 on the spec sheet), ~104 TFLOPS bf16 with fp32 accumulation; wren's 4-bit weights are decoded to bf16 for the tensor
+cores, so flops are at the bf16 rate. Flops a token: 23.8 GFLOP, plus attention (0.67 GFLOP a token in the sliding layers once the window
+is full, and 0.26 MFLOP per token of context in the global ones). KV a token: 327,680 bytes in the sliding layers (up to the window),
+8,192 in the global ones, bf16 (no 12-bit tables for these head dims yet).
 
-| step | bytes (weights + KV) | at 736 GB/s | flops | at 104 TFLOPS | ceiling | measured (record) |
+| step | bytes (weights + KV) | at 702 GB/s | flops | at 104 TFLOPS | ceiling | measured |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| decode, 1 row, 35 tokens of context | 11.06 GB | 15.03 ms | 15 GFLOP | 0.15 ms | 66.5 tok/s | 59.9 (90%) |
-| decode, 8 rows, ~2,000 context | 11.06 + 1.77 GB | 17.43 ms | 121 GFLOP | 1.26 ms | 57.4 tok/s a user, 459 total | 40.2 a user (70%) under arriving prompts |
-| decode, 8 rows, ~4,000 context | 11.06 + 3.54 GB | 19.84 ms | 0.13 TFLOP | 1.35 ms | 50.4 a user, 403 total | 34.3 a user (68%) under arriving prompts |
-| decode, 64 rows, 600 context | 11.06 + 4.25 GB | 20.80 ms | 0.99 TFLOP | 9.53 ms | 48.1 a user, 3,077 total | not run (the M2 gate) |
-| prompt, 8 x 35 tokens | 11.06 GB | 15.0 ms | 4.3 TFLOP | 41.0 ms | 41 ms | 82 ms first token at 8 users |
-| prompt, 2,000 tokens | 11.06 GB | 15.0 ms | 31.5 TFLOP | 302 ms | 302 ms | 353 ms (86%) |
-| prompt, 4,000 tokens | 11.06 GB | 15.0 ms | 65.3 TFLOP | 628 ms | 628 ms | ~690 ms |
+| decode, 1 row, ~30 tokens of context | 6.74 GB | 9.60 ms | 24 GFLOP | 0.23 ms | 104 tok/s | 11.22 ms, 89 tok/s (86%) |
+| decode, 8 rows, 4,096 context | 6.74 + 2.95 GB | 13.81 ms | 0.20 TFLOP | 1.97 ms | 72 tok/s a user, 579 total | not possible today (one sequence) |
+| decode, 64 rows, ~370 context | 6.74 + 7.52 GB | 20.32 ms | 1.54 TFLOP | 14.85 ms | 49 tok/s a user, 3,150 total | not possible today (the M2 gate) |
+| prompt, 8 x 30 tokens | 6.74 GB | 9.6 ms | 5.7 TFLOP | 55 ms | 55 ms | one prompt at a time |
+| prompt, 2,000 tokens | 6.74 GB | 9.6 ms | 49 TFLOP | 473 ms | 473 ms | not recorded |
+| prompt, 4,000 tokens | 6.74 GB | 9.6 ms | 100 TFLOP | 959 ms | 959 ms | not recorded |
 
-- Decode is memory-bound up to ~103 rows (where 11.06 GB / 736 GB/s equals rows x 15.1 GFLOP / 104 TFLOPS); prompts are compute-bound
-  past ~100 tokens. A step that holds both pays the weights once, which is why decode rows ride free in a prompt chunk's pass.
-- At 64 users the cache, not the weights, sets the limit: 4.2 GiB of KV after the weights holds 40,972 tokens at 12 bits and 30,729 at
-  bf16, 640 and 480 tokens a user. The lossless KV format is worth 33% more context per user here.
-- The 8-row long-context rows are below their ceiling mostly because new prompts keep arriving during decode (each 2,000-token prompt is
-  a 350 ms pass); the unified step with an ITL target bounds that stall instead of removing the work.
+The one-row measurement is `research/ceiling/gemma4-12b-wren-4080-2026-10-17.txt` (12.47 ms; in git history since the raw-data move,
+commit 26faee41) and GLY-312's prefetch change after it (11.32 to 11.22 ms, commit 4f245566). That record's profile: the four products
+take 10.18 ms against 8.80 ideal (86% of the copy rate), and norms, attention, prep and the activation 1.42 ms.
+
+- Decode is memory-bound only up to ~42 rows here (6.74 GB / 702 GB/s equals rows x 23.8 GFLOP / 104 TFLOPS), against ~103 for an
+  8B model at 10.75 bits: the fewer bits a weight, the sooner compute binds, so at 64 rows the products' tensor rate matters as much
+  as their bytes. A tensor path below bf16 for the products is kernel work (V8), not runtime work.
+- KV is up to a third of a step's bytes at 8 rows of 4,096 tokens, all bf16, which is why the lossless KV format for head dims 256/512
+  is on the list above.
+- Batching is where the room is: one row uses 9.6 ms of the card for 104 tokens at most, eight rows 13.8 ms for 579.
 
 Where the runtime spends time per step (target, then how it is held):
 
@@ -711,12 +752,12 @@ Where the runtime spends time per step (target, then how it is held):
 | :--- | ---: | :--- |
 | scheduling (admission, paging, hashing, batch build) | 0 on the device's critical path | overlapped with the previous step (`launch`/`finish`); < 0.2 ms of CPU even at 64 rows |
 | metadata upload | ~10 µs | one H2D copy from pinned memory (positions, offsets, block table, `Prev` map) |
-| dispatch | < 1 µs | 72 dyn calls a step; none at graph replay |
+| dispatch | < 1 µs | 96 dyn calls a step; none at graph replay |
 | launches | ~0.5 µs a kernel in a graph | graphs per row bucket |
-| sampling | < 0.1 ms | on the device; 4 bytes a row back |
-| kernels' fixed time | today 1.7 ms (16.7 - 15.0) | the kernel side's budget, not the runtime's: fusions per kind (ceiling.md: ~5.5 µs a product start) |
+| sampling | < 0.1 ms | on the device, over 262,144 logits a row; 4 bytes a row back |
+| kernels' fixed time | today 1.6 ms (11.22 - 9.60) | the kernel side's budget, not the runtime's: fusions per kind (the record's ablation: norms 0.45 ms, attention 0.84 at 30 tokens) |
 
-The runtime's own overhead target is under 1% of the ceiling step (0.15 ms here); everything above that is kernel time, measured per
+The runtime's own overhead target is under 1% of the ceiling step (0.1 ms here); everything above that is kernel time, measured per
 kind by `glyd bench`.
 
 ### Kimi-K3 on 8x A100 80 GB and 8x H100 80 GB

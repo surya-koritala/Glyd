@@ -25,95 +25,16 @@
 //!
 //! A development build (the default features) has the checks and the measurements too: src/devcmd.rs.
 
-use glyd_engine::args::Args;
-use glyd_engine::ffi::{err, Result};
+use glyd_engine::entry::Dev;
 
 #[cfg(feature = "dev")]
 mod devcmd;
 
-#[cfg(feature = "dev")]
-const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | connect [TOOL] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5), wren (about 4.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
-#[cfg(not(feature = "dev"))] // (wren runs in a development build only)
-const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | connect [TOOL] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
-
-/// glibc's allocator told to keep freed buffers up to 32 MB (its largest such setting) in the heap and not hand freed memory back: a load's threads (one a GPU,
-/// each with its packers) free buffers of a few MB to tens of MB by the thousand, and every unmapping stops every CPU the process runs on to flush its TLB (the
-/// 8-GPU Kimi-K3 load spent about half its time there).
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn keep_buffers() {
-    extern "C" {
-        fn mallopt(param: i32, value: i32) -> i32;
-    }
-    const M_TRIM_THRESHOLD: i32 = -1;
-    const M_MMAP_THRESHOLD: i32 = -3;
-    // SAFETY: mallopt only sets the allocator's parameters; it is called before any thread starts.
-    unsafe {
-        mallopt(M_MMAP_THRESHOLD, 32 << 20);
-        mallopt(M_TRIM_THRESHOLD, i32::MAX);
-    }
-}
-
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-fn keep_buffers() {}
-
 fn main() {
-    keep_buffers();
-    if let Err(e) = run() {
-        eprintln!("glyd-engine: {e}");
-        std::process::exit(1);
-    }
-}
-
-fn run() -> Result<()> {
-    let mut a = Args::parse();
-    // a model given as a GGUF file (or a Hub repo of GGUF files) is read as a Hugging Face directory (src/gguf.rs)
-    if let Some(code) = glyd_engine::gguf::resolve_args(&mut a) {
-        std::process::exit(code);
-    }
-    // a Hugging Face token given as a flag is the Hub client's before the environment's and the saved login's (glyd run and glyd serve move it to HF_TOKEN before they start this program)
-    if let Some(t) = a.flag("hf-token").filter(|t| !t.is_empty()) {
-        glyd_engine::hub::set_token(t);
-        eprintln!("glyd-engine: the Hugging Face token is on this program's command line, which ps shows: next time set HF_TOKEN=TOKEN in the environment, or run glyd login.");
-    }
-    let cmd = a.pos.first().map(String::as_str);
-    if a.has("version") || matches!(cmd, Some("version" | "-V" | "-v")) {
-        println!("glyd-engine {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-    if a.has("help") || matches!(cmd, Some("help" | "-h")) {
-        println!("{USAGE}");
-        return Ok(());
-    }
-    match cmd {
-        Some("run") => std::process::exit(glyd_engine::cli::run(&a)),
-        Some("serve") => std::process::exit(glyd_engine::cli::serve(&a)),
-        Some("doctor") => std::process::exit(glyd_engine::cli::doctor(&a)),
-        // what to give a program (Open WebUI, Continue, Claude Code, an SDK) so that it talks to the server that runs here
-        Some("connect") => std::process::exit(glyd_engine::connect::connect(&a)),
-        Some("login") => std::process::exit(glyd_engine::cli::login(&a)),
-        Some("supports") => std::process::exit(glyd_engine::cli::supports(&a)),
-        Some("preflight") => std::process::exit(glyd_engine::cli::preflight(&a)),
-        Some("fetch") => std::process::exit(glyd_engine::cli::fetch(&a)),
-        Some("verify") => std::process::exit(glyd_engine::cli::verify(&a)),
-        Some("prepare") => std::process::exit(glyd_engine::cli::prepare_cmd(&a)),
-        // the cost profile of a model at a level, and this machine's memory tiers (docs/cost-profile.md)
-        Some("costs") => glyd_engine::costs::costs_cmd(&a),
-        Some("rates") => glyd_engine::costs::tiers_cmd(&a),
-        // what a run of MODEL would do on this machine (or a described one), before anything is downloaded
-        Some("fit") => std::process::exit(glyd_engine::plan::fit_cmd(&a)),
-        // a range of a model's layers as a process: glyd-range/1 on the standard input and output (docs/range-worker.md)
-        Some("rangeworker") => glyd_engine::dynamic::range::worker(&a),
-        // Qwen3.8-Flash-Next behind glyd-hummingbird's tools/qwen_shim.py: one JSON request a line on stdin, one answer a line on stdout
-        // (with --port or --host: the HTTP server, the chat page and the OpenAI and Anthropic APIs; else the JSON-lines protocol on the standard input)
-        Some("qwenbench") => glyd_engine::qwen_tools::bench(&a),
-        Some("qwenmcp") => glyd_engine::qwen_tools::mcp(&a),
-        Some("qwenget") => glyd_engine::qwen4x_serve::get(a.need(1, "REPO")?, std::path::Path::new(a.need(2, "DIR")?), &a),
-        Some("qwenserve") if a.has("port") || a.has("host") => {
-            glyd_engine::qwen4x_serve::http(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a)
-        }
-        Some("qwenserve") => glyd_engine::qwen4x_serve::serve(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a),
-        #[cfg(feature = "dev")]
-        Some(c) => devcmd::run(c, &a),
-        _ => err(USAGE),
-    }
+    #[cfg(feature = "dev")]
+    let dev: Dev = Some(&devcmd::run);
+    #[cfg(not(feature = "dev"))]
+    let dev: Dev = None;
+    // the whole command line is the library's (src/entry.rs), which `glyd` runs too where the engine is linked
+    glyd_engine::entry::main("glyd-engine", std::env::args().skip(1).collect(), dev)
 }
