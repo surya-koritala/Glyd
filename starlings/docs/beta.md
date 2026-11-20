@@ -59,7 +59,10 @@ The checks are how you know the two machines are talking to each other and not t
 between. Don't approve a check you didn't read off the other machine's screen.
 
 If either machine has more than one network address, add `--host LAN_ADDRESS`. To start again
-later with the same setup, run the same command; it asks once and reuses everything.
+later with the same setup, run the same command; it verifies the checkpoint files, asks once
+and reuses the enrollment and split. Changed model files, workload or selected GPU count
+require a new `--state-dir`. Older saved setups without file identities also need a new state
+directory. Cached Hub revisions are reused without a new fetch.
 
 ## Using it
 
@@ -87,6 +90,8 @@ Qwen3.8-27B swift on two RTX 4090s (24 GB) in one data center (0.5 ms apart), 25
 Each answer was the whole model's, word for word. From empty state to READY took 25 s with the
 model already on disk. On a home LAN or Wi-Fi each token waits one round trip between the
 machines, so a slower link means fewer tok/s; drafting hides part of it.
+That startup measurement predates checkpoint-content verification; current startup cost
+still needs to be measured.
 
 ## Limits
 
@@ -99,8 +104,9 @@ machines, so a slower link means fewer tok/s; drafting hides part of it.
 - **Failures:** if a stage's engine dies, `up` and `join` restart that stage; a request in
   flight then fails. If a machine goes away, its requests fail within a minute.
 - **Shared machines:** another user on the same machine can hold all 4 local API connections.
-- **Integrity:** the download has checksums but is not signed yet. The model check compares the
-  model's description, not its weights.
+- **Integrity:** the download has checksums but is not signed yet. Checkpoint contents, including
+  weights, configuration and tokenizer, are verified at approval and stage load. Startup must
+  read those files; its cost on large checkpoints remains to be measured.
 
 ## Reporting a problem
 

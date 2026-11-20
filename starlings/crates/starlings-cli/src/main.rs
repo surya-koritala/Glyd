@@ -292,7 +292,7 @@ fn help() {
         "Qualified CPU routing: daemon --execute PRIVATE_CONFIG --approve DIGEST (worker) | daemon --route PRIVATE_CONFIG --approve DIGEST (coordinator)"
     );
     println!(
-        "Two-stage pipeline: daemon --stage PRIVATE_CONFIG --approve DIGEST (worker) | daemon --pipeline PRIVATE_CONFIG --approve DIGEST (coordinator); model stage-digest | pipeline-digest PRIVATE_CONFIG"
+        "Two-stage pipeline: daemon --stage PRIVATE_CONFIG --approve DIGEST (worker) | daemon --pipeline PRIVATE_CONFIG --approve DIGEST (coordinator); model stage-digest | pipeline-digest PRIVATE_CONFIG; model files-digest MODEL_DIR"
     );
     println!(
         "Live route activation: cluster route PRIVATE_CONFIG --approve DIGEST; one route per coordinator process"

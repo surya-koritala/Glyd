@@ -27,6 +27,11 @@ fn print(value: &impl serde::Serialize) -> Result<()> {
 }
 pub fn run(mut paths: Paths, args: &[OsString]) -> Result<()> {
     match args {
+        [command, model] if command == "files-digest" => {
+            let manifest = starlings_cli::model_files::digest(Path::new(model))?;
+            return print(&serde_json::json!({"model_files_sha256": manifest,
+                "approval_granted": false}));
+        }
         [command] if command == "qualification-target" => {
             return print(
                 &serde_json::json!({"target":starlings_adapters::resources::HostSnapshot::collect_memory().qualification_target(), "approval_granted":false}),

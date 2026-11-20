@@ -54,6 +54,7 @@ struct Options {
     sessions: u32,
     drafts: u32,
     yes: bool,
+    model_files: Digest,
 }
 impl Options {
     fn parse(args: &[OsString]) -> Result<Self> {
@@ -67,6 +68,7 @@ impl Options {
             sessions: 1,
             drafts: 7,
             yes: false,
+            model_files: starlings_protocol::byte_digest(b"not resolved"),
         };
         let mut args = args.iter();
         while let Some(flag) = args.next() {
@@ -95,6 +97,7 @@ impl Options {
         if options.model.as_os_str().is_empty() || !(1..=2).contains(&options.machines) {
             return Err(USAGE.into());
         }
+        options.validate_workload()?;
         // The engine and its GPU library default to the ones installed beside this binary.
         let beside = |name: &str| {
             std::env::current_exe()
@@ -112,7 +115,17 @@ impl Options {
             options.gpu_lib = beside("libglyd_gpu_cuda13.so");
         }
         options.model = model_dir(&options.model, &options.engine, options.yes)?;
+        options.model_files = starlings_cli::model_files::digest(&options.model)?;
         Ok(options)
+    }
+    fn validate_workload(&self) -> Result<()> {
+        if !(1..=2).contains(&self.sessions)
+            || self.context < CHUNK + self.max_output()
+            || self.drafts >= starlings_protocol::MAX_DECODE_ROWS.min(CHUNK)
+        {
+            return Err("invalid context, sessions or drafts for this pipeline".into());
+        }
+        Ok(())
     }
     fn max_output(&self) -> u32 {
         1024.min(self.context / 4)
@@ -152,18 +165,22 @@ fn model_dir(model: &Path, engine: &Path, yes: bool) -> Result<PathBuf> {
             ),
             yes,
         )?;
-    }
-    let fetched = Command::new(engine)
-        .args(["fetch", name])
-        .status()
-        .map_err(|e| format!("{}: {e}", engine.display()))?;
-    if !fetched.success() {
-        return Err(format!("could not fetch {name}"));
+        let fetched = Command::new(engine)
+            .args(["fetch", name])
+            .status()
+            .map_err(|e| format!("{}: {e}", engine.display()))?;
+        if !fetched.success() {
+            return Err(format!("could not fetch {name}"));
+        }
     }
     let revision = fs::read_to_string(repo.join("refs/main"))
         .map_err(|e| format!("{}: {e}", repo.display()))?;
+    let revision = revision.trim();
+    if revision.len() != 40 || !revision.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("invalid cached model revision".into());
+    }
     repo.join("snapshots")
-        .join(revision.trim())
+        .join(revision)
         .canonicalize()
         .map_err(|e| e.to_string())
 }
@@ -176,6 +193,7 @@ struct JoinCode {
     context: u32,
     sessions: u32,
     drafts: u32,
+    manifest: Digest,
 }
 /// From the second machine back: what the first approves and plans with.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -556,6 +574,10 @@ fn local_stage(
     (control, host, port, gpu): (IpAddr, IpAddr, u16, usize),
     describe_dir: &Path,
 ) -> Result<(StageRoute, Digest)> {
+    o.validate_workload()?;
+    if range[0] >= range[1] || range[1] as usize > shape.layers.len() {
+        return Err("stage layers are outside this model".into());
+    }
     let mut environment = BTreeMap::from([("CUDA_VISIBLE_DEVICES".to_owned(), gpu.to_string())]);
     if let Some(lib) = &o.gpu_lib {
         environment.insert("GLYD_GPU_LIB".into(), lib.to_string_lossy().into_owned());
@@ -572,6 +594,7 @@ fn local_stage(
         executable: o.engine.clone(),
         executable_sha256: digest(&o.engine)?,
         model: o.model.clone(),
+        model_files_sha256: o.model_files.clone(),
         layers: range,
         context_tokens: o.context,
         chunk_tokens: CHUNK,
@@ -608,8 +631,7 @@ fn local_stage(
         return Err("the engine reads a different layer count than config.json".into());
     }
     stage.descriptor = glyd::descriptor_digest(&described).map_err(|e| format!("{e:?}"))?;
-    let manifest =
-        starlings_protocol::content_hash(&described["model"]).map_err(|e| format!("{e:?}"))?;
+    let manifest = o.model_files.clone();
     let check = starlings_protocol::content_hash(&stage).map_err(|e| format!("{e:?}"))?;
     stage
         .validate(&check)
@@ -739,9 +761,65 @@ fn state_root(state: &Path) -> Result<()> {
 }
 
 /// Where each machine's second stage is, for the plan.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Remote {
     host: IpAddr,
     engine: Digest,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedUp {
+    machines: u32,
+    cut: u32,
+    nodes: Vec<String>,
+    manifest: Digest,
+    peer: Option<Remote>,
+    context: u32,
+    sessions: u32,
+    drafts: u32,
+    gpus: usize,
+    host: IpAddr,
+}
+impl SavedUp {
+    fn validate(&self, o: &Options, layers: u32, gpus: usize, host: IpAddr) -> Result<()> {
+        if self.machines != o.machines
+            || self.manifest != o.model_files
+            || (self.context, self.sessions, self.drafts) != (o.context, o.sessions, o.drafts)
+            || self.gpus != gpus
+            || self.host != host
+            || self.peer.is_some() != (o.machines == 2)
+            || self.nodes.len() != 3
+            || self.nodes.iter().any(String::is_empty)
+            || self
+                .nodes
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != 3
+        {
+            return Err(
+                "saved setup does not match this model, workload or devices; use a new --state-dir"
+                    .into(),
+            );
+        }
+        validate_cut(self.cut, layers)
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedJoin {
+    cut: u32,
+    host: IpAddr,
+    context: u32,
+    sessions: u32,
+    drafts: u32,
+    manifest: Digest,
+}
+fn validate_cut(cut: u32, layers: u32) -> Result<()> {
+    if cut == 0 || cut >= layers {
+        return Err("saved split is outside this model; use a new --state-dir".into());
+    }
+    Ok(())
 }
 
 pub fn run(state: &Path, args: &[OsString]) -> Result<()> {
@@ -771,22 +849,17 @@ pub fn run(state: &Path, args: &[OsString]) -> Result<()> {
     let mut daemons = Daemons(Vec::new());
     let stop;
     // The split, the local stages, the nodes and (two machines) the other machine.
-    let (cut, nodes, manifest, remote) = if saved["machines"] == o.machines {
-        let cut = saved["cut"].as_u64().ok_or("up.json: no cut")? as u32;
-        let nodes: Vec<String> =
-            serde_json::from_value(saved["nodes"].clone()).map_err(|e| e.to_string())?;
-        let manifest: Digest =
-            serde_json::from_value(saved["manifest"].clone()).map_err(|e| e.to_string())?;
-        let remote = two
-            .then(|| -> Result<Remote> {
-                Ok(Remote {
-                    host: serde_json::from_value(saved["peer"]["host"].clone())
-                        .map_err(|e| e.to_string())?,
-                    engine: serde_json::from_value(saved["peer"]["engine"].clone())
-                        .map_err(|e| e.to_string())?,
-                })
-            })
-            .transpose()?;
+    let (cut, nodes, manifest, remote) = if !saved.is_null() {
+        let saved: SavedUp = serde_json::from_value(saved)
+            .map_err(|e| format!("invalid or older up.json; use a new --state-dir: {e}"))?;
+        saved.validate(&o, layers, free.len().min(2), host)?;
+        let SavedUp {
+            cut,
+            nodes,
+            manifest,
+            peer: remote,
+            ..
+        } = saved;
         println!("Starlings, the saved setup:");
         summary(&o, layers)?;
         println!(
@@ -884,6 +957,7 @@ pub fn run(state: &Path, args: &[OsString]) -> Result<()> {
             context: o.context,
             sessions: o.sessions,
             drafts: o.drafts,
+            manifest: manifest.clone(),
         })?;
         let code_file = write(state, "join-code.json", &code)?;
         println!("\nOn the other machine, within five minutes, run");
@@ -952,14 +1026,13 @@ pub fn run(state: &Path, args: &[OsString]) -> Result<()> {
             .ok_or("coordinator config has no node")?;
         permit(coordinator, me, &manifest, "control")?;
         daemons.stop();
-        let peer = remote
-            .as_ref()
-            .map(|r| serde_json::json!({"host": r.host, "engine": r.engine}));
         write(
             state,
             "up.json",
             &serde_json::json!({"machines": o.machines, "cut": cut, "nodes": nodes,
-                "manifest": manifest, "peer": peer}),
+                "manifest": manifest, "peer": remote, "context": o.context,
+                "sessions": o.sessions, "drafts": o.drafts, "gpus": free.len().min(2),
+                "host": host}),
         )?;
     }
 
@@ -1162,15 +1235,27 @@ pub fn join(state: &Path, args: &[OsString]) -> Result<()> {
     let worker = state.join("stage");
     let saved = read_json(&state.join("join.json"));
     let (cut, host) = if worker.join("config.json").exists() {
-        o.context = saved["context"].as_u64().ok_or("join.json: no context")? as u32;
-        o.sessions = saved["sessions"].as_u64().ok_or("join.json: no sessions")? as u32;
-        o.drafts = saved["drafts"].as_u64().ok_or("join.json: no drafts")? as u32;
-        let cut = saved["cut"].as_u64().ok_or("join.json: no cut")? as u32;
-        let host = serde_json::from_value(saved["host"].clone()).map_err(|e| e.to_string())?;
-        (cut, host)
+        let saved: SavedJoin = serde_json::from_value(saved)
+            .map_err(|e| format!("invalid or older join.json; use a new --state-dir: {e}"))?;
+        if saved.manifest != o.model_files || o.host.is_some_and(|h| h != saved.host) {
+            return Err(
+                "saved stage does not match this model or host; use a new --state-dir".into(),
+            );
+        }
+        (o.context, o.sessions, o.drafts) = (saved.context, saved.sessions, saved.drafts);
+        o.validate_workload()?;
+        validate_cut(
+            saved.cut,
+            split::read(&o.model, o.context, o.sessions)?.layers.len() as u32,
+        )?;
+        (saved.cut, saved.host)
     } else {
         let code: JoinCode = decode(&read_line("Paste the join code from the first machine: ")?)?;
         (o.context, o.sessions, o.drafts) = (code.context, code.sessions, code.drafts);
+        o.validate_workload()?;
+        if code.manifest != o.model_files {
+            return Err("the join code approves a different model's files".into());
+        }
         let invitation_value = unpack(code.invitation)?;
         let cluster = cluster_check(&invitation_value);
         let invitation = write(state, "invitation.json", &invitation_value)?;
@@ -1241,7 +1326,7 @@ pub fn join(state: &Path, args: &[OsString]) -> Result<()> {
             state,
             "join.json",
             &serde_json::json!({"cut": cut, "host": host, "context": o.context,
-                "sessions": o.sessions, "drafts": o.drafts}),
+                "sessions": o.sessions, "drafts": o.drafts, "manifest": o.model_files}),
         )?;
         // The invitation is spent (the worker keeps what it needs in its own state).
         let _ = fs::remove_file(&invitation);
@@ -1299,6 +1384,92 @@ fn serve(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn options() -> Options {
+        Options {
+            model: PathBuf::from("/model"),
+            engine: PathBuf::from("/engine"),
+            gpu_lib: None,
+            machines: 1,
+            host: None,
+            context: 4096,
+            sessions: 1,
+            drafts: 7,
+            yes: true,
+            model_files: starlings_protocol::byte_digest(b"checkpoint"),
+        }
+    }
+
+    #[test]
+    fn saved_setup_rejects_changed_model_workload_topology_and_invalid_splits() {
+        let o = options();
+        let host = Ipv4Addr::LOCALHOST.into();
+        let saved = SavedUp {
+            machines: 1,
+            cut: 1,
+            nodes: vec!["a".into(), "b".into(), "c".into()],
+            manifest: o.model_files.clone(),
+            peer: None,
+            context: 4096,
+            sessions: 1,
+            drafts: 7,
+            gpus: 2,
+            host,
+        };
+        saved.validate(&o, 2, 2, host).unwrap();
+        assert!(saved.validate(&o, 1, 2, host).is_err());
+        assert!(saved.validate(&o, 2, 1, host).is_err());
+        for (key, value) in [
+            (
+                "manifest",
+                serde_json::json!(starlings_protocol::byte_digest(b"changed")),
+            ),
+            ("machines", serde_json::json!(2)),
+            ("context", serde_json::json!(2048)),
+            ("sessions", serde_json::json!(2)),
+            ("drafts", serde_json::json!(0)),
+            ("cut", serde_json::json!(0)),
+            ("cut", serde_json::json!(2)),
+            ("cut", serde_json::json!(u64::MAX)),
+            ("nodes", serde_json::json!(["a"])),
+            ("nodes", serde_json::json!(["a", "a", "c"])),
+            ("host", serde_json::json!("192.0.2.1")),
+        ] {
+            let mut record = serde_json::to_value(&saved).unwrap();
+            record[key] = value;
+            assert!(
+                !serde_json::from_value::<SavedUp>(record)
+                    .is_ok_and(|s| s.validate(&o, 2, 2, host).is_ok()),
+                "{key}"
+            );
+        }
+        let mut legacy = serde_json::to_value(&saved).unwrap();
+        legacy.as_object_mut().unwrap().remove("context");
+        assert!(serde_json::from_value::<SavedUp>(legacy).is_err());
+    }
+
+    #[test]
+    fn invalid_workloads_are_refused_before_fetch_or_engine_launch() {
+        for args in [
+            ["--sessions", "0"],
+            ["--sessions", "3"],
+            ["--ctx", "0"],
+            ["--ctx", "31"],
+            ["--drafts", "8"],
+            ["--drafts", "4294967295"],
+        ] {
+            let args = ["--model", "org/model", args[0], args[1]].map(OsString::from);
+            assert!(
+                Options::parse(&args)
+                    .err()
+                    .unwrap()
+                    .contains("invalid context")
+            );
+        }
+        options().validate_workload().unwrap();
+    }
+
     #[test]
     fn stop_tokens_are_the_end_of_text_and_turn_ids() {
         let dir = tempfile::tempdir().unwrap();
