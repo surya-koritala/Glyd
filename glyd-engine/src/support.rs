@@ -233,7 +233,10 @@ pub fn family(cfg_text: &str, name: &str) -> Result<Family, Refusal> {
         // (the frozen Python tool reads this sentence to hand the model to vLLM; keep its words)
         _ => Err(Refusal::unsupported(
             format!("{name} is a {arch} model, and this engine runs Qwen3 models so far"),
-            "Other models run with the vLLM-based glyd: pip install \"glyd[vllm]\" (https://getglyd.com)",
+            crate::machine::instead(
+                "Other models run with the vLLM-based glyd, which is installed here",
+                &format!("Pick a Qwen3 model (glyd run Qwen/Qwen3-8B), or {}", crate::machine::FULL_TOOL),
+            ),
         )),
     }
 }

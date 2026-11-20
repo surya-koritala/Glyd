@@ -10,11 +10,72 @@ use crate::weights::Config;
 /// The CUDA version a driver of the series 580 reports (13.0): the engine's kernels are built with CUDA 13 and run on no older driver.
 pub const DRIVER_MIN: i32 = 13000;
 
+/// Where `glyd run` looks for the Python tool (the one with vLLM): the directories of PATH, where `uv tool install` puts programs (UV_TOOL_BIN_DIR, XDG_BIN_HOME) and ~/.local/bin.
+fn tool_dirs() -> Vec<std::path::PathBuf> {
+    use std::env::{split_paths, var_os};
+    let mut dirs: Vec<std::path::PathBuf> = var_os("PATH").map(|p| split_paths(&p).collect()).unwrap_or_default();
+    for v in ["UV_TOOL_BIN_DIR", "XDG_BIN_HOME"] {
+        dirs.extend(var_os(v).map(std::path::PathBuf::from));
+    }
+    dirs.extend(var_os("HOME").map(|h| std::path::Path::new(&h).join(".local").join("bin")));
+    dirs.into_iter().filter(|d| !d.as_os_str().is_empty()).collect()
+}
+
+/// Whether vLLM is in one of `dirs`: a `vllm` program there, or beside the Python of a `glyd` script there (its `#!` line), as `uv tool install "glyd[vllm]"` leaves it
+/// (the environment's bin/vllm, and its lib/python*/site-packages/vllm). No Python is started: the files say.
+pub fn vllm_in(dirs: &[std::path::PathBuf]) -> bool {
+    use std::io::Read;
+    let beside = |py: &std::path::Path| -> bool {
+        let Some(bin) = py.parent() else { return false };
+        if bin.join("vllm").is_file() {
+            return true;
+        }
+        let lib = bin.join("..").join("lib");
+        std::fs::read_dir(lib).into_iter().flatten().flatten().any(|e| e.path().join("site-packages").join("vllm").is_dir())
+    };
+    dirs.iter().any(|d| {
+        if d.join("vllm").is_file() {
+            return true;
+        }
+        let mut head = Vec::new();
+        if std::fs::File::open(d.join("glyd")).and_then(|f| f.take(256).read_to_end(&mut head)).is_err() || !head.starts_with(b"#!") {
+            return false;
+        }
+        let line = String::from_utf8_lossy(&head);
+        let first = line.lines().next().unwrap_or("").trim_start_matches("#!").split_whitespace().next().unwrap_or("");
+        !first.is_empty() && !first.ends_with("/env") && beside(std::path::Path::new(first))
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's answer to `vllm_installed` (the tests of the words a refusal uses set it; the others see the machine's).
+    pub static FORCE_VLLM: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether vLLM is installed here (`vllm_in` the places the Python tool is): a refusal names vLLM as what runs the model only where it is.
+pub fn vllm_installed() -> bool {
+    #[cfg(test)]
+    if let Some(v) = FORCE_VLLM.with(|f| f.get()) {
+        return v;
+    }
+    static HERE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HERE.get_or_init(|| vllm_in(&tool_dirs()))
+}
+
+/// What a refusal says to do instead: `with_vllm` where vLLM is installed (the model runs with it), else `rust_only`: what a computer with the Rust install alone can do.
+pub fn instead(with_vllm: &str, rust_only: &str) -> String {
+    (if vllm_installed() { with_vllm } else { rust_only }).to_string()
+}
+
+/// The Rust-only install's way to the models and GPUs the engine does not run: the whole tool.
+pub const FULL_TOOL: &str = "install the full glyd, which runs it another way: curl -LsSf https://getglyd.com/install.sh | sh";
+
 /// The GPUs `glyd run` hands a model to the engine on, one line each: the word the driver's name for the GPU holds (a whole word: "L4" is not an L40S, "H100" is not an H200) and the GPU's compute capability.
 ///
 /// THE SPEED BAR: a GPU is here only where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory (the engine serves up to 8 users at once, so
 /// `glyd serve` is vLLM's, whatever is here), and has run on the GPU. Measurements decide it, not what the engine can run: it is EMPTY until they are made, and while it is empty every model runs as
-/// it did in v0.28 (vLLM). Every GPU not named here, and every compute capability, runs vLLM. Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9)),`.
+/// it did in v0.28 (vLLM). Every GPU not named here, and every compute capability, runs vLLM. Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9)),` (docs/adding-a-gpu.md: `scripts/gpu_bar.py` reads the two measurement files).
 pub const GPUS: &[(&str, (i32, i32))] = &[];
 
 /// The architectures of the computers the engine has run on (`std::env::consts::ARCH`): a GH200 is a Grace computer, and the engine has not run on one.
@@ -91,7 +152,7 @@ fn refusal_on(table: &[(&str, (i32, i32))], archs: &[&str], g: &Gpu, arch: &str,
     let words: Vec<&str> = table.iter().map(|(w, _)| *w).collect();
     if table.is_empty() && !asked {
         // (no GPU is measured yet: the speed bar is the whole answer, whatever the GPU, its driver or its computer)
-        return Some(cannot(not_measured(&g.name, &words), "vLLM runs the model on this GPU"));
+        return Some(cannot(not_measured(&g.name, &words), unmeasured_fix()));
     }
     if is_mig(&g.name) {
         return Some(cannot(format!("{} is a MIG slice of a GPU, which this engine does not size", g.name), "Use the whole GPU"));
@@ -105,13 +166,16 @@ fn refusal_on(table: &[(&str, (i32, i32))], archs: &[&str], g: &Gpu, arch: &str,
     if !archs.contains(&arch) {
         return Some(cannot(
             format!("this engine has not run on {arch} computers yet ({})", g.name),
-            format!("It runs on {} computers so far; vLLM runs the model here", archs.join(" and ")),
+            instead(
+                &format!("It runs on {} computers so far; vLLM runs the model here", archs.join(" and ")),
+                &format!("It runs on {} computers so far; {FULL_TOOL}", archs.join(" and ")),
+            ),
         ));
     }
     if !asked && !table.iter().any(|(_, cc)| *cc == g.cc) {
         return Some(cannot(
             format!("this engine has not run on {} (compute capability {major}.{minor}) yet: it runs on the {}", g.name, joined(&words)),
-            "vLLM runs the model on this GPU",
+            unmeasured_fix(),
         ));
     }
     if g.driver < DRIVER_MIN {
@@ -121,13 +185,32 @@ fn refusal_on(table: &[(&str, (i32, i32))], archs: &[&str], g: &Gpu, arch: &str,
                 g.driver / 1000,
                 g.driver % 1000 / 10
             ),
-            "Update the NVIDIA driver to 580 or newer (https://www.nvidia.com/drivers), or run the model with vLLM",
+            driver_fix(g.driver, "run the model with vLLM"),
         ));
     }
     if !asked && !on_list(table, g) {
-        return Some(cannot(not_measured(&g.name, &words), "vLLM runs the model on this GPU"));
+        return Some(cannot(not_measured(&g.name, &words), unmeasured_fix()));
     }
     None
+}
+
+/// What to do on a GPU the engine is not measured on: vLLM runs the model where it is installed; else the engine can be asked for by name (GLYD_ENGINE=1: it runs where it can), or the whole tool installed.
+fn unmeasured_fix() -> String {
+    instead(
+        "vLLM runs the model on this GPU",
+        &format!("GLYD_ENGINE=1 glyd run MODEL uses the engine here all the same (it is not measured on this GPU yet), or {FULL_TOOL}"),
+    )
+}
+
+/// The exact update for a driver below `DRIVER_MIN` (`driver`: the CUDA version it reports, 12080 for 12.8): the series to install and how, and where vLLM is installed the other way out.
+pub fn driver_fix(driver: i32, with_vllm: &str) -> String {
+    let have = format!("the driver here runs CUDA {}.{}", driver / 1000, driver % 1000 / 10);
+    let update = format!(
+        "{have}; the engine's kernels need CUDA {}.{} (driver 580 or newer): on Ubuntu `sudo apt install nvidia-driver-580` (or `sudo ubuntu-drivers install`) and reboot, elsewhere the installer at https://www.nvidia.com/drivers",
+        DRIVER_MIN / 1000,
+        DRIVER_MIN % 1000 / 10
+    );
+    instead(&format!("{update}, or {with_vllm}"), &update)
 }
 
 /// What is said of a GPU that is not one the engine is used on: it is not measured at least as fast as vLLM there (the speed bar), and where it is, on which GPUs.
@@ -141,13 +224,13 @@ pub fn config_refusal(name: &str, c: &Config) -> Option<Refusal> {
     if c.head_dim != 128 {
         return Some(cannot(
             format!("{name}: its attention heads have {} values, and the engine's KV cache takes 128", c.head_dim),
-            "Other models run with vLLM",
+            instead("Other models run with vLLM", "Pick a Qwen3 model, which this engine runs: glyd run Qwen/Qwen3-8B"),
         ));
     }
     if c.kv_heads == 0 || !c.heads.is_multiple_of(c.kv_heads) || c.heads / c.kv_heads > MAX_GROUP {
         return Some(cannot(
             format!("{name} has {} query heads to {} KV heads, and the engine takes up to {MAX_GROUP} to one", c.heads, c.kv_heads),
-            "Other models run with vLLM",
+            instead("Other models run with vLLM", "Pick a Qwen3 model, which this engine runs: glyd run Qwen/Qwen3-8B"),
         ));
     }
     None
@@ -158,7 +241,10 @@ pub fn context_refusal(name: &str, ctx: usize) -> Option<Refusal> {
     (ctx > MAX_CONTEXT).then(|| {
         cannot(
             format!("{name} with {ctx} tokens of context: the lossless KV cache's tables cover up to {MAX_CONTEXT}"),
-            format!("Ask for up to {MAX_CONTEXT}: --context {MAX_CONTEXT}, or run the model with vLLM"),
+            instead(
+                &format!("Ask for up to {MAX_CONTEXT}: --context {MAX_CONTEXT}, or run the model with vLLM"),
+                &format!("Ask for up to {MAX_CONTEXT}: --context {MAX_CONTEXT}"),
+            ),
         )
     })
 }
@@ -277,6 +363,7 @@ mod tests {
     /// whatever else is wrong with it, with no list to name.
     #[test]
     fn the_engine_is_used_only_where_it_is_measured_at_least_as_fast_as_vllm() {
+        FORCE_VLLM.with(|f| f.set(Some(true)));
         for (word, cc) in GPUS {
             assert!(!word.is_empty() && cc.0 >= 8, "{word} {cc:?}");
         }
@@ -435,5 +522,66 @@ mod tests {
         // a spare gibibyte: exactly the sum is not enough
         assert!(disk_refusal("m", Some(gb(10)), None, true, gb(10) - (1 << 30), 0).is_none());
         assert!(disk_refusal("m", Some(gb(10)), None, true, gb(10) - (1 << 30) + 1, 0).is_some());
+    }
+    /// Where vLLM is not installed (the Rust install alone), no refusal sends the user to it: each says what the Rust install can do, which is a Qwen3 model, the engine by name, or the whole tool.
+    #[test]
+    fn a_refusal_names_vllm_only_where_it_is_installed() {
+        let l4 = gpu("NVIDIA L4", (8, 9), 22, 13000);
+        let old = gpu("NVIDIA L4", (8, 9), 22, 12080);
+        let wide = Config { heads: 72, ..qwen3_8b() };
+        let all = |installed: bool| {
+            FORCE_VLLM.with(|f| f.set(Some(installed)));
+            let rs = [
+                refusal_on(&[], ARCHS, &l4, "x86_64", false).unwrap(),
+                refusal_on(TABLE, ARCHS, &gpu("NVIDIA L4", (8, 9), 22, 13000), "aarch64", true).unwrap(),
+                refusal_on(TABLE, ARCHS, &old, "x86_64", true).unwrap(),
+                config_refusal("x", &wide).unwrap(),
+                context_refusal("m", 100_000).unwrap(),
+            ];
+            rs.map(|r| r.fix)
+        };
+        for fix in all(true) {
+            assert!(fix.contains("vLLM"), "{fix}");
+        }
+        let alone = all(false);
+        for fix in &alone {
+            assert!(!fix.contains("vLLM") && !fix.contains("vllm"), "{fix}");
+        }
+        assert!(alone[0].contains("GLYD_ENGINE=1 glyd run MODEL") && alone[0].contains("install.sh"), "{}", alone[0]);
+        assert!(alone[1].contains("install.sh") && alone[3].contains("Qwen/Qwen3-8B") && alone[4].contains("--context 40960"), "{alone:?}");
+        // the driver's update is exact either way: what it has, what the engine needs, and the command
+        for fix in [&alone[2], &all(true)[2]] {
+            assert!(fix.contains("runs CUDA 12.8") && fix.contains("CUDA 13.0") && fix.contains("580") && fix.contains("nvidia-driver-580"), "{fix}");
+        }
+    }
+
+    /// vLLM is found by files alone: a `vllm` program in a directory of PATH, or in the environment of the Python of a `glyd` script (its `#!` line), as `uv tool install "glyd[vllm]"` leaves it.
+    #[test]
+    fn vllm_is_found_beside_the_python_tool() {
+        let root = std::env::temp_dir().join(format!("glyd-vllm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (empty, plain, tool, venv, with_prog) = (root.join("empty"), root.join("plain"), root.join("bin"), root.join("venv"), root.join("prog"));
+        for d in [&empty, &plain, &tool, &venv.join("bin"), &venv.join("lib/python3.12/site-packages/vllm"), &with_prog] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // a glyd whose Python has vllm in its site-packages; a glyd whose Python has nothing; a vllm program on its own
+        std::fs::write(tool.join("glyd"), format!("#!{}/bin/python\nimport glyd.cli\n", venv.display())).unwrap();
+        let bare = root.join("bare");
+        std::fs::create_dir_all(bare.join("bin")).unwrap();
+        std::fs::write(plain.join("glyd"), format!("#!{}/bin/python\nimport glyd.cli\n", bare.display())).unwrap();
+        std::fs::write(with_prog.join("vllm"), "#!/bin/sh\n").unwrap();
+        assert!(!vllm_in(&[]) && !vllm_in(std::slice::from_ref(&empty)) && !vllm_in(std::slice::from_ref(&plain)));
+        assert!(vllm_in(std::slice::from_ref(&tool)) && vllm_in(std::slice::from_ref(&with_prog)));
+        assert!(vllm_in(&[empty, plain, tool]));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `doctor` fails on a driver below `DRIVER_MIN` and says the update; a new enough one passes.
+    #[test]
+    fn doctor_fails_a_driver_below_the_minimum() {
+        FORCE_VLLM.with(|f| f.set(Some(false)));
+        let said = crate::cli::driver_problem(&gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 12080)).unwrap();
+        assert!(said.contains("runs CUDA 12.8") && said.contains("driver 580 or newer") && said.contains("sudo apt install nvidia-driver-580"), "{said}");
+        assert!(crate::cli::driver_problem(&gpu("x", (8, 9), 16, DRIVER_MIN)).is_none() && crate::cli::driver_problem(&gpu("x", (8, 9), 16, 13020)).is_none());
     }
 }

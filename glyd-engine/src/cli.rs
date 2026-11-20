@@ -192,7 +192,10 @@ fn engine_refusal(e: crate::ffi::Error, name: &str, fit: &fit::Fit, gpu: &Gpu) -
     {
         return Refusal::unsupported(
             format!("the GPU's driver cannot run the engine's kernels ({})", e.0),
-            "Update the NVIDIA driver (the engine's kernels are built for CUDA 13: driver 580 or newer), or use the vLLM-based glyd",
+            machine::instead(
+                "Update the NVIDIA driver (the engine's kernels are built for CUDA 13: driver 580 or newer), or use the vLLM-based glyd",
+                "Update the NVIDIA driver to 580 or newer: on Ubuntu `sudo apt install nvidia-driver-580` and reboot, elsewhere the installer at https://www.nvidia.com/drivers",
+            ),
         );
     }
     cannot(e.0)
@@ -234,6 +237,11 @@ fn unsupported_setting(cfg_text: &str) -> Option<&'static str> {
     None
 }
 
+/// What to do with a model the engine does not run (yet): vLLM runs it where it is installed, else the whole tool does.
+fn unrun_fix() -> String {
+    machine::instead("Run it with the vLLM-based glyd, which is installed here", &format!("The engine does not run it yet: {}", machine::FULL_TOOL))
+}
+
 /// The engine runs Qwen3 dense models (Qwen3ForCausalLM) with no rope scaling: a Refusal (exit 3) for the rest.
 fn supported(name: &str, cfg_text: &str) -> Done<()> {
     let Some((arch, scaled)) = architecture(cfg_text) else {
@@ -242,26 +250,26 @@ fn supported(name: &str, cfg_text: &str) -> Done<()> {
     if crate::nemotron::is_nemotron_h(cfg_text) {
         return Err(Refusal::unsupported(
             format!("{name} is a Nemotron-H model: this engine runs it at the hummingbird, swift and kestrel levels, not lossless"),
-            "Run it at a level: glyd run MODEL:hummingbird on a 16 to 32 GB card (or :swift, :kestrel on a 96 GB one or larger); lossless it runs with the vLLM-based glyd: pip install \"glyd[vllm]\" (https://getglyd.com)",
+            machine::instead(
+                "Run it at a level: glyd run MODEL:hummingbird on a 16 to 32 GB card (or :swift, :kestrel on a 96 GB one or larger); lossless it runs with the vLLM-based glyd, which is installed here",
+                &format!("Run it at a level: glyd run MODEL:hummingbird on a 16 to 32 GB card (or :swift, :kestrel on a 96 GB one or larger); lossless, {}", machine::FULL_TOOL),
+            ),
         ));
     }
     if arch != "Qwen3ForCausalLM" {
         return Err(Refusal::unsupported(
             format!("{name} is a {arch} model, and this engine runs Qwen3 models so far"),
-            "Other models run with the vLLM-based glyd: pip install \"glyd[vllm]\" (https://getglyd.com)",
+            machine::instead(
+                "Other models run with the vLLM-based glyd, which is installed here",
+                &format!("Pick a Qwen3 model (glyd run Qwen/Qwen3-8B), or {}", machine::FULL_TOOL),
+            ),
         ));
     }
     if scaled {
-        return Err(Refusal::unsupported(
-            format!("{name} uses rope scaling, which this engine does not run yet"),
-            "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\"",
-        ));
+        return Err(Refusal::unsupported(format!("{name} uses rope scaling, which this engine does not run yet"), unrun_fix()));
     }
     if let Some(what) = unsupported_setting(cfg_text) {
-        return Err(Refusal::unsupported(
-            format!("{name} has {what}, which this engine does not run yet"),
-            "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\"",
-        ));
+        return Err(Refusal::unsupported(format!("{name} has {what}, which this engine does not run yet"), unrun_fix()));
     }
     Ok(())
 }
@@ -1146,8 +1154,7 @@ fn lossy_plan_with(
         if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
             return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
         }
-        let cfg = ConfigNemotronH::parse(text, "config.json", gen)
-            .map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\""))?;
+        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), unrun_fix()))?;
         (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos)
     } else {
         if layout == Layout::Hummingbird {
@@ -1205,8 +1212,7 @@ fn lossy_plan_with(
     }
     let mut also = String::new();
     if nemotron && (!fits || cache.is_some()) {
-        let cfg = ConfigNemotronH::parse(text, "config.json", gen)
-            .map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), "Run it with the vLLM-based glyd: pip install \"glyd[vllm]\""))?;
+        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), unrun_fix()))?;
         match offloaded(&cfg, layout, weights, state, per, free, host, asked, cache, host_asked, gpu) {
             Ok((ctx, plan)) => return Ok(Lossy { weights, bf16, ctx, nemotron, gemma: false, cache: Some(plan) }),
             Err(why) if cache.is_some() => {
@@ -2204,6 +2210,11 @@ pub fn verify(a: &Args) -> i32 {
     }
 }
 
+/// What `doctor` says of a driver below `DRIVER_MIN` (the engine's kernels are CUDA 13's): what it runs, what the engine needs and the exact update; None where it is new enough.
+pub fn driver_problem(g: &Gpu) -> Option<String> {
+    (g.driver < machine::DRIVER_MIN).then(|| format!("too old: {}", machine::driver_fix(g.driver, "run the model with vLLM")))
+}
+
 pub fn doctor(_a: &Args) -> i32 {
     let say = |k: &str, v: String| println!("  {k:<14}{v}");
     println!("glyd engine {VERSION}");
@@ -2225,6 +2236,10 @@ pub fn doctor(_a: &Args) -> i32 {
             );
             if g.cc.0 < 8 {
                 say("", "older than the engine runs on (Ampere or newer)".to_string());
+                bad += 1;
+            }
+            if let Some(fix) = driver_problem(&g) {
+                say("driver", fix);
                 bad += 1;
             }
             if n > 1 {
