@@ -94,10 +94,10 @@ impl Backend for &mut Engine {
         self.prefill_chunk(pages, start, tokens, last)
     }
     fn prefill_rows(&self) -> usize {
-        // (GLYD_ENGINE_BATCH_PREFILL=1: the prompts of up to 8 sequences in a pass. Not by default: a pass of more than 64 rows takes the products' route its rows give, so a reply may then differ in the last
-        // bits of its logits, and at a near tie in its tokens, from the one the sequence has alone; a server with one request at a time gives the same bits either way)
+        // (the prompts of up to 8 sequences in a pass; GLYD_ENGINE_BATCH_PREFILL=0: one prompt a pass, as before. A pass of more than 64 rows takes the products' route its rows give, so with several prompts at
+        // once a reply's last bits can differ from the same prompt's alone (the same token in nearly every case: `glyd-engine batchcheck`); =0 keeps every reply identical to solo)
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "1")) {
+        if *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_none_or(|v| v != "0")) {
             MAX_ROWS
         } else {
             1
@@ -209,6 +209,7 @@ pub const MAX_TRIES: u32 = 6;
 /// The most tokens a prompt pass has for the round's decode step to wait on the prompts that are coming in, and the most rounds in a row it does.
 const SHORT_PASS: usize = 256;
 const MAX_SKIPS: u32 = 4;
+const MAX_LONG_SKIPS: u32 = 2;
 
 pub struct Sched<B: Backend> {
     be: B,
@@ -364,7 +365,14 @@ impl<B: Backend> Sched<B> {
         self.flush();
         // Requests that come in together are taken in over a few milliseconds: after a short pass for prompts that were taken in this round, the next round takes in the rest before the decode step
         // (which would be 17 ms of the earlier prompts' decoding between the passes), at most MAX_SKIPS rounds in a row so that a sequence that is decoding is never left for long.
-        if admitted && self.stats.prefill_rounds != passes && self.pass_tokens <= SHORT_PASS && self.skips < MAX_SKIPS {
+        // After a pass of a long prompt (a first token is 350 ms of it) with more prompts still to run, the decode step likewise waits for up to MAX_LONG_SKIPS passes: a decode step between each two of 8 prompts of
+        // 2,000 tokens put 7 x 17 ms into their mean first token (3.5% of it), and the sequences that are decoding wait two passes longer, not seven steps' worth.
+        let more = self.active.iter().any(|s| s.prefilling) || !self.waiting.is_empty();
+        let ran = self.stats.prefill_rounds != passes;
+        if ran
+            && ((admitted && self.pass_tokens <= SHORT_PASS && self.skips < MAX_SKIPS)
+                || (more && self.pass_tokens > SHORT_PASS && self.skips < MAX_LONG_SKIPS))
+        {
             self.skips += 1;
             self.stats.tick_ns += t.elapsed().as_nanos() as u64;
             self.gauges();

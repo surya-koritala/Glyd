@@ -8,7 +8,7 @@ every earlier format.
 
 ## Unreleased
 
-- Engine: after a short prompt pass for requests that came in together, the round's decode step waits for the rest of them (first token with 4 short prompts at once 80 to 51 ms on an RTX 4080 SUPER, tokens unchanged), and `GLYD_ENGINE_BATCH_PREFILL=1` runs the prompts of up to 8 requests in one pass (8 short prompts at once 162 to 82 ms; off by default, a reply may then differ from the one it has alone in the last bits; `benchmarks/gpu/rtx4080s-batched-prefill-2026-11-20`).
+- Engine: after a short prompt pass for requests that came in together, the round's decode step waits for the rest of them (first token with 4 short prompts at once 80 to 51 ms on an RTX 4080 SUPER, tokens unchanged), and the prompts of up to 8 requests that arrive together run in one pass (8 short prompts at once 162 to 65 ms on an RTX 4080 SUPER; a reply's last bits can then differ from the same prompt's alone, `GLYD_ENGINE_BATCH_PREFILL=0` keeps every reply identical to solo; `benchmarks/gpu/rtx4080s-batched-prefill-2026-11-20`).
 - **Glyd is open source, all of it, under the Apache License 2.0.** The GPU library and its kernels (`gpu/`), the packer (`glyd-gpu/`),
   the Python GPU package (`glyd-gpu-py/`) and Glyd's engine (`glyd-engine/`), released compiled only from v0.27, are in this repository with
   their source, beside the codec and the store. Condor (`condor/`) and Starlings (`starlings/`, one model across GPUs and machines) moved in
