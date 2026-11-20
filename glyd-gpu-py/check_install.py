@@ -2,8 +2,7 @@
 """What an installed glyd-gpu wheel has, looked at from outside the source tree (run it as python -I, so that no checkout is on the path):
 its version; that importing it pulls in no torch; both CUDA libraries load without a GPU (their CUDA runtime is linked in: the driver is
 looked for at the first call) and answer the C API version of the header the wheel ships (the package's calls are written for it:
-test_gpu.py's header tests tie the two; a stale library does not), give their table (glyd_gpu_table: how the package reaches every function
-but the public header's eight) and keep every other function out of their exports; the engine's program (glyd-engine) is executable, is this
+test_gpu.py's header tests tie the two; a stale library does not) and export the functions the package calls by their names; the engine's program (glyd-engine) is executable, is this
 version, finds the library beside it and says which models it runs (with no GPU, and no network); vLLM's entry point is registered.
 
     python -I check_install.py VERSION [--no-libs]        (--no-libs: a wheel built without the CUDA libraries)"""
@@ -17,26 +16,6 @@ import subprocess
 import sys
 import tempfile
 from importlib.metadata import entry_points, version
-
-
-class Entry(ctypes.Structure):  # (glyd_gpu.h's glyd_gpu_entry)
-    _fields_ = [("id", ctypes.c_uint32), ("reserved", ctypes.c_uint32), ("fn", ctypes.c_void_p)]
-
-
-def table_fn(lib, api, name, result=ctypes.c_int, args=()):
-    """A function of the library's table: its id is the 32-bit FNV-1a hash of its name without glyd_gpu_ (0 made 1)."""
-    h = 2166136261
-    for b in name.encode():
-        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
-    lib.glyd_gpu_table.argtypes, lib.glyd_gpu_table.restype = [ctypes.c_int], ctypes.POINTER(Entry)
-    table = lib.glyd_gpu_table(api)
-    assert table, "no table for this C API version"
-    i = 0
-    while table[i].id:
-        if table[i].id == (h or 1):
-            return ctypes.CFUNCTYPE(result, *args)(table[i].fn)
-        i += 1
-    raise AssertionError(f"no {name} in the table")
 
 
 want = sys.argv[1]
@@ -55,9 +34,9 @@ else:
     api = int(re.search(r"#define GLYD_GPU_API_VERSION (\d+)", open(d + "/glyd_gpu.h").read()).group(1))
     for f in libs:
         lib = ctypes.CDLL(f)
-        print(os.path.basename(f), os.path.getsize(f), "bytes, CUDA runtime", table_fn(lib, api, "cuda_version")(), "C API", lib.glyd_gpu_api_version())
+        print(os.path.basename(f), os.path.getsize(f), "bytes, CUDA runtime", lib.glyd_gpu_cuda_version(), "C API", lib.glyd_gpu_api_version())
         assert lib.glyd_gpu_api_version() == api, f"{f}: its C API is not the header's ({api})"
-        assert not hasattr(lib, "glyd_gpu_cuda_version") and not hasattr(lib, "glyd_gpu_mma_gemm"), f"{f}: a function that is the table's is exported"
+        assert hasattr(lib, "glyd_gpu_cuda_version") and hasattr(lib, "glyd_gpu_mma_gemm"), f"{f}: a function of the C API is not exported by its name"
 eng = os.path.join(d, "glyd-engine")
 if "--no-libs" in sys.argv:
     assert not os.path.exists(eng), "an engine's program in a wheel built without the libraries"

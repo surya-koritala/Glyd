@@ -1298,6 +1298,7 @@ mod bench {
     /// A layer file of a pack mapped read-only (the codes' and the books' offsets as `GlmMoeCb` finds them: the first kept expert's tensors, the others end to end after them).
     struct Mapped {
         ptr: *mut u8,
+        #[cfg_attr(windows, allow(dead_code))]
         len: usize,
     }
 

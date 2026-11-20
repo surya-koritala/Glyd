@@ -1,7 +1,7 @@
 //! The binding: the CUDA driver and Glyd's GPU library (the C API of gpu/glyd_gpu.h, version 16), both loaded at run
 //! time; nothing is linked at build time. This is the only module that names a symbol: the library's functions are
-//! resolved in `Lib::load` through the library's table (`glyd_gpu_table`: a function's id is the FNV-1a hash of its name),
-//! which every build of the library offers. The declarations are held to gpu/glyd_gpu.h by a test (`declarations_are_the_header`).
+//! resolved in `Lib::load` by their names (every function of glyd_gpu.h is exported by its name). The declarations are held to
+//! gpu/glyd_gpu.h by a test (`declarations_are_the_header`).
 //!
 //! Device memory is a `u64` address (the driver's CUdeviceptr); the library takes it as a pointer. Every call returns
 //! a `Result` with the status text of the driver or the library.
@@ -141,6 +141,12 @@ macro_rules! table {
                     std::mem::transmute::<*mut c_void, unsafe extern "C" fn($($arg),*) $(-> $ret)?>(p)
                 } ),* })
             }
+
+            /// (Tests) Each function's name and its arguments' and result's Rust types as declared here, which a test holds to the C header.
+            #[cfg(test)]
+            #[allow(dead_code)]
+            pub(crate) const DECLARED: &'static [(&'static str, &'static [&'static str], &'static str)] =
+                &[$((stringify!($f), &[$(stringify!($arg)),*], concat!("" $(, stringify!($ret))?)),)*];
         }
     };
 }
@@ -379,60 +385,6 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
 pub const API_VERSION: c_int = 16;
 
-/// A function's id in a library's table (`glyd_gpu_table`): the 32-bit FNV-1a hash of its name without `glyd_gpu_` (an id of 0 made 1).
-pub const fn table_id(name: &str) -> u32 {
-    let (b, prefix) = (name.as_bytes(), b"glyd_gpu_");
-    let (mut at, mut i) = (0, 0);
-    while i < prefix.len() && i < b.len() && b[i] == prefix[i] {
-        i += 1;
-    }
-    if i == prefix.len() {
-        at = i;
-    }
-    let mut h: u32 = 2166136261;
-    while at < b.len() {
-        h = (h ^ b[at] as u32).wrapping_mul(16777619);
-        at += 1;
-    }
-    if h == 0 {
-        1
-    } else {
-        h
-    }
-}
-
-/// One pair of a library's table: a function's id and address (the table ends with id 0).
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct TableEntry {
-    id: u32,
-    reserved: u32,
-    function: *const c_void,
-}
-
-/// A table of the library's functions, each found by its id in the library's table: `table_id` of its field's name, worked out when this is compiled. (Tests) `Api::DECLARED`: each function's name and its arguments' and result's Rust types as declared here, which a test holds to the C header.
-macro_rules! id_table {
-    ($vis:vis struct $name:ident { $( fn $f:ident ( $($arg:ty),* ) $(-> $ret:ty)? ; )* }) => {
-        #[allow(non_snake_case, dead_code)]
-        $vis struct $name { $( pub $f: unsafe extern "C" fn($($arg),*) $(-> $ret)? ),* }
-        impl $name {
-            /// # Safety
-            /// `find` gives, for an id, the address of the function that id is of, with the signature declared here (or null).
-            unsafe fn resolve_ids(find: &dyn Fn(u32) -> *mut c_void) -> std::result::Result<$name, String> {
-                Ok($name { $( $f: {
-                    const ID: u32 = table_id(stringify!($f));
-                    let p = find(ID);
-                    if p.is_null() { return Err(format!("no function {} ({ID:08x})", stringify!($f))); }
-                    std::mem::transmute::<*mut c_void, unsafe extern "C" fn($($arg),*) $(-> $ret)?>(p)
-                } ),* })
-            }
-            #[cfg(test)]
-            pub(crate) const DECLARED: &'static [(&'static str, &'static [&'static str], &'static str)] =
-                &[$((stringify!($f), &[$(stringify!($arg)),*], concat!("" $(, stringify!($ret))?)),)*];
-        }
-    };
-}
-
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {
     ($n:literal) => {
@@ -440,7 +392,7 @@ macro_rules! call {
     };
 }
 
-id_table! {
+table! {
     pub struct Api {
         fn glyd_gpu_api_version() -> c_int;
         fn glyd_gpu_cuda_version() -> c_int;
@@ -651,26 +603,9 @@ impl Lib {
         if v != API_VERSION {
             return err(format!("{path}: C API version {v}, where this engine is written for {API_VERSION}: take the library of this engine's release"));
         }
-        // the functions by the library's table
-        // SAFETY: glyd_gpu_table takes the version and gives its table (null for another one); the entries' functions have the signatures declared in `Api` at this version.
-        let api = unsafe {
-            let t = dl::sym(h, "glyd_gpu_table\0");
-            if t.is_null() {
-                return err(format!("{path}: no table of functions"));
-            }
-            let table = std::mem::transmute::<*mut c_void, unsafe extern "C" fn(c_int) -> *const TableEntry>(t)(API_VERSION);
-            if table.is_null() {
-                return err(format!("{path}: its table is for another version of the C API"));
-            }
-            let mut entries = Vec::new();
-            let mut i = 0;
-            while (*table.add(i)).id != 0 {
-                entries.push(*table.add(i));
-                i += 1;
-            }
-            Api::resolve_ids(&|id| entries.iter().find(|e| e.id == id).map_or(std::ptr::null_mut(), |e| e.function as *mut c_void))
-                .map_err(|e| Error(format!("{path}: {e}")))?
-        };
+        // the functions by their names
+        // SAFETY: `h` is the library's handle; its functions have the signatures declared in `Api` at this version.
+        let api = unsafe { Api::resolve(h) }.map_err(|e| Error(format!("{path}: {e}")))?;
         Ok(Lib { api, path: path.to_string() })
     }
 
@@ -1382,16 +1317,6 @@ pub fn cstr(s: &str) -> CString {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A function's id in the library's table: the FNV-1a hash of its name without the prefix (the values the library's own `fnv1a` gives for these names).
-    #[test]
-    fn ids_in_the_libraries_table() {
-        assert_eq!(table_id("glyd_gpu_api_version"), 0xe3fd8d74);
-        assert_eq!(table_id("kv_decode"), 0xcaf4d0c3);
-        assert_eq!(table_id("glyd_gpu_kv_work_put"), 0x361d7e3a);
-        assert_eq!(table_id("glyd_gpu_mma_way"), 0xd92d1b36);
-        assert_eq!(table_id("glyd_gpu_gpu"), 0x473bf115);
-    }
 
     /// A C parameter's or result's type as `Api` declares it, without spaces: `const uint8_t* data` *constu8,
     /// `const uint32_t tiers[3]` *constu32, `int* done` *mutc_int, `cudaStream_t cs` Stream.

@@ -9,8 +9,8 @@
 #   bash gpu/build_lib.sh [OUT_DIR]      (default: next to glyd_gpu_dev.py)
 # GLYD_GPU_NVCC_THREADS=N: nvcc's threads for the compile (default 0: one an architecture; a CI runner of 2 cores and 7 GB takes 2).
 # GLYD_GPU_RELEASE=1 (the release build, glyd-gpu-py/build.sh): machine code for those architectures and Ampere's PTX for newer GPUs,
-# no line or debug information, the library stripped and exporting the public header's eight functions and glyd_gpu_table, and an
-# nvcc without Blackwell's architectures refused. Kernel names are the source's in every build.
+# no line or debug information, the library stripped, and an nvcc without Blackwell's architectures refused. Every build
+# exports the functions of glyd_gpu.h by their names, and the kernels keep the names the source gives them.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${1:-$HERE}"
@@ -46,10 +46,6 @@ FLAGS=(-O3 -std=c++20 --expt-relaxed-constexpr -isystem "$CUDA/include"
 # runs an nvlink an architecture in parallel, each writing the one _dlink.reg.c (nvcc --dryrun), and CUDA 12.8's
 # release build failed on it ("nvlink fatal: Could not read file ..._dlink.reg.c (target: sm_100)", x86_64,
 # 2026-09-28).
-if [ "${GLYD_GPU_RELEASE:-0}" = 1 ]; then  # (the C++ library's inline functions would be exported too, whatever -fvisibility says)
-    printf '{ global: glyd_gpu_api_version; glyd_gpu_error_string; glyd_gpu_mma_linear_workspace; glyd_gpu_mma_linear; glyd_gpu_mma12_linear_workspace; glyd_gpu_mma12_linear; glyd_gpu_mma_unpack; glyd_gpu_mma12_unpack; glyd_gpu_table; local: *; };\n' > "$TMP/exports.map"
-    STRIP+=(-Xlinker --version-script="$TMP/exports.map")
-fi
 "$NVCC" "${FLAGS[@]}" --threads "${GLYD_GPU_NVCC_THREADS:-0}" -c -o "$TMP/glyd_gpu.o" "$HERE/glyd_gpu.cu"
 "$NVCC" "${FLAGS[@]}" -shared -Xlinker --exclude-libs,ALL ${STRIP[@]+"${STRIP[@]}"} -cudart static -L"$CUDA/lib" \
     -o "$OUT/libglyd_gpu_cuda$MAJOR.so" "$TMP/glyd_gpu.o"

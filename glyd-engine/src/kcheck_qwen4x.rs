@@ -104,7 +104,10 @@ pub fn gpu_lock(a: &Args) -> Result<Option<GpuLock>> {
         return err(format!("{path}: flock: {}", std::io::Error::last_os_error()));
     }
     #[cfg(windows)]
-    return err(format!("{path}: --lock takes flock, a Linux call ({} unlocked)", f.metadata().map_or(0, |m| m.len())));
+    {
+        err(format!("{path}: --lock takes flock, a Linux call ({} unlocked)", f.metadata().map_or(0, |m| m.len())))
+    }
+    #[cfg(not(windows))]
     Ok(Some(GpuLock(f)))
 }
 

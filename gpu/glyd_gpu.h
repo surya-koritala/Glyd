@@ -72,14 +72,8 @@ int glyd_gpu_api_version(void);
 int glyd_gpu_cuda_version(void);
 /* A status's text. */
 const char* glyd_gpu_error_string(int status);
-/* The package's way to every function below (a release library exports this and the public header's eight alone, by
- * name): a table of glyd_gpu_entry, ending with id 0, for GLYD_GPU_API_VERSION (null for any other); a function's id is
- * the FNV-1a hash (32 bit, an id of 0 made 1) of its name without `glyd_gpu_`. */
-typedef struct {
-    uint32_t id, reserved;
-    const void* fn;
-} glyd_gpu_entry;
-const void* glyd_gpu_table(int version);
+/* Every function below is exported by its name, in every build of the library. (glyd_gpu_table, which the compiled
+ * libraries of v0.27 to v0.32.1 had to reach the functions whose names they did not export, is gone.) */
 
 /* ------------------------------------------------------------------------
  * The mma layouts: W [O, K] (O a multiple of 64, K of 16) held as O K / 1024

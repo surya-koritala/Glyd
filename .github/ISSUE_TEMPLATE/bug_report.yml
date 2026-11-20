@@ -1,5 +1,5 @@
-name: Bug
-description: Something that fails, gives wrong output, or does not decode.
+name: Codec or store bug
+description: The glyd codec or glyd-store fails, gives wrong output, or a file does not decode. For the inference engine use "Engine bug".
 labels: [bug]
 body:
   - type: markdown

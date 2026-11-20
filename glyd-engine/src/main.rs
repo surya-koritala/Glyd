@@ -65,7 +65,11 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let a = Args::parse();
+    let mut a = Args::parse();
+    // a model given as a GGUF file (or a Hub repo of GGUF files) is read as a Hugging Face directory (src/gguf.rs)
+    if let Some(code) = glyd_engine::gguf::resolve_args(&mut a) {
+        std::process::exit(code);
+    }
     // a Hugging Face token given as a flag is the Hub client's before the environment's and the saved login's (glyd run and glyd serve move it to HF_TOKEN before they start this program)
     if let Some(t) = a.flag("hf-token").filter(|t| !t.is_empty()) {
         glyd_engine::hub::set_token(t);

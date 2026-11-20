@@ -1,5 +1,5 @@
-name: Speed or ratio
-description: A case where Glyd is slower or larger than it should be, or than another codec.
+name: Codec speed or ratio
+description: A case where the glyd codec is slower or larger than it should be, or than another codec. For the engine use "Engine speed or hardware report".
 labels: [performance]
 body:
   - type: markdown

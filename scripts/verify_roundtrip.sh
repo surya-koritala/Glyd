@@ -9,7 +9,7 @@
 # COLD=1 adds the cold level (--cold, --cold -r), at 1-2 MB/s per core.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GLYD="$ROOT/target/release/glyd"
+GLYD="${GLYD_BIN:-$ROOT/target/release/glyd}"
 [ -x "$GLYD" ] || cargo build --release --manifest-path "$ROOT/Cargo.toml" >/dev/null
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

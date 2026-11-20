@@ -1,0 +1,45 @@
+name: Engine bug
+description: glyd run, glyd serve or glyd-engine fails, refuses a model it should run, or gives wrong output.
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a file that does not decode, or a codec or store problem, use the "Codec or store bug" form. A security problem goes by email to suryakoritala@getglyd.com (see SECURITY.md), not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `glyd-engine --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `glyd-engine doctor`
+      description: Run it on the machine where the bug happens and paste everything it prints.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and level
+      description: As typed, e.g. `Qwen/Qwen3.5-9B:swift`, or the directory you passed.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The command
+      description: The exact command and flags, and for `serve` the request you sent (with any API key removed).
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened, and what you expected
+      description: The error or the output (the end of it is enough), and what you expected instead.
+    validations:
+      required: true
