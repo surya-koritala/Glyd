@@ -521,13 +521,41 @@ fn word_char(c: char) -> bool {
 /// `text` with what must not leave the machine taken out: the home folder (as `~`), tokens by their well-known prefixes (`hf_`, `sk-`, ...: kept as the prefix
 /// and `<redacted>`), a `Bearer` credential, and the value after a secret's name (`--api-key X`, `HF_TOKEN=X`, `"token": "X"`, `password: X`).
 pub fn redact(text: &str, home: &str) -> String {
+    redact_with(text, home, &[])
+}
+
+/// `redact`, and each of `secrets` (a token or key this machine holds, 6 characters or more) taken out wherever it is, whatever is around it.
+pub fn redact_with(text: &str, home: &str, secrets: &[String]) -> String {
     let mut s = text.to_string();
+    for secret in secrets.iter().filter(|x| x.len() >= 6) {
+        s = s.replace(secret.as_str(), "<redacted>");
+    }
     if home.len() > 1 {
         s = s.replace(&home.replace('\\', "\\\\"), "~").replace(home, "~");
     }
+    s = redact_urls(&s);
     s = redact_prefixed(&s);
     s = redact_bearer(&s);
     redact_keyed(&s)
+}
+
+/// `scheme://user:password@host` as `scheme://<redacted>@host` (a proxy or a mirror with its credentials in the address).
+fn redact_urls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        out += head;
+        let end = tail.find(|c: char| c.is_whitespace() || matches!(c, '/' | '"' | '\'' | '\\' | '<' | '>')).unwrap_or(tail.len());
+        match tail[..end].rfind('@') {
+            Some(at) => {
+                out += "<redacted>";
+                rest = &tail[at..];
+            }
+            None => rest = tail,
+        }
+    }
+    out + rest
 }
 
 fn redact_prefixed(s: &str) -> String {
@@ -577,30 +605,45 @@ fn redact_keyed(s: &str) -> String {
     let mut at = 0;
     'scan: while at < s.len() {
         for key in SECRET_WORDS {
-            if lower[at..].starts_with(key) && (at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_')) {
+            if lower[at..].starts_with(key) && (at == 0 || !bytes[at - 1].is_ascii_alphanumeric()) {
                 let mut j = at + key.len();
                 // (the key is the whole word: `tokens` and `hf_token_path` are not it)
                 if j < s.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
                     continue;
                 }
                 let sep_start = j;
+                // (a property list's `<key>NAME</key>` and its `<string>VALUE</string>`)
+                if s[j..].starts_with("</key>") {
+                    j += 6;
+                    while j < s.len() && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if s[j..].starts_with("<string>") {
+                        j += 8;
+                    }
+                }
                 while j < s.len() && matches!(bytes[j], b'=' | b':' | b' ' | b'"' | b'\'' | b'\\') {
                     j += 1;
                 }
                 let value = s[j..]
                     .chars()
-                    .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | '\'' | ',' | '\\' | '}' | ']' | ';' | '&'))
+                    .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | '\'' | ',' | '\\' | '}' | ']' | ';' | '&' | '<'))
                     .map(char::len_utf8)
                     .sum::<usize>();
                 let v = &s[j..j + value];
                 let plain = v.is_empty()
                     || v.starts_with('<')
                     || v.contains("<redacted>")
+                    || s[j + value..].starts_with("<redacted>")
                     || matches!(v, "null" | "true" | "false" | "none" | "found")
                     || v.eq_ignore_ascii_case("bearer")
                     || v.eq_ignore_ascii_case("basic")
                     || v.chars().all(|c| c.is_ascii_digit());
-                if j > sep_start && !plain && (key != "token" || value >= 8) && s[sep_start..j].contains(['=', ':', ' ']) {
+                if j > sep_start
+                    && !plain
+                    && (key != "token" || value >= 8)
+                    && (s[sep_start..j].contains(['=', ':', ' ']) || s[sep_start..j].starts_with("</key>"))
+                {
                     out += &s[at..j];
                     out += "<redacted>";
                     at = j + value;
@@ -613,6 +656,13 @@ fn redact_keyed(s: &str) -> String {
         at += c.len_utf8();
     }
     out
+}
+
+/// The tokens and keys this machine holds, by value: the bundle takes each out wherever it turns up.
+fn secrets() -> Vec<String> {
+    let mut v: Vec<String> = ["GLYD_API_KEY", "VLLM_API_KEY", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"].iter().filter_map(|k| std::env::var(k).ok()).collect();
+    v.extend(hub::token());
+    v
 }
 
 /// The environment's names the bundle lists, with the value of each (a name that holds a secret says only that it is set).
@@ -661,7 +711,16 @@ fn service_config() -> Option<(String, String)> {
 
 /// The bundle as JSON text (`glyd-doctor/1`), redacted: the versions, the checks with their fixes, the memory terms, the sample plan, the failure matrix, the
 /// environment, the service's configuration and the end of its recent logs.
-pub fn bundle(f: &Facts, cs: &[Check], logs: Vec<(String, Vec<String>)>, config: Option<(String, String)>, env: Vec<(String, String)>, home: &str) -> String {
+#[allow(clippy::too_many_arguments)]
+pub fn bundle(
+    f: &Facts,
+    cs: &[Check],
+    logs: Option<Vec<(String, Vec<String>)>>,
+    config: Option<(String, String)>,
+    env: Vec<(String, String)>,
+    home: &str,
+    secrets: &[String],
+) -> String {
     let m = f.machine();
     let plan = match sample_plan(&m) {
         Ok(p) => serde_json::from_str(&p.json(SAMPLE_MODEL)).unwrap_or_default(),
@@ -698,9 +757,10 @@ pub fn bundle(f: &Facts, cs: &[Check], logs: Vec<(String, Vec<String>)>, config:
         "matrix": MATRIX.iter().map(|x| serde_json::json!({"class": x.class, "check": x.check, "fix": x.fix})).collect::<Vec<_>>(),
         "environment": env.iter().map(|(k, val)| serde_json::json!({"name": k, "value": val})).collect::<Vec<_>>(),
         "service_config": config.map(|(p, t)| serde_json::json!({"path": p, "text": t})),
-        "logs": logs.into_iter().map(|(n, lines)| serde_json::json!({"file": n, "last_lines": lines})).collect::<Vec<_>>(),
+        "logs_included": logs.is_some(),
+        "logs": logs.unwrap_or_default().into_iter().map(|(n, lines)| serde_json::json!({"file": n, "last_lines": lines})).collect::<Vec<_>>(),
     });
-    redact(&serde_json::to_string_pretty(&v).unwrap_or_default(), home)
+    redact_with(&serde_json::to_string_pretty(&v).unwrap_or_default(), home, secrets)
 }
 
 /// `glyd doctor [--json] [--bundle [FILE]]`: the checks on the terminal; with `--json` the bundle on standard output instead; with `--bundle` the bundle in a
@@ -712,7 +772,8 @@ pub fn run(a: &Args) -> i32 {
     let want_file = a.flag("bundle").is_some() || a.has("bundle");
     if a.has("json") || want_file {
         let home = crate::os::home().to_string_lossy().into_owned();
-        let json = bundle(&f, &cs, recent_logs(&crate::service::log_dir(), 3, 40), service_config(), environment(), &home);
+        let logs = (!a.has("no-logs")).then(|| recent_logs(&crate::service::log_dir(), 3, 40));
+        let json = bundle(&f, &cs, logs, service_config(), environment(), &home, &secrets());
         if want_file {
             let name = match a.flag("bundle") {
                 Some(p) if !p.is_empty() => p.to_string(),
@@ -723,7 +784,10 @@ pub fn run(a: &Args) -> i32 {
                 return 1;
             }
             print!("{words}");
-            println!("Support bundle written to {name}: attach it to the issue (tokens, keys and your home folder are taken out of it).");
+            println!(
+                "Support bundle written to {name}: attach it to the issue. It holds the checks above, the environment (GLYD_*, HF_*, CUDA_*, PATH), the service's configuration{}. Tokens, keys, credentials in addresses and your home folder are taken out of it; read it before you post it.",
+                if a.has("no-logs") { " (no logs: --no-logs)" } else { " and the last 40 lines of its 3 newest logs (--no-logs leaves them out)" }
+            );
         } else {
             println!("{json}");
         }
@@ -900,6 +964,11 @@ mod tests {
             ("/Users/alice/.cache/glyd and /Users/alice/models", "~/.cache/glyd and ~/models"),
             ("password=hunter2", "password=<redacted>"),
             ("GLYD_API_KEY=<set>", "GLYD_API_KEY=<set>"),
+            ("GLYD_API_KEY=abcdefghijkl in the log", "GLYD_API_KEY=<redacted> in the log"),
+            ("Environment=VLLM_API_KEY=s3cr3tvalue", "Environment=VLLM_API_KEY=<redacted>"),
+            ("<key>HF_TOKEN</key>\n  <string>plainsecret</string>", "<key>HF_TOKEN</key>\n  <string><redacted></string>"),
+            ("HF_ENDPOINT=https://user:p4ss@mirror.example.com/x", "HF_ENDPOINT=https://<redacted>@mirror.example.com/x"),
+            ("http://proxy:3128 is fine and https://a@b.c too", "http://proxy:3128 is fine and https://<redacted>@b.c too"),
             // (not secrets: a count of tokens, a path to a token file, a number)
             ("12 tokens: 4096", "12 tokens: 4096"),
             ("HF_TOKEN_PATH=/tmp/t", "HF_TOKEN_PATH=/tmp/t"),
@@ -919,8 +988,15 @@ mod tests {
         let logs = vec![("service-gemma.log".to_string(), vec!["loading".to_string(), "HF_TOKEN=hf_SECRETSECRETSECRET1234 at /home/u/x".to_string()])];
         let config = Some(("/home/u/.config/systemd/user/glyd.service".to_string(), "ExecStart=/home/u/glyd service --api-key hunter2hunter2\n".to_string()));
         let env = vec![("GLYD_API_KEY".to_string(), "<set>".to_string()), ("HF_HOME".to_string(), "/home/u/hf".to_string())];
-        let text = bundle(&f, &cs, logs, config, env, "/home/u");
+        let text = bundle(&f, &cs, Some(logs), config, env, "/home/u", &["live-key-0123456789".to_string()]);
         assert!(!text.contains("hf_SECRET") && !text.contains("hunter2") && !text.contains("/home/u/"), "{text}");
+        // (a secret this machine holds is out wherever it is, as is a credential in an address)
+        let mut g = healthy();
+        g.hub = HubState::Unreachable("https://user:pw123@mirror.example.com".into(), "refused with live-key-0123456789".into());
+        let other = bundle(&g, &checks(&g), None, None, vec![], "/home/u", &["live-key-0123456789".to_string()]);
+        assert!(!other.contains("pw123") && !other.contains("live-key-0123456789") && other.contains("mirror.example.com"), "{other}");
+        let o: serde_json::Value = serde_json::from_str(&other).unwrap();
+        assert_eq!((o["logs_included"].as_bool(), o["logs"].as_array().unwrap().len(), o["ok"].as_bool()), (Some(false), 0, Some(false)));
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         for k in [
             "schema",

@@ -6,8 +6,8 @@ Start with `glyd doctor`. It prints one line for each thing a run needs and ends
 For a bug report, run `glyd doctor --json` (the bundle on the screen) or `glyd doctor --bundle` (the same in a file, `glyd-bundle-TIME.json`, or
 `--bundle FILE`) and attach it. It holds the versions, every check with its fix, each GPU's memory and the terms a plan is made of (what the engine keeps
 free, its work, the computer's memory kept for the system), each backend detected or rejected and why, the plan `run` would load for Gemma 4 12B here, the
-ports, the models in the caches, the `GLYD_*` and `HF_*` environment, the service's configuration and the end of its recent logs. Tokens, keys and your
-home folder are taken out of it (`~`); read it before you post it.
+ports, the models in the caches, the `GLYD_*` and `HF_*` environment, the service's configuration and the end of its recent logs. Tokens, keys, credentials in
+addresses and your home folder are taken out of it (`~`); `--no-logs` leaves the logs out. Read it before you post it.
 
 ## Exit codes
 
