@@ -621,6 +621,8 @@ mod tests {
         }
     }
 
+    // (the speed test's clock: libc's, so not on Windows)
+    #[cfg(unix)]
     fn cpu_ns() -> u64 {
         let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
         unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
@@ -629,6 +631,7 @@ mod tests {
 
     #[test]
     #[ignore]
+    #[cfg(unix)]
     fn speed() {
         let mut r = rng(9);
         let n = 1 << 24;
@@ -726,6 +729,7 @@ mod tests {
 
     #[test]
     #[ignore]
+    #[cfg(unix)]
     fn speed_by_tables() {
         // the same distribution under `ntab` identical tables, picked by the context
         let mut r = rng(11);
