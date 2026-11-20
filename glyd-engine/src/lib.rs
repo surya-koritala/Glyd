@@ -81,6 +81,8 @@ pub mod kvcal;
 #[cfg(feature = "dev")]
 pub mod kvtest;
 pub mod levels;
+#[cfg(feature = "dev")]
+pub mod logits;
 pub mod machine;
 pub mod mapped;
 pub mod mla_glm;
