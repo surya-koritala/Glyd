@@ -189,7 +189,7 @@ jobs:
             sass=$(cuobjdump --list-elf "$f" | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')
             [ "$sass" = "sm_100 sm_120 sm_80 sm_86 sm_89 sm_90a " ] || { echo "$f has machine code for $sass"; exit 1; }
             ! readelf -S "$f" | grep -qE '\.symtab|\.debug' || { echo "$f is not stripped"; exit 1; }
-            echo "$f: machine code for $sass and Ampere's PTX, stripped, $(nm -D --defined-only "$f" | wc -l) exports (the eight functions and the table)"
+            echo "$f: machine code for $sass (no PTX), stripped, $(nm -D --defined-only "$f" | wc -l) exports (the eight functions and the table)"
           done
           cd lib && for f in libglyd_gpu_cuda*.so; do sha256sum "$f" > "$f.sha256"; done && cat ./*.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -430,6 +430,11 @@ jobs:
           [ "${#mine[@]}" = "$WANT" ] || { echo "not all of them are glyd_gpu-$VERSION wheels"; exit 1; }
           python -m pip install --quiet "twine==7.0.0"
           twine check --strict wheels/*.whl
+          # PyPI refuses a file over 100 MB (glyd-gpu's limit): v0.33.0's wheels were 181 MB and v0.33.0 never reached PyPI
+          for w in wheels/*.whl; do
+            size=$(stat -c %s "$w"); echo "$w: $size bytes"
+            [ "$size" -lt 95000000 ] || { echo "$w is $size bytes: PyPI's limit is 100 MB (95 MB here, to keep room)"; exit 1; }
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: glyd-gpu-wheels

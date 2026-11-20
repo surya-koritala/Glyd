@@ -6,6 +6,10 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.33.1 — 2026-11-20
+
+- The `glyd-gpu` wheels are under PyPI's 100 MB limit again (v0.33.0's were 181 MB each, and PyPI refused them, so `glyd-gpu` 0.33.0 is not on PyPI and `glyd[gpu]==0.33.0` does not install). The release GPU library is built with `GLYD_RELEASE` again, as the releases through v0.32.1 were: the default plans' kernels alone and no tuning variables, about a fifth of the size. The engine bundle's library shrinks the same way. v0.33.0's GitHub release, its `glyd` wheels and its engine bundles are as they were; use v0.33.1 for `glyd-gpu`.
+
 ## v0.33.0 — 2026-11-20
 
 - Server: Ollama's API under `/api` for the programs that talk to Ollama (Open WebUI, Continue, LangChain, the `ollama` libraries): `chat` and `generate` as JSON lines or one object (`options`, `format` with a JSON schema, `think`, tools, images, `suffix`), `tags`, `show` (with `capabilities` and `context_length`), `ps`, `version`, `pull` and `delete` for the one model a server holds; `--ollama-port N` listens on Ollama's port too where it is free. The key guards `/api`. Checked with the `ollama` Python library on Qwen3-8B.
