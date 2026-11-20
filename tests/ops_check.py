@@ -71,7 +71,7 @@ def histogram(s, name):
 
 
 log = open("/tmp/ops-serve.log", "w")
-proc = subprocess.Popen([ENGINE, "serve", MODEL, "--port", str(PORT), "--ctx", "4096", "--drain-timeout", str(DRAIN_BOUND)], stdout=log, stderr=subprocess.STDOUT)
+proc = subprocess.Popen([ENGINE, "serve", MODEL, "--port", str(PORT), "--ctx", "4096", "--users", "2", "--no-draft", "--drain-timeout", str(DRAIN_BOUND)], stdout=log, stderr=subprocess.STDOUT)
 
 # ---- alive, then ready once the model is loaded ----
 t0 = time.time()
@@ -116,12 +116,12 @@ ttft, tpot = histogram(s, "glyd_time_to_first_token_seconds"), histogram(s, "gly
 histogram(s, "glyd_request_duration_seconds")
 assert ttft[0] >= 2 and 0 < ttft[1] / ttft[0] < 120, f"first-token histogram {ttft}"
 assert tpot[0] >= 20 and 0 < tpot[1] / tpot[0] < 5, f"per-token histogram {tpot}"
-# (the KV cache's pages are the scheduler's: a lossy level's engine has none and says nothing of them; where they are told they must make sense)
+# (two users: the scheduler runs, which has the KV cache's pages and the queue; one user at a lossy level is the engine's own loop, which has none and says nothing of them)
 kv = s.get("glyd_kv_cache_pages")
-assert kv is None or (kv > 0 and 0 <= s["glyd_kv_cache_usage_ratio"] <= 1), "the KV cache's pages"
+assert kv is not None and kv > 0 and 0 <= s["glyd_kv_cache_usage_ratio"] <= 1, "the KV cache's pages"
 gpu = [v for k, v in s.items() if k.startswith("glyd_gpu_memory_used_bytes")]
 assert gpu and max(gpu) > 1 << 28, f"the GPU's memory in use: {gpu}"
-print(f"metrics ok: first token {1000 * ttft[1] / ttft[0]:.0f} ms mean, {1000 * tpot[1] / tpot[0]:.1f} ms a token, KV {"%.3f used" % s["glyd_kv_cache_usage_ratio"] if kv else "not told (no scheduler at this level)"}, GPU {max(gpu) / 2**30:.1f} GiB")
+print(f"metrics ok: first token {1000 * ttft[1] / ttft[0]:.0f} ms mean, {1000 * tpot[1] / tpot[0]:.1f} ms a token, KV {s["glyd_kv_cache_usage_ratio"]:.3f} used of {int(kv)} pages, GPU {max(gpu) / 2**30:.1f} GiB")
 
 # ---- the drain: SIGTERM while a reply is streaming ----
 result = {}
