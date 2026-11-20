@@ -393,6 +393,19 @@ impl Sampler {
     /// The draw's candidates and their probabilities (largest first; walk renormalizes them): top-k, temperature, min-p and top-p over the processed row.
     fn dist(&self, l: &mut [f32]) -> (Vec<u32>, Vec<f64>) {
         // the candidates by probability, largest first, cut by top-k, then min-p, then top-p
+        if self.gram.is_some() && self.p.top_k > 0 {
+            // (a grammar leaves a share of the row, and a top-k over it is of the logits with their tokens beside them: the same order as below, a scan and a selection that do not look each logit up)
+            let mut c: Vec<(f32, u32)> = l.iter().enumerate().filter(|(_, &x)| x > f32::NEG_INFINITY).map(|(i, &x)| (x, i as u32)).collect();
+            if !c.is_empty() {
+                let by = |a: &(f32, u32), b: &(f32, u32)| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1));
+                if self.p.top_k < c.len() {
+                    c.select_nth_unstable_by(self.p.top_k - 1, by);
+                    c.truncate(self.p.top_k);
+                }
+                c.sort_by(by);
+                return self.cut(c.iter().map(|x| x.1).collect(), c.iter().map(|x| x.0).collect());
+            }
+        }
         let mut idx: Vec<u32> = (0..l.len() as u32).collect();
         if self.gram.is_some() {
             // (a grammar leaves a few tokens of the row: the rest are not sorted)

@@ -250,6 +250,10 @@ impl Gram {
             if w == u32::MAX {
                 continue;
             }
+            if w == 0 || i * 32 >= mask.len() {
+                chunk.fill(f32::NEG_INFINITY);
+                continue;
+            }
             for (b, x) in chunk.iter_mut().enumerate() {
                 if (w >> b) & 1 == 0 || i * 32 + b >= mask.len() {
                     *x = f32::NEG_INFINITY;
@@ -511,6 +515,32 @@ mod tests {
         }
         // a request with no grammar is as it was
         assert!(Params::default().greedy() && Sampler::new(Params::default(), &[]).top_need().is_none());
+    }
+
+    /// The draw under a grammar is the draw from the row with the grammar's tokens taken out, as the sampler makes it with no grammar: a top-k, a top-p, whole or not.
+    #[test]
+    fn a_draw_under_a_grammar_is_a_draw_from_the_masked_row() {
+        use crate::sampler::{Params, Sampler};
+        let c = grammars().compile(&Spec::Regex("[a-c]{3}-[0-9]{2}".into())).unwrap();
+        let width = vocab().len() + 5;
+        let mut masked = vec![0.0f32; width];
+        c.start().apply(&mut masked);
+        assert!(masked.iter().any(|&x| x == f32::NEG_INFINITY) && masked.iter().any(|&x| x == 0.0));
+        for (top_k, top_p, min_p) in [(5, 1.0, 0.0), (0, 0.9, 0.0), (3, 0.8, 0.0), (0, 1.0, 0.1), (100, 1.0, 0.0)] {
+            for seed in 0..20u64 {
+                let row: Vec<f32> = (0..width).map(|t| ((t * 7919 + seed as usize * 13) % 101) as f32 / 10.0).collect();
+                let p = Params { temperature: 0.9, top_k, top_p, min_p, seed, ..Params::default() };
+                let mut by_grammar = Sampler::new(Params { constraint: Some(c.clone()), ..p.clone() }, &[]);
+                let mut by_hand = Sampler::new(p, &[]);
+                let mut m = row.clone();
+                for (x, &ok) in m.iter_mut().zip(&masked) {
+                    if ok == f32::NEG_INFINITY {
+                        *x = f32::NEG_INFINITY;
+                    }
+                }
+                assert_eq!(by_grammar.sample(&row), by_hand.sample(&m), "top_k {top_k} top_p {top_p} min_p {min_p} seed {seed}");
+            }
+        }
     }
 
     /// A least length does not hold a reply that the grammar has ended past its end: the end token is chosen where nothing else may be.
