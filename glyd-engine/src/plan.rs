@@ -282,6 +282,9 @@ pub struct Shape {
     pub mtp: bool,
 }
 
+/// The most layers a config.json may say (the deepest models have a few hundred).
+const MAX_LAYERS: usize = 10_000;
+
 impl Shape {
     pub fn params(&self) -> f64 {
         self.embed + self.head + self.dense + self.routed
@@ -312,6 +315,10 @@ impl Shape {
         let (h, layers, heads) = (u("hidden_size"), u("num_hidden_layers"), u("num_attention_heads"));
         if h == 0 || layers == 0 || heads == 0 {
             return Err("config.json has no hidden_size, num_hidden_layers or num_attention_heads".into());
+        }
+        // (a layer takes a list entry below: a number of them no model has is a file that is not one)
+        if layers > MAX_LAYERS {
+            return Err(format!("config.json: num_hidden_layers {layers}, where no model has more than {MAX_LAYERS}"));
         }
         let (hf, kv_heads) = (h as f64, n("num_key_value_heads").unwrap_or(heads as f64));
         let hd = n("head_dim").filter(|&d| d > 0.0).unwrap_or(hf / heads as f64);
@@ -837,6 +844,16 @@ mod tests {
 
     /// Qwen3-32B's config (Qwen3ForCausalLM), as the Hub has it.
     const QWEN3_32B: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 5120, "intermediate_size": 25600, "num_hidden_layers": 64, "num_attention_heads": 64, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "tie_word_embeddings": false, "max_position_embeddings": 40960}"#;
+
+    /// A config.json that says a number of layers no model has was an allocation of that many entries (a panic, or the process killed for its memory), and is an error.
+    #[test]
+    fn a_config_with_a_billion_layers_is_an_error() {
+        let c = |layers: &str| QWEN3_32B.replace("\"num_hidden_layers\": 64", &format!("\"num_hidden_layers\": {layers}"));
+        for layers in ["1000000000", "4000000000000000000", "277777777777777777777777777777777777777777777777777"] {
+            assert!(Shape::from_config(&c(layers)).unwrap_err().contains("num_hidden_layers"), "{layers}");
+        }
+        assert_eq!(Shape::from_config(&c("10000")).unwrap().layers, 10_000);
+    }
 
     fn chosen(p: &Plan) -> &Candidate {
         p.chosen.as_ref().expect("a plan")
