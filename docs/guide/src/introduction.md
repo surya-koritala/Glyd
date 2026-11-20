@@ -29,6 +29,7 @@ except for Qwen3, which batches up to 8.
 7. [Condor](condor.md).
 8. [Troubleshooting](troubleshooting.md), by what `glyd-engine doctor` prints.
 9. [Models](models.md), generated from `glyd-engine/src/support.rs`.
+10. [The model catalog](catalog.md): who owns an entry, and what a new model needs before it is listed.
 
 ## The command is `glyd-engine`
 
