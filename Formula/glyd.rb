@@ -6,7 +6,7 @@
 class Glyd < Formula
   desc "Compression for object storage: record mode, packs, a cross-object store"
   homepage "https://getglyd.com"
-  version "0.32.1"
+  version "0.33.0"
   # Apache-2.0 from the release after v0.32.1 (v0.29.0 to v0.32.1: BUSL-1.1; v0.28.0 and earlier: glyd BSD-3-Clause or GPL-2.0, glyd-store BUSL-1.1).
   license "Apache-2.0"
 
@@ -17,23 +17,23 @@ class Glyd < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.32.1/glyd-v0.32.1-macos-arm64.tar.gz"
-      sha256 "ab9d99cf36c5cf2d4f2ca300e23368899f341301f584fbb6613a163a5daa6924"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.33.0/glyd-v0.33.0-macos-arm64.tar.gz"
+      sha256 "a78efc6452d57924b1e9c8d008817a145c7da6ea0cef44131abdae1b76e5cc61"
     end
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.32.1.tar.gz"
-      sha256 "7d29191eb55872ea8a2102c23614c9492810a3bc749a99194088f75b0eafb075"
+      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.33.0.tar.gz"
+      sha256 "84cfe1b5479be6fa675866ab2d348a33e337561a7edec88e939430482c8fdd7c"
       depends_on "rust" => :build
     end
   end
   on_linux do
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.32.1/glyd-v0.32.1-linux-x86_64.tar.gz"
-      sha256 "46fa77fc5a1f49b85c84cb72531b5428b1d3c97fd76894c4fb50fc8f89b2d9b4"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.33.0/glyd-v0.33.0-linux-x86_64.tar.gz"
+      sha256 "9355e62ac07c45248e8739c02b7f8e9438fc86fb122491de7911b00cc496dbb4"
     end
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.32.1/glyd-v0.32.1-linux-aarch64.tar.gz"
-      sha256 "a237f75e5fcb54fbf14e30f37a9a2147a74afaf5fd8c430acf9a3334355a3564"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.33.0/glyd-v0.33.0-linux-aarch64.tar.gz"
+      sha256 "c6e06e12f84bed1f18042eef14e53febc539257cc6342f18bff3b389448714ff"
     end
   end
 
