@@ -237,7 +237,7 @@ fn with_images(text: &str, images: Option<&Value>) -> Value {
 }
 
 /// `/api/chat`'s request as the chat request it is.
-fn chat_of(v: &Value) -> std::result::Result<Value, String> {
+pub(super) fn chat_of(v: &Value) -> std::result::Result<Value, String> {
     let list = v.get("messages").and_then(Value::as_array).ok_or("messages: Field required")?;
     let mut msgs = Vec::new();
     // (the ids of the calls the assistant made, by name, in order: the tool messages that answer them carry them)
@@ -292,7 +292,7 @@ fn chat_of(v: &Value) -> std::result::Result<Value, String> {
 }
 
 /// `/api/generate`'s request as a chat request (the prompt a user message, `system` before it), or, where `raw`, a plain completion with the prompt as it is (and `suffix`).
-fn generate_of(v: &Value) -> std::result::Result<(Value, bool), String> {
+pub(super) fn generate_of(v: &Value) -> std::result::Result<(Value, bool), String> {
     let prompt = v.get("prompt").and_then(Value::as_str).unwrap_or("");
     let suffix = v.get("suffix").and_then(Value::as_str).filter(|t| !t.is_empty());
     // (a prompt that is not wrapped in the chat template: `raw`, or a `suffix`, which is the model's fill in the middle of the prompt and what follows)

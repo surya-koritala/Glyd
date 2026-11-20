@@ -86,7 +86,7 @@ const MAX_HEAD: usize = 64 << 10;
 const MAX_HEADERS: usize = 256;
 
 /// What the request line and the headers of a request say that the server uses.
-struct Head {
+pub struct Head {
     method: String,
     path: String,
     len: usize,
@@ -112,7 +112,7 @@ fn head_line(r: &mut impl BufRead, budget: &mut usize, buf: &mut Vec<u8>) -> std
 }
 
 /// The request line and the headers from `r`, within MAX_HEAD bytes and MAX_HEADERS headers; None where the input ends before a request.
-fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Rejected> {
+pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Rejected> {
     let (mut budget, mut buf) = (MAX_HEAD, Vec::new());
     if !head_line(r, &mut budget, &mut buf)? {
         return Ok(None);
@@ -4840,5 +4840,27 @@ pub(crate) mod tests {
         assert!(matches!(gone.recv().unwrap(), Ev::End(Ok(Finish::Stopped))));
         assert!(matches!(kept.recv().unwrap(), Ev::Token(7)) && matches!(kept.recv().unwrap(), Ev::End(Ok(Finish::Length))));
         assert_eq!(c.0, 1, "the sequence asked to end was not run");
+    }
+}
+
+/// The translations of the other APIs' request bodies into the completions form, as the fuzz targets (fuzz/) call them: Anthropic's Messages, OpenAI's Responses, Ollama's chat and generate.
+#[doc(hidden)]
+pub mod fuzzing {
+    use glyd_gpu::json::Value;
+
+    pub fn anthropic(v: &Value) -> Result<Value, String> {
+        super::anthropic::openai_of_with(v, false)
+    }
+
+    pub fn responses(v: &Value) -> Result<Value, String> {
+        super::responses::chat_of(v)
+    }
+
+    pub fn ollama_chat(v: &Value) -> Result<Value, String> {
+        super::ollama::chat_of(v)
+    }
+
+    pub fn ollama_generate(v: &Value) -> Result<(Value, bool), String> {
+        super::ollama::generate_of(v)
     }
 }

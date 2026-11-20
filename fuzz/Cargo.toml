@@ -1,0 +1,120 @@
+[package]
+name = "glyd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+rust-version = "1.89"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+glyd-gpu = { path = "../glyd-gpu" }
+glyd-engine = { path = "../glyd-engine" }
+glyd = { path = "..", default-features = false, features = ["deflate"] }
+
+# Its own workspace: the fuzz crate stays out of the main one, so a normal build or test never pays for libFuzzer.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gguf"
+path = "fuzz_targets/gguf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_head"
+path = "fuzz_targets/http_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chat_request"
+path = "fuzz_targets/chat_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "constraint"
+path = "fuzz_targets/constraint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chat_template"
+path = "fuzz_targets/chat_template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "strftime"
+path = "fuzz_targets/strftime.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "machine"
+path = "fuzz_targets/machine.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tokenizer"
+path = "fuzz_targets/tokenizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "safetensors_header"
+path = "fuzz_targets/safetensors_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "checkpoint_index"
+path = "fuzz_targets/checkpoint_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pack_dir"
+path = "fuzz_targets/pack_dir.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tool_calls"
+path = "fuzz_targets/tool_calls.rs"
+test = false
+doc = false
+bench = false
