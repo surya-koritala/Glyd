@@ -24,6 +24,7 @@ macro_rules! tmark {
 }
 
 pub mod args;
+pub mod bench;
 pub mod calib;
 pub mod cb2_prefill;
 #[cfg(feature = "dev")]

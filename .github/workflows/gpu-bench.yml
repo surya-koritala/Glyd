@@ -1,0 +1,115 @@
+name: GPU bench
+
+# The speed of the engine on the project's self-hosted GPU machine, held to the last result of main on the same GPU: `glyd-engine bench` (glyd-engine/src/bench.rs, docs/bench.md) puts the gate's loads on
+# `glyd-engine serve` and, on a pull request, `bench --compare` fails it where a metric is worse than the noise band (the measured spread of the runs, and of earlier sessions where the volume has them).
+# Runs only where the repository variable GPU_RUNNER names the machine, never for a pull request from a fork: on main (the result becomes the baseline), by hand, or on a same-repository pull request
+# labeled "gpu".
+on:
+  push:
+    branches: [main]
+    paths: ['glyd-engine/**', 'gpu/**', 'glyd-gpu/**', 'Cargo.lock', 'scripts/ci_gpu_build.sh', 'scripts/ci_restore_mtimes.py', '.github/workflows/gpu-bench.yml']
+  pull_request:
+    types: [labeled, synchronize]
+  workflow_dispatch:
+    inputs:
+      model:
+        type: string
+        default: Qwen/Qwen3-8B
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: bench (${{ vars.GPU_RUNNER_ARCHS || '89' }})
+    if: >-
+      vars.GPU_RUNNER != '' && (github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'gpu') && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ${{ fromJSON(vars.GPU_RUNNER) }}
+    timeout-minutes: 90
+    container:
+      image: nvidia/cuda:13.0.3-devel-ubuntu24.04
+      options: --gpus all -v glyd-ci-cache:/cache
+    env:
+      HF_HOME: /cache/hf
+      GLYD_CACHE: /cache/glyd                      # (the packed model, kept between runs: its first start packs it)
+      CARGO_HOME: /cache/cargo
+      RUSTUP_HOME: /cache/rustup
+      CARGO_TARGET_DIR: /cache/target-sm${{ vars.GPU_RUNNER_ARCHS || '89' }}
+      GLYD_ENGINE_ARCHS: ${{ vars.GPU_RUNNER_ARCHS || '89' }}
+      NVCC: /usr/local/cuda/bin/nvcc
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      BENCH_MODEL: ${{ inputs.model || 'Qwen/Qwen3-8B' }}
+      BENCH_WEIGHTS_GIB: "10.3"                    # (Qwen3-8B lossless as the engine holds it: the ceiling's bytes)
+    steps:
+      - name: Tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential pkg-config curl git ca-certificates python3 > /dev/null
+          [ -x "$CARGO_HOME/bin/cargo" ] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          nvidia-smi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: The checkout's files get the times their content last changed
+        run: python3 scripts/ci_restore_mtimes.py "/cache/mtimes-sm${GLYD_ENGINE_ARCHS}.json"
+      - name: Build the engine and the GPU library
+        run: bash scripts/ci_gpu_build.sh
+      - name: Bench (the gate's loads, five runs each; again where the GPU was busy before it began)
+        run: |
+          gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr -c 'A-Za-z0-9\n' '-' | sed 's/-*$//')
+          echo "GPU=$gpu" >> "$GITHUB_ENV"
+          for attempt in 1 2 3; do
+            "$E" bench "$BENCH_MODEL" --suite gate --runs 5 --weights-gib "$BENCH_WEIGHTS_GIB" --label "${GITHUB_REPOSITORY}@${GITHUB_SHA::10} ${GITHUB_EVENT_NAME}" --out result.json
+            busy=$(python3 -c 'import json;print(json.load(open("result.json"))["contention"]["busy_before"])')
+            [ "$busy" = "False" ] && break
+            echo "the GPU was busy before attempt $attempt: another job on it. Waiting a minute."
+            sleep 60
+          done
+          uptime
+      - name: Held to main's last result on this GPU (a pull request)
+        if: github.event_name != 'push'
+        run: |
+          base="/cache/bench/main-$GPU.json"
+          if [ ! -f "$base" ]; then
+            echo "no result of main on $GPU yet (the next merge to main makes one): nothing to hold this to"
+            exit 0
+          fi
+          "$E" bench --compare "$base" result.json --history "/cache/bench/history-$GPU"
+      - name: The gate fails a slowdown (its own test: the result with every speed at 80%)
+        if: github.event_name != 'push'
+        run: |
+          base="/cache/bench/main-$GPU.json"
+          [ -f "$base" ] || exit 0
+          set +e
+          "$E" bench --compare "$base" result.json --synthetic 0.8 > synthetic.txt
+          code=$?
+          tail -4 synthetic.txt
+          [ "$code" -eq 1 ] || { echo "the gate did not fail a 20% slowdown (exit $code)"; exit 1; }
+      - name: This result is main's last on this GPU (a merge to main)
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p "/cache/bench/history-$GPU"
+          if [ "$(python3 -c 'import json;print(json.load(open("result.json"))["contention"]["busy_before"])')" = "False" ]; then
+            cp result.json "/cache/bench/main-$GPU.json"
+            cp result.json "/cache/bench/history-$GPU/$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::10}.json"
+            ls -t "/cache/bench/history-$GPU"/*.json | tail -n +21 | xargs -r rm -f
+          else
+            echo "measured on a busy GPU: not made main's last result"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-result
+          path: |
+            result.json
+            synthetic.txt
+          if-no-files-found: ignore
+      - name: The workspace back to the runner's user
+        if: always()
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

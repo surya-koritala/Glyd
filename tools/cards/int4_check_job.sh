@@ -41,7 +41,7 @@ for l in i4 i3; do step generate-$l $E generate ~/v/m08 "The three primary colou
 until [ -f ~/v/m9.dl ]; do sleep 5; done
 step preflight-wren $E preflight ~/v/m9:wren --context 32768
 # the bench's own context is 4,096: its GPU memory is the figure for a 4k conversation
-bench() { local n=$1; shift; $E bench ~/v/m9 "$@" --prompt 1024 --new 256 --ctx 4096 > $R/$n.out 2> $R/$n.err; echo "$n: rc=$?" >> $P; grep '^{' $R/$n.out | tail -1 > $R/$n.json; }
+bench() { local n=$1; shift; $E microbench ~/v/m9 "$@" --prompt 1024 --new 256 --ctx 4096 > $R/$n.out 2> $R/$n.err; echo "$n: rc=$?" >> $P; grep '^{' $R/$n.out | tail -1 > $R/$n.json; }
 bench bench-i4 --layout i4
 late 40 || bench bench-i5 --layout i5
 late 45 || bench bench-i3 --layout i3
