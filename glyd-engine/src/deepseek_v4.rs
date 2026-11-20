@@ -124,6 +124,9 @@ impl ConfigV4 {
             return refuse("a tied LM head");
         }
         let layers = u("num_hidden_layers")?;
+        if layers > crate::plan::MAX_LAYERS {
+            return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
+        }
         let ratios: Vec<usize> = match v.get("compress_ratios").and_then(Value::as_u64s) {
             Some(r) => r.iter().map(|&x| x as usize).collect(),
             None => return err(format!("{label}: no compress_ratios")),

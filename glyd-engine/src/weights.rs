@@ -84,9 +84,13 @@ impl Config {
             return err(format!("{label}: rope_scaling: not supported yet"));
         }
         let eos = eos_ids(&v, generation);
+        let layers = u("num_hidden_layers")?;
+        if layers > crate::plan::MAX_LAYERS {
+            return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
+        }
         Ok(Config {
             hidden: u("hidden_size")?,
-            layers: u("num_hidden_layers")?,
+            layers,
             heads,
             kv_heads: u("num_key_value_heads")?,
             head_dim,

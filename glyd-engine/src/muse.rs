@@ -83,6 +83,9 @@ impl ConfigMuse {
             return refuse("shared experts");
         }
         let layers = u("num_hidden_layers")?;
+        if layers > crate::plan::MAX_LAYERS {
+            return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
+        }
         let strs = |k: &str| -> Result<Vec<String>> {
             Ok(get(k)?.as_array().ok_or_else(|| Error(format!("{label}: {k}: not a list")))?.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect())
         };

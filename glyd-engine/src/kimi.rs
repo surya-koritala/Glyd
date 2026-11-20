@@ -108,6 +108,9 @@ impl ConfigKimi {
             return refuse("a router other than sigmoid's");
         }
         let layers = u("num_hidden_layers")?;
+        if layers > crate::plan::MAX_LAYERS {
+            return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
+        }
         let heads = u("num_attention_heads")?;
         if u("num_key_value_heads")? != heads {
             return refuse("fewer key and value heads than query heads");

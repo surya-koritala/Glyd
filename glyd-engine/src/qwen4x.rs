@@ -105,6 +105,9 @@ impl ConfigQx {
             return refuse("biases in the attention");
         }
         let layers = u("num_hidden_layers")?;
+        if layers > crate::plan::MAX_LAYERS {
+            return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
+        }
         let kinds: Vec<QxKind> = match t.get("layer_types").and_then(Value::as_array) {
             Some(a) if a.len() == layers => a
                 .iter()
@@ -115,7 +118,9 @@ impl ConfigQx {
                 })
                 .collect::<Result<_>>()?,
             Some(a) => return err(format!("{label}: {} layer_types for {layers} layers", a.len())),
-            None => (0..layers).map(|i| if (i + 1) % u_or("full_attention_interval", 4).unwrap_or(4) == 0 { QxKind::Attn } else { QxKind::Gdn }).collect(),
+            None => {
+                (0..layers).map(|i| if (i + 1) % u_or("full_attention_interval", 4).unwrap_or(4).max(1) == 0 { QxKind::Attn } else { QxKind::Gdn }).collect()
+            }
         };
         let rope = t.get("rope_parameters");
         let rp = |k: &str| rope.and_then(|r| r.get(k)).filter(|x| **x != Value::Null);

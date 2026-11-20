@@ -168,6 +168,9 @@ impl ConfigGlm {
             return refuse("a rotary in the latent attention");
         }
         let layers = u("num_hidden_layers")?;
+        if layers > crate::plan::MAX_LAYERS {
+            return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
+        }
         let (heads, kv_heads) = (u("num_attention_heads")?, u_or("num_key_value_heads", u("num_attention_heads")?)?);
         if heads == 0 || kv_heads != heads {
             return err(format!("{label}: {heads} query heads to {kv_heads} KV heads, where the latent attention has as many"));
