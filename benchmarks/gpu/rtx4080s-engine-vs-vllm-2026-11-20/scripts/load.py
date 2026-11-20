@@ -72,7 +72,7 @@ def one(url, model, kind, seed, max_tokens, out):
         out.append({"error": str(e)})
         return
     toks = usage.get("completion_tokens") or chunks
-    out.append({"ttft": (first - t0) if first else None, "tokens": toks, "prompt_tokens": usage.get("prompt_tokens"), "first": first, "last": last,
+    out.append({"sent": t0, "ttft": (first - t0) if first else None, "tokens": toks, "prompt_tokens": usage.get("prompt_tokens"), "first": first, "last": last,
                 "decode_tps": (toks - 1) / (last - first) if first and last and last > first and toks > 1 else None})
 
 
