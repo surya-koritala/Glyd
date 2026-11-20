@@ -38,14 +38,29 @@ pub(super) fn row_wise(op: &Op) -> bool {
             | Op::NormAdd { .. }
             | Op::GatedNorm { .. }
             | Op::GateUpSilu { .. }
+            | Op::MuseRms { .. }
+            | Op::MuseRmsIn { .. }
+            | Op::MuseGate { .. }
+            | Op::MuseOGate { .. }
+            | Op::MuseMoe { .. }
             | Op::Nop
     )
 }
 
 /// Whether an operation on a sequence's cache or states takes its rows at an offset in a pass over several sequences (`Dyn::rows_before`, `Dyn::cache`, `Dyn::state`): Gemma 4's attention,
-/// Qwen3.5's (Qwen3.8's) gated attention and gated delta rule.
+/// Qwen3.5's (Qwen3.8's) gated attention and gated delta rule, Muse Spark's attention.
 fn by_sequence(op: &Op) -> bool {
-    matches!(op, Op::QkvPrep { .. } | Op::Attention { .. } | Op::Prep35 { .. } | Op::Attn35 { .. } | Op::GdnConv { .. } | Op::GdnDelta { .. })
+    matches!(
+        op,
+        Op::QkvPrep { .. }
+            | Op::Attention { .. }
+            | Op::Prep35 { .. }
+            | Op::Attn35 { .. }
+            | Op::GdnConv { .. }
+            | Op::GdnDelta { .. }
+            | Op::MuseQk { .. }
+            | Op::MuseAttn { .. }
+    )
 }
 
 impl Dyn {
@@ -198,8 +213,8 @@ impl Dyn {
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
     /// engine runs one sequence only (a draft model, a stage of a split model, a family `add_seqs` refuses).
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
-        // (Gemma 4, and Qwen3.5's layout, which Qwen3.8 dense runs on)
-        if self.draft.is_some() || !self.stage.first || !self.stage.last || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5") {
+        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, and Muse Spark on one GPU; the other MoE families' latent attention and delta rules are not by sequence yet)
+        if self.draft.is_some() || !self.stage.first || !self.stage.last || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark") {
             return Ok(None);
         }
         if self.seqs.len() > 1 {

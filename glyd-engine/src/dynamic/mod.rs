@@ -1819,15 +1819,17 @@ impl Dyn {
             }
             Op::MuseQk { stride, nq, nk, rope, ring, scale } => {
                 let k = &self.kmuse;
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
+                let (kc, vc) = self.cache(ring);
+                let (mix, qo) = (p.slot(Slot::Mix) + self.rows_before(stride), p.slot(Slot::Qo) + self.rows_before(nq * 64));
                 let (c, sn) = (self.ropes[0].0.ptr, self.ropes[0].1.ptr);
-                launch!(k.qk, [nu, ((nq + 2 * nk) as u32).div_ceil(8), 1], [256, 1, 1], s; p.slot(Slot::Mix), stride as i32, p.slot(Slot::Qo), kc, vc, c, sn, pos.0, self.ring_cap[ring] as i32, nq as i32, nk as i32, rope as i32, scale, eps)?;
+                launch!(k.qk, [nu, ((nq + 2 * nk) as u32).div_ceil(8), 1], [256, 1, 1], s; mix, stride as i32, qo, kc, vc, c, sn, pos.0, self.ring_cap[ring] as i32, nq as i32, nk as i32, rope as i32, scale, eps)?;
                 self.mark("attention: q/k norm, rotary, cache write")
             }
             Op::MuseAttn { ring, nq, nk, window } => {
                 let k = &self.kmuse;
-                let (kc, vc) = (self.kc.ptr + self.ring_off[ring], self.vc.ptr + self.ring_off[ring]);
-                launch!(k.attn, [nu, nk as u32, 1], [(32 * (nq / nk)) as u32, 1, 1], s; p.slot(Slot::Qo), kc, vc, pos.1, p.slot(Slot::Att), self.ring_cap[ring] as i32, nq as i32, nk as i32, window as i32)?;
+                let (kc, vc) = self.cache(ring);
+                let (qo, att) = (p.slot(Slot::Qo) + self.rows_before(nq * 64), p.slot(Slot::Att) + self.rows_before(nq * 64));
+                launch!(k.attn, [nu, nk as u32, 1], [(32 * (nq / nk)) as u32, 1, 1], s; qo, kc, vc, pos.1, att, self.ring_cap[ring] as i32, nq as i32, nk as i32, window as i32)?;
                 self.mark(if window > 0 { "attention (sliding)" } else { "attention (global)" })
             }
             Op::MuseOGate { stride, goff, nq } => {
@@ -2374,8 +2376,8 @@ impl Dyn {
     /// Room for `k` more sequences beside the one in use (each its own keys and values for the context, its states, its graph captured on them; the
     /// activations and workspaces stay shared): `select` picks the one the next passes run on. Qwen3.5's stages; after `set_head_rows`.
     pub fn add_seqs(&mut self, k: usize) -> Result<()> {
-        if k > 0 && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4") || self.draft.is_some()) {
-            return err(format!("more sequences than one on {}: Qwen3.5's and Gemma 4's only, with no draft model", self.big.d.family));
+        if k > 0 && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark") || self.draft.is_some()) {
+            return err(format!("more sequences than one on {}: Qwen3.5's, Gemma 4's and Muse Spark's only, with no draft model", self.big.d.family));
         }
         for _ in 0..k {
             let states = self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<_>>()?;
