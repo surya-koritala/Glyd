@@ -89,7 +89,7 @@ jobs:
           wait "$server" 2> /dev/null || true
           [ "$status" = 0 ] || tail -40 /tmp/serve.log
           exit "$status"
-      - name: The lossless KV cache (a random Qwen3 dense model made here: kvtest reads the dense engine's cache)
+      - name: The lossless KV cache (a random Qwen3 dense model made here, which kvtest reads as the dense engine's cache)
         run: |
           "$E" logitsmodel qwen3 /tmp/qwen3-standin
           "$E" kvtest /tmp/qwen3-standin
