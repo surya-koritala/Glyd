@@ -358,6 +358,8 @@ impl Warm {
         private: &std::path::Path,
         stop: &AtomicBool,
     ) -> Result<Self> {
+        crate::model_files::verify(&route.model, &route.model_files_sha256)
+            .map_err(|_| Error::Denied)?;
         let (process, stdout, stdin) = glyd::RangeProcess::spawn(
             &route.executable,
             &route.executable_sha256,
@@ -397,7 +399,7 @@ impl Warm {
             prefill_chunk_tokens: bounded(route.chunk_tokens)?,
             sessions: bounded(route.sessions)?,
         };
-        let (contract, first, last, vocabulary) = glyd::qwen_boundary(
+        let (mut contract, first, last, vocabulary) = glyd::qwen_boundary(
             &d,
             &route.executable_sha256,
             &route.execution_profile,
@@ -405,6 +407,7 @@ impl Warm {
             workload,
         )
         .map_err(engine_error)?;
+        contract.key.manifest_digest = route.model_files_sha256.clone();
         let hidden = d["model"]["hidden"]
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
@@ -444,6 +447,8 @@ impl Warm {
                 return Err(Error::Invalid);
             };
         }
+        crate::model_files::verify(&route.model, &route.model_files_sha256)
+            .map_err(|_| Error::Denied)?;
         Ok(Self {
             manifest: contract.key.manifest_digest.clone(),
             worker: std::sync::Mutex::new(worker),
@@ -458,8 +463,7 @@ impl Warm {
             broken: AtomicBool::new(false),
         })
     }
-    /// The model the stage serves is its approved descriptor's `model` section.
-    // ponytail: stages on other machines need the same model path, or catalog manifests.
+    /// The model the stage serves is bound to its verified checkpoint contents.
     pub fn binding(&self, route: &StageRoute, epoch: AuthorityEpoch) -> GenerationBinding {
         GenerationBinding {
             version: Version,

@@ -10,7 +10,10 @@ between the stages over enrolled TLS. Measured on the PC in
 
 Install (Linux x86_64, an NVIDIA driver for CUDA 13, no root): unpack the download and run its
 `install.sh`. It checks `SHA256SUMS` and puts starlings, glyd-engine and the GPU library in
-`~/.local/lib/starlings`, with the command in `~/.local/bin`. `install.sh --uninstall` removes them
+`~/.local/lib/starlings`, with the license, checksums and uninstall script retained there,
+and the command in `~/.local/bin`. It validates the staged executable and restores the
+previous installation if activation fails.
+`install.sh --uninstall` removes them
 (state and models stay); an upgrade is a new download's `install.sh`.
 `scripts/build-starlings-linux.sh OUT_DIR` builds starlings against glibc 2.28 in a Rocky Linux 8
 container, as the engine release is built. `scripts/package-beta.sh STARLINGS ENGINE_DIR OUT_DIR`
@@ -23,6 +26,7 @@ One machine, both stages (on GPU 0 and 1, or both on GPU 0):
 
 `--model` is a directory (absolute, or starting with `./` or `../`) or a Hub name. A name is fetched
 by the engine into the Hugging Face cache, after the operator agrees to the download.
+An existing cached revision is reused without fetching a newer `main`.
 `--engine` and `--gpu-lib` default to the ones installed beside starlings.
 
 Two machines on one LAN:
@@ -63,7 +67,10 @@ before it sends its code (`--yes` skips that). The first machine shows both stag
 before it approves the other node. Each machine then runs only the stage its own operator
 confirmed.
 
-A rerun of either command reuses its saved enrollment and split. The ports are fixed:
+A rerun of either command reuses its saved enrollment and split after checking the checkpoint
+contents and split bounds. `up` also checks the context, sessions, drafts, host and number of
+selected GPUs. Incompatible or older saved records require a new `--state-dir`; they are never
+silently reapproved. The ports are fixed:
 - registry 9741, on the first machine's LAN address;
 - API 9750 and UI 9751, loopback;
 - stages 9760 and 9770, plus one port per extra session.
@@ -74,8 +81,9 @@ need a private network first.
 Limits (GLY-366 review):
 - The client API allows 4 connections per source address, and local clients all come from
   127.0.0.1. Another user on the same machine can hold them all.
-- The model digest covers the engine's description of the model (path and shape), not the weights:
-  weights changed at the same path are not detected.
+- Checkpoint contents are hashed at approval and stage load. This reads every weight shard;
+  startup cost on large checkpoints still needs native measurement. It does not prevent a
+  hostile process running as the same user from modifying files while inference runs.
 - The download has SHA256SUMS for corruption but is not signed yet.
 - The UI's secret link is recorded in the browser's history when it is opened.
 
@@ -90,12 +98,13 @@ starlings --state-dir S0    daemon --stage STAGE0.json --approve DIGEST
 starlings --state-dir S1    daemon --stage STAGE1.json --approve DIGEST
 ```
 
-`model stage-digest FILE` and `model pipeline-digest FILE` print a record's digest;
+`model files-digest MODEL_DIR` computes the content identity needed by a manually prepared
+stage record. `model stage-digest FILE` and `model pipeline-digest FILE` print a record's digest;
 they approve nothing. `cluster service` on a stage daemon shows its state, request
 counts and the engine's device report.
 
 `StageRoute` (worker): generation and data listeners, the engine path and SHA-256, the
-model directory, layer range, `--ctx`/`--chunk`, the per-request maxima (prompt +
+model directory and required `model_files_sha256`, layer range, `--ctx`/`--chunk`, the per-request maxima (prompt +
 output <= ctx), the approved `describe` digest, profile names, device/pool ID, an
 engine-bytes bound, the engine's environment (no `LD_*` or `DYLD_*` keys) and, with
 `GLYD_GPU_LIB`, that library's approved SHA-256. At start the daemon spawns the engine
@@ -103,7 +112,11 @@ engine-bytes bound, the engine's environment (no `LD_*` or `DYLD_*` keys) and, w
 after their check: on Linux a sealed memfd (no write, grow, shrink or new seals) run as
 `/proc/self/fd/N`, elsewhere a copy in a fresh 0700 directory under the state directory.
 The engine's `GLYD_GPU_LIB` names a checked copy there too. Then the daemon checks
-`describe` against the approved digest, and loads and commits the stage.
+`describe` against the approved digest, and loads and commits the stage. The path-independent
+model identity hashes the names, sizes and contents of root files and chat templates,
+including configuration, tokenizer and every safetensors shard. Hub blob file symlinks work;
+template directory symlinks are refused. The files are checked before starting the engine and
+again during loading. Two machines may use different absolute model paths.
 A load past 10 minutes, or a stop, kills it. The stage stays loaded across requests;
 each request opens and ends one engine session.
 While warm, the heartbeat sample advertises the backend with `layer_sharding`, so the
@@ -118,7 +131,7 @@ chunk, the output maximum, the lease lifetime (<= 60 s) and the stop token IDs.
 1. `admit` checks the bearer token, the model and the body, as for whole requests.
    Temperature 0 is greedy; above 0 the last stage draws with the engine's sampler
    from (seed, step, logits), so a request alone fixes its tokens.
-2. The first stage counts: it tokenizes the one user message with the model's chat
+2. The first stage counts: it tokenizes the system/user/assistant conversation with the model's chat
    template (the engine's `tokenize`, `chat: true`).
 3. Per request the coordinator writes a plan (its epoch, a new ID and times), one
    lease and one session per stage, and a `StageIssuer` for the live client
@@ -216,17 +229,15 @@ machine reaches neither the listener nor the token, and the client listener stil
 
 ## Limits
 
-- Two stages only, one request at a time (another is refused with 503).
+- Two stages only, with one or two concurrent sessions according to the approved route.
 - A stage must connect from the IP of its own data listener; one handshake is tried at a
   time, so a connection from that IP that speaks and then stalls holds the wait for up
   to a second.
-- One user message: the engine's chat tokenize takes no system or multi-turn input.
-- The model is the descriptor's `model` section, which includes the model path:
-  stages on other machines need the same path, or catalog manifests.
 - A request must finish inside one 60 s lease; the output maximum is set for that.
 - The engine's device bytes in the heartbeat are its report at prepare, not a live sample.
 - Text is detokenized from the whole answer at each token (quadratic in its length).
-- A failed stage is not relaunched; the daemon must be restarted.
+- A bare stage daemon needs an operator restart after engine failure. `up` supervises local
+  stages and permits at most three restarts in ten minutes.
 - The engine runs as a memfd, so it finds nothing beside its own path: it looks there only
   for the GPU library (given by `GLYD_GPU_LIB`) and an optional cuBLAS. A host that ships
   cuBLAS beside the engine sets `GLYD_CUBLAS` in the stage environment (not checked).

@@ -27,6 +27,8 @@ fn spawn(
     std::process::ChildStdin,
     serde_json::Value,
 ) {
+    starlings_cli::model_files::verify(&stage.model, &stage.model_files_sha256)
+        .expect("approved model files");
     let (process, mut stdout, mut stdin) = glyd::RangeProcess::spawn(
         &stage.executable,
         &stage.executable_sha256,
@@ -58,7 +60,7 @@ fn main() {
             println!(
                 "{}",
                 serde_json::json!({"descriptor": glyd::descriptor_digest(&d).unwrap(),
-                    "model": content_hash(&d["model"]).unwrap(), "layers": d["model"]["layers"]})
+                    "model": stage.model_files_sha256, "layers": d["model"]["layers"]})
             );
         }
         ["plan", plan] => {
@@ -100,7 +102,7 @@ fn main() {
                 prefill_chunk_tokens: BoundedU32::new(stage.chunk_tokens).unwrap(),
                 sessions: BoundedU32::new(1).unwrap(),
             };
-            let (contract, first, last, vocabulary) = glyd::qwen_boundary(
+            let (mut contract, first, last, vocabulary) = glyd::qwen_boundary(
                 &d,
                 &stage.executable_sha256,
                 &stage.execution_profile,
@@ -108,6 +110,7 @@ fn main() {
                 workload,
             )
             .unwrap();
+            contract.key.manifest_digest = stage.model_files_sha256.clone();
             let mut worker = glyd::Worker::new(
                 stdout,
                 stdin,

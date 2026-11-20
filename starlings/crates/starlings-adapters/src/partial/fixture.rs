@@ -180,6 +180,23 @@ pub fn run() {
                     "kv_bytes": 1, "state_bytes": 1})
             }
             "run_chunk" => {
+                // Explicit fault-injection barrier, compiled only in the development fixture.
+                // The test arms a phase, observes this engine's PID, then kills or releases it.
+                if let Ok(directory) = std::env::var("STARLINGS_TEST_PHASE_GATE") {
+                    let directory = std::path::Path::new(&directory);
+                    if let Ok(phase) = std::fs::read_to_string(directory.join("arm"))
+                        && request["phase"].as_str() == Some(phase.trim())
+                    {
+                        std::fs::write(directory.join("reached"), std::process::id().to_string())
+                            .unwrap();
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(10);
+                        while directory.join("arm").exists() && std::time::Instant::now() < deadline
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                }
                 // A chunk continues the session, or keeps `keep_previous` rows of a multi-row
                 // decode chunk and starts after them.
                 let start = request["position_start"].as_u64().unwrap_or(0);

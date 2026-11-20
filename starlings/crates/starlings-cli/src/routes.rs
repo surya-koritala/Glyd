@@ -249,6 +249,8 @@ pub struct StageRoute {
     pub executable: std::path::PathBuf,
     pub executable_sha256: Digest,
     pub model: std::path::PathBuf,
+    /// Content identity of weights, configuration and tokenizer, independent of the model path.
+    pub model_files_sha256: Digest,
     pub layers: [u32; 2],
     pub context_tokens: u32,
     pub chunk_tokens: u32,
@@ -573,6 +575,7 @@ mod tests {
             executable: root.join("glyd-engine"),
             executable_sha256: digest.clone(),
             model: root.join("qwen"),
+            model_files_sha256: digest.clone(),
             layers: [0, 16],
             context_tokens: 1024,
             chunk_tokens: 32,

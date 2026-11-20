@@ -3155,6 +3155,21 @@ fn pipeline_stages_with(
     u32,
 ) {
     use starlings_adapters::partial::glyd;
+    let model = if engine == PathBuf::from(BIN).canonicalize().unwrap() {
+        let fixture = model.join("fixture-model");
+        fs::create_dir_all(&fixture).unwrap();
+        for (name, bytes) in [
+            ("config.json", "{}"),
+            ("tokenizer.json", "{}"),
+            ("model.safetensors", "synthetic weights"),
+        ] {
+            fs::write(fixture.join(name), bytes).unwrap();
+        }
+        fixture
+    } else {
+        model.to_path_buf()
+    };
+    let manifest = starlings_cli::model_files::digest(&model).unwrap();
     let build = starlings_adapters::service::executable_digest(engine).unwrap();
     let gpu = environment
         .get("GLYD_GPU_LIB")
@@ -3176,7 +3191,8 @@ fn pipeline_stages_with(
                 data_listen: port(),
                 executable: engine.into(),
                 executable_sha256: build.clone(),
-                model: model.into(),
+                model: model.clone(),
+                model_files_sha256: manifest.clone(),
                 layers,
                 context_tokens: context,
                 chunk_tokens: chunk,
@@ -3211,7 +3227,6 @@ fn pipeline_stages_with(
             stage
         })
         .collect();
-    let manifest = starlings_protocol::content_hash(&descriptors[0]["model"]).unwrap();
     let layers = descriptors[0]["model"]["layers"].as_u64().unwrap() as u32;
     (stages, manifest, layers)
 }
@@ -4473,6 +4488,372 @@ fn pipeline_fake_engine_a_killed_stage_or_engine_fails_its_requests_and_serves_a
     assert_eq!(sse_text(&last), "ffffffff");
     assert_eq!(stage_state(&cluster.workers[0])["state"], "ready");
     cluster.stop();
+}
+
+/// Machine-local checkpoint paths do not change the shared model identity.
+#[cfg(feature = "test-backend")]
+#[test]
+fn pipeline_fake_engine_identical_checkpoints_work_at_different_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let engine = PathBuf::from(BIN).canonicalize().unwrap();
+    let (mut stages, manifest, layers) = pipeline_stages(
+        &engine,
+        &root.join("first"),
+        &Default::default(),
+        [[0, 1], [1, 2]],
+        (128, 4, 32, 8),
+    );
+    let (other, other_manifest, _) = pipeline_stages(
+        &engine,
+        &root.join("second"),
+        &Default::default(),
+        [[0, 1], [1, 2]],
+        (128, 4, 32, 8),
+    );
+    assert_eq!(manifest, other_manifest);
+    stages[1] = other[1].clone();
+    assert_ne!(stages[0].model, stages[1].model);
+    let cluster = pipeline_cluster(&stages, &manifest, layers, 30_000, vec![], None, 0);
+    let (reply, _) = cluster.chat("different paths", 8, (0.0, 1.0, 1), true);
+    assert!(
+        reply.trim_end().ends_with("data: [DONE]"),
+        "{reply}\n{}",
+        cluster.logs()
+    );
+    assert_eq!(sse_text(&reply), "ffffffff");
+    cluster.stop();
+}
+
+/// Full phase matrix is opt-in so ordinary CI retains the smaller restart regressions.
+#[cfg(all(feature = "test-backend", unix))]
+#[test]
+#[ignore = "explicit local or integration qualification; sixteen process-failure cases"]
+fn pipeline_fake_engine_phase_fault_matrix() {
+    for sessions in [1, 2] {
+        for stage in [0, 1] {
+            for target_engine in [false, true] {
+                for phase in ["prefill", "decode"] {
+                    eprintln!(
+                        "FAULT_CASE sessions={sessions} stage={stage} engine={target_engine} phase={phase}"
+                    );
+                    let temp = tempfile::tempdir().unwrap();
+                    let root = temp.path().canonicalize().unwrap();
+                    let engine = PathBuf::from(BIN).canonicalize().unwrap();
+                    let (mut stages, manifest, layers) = pipeline_stages_with(
+                        &engine,
+                        &root,
+                        &Default::default(),
+                        [[0, 1], [1, 2]],
+                        (128, 4, 32, 40),
+                        sessions,
+                    );
+                    let gate = root.join("gate");
+                    fs::create_dir(&gate).unwrap();
+                    stages[stage].environment.insert(
+                        "STARLINGS_TEST_PHASE_GATE".into(),
+                        gate.to_str().unwrap().into(),
+                    );
+                    let mut cluster =
+                        pipeline_cluster(&stages, &manifest, layers, 5000, vec![], None, 0);
+                    fs::write(gate.join("arm"), phase).unwrap();
+                    let engine_pid = thread::scope(|threads| {
+                        let c = &cluster;
+                        let clients: Vec<_> = (0..sessions)
+                            .map(|_| {
+                                threads
+                                    .spawn(move || c.chat("fault barrier", 40, (0.0, 1.0, 1), true))
+                            })
+                            .collect();
+                        let deadline = Instant::now() + Duration::from_secs(4);
+                        let engine_pid: u32 = loop {
+                            if let Ok(pid) = fs::read_to_string(gate.join("reached"))
+                                && let Ok(pid) = pid.parse()
+                            {
+                                break pid;
+                            }
+                            assert!(Instant::now() < deadline, "phase not reached\n{}", c.logs());
+                            thread::sleep(Duration::from_millis(10));
+                        };
+                        let pid = if target_engine {
+                            engine_pid
+                        } else {
+                            c.workers[stage].child.id()
+                        };
+                        assert!(
+                            Command::new("kill")
+                                .args(["-9", &pid.to_string()])
+                                .status()
+                                .unwrap()
+                                .success()
+                        );
+                        // Let an orphaned stand-in observe its closed pipes. Native device cleanup
+                        // after daemon SIGKILL requires its separate hardware qualification.
+                        fs::remove_file(gate.join("arm")).unwrap();
+                        for client in clients {
+                            let (reply, elapsed) = client.join().unwrap();
+                            assert!(!reply.trim_end().ends_with("data: [DONE]"), "{reply}");
+                            assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
+                        }
+                        engine_pid
+                    });
+                    if target_engine {
+                        let deadline = Instant::now() + Duration::from_secs(8);
+                        while stage_state(&cluster.workers[stage])["state"] != "failed" {
+                            assert!(Instant::now() < deadline, "dead engine remained eligible");
+                            thread::sleep(Duration::from_millis(100));
+                        }
+                        mutation_once(&cluster.workers[stage].state, &["cluster", "stop"]);
+                        cluster.workers[stage].wait();
+                    }
+                    relaunch(&mut cluster.workers[stage], "--stage", &[]);
+                    wait_stage_ready(&cluster, stage);
+                    thread::sleep(Duration::from_secs(4));
+                    let (reply, _) = cluster.chat("after restart", 8, (0.0, 1.0, 1), true);
+                    assert!(
+                        reply.trim_end().ends_with("data: [DONE]"),
+                        "{reply}\n{}",
+                        cluster.logs()
+                    );
+                    assert_eq!(sse_text(&reply), "ffffffff");
+                    // A departed stand-in must not remain alive after recovery.
+                    let gone = Command::new("kill")
+                        .args(["-0", &engine_pid.to_string()])
+                        .output()
+                        .unwrap();
+                    assert!(
+                        !gone.status.success(),
+                        "old stand-in engine remains: {engine_pid}"
+                    );
+                    cluster.stop();
+                }
+            }
+        }
+    }
+}
+
+/// The actual `up` entry point, with synthetic checkpoint files and GPU inventory.
+#[cfg(all(feature = "test-backend", unix))]
+#[test]
+fn pipeline_fake_engine_up_chats_restarts_and_refuses_changed_saved_setup() {
+    onboarding(1);
+}
+
+#[cfg(all(feature = "test-backend", unix))]
+#[test]
+#[ignore = "explicit onboarding qualification; two interactive processes and saved restart"]
+fn pipeline_fake_engine_two_machine_up_join_and_saved_restart() {
+    onboarding(2);
+}
+
+#[cfg(all(feature = "test-backend", unix))]
+fn onboarding(machines: u32) {
+    use std::{io::Write, os::unix::fs::PermissionsExt};
+    static PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _ports = PORTS.lock().unwrap(); // `up` uses fixed operator ports.
+    // Nested state paths must still fit the Unix socket path bound on macOS.
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let cache = root.join("hub");
+    let repo = cache.join("models--fixture--model");
+    let revision = "a".repeat(40);
+    let model = repo.join("snapshots").join(&revision);
+    fs::create_dir_all(&model).unwrap();
+    fs::create_dir(repo.join("refs")).unwrap();
+    fs::write(repo.join("refs/main"), revision).unwrap();
+    fs::write(
+        model.join("config.json"),
+        br#"{"num_hidden_layers":2,"num_key_value_heads":1,"head_dim":4}"#,
+    )
+    .unwrap();
+    fs::write(model.join("tokenizer.json"), b"{}").unwrap();
+    let header = serde_json::to_vec(&serde_json::json!({
+        "model.embed_tokens.weight": {"data_offsets": [0, 1]},
+        "model.layers.0.weight": {"data_offsets": [1, 2]},
+        "model.layers.1.weight": {"data_offsets": [2, 3]},
+        "lm_head.weight": {"data_offsets": [3, 4]}}))
+    .unwrap();
+    let mut weights = (header.len() as u64).to_le_bytes().to_vec();
+    weights.extend(header);
+    weights.extend([0; 4]);
+    fs::write(model.join("model.safetensors"), weights).unwrap();
+    let driver = root.join("nvidia-smi");
+    fs::write(&driver, b"#!/bin/sh\nprintf '16384, 580.0\\n'\n").unwrap();
+    fs::set_permissions(&driver, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(root.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let state = root.join("missing/parents/state");
+    let peer_state = root.join("peer/state");
+    let command = || {
+        let mut cmd = Command::new(BIN);
+        cmd.env("PATH", &path)
+            .env("HF_HUB_CACHE", &cache)
+            .args(["--state-dir"])
+            .arg(&state)
+            // The stand-in has no fetch command: this succeeds only by reusing the cached pin.
+            .args(["up", "--model", "fixture/model"])
+            .args(["--machines", &machines.to_string(), "--host", "127.0.0.1"])
+            .args(["--engine", BIN, "--ctx", "128", "--drafts", "0", "--yes"]);
+        cmd
+    };
+    struct Up(Child);
+    impl Drop for Up {
+        fn drop(&mut self) {
+            let _ = Command::new("kill")
+                .args(["-INT", &self.0.id().to_string()])
+                .output();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while self.0.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(100));
+            }
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    for _ in 0..2 {
+        let log_path = root.join("up.log");
+        let log = fs::File::create(&log_path).unwrap();
+        let mut up = Up(command()
+            .stdin(std::process::Stdio::piped())
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .unwrap());
+        let peer = if machines == 2 {
+            let fresh = !peer_state.join("join.json").exists();
+            if fresh {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while !state.join("join-code.json").exists() {
+                    assert!(
+                        up.0.try_wait().unwrap().is_none(),
+                        "{}",
+                        fs::read_to_string(&log_path).unwrap()
+                    );
+                    assert!(Instant::now() < deadline, "join code not published");
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+            let peer_log_path = root.join("join.log");
+            let peer_log = fs::File::create(&peer_log_path).unwrap();
+            let mut peer = Up(Command::new(BIN)
+                .env("PATH", &path)
+                .env("HF_HUB_CACHE", &cache)
+                .arg("--state-dir")
+                .arg(&peer_state)
+                .args([
+                    "join",
+                    "--model",
+                    "fixture/model",
+                    "--engine",
+                    BIN,
+                    "--host",
+                    "127.0.0.1",
+                    "--yes",
+                ])
+                .stdin(std::process::Stdio::piped())
+                .stdout(peer_log.try_clone().unwrap())
+                .stderr(peer_log)
+                .spawn()
+                .unwrap());
+            if fresh {
+                let code: String =
+                    serde_json::from_slice(&fs::read(state.join("join-code.json")).unwrap())
+                        .unwrap();
+                writeln!(peer.0.stdin.as_mut().unwrap(), "{code}").unwrap();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    let text = fs::read_to_string(&peer_log_path).unwrap();
+                    if let Some(check) = text.lines().find_map(|l| {
+                        l.strip_prefix("It then asks for this check; type it there: ")
+                    }) {
+                        let code = text
+                            .split("Paste this on the first machine:")
+                            .nth(1)
+                            .unwrap()
+                            .split_whitespace()
+                            .next()
+                            .unwrap();
+                        writeln!(up.0.stdin.as_mut().unwrap(), "{code}\n{check}").unwrap();
+                        break;
+                    }
+                    assert!(peer.0.try_wait().unwrap().is_none(), "{text}");
+                    assert!(
+                        Instant::now() < deadline,
+                        "peer approval not published: {text}"
+                    );
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+            Some(peer)
+        } else {
+            None
+        };
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            let text = fs::read_to_string(&log_path).unwrap();
+            if text.contains("READY: open ") {
+                break;
+            }
+            assert!(up.0.try_wait().unwrap().is_none(), "{text}");
+            assert!(Instant::now() < deadline, "up did not become ready: {text}");
+            thread::sleep(Duration::from_millis(100));
+        }
+        let coordinator = state.join("coordinator");
+        let token = starlings_security::ClientToken::load(
+            &starlings_security::PrivateDir::open(&coordinator).unwrap(),
+            "token.json",
+        )
+        .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(state.join("up.json")).unwrap()).unwrap();
+        let body = serde_json::to_vec(&serde_json::json!({"model": saved["manifest"],
+            "messages": [{"role": "user", "content": "hello"}], "max_tokens": 8,
+            "temperature": 0.0, "top_p": 1.0, "seed": 1, "stream": true}))
+        .unwrap();
+        let mut socket = TcpStream::connect("127.0.0.1:9750").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        write!(socket, "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:9750\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", token.bearer(), body.len()).unwrap();
+        socket.write_all(&body).unwrap();
+        let mut reply = String::new();
+        socket.read_to_string(&mut reply).unwrap();
+        assert!(reply.trim_end().ends_with("data: [DONE]"), "{reply}");
+        assert_eq!(sse_text(&reply), "ffffffff");
+        drop(peer);
+        drop(up);
+        let names: &[&str] = if machines == 1 {
+            &["coordinator", "stage0", "stage1"]
+        } else {
+            &["coordinator", "stage0"]
+        };
+        for name in names {
+            assert!(!state.join(name).join("admin.cap").exists());
+            assert!(state.join(name).join("config.json").exists());
+        }
+        if machines == 2 {
+            assert!(!peer_state.join("stage/admin.cap").exists());
+            assert!(peer_state.join("stage/config.json").exists());
+        }
+    }
+    let original = fs::read(model.join("model.safetensors")).unwrap();
+    let mut changed = original.clone();
+    *changed.last_mut().unwrap() = 1;
+    fs::write(model.join("model.safetensors"), changed).unwrap();
+    let refused = command().output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("saved setup does not match"));
+    fs::write(model.join("model.safetensors"), original).unwrap();
+    let mut saved: serde_json::Value =
+        serde_json::from_slice(&fs::read(state.join("up.json")).unwrap()).unwrap();
+    saved["cut"] = 99.into();
+    fs::write(state.join("up.json"), serde_json::to_vec(&saved).unwrap()).unwrap();
+    let refused = command().output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("saved split is outside"));
 }
 
 /// Starts a killed or stopped daemon again from its approved launch record.

@@ -7,6 +7,7 @@ pub mod diagnostics;
 pub mod glyd_costs;
 pub mod inference;
 pub mod link_record;
+pub mod model_files;
 pub mod pipeline;
 pub mod planning;
 pub mod routes;
