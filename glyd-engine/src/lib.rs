@@ -91,6 +91,7 @@ pub mod model_gemma4;
 pub mod model_glm;
 pub mod model_nh;
 pub mod model_qwen4x;
+pub mod models;
 pub mod moe;
 pub mod moe_glm;
 pub mod moe_glm_cb;

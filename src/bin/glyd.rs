@@ -8,7 +8,8 @@ fn print_usage() {
         r#"Glyd: LLM weights and KV cache compressed without loss, the engine that runs them, and compression for files
 Usage: glyd run MODEL[:LEVEL]       chat with a model in the terminal and at one URL (MODEL: a Hub repo, a directory or a GGUF file)
        glyd serve MODEL[:LEVEL]     the OpenAI-compatible API and the chat page
-       glyd pull MODEL              download a model (glyd fetch is the same)
+       glyd pull MODEL              download a model by name (qwen3.5, qwen3.5:27b, qwen3.5:27b:swift) or Hub id
+       glyd ls [--all] | rm MODEL   the models downloaded, with their level and size; take one out of the cache
        glyd fit MODEL               what a run of MODEL would do on this computer, before anything is downloaded
        glyd doctor | login          what this computer has for it; save a Hugging Face token
        glyd supports | preflight | prepare | costs | rates | rangeworker   the engine's other commands (glyd run --help)
@@ -201,9 +202,9 @@ fn is_model_command(cmd: &str) -> bool {
 }
 
 /// The engine's commands that the Python tool has no such command for: they are the engine's wherever one is here (linked, beside this program or on PATH), the tool or no tool.
-/// `pull` is `fetch` (the engine's own word for the download); a file of one of these names (./fit) is still compressed where there is no engine.
+/// `pull`, `ls` and `rm` are the models in the cache (glyd-engine/src/models.rs); a file of one of these names (./fit) is still compressed where there is no engine.
 fn is_engine_command(cmd: &str) -> bool {
-    matches!(cmd, "fit" | "pull" | "rangeworker")
+    matches!(cmd, "fit" | "pull" | "ls" | "rm" | "rangeworker")
 }
 
 /// Whether the engine is linked into this program (the `engine` feature: the release tarballs' glyd).
@@ -402,9 +403,9 @@ fn go(route: Route, args: &[String]) -> ! {
         }
         Route::Engine | Route::EngineProgram(_) => {
             let model = if matches!(cmd, "run" | "serve") && !args.iter().any(|a| a == "-h" || a == "--help") { model_arg(args) } else { None };
-            if let Some(model) = model {
-                let on = if matches!(route, Route::Engine) { "the engine" } else { "glyd-engine" };
-                eprintln!("glyd {cmd}: {model} on {on} (GLYD_ENGINE=0: vLLM instead).");
+            // (the linked engine says its own lines: a model that is no model is refused before any of them)
+            if let (Some(model), Route::EngineProgram(_)) = (model, &route) {
+                eprintln!("glyd {cmd}: {model} on glyd-engine (GLYD_ENGINE=0: vLLM instead).");
             }
             // an API key or a token given as a flag goes to the engine in its environment, not on its command line (where `ps` and a log show it)
             let mut run_args = args.to_vec();
@@ -1031,7 +1032,7 @@ mod tests {
 
     #[test]
     fn fit_pull_and_rangeworker_are_the_engines_with_or_without_the_tool() {
-        for cmd in ["fit", "pull", "rangeworker"] {
+        for cmd in ["fit", "pull", "ls", "rm", "rangeworker"] {
             assert!(is_engine_command(cmd));
             let mut f = bare();
             f.python_tool = true;
