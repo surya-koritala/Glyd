@@ -32,15 +32,19 @@ GLYD_HIP=1 cargo build --release -p glyd-engine        # AMD RDNA 3/4 (ROCm hipc
 
 On every pull request and push to main (`.github/workflows/`):
 
-- `ci.yml`, skipped when only docs, benchmarks, research, condor, starlings, cards or tools change: Build & Test (the codec
-  and store tests, regression floors, C ABI, a CLI round trip), Lint (`cargo fmt --check`, `cargo clippy -D warnings`
-  over the workspace and the engine's release feature set, cargo-deny), Versions agree, the `glyd-gpu` crate's tests, and
-  the engine's host tests as a development build and as the release build, with no nvcc and no GPU.
+- `ci.yml` on every pull request and push to main. Its `changes` job lists the files a pull request touches; a pull request that changes
+  only docs, benchmarks, research, condor, starlings, cards, tools or other workflows skips the jobs below, so it reports in seconds.
+  The jobs: Build & Test (the codec and store tests, regression floors, C ABI, a CLI round trip), Lint (`cargo fmt --check`,
+  `cargo clippy -D warnings` over the workspace and the engine's release feature set, cargo-deny), Versions agree, the `glyd-gpu`
+  crate's tests, and the engine's host tests as a development build and as the release build, with no nvcc and no GPU. When Rust
+  code changes: the workspace compiled and unit-tested on Windows x86_64 and macOS arm64 (six jobs: the codec, store and CLI, the
+  engine, the engine's release build, on each), a Minimum Rust version job (`rust-version` 1.89), and, when the kernels or the
+  engine's sources change, `HIP kernels compile (AMD)` (ROCm's compiler, no GPU). The tests build with `--profile ci`
+  (`Cargo.toml`: release code, no fat LTO) and keep their build in a cache saved from main.
+  **`CI result` is the one check to require** on main: it waits for all of them and passes when each succeeded or was skipped.
 - Only when their paths change: `python.yml` (the Python GPU package and vLLM plugin), `kernels.yml` (the engine's kernels
   compile with nvcc 13 for sm_80 to sm_120, no GPU), `starlings-ci.yml`, `condor-ci.yml`, `cpu-pack.yml`.
 - Always: `tree.yml` (no large data files, `scripts/check_tree.sh`) and `dco.yml` (sign-off on every commit).
-
-CI runs on Linux only. Nothing builds or tests on Windows or macOS yet ([#213](https://github.com/surya-koritala/Glyd/issues/213)).
 
 GPU tests (`gpu.yml`) run on one self-hosted machine, the one `vars.GPU_RUNNER` names (`tools/ci/setup-gpu-runner.sh` registers
 an Ubuntu machine's GPU). They run on pushes to main that touch `glyd-engine/`, `gpu/`, `glyd-gpu/` or the lockfile, on a

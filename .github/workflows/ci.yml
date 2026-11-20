@@ -8,13 +8,14 @@ name: CI
 # publishing are release.yml's. A newer push to a pull request stops its older run.
 # The Rust jobs build with `--profile ci` (Cargo.toml: the release build's code without fat LTO) and keep their build in Swatinem/rust-cache, saved from main's runs.
 # A run on main or by hand always runs to the end, each in its own group: release.yml needs CI's success on a release's exact commit.
+# The check to require on main is `CI result` (the last job): it passes when every job above succeeded or was skipped, which is what a pull request that changes only docs gets.
 on:
   push:
     branches: [main]
     paths-ignore: ['**.md', 'docs/**', 'benchmarks/**', 'research/**', 'condor/**', 'starlings/**', 'cards/**', 'tools/**']
+  # (no paths-ignore here: a required check must report on every pull request, so the `changes` job decides and the jobs it gates are skipped; `CI result` is the one check to require)
   pull_request:
     branches: [main]
-    paths-ignore: ['**.md', 'docs/**', 'benchmarks/**', 'research/**', 'condor/**', 'starlings/**', 'cards/**', 'tools/**']
   workflow_dispatch:
 
 permissions:
@@ -33,6 +34,8 @@ jobs:
   # Its name is the required check on main.
   codec:
     name: Build & Test
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (as below)
     timeout-minutes: 45
     env:
@@ -75,6 +78,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      code: ${{ steps.diff.outputs.code }}
       rust: ${{ steps.diff.outputs.rust }}
       hip: ${{ steps.diff.outputs.hip }}
     steps:
@@ -85,12 +89,19 @@ jobs:
       - id: diff
         run: |
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
             echo "rust=true" >> "$GITHUB_OUTPUT"
             echo "hip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # (the pull request's merge commit against its first parent, the base)
           git diff --name-only HEAD^1 HEAD | tee "$RUNNER_TEMP/changed"
+          # Anything but docs, benchmarks, research, condor, starlings, cards, tools and the other workflows (each has its own, or none): the heavy jobs run.
+          if { grep -Ev '^(.*\.md|docs/|benchmarks/|research/|condor/|starlings/|cards/|tools/)' "$RUNNER_TEMP/changed" || true; } | grep -Evq '^\.github/workflows/' || grep -Eq '^\.github/workflows/ci\.yml$' "$RUNNER_TEMP/changed"; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
           if grep -Eq '^(Cargo\.(toml|lock)|rust-toolchain\.toml|rustfmt\.toml|src/|glyd-(store|gpu|engine)/|third_party/|include/|tests/|examples/|\.github/workflows/ci\.yml|\.github/actions/)' "$RUNNER_TEMP/changed"; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
@@ -274,6 +285,8 @@ jobs:
   # Clippy's findings from before the baseline are allowed by name in Cargo.toml's [workspace.lints.clippy].
   lint:
     name: Lint
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (as below)
     timeout-minutes: 30
     env:
@@ -304,6 +317,8 @@ jobs:
 
   versions:
     name: Versions agree
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
     timeout-minutes: 10
     steps:
@@ -320,6 +335,8 @@ jobs:
 
   rust:
     name: The Rust glyd-gpu crate
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
     timeout-minutes: 20
     steps:
@@ -340,6 +357,8 @@ jobs:
     # glyd-engine (glyd-engine/) as a development build (the default features; the release build is the next job): its host-side tests, with no nvcc (the crate
     # is built without its kernels); and the Rust glyd's hand-off of glyd run and glyd serve to the engine or the Python tool.
     name: The Rust engine (tests, the Rust glyd's hand-off)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
     timeout-minutes: 45
     steps:
@@ -362,6 +381,8 @@ jobs:
   # The engine's release build (--no-default-features), in a job of its own so that the two builds of the crate run side by side.
   engine-release:
     name: The Rust engine, release build (tests)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (as above)
     timeout-minutes: 45
     steps:
@@ -377,3 +398,20 @@ jobs:
           shared-key: engine-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --profile ci -p glyd-engine --no-default-features
+
+  # The one check to require on main: it waits for every job above, and passes when each succeeded or was skipped (a pull request that changes only docs skips the
+  # heavy ones, so it reports in seconds), and fails when one failed or was cancelled.
+  result:
+    name: CI result
+    if: always()
+    needs: [changes, codec, lint, versions, rust, engine, engine-release, platform, msrv, hip]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "needed jobs: $RESULTS"
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) echo "::error::a job failed or was cancelled"; exit 1 ;;
+          esac
