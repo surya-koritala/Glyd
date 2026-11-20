@@ -30,7 +30,12 @@ the 3% the bar allows; every other load is ahead.
   94 TFLOPS) with a 17 ms decode step between each pair, 7 of them in the mean first token (1.640 s against vLLM's 1.587: 3.3% at a spread of 0.1%, so not noise). Now every third round has the step: 1.604 s, decode a user
   40.2 tokens/s as before, total 267.5 against 265.2.
 
+## Per family, and the age of the model
+
+Since this record `GPUS` is per (GPU, family) and the measurement file names its model: this one is Qwen3 (`family Qwen3`), measured on Qwen3-8B, released 2025-04-27, 572 days before the run: the newest dense Qwen3
+model there is, but older than the owner's 6 months, so `gpu_bar.py` passes it only with `--stale-ok`. [rtx4080s-gemma4-12b-2026-11-20](../rtx4080s-gemma4-12b-2026-11-20) measures the one recent model that fits.
+
 ## Files
 
-`engine.json` and `vllm.json`: the means and spreads of the five runs of each, the measurement file `scripts/gpu_bar.py` takes (`python3 scripts/gpu_bar.py engine.json vllm.json "NVIDIA GeForce RTX 4080 SUPER" 8.9`, exit 0 and the
+`engine.json` and `vllm.json`: the means and spreads of the five runs of each, the measurement file `scripts/gpu_bar.py` takes (`python3 scripts/gpu_bar.py engine.json vllm.json "NVIDIA GeForce RTX 4080 SUPER" 8.9 Qwen3 --stale-ok`, exit 0 and the
 `GPUS` line); made from the runs' own files by `gpu_bar.py --summarize` (the runs' files are not kept: `scripts/check_tree.sh`). The scripts that made the runs: the earlier record's `load.py`, `run.sh`, `until_clean.sh`.
