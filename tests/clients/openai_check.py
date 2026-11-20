@@ -25,6 +25,8 @@ WEATHER = {
 WEATHER_RESP = {"type": "function", "name": "get_weather", "description": "Get the current weather in a city", "parameters": WEATHER["function"]["parameters"]}
 SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}, "temp_c": {"type": "integer"}}, "required": ["city", "temp_c"], "additionalProperties": False}
 
+# (Qwen3 thinks first: a check of the answer's words turns the thinking off, as the SDK's users do with `extra_body`)
+NOTHINK = {"chat_template_kwargs": {"enable_thinking": False}}
 failures = []
 
 
@@ -61,13 +63,13 @@ def main():
 
     @check
     def chat():
-        r = c.chat.completions.create(model=model, messages=ask, max_tokens=64, temperature=0)
+        r = c.chat.completions.create(model=model, messages=ask, max_tokens=64, temperature=0, extra_body=NOTHINK)
         assert r.object == "chat.completion" and r.choices[0].message.role == "assistant"
         assert r.choices[0].finish_reason in ("stop", "length") and r.usage.total_tokens == r.usage.prompt_tokens + r.usage.completion_tokens
 
     @check
     def chat_stream_with_usage():
-        s = c.chat.completions.create(model=model, messages=ask, max_tokens=64, temperature=0, stream=True, stream_options={"include_usage": True})
+        s = c.chat.completions.create(model=model, messages=ask, max_tokens=64, temperature=0, stream=True, stream_options={"include_usage": True}, extra_body=NOTHINK)
         chunks = list(s)
         assert chunks[-1].choices == [] and chunks[-1].usage.completion_tokens > 0
         assert all(x.usage is None for x in chunks[:-1])
@@ -75,7 +77,7 @@ def main():
 
     @check
     def seed_is_reproducible():
-        r = [c.chat.completions.create(model=model, messages=[{"role": "user", "content": "Name a color."}], max_tokens=24, temperature=1.0, seed=7).choices[0].message.content for _ in range(2)]
+        r = [c.chat.completions.create(model=model, messages=[{"role": "user", "content": "Name a color."}], max_tokens=24, temperature=1.0, seed=7, extra_body=NOTHINK).choices[0].message.content for _ in range(2)]
         assert r[0] == r[1], r
 
     @check
@@ -108,19 +110,19 @@ def main():
 
     @check
     def responses_text():
-        r = c.responses.create(model=model, input="Reply with the single word: pong", instructions="Be brief.", max_output_tokens=64, temperature=0)
+        r = c.responses.create(model=model, input="Reply with the single word: pong", instructions="Be brief.", max_output_tokens=64, temperature=0, reasoning={"effort": "minimal"})
         assert r.object == "response" and r.status == "completed" and r.output_text, r
         assert r.usage.total_tokens == r.usage.input_tokens + r.usage.output_tokens
         assert r.instructions == "Be brief." and r.store is False
 
     @check
     def responses_input_items():
-        r = c.responses.create(model=model, input=[{"role": "developer", "content": "Answer in one word."}, {"role": "user", "content": [{"type": "input_text", "text": "Capital of France?"}]}], max_output_tokens=64, temperature=0)
+        r = c.responses.create(model=model, input=[{"role": "developer", "content": "Answer in one word."}, {"role": "user", "content": [{"type": "input_text", "text": "Capital of France?"}]}], max_output_tokens=64, temperature=0, reasoning={"effort": "minimal"})
         assert "paris" in r.output_text.lower(), r.output_text
 
     @check
     def responses_stream():
-        with c.responses.stream(model=model, input="Count: one two three", max_output_tokens=64, temperature=0) as s:
+        with c.responses.stream(model=model, input="Count: one two three", max_output_tokens=64, temperature=0, reasoning={"effort": "minimal"}) as s:
             kinds = [e.type for e in s]
             final = s.get_final_response()
         assert kinds[0] == "response.created" and kinds[-1] == "response.completed", kinds

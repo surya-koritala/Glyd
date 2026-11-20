@@ -158,7 +158,7 @@ fn read_request(s: &mut TcpStream) -> std::result::Result<Option<Req>, Rejected>
     let mut r = BufReader::new(s.try_clone().map_err(bad)?);
     let Some(h) = read_head(&mut r)? else { return Ok(None) };
     if h.len > MAX_BODY {
-        return Err((400, "the request's body is too large".to_string()));
+        return Err((413, format!("the request's body is over {} MiB", MAX_BODY >> 20)));
     }
     if h.expect {
         s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").ok();
@@ -191,6 +191,7 @@ fn status_text(code: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Payload Too Large",
         421 => "Misdirected Request",
         431 => "Request Header Fields Too Large",
         503 => "Service Unavailable",
@@ -1931,7 +1932,7 @@ fn route(
         | (_, "/v1/messages")
         | (_, "/v1/glyd/tokenize")
         | (_, "/v1/glyd/info") => respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes()),
-        _ => respond_with(&mut s, 404, "application/json", &cors, error_body("not found", 404).as_bytes()),
+        _ => respond_with(&mut s, 404, "application/json", &cors, error_body(&format!("Invalid URL ({} {path})", req.method), 404).as_bytes()),
     }
 }
 
@@ -3863,6 +3864,15 @@ pub(crate) mod tests {
         let (h, b) = raw("PUT", "/v1/chat/completions", true);
         assert!(h.starts_with("HTTP/1.1 405"), "{h}");
         shape(&b, "invalid_request_error", None);
+        // a body past the limit is 413, before any of it is read
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer k\r\nContent-Length: 99999999999\r\n\r\n").unwrap();
+        let mut out = String::new();
+        c.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 413 Payload Too Large"), "{out}");
+        shape(&json::parse(out.split_once("\r\n\r\n").unwrap().1).unwrap(), "invalid_request_error", None);
+        let (_, b) = raw("GET", "/v1/nothing", true);
+        assert_eq!(at(&b, &["error", "message"]).as_str(), Some("Invalid URL (GET /v1/nothing)"));
         // one model by its name, as `models.retrieve` asks (the slash of an org's model name may be written %2F)
         let (h, b) = raw("GET", "/v1/models/fake", true);
         assert!(h.starts_with("HTTP/1.1 200"), "{h}");
