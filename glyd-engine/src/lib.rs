@@ -128,6 +128,7 @@ pub mod report;
 pub mod sampler;
 pub mod sched;
 pub mod server;
+pub mod service;
 #[cfg(feature = "dev")]
 pub mod ship;
 pub mod skinny;

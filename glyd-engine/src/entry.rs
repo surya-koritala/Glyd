@@ -22,6 +22,9 @@ pub const COMMANDS: &[&str] = &[
     "pull",
     "ls",
     "rm",
+    "service",
+    "ps",
+    "stop",
     "verify",
     "prepare",
     "costs",
@@ -88,7 +91,8 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         return Ok(());
     }
     match cmd {
-        Some("run") => std::process::exit(crate::cli::run(&a)),
+        // where the service is running, the chat goes through it (src/service.rs); else a process of its own as before
+        Some("run") => std::process::exit(crate::service::attach(&a).unwrap_or_else(|| crate::cli::run(&a))),
         Some("serve") => std::process::exit(crate::cli::serve(&a)),
         Some("doctor") => std::process::exit(crate::cli::doctor(&a)),
         // what to give a program (Open WebUI, Continue, Claude Code, an SDK) so that it talks to the server that runs here
@@ -101,6 +105,10 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("pull") => std::process::exit(crate::models::pull(&a)),
         Some("ls" | "list") => std::process::exit(crate::models::ls(&a)),
         Some("rm") => std::process::exit(crate::models::rm(&a)),
+        // the background service: models loaded on request and unloaded when idle; what it holds; a model unloaded (src/service.rs)
+        Some("service") => std::process::exit(crate::service::run(&a)),
+        Some("ps") => std::process::exit(crate::service::ps(&a)),
+        Some("stop") => std::process::exit(crate::service::stop(&a)),
         Some("verify") => std::process::exit(crate::cli::verify(&a)),
         Some("prepare") => std::process::exit(crate::cli::prepare_cmd(&a)),
         // the cost profile of a model at a level, and this machine's memory tiers (docs/cost-profile.md)

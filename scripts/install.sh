@@ -25,6 +25,7 @@
 #   GLYD_RELEASE_URL  a mirror (https://...) or a folder (file:///DIR) that holds the release's tarballs and their .sha256 files, in place of
 #                     the GitHub release's (a build of one's own, the release's tests before it exists)
 #   GLYD_ENGINE_TARBALL  a local glyd-engine-vX.Y.Z-PLATFORM.tar.gz to install in place of the release's (a build of one's own, the release's tests)
+#   GLYD_NO_SERVICE   1: leave out the background service that the engine install sets up (a user unit of this account, 127.0.0.1:11434; docs/service.md)
 #   GLYD_CONSTRAINTS  none: resolve the packages fresh, where one of the versions listed below has been withdrawn from PyPI
 set -eu
 
@@ -180,6 +181,11 @@ install_engine() {
   "$cli/glyd-engine" --version >/dev/null 2>&1 || die "Glyd's engine does not start on this machine ($cli/glyd-engine --version): it needs Linux with glibc 2.28 or newer."
   ln -sf "$cli/glyd-engine" "$bin/glyd-engine"
   say "$("$cli/glyd-engine" --version | head -n 1) is installed in $cli beside glyd (no Python: GLYD_WITH_VLLM=1 in front of sh adds vLLM for the models the engine does not run)"
+  # The background service, a user unit of this account (no sudo): it answers on 127.0.0.1:11434 from now and at every login, loads a model when a request names one
+  # (downloaded with glyd pull) and unloads it when it is idle. GLYD_NO_SERVICE=1: not installed. A release before 0.33 has none.
+  if [ -z "${GLYD_NO_SERVICE:-}" ] && "$cli/glyd" service --help >/dev/null 2>&1 && "$cli/glyd" service install; then :; elif [ -z "${GLYD_NO_SERVICE:-}" ]; then
+    warn "the background service was not set up (glyd service install says why); glyd run and glyd serve work without it."
+  fi
 }
 
 main() {
