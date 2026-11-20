@@ -16,6 +16,8 @@ use crate::sched::{ModelStep, PrefillJob, Row, Sample};
 
 /// One sequence's rows in a pass over several: the first row, how many, where its tokens begin in the sequence, and its caches and recurrent states.
 pub(super) struct Part {
+    /// The sequence (its index in `Dyn::seqs`, its latent attention caches' too).
+    pub slot: usize,
     pub row0: usize,
     pub rows: usize,
     pub start: usize,
@@ -43,6 +45,21 @@ pub(super) fn row_wise(op: &Op) -> bool {
             | Op::MuseGate { .. }
             | Op::MuseOGate { .. }
             | Op::MuseMoe { .. }
+            | Op::KdaOut { .. }
+            | Op::LinearAt { .. }
+            | Op::KimiParts { .. }
+            | Op::KimiMixNorm { .. }
+            | Op::KimiAdd { .. }
+            | Op::KimiEarly { .. }
+            | Op::Situ { .. }
+            | Op::SwiGluClamp { .. }
+            | Op::Moe { .. }
+            | Op::GlmStreams
+            | Op::GlmPre { .. }
+            | Op::GlmPost
+            | Op::GlmHead { .. }
+            // (a latent attention block runs its products over every row and its caches' parts by sequence itself: `GlmHost::seq_rows`)
+            | Op::Mla { .. }
             | Op::Nop
     )
 }
@@ -60,6 +77,8 @@ fn by_sequence(op: &Op) -> bool {
             | Op::GdnDelta { .. }
             | Op::MuseQk { .. }
             | Op::MuseAttn { .. }
+            | Op::KdaConv { .. }
+            | Op::KdaDelta { .. }
     )
 }
 
@@ -133,7 +152,7 @@ impl Dyn {
                 .ok_or_else(|| crate::ffi::Error(format!("sequence {slot}: this engine holds {}", self.seqs.len())))?;
             (s.kc.ptr, s.vc.ptr, s.states.iter().map(|b| b.ptr).collect())
         };
-        Ok(Part { row0, rows, start, kc, vc, states })
+        Ok(Part { slot, row0, rows, start, kc, vc, states })
     }
 
     /// Sequence `slot` empty again: no tokens, its states zeroed (its cache is overwritten as it runs).
@@ -220,8 +239,12 @@ impl Dyn {
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
     /// engine runs one sequence only (a draft model, a stage of a split model, a family `add_seqs` refuses).
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
-        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, and Muse Spark on one GPU; the other MoE families' latent attention and delta rules are not by sequence yet)
-        if self.draft.is_some() || !self.stage.first || !self.stage.last || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark") {
+        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, and Muse Spark, Kimi-K3 and GLM-5.3-Flash on one GPU; DeepSeek-V4's compressed entries are not by sequence yet)
+        if self.draft.is_some()
+            || !self.stage.first
+            || !self.stage.last
+            || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash")
+        {
             return Ok(None);
         }
         if self.seqs.len() > 1 {
@@ -232,7 +255,8 @@ impl Dyn {
         if users > 1 {
             self.set_head_rows(users)?;
         }
-        let per = (self.kc.bytes + self.vc.bytes + self.states.iter().map(|b| b.bytes).sum::<usize>()).max(1);
+        let mla: usize = self.big.mla.iter().map(|b| b.seq_bytes(self.ctx)).sum();
+        let per = (self.kc.bytes + self.vc.bytes + self.states.iter().map(|b| b.bytes).sum::<usize>() + mla).max(1);
         let (free, _) = self.dev.mem_info()?;
         // (room kept for the products' workspaces and the driver)
         const KEEP: usize = 512 << 20;
