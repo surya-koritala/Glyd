@@ -346,7 +346,7 @@ fn glyd_alone_explains_the_models_first_and_documents_its_exit_status() {
     let err = text(&o.stderr);
     let (models, files) = (err.find("glyd run MODEL").expect("run"), err.find("compress or decompress a file").expect("files"));
     assert!(models < files, "{err}");
-    for cmd in ["glyd serve", "glyd pull", "glyd fit", "glyd doctor", "Exit status: 0 done, 1 an error, 3 not supported"] {
+    for cmd in ["glyd serve", "glyd pull", "glyd ls", "glyd fit", "glyd doctor", "Exit status: 0 done, 1 an error, 3 not supported"] {
         assert!(err.contains(cmd), "{cmd}: {err}");
     }
 }
