@@ -20,7 +20,7 @@ Each request is a streamed chat completion at temperature 0 with `--max-tokens` 
 | `bar` | short, 2k and 4k prompts, each at 1, 4 and 8 at once: the speed bar's matrix (docs/adding-a-gpu.md) |
 | `full` | short at 1, 8, 64 and 256 at once; 1k, 4k and 32k at 1: everything R8 lists (64 and 256 at once need the server to take them: R11) |
 
-`--loads short:1,4k:8` names loads by hand. A load that fails is counted (`errors`), not hidden.
+`--loads short:1,4k:8` names loads by hand. The server `bench` starts takes as many users as the heaviest load asks for (at most 8; `--users N` says): `serve` alone takes 4, and 8 requests at once would be 4 and 4 waiting. A load that fails is counted (`errors`), not hidden.
 
 Per load and run: time to first token, decode tokens/s a user (tokens after the first over the time from first to last), the inter-token latency (its mean and the 99th percentile of every gap), decode tokens/s
 in all (every user's tokens after the first over the span from the earliest first token to the last token), and prefill tokens/s (the prompts' tokens over the slowest first token). A user's figure
