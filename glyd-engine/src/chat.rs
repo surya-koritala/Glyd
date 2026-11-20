@@ -304,7 +304,8 @@ fn generation_plain(src: &str) -> String {
     while let Some(i) = rest.find("{%") {
         out.push_str(&rest[..i]);
         let tag = &rest[i..];
-        let Some(j) = tag.find("%}") else { break };
+        // (past the opening's own `%`: `{%}` has no end)
+        let Some(j) = tag[2..].find("%}").map(|k| k + 2) else { break };
         let inner = &tag[2..j];
         let word = match inner.trim_matches('-').trim() {
             "generation" => Some("if true"),
@@ -575,6 +576,15 @@ mod tests {
 
     /// A template of the Qwen3 kind: a system turn, the turns, thinking closed for the answers after the last question, the generation prompt.
     const SMALL: &str = "{%- for message in messages %}\n    {%- if message.role == 'system' and loop.first %}\n        {{- '<|im_start|>system\\n' + message.content + '<|im_end|>\\n' }}\n    {%- elif message.role == 'user' %}\n        {{- '<|im_start|>user\\n' + message.content + '<|im_end|>\\n' }}\n    {%- else %}\n        {{- '<|im_start|>assistant\\n' + message.content.strip('\\n') + '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n    {%- if enable_thinking is defined and enable_thinking is false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- endif %}\n{%- endif %}";
+
+    /// A tag that opens and never closes, or closes on its own opening's `%` (`{%}`), is left to the template engine to refuse: it was a panic in the scan for `generation` marks.
+    #[test]
+    fn a_tag_with_no_end_is_an_error_not_a_panic() {
+        for src in ["{%}", "{%", "a{%}b", "{% if x %}{%}", "{%-}", "{{ 1 }}{%", "{%%}"] {
+            assert!(Chat::from_template(src).is_err() || generation_plain(src).contains("{%"), "{src:?}");
+        }
+        assert_eq!(generation_plain("{%}x"), "{%}x");
+    }
 
     /// `{% generation %}` blocks render their text, whitespace control kept.
     #[test]
