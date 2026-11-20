@@ -1,13 +1,11 @@
 name: Starlings CI
 
+# Starlings' full matrix: every OS and the Windows partitions. Nightly, by hand, and on a pull request labeled full-ci.
+# The Linux x86_64 run of every pull request and push (formatting, clippy, tests, dependency policy) is a job of ci.yml, gated by its `changes` job.
 on:
-  # (nightly and by hand: the full matrix, every OS; a push to main and a pull request run Linux x86_64 alone, which is what takes a PR's time)
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ['starlings/**', '.github/workflows/starlings-*.yml']
   pull_request:
     paths: ['starlings/**', '.github/workflows/starlings-*.yml']
     # (labeled: adding the full-ci label runs the full main matrix on the PR)
@@ -32,16 +30,22 @@ jobs:
     name: ${{ matrix.partition == 'all' && format('Core ({0})', matrix.os) || format('Windows {0}', matrix.partition) }}
     strategy:
       fail-fast: false
-      # (Linux x86_64 on a push to main and on a pull request; every OS nightly, by hand, and on a pull request with the full-ci label. macOS (9.6 min) and Windows take longer
-      # than Linux, and most of that is the tests' own time, not the build, which the cache below already restores.)
-      matrix: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && '{"os":["ubuntu-latest","ubuntu-24.04-arm","macos-latest"],"partition":["all"],"include":[{"os":"windows-latest","partition":"default"},{"os":"windows-latest","partition":"backend"},{"os":"windows-latest","partition":"lifecycle"}]}' || '{"os":["ubuntu-latest"],"partition":["all"]}') }}
+      # (macOS (9.6 min) and Windows take longer than Linux, and most of that is the tests' own time, not the build, which the cache below already restores.)
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        partition: [all]
+        include:
+          - {os: windows-latest, partition: default}
+          - {os: windows-latest, partition: backend}
+          - {os: windows-latest, partition: lifecycle}
     # (Linux x64 runs on the owner's PC when CI_RUNNER is '["self-hosted","glyd-pc"]', for pushes and same-repo PRs only: fork code never runs there)
     runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.CI_RUNNER && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || matrix.os }}
+    # (a pull request runs this only with the full-ci label)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     timeout-minutes: 10
     defaults:
       run:
         shell: bash
-        working-directory: starlings
     steps:
       - name: Own home and persistent target on the PC
         working-directory: ${{ github.workspace }}
@@ -68,7 +72,7 @@ jobs:
           path: |
             ~/.rustup/toolchains/1.97.1-x86_64-pc-windows-msvc
             ~/.rustup/update-hashes/1.97.1-x86_64-pc-windows-msvc
-          key: toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('starlings/rust-toolchain.toml') }}
+          key: toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
       - name: Install pinned toolchain
         if: runner.os != 'Windows' || steps.windows_toolchain.outputs.cache-hit != 'true'
         run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
@@ -83,7 +87,7 @@ jobs:
       - name: Formatting
         run: |
           rustup run 1.97.1 cargo fmt --all -- --check
-          rustup run 1.97.1 cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+          rustup run 1.97.1 cargo fmt --manifest-path starlings/fuzz/Cargo.toml --all -- --check
       - name: Cache locked Rust dependencies and builds
         id: cache
         if: runner.environment != 'self-hosted'
@@ -91,12 +95,11 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-            starlings/target
-          key: core-v5-${{ runner.os }}-${{ runner.arch }}-${{ matrix.partition }}-${{ hashFiles('starlings/Cargo.lock', 'starlings/Cargo.toml', 'starlings/crates/**/Cargo.toml', 'starlings/rust-toolchain.toml', '.github/workflows/starlings-ci.yml') }}
+            target
+          key: core-v6-${{ runner.os }}-${{ runner.arch }}-${{ matrix.partition }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'starlings/crates/**/Cargo.toml', 'rust-toolchain.toml', '.github/workflows/starlings-ci.yml') }}
           # Cargo checks source, compiler, features and lockfile fingerprints before reuse.
           restore-keys: |
-            core-v5-${{ runner.os }}-${{ runner.arch }}-
-            core-v4-${{ runner.os }}-${{ runner.arch }}-
+            core-v6-${{ runner.os }}-${{ runner.arch }}-
       - name: Remove unpacked sources from legacy fallback caches
         if: steps.cache.outputs.cache-hit != 'true'
         run: rm -rf "$HOME/.cargo/registry/src"
@@ -107,20 +110,20 @@ jobs:
           fi
       - name: Default lint
         if: matrix.partition == 'all' || matrix.partition == 'default'
-        run: rustup run 1.97.1 cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+        run: rustup run 1.97.1 cargo clippy -p 'starlings-*' --all-targets --locked --offline -- -D warnings
       - name: Development backend lint
         if: matrix.partition == 'all' || matrix.partition == 'backend'
-        run: rustup run 1.97.1 cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings
+        run: rustup run 1.97.1 cargo clippy -p 'starlings-*' --all-targets --all-features --locked --offline -- -D warnings
       - name: Default tests
         if: matrix.partition == 'all' || matrix.partition == 'default'
         run: |
           if [[ "$RUNNER_OS" == Windows ]]; then
             security_case=generation::tests::enrolled_worker_applies_whole_requests_once_and_retains_buffers_until_local_drain
-            STARLINGS_TEST_GENERATION_GATE_TRACE=1 rustup run 1.97.1 cargo test --workspace --exclude starlings-cli --locked --offline -- --exact "$security_case" --nocapture
+            STARLINGS_TEST_GENERATION_GATE_TRACE=1 rustup run 1.97.1 cargo test -p starlings-protocol -p starlings-core -p starlings-adapters -p starlings-security --locked --offline -- --exact "$security_case" --nocapture
             # (the runner's disk does about 25 durable commits a second, shared by every test thread; one at a time keeps a registry heartbeat inside its 6 s deadline)
-            STARLINGS_TEST_REGISTRY_TRACE=1 RUST_TEST_THREADS=1 rustup run 1.97.1 cargo test --workspace --exclude starlings-cli --locked --offline -- --nocapture --skip "$security_case"
+            STARLINGS_TEST_REGISTRY_TRACE=1 RUST_TEST_THREADS=1 rustup run 1.97.1 cargo test -p starlings-protocol -p starlings-core -p starlings-adapters -p starlings-security --locked --offline -- --nocapture --skip "$security_case"
           else
-            rustup run 1.97.1 cargo test --workspace --locked --offline -- --nocapture
+            rustup run 1.97.1 cargo test -p 'starlings-*' --locked --offline -- --nocapture
           fi
       - name: Default CLI tests
         if: matrix.partition == 'backend'
@@ -180,7 +183,7 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-            starlings/target
+            target
           key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Remove the job temp folder on the PC
         if: always() && runner.environment == 'self-hosted'
@@ -193,7 +196,7 @@ jobs:
   windows:
     name: Core (windows-latest)
     needs: core
-    if: always()
+    if: always() && needs.core.result != 'skipped'
     runs-on: ${{ vars.CI_RUNNER && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 1
     steps:
@@ -209,6 +212,7 @@ jobs:
 
   dependencies:
     name: Dependency policy
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ vars.CI_RUNNER && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
@@ -223,7 +227,6 @@ jobs:
           tar -xzf "$RUNNER_TEMP/cargo-deny.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/cargo-deny-0.20.2-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
       - name: Advisory, license, dependency and source policy
-        working-directory: starlings
         run: |
-          cargo-deny --locked check --deny warnings
-          cargo-deny --manifest-path fuzz/Cargo.toml --config fuzz/deny.toml --locked check --deny warnings
+          cargo-deny --workspace --locked check --deny warnings
+          cargo-deny --manifest-path starlings/fuzz/Cargo.toml --config starlings/fuzz/deny.toml --locked check --deny warnings

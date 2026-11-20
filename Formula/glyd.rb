@@ -6,7 +6,7 @@
 class Glyd < Formula
   desc "Compression for object storage: record mode, packs, a cross-object store"
   homepage "https://getglyd.com"
-  version "0.33.0"
+  version "0.33.1"
   # Apache-2.0 from the release after v0.32.1 (v0.29.0 to v0.32.1: BUSL-1.1; v0.28.0 and earlier: glyd BSD-3-Clause or GPL-2.0, glyd-store BUSL-1.1).
   license "Apache-2.0"
 
@@ -17,23 +17,23 @@ class Glyd < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.33.0/glyd-v0.33.0-macos-arm64.tar.gz"
-      sha256 "a78efc6452d57924b1e9c8d008817a145c7da6ea0cef44131abdae1b76e5cc61"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.33.1/glyd-v0.33.1-macos-arm64.tar.gz"
+      sha256 "4c2cf4ba6f6f21a58fbe0c24984b5c914269a26c202f967152424bcdeeabe2e8"
     end
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.33.0.tar.gz"
-      sha256 "84cfe1b5479be6fa675866ab2d348a33e337561a7edec88e939430482c8fdd7c"
+      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.33.1.tar.gz"
+      sha256 "e6ee92c86e850909cf3d8fafbba5450f08d460526ae1dd84b45034ab0d345319"
       depends_on "rust" => :build
     end
   end
   on_linux do
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.33.0/glyd-v0.33.0-linux-x86_64.tar.gz"
-      sha256 "9355e62ac07c45248e8739c02b7f8e9438fc86fb122491de7911b00cc496dbb4"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.33.1/glyd-v0.33.1-linux-x86_64.tar.gz"
+      sha256 "890c3e309cf58672bc03dc1692d7c364af3a7f6a40ef32e93dee6b4c8e39221b"
     end
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.33.0/glyd-v0.33.0-linux-aarch64.tar.gz"
-      sha256 "c6e06e12f84bed1f18042eef14e53febc539257cc6342f18bff3b389448714ff"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.33.1/glyd-v0.33.1-linux-aarch64.tar.gz"
+      sha256 "714b7224d39e5ef6b315ff46731d8438cb63c3f09a9ba7a34ea382cc5f4036b2"
     end
   end
 
