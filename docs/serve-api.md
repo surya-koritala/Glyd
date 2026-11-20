@@ -233,7 +233,9 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
 - On a level's engine that runs one request at a time (`concurrency: 1`: a model with a draft model, or split across GPUs, and the
   families the scheduler does not batch yet), `logprobs` and `min_tokens` are refused: it gives no log-probabilities and has no
   least length. `fields.refused` says so. Gemma 4, Qwen3.8 dense (the Qwen3.5 layout) and Muse Spark on one GPU are served by the
-  scheduler to `--users` at once (`limits.concurrency`), with both.
+  scheduler to `--users` at once (`limits.concurrency`), with both. `GLYD_ENGINE_BATCH_PREFILL=0` makes every reply the one the same
+  request alone gets: prompts run one a pass, and Muse Spark's decode steps one sequence each (its experts' products differ in the last
+  bits at several rows).
 - A field this server does not know is answered without it, and said once on stderr.
 - `model` is not checked: one model is served, and the reply names it.
 - The context holds the prompt and the reply. A prompt of the context's size or more is refused; with `max_tokens` (or
