@@ -345,8 +345,8 @@ fn error_body(msg: &str, code: u16) -> String {
     format!("{{\"error\":{{\"message\":{},\"type\":\"invalid_request_error\",\"code\":{code}}}}}", jstr(&said(msg)))
 }
 
-/// The server runs alone (qwenserve): no vLLM behind it for a refusal to point at, `tool_choice: "none"` keeps the tools out of the prompt (the model would write calls that are not read), and `response_format`'s
-/// JSON is asked for in the prompt, the answer begun with `{` (not a grammar: the model can still write JSON that does not parse, or that misses the schema).
+/// The server runs alone (qwenserve): no vLLM behind it for a refusal to point at, `tool_choice: "none"` keeps the tools out of the prompt (the model would write calls that are not read), and a call
+/// required of one tool is a call of that tool.
 pub static STANDALONE: AtomicBool = AtomicBool::new(false);
 
 /// A refusal's words; where the server runs alone, without the notes that point at vLLM.
@@ -370,7 +370,7 @@ fn without_vllm(msg: &str) -> String {
     m
 }
 
-/// The instruction for JSON mode where the server runs alone and the request asks for it (`response_format` json_object, or json_schema with its schema; vLLM's `guided_json` and `structured_outputs` json): the grammar
+/// The instruction for JSON mode where the request asks for it (`response_format` json_object, or json_schema with its schema; vLLM's `guided_json` and `structured_outputs` json): the grammar
 /// (`constraint_spec`) holds the reply to it, and the prompt says what it is, so that the model writes toward it.
 fn json_rule(v: &Value) -> Option<String> {
     let rule = "Reply with one JSON object and nothing else: no code fence, no text before or after it.";
