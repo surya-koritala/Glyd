@@ -205,6 +205,25 @@ pub(super) fn chat_of(v: &Value) -> std::result::Result<Value, String> {
     Ok(obj(o))
 }
 
+/// The tools as a response repeats them: each function with its description, its parameters and `strict` (false where the request gave none: this server does not hold arguments to the schema of a tool, only a forced call's).
+fn tools_echo(v: &Value) -> Value {
+    let list = v.get("tools").and_then(Value::as_array).unwrap_or(&[]);
+    Value::Array(
+        list.iter()
+            .map(|t| {
+                let get = |k: &str, or: Value| t.get(k).filter(|x| **x != Value::Null).cloned().unwrap_or(or);
+                obj(vec![
+                    ("type", get("type", Value::from("function"))),
+                    ("name", get("name", Value::from(""))),
+                    ("description", get("description", Value::Null)),
+                    ("parameters", get("parameters", Value::Null)),
+                    ("strict", get("strict", Value::Bool(false))),
+                ])
+            })
+            .collect(),
+    )
+}
+
 /// What a response says besides its output: the request's own settings as the API repeats them.
 struct Ctx {
     id: String,
@@ -224,13 +243,37 @@ impl Ctx {
             ("metadata", get("metadata", Value::Object(vec![]))),
             ("parallel_tool_calls", get("parallel_tool_calls", Value::Bool(true))),
             ("previous_response_id", Value::Null),
-            ("reasoning", obj(vec![("effort", v.get("reasoning").and_then(|r| r.get("effort")).cloned().unwrap_or(Value::Null)), ("summary", Value::Null)])),
+            // (`minimal` is run as none, and said so)
+            (
+                "reasoning",
+                obj(vec![
+                    (
+                        "effort",
+                        v.get("reasoning").and_then(|r| r.get("effort")).map_or(Value::Null, |e| {
+                            if e.as_str() == Some("minimal") {
+                                Value::from("none")
+                            } else {
+                                e.clone()
+                            }
+                        }),
+                    ),
+                    ("summary", Value::Null),
+                ]),
+            ),
             ("store", Value::Bool(false)),
-            ("temperature", get("temperature", Value::Null)),
+            ("temperature", get("temperature", Value::from(1u64))),
             ("text", obj(vec![("format", v.get("text").and_then(|t| t.get("format")).cloned().unwrap_or_else(|| obj(vec![("type", Value::from("text"))])))])),
             ("tool_choice", get("tool_choice", Value::from("auto"))),
-            ("tools", get("tools", Value::Array(vec![]))),
-            ("top_p", get("top_p", Value::Null)),
+            ("tools", tools_echo(v)),
+            ("top_p", get("top_p", Value::from(1u64))),
+            // (what the specification's response has beside: the penalties asked for, no tool-call limit, the one tier, and the keys of a request, null where it sent none)
+            ("presence_penalty", get("presence_penalty", Value::from(0u64))),
+            ("frequency_penalty", get("frequency_penalty", Value::from(0u64))),
+            ("top_logprobs", Value::from(0u64)),
+            ("max_tool_calls", get("max_tool_calls", Value::Null)),
+            ("service_tier", Value::from("default")),
+            ("safety_identifier", get("safety_identifier", Value::Null)),
+            ("prompt_cache_key", get("prompt_cache_key", Value::Null)),
             ("truncation", Value::from("disabled")),
             ("user", get("user", Value::Null)),
         ];
@@ -243,6 +286,8 @@ impl Ctx {
             format!("\"id\":{}", jstr(&self.id)),
             "\"object\":\"response\"".to_string(),
             format!("\"created_at\":{}", self.created),
+            // (when it ended: not before)
+            format!("\"completed_at\":{}", if status == "in_progress" { "null".to_string() } else { now().to_string() }),
             format!("\"status\":\"{status}\""),
             format!("\"model\":{}", jstr(&self.model)),
             format!("\"output\":[{}]", output.join(",")),

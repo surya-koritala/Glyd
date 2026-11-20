@@ -100,7 +100,7 @@ A container on Linux reaches a server on this computer's own address only from t
 Docker Desktop (macOS, Windows) and Podman reach it as `host.docker.internal` and `host.containers.internal`; the Host check answers those two names (it still refuses every other name and every other site's Origin), and
 the address stays this computer's own. A server on another interface (`--host 0.0.0.0`) turns the Host and Origin checks off: give it a key.
 
-The clients are checked in `tests/clients/`: `run.sh URL [KEY]` runs the OpenAI, Anthropic, Ollama and LangChain checks, each with the newest release of its library, against a running server; `openwebui_check.py`
+The clients are checked in `tests/clients/`: `run.sh URL [KEY]` runs the OpenAI, Anthropic, Ollama, LangChain and Open Responses checks (the HTTP tests of the Open Responses compliance suite, with every response and stream event checked against the specification's schema in `tests/clients/openresponses/`), each with the newest release of its library, against a running server; `openwebui_check.py`
 checks an Open WebUI container. Claude Code and Open WebUI were run against Qwen3-8B on an RTX 4080 SUPER for v0.34.0 (the numbers are in the pull request).
 
 ## /v1/responses

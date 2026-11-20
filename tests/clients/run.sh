@@ -9,10 +9,10 @@ set -u
 URL=$1; KEY=${2:-}; EXTRA="${*:3}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 VENV=${VENV:-$(mktemp -d)/venv}
-python3 -m venv "$VENV" && "$VENV/bin/pip" install -q openai anthropic ollama requests langchain-openai langchain-anthropic langchain-ollama || exit 99
+python3 -m venv "$VENV" && "$VENV/bin/pip" install -q openai anthropic ollama requests jsonschema langchain-openai langchain-anthropic langchain-ollama || exit 99
 KEYARG=(); [ -n "$KEY" ] && KEYARG=(--key "$KEY")
 bad=0
-for c in openai anthropic ollama langchain; do
+for c in openai anthropic ollama langchain openresponses; do
   echo "== $c"
   case $c in openai | ollama) extra="$EXTRA" ;; *) extra="" ;; esac
   "$VENV/bin/python" "$HERE/${c}_check.py" "$URL" "${KEYARG[@]}" $extra || bad=$((bad + $?))
