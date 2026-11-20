@@ -37,8 +37,9 @@ on:
 permissions:
   contents: read
 
+# A pull request's build has its own group, so a push to main does not replace it in the queue.
 concurrency:
-  group: pages
+  group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.ref) || 'pages' }}
   cancel-in-progress: false
 
 env:
