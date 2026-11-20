@@ -144,6 +144,63 @@ jobs:
           done
           target/ci/glyd-engine$exe --version
 
+  # The Rust workspace on its minimum Rust (rust-version in every manifest): what compiles on 1.89 and no newer.
+  msrv:
+    name: Minimum Rust version
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # (rust-toolchain.toml pins the toolchain of the other jobs; this one asks for the minimum)
+      RUSTUP_TOOLCHAIN: "1.89.0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.89.0"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --workspace --all-targets
+
+  # The AMD build of the engine's kernels (GLYD_HIP=1: kernels/engine.cu by hipcc for RDNA 3 and 4, and the engine's Rust under cfg glyd_hip), compiled and not run:
+  # GitHub's machines have no AMD GPU, and ROCm's compiler from AMD's apt repository is all the build needs.
+  hip:
+    name: HIP kernels compile (AMD)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GLYD_HIP: "1"
+      HIPCC: /opt/rocm/bin/hipcc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: hip
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: ROCm's HIP compiler
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://repo.radeon.com/rocm/rocm.gpg.key -o "$RUNNER_TEMP/rocm.gpg.key"
+          echo "2de99e2354646a90d9903e2a669fc4e36b02c1bbff7075c481e12d7edab2c88b  $RUNNER_TEMP/rocm.gpg.key" | sha256sum --check
+          sudo mkdir -p /etc/apt/keyrings
+          gpg --dearmor < "$RUNNER_TEMP/rocm.gpg.key" | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.1 noble main" | sudo tee /etc/apt/sources.list.d/rocm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends hip-dev rocm-device-libs
+          /opt/rocm/bin/hipcc --version
+      - run: cargo build --profile ci -p glyd-engine
+
   # rustfmt, clippy with warnings denied (both feature sets of the engine), and the dependency policy (deny.toml).
   # Clippy's findings from before the baseline are allowed by name in Cargo.toml's [workspace.lints.clippy].
   lint:
