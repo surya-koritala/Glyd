@@ -97,7 +97,7 @@ jobs:
             echo "rust=false" >> "$GITHUB_OUTPUT"
           fi
           # The AMD build: the kernels, their HIP header, the build script and the engine's sources that have a HIP form (cfg glyd_hip), the lock file and this workflow.
-          if grep -Eq '^(glyd-engine/(kernels/|build\.rs|Cargo\.toml|src/(ffi|dev|kern|plan)\.rs)|gpu/hip\.h|Cargo\.lock|\.github/workflows/ci\.yml)' "$RUNNER_TEMP/changed"; then
+          if grep -Eq '^(glyd-engine/(kernels/|build\.rs|Cargo\.toml|src/)|glyd-gpu/|gpu/hip\.h|Cargo\.lock|\.github/workflows/ci\.yml)' "$RUNNER_TEMP/changed"; then
             echo "hip=true" >> "$GITHUB_OUTPUT"
           else
             echo "hip=false" >> "$GITHUB_OUTPUT"
@@ -220,24 +220,24 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      # A compile that passed is remembered by the content of everything it reads: the same files again (a rerun, a push that changed nothing the AMD build reads) skip
+      # the install and the build, and the job passes. (A cache of hipcc's output through cargo did not work: cargo rebuilt the engine's crate, and hipcc, whatever the file times.)
+      - id: memo
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: ${{ runner.temp }}/hip-compiled
+          key: hip-compiled-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'glyd-engine/Cargo.toml', 'glyd-engine/src/**', 'glyd-gpu/**', 'gpu/hip.h', 'Cargo.lock', 'rust-toolchain.toml', '.github/workflows/ci.yml') }}
+      - if: steps.memo.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: "1.97.1"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - if: steps.memo.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: hip
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # (the engine's own build, the kernels hipcc made, is what the cache is for)
-          cache-workspace-crates: true
-      # Cargo reruns a build script when a source file is newer than its last build, and a checkout makes every file new: the files get the times their content last
-      # changed (scripts/ci_restore_mtimes.py), so hipcc runs again only when a kernel or the build script changed.
-      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
-        with:
-          path: ${{ runner.temp }}/mtimes-hip.json
-          key: hip-mtimes-${{ github.run_id }}
-          restore-keys: hip-mtimes-
-      - run: python3 scripts/ci_restore_mtimes.py "$RUNNER_TEMP/mtimes-hip.json"
       - name: ROCm 7.2.1's HIP compiler
+        if: steps.memo.outputs.cache-hit != 'true'
         run: |
           curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://repo.radeon.com/rocm/rocm.gpg.key -o "$RUNNER_TEMP/rocm.gpg.key"
           echo "2de99e2354646a90d9903e2a669fc4e36b02c1bbff7075c481e12d7edab2c88b  $RUNNER_TEMP/rocm.gpg.key" | sha256sum --check
@@ -252,12 +252,10 @@ jobs:
           echo "ROCM_PATH=$rocm" >> "$GITHUB_ENV"
           echo "HIPCC=$rocm/bin/hipcc" >> "$GITHUB_ENV"
           "$rocm/bin/hipcc" --version
-      - run: cargo build --profile ci -p glyd-engine
-      - if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
-        with:
-          path: ${{ runner.temp }}/mtimes-hip.json
-          key: hip-mtimes-${{ github.run_id }}
+      - if: steps.memo.outputs.cache-hit != 'true'
+        run: cargo build --profile ci -p glyd-engine
+      - if: steps.memo.outputs.cache-hit != 'true'
+        run: mkdir -p "$RUNNER_TEMP/hip-compiled" && date -u > "$RUNNER_TEMP/hip-compiled/at"
 
   # rustfmt, clippy with warnings denied (both feature sets of the engine), and the dependency policy (deny.toml).
   # Clippy's findings from before the baseline are allowed by name in Cargo.toml's [workspace.lints.clippy].
