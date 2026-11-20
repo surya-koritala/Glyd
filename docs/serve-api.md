@@ -28,8 +28,10 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   where N is free (else it says so and goes on): for the programs that look for Ollama at its port; Ollama's API is at
   the server's own port too.
 - The GPU is the one with the most free memory of those CUDA_VISIBLE_DEVICES shows. The context is `--ctx N` (`--context`);
-  without it, what fits, up to 32,768 at a level. A level's engine runs one request at a time (the others wait in order);
-  the lossless engine runs `--users N` at once (1 to 8, 4 if not given).
+  without it, what fits, up to 32,768 at a level (served to several users, what fits each of them, at least 4,096). `--users N`
+  (4 if not given) is how many requests run at once: 1 to 8 on the lossless Qwen3 engine; 1 to 64 for Gemma 4, Qwen3.8 dense
+  and Muse Spark on one GPU, as many as the GPU's memory holds (the server says how many); the other level engines run one
+  request at a time (the others wait in order).
 - A model too big for one GPU (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark) uses all the GPUs shown. On datacenter
   GPUs (A100, H100, B200) that reach each other directly, Kimi-K3 and DeepSeek-V4 put every layer across all of them:
   each GPU holds a slice of every big matrix and the slices are gathered GPU to GPU, so every GPU works on every token.
@@ -55,15 +57,40 @@ driver's again when the process is gone (the record: 2,223 MiB used before the s
 ## The key and the address checks
 
 - With a key, every path under `/v1` needs `Authorization: Bearer KEY` (the scheme in any case), else
-  `401` (`{"error": {"message": ..., "type": "authentication_error", "param": null, "code": "invalid_api_key"}}`, with `WWW-Authenticate: Bearer`). `/`, `/health` and `/stats` are open. The key is compared as SHA-256 digests in constant time.
+  `401` (`{"error": {"message": ..., "type": "authentication_error", "param": null, "code": "invalid_api_key"}}`, with `WWW-Authenticate: Bearer`). `/`, `/health`, `/ready` and `/stats` are open; `/metrics` needs the key. The key is compared as SHA-256 digests in constant time.
 - On this computer's own address (the default, and a loopback `--host`): a Host that is not localhost, 127.0.0.1, [::1], a container's name for this computer (`host.docker.internal`, `gateway.docker.internal`, `kubernetes.docker.internal`, `host.containers.internal`, `host.lima.internal`, `host.minikube.internal`) or a name in `--allowed-hosts` is 421. On every address an Origin that is not the server's own (`http://` and the Host; `https://` too where the server is open to the network, for a proxy that ends TLS) or one in `--allowed-origins` is 403 (a CORS preflight too). A program that sends no Origin (curl, the OpenAI libraries) is answered.
 - Limits: a body of 16 MiB (413), a header block of 64 KiB or 256 headers (431), 64 connections at once (503), the request line and headers within 30 s and the body within 120 s (408), a write to a client that reads nothing 60 s.
+
+## Operations: metrics, readiness and drain
+
+`GET /metrics` (guarded by the key where there is one: Prometheus takes `authorization: {credentials: ...}` in its scrape config) answers, from the first request on:
+
+| metric | kind | what |
+|---|---|---|
+| `glyd_requests_total{api}` | counter | requests taken for `chat_completions`, `completions`, `messages`, `responses`, `ollama` |
+| `glyd_requests_refused_total{code}` | counter | requests refused before any work: 401, 403, 421, 408, 413, 431, 503 (a drain) |
+| `glyd_requests_in_flight` | gauge | requests taken and not yet answered to their end |
+| `glyd_prompt_tokens_total`, `glyd_prefix_cache_hit_tokens_total`, `glyd_generated_tokens_total` | counter | prompt tokens run or found in the prefix cache, those found, tokens written |
+| `glyd_sequences_finished_total{reason}` | counter | `stop`, `length`, `stopped` (the client left or cancelled), `error` |
+| `glyd_time_to_first_token_seconds` | histogram | from the sequence reaching the scheduler to its first token (the queue and the prompt included) |
+| `glyd_time_per_output_token_seconds` | histogram | between two tokens of one reply |
+| `glyd_request_duration_seconds` | histogram | a sequence from the scheduler to its end |
+| `glyd_queue_depth`, `glyd_sequences_running` | gauge | sequences waiting for room, sequences running |
+| `glyd_kv_cache_pages`, `glyd_kv_cache_pages_used`, `glyd_kv_cache_usage_ratio` | gauge | the KV cache's pages (not at a lossy level: its engine has no paged cache) |
+| `glyd_gpu_memory_used_bytes{gpu}`, `glyd_gpu_memory_total_bytes{gpu}` | gauge | the computer's GPU memory by `nvidia-smi` (read at most every 5 s; left out where there is none) |
+| `glyd_ready`, `glyd_draining`, `glyd_uptime_seconds`, `glyd_build_info{version,model}` | gauge | the server's own state |
+
+The lossy levels (no scheduler) count tokens, the two latencies and the ends too, from the start of the reply, so their first token excludes the wait in line. `glyd service` answers `/ready` and `/metrics` with its own state (`glyd_service_models_loaded`, requests, refusals, in flight); a model's tokens and latencies are on that model's own `glyd serve`.
+
+SIGTERM drains: the server stops taking requests (every new one for an API is `503` with `Retry-After: 1`, `/ready` is `503 draining`; `/health`, the model list and `/metrics` still answer), lets the requests in flight end, and exits 0 when the last has ended, or 1 when `--drain-timeout SECS` (default 30) passes with some still running (they end with the process). A second SIGTERM exits at once (143). Ctrl-C is not a drain. `glyd service` drains the same way and then unloads its models. Not done yet: traces per request (queue, prefill, decode) and the experts' cache usage.
 
 ## Endpoints
 
 | | key | |
 | :--- | :--- | :--- |
-| `GET /health` | no | `{"status":"ok"}` |
+| `GET /health` | no | `{"status":"ok"}`: the process is up (a load balancer's liveness probe) |
+| `GET /ready` | no | `{"status":"ready"}` where the model is loaded and the server takes requests; 503 `{"status":"loading"}` while it loads, 503 `{"status":"draining"}` after SIGTERM (readiness probe) |
+| `GET /metrics` | with a key | Prometheus text (version 0.0.4): see Operations |
 | `GET /v1/models`, `GET /v1/models/ID` | yes | the one model: `id` is MODEL as typed (with its tag, or the directory's path), `max_model_len` the context; another id is 404 |
 | `POST /v1/chat/completions` | yes | a chat, JSON or SSE |
 | `POST /v1/completions` | yes | a plain completion, JSON or SSE; `suffix` makes it a fill in the middle (see below) |

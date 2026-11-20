@@ -6,5 +6,8 @@
 //! function per kind with its tests against the per-family references (`*_ref.rs`) and against Hugging Face transformers.
 
 pub mod backend;
+pub mod describe;
+#[cfg(test)]
+mod describe_tests;
 pub mod kinds;
 pub mod reference;
