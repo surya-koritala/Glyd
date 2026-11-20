@@ -25,6 +25,7 @@ pub const COMMANDS: &[&str] = &[
     "service",
     "ps",
     "stop",
+    "bench",
     "verify",
     "prepare",
     "costs",
