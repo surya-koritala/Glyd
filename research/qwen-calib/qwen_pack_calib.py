@@ -11,6 +11,10 @@ An expert with no calibration token is packed as the packer packs it (nearest en
 
   QWEN_SNAP=.../flash-next python qwen_pack_calib.py --plan plan.json --calib DIR --out PACK [--layers 0:49] [--damp 0.01] [--beta 1.0] [--batch 16]
   QWEN_SNAP=.../flash-next python qwen_pack_calib.py --side-of PACK --only cb4 --fmt cb3 --calib DIR --out PACK/hot    (the GPU copies, calibrated too)
+  QWEN_SNAP=.../flash-next python qwen_pack_calib.py --damage DAMAGE.json --calib DIR --out DIR    (no pack: each expert's damage at cb2, cb3, cb4)
+  python qwen_pack_calib.py --allocate DAMAGE.json --budget-gb G --out PLAN.json    (the formats that cost the least damage in G GB of experts)
+An expert's damage at a format is its GPTQ output error tr(dW H dW^T) (up and down, each H per routed token) times its use (the sum of its
+routing weights squared over the calibration tokens, per token): what the format costs the model's output on the calibration text.
 Logs per layer the output error tr(dW H dW^T) summed over the experts, nearest-entry vs GPTQ."""
 import argparse, json, os, sys, time
 import torch
@@ -46,7 +50,7 @@ def hessians(x, xr, idx, wt, gue, e, beta, hu_all):
         Hu = Hu + xs.T @ xs / (g * g).sum()
         ar = act[rows] * g[:, None]
         Hd = Hd + ar.T @ ar / (g * g).sum()
-    return Hu, Hd, len(rows)
+    return Hu, Hd, len(rows), (float((g * g).sum()) / len(x) if len(rows) else 0.0)
 
 
 def gptq(W, H, cb, per_row, damp, step=128):
@@ -89,14 +93,130 @@ def err(W, Q, H):
     return torch.einsum("brc,bcd,brd->", d, H, d).item()
 
 
+def err_b(W, Q, H):
+    """err for each of the batch's experts."""
+    d = W - Q
+    return torch.einsum("brc,bcd,brd->b", d, H, d)
+
+
+def expert_bytes(fmt):
+    """An expert's bytes at a format: up (1,280 rows) and downT (640) of 2,560 codes, each row its bf16 codebook."""
+    return (1280 + 640) * (P.ROW_BYTES[fmt] + 2 * P.K_ENTRIES[fmt])
+
+
+def damage(a):
+    """--damage: every expert's damage at the formats of --fmts (see the docstring), layer by layer into a.damage (resumed where it stopped).
+    An existing table gains the formats it lacks, layer by layer; its formats stay ordered by size (allocate's upgrades go up that list)."""
+    want = a.fmts.split(",")
+    out = json.load(open(a.damage)) if os.path.exists(a.damage) else {"fmts": [], "layers": {}, "calib": os.path.abspath(a.calib)}
+    have = out["fmts"]
+    fmts = sorted(set(have) | set(want), key=expert_bytes)
+    ck = P.Ckpt()
+    l0, l1 = (int(x) for x in a.layers.split(":"))
+    for l in range(l0, min(l1, P.NL)):
+        old = out["layers"].get(str(l))
+        if old is not None and old.get("fmts", have) == fmts:
+            continue
+        todo = [f for f in fmts if old is None or f not in old.get("fmts", have)]
+        t0 = time.time()
+        gu = ck.get(P.prefix(l) + "mlp.experts.gate_up_proj")
+        dn = ck.get(P.prefix(l) + "mlp.experts.down_proj")
+        s = P.layer_signs(l)
+        cal = calib_of(a.calib, l)
+        got = {f: [0.0] * P.NE for f in todo}
+        use = [0.0] * P.NE
+        with P.Lock():
+            gug, dng = gu.to(DEV), dn.to(DEV)
+            x = cal["x"].to(DEV)
+            xr = P.rotate(x, s)
+            idx, wt = cal["idx"].to(DEV).long(), cal["w"].to(DEV)
+            hu_all = xr.T @ xr / len(xr)
+            for b0 in range(0, P.NE, a.batch):
+                eb = list(range(b0, min(b0 + a.batch, P.NE)))
+                Wu = torch.stack([P.rotate(gug[e], s) for e in eb])
+                Wd = torch.stack([P.rotate(dng[e].T, s) for e in eb])
+                Hu = torch.zeros(len(eb), P.HID, P.HID, device=DEV)
+                Hd = torch.zeros(len(eb), P.INTER, P.INTER, device=DEV)
+                for j, e in enumerate(eb):
+                    Hu[j], Hd[j], _, use[e] = hessians(x, xr, idx, wt, gug[e], e, a.beta, hu_all)
+                WdT = Wd.transpose(1, 2).contiguous()
+                for fmt in todo:
+                    k = P.K_ENTRIES[fmt]
+                    cbu = torch.stack([P.fit_codebooks(w, k) for w in Wu])
+                    cbd = torch.stack([P.fit_codebooks(w, k) for w in Wd])
+                    cu, cd = gptq(Wu, Hu, cbu, True, a.damp), gptq(WdT, Hd, cbd, False, a.damp)
+                    d = err_b(Wu, deq(cu, cbu, True), Hu) + err_b(WdT, deq(cd, cbd, False), Hd)
+                    for j, e in enumerate(eb):
+                        got[fmt][e] = float(d[j]) * use[e]
+            del gug, dng, x, xr
+            torch.cuda.empty_cache()
+        prev = {} if old is None else {f: [d[i] for d in old["damage"]] for i, f in enumerate(old.get("fmts", have))}
+        prev.update(got)
+        dmg = [[prev[f][e] for f in fmts] for e in range(P.NE)]
+        out["layers"][str(l)] = {"damage": dmg, "use": use, "fmts": fmts}
+        out["fmts"] = fmts
+        json.dump(out, open(a.damage + ".part", "w")); os.replace(a.damage + ".part", a.damage)
+        tot = ", ".join(f"{f} {sum(d[i] for d in dmg):.3e}" for i, f in enumerate(fmts))
+        print(f"layer {l}: {time.time() - t0:.0f} s, damage {tot}, unused {use.count(0.0)}", flush=True)
+
+
+def allocate(dm, budget, per_layer=False):
+    """The formats (per layer, per expert) that cost the least summed damage in `budget` bytes of experts: every expert from cb2, then the
+    upgrades that save the most damage per byte (cb2 -> cb3 before cb3 -> cb4 of the same expert), while they fit. Returns (plan, bytes, damage).
+    per_layer: each layer gets an equal share of the budget (damage chooses within a layer only; its scale grows with depth, KL's does not)."""
+    if per_layer:
+        plan, used, dmg = {}, 0, 0.0
+        for l, v in dm["layers"].items():
+            p, u, d = allocate({"fmts": dm["fmts"], "layers": {l: v}}, budget / len(dm["layers"]))
+            plan.update(p); used += u; dmg += d
+        return plan, used, dmg
+    import heapq
+    fmts = dm["fmts"]
+    cost = [expert_bytes(f) for f in fmts]
+    assert all(v.get("fmts", fmts) == fmts for v in dm["layers"].values()), "layers of the table with other formats: run --damage again"
+    lay = {int(l): v["damage"] for l, v in dm["layers"].items()}
+    at = {l: [0] * len(d) for l, d in lay.items()}
+    used = sum(cost[0] * len(d) for d in lay.values())
+    heap = []
+    def push(l, e):
+        f = at[l][e]
+        if f + 1 < len(fmts):
+            save = lay[l][e][f] - lay[l][e][f + 1]
+            heapq.heappush(heap, (-save / (cost[f + 1] - cost[f]), l, e))
+    for l, d in lay.items():
+        for e in range(len(d)):
+            push(l, e)
+    while heap:
+        _, l, e = heapq.heappop(heap)
+        f = at[l][e]
+        step = cost[f + 1] - cost[f]
+        if used + step > budget:
+            continue
+        at[l][e], used = f + 1, used + step
+        push(l, e)
+    plan = {str(l): [fmts[f] for f in at[l]] for l in sorted(lay)}
+    return plan, used, sum(lay[l][e][at[l][e]] for l in lay for e in range(len(lay[l])))
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--plan"); ap.add_argument("--calib", required=True); ap.add_argument("--out", required=True)
+    ap.add_argument("--plan"); ap.add_argument("--calib"); ap.add_argument("--out", required=True)
     ap.add_argument("--layers", default="0:49"); ap.add_argument("--damp", type=float, default=0.01); ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--beta", type=float, default=1.0, help="the weight of the all-token prior in each expert's Hessians")
     ap.add_argument("--side-of", default=None, help="a sidecar of this (calibrated) pack: its --only experts again at --fmt (as qwen_pack.py sidecar)")
     ap.add_argument("--only", default="cb4"); ap.add_argument("--fmt", default="cb3")
+    ap.add_argument("--damage", help="(no pack) each expert's damage at cb2, cb3, cb4 into this JSON"); ap.add_argument("--allocate", help="a --damage JSON: write the plan for --budget-gb to --out")
+    ap.add_argument("--budget-gb", type=float); ap.add_argument("--fmts", default="cb2,cb3,cb4", help="--damage's formats (tern, cb2, cb3, cb4)")
+    ap.add_argument("--per-layer", action="store_true", help="--allocate: an equal share of the budget per layer")
     a = ap.parse_args()
+    if a.allocate:
+        plan, used, dmg = allocate(json.load(open(a.allocate)), a.budget_gb * 1e9, a.per_layer)
+        share = {f: sum(v.count(f) for v in plan.values()) for f in P.K_ENTRIES}
+        json.dump({"layers": plan, "bytes": used, "damage": dmg, "from": os.path.abspath(a.allocate)}, open(a.out, "w"))
+        print(f"plan {a.out}: {used / 1e9:.2f} GB of experts, damage {dmg:.4e}, {share}")
+        return
+    if a.damage:
+        return damage(a)
     os.makedirs(a.out, exist_ok=True)
     mp = f"{a.out}/meta.json"
     if a.side_of:
@@ -115,7 +235,7 @@ def main():
         gu = ck.get(P.prefix(l) + "mlp.experts.gate_up_proj")   # [512, 1280, 2560] bf16
         dn = ck.get(P.prefix(l) + "mlp.experts.down_proj")                  # [512, 2560, 640]
         s = P.layer_signs(l)
-        cal = calib_of(a.calib, l) if l < P.NL else None
+        cal = calib_of(a.calib, l) if a.calib and l < P.NL else None
         out, e_rtn, e_gptq, tokens = {}, [0.0, 0.0], [0.0, 0.0], []
         tm = {"wait": 0.0, "load": 0.0, "hess": 0.0, "gptq": 0.0, "check": 0.0}
         tick = lambda k, t: tm.__setitem__(k, tm[k] + time.time() - t) or time.time()
@@ -143,7 +263,7 @@ def main():
                     Hd = torch.zeros(len(eb), P.INTER, P.INTER, device=DEV)
                     if cal is not None:
                         for j, e in enumerate(eb):
-                            Hu[j], Hd[j], n = hessians(x, xr, idx, wt, gug[e], e, a.beta, hu_all)
+                            Hu[j], Hd[j], n, _ = hessians(x, xr, idx, wt, gug[e], e, a.beta, hu_all)
                             tokens.append(n)
                     torch.cuda.synchronize(); t = tick("hess", t)
                     cu = gptq(Wu, Hu, cbu, True, a.damp)
@@ -190,6 +310,29 @@ def selftest():
         eg, er = err(W, deq(c, cb, per_row), H), err(W, deq(r, cb, per_row), H)
         assert c.min() >= 0 and c.max() < k and eg < 0.9 * er, (per_row, eg, er)
         print(f"selftest per_row={per_row}: GPTQ {eg / er:.3f}x of nearest-entry")
+    # allocate: within the budget, the upgrade that saves the most damage per byte first, cb3 before cb4 of an expert
+    c2, c3, c4 = (expert_bytes(f) for f in ("cb2", "cb3", "cb4"))
+    dm = {"fmts": ["cb2", "cb3", "cb4"], "layers": {"0": {"damage": [[10.0, 2.0, 1.0], [1.0, 0.9, 0.85], [8.0, 7.9, 0.1]]}}}
+    plan, used, dmg = allocate(dm, 3 * c2 + (c3 - c2))
+    assert plan["0"] == ["cb3", "cb2", "cb2"] and used == 3 * c2 + (c3 - c2), (plan, used)
+    plan, used, dmg = allocate(dm, 3 * c4)
+    assert plan["0"] == ["cb4", "cb4", "cb4"] and abs(dmg - 1.95) < 1e-9, (plan, dmg)
+    plan, _, _ = allocate(dm, 3 * c2 + (c3 - c2) + (c4 - c3) + 1)
+    assert plan["0"] == ["cb4", "cb2", "cb2"], plan
+    two = {"fmts": dm["fmts"], "layers": {"0": dm["layers"]["0"], "1": {"damage": [[100.0, 50.0, 0.0]] * 3}}}
+    plan, used, _ = allocate(two, 2 * (3 * c2 + (c3 - c2)), per_layer=True)
+    assert plan["0"] == ["cb3", "cb2", "cb2"] and plan["1"].count("cb3") == 1 and used == 2 * (3 * c2 + (c3 - c2)), (plan, used)
+    print("selftest allocate: budget kept, most damage saved per byte first, per layer")
+    # tern: five base-3 digits a byte, code 5 b + d at digit d of byte b (the engine's layout), round trip; its size; allocation from it
+    codes = torch.randint(0, 3, (7, 2560), dtype=torch.uint8)
+    b = P.pack_bits(codes, "tern")
+    assert b.shape == (7, P.ROW_BYTES["tern"]) and int(b[0, 0]) == sum(int(codes[0, d]) * 3 ** d for d in range(5))
+    assert torch.equal(P.unpack_bits(b, "tern").to(torch.uint8), codes)
+    assert expert_bytes("tern") == (1280 + 640) * (512 + 6) and expert_bytes("cb2") == 1244160
+    dm = {"fmts": ["tern", "cb2"], "layers": {"0": {"damage": [[5.0, 1.0], [0.2, 0.1]]}}}
+    plan, used, _ = allocate(dm, 2 * expert_bytes("tern") + (expert_bytes("cb2") - expert_bytes("tern")))
+    assert plan["0"] == ["cb2", "tern"], plan
+    print("selftest tern: packing round trip, size, allocation from tern")
 
 
 if __name__ == "__main__":
