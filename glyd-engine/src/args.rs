@@ -73,10 +73,28 @@ const SWITCHES: &[&str] = &[
     "decode",
     "json",
     "all",
+    "insecure-no-auth",
 ];
 #[cfg(not(feature = "dev"))]
-const SWITCHES: &[&str] =
-    &["no-think", "help", "quiet", "chat", "version", "lossy", "precise", "predict", "load", "no-gpu", "costs", "json", "all", "compare", "bar", "no-draft"];
+const SWITCHES: &[&str] = &[
+    "no-think",
+    "help",
+    "quiet",
+    "chat",
+    "version",
+    "lossy",
+    "precise",
+    "predict",
+    "load",
+    "no-gpu",
+    "costs",
+    "json",
+    "all",
+    "compare",
+    "bar",
+    "no-draft",
+    "insecure-no-auth",
+];
 
 #[derive(Clone)]
 pub struct Args {
