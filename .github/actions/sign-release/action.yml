@@ -1,0 +1,61 @@
+name: Sign a release's files
+description: >-
+  For the release files in `dir` (tarballs and wheels): a SHA-256 list of them, an SBOM of the source (SPDX), GitHub build-provenance and SBOM attestations for each file, and
+  keyless Sigstore (cosign) signatures of every tarball and of the list, as `.sigstore.json` bundles beside them. The calling job needs `id-token: write` and
+  `attestations: write`, and the source checked out at the commit the files were built from (the SBOM reads its lock files).
+inputs:
+  dir:
+    description: Folder with the files to sign
+    required: true
+  sums:
+    description: Name of the SHA-256 list written to `dir`
+    default: SHA256SUMS
+  sbom:
+    description: Name of the SBOM written to `dir`
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: SHA-256 of every tarball and wheel
+      shell: bash
+      env:
+        DIR: ${{ inputs.dir }}
+        SUMS: ${{ inputs.sums }}
+      run: |
+        set -euo pipefail
+        cd "$DIR"
+        files=$(ls -1 | grep -E '\.(tar\.gz|whl)$' | sort)
+        [ -n "$files" ] || { echo "no tarball or wheel in $DIR"; exit 1; }
+        # shellcheck disable=SC2086
+        sha256sum $files > "$SUMS"
+        cat "$SUMS"
+    - name: SBOM of the source (SPDX)
+      uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      with:
+        path: .
+        format: spdx-json
+        output-file: ${{ inputs.dir }}/${{ inputs.sbom }}
+        upload-artifact: false
+        upload-release-assets: false
+    - name: Build provenance of every file
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-checksums: ${{ inputs.dir }}/${{ inputs.sums }}
+    - name: SBOM attestation of every file
+      uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+      with:
+        subject-checksums: ${{ inputs.dir }}/${{ inputs.sums }}
+        sbom-path: ${{ inputs.dir }}/${{ inputs.sbom }}
+    - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+    - name: Keyless signatures of the tarballs and the list
+      shell: bash
+      env:
+        DIR: ${{ inputs.dir }}
+        SUMS: ${{ inputs.sums }}
+      run: |
+        set -euo pipefail
+        cd "$DIR"
+        for f in *.tar.gz "$SUMS"; do
+          cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+        done
+        ls -l
