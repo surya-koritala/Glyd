@@ -5,9 +5,9 @@ name: Install check
 # published, weekly (catches the Homebrew tap or an index drifting after the fact), and by
 # hand for a chosen version (default: the latest release).
 #
-# The GPU half is the glyd-gpu package (compiled wheels, published from its own repository,
-# which tests them before it publishes): its extras are checked as a user installs them, that
-# they bring glyd-gpu of this version. No GPU runners here: the gpu extra is checked for its
+# The GPU half is the glyd-gpu package (compiled wheels, published by release-gpu.yml on the
+# same tag, which tests them before it publishes): its extras are checked as a user installs
+# them, that they bring glyd-gpu of this version. No GPU runners here: the gpu extra is checked for its
 # wheel resolving and its GPU-free CLI (`python -m glyd_gpu fit`) only.
 on:
   release:
@@ -260,9 +260,10 @@ jobs:
       - name: Wait for and download the release's assets
         run: |
           set -e
-          # release.yml's tarballs (+.sha256) and wheels. The GPU libraries are no assets of the
-          # release: they come in the glyd-gpu wheels (PyPI). Extra assets beyond this list are
-          # fine — only these are required.
+          # release.yml's tarballs (+.sha256) and wheels, and release-gpu.yml's engine bundles
+          # (glyd-engine, its GPU library; what install.sh downloads on Linux with an NVIDIA GPU).
+          # The glyd-gpu wheels are on PyPI only. Extra assets beyond this list are fine; only these
+          # are required.
           expected=(
             "glyd-$TAG-linux-x86_64.tar.gz" "glyd-$TAG-linux-x86_64.tar.gz.sha256"
             "glyd-$TAG-linux-aarch64.tar.gz" "glyd-$TAG-linux-aarch64.tar.gz.sha256"
@@ -270,15 +271,17 @@ jobs:
             "glyd-$V-py3-none-manylinux_2_28_x86_64.whl"
             "glyd-$V-py3-none-manylinux_2_28_aarch64.whl"
             "glyd-$V-py3-none-macosx_11_0_arm64.whl"
+            "glyd-engine-$TAG-linux-x86_64.tar.gz" "glyd-engine-$TAG-linux-x86_64.tar.gz.sha256"
+            "glyd-engine-$TAG-linux-aarch64.tar.gz" "glyd-engine-$TAG-linux-aarch64.tar.gz.sha256"
           )
           ok=0
           have=""
-          for i in $(seq 1 40); do
+          for i in $(seq 1 100); do
             have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
             missing=0
             for f in "${expected[@]}"; do echo "$have" | grep -qxF "$f" || missing=1; done
             [ "$missing" = 0 ] && { ok=1; break; }
-            echo "release ${TAG}: still missing assets (attempt $i/40); retrying in 30s"
+            echo "release ${TAG}: still missing assets (attempt $i/100); retrying in 30s"
             sleep 30
           done
           [ "$ok" = 1 ] || { echo "release $TAG never got all expected assets. It has:"; echo "$have"; exit 1; }

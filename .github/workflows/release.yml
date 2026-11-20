@@ -5,9 +5,9 @@ name: Release
 # attach them to the GitHub release, and publish them: to PyPI by trusted
 # publishing (pypi.org trusts this workflow file, in the `pypi` environment, no
 # token), to crates.io when the CARGO_REGISTRY_TOKEN secret is set. The GPU half
-# of glyd (the glyd-gpu package, with the CUDA libraries) is built and published
-# from its own repository: nothing of it is built here, and the wheel's `gpu` and
-# `vllm` extras name it.
+# of glyd (the glyd-gpu package, with the CUDA libraries, and the engine bundles) is
+# built and published by release-gpu.yml on the same tag: nothing of it is built here,
+# and the wheel's `gpu` and `vllm` extras name it.
 #
 # What publishes: a pushed v* tag, or a dispatch whose `tag` is one, that exists, whose
 # commit is on main or a release-X.Y.Z branch, whose version files all say the tag's version
