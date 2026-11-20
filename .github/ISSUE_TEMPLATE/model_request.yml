@@ -1,0 +1,39 @@
+name: Model request
+description: Ask for a model or model family to run on the engine.
+labels: [enhancement, "area: models", needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `glyd-engine supports MODEL` says whether the engine runs a model. Run it first, and paste what it says. The list of families the engine runs and the ones planned is in ROADMAP.md.
+  - type: input
+    id: model
+    attributes:
+      label: The model
+      description: A Hugging Face link, e.g. https://huggingface.co/Qwen/Qwen3.5-9B
+    validations:
+      required: true
+  - type: input
+    id: architecture
+    attributes:
+      label: Architecture
+      description: The `architectures` entry in its config.json, e.g. `LlamaForCausalLM`.
+    validations:
+      required: true
+  - type: textarea
+    id: supports
+    attributes:
+      label: Output of `glyd-engine supports MODEL`
+      render: text
+  - type: input
+    id: license
+    attributes:
+      label: License
+      description: The model's license, and whether the Hub gates the download.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why you want it
+      description: The size you would run it at and on what hardware. Whether you can test a change on that hardware.
