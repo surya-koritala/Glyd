@@ -3,8 +3,7 @@
 Milestones in dependency order; each ships as one release. Tracks within a milestone run in parallel. Each milestone ends
 on a gate measured on real hardware, with the result committed under `benchmarks/`. Design:
 [docs/architecture.md](docs/architecture.md). Every item is a GitHub issue with tasks, acceptance criteria, test hardware and
-dependencies, under its milestone's epic; the epics are tracked in [#118](https://github.com/surya-koritala/Glyd/issues/118). This file is generated from the same data
-as the issues.
+dependencies, under its milestone's epic; the epics are tracked in [#118](https://github.com/surya-koritala/Glyd/issues/118). The checkboxes follow the issues' state; there is no generator in this repository, so they are updated by hand.
 
 | Release | Milestone | Epic | Issues |
 | :--- | :--- | :--- | ---: |
@@ -19,15 +18,32 @@ as the issues.
 
 ## Where it stands (v0.32.1, 2026-10-17)
 
-- Released (v0.32.1): the `glyd` CLI, with most models and `glyd run` by default going through the frozen vLLM path (Python);
-  the engine is used where asked (`GLYD_ENGINE=1`). Releases v0.29 to v0.32.1 were BUSL-1.1; Apache-2.0 starts with v0.33.0.
-- On `open-source-monorepo` (unreleased): the engine runs Qwen3 dense (lossless), Qwen3.5/3.8 and Nemotron-H (lossy levels),
-  Gemma 4 12B/31B, GLM-5.3, Kimi-K3, DeepSeek-V4, Muse and Qwen3.8-Flash-Next (Condor), each through its own pipeline.
+Released, on main and planned are listed apart.
+
+**Released: v0.32.1** (2026-10-17, BUSL-1.1; Apache-2.0 starts with v0.33.0)
+- The `glyd` CLI as the Python tool: `glyd run` goes through the frozen vLLM path (Python, vLLM and PyTorch, about 8 GB). The
+  engine is used where asked (`GLYD_ENGINE=1`). The release has no engine tarball.
+- Compression of files, the store, and the Python GPU package and vLLM plugin.
+
+**On main, not released** (v0.33.0 is the first release from this repository)
+- One repository under Apache-2.0 with the engine, the GPU library, Condor and Starlings (#263); raw data out of the tree
+  (#265); rustfmt, clippy and cargo-deny in CI (#266, part of S8); one table of what the engine runs, shared by `fit`,
+  `run` and `serve` (#267, P16); security updates (S7, #211).
+- The engine runs Qwen3 dense (lossless); Qwen3.5/3.6/3.8 dense (lossy levels only); Gemma 4 12B and 31B and Nemotron-H
+  (lossless and lossy levels); and, lossless, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark, each through its own
+  pipeline. Qwen3.8-Flash-Next (Condor's model) runs through Condor's `qwenserve`, not `glyd run`. The list is
+  `glyd-engine/src/support.rs`.
+- `glyd run` hands a model to the engine only on GPUs listed in `GPUS` (`glyd-engine/src/machine.rs`): none are listed, so it
+  uses vLLM unless `GLYD_ENGINE=1` (S10).
 - Batching on the Qwen3 path only (up to 8 sequences); other families serve one request at a time.
-- MoE experts on GPU/RAM/NVMe with CPU compute for misses (Condor's model); layer split over GPUs; two-machine pipeline
-  (Starlings beta). `glyd-engine fit` plans before download but does not yet drive loading.
-- NVIDIA Ampere-Blackwell, Linux x86_64, driver 580+. AMD RDNA 3/4 development builds. No Windows engine release, no aarch64,
-  Apple or CPU-only.
+- MoE experts on GPU/RAM/NVMe with CPU compute for misses; layer split over the GPUs of one machine for Nemotron-H,
+  Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark; two-machine pipeline (Starlings, beta). `glyd-engine fit` plans before
+  download but `run` does not yet load by the plan (P2a).
+- NVIDIA Ampere to Blackwell, Linux x86_64, driver 580 or newer. AMD RDNA 3/4 as development builds (`GLYD_HIP=1`). The GPU
+  workflow runs on one self-hosted machine (sm_89) with a small model; Windows and macOS CI and the engine on every release
+  platform are not there yet.
+
+**Not there**: Windows engine release, aarch64, Apple, CPU-only runs, CUDA 12 drivers (M1 and later).
 
 ## M0 Open-source baseline · v0.33.0
 
@@ -35,7 +51,7 @@ as the issues.
 
 One public repository for all of Glyd under Apache-2.0; a release built entirely from it that installs and runs without Python; docs that match the code; and the engineering baseline: security updates, lints, CI on every OS, GPU CI on real hardware.
 
-- [ ] S7 Security updates: rustls and Dependabot for every manifest ([#211](https://github.com/surya-koritala/Glyd/issues/211))
+- [x] S7 Security updates: rustls and Dependabot for every manifest ([#211](https://github.com/surya-koritala/Glyd/issues/211))
 - [ ] S1 Merge the monorepo branch and retire the predecessor repositories ([#126](https://github.com/surya-koritala/Glyd/issues/126))
 - [ ] S2 Self-hosted GPU runner for gpu.yml ([#127](https://github.com/surya-koritala/Glyd/issues/127))
 - [ ] S3 Ephemeral cloud GPU runners for gpu-cloud.yml ([#128](https://github.com/surya-koritala/Glyd/issues/128))

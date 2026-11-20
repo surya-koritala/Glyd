@@ -3,188 +3,41 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Glyd — lossless compression for AI</title>
-<meta name="description" content="Glyd: a store that compresses across objects, 3.5× fewer bytes than zstd on a 1.2 TB bucket, 4.6× on a 39 GB one; base mode stores a new version of a dump, image or source tree for a few percent of its size, 15 kernel releases in 228 MB; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; the cold level's context mixing stores 1.5–2× less than zstd -19; benchmarked against gzip, zstd, xz, brotli and LZ4 on 24 kinds of data, every decode byte-exact.">
+<title>Glyd</title>
+<meta name="description" content="Glyd is an LLM inference engine in Rust that fits a model to your GPU with lossless and lossy compression in GPU memory. Apache-2.0.">
 <style>
-  :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; --hl:#eef3ff; }
-  @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; --hl:#1b2233; } }
+  :root { --fg:#111; --bg:#fff; --muted:#666; --accent:#0b5fff; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --accent:#6ea0ff; } }
   body { font: 16px/1.55 -apple-system, system-ui, sans-serif; color:var(--fg); background:var(--bg); margin:0; padding:24px 16px; }
-  main { max-width:860px; margin:0 auto; }
-  h1 { font-size:1.9rem; margin:0 0 .25rem; }
-  h2 { font-size:1.25rem; margin:2rem 0 .5rem; }
-  p.sub { color:var(--muted); margin:0 0 1rem; font-size:1.05rem; }
-  nav a { margin-right:14px; }
+  main { max-width:760px; margin:0 auto; }
+  h1 { font-size:1.6rem; margin:0 0 .5rem; }
+  h2 { font-size:1.15rem; margin:1.8rem 0 .4rem; }
   a { color:var(--accent); }
-  img { max-width:100%; height:auto; display:block; margin:12px 0; border-radius:6px; }
-  table { border-collapse:collapse; width:100%; margin:12px 0; font-size:.95rem; }
-  td, th { text-align:right; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
-  td:first-child, th:first-child { text-align:left; white-space:normal; min-width:15em; }
-  tr.g td { background:var(--hl); font-weight:600; }
-  .wrap { overflow-x:auto; }
-  small, .muted { color:var(--muted); }
-  code { font-size:.95em; }
-  ul { padding-left:1.2rem; }
-  .cta { display:inline-block; margin:8px 12px 8px 0; padding:8px 14px; border:1px solid var(--accent); border-radius:8px; text-decoration:none; }
+  .muted { color:var(--muted); }
 </style>
 </head>
 <body>
 <main>
-  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.19.0">v0.19.0 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Benchmark report</a><a href="#landscape">Against zstd, xz, brotli</a><a href="savings.html">Savings calculator</a></nav>
   <h1>Glyd</h1>
-  <p class="sub"><b>Lossless AI compression: 33% less GPU memory, bit for bit.</b> Rust, C ABI, CLI; v0.32.1, October 2026. Every number below is measured on public data and reproducible from the repository.</p>
+  <p>Glyd is an LLM inference engine written in Rust. You name a model and it works out how to fit it on your GPU: lossless
+  compression in GPU memory first, then lossy levels, then experts in RAM or on NVMe, then more GPUs. It also holds the
+  file codec and store the project started as. Apache-2.0.</p>
 
-  <a class="cta" href="savings.html">What would it save you?</a>
-  <a class="cta" href="https://github.com/surya-koritala/Glyd#quick-start">Quick start</a>
-
-  <h2>Fastest or slowest? The table everyone uses</h2>
-  <p>The 8.7 GB real-data corpus on AWS Graviton3, ratio · compress MB/s · decompress MB/s. One core, the way zstd's README reports it, then eight cores (Glyd's output decodes in parallel; a zstd or LZ4 frame decodes on one thread).</p>
-  <div class="wrap"><table>
-    <tr><th>One core</th><th>Ratio</th><th>Compress MB/s</th><th>Decompress MB/s</th></tr>
-    <tr><td>LZ4</td><td>2.72</td><td><b>504</b></td><td>1,394</td></tr>
-    <tr class="g"><td>Glyd default</td><td>2.82</td><td>332</td><td><b>3,309</b></td></tr>
-    <tr><td>zstd -3</td><td>3.86</td><td>313</td><td>1,425</td></tr>
-    <tr class="g"><td>Glyd --max</td><td><b>3.98</b></td><td>233</td><td><b>1,571</b></td></tr>
-  </table></div>
-  <div class="wrap"><table>
-    <tr><th>Eight cores</th><th>Ratio</th><th>Compress MB/s</th><th>Decompress MB/s</th></tr>
-    <tr class="g"><td>Glyd default</td><td>2.82</td><td><b>2,143</b></td><td><b>22,707</b></td></tr>
-    <tr><td>zstd -3 -T8</td><td>3.85</td><td>1,969</td><td>1,422</td></tr>
-    <tr class="g"><td>Glyd --max</td><td>3.94</td><td>1,512</td><td><b>10,413</b></td></tr>
-    <tr class="g"><td>Glyd --max -r</td><td>4.71</td><td>643</td><td><b>4,040</b></td></tr>
-    <tr><td>LZ4</td><td>2.72</td><td>503</td><td>1,392</td></tr>
-    <tr><td>zstd -19 -T8</td><td>4.66</td><td>13</td><td>1,326</td></tr>
-    <tr class="g"><td>Glyd --ultra</td><td>4.66</td><td>14.5</td><td><b>9,620</b></td></tr>
-    <tr class="g"><td>Glyd --ultra -r</td><td><b>5.22</b></td><td>20</td><td><b>3,927</b></td></tr>
-  </table></div>
-  <p class="muted">Reads: Glyd is the fastest, 3–7× zstd on a server. Writes: Glyd is slower, 0.77× zstd -3 (record mode 0.33×); LZ4 is the write-speed king on one core. Size: Glyd is the smallest wherever the data has structure, and ties elsewhere.</p>
-
-  <h2 id="landscape">Against zstd, xz and brotli on 24 kinds of data</h2>
-  <p>Every codec's own CLI on one thread, every decode compared byte for byte with its input. Green: Glyd's file is smaller.</p>
-  <img src="benchmarks/charts/bytes-fast-tier.svg" alt="Compression benchmark: Glyd --max bytes against zstd -3 on logs, SQL dumps, JSON, gzip, zip, jar, Office documents, PDF, PNG, JPEG, text, executables and Parquet">
-  <div class="wrap"><table>
-    <tr><th>Data</th><th>vs zstd -3 (--max)</th><th>vs zstd -19, xz, brotli -11 (--ultra)</th></tr>
-    <tr class="g"><td>Records: logs, dumps, JSON (-r)</td><td>12–61% fewer bytes</td><td>3–38% fewer (JSON: 9% more)</td></tr>
-    <tr class="g"><td>Containers: gzip, zip, Office, PDF, PNG, JPEG</td><td>up to 60% fewer</td><td>14–63% fewer</td></tr>
-  </table></div>
-  <p class="muted">Glyd wins where the data has structure: each field of a record becomes a column, and the deflate, snappy, zstd or JPEG inside a container is opened and re-created bit for bit, Parquet pages included. On plain text and executables it is zstd-class: within 2% at the fast tier, 1–15% larger than xz and brotli -11 at their strongest. <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/landscape-2026-09-22.md">Every codec's speed, the strong-tier and ratio-against-speed charts, and lz4, bzip2, zpaq and JPEG XL</a>.</p>
-
-  <h2>The store: compression across objects, not just inside them</h2>
-  <p>Inside one object every codec sits on the same floor. The redundancy of object storage is between objects — builds, snapshots, dumps and releases that are near-copies of earlier ones. <code>glyd-store bucket/ --put ...</code> keeps each object as a delta against the stored object it most resembles when that pays; a read is at most five decodes. Measured on a 39 GB bucket, each object arriving in order, every one read back and compared:</p>
-  <div class="wrap"><table>
-    <tr><th>Family</th><th>Raw</th><th>zstd -3, each object alone</th><th>Glyd store</th><th>Gain</th></tr>
-    <tr class="g"><td>Linux 6.10 releases (15)</td><td>22.5 GB</td><td>3,237 MB</td><td>232 MB</td><td>13.9× smaller</td></tr>
-    <tr class="g"><td>Ubuntu 24.04 cloud images (6 builds)</td><td>6.6 GB</td><td>1,880 MB</td><td>361 MB</td><td>5.2×</td></tr>
-    <tr class="g"><td>Wikipedia dumps (2 months, 3 tables)</td><td>0.7 GB</td><td>140 MB</td><td>71 MB</td><td>2.0×</td></tr>
-    <tr class="g"><td>GitHub events (12 hours)</td><td>9.4 GB</td><td>875 MB</td><td>670 MB</td><td>1.3× (nothing is a version of anything)</td></tr>
-    <tr class="g"><td><b>The bucket</b></td><td><b>39.2 GB</b></td><td><b>6,132 MB (6.4×)</b></td><td><b>1,334 MB (29.4×)</b></td><td><b>4.6× smaller</b></td></tr>
-  </table></div>
-  <p class="muted">Put runs at 620 MB/s end to end on ten cores; delete, compact and verify are there. A petabyte of such data in S3 Standard: $43K a year with zstd -3, $9.4K with the store. Chunk-level dedup, the backup approach, gains 1–4× on the same pairs.</p>
-
-  <h2>Base mode: a version stored for the change, not the whole</h2>
-  <p>Most stored bytes are versions — nightly dumps, snapshots, images, source trees. <code>glyd --base old new</code> parses every 32 MB of the new version with the old one's matching region as history and writes a stream that decodes with the same base. Measured on consecutive versions of real objects against zstd 1.5.7's own <code>--patch-from</code>, same machine, every rebuild byte-exact:</p>
-  <div class="wrap"><table>
-    <tr><th>Old → new</th><th>zstd -3 --patch-from</th><th>zstd -19 --patch-from</th><th>Glyd --max --base</th><th>Glyd --ultra --base</th></tr>
-    <tr class="g"><td>Wikipedia page-table dumps, a month apart (108 MB)</td><td>3.84 MB · 409 MB/s</td><td>1.30 MB · 2 MB/s</td><td>1.79 MB · 720 MB/s</td><td>1.23 MB · 6 MB/s</td></tr>
-    <tr class="g"><td>Ubuntu 24.04 cloud root filesystem, builds 16 days apart (1.1 GB)</td><td>8.82 MB · 654 MB/s</td><td>5.61 MB · 39 MB/s</td><td>5.33 MB · 1,590 MB/s</td><td>4.60 MB · 11 MB/s</td></tr>
-    <tr class="g"><td>Linux 6.10 → 6.10.1 source tar (1.5 GB)</td><td>3.26 MB · 560 MB/s</td><td>2.58 MB · 30 MB/s</td><td>3.03 MB · 1,700 MB/s</td><td>2.04 MB · 3 MB/s</td></tr>
-  </table></div>
-  <p class="muted">Compressed alone those versions are 33, 287 and 200 MB: a version costs 1–5% of what it did. Against zstd's fast patch Glyd stores 1.1–2.1× less at 1.8–3× the speed; <code>--ultra --base</code> stores 5–21% less than zstd -19's patch on every pair, at the plain <code>--ultra</code> speed. Content is found wherever it moved in the old version (a coarse map of the base picks each unit's region). Chunk-level dedup, the backup approach, gains only 1–4× on the same pairs.</p>
-  <div class="wrap"><table>
-    <tr><th>15 Linux 6.10 point releases (1.5 GB each)</th><th>Glyd --max --base</th><th>zstd -3 --patch-from</th><th>Stored one by one</th></tr>
-    <tr class="g"><td>each release against the one before it</td><td>228 MB</td><td>260 MB</td><td>3,000 MB (Glyd --max) · 3,236 MB (zstd -3)</td></tr>
-    <tr class="g"><td>each release against 6.10 (any version is two reads)</td><td>246 MB</td><td>265 MB</td><td></td></tr>
-  </table></div>
-  <p class="muted">A step costs 1.8 MB, 0.12% of the tree; the delta against a base 14 releases old is 3.6 MB, so a series needs no rebasing. A terabyte of such trees in S3 Standard: $37 a year compressed one by one with <code>--max</code> ($40 with zstd -3), $2.8–3.0 with base mode ($3.2–3.3 with zstd's patch).</p>
-
-  <h2>Model weights and checkpoints</h2>
-  <p>A safetensors file is opened tensor by tensor; against a base (<code>--base</code>, and the store, which finds a checkpoint's predecessor by its tensors), a checkpoint is stored for what changed. The Ryzen box, all cores, every file decoded and compared (<a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/weights-2026-09-25.md">report</a>):</p>
-  <div class="wrap"><table>
-    <tr><th>File</th><th>zstd -3</th><th>zstd -19</th><th>Glyd -9</th></tr>
-    <tr class="g"><td>Pythia-410M, step 143000 (fp32, 1,621 MB)</td><td>959 MB · 0.8 s</td><td>809 MB · 89 s</td><td>701 MB · 3.3 s</td></tr>
-    <tr class="g"><td>Qwen2.5-0.5B (bf16, 988 MB)</td><td>769 MB · 0.3 s</td><td>750 MB · 29 s</td><td>663 MB · 2.5 s</td></tr>
-    <tr><th>A checkpoint against another</th><th></th><th>zstd -19 --patch-from</th><th>Glyd --max --base</th></tr>
-    <tr class="g"><td>Pythia step 143000 against step 142000</td><td></td><td>806 MB · 148 s</td><td>501 MB · 4.7 s</td></tr>
-    <tr class="g"><td>Qwen2.5-0.5B-Instruct against Qwen2.5-0.5B</td><td></td><td>748 MB · 57 s</td><td>558 MB · 3.4 s</td></tr>
-  </table></div>
-  <p class="muted">The smallest size a coder that sees each tensor on its own can reach is 682–684 MB for a Pythia checkpoint and 650 MB for Qwen2.5: Glyd is within 2–3% of it.</p>
-  <p>Training checkpoints with the optimizer's state (<code>torch.save</code>; Qwen2.5-0.5B with AdamW, 5.93 GB each) go in at 83% of their size alone and 77% against the checkpoint before; zstd -19 stores 92%, and its <code>--patch-from</code> stops at 2 GB.</p>
-  <div class="wrap"><table>
-    <tr><th>Qwen2.5-7B-Instruct on an RTX 4080 SUPER (16 GB)</th><th>GPU memory</th><th>1 sequence</th><th>32 at once</th><th>Prompt of 128 tokens</th><th>Of 4096</th></tr>
-    <tr><td>bf16</td><td>15.25 GB</td><td>43.4 tokens/s</td><td>1,154 tokens/s</td><td>29 ms</td><td>645 ms</td></tr>
-    <tr class="g"><td>Glyd, <code>mma</code></td><td>10.61 GB</td><td>55.7</td><td>1,519</td><td>29 ms</td><td>702 ms</td></tr>
-  </table></div>
-  <p class="muted">The weights stay compressed in GPU memory and are rebuilt bit for bit as the model runs (<a href="https://github.com/surya-koritala/Glyd/blob/main/gpu/README.md">gpu/</a>): about a third of a bf16 model's memory back, and generation faster than bf16; perplexity as bf16's (17.0052 against 17.0015 on Wikipedia text).</p>
-
-  <h2>Record mode: the data's own structure, not just its bytes</h2>
-  <p>Byte-level matching (zstd, LZ4, Glyd's own levels) is a plateau: on real data zstd -19, xz and Glyd <code>--ultra</code> land within a few percent of each other. The redundancy of a log, a dump or a telemetry export sits in the same field of every record. <code>glyd -r</code> detects delimited lines, SQL dumps and JSON lines, turns them into one typed stream per field (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those, and rebuilds the bytes exactly. Logs whose lines vary in shape take a template: the line's text with a hole where every token holding a digit was, and the tokens as typed columns keyed by template and slot. Anything else is left as it is.</p>
-
-  <div class="wrap"><table>
-    <tr><th>Telemetry, 128 MB slices (ratio, higher is smaller)</th><th>LZ4</th><th>zstd -3</th><th>zstd -19</th><th>Glyd --max -r</th><th>Glyd --ultra -r</th></tr>
-    <tr class="g"><td>Alibaba cluster machine usage, CSV</td><td>2.8</td><td>4.5</td><td>6.9</td><td>12.6</td><td>13.7</td></tr>
-    <tr class="g"><td>the same rows as JSON lines</td><td>8.3</td><td>15.7</td><td>28.7</td><td>54.6</td><td>58.9</td></tr>
-    <tr class="g"><td>NOAA daily weather, CSV</td><td>3.8</td><td>7.0</td><td>12.0</td><td>19.6</td><td>23.1</td></tr>
-    <tr class="g"><td>the same rows as JSON lines</td><td>10.5</td><td>18.7</td><td>31.6</td><td>47.0</td><td>58.0</td></tr>
-    <tr class="g"><td>NYC taxi trips, CSV export</td><td>3.3</td><td>5.6</td><td>8.4</td><td>8.9</td><td>9.4</td></tr>
-  </table></div>
-  <p class="muted">2.5–3.5× fewer bytes than the fast tier (LZ4, zstd -3), 1.5–2× fewer than zstd -19, written at 340–690 MB/s on 10 cores.</p>
-
-  <div class="wrap"><table>
-    <tr><th>Application and system logs, 128 MB slices (loghub 2.0)</th><th>LZ4</th><th>zstd -3</th><th>zstd -19</th><th>Glyd --max -r</th><th>Glyd --ultra -r</th></tr>
-    <tr class="g"><td>HDFS (Hadoop file system)</td><td>5.6</td><td>10.4</td><td>16.0</td><td>22.0</td><td>27.5</td></tr>
-    <tr class="g"><td>Spark (application logs)</td><td>7.9</td><td>14.5</td><td>25.2</td><td>47.0</td><td>53.6</td></tr>
-    <tr class="g"><td>BGL (supercomputer RAS log)</td><td>6.1</td><td>11.0</td><td>22.4</td><td>15.9</td><td>28.9</td></tr>
-    <tr class="g"><td>Android (system log)</td><td>5.0</td><td>12.9</td><td>23.0</td><td>17.9</td><td>25.4</td></tr>
-  </table></div>
-  <p class="muted">1.4–3.3× fewer bytes than zstd -3 and 1.1–2.1× fewer than zstd -19 with <code>--ultra -r</code>; <code>--max -r</code> writes at 260–460 MB/s and reads back at 1,200–1,400 MB/s. Sources and the script that fetches them: <code>scripts/download_ext_corpus.sh</code>.</p>
-
-  <h2>The cold level: below the floor every LZ codec shares</h2>
-  <p>On real data zstd -19, xz -9 and Glyd <code>--ultra</code> land within 5% of each other: that is the floor of byte matching. Context mixing — every bit predicted from many contexts at once and coded at the mixed probability, no parse — goes below it at 30–100× the CPU. <code>glyd --cold</code> is that level: eleven predictors with paq-style bit histories, two mixers, two SSE stages, 32 MB units coded in parallel at 1.2–1.3 MB/s per core each way. Measured on 64 MB slices against the strongest tools, every decode byte-checked:</p>
-  <div class="wrap"><table>
-    <tr><th>Data</th><th>zstd -19</th><th>xz -9</th><th>Glyd --ultra (-r)</th><th>zpaq -m5</th><th>Glyd --cold (-r)</th><th>vs zstd -19</th></tr>
-    <tr class="g"><td>GitHub Archive JSON events</td><td>14.6</td><td>14.8</td><td>15.9</td><td>22.8 · 0.4 MB/s</td><td>22.5 · 1.3 MB/s per core</td><td>1.54× smaller</td></tr>
-    <tr class="g"><td>NASA access log</td><td>15.7</td><td>15.4</td><td>26.4</td><td>31.7 · 0.3 MB/s</td><td>31.1 · 1.2 MB/s per core</td><td>1.98× smaller</td></tr>
-    <tr class="g"><td>enwiki page_props SQL dump</td><td>6.2</td><td>6.4</td><td>8.6</td><td>11.1 · 0.4 MB/s</td><td>11.6 · 1.2 MB/s per core</td><td>1.87× smaller</td></tr>
-    <tr class="g"><td>webster (text, 41 MB)</td><td>4.8</td><td>4.9</td><td>4.8</td><td>7.3 · 0.35 MB/s</td><td>7.1 · 1.2 MB/s per core</td><td>1.47× smaller</td></tr>
-    <tr class="g"><td>HDFS log, 128 MB (-r)</td><td>16.0</td><td></td><td>27.5</td><td></td><td>33.7</td><td>2.1× smaller</td></tr>
-    <tr class="g"><td>Spark log, 128 MB (-r)</td><td>25.2</td><td></td><td>53.6</td><td></td><td>65.2</td><td>2.6× smaller</td></tr>
-  </table></div>
-  <p class="muted">The zpaq -m5 class within 3% either way, at 3–4× its speed per core; reads cost what writes cost. A terabyte is about 210 core-hours each way ($8 on Graviton3); 1.5–2× fewer bytes than zstd -19 saves $3–5 a year per raw terabyte in S3 Standard-IA, so the level pays for data kept two years or more and read a few times at most, or moved more than it is read.</p>
-
-  <h2>The 8.7 GB corpus on AWS (Graviton3 and Sapphire Rapids, 8 threads)</h2>
-  <div class="wrap"><table>
-    <tr><th>Data</th><th>Glyd --max</th><th>Glyd --max -r</th><th>zstd -3</th><th>Glyd --ultra</th><th>Glyd --ultra -r</th><th>zstd -19</th></tr>
-    <tr><td>Whole corpus</td><td>3.94</td><td><b>4.71</b></td><td>3.85</td><td>4.66</td><td><b>5.22</b></td><td>4.66</td></tr>
-    <tr><td>JSON events (2.6 GB)</td><td><b>13.7</b></td><td>13.7</td><td>10.5</td><td><b>16.7</b></td><td>16.7</td><td>15.1</td></tr>
-    <tr><td>Access and pageview logs (1.3 GB)</td><td>5.09</td><td><b>6.16</b></td><td>4.89</td><td>6.63</td><td><b>7.74</b></td><td>6.83</td></tr>
-    <tr><td>SQL dumps (3.9 GB)</td><td>4.88</td><td><b>8.13</b></td><td>4.97</td><td>6.99</td><td><b>10.1</b></td><td>7.10</td></tr>
-    <tr><td>Parquet (1.0 GB, already compressed)</td><td>1.01</td><td>1.01</td><td>1.01</td><td>1.02</td><td>1.02</td><td>1.02</td></tr>
-    <tr><td>Compress MB/s, Graviton3</td><td>1,512</td><td>643</td><td>1,969</td><td>14.5</td><td>20</td><td>13</td></tr>
-    <tr><td>Decompress MB/s, Graviton3</td><td><b>10,413</b></td><td><b>4,040</b></td><td>1,422</td><td><b>9,620</b></td><td><b>3,927</b></td><td>1,326</td></tr>
-  </table></div>
-  <p class="muted"><code>--max -r</code> stores 18% less than zstd -3 and 1% less than zstd -19 while writing 50× faster than zstd -19; Glyd's output decodes in parallel, so with 8 cores it reads 3–7× faster than a zstd frame. JSON events are not record-shaped (their bytes are hashes, ids and free text); the 128 MB long-distance matcher (<code>--max --long</code>, <code>--ultra</code>, the store) is what wins there.</p>
-
-  <h2>A terabyte in S3 for a year</h2>
-  <p>Compressed once by the CLI, read back once a month in the region, S3 Standard at list price, instance CPU seconds at the on-demand price (Graviton3):</p>
-  <div class="wrap"><table>
-    <tr><th>Codec</th><th>Stored</th><th>Year 1, 1 read/month</th><th>10 reads/month</th><th>100 reads/month</th></tr>
-    <tr><td>Raw</td><td>1.000 TB</td><td>$276</td><td>$276</td><td>$278</td></tr>
-    <tr class="g"><td>Glyd --max -r</td><td>0.212 TB</td><td>$61.7</td><td>$82.4</td><td>$289</td></tr>
-    <tr class="g"><td>Glyd --max</td><td>0.254 TB</td><td>$71.6</td><td>$81.3</td><td>$178</td></tr>
-    <tr><td>zstd -3</td><td>0.260 TB</td><td>$73.3</td><td>$84.1</td><td>$191</td></tr>
-    <tr class="g"><td>Glyd --ultra -r</td><td>0.191 TB</td><td>$82.8</td><td>$103</td><td>$311</td></tr>
-    <tr class="g"><td>Glyd --ultra</td><td>0.214 TB</td><td>$99.7</td><td>$110</td><td>$210</td></tr>
-    <tr><td>zstd -19</td><td>0.216 TB</td><td>$102</td><td>$114</td><td>$232</td></tr>
-  </table></div>
-  <p class="muted">Where zstd still wins, plainly: a hundred CPU-billed reads a month of record-mode data (its reads spend 2× zstd's CPU rebuilding the columns), single-core compression speed on match-dense data (<code>--max</code> at 0.89× zstd -3 on logs and table dumps on Graviton3; 1.01–1.05× on the rest, v0.14.5), small objects with dictionaries (1–3% larger, 1.4–2× slower per object), and data made of hashes.</p>
-  <h2>How the numbers are made</h2>
+  <h2>Where things are</h2>
   <ul>
-    <li><b>Correctness first</b>: 106 tests, a million-mutation fuzz, files from every earlier release decoded unchanged, and <code>scripts/verify_roundtrip.sh</code> through the CLI on both machines with corrupted copies rejected or decoded exactly; base-mode streams refuse any other base.</li>
-    <li><b>Fair comparison</b>: zstd -3, zstd -19 and LZ4 on the same machines and thread counts, each on its fastest API, buffers kept; compressed bytes include every codec's own framing.</li>
-    <li><b>A real workflow</b>: compress, upload to S3, download, decompress, sha256 every file, at list prices.</li>
-    <li><b>The floors are stated</b>: JSON API events are 20% hashes, 10% random ids and 30% free text once compressed; Parquet is already zstd inside. Neither moves. Where zstd wins — write speed, small objects per second, reads at very high read rates — is written down too.</li>
+    <li><a href="https://github.com/surya-koritala/Glyd#readme">README</a>: what runs today, the measurements with their logs, and the known limits.</li>
+    <li><a href="https://github.com/surya-koritala/Glyd/blob/main/ROADMAP.md">ROADMAP</a>: the milestones, one GitHub issue per item.</li>
+    <li><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/architecture.md">Architecture</a>: what exists and what is planned.</li>
+    <li><a href="https://github.com/surya-koritala/Glyd/blob/main/DETAILS.md">DETAILS</a>: the older measurements for the GPU package and the codec.</li>
+    <li><a href="https://github.com/surya-koritala/Glyd/releases">Releases</a>.</li>
   </ul>
-  <p><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Full report with every table</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/design/format-v7.md">Design notes</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/CHANGELOG.md">Changelog</a></p>
-  <p><small>Glyd is open source under the Apache License 2.0: the codec, the store, the GPU library and the engine. Contact: suryakoritala@getglyd.com.</small></p>
+
+  <h2>Status</h2>
+  <p>Rust, C ABI, CLI; v0.32.1, October 2026. The release installs the Python tool, and <code>glyd run</code> uses vLLM. The engine runs on NVIDIA GPUs of the Ampere
+  generation or newer, on Linux x86_64 with driver 580 or newer, and is not the default yet. The README has the list of
+  models and the limits.</p>
+
+  <p class="muted">This page lists links only. The user documentation site is <a href="https://github.com/surya-koritala/Glyd/issues/225">#225</a>.</p>
 </main>
 </body>
 </html>
