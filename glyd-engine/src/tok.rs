@@ -360,7 +360,7 @@ pub(crate) mod tests {
     fn a_tokenizer_json_with_a_broken_decoder_is_an_error() {
         let broken = BOS_TOKENIZER.replace("\"decoder\":null", "\"decoder\":{\"type\" \"Fuse\"}");
         assert_ne!(broken, BOS_TOKENIZER);
-        let e = parse(broken.as_bytes()).err().expect("an error");
+        let Err(e) = parse(broken.as_bytes()) else { panic!("an error") };
         assert!(e.contains("tokenizer.json") || e.contains("expected"), "{e}");
         assert!(parse(BOS_TOKENIZER.as_bytes()).is_ok());
         assert!(parse(b"").is_err());
