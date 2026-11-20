@@ -2,7 +2,7 @@
 # release rules; MSVC is nvcc's host compiler, so run it from a Developer PowerShell or after vcvars64). The CUDA runtime
 # is linked in, so the DLL needs only the driver. The name carries the CUDA major version: libglyd_gpu_cuda13.dll (the .so's name).
 #   powershell -ExecutionPolicy Bypass -File gpu\build_lib.ps1 [OUT_DIR]      (default: next to this script)
-# GLYD_GPU_RELEASE=1: machine code for sm_80/86/89/90a/100/120 and Ampere's PTX, an nvcc without Blackwell refused; kernel
+# GLYD_GPU_RELEASE=1: machine code for sm_80/86/89/90a/100/120 and no PTX, an nvcc without Blackwell refused; kernel
 # names are the source's in every build. The DLL exports the functions of glyd_gpu.h by their names (__declspec(dllexport) in glyd_gpu.cu).
 param([string]$Out = $PSScriptRoot)
 $ErrorActionPreference = 'Stop'
@@ -16,6 +16,7 @@ foreach ($a in 100, 120) {
 }
 $ptx = @('-gencode', 'arch=compute_80,code=compute_80')
 $release = @()
+if ($env:GLYD_GPU_RELEASE -eq '1') { $release = @('-DGLYD_RELEASE', '--compress-mode=size'); $ptx = @() }  # (the default plans' kernels alone, no tuning variables, no PTX, device code compressed for size: build_lib.sh says why)
 $tmp = Join-Path $env:TEMP "glyd_gpu_$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 $flags = @('-O3', '-std=c++20', '--expt-relaxed-constexpr',
