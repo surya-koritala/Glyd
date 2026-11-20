@@ -97,6 +97,13 @@ impl Dyn {
             && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| row_wise(op) || by_sequence(op))
     }
 
+    /// Whether a step of several rows gives each row the sums a one-row step does: not where the description has experts (a product over the experts' rows groups them by the step's rows; the GPU job's
+    /// usercheck found 3 of 4 Muse Spark replies the same). With GLYD_ENGINE_BATCH_PREFILL=0 such a description's decode steps run one sequence each, so every reply is the reply alone.
+    fn rows_exact(&self) -> bool {
+        let d = &self.big.d;
+        !d.layers.iter().flatten().any(|op| matches!(op, Op::MuseMoe { .. } | Op::Moe { .. } | Op::V4Moe { .. }))
+    }
+
     /// Sequence `slot`'s tokens in its cache.
     fn seq_n(&self, slot: usize) -> usize {
         if slot == self.seq {
@@ -296,7 +303,7 @@ impl ModelStep for Dyn {
         if rows.len() > self.head_room() {
             return err(format!("a step of {} rows, where the head holds {}", rows.len(), self.head_room()));
         }
-        if rows.len() == 1 || !self.batchable() {
+        if rows.len() == 1 || !self.batchable() || (!Self::batch_prefill() && !self.rows_exact()) {
             // (one sequence's step as a reply alone takes it, its graph where it has one; several one after another, the last first, each one's logits row moved to its place in the head's rows
             // before the next step writes its own over the first)
             let mut out = vec![None; rows.len()];
