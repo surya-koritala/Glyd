@@ -230,6 +230,55 @@ pub fn stats_json() -> String {
     }
 }
 
+/// A step behind a reference (an engine handed over as `conv::Gen::as_step` gives it).
+impl ModelStep for &mut dyn ModelStep {
+    fn window(&self) -> usize {
+        (**self).window()
+    }
+    fn chunk(&self) -> usize {
+        (**self).chunk()
+    }
+    fn pages(&self) -> usize {
+        (**self).pages()
+    }
+    fn slots(&self) -> Option<usize> {
+        (**self).slots()
+    }
+    fn eos(&self) -> Vec<i64> {
+        (**self).eos()
+    }
+    fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
+        (**self).prefill(pages, start, tokens, last)
+    }
+    fn prefill_rows(&self) -> usize {
+        (**self).prefill_rows()
+    }
+    fn prefill_together(&self) -> usize {
+        (**self).prefill_together()
+    }
+    fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
+        (**self).prefill_many(jobs)
+    }
+    fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
+        (**self).decode(rows)
+    }
+    fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
+        (**self).logits(row)
+    }
+    fn release(&mut self, pages: &[i32]) -> Result<()> {
+        (**self).release(pages)
+    }
+    fn verify(&mut self, pages: &[i32]) -> Result<()> {
+        (**self).verify(pages)
+    }
+    fn lost(&mut self) -> Lost {
+        (**self).lost()
+    }
+    fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        (**self).top(row)
+    }
+}
+
 struct Seq {
     id: u64,
     out: Sender<Ev>,

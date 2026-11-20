@@ -682,13 +682,31 @@ pub fn serve(a: &Args) -> i32 {
     0
 }
 
-/// `serve MODEL:kestrel` (or `:swift`): the lossy level loaded as run loads it, served to one user at a time.
+/// `serve MODEL:kestrel` (or `:swift`): the lossy level loaded as run loads it, served by the scheduler to up to --users sequences at once where the engine is a step of several (src/dynamic/rows.rs: Gemma 4),
+/// else to one user at a time.
 fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>) -> i32 {
-    let (mut e, tok, chat, defaults, vocab, line, info) = match load_lossy(a, layout, &name, ui) {
+    let (mut e, tok, chat, defaults, vocab, line, mut info) = match load_lossy(a, layout, &name, ui) {
         Ok(x) => x,
         Err(r) => return fail(ui, &r),
     };
     ui.borrow_mut().line(&line);
+    let users = match users_of(a) {
+        Ok(u) => u,
+        Err(r) => return fail(ui, &r),
+    };
+    let several = match e.as_step(users) {
+        Ok(s) => s.map(|(k, _)| k),
+        Err(err) => return fail(ui, &cannot(err)),
+    };
+    if let Some(k) = several {
+        ui.borrow_mut().line(&format!(
+            "Up to {k} users at once{}.",
+            if k < users { format!(" (the GPU's free memory holds {k} of the {users} asked for)") } else { String::new() }
+        ));
+        if let Some(i) = &mut info {
+            (i.concurrency, i.refused, i.held) = (k, &[], e.held());
+        }
+    }
     let (tx, rx) = mpsc::channel();
     let window = e.capacity();
     let addr = match listen(a, &name, window, tx.clone()) {
@@ -701,7 +719,12 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>) -> i32 
     STATUS.ready();
     access_notes(ui, a);
     ui.borrow_mut().line(&format!("{name} is served at http://{addr}: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it."));
-    server::work_gen(&mut *e, Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused: server::ONE_AT_A_TIME }), &rx, &tx);
+    let refused = if several.is_some() { &[][..] } else { server::ONE_AT_A_TIME };
+    let shared = Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused });
+    match e.as_step(users) {
+        Ok(Some((k, step))) => server::work_with(&mut crate::sched::Sched::new(step, k), shared, &rx, &tx),
+        _ => server::work_gen(&mut *e, shared, &rx, &tx),
+    }
     0
 }
 
