@@ -114,6 +114,7 @@ pub mod muse;
 pub mod muse_ref;
 pub mod nemotron;
 pub mod offload;
+pub mod ops;
 pub mod os;
 pub mod pack;
 pub mod pixels;

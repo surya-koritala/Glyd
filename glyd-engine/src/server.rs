@@ -44,6 +44,8 @@ pub struct Req {
     preflight: Option<(String, Option<String>)>,
     /// The headers that go with an answer for a browser's script (CORS), as the server's rules allow them for this request's Origin.
     cors: String,
+    /// The request's place in the server's count of requests in flight, for as long as it is answered (it goes with the request to the thread that answers it): a drain waits for these.
+    inflight: Option<crate::ops::Inflight>,
 }
 
 /// What the engine's thread is asked to do.
@@ -219,7 +221,7 @@ fn read_request_within(s: &mut TcpStream, head: Duration, body: Duration) -> std
     let preflight = if h.method == "OPTIONS" && !h.origin.is_empty() { h.ask_method.map(|m| (m, h.ask_headers)) } else { None };
     // (the key as `x-api-key` is the same key as a bearer token: the Authorization header, where both come, is the one read)
     let auth = h.auth.or(h.x_api_key.map(|k| format!("Bearer {k}")));
-    Ok(Some(Req { method: h.method, path: h.path, body, auth, host: h.host, origin: h.origin, preflight, cors: String::new() }))
+    Ok(Some(Req { method: h.method, path: h.path, body, auth, host: h.host, origin: h.origin, preflight, cors: String::new(), inflight: None }))
 }
 
 /// After an answer that was sent before the request was read to its end (a header block past its bounds): the end of the connection that sends no more, and what the client still sends read and thrown away
@@ -1970,6 +1972,22 @@ pub fn listen_loading(
     tx: Sender<Job>,
     loading: Arc<AtomicBool>,
 ) -> Result<std::net::SocketAddr> {
+    listen_with_life(addr, name, window, key, local_only, tx, loading, crate::ops::Life::global())
+}
+
+/// `listen_loading` with the life (draining and the requests in flight) it answers to: the process's own for a server, a test's own for a test.
+#[allow(clippy::too_many_arguments)]
+pub fn listen_with_life(
+    addr: &str,
+    name: &str,
+    window: usize,
+    key: Option<String>,
+    local_only: bool,
+    tx: Sender<Job>,
+    loading: Arc<AtomicBool>,
+    life: Arc<crate::ops::Life>,
+) -> Result<std::net::SocketAddr> {
+    crate::ops::init();
     let listener = TcpListener::bind(addr).map_err(|e| Error(format!("{addr}: {e}")))?;
     let bound = listener.local_addr().map_err(|e| Error(e.to_string()))?;
     let name = Arc::new(name.to_string());
@@ -1988,9 +2006,9 @@ pub fn listen_loading(
                 continue;
             }
             let id = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
-            let (tx, name, live, key, loading) = (tx.clone(), name.clone(), live.clone(), key.clone(), loading.clone());
+            let (tx, name, live, key, loading, life) = (tx.clone(), name.clone(), live.clone(), key.clone(), loading.clone(), life.clone());
             std::thread::spawn(move || {
-                route(s, &name, window, &key, (guard, port), &tx, id, &loading);
+                route(s, &name, window, &key, (guard, port), &tx, id, &loading, &life);
                 live.fetch_sub(1, Ordering::SeqCst);
             });
         }
@@ -2015,11 +2033,13 @@ fn route(
     tx: &Sender<Job>,
     id: u64,
     loading: &AtomicBool,
+    life: &Arc<crate::ops::Life>,
 ) {
     let mut req = match read_request(&mut s) {
         Ok(Some(r)) => r,
         Ok(None) => return,
         Err((code, why)) => {
+            crate::ops::refused(code);
             respond(&mut s, code, "application/json", error_body(&why, code).as_bytes());
             if code == 431 {
                 drain(&mut s);
@@ -2028,6 +2048,7 @@ fn route(
         }
     };
     if let Some((code, why)) = refusal(&req.host, &req.origin, local_only) {
+        crate::ops::refused(code);
         return respond(&mut s, code, "application/json", forbidden_body(&why, code).as_bytes());
     }
     if let Some((method, headers)) = &req.preflight {
@@ -2037,7 +2058,10 @@ fn route(
     let path = req.path.split('?').next().unwrap_or("").to_string();
     let cors = req.cors.clone();
     // the API wants the key where there is one (the page and the health check do not; nor does an OPTIONS)
-    if (path.starts_with("/v1") || path.starts_with("/api/")) && req.method != "OPTIONS" && key.as_ref().is_some_and(|k| !key_matches(k, req.auth.as_deref())) {
+    if (path.starts_with("/v1") || path.starts_with("/api/") || path == "/metrics")
+        && req.method != "OPTIONS"
+        && key.as_ref().is_some_and(|k| !key_matches(k, req.auth.as_deref()))
+    {
         // (the Messages API's clients, the Anthropic SDKs and Claude Code, read Anthropic's error: it says `invalid x-api-key`, and the key is `x-api-key` or a bearer token)
         let body = if path.starts_with("/v1/messages") {
             anthropic::anthropic_body(401, "invalid x-api-key: the server's key is needed as `x-api-key: <key>` or `Authorization: Bearer <key>`")
@@ -2046,7 +2070,23 @@ fn route(
         } else {
             error_body("Incorrect API key provided: the server's key is needed as `Authorization: Bearer <key>`.", 401)
         };
+        crate::ops::refused(401);
         return respond_with(&mut s, 401, "application/json", &format!("{cors}WWW-Authenticate: Bearer\r\n"), body.as_bytes());
+    }
+    // a request for an API that goes to the engine is counted as in flight until its answer ends, and is not taken while the server drains (a 503 that says so: the load balancer's next try goes elsewhere)
+    let to_engine = (req.method == "POST"
+        && matches!(path.as_str(), "/v1/chat/completions" | "/v1/completions" | "/v1/responses" | "/v1/messages" | "/v1/messages/count_tokens"))
+        || path.starts_with("/api/");
+    if to_engine {
+        crate::ops::request(&path);
+        match life.enter() {
+            Some(g) => req.inflight = Some(g),
+            None => {
+                crate::ops::refused(503);
+                let body = error_body("the server is shutting down: it takes no new requests", 503);
+                return respond_with(&mut s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
+            }
+        }
     }
     match (req.method.as_str(), path.as_str()) {
         ("GET" | "HEAD", "/") | ("GET" | "HEAD", "/index.html") => {
@@ -2106,6 +2146,15 @@ fn route(
             respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"loading\"}")
         }
         ("GET", "/health" | "/v1/health") => respond_with(&mut s, 200, "application/json", &cors, b"{\"status\":\"ok\"}"),
+        // (ready: the model is loaded and the server is not draining; `/health` says only that the process is up)
+        ("GET" | "HEAD", "/ready") if loading.load(Ordering::Relaxed) => respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"loading\"}"),
+        ("GET" | "HEAD", "/ready") if life.draining() => respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"draining\"}"),
+        ("GET" | "HEAD", "/ready") => respond_with(&mut s, 200, "application/json", &cors, b"{\"status\":\"ready\"}"),
+        ("GET", "/metrics") => {
+            let ready = !loading.load(Ordering::Relaxed);
+            let text = crate::ops::render(&crate::ops::State { model: name, ready, life, engine: true });
+            respond_with(&mut s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
+        }
         ("GET", "/stats") => respond_with(&mut s, 200, "application/json", &cors, stats_json().as_bytes()),
         ("GET", "/v1/models") => {
             let body =
@@ -2382,7 +2431,17 @@ pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &S
                 let _ = sub.out.send(Ev::End(Ok(Finish::Stopped)));
             }
             Job::Seq(sub) => {
-                let r = e.reply(&sub.prompt, &sub.reply, &mut |t| sub.out.send(Ev::Token(t)).is_ok() && !sub.abort.load(Ordering::Relaxed));
+                let mut timer = crate::ops::Timer::start();
+                let r = e.reply(&sub.prompt, &sub.reply, &mut |t| {
+                    timer.token();
+                    sub.out.send(Ev::Token(t)).is_ok() && !sub.abort.load(Ordering::Relaxed)
+                });
+                timer.end(match &r {
+                    Ok((_, Finish::Stop)) => "stop",
+                    Ok((_, Finish::Length)) => "length",
+                    Ok((_, Finish::Stopped)) => "stopped",
+                    Err(_) => "error",
+                });
                 if let Err(err) = &r {
                     engine_failed(&err.to_string());
                 }
@@ -3310,6 +3369,88 @@ pub(crate) mod tests {
         over.read_to_string(&mut out).unwrap();
         assert!(out.starts_with("HTTP/1.1 503 Service Unavailable"), "{out}");
         drop(idle);
+    }
+
+    /// `/health` says the process is up, `/ready` that the model is loaded (200 `ready`; 503 `loading` where the server listens while it loads), `/metrics` is Prometheus's text format with the families an operator
+    /// needs; with a key set the key guards `/metrics` and not the two probes (a load balancer has no key).
+    #[test]
+    fn health_ready_and_metrics_answer_as_an_operator_needs() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let loading = Arc::new(AtomicBool::new(true));
+        let addr = listen_with_life("127.0.0.1:0", "Qwen/Qwen3-8B", 4096, Some("k3y".into()), true, tx, loading.clone(), Arc::default()).unwrap();
+        // loading: alive, not ready
+        assert_eq!(ask(addr, "GET", "/ready", &[]).0, 503);
+        assert!(ask(addr, "GET", "/ready", &[]).2.contains("loading"));
+        loading.store(false, Ordering::Relaxed);
+        let (st, _, body) = ask(addr, "GET", "/ready", &[]);
+        assert_eq!((st, body.as_str()), (200, "{\"status\":\"ready\"}"));
+        assert_eq!(ask(addr, "GET", "/health", &[]).0, 200);
+        // the metrics: the key guards them
+        assert_eq!(ask(addr, "GET", "/metrics", &[]).0, 401);
+        assert_eq!(ask(addr, "GET", "/metrics", &[("Authorization", "Bearer wrong")]).0, 401);
+        let (st, head, text) = ask(addr, "GET", "/metrics", &[("Authorization", "Bearer k3y")]);
+        assert_eq!(st, 200);
+        assert!(head.contains("content-type: text/plain; version=0.0.4"), "{head}");
+        for name in [
+            "glyd_requests_total",
+            "glyd_generated_tokens_total",
+            "glyd_prompt_tokens_total",
+            "glyd_time_to_first_token_seconds_bucket",
+            "glyd_time_per_output_token_seconds_bucket",
+            "glyd_queue_depth",
+            "glyd_requests_in_flight",
+            "glyd_ready 1",
+            "glyd_draining 0",
+            "glyd_build_info{version=",
+        ] {
+            assert!(text.contains(name), "{name} in {text}");
+        }
+        // a refusal is counted: the 401 above
+        assert!(text.contains("glyd_requests_refused_total{code=\"401\"} "), "{text}");
+        // without a key the metrics are open (this computer's own address, no key)
+        let (tx, _rx2) = std::sync::mpsc::channel();
+        let open = listen("127.0.0.1:0", "m", 4096, None, true, tx).unwrap();
+        assert_eq!(ask(open, "GET", "/metrics", &[]).0, 200);
+        // and the Host check applies to them as to every path
+        assert_eq!(ask(open, "GET", "/metrics", &[("Host", "evil.example")]).0, 421);
+    }
+
+    /// A drain: `/ready` turns 503 `draining`, the requests for the engine in flight are let end, a new one is refused (503, `Retry-After`), the probes and the model list still answer, and the count is 0 when the last ends.
+    #[test]
+    fn a_drain_stops_taking_requests_and_waits_for_those_in_flight() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let life = Arc::new(crate::ops::Life::default());
+        let addr = listen_with_life("127.0.0.1:0", "m", 4096, None, true, tx, Arc::new(AtomicBool::new(false)), life.clone()).unwrap();
+        // a request that is taken and waits in the engine's queue (nobody runs it here): in flight
+        let body = "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(
+            format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+                .as_bytes(),
+        )
+        .unwrap();
+        let t = std::time::Instant::now();
+        while life.inflight() == 0 {
+            assert!(t.elapsed() < Duration::from_secs(5), "the request was not taken");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(ask(addr, "GET", "/ready", &[]).0, 200);
+        life.begin_drain();
+        let (st, _, b) = ask(addr, "GET", "/ready", &[]);
+        assert_eq!((st, b.as_str()), (503, "{\"status\":\"draining\"}"));
+        // a new request for the engine is refused and not counted; the rest answers
+        let (st, head, b) = ask(addr, "POST", "/v1/chat/completions", &[("Content-Length", "0")]);
+        assert_eq!(st, 503, "{b}");
+        assert!(head.contains("retry-after: 1") && b.contains("shutting down"), "{head} {b}");
+        assert_eq!(ask(addr, "GET", "/v1/models", &[]).0, 200);
+        assert_eq!(ask(addr, "GET", "/health", &[]).0, 200);
+        assert!(ask(addr, "GET", "/metrics", &[]).2.contains("glyd_draining 1"));
+        assert_eq!(life.inflight(), 1);
+        assert_eq!(life.wait_idle(Duration::from_millis(100)), 1, "the bound passed with the request still in flight");
+        // the request ends (here: the engine's queue is dropped with the request in it): the drain is done
+        drop(rx);
+        assert_eq!(life.wait_idle(Duration::from_secs(5)), 0);
+        drop(c);
     }
 
     /// The API key as vLLM's middleware checks it: `Authorization: Bearer KEY` (the scheme in any case; the token is what follows the first space), by the digests of both in constant time; for every path of /v1, and

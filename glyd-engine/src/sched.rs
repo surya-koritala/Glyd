@@ -201,10 +201,22 @@ struct Seq {
     after: Vec<u64>,
     /// Hit twice while others ran: it runs alone next (nothing else is let in until it ends).
     solo: bool,
+    /// When it was sent to the scheduler and when its last token was written (the metrics' first-token and between-token times).
+    began: std::time::Instant,
+    last_token: Option<std::time::Instant>,
 }
 
 /// Times a sequence's step may be taken back for a lost block before it ends with an error (the extra memory is shared: one that is still lost after this many waits does not fit it).
 pub const MAX_TRIES: u32 = 6;
+
+/// The name of how a sequence ended, as the metrics count it.
+fn finish_name(f: Finish) -> &'static str {
+    match f {
+        Finish::Stop => "stop",
+        Finish::Length => "length",
+        Finish::Stopped => "stopped",
+    }
+}
 
 /// The most tokens a prompt pass has for the round's decode step to wait on the prompts that are coming in, and the most rounds in a row it does.
 const SHORT_PASS: usize = 256;
@@ -309,12 +321,17 @@ impl<B: Backend> Sched<B> {
             tries: 0,
             after: Vec::new(),
             solo: false,
+            began: std::time::Instant::now(),
+            last_token: None,
         });
         self.gauges();
     }
 
     fn gauges(&self) {
         let st = &self.stats;
+        let pages = self.pager.pages();
+        crate::ops::KV_PAGES.store(pages as u64, Relaxed);
+        crate::ops::KV_PAGES_HELD.store(pages.saturating_sub(self.pager.available()) as u64, Relaxed);
         for (a, v) in SHARED.iter().zip([
             st.prompt,
             st.hit,
@@ -395,6 +412,7 @@ impl<B: Backend> Sched<B> {
     /// Every sequence ended with `msg`, the pages all free again.
     pub fn fail(&mut self, msg: &str) {
         for s in self.active.drain(..).chain(self.waiting.drain(..)) {
+            crate::ops::ended("error", s.began);
             self.pending.push((s.out.clone(), Ev::End(Err(msg.to_string()))));
         }
         self.pager = Pager::new(self.be.pages());
@@ -418,6 +436,7 @@ impl<B: Backend> Sched<B> {
         let gone: Vec<usize> = self.waiting.iter().enumerate().filter(|(_, s)| s.abort.load(Relaxed)).map(|(i, _)| i).collect();
         for i in gone.into_iter().rev() {
             if let Some(s) = self.waiting.remove(i) {
+                crate::ops::ended("stopped", s.began);
                 self.pending.push((s.out.clone(), Ev::End(Ok(Finish::Stopped))));
             }
         }
@@ -454,6 +473,7 @@ impl<B: Backend> Sched<B> {
                 if self.active.is_empty() {
                     // nothing will free a page: this one never fits
                     let s = self.waiting.remove(k).expect("a waiting sequence");
+                    crate::ops::ended("error", s.began);
                     self.pending.push((s.out.clone(), Ev::End(Err(format!("{} tokens, where the cache holds {} blocks", s.tokens.len(), self.pager.pages())))));
                     continue;
                 }
@@ -570,6 +590,7 @@ impl<B: Backend> Sched<B> {
                 self.stats.ended_lost += 1;
                 let mut s = self.active.remove(i);
                 self.give_back(&mut s)?;
+                crate::ops::ended("error", s.began);
                 self.pending.push((s.out.clone(), Ev::End(Err(ALONE_MESSAGE.to_string()))));
                 continue;
             }
@@ -616,6 +637,7 @@ impl<B: Backend> Sched<B> {
     fn finish(&mut self, i: usize, f: Finish) -> Result<()> {
         let mut s = self.active.remove(i);
         self.give_back(&mut s)?;
+        crate::ops::ended(finish_name(f), s.began);
         self.pending.push((s.out.clone(), Ev::End(Ok(f))));
         Ok(())
     }
@@ -663,6 +685,7 @@ impl<B: Backend> Sched<B> {
             return Some(Finish::Stopped);
         }
         self.pending.push((s.out.clone(), Ev::Token(tok)));
+        crate::ops::token(s.began, &mut s.last_token);
         s.tokens.push(tok);
         s.generated += 1;
         if s.generated >= s.reply.max_new || s.tokens.len() > window {
@@ -1093,6 +1116,30 @@ pub(crate) mod tests {
             }
             assert!(s.be.batches > 0, "no pass took more than one prompt ({pages} pages, chunk {chunk}, {batch} to a pass)");
         }
+    }
+
+    /// The metrics see what a sequence did: its first token and the gaps after it, its tokens, how it ended, and the cache's pages while it holds some (the counters are the process's, other tests add to them: at least these).
+    #[test]
+    fn a_sequence_is_counted_in_the_metrics() {
+        use crate::ops;
+        let (first, gaps, whole) = (ops::TTFT.count(), ops::TOKEN_GAP.count(), ops::REQUEST_TIME.count());
+        let mut s = Sched::new(Fake::new(64, 32), 4);
+        let (rx, _) = add(&mut s, prompt(2, 20), 6);
+        s.tick().unwrap();
+        assert!(ops::KV_PAGES.load(Relaxed) >= 64 && ops::KV_PAGES_HELD.load(Relaxed) > 0, "the sequence holds pages while it runs");
+        run(&mut s);
+        let (tokens, f) = collect(&rx);
+        assert_eq!((tokens.len(), f), (6, Finish::Length));
+        assert!(ops::TTFT.count() > first, "the first token was not counted");
+        assert!(ops::TOKEN_GAP.count() >= gaps + 5, "the gaps of the five tokens after the first were not counted");
+        assert!(ops::REQUEST_TIME.count() > whole, "the end was not counted");
+        let text = ops::render(&ops::State { model: "m", ready: true, life: &ops::Life::default(), engine: true });
+        assert!(text.contains("glyd_sequences_finished_total{reason=\"length\"} "), "{text}");
+        // a request that is asked to end before it runs is counted as stopped
+        let (rx, abort) = add(&mut s, prompt(3, 20), 6);
+        abort.store(true, Relaxed);
+        run(&mut s);
+        assert_eq!(collect(&rx).1, Finish::Stopped);
     }
 
     #[test]

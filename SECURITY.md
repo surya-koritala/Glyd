@@ -52,7 +52,7 @@ credited in the advisory unless they ask not to be.
 - Image URLs in a request are fetched only from public addresses: the address a name resolves to is checked where the
   connection is made, so a name that answers a public address first and a private one next (DNS rebinding) is refused.
 - An API key (`GLYD_API_KEY`, or `--api-key`) guards the `/v1` routes. It is compared as SHA-256 digests in constant
-  time. The chat page, `/health` and `/stats` do not need the key.
+  time. The chat page, `/health`, `/ready` and `/stats` do not need the key; `/metrics` does.
 - In scope: reading or using the model without the key where one is set; getting past the loopback checks on an
   address the server chose itself; a request that crashes, hangs or exhausts memory beyond the limits it sets
   (request body 16 MiB, header block 64 KiB, 256 headers, 64 connections, 30 s for the request line and headers, 120 s for the body, 60 s for a write to a client that reads nothing: a request that is too slow is answered 408); an out-of-bounds read or
