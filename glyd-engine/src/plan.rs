@@ -282,8 +282,8 @@ pub struct Shape {
     pub mtp: bool,
 }
 
-/// The most layers a config.json may say (the deepest models have a few hundred).
-const MAX_LAYERS: usize = 10_000;
+/// The most layers a config.json may say (the deepest models have a few hundred): every family's parser refuses more, for a layer is an entry of a list it makes.
+pub const MAX_LAYERS: usize = 10_000;
 
 impl Shape {
     pub fn params(&self) -> f64 {
@@ -853,6 +853,55 @@ mod tests {
             assert!(Shape::from_config(&c(layers)).unwrap_err().contains("num_hidden_layers"), "{layers}");
         }
         assert_eq!(Shape::from_config(&c("10000")).unwrap().layers, 10_000);
+    }
+
+    /// Every family's parser refuses a layer count no model has (each layer is an entry of a list the parser makes: a billion of them was an allocation that took the machine's memory, or a loop of minutes), and a Qwen4x
+    /// config whose `full_attention_interval` is 0 (a remainder by it) is read as an interval of 1, as Qwen3.5's is.
+    #[test]
+    fn every_family_refuses_a_billion_layers() {
+        fn with_layers(v: &mut json::Value, layers: u64) {
+            if let json::Value::Object(o) = v {
+                o.retain(|(k, _)| k != "layer_types" && k != "hybrid_override_pattern");
+                for (k, x) in o.iter_mut() {
+                    if k == "num_hidden_layers" {
+                        *x = json::Value::from(layers);
+                    } else {
+                        with_layers(x, layers);
+                    }
+                }
+            }
+        }
+        let big = |text: &str| {
+            let mut v = json::parse(text).unwrap();
+            with_layers(&mut v, 1_000_000_000);
+            json::to_compact(&v)
+        };
+        let start = std::time::Instant::now();
+        let qx = big(&fixture("qwen4x_config.json"));
+        assert!(crate::qwen4x::ConfigQx::parse(&qx, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
+        let glm = big(&fixture("glm5_next_tiny_config.json"));
+        assert!(crate::glm::ConfigGlm::parse(&glm, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
+        let q35 = big(&json::to_compact(json::parse(&fixture("qwen35_configs.json")).unwrap().get("Qwen/Qwen3.5-9B").unwrap()));
+        assert!(crate::qwen35::Config35::parse(&q35, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
+        let q3 = r#"{"architectures":["Qwen3ForCausalLM"],"hidden_size":1024,"num_hidden_layers":1000000000,"num_attention_heads":16,"num_key_value_heads":8,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960}"#;
+        assert!(crate::weights::Config::parse(q3, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+        // an interval of 0 in a Qwen4x config without layer_types
+        let mut v = json::parse(&fixture("qwen4x_config.json")).unwrap();
+        fn no_types(v: &mut json::Value) {
+            if let json::Value::Object(o) = v {
+                o.retain(|(k, _)| k != "layer_types");
+                if let Some(t) = o.iter_mut().find(|(k, _)| k == "text_config") {
+                    no_types(&mut t.1);
+                    if let json::Value::Object(t) = &mut t.1 {
+                        t.retain(|(k, _)| k != "full_attention_interval");
+                        t.push(("full_attention_interval".to_string(), json::Value::from(0u64)));
+                    }
+                }
+            }
+        }
+        no_types(&mut v);
+        let _ = crate::qwen4x::ConfigQx::parse(&json::to_compact(&v), "c", None);
     }
 
     fn chosen(p: &Plan) -> &Candidate {

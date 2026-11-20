@@ -138,6 +138,9 @@ impl Config35 {
             }
         }
         let layers = u("num_hidden_layers")?;
+        if layers > crate::plan::MAX_LAYERS {
+            return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
+        }
         let kinds = match t.get("layer_types").and_then(Value::as_array) {
             Some(a) => {
                 if a.len() != layers {
