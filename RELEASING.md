@@ -34,8 +34,8 @@ bird: penguin, kestrel, swift, wren, hummingbird.
 3. The tag runs both release workflows from this source:
    - `release.yml`: the `glyd` CLI tarballs and wheels attached to the release, `glyd` to PyPI and crates.io.
    - `release-gpu.yml`: the GPU library, the engine, the `glyd-gpu` wheels to PyPI, and the engine bundles
-     (`glyd-engine-vX.Y.Z-linux-*.tar.gz` and their `.sha256`) attached to the same GitHub release (`attach-engine`), which `install.sh`
-     and `condor/tools/install.sh` download.
+     (`glyd-engine-vX.Y.Z-linux-*.tar.gz` and their `.sha256`: `glyd` with the engine linked, `glyd-engine` as a link to it, the GPU
+     library) attached to the same GitHub release (`attach-engine`), which `install.sh` and `condor/tools/install.sh` download.
    PyPI's trusted publisher for `glyd-gpu` must name this repository and `release-gpu.yml` (environment `pypi`).
 4. Check the release page has the CLI tarballs, the wheels and both engine bundles.
 5. (reserved)

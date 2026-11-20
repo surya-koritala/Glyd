@@ -5,15 +5,22 @@ use std::time::Instant;
 
 fn print_usage() {
     eprintln!(
-        r#"Glyd: compression for cloud storage
-Usage: glyd [OPTIONS] [INPUT] [-o OUTPUT]
-       glyd pack MODEL OUT | glyd verify PATH   (a model's weights for Glyd's GPU layouts:
-       packed and checked on the CPU by the glyd-gpu command; glyd pack --help)
+        r#"Glyd: LLM weights and KV cache compressed without loss, the engine that runs them, and compression for files
+Usage: glyd run MODEL[:LEVEL]       chat with a model in the terminal and at one URL (MODEL: a Hub repo, a directory or a GGUF file)
+       glyd serve MODEL[:LEVEL]     the OpenAI-compatible API and the chat page
+       glyd pull MODEL              download a model by name (qwen3.5, qwen3.5:27b, qwen3.5:27b:swift) or Hub id
+       glyd ls [--all] | rm MODEL   the models downloaded, with their level and size; take one out of the cache
+       glyd fit MODEL               what a run of MODEL would do on this computer, before anything is downloaded
+       glyd doctor | login          what this computer has for it; save a Hugging Face token
+       glyd supports | preflight | prepare | costs | rates | rangeworker   the engine's other commands (glyd run --help)
+       glyd cluster                 one model across computers (not yet: ROADMAP.md, M5)
+       glyd pack MODEL OUT | glyd verify PATH   a model's weights for Glyd's GPU layouts, packed and checked on the CPU
+       glyd [OPTIONS] [INPUT] [-o OUTPUT]       compress or decompress a file (the options below)
        (the store, which compresses across objects, is the glyd-store command)
-       glyd run MODEL | serve MODEL | fetch MODEL | verify MODEL | doctor | login   (the local chat, on Linux with an NVIDIA GPU: the
-       Python tool's commands, which this program passes to it; glyd run uses Glyd's own engine, the
-       glyd-engine command, on the GPUs where it is measured at least as fast as vLLM; GLYD_ENGINE=1
-       uses it on any GPU it runs on, GLYD_ENGINE=0 keeps vLLM; a file named run is ./run)
+       The engine is in this program where it was built with it (glyd --version says so), else the glyd-engine command beside it or on PATH.
+       On a computer with the Python tool and vLLM, run and serve are its where the engine does not take the model; GLYD_ENGINE=1
+       uses the engine on any GPU it runs on, GLYD_ENGINE=0 keeps vLLM; a file named run is ./run
+Exit status: 0 done, 1 an error, 3 not supported (glyd supports MODEL: the engine does not run it)
 
 Options:
     -c, --compress         Compress input (default if output is .glyd)
@@ -66,6 +73,9 @@ Examples:
 
 fn print_version() {
     println!("glyd {}", env!("CARGO_PKG_VERSION"));
+    if LINKED {
+        println!("engine: linked (glyd run, serve, pull, fit and doctor are this program's own)");
+    }
     // The kernels are AVX2 (x86-64) and NEON (aarch64); everything else runs scalar.
     #[cfg(target_arch = "x86_64")]
     println!("SIMD: {}", if is_x86_feature_detected!("avx2") { "AVX2" } else { "scalar" });
@@ -191,6 +201,130 @@ fn is_model_command(cmd: &str) -> bool {
     matches!(cmd, "fetch" | "preflight" | "prepare" | "supports" | "costs" | "rates")
 }
 
+/// The engine's commands that the Python tool has no such command for: they are the engine's wherever one is here (linked, beside this program or on PATH), the tool or no tool.
+/// `pull`, `ls` and `rm` are the models in the cache (glyd-engine/src/models.rs); a file of one of these names (./fit) is still compressed where there is no engine.
+fn is_engine_command(cmd: &str) -> bool {
+    matches!(cmd, "fit" | "pull" | "ls" | "rm" | "rangeworker")
+}
+
+/// Whether the engine is linked into this program (the `engine` feature: the release tarballs' glyd).
+const LINKED: bool = cfg!(feature = "engine");
+
+/// What the routing of a command goes by, read from this computer once (and given by hand in the tests).
+struct Facts {
+    /// GLYD_FORWARDED is set: the Python tool's glyd sent the command here.
+    forwarded: bool,
+    /// The Python tool's glyd is installed.
+    python_tool: bool,
+    /// The glyd-gpu command is beside this program.
+    gpu_tool_beside: bool,
+    /// What GLYD_ENGINE says.
+    choice: Engine,
+    /// GLYD_ENGINE asks for the engine by name (1, on, yes, true).
+    asked: bool,
+    /// An engine program found (GLYD_ENGINE's path, beside this program, on PATH): not the linked one.
+    external: Option<PathBuf>,
+    /// The command's word is a file here (`./fit`), which the compression program takes where there is no engine.
+    is_file: bool,
+}
+
+impl Facts {
+    fn read(cmd: &str) -> Facts {
+        let choice = engine_choice();
+        Facts {
+            forwarded: env::var_os("GLYD_FORWARDED").is_some_and(|v| !v.is_empty()), // (empty is not set, as the Python tool takes it)
+            python_tool: find_python_tool().is_some(),
+            gpu_tool_beside: gpu_tool_beside(),
+            asked: engine_asked_for(),
+            external: find_engine(&choice),
+            choice,
+            is_file: Path::new(cmd).exists(),
+        }
+    }
+
+    /// Whether there is an engine to run a command: the linked one, or a program found.
+    fn engine_here(&self) -> bool {
+        LINKED || self.external.is_some()
+    }
+}
+
+/// Where a command goes.
+#[derive(Debug, PartialEq)]
+enum Route {
+    /// A file to compress or decompress (or this program's own flags).
+    Codec,
+    /// The glyd-gpu command.
+    GpuTool,
+    /// The Python tool's `glyd` (which says what to do where there is none), with these variables for it alone.
+    Python(Vec<(&'static str, String)>),
+    /// The engine linked into this program.
+    Engine,
+    /// An engine program of its own: GLYD_ENGINE's, beside this program, or on PATH.
+    EngineProgram(PathBuf),
+    /// An engine command and no engine here.
+    NoEngine,
+    /// `glyd cluster`, which is a stub until C3 (ROADMAP M5).
+    Cluster,
+}
+
+/// `run`, `serve`, `doctor`, `login` and the engine's other commands about a model. Where there is a Python tool, `run` and `serve` are its: it asks the engine (the program found, never the linked
+/// one, which the tool cannot start: GLYD_ENGINE names a file) whether it is used on this GPU and will certainly run the model, before anything is downloaded, runs it as its child where it will, and
+/// runs vLLM, with one line saying why, where it will not; `serve` is vLLM's unless GLYD_ENGINE asks for the engine (the engine serves up to 8 users at once). This program says nothing of its own there:
+/// it tells the tool which engine it found, and the tool, which has vLLM to fall back to, does the rest. Where there is no tool there is no other runner: the engine (linked, else a program found)
+/// runs the command, and its refusals are the last word. `doctor` and `login` are the engine's where one is here, else the tool's.
+fn chat_route(cmd: &str, f: &Facts) -> Route {
+    if f.forwarded {
+        return Route::Python(vec![]); // (it says what this program would say: the tool has the engine's choice to make, and no loop to start)
+    }
+    if is_model_command(cmd) && f.python_tool {
+        return Route::Python(vec![]); // (the tool knows the models vLLM runs too)
+    }
+    if matches!(cmd, "run" | "serve") && f.python_tool {
+        let found = if f.choice == Engine::Auto && (cmd == "run" || f.asked) { f.external.as_ref().and_then(|p| p.to_str()) } else { None }; // (a path in GLYD_ENGINE asks the tool for the engine on `serve`: it is only given where it was asked for)
+        return match found {
+            Some(path) if f.asked => Route::Python(vec![("GLYD_ENGINE", path.to_string()), ("GLYD_ENGINE_ASKED", "1".to_string())]), // (the user's 1, which the path takes the place of)
+            Some(path) => Route::Python(vec![("GLYD_ENGINE", path.to_string())]),
+            None => Route::Python(vec![]), // (GLYD_ENGINE=0, or a program the user named, which the tool is told by the environment; or no engine program here: the tool's own package has one, or vLLM runs it)
+        };
+    }
+    match &f.choice {
+        Engine::Off => Route::Python(vec![]),
+        Engine::Path(_) => f.external.clone().map_or(Route::Python(vec![]), Route::EngineProgram), // (the program the user named runs it, linked or not)
+        Engine::Auto if LINKED => Route::Engine,
+        Engine::Auto => f.external.clone().map_or(Route::Python(vec![]), Route::EngineProgram),
+    }
+}
+
+/// Where `glyd CMD ...` goes (`cmd`: the first word after the program's name).
+fn route(cmd: &str, f: &Facts) -> Route {
+    if cmd == "verify" && !f.gpu_tool_beside && !f.python_tool && f.engine_here() {
+        return chat_route(cmd, f); // (the Rust-only install: no glyd-gpu beside this program, so `glyd verify MODEL` is the engine's)
+    }
+    if matches!(cmd, "pack" | "verify") {
+        return Route::GpuTool; // (a file named pack or verify: ./pack)
+    }
+    if matches!(cmd, "run" | "serve" | "doctor" | "login") {
+        return chat_route(cmd, f); // (a file named run: ./run)
+    }
+    if is_model_command(cmd) && (f.python_tool || f.engine_here()) {
+        return chat_route(cmd, f); // (a model's command: the Python tool's where there is one, else the engine's, as in the Rust-only install)
+    }
+    if cmd == "cluster" && !f.is_file {
+        return Route::Cluster;
+    }
+    if is_engine_command(cmd) {
+        // (the Python tool has no such command: the engine runs it, or nothing does)
+        let engine = match &f.choice {
+            Engine::Off => None,
+            Engine::Path(_) => f.external.clone().map(Route::EngineProgram),
+            Engine::Auto if LINKED => Some(Route::Engine),
+            Engine::Auto => f.external.clone().map(Route::EngineProgram),
+        };
+        return engine.unwrap_or(if f.is_file { Route::Codec } else { Route::NoEngine });
+    }
+    Route::Codec
+}
+
 /// Whether the glyd-gpu command (the packer and file checker) is beside this program, as the full install has it.
 fn gpu_tool_beside() -> bool {
     env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("glyd-gpu"))).is_some_and(|p| p.exists())
@@ -246,75 +380,94 @@ fn take_secret(args: &mut Vec<String>, names: &[&str]) -> Option<String> {
     found
 }
 
-/// `glyd run`, `glyd serve`, `glyd doctor` and `glyd login`. Where there is a Python tool, `run` and `serve` are its: for `run` it asks the engine (the program GLYD_ENGINE names, else the one this program
-/// found beside it or on PATH, else the one of the tool's own package) whether it is used on this GPU (where it is measured at least as fast as vLLM) and will certainly run the model, before anything is
-/// downloaded, runs the engine as its child where it will, and runs vLLM, with one line saying why, where it will not and where the engine refuses before it is up; `serve` is vLLM's unless GLYD_ENGINE asks for
-/// the engine (the engine serves up to 8 users at once). This program says nothing of its own: it tells the tool which engine it found (GLYD_ENGINE, where the user named none, and for `serve` where
-/// the user asked for the engine), and the tool, which has vLLM to fall back to, does the rest. Where there is no tool there is no other runner: an engine program found here runs the
-/// command (an API key or a token given as a flag goes to it in its environment, not on its command line), and its refusals are the last word. `doctor` and `login` are the engine's where one is found here, else the tool's.
-fn local_chat(args: &[String]) -> ! {
-    let forwarded = env::var_os("GLYD_FORWARDED").map_or(false, |v| !v.is_empty());
-    let (cmd, choice) = (args[0].as_str(), engine_choice());
-    if forwarded {
-        python_command(args, &[]); // (it says what this program would say: the tool has the engine's choice to make, and no loop to start)
-    }
-    if is_model_command(cmd) && find_python_tool().is_some() {
-        python_command(args, &[]); // (the tool knows the models vLLM runs too)
-    }
-    if matches!(cmd, "run" | "serve") && find_python_tool().is_some() {
-        let found = if choice == Engine::Auto && (cmd == "run" || engine_asked_for()) { find_engine(&choice) } else { None }; // (a path in GLYD_ENGINE asks the tool for the engine on `serve`: it is only given where it was asked for)
-        match found.as_ref().and_then(|p| p.to_str()) {
-            Some(path) if engine_asked_for() => python_command(args, &[("GLYD_ENGINE", path), ("GLYD_ENGINE_ASKED", "1")]), // (the user's 1, which the path takes the place of)
-            Some(path) => python_command(args, &[("GLYD_ENGINE", path)]),
-            None => python_command(args, &[]), // (GLYD_ENGINE=0, or a program the user named, which the tool is told by the environment; or no engine here: the tool's own package has one, or vLLM runs it)
+/// Runs a route's command: `args` are the words after this program's name. Never returns for a route but Codec.
+fn go(route: Route, args: &[String]) -> ! {
+    let cmd = args[0].as_str();
+    match route {
+        Route::Codec => unreachable!("the compression program's own"),
+        Route::GpuTool => gpu_command(args),
+        Route::Python(extra) => {
+            let extra: Vec<(&str, &str)> = extra.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            python_command(args, &extra)
+        }
+        Route::Cluster => {
+            eprintln!("glyd cluster: one model across computers is not in this program yet (ROADMAP.md, M5). Today it is the starlings program (starlings/README.md). A file named cluster is compressed as ./cluster.");
+            std::process::exit(3);
+        }
+        Route::NoEngine => {
+            eprintln!(
+                "glyd {cmd}: the engine is not here: this program was built without it, and there is no glyd-engine command beside it or on PATH. Install the engine's release (curl -LsSf https://getglyd.com/install.sh | sh) \
+                 (a file named {cmd} is compressed as ./{cmd})"
+            );
+            std::process::exit(127);
+        }
+        Route::Engine | Route::EngineProgram(_) => {
+            let model = if matches!(cmd, "run" | "serve") && !args.iter().any(|a| a == "-h" || a == "--help") { model_arg(args) } else { None };
+            // (the linked engine says its own lines: a model that is no model is refused before any of them)
+            if let (Some(model), Route::EngineProgram(_)) = (model, &route) {
+                eprintln!("glyd {cmd}: {model} on glyd-engine (GLYD_ENGINE=0: vLLM instead).");
+            }
+            // an API key or a token given as a flag goes to the engine in its environment, not on its command line (where `ps` and a log show it)
+            let mut run_args = args.to_vec();
+            let mut secrets = Vec::new();
+            for (names, var, what) in
+                [(&["--api-key", "--api_key"][..], "GLYD_API_KEY", "API key"), (&["--hf-token", "--hf_token"][..], "HF_TOKEN", "Hugging Face token")]
+            {
+                if let Some(v) = take_secret(&mut run_args, names) {
+                    secrets.push((var, v));
+                    eprintln!("glyd {cmd}: the {what} goes to the engine in {var}, not on its command line (next time set {var} yourself: a shell's history keeps what you type).");
+                }
+            }
+            match route {
+                Route::EngineProgram(engine) => {
+                    let mut c = std::process::Command::new(&engine);
+                    c.envs(secrets).args(&run_args);
+                    #[cfg(unix)]
+                    let e = std::os::unix::process::CommandExt::exec(&mut c);
+                    #[cfg(not(unix))]
+                    let e = match c.status() {
+                        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+                        Err(e) => e,
+                    };
+                    eprintln!("glyd {}: could not start {}: {e}", args[0], engine.display());
+                    std::process::exit(126);
+                }
+                _ => {
+                    for (var, v) in secrets {
+                        env::set_var(var, v); // (this program has started no thread yet)
+                    }
+                    run_linked_engine(run_args)
+                }
+            }
         }
     }
-    let engine = if choice == Engine::Off { None } else { find_engine(&choice) };
-    let Some(engine) = engine else { python_command(args, &[]) };
-    let model = if matches!(cmd, "run" | "serve") && !args.iter().any(|a| a == "-h" || a == "--help") { model_arg(args) } else { None };
-    if let Some(model) = model {
-        eprintln!("glyd {cmd}: {model} on glyd-engine (GLYD_ENGINE=0: vLLM instead).");
-    }
-    let mut c = std::process::Command::new(&engine);
-    // an API key or a token given as a flag goes to the engine in its environment, not on its command line (where `ps` and a log show it)
-    let mut run_args = args.to_vec();
-    for (names, var, what) in
-        [(&["--api-key", "--api_key"][..], "GLYD_API_KEY", "API key"), (&["--hf-token", "--hf_token"][..], "HF_TOKEN", "Hugging Face token")]
-    {
-        if let Some(v) = take_secret(&mut run_args, names) {
-            c.env(var, v);
-            eprintln!("glyd {cmd}: the {what} goes to the engine in {var}, not on its command line (next time set {var} yourself: a shell's history keeps what you type).");
-        }
-    }
-    c.args(&run_args);
-    #[cfg(unix)]
-    let e = std::os::unix::process::CommandExt::exec(&mut c);
-    #[cfg(not(unix))]
-    let e = match c.status() {
-        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-        Err(e) => e,
-    };
-    eprintln!("glyd {}: could not start {}: {e}", args[0], engine.display());
-    std::process::exit(126);
+}
+
+/// The linked engine's command line, as `glyd-engine` has it: `args` are the words after the program's name.
+#[cfg(feature = "engine")]
+fn run_linked_engine(args: Vec<String>) -> ! {
+    glyd_engine::entry::main("glyd", args, None)
+}
+
+#[cfg(not(feature = "engine"))]
+fn run_linked_engine(_: Vec<String>) -> ! {
+    unreachable!("a route to the linked engine is made only where it is linked")
 }
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
+    // `glyd-engine`, a link to this program (or a copy of it) where the engine is linked: the engine's own command line, as the program of that name had it
+    #[cfg(feature = "engine")]
+    if env::args_os().next().is_some_and(|a| Path::new(&a).file_stem().is_some_and(|s| s == "glyd-engine")) {
+        glyd_engine::entry::main("glyd-engine", args[1..].to_vec(), None);
+    }
     if args.len() == 1 {
         print_usage();
         return Ok(());
     }
-    if args[1] == "verify" && !gpu_tool_beside() && find_python_tool().is_none() && find_engine(&engine_choice()).is_some() {
-        local_chat(&args[1..]); // (the Rust-only install: no glyd-gpu beside this program, so `glyd verify MODEL` is the engine's)
-    }
-    if matches!(args[1].as_str(), "pack" | "verify") {
-        gpu_command(&args[1..]); // (a file named pack or verify: ./pack)
-    }
-    if matches!(args[1].as_str(), "run" | "serve" | "doctor" | "login") {
-        local_chat(&args[1..]); // (a file named run: ./run)
-    }
-    if is_model_command(&args[1]) && (find_python_tool().is_some() || find_engine(&engine_choice()).is_some()) {
-        local_chat(&args[1..]); // (a model's command: the Python tool's where there is one, else the engine's, as in the Rust-only install)
+    match route(&args[1], &Facts::read(&args[1])) {
+        Route::Codec => {}
+        other => go(other, &args[1..]),
     }
 
     let mut input_path: Option<String> = None;
@@ -776,7 +929,126 @@ fn run_benchmark(path_str: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::model_arg;
+    use super::{is_engine_command, model_arg, route, Engine, Facts, Route};
+    use std::path::PathBuf;
+
+    /// A computer with nothing installed, which a test adds to.
+    fn bare() -> Facts {
+        Facts { forwarded: false, python_tool: false, gpu_tool_beside: false, choice: Engine::Auto, asked: false, external: None, is_file: false }
+    }
+
+    fn engine_program() -> Option<PathBuf> {
+        Some(PathBuf::from("/opt/glyd/glyd-engine"))
+    }
+
+    #[test]
+    fn files_and_compression_options_are_the_codecs() {
+        let f = bare();
+        for cmd in ["input.tar", "-d", "--help", "-b", "events.json"] {
+            assert_eq!(route(cmd, &f), Route::Codec, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn pack_and_verify_are_the_gpu_tools_unless_this_is_a_rust_only_install() {
+        let mut f = bare();
+        assert_eq!(route("pack", &f), Route::GpuTool);
+        assert_eq!(route("verify", &f), if super::LINKED { Route::Engine } else { Route::GpuTool }); // (no engine, no glyd-gpu: the packer's answer says what is missing)
+        f.gpu_tool_beside = true;
+        f.external = engine_program();
+        assert_eq!(route("verify", &f), Route::GpuTool); // (the full install has glyd-gpu beside)
+        f.gpu_tool_beside = false;
+        assert_eq!(route("verify", &f), Route::EngineProgram(PathBuf::from("/opt/glyd/glyd-engine")).or_linked()); // (the Rust-only install: `verify MODEL` is the engine's)
+        f.python_tool = true;
+        assert_eq!(route("verify", &f), Route::GpuTool); // (the tool's, through glyd-gpu)
+    }
+
+    impl Route {
+        /// The route to the linked engine where there is one, else this one.
+        fn or_linked(self) -> Route {
+            if super::LINKED {
+                Route::Engine
+            } else {
+                self
+            }
+        }
+    }
+
+    #[test]
+    fn the_python_tool_takes_run_and_serve_and_is_told_which_engine_was_found() {
+        let mut f = bare();
+        f.python_tool = true;
+        assert_eq!(route("run", &f), Route::Python(vec![]));
+        f.external = engine_program();
+        assert_eq!(route("run", &f), Route::Python(vec![("GLYD_ENGINE", "/opt/glyd/glyd-engine".into())]));
+        assert_eq!(route("serve", &f), Route::Python(vec![])); // (serve is vLLM's unless the engine is asked for)
+        f.asked = true;
+        assert_eq!(route("serve", &f), Route::Python(vec![("GLYD_ENGINE", "/opt/glyd/glyd-engine".into()), ("GLYD_ENGINE_ASKED", "1".into())]));
+        f.choice = Engine::Off;
+        assert_eq!(route("run", &f), Route::Python(vec![])); // (GLYD_ENGINE=0: vLLM)
+    }
+
+    #[test]
+    fn a_command_the_tool_sent_back_is_not_sent_again() {
+        let mut f = bare();
+        f.python_tool = true;
+        f.forwarded = true;
+        for cmd in ["run", "serve", "doctor", "login", "fetch"] {
+            assert_eq!(route(cmd, &f), Route::Python(vec![]), "{cmd}"); // (python_command refuses it: it would be a loop)
+        }
+    }
+
+    #[test]
+    fn with_no_tool_the_engine_runs_the_model_commands() {
+        let mut f = bare();
+        // no engine anywhere: the answer is python_command's (what to install)
+        assert_eq!(route("run", &f), if super::LINKED { Route::Engine } else { Route::Python(vec![]) });
+        f.external = engine_program();
+        let want = if super::LINKED { Route::Engine } else { Route::EngineProgram(PathBuf::from("/opt/glyd/glyd-engine")) };
+        for cmd in ["run", "serve", "doctor", "login", "fetch", "preflight", "supports", "costs"] {
+            assert_eq!(route(cmd, &f), want, "{cmd}");
+        }
+        f.choice = Engine::Off;
+        assert_eq!(route("run", &f), Route::Python(vec![])); // (GLYD_ENGINE=0 and no tool: python_command says so)
+    }
+
+    #[test]
+    fn a_program_the_user_names_runs_the_command_linked_or_not() {
+        let mut f = bare();
+        f.choice = Engine::Path(PathBuf::from("/x/my-engine"));
+        f.external = Some(PathBuf::from("/x/my-engine"));
+        assert_eq!(route("run", &f), Route::EngineProgram(PathBuf::from("/x/my-engine")));
+        f.external = None; // (not a file)
+        assert_eq!(route("run", &f), Route::Python(vec![]));
+    }
+
+    #[test]
+    fn cluster_is_a_stub_that_says_where_it_is_going_unless_it_is_a_file() {
+        let mut f = bare();
+        assert_eq!(route("cluster", &f), Route::Cluster);
+        f.is_file = true;
+        assert_eq!(route("cluster", &f), Route::Codec);
+    }
+
+    #[test]
+    fn fit_pull_and_rangeworker_are_the_engines_with_or_without_the_tool() {
+        for cmd in ["fit", "pull", "ls", "rm", "rangeworker"] {
+            assert!(is_engine_command(cmd));
+            let mut f = bare();
+            f.python_tool = true;
+            f.external = engine_program();
+            let want = if super::LINKED { Route::Engine } else { Route::EngineProgram(PathBuf::from("/opt/glyd/glyd-engine")) };
+            assert_eq!(route(cmd, &f), want, "{cmd}");
+            // with no engine: a file of that name is compressed, else the answer says the engine is not here
+            let mut f = bare();
+            let nowhere = if super::LINKED { Route::Engine } else { Route::NoEngine };
+            assert_eq!(route(cmd, &f), nowhere, "{cmd}");
+            f.is_file = true;
+            assert_eq!(route(cmd, &f), if super::LINKED { Route::Engine } else { Route::Codec }, "{cmd}");
+            f.choice = Engine::Off;
+            assert_eq!(route(cmd, &f), if f.is_file { Route::Codec } else { Route::NoEngine }, "{cmd}");
+        }
+    }
 
     fn a(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

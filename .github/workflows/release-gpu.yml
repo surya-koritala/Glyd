@@ -240,22 +240,28 @@ jobs:
           export RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=cargo --remap-path-prefix=$HOME/.rustup=rustup"
           time cargo build --release --locked -p glyd-engine --no-default-features
           mkdir engine && cp target/release/glyd-engine engine/
+          # glyd, the one program: the compression program with this engine linked (its `engine` feature takes the engine's library without its development
+          # commands, the build just made, so cargo builds only glyd's own code now). The tarball (engine-bundle) holds it, and glyd-engine as a link to it.
+          time cargo build --release --locked -p glyd --features engine --bin glyd
+          cp target/release/glyd engine/
       - name: Check (glibc 2.28, the system's libraries only; stripped)
         run: |
           set -e
           source /opt/rh/gcc-toolset-13/enable
-          f=engine/glyd-engine
-          needed=$(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort | tr '\n' ' ')
-          top() { objdump -T "$f" | grep -oE "$1_[0-9]+(\.[0-9]+)*" | sed "s/$1_//" | sort -uV | tail -1; }
-          echo "$f: $(stat -c %s "$f") bytes; needs $needed; GLIBC up to $(top GLIBC)"
-          [ "$(printf '%s\n' "$(top GLIBC)" 2.28 | sort -V | tail -1)" = 2.28 ] || { echo "$f needs GLIBC $(top GLIBC), past 2.28"; exit 1; }
-          ! readelf -S "$f" | grep -qE '\.symtab|\.debug' || { echo "$f is not stripped"; exit 1; }
-          cd engine && sha256sum glyd-engine > glyd-engine.sha256 && cat glyd-engine.sha256
+          for f in engine/glyd-engine engine/glyd; do
+            needed=$(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort | tr '\n' ' ')
+            top() { objdump -T "$f" | grep -oE "$1_[0-9]+(\.[0-9]+)*" | sed "s/$1_//" | sort -uV | tail -1; }
+            echo "$f: $(stat -c %s "$f") bytes; needs $needed; GLIBC up to $(top GLIBC)"
+            [ "$(printf '%s\n' "$(top GLIBC)" 2.28 | sort -V | tail -1)" = 2.28 ] || { echo "$f needs GLIBC $(top GLIBC), past 2.28"; exit 1; }
+            ! readelf -S "$f" | grep -qE '\.symtab|\.debug' || { echo "$f is not stripped"; exit 1; }
+          done
+          cd engine && sha256sum glyd-engine glyd > glyd-engine.sha256 && cat glyd-engine.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: glyd-engine-${{ matrix.name }}
           path: |
             engine/glyd-engine
+            engine/glyd
             engine/glyd-engine.sha256
           if-no-files-found: error
 
@@ -286,7 +292,7 @@ jobs:
         with:
           name: gpu-lib-${{ matrix.name }}-cuda13.0.3
           path: lib
-      - name: The tarball (glyd-engine, libglyd_gpu_cuda13.so, LICENSE) and its sha256
+      - name: The tarball (glyd with the engine linked, glyd-engine as a link to it, libglyd_gpu_cuda13.so, LICENSE) and its sha256
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           NAME: ${{ matrix.name }}
@@ -296,9 +302,11 @@ jobs:
           (cd lib && sha256sum -c libglyd_gpu_cuda13.so.sha256)
           d="glyd-engine-v$VERSION-$NAME"
           mkdir -p "out/$d"
-          cp engine/glyd-engine lib/libglyd_gpu_cuda13.so "out/$d/"
+          cp engine/glyd lib/libglyd_gpu_cuda13.so "out/$d/"
           cp glyd-engine/LICENSE "out/$d/LICENSE"
-          chmod +x "out/$d/glyd-engine"
+          chmod +x "out/$d/glyd"
+          # (the engine's old command: this program under that name, which it takes for the engine's command line; install.sh and condor/tools/install.sh copy it)
+          ln -s glyd "out/$d/glyd-engine"
           tar -C out --owner=0 --group=0 -czf "out/$d.tar.gz" "$d"
           (cd out && sha256sum "$d.tar.gz" > "$d.tar.gz.sha256" && cat "$d.tar.gz.sha256" && tar -tzvf "$d.tar.gz")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -452,7 +460,7 @@ jobs:
           skip-existing: true
 
   attach-engine:
-    # The engine bundles (engine-bundle: glyd-engine, libglyd_gpu_cuda13.so, LICENSE, a tarball for each Linux architecture, and its sha256) attached to this
+    # The engine bundles (engine-bundle: glyd with the engine linked, glyd-engine as a link to it, libglyd_gpu_cuda13.so, LICENSE, a tarball for each Linux architecture, and its sha256) attached to this
     # repository's GitHub release of the tag: what install.sh and condor/tools/install.sh download on Linux with an NVIDIA GPU. release.yml makes the release
     # (its attach job); this job waits up to 30 minutes for it, then uploads, replacing assets of the same name.
     needs: [plan, engine-bundle]

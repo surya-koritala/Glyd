@@ -68,9 +68,11 @@ const SWITCHES: &[&str] = &[
     "by-layers",
     "one",
     "decode",
+    "json",
+    "all",
 ];
 #[cfg(not(feature = "dev"))]
-const SWITCHES: &[&str] = &["no-think", "help", "quiet", "chat", "version", "lossy", "precise", "predict", "load", "no-gpu", "costs"];
+const SWITCHES: &[&str] = &["no-think", "help", "quiet", "chat", "version", "lossy", "precise", "predict", "load", "no-gpu", "costs", "json", "all"];
 
 #[derive(Clone)]
 pub struct Args {

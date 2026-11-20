@@ -75,6 +75,8 @@ pub struct Done {
     pub tokens: usize,
     pub calls: Vec<Call>,
     pub content: Option<String>,
+    /// The stop string that ended the reply, where one did.
+    pub stop: Option<String>,
 }
 
 pub struct Choice {
@@ -251,7 +253,7 @@ impl Choice {
         }
         // the end-of-sequence token is not in the reply's text and is one of its tokens
         let tokens = self.tokens + (finish == Finish::Stop && !self.stops.hit) as usize;
-        Ok((d, Done { finish_reason, tokens, calls, content }))
+        Ok((d, Done { finish_reason, tokens, calls, content, stop: self.stops.matched.clone() }))
     }
 }
 

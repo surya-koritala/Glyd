@@ -1,0 +1,59 @@
+# Serving and the APIs
+
+```bash
+glyd-engine serve Qwen/Qwen3-8B
+```
+
+`serve` loads the model and answers on `http://127.0.0.1:8000`. The chat page is at `/`. `run` starts the same server.
+
+## Options
+
+| Flag | What |
+| :--- | :--- |
+| `--port N` | The port. Without it, 8000, then each next port up to 8020 that is free. With it, that port or a refusal. |
+| `--host H` | Listen on H. Without it, only this computer, and a request whose Host or Origin is not this computer's is refused (421, 403). With it, those checks are off. |
+| `--context N` | The context in tokens (`--ctx` is the same). Without it, what fits: [Models](models.md) has each family's default. |
+| `--users N` | How many requests run at once, 1 to 8, 4 by default. Qwen3 at penguin batches them; other families take one at a time and the rest wait in order. |
+| `--host-memory GIB` | The computer's memory a mixture of experts may use for its experts. |
+| `MODEL:LEVEL` | A level: [Choosing a level](levels.md). |
+
+## The key
+
+```bash
+GLYD_API_KEY=secret glyd-engine serve Qwen/Qwen3-8B
+```
+
+With a key, every path under `/v1` needs `Authorization: Bearer secret`. `/`, `/health` and `/stats` stay open. Put the key in
+the environment: a `--api-key` flag shows in `ps`. With `--host` set to an address other than this computer's, anyone who
+can reach it can use the model, and the traffic is plain HTTP: use a key and an SSH tunnel or a VPN.
+
+## What it answers
+
+| Path | What |
+| :--- | :--- |
+| `POST /v1/chat/completions` | OpenAI chat, JSON or a stream. Tools, `response_format` (`json_object`, `json_schema`), `tool_choice`, and vLLM's `guided_*` fields. |
+| `POST /v1/completions` | A plain completion; `suffix` makes it fill in the middle for a model that has the tokens. |
+| `POST /v1/responses` | OpenAI's Responses API, stateless. |
+| `POST /v1/messages`, `/v1/messages/count_tokens` | Anthropic's Messages API. |
+| `GET /v1/models`, `/v1/models/ID` | The one model. `id` is the name you started it with. |
+| `GET /health` | `{"status":"ok"}`, no key needed. |
+| `GET /v1/glyd/info` | What the server is and holds: model, level, precision, device, limits, memory. |
+| `GET /stats` | The scheduler's counts (lossless engine). |
+
+A first request with `curl`:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Say pong."}],"max_tokens":64}'
+```
+
+A Qwen3 model thinks before it answers. To turn that off for a request, send
+`"chat_template_kwargs": {"enable_thinking": false}`; `run` takes `--no-think`.
+
+Errors are OpenAI's shape: `{"error": {"message", "type", "param", "code"}}`. A prompt past the context is 400 with the code
+`context_length_exceeded`; a wrong key is 401 `invalid_api_key`.
+
+## The full reference
+
+Every field the server reads, refuses or ignores, the states from loading to failed, the exit codes and the status file are in
+[docs/serve-api.md](https://github.com/surya-koritala/Glyd/blob/main/docs/serve-api.md) (the contract, `glyd-serve/1`).
