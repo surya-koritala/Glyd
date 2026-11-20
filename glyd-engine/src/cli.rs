@@ -407,7 +407,7 @@ fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
     let t0 = Instant::now();
     let gpu = gpu_pick()?;
     // (the machine checks of every other path: the CPU architecture, the driver, a MIG slice)
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true) {
+    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
         return Err(r);
     }
     let model = a.need(1, "MODEL")?.to_string();
@@ -1350,7 +1350,7 @@ fn load_lossy(
     let name = short_name(&model);
     let mut packed = v7_layout(&model)?.map(|_| PathBuf::from(&model));
     let gpu = gpu_pick()?;
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true) {
+    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
         return Err(r);
     }
     let first = match packed {
@@ -1559,7 +1559,7 @@ fn dynamic_gpus() -> Done<(Vec<Gpu>, Gpu)> {
         .first()
         .cloned()
         .ok_or_else(|| Refusal::unsupported("the driver shows no GPU of the Ampere generation or newer", "Check that nvidia-smi shows it"))?;
-    if let Some(r) = machine::gpu_refusal(&first, std::env::consts::ARCH, true) {
+    if let Some(r) = machine::gpu_refusal(&first, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
         return Err(r);
     }
     Ok((gpus, first))
@@ -2039,7 +2039,7 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
     // the GPU a run would use, its driver, and the engine's own files on it
     let gpu = gpu_pick()?;
     let asked = std::env::var("GLYD_ENGINE_ASKED").map_or(false, |v| v.trim() == "1"); // (GLYD_ENGINE=1, passed on by glyd run and glyd serve)
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, asked) {
+    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, asked, machine::QWEN3) {
         return Err(r);
     }
     let (Some(model), Some(cfg)) = (model, cfg) else {
@@ -2083,7 +2083,7 @@ fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<
     }
     let text = config_text(model)?;
     let gpu = gpu_pick()?;
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true) {
+    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
         return Err(r);
     }
     let plan = lossy_plan(a, model, layout, &text, None, gpu.free, &gpu.name, v7_layout(model)?.map(|_| Path::new(model)))?;

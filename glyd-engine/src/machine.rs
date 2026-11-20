@@ -71,14 +71,25 @@ pub fn instead(with_vllm: &str, rust_only: &str) -> String {
 /// The Rust-only install's way to the models and GPUs the engine does not run: the whole tool.
 pub const FULL_TOOL: &str = "install the full glyd, which runs it another way: curl -LsSf https://getglyd.com/install.sh | sh";
 
-/// The GPUs `glyd run` hands a model to the engine on, one line each: the word the driver's name for the GPU holds (a whole word: "L4" is not an L40S, "H100" is not an H200) and the GPU's compute capability.
+/// A line of the list: the word the driver's name for the GPU holds, the GPU's compute capability, and the model families the engine is measured on there.
+pub type Entry = (&'static str, (i32, i32), &'static [&'static str]);
+
+/// The family of the Qwen3 dense models (Qwen3ForCausalLM), the one `glyd run` hands to the engine by default: the lossless levels of the others are vLLM's, and their lossy levels are the engine's by the user's asking
+/// (`:kestrel`, `:swift`), where this list is not looked at (vLLM has no lossy levels).
+pub const QWEN3: &str = "Qwen3";
+
+/// For a path that is the engine's whatever the list (the user asked for it by name, or a lossy level): the list is not looked at, and no family is named.
+pub const ANY_FAMILY: &str = "";
+
+/// The (GPU, family) pairs `glyd run` hands a model to the engine on, one line each: the word the driver's name for the GPU holds (a whole word: "L4" is not an L40S, "H100" is not an H200), the GPU's compute
+/// capability, and the families.
 ///
-/// THE SPEED BAR: a GPU is here only where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory (the engine serves up to 8 users at once, so
+/// THE SPEED BAR: a family is here on a GPU only where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory (the engine serves up to 8 users at once, so
 /// `glyd serve` is vLLM's, whatever is here), and has run on the GPU. Measurements decide it, not what the engine can run: it was EMPTY until they were made (the first line, the RTX 4080 SUPER, is of 2026-11-20), and while it is empty every model runs as
-/// it did in v0.28 (vLLM). Every GPU not named here, and every compute capability, runs vLLM. Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9)),` (docs/adding-a-gpu.md: `scripts/gpu_bar.py` reads the two measurement files).
-pub const GPUS: &[(&str, (i32, i32))] = &[
+/// it did in v0.28 (vLLM). Every GPU not named here, and every compute capability, runs vLLM. Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9), &["Qwen3"]),` (docs/adding-a-gpu.md: `scripts/gpu_bar.py` reads the two measurement files).
+pub const GPUS: &[Entry] = &[
     // measured 2026-11-20 on glyd-pc, Qwen3-8B, 1, 4 and 8 users at once with short, 2,000 and 4,000-token prompts, 5 runs of each engine: benchmarks/gpu/rtx4080s-bar-2026-11-20
-    ("RTX 4080 SUPER", (8, 9)),
+    ("RTX 4080 SUPER", (8, 9), &["Qwen3"]),
 ];
 
 /// The architectures of the computers the engine has run on (`std::env::consts::ARCH`): a GH200 is a Grace computer, and the engine has not run on one.
@@ -104,13 +115,19 @@ fn has_word(text: &str, word: &str) -> bool {
     text.match_indices(word).any(|(i, _)| (i == 0 || !in_word(b[i - 1])) && (i + w == b.len() || !in_word(b[i + w])))
 }
 
-/// Whether `g` is one of `GPUS`: its name has the word and its compute capability is the line's.
-pub fn listed(g: &Gpu) -> bool {
-    on_list(GPUS, g)
+/// Whether `g` is one of `GPUS` for `family`: its name has the word and its compute capability is the line's.
+pub fn listed(g: &Gpu, family: &str) -> bool {
+    on_list(GPUS, g, family)
 }
 
-fn on_list(table: &[(&str, (i32, i32))], g: &Gpu) -> bool {
-    table.iter().any(|(word, cc)| *cc == g.cc && has_word(&g.name, word))
+/// Whether `g` is a line of `table` for `family`.
+fn on_list(table: &[Entry], g: &Gpu, family: &str) -> bool {
+    table.iter().any(|(word, cc, families)| *cc == g.cc && has_word(&g.name, word) && families.contains(&family))
+}
+
+/// Whether `g` is a line of `table` for some family.
+fn on_gpu(table: &[Entry], g: &Gpu) -> bool {
+    table.iter().any(|(word, cc, _)| *cc == g.cc && has_word(&g.name, word))
 }
 
 /// "A100, L4, H100 or GH200".
@@ -146,13 +163,14 @@ pub fn pick(gpus: &[Gpu]) -> Option<&Gpu> {
 /// Why `glyd run` does not hand a model to the engine on this GPU, or None where it does: where `GPUS` is empty, that (the speed bar); else a MIG slice or a card older than Ampere, the architecture
 /// of the computer (`ARCHS`), the GPU's compute capability (those of `GPUS`), the driver (CUDA 13), and the GPU itself (`GPUS`: where it is measured). `arch` is `std::env::consts::ARCH`. `asked`:
 /// the user asked for the engine by name (GLYD_ENGINE=1, which `glyd run` passes on as GLYD_ENGINE_ASKED=1): `GPUS` is not asked, and the rest is.
-pub fn gpu_refusal(g: &Gpu, arch: &str, asked: bool) -> Option<Refusal> {
-    refusal_on(GPUS, ARCHS, g, arch, asked)
+pub fn gpu_refusal(g: &Gpu, arch: &str, asked: bool, family: &str) -> Option<Refusal> {
+    refusal_on(GPUS, ARCHS, g, arch, asked, family)
 }
 
-fn refusal_on(table: &[(&str, (i32, i32))], archs: &[&str], g: &Gpu, arch: &str, asked: bool) -> Option<Refusal> {
+fn refusal_on(table: &[Entry], archs: &[&str], g: &Gpu, arch: &str, asked: bool, family: &str) -> Option<Refusal> {
     let (major, minor) = g.cc;
-    let words: Vec<&str> = table.iter().map(|(w, _)| *w).collect();
+    let mut words: Vec<&str> = table.iter().map(|(w, _, _)| *w).collect();
+    words.dedup();
     if table.is_empty() && !asked {
         // (no GPU is measured yet: the speed bar is the whole answer, whatever the GPU, its driver or its computer)
         return Some(cannot(not_measured(&g.name, &words), unmeasured_fix()));
@@ -175,7 +193,7 @@ fn refusal_on(table: &[(&str, (i32, i32))], archs: &[&str], g: &Gpu, arch: &str,
             ),
         ));
     }
-    if !asked && !table.iter().any(|(_, cc)| *cc == g.cc) {
+    if !asked && !table.iter().any(|(_, cc, _)| *cc == g.cc) {
         return Some(cannot(
             format!("this engine has not run on {} (compute capability {major}.{minor}) yet: it runs on the {}", g.name, joined(&words)),
             unmeasured_fix(),
@@ -191,7 +209,15 @@ fn refusal_on(table: &[(&str, (i32, i32))], archs: &[&str], g: &Gpu, arch: &str,
             driver_fix(g.driver, "run the model with vLLM"),
         ));
     }
-    if !asked && !on_list(table, g) {
+    if !asked && !on_list(table, g, family) {
+        if on_gpu(table, g) {
+            // (the GPU is measured, for other families: the speed bar is per family, as a family that serves one request at a time loses to vLLM at several)
+            let families: Vec<&str> = table.iter().filter(|(w, cc, _)| *cc == g.cc && has_word(&g.name, w)).flat_map(|(_, _, f)| f.iter().copied()).collect();
+            return Some(cannot(
+                format!("{} is a GPU the engine is measured at least as fast as vLLM on for {} models only, and this is not one", g.name, joined(&families)),
+                unmeasured_fix(),
+            ));
+        }
         return Some(cannot(not_measured(&g.name, &words), unmeasured_fix()));
     }
     None
@@ -280,7 +306,7 @@ mod tests {
     use super::*;
 
     /// Lines of the kind `GPUS` gets once a GPU is measured, to test every rule with: the shipped list is a decision of the measurements (it is empty until they are made).
-    const TABLE: &[(&str, (i32, i32))] = &[("A100", (8, 0)), ("L4", (8, 9)), ("H100", (9, 0)), ("GH200", (9, 0))];
+    const TABLE: &[Entry] = &[("A100", (8, 0), &["Qwen3"]), ("L4", (8, 9), &["Qwen3"]), ("H100", (9, 0), &["Qwen3"]), ("GH200", (9, 0), &["Qwen3"])];
 
     fn gpu(name: &str, cc: (i32, i32), free_gib: u64, driver: i32) -> Gpu {
         Gpu { name: name.to_string(), cc, sms: 80, total: free_gib << 30, free: free_gib << 30, driver, count: 1, ordinal: 0 }
@@ -317,7 +343,7 @@ mod tests {
             ("NVIDIA GH200 480GB", (9, 0)),
             ("L4", (8, 9)),
         ] {
-            assert!(on_list(TABLE, &named(yes, cc)), "{yes}");
+            assert!(on_list(TABLE, &named(yes, cc), "Qwen3"), "{yes}");
         }
         // the neighbours are not: an L40S is not an L4, an A100X is not an A100, nor an H200 an H100; and a name on the list with another compute capability is not that GPU
         for (no, cc) in [
@@ -337,28 +363,34 @@ mod tests {
             ("XL4", (8, 9)),
             ("NVIDIA A100-SXM4-80GB", (8, 9)),
         ] {
-            assert!(!on_list(TABLE, &named(no, cc)), "{no}");
+            assert!(!on_list(TABLE, &named(no, cc), "Qwen3"), "{no}");
         }
     }
 
     /// The list is one constant: a GPU added to it (here an RTX 4090, as the measurement of one would add it) is handed models, and said in every refusal that names the list; nothing else changes.
     #[test]
     fn a_gpu_added_to_the_list_is_one_line() {
-        let with = [TABLE, &[("RTX 4090", (8, 9))]].concat();
+        let with = [TABLE, &[("RTX 4090", (8, 9), &["Qwen3"])]].concat();
         let g4090 = gpu("NVIDIA GeForce RTX 4090", (8, 9), 24, 13000);
-        assert!(refusal_on(TABLE, ARCHS, &g4090, "x86_64", false).is_some() && refusal_on(&with, ARCHS, &g4090, "x86_64", false).is_none());
+        assert!(refusal_on(TABLE, ARCHS, &g4090, "x86_64", false, "Qwen3").is_some() && refusal_on(&with, ARCHS, &g4090, "x86_64", false, "Qwen3").is_none());
         // (the neighbours of the new line stay out: a 4080 is no 4090, an L40S is not an RTX 4090)
-        assert!(refusal_on(&with, ARCHS, &gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 13000), "x86_64", false).is_some());
-        assert!(refusal_on(&with, ARCHS, &gpu("NVIDIA L40S", (8, 9), 44, 13000), "x86_64", false).unwrap().what.contains("A100, L4, H100, GH200 or RTX 4090"));
+        assert!(refusal_on(&with, ARCHS, &gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 13000), "x86_64", false, "Qwen3").is_some());
+        assert!(refusal_on(&with, ARCHS, &gpu("NVIDIA L40S", (8, 9), 44, 13000), "x86_64", false, "Qwen3")
+            .unwrap()
+            .what
+            .contains("A100, L4, H100, GH200 or RTX 4090"));
         // and the refusals say the list the table holds, whatever it holds
-        let said = refusal_on(TABLE, ARCHS, &gpu("NVIDIA B200", (10, 0), 180, 13000), "x86_64", false).unwrap().what;
+        let said = refusal_on(TABLE, ARCHS, &gpu("NVIDIA B200", (10, 0), 180, 13000), "x86_64", false, "Qwen3").unwrap().what;
         assert!(said.ends_with("it runs on the A100, L4, H100 or GH200"), "{said}");
         // an architecture added to ARCHS is one line too
         let grace = gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000);
-        assert!(refusal_on(TABLE, ARCHS, &grace, "aarch64", false).is_some() && refusal_on(TABLE, &["x86_64", "aarch64"], &grace, "aarch64", false).is_none());
-        // the shipped list: an L4 is handed models by the line `("L4", (8, 9))`, which is all it takes
+        assert!(
+            refusal_on(TABLE, ARCHS, &grace, "aarch64", false, "Qwen3").is_some()
+                && refusal_on(TABLE, &["x86_64", "aarch64"], &grace, "aarch64", false, "Qwen3").is_none()
+        );
+        // the shipped list: an L4 is handed models by the line `("L4", (8, 9), &["Qwen3"])`, which is all it takes
         let l4 = gpu("NVIDIA L4", (8, 9), 22, 13000);
-        assert!(refusal_on(&[GPUS, &[("L4", (8, 9))]].concat(), ARCHS, &l4, "x86_64", false).is_none());
+        assert!(refusal_on(&[GPUS, &[("L4", (8, 9), &["Qwen3"])]].concat(), ARCHS, &l4, "x86_64", false, "Qwen3").is_none());
     }
 
     /// The speed bar: the engine is used only where it is measured at least as fast as vLLM, and `GPUS` is where that is written. Whatever it holds, a GPU it does not name is refused with the bar as the reason
@@ -367,16 +399,17 @@ mod tests {
     #[test]
     fn the_engine_is_used_only_where_it_is_measured_at_least_as_fast_as_vllm() {
         FORCE_VLLM.with(|f| f.set(Some(true)));
-        for (word, cc) in GPUS {
+        for (word, cc, families) in GPUS {
+            assert!(!families.is_empty());
             assert!(!word.is_empty() && cc.0 >= 8, "{word} {cc:?}");
         }
         let unlisted = [("NVIDIA GeForce RTX 3060 Ti", (8, 6)), ("Some Future GPU 9000", (8, 9)), ("NVIDIA GeForce RTX 5090", (12, 0))];
         for (name, cc) in unlisted {
             let g = gpu(name, cc, 24, 13000);
-            if on_list(GPUS, &g) {
+            if on_list(GPUS, &g, "Qwen3") {
                 continue; // (a GPU the measurements added is the case that is meant)
             }
-            let r = gpu_refusal(&g, "x86_64", false).unwrap_or_else(|| panic!("{name} was not refused"));
+            let r = gpu_refusal(&g, "x86_64", false, "Qwen3").unwrap_or_else(|| panic!("{name} was not refused"));
             assert!(
                 r.code == 3
                     && r.what.contains(name)
@@ -395,7 +428,7 @@ mod tests {
             (gpu("NVIDIA A100-SXM4-40GB MIG 1g.5gb", (8, 0), 5, 13000), "x86_64"),
             (gpu("Tesla T4", (7, 5), 15, 13000), "x86_64"),
         ] {
-            let r = refusal_on(&[], ARCHS, &g, arch, false).unwrap();
+            let r = refusal_on(&[], ARCHS, &g, arch, false, "Qwen3").unwrap();
             assert_eq!(
                 (r.code, r.what.as_str()),
                 (3, format!("{} is not a GPU the engine is measured at least as fast as vLLM on", g.name).as_str()),
@@ -405,12 +438,12 @@ mod tests {
             assert_eq!(r.fix, "vLLM runs the model on this GPU");
         }
         // and with a list, the bar is the last thing asked of a GPU that has run, and says where the engine is measured
-        let r = refusal_on(TABLE, ARCHS, &gpu("NVIDIA GeForce RTX 4090", (8, 9), 24, 13000), "x86_64", false).unwrap();
+        let r = refusal_on(TABLE, ARCHS, &gpu("NVIDIA GeForce RTX 4090", (8, 9), 24, 13000), "x86_64", false, "Qwen3").unwrap();
         assert!(r.what.ends_with("vLLM on (A100, L4, H100 or GH200)"), "{r:?}");
         // asked for by name (GLYD_ENGINE=1): no list is asked, an empty one or not, and every other check is
         for table in [&[][..], TABLE] {
             for (name, cc) in [("NVIDIA GeForce RTX 4090", (8, 9)), ("NVIDIA GeForce RTX 5090", (12, 0)), ("NVIDIA B200", (10, 0)), ("NVIDIA A10", (8, 6))] {
-                assert!(refusal_on(table, ARCHS, &gpu(name, cc, 24, 13000), "x86_64", true).is_none(), "{name}");
+                assert!(refusal_on(table, ARCHS, &gpu(name, cc, 24, 13000), "x86_64", true, "Qwen3").is_none(), "{name}");
             }
             for (g, arch, said) in [
                 (gpu("NVIDIA A100-SXM4-40GB MIG 1g.5gb", (8, 0), 5, 13000), "x86_64", "MIG slice"),
@@ -418,7 +451,7 @@ mod tests {
                 (gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "aarch64", "aarch64"),
                 (gpu("NVIDIA GeForce RTX 4090", (8, 9), 24, 12080), "x86_64", "CUDA 12.8"),
             ] {
-                let r = refusal_on(table, ARCHS, &g, arch, true).unwrap();
+                let r = refusal_on(table, ARCHS, &g, arch, true, "Qwen3").unwrap();
                 assert!(r.code == 3 && r.what.contains(said), "{r:?}");
             }
         }
@@ -451,7 +484,7 @@ mod tests {
     #[test]
     fn every_reason_a_gpu_is_refused_for_and_the_order_they_are_said_in() {
         let ok = gpu("NVIDIA L4", (8, 9), 22, 13000);
-        let said = |g: Gpu, arch: &str| refusal_on(TABLE, ARCHS, &g, arch, false).map(|r| (r.code, r.what));
+        let said = |g: Gpu, arch: &str| refusal_on(TABLE, ARCHS, &g, arch, false, "Qwen3").map(|r| (r.code, r.what));
         assert!(said(ok.clone(), "x86_64").is_none());
         for (name, cc) in [("NVIDIA A100-SXM4-80GB", (8, 0)), ("NVIDIA H100 80GB HBM3", (9, 0))] {
             assert!(said(gpu(name, cc, 70, 13020), "x86_64").is_none(), "{name}");
@@ -538,9 +571,9 @@ mod tests {
         let all = |installed: bool| {
             FORCE_VLLM.with(|f| f.set(Some(installed)));
             let rs = [
-                refusal_on(&[], ARCHS, &l4, "x86_64", false).unwrap(),
-                refusal_on(TABLE, ARCHS, &gpu("NVIDIA L4", (8, 9), 22, 13000), "aarch64", true).unwrap(),
-                refusal_on(TABLE, ARCHS, &old, "x86_64", true).unwrap(),
+                refusal_on(&[], ARCHS, &l4, "x86_64", false, "Qwen3").unwrap(),
+                refusal_on(TABLE, ARCHS, &gpu("NVIDIA L4", (8, 9), 22, 13000), "aarch64", true, "Qwen3").unwrap(),
+                refusal_on(TABLE, ARCHS, &old, "x86_64", true, "Qwen3").unwrap(),
                 config_refusal("x", &wide).unwrap(),
                 context_refusal("m", 100_000).unwrap(),
             ];
@@ -584,9 +617,24 @@ mod tests {
 
     /// `doctor` fails on a driver below `DRIVER_MIN` and says the update; a new enough one passes.
     /// The RTX 4080 SUPER is measured (benchmarks/gpu/rtx4080s-bar-2026-11-20): it is on the list by the name the driver gives, and its neighbours, which are not measured, are not.
+    /// The list is per (GPU, family): the 4080 SUPER is on it for Qwen3 and not for a family not measured there, whose refusal says which it is measured for.
+    #[test]
+    fn the_list_is_per_gpu_and_family() {
+        FORCE_VLLM.with(|f| f.set(Some(true)));
+        let g = gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 13000);
+        assert!(listed(&g, QWEN3) && !listed(&g, "Gemma4"));
+        assert!(gpu_refusal(&g, "x86_64", false, QWEN3).is_none());
+        let r = gpu_refusal(&g, "x86_64", false, "Gemma4").unwrap();
+        assert!(r.code == 3 && r.what.contains("for Qwen3 models only") && r.fix == "vLLM runs the model on this GPU", "{r:?}");
+        // asked for by name, or a lossy level: the list is not looked at
+        assert!(gpu_refusal(&g, "x86_64", true, "Gemma4").is_none() && gpu_refusal(&g, "x86_64", true, ANY_FAMILY).is_none());
+        let table: &[Entry] = &[("L4", (8, 9), &["Qwen3", "Gemma4"]), ("H100", (9, 0), &["Qwen3"])];
+        assert!(on_list(table, &gpu("NVIDIA L4", (8, 9), 22, 13000), "Gemma4") && !on_list(table, &gpu("NVIDIA H100 80GB HBM3", (9, 0), 80, 13000), "Gemma4"));
+    }
+
     #[test]
     fn the_rtx_4080_super_is_listed_and_its_neighbours_are_not() {
-        let on = |name: &str, cc| on_list(GPUS, &gpu(name, cc, 16, 13000));
+        let on = |name: &str, cc| on_list(GPUS, &gpu(name, cc, 16, 13000), "Qwen3");
         assert!(on("NVIDIA GeForce RTX 4080 SUPER", (8, 9)));
         for (no, cc) in [
             ("NVIDIA GeForce RTX 4080", (8, 9)),
@@ -597,7 +645,7 @@ mod tests {
             assert!(!on(no, cc), "{no}");
         }
         FORCE_VLLM.with(|f| f.set(Some(true)));
-        assert!(gpu_refusal(&gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 13000), "x86_64", false).is_none());
+        assert!(gpu_refusal(&gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 13000), "x86_64", false, "Qwen3").is_none());
     }
 
     #[test]
