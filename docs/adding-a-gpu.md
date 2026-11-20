@@ -3,13 +3,20 @@
 `glyd run` hands a model to `glyd-engine` on the GPUs in `GPUS` (`glyd-engine/src/machine.rs`) and to vLLM on every other. A GPU goes in
 where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory: the speed bar.
 
-1. On the GPU, with nothing else using it, run both servers under the same load, one after the other. `benchmarks/gpu/rtx4080s-engine-vs-vllm-2026-11-20/scripts/`
-   has what the first run used: `run.sh engine OUT` and `run.sh vllm OUT` (each starts the server, puts 1, 4 and 8 users at once with short and 2,000 and 4,000 token
-   prompts on it, writes `OUT/load.json` and stops it). `glyd-engine` and the pinned vLLM (`glyd-gpu`'s, `vllm>=0.30,<0.31`) are what a user has.
+1. On the GPU, with nothing else using it, put the same loads on both servers, one after the other, with `glyd-engine bench` (docs/bench.md): it measures any OpenAI-compatible server over HTTP, so
+   the two files differ in the server and in nothing else. `glyd-engine` and the pinned vLLM (`glyd-gpu`'s, `vllm>=0.30,<0.31`) are what a user has.
+
+   ```bash
+   glyd-engine bench Qwen/Qwen3-8B --suite bar --runs 5 --out engine.json        # starts `glyd-engine serve` itself
+   vllm serve Qwen/Qwen3-8B --quantization glyd --port 8001 &                    # vLLM's, then the same loads on it
+   glyd-engine bench --against http://127.0.0.1:8001 --suite bar --runs 5 --out vllm.json
+   ```
+
+   (1, 4 and 8 requests at once with short, 2,000 and 4,000 token prompts, a warm-up round and five runs of each load, the peak GPU memory sampled while they run.)
 2. Put the two files through the bar:
 
    ```bash
-   python3 scripts/gpu_bar.py OUT-engine/load.json OUT-vllm/load.json "NVIDIA GeForce RTX 4080 SUPER" 8.9
+   glyd-engine bench --bar engine.json vllm.json --gpu-name "NVIDIA GeForce RTX 4080 SUPER" --cc 8.9      # or: python3 scripts/gpu_bar.py engine.json vllm.json "NVIDIA GeForce RTX 4080 SUPER" 8.9
    ```
 
    It prints the table of the loads; at every one the engine's decode tokens/s (a user, and in all) and its time to first token must be at least vLLM's (3%, the
