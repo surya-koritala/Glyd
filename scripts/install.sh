@@ -229,7 +229,7 @@ main() {
     driver_check
     say "Checking this machine (glyd doctor)"
     if "$bin/glyd" doctor; then
-      say "Next: glyd run Qwen/Qwen3.5-9B:swift (glyd fetch MODEL:LEVEL downloads without running)"
+      say "Next: glyd run gemma4:12b:wren (glyd pull MODEL:LEVEL downloads without running)"
     else
       say "Fix the lines marked NO above, then run: glyd doctor"
     fi
@@ -330,7 +330,7 @@ main() {
 
   say "Checking this machine (glyd doctor)"
   if "$bin/glyd" doctor; then
-    [ "$stack" != yes ] || say "Next: glyd run Qwen/Qwen3.5-9B"
+    [ "$stack" != yes ] || say "Next: glyd run google/gemma-4-12B-it"
   else
     say "Fix the lines marked NO above, then run: glyd doctor"
   fi

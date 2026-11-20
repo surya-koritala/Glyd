@@ -5,12 +5,12 @@ than one model at a time. After `install.sh` on Linux with an NVIDIA GPU it is a
 every login, with no command typed (`GLYD_NO_SERVICE=1` in front of `sh` leaves it out; `glyd service uninstall` takes it out).
 
 ```
-glyd pull qwen3                      # download a model (by name or Hub id)
+glyd pull gemma4:12b:wren                      # download a model (by name or Hub id)
 curl localhost:11434/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3","messages":[{"role":"user","content":"hi"}]}'    # loads it; the answer streams as with glyd serve
+  -d '{"model":"gemma4:12b:wren","messages":[{"role":"user","content":"hi"}]}'    # loads it; the answer streams as with glyd serve
 glyd ps                              # what is loaded, for how long, and when it is unloaded
-glyd stop qwen3                      # unload it now (glyd stop --all)
-glyd run qwen3                       # a chat through the service (its model, no second copy on the GPU)
+glyd stop gemma4:12b:wren                      # unload it now (glyd stop --all)
+glyd run gemma4:12b:wren                       # a chat through the service (its model, no second copy on the GPU)
 glyd service install | uninstall | status | stop
 ```
 

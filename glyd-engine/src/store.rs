@@ -188,7 +188,7 @@ pub fn looks_like_repo(model: &str) -> bool {
 pub fn hub_refusal(model: &str) -> Refusal {
     Refusal::new(
         format!("the Hugging Face Hub would not show {model}: the name is wrong, or it is a gated or private model"),
-        format!("Check the name (ORG/NAME, as in Qwen/Qwen3.5-9B). For a gated model, accept its licence at {HUB}/{model}, then run: glyd login   (it takes a token from {HUB}/settings/tokens)"),
+        format!("Check the name (ORG/NAME, as in google/gemma-4-12B-it). For a gated model, accept its licence at {HUB}/{model}, then run: glyd login   (it takes a token from {HUB}/settings/tokens)"),
     )
 }
 
@@ -232,7 +232,7 @@ pub fn hub_plan_as(model: &str, ui: &RefCell<Ui>, exact: bool) -> Done<(Hub, Rem
     if !looks_like_repo(model) {
         return Err(Refusal::new(
             format!("{model}: no such directory, and not a Hugging Face name"),
-            "Give a directory with the model, or its Hub name (ORG/NAME, as in Qwen/Qwen3.5-9B)",
+            "Give a directory with the model, or its Hub name (ORG/NAME, as in google/gemma-4-12B-it)",
         ));
     }
     if hub::offline() {

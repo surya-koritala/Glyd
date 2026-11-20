@@ -1,8 +1,8 @@
 //! Model names, and `glyd pull`, `ls` and `rm` over the Hub cache.
 //!
-//! A model is a Hub id (`Qwen/Qwen3.5-9B`), a directory, a GGUF file, or a short name from the manifest (models.json: versioned, in the repository and in the
-//! program; `$GLYD_MODELS` or `<cache>/models.json` names another). The grammar of a short name is `NAME[:SIZE][:LEVEL]` (`qwen3.5`, `qwen3.5:27b`,
-//! `qwen3.5:27b:swift`); a tag of letters only is a level (levels.rs), so `:27b` and `:35b-a3b` are sizes. NAME and SIZE are matched without case, and NAME without
+//! A model is a Hub id (`google/gemma-4-12B-it`), a directory, a GGUF file, or a short name from the manifest (models.json: versioned, in the repository and in the
+//! program; `$GLYD_MODELS` or `<cache>/models.json` names another). The grammar of a short name is `NAME[:SIZE][:LEVEL]` (`gemma4`, `qwen3.8:27b`,
+//! `gemma4:12b:wren`); a tag of letters only is a level (levels.rs), so `:27b` and `:35b-a3b` are sizes. NAME and SIZE are matched without case, and NAME without
 //! its `-` and `_`. Where SIZE is left out the family's default is taken; choosing the size that fits this computer is `glyd fit`'s (P4b).
 //!
 //! The copies of a model are in the Hub's cache (hub.rs; `$HF_HUB_CACHE`) as huggingface_hub keeps them, so what vLLM or the Python tool downloaded is here too,
@@ -17,6 +17,10 @@ use std::path::{Path, PathBuf};
 /// The manifest's version this program reads.
 pub const MANIFEST_VERSION: u64 = 1;
 
+/// Models we test and show are released within the last six months of this date (the owner's rule, 2026-11-20): the default of every family that is not `legacy` is no older.
+/// An older model still resolves by name; it is no family's default, and no example or listing offers it.
+pub const RECENT_CUTOFF: &str = "2026-05-20";
+
 /// The manifest as the repository holds it.
 const EMBEDDED: &str = include_str!("../models.json");
 
@@ -25,12 +29,16 @@ pub struct Entry {
     pub size: String,
     pub repo: String,
     pub default: bool,
+    /// The Hub repo's creation date (YYYY-MM-DD), where the manifest says it.
+    pub released: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Family {
     pub name: String,
     pub aliases: Vec<String>,
+    /// An older family: it resolves by name, but names and listings do not offer it first.
+    pub legacy: bool,
     pub models: Vec<Entry>,
 }
 
@@ -74,12 +82,19 @@ impl Manifest {
                 if models.iter().any(|e| e.size == size) {
                     return Err(format!("{name}:{size} is there twice"));
                 }
-                models.push(Entry { size, repo, default: m.get("default").and_then(|x| x.as_bool()).unwrap_or(false) });
+                let released = match m.get("released").and_then(|x| x.as_str()) {
+                    None => None,
+                    Some(d) if d.len() == 10 && d.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() }) => {
+                        Some(d.to_string())
+                    }
+                    Some(d) => return Err(format!("{name}:{size}: \"released\" {d} is not YYYY-MM-DD")),
+                };
+                models.push(Entry { size, repo, default: m.get("default").and_then(|x| x.as_bool()).unwrap_or(false), released });
             }
             if models.is_empty() || models.iter().filter(|e| e.default).count() != 1 {
                 return Err(format!("{name}: it needs models, and exactly one of them \"default\""));
             }
-            let fam = Family { name, aliases, models };
+            let fam = Family { name, aliases, legacy: f.get("legacy").and_then(|x| x.as_bool()).unwrap_or(false), models };
             for key in std::iter::once(&fam.name).chain(fam.aliases.iter()).map(|s| norm(s)) {
                 if families.iter().any(|o| std::iter::once(&o.name).chain(o.aliases.iter()).any(|s| norm(s) == key)) || key.is_empty() {
                     return Err(format!("the name {key} is taken twice"));
@@ -112,11 +127,14 @@ impl Manifest {
 
     /// The names a refusal offers: the families, each with its sizes.
     pub fn names(&self) -> String {
-        self.families
-            .iter()
-            .map(|f| format!("{} ({})", f.name, f.models.iter().map(|m| m.size.as_str()).collect::<Vec<_>>().join(", ")))
-            .collect::<Vec<_>>()
-            .join("; ")
+        let one = |f: &Family| format!("{} ({})", f.name, f.models.iter().map(|m| m.size.as_str()).collect::<Vec<_>>().join(", "));
+        let recent: Vec<String> = self.families.iter().filter(|f| !f.legacy).map(one).collect();
+        let older: Vec<&str> = self.families.iter().filter(|f| f.legacy).map(|f| f.name.as_str()).collect();
+        if older.is_empty() {
+            recent.join("; ")
+        } else {
+            format!("{}; older ones also resolve: {}", recent.join("; "), older.join(", "))
+        }
     }
 
     /// The family that is the nearest to `name` where it is a slip of one letter (`gemma`, `qwem3`), for "did you mean".
@@ -195,7 +213,7 @@ fn resolve_with(arg: &str, m: &Manifest, exists: &dyn Fn(&str) -> bool) -> Resul
         // (a name that is no family: a word with no digit may be a directory that is not there, which the old answer said; one the manifest nearly has says so)
         let near = m.nearest(name).map(|n| format!(" Did you mean {n}?")).unwrap_or_default();
         return Err(format!(
-            "{arg}: no such directory, no such model name, and not a Hub id (ORG/NAME).{near} The names: {}. A Hub id is ORG/NAME, as in Qwen/Qwen3.5-9B.",
+            "{arg}: no such directory, no such model name, and not a Hub id (ORG/NAME).{near} The names: {}. A Hub id is ORG/NAME, as in google/gemma-4-12B-it.",
             m.names()
         ));
     };
@@ -354,6 +372,7 @@ pub fn ls(a: &Args) -> i32 {
     let missing: Vec<(String, String)> = if a.has("all") {
         m.families
             .iter()
+            .filter(|f| !f.legacy)
             .flat_map(|f| f.models.iter().map(move |e| (format!("{}:{}", f.name, e.size), e.repo.clone())))
             .filter(|(_, r)| !local.iter().any(|l| &l.repo == r))
             .collect()
@@ -508,6 +527,31 @@ mod tests {
     }
 
     #[test]
+    fn every_default_is_a_recent_model_and_the_older_ones_are_legacy() {
+        // the owner's rule (2026-11-20): what we test and show was released within six months of 2026-05-20
+        let m = manifest();
+        for f in &m.families {
+            let d = f.models.iter().find(|e| e.default).unwrap();
+            let released = d.released.as_deref().unwrap_or_else(|| panic!("{}:{} has no \"released\"", f.name, d.size));
+            assert_eq!(f.legacy, released < RECENT_CUTOFF, "{}:{} released {released}: legacy iff before {RECENT_CUTOFF}", f.name, d.size);
+        }
+        let recent: Vec<&str> = m.families.iter().filter(|f| !f.legacy).map(|f| f.name.as_str()).collect();
+        for want in ["gemma4", "qwen3.8", "glm", "kimi", "muse"] {
+            assert!(recent.contains(&want), "{want}");
+        }
+        // the unversioned names point at the recent ones
+        assert_eq!(resolve("qwen", &m).unwrap().unwrap().name, "qwen3.8:27b");
+        assert_eq!(resolve("gemma", &m).unwrap().unwrap().name, "gemma4:12b");
+        assert_eq!(resolve("muse-spark-open", &m).unwrap().unwrap().repo, "meta-models/Muse-Spark-Open-816B-A42B");
+        assert_eq!(resolve("qwen3.8:flash-next", &m).unwrap().unwrap().repo, "Qwen/Qwen3.8-Flash-Next");
+        // the older ones still resolve, by their own names
+        assert_eq!(resolve("qwen3", &m).unwrap().unwrap().repo, "Qwen/Qwen3-8B");
+        // a malformed date is refused
+        let bad = "{\"version\":1,\"families\":[{\"name\":\"x\",\"models\":[{\"size\":\"1b\",\"repo\":\"a/b\",\"default\":true,\"released\":\"May 2026\"}]}]}";
+        assert!(Manifest::parse(bad).unwrap_err().contains("YYYY-MM-DD"));
+    }
+
+    #[test]
     fn manifests_that_are_wrong_are_refused_with_the_reason() {
         let bad = |s: &str| Manifest::parse(s).unwrap_err();
         assert!(bad("{").contains("not JSON"));
@@ -572,7 +616,10 @@ mod tests {
         let e = resolve("qwen3.5:9b:fast", &m).unwrap_err();
         assert!(e.contains(":fast is not a level") && e.contains("penguin"), "{e}");
         let e = resolve("qwem3.5", &m).unwrap_err();
-        assert!(e.contains("Did you mean qwen3.5?") && e.contains("qwen3.5 (0.8b"), "{e}");
+        assert!(
+            e.contains("Did you mean qwen3.5?") && e.contains("gemma4 (12b, 31b)") && e.contains("older ones also resolve: qwen3.6, qwen3.5, qwen3"),
+            "{e}"
+        );
         let e = resolve("llama", &m).unwrap_err();
         assert!(e.contains("no such model name") && e.contains("ORG/NAME") && !e.contains("Did you mean"), "{e}");
     }
