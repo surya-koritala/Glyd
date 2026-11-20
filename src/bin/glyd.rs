@@ -8,7 +8,7 @@ fn print_usage() {
         r#"Glyd: LLM weights and KV cache compressed without loss, the engine that runs them, and compression for files
 Usage: glyd run MODEL[:LEVEL]       chat with a model in the terminal and at one URL (MODEL: a Hub repo, a directory or a GGUF file)
        glyd serve MODEL[:LEVEL]     the OpenAI-compatible API and the chat page
-       glyd pull MODEL              download a model by name (qwen3.5, qwen3.5:27b, qwen3.5:27b:swift) or Hub id
+       glyd pull MODEL              download a model by name (gemma4, qwen3.8:27b, gemma4:12b:wren) or Hub id
        glyd ls [--all] | rm MODEL   the models downloaded, with their level and size; take one out of the cache
        glyd service [install]       the background service: models load on request and unload when idle (install: at every login)
        glyd ps | stop MODEL|--all   what the service holds; a model unloaded now
