@@ -17,10 +17,11 @@ impl Tok {
         let p = dir.join("tokenizer.json");
         if !p.exists() && dir.join("tiktoken.model").exists() {
             let json = tiktoken_json(dir)?;
-            let t = Tokenizer::from_bytes(json.as_bytes()).map_err(|e| Error(format!("{}: {e}", dir.join("tiktoken.model").display())))?;
+            let t = parse(json.as_bytes()).map_err(|e| Error(format!("{}: {e}", dir.join("tiktoken.model").display())))?;
             return Ok(Tok::of(t, dir));
         }
-        let t = Tokenizer::from_file(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+        let bytes = std::fs::read(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+        let t = parse(&bytes).map_err(|e| Error(format!("{}: {e}", p.display())))?;
         Ok(Tok::of(t, dir))
     }
 
@@ -154,6 +155,18 @@ impl Tok {
     /// `ids` as text, with or without the special tokens (`<|im_end|>` ...) in it.
     pub fn decode_with(&self, ids: &[u32], skip_special: bool) -> Result<String> {
         self.t.decode(ids, skip_special).map_err(|e| Error(e.to_string()))
+    }
+}
+
+/// A tokenizer.json read: its error in words, where the `tokenizers` crate gives one, and where it panics instead (its decoders' deserializer `expect`s the JSON to be well formed, so a syntax error inside a
+/// `decoder` is a panic) the same: a repository's file must not stop the process that loads it.
+fn parse(bytes: &[u8]) -> std::result::Result<Tokenizer, String> {
+    match std::panic::catch_unwind(|| Tokenizer::from_bytes(bytes)) {
+        Ok(r) => r.map_err(|e| e.to_string()),
+        Err(p) => Err(format!(
+            "not a tokenizer.json ({})",
+            p.downcast_ref::<String>().map(String::as_str).or_else(|| p.downcast_ref::<&str>().copied()).unwrap_or("the reader panicked")
+        )),
     }
 }
 
@@ -341,6 +354,17 @@ pub(crate) mod tests {
         "normalizer":null,"pre_tokenizer":{"type":"Whitespace"},
         "post_processor":{"type":"TemplateProcessing","single":[{"SpecialToken":{"id":"<begin>","type_id":0}},{"Sequence":{"id":"A","type_id":0}}],"pair":[{"Sequence":{"id":"A","type_id":0}}],"special_tokens":{"<begin>":{"id":"<begin>","ids":[0],"tokens":["<begin>"]}}},
         "decoder":null,"model":{"type":"WordLevel","vocab":{"<begin>":0,"hello":1,"world":2,"<unk>":3},"unk_token":"<unk>"}}"#;
+
+    /// A syntax error inside a tokenizer.json's `decoder` was a panic of the `tokenizers` crate (it `expect`s), and a bad file is an error.
+    #[test]
+    fn a_tokenizer_json_with_a_broken_decoder_is_an_error() {
+        let broken = BOS_TOKENIZER.replace("\"decoder\":null", "\"decoder\":{\"type\" \"Fuse\"}");
+        assert_ne!(broken, BOS_TOKENIZER);
+        let Err(e) = parse(broken.as_bytes()) else { panic!("an error") };
+        assert!(e.contains("tokenizer.json") || e.contains("expected"), "{e}");
+        assert!(parse(BOS_TOKENIZER.as_bytes()).is_ok());
+        assert!(parse(b"").is_err());
+    }
 
     fn tok() -> Tok {
         Tok::of(Tokenizer::from_bytes(BOS_TOKENIZER.as_bytes()).unwrap(), Path::new("."))
