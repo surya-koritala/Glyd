@@ -1,7 +1,7 @@
 //! `glyd bench`: one benchmark harness (R8). It puts fixed prompts at fixed concurrencies on an OpenAI-compatible server over HTTP and writes the speed as JSON, `glyd-bench/1` (docs/bench.md).
 //!
 //!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full | --loads short:1,4k:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
-//!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P]
+//!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P] [--eval gsm8k[:N]]
 //!       starts `serve MODEL` of this program (or measures the server at --against, whatever program it is: vLLM, llama.cpp, SGLang) and measures each load: per load, one warm-up round and `runs` rounds
 //!       of N simultaneous requests, every prompt different from its first token on (no prefix to share). Time to first token, inter-token latency, decode tokens/s a user and in all, prefill tokens/s,
 //!       each as the runs' mean, standard deviation, median and the runs themselves; the peak GPU memory; and the decode rate as a share of the ceiling (the weights' bytes a token over the memory's
@@ -541,6 +541,17 @@ pub fn measure(a: &Args) -> Result<()> {
         }
         cells.push(cell);
     }
+    let quality = a.flag("eval").map(|e| match e.strip_prefix("gsm8k") {
+        Some(rest) => {
+            let n = rest.strip_prefix(':').and_then(|n| n.parse::<usize>().ok()).unwrap_or(30);
+            let r = gsm8k(&agent, &url, &model, n);
+            if !quiet {
+                eprintln!("gsm8k: {} of {} correct", r["correct"], r["problems"]);
+            }
+            json!({"gsm8k": r})
+        }
+        None => json!({"error": format!("--eval {e}: gsm8k or gsm8k:N")}),
+    });
     let peak_mib = peak.finish();
     let after = gpu_now();
     let result = json!({
@@ -558,6 +569,7 @@ pub fn measure(a: &Args) -> Result<()> {
         "contention": {"busy_before": busy, "utilization_median_pct": util, "before": before, "after": after},
         "idle_mib": idle,
         "peak_mib": peak_mib,
+        "quality": quality,
         "cells": cells,
     });
     drop(server);
@@ -572,6 +584,83 @@ pub fn measure(a: &Args) -> Result<()> {
         );
     }
     Ok(())
+}
+
+// ---- a small eval
+
+/// The last number in a reply (commas out of it), as GSM8K's answers are compared.
+pub fn last_number(text: &str) -> Option<String> {
+    let mut best = None;
+    let mut cur = String::new();
+    let flush = |cur: &mut String, best: &mut Option<String>| {
+        let t = cur.trim_end_matches('.').to_string();
+        if t.chars().any(|c| c.is_ascii_digit()) {
+            *best = Some(t);
+        }
+        cur.clear();
+    };
+    for c in text.chars() {
+        if c.is_ascii_digit() || (c == '.' && !cur.is_empty()) || (c == '-' && cur.is_empty()) {
+            cur.push(c);
+        } else if c == ',' && !cur.is_empty() {
+            // (a thousands separator)
+        } else {
+            flush(&mut cur, &mut best);
+        }
+    }
+    flush(&mut cur, &mut best);
+    best
+}
+
+fn same_number(a: &str, b: &str) -> bool {
+    match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(x), Ok(y)) => (x - y).abs() < 1e-6,
+        _ => a == b,
+    }
+}
+
+/// `--eval gsm8k[:N]`: the first N (30) problems of GSM8K's test split (read from the Hub's datasets server, MIT license), each asked of the server at temperature 0 with eight at once; the share whose last number is the
+/// answer after "####". Not a benchmark of the model's reasoning, a check that a change did not make it worse: the same problems every time.
+fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
+    let rows = ureq::get(&format!("https://datasets-server.huggingface.co/rows?dataset=openai/gsm8k&config=main&split=test&offset=0&length={n}"))
+        .call()
+        .ok()
+        .and_then(|mut r| r.body_mut().read_to_string().ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let Some(rows) = rows.as_ref().and_then(|r| r["rows"].as_array()) else {
+        return json!({"error": "the problems could not be read from datasets-server.huggingface.co"});
+    };
+    let problems: Vec<(String, String)> = rows
+        .iter()
+        .filter_map(|r| Some((r["row"]["question"].as_str()?.to_string(), r["row"]["answer"].as_str()?.rsplit("####").next()?.trim().replace(',', ""))))
+        .collect();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let correct = std::sync::atomic::AtomicUsize::new(0);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..8 {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some((q, want)) = problems.get(i) else { break };
+                let body = json!({"model": model, "messages": [{"role": "user", "content": format!("{q}\nThink step by step, then end with the final answer as a number alone on the last line.")}],
+                    "max_tokens": 768, "temperature": 0, "stream": false, "chat_template_kwargs": {"enable_thinking": false}});
+                let reply = agent
+                    .post(&format!("{url}/v1/chat/completions"))
+                    .header("Content-Type", "application/json")
+                    .send(body.to_string())
+                    .ok()
+                    .and_then(|mut r| r.body_mut().read_to_string().ok())
+                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                    .and_then(|v| v["choices"][0]["message"]["content"].as_str().map(str::to_string));
+                done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if reply.and_then(|t| last_number(&t)).is_some_and(|got| same_number(&got, want)) {
+                    correct.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    let (c, d) = (correct.into_inner(), done.into_inner());
+    json!({"source": "openai/gsm8k test, first problems", "problems": d, "correct": c, "accuracy": if d > 0 { c as f64 / d as f64 } else { f64::NAN }})
 }
 
 // ---- the gate
@@ -861,6 +950,14 @@ mod tests {
         let (a, b) = (prompt("1k", 1).unwrap(), prompt("1k", 2).unwrap());
         assert!(a.len() > 4000 && a != b && a[..3] != b[..3]);
         assert!(prompt("9k", 1).is_err());
+    }
+
+    #[test]
+    fn the_last_number_of_a_reply_is_the_answer() {
+        assert_eq!(last_number("So she has 1,234 apples.\n\n18").as_deref(), Some("18"));
+        assert_eq!(last_number("The answer is $-5.50.").as_deref(), Some("-5.50"));
+        assert_eq!(last_number("no digits"), None);
+        assert!(same_number("18.0", "18") && !same_number("19", "18"));
     }
 
     #[test]
