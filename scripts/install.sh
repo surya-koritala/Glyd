@@ -136,8 +136,9 @@ driver_check() {
   esac
 }
 
-# Glyd's engine (glyd-engine, Rust) and its GPU library, beside the compression program in $cli: `glyd run`, `serve`, `fetch` and `verify` of a model the
-# engine runs go to it (the compression program finds it beside itself), with no Python. The release's tarball, checked against its sha256.
+# Glyd's engine (Rust) and its GPU library in $cli: `glyd run`, `serve`, `pull`, `fit` and `verify` of a model the engine runs, with no Python. From release
+# 0.33 the engine is linked into glyd (one program, and glyd-engine a link to it); before that it is the program glyd-engine beside the compression program,
+# which finds it there. The release's tarball, checked against its sha256.
 install_engine() {
   case "$arch" in
     x86_64) eplat=linux-x86_64 ;;
@@ -158,9 +159,18 @@ install_engine() {
     [ -n "$want" ] && [ "$got" = "$want" ] || die "the engine's download is not the file the release lists (its sha256 is $got, the release says ${want:-nothing}). Run this again; if it happens again, tell the Glyd team."
   fi
   mkdir -p "$tmp/e"
-  tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/glyd-engine" "$ename/libglyd_gpu_cuda13.so" "$ename/LICENSE" \
-    || die "the engine's tarball is not laid out as this installer expects ($ename/glyd-engine, ...): run this again, or take it from $REPO/releases."
-  cp "$tmp/e/$ename/glyd-engine" "$tmp/e/$ename/libglyd_gpu_cuda13.so" "$cli"/ && cp "$tmp/e/$ename/LICENSE" "$cli/LICENSE-engine" || die "could not write to $cli."
+  # A release from 0.33 holds glyd itself with the engine linked (and glyd-engine as a link to it): the one program, which replaces the compression program
+  # of the same release beside it. An earlier release's tarball holds the engine as a program of its own, which stays beside glyd.
+  if tar -tzf "$tmp/$ename.tar.gz" "$ename/glyd" >/dev/null 2>&1; then one=glyd; else one=glyd-engine; fi
+  tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/$one" "$ename/libglyd_gpu_cuda13.so" "$ename/LICENSE" \
+    || die "the engine's tarball is not laid out as this installer expects ($ename/$one, ...): run this again, or take it from $REPO/releases."
+  cp "$tmp/e/$ename/libglyd_gpu_cuda13.so" "$cli"/ && cp "$tmp/e/$ename/LICENSE" "$cli/LICENSE-engine" || die "could not write to $cli."
+  if [ "$one" = glyd ]; then
+    cp "$tmp/e/$ename/glyd" "$cli/glyd.new" && chmod +x "$cli/glyd.new" && mv -f "$cli/glyd.new" "$cli/glyd" || die "could not write to $cli."
+    ln -sf glyd "$cli/glyd-engine"  # (glyd takes the name it is started by for the engine's own command line)
+  else
+    cp "$tmp/e/$ename/glyd-engine" "$cli"/ || die "could not write to $cli."
+  fi
   chmod +x "$cli/glyd-engine"
   "$cli/glyd-engine" --version >/dev/null 2>&1 || die "Glyd's engine does not start on this machine ($cli/glyd-engine --version): it needs Linux with glibc 2.28 or newer."
   ln -sf "$cli/glyd-engine" "$bin/glyd-engine"

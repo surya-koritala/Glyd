@@ -48,6 +48,7 @@ pub mod draft_loop;
 #[cfg(feature = "dev")]
 pub mod dsv4_ref;
 pub mod dynamic;
+pub mod entry;
 pub mod f8;
 pub mod ffi;
 pub mod fit;
