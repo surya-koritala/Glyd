@@ -24,7 +24,9 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
 - A Hub name with a level reads the base model's config.json (the cache, else the Hub) and loads glyd/NAME-LEVEL from the
   cache (else downloads it). Offline, give the snapshot directory: nothing else is read.
 - The address is 127.0.0.1:8000, or the next free port up to 8020; `--port N` is that port or a refusal. `--host H`
-  listens on H and turns the Host and Origin checks off.
+  listens on H and turns the Host and Origin checks off. `--ollama-port N` also listens on N (Ollama's own is 11434), only
+  where N is free (else it says so and goes on): for the programs that look for Ollama at its port; Ollama's API is at
+  the server's own port too.
 - The GPU is the one with the most free memory of those CUDA_VISIBLE_DEVICES shows. The context is `--ctx N` (`--context`);
   without it, what fits, up to 32,768 at a level. A level's engine runs one request at a time (the others wait in order);
   the lossless engine runs `--users N` at once (1 to 8, 4 if not given).
@@ -66,6 +68,7 @@ driver's again when the process is gone (the record: 2,223 MiB used before the s
 | `POST /v1/chat/completions` | yes | a chat, JSON or SSE |
 | `POST /v1/completions` | yes | a plain completion, JSON or SSE; `suffix` makes it a fill in the middle (see below) |
 | `POST /v1/responses` | yes | OpenAI's Responses API, stateless: JSON or SSE (see below) |
+| `/api/chat`, `/api/generate`, `/api/tags`, `/api/show`, `/api/ps`, `/api/version`, `/api/pull`, `/api/delete` | yes | Ollama's API (see below); `/api/embed` and the model-making calls answer 501 |
 | `POST /v1/messages`, `/v1/messages/count_tokens` | yes | Anthropic's Messages API, JSON or SSE (see below; not tracked by id) |
 | `POST /v1/glyd/tokenize` | yes | a request's prompt counted, nothing run |
 | `GET /v1/glyd/info` | yes | what the server is and holds |
@@ -100,6 +103,16 @@ a `thinking` block with an empty signature, which this server cannot make; else 
 usage says no token was cached. A stream is `message_start`, `ping`, each block's `content_block_start`, `content_block_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and
 `content_block_stop`, `message_delta` (the `stop_reason`: `end_turn`, `max_tokens`, `stop_sequence` with the string, `tool_use`; the usage) and `message_stop`, with a `ping` while a request waits for its turn. Errors are
 `{"type": "error", "error": {"type", "message"}}` (`invalid_request_error`, `authentication_error`, `not_found_error`, `api_error`). `/v1/models` carries `type`, `display_name` and `created_at` beside OpenAI's fields.
+
+## /api (Ollama)
+
+For the programs that talk to Ollama (Open WebUI, Continue, LangChain, the `ollama` libraries). `POST /api/chat` and `/api/generate` stream JSON lines (`application/x-ndjson`; `stream` is on unless it is false) and end with
+`done`, `done_reason`, the durations (nanoseconds) and `prompt_eval_count` and `eval_count`; with `tools` the reply comes whole (a call is sent at once, its arguments an object). Read: `messages` (with `images` in base64, `tool_calls`,
+and `tool` messages by `tool_name`), `prompt`, `system`, `suffix` (fill in the middle) and `raw`, `tools`, `format` (`"json"` or a JSON schema), `think` (a boolean or a level; the thinking comes in `thinking`),
+and `options`: `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stop`, `num_predict`, `repeat_penalty`, `presence_penalty`, `frequency_penalty` (`num_ctx` is the server's `--context`; the others have no effect).
+`keep_alive` and `model` are read and ignored: the server holds one model and every request is answered by it; `/api/tags` and `/api/ps` list it as `NAME:latest` and `/api/show` says its `capabilities`
+(`completion`, `tools`, `thinking`, `vision`, `insert`) and its `context_length`. `/api/pull` of that model says `success`, of another is 404 with what to run; `/api/delete` of the served model is refused.
+Errors are `{"error": "..."}`. The key guards `/api` as it guards `/v1`.
 
 ## Fill in the middle
 

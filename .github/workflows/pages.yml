@@ -1,0 +1,99 @@
+name: Pages
+
+# The site: docs/index.html and the pages beside it at the root, and the user guide (docs/guide, mdBook) at /guide/.
+# The guide's models page is generated from glyd-engine/src/support.rs on every build, so it cannot drift.
+# Main is built to /guide/; each v* tag that has docs/guide is built to /guide/vX.Y.Z/ (that tag's own text and generator).
+# A pull request that touches the site is built and not deployed. A push to main, a release and a run by hand deploy.
+# Deploy runs only where the repository variable PAGES_FROM_ACTIONS is 'true'. Set it after the Pages source is switched to
+# "GitHub Actions" (Settings, Pages, Build and deployment). Until then every run builds the site, so a broken page fails here,
+# and the old Pages build keeps serving.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "glyd-engine/src/support.rs"
+      - "glyd-engine/src/levels.rs"
+      - "glyd-engine/src/machine.rs"
+      - "glyd-engine/src/kvcal.rs"
+      - "glyd-engine/Cargo.toml"
+      - "scripts/gen_models.py"
+      - "scripts/build_site.sh"
+      - ".github/workflows/pages.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "glyd-engine/src/support.rs"
+      - "glyd-engine/src/levels.rs"
+      - "glyd-engine/src/machine.rs"
+      - "glyd-engine/src/kvcal.rs"
+      - "scripts/gen_models.py"
+      - "scripts/build_site.sh"
+      - ".github/workflows/pages.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  MDBOOK_VERSION: "0.4.52"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the tags
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Install mdBook
+        run: cargo install mdbook --version "$MDBOOK_VERSION" --locked
+      - name: Assemble the site
+        run: |
+          set -eu
+          out="$PWD/_site"
+          mkdir -p "$out"
+          # the pages that were always here: the codec's page and what it uses
+          find docs -maxdepth 1 -name '*.html' -exec cp {} "$out"/ \;
+          cp -r docs/img "$out"/img
+          touch "$out/.nojekyll"
+          # the guide at main
+          scripts/build_site.sh "$out/guide"
+          # the guide at each release that has one
+          for tag in $(git tag -l 'v*'); do
+            git cat-file -e "$tag:docs/guide/book.toml" 2>/dev/null || continue
+            work=$(mktemp -d)
+            git worktree add --detach "$work/src" "$tag"
+            (cd "$work/src" && sh scripts/build_site.sh "$out/guide/$tag")
+            git worktree remove --force "$work/src"
+          done
+          find "$out" -maxdepth 2 | sort | head -40
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        if: github.event_name != 'pull_request' && vars.PAGES_FROM_ACTIONS == 'true'
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: github.event_name != 'pull_request' && vars.PAGES_FROM_ACTIONS == 'true'
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request' && vars.PAGES_FROM_ACTIONS == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

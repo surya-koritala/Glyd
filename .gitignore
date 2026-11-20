@@ -31,3 +31,7 @@ bindings/python/LICENSE
 bindings/python/COPYING
 bindings/python/LICENSE-glyd-store
 bindings/python/LICENSE-glyd-gpu
+
+# user guide: built by scripts/build_site.sh
+/docs/guide/book/
+/docs/guide/src/models.md
