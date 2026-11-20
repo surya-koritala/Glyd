@@ -130,9 +130,13 @@ extern "C" __global__ void g4_add_norm(bf16* x, const bf16* y, const bf16* wpost
 // transformers' cos 1 and sin 0), each product rounded and their sum rounded: x_i c - x_{i+D/2} s, x_{i+D/2} c + x_i s. A value: rmsnorm over D with no weight, one rounding,
 // from its own head, or (no v) from the key head's raw values (Gemma 4's global layers, K = V). Queries to qo [n, nq D]; keys and values to the ring kc, vc [cap, nk, D] at
 // slot pos % cap. Block (row, head of nq + nk), D / 2 threads: thread t takes i = t and i + D/2.
+// A key's place in a layer's cache: through the sequence's block table where it has one (16-token blocks, each a page of the pool: src/dynamic/pages.rs), else the ring's
+// slot p % cap.
+__device__ __forceinline__ size_t g4_place(const int* tab, int p, int cap) { return tab ? (size_t)tab[p >> 4] * 16 + (p & 15) : (size_t)(p % cap); }
+
 template <int D>
 __device__ __forceinline__ void g4_prep_t(const bf16* qkv, int stride, const bf16* qw, const bf16* kw, const bf16* cs, const bf16* sn, int rot, const int* pos, int cap, bf16* qo, bf16* kc,
-                                          bf16* vc, int nq, int nk, int has_v, float eps) {
+                                          bf16* vc, int nq, int nk, int has_v, float eps, const int* tab) {
     constexpr int H = D / 2;
     const int r = blockIdx.x, hh = blockIdx.y, t = threadIdx.x;
     const bf16* row = qkv + (size_t)r * stride;
@@ -150,7 +154,7 @@ __device__ __forceinline__ void g4_prep_t(const bf16* qkv, int stride, const bf1
         oa = b2f(f2b(b2f(f2b(na * c)) - b2f(f2b(nb * sv))));
         ob = b2f(f2b(b2f(f2b(nb * c)) + b2f(f2b(na * sv))));
     }
-    const size_t slot = (size_t)(p % cap);
+    const size_t slot = g4_place(tab, p, cap);
     bf16* o = isq ? qo + (size_t)r * nq * D + hh * D : kc + (slot * nk + kh) * D;
     o[t] = f2b(oa);
     o[t + H] = f2b(ob);
@@ -165,15 +169,15 @@ __device__ __forceinline__ void g4_prep_t(const bf16* qkv, int stride, const bf1
 }
 
 extern "C" __global__ void __launch_bounds__(128) g4_prep256(const bf16* qkv, int stride, const bf16* qw, const bf16* kw, const bf16* cs, const bf16* sn, int rot, const int* pos, int cap, bf16* qo,
-                                                            bf16* kc, bf16* vc, int nq, int nk, int has_v, float eps, G4Pf pf) {
+                                                            bf16* kc, bf16* vc, int nq, int nk, int has_v, float eps, G4Pf pf, const int* tab) {
     if (blockIdx.z > 0) return g4_pf(pf, (blockIdx.z - 1) * gridDim.x * gridDim.y + blockIdx.y * gridDim.x + blockIdx.x, (gridDim.z - 1) * gridDim.x * gridDim.y);
-    g4_prep_t<256>(qkv, stride, qw, kw, cs, sn, rot, pos, cap, qo, kc, vc, nq, nk, has_v, eps);
+    g4_prep_t<256>(qkv, stride, qw, kw, cs, sn, rot, pos, cap, qo, kc, vc, nq, nk, has_v, eps, tab);
 }
 
 extern "C" __global__ void __launch_bounds__(256) g4_prep512(const bf16* qkv, int stride, const bf16* qw, const bf16* kw, const bf16* cs, const bf16* sn, int rot, const int* pos, int cap, bf16* qo,
-                                                            bf16* kc, bf16* vc, int nq, int nk, int has_v, float eps, G4Pf pf) {
+                                                            bf16* kc, bf16* vc, int nq, int nk, int has_v, float eps, G4Pf pf, const int* tab) {
     if (blockIdx.z > 0) return g4_pf(pf, (blockIdx.z - 1) * gridDim.x * gridDim.y + blockIdx.y * gridDim.x + blockIdx.x, (gridDim.z - 1) * gridDim.x * gridDim.y);
-    g4_prep_t<512>(qkv, stride, qw, kw, cs, sn, rot, pos, cap, qo, kc, vc, nq, nk, has_v, eps);
+    g4_prep_t<512>(qkv, stride, qw, kw, cs, sn, rot, pos, cap, qo, kc, vc, nq, nk, has_v, eps, tab);
 }
 
 // ---- attention ---------------------------------------------------------------------------------------------------------------------------
@@ -185,7 +189,8 @@ extern "C" __global__ void __launch_bounds__(256) g4_prep512(const bf16* qkv, in
 // memory: lane j scores key j, then each lane sums D / 32 output dims. Dynamic shared memory: (G4_KB (D/2 + 1) + G4_KB D/2 + R G D/2) * 4 bytes.
 // SPLIT (a decode step, R = 1): block z takes the S-th part z of the row's keys and writes its outputs, maximum (log2 units) and sum to part [(t nq + h) S + z][D + 2].
 template <int D, bool SPLIT>
-__device__ __forceinline__ void g4_attn_t(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int R, int window, int cap, float* part, int S) {
+__device__ __forceinline__ void g4_attn_t(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int R, int window, int cap, float* part, int S,
+                                          const int* tab) {
     constexpr int W2 = D / 2, KS = W2 + 1, PER = D / 32;
     extern __shared__ uint32_t sm[];
     uint32_t* Ks = sm;
@@ -229,7 +234,7 @@ __device__ __forceinline__ void g4_attn_t(const bf16* q, const bf16* kc, const b
             const bool isv = c >= G4_KB * (W2 / 4);
             const int cc = isv ? c - G4_KB * (W2 / 4) : c, j = cc / (W2 / 4), q4 = cc % (W2 / 4);
             uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < kmax) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + ((size_t)((k0 + j) % cap) * nk + kvh) * D)[q4];
+            if (k0 + j < kmax) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + (g4_place(tab, k0 + j, cap) * nk + kvh) * D)[q4];
             if (isv) {
                 *reinterpret_cast<uint4*>(Vs + j * W2 + q4 * 4) = v;
             } else {
@@ -289,17 +294,21 @@ __device__ __forceinline__ void g4_attn_t(const bf16* q, const bf16* kc, const b
     for (int e = 0; e < PER; e++) o[e] = f2b(acc[e] / l_run);
 }
 
-extern "C" __global__ void __launch_bounds__(512) g4_attn256(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int R, int window, int cap) {
-    g4_attn_t<256, false>(q, kc, vc, pos, out, n, nq, nk, R, window, cap, nullptr, 1);
+extern "C" __global__ void __launch_bounds__(512) g4_attn256(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int R, int window, int cap,
+                                                           const int* tab) {
+    g4_attn_t<256, false>(q, kc, vc, pos, out, n, nq, nk, R, window, cap, nullptr, 1, tab);
 }
-extern "C" __global__ void __launch_bounds__(512) g4_attn512(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int R, int window, int cap) {
-    g4_attn_t<512, false>(q, kc, vc, pos, out, n, nq, nk, R, window, cap, nullptr, 1);
+extern "C" __global__ void __launch_bounds__(512) g4_attn512(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int R, int window, int cap,
+                                                           const int* tab) {
+    g4_attn_t<512, false>(q, kc, vc, pos, out, n, nq, nk, R, window, cap, nullptr, 1, tab);
 }
-extern "C" __global__ void __launch_bounds__(512) g4_attn256_parts(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, int n, int nq, int nk, int window, int cap, float* part, int S) {
-    g4_attn_t<256, true>(q, kc, vc, pos, nullptr, n, nq, nk, 1, window, cap, part, S);
+extern "C" __global__ void __launch_bounds__(512) g4_attn256_parts(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, int n, int nq, int nk, int window, int cap, float* part, int S,
+                                                                 const int* tab) {
+    g4_attn_t<256, true>(q, kc, vc, pos, nullptr, n, nq, nk, 1, window, cap, part, S, tab);
 }
-extern "C" __global__ void __launch_bounds__(512) g4_attn512_parts(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, int n, int nq, int nk, int window, int cap, float* part, int S) {
-    g4_attn_t<512, true>(q, kc, vc, pos, nullptr, n, nq, nk, 1, window, cap, part, S);
+extern "C" __global__ void __launch_bounds__(512) g4_attn512_parts(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, int n, int nq, int nk, int window, int cap, float* part, int S,
+                                                                 const int* tab) {
+    g4_attn_t<512, true>(q, kc, vc, pos, nullptr, n, nq, nk, 1, window, cap, part, S, tab);
 }
 
 // ---- a prompt chunk's attention on the tensor cores -------------------------------------------------------------------------------------
@@ -314,7 +323,7 @@ __device__ __forceinline__ uint32_t g4_pk(float a, float b) {
 }
 
 template <int D, int DV, int BM>
-__device__ __forceinline__ void g4_fa_t(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int window, int cap) {
+__device__ __forceinline__ void g4_fa_t(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int window, int cap, const int* tab) {
     constexpr int KT = 32, QS = D + 8, VS = DV + 8, NT = DV / 8, W = BM / 16;
     extern __shared__ __align__(16) unsigned char g4_fa_sm[];
     bf16* Qs = reinterpret_cast<bf16*>(g4_fa_sm);
@@ -352,13 +361,13 @@ __device__ __forceinline__ void g4_fa_t(const bf16* q, const bf16* kc, const bf1
         for (int c = threadIdx.x; c < KT * (D / 8); c += blockDim.x) {
             const int j = c / (D / 8), q8 = c % (D / 8);
             uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < s_hi) v = reinterpret_cast<const uint4*>(kc + ((size_t)((k0 + j) % cap) * nk + kvh) * D)[q8];
+            if (k0 + j < s_hi) v = reinterpret_cast<const uint4*>(kc + (g4_place(tab, k0 + j, cap) * nk + kvh) * D)[q8];
             *reinterpret_cast<uint4*>(Ks + j * QS + q8 * 8) = v;
         }
         for (int c = threadIdx.x; c < KT * (DV / 8); c += blockDim.x) {
             const int j = c / (DV / 8), q8 = c % (DV / 8);
             uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < s_hi) v = reinterpret_cast<const uint4*>(vc + ((size_t)((k0 + j) % cap) * nk + kvh) * D + v0)[q8];
+            if (k0 + j < s_hi) v = reinterpret_cast<const uint4*>(vc + (g4_place(tab, k0 + j, cap) * nk + kvh) * D + v0)[q8];
             *reinterpret_cast<uint4*>(Vs + j * VS + q8 * 8) = v;
         }
         __syncthreads();
@@ -451,7 +460,8 @@ __device__ __forceinline__ void g4_fa_t(const bf16* q, const bf16* kc, const bf1
 // softmax (the four warps alike), and P V into the warp's own 128 value columns: the scores are made once. Shared memory: K and V [32][520] bf16
 // (the queries pass through V's space first) and the shares [2][4][16][33] floats: 83,456 bytes. Grid (ceil(n / 32), nq).
 #define G4B_SP 33
-extern "C" __global__ void __launch_bounds__(256, 1) g4_fa512b(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int window, int cap) {
+extern "C" __global__ void __launch_bounds__(256, 1) g4_fa512b(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int window, int cap,
+                                                                const int* tab) {
     constexpr int D = 512, KT = 32, QS = D + 8, BM = 32;
     extern __shared__ __align__(16) unsigned char g4_fa_sm[];
     bf16* Ks = reinterpret_cast<bf16*>(g4_fa_sm);
@@ -493,7 +503,7 @@ extern "C" __global__ void __launch_bounds__(256, 1) g4_fa512b(const bf16* q, co
             const bool isv = c >= KT * (D / 8);
             const int cc = isv ? c - KT * (D / 8) : c, j = cc / (D / 8), q8 = cc % (D / 8);
             uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < s_hi) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + ((size_t)((k0 + j) % cap) * nk + kvh) * D)[q8];
+            if (k0 + j < s_hi) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + (g4_place(tab, k0 + j, cap) * nk + kvh) * D)[q8];
             *reinterpret_cast<uint4*>((isv ? Vs : Ks) + j * QS + q8 * 8) = v;
         }
         __syncthreads();
@@ -590,11 +600,12 @@ extern "C" __global__ void __launch_bounds__(256, 1) g4_fa512b(const bf16* q, co
     }
 }
 
-extern "C" __global__ void __launch_bounds__(128, 1) g4_fa256(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int window, int cap) {
-    g4_fa_t<256, 256, 64>(q, kc, vc, pos, out, n, nq, nk, window, cap);
+extern "C" __global__ void __launch_bounds__(128, 1) g4_fa256(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int window, int cap,
+                                                              const int* tab) {
+    g4_fa_t<256, 256, 64>(q, kc, vc, pos, out, n, nq, nk, window, cap, tab);
 }
-extern "C" __global__ void __launch_bounds__(64, 1) g4_fa512(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int window, int cap) {
-    g4_fa_t<512, 256, 32>(q, kc, vc, pos, out, n, nq, nk, window, cap);
+extern "C" __global__ void __launch_bounds__(64, 1) g4_fa512(const bf16* q, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int n, int nq, int nk, int window, int cap, const int* tab) {
+    g4_fa_t<512, 256, 32>(q, kc, vc, pos, out, n, nq, nk, window, cap, tab);
 }
 
 // The S parts combined: out = bf16(sum of the parts' outputs, each times 2^(its maximum - the largest), / the sum likewise). Block (row, query head), D threads (a dim each).

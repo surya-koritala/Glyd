@@ -8,6 +8,7 @@ pub mod glm;
 pub mod kimi;
 pub mod muse;
 pub mod nemotron;
+pub mod pages;
 pub mod qwen35;
 pub mod range;
 mod rows;
@@ -865,6 +866,9 @@ pub struct Dyn {
     parts: Vec<rows::Part>,
     at: std::cell::Cell<Option<usize>>,
     head_rows: Vec<usize>,
+    /// Paged keys and values (R4b: src/dynamic/pages.rs): kc and vc are then the pools every sequence's blocks are in, and each sequence has a block table a layer group. None: each sequence a
+    /// room of its own.
+    paged: Option<rows::Paged>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1209,6 +1213,7 @@ impl Dyn {
             parts: Vec::new(),
             at: std::cell::Cell::new(None),
             head_rows: Vec::new(),
+            paged: None,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {
@@ -1466,7 +1471,7 @@ impl Dyn {
                 let (nx, rows) = Self::next_linear(p, l, i, n, head);
                 let (pf, pfb) = self.pf(nx, rows, self.pf_kib[0], (d / 2) as u32);
                 let slice = nu * (nq + nki) as u32;
-                launch!(*prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; proj, stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, self.ring_cap[ring] as i32, qo, kc, vc, nq, nki, has_v as i32, eps, pf)?;
+                launch!(*prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; proj, stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, self.ring_cap[ring] as i32, qo, kc, vc, nq, nki, has_v as i32, eps, pf, self.table(ring))?;
                 self.mark("prep")
             }
             Op::Attention { d, nq, nk, window, ring } => {
@@ -1477,18 +1482,18 @@ impl Dyn {
                 let g = nq / nki;
                 if n <= self.split_rows {
                     let parts = if d == 256 { &self.kg.parts256 } else { &self.kg.parts512 };
-                    launch!(*parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; qo, kc, vc, pos.1, n as i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32)?;
+                    launch!(*parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; qo, kc, vc, pos.1, n as i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32, self.table(ring))?;
                     launch!(self.kg.merge, [nu, nq as u32, 1], [di as u32, 1, 1], s; self.part.ptr, SPLITS as i32, att, nq, di)?;
                 } else if self.kg.fa {
                     if d == 256 {
-                        launch!(self.kg.fa256, [(n.div_ceil(64)) as u32, nq as u32, 1], [128, 1, 1], smem fa_smem(256, 256, 64), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap)?;
+                        launch!(self.kg.fa256, [(n.div_ceil(64)) as u32, nq as u32, 1], [128, 1, 1], smem fa_smem(256, 256, 64), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap, self.table(ring))?;
                     } else {
-                        launch!(self.kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap)?;
+                        launch!(self.kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap, self.table(ring))?;
                     }
                 } else {
                     let r = (16 / g).max(1);
                     let attn = if d == 256 { &self.kg.attn256 } else { &self.kg.attn512 };
-                    launch!(*attn, [((n as i32 + r - 1) / r) as u32, nki as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, (r * g) as usize), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, r, window, cap)?;
+                    launch!(*attn, [((n as i32 + r - 1) / r) as u32, nki as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, (r * g) as usize), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, r, window, cap, self.table(ring))?;
                 }
                 self.mark(if window > 0 { "attention (sliding)" } else { "attention (global)" })
             }
@@ -2394,15 +2399,9 @@ impl Dyn {
         }
         for _ in 0..k {
             let states = self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<_>>()?;
-            self.seqs.push(Some(Seq {
-                kc: Buf::zeroed(self.kc.bytes)?,
-                vc: Buf::zeroed(self.vc.bytes)?,
-                states,
-                n: 0,
-                pending: None,
-                verify: None,
-                graph: None,
-            }));
+            // (paged: every sequence's keys and values are in the pools, kc and vc; its own are its block tables)
+            let room = if self.paged.is_some() { 4 } else { self.kc.bytes };
+            self.seqs.push(Some(Seq { kc: Buf::zeroed(room)?, vc: Buf::zeroed(room)?, states, n: 0, pending: None, verify: None, graph: None }));
             let (back, graph) = (self.seq, self.graph.is_some());
             if graph {
                 // (its own graph: the one-row step captured on its buffers)
@@ -2426,8 +2425,10 @@ impl Dyn {
         }
         let mut s = self.seqs.get_mut(i).and_then(Option::take).ok_or_else(|| Error(format!("sequence {i}: this engine holds {}", self.seqs.len())))?;
         self.dev.sync()?;
-        std::mem::swap(&mut self.kc, &mut s.kc);
-        std::mem::swap(&mut self.vc, &mut s.vc);
+        if self.paged.is_none() {
+            std::mem::swap(&mut self.kc, &mut s.kc);
+            std::mem::swap(&mut self.vc, &mut s.vc);
+        }
         std::mem::swap(&mut self.states, &mut s.states);
         std::mem::swap(&mut self.n, &mut s.n);
         std::mem::swap(&mut self.pending, &mut s.pending);
@@ -2654,7 +2655,7 @@ impl crate::conv::Gen for Dyn {
         let k = self.seqs.len() as u64;
         Some(crate::dev::Held {
             weights: self.bytes as u64,
-            kv: k * (self.kc.bytes + self.vc.bytes) as u64,
+            kv: if self.paged.is_some() { (self.kc.bytes + self.vc.bytes) as u64 } else { k * (self.kc.bytes + self.vc.bytes) as u64 },
             state: k * self.states.iter().map(|b| b.bytes as u64).sum::<u64>(),
             kv_type: "bf16",
             state_type,

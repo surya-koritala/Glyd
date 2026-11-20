@@ -1381,13 +1381,21 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     let together = ask(&mut s, &prompts)?;
     let same = together.iter().zip(&reference).filter(|(a, b)| a == b).count();
-    let strict = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0");
+    // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
+    // replies are then counted, not required to be the same)
+    let squeezed = std::env::var_os("GLYD_ENGINE_PAGES").is_some();
+    let strict = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0") && !squeezed;
     let steps: Vec<u64> = crate::sched::SHARED[18..27].iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).collect();
+    let resumed = crate::sched::SHARED[2].load(std::sync::atomic::Ordering::Relaxed);
     println!(
-        "at once: {same} of {} replies the reply alone (prompts {}); {k} sequences, rows in one pass: {batchable}; decode steps by rows {steps:?}",
+        "at once: {same} of {} replies the reply alone (prompts {}); {k} sequences, rows in one pass: {batchable}; decode steps by rows {steps:?}; sequences sent back for room {resumed}",
         prompts.len(),
         if strict { "one a pass" } else { "together" }
     );
+    if squeezed && resumed == 0 {
+        println!("FAIL a page budget of GLYD_ENGINE_PAGES sent no sequence back");
+        fails += 1;
+    }
     if strict && same < prompts.len() {
         println!("FAIL replies at once differ from alone with prompts one a pass");
         fails += 1;

@@ -924,7 +924,7 @@ impl EngineG4 {
             if self.on("prep") {
                 let (pf, pfb) = self.pf(&ly.o, n, self.pf_kib[0], (d / 2) as u32);
                 let slice = nu * (nq + nki) as u32;
-                launch!(*prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; self.proj.ptr, stride, ly.q_norm.ptr, ly.k_norm.ptr, cos, sin, rot, pos, cap, self.qo.ptr, kc, vc, nq, nki, has_v as i32, eps, pf)?;
+                launch!(*prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; self.proj.ptr, stride, ly.q_norm.ptr, ly.k_norm.ptr, cos, sin, rot, pos, cap, self.qo.ptr, kc, vc, nq, nki, has_v as i32, eps, pf, 0u64)?;
             }
             self.mark("prep")?;
             let g = nq / nki;
@@ -932,21 +932,21 @@ impl EngineG4 {
             } else if n <= self.split_rows {
                 let parts = if d == 256 { &self.kg.parts256 } else { &self.kg.parts512 };
                 let splits = SPLITS as i32;
-                launch!(*parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; self.qo.ptr, kc, vc, pos, n as i32, nq, nki, window, cap, self.part.ptr, splits)?;
+                launch!(*parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; self.qo.ptr, kc, vc, pos, n as i32, nq, nki, window, cap, self.part.ptr, splits, 0u64)?;
                 if self.on("merge") {
                     launch!(self.kg.merge, [nu, nq as u32, 1], [di as u32, 1, 1], s; self.part.ptr, splits, self.att.ptr, nq, di)?;
                 }
             } else if self.kg.fa {
                 // (a prompt chunk: the tensor cores; a 512-wide head's values in two passes)
                 if d == 256 {
-                    launch!(self.kg.fa256, [(n.div_ceil(64)) as u32, nq as u32, 1], [128, 1, 1], smem fa_smem(256, 256, 64), s; self.qo.ptr, kc, vc, pos, self.att.ptr, n as i32, nq, nki, window, cap)?;
+                    launch!(self.kg.fa256, [(n.div_ceil(64)) as u32, nq as u32, 1], [128, 1, 1], smem fa_smem(256, 256, 64), s; self.qo.ptr, kc, vc, pos, self.att.ptr, n as i32, nq, nki, window, cap, 0u64)?;
                 } else {
-                    launch!(self.kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; self.qo.ptr, kc, vc, pos, self.att.ptr, n as i32, nq, nki, window, cap)?;
+                    launch!(self.kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; self.qo.ptr, kc, vc, pos, self.att.ptr, n as i32, nq, nki, window, cap, 0u64)?;
                 }
             } else {
                 let r = (16 / g).max(1);
                 let attn = if d == 256 { &self.kg.attn256 } else { &self.kg.attn512 };
-                launch!(*attn, [((n as i32 + r - 1) / r) as u32, nki as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, (r * g) as usize), s; self.qo.ptr, kc, vc, pos, self.att.ptr, n as i32, nq, nki, r, window, cap)?;
+                launch!(*attn, [((n as i32 + r - 1) / r) as u32, nki as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, (r * g) as usize), s; self.qo.ptr, kc, vc, pos, self.att.ptr, n as i32, nq, nki, r, window, cap, 0u64)?;
             }
             self.mark(if ly.kind == KindG4::Sliding { "attention (sliding)" } else { "attention (global)" })?;
             if self.on("o") {
@@ -1119,10 +1119,10 @@ impl EngineG4 {
             lin(&ly.q, dr.h.ptr, dr.q.ptr)?;
             let prep = if d == 256 { &self.kg.prep256 } else { &self.kg.prep512 };
             // (queries alone: no key or value heads, so nothing is written to the big model's cache)
-            launch!(*prep, [1, nq as u32, 1], [(d / 2) as u32, 1, 1], s; dr.q.ptr, nq * d as i32, ly.q_norm.ptr, ly.q_norm.ptr, cos, sin, rot, qpos, cap, dr.qo.ptr, kc, vc, nq, 0i32, 0i32, eps, G4Pf::default())?;
+            launch!(*prep, [1, nq as u32, 1], [(d / 2) as u32, 1, 1], s; dr.q.ptr, nq * d as i32, ly.q_norm.ptr, ly.q_norm.ptr, cos, sin, rot, qpos, cap, dr.qo.ptr, kc, vc, nq, 0i32, 0i32, eps, G4Pf::default(), 0u64)?;
             let g = nq / nki;
             let parts = if d == 256 { &self.kg.parts256 } else { &self.kg.parts512 };
-            launch!(*parts, [1, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; dr.qo.ptr, kc, vc, kpos, 1i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32)?;
+            launch!(*parts, [1, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; dr.qo.ptr, kc, vc, kpos, 1i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32, 0u64)?;
             launch!(self.kg.merge, [1, nq as u32, 1], [d as u32, 1, 1], s; self.part.ptr, SPLITS as i32, dr.att.ptr, nq, d as i32)?;
             lin(&ly.o, dr.att.ptr, dr.o.ptr)?;
             launch!(self.kg.add_norm, [1, 1, 1], [nt, 1, 1], s; dr.x.ptr, dr.o.ptr, ly.post_attn.ptr, 0u64, ly.pre_ff.ptr, dr.h.ptr, hd, eps, G4Pf::default())?;
@@ -1640,11 +1640,11 @@ pub fn fa_test(a: &crate::args::Args) -> Result<()> {
         let (nqi, nki) = (nq as i32, nk as i32);
         // SAFETY: buffers sized for n rows and cap positions.
         unsafe {
-            launch!(*attn, [((n + r - 1) / r) as u32, nk as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, r * g), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o1.ptr, n as i32, nqi, nki, r as i32, window, cap as i32)?;
+            launch!(*attn, [((n + r - 1) / r) as u32, nk as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, r * g), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o1.ptr, n as i32, nqi, nki, r as i32, window, cap as i32, 0u64)?;
             if d == 512 && a.has("b") {
-                launch!(kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32)?;
+                launch!(kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32, 0u64)?;
             } else {
-                launch!(*fa, [(n.div_ceil(bm)) as u32, nq as u32, (d / 256) as u32], [(bm / 16 * 32) as u32, 1, 1], smem fa_smem(d, 256, bm), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32)?;
+                launch!(*fa, [(n.div_ceil(bm)) as u32, nq as u32, (d / 256) as u32], [(bm / 16 * 32) as u32, 1, 1], smem fa_smem(d, 256, bm), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32, 0u64)?;
             }
         }
         dev.sync()?;
