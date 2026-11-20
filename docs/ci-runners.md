@@ -8,9 +8,10 @@ rust-cache keys carry the lock file's hash, so every `Cargo.lock` change adds a 
 
 ## Merging
 
-Main has a merge queue. Merge with `gh pr merge <N> --merge`, which enqueues the pull request (the queue builds it on top of the latest main and the entries ahead,
-and runs `CI result`, `Tree size` and `signoff` on that); never with `--admin`, which skips the queue. Only `ci.yml`, `tree.yml` and `dco.yml` run for the
-queue (`merge_group`): the GPU workflows do not, because they are not required and glyd-pc runs one job at a time.
+Main is protected: `CI result`, `Tree size` and `signoff` are required and the branch must be up to date, for admins too: `--admin` bypasses nothing. When a pull request
+is behind, `gh pr update-branch <N>`; then `gh pr merge <N> --merge --auto` (it merges when the required checks pass). GitHub's merge queue needs an
+organization-owned repository, so there is none; `ci.yml`, `tree.yml` and `dco.yml` already run for `merge_group`, to be ready if the repository moves to one.
+The GPU workflows do not run for it (they are not required, and glyd-pc runs one job at a time).
 
 ## What can land on glyd-pc
 
