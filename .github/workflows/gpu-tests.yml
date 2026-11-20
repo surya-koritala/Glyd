@@ -120,8 +120,8 @@ jobs:
         run: |
           # (prompts one a pass: every reply at once the reply alone, token for token; prompts together: counted)
           for c in gemma4 qwen35; do
-            GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck "$c" --users 4 --level swift
-            "$E" usercheck "$c" --users 4 --level kestrel
+            GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck "$c" --users 4 --level penguin
+            "$E" usercheck "$c" --users 4 --level penguin
           done
       - name: The workspace back to the runner's user
         if: always()

@@ -1290,7 +1290,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     let case = a.need(1, "CASE")?;
-    let level = a.flag("level").unwrap_or("kestrel");
+    let level = a.flag("level").unwrap_or("penguin");
     let users: usize = a.num("users", 4usize)?;
     let tokens: usize = a.num("tokens", 24usize)?;
     let dir = std::env::temp_dir().join(format!("glyd-usercheck-{case}-{}", std::process::id()));
