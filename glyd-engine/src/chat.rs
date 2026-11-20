@@ -422,6 +422,10 @@ Here are the available tools, described in JSONSchema.
 {%- endfor -%}
 {%- if add_generation_prompt -%}<|open|>message role="assistant"<|sep|>{%- if thinking -%}<|open|>think<|sep|>{%- else -%}<|open|>response<|sep|>{%- endif -%}{%- endif -%}"#;
 
+/// What a render may spend, in the template engine's instructions (a loop's turn is a few): a conversation of thousands of messages takes millions, and a template that loops over `range` inside `range`, as a
+/// repository's file could, runs out of it and is refused where it would hold the engine's thread for hours.
+const TEMPLATE_FUEL: u64 = 50_000_000;
+
 impl Chat {
     pub fn from_template(src: &str) -> Result<Chat> {
         Chat::with_clock(src, Arc::new(Civil::now))
@@ -432,6 +436,7 @@ impl Chat {
         let mut env = Environment::new();
         env.set_trim_blocks(true);
         env.set_lstrip_blocks(true);
+        env.set_fuel(Some(TEMPLATE_FUEL));
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
         // Python's `iterable` test: none is not one (minijinja iterates none as an empty sequence), and a template may ask `tools is iterable and tools | length > 0` of its `tools = none`
         env.add_test("iterable", |v: Value| !v.is_none() && v.try_iter().is_ok());
@@ -576,6 +581,19 @@ mod tests {
 
     /// A template of the Qwen3 kind: a system turn, the turns, thinking closed for the answers after the last question, the generation prompt.
     const SMALL: &str = "{%- for message in messages %}\n    {%- if message.role == 'system' and loop.first %}\n        {{- '<|im_start|>system\\n' + message.content + '<|im_end|>\\n' }}\n    {%- elif message.role == 'user' %}\n        {{- '<|im_start|>user\\n' + message.content + '<|im_end|>\\n' }}\n    {%- else %}\n        {{- '<|im_start|>assistant\\n' + message.content.strip('\\n') + '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n    {%- if enable_thinking is defined and enable_thinking is false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- endif %}\n{%- endif %}";
+
+    /// A template that loops without end in all but name runs out of fuel and is an error (it held the process for minutes), and one of a big conversation still renders.
+    #[test]
+    fn a_template_that_loops_for_hours_is_refused() {
+        let spin = Chat::from_template("{% for a in range(99999) %}{% for b in range(99999) %}{% endfor %}{% endfor %}x").unwrap();
+        let start = std::time::Instant::now();
+        let e = spin.render(&[Message::new("user", "hi")], false, None).unwrap_err().to_string();
+        assert!(e.contains("fuel"), "{e}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(60), "{:?}", start.elapsed());
+        let t = Chat::from_template("{% for m in messages %}{{ m.role }}: {{ m.content | trim }}\n{% endfor %}").unwrap();
+        let many: Vec<Message> = (0..20_000).map(|i| Message::new(if i % 2 == 0 { "user" } else { "assistant" }, "some words of a turn")).collect();
+        assert!(t.render(&many, true, None).unwrap().len() > 400_000);
+    }
 
     /// A tag that opens and never closes, or closes on its own opening's `%` (`{%}`), is left to the template engine to refuse: it was a panic in the scan for `generation` marks.
     #[test]
