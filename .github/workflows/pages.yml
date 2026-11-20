@@ -4,7 +4,9 @@ name: Pages
 # The guide's models page is generated from glyd-engine/src/support.rs on every build, so it cannot drift.
 # Main is built to /guide/; each v* tag that has docs/guide is built to /guide/vX.Y.Z/ (that tag's own text and generator).
 # A pull request that touches the site is built and not deployed. A push to main, a release and a run by hand deploy.
-# The repository's Pages source must be "GitHub Actions" (Settings, Pages).
+# Deploy runs only where the repository variable PAGES_FROM_ACTIONS is 'true'. Set it after the Pages source is switched to
+# "GitHub Actions" (Settings, Pages, Build and deployment). Until then every run builds the site, so a broken page fails here,
+# and the old Pages build keeps serving.
 on:
   push:
     branches: [main]
@@ -75,14 +77,14 @@ jobs:
           done
           find "$out" -maxdepth 2 | sort | head -40
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && vars.PAGES_FROM_ACTIONS == 'true'
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && vars.PAGES_FROM_ACTIONS == 'true'
         with:
           path: _site
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && vars.PAGES_FROM_ACTIONS == 'true'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
