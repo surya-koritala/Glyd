@@ -575,6 +575,8 @@ fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<st
     let host = a.flag("host").unwrap_or("127.0.0.1").to_string();
     let port: u16 = a.num("port", 8000u16)?;
     let explicit = a.has("port");
+    // SIGTERM stops the server taking requests and lets those in flight end (up to --drain-timeout seconds), then ends the process
+    crate::ops::drain_on_sigterm(crate::ops::Life::global(), std::time::Duration::from_secs(a.num("drain-timeout", crate::ops::DRAIN_SECONDS)?), |_| {});
     // the checks of the Host and the Origin are on for every address of this computer's own, a loopback one the user names included; an address that is not is open to the network, with the key (or the user's word) it was let start with
     let local_only = server::is_loopback_addr(&host);
     for p in port..=port.saturating_add(if explicit { 0 } else { 20 }) {

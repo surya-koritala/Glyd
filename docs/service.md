@@ -25,6 +25,10 @@ lossless KV cache) and leaves the GPU by its program ending, which frees all of 
 | `--context N`, `--users N` | Passed to each model's `glyd serve`. |
 | `--host H` | An address of your choice. One that is not this computer's own needs `GLYD_API_KEY` or `--insecure-no-auth` (else the service does not start), and gives the warning `glyd serve` gives. `--allowed-origins` and `--allowed-hosts` as for `glyd serve`. |
 
+## Probes, metrics and stopping
+
+`GET /health` (up) and `GET /ready` (takes requests; 503 while draining) are open; `GET /metrics` (Prometheus text: models loaded, requests, refusals, in flight) needs the key where one is set. SIGTERM drains: no new request for a model is taken (503), the ones in flight finish, up to `--drain-timeout SECS` (30), then the models are unloaded and the service exits 0 (1 if some were still running at the bound). `glyd service stop` is the immediate stop.
+
 ## What is open
 
 - It listens on 127.0.0.1 unless `--host` says otherwise. On its own address, a loopback `--host` too, it refuses a Host that is not a loopback or container name and an Origin that is not its own, as `glyd serve` does; CORS is off. Requests are bounded as `glyd serve`'s are (headers 64 KiB and 30 s, body 128 MB and 120 s).

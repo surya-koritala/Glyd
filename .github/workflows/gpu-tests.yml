@@ -113,6 +113,8 @@ jobs:
             wait "$server" 2> /dev/null || true
             [ "$status" = 0 ] || { tail -40 /tmp/serve4.log; exit 1; }
           done
+      - name: Health, readiness, metrics and a graceful drain on a served ${{ inputs.client_model }} (/metrics scraped after real requests; SIGTERM with a reply streaming; tests/ops_check.py)
+        run: python3 tests/ops_check.py "$E" "${{ inputs.client_model }}"
       - name: glyd doctor on this GPU (the bundle, every check, the sample plan, nothing secret)
         run: |
           "$E" doctor --bundle /tmp/doctor-bundle.json
