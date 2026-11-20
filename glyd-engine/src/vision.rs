@@ -193,12 +193,15 @@ pub fn fetch(url: &str) -> Result<Vec<u8>> {
         return err(format!("an image URL that is neither data: nor http(s): {shown}"));
     }
     // (redirects followed here, one at a time, so that every hop's host is checked)
-    let agent = ureq::Agent::new_with_config(
+    // (the addresses a name resolves to are checked where the connection is made, not in an earlier lookup: a name whose DNS answers a public address to the check and a private one to the connection (DNS rebinding) is not let through)
+    let agent = ureq::Agent::with_parts(
         ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(30)))
             .max_redirects(0)
             .user_agent(concat!("glyd-engine/", env!("CARGO_PKG_VERSION")))
             .build(),
+        ureq::unversioned::transport::DefaultConnector::new(),
+        PublicOnly(ureq::unversioned::resolver::DefaultResolver::default()),
     );
     let mut at = url.to_string();
     for _ in 0..6 {
@@ -215,6 +218,28 @@ pub fn fetch(url: &str) -> Result<Vec<u8>> {
         return r.body_mut().with_config().limit(MAX_BYTES as u64).read_to_vec().map_err(|e| Error(format!("the image at {at}: {e}")));
     }
     err(format!("the image at {url}: more than 5 redirects"))
+}
+
+/// A resolver that answers with the addresses of `R` only where all of them are public (`public_ip`): the connection goes to an address that was checked, since the connection takes its address from here.
+#[derive(Debug)]
+struct PublicOnly<R>(R);
+
+impl<R: ureq::unversioned::resolver::Resolver> ureq::unversioned::resolver::Resolver for PublicOnly<R> {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> std::result::Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let addrs = self.0.resolve(uri, config, timeout)?;
+        match addrs.iter().find(|a| !public_ip(a.ip())) {
+            Some(a) => Err(ureq::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{} resolves to {}, an address on this computer or its network (only public addresses are fetched)", uri.host().unwrap_or(""), a.ip()),
+            ))),
+            None => Ok(addrs),
+        }
+    }
 }
 
 /// Refuses an http(s) URL unless every address its host resolves to is public (`public_ip`).
@@ -797,6 +822,53 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A resolver that answers what it was given: the lookup of a name whose DNS changes its answer between the check and the connection.
+    #[derive(Debug)]
+    struct Fixed(Vec<&'static str>);
+
+    impl ureq::unversioned::resolver::Resolver for Fixed {
+        fn resolve(
+            &self,
+            _: &ureq::http::Uri,
+            _: &ureq::config::Config,
+            _: ureq::unversioned::transport::NextTimeout,
+        ) -> std::result::Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+            let mut v = ureq::unversioned::resolver::ArrayVec::from_fn(|_| "0.0.0.0:1".parse().unwrap());
+            for a in &self.0 {
+                v.push(format!("{a}:80").parse().unwrap());
+            }
+            Ok(v)
+        }
+    }
+
+    /// The connection takes its addresses from the resolver that checks them: a name that resolves to a private address (the answer a rebinding DNS gives the second time), or to a public one and a private one together,
+    /// is refused where the connection is made; a public one is let through as it came.
+    #[test]
+    fn the_address_that_is_connected_to_is_the_address_that_was_checked() {
+        use ureq::unversioned::resolver::Resolver;
+        let uri: ureq::http::Uri = "http://rebind.example/x.png".parse().unwrap();
+        let cfg = ureq::config::Config::default();
+        let ask = |ips: Vec<&'static str>| {
+            PublicOnly(Fixed(ips)).resolve(
+                &uri,
+                &cfg,
+                ureq::unversioned::transport::NextTimeout { after: ureq::unversioned::transport::time::Duration::NotHappening, reason: ureq::Timeout::Global },
+            )
+        };
+        for ips in [vec!["127.0.0.1"], vec!["169.254.169.254"], vec!["10.0.0.5"], vec!["93.184.216.34", "192.168.1.1"], vec!["192.168.1.1", "93.184.216.34"]] {
+            let e = ask(ips.clone()).map(|_| ()).unwrap_err().to_string();
+            assert!(e.contains("only public addresses"), "{ips:?}: {e}");
+        }
+        let ok = ask(vec!["93.184.216.34", "8.8.8.8"]).unwrap();
+        assert_eq!(ok.iter().map(|a| a.to_string()).collect::<Vec<_>>(), ["93.184.216.34:80", "8.8.8.8:80"]);
+        // and a URL of an address that is this computer's own is refused by `fetch` itself
+        for url in
+            ["http://127.0.0.1:1/a.png", "http://[::1]:1/a.png", "http://169.254.169.254/latest/meta-data", "http://localhost:9/a.png", "file:///etc/passwd"]
+        {
+            assert!(fetch(url).is_err(), "{url}");
+        }
+    }
 
     #[test]
     fn only_public_hosts_are_fetched() {

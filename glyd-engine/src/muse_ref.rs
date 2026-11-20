@@ -230,6 +230,60 @@ impl RefMuse {
     }
 }
 
+#[cfg(test)]
+impl RefMuse {
+    /// A model of attention layers only, from each layer's q, k, v, gate and o weights (the runtime's kind tests,
+    /// `runtime::reference::ref_tests`).
+    pub(crate) fn attention_only(c: ConfigMuse, w: Vec<[Vec<f32>; 5]>) -> RefMuse {
+        let layers = w
+            .into_iter()
+            .map(|[q, k, v, g, o]| Layer {
+                w_in: Vec::new(),
+                q,
+                k,
+                v,
+                g,
+                o,
+                ga: (Vec::new(), Vec::new()),
+                w_ff: Vec::new(),
+                router: Vec::new(),
+                bias: Vec::new(),
+                pre: Vec::new(),
+                w_pre: Vec::new(),
+                gu: Vec::new(),
+                down: Vec::new(),
+                w_post_e: Vec::new(),
+                post: Vec::new(),
+                w_post_ff: Vec::new(),
+                gf: (Vec::new(), Vec::new()),
+                keys: Vec::new(),
+                vals: Vec::new(),
+            })
+            .collect();
+        RefMuse { c, embed: Vec::new(), head: Vec::new(), norm: Vec::new(), layers, pos: 0 }
+    }
+
+    /// A model of MoE layers only, from each layer's router, choice bias, pre-expert projection and norm, experts' gate-up and down,
+    /// post-expert norm and projection (the norms' weights as the checkpoint holds them).
+    pub(crate) fn moe_only(c: ConfigMuse, w: Vec<[Vec<f32>; 8]>) -> RefMuse {
+        let mut m = RefMuse::attention_only(c, w.iter().map(|_| Default::default()).collect());
+        for (ly, [router, bias, pre, w_pre, gu, down, w_post_e, post]) in m.layers.iter_mut().zip(w) {
+            (ly.router, ly.bias, ly.pre, ly.w_pre, ly.gu, ly.down, ly.w_post_e, ly.post) =
+                (router, bias, pre, plus_one(&w_pre), gu, down, plus_one(&w_post_e), post);
+        }
+        m
+    }
+
+    pub(crate) fn moe_of(&self, l: usize, h: &[f32]) -> Vec<f32> {
+        self.moe(l, h)
+    }
+
+    /// Layer `l`'s attention on its normed input at `self.pos`.
+    pub(crate) fn attention_of(&mut self, l: usize, h: &[f32]) -> Vec<f32> {
+        self.attention(l, h)
+    }
+}
+
 /// A small Muse Spark of the release's layout in `out` (bf16, the routers fp32; random weights): four layers (the window's, every position's, the window's twice), a window of 32, 16 experts of which 4,
 /// a latent of 512.
 pub fn random(out: &Path) -> Result<()> {

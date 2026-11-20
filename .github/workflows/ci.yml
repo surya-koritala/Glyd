@@ -88,6 +88,7 @@ jobs:
       platforms: ${{ steps.diff.outputs.platforms }}
       rust: ${{ steps.diff.outputs.rust }}
       hip: ${{ steps.diff.outputs.hip }}
+      starlings: ${{ steps.diff.outputs.starlings }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -113,6 +114,7 @@ jobs:
                 echo "rust=true"
                 echo "hip=true"
                 echo "platforms=true"
+                echo "starlings=true"
               } >> "$GITHUB_OUTPUT"
               exit 0 ;;
           esac
@@ -150,6 +152,12 @@ jobs:
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
           fi
+          # Starlings: its crates and fuzz target, and what every member of the workspace shares (the lock file, the toolchain, the dependency policy, this workflow).
+          if grep -Eq '^(starlings/|Cargo\.(toml|lock)|rust-toolchain\.toml|deny\.toml|\.github/workflows/ci\.yml)' "$RUNNER_TEMP/changed"; then
+            echo "starlings=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "starlings=false" >> "$GITHUB_OUTPUT"
+          fi
           # The AMD build: the kernels, their HIP header, the build script and the engine's sources that have a HIP form (cfg glyd_hip), the lock file and this workflow.
           if grep -Eq '^(glyd-engine/(kernels/|build\.rs|Cargo\.toml|src/)|glyd-gpu/|gpu/hip\.h|Cargo\.lock|\.github/workflows/ci\.yml)' "$RUNNER_TEMP/changed"; then
             echo "hip=true" >> "$GITHUB_OUTPUT"
@@ -158,7 +166,7 @@ jobs:
           fi
 
   # The codec, the store, glyd-gpu's host code and the engine without its kernels (no nvcc: the CUDA paths report that the build has none), built and unit-tested
-  # on the systems the engine does not run on, so that a change that stops them compiling or linking is caught before a release is planned. GitHub's own machines
+  # on the systems the engine does not run on (and on aarch64 Linux, where it has not run a model yet), so that a change that stops them compiling or linking is caught before a release is planned. GitHub's own machines
   # always (CI_RUNNER is for the Linux jobs); the target directory and the registry are cached by Cargo.lock.
   # The names are the required checks.
   platform:
@@ -179,6 +187,16 @@ jobs:
             part: engine
           - name: Windows x86_64 compile & test (engine, release build)
             os: windows-latest
+            part: engine-release
+          # (aarch64 Linux, the architecture of GH200, GB200, DGX Spark and Jetson: GitHub's free arm runners have no GPU, so this is the build and the host-side tests, not a run on a GPU; machine.rs's ARCHS_BUILT)
+          - name: Linux aarch64 compile & test (codec, store, CLI)
+            os: ubuntu-24.04-arm
+            part: codec
+          - name: Linux aarch64 compile & test (engine)
+            os: ubuntu-24.04-arm
+            part: engine
+          - name: Linux aarch64 compile & test (engine, release build)
+            os: ubuntu-24.04-arm
             part: engine-release
           - name: macOS arm64 compile & test (codec, store, CLI)
             os: macos-latest
@@ -258,7 +276,8 @@ jobs:
         with:
           shared-key: msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --workspace --all-targets
+      # (Starlings' crates declare rust-version 1.97.1, the pinned toolchain: the other jobs build them)
+      - run: cargo check --workspace --exclude 'starlings-*' --all-targets
 
   # The AMD build of the engine's kernels (GLYD_HIP=1: kernels/engine.cu by hipcc for RDNA 3 and 4, and the engine's Rust under cfg glyd_hip), compiled and not run:
   # GitHub's machines have no AMD GPU, and ROCm's compiler from AMD's apt repository is all the build needs.
@@ -442,12 +461,73 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --profile ci -p glyd-engine --no-default-features
 
+  # Starlings (starlings/crates, members of this workspace; edition 2024, rustfmt defaults from starlings/rustfmt.toml): formatting (its fuzz crate too), clippy, the tests on Linux x86_64 and the
+  # dependency policy of the whole workspace and of the fuzz crate. Runs when starlings/ or something every crate shares changes. Every OS, the Windows partitions and the daemon lifecycle
+  # run nightly and on a pull request labeled full-ci (starlings-ci.yml).
+  starlings:
+    name: Starlings (tests, lint, dependency policy)
+    needs: changes
+    if: needs.changes.outputs.starlings == 'true'
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (as above)
+    timeout-minutes: 20
+    env:
+      RUSTFLAGS: -D warnings
+      RUSTDOCFLAGS: -D warnings
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pc-job
+      - name: Short temp folder on the PC
+        if: runner.environment == 'self-hosted'
+        run: |
+          # (TMPDIR short: systemd-analyze binds sockets under it, and a Unix socket path is at most 108 bytes; Ubuntu's spice-vdagent user unit has a bad key that fails its unit-file check)
+          mkdir -p "$HOME/.config/systemd/user"
+          ln -s /dev/null "$HOME/.config/systemd/user/spice-vdagent.service"
+          echo "TMPDIR=$(mktemp -d /tmp/starlings-ci.XXXXXX)" >> "$GITHUB_ENV"
+      - run: git config --global init.defaultBranch main
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.97.1"
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: starlings
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Dependency policy
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/cargo-deny.tar.gz"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $RUNNER_TEMP/cargo-deny.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/cargo-deny.tar.gz" -C "$RUNNER_TEMP"
+          deny="$RUNNER_TEMP/cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny"
+          "$deny" --workspace --locked check --deny warnings
+          "$deny" --manifest-path starlings/fuzz/Cargo.toml --config starlings/fuzz/deny.toml --locked check --deny warnings
+      - name: Formatting
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path starlings/fuzz/Cargo.toml --all -- --check
+      - name: Lint (default features, then every feature)
+        run: |
+          cargo clippy -p 'starlings-*' --all-targets --locked -- -D warnings
+          cargo clippy -p 'starlings-*' --all-targets --all-features --locked -- -D warnings
+      - name: Tests
+        run: cargo test -p 'starlings-*' --locked -- --nocapture
+      - name: Tests with every feature (the development backend), the daemon with the stand-in engine
+        run: |
+          cargo test -p starlings-cli -p starlings-adapters --all-features --lib --bins --test cli --locked -- --nocapture
+          cargo test -p starlings-cli --all-features --test daemon catalog_service_ --locked -- --nocapture
+          cargo test -p starlings-cli --all-features --test daemon pipeline_fake_engine --locked -- --nocapture
+
   # The one check to require on main: it waits for every job above, and passes when each succeeded or was skipped (a pull request that changes only docs skips the
   # heavy ones, so it reports in seconds), and fails when one failed or was cancelled.
   result:
     name: CI result
     if: always()
-    needs: [changes, codec, lint, versions, rust, engine, engine-release, platform, msrv, hip]
+    needs: [changes, codec, lint, versions, rust, engine, engine-release, platform, msrv, hip, starlings]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

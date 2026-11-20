@@ -28,10 +28,10 @@ glyd serve MODEL --split CUTS --devices GPUS              # your own split, see 
 Starlings is a beta. One model across two GPUs in one machine, or two machines on one LAN, NVIDIA on Linux, Qwen3.5, 3.6 and 3.8
 models. Each GPU holds a contiguous range of layers and the output is the same tokens the whole model gives on one card.
 
-Build it (own workspace and pinned toolchain):
+Build it (from the repository root; the binary is `target/release/starlings`):
 
 ```bash
-(cd starlings && cargo build --release)
+cargo build --release -p starlings-cli
 ```
 
 Run it, from the [beta guide](https://github.com/surya-koritala/Glyd/blob/main/starlings/docs/beta.md):

@@ -506,7 +506,8 @@ def parse(cmd, argv):
                        "(not lossless; about 27%% less GPU memory for the weights than FP8); MODEL:swift takes about 5.5 bits per weight")
     else:
         p.add_argument("--host", default=None, help="the address to listen on (default 127.0.0.1: this computer only, and only its own page and programs). "
-                       "Another address opens the server to the network: set an API key with VLLM_API_KEY=KEY glyd serve ...")
+                       "Another address opens the server to the network: it starts only with an API key (VLLM_API_KEY=KEY glyd serve ...) or with --insecure-no-auth")
+        p.add_argument("--insecure-no-auth", action="store_true", help="start on an address that is not this computer's own with no API key (anyone who can reach it can send the model prompts)")
     a = p.parse_args(argv)
     a.host = getattr(a, "host", None)  # (None: not given)
     return a
@@ -550,6 +551,9 @@ def start(a, extra, mode, ui, environ=None, before_download=None):
     pf.check_dtype(m, given)
     host = str(given["host"]) if "host" in given else (a.host or "127.0.0.1")
     port = pf.parse_port(given["port"]) if "port" in given else (a.port or 8000)
+    if host not in LOOPBACK and not key and not getattr(a, "insecure_no_auth", False):
+        raise pf.Refusal(f"{host} is not this computer's own address, and there is no API key: anyone who can reach it could send the model prompts",
+                         "Set a key (VLLM_API_KEY=KEY glyd serve ... in the environment), or give --insecure-no-auth if an open server is what you mean. Without --host the server listens on 127.0.0.1 only.")
     strict = "host" not in given and not a.host  # (the address is glyd's own choice: this computer, its own page and programs only)
     base = base_url(host, port)
     served = read_marker(port)

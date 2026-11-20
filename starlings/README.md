@@ -36,12 +36,13 @@ Then a chat page and an OpenAI-style `/v1/chat/completions` on loopback. Two RTX
 
 ## Build and test
 
-Rust 1.97.1 is pinned in `rust-toolchain.toml`.
+Starlings' crates are members of the repository's workspace (one `Cargo.lock`, one `target/` at the root), so `cargo test --workspace` at the root covers them. Rust 1.97.1 is pinned in the root `rust-toolchain.toml`; formatting follows the `rustfmt.toml` in this directory.
 
 ```bash
-cargo build --workspace --locked
-cargo test --workspace --locked          # a few tests need IPv6 loopback and systemd-analyze >= 250
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+S="-p starlings-protocol -p starlings-core -p starlings-adapters -p starlings-cli -p starlings-security"
+cargo build $S --locked
+cargo test $S --locked                   # a few tests need IPv6 loopback and systemd-analyze >= 250
+cargo clippy $S --all-targets --all-features --locked -- -D warnings
 ```
 
 Design and contracts: [docs/architecture.md](docs/architecture.md) and the rest of [docs/](docs/).
