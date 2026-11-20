@@ -14,8 +14,8 @@ What it checks, by feature (a line `ok` or `FAIL` for each, `SAME` or `DIFF` for
   logit_bias   -100 on the token a greedy reply begins with changes it, +100 on a token makes the reply of that token, +100 on a token that is not among the 64 largest (the whole row is used), the same with the host
                sampling (GLYD_ENGINE_HOST_SAMPLING=1 on a development build: run this script against that server too)
   openwebui    the requests Open WebUI sends: a chat with its built-in tools offered (an ordinary answer), a question that asks for one, the follow-up after a tool's result, its title request
-  other        stop_token_ids, min_tokens, include_stop_str_in_output, skip_special_tokens, echo, prompt as token ids and as a list, request_id, reasoning_effort, allowed_token_ids; response_format json_object and
-               json_schema refused in words that name GLYD_ENGINE=0; fields that are not done refused
+  other        stop_token_ids, min_tokens, include_stop_str_in_output, skip_special_tokens, echo, prompt as token ids and as a list, request_id, reasoning_effort, allowed_token_ids; fields that are not done refused in
+               words that name GLYD_ENGINE=0 (response_format and the guided_* fields are done: constrained_check.py)
   loopback     (the engine, unless --no-guard) a Host that is not localhost, 127.0.0.1 or [::1] is 421, another site's Origin 403 and its preflight 403, the page's own origin and a program with none are answered; with
                --key the API is 401 without it, with a wrong one, with another scheme, and open for /health and the page
 """
@@ -318,9 +318,6 @@ def other(eng, ref):
         r11, _ = whole_of(srv.chat(messages=msgs, temperature=0, max_tokens=6, logprobs=True, extra_body=dict(NOTHINK, allowed_token_ids=[only_id], return_tokens_as_token_ids=True)))
         check(f"[{srv.label}] allowed_token_ids: only that token", {e["token"] for e in r11[0]["lps"]} == {f"token_id:{only_id}"}, [e["token"] for e in r11[0]["lps"]])
     for what, body in (
-        ("response_format json_object", dict(response_format={"type": "json_object"})),
-        ("response_format json_schema", dict(response_format={"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}})),
-        ("structured_outputs", dict(structured_outputs={"json": {"type": "object"}})),
         ("bad_words", dict(bad_words=["x"])),
         ("prompt_logprobs", dict(prompt_logprobs=1)),
     ):

@@ -123,16 +123,54 @@ impl std::fmt::Debug for Constraint {
 }
 
 impl Constraint {
-    /// A matcher at the start of the grammar, independent of the others.
+    /// A matcher at the start of the grammar, independent of the others; the first mask is begun at once (the prompt's prefill runs meanwhile).
     pub fn start(&self) -> Gram {
         let m = self.matcher.lock().unwrap_or_else(|e| e.into_inner()).deep_clone();
-        Gram { m, ends: self.ends.clone(), vocab: self.vocab, masks: 0 }
+        let mut g = Gram { m: None, pending: None, ready: None, ends: self.ends.clone(), vocab: self.vocab, masks: 0 };
+        g.hand_over(m, None);
+        g
     }
 }
 
-/// A sequence's place in its grammar.
-pub struct Gram {
+/// A matcher with the token it is to take, and where its next mask goes.
+struct Job {
     m: Matcher,
+    tok: Option<u32>,
+    out: std::sync::mpsc::Sender<Made>,
+}
+
+/// The matcher, and the mask of the tokens that may follow (None where the matcher cannot say, or has stopped).
+type Made = (Matcher, Option<SimpleVob>);
+
+/// How many threads make masks. A mask costs some 50 us and now and then a millisecond or more: they are made beside the GPU's step, not after it, so that a slow one does not hold the others up.
+const WORKERS: usize = 4;
+
+fn workers() -> &'static std::sync::mpsc::Sender<Job> {
+    static POOL: std::sync::OnceLock<std::sync::mpsc::Sender<Job>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let rx = Arc::new(Mutex::new(rx));
+        for i in 0..WORKERS {
+            let rx = rx.clone();
+            let _ = std::thread::Builder::new().name(format!("glyd-mask-{i}")).spawn(move || loop {
+                let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                let Ok(Job { mut m, tok, out }) = job else { return };
+                if let Some(t) = tok {
+                    let _ = m.consume_token(t);
+                }
+                let mask = if m.is_stopped() { None } else { m.compute_mask().ok() };
+                let _ = out.send((m, mask));
+            });
+        }
+        tx
+    })
+}
+
+/// A sequence's place in its grammar: its matcher, which is with a worker (taking the token chosen and making the next mask) between a token and the next step's draw.
+pub struct Gram {
+    m: Option<Matcher>,
+    pending: Option<std::sync::mpsc::Receiver<Made>>,
+    ready: Option<Option<SimpleVob>>,
     ends: Vec<u32>,
     vocab: usize,
     /// Masks made so far.
@@ -140,11 +178,35 @@ pub struct Gram {
 }
 
 impl Gram {
+    /// Sends the matcher to a worker with the token it takes (if any); the mask it makes is then `ready`'s, when `settle` has it back. Where no worker can be had the matcher stays and the mask is made at the draw.
+    fn hand_over(&mut self, m: Matcher, tok: Option<u32>) {
+        let (out, rx) = std::sync::mpsc::channel();
+        match workers().send(Job { m, tok, out }) {
+            Ok(()) => self.pending = Some(rx),
+            Err(e) => self.m = Some(e.0.m),
+        }
+    }
+
+    /// The matcher and its mask back from the worker, if they are out.
+    fn settle(&mut self) {
+        if let Some(rx) = self.pending.take() {
+            // (a worker that died took the matcher: the grammar is then lost, and the reply ends)
+            if let Ok((m, mask)) = rx.recv() {
+                self.m = Some(m);
+                self.ready = Some(mask);
+            }
+        }
+    }
+
     /// The tokens that may be chosen next. Where the grammar is complete the end tokens may be chosen (and where nothing more can follow, they alone); where it has gone wrong (the matcher cannot say)
     /// they alone, so that the reply ends and does not go on past the grammar.
     pub fn mask(&mut self) -> SimpleVob {
         self.masks += 1;
-        let made = if self.m.is_stopped() { None } else { self.m.compute_mask().ok() };
+        self.settle();
+        let made = match self.ready.take() {
+            Some(mask) => mask,
+            None => self.m.as_mut().and_then(|m| if m.is_stopped() { None } else { m.compute_mask().ok() }),
+        };
         let mut mask = made.clone().unwrap_or_else(|| SimpleVob::alloc(self.vocab));
         if made.is_none() || self.ends.iter().any(|&e| mask.is_allowed(e)) {
             for &e in &self.ends {
@@ -179,16 +241,22 @@ impl Gram {
         }
     }
 
-    /// The token chosen, which the grammar then holds (an end token is not part of it).
+    /// The token chosen, which the grammar then holds (an end token is not part of it); the next mask is made while the step that follows runs.
     pub fn consume(&mut self, tok: u32) {
-        if !self.ends.contains(&tok) {
-            let _ = self.m.consume_token(tok);
+        if self.ends.contains(&tok) {
+            return;
+        }
+        self.settle();
+        self.ready = None;
+        if let Some(m) = self.m.take() {
+            self.hand_over(m, Some(tok));
         }
     }
 
     /// Whether the text so far is a whole of the grammar.
     pub fn accepting(&mut self) -> bool {
-        self.m.is_accepting().unwrap_or(false)
+        self.settle();
+        self.m.as_mut().is_some_and(|m| m.is_accepting().unwrap_or(false))
     }
 
     /// Masks made.

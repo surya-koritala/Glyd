@@ -664,7 +664,11 @@ const MAX_LOGPROBS: i64 = 20;
 /// The grammar the reply must follow, compiled: its form (`constraint_spec`), or, where the call is forced (`tool_choice` a function or required) and the model's call format is one the grammars know, the call.
 /// None where the request asks for neither, and where the server does not run alone (vLLM's own refusal stands).
 fn constraint_of(sh: &Shared, v: &Value, api: &Api) -> std::result::Result<Option<Arc<crate::constrain::Constraint>>, String> {
-    if !STANDALONE.load(Ordering::Relaxed) {
+    constraint_of_with(sh, v, api, STANDALONE.load(Ordering::Relaxed))
+}
+
+fn constraint_of_with(sh: &Shared, v: &Value, api: &Api, standalone: bool) -> std::result::Result<Option<Arc<crate::constrain::Constraint>>, String> {
+    if !standalone {
         return Ok(None);
     }
     let spec = constraint_spec(v)?;
@@ -3338,6 +3342,46 @@ mod tests {
     }
 
     const WEATHER: &str = r#"{"type":"function","function":{"name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}"#;
+
+    /// A reply held to a grammar begins at once: the prompt closes the thinking and puts no `{` or call opening of its own (the grammar writes it).
+    #[test]
+    fn the_prompt_of_a_request_held_to_a_grammar() {
+        let shared = Shared {
+            tok: crate::tok::tests::toy(&["x"]),
+            chat: Some(Chat::from_template(&qwen3_template()).unwrap()),
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        };
+        let mut bytes: Vec<Vec<u8>> = (0..=255u8).map(|b| vec![b]).collect();
+        bytes.push([&[toktrie::TokTrie::SPECIAL_TOKEN_MARKER][..], b"<|im_end|>"].concat());
+        let c = crate::constrain::Grammars::new(bytes, &[256], 300).unwrap().compile(&Spec::Regex("[0-9]+".into())).unwrap();
+        let msgs = r#""messages":[{"role":"user","content":"A number?"}]"#;
+        let text = |body: &str, constraint: bool| {
+            let v = json::parse(body).unwrap();
+            let mut r = request_of(&v, 4096, &Params::default());
+            r.params.constraint = constraint.then(|| c.clone());
+            let api = api_of(&v, true, 2048).unwrap();
+            chat_text_of(&shared, &v, &api, &r).map(|(t, i, p, _)| (t, i, p)).unwrap()
+        };
+        let body = format!("{{{msgs},\"guided_regex\":\"[0-9]+\",\"chat_template_kwargs\":{{\"enable_thinking\":true}}}}");
+        let (t, thinking, prefix) = text(&body, true);
+        assert!(t.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"), "{t}");
+        assert_eq!((thinking, prefix.as_str()), (false, ""));
+        // no grammar: the model's own generation prompt
+        let (t, _, prefix) = text(&body, false);
+        assert!(t.ends_with("<|im_start|>assistant\n"), "{t}");
+        assert_eq!(prefix, "");
+        // (the grammar of a request is the one the request names: forms that name none, and calls where the tools' format has no grammar, have none)
+        let api = |b: &str| api_of(&json::parse(b).unwrap(), true, 2048).unwrap();
+        let g = |b: &str| constraint_of_with(&shared, &json::parse(b).unwrap(), &api(b), true).unwrap().is_some();
+        assert!(!g(&format!("{{{msgs}}}")));
+        assert!(!g(&format!("{{{msgs},\"tools\":[{WEATHER}]}}")));
+        assert!(constraint_of_with(&shared, &json::parse("{}").unwrap(), &api(&format!("{{{msgs}}}")), false).unwrap().is_none());
+    }
 
     /// What the model is shown: the tools in the template as vLLM's chat path gives them (`tojson` as Python writes it), a conversation with a call and its result, and the opening of a forced call at the end of the
     /// prompt, the thinking closed before it.
