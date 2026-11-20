@@ -5,7 +5,7 @@
 set -euo pipefail
 out=$(mkdir -p "$1" && cd "$1" && pwd)
 image=${2:-nvidia/cuda:13.0.3-devel-rockylinux8}
-src=$(cd "$(dirname "$0")/.." && pwd)
+src=$(cd "$(dirname "$0")/../.." && pwd)  # (the repository root: the workspace and its rust-toolchain.toml)
 cache=${STARLINGS_BUILD_CACHE:-$HOME/.cache/starlings-build}
 mkdir -p "$cache"
 toolchain=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$src/rust-toolchain.toml")
