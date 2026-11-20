@@ -124,8 +124,13 @@ pub struct Timer {
     last: Option<Instant>,
 }
 
+/// The prompt tokens of the requests an engine with no scheduler ran (the scheduler counts its own, `sched::SHARED`).
+static PROMPT_TOKENS: AtomicU64 = AtomicU64::new(0);
+
 impl Timer {
-    pub fn start() -> Timer {
+    /// A request of `prompt` tokens begins.
+    pub fn start(prompt: usize) -> Timer {
+        PROMPT_TOKENS.fetch_add(prompt as u64, Relaxed);
         Timer { began: Instant::now(), last: None }
     }
     pub fn token(&mut self) {
@@ -356,7 +361,7 @@ pub fn render(s: &State) -> String {
         return o;
     }
     let v: Vec<u64> = crate::sched::SHARED.iter().take(7).map(|a| a.load(Relaxed)).collect();
-    family(&mut o, "glyd_prompt_tokens_total", "counter", "Prompt tokens run or found in the prefix cache.", &one(v[0]));
+    family(&mut o, "glyd_prompt_tokens_total", "counter", "Prompt tokens run or found in the prefix cache.", &one(v[0] + PROMPT_TOKENS.load(Relaxed)));
     family(&mut o, "glyd_prefix_cache_hit_tokens_total", "counter", "Prompt tokens found in the prefix cache.", &one(v[1]));
     family(&mut o, "glyd_generated_tokens_total", "counter", "Tokens written to replies.", &one(TOKENS_OUT.load(Relaxed)));
     TTFT.render(
@@ -491,7 +496,7 @@ mod tests {
     #[test]
     fn a_timer_counts_the_first_token_the_gaps_and_the_end() {
         let (t0, g0, r0) = (TTFT.count(), TOKEN_GAP.count(), REQUEST_TIME.count());
-        let mut t = Timer::start();
+        let mut t = Timer::start(3);
         t.token();
         t.token();
         t.token();

@@ -2431,7 +2431,7 @@ pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &S
                 let _ = sub.out.send(Ev::End(Ok(Finish::Stopped)));
             }
             Job::Seq(sub) => {
-                let mut timer = crate::ops::Timer::start();
+                let mut timer = crate::ops::Timer::start(sub.prompt.len());
                 let r = e.reply(&sub.prompt, &sub.reply, &mut |t| {
                     timer.token();
                     sub.out.send(Ev::Token(t)).is_ok() && !sub.abort.load(Ordering::Relaxed)
