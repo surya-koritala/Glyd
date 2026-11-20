@@ -18,6 +18,9 @@ on:
     branches: [main]
   # (the merge queue: each queued pull request is tested on top of main and the pull requests ahead of it, before it lands)
   merge_group:
+  # (nightly: everything, the Windows and macOS jobs included, which a pull request runs only when it touches code that differs between systems)
+  schedule:
+    - cron: '47 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -82,6 +85,7 @@ jobs:
     outputs:
       code: ${{ steps.diff.outputs.code }}
       versions: ${{ steps.diff.outputs.versions }}
+      platforms: ${{ steps.diff.outputs.platforms }}
       rust: ${{ steps.diff.outputs.rust }}
       hip: ${{ steps.diff.outputs.hip }}
     steps:
@@ -92,6 +96,7 @@ jobs:
       - id: diff
         env:
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          PLATFORMS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'platforms') }}
         run: |
           case "$GITHUB_EVENT_NAME" in
             pull_request)
@@ -107,6 +112,7 @@ jobs:
                 echo "versions=true"
                 echo "rust=true"
                 echo "hip=true"
+                echo "platforms=true"
               } >> "$GITHUB_OUTPUT"
               exit 0 ;;
           esac
@@ -126,6 +132,19 @@ jobs:
           else
             echo "versions=false" >> "$GITHUB_OUTPUT"
           fi
+          # Windows and macOS: a pull request runs them when it carries the `platforms` label, changes a manifest, a build script, the checkout rules or this workflow, or changes a
+          # Rust file that has code for one system (cfg on windows, unix or target_os, or std::os::unix/windows). The rest is the same on every system and is tested on Linux.
+          platforms=false
+          [ "$PLATFORMS_LABEL" = true ] && platforms=true
+          if grep -Eq '(^|/)(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain\.toml)$|^\.gitattributes$|^\.github/workflows/ci\.yml$|^src/mmap' "$RUNNER_TEMP/changed"; then
+            platforms=true
+          fi
+          while IFS= read -r f; do
+            case "$f" in
+              *.rs) [ -f "$f" ] && grep -Eq 'cfg\(.*(windows|unix|target_os)|cfg!\(.*(windows|unix|target_os)|std::os::(unix|windows)' "$f" && platforms=true ;;
+            esac
+          done < "$RUNNER_TEMP/changed"
+          echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
           if grep -Eq '^(Cargo\.(toml|lock)|rust-toolchain\.toml|rustfmt\.toml|src/|glyd-(store|gpu|engine)/|third_party/|include/|tests/|examples/|\.github/workflows/ci\.yml|\.github/actions/)' "$RUNNER_TEMP/changed"; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
@@ -145,7 +164,7 @@ jobs:
   platform:
     name: ${{ matrix.name }}
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.platforms == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -439,3 +458,28 @@ jobs:
           case " $RESULTS " in
             *" failure "*|*" cancelled "*) echo "::error::a job failed or was cancelled"; exit 1 ;;
           esac
+
+  # A Windows or macOS job that fails on main (a push or the nightly run) opens an issue (or adds to the one already open), so that breakage after a merge is seen:
+  # a pull request skips those jobs unless it touches code that differs between systems.
+  platform-failed:
+    name: Platform failure on main
+    needs: platform
+    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.platform.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          title="Windows or macOS CI failed on main"
+          body="A Windows or macOS job failed on main at ${SHA:0:10}: $RUN_URL (a pull request runs those jobs only when it changes code that differs between systems, so a break can land after a merge)."
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label "area: ci" --body "$body"
+          fi
