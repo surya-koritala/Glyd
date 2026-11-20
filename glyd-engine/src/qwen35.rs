@@ -132,7 +132,8 @@ impl Config35 {
         }
         if let Some(sec) = rope.get("mrope_section").and_then(Value::as_u64s) {
             // with text alone the three position streams are one, and the sections' frequencies are the plain rotary's
-            if 2 * sec.iter().sum::<u64>() as usize != rotary_dim {
+            // (the sections' sum, checked: a section past 2^63 or sums that wrap round to the right one are not a model's)
+            if sec.iter().try_fold(0u64, |a, &x| a.checked_add(x)) != Some(rotary_dim as u64 / 2) {
                 return err(format!("{label}: mrope_section {sec:?} does not cover the {rotary_dim} rotary dims"));
             }
         }
@@ -506,6 +507,11 @@ mod tests {
             }),
             "mrope_section",
         );
+        // sections that overflow were a panic of the sum (and, where it wrapped to the right one, a config accepted)
+        for sec in ["[9223372036854775808]", "[9223372036854775808, 9223372036854775808]", "[18446744073709551615, 33]"] {
+            let rope = format!(r#"{{"rope_type": "default", "rope_theta": 1e7, "partial_rotary_factor": 0.25, "mrope_section": {sec}}}"#);
+            refused(&edited(|t| set(t, "rope_parameters", &rope)), "mrope_section");
+        }
         refused(&edited(|t| set(t, "num_key_value_heads", "3")), "16 query heads to 3 KV heads");
         refused(&edited(|t| set(t, "num_attention_heads", "0")), "0 query heads to 4 KV heads");
         refused(&edited(|t| set(t, "output_gate_type", r#""sigmoid""#)), "output gate of type sigmoid");
