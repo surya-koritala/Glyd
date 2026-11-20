@@ -11,3 +11,4 @@
 - [Condor: a big MoE on one GPU](condor.md)
 - [Troubleshooting](troubleshooting.md)
 - [Models](models.md)
+- [The model catalog](catalog.md)
