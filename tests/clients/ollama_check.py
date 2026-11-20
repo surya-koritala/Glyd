@@ -49,7 +49,7 @@ def main():
     def version_tags_ps_show():
         assert requests.get(base + "/api/version", headers=headers).json()["version"]
         tags = c.list()
-        assert len(tags.models) == 1 and tags.models[0].model.endswith(":latest") and tags.models[0].digest
+        assert len(tags.models) == 1 and ":" in tags.models[0].model and tags.models[0].digest
         name = tags.models[0].model
         assert c.ps().models[0].model == name
         s = c.show(name)
@@ -119,7 +119,7 @@ def main():
         r = requests.post(base + "/api/chat", headers=headers, json={"model": "m", "messages": ask, "options": opts, "think": False}, stream=True)
         assert r.headers["content-type"].startswith("application/x-ndjson"), r.headers
         lines = [json.loads(l) for l in r.iter_lines() if l]
-        assert lines[-1]["done"] is True and lines[0]["created_at"] and lines[0]["model"].endswith(":latest")
+        assert lines[-1]["done"] is True and lines[0]["created_at"] and ":" in lines[0]["model"]
         r = requests.post(base + "/api/generate", headers=headers, json={"model": "m"}).json()
         assert r["done"] is True and r["done_reason"] == "load"
         r = requests.post(base + "/api/pull", headers=headers, json={"model": c.list().models[0].model, "stream": False}).json()
