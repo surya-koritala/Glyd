@@ -50,6 +50,7 @@ pub mod dynamic;
 pub mod f8;
 pub mod ffi;
 pub mod fit;
+pub mod gguf;
 pub mod glm;
 pub mod glm_cb;
 #[cfg(feature = "dev")]
