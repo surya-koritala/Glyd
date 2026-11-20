@@ -31,6 +31,9 @@ jobs:
       (contains(github.event.pull_request.labels.*.name, 'gpu') && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ${{ fromJSON(vars.GPU_RUNNER) }}
     timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
     container:
       image: nvidia/cuda:13.0.3-devel-ubuntu24.04
       options: --gpus all -v glyd-ci-cache:/cache
