@@ -8,6 +8,8 @@ use crate::weights::Layout;
 #[cfg(feature = "dev")]
 const SWITCHES: &[&str] = &[
     "no-graph",
+    "cpu-ref",
+    "list-cases",
     "p2p",
     "ignore-eos",
     "logprobs",
