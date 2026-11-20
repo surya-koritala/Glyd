@@ -45,12 +45,12 @@ So **Gemma 4 is not on the list on the 4080 SUPER** at either level, and `glyd r
 
 - `GPUS` is per (GPU, family): `("RTX 4080 SUPER", (8, 9), &["Qwen3"])`; `gpu_refusal(.., family)` says "a GPU the engine is measured at least as fast as vLLM on for Qwen3 models only" for another family; `glyd run`'s default
   path (`preflight` of a lossless model) is only the Qwen3 dense family's, so that is the one family consulted today, and the lossy levels and `GLYD_ENGINE=1` look at no list.
-- `scripts/gpu_bar.py` takes the family (and prints the line with it), reads the model and its release date from the measurement file (`--summarize ... --model ID --released DATE --family NAME`) and exits 2 for a model older than
-  6 months unless `--stale-ok`; docs/adding-a-gpu.md says so. The Qwen3 measurement file now carries its model and date.
-- **For the owner:** the 4080 SUPER's Qwen3 line rests on Qwen3-8B (572 days old), for there is no newer model of that family. `gpu_bar.py` passes it only with `--stale-ok`. If the rule is to stand without
+- The speed bar (`glyd-engine bench --bar`, which `scripts/gpu_bar.py` hands its arguments) takes the family (`--family`) and prints the line with it, reads the model's release date (`--released`, or the result file's own: these
+  measurement files carry their model, date and family) and exits 2 for a model older than 6 months unless `--stale-ok`; docs/adding-a-gpu.md and docs/bench.md say so.
+- **For the owner:** the 4080 SUPER's Qwen3 line rests on Qwen3-8B (572 days old), for there is no newer model of that family. the bar passes it only with `--stale-ok`. If the rule is to stand without
   exceptions, the line goes (`GPUS` empty again and the Qwen3 dense models back to vLLM by default on this card); it is one line in `machine.rs`.
 
 ## Files
 
-`engine-kestrel.json`, `engine-swift.json`, `vllm-w4a16.json`: the measurement files (`python3 scripts/gpu_bar.py engine-swift.json vllm-w4a16.json "NVIDIA GeForce RTX 4080 SUPER" 8.9 Gemma4`: exit 1, the loads it fails);
+`engine-kestrel.json`, `engine-swift.json`, `vllm-w4a16.json`: the measurement files (`python3 scripts/gpu_bar.py engine-swift.json vllm-w4a16.json "NVIDIA GeForce RTX 4080 SUPER" 8.9 --family Gemma4`: exit 1, the loads it fails);
 `scripts/run_gemma.sh`, `scripts/load.py` (the earlier record's). Raw outputs and the servers' logs are not in the tree.

@@ -23,7 +23,7 @@
 //!                                                             process's peak resident memory, are in the output)
 //!   glyd-engine check DIR PROMPTS.json OUT.json [--new N] [--ctx N] [--no-graph]
 //!   glyd-engine score DIR REF.json OUT.json [--ctx N]        teacher-forced top-1 and logprobs over REF's "score_ids"
-//!   glyd-engine bench DIR [--prompt N[,N...]] [--new N] [--ctx N] [--chunk N] [--reps N] [--no-graph] [--profile] [--profile-prefill] [--attn-decode]
+//!   glyd-engine microbench DIR [--prompt N[,N...]] [--new N] [--ctx N] [--chunk N] [--reps N] [--no-graph] [--profile] [--profile-prefill] [--attn-decode]
 //!   glyd-engine rowcheck DIR [--ctx N] [--tables T]          one sequence's logits in a step with 0 to 7 others, at every batch size
 //!   glyd-engine rowprofile DIR [--rows B] [--len N] [--steps N] [--ctx N] [--tables T]   a decode step of B sequences, launch by launch
 //!   glyd-engine kvtest DIR [--ctx N] [--tables T]            a known answer for the KV cache: bf16 values of every kind written through the engine's write path, read back, compared bit for bit
@@ -77,7 +77,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "chat" => std::process::exit(glyd_engine::cli::run(&Args::from(std::env::args().skip(1).chain(["--chat".to_string()])))),
         "generate" => cmd_run(a),
         "check" => cmd_check(a),
-        "bench" => cmd_bench(a),
+        "microbench" => cmd_bench(a),
         "score" => cmd_score(a),
         "rowcheck" => cmd_rowcheck(a),
         "batchcheck" => cmd_batchcheck(a),

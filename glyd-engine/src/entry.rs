@@ -25,6 +25,7 @@ pub const COMMANDS: &[&str] = &[
     "service",
     "ps",
     "stop",
+    "bench",
     "verify",
     "prepare",
     "costs",
@@ -110,6 +111,8 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("ps") => std::process::exit(crate::service::ps(&a)),
         Some("stop") => std::process::exit(crate::service::stop(&a)),
         Some("verify") => std::process::exit(crate::cli::verify(&a)),
+        // one benchmark harness over HTTP, its regression gate and the speed bar (docs/bench.md)
+        Some("bench") => std::process::exit(crate::bench::cmd(&a)),
         Some("prepare") => std::process::exit(crate::cli::prepare_cmd(&a)),
         // the cost profile of a model at a level, and this machine's memory tiers (docs/cost-profile.md)
         Some("costs") => crate::costs::costs_cmd(&a),

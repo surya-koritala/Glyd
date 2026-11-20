@@ -37,5 +37,5 @@ model there is, but older than the owner's 6 months, so `gpu_bar.py` passes it o
 
 ## Files
 
-`engine.json` and `vllm.json`: the means and spreads of the five runs of each, the measurement file `scripts/gpu_bar.py` takes (`python3 scripts/gpu_bar.py engine.json vllm.json "NVIDIA GeForce RTX 4080 SUPER" 8.9 Qwen3 --stale-ok`, exit 0 and the
-`GPUS` line); made from the runs' own files by `gpu_bar.py --summarize` (the runs' files are not kept: `scripts/check_tree.sh`). The scripts that made the runs: the earlier record's `load.py`, `run.sh`, `until_clean.sh`.
+`engine.json` and `vllm.json`: the means and spreads of the five runs of each, the measurement file `scripts/gpu_bar.py` takes (`python3 scripts/gpu_bar.py engine.json vllm.json "NVIDIA GeForce RTX 4080 SUPER" 8.9 --family Qwen3 --stale-ok`, exit 0 and the
+`GPUS` line); made from the runs' own files by the summary script of the time (`gpu_bar.py --summarize`, since replaced by the harness's own result files, `glyd-engine bench --out`) (the runs' files are not kept: `scripts/check_tree.sh`). The scripts that made the runs: the earlier record's `load.py`, `run.sh`, `until_clean.sh`.
