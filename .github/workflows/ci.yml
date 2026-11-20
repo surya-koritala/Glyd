@@ -195,6 +195,8 @@ jobs:
           sudo mkdir -p /etc/apt/keyrings
           gpg --dearmor < "$RUNNER_TEMP/rocm.gpg.key" | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
           echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.1 noble main" | sudo tee /etc/apt/sources.list.d/rocm.list
+          # (Ubuntu has a hipcc of its own with a higher version number, 5.7: ROCm's packages are preferred)
+          printf 'Package: *\nPin: origin repo.radeon.com\nPin-Priority: 1001\n' | sudo tee /etc/apt/preferences.d/rocm-pin
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends hip-dev rocm-device-libs
           rocm=$(dirname "$(dirname "$(ls /opt/rocm*/bin/hipcc | head -1)")")
