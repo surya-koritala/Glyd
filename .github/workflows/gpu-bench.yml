@@ -83,12 +83,17 @@ jobs:
             echo "no result of main on $GPU yet (the next merge to main makes one): nothing to hold this to"
             exit 0
           fi
+          if ! python3 -c 'import json,sys;sys.exit(0 if json.load(open(sys.argv[1]))["model"]["id"]==json.load(open("result.json"))["model"]["id"] else 1)' "$base"; then
+            echo "main's last result on $GPU is of another model: this change changes the bench's model, and the next merge to main makes its result the baseline"
+            exit 0
+          fi
           "$E" bench --compare "$base" result.json --history "/cache/bench/history-$GPU"
       - name: The gate fails a slowdown (its own test, the result with every speed at 80%)
         if: github.event_name != 'push'
         run: |
           base="/cache/bench/main-$GPU.json"
           [ -f "$base" ] || exit 0
+          python3 -c 'import json,sys;sys.exit(0 if json.load(open(sys.argv[1]))["model"]["id"]==json.load(open("result.json"))["model"]["id"] else 1)' "$base" || exit 0
           set +e
           "$E" bench --compare "$base" result.json --synthetic 0.8 > synthetic.txt
           code=$?
