@@ -3,6 +3,12 @@
 Start with `glyd doctor`. It prints one line for each thing a run needs and ends with
 "Everything glyd run needs is here." (exit 0) or "N thing(s) to fix." (exit 1). Fix the lines it names, in order.
 
+For a bug report, run `glyd doctor --json` (the bundle on the screen) or `glyd doctor --bundle` (the same in a file, `glyd-bundle-TIME.json`, or
+`--bundle FILE`) and attach it. It holds the versions, every check with its fix, each GPU's memory and the terms a plan is made of (what the engine keeps
+free, its work, the computer's memory kept for the system), each backend detected or rejected and why, the plan `run` would load for Gemma 4 12B here, the
+ports, the models in the caches, the `GLYD_*` and `HF_*` environment, the service's configuration and the end of its recent logs. Tokens, keys, credentials in
+addresses and your home folder are taken out of it (`~`); `--no-logs` leaves the logs out. Read it before you post it.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -22,6 +28,10 @@ Start with `glyd doctor`. It prints one line for each thing a run needs and ends
 | `cuBLAS  not found` | Not an error. Long prompts use the engine's own products, a little slower. | Optional: install the CUDA 13 cuBLAS, or set `GLYD_CUBLAS` to it. |
 | `cache`, `models`: a low "free" figure | The packed copy and the downloads need disk: the download is the model's size on the Hub, and the packed copy is extra. | Free space, or move them: `GLYD_CACHE=/big/drive` for packed models, `HF_HOME=/big/drive` for downloads. |
 | `Hub token  none` | Fine for public models. | For a gated model, accept its licence on the model's page, then `glyd login` (a token from huggingface.co/settings/tokens), or set `HF_TOKEN`. |
+| `backend ...` | Each backend (CUDA, ROCm, Metal, CPU) is said detected or not, with its version, and accepted or rejected with the refusal `run` would give. | Only a rejected backend that is the one you need is a problem: its line has the fix. |
+| `GPU budget`, `RAM` | The terms a plan is made of: free memory, what the engine keeps and its work, the computer's memory kept for the system. | A small "for the weights and the cache" means little room: close programs that use the GPU. |
+| `sample plan  ... does not load here` | Gemma 4 12B, a small model, has no level that loads on this GPU and memory. | Not an error: a bigger model will not either. `glyd fit MODEL` shows each level. |
+| `port  ... is in use by ...` | A program holds the service's port (11434) or a server's first port (8000). | Stop it, or `glyd service --port N`; a server takes the next free port up to 8020. |
 | `Hub  ...: <error>` | The Hub is not reachable: no network, a proxy, or IPv6 that fails. | Check the network. `GLYD_IPV4=1` forces IPv4. `HF_ENDPOINT` names a mirror. A model already downloaded runs with `HF_HUB_OFFLINE=1`. |
 
 ## Refusals from `run` and `serve`
