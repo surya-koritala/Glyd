@@ -18,7 +18,7 @@ name: Release
 #
 # Permissions: read everywhere (`plan` also reads the Actions runs, actions: read, in a step that runs nothing of the tag's tree).
 # `publish` alone has id-token: write, and runs only the wheels' download and PyPI's action: no source tree, no build tool, no secret.
-# Every action is a commit, with its version in the comment. This repository is private, so a run is billed in minutes: a run by hand takes `pythons` to test the wheels on fewer CPythons.
+# Every action is a commit, with its version in the comment. The CUDA builds take about an hour of runner time: a run by hand takes `pythons` to test the wheels on fewer CPythons.
 on:
   push:
     tags: ["v*"]

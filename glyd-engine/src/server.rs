@@ -22,6 +22,10 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod anthropic;
+mod ollama;
+mod responses;
+
 const PAGE: &str = include_str!("../data/chat.html");
 const MAX_BODY: usize = 16 << 20;
 const MAX_CONNECTIONS: usize = 64;
@@ -48,12 +52,23 @@ pub enum Job {
     Http { s: TcpStream, req: Req, chat: bool, id: u64 },
     /// An Anthropic Messages request (`count`: /v1/messages/count_tokens), its connection open for the reply.
     Messages { s: TcpStream, req: Req, count: bool, id: u64 },
+    /// A request of one of the other APIs (`Endpoint`), its connection open for the reply.
+    Api { s: TcpStream, req: Req, kind: Endpoint, id: u64 },
     /// A reply for the terminal's chat: its pieces (and, last, how it ended) come back on `out`.
     Term { messages: Vec<Message>, request: Request, out: Sender<Piece>, abort: Arc<AtomicBool> },
     /// A sequence for the scheduler (what a request's thread sends: `Remote`).
     Seq(Submit),
     /// The engine's thread returns.
     Stop,
+}
+
+/// The APIs served beside the completions' and Anthropic's, each in a module of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Endpoint {
+    /// OpenAI's Responses API (stateless).
+    Responses,
+    /// Ollama's REST API (`/api/...`): which of its calls is in the request's path.
+    Ollama,
 }
 
 pub enum Piece {
@@ -77,6 +92,8 @@ struct Head {
     len: usize,
     expect: bool,
     auth: Option<String>,
+    /// Anthropic's `x-api-key` header: the key as the Anthropic SDKs and Claude Code send it.
+    x_api_key: Option<String>,
     host: String,
     origin: String,
     ask_method: Option<String>,
@@ -108,6 +125,7 @@ fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Rejected
         len: 0,
         expect: false,
         auth: None,
+        x_api_key: None,
         host: String::new(),
         origin: String::new(),
         ask_method: None,
@@ -126,6 +144,8 @@ fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Rejected
             h.len = v.trim().parse().unwrap_or(0);
         } else if low.starts_with("authorization:") {
             h.auth = Some(value);
+        } else if low.starts_with("x-api-key:") {
+            h.x_api_key = Some(value);
         } else if low.starts_with("host:") {
             h.host = value;
         } else if low.starts_with("origin:") {
@@ -147,7 +167,7 @@ fn read_request(s: &mut TcpStream) -> std::result::Result<Option<Req>, Rejected>
     let mut r = BufReader::new(s.try_clone().map_err(bad)?);
     let Some(h) = read_head(&mut r)? else { return Ok(None) };
     if h.len > MAX_BODY {
-        return Err((400, "the request's body is too large".to_string()));
+        return Err((413, format!("the request's body is over {} MiB", MAX_BODY >> 20)));
     }
     if h.expect {
         s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").ok();
@@ -155,7 +175,9 @@ fn read_request(s: &mut TcpStream) -> std::result::Result<Option<Req>, Rejected>
     let mut body = vec![0u8; h.len];
     r.read_exact(&mut body).map_err(bad)?;
     let preflight = if h.method == "OPTIONS" && !h.origin.is_empty() { h.ask_method.map(|m| (m, h.ask_headers)) } else { None };
-    Ok(Some(Req { method: h.method, path: h.path, body, auth: h.auth, host: h.host, origin: h.origin, preflight, cors: String::new() }))
+    // (the key as `x-api-key` is the same key as a bearer token: the Authorization header, where both come, is the one read)
+    let auth = h.auth.or(h.x_api_key.map(|k| format!("Bearer {k}")));
+    Ok(Some(Req { method: h.method, path: h.path, body, auth, host: h.host, origin: h.origin, preflight, cors: String::new() }))
 }
 
 /// After an answer that was sent before the request was read to its end (a header block past its bounds): the end of the connection that sends no more, and what the client still sends read and thrown away
@@ -180,6 +202,7 @@ fn status_text(code: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Payload Too Large",
         421 => "Misdirected Request",
         431 => "Request Header Fields Too Large",
         503 => "Service Unavailable",
@@ -341,8 +364,24 @@ pub fn jstr(s: &str) -> String {
     o
 }
 
+/// An error as OpenAI's API writes it: `{"error": {"message", "type", "param", "code"}}`, the type by the status (a client's own mistake `invalid_request_error`, a refused key `authentication_error`, the
+/// server's `server_error`) and the code where there is one a client can act on (`invalid_api_key`, `context_length_exceeded`), else null.
 fn error_body(msg: &str, code: u16) -> String {
-    format!("{{\"error\":{{\"message\":{},\"type\":\"invalid_request_error\",\"code\":{code}}}}}", jstr(&said(msg)))
+    let msg = said(msg);
+    let kind = match code {
+        401 => "authentication_error",
+        403 => "permission_error",
+        429 => "rate_limit_error",
+        500..=599 => "server_error",
+        _ => "invalid_request_error",
+    };
+    let slug = match code {
+        401 => "invalid_api_key",
+        _ if msg.contains("maximum context length") => "context_length_exceeded",
+        _ => "",
+    };
+    let slug = if slug.is_empty() { "null".to_string() } else { jstr(slug) };
+    format!("{{\"error\":{{\"message\":{},\"type\":\"{kind}\",\"param\":null,\"code\":{slug}}}}}", jstr(&msg))
 }
 
 /// The server runs alone (qwenserve): no vLLM behind it for a refusal to point at, `tool_choice: "none"` keeps the tools out of the prompt (the model would write calls that are not read), and a call
@@ -600,7 +639,6 @@ const NOT_DONE: &[(&str, &str)] = &[
     ("media_io_kwargs", "null"),
     ("mm_processor_kwargs", "null"),
     ("continue_final_message", "false"),
-    ("suffix", "null"),
     ("prompt_embeds", "null"),
     ("functions", "null"),
     ("function_call", "null"),
@@ -639,6 +677,32 @@ pub fn unsupported(v: &Value) -> Option<String> {
         return Some(format!("best_of more than n {yet}"));
     }
     None
+}
+
+/// The model as OpenAI's list has it, and as Anthropic's does (`type`, `display_name`, `created_at`): the one object serves the clients of both.
+fn model_json(name: &str, window: usize) -> String {
+    let created = now();
+    format!(
+        "{{\"id\":{0},\"object\":\"model\",\"created\":{created},\"owned_by\":\"glyd\",\"max_model_len\":{window},\"type\":\"model\",\"display_name\":{0},\"created_at\":\"{1}\"}}",
+        jstr(name),
+        rfc3339(created)
+    )
+}
+
+/// A time in seconds since 1970 as RFC 3339 in UTC (`2026-11-20T12:00:00Z`).
+fn rfc3339(secs: u64) -> String {
+    let (days, rest) = ((secs / 86400) as i64, secs % 86400);
+    // (the civil date of a day count: Howard Hinnant's algorithm)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + (month <= 2) as i64;
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rest / 3600, rest % 3600 / 60, rest % 60)
 }
 
 fn now() -> u64 {
@@ -942,6 +1006,29 @@ fn prompts_of(sh: &Shared, v: &Value, chat: bool, api: &Api, r: &Request) -> Res
     let from_ids =
         |ids: Vec<u32>| -> Result<Prompt> { Ok(Prompt { text: sh.tok.decode(&ids)?, ids, in_thinking: false, prefix: String::new(), images: Vec::new() }) };
     let wrong = || Error("`prompt` must be a string, a list of strings, a list of token ids or a list of lists of token ids".into());
+    // `suffix`: the text that comes after the completion, for an editor's fill in the middle: the prompt is the text before it, and the model's own fill-in-the-middle tokens put the two in order
+    match v.get("suffix") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(sfx)) => {
+            let Some(Value::String(prefix)) = v.get("prompt") else {
+                return err("`suffix` goes with a `prompt` that is one string: the text before the completion");
+            };
+            let Some([pre, suf, mid]) = fim_tokens(&sh.tok) else {
+                return err(
+                    "this model has no fill-in-the-middle tokens (<|fim_prefix|>, <fim_prefix> or <｜fim▁begin｜>), so `suffix` cannot be served by it",
+                );
+            };
+            let text = format!("{pre}{prefix}{suf}{sfx}{mid}");
+            return Ok(vec![Prompt {
+                ids: sh.tok.encode_with(&text, special)?,
+                text: prefix.clone(),
+                in_thinking: false,
+                prefix: String::new(),
+                images: Vec::new(),
+            }]);
+        }
+        Some(_) => return Err(Error("`suffix` must be a string".into())),
+    }
     let prompts = match v.get("prompt") {
         Some(Value::String(t)) if !t.is_empty() => vec![from_text(t)?],
         Some(Value::Array(a)) if !a.is_empty() && a.iter().all(|x| matches!(x, Value::Number(_))) => vec![from_ids(ids_of_list(a)?)?],
@@ -956,6 +1043,18 @@ fn prompts_of(sh: &Shared, v: &Value, chat: bool, api: &Api, r: &Request) -> Res
         _ => return Err(wrong()),
     };
     Ok(prompts)
+}
+
+/// The tokens a model writes a fill-in-the-middle prompt with, as (prefix, suffix, middle): `<prefix>TEXT BEFORE<suffix>TEXT AFTER<middle>`, the reply the text between; the first set the tokenizer has as one token each
+/// (Qwen's and CodeGemma's `<|fim_prefix|>`, StarCoder's `<fim_prefix>`, DeepSeek-Coder's `<｜fim▁begin｜>`). None where it has none of them.
+fn fim_tokens(tok: &Tok) -> Option<[&'static str; 3]> {
+    const SETS: [[&str; 3]; 3] = [
+        ["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>"],
+        ["<fim_prefix>", "<fim_suffix>", "<fim_middle>"],
+        ["<｜fim▁begin｜>", "<｜fim▁hole｜>", "<｜fim▁end｜>"],
+    ];
+    let added = tok.added_ids();
+    SETS.into_iter().find(|set| set.iter().all(|t| tok.encode_with(t, false).is_ok_and(|ids| ids.len() == 1 && added.contains(&ids[0]))))
 }
 
 /// The text of a chat prompt (the template's, with the tools, and a forced call's opening at its end), whether it ends inside the thinking, and that opening; and its images' URLs in order
@@ -1163,6 +1262,93 @@ fn delta_fields(d: &Delta) -> String {
         f.push(format!("\"tool_calls\":[{}]", calls.join(",")));
     }
     f.join(",")
+}
+
+/// A chat request, in OpenAI's chat form, made ready to run as one sequence on the engine: what the other APIs' handlers (a request of theirs is turned into this form first) share with the completions' one,
+/// its refusals, its sampling, its grammar (`constraint_of`), its prompt, its tools and its window. `hide_reasoning`: the reply's thinking is left out of what is sent (an API with no place for it).
+struct Started {
+    h: Handle,
+    cfg: Cfg,
+    prompt_tokens: usize,
+    api: Api,
+}
+
+/// What a request is refused with: the status and the words.
+type Refused = (u16, String);
+
+/// A chat request read and its prompt made, before anything runs (a count of the prompt's tokens stops here).
+struct Prepared {
+    pr: Prompt,
+    r: Request,
+    api: Api,
+}
+
+fn prepare(sh: &Shared, o: &Value) -> std::result::Result<Prepared, Refused> {
+    prepare_as(sh, o, true)
+}
+
+/// `prepare` for a chat (messages) or, where `chat` is false, a plain prompt (`prompt`, and `suffix` for a fill in the middle).
+fn prepare_as(sh: &Shared, o: &Value, chat: bool) -> std::result::Result<Prepared, Refused> {
+    let bad = |m: String| (400u16, m);
+    let not_here = || sh.refused.iter().find(|(n, d)| asked(o, n, d)).map(|(n, _)| format!("{n} is not supported by the engine this model runs on yet"));
+    if let Some(why) = unsupported(o).or_else(not_here).or_else(|| invalid(o, chat, sh.vocab)) {
+        return Err(bad(why));
+    }
+    let mut r = request_of(o, sh.window, &sh.defaults);
+    r.thinking = r.thinking.or(sh.thinking);
+    r.params.logit_bias = logit_bias_of(o, sh.vocab).unwrap_or_default();
+    let api = api_of(o, chat, sh.vocab).map_err(bad)?;
+    r.params.constraint = constraint_of(sh, o, &api).map_err(bad)?;
+    if api.n > 1 {
+        return Err(bad("n must be 1: this API makes one choice".to_string()));
+    }
+    let pr = prompts_of(sh, o, chat, &api, &r).map_err(|e| bad(e.to_string()))?.remove(0);
+    if pr.ids.len() + 1 > sh.window {
+        return Err(bad(format!(
+            "This prompt has {} tokens, longer than the model's context of {} tokens: maximum context length (a longer one: --context N)",
+            pr.ids.len(),
+            sh.window
+        )));
+    }
+    Ok(Prepared { pr, r, api })
+}
+
+fn start_chat(sh: &Shared, tx: &Sender<Job>, o: &Value, hide_reasoning: bool) -> std::result::Result<Started, Refused> {
+    start_as(sh, tx, o, true, hide_reasoning)
+}
+
+/// `start_chat` for a chat or, where `chat` is false, a plain prompt.
+fn start_as(sh: &Shared, tx: &Sender<Job>, o: &Value, chat: bool, hide_reasoning: bool) -> std::result::Result<Started, Refused> {
+    let Prepared { pr, r, api } = prepare_as(sh, o, chat)?;
+    let reading = api.tools.as_ref().filter(|t| t.choice != ToolChoice::None);
+    let tools_cfg = reading.map(|t| ToolsCfg {
+        choice: t.choice.clone(),
+        parallel: t.parallel,
+        format: sh.chat.as_ref().map_or(Format::Hermes, Format::of),
+        list: t.list.clone(),
+        prefix: pr.prefix.clone(),
+        stream: api.stream,
+    });
+    let cfg = Cfg {
+        chat,
+        in_thinking: pr.in_thinking,
+        stops: r.stop.clone(),
+        include_stop: r.include_stop,
+        skip_special: r.skip_special && reading.is_none(),
+        hide_reasoning: hide_reasoning || api.hide_reasoning,
+        tools: tools_cfg,
+        lead: if reading.is_none() { pr.prefix.clone() } else { String::new() },
+        xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)),
+    };
+    let reply = Reply {
+        params: r.params.clone(),
+        max_new: r.max_new.min(sh.window - pr.ids.len()).max(1),
+        ignore_eos: r.ignore_eos,
+        logprobs: None,
+        stop_ids: r.stop_ids.clone(),
+    };
+    let h = (Remote { tx: tx.clone(), window: sh.window }).start_with(&pr.ids, pr.images.clone(), &reply).map_err(|e| (500, e.to_string()))?;
+    Ok(Started { h, cfg, prompt_tokens: pr.ids.len(), api })
 }
 
 /// One completions request on `s`: chat (messages) or plain (a prompt); or, at /v1/glyd/tokenize, the count of its prompt's tokens alone (a chat's where it has messages), made as its reply's would be.
@@ -1474,6 +1660,7 @@ const DONE: &[&str] = &[
     "request_id",
     "return_tokens_as_token_ids",
     "best_of",
+    "suffix",
 ];
 
 /// The fields that change nothing on a server of one model on this computer.
@@ -1517,12 +1704,14 @@ fn start_stream(s: &mut TcpStream, head: &str, chat: bool, api: &Api, cors: &str
     if s.write_all(h.as_bytes()).is_err() {
         return false;
     }
+    // (OpenAI's chunks carry `"usage": null` where the stream's last chunk has the usage: `stream_options.include_usage`)
+    let usage = if api.include_usage { ",\"usage\":null" } else { "" };
     for i in 0..api.total {
         let first = if chat {
-            format!("{head},\"choices\":[{{\"index\":{i},\"delta\":{{\"role\":\"assistant\",\"content\":\"\"}},\"logprobs\":null,\"finish_reason\":null}}]}}")
+            format!("{head},\"choices\":[{{\"index\":{i},\"delta\":{{\"role\":\"assistant\",\"content\":\"\"}},\"logprobs\":null,\"finish_reason\":null}}]{usage}}}")
         } else if let Some(t) = api.echo_texts.get(i) {
             // (a plain completion that echoes its prompt: the first chunk of each choice is the prompt)
-            format!("{head},\"choices\":[{{\"index\":{i},\"text\":{},\"logprobs\":null,\"finish_reason\":null}}]}}", jstr(t))
+            format!("{head},\"choices\":[{{\"index\":{i},\"text\":{},\"logprobs\":null,\"finish_reason\":null}}]{usage}}}", jstr(t))
         } else {
             continue;
         };
@@ -1571,7 +1760,7 @@ fn stream_chunk(
         let text = fields.strip_prefix("\"content\":").unwrap_or("\"\"");
         format!("{{\"index\":{i},\"text\":{text},\"logprobs\":{logprobs},\"finish_reason\":{finish}}}")
     };
-    sse(s, &format!("{head},\"choices\":[{choice}]}}")).is_ok()
+    sse(s, &format!("{head},\"choices\":[{choice}]{}}}", if api.include_usage { ",\"usage\":null" } else { "" })).is_ok()
 }
 
 /// How long a request's thread waits for its reply's next piece before it looks at its client.
@@ -1691,8 +1880,16 @@ fn route(
     let path = req.path.split('?').next().unwrap_or("").to_string();
     let cors = req.cors.clone();
     // the API wants the key where there is one (the page and the health check do not; nor does an OPTIONS)
-    if path.starts_with("/v1") && req.method != "OPTIONS" && key.as_ref().is_some_and(|k| !key_matches(k, req.auth.as_deref())) {
-        return respond_with(&mut s, 401, "application/json", &cors, b"{\"error\":\"Unauthorized\"}");
+    if (path.starts_with("/v1") || path.starts_with("/api/")) && req.method != "OPTIONS" && key.as_ref().is_some_and(|k| !key_matches(k, req.auth.as_deref())) {
+        // (the Messages API's clients, the Anthropic SDKs and Claude Code, read Anthropic's error: it says `invalid x-api-key`, and the key is `x-api-key` or a bearer token)
+        let body = if path.starts_with("/v1/messages") {
+            anthropic::anthropic_body(401, "invalid x-api-key: the server's key is needed as `x-api-key: <key>` or `Authorization: Bearer <key>`")
+        } else if path.starts_with("/api/") {
+            "{\"error\":\"unauthorized: the server's key is needed as `Authorization: Bearer <key>`\"}".to_string()
+        } else {
+            error_body("Incorrect API key provided: the server's key is needed as `Authorization: Bearer <key>`.", 401)
+        };
+        return respond_with(&mut s, 401, "application/json", &format!("{cors}WWW-Authenticate: Bearer\r\n"), body.as_bytes());
     }
     match (req.method.as_str(), path.as_str()) {
         ("GET" | "HEAD", "/") | ("GET" | "HEAD", "/index.html") => {
@@ -1754,11 +1951,8 @@ fn route(
         ("GET", "/health" | "/v1/health") => respond_with(&mut s, 200, "application/json", &cors, b"{\"status\":\"ok\"}"),
         ("GET", "/stats") => respond_with(&mut s, 200, "application/json", &cors, stats_json().as_bytes()),
         ("GET", "/v1/models") => {
-            let body = format!(
-                "{{\"object\":\"list\",\"data\":[{{\"id\":{},\"object\":\"model\",\"created\":{},\"owned_by\":\"glyd\",\"max_model_len\":{window}}}]}}",
-                jstr(name),
-                now()
-            );
+            let body =
+                format!("{{\"object\":\"list\",\"data\":[{}],\"has_more\":false,\"first_id\":{1},\"last_id\":{1}}}", model_json(name, window), jstr(name));
             respond_with(&mut s, 200, "application/json", &cors, body.as_bytes());
         }
         ("POST", p @ ("/v1/chat/completions" | "/v1/completions" | "/v1/glyd/tokenize")) => {
@@ -1768,16 +1962,39 @@ fn route(
                 drop(e);
             }
         }
+        ("GET", p) if p.starts_with("/v1/models/") => {
+            // (one model, as the OpenAI SDKs' `models.retrieve` asks: the model's name may hold slashes)
+            let asked = p["/v1/models/".len()..].replace("%2F", "/").replace("%2f", "/").replace("%3A", ":").replace("%3a", ":");
+            if asked == name {
+                respond_with(&mut s, 200, "application/json", &cors, model_json(name, window).as_bytes());
+            } else {
+                respond_with(&mut s, 404, "application/json", &cors, error_body(&format!("The model `{asked}` does not exist"), 404).as_bytes());
+            }
+        }
+        // (Ollama's API: the key guards it as it guards /v1; its errors are its own, `{"error": "..."}`)
+        (_, p) if p.starts_with("/api/") => {
+            if tx.send(Job::Api { s: s.try_clone().expect("a connection clones"), req, kind: Endpoint::Ollama, id }).is_err() {
+                respond_with(&mut s, 503, "application/json", &cors, b"{\"error\":\"the engine is not running\"}");
+            }
+        }
+        ("POST", "/v1/responses") => {
+            if tx.send(Job::Api { s: s.try_clone().expect("a connection clones"), req, kind: Endpoint::Responses, id }).is_err() {
+                respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
+            }
+        }
         ("POST", p @ ("/v1/messages" | "/v1/messages/count_tokens")) => {
             let count = p.ends_with("count_tokens");
             if tx.send(Job::Messages { s: s.try_clone().expect("a connection clones"), req, count, id }).is_err() {
                 respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
             }
         }
-        (_, "/v1/chat/completions") | (_, "/v1/completions") | (_, "/v1/models") | (_, "/v1/messages") | (_, "/v1/glyd/tokenize") | (_, "/v1/glyd/info") => {
+        (_, "/v1/messages" | "/v1/messages/count_tokens") => {
+            respond_with(&mut s, 405, "application/json", &cors, anthropic::anthropic_body(405, "method not allowed").as_bytes())
+        }
+        (_, "/v1/chat/completions") | (_, "/v1/completions") | (_, "/v1/models") | (_, "/v1/responses") | (_, "/v1/glyd/tokenize") | (_, "/v1/glyd/info") => {
             respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes())
         }
-        _ => respond_with(&mut s, 404, "application/json", &cors, error_body("not found", 404).as_bytes()),
+        _ => respond_with(&mut s, 404, "application/json", &cors, error_body(&format!("Invalid URL ({} {path})", req.method), 404).as_bytes()),
     }
 }
 
@@ -1972,7 +2189,17 @@ pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
         Job::Messages { mut s, req, count, id } => {
             std::thread::spawn(move || {
                 if !client_gone(&s) {
-                    handle_messages(&sh, &tx, &mut s, &req, count, id);
+                    anthropic::handle(&sh, &tx, &mut s, &req, count, id);
+                }
+            });
+        }
+        Job::Api { mut s, req, kind, id } => {
+            std::thread::spawn(move || {
+                if !client_gone(&s) {
+                    match kind {
+                        Endpoint::Responses => responses::handle(&sh, &tx, &mut s, &req, id),
+                        Endpoint::Ollama => ollama::handle(&sh, &tx, &mut s, &req),
+                    }
                 }
             });
         }
@@ -2024,7 +2251,7 @@ pub fn work_with<B: Backend>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &Rec
             let reader = reader;
             while let Ok(job) = reader.0.recv() {
                 match job {
-                    Job::Http { .. } | Job::Messages { .. } | Job::Term { .. } => detach(job, &shared, tx),
+                    Job::Http { .. } | Job::Messages { .. } | Job::Api { .. } | Job::Term { .. } => detach(job, &shared, tx),
                     Job::Stop => {
                         let _ = wtx.send(Job::Stop);
                         return;
@@ -2177,392 +2404,8 @@ fn engine_failed(e: &str) {
     }
 }
 
-// ---- Anthropic's Messages API ------------------------------------------------------------------------------------------------------------------------
-
-/// An Anthropic Messages request in the OpenAI form the rest of the server reads: the system prompt a message of its own, an assistant's tool_use blocks its tool calls, a tool_result block a tool message, the tools
-/// as functions, `tool_choice` as OpenAI names it, `stop_sequences` as `stop`, and `thinking` the template's enable_thinking (off unless it is enabled).
-pub fn openai_of(v: &Value) -> std::result::Result<Value, String> {
-    openai_of_with(v, crate::vision::PREP.get().is_some())
-}
-
-/// `openai_of`, its image blocks image_url parts where `images` (the model reads them), else left out.
-pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, String> {
-    use tools::obj;
-    let text_of = |c: &Value| -> String {
-        match c {
-            Value::String(t) => t.clone(),
-            Value::Array(b) => {
-                b.iter().filter(|x| x.get("type").and_then(Value::as_str) == Some("text")).filter_map(|x| x.get("text").and_then(Value::as_str)).collect()
-            }
-            _ => String::new(),
-        }
-    };
-    let mut msgs = Vec::new();
-    if let Some(sys) = v.get("system").map(text_of).filter(|t| !t.is_empty()) {
-        msgs.push(obj(vec![("role", Value::from("system")), ("content", Value::String(sys))]));
-    }
-    for m in v.get("messages").and_then(Value::as_array).ok_or("messages: Field required")? {
-        let role = m.get("role").and_then(Value::as_str).ok_or("a message with no role")?;
-        let blocks = match m.get("content") {
-            Some(Value::Array(b)) => b.as_slice(),
-            Some(c @ Value::String(_)) => {
-                msgs.push(obj(vec![("role", Value::from(role)), ("content", c.clone())]));
-                continue;
-            }
-            _ => return Err(format!("a {role} message whose content is neither text nor a list of blocks")),
-        };
-        let (mut text, mut calls) = (String::new(), Vec::new());
-        // (an image block: an image_url part, the message's content then the list of its text and image parts in order)
-        let mut parts: Vec<Value> = Vec::new();
-        for b in blocks {
-            let get = |k: &str| b.get(k).cloned().unwrap_or(Value::Null);
-            match b.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    let t = b.get("text").and_then(Value::as_str).unwrap_or("");
-                    text.push_str(t);
-                    parts.push(obj(vec![("type", Value::from("text")), ("text", Value::from(t))]));
-                }
-                // (where the model reads images; a text model's server leaves them out, as it always has)
-                Some("image") if images => {
-                    let src = b.get("source");
-                    let field = |k: &str| src.and_then(|s| s.get(k)).and_then(Value::as_str).unwrap_or("");
-                    let url = match field("type") {
-                        "base64" => format!("data:{};base64,{}", field("media_type"), field("data")),
-                        "url" => field("url").to_string(),
-                        t => return Err(format!("an image block whose source is of type {t:?}: base64 or url")),
-                    };
-                    parts.push(obj(vec![("type", Value::from("image_url")), ("image_url", obj(vec![("url", Value::String(url))]))]));
-                }
-                Some("tool_use") => calls.push(obj(vec![
-                    ("id", get("id")),
-                    ("type", Value::from("function")),
-                    ("function", obj(vec![("name", get("name")), ("arguments", b.get("input").cloned().unwrap_or(Value::Object(vec![])))])),
-                ])),
-                Some("tool_result") => msgs.push(obj(vec![
-                    ("role", Value::from("tool")),
-                    ("tool_call_id", get("tool_use_id")),
-                    ("content", Value::String(b.get("content").map(text_of).unwrap_or_default())),
-                ])),
-                _ => {}
-            }
-        }
-        let has_image = parts.iter().any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
-        if !text.is_empty() || !calls.is_empty() || has_image {
-            let mut o = vec![("role", Value::from(role)), ("content", if has_image { Value::Array(parts) } else { Value::String(text) })];
-            if !calls.is_empty() {
-                o.push(("tool_calls", Value::Array(calls)));
-            }
-            msgs.push(obj(o));
-        }
-    }
-    let mut o = vec![("messages", Value::Array(msgs))];
-    let tools: Vec<Value> = v
-        .get("tools")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
-        .iter()
-        .filter(|t| t.get("name").is_some())
-        .map(|t| {
-            let get = |k: &str, or: Value| t.get(k).cloned().unwrap_or(or);
-            obj(vec![
-                ("type", Value::from("function")),
-                (
-                    "function",
-                    obj(vec![
-                        ("name", get("name", Value::Null)),
-                        ("description", get("description", Value::from(""))),
-                        ("parameters", get("input_schema", Value::Object(vec![]))),
-                    ]),
-                ),
-            ])
-        })
-        .collect();
-    if !tools.is_empty() {
-        o.push(("tools", Value::Array(tools)));
-        let choice = v.get("tool_choice");
-        let named = choice.and_then(|c| c.get("name")).cloned();
-        match choice.and_then(|c| c.get("type")).and_then(Value::as_str) {
-            Some("any") => o.push(("tool_choice", Value::from("required"))),
-            Some("none") => o.push(("tool_choice", Value::from("none"))),
-            Some("tool") if named.is_some() => {
-                o.push(("tool_choice", obj(vec![("type", Value::from("function")), ("function", obj(vec![("name", named.unwrap_or(Value::Null))]))])))
-            }
-            _ => {}
-        }
-        if choice.and_then(|c| c.get("disable_parallel_tool_use")).and_then(Value::as_bool) == Some(true) {
-            o.push(("parallel_tool_calls", Value::Bool(false)));
-        }
-    }
-    for k in ["max_tokens", "temperature", "top_p", "top_k", "stream"] {
-        if let Some(x) = v.get(k) {
-            o.push((k, x.clone()));
-        }
-    }
-    if let Some(x) = v.get("stop_sequences") {
-        o.push(("stop", x.clone()));
-    }
-    let think = v.get("thinking").and_then(|t| t.get("type")).and_then(Value::as_str) == Some("enabled");
-    o.push(("chat_template_kwargs", obj(vec![("enable_thinking", Value::Bool(think))])));
-    Ok(obj(o))
-}
-
-fn anthropic_error(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
-    let kind = if code == 400 { "invalid_request_error" } else { "api_error" };
-    respond_with(
-        s,
-        code,
-        "application/json",
-        cors,
-        format!("{{\"type\":\"error\",\"error\":{{\"type\":\"{kind}\",\"message\":{}}}}}", jstr(&said(msg))).as_bytes(),
-    );
-}
-
-/// An event of a streamed Messages reply, as one chunk of the chunked body.
-fn event(s: &mut TcpStream, kind: &str, fields: &str) -> bool {
-    let ev = format!("event: {kind}\ndata: {{\"type\":\"{kind}\"{}{fields}}}\n\n", if fields.is_empty() { "" } else { "," });
-    s.write_all(format!("{:x}\r\n{ev}\r\n", ev.len()).as_bytes()).and_then(|_| s.flush()).is_ok()
-}
-
-/// The content blocks of a streamed Messages reply as its deltas come: text in a text block, each tool call a tool_use block of its own, its arguments as `input_json_delta`s. The thinking is not sent (Anthropic's
-/// thinking blocks carry a signature this server cannot make).
-#[derive(Default)]
-struct Blocks {
-    next: usize,
-    open: Option<bool>,
-    /// A tool_use block was sent (the reply's stop_reason is then tool_use, a named tool's too, as Anthropic's API has it).
-    called: bool,
-}
-
-impl Blocks {
-    fn close(&mut self, s: &mut TcpStream) -> bool {
-        if self.open.take().is_none() {
-            return true;
-        }
-        self.next += 1;
-        event(s, "content_block_stop", &format!("\"index\":{}", self.next - 1))
-    }
-
-    fn delta(&mut self, s: &mut TcpStream, d: &Delta) -> bool {
-        let mut ok = true;
-        if !d.content.is_empty() {
-            if self.open != Some(true) {
-                ok &=
-                    self.close(s) && event(s, "content_block_start", &format!("\"index\":{},\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}", self.next));
-                self.open = Some(true);
-            }
-            ok &= event(s, "content_block_delta", &format!("\"index\":{},\"delta\":{{\"type\":\"text_delta\",\"text\":{}}}", self.next, jstr(&d.content)));
-        }
-        for c in &d.calls {
-            match c {
-                ToolEv::Start { id, name, .. } => {
-                    ok &= self.close(s)
-                        && event(
-                            s,
-                            "content_block_start",
-                            &format!(
-                                "\"index\":{},\"content_block\":{{\"type\":\"tool_use\",\"id\":{},\"name\":{},\"input\":{{}}}}",
-                                self.next,
-                                jstr(id),
-                                jstr(name)
-                            ),
-                        );
-                    self.open = Some(false);
-                    self.called = true;
-                }
-                ToolEv::Args { args, .. } if self.open == Some(false) => {
-                    ok &= event(
-                        s,
-                        "content_block_delta",
-                        &format!("\"index\":{},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{}}}", self.next, jstr(args)),
-                    );
-                }
-                _ => {}
-            }
-        }
-        ok
-    }
-}
-
-fn stop_reason(finish: &str) -> &'static str {
-    match finish {
-        "tool_calls" => "tool_use",
-        "length" => "max_tokens",
-        _ => "end_turn",
-    }
-}
-
-/// One Messages request on `s` (Anthropic's API): the request read as the OpenAI one it is the same as, one choice made as a chat completion's, the reply in Anthropic's form.
-fn handle_messages(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, count: bool, id: u64) {
-    let cors = req.cors.as_str();
-    let bad = |s: &mut TcpStream, msg: &str| anthropic_error(s, cors, 400, msg);
-    let Some(v) = std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()) else { return bad(s, "the body is not JSON") };
-    let o = match openai_of(&v) {
-        Ok(o) => o,
-        Err(m) => return bad(s, &m),
-    };
-    let mut r = request_of(&o, sh.window, &sh.defaults);
-    r.thinking = r.thinking.or(sh.thinking);
-    let api = match api_of(&o, true, sh.vocab) {
-        Ok(a) => a,
-        Err(m) => return bad(s, &m),
-    };
-    let pr = match prompts_of(sh, &o, true, &api, &r) {
-        Ok(mut p) => p.remove(0),
-        Err(e) => return bad(s, &e.to_string()),
-    };
-    if count {
-        return respond_with(s, 200, "application/json", cors, format!("{{\"input_tokens\":{}}}", pr.ids.len()).as_bytes());
-    }
-    if pr.ids.len() + 1 > sh.window {
-        return bad(s, &format!("prompt is too long: {} tokens > {} maximum (the server's context: --ctx N)", pr.ids.len(), sh.window));
-    }
-    let reading = api.tools.as_ref().filter(|t| t.choice != ToolChoice::None);
-    let tools_cfg = reading.map(|t| ToolsCfg {
-        choice: t.choice.clone(),
-        parallel: t.parallel,
-        format: sh.chat.as_ref().map_or(Format::Hermes, Format::of),
-        list: t.list.clone(),
-        prefix: pr.prefix.clone(),
-        stream: api.stream,
-    });
-    let cfg = Cfg {
-        chat: true,
-        in_thinking: pr.in_thinking,
-        stops: r.stop.clone(),
-        include_stop: r.include_stop,
-        skip_special: r.skip_special && reading.is_none(),
-        hide_reasoning: true,
-        tools: tools_cfg,
-        lead: String::new(),
-        xtml: sh.chat.as_ref().filter(|c| c.is_xtml()).map(|_| pr.text.ends_with(crate::conv::XTML_THINK)),
-    };
-    let reply = Reply {
-        params: r.params.clone(),
-        max_new: r.max_new.min(sh.window - pr.ids.len()).max(1),
-        ignore_eos: r.ignore_eos,
-        logprobs: None,
-        stop_ids: r.stop_ids.clone(),
-    };
-    let h = match (Remote { tx: tx.clone(), window: sh.window }).start_with(&pr.ids, pr.images.clone(), &reply) {
-        Ok(h) => h,
-        Err(e) => return anthropic_error(s, cors, 500, &e.to_string()),
-    };
-    let abort = h.abort.clone();
-    let mid = format!("msg_{:016x}{id:08x}", fresh_seed());
-    let (name, n_in) = (jstr(&sh.name), pr.ids.len());
-    let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
-    std::thread::scope(|sc| {
-        let tok = &sh.tok;
-        sc.spawn(move || drive(0, h, Choice::new(cfg), tok, !api.stream, out_tx, None));
-        if api.stream {
-            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
-            let mut ok = s.write_all(head.as_bytes()).is_ok()
-                && event(s, "message_start", &format!("\"message\":{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":{n_in},\"output_tokens\":0}}}}"));
-            let mut blocks = Blocks::default();
-            while ok {
-                match out_rx.recv_timeout(WAIT_TICK) {
-                    // (waiting for its turn or its prompt: a ping, as Anthropic's API sends them, and a look at the client)
-                    Err(RecvTimeoutError::Timeout) => ok = event(s, "ping", "") && !client_gone(s),
-                    Ok(Out::Delta(_, d)) => ok = blocks.delta(s, &d),
-                    Ok(Out::Done { last, done, .. }) => {
-                        let _ = blocks.delta(s, &last)
-                            && blocks.close(s)
-                            && event(
-                                s,
-                                "message_delta",
-                                &format!(
-                                    "\"delta\":{{\"stop_reason\":\"{}\",\"stop_sequence\":null}},\"usage\":{{\"output_tokens\":{}}}",
-                                    if blocks.called { "tool_use" } else { stop_reason(done.finish_reason) },
-                                    done.tokens
-                                ),
-                            )
-                            && event(s, "message_stop", "")
-                            && s.write_all(b"0\r\n\r\n").is_ok();
-                        return;
-                    }
-                    Ok(Out::Failed(e)) => {
-                        eprintln!("glyd: a request failed: {e}");
-                        let _ =
-                            event(s, "error", &format!("\"error\":{{\"type\":\"api_error\",\"message\":{}}}", jstr(&e))) && s.write_all(b"0\r\n\r\n").is_ok();
-                        return;
-                    }
-                    Err(RecvTimeoutError::Disconnected) => return,
-                }
-            }
-            // (the client went away: the engine stops after the pass it is in, or skips the reply where its turn has not come)
-            abort.store(true, Ordering::Relaxed);
-            return;
-        }
-        loop {
-            match out_rx.recv_timeout(WAIT_TICK) {
-                Err(RecvTimeoutError::Timeout) if client_gone(s) => {
-                    abort.store(true, Ordering::Relaxed);
-                    return;
-                }
-                Err(RecvTimeoutError::Timeout) | Ok(Out::Delta(..)) => {}
-                Ok(Out::Done { done, .. }) => {
-                    let mut content: Vec<String> =
-                        done.content.iter().filter(|t| !t.is_empty()).map(|t| format!("{{\"type\":\"text\",\"text\":{}}}", jstr(t))).collect();
-                    for c in &done.calls {
-                        let input = json::parse(&c.arguments).ok().filter(|x| matches!(x, Value::Object(_))).unwrap_or(Value::Object(vec![]));
-                        content.push(format!(
-                            "{{\"type\":\"tool_use\",\"id\":{},\"name\":{},\"input\":{}}}",
-                            jstr(&tools::new_id()),
-                            jstr(&c.name),
-                            json::to_compact(&input)
-                        ));
-                    }
-                    let body = format!(
-                        "{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[{}],\"stop_reason\":\"{}\",\"stop_sequence\":null,\"usage\":{{\"input_tokens\":{n_in},\"output_tokens\":{}}}}}",
-                        content.join(","),
-                        if done.calls.is_empty() { stop_reason(done.finish_reason) } else { "tool_use" },
-                        done.tokens
-                    );
-                    return respond_with(s, 200, "application/json", cors, body.as_bytes());
-                }
-                Ok(Out::Failed(e)) => return anthropic_error(s, cors, 500, &e),
-                Err(RecvTimeoutError::Disconnected) => return anthropic_error(s, cors, 500, "the engine stopped"),
-            }
-        }
-    });
-}
-
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn an_anthropic_request_as_the_openai_one() {
-        let v = json::parse(r#"{"system":[{"type":"text","text":"Be brief."}],"max_tokens":50,"stop_sequences":["END"],"tool_choice":{"type":"any"},
-            "tools":[{"name":"ls","description":"list","input_schema":{"type":"object"}}],
-            "messages":[{"role":"user","content":"list"},{"role":"assistant","content":[{"type":"text","text":"Sure."},{"type":"tool_use","id":"t1","name":"ls","input":{"dir":"."}}]},
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"a.txt"}]}]}]}"#).unwrap();
-        let o = openai_of(&v).unwrap();
-        let roles: Vec<&str> = o.get("messages").and_then(Value::as_array).unwrap().iter().filter_map(|m| m.get("role").and_then(Value::as_str)).collect();
-        assert_eq!(roles, ["system", "user", "assistant", "tool"]);
-        let m = o.get("messages").and_then(Value::as_array).unwrap();
-        assert_eq!(
-            m[2].get("tool_calls").and_then(Value::as_array).unwrap()[0].get("function").and_then(|f| f.get("name")).and_then(Value::as_str),
-            Some("ls")
-        );
-        assert_eq!(m[3].get("content").and_then(Value::as_str), Some("a.txt"));
-        assert_eq!(o.get("tool_choice").and_then(Value::as_str), Some("required"));
-        assert_eq!(o.get("stop").and_then(Value::as_array).map(|a| a.len()), Some(1));
-        assert_eq!(o.get("chat_template_kwargs").and_then(|k| k.get("enable_thinking")).and_then(Value::as_bool), Some(false));
-        // (the messages the template reads)
-        assert!(tools::template_messages(&o).is_ok());
-        // an image block: left out where the model reads text alone; where it reads images, an image_url part beside the text, in order
-        let v = json::parse(r#"{"max_tokens":9,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},{"type":"text","text":"What is it?"},{"type":"image","source":{"type":"url","url":"https://x/y.jpg"}}]}]}"#).unwrap();
-        let o = openai_of_with(&v, false).unwrap();
-        assert_eq!(
-            o.get("messages").and_then(Value::as_array).and_then(|m| m.first()).and_then(|m| m.get("content")).and_then(Value::as_str),
-            Some("What is it?")
-        );
-        let o = openai_of_with(&v, true).unwrap();
-        let mut urls = Vec::new();
-        let m = tools::template_messages_with(&o, Some(&mut urls)).unwrap();
-        assert_eq!(urls, ["data:image/png;base64,AAAA", "https://x/y.jpg"]);
-        assert_eq!(m[0].get("content").and_then(Value::as_str), Some(format!("{0}What is it?{0}", tools::IMAGE_PLACE).as_str()));
-    }
-
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -2739,16 +2582,16 @@ mod tests {
         assert!(tools::template_messages(&json::parse(r#"{"messages":[]}"#).unwrap()).is_err());
     }
 
-    use crate::sched::tests::Fake;
+    pub(crate) use crate::sched::tests::Fake;
     use std::sync::atomic::Ordering::Relaxed;
 
     /// A server on a made-up model (`Fake`: a token after tokens is a hash of them, its row of logits has 10.0 for that token and 5.0 for the next) with a tokenizer whose words are its tokens: what a client of the API sees,
     /// through the real handler, scheduler and sockets, with no GPU.
-    fn serve_fake(f: Fake, template: Option<&str>, users: usize) -> std::net::SocketAddr {
+    pub(crate) fn serve_fake(f: Fake, template: Option<&str>, users: usize) -> std::net::SocketAddr {
         serve_fake_with(f, template, users, false, None, &[])
     }
 
-    fn serve_fake_with(
+    pub(crate) fn serve_fake_with(
         f: Fake,
         template: Option<&str>,
         users: usize,
@@ -2777,7 +2620,7 @@ mod tests {
     }
 
     /// A request and its whole answer: (status, the body, with a chunked body put together).
-    fn call(addr: std::net::SocketAddr, path: &str, body: &str) -> (u16, String) {
+    pub(crate) fn call(addr: std::net::SocketAddr, path: &str, body: &str) -> (u16, String) {
         let mut c = TcpStream::connect(addr).unwrap();
         c.write_all(format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
             .unwrap();
@@ -2803,21 +2646,21 @@ mod tests {
     }
 
     /// The JSON of each `data:` event of a streamed answer (`[DONE]` last, as the string it is).
-    fn events(body: &str) -> Vec<json::Value> {
+    pub(crate) fn events(body: &str) -> Vec<json::Value> {
         body.split("\n\n")
             .filter_map(|e| e.strip_prefix("data: "))
             .map(|d| if d == "[DONE]" { Value::String("[DONE]".to_string()) } else { json::parse(d).unwrap() })
             .collect()
     }
 
-    fn f64_of(v: &Value) -> f64 {
+    pub(crate) fn f64_of(v: &Value) -> f64 {
         match v {
             Value::Number(n) => n.parse().unwrap(),
             other => panic!("{other:?} is not a number"),
         }
     }
 
-    fn at<'a>(v: &'a Value, path: &[&str]) -> &'a Value {
+    pub(crate) fn at<'a>(v: &'a Value, path: &[&str]) -> &'a Value {
         path.iter().fold(v, |v, k| match k.parse::<usize>() {
             Ok(i) => &v.as_array().unwrap_or_else(|| panic!("no list at {k} in {v:?}"))[i],
             Err(_) => v.get(k).unwrap_or_else(|| panic!("no {k} in {v:?}")),
@@ -3206,7 +3049,10 @@ mod tests {
             "Token s3cret key",
         ] {
             let (st, _, body) = get("/v1/models", Some(bad));
-            assert_eq!((st, body.as_str()), (401, "{\"error\":\"Unauthorized\"}"), "{bad:?}");
+            assert!(
+                st == 401 && body.starts_with("{\"error\":{\"message\":\"Incorrect API key provided") && body.contains("\"code\":\"invalid_api_key\""),
+                "{bad:?}: {st} {body}"
+            );
         }
         assert_eq!(get("/v1/models", None).0, 401);
         // every path under /v1 asks for it, one that does not exist too (the key is asked before the route is looked for)
@@ -3266,7 +3112,7 @@ mod tests {
             let _ = w.write_all(b"\r\n\r\n");
         });
         assert_eq!(first(&out), "HTTP/1.1 431 Request Header Fields Too Large", "{}", &out[..out.len().min(300)]);
-        assert!(out.contains("\"code\":431") && out.contains("header block"), "{out}");
+        assert!(out.contains("\"type\":\"invalid_request_error\"") && out.contains("header block"), "{out}");
         assert!(t0.elapsed() < Duration::from_secs(20), "{:?}", t0.elapsed());
         // a request line of 96 MiB is the same block
         let out = send_raw(addr, |w| {
@@ -3511,12 +3357,12 @@ mod tests {
         assert!(!thinking && t.ends_with(&format!("<|assistant|><think></think>{p}")) && p.starts_with("<tool_call>get_weather"), "{t}");
     }
 
-    fn serve_script(reply: &str) -> std::net::SocketAddr {
+    pub(crate) fn serve_script(reply: &str) -> std::net::SocketAddr {
         serve_script_with(reply, &qwen3_template())
     }
 
     /// `serve_script` with the chat template given.
-    fn serve_script_with(reply: &str, template: &str) -> std::net::SocketAddr {
+    pub(crate) fn serve_script_with(reply: &str, template: &str) -> std::net::SocketAddr {
         // (a special token of the reply is a piece of its own)
         let mut pieces: Vec<String> = Vec::new();
         for (k, part) in reply.split("<|im_end|>").enumerate() {
@@ -3556,7 +3402,7 @@ mod tests {
 
     /// A streamed chat answer put together: (thinking, content, the calls as (id, name, arguments) by index, the finish reasons, the usage's completion tokens).
     #[allow(clippy::type_complexity)]
-    fn put_together(body: &str) -> (String, String, Vec<(String, String, String)>, Vec<String>, Option<f64>) {
+    pub(crate) fn put_together(body: &str) -> (String, String, Vec<(String, String, String)>, Vec<String>, Option<f64>) {
         let (mut think, mut content, mut calls, mut finishes, mut usage) =
             (String::new(), String::new(), Vec::<(String, String, String)>::new(), Vec::new(), None);
         for e in events(body) {
@@ -3632,6 +3478,109 @@ mod tests {
         assert_eq!(a(r#"{"stream":true,"stream_options":{}}"#), Ok((true, false)));
         assert_eq!(a(r#"{"stream":true,"stream_options":{"include_usage":true}}"#), Ok((true, true)));
         assert!(a(r#"{"stream_options":{"include_usage":true}}"#).unwrap_err().contains("only be defined when `stream=True`"));
+    }
+
+    /// Fill in the middle: the prompt is the text before, `suffix` the text after, and the model's own tokens put them in order (`<prefix>BEFORE<suffix>AFTER<middle>`); a model with no such tokens refuses `suffix`, in words.
+    #[test]
+    fn a_suffix_is_a_fill_in_the_middle() {
+        let shared = |words: &[&str]| Shared {
+            tok: crate::tok::tests::toy(words),
+            chat: None,
+            name: "m".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 2048,
+            thinking: None,
+            refused: &[],
+        };
+        let ask = |sh: &Shared, body: &str| {
+            let v = json::parse(body).unwrap();
+            let api = api_of(&v, false, sh.vocab).unwrap();
+            prompts_of(sh, &v, false, &api, &request_of(&v, sh.window, &sh.defaults))
+        };
+        let qwen = shared(&["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>", "def", "add", "return", "a"]);
+        let p = ask(&qwen, r#"{"prompt":"def add","suffix":"return a"}"#).unwrap();
+        // (the ids the toy gives: the three tokens are 1, 2, 3 and the words after them)
+        assert_eq!(p[0].ids, [1, 4, 5, 2, 6, 7, 3]);
+        assert_eq!(p[0].text, "def add");
+        // an empty suffix is the end of the file (still a fill in the middle); none, or null, is a plain prompt
+        assert_eq!(ask(&qwen, r#"{"prompt":"def add","suffix":""}"#).unwrap()[0].ids, [1, 4, 5, 2, 3]);
+        assert_eq!(ask(&qwen, r#"{"prompt":"def add"}"#).unwrap()[0].ids, [4, 5]);
+        assert_eq!(ask(&qwen, r#"{"prompt":"def add","suffix":null}"#).unwrap()[0].ids, [4, 5]);
+        let e = |sh: &Shared, b: &str| ask(sh, b).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e(&qwen, r#"{"prompt":["a","b"],"suffix":"x"}"#).contains("`prompt` that is one string"));
+        assert!(e(&qwen, r#"{"prompt":"a","suffix":5}"#).contains("`suffix` must be a string"));
+        assert!(e(&shared(&["def", "add"]), r#"{"prompt":"def","suffix":"add"}"#).contains("no fill-in-the-middle tokens"));
+        // (a model that has only part of the set has none)
+        assert!(e(&shared(&["<|fim_prefix|>", "<|fim_suffix|>", "def"]), r#"{"prompt":"def","suffix":"def"}"#).contains("no fill-in-the-middle tokens"));
+    }
+
+    /// OpenAI's error form: `{"error": {"message", "type", "param", "code"}}` with the status a client keys on, for what the server itself refuses as for what a request does; a streamed reply's chunks carry `usage: null` where the usage is asked for.
+    #[test]
+    fn errors_and_streams_as_openai_writes_them() {
+        let addr = serve_fake_with(Fake::new(64, 32), None, 2, false, Some("k"), &[]);
+        let raw = |method: &str, path: &str, auth: bool| {
+            let mut c = TcpStream::connect(addr).unwrap();
+            let a = if auth { "Authorization: Bearer k\r\n" } else { "" };
+            c.write_all(format!("{method} {path} HTTP/1.1\r\nHost: x\r\n{a}Content-Length: 0\r\n\r\n").as_bytes()).unwrap();
+            let mut out = String::new();
+            c.read_to_string(&mut out).unwrap();
+            let (head, body) = out.split_once("\r\n\r\n").unwrap();
+            (head.to_string(), json::parse(body).unwrap_or_else(|e| panic!("{body}: {e}")))
+        };
+        let shape = |b: &Value, kind: &str, code: Option<&str>| {
+            assert_eq!(at(b, &["error", "type"]).as_str(), Some(kind), "{b:?}");
+            assert_eq!(at(b, &["error", "param"]), &Value::Null);
+            assert_eq!(at(b, &["error", "code"]).as_str(), code, "{b:?}");
+            assert!(at(b, &["error", "message"]).as_str().is_some_and(|m| !m.is_empty()));
+        };
+        let (h, b) = raw("GET", "/v1/models", false);
+        assert!(h.starts_with("HTTP/1.1 401") && h.contains("WWW-Authenticate: Bearer"), "{h}");
+        shape(&b, "authentication_error", Some("invalid_api_key"));
+        let (h, b) = raw("GET", "/v1/nothing", true);
+        assert!(h.starts_with("HTTP/1.1 404"), "{h}");
+        shape(&b, "invalid_request_error", None);
+        let (h, b) = raw("PUT", "/v1/chat/completions", true);
+        assert!(h.starts_with("HTTP/1.1 405"), "{h}");
+        shape(&b, "invalid_request_error", None);
+        // a body past the limit is 413, before any of it is read
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer k\r\nContent-Length: 99999999999\r\n\r\n").unwrap();
+        let mut out = String::new();
+        c.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 413 Payload Too Large"), "{out}");
+        shape(&json::parse(out.split_once("\r\n\r\n").unwrap().1).unwrap(), "invalid_request_error", None);
+        let (_, b) = raw("GET", "/v1/nothing", true);
+        assert_eq!(at(&b, &["error", "message"]).as_str(), Some("Invalid URL (GET /v1/nothing)"));
+        // one model by its name, as `models.retrieve` asks (the slash of an org's model name may be written %2F)
+        let (h, b) = raw("GET", "/v1/models/fake", true);
+        assert!(h.starts_with("HTTP/1.1 200"), "{h}");
+        assert_eq!((at(&b, &["id"]).as_str(), at(&b, &["object"]).as_str()), (Some("fake"), Some("model")));
+        let (h, b) = raw("GET", "/v1/models/gpt-4", true);
+        assert!(h.starts_with("HTTP/1.1 404"), "{h}");
+        assert!(at(&b, &["error", "message"]).as_str().unwrap().contains("`gpt-4` does not exist"));
+        // a refused request: the type, and no code where there is none to act on
+        let mut c = TcpStream::connect(addr).unwrap();
+        let body = r#"{"messages":[{"role":"user","content":"hi"}],"n":0}"#;
+        c.write_all(
+            format!("POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer k\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes(),
+        )
+        .unwrap();
+        let mut out = String::new();
+        c.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 400"), "{out}");
+        shape(&json::parse(out.split_once("\r\n\r\n").unwrap().1).unwrap(), "invalid_request_error", None);
+        // a stream that asks for its usage: every chunk has `usage` (null), the last has it and no choices
+        let open = serve_fake(Fake::new(64, 32), None, 2);
+        let chat = r#""messages":[{"role":"user","content":"hello there"}],"max_tokens":3,"temperature":0"#;
+        let (st, raw_out) = call(open, "/v1/chat/completions", &format!("{{{chat},\"stream\":true,\"stream_options\":{{\"include_usage\":true}}}}"));
+        assert_eq!(st, 200, "{raw_out}");
+        let evs = events(&raw_out);
+        let chunks: Vec<&Value> = evs.iter().filter(|e| e.get("object").is_some()).collect();
+        assert!(chunks.len() > 2, "{raw_out}");
+        let (last, rest) = chunks.split_last().unwrap();
+        assert!(rest.iter().all(|e| e.get("usage") == Some(&Value::Null)), "{raw_out}");
+        assert_eq!((at(last, &["choices"]).as_array().map(<[Value]>::len), f64_of(at(last, &["usage", "completion_tokens"]))), (Some(0), 3.0));
     }
 
     const CALL: &str = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>";
@@ -4206,7 +4155,7 @@ mod tests {
             (",\"response_format\":{\"type\":\"xml\"}", "response_format of type xml is not supported"),
             (",\"bad_words\":[\"x\"]", "bad_words is not supported by this engine yet (GLYD_ENGINE=0 runs vLLM, which has it)"),
             (",\"prompt_logprobs\":1", "prompt_logprobs is not supported"),
-            (",\"suffix\":\"x\"", "suffix is not supported"),
+            (",\"suffix\":\"x\"", "no fill-in-the-middle tokens"),
             (",\"best_of\":3", "best_of more than n is not supported"),
             (",\"use_beam_search\":true", "use_beam_search is not supported"),
             (",\"priority\":2", "priority is not supported"),

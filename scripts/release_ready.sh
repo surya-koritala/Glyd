@@ -5,7 +5,8 @@
 #
 # It says, of COMMIT: CI's (ci.yml) result on that exact commit, in a push or a run by hand (release.yml refuses a tag whose commit
 # CI has not passed), whether its version files say the version (scripts/bump_version.py --check, on COMMIT's own files), whether
-# the tag exists already elsewhere, and whether glyd-gpu VERSION is on PyPI: the extras pin glyd-gpu==VERSION, so it publishes first.
+# the tag exists already elsewhere, and says whether glyd-gpu VERSION is on PyPI already (release-gpu.yml publishes it on the same tag;
+# the extras pin glyd-gpu==VERSION, and install-check.yml retries until both are there).
 # Exit 0: ready to tag.
 set -euo pipefail
 [ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '2,9p' "$0"; exit 2; }
@@ -40,7 +41,7 @@ t=$(gh api "repos/$here/commits/v$py" --jq .sha 2>/dev/null || true)
 if [[ "$t" =~ ^[0-9a-f]{40}$ ]]; then
   [ "$t" = "$sha" ] && echo "  (tag v$py exists already, at this commit)" || no "tag v$py exists already in $here at ${t:0:12}, not at this commit"
 fi
-echo "glyd-gpu $py (the extras' pin; it publishes first):"
-if curl -fsS -o /dev/null "https://pypi.org/pypi/glyd-gpu/$py/json" 2>/dev/null; then echo "  on PyPI"; else no "glyd-gpu $py is not on PyPI yet"; fi
+echo "glyd-gpu $py (the extras' pin; release-gpu.yml publishes it on this tag):"
+if curl -fsS -o /dev/null "https://pypi.org/pypi/glyd-gpu/$py/json" 2>/dev/null; then echo "  on PyPI already"; else echo "  not on PyPI yet: the tag publishes it (its PyPI publisher must name $here release-gpu.yml, environment pypi)"; fi
 
 if $ready; then echo "READY: tag v$py at $sha"; else echo "not ready to tag v$py"; exit 1; fi

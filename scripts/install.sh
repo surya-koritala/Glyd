@@ -22,6 +22,8 @@
 #                     build (the list below still applies to it: a build that needs other versions says GLYD_CONSTRAINTS=none)
 #   GLYD_WITH_VLLM    1: on Linux with an NVIDIA GPU, install Glyd's Python tool with vLLM and PyTorch (about 8 GB), which also runs the bf16
 #                     models Glyd's engine does not; without it the install is the engine alone (Rust, about 100 MB, no Python)
+#   GLYD_RELEASE_URL  a mirror (https://...) or a folder (file:///DIR) that holds the release's tarballs and their .sha256 files, in place of
+#                     the GitHub release's (a build of one's own, the release's tests before it exists)
 #   GLYD_ENGINE_TARBALL  a local glyd-engine-vX.Y.Z-PLATFORM.tar.gz to install in place of the release's (a build of one's own, the release's tests)
 #   GLYD_CONSTRAINTS  none: resolve the packages fresh, where one of the versions listed below has been withdrawn from PyPI
 set -eu
@@ -48,8 +50,11 @@ finish() {
   if [ "$rc" != 0 ] && [ -n "$resume" ]; then warn "the install did not finish (see above). Run the same command again: $resume"; fi
 }
 
-# HTTPS only, and a failing status is a failure (a 404 page is not a file)
-fetch() { curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 2 -o "$2" "$1"; }
+# HTTPS only (a folder too where GLYD_RELEASE_URL names one), and a failing status is a failure (a 404 page is not a file)
+fetch() {
+  if [ -n "${GLYD_RELEASE_URL:-}" ]; then proto='=https,file'; else proto='=https'; fi
+  curl --proto "$proto" --tlsv1.2 -fsSL --retry 3 --retry-delay 2 -o "$2" "$1"
+}
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d ' ' -f 1
@@ -81,7 +86,7 @@ install_cli() {
   bin=${XDG_BIN_HOME:-$HOME/.local/bin}
   cli=${XDG_DATA_HOME:-$HOME/.local/share}/glyd/cli
   name=glyd-v$GLYD_VERSION-$plat
-  url=$REPO/releases/download/v$GLYD_VERSION
+  url=${GLYD_RELEASE_URL:-$REPO/releases/download/v$GLYD_VERSION}
   for f in glyd glyd-store; do  # (before anything is downloaded: only a link of this installer's own is replaced)
     if [ -e "$bin/$f" ] || [ -L "$bin/$f" ]; then
       case $(readlink "$bin/$f" 2>/dev/null || true) in
@@ -150,7 +155,7 @@ install_engine() {
     say "Installing Glyd's engine from $GLYD_ENGINE_TARBALL (GLYD_ENGINE_TARBALL)"
     cp "$GLYD_ENGINE_TARBALL" "$tmp/$ename.tar.gz" || die "could not read $GLYD_ENGINE_TARBALL."
   else
-    eurl=$REPO/releases/download/v$GLYD_VERSION
+    eurl=${GLYD_RELEASE_URL:-$REPO/releases/download/v$GLYD_VERSION}
     say "Installing Glyd's engine and its GPU library, $GLYD_VERSION for $eplat (the release's tarball, checked against its sha256)"
     fetch "$eurl/$ename.tar.gz" "$tmp/$ename.tar.gz" || die "could not download $eurl/$ename.tar.gz: check the network, and that release $GLYD_VERSION has it ($REPO/releases)."
     fetch "$eurl/$ename.tar.gz.sha256" "$tmp/$ename.sha256" || die "could not download the engine's checksum ($eurl/$ename.tar.gz.sha256)."
