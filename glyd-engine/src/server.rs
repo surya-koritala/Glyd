@@ -10,7 +10,7 @@ use crate::conv::{Gen, Outcome, Request, Talk};
 use crate::ffi::{err, Error, Result};
 use crate::model::{Engine, Finish, Reply, MAX_ROWS};
 use crate::sampler::{fresh_seed, Lp, Params};
-use crate::sched::{stats_json, Backend, Ev, Sched, Submit};
+use crate::sched::{stats_json, Ev, ModelStep, Sched, Submit};
 use crate::tok::Tok;
 use crate::tools::{self, Format, ToolChoice, ToolEv, Tools};
 use crate::wire;
@@ -2263,7 +2263,7 @@ pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &S
 }
 
 /// `work` on any scheduler (the tests run it on a scheduler of a made-up model).
-pub fn work_with<B: Backend>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
+pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
     // A thread of its own takes the jobs off the queue as they come: the requests' threads (which parse, tokenize and apply the chat template) start at once, and not at the end of the prompt pass or decode
     // step the scheduler is in (20 ms of every first token with eight requests at once), and the sequences they make are passed on; the scheduler takes them in at its next round.
     let (wtx, wrx) = std::sync::mpsc::channel::<Job>();

@@ -4,10 +4,14 @@
 //! The cache's extra memory is shared and finite. After every step the backend says which blocks the step could not store exactly (they are named lost) and which it kept in the scarce second extra memory (heavy). A sequence
 //! that holds a lost block has the step's output taken back, never used or sent: it gives its pages back and waits until the sequences that were running with it have finished, then runs again from its tokens; one that is lost
 //! alone twice, or six times, ends with an error in words. Lost and heavy blocks are never kept in the prefix cache.
+//!
+//! The scheduler is the same for every model: it drives a `ModelStep` (docs/design/runtime.md, section 2). A step keeps its cache one of two ways: pages shared by every sequence (the dense Qwen3 engine's,
+//! with the prefix cache and preemption above), or a room of the whole context for each of a few sequences (`ModelStep::slots`: the description executor, `src/dynamic`), where a sequence holds one slot from
+//! its admission to its end, nothing is shared and nothing is preempted for room.
 
 use crate::ffi::Result;
 use crate::kv::{chain_key, Lost, Pager, ALONE_MESSAGE, PAGE};
-use crate::model::{Engine, Finish, PrefillJob, Reply, Row, Sample, FUSED_ROWS, MAX_ROWS};
+use crate::model::{Engine, FUSED_ROWS, MAX_ROWS};
 use crate::sampler::{logprobs_of, Lp, Sampler};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
@@ -34,14 +38,62 @@ pub struct Submit {
     pub images: Vec<Arc<crate::vision::Image>>,
 }
 
-/// What a scheduler runs on: the model's steps on pages.
-pub trait Backend {
+/// One sequence's prompt chunk in a batch of them: `tokens` at positions `start` on, into `pages` (a slot step: `[slot]`); where `last`, the token after the chunk is wanted.
+pub struct PrefillJob<'a> {
+    pub pages: &'a [i32],
+    pub start: usize,
+    pub tokens: &'a [u32],
+    pub last: bool,
+}
+
+/// One sequence's row of a decode step: the token whose keys and values are written at `pos` (the sequence's next position) and the pages of the sequence (at least pos / 16 + 1; a slot step: `[slot]`).
+pub struct Row<'a> {
+    pub token: u32,
+    pub pos: usize,
+    pub pages: &'a [i32],
+}
+
+/// A sampled token with its logit and, where asked, its logprob.
+#[derive(Clone, Copy, Debug)]
+pub struct Sample {
+    pub token: u32,
+    pub logit: f32,
+    pub logprob: Option<f32>,
+}
+
+/// What a reply is asked to be: sampling, length, and whether the end-of-sequence token ends it.
+#[derive(Clone, Debug, Default)]
+pub struct Reply {
+    pub params: crate::sampler::Params,
+    pub max_new: usize,
+    pub ignore_eos: bool,
+    /// Log-probabilities asked for: the number of likeliest tokens with each (0: the chosen token's alone).
+    pub logprobs: Option<usize>,
+    /// Tokens besides the end-of-sequence tokens that end the reply (vLLM's `stop_token_ids`); not part of its text.
+    pub stop_ids: Vec<u32>,
+}
+
+/// How a reply ended: the model ended it, `max_new` or the context was reached, or the caller stopped it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Finish {
+    Stop,
+    Length,
+    Stopped,
+}
+
+/// What a scheduler runs on: the model's steps on its cache (docs/design/runtime.md: `ModelStep`).
+pub trait ModelStep {
     /// The longest sequence, in tokens.
     fn window(&self) -> usize;
     /// The most prompt tokens a chunk takes.
     fn chunk(&self) -> usize;
-    /// Pages in the cache.
+    /// Pages in the cache (a slot step: unused).
     fn pages(&self) -> usize;
+    /// Some(k) where the cache is a room of `window()` tokens for each of k sequences, not shared pages: a row's and a chunk's `pages` is then `[slot]`, and `release(&[slot])` makes the slot empty
+    /// (position 0, recurrent states zeroed). None: shared pages.
+    fn slots(&self) -> Option<usize> {
+        None
+    }
     fn eos(&self) -> Vec<i64>;
     /// `tokens` at positions `start` on into `pages`; with `last`, the sample after the final token.
     fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>>;
@@ -77,7 +129,7 @@ pub trait Backend {
     }
 }
 
-impl Backend for &mut Engine {
+impl ModelStep for &mut Engine {
     fn window(&self) -> usize {
         self.capacity()
     }
@@ -211,7 +263,7 @@ const SHORT_PASS: usize = 256;
 const MAX_SKIPS: u32 = 4;
 const MAX_LONG_SKIPS: u32 = 2;
 
-pub struct Sched<B: Backend> {
+pub struct Sched<B: ModelStep> {
     be: B,
     pager: Pager,
     users: usize,
@@ -229,12 +281,16 @@ pub struct Sched<B: Backend> {
     /// The tokens of the last prompt pass, and the rounds in a row that gave their decode step up for the prompts that came in (see `tick`).
     pass_tokens: usize,
     skips: u32,
+    /// A slot step's free slots, the lowest last (None: the cache is pages).
+    free: Option<Vec<i32>>,
 }
 
-impl<B: Backend> Sched<B> {
-    /// A scheduler for up to `users` sequences at a step (1 to MAX_ROWS).
+impl<B: ModelStep> Sched<B> {
+    /// A scheduler for up to `users` sequences at a step (1 to MAX_ROWS, and at most a slot step's slots).
     pub fn new(be: B, users: usize) -> Sched<B> {
-        let pager = Pager::new(be.pages());
+        let slots = be.slots();
+        let pager = Pager::new(if slots.is_some() { 0 } else { be.pages() });
+        let users = slots.map_or(users, |k| users.min(k)).clamp(1, MAX_ROWS);
         let eos = be.eos();
         let (emit, batches) = std::sync::mpsc::channel::<Vec<(Sender<Ev>, Ev)>>();
         std::thread::spawn(move || {
@@ -249,7 +305,7 @@ impl<B: Backend> Sched<B> {
             emit,
             be,
             pager,
-            users: users.clamp(1, MAX_ROWS),
+            users,
             waiting: VecDeque::new(),
             active: Vec::new(),
             next_id: 0,
@@ -258,16 +314,25 @@ impl<B: Backend> Sched<B> {
             trace: crate::tune!("GLYD_ENGINE_TRACE_SCHED").is_some(),
             pass_tokens: 0,
             skips: 0,
+            free: slots.map(|k| (0..k as i32).rev().collect()),
         }
+    }
+
+    /// The sequences that run at once at most.
+    pub fn users(&self) -> usize {
+        self.users
     }
 
     pub fn idle(&self) -> bool {
         self.active.is_empty() && self.waiting.is_empty()
     }
 
-    /// Pages that can be had now (free or only cached).
+    /// Pages that can be had now (free or only cached); a slot step's free slots.
     pub fn available(&self) -> usize {
-        self.pager.available()
+        match &self.free {
+            Some(f) => f.len(),
+            None => self.pager.available(),
+        }
     }
 
     /// Every cached page that no sequence holds given up and cleared (the extra memory they hold goes back): of a scheduler that is idle, nothing is held.
@@ -397,9 +462,18 @@ impl<B: Backend> Sched<B> {
         for s in self.active.drain(..).chain(self.waiting.drain(..)) {
             self.pending.push((s.out.clone(), Ev::End(Err(msg.to_string()))));
         }
+        let _ = self.be.lost();
+        if let Some(k) = self.be.slots() {
+            // (every slot emptied)
+            let all: Vec<i32> = (0..k as i32).collect();
+            let _ = self.be.release(&all);
+            self.free = Some(all.into_iter().rev().collect());
+            self.flush();
+            self.gauges();
+            return;
+        }
         self.pager = Pager::new(self.be.pages());
         // (nothing is sure of the pages: every one is cleared, so that the extra memory they hold goes back)
-        let _ = self.be.lost();
         let all: Vec<i32> = (0..self.be.pages() as i32).collect();
         let _ = self.be.release(&all);
         self.flush();
@@ -449,6 +523,12 @@ impl<B: Backend> Sched<B> {
                     None => break,
                 },
             };
+            if self.free.is_some() {
+                if !self.admit_slot(k) {
+                    break;
+                }
+                continue;
+            }
             let need = self.waiting[k].tokens.len().div_ceil(PAGE) + 1;
             if self.pager.available() < need + self.active.len() {
                 if self.active.is_empty() {
@@ -478,8 +558,30 @@ impl<B: Backend> Sched<B> {
         Ok(())
     }
 
-    /// Pages for the sequence `id`'s first `upto` tokens, the newest sequences giving theirs back where there are none to take. False where `id` itself was sent back to wait.
+    /// Waiting sequence `k` given a slot of its own (a slot step); false where none is free. A prompt the slot cannot hold with a token after it ends at once with an error in words.
+    fn admit_slot(&mut self, k: usize) -> bool {
+        let window = self.be.window();
+        if self.waiting[k].tokens.len() >= window {
+            let s = self.waiting.remove(k).expect("a waiting sequence");
+            self.pending.push((s.out.clone(), Ev::End(Err(format!("{} tokens, where the context holds {window}", s.tokens.len())))));
+            return true;
+        }
+        let Some(slot) = self.free.as_mut().and_then(Vec::pop) else { return false };
+        let mut s = self.waiting.remove(k).expect("a waiting sequence");
+        s.pages = vec![slot];
+        (s.done, s.published, s.chain, s.prefilling) = (0, 0, 0, true);
+        s.after.clear();
+        self.stats.prompt += s.tokens.len() as u64;
+        self.active.push(s);
+        true
+    }
+
+    /// Pages for the sequence `id`'s first `upto` tokens, the newest sequences giving theirs back where there are none to take. False where `id` itself was sent back to wait. (A slot holds the whole
+    /// window, and a sequence ends at the window's end.)
     fn ensure_pages(&mut self, id: u64, upto: usize) -> Result<bool> {
+        if self.free.is_some() {
+            return Ok(self.active.iter().any(|s| s.id == id));
+        }
         loop {
             let Some(i) = self.active.iter().position(|s| s.id == id) else { return Ok(false) };
             if self.active[i].pages.len() >= upto.div_ceil(PAGE) {
@@ -597,8 +699,17 @@ impl<B: Backend> Sched<B> {
         Ok(())
     }
 
-    /// The sequence's full pages given to the cache and all its pages released; those nothing names are cleared on the GPU.
+    /// The sequence's full pages given to the cache and all its pages released; those nothing names are cleared on the GPU. A slot step's slot is emptied and free again.
     fn give_back(&mut self, s: &mut Seq) -> Result<()> {
+        if let Some(free) = &mut self.free {
+            let slots = std::mem::take(&mut s.pages);
+            free.extend(slots.iter().copied());
+            free.sort_unstable_by(|a, b| b.cmp(a));
+            let t = std::time::Instant::now();
+            let r = self.be.release(&slots);
+            self.stats.release_ns += t.elapsed().as_nanos() as u64;
+            return r;
+        }
         while (s.published + 1) * PAGE <= s.done {
             let k = s.published;
             s.chain = self.pager.publish(s.pages[k], s.chain, &s.tokens[k * PAGE..(k + 1) * PAGE]);
@@ -622,6 +733,9 @@ impl<B: Backend> Sched<B> {
 
     /// Full pages of the prompt as far as it has run, offered to the cache at once (a request with the same first tokens that comes now finds them).
     fn publish(&mut self, i: usize) {
+        if self.free.is_some() {
+            return;
+        }
         let s = &mut self.active[i];
         while (s.published + 1) * PAGE <= s.done {
             let k = s.published;
@@ -698,8 +812,10 @@ impl<B: Backend> Sched<B> {
             }
         }
         // (the pages of a later one may have been taken from an earlier one, which went back to wait)
-        picks
-            .retain(|&(id, n)| at(&self.active, id).is_some_and(|i| self.active[i].prefilling && self.active[i].pages.len() * PAGE >= self.active[i].done + n));
+        let slots = self.free.is_some();
+        picks.retain(|&(id, n)| {
+            at(&self.active, id).is_some_and(|i| self.active[i].prefilling && (slots || self.active[i].pages.len() * PAGE >= self.active[i].done + n))
+        });
         if picks.is_empty() {
             return Ok(());
         }
@@ -777,7 +893,7 @@ impl<B: Backend> Sched<B> {
         self.stats.decode_ns += t.elapsed().as_nanos() as u64;
         self.stats.steps += 1;
         self.stats.rows += rows.len() as u64;
-        self.stats.by_rows[rows.len()] += 1;
+        self.stats.by_rows[rows.len().min(MAX_ROWS)] += 1;
         // (a row whose token could not be stored exactly has the step's output taken back below: its token is not used)
         let hit = self.after_step()?;
         let tc = std::time::Instant::now();
@@ -944,7 +1060,7 @@ pub(crate) mod tests {
         }
     }
 
-    impl Backend for Fake {
+    impl ModelStep for Fake {
         fn window(&self) -> usize {
             self.store.len() * PAGE
         }
@@ -1041,7 +1157,7 @@ pub(crate) mod tests {
         Reply { params: Params { temperature: 0.0, ..Params::default() }, max_new, ignore_eos: false, logprobs: None, stop_ids: Vec::new() }
     }
 
-    pub fn add(s: &mut Sched<Fake>, prompt: Vec<u32>, max_new: usize) -> (Receiver<Ev>, Arc<AtomicBool>) {
+    pub fn add<B: ModelStep>(s: &mut Sched<B>, prompt: Vec<u32>, max_new: usize) -> (Receiver<Ev>, Arc<AtomicBool>) {
         let (tx, rx) = channel();
         let abort = Arc::new(AtomicBool::new(false));
         s.submit(Submit { prompt, reply: reply(max_new), out: tx, abort: abort.clone(), resumed: Default::default(), images: Vec::new() });
@@ -1060,7 +1176,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub fn run(s: &mut Sched<Fake>) {
+    pub fn run<B: ModelStep>(s: &mut Sched<B>) {
         let mut guard = 0;
         while !s.idle() {
             s.tick().unwrap();
@@ -1645,5 +1761,264 @@ pub(crate) mod tests {
         // a stop token is held back by the least length as the end token is
         let (got, _) = run_with(vec![r[first]], first + 3, vec![0]);
         assert!(got.len() >= first + 3 && !got[..first + 3].contains(&r[first]), "{got:?}");
+    }
+
+    // ---- a slot step: a room of the whole context for each sequence (the description executor's cache), driven by the same scheduler ------------------------------------------------------------------
+
+    /// A model with a cache of `slots` rooms of `window` tokens each: the token after a sequence is `next_of` all of its tokens, read from its own room, so a token written to another sequence's room, at a
+    /// wrong place, or left from a sequence that ended changes every token after it. It checks what the scheduler hands it: a chunk or a row goes on exactly where its slot's sequence is.
+    pub struct SlotFake {
+        pub rooms: Vec<Vec<u32>>,
+        pub window: usize,
+        pub chunk: usize,
+        pub batch: usize,
+        /// Slots emptied (`release`), passes of several prompts, decode steps by their rows, and the most slots in use at once.
+        pub emptied: usize,
+        pub batches: usize,
+        pub steps: Vec<usize>,
+        pub most: usize,
+        pub rows: Vec<Vec<f32>>,
+    }
+
+    impl SlotFake {
+        pub fn new(slots: usize, window: usize, chunk: usize) -> SlotFake {
+            SlotFake { rooms: vec![Vec::new(); slots], window, chunk, batch: 1, emptied: 0, batches: 0, steps: Vec::new(), most: 0, rows: Vec::new() }
+        }
+        fn put(&mut self, slot: &[i32], start: usize, tokens: &[u32]) -> u32 {
+            assert_eq!(slot.len(), 1, "a slot step's pages are its slot");
+            let room = &mut self.rooms[slot[0] as usize];
+            assert_eq!(room.len(), start, "tokens at {start} where the slot holds {}", room.len());
+            room.extend_from_slice(tokens);
+            assert!(room.len() <= self.window, "past the slot's room");
+            let next = next_of(room);
+            self.most = self.most.max(self.rooms.iter().filter(|r| !r.is_empty()).count());
+            next
+        }
+    }
+
+    impl ModelStep for SlotFake {
+        fn window(&self) -> usize {
+            self.window
+        }
+        fn chunk(&self) -> usize {
+            self.chunk
+        }
+        fn pages(&self) -> usize {
+            0
+        }
+        fn slots(&self) -> Option<usize> {
+            Some(self.rooms.len())
+        }
+        fn eos(&self) -> Vec<i64> {
+            vec![0]
+        }
+        fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
+            let t = self.put(pages, start, tokens);
+            let s = last.then_some(Sample { token: t, logit: 0.0, logprob: None });
+            if let Some(s) = s {
+                self.rows = vec![row_of(s.token)];
+            }
+            Ok(s)
+        }
+        fn prefill_rows(&self) -> usize {
+            self.batch
+        }
+        fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
+            let mut rows = Vec::new();
+            let out: Vec<Option<Sample>> = jobs
+                .iter()
+                .map(|j| {
+                    let t = self.put(j.pages, j.start, j.tokens);
+                    j.last.then(|| {
+                        rows.push(row_of(t));
+                        Sample { token: t, logit: 0.0, logprob: None }
+                    })
+                })
+                .collect();
+            self.batches += (jobs.len() > 1) as usize;
+            if !rows.is_empty() {
+                self.rows = rows;
+            }
+            Ok(out)
+        }
+        fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
+            let mut seen: Vec<i32> = rows.iter().map(|r| r.pages[0]).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), rows.len(), "two rows of a step in one slot");
+            self.steps.push(rows.len());
+            let out: Vec<Sample> = rows.iter().map(|r| Sample { token: self.put(r.pages, r.pos, &[r.token]), logit: 0.0, logprob: None }).collect();
+            self.rows = out.iter().map(|s| row_of(s.token)).collect();
+            Ok(out)
+        }
+        fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
+            self.rows.get(row).cloned().ok_or_else(|| crate::ffi::Error("no logits".into()))
+        }
+        fn release(&mut self, pages: &[i32]) -> Result<()> {
+            for &p in pages {
+                self.rooms[p as usize].clear();
+                self.emptied += 1;
+            }
+            Ok(())
+        }
+    }
+
+    /// Every sequence on a slot step gives the tokens it gives alone, however many run together, with prompts one a pass or several in one; no more run at once than there are slots, and every slot is
+    /// empty again at the end.
+    #[test]
+    fn a_slot_step_gives_each_sequence_its_tokens_alone() {
+        for (slots, users, batch, chunk) in [(1, 4, 1, 16), (3, 4, 1, 16), (4, 4, 4, 16), (4, 8, 4, 64), (8, 8, 8, 7)] {
+            let mut f = SlotFake::new(slots, 256, chunk);
+            f.batch = batch;
+            let mut s = Sched::new(f, users);
+            assert_eq!(s.users(), users.min(slots));
+            let reqs: Vec<(Vec<u32>, usize)> = (0..9).map(|k| (prompt(k as u32 + 1, 3 + 11 * k), 5 + 3 * k)).collect();
+            let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+            run(&mut s);
+            for ((p, n), rx) in reqs.iter().zip(&rx) {
+                assert_eq!(collect(rx), (reference(p, *n), Finish::Length), "slots {slots}, batch {batch}, chunk {chunk}");
+            }
+            assert!(s.be.most <= slots);
+            assert!(s.be.rooms.iter().all(Vec::is_empty) && s.be.emptied == reqs.len());
+            assert_eq!(s.available(), slots);
+            if batch > 1 && slots > 1 && chunk >= 64 {
+                assert!(s.be.batches > 0, "prompts ran together");
+            }
+            if slots > 1 {
+                assert!(s.be.steps.iter().any(|&r| r > 1), "decode steps of several rows");
+            }
+        }
+    }
+
+    /// Admission is first come, first served: with one slot the replies end in the order the requests came, and a later short one does not pass an earlier long one.
+    #[test]
+    fn admission_is_in_the_order_requests_come() {
+        let mut s = Sched::new(SlotFake::new(1, 256, 16), 4);
+        let (ends_tx, ends_rx) = channel::<usize>();
+        let rx: Vec<_> = [40usize, 2, 30, 1].iter().map(|&n| add(&mut s, prompt(n as u32, 5), n).0).collect();
+        while !s.idle() {
+            s.tick().unwrap();
+            for (k, r) in rx.iter().enumerate() {
+                while let Ok(ev) = r.try_recv() {
+                    if let Ev::End(_) = ev {
+                        ends_tx.send(k).unwrap();
+                    }
+                }
+            }
+        }
+        drop(ends_tx);
+        // (the events reach the requests on the scheduler's sending thread: what was not seen in the loop comes after it)
+        let mut order: Vec<usize> = ends_rx.iter().collect();
+        for (k, r) in rx.iter().enumerate() {
+            if r.recv().is_ok_and(|e| matches!(e, Ev::End(_))) || r.try_iter().any(|e| matches!(e, Ev::End(_))) {
+                order.push(k);
+            }
+        }
+        order.dedup();
+        assert_eq!(order, vec![0, 1, 2, 3]);
+    }
+
+    /// Fairness while decoding: every round with a decode step gives every sequence that is decoding one token, so the replies of sequences that started together never differ by more than a token
+    /// until one ends; a new prompt runs beside them (they wait for it at most a few rounds, never until it is done).
+    #[test]
+    fn every_decoding_sequence_gets_a_token_each_step() {
+        let mut s = Sched::new(SlotFake::new(4, 4096, 32), 4);
+        let rx: Vec<_> = (0..3).map(|k| add(&mut s, prompt(k + 1, 8), 200).0).collect();
+        let mut got = [0usize; 3];
+        let mut late: Option<Receiver<Ev>> = None;
+        let mut rounds_waited = 0;
+        let mut longest_wait = 0;
+        for round in 0..400 {
+            if s.idle() {
+                break;
+            }
+            if round == 20 {
+                // a long prompt comes while the three decode: 2,000 tokens, 63 chunks
+                late = Some(add(&mut s, prompt(99, 2000), 4).0);
+            }
+            let before = got;
+            s.tick().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            for (k, r) in rx.iter().enumerate() {
+                got[k] += r.try_iter().filter(|e| matches!(e, Ev::Token(_))).count();
+            }
+            if got.iter().all(|&g| g > 0) && got.iter().all(|&g| g < 200) {
+                let (lo, hi) = (got.iter().min().unwrap(), got.iter().max().unwrap());
+                assert!(hi - lo <= 1, "round {round}: {got:?}");
+            }
+            if got == before && got.iter().any(|&g| g > 0 && g < 200) {
+                rounds_waited += 1;
+                longest_wait = longest_wait.max(rounds_waited);
+            } else {
+                rounds_waited = 0;
+            }
+        }
+        run(&mut s);
+        assert!(longest_wait <= MAX_LONG_SKIPS as usize + 1, "decoding sequences waited {longest_wait} rounds in a row");
+        assert_eq!(collect(&late.unwrap()).0, reference(&prompt(99, 2000), 4));
+    }
+
+    /// Cancellation: a waiting request asked to end ends stopped without running; a running one ends stopped at its next round, its slot emptied and given to the next.
+    #[test]
+    fn a_cancelled_request_frees_its_slot_for_the_next() {
+        let mut s = Sched::new(SlotFake::new(2, 256, 16), 2);
+        let (rx_a, stop_a) = add(&mut s, prompt(1, 10), 100);
+        let (rx_b, _) = add(&mut s, prompt(2, 10), 20);
+        let (rx_c, stop_c) = add(&mut s, prompt(3, 10), 20);
+        let (rx_d, _) = add(&mut s, prompt(4, 10), 20);
+        stop_c.store(true, Relaxed);
+        for _ in 0..5 {
+            s.tick().unwrap();
+        }
+        assert!(s.be.rooms.iter().all(|r| !r.is_empty()), "a and b run");
+        stop_a.store(true, Relaxed);
+        run(&mut s);
+        let (a, fa) = collect(&rx_a);
+        assert_eq!(fa, Finish::Stopped);
+        assert!(!a.is_empty() && a.len() < 100 && a[..] == reference(&prompt(1, 10), a.len())[..]);
+        assert_eq!(collect(&rx_b), (reference(&prompt(2, 10), 20), Finish::Length));
+        assert_eq!(collect(&rx_c), (Vec::new(), Finish::Stopped));
+        assert_eq!(collect(&rx_d), (reference(&prompt(4, 10), 20), Finish::Length));
+        assert_eq!(s.be.emptied, 3, "a, b and d emptied their slots; c never had one");
+        assert!(s.be.rooms.iter().all(Vec::is_empty));
+    }
+
+    /// A prompt a slot cannot hold with a token after it ends with an error in words; the others run. A reply ends at the slot's end (the length: the slot full, and the token after it).
+    #[test]
+    fn a_slot_step_refuses_a_prompt_past_its_window() {
+        let mut s = Sched::new(SlotFake::new(2, 64, 16), 2);
+        let (big, _) = add(&mut s, prompt(1, 64), 4);
+        let (ok, _) = add(&mut s, prompt(2, 60), 10);
+        run(&mut s);
+        let (none, e) = outcome(&big);
+        assert!(none.is_empty() && e.as_ref().is_err_and(|m| m.contains("64 tokens")), "{e:?}");
+        assert_eq!(collect(&ok), (reference(&prompt(2, 60), 5), Finish::Length));
+    }
+
+    /// Preemption on pages: where pages run out the newest sequence is the one sent back (it is resumed, the oldest never is), and every reply is still whole.
+    #[test]
+    fn the_newest_sequence_gives_its_pages_back() {
+        let mut s = Sched::new(Fake::new(12, 16), 4);
+        let mut subs = Vec::new();
+        for k in 0..4u32 {
+            let (tx, rx) = channel();
+            let resumed = Arc::new(AtomicU32::new(0));
+            s.submit(Submit {
+                prompt: prompt(k + 1, 20),
+                reply: reply(30),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: resumed.clone(),
+                images: Vec::new(),
+            });
+            subs.push((rx, resumed));
+        }
+        run(&mut s);
+        for (k, (rx, _)) in subs.iter().enumerate() {
+            assert_eq!(collect(rx), (reference(&prompt(k as u32 + 1, 20), 30), Finish::Length));
+        }
+        let resumed: Vec<u32> = subs.iter().map(|(_, r)| r.load(Relaxed)).collect();
+        assert!(s.stats.preempted > 0 && resumed[0] == 0, "{resumed:?}");
+        assert!(resumed[3] >= resumed[1], "the newest goes back first: {resumed:?}");
     }
 }
