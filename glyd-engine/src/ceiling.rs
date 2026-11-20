@@ -32,9 +32,34 @@ struct Box {
     ours: (f64, f64, f64, &'static str),
     /// A small gather's time measured at 2, 4 and 8 GPUs (us; 0: not measured) and a host pair of a Kimi-K3 expert (ms; 0: not measured).
     gather_us: [f64; 3],
+    /// A gather's time by its size, in the step graph (tpgather): for each count of GPUs, (KB a GPU, us) points, the low-latency kind's then the
+    /// regular kind's (empty: not measured; then `gather_us`).
+    gathers: &'static [(usize, &'static [(f64, f64)], &'static [(f64, f64)])],
     pair_ms: f64,
     /// A product's own time (us) beside its bytes, a dense one's and a MoE layer's experts' (0: in the shares above).
     t0_us: (f64, f64),
+}
+
+/// 8x A100 80 GB SXM4's gathers in the step graph (tpgather, research/kimi-k3-a100-2026-10-22b): 1 x 896, 1 x 4608, 16 x 768, 64 x 4608 and 1024 x
+/// 4608 values a GPU.
+const A100_GATHERS: &[(usize, &[(f64, f64)], &[(f64, f64)])] = &[
+    (2, &[(1.8, 3.6), (9.2, 5.5), (24.6, 6.4), (589.8, 48.2), (9437.2, 227.4)], &[(1.8, 7.9), (9.2, 9.8), (24.6, 12.9), (589.8, 45.2), (9437.2, 228.6)]),
+    (4, &[(1.8, 5.6), (9.2, 10.5), (24.6, 13.3), (589.8, 98.2), (9437.2, 482.4)], &[(1.8, 10.3), (9.2, 15.2), (24.6, 21.7), (589.8, 98.2), (9437.2, 483.0)]),
+    (
+        8,
+        &[(1.8, 8.8), (9.2, 20.9), (24.6, 22.7), (589.8, 202.9), (9437.2, 1224.9)],
+        &[(1.8, 15.4), (9.2, 24.1), (24.6, 32.8), (589.8, 200.3), (9437.2, 1210.9)],
+    ),
+];
+
+/// A gather's time (us) of `kb` KB a GPU from measured points: straight lines between them, the first's time below it, the last two's line past them.
+fn gather_time(pts: &[(f64, f64)], kb: f64) -> f64 {
+    let i = pts.iter().position(|p| p.0 >= kb).unwrap_or(pts.len() - 1).max(1);
+    if kb <= pts[0].0 {
+        return pts[0].1;
+    }
+    let ((x0, y0), (x1, y1)) = (pts[i - 1], pts[i]);
+    y0 + (y1 - y0) * (kb - x0) / (x1 - x0)
 }
 
 /// The boxes measured or planned. ponytail: a table in the source; a file of boxes when there are more than a handful.
@@ -57,6 +82,7 @@ const BOXES: &[Box] = &[
             "measured at real widths: Kimi-K3 layer 0's bf16 products 92.2%, DeepSeek-V4's 3 layers 95.1% (tpbench --one --prof, 2026-10-22)",
         ),
         gather_us: [0.0; 3],
+        gathers: &[],
         pair_ms: 0.45,
         t0_us: (0.0, 0.0),
     },
@@ -78,6 +104,7 @@ const BOXES: &[Box] = &[
             "bf16: H100's 12-bit 80% (Nsight); FP8 and FP4 experts 57%, fitted to DeepSeek-V4-Flash's split-on-2 and across-2 runs (docs/ceiling.md)",
         ),
         gather_us: [8.9, 12.9, 19.5],
+        gathers: A100_GATHERS,
         pair_ms: 0.76,
         t0_us: (0.0, 0.0),
     },
@@ -94,6 +121,7 @@ const BOXES: &[Box] = &[
         hbm: true,
         ours: (0.80, 0.80, 0.30, "Nsight on one H100, 2026-10-22; FP8 assumed 80%"),
         gather_us: [0.0; 3],
+        gathers: &[],
         pair_ms: 0.0,
         t0_us: (0.0, 0.0),
     },
@@ -167,6 +195,8 @@ struct Step {
     exchanges: usize,
     /// the products a token runs on a GPU, sliced or whole (the experts' two a MoE layer apart)
     products: usize,
+    /// each exchange's KB a GPU at one token (its slice of the product's rows, bf16)
+    gather_kb: Vec<f64>,
     attn: f64,
     attn_note: String,
     /// every byte the GPUs hold (the embedding and every expert too)
@@ -223,6 +253,7 @@ fn step(cfg: &Value, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_shar
             }
         }
     }
+    let mut rows_of: std::collections::BTreeMap<(usize, String), u64> = std::collections::BTreeMap::new();
     // (the products of a layer, as the engine makes them (`product_of`); their names without the weight's suffix)
     let mut products: std::collections::BTreeSet<(usize, String)> = std::collections::BTreeSet::new();
     let mut every: std::collections::BTreeSet<(usize, String)> = std::collections::BTreeSet::new();
@@ -254,6 +285,9 @@ fn step(cfg: &Value, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_shar
         }
         // (the loaders slice any two-dimensional matrix the rule takes, whatever its size, Kimi-K3's packs as one; the layouts above count the big ones alone)
         let key = (l.unwrap_or(usize::MAX), product_of(&base_of(name), kind(l)));
+        if shape.len() == 2 && !name.contains("scale") {
+            *rows_of.entry(key.clone()).or_default() += shape[0];
+        }
         let cut = shape.len() == 2
             && match packs.get(&key) {
                 Some(&(rows, cols, parts)) => slicer.slices(if parts > 1 { rows.div_ceil(512) * 512 } else { rows } as usize, cols as usize),
@@ -284,6 +318,20 @@ fn step(cfg: &Value, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_shar
     }
     // (every sliced product gathers once; the experts' two products once each a MoE layer)
     s.exchanges = if n > 1 { products.len() + 2 * s.moe_layers } else { 0 };
+    if n > 1 {
+        for k in &products {
+            let rows = rows_of.get(k).copied().unwrap_or(0);
+            let rows = if packs.get(k).is_some_and(|p| p.2 > 1) { rows.div_ceil(512) * 512 } else { rows };
+            s.gather_kb.push(rows as f64 / n as f64 * 2.0 / 1e3);
+        }
+        // (the experts' first product: top_k rows of gate and up, sliced; the second's weighted sum: the latent's or the model's width, sliced)
+        let inter = cfg_num(cfg, &["moe_intermediate_size"]).unwrap_or(0.0);
+        let out = cfg_num(cfg, &["routed_expert_hidden_size"]).or_else(|| cfg_num(cfg, &["hidden_size"])).unwrap_or(0.0);
+        for _ in 0..s.moe_layers {
+            s.gather_kb.push(topk * 2.0 * inter / n as f64 * 2.0 / 1e3);
+            s.gather_kb.push(out / n as f64 * 2.0 / 1e3);
+        }
+    }
     s.products = every.len();
     // attention's reads a token (every GPU its own: attention is not sliced): the cache at `pos` and the linear attention's states, read and written
     let t = cfg.get("text_config").unwrap_or(cfg);
@@ -359,7 +407,8 @@ pub fn cmd(a: &Args) -> Result<()> {
     // (a product's own time beside its bytes: its start and its last wave, measured on the PC at the slices' sizes; the experts' product of a MoE layer more)
     let (t0, t0_moe): (f64, f64) = (a.num("t0-us", b.t0_us.0)?, a.num("t0-moe-us", b.t0_us.1)?);
     let t_products = (s.products as f64 * t0 + 2.0 * s.moe_layers as f64 * t0_moe) / 1e3;
-    // (a decode step's gathers are small: tpgather's 1 x 896 a GPU, at the GPUs' count)
+    // (each gather at its size from the box's measured points, the low-latency kind's (--gathers regular: the other's); else one time for every gather:
+    // --exchange-us, or tpgather's 1 x 896 a GPU at the GPUs' count)
     let ex_us: f64 = a.num(
         "exchange-us",
         b.gather_us[if n <= 2 {
@@ -370,6 +419,8 @@ pub fn cmd(a: &Args) -> Result<()> {
             2
         }],
     )?;
+    let regular = a.flag("gathers") == Some("regular");
+    let by_size = b.gathers.iter().find(|g| g.0 == n).filter(|_| a.flag("exchange-us").is_none()).map(|g| if regular { g.2 } else { g.1 });
     let ceil_ex_us = 2.0;
     let t_w = ms(w, b.read);
     let t_a = ms(s.attn, b.read);
@@ -389,7 +440,10 @@ pub fn cmd(a: &Args) -> Result<()> {
     let pair_ms: f64 = a.num("pair-ms", b.pair_ms)?;
     let host_ours = if pair_ms > 0.0 { s.per_expert / (pair_ms * 1e-3) / 1e9 } else { 0.0 };
     let ours_m = if missing > 0.0 { ms(missing, pcie + host_ours) } else { 0.0 };
-    let ours_x = s.exchanges as f64 * ex_us / 1e3;
+    let ours_x = match by_size {
+        Some(pts) => s.gather_kb.iter().map(|&kb| gather_time(pts, kb)).sum::<f64>() / 1e3,
+        None => s.exchanges as f64 * ex_us / 1e3,
+    };
     let gib = |x: f64| x / (1u64 << 30) as f64;
     println!(
         "{model} on {} ({}), {} GPU{} {}, position {pos}, experts found on the GPUs {:.0}%",
@@ -417,8 +471,16 @@ pub fn cmd(a: &Args) -> Result<()> {
         );
     }
     if s.exchanges > 0 {
+        let how = match by_size {
+            Some(_) => format!(
+                "each at its size ({} kind, tpgather in the step graph): {:.1} us on average",
+                if regular { "regular" } else { "low-latency" },
+                ours_x * 1e3 / s.exchanges as f64
+            ),
+            None => format!("{ex_us} us each"),
+        };
         println!(
-            "  {:<34} {:>8.2}ms {:>8.2}ms  {} exchanges x {ceil_ex_us} us (one NVLink write and a kernel); ours {ex_us} us each",
+            "  {:<34} {:>8.2}ms {:>8.2}ms  {} exchanges x {ceil_ex_us} us (one NVLink write and a kernel); ours {how}",
             "exchanges", t_x, ours_x, s.exchanges
         );
     }
@@ -497,5 +559,9 @@ mod tests {
         assert_eq!(s.products, 3 + 5, "{s:?}");
         // (f_b too small to slice; the others gathered, and the experts' two)
         assert_eq!(s.exchanges, 2 + 5 + 2, "{s:?}");
+        // (a gather a GPU's slice of a token's row: the delta attention's pack is 4 x 4096 + 128 + 32 rows, 16,896 padded, half of them a GPU)
+        assert_eq!(s.gather_kb.len(), s.exchanges);
+        assert!((s.gather_kb.iter().copied().fold(0.0, f64::max) - 16.896).abs() < 1e-9, "{:?}", s.gather_kb);
+        assert!((gather_time(&[(1.0, 10.0), (3.0, 20.0)], 2.0) - 15.0).abs() < 1e-9 && gather_time(&[(1.0, 10.0), (3.0, 20.0)], 0.5) == 10.0);
     }
 }

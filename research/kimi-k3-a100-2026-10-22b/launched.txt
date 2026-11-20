@@ -1,0 +1,1 @@
+10-22 21:36 EDT gpu_8x_a100_80gb_sxm4 us-east-1 {"data": {"instance_ids":["a685e0f47b994bcdb7a399ed808d6bcf"]}}
