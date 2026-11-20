@@ -55,6 +55,7 @@ const NEURONS: usize = 64;
 const OUTPUTS: usize = 128;
 
 /// Bytes of a row of 4,096 codes, and entries of its table, in the pack.
+#[cfg_attr(not(feature = "dev"), allow(dead_code))] // development tools only
 fn row_bytes(f: Fmt) -> usize {
     f.row_bytes(HID)
 }
@@ -1302,8 +1303,8 @@ mod bench {
 
     #[cfg(unix)]
     extern "C" {
-        fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
-        fn munmap(addr: *mut u8, len: usize) -> i32;
+        fn mmap(addr: *mut std::ffi::c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut std::ffi::c_void;
+        fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
     }
 
     impl Drop for Mapped {
@@ -1311,7 +1312,7 @@ mod bench {
             // SAFETY: mapped in `map_layer`, unmapped once.
             #[cfg(unix)]
             unsafe {
-                munmap(self.ptr, self.len)
+                munmap(self.ptr as *mut std::ffi::c_void, self.len)
             };
             #[cfg(windows)]
             unsafe {
@@ -1347,7 +1348,7 @@ mod bench {
         let len = file.metadata().map_err(|e| Error(format!("{}: {e}", path.display())))?.len() as usize;
         // SAFETY: a read-only private mapping of a file held open; it outlives the descriptor.
         #[cfg(unix)]
-        let ptr = unsafe { mmap(std::ptr::null_mut(), len, 1, 2, file.as_raw_fd(), 0) };
+        let ptr = unsafe { mmap(std::ptr::null_mut(), len, 1, 2, file.as_raw_fd(), 0) } as *mut u8;
         #[cfg(unix)]
         if ptr as usize == usize::MAX {
             return err(format!("{}: cannot be mapped", path.display()));

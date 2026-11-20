@@ -449,7 +449,7 @@ impl Pager {
     }
 
     /// The run of cached pages `tokens` begins with (at most `max` of them), each now held by the caller.
-    #[allow(clippy::chunks_exact_to_as_chunks)]
+    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
     pub fn lookup(&mut self, tokens: &[u32], max: usize) -> Vec<i32> {
         let mut out = Vec::new();
         let mut prev = 0;

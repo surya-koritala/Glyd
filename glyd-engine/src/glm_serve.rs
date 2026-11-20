@@ -368,7 +368,7 @@ fn one_request(
         }));
     }
     let (t1, io0) = (Instant::now(), read_bytes());
-    let mut s = e.prefill(&ids)?;
+    let s = e.prefill(&ids)?;
     let prefill_ms = t1.elapsed().as_secs_f64() * 1e3;
     // `"top": K`: the K most probable tokens after the prompt with their probabilities (softmax of the logits the prefill ended in), in the reply
     let top: Option<Vec<(u32, f32)>> = match v.get("top").and_then(Value::as_u64) {

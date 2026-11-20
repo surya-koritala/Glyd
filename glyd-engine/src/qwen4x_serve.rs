@@ -503,6 +503,7 @@ pub fn serve(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
         });
         *e.emit.borrow_mut() = None;
         *e.sampler.borrow_mut() = None;
+        #[allow(dropping_copy_types)] // (a release build's lock is `()`)
         drop(lock);
         // (the GPU's free memory after each request where it changed: what the requests made beside the load, for the reserve)
         if let Ok((free, _)) = e.dev.mem_info() {

@@ -1537,6 +1537,7 @@ pub fn pack_fp4r_into(q: &[u8], e: &[u8], rows: usize, cols: usize, data: &mut [
 }
 
 /// Weight i's code of an MX FP4 matrix's bytes (two a byte, the first in the low nibble).
+#[cfg(test)]
 fn fp4_code(q: &[u8], i: usize) -> u8 {
     (q[i / 2] >> (4 * (i % 2))) & 15
 }

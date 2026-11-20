@@ -370,8 +370,8 @@ struct PackMap {
 
 #[cfg(unix)]
 extern "C" {
-    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
-    fn munmap(addr: *mut u8, len: usize) -> i32;
+    fn mmap(addr: *mut std::ffi::c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut std::ffi::c_void;
+    fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
     #[cfg(target_os = "linux")]
     fn posix_fadvise(fd: i32, off: i64, len: i64, advice: i32) -> i32;
 }
@@ -391,7 +391,7 @@ impl PackMap {
         let _ = drop_cached;
         // SAFETY: a read-only private mapping of a file held open; it outlives the descriptor.
         #[cfg(unix)]
-        let ptr = unsafe { mmap(std::ptr::null_mut(), len, 1, 2, f.as_raw_fd(), 0) };
+        let ptr = unsafe { mmap(std::ptr::null_mut(), len, 1, 2, f.as_raw_fd(), 0) } as *mut u8;
         #[cfg(unix)]
         if ptr as usize == usize::MAX {
             return err(format!("{}: cannot be mapped", path.display()));
@@ -413,7 +413,7 @@ impl Drop for PackMap {
         // SAFETY: mapped by `open`, unmapped once.
         #[cfg(unix)]
         unsafe {
-            munmap(self.ptr, self.len)
+            munmap(self.ptr as *mut std::ffi::c_void, self.len)
         };
         #[cfg(windows)]
         unsafe {

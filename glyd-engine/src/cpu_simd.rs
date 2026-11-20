@@ -80,6 +80,7 @@ pub(crate) fn tq_value(s: u32) -> f32 {
 
 /// The state of weight t of a format q row of `k` bits a weight (`words`: the row's `k cols / 32` little-endian words, a circular stream, most significant bit first): its 14 bits from bit k t
 /// (q, q3, q4: k 2, 3, 4), the value as `tq_value`.
+#[cfg_attr(not(feature = "dev"), allow(dead_code))] // development tools only
 #[inline(always)]
 pub(crate) fn tq_state_k(words: &[u32], k: usize, t: usize) -> u32 {
     let (p, w) = (k * t, words.len());

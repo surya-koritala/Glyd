@@ -1778,7 +1778,6 @@ impl EngineQx {
         let c = &w.cfg;
         let (hid, ch) = (c.hidden, o.chunk.max(1));
         let ctx = o.ctx.div_ceil(16) * 16;
-        let act = |cols: usize| Buf::new(ch * cols * 2);
         let hw = c.hc * hid;
         // (the streams, the positions, the n-gram rows and the experts' half's stream weights of every row of a prompt taken layer by layer: `whole` rows)
         let whole = o.whole.min(ctx);
@@ -2937,6 +2936,7 @@ impl EngineQx {
     ///
     /// # Safety
     /// As `gr_mix`.
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))] // development tools only
     pub(crate) unsafe fn mixer_only(&self, ly: &LayerQx, n: usize, pos: u64, start: usize) -> Result<()> {
         match ly.kind {
             QxKind::Gdn => self.gdn(ly, n),
@@ -3577,6 +3577,7 @@ impl EngineQx {
         if self.n + n + 1 > self.ctx {
             return err(format!("{} tokens and {n} more, where a sequence may reach {}", self.n, self.ctx));
         }
+        #[cfg_attr(not(feature = "dev"), allow(unused_variables))]
         let s = self.dev.stream;
         self.keep_states(tokens)?;
         let pos: Vec<i32> = (0..n).map(|i| (self.n + i) as i32).collect();
@@ -3738,7 +3739,7 @@ impl EngineQx {
         let c = &self.w.cfg;
         let s = self.dev.stream;
         let mh = self.w.mtp.as_ref().ok_or_else(|| Error("the engine has no MTP head (OptsQx::mtp)".into()))?;
-        let (m, hid, hw) = (tokens.len(), c.hidden, c.hc * c.hidden);
+        let (m, hw) = (tokens.len(), c.hc * c.hidden);
         if m == 0 || m > self.chunk {
             return err(format!("the MTP head on {m} rows, where a chunk is {}", self.chunk));
         }

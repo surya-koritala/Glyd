@@ -20,6 +20,7 @@
 use glyd::format::*;
 use std::time::Instant;
 
+#[allow(dead_code)] // the whole block as parsed, read in part
 struct Block {
     tokens: Vec<u8>,
     extras: Vec<u8>,

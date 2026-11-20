@@ -182,6 +182,7 @@ fn read_shared_f8(ck: &Checkpoint, c: &ConfigGlm, l: usize, dev: &Dev, lib: &Lib
 }
 
 /// Layer `l`'s tensors from `ck` at `level` (Int6, Int5 or Int4). A glyd-v7 directory is read where `ck` is one of them and at `level`: what it holds saved is read as it is, the rest packed (from FP8 or bf16).
+#[allow(dead_code)] // the GLM development engine (R13 retires or moves it)
 fn read_layer(l: usize, c: &ConfigGlm, ck: &Checkpoint, level: Layout) -> Result<Host> {
     read_layer_with(l, c, ck, level, false)
 }

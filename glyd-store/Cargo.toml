@@ -22,3 +22,6 @@ glyd = { version = "0.32.1", path = ".." }
 hmac = "0.13"
 sha2 = "0.11"
 ureq = "3"
+
+[lints]
+workspace = true

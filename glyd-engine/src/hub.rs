@@ -419,7 +419,7 @@ impl Hub {
         format!("{}/{}/resolve/{}/{path}", self.endpoint, remote.repo, remote.commit)
     }
 
-    #[allow(clippy::chunks_exact_to_as_chunks)] // (as_chunks needs a newer compiler than some machines have)
+    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)] // (as_chunks needs a newer compiler than some machines have)
     fn fetch_blob(&self, remote: &Remote, e: &Entry, blobs: &Path, done: &AtomicU64, total: u64, progress: &dyn Fn(u64, u64)) -> Res<PathBuf> {
         let blob = blobs.join(&e.blob);
         if std::fs::metadata(&blob).is_ok_and(|m| m.len() == e.size) {

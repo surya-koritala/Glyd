@@ -770,6 +770,7 @@ impl QxMoeCb {
     ///
     /// # Safety
     /// No kernel that reads it is queued or running (a step's start, or a host part after its front's word).
+    #[allow(clippy::mut_from_ref)] // the map is pinned host memory, not `self`'s; R15 (a sound device API) replaces this
     unsafe fn pmap_mut(&self) -> &mut [i32] {
         std::slice::from_raw_parts_mut(self.pmap.ptr as *mut i32, self.descs.len())
     }

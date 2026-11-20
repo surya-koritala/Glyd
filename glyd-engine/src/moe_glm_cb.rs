@@ -660,6 +660,7 @@ pub struct GlmMoeCb {
     descs: Vec<ExpertDesc>,
     strides: [usize; 2],
     mixed: bool,
+    #[allow(dead_code)] // the GLM development engine (R13 retires or moves it)
     kept: usize,
     store: Rc<ExpertStore>,
     layer: usize,

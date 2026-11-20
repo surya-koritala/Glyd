@@ -921,6 +921,7 @@ impl HostPack {
     }
 
     /// The bytes of expert `e` in both streams.
+    #[allow(dead_code)]
     fn bytes_of(&self, e: usize) -> u64 {
         (self.len(0, e) + self.len(1, e)) as u64
     }

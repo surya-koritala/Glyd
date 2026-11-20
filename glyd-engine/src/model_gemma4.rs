@@ -622,6 +622,7 @@ pub struct EngineG4 {
     st: Buf,
     tok: Buf,
     val: Buf,
+    #[allow(dead_code)] // owned: the kernels write it
     lse: Buf,
     pub top: TopGpu,
     part: Buf,
