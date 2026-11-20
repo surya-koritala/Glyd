@@ -108,8 +108,9 @@ Rules:
 
 The seam between vendors sits at the layer kind, not at alloc/launch: MLX and a CPU backend cannot implement CUDA's
 memory-and-launch model, and candle, ggml and burn split the same way. Each backend implements the layer kinds it supports
-and says which it does not; the scheduler drives a model step through a request-level engine interface. A sketch, to be
-settled in the runtime design (R9):
+and says which it does not; the scheduler drives a model step through a request-level engine interface. The sketch below
+is superseded by the runtime design, [design/runtime.md](design/runtime.md) (R9), which names the traits (`ModelStep`, `Backend`,
+`LayerImpl`) and the migration order:
 
 ```rust
 pub trait Backend {

@@ -136,13 +136,15 @@ pub struct Stops {
     stops: Vec<String>,
     held: String,
     pub hit: bool,
+    /// The stop string that was found (Anthropic's `stop_sequence`).
+    pub matched: Option<String>,
     /// The stop string that was found is part of the text (vLLM's `include_stop_str_in_output`).
     include: bool,
 }
 
 impl Stops {
     pub fn new(stops: &[String]) -> Stops {
-        Stops { stops: stops.iter().filter(|s| !s.is_empty()).cloned().collect(), held: String::new(), hit: false, include: false }
+        Stops { stops: stops.iter().filter(|s| !s.is_empty()).cloned().collect(), held: String::new(), hit: false, matched: None, include: false }
     }
 
     /// Keeps the stop string that ends the text in it.
@@ -157,9 +159,10 @@ impl Stops {
             return String::new();
         }
         self.held.push_str(text);
-        let cut = self.stops.iter().filter_map(|s| self.held.find(s.as_str()).map(|i| (i, s.len()))).min_by_key(|&(i, _)| i);
-        if let Some((i, len)) = cut {
+        let cut = self.stops.iter().filter_map(|s| self.held.find(s.as_str()).map(|i| (i, s.len(), s))).min_by_key(|&(i, ..)| i);
+        if let Some((i, len, which)) = cut {
             self.hit = true;
+            self.matched = Some(which.clone());
             let out = self.held[..if self.include { i + len } else { i }].to_string();
             self.held.clear();
             return out;

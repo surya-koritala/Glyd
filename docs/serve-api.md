@@ -53,7 +53,7 @@ driver's again when the process is gone (the record: 2,223 MiB used before the s
 ## The key and the address checks
 
 - With a key, every path under `/v1` needs `Authorization: Bearer KEY` (the scheme in any case), else
-  `401 {"error":"Unauthorized"}`. `/`, `/health` and `/stats` are open. The key is compared as SHA-256 digests in constant time.
+  `401` (`{"error": {"message": ..., "type": "authentication_error", "param": null, "code": "invalid_api_key"}}`, with `WWW-Authenticate: Bearer`). `/`, `/health` and `/stats` are open. The key is compared as SHA-256 digests in constant time.
 - Without `--host`: a Host that is not localhost, 127.0.0.1 or [::1] is 421, an Origin that is not the server's own is 403
   (a CORS preflight too). A program that sends no Origin (curl, the OpenAI libraries) is answered.
 
@@ -62,10 +62,11 @@ driver's again when the process is gone (the record: 2,223 MiB used before the s
 | | key | |
 | :--- | :--- | :--- |
 | `GET /health` | no | `{"status":"ok"}` |
-| `GET /v1/models` | yes | the one model: `id` is MODEL as typed (with its tag, or the directory's path), `max_model_len` the context |
+| `GET /v1/models`, `GET /v1/models/ID` | yes | the one model: `id` is MODEL as typed (with its tag, or the directory's path), `max_model_len` the context; another id is 404 |
 | `POST /v1/chat/completions` | yes | a chat, JSON or SSE |
-| `POST /v1/completions` | yes | a plain completion, JSON or SSE |
-| `POST /v1/messages`, `/v1/messages/count_tokens` | yes | Anthropic's Messages API (not tracked by id) |
+| `POST /v1/completions` | yes | a plain completion, JSON or SSE; `suffix` makes it a fill in the middle (see below) |
+| `POST /v1/responses` | yes | OpenAI's Responses API, stateless: JSON or SSE (see below) |
+| `POST /v1/messages`, `/v1/messages/count_tokens` | yes | Anthropic's Messages API, JSON or SSE (see below; not tracked by id) |
 | `POST /v1/glyd/tokenize` | yes | a request's prompt counted, nothing run |
 | `GET /v1/glyd/info` | yes | what the server is and holds |
 | `GET /v1/glyd/requests/ID` | yes | how a request stands |
@@ -73,6 +74,37 @@ driver's again when the process is gone (the record: 2,223 MiB used before the s
 | `GET /stats` | no | the lossless engine's scheduler counts (zero at a level) |
 
 A method a path does not take is 405, a path there is not 404.
+
+Every error is OpenAI's: `{"error": {"message", "type", "param", "code"}}` with the status a client keys on. `type` is `invalid_request_error` (400, 404, 405, 413),
+`authentication_error` (401), `permission_error` (403), `rate_limit_error` (429) or `server_error` (5xx); `code` is null except `invalid_api_key` (401) and
+`context_length_exceeded` (a prompt, or a prompt and its length, past the context). `stream_options.include_usage` puts `"usage": null` in every chunk of a stream and the usage in a
+last chunk with no choices, as OpenAI's does.
+
+## /v1/responses
+
+The request is read as the chat request it is the same as and run as any chat request is, so its refusals, its grammar and its tools are the chat path's. Read: `input` (a string, or a list
+of `message`, `function_call`, `function_call_output` items; `reasoning` items are skipped; `input_text`, `output_text` and `input_image` parts), `instructions`, `tools` (`function` only),
+`tool_choice`, `parallel_tool_calls`, `text.format` (`json_schema`, `json_object`, `text`), `max_output_tokens`, `temperature`, `top_p`, `top_k`, `seed`, `reasoning.effort`, `stream`. The server
+keeps no conversations: `previous_response_id`, `conversation`, `background`, `item_reference` and the tools that run at OpenAI's end (search, code, computer) are 400 with the reason, and
+`store` is ignored (the response says `store: false`). The response has the thinking as a `reasoning` item (`content[].reasoning_text`), the answer as a `message`, each call as a
+`function_call`; `status` is `incomplete` with `incomplete_details.reason` `max_output_tokens` where the length cut it. A stream is the events `response.created`, `response.in_progress`,
+`response.output_item.added`, `response.content_part.added`, `response.output_text.delta`, `.done`, `response.reasoning_text.delta`, `.done`, `response.function_call_arguments.delta`, `.done`,
+`response.output_item.done`, then `response.completed` (or `response.incomplete`, `response.failed`), each numbered by `sequence_number`.
+
+## /v1/messages
+
+Anthropic's Messages API for the Anthropic SDKs and Claude Code (`ANTHROPIC_BASE_URL=http://127.0.0.1:8238 ANTHROPIC_API_KEY=any`; with a server key, `x-api-key: KEY` or a bearer token). The request is read as the chat
+request it is the same as and run as any chat request is. Read: `system` (a string or blocks), `messages` (`text`, `image`, `tool_use`, `tool_result` blocks; `thinking` blocks of an earlier turn are skipped),
+`tools` (custom tools; the ones Anthropic runs, `web_search` and the like, are left out), `tool_choice` (`auto`, `any`, `tool`, `none`, `disable_parallel_tool_use`), `thinking` (`enabled` shows the model's thinking in
+a `thinking` block with an empty signature, which this server cannot make; else it is off), `stop_sequences`, `max_tokens` (required), `temperature`, `top_p`, `top_k`, `stream`; `cache_control` is read and has no effect, and the
+usage says no token was cached. A stream is `message_start`, `ping`, each block's `content_block_start`, `content_block_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and
+`content_block_stop`, `message_delta` (the `stop_reason`: `end_turn`, `max_tokens`, `stop_sequence` with the string, `tool_use`; the usage) and `message_stop`, with a `ping` while a request waits for its turn. Errors are
+`{"type": "error", "error": {"type", "message"}}` (`invalid_request_error`, `authentication_error`, `not_found_error`, `api_error`). `/v1/models` carries `type`, `display_name` and `created_at` beside OpenAI's fields.
+
+## Fill in the middle
+
+`POST /v1/completions` with `"prompt"` (the text before the cursor, one string) and `"suffix"` (the text after) is written with the model's own tokens, `<|fim_prefix|>BEFORE<|fim_suffix|>AFTER<|fim_middle|>`
+(or StarCoder's `<fim_...>`, DeepSeek-Coder's `<｜fim▁begin｜>`), and the reply is the text between. A model whose tokenizer has none of them refuses `suffix` with 400.
 
 ## /v1/glyd/info
 
