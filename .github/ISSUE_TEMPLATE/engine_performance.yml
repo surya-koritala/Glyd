@@ -1,0 +1,46 @@
+name: Engine speed or hardware report
+description: Tokens per second or memory use on your machine, slower than expected, or a report from a GPU we may not have tested.
+labels: [performance, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A number needs a machine and a command. Run the same command twice and report the second run, so the model's first load is not in it. For Condor (the big-MoE-on-one-card path) use the "Condor: bench result or slow speed" form.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `glyd-engine --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: machine
+    attributes:
+      label: Machine
+      description: The output of `glyd-engine doctor`, and the CPU, RAM, OS and whether the GPU also drives a display.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and level
+      description: As typed, e.g. `Qwen/Qwen3.5-9B:swift`, and the context size (`--ctx`) if you set it.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The command
+      description: The exact command and flags.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: numbers
+    attributes:
+      label: The numbers
+      description: Prompt tokens, generated tokens, tokens per second as printed, peak GPU memory (`nvidia-smi`). What you compared it with, if anything (another engine, the same model on another machine), and its numbers and command.
+      render: text
+    validations:
+      required: true
