@@ -19,15 +19,16 @@ and an SBOM attestation, stored by GitHub. The wheels on PyPI carry PyPI's own a
 
 ## Check a file
 
-With the [GitHub CLI](https://cli.github.com/) (the simplest):
+With the [GitHub CLI](https://cli.github.com/) (the simplest). Always name the workflow and the tag: an attestation by itself only says that some workflow of this repository, on some branch or pull request, attested a file with that digest.
 
 ```
-gh attestation verify glyd-vX.Y.Z-linux-x86_64.tar.gz --repo surya-koritala/Glyd
-gh attestation verify glyd-vX.Y.Z-linux-x86_64.tar.gz --repo surya-koritala/Glyd --predicate-type https://spdx.dev/Document/v2.3
+gh attestation verify glyd-vX.Y.Z-linux-x86_64.tar.gz --repo surya-koritala/Glyd \
+  --signer-workflow surya-koritala/Glyd/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z
+gh attestation verify glyd-vX.Y.Z-linux-x86_64.tar.gz --repo surya-koritala/Glyd \
+  --signer-workflow surya-koritala/Glyd/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z --predicate-type https://spdx.dev/Document/v2.3
 ```
 
-The first checks where and how the file was built (the workflow, the tag, the commit); the second, its SBOM. Add `--signer-workflow surya-koritala/Glyd/.github/workflows/release.yml`
-(or `release-gpu.yml` for the engine bundles) to require that workflow.
+The first checks where and how the file was built (the workflow, the tag, the commit); the second, its SBOM. For the engine bundles (`glyd-engine-...`) the workflow is `release-gpu.yml`.
 
 With `cosign` alone, no GitHub account needed:
 
