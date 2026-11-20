@@ -4,7 +4,7 @@
 Asks each prompt alone, one after another (greedy, the reference), then all of them at once, and compares: with --same every reply at once must be
 the reply alone, token for token (GLYD_ENGINE_BATCH_PREFILL=0); otherwise at least --least of them must be, and none may fail or come back empty
 (prompts run together may take another product route, whose last bits can change a later greedy token). It also checks that the server says it runs
-that many at once (/v1/glyd/info) and that its decode steps had several rows (/stats, steps_by_rows). The times are printed, not judged: a speed bar
+that many at once (/v1/glyd/info, limits.concurrency) and that its decode steps had several rows (/stats, steps_by_rows). The times are printed, not judged: a speed bar
 needs a GPU of its own (glyd-engine/docs/bench.md).
 
 usage: ci_concurrent_check.py URL [--users 4] [--same] [--least 3] [--tokens 48]
@@ -63,7 +63,7 @@ def main():
     fails = 0
     model = get(url + "/v1/models")["data"][0]["id"]
     info = get(url + "/v1/glyd/info")
-    users = info.get("concurrency")
+    users = info.get("limits", {}).get("concurrency")
     print(f"{model}: the server runs {users} at once")
     if not isinstance(users, int) or users < a.users:
         print(f"FAIL concurrency {users}, where {a.users} were asked for")

@@ -230,8 +230,10 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
   (Qwen, Kimi-style hermes, Nemotron): the arguments follow the tool's schema. The tokens the grammar does not allow are taken out of
   each step's row of logits (llguidance), so the reply is valid or ends with `finish_reason` `length`. A schema or grammar that cannot
   be compiled, and two forms at once, are 400 in words. A request with none is sampled as before. `guided_whitespace_pattern` is refused.
-- On a level's engine (`concurrency: 1`), `logprobs` and `min_tokens` are refused: it gives no log-probabilities and has no
-  least length. `fields.refused` says so.
+- On a level's engine that runs one request at a time (`concurrency: 1`: a model with a draft model, or split across GPUs, and the
+  families the scheduler does not batch yet), `logprobs` and `min_tokens` are refused: it gives no log-probabilities and has no
+  least length. `fields.refused` says so. Gemma 4, Qwen3.8 dense (the Qwen3.5 layout) and Muse Spark on one GPU are served by the
+  scheduler to `--users` at once (`limits.concurrency`), with both.
 - A field this server does not know is answered without it, and said once on stderr.
 - `model` is not checked: one model is served, and the reply names it.
 - The context holds the prompt and the reply. A prompt of the context's size or more is refused; with `max_tokens` (or
@@ -352,8 +354,8 @@ on purpose:
 1. Loading: the port is bound only once the model is loaded. Before that a connection is refused; there is no 503 while
    loading. The status file (`--status-file`) says `ready`, or the reason of a refusal.
 2. `/health` is open: it answers 200 with or without the key. The refusal without a key holds for every path under `/v1`.
-3. There is no `/props`. `/v1/glyd/info` has the build, the context per request (`limits.context_tokens`), one request
-   at a time (`limits.concurrency: 1`) and the model; it has no chat-template capability flags.
+3. There is no `/props`. `/v1/glyd/info` has the build, the context per request (`limits.context_tokens`), the requests it runs
+   at once (`limits.concurrency`) and the model; it has no chat-template capability flags.
 4. `/v1/models`'s id, and every reply's `model`, is MODEL as typed: the directory's path where a directory is served.
    There is no served-model-name flag, and a request's `model` is not checked.
 5. The final usage needs `stream_options: {"include_usage": true}`.
