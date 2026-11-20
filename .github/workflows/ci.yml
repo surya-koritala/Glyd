@@ -188,13 +188,13 @@ jobs:
         with:
           shared-key: hip
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: ROCm's HIP compiler
+      - name: ROCm 7.2.1's HIP compiler
         run: |
           curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://repo.radeon.com/rocm/rocm.gpg.key -o "$RUNNER_TEMP/rocm.gpg.key"
           echo "2de99e2354646a90d9903e2a669fc4e36b02c1bbff7075c481e12d7edab2c88b  $RUNNER_TEMP/rocm.gpg.key" | sha256sum --check
           sudo mkdir -p /etc/apt/keyrings
           gpg --dearmor < "$RUNNER_TEMP/rocm.gpg.key" | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
-          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.1 noble main" | sudo tee /etc/apt/sources.list.d/rocm.list
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.1 noble main" | sudo tee /etc/apt/sources.list.d/rocm.list
           # (Ubuntu has a hipcc of its own with a higher version number, 5.7: ROCm's packages are preferred)
           printf 'Package: *\nPin: origin repo.radeon.com\nPin-Priority: 1001\n' | sudo tee /etc/apt/preferences.d/rocm-pin
           sudo apt-get update
