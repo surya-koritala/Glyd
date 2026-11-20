@@ -24,7 +24,7 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
 - A Hub name with a level reads the base model's config.json (the cache, else the Hub) and loads glyd/NAME-LEVEL from the
   cache (else downloads it). Offline, give the snapshot directory: nothing else is read.
 - The address is 127.0.0.1:8000, or the next free port up to 8020; `--port N` is that port or a refusal. `--host H`
-  listens on H and turns the Host and Origin checks off. `--ollama-port N` also listens on N (Ollama's own is 11434), only
+  listens on H: an address that is not this computer's own (0.0.0.0, a LAN address) needs `GLYD_API_KEY` (or `--api-key`) or `--insecure-no-auth`, else it is a refusal before the model loads. `--allowed-origins URL,URL` lets those pages' scripts call the API (CORS answers for exactly those origins, never `*`; with none listed CORS is off), `--allowed-hosts NAME,NAME` adds names the Host may be. `--ollama-port N` also listens on N (Ollama's own is 11434), only
   where N is free (else it says so and goes on): for the programs that look for Ollama at its port; Ollama's API is at
   the server's own port too.
 - The GPU is the one with the most free memory of those CUDA_VISIBLE_DEVICES shows. The context is `--ctx N` (`--context`);
@@ -58,8 +58,8 @@ driver's again when the process is gone (the record: 2,223 MiB used before the s
 
 - With a key, every path under `/v1` needs `Authorization: Bearer KEY` (the scheme in any case), else
   `401` (`{"error": {"message": ..., "type": "authentication_error", "param": null, "code": "invalid_api_key"}}`, with `WWW-Authenticate: Bearer`). `/`, `/health` and `/stats` are open. The key is compared as SHA-256 digests in constant time.
-- Without `--host`: a Host that is not localhost, 127.0.0.1 or [::1] is 421, an Origin that is not the server's own is 403
-  (a CORS preflight too). A program that sends no Origin (curl, the OpenAI libraries) is answered.
+- On this computer's own address (the default, and a loopback `--host`): a Host that is not localhost, 127.0.0.1, [::1], a container's name for this computer (`host.docker.internal`, `gateway.docker.internal`, `kubernetes.docker.internal`, `host.containers.internal`, `host.lima.internal`, `host.minikube.internal`) or a name in `--allowed-hosts` is 421. On every address an Origin that is not the server's own (`http://` and the Host; `https://` too where the server is open to the network, for a proxy that ends TLS) or one in `--allowed-origins` is 403 (a CORS preflight too). A program that sends no Origin (curl, the OpenAI libraries) is answered.
+- Limits: a body of 16 MiB (413), a header block of 64 KiB or 256 headers (431), 64 connections at once (503), the request line and headers within 30 s and the body within 120 s (408), a write to a client that reads nothing 60 s.
 
 ## Endpoints
 
@@ -100,7 +100,7 @@ The default address is `http://127.0.0.1:8000` (`--port N` for another; if 8000 
 
 A container on Linux reaches a server on this computer's own address only from the host's network: `docker run --network=host -e PORT=3000 -e OLLAMA_BASE_URL=http://127.0.0.1:8000 -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 ... ghcr.io/open-webui/open-webui:main`.
 Docker Desktop (macOS, Windows) and Podman reach it as `host.docker.internal` and `host.containers.internal`; the Host check answers those two names (it still refuses every other name and every other site's Origin), and
-the address stays this computer's own. A server on another interface (`--host 0.0.0.0`) turns the Host and Origin checks off: give it a key.
+the address stays this computer's own. A server on another interface (`--host 0.0.0.0`) needs a key (or `--insecure-no-auth`), answers any Host (or those of `--allowed-hosts`) and still refuses another page's Origin. On Linux, Docker's `host.docker.internal:host-gateway` reaches the Docker bridge, not 127.0.0.1: use `--host 172.17.0.1` (with a key) or `--network=host`. WSL reaches a server on Windows' 127.0.0.1 as `localhost` (mirrored networking or localhost forwarding); another name goes in `--allowed-hosts`.
 
 The clients are checked in `tests/clients/`: `run.sh URL [KEY]` runs the OpenAI, Anthropic, Ollama, LangChain and Open Responses checks (the HTTP tests of the Open Responses compliance suite, with every response and stream event checked against the specification's schema in `tests/clients/openresponses/`), each with the newest release of its library, against a running server; `openwebui_check.py`
 checks an Open WebUI container. Claude Code and Open WebUI were run against Qwen3-8B on an RTX 4080 SUPER for v0.34.0 (the numbers are in the pull request).

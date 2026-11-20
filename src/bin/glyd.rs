@@ -334,8 +334,22 @@ fn gpu_tool_beside() -> bool {
 
 /// The model of `glyd run MODEL ...`: the first word that is not a flag or a flag's value.
 fn model_arg(args: &[String]) -> Option<&str> {
-    const WITH_VALUE: [&str; 12] =
-        ["--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables", "--api-key", "--hf-token"];
+    const WITH_VALUE: [&str; 14] = [
+        "--prompt",
+        "-p",
+        "--context",
+        "--ctx",
+        "--port",
+        "--host",
+        "--temp",
+        "--layout",
+        "--users",
+        "--tables",
+        "--api-key",
+        "--hf-token",
+        "--allowed-origins",
+        "--allowed-hosts",
+    ];
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
         if a == "--" {
@@ -353,7 +367,8 @@ fn model_arg(args: &[String]) -> Option<&str> {
 /// A flag that carries a secret (`--api-key KEY`, `--api-key=KEY`) taken out of `args` with its value, for the engine's environment: a secret on a command line is in `ps` and in a log. None where the flag is not
 /// there or has no value after it (`--hf-token` alone means the saved login: it stays). Words after a lone `--` are not looked at, nor are the values of the engine's other flags.
 fn take_secret(args: &mut Vec<String>, names: &[&str]) -> Option<String> {
-    const WITH_VALUE: [&str; 10] = ["--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables"];
+    const WITH_VALUE: [&str; 12] =
+        ["--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables", "--allowed-origins", "--allowed-hosts"];
     let (mut found, mut i) = (None, 0);
     while i < args.len() {
         if args[i] == "--" {
