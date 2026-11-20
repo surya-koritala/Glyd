@@ -1,0 +1,57 @@
+name: Signing check
+
+# The release signing action (.github/actions/sign-release) on a test tarball, then the checks that docs/verify-releases.md tells a user to run: the cosign signature of the
+# checksum list, the checksums, the build provenance and the SBOM attestation. Runs when the action or this file changes, and by hand; not part of CI result.
+on:
+  pull_request:
+    paths: ['.github/actions/sign-release/**', '.github/workflows/sign-check.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sign-and-verify:
+    name: Sign and verify a test tarball
+    # (a pull request from a fork has no OIDC token to sign with)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: A test tarball
+        run: |
+          mkdir -p out glyd-test
+          echo "glyd signing check $GITHUB_SHA" > glyd-test/README
+          tar -czf out/glyd-test.tar.gz glyd-test
+      - uses: ./.github/actions/sign-release
+        with:
+          dir: out
+          sums: SHA256SUMS
+          sbom: glyd-test.spdx.json
+      - name: Verify as a user would
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd out
+          sha256sum -c SHA256SUMS
+          for f in glyd-test.tar.gz SHA256SUMS; do
+            cosign verify-blob --bundle "$f.sigstore.json" \
+              --certificate-identity-regexp "^https://github.com/$REPO/\.github/workflows/sign-check\.yml@" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$f"
+          done
+          gh attestation verify glyd-test.tar.gz --repo "$REPO" --signer-workflow "$REPO/.github/workflows/sign-check.yml"
+          gh attestation verify glyd-test.tar.gz --repo "$REPO" --signer-workflow "$REPO/.github/workflows/sign-check.yml" --predicate-type https://spdx.dev/Document/v2.3
+          echo "a tampered file must not verify:"
+          echo x >> glyd-test.tar.gz
+          if cosign verify-blob --bundle glyd-test.tar.gz.sigstore.json --certificate-identity-regexp ".*" --certificate-oidc-issuer https://token.actions.githubusercontent.com glyd-test.tar.gz; then
+            echo "a changed file verified"; exit 1
+          fi

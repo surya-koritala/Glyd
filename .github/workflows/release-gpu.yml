@@ -17,7 +17,8 @@ name: Release
 # it without CI's success, and says so in a warning; that publishes on one person's say-so, as a pushed tag always could.
 #
 # Permissions: read everywhere (`plan` also reads the Actions runs, actions: read, in a step that runs nothing of the tag's tree).
-# `publish` alone has id-token: write, and runs only the wheels' download and PyPI's action: no source tree, no build tool, no secret.
+# `publish` has id-token: write, and runs only the wheels' download and PyPI's action: no source tree, no build tool, no secret; `sign-engine` (id-token and attestations: write) runs only the
+# sign-release action on the engine bundles as built (provenance, SBOM and Sigstore signatures: docs/verify-releases.md).
 # Every action is a commit, with its version in the comment. The CUDA builds take about an hour of runner time: a run by hand takes `pythons` to test the wheels on fewer CPythons.
 on:
   push:
@@ -464,11 +465,45 @@ jobs:
           packages-dir: wheels/
           skip-existing: true
 
+  sign-engine:
+    # Provenance, an SBOM and keyless signatures of the engine bundles that attach-engine puts on the release (.github/actions/sign-release): with id-token: write besides `publish`;
+    # it builds nothing and runs pinned actions on the bundles as they are. docs/verify-releases.md says how to check them.
+    needs: [plan, engine-bundle]
+    if: needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: engine-bundle-*
+          path: bundles
+          merge-multiple: true
+      - uses: ./.github/actions/sign-release
+        with:
+          dir: bundles
+          sums: SHA256SUMS-engine
+          sbom: glyd-engine-${{ needs.plan.outputs.label }}.spdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: engine-signatures
+          path: |
+            bundles/SHA256SUMS-engine
+            bundles/*.sigstore.json
+            bundles/*.spdx.json
+
   attach-engine:
     # The engine bundles (engine-bundle: glyd with the engine linked, glyd-engine as a link to it, libglyd_gpu_cuda13.so, LICENSE, a tarball for each Linux architecture, and its sha256) attached to this
     # repository's GitHub release of the tag: what install.sh and condor/tools/install.sh download on Linux with an NVIDIA GPU. release.yml makes the release
     # (its attach job); this job waits up to 30 minutes for it, then uploads, replacing assets of the same name.
-    needs: [plan, engine-bundle]
+    needs: [plan, engine-bundle, sign-engine]
     if: needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -480,6 +515,10 @@ jobs:
           pattern: engine-bundle-*
           path: bundles
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: engine-signatures
+          path: bundles
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -490,4 +529,4 @@ jobs:
           ls -l bundles
           (cd bundles && for f in *.tar.gz; do sha256sum -c "$f.sha256"; done)
           for i in $(seq 1 60); do gh release view "$TAG" -R "$REPO" > /dev/null 2>&1 && break; echo "waiting for release $TAG ($i)"; sleep 30; done
-          gh release upload "$TAG" -R "$REPO" --clobber bundles/*.tar.gz bundles/*.tar.gz.sha256
+          gh release upload "$TAG" -R "$REPO" --clobber bundles/*.tar.gz bundles/*.tar.gz.sha256 bundles/SHA256SUMS-engine bundles/*.sigstore.json bundles/*.spdx.json
