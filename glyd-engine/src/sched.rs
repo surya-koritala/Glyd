@@ -7,7 +7,7 @@
 
 use crate::ffi::Result;
 use crate::kv::{chain_key, Lost, Pager, ALONE_MESSAGE, PAGE};
-use crate::model::{Engine, Finish, PrefillJob, Reply, Row, Sample, FUSED_ROWS, MAX_ROWS};
+use crate::model::{Engine, Finish, PrefillJob, Reply, Row, Sample, FUSED_ROWS, JOIN_MIN, MAX_ROWS};
 use crate::sampler::{logprobs_of, Lp, Sampler};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
@@ -49,9 +49,9 @@ pub trait Backend {
     fn prefill_rows(&self) -> usize {
         1
     }
-    /// The most tokens a chunk has to run in a pass with others (each of the others' too; a longer one is run alone).
-    fn prefill_together(&self) -> usize {
-        usize::MAX
+    /// Whether a chunk of `n` tokens may run in a pass with others (a chunk that may not is run alone).
+    fn prefill_joins(&self, _n: usize) -> bool {
+        true
     }
     /// The chunks of several sequences' prompts in one pass: the sample after each that is `last`, in order (the logits and candidates of the j-th of them are row j, as a decode step's).
     fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
@@ -103,8 +103,8 @@ impl Backend for &mut Engine {
             1
         }
     }
-    fn prefill_together(&self) -> usize {
-        FUSED_ROWS
+    fn prefill_joins(&self, n: usize) -> bool {
+        (JOIN_MIN..=FUSED_ROWS).contains(&n)
     }
     fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
         self.prefill_batch(jobs)
@@ -666,14 +666,13 @@ impl<B: Backend> Sched<B> {
         let at = |a: &Vec<Seq>, id: u64| a.iter().position(|s| s.id == id);
         let cands: Vec<u64> = self.active.iter().filter(|s| s.prefilling).take(self.be.prefill_rows().max(1)).map(|s| s.id).collect();
         let budget = self.be.chunk();
-        let together = self.be.prefill_together();
         let mut picks: Vec<(u64, usize)> = Vec::new();
         let mut used = 0;
         for id in cands {
             let Some(i) = at(&self.active, id) else { continue };
             let left = self.active[i].tokens.len() - self.active[i].done;
             let n = if picks.is_empty() { left.min(budget) } else { left };
-            if n == 0 || used + n > budget || (!picks.is_empty() && n > together) {
+            if n == 0 || used + n > budget || (!picks.is_empty() && !self.be.prefill_joins(n)) {
                 break;
             }
             let upto = self.active[i].done + n;
@@ -682,8 +681,8 @@ impl<B: Backend> Sched<B> {
             }
             picks.push((id, n));
             used += n;
-            if n > together {
-                break; // (too long to run with others: alone)
+            if !self.be.prefill_joins(n) {
+                break; // (not for a pass with others: alone)
             }
         }
         // (the pages of a later one may have been taken from an earlier one, which went back to wait)

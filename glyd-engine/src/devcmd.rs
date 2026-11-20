@@ -599,8 +599,7 @@ fn cmd_batchcheck(a: &Args) -> Result<()> {
     let lens = [35usize, 20, 48, 33, 64, 18, 50, 27];
     let starts = [0usize, 0, 0, 0, 0, 0, 0, 0];
     let with_starts = [0usize, 16, 0, 32, 16, 0, 48, 16];
-    // (passes of at most 64 rows in all take the library's route as each does alone: bit for bit the same; larger ones the route their rows give: the same token, the logits within noise)
-    let (mut exact, mut near, mut bad, mut worst) = (0, 0, 0, 0f32);
+    let (mut exact, mut bad) = (0, 0);
     for (name, st) in [("from the start", starts), ("after earlier pages", with_starts)] {
         let toks = |k: usize| -> Vec<u32> { (0..st[k] + lens[k]).map(|i| 1 + ((k * 7919 + i * 104_729) % 4000) as u32).collect() };
         let pages: Vec<Vec<i32>> = (0..8).map(|k| (0..per).map(|j| (k * per + j) as i32).collect()).collect();
@@ -630,23 +629,17 @@ fn cmd_batchcheck(a: &Args) -> Result<()> {
                     let l = e.read_logits_row(j)?;
                     let tok = out[j].expect("a sample").token;
                     let d = l.iter().zip(&alone[k].0).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
-                    if tok != alone[k].1 {
+                    if tok != alone[k].1 || d != 0.0 {
                         bad += 1;
-                        println!("{name}: {b} in a pass ({rows} rows): sequence {k} in row {j}: token {tok}, alone {}", alone[k].1);
-                    } else if d == 0.0 {
-                        exact += 1;
-                    } else if rows <= 64 {
-                        bad += 1;
-                        println!("{name}: {b} in a pass ({rows} rows, one route): sequence {k}: logits differ by {d}");
+                        println!("{name}: {b} in a pass ({rows} rows): sequence {k} in row {j}: token {tok}, alone {}; logits differ by {d}", alone[k].1);
                     } else {
-                        near += 1;
-                        worst = worst.max(d);
+                        exact += 1;
                     }
                 }
             }
         }
     }
-    println!("sequences in passes of 2 to 8: {exact} bit for bit as alone, {near} the same token with logits within {worst} of alone's (passes of more than 64 rows), {bad} wrong");
+    println!("sequences in passes of 2 to 8: {exact} bit for bit as alone, {bad} not");
     if bad > 0 {
         std::process::exit(1);
     }

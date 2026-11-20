@@ -75,6 +75,10 @@ pub const MAX_ROWS: usize = 8;
 /// took: the logits differ in the last bits (a few hundredths of a logprob at most), as they do between any two routes.
 pub const FUSED_ROWS: usize = 64;
 
+/// The fewest tokens a chunk has to run in a pass with others: the library multiplies 16 rows or fewer by another kernel (the step kernel), whose sums are not those of the kernels from 17 rows to FUSED_ROWS, which
+/// a pass of several chunks uses for every row.
+pub const JOIN_MIN: usize = 17;
+
 /// The pages `start` .. `start + n` (a sequence's room, for the checks that give a sequence pages of their own).
 pub fn first_pages(start: usize, n: usize) -> Vec<i32> {
     (start..start + n).map(|p| p as i32).collect()
@@ -328,6 +332,8 @@ pub struct Engine {
     marks: RefCell<Option<Vec<(&'static str, Ev)>>>,
     /// The sequences of the prompt batch being run (empty: one sequence's chunk, as `Flash` says), and the rows whose logits it is to give.
     parts: RefCell<Vec<Part>>,
+    /// A prompt batch is running: every product is the library's own, 64 rows at a time (a row's bits are those it has in a pass of its own sequence alone, whatever the other rows).
+    sliced: std::cell::Cell<bool>,
     picked: RefCell<Vec<usize>>,
     /// A row of the chunk being run whose residual stream is dumped after every layer (debugging: GLYD_ENGINE_DUMP=position, in `score`).
     dump_row: std::cell::Cell<Option<usize>>,
@@ -587,6 +593,7 @@ impl Engine {
             work_bytes,
             marks: RefCell::new(None),
             parts: RefCell::new(Vec::new()),
+            sliced: std::cell::Cell::new(false),
             picked: RefCell::new(Vec::new()),
             dump_row: std::cell::Cell::new(None),
             dumped: RefCell::new(Vec::new()),
@@ -680,7 +687,7 @@ impl Engine {
     /// Whether a product of `m` rows by `p` takes the decoded matrix's way: the library's route says DECODE or AHEAD (a long prompt, where decoding W once and multiplying by a dense product is the faster, on
     /// the GPUs it is measured on), or `m` is past GLYD_ENGINE_DECODE_FROM.
     unsafe fn decoded_way(&self, p: &PackBuf, m: usize) -> Result<bool> {
-        if (self.blas.is_none() && !self.own) || m <= FUSED_ROWS || p.pack.cols % 64 != 0 {
+        if (self.blas.is_none() && !self.own) || m <= FUSED_ROWS || p.pack.cols % 64 != 0 || self.sliced.get() {
             return Ok(false);
         }
         if self.decode_from.is_some_and(|d| m >= d) {
@@ -698,6 +705,19 @@ impl Engine {
             }
             let tile = self.kern.pick_tile(m, p.pack.rows as usize, p.pack.cols as usize);
             return self.kern.gemm(self.dev.stream, tile, x, self.scratch_w.ptr, y, m as i32, p.pack.rows as i32, p.pack.cols as i32);
+        }
+        if self.sliced.get() && m > FUSED_ROWS {
+            // (the library's product for each 64 rows: the route and the sums of a prompt of that many tokens, which is what each sequence of the batch would have had alone; the weights are read again for each
+            // slice, from the cache where the matrix is small)
+            let (k, o) = (p.pack.cols as u64 * 2, p.pack.rows as u64 * 2);
+            // (in slices of the same size or nearly, so that none is of 16 rows or fewer, which the library multiplies by another kernel, with other sums)
+            let (slices, mut at) = (m.div_ceil(FUSED_ROWS), 0);
+            for i in 0..slices {
+                let n = m / slices + (i < m % slices) as usize;
+                self.lib.linear(&p.pack, x + at as u64 * k, n as i64, y + at as u64 * o, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream)?;
+                at += n;
+            }
+            return Ok(());
         }
         self.lib.linear(&p.pack, x, m as i64, y, self.ws.ptr, self.ws.bytes, self.done.ptr, self.dev.stream)
     }
@@ -1301,8 +1321,8 @@ impl Engine {
         if self.attn_decode {
             return err("the prompt's attention through the decode kernel is for checking one sequence");
         }
-        if let Some(j) = jobs.iter().find(|j| j.tokens.len() > FUSED_ROWS) {
-            return err(format!("a chunk of {} tokens in a batch: up to {FUSED_ROWS} run together", j.tokens.len()));
+        if let Some(j) = jobs.iter().find(|j| !(JOIN_MIN..=FUSED_ROWS).contains(&j.tokens.len())) {
+            return err(format!("a chunk of {} tokens in a batch: {JOIN_MIN} to {FUSED_ROWS} run together", j.tokens.len()));
         }
         let total: usize = jobs.iter().map(|j| j.tokens.len()).sum();
         if total == 0 || total > self.chunk || jobs.iter().any(|j| j.tokens.is_empty()) {
@@ -1348,6 +1368,7 @@ impl Engine {
         }
         let k = picked.len();
         *self.parts.borrow_mut() = parts;
+        self.sliced.set(true);
         *self.picked.borrow_mut() = picked;
         let flash = Flash { start: 0, gather: self.gpages.ptr, lslots: self.lslots.ptr };
         let p = self.host.ptr as *mut u8;
@@ -1379,6 +1400,7 @@ impl Engine {
             })()
         };
         self.parts.borrow_mut().clear();
+        self.sliced.set(false);
         run?;
         self.dev.sync()?;
         self.after_step(&fresh, &touched)?;
