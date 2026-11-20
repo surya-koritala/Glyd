@@ -147,7 +147,7 @@ jobs:
           fi
 
   # The codec, the store, glyd-gpu's host code and the engine without its kernels (no nvcc: the CUDA paths report that the build has none), built and unit-tested
-  # on the systems the engine does not run on, so that a change that stops them compiling or linking is caught before a release is planned. GitHub's own machines
+  # on the systems the engine does not run on (and on aarch64 Linux, where it has not run a model yet), so that a change that stops them compiling or linking is caught before a release is planned. GitHub's own machines
   # always (CI_RUNNER is for the Linux jobs); the target directory and the registry are cached by Cargo.lock.
   # The names are the required checks.
   platform:
@@ -168,6 +168,16 @@ jobs:
             part: engine
           - name: Windows x86_64 compile & test (engine, release build)
             os: windows-latest
+            part: engine-release
+          # (aarch64 Linux, the architecture of GH200, GB200, DGX Spark and Jetson: GitHub's free arm runners have no GPU, so this is the build and the host-side tests, not a run on a GPU; machine.rs's ARCHS_BUILT)
+          - name: Linux aarch64 compile & test (codec, store, CLI)
+            os: ubuntu-24.04-arm
+            part: codec
+          - name: Linux aarch64 compile & test (engine)
+            os: ubuntu-24.04-arm
+            part: engine
+          - name: Linux aarch64 compile & test (engine, release build)
+            os: ubuntu-24.04-arm
             part: engine-release
           - name: macOS arm64 compile & test (codec, store, CLI)
             os: macos-latest
