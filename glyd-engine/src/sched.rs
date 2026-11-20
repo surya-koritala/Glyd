@@ -707,9 +707,11 @@ impl<B: Backend> Sched<B> {
         let samples = self.be.prefill_many(&jobs)?;
         if self.trace {
             eprintln!(
-                "sched {:.3} prefill pass of {} sequences, {} tokens, {:.1} ms; {} active, {} waiting",
+                "sched {:.4} pass from {:.4} of {} sequences {:?}, {} tokens, {:.1} ms; {} active, {} waiting",
                 crate::monitor::clock(),
+                t0,
                 jobs.len(),
+                picks.iter().map(|p| p.0).collect::<Vec<_>>(),
                 used,
                 t.elapsed().as_secs_f64() * 1e3,
                 self.active.len(),

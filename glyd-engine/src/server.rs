@@ -1964,10 +1964,9 @@ pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
     match job {
         Job::Http { mut s, req, chat, id } => {
             std::thread::spawn(move || {
-                if client_gone(&s) {
-                    return;
+                if !client_gone(&s) {
+                    handle_completion(&sh, &tx, &mut s, &req, chat, id);
                 }
-                handle_completion(&sh, &tx, &mut s, &req, chat, id);
             });
         }
         Job::Messages { mut s, req, count, id } => {
@@ -2012,31 +2011,60 @@ pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &S
 
 /// `work` on any scheduler (the tests run it on a scheduler of a made-up model).
 pub fn work_with<B: Backend>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
-    let mut next: Option<Job> = None;
-    loop {
-        if next.is_none() {
-            next = if sched.idle() { rx.recv().ok() } else { rx.try_recv().ok() };
-            if next.is_none() && sched.idle() {
-                return;
+    // A thread of its own takes the jobs off the queue as they come: the requests' threads (which parse, tokenize and apply the chat template) start at once, and not at the end of the prompt pass or decode
+    // step the scheduler is in (20 ms of every first token with eight requests at once), and the sequences they make are passed on; the scheduler takes them in at its next round.
+    let (wtx, wrx) = std::sync::mpsc::channel::<Job>();
+    /// The queue's receiver for the one thread that reads it from here on (this function's own thread does not touch it until the scope ends).
+    struct OnlyReader<'a>(&'a Receiver<Job>);
+    // SAFETY: a Receiver may move to another thread (its jobs are Send); only the thread given this reads it while the scope runs, and the scope ends before `rx` is used again.
+    unsafe impl Send for OnlyReader<'_> {}
+    let reader = OnlyReader(rx);
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let reader = reader;
+            while let Ok(job) = reader.0.recv() {
+                match job {
+                    Job::Http { .. } | Job::Messages { .. } | Job::Term { .. } => detach(job, &shared, tx),
+                    Job::Stop => {
+                        let _ = wtx.send(Job::Stop);
+                        return;
+                    }
+                    job => {
+                        if wtx.send(job).is_err() {
+                            return;
+                        }
+                    }
+                }
             }
-        }
-        while let Some(job) = next.take() {
-            match job {
-                Job::Stop => {
-                    sched.fail("the server is stopping");
+            // (every sender is gone: the scheduler's queue closes, and it ends when it has nothing left to run)
+            drop(wtx);
+        });
+        let mut next: Option<Job> = None;
+        loop {
+            if next.is_none() {
+                next = if sched.idle() { wrx.recv().ok() } else { wrx.try_recv().ok() };
+                if next.is_none() && sched.idle() {
                     return;
                 }
-                Job::Seq(sub) => sched.submit(sub),
-                Job::Http { .. } | Job::Messages { .. } | Job::Term { .. } => detach(job, &shared, tx),
             }
-            next = rx.try_recv().ok();
+            while let Some(job) = next.take() {
+                match job {
+                    Job::Stop => {
+                        sched.fail("the server is stopping");
+                        return;
+                    }
+                    Job::Seq(sub) => sched.submit(sub),
+                    _ => {} // (the requests' own jobs went to their threads at the dispatcher)
+                }
+                next = wrx.try_recv().ok();
+            }
+            if let Err(err) = sched.tick() {
+                eprintln!("glyd: {err}");
+                engine_failed(&err.to_string());
+                sched.fail(&err.to_string());
+            }
         }
-        if let Err(err) = sched.tick() {
-            eprintln!("glyd: {err}");
-            engine_failed(&err.to_string());
-            sched.fail(&err.to_string());
-        }
-    }
+    });
 }
 
 // ---- a request by its id: how it stands, and a cancel ---------------------------------------------------------------------------------------------------
