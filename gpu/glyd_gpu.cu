@@ -9059,19 +9059,14 @@ __global__ void __launch_bounds__(LNT, C) f8h_lin3_kernel(const F8Lin P) {
 // by each, for one stream at a time. The pybind module (after it) and the
 // library (build_lib.sh) launch the same kernels with the same arguments.
 // glyd_gpu.h declares it for its callers, each function's arguments said.
-// GLYD_GPU_API: a function the library exports by its name (the public header's eight, and glyd_gpu_table: the package's way
-// to the rest). GLYD_GPU_INTERNAL: every other function of the C API, which a release build keeps hidden (reached through the
-// table alone) and a development build exports as well.
+// GLYD_GPU_API: a function the library exports by its name (every function of glyd_gpu.h, in every build; the loaders find them
+// by name). GLYD_GPU_INTERNAL: the same for a function the public header (glyd-gpu-py/include/glyd_gpu.h) does not have.
 #ifdef TORCH_EXTENSION_NAME
 #define GLYD_GPU_API extern "C" __attribute__((visibility("hidden")))  // the pybind module's own
 #define GLYD_GPU_INTERNAL GLYD_GPU_API
 #elif defined(_WIN32)
-// (Windows: the DLL exports the functions its .def file names, gpu/build_lib.ps1: the release build's nine, in a development build too)
-#define GLYD_GPU_API extern "C"
-#define GLYD_GPU_INTERNAL extern "C"
-#elif defined(GLYD_RELEASE)
-#define GLYD_GPU_API extern "C" __attribute__((visibility("default")))
-#define GLYD_GPU_INTERNAL extern "C" __attribute__((visibility("hidden")))
+#define GLYD_GPU_API extern "C" __declspec(dllexport)
+#define GLYD_GPU_INTERNAL GLYD_GPU_API
 #else
 #define GLYD_GPU_API extern "C" __attribute__((visibility("default")))
 #define GLYD_GPU_INTERNAL GLYD_GPU_API
@@ -11783,115 +11778,6 @@ GLYD_GPU_INTERNAL int glyd_gpu_f8h_moe(const uint8_t* core, const uint32_t* head
         return (int)cudaGetLastError();
     });
 }
-
-// The package's way to the library's functions: glyd_gpu_table(GLYD_GPU_API_VERSION) is a table of (id, function) pairs ending
-// with id 0, an id the FNV-1a hash of a function's name without its `glyd_gpu_`; null for another version. A release build
-// exports this and the public header's eight functions alone (the names of the rest are in no file of it).
-struct TableEntry {
-    uint32_t id, reserved;
-    const void* fn;
-};
-constexpr uint32_t fnv1a(const char* s) {
-    uint32_t h = 2166136261u;
-    for (; *s; s++) h = (h ^ (uint8_t)*s) * 16777619u;
-    return h ? h : 1;
-}
-template <uint32_t V> struct Id { static constexpr uint32_t value = V; };
-#define T(name) {Id<fnv1a(#name)>::value, 0, reinterpret_cast<const void*>(&glyd_gpu_##name)},
-static const TableEntry g_table[] = {
-    T(cuda_version)
-    T(api_version)
-    T(error_string)
-    T(pass_a)
-    T(pass_b)
-    T(decode)
-    T(gemv)
-    T(fast_gemv)
-    T(fast_decode)
-    T(fast_gemm_workspace)
-    T(fast_gemm)
-    T(fast_bgemv_workspace)
-    T(fast_bgemv)
-    T(mma_gemm_workspace)
-    T(mma_gemm)
-    T(mma12_gemm_workspace)
-    T(mma12_gemm)
-    T(mma_gemm_x1_workspace)
-    T(mma_gemm_x1)
-    T(mma12_gemm_x1_workspace)
-    T(mma12_gemm_x1)
-    T(mma12_gemm_x2_workspace)
-    T(mma12_gemm_x2)
-    T(mma12_gemm_x3_workspace)
-    T(mma12_gemm_x3)
-    T(gpu)
-    T(mma_way)
-    T(mma12_way)
-    T(mma_linear_workspace)
-    T(mma_linear)
-    T(mma12_linear_workspace)
-    T(mma12_linear)
-    T(hold)
-    T(mma_unpack)
-    T(mma12_unpack)
-    T(mma12_unpack_part)
-    T(mma_rows)
-    T(mma12_rows)
-    T(aux_create)
-    T(aux_destroy)
-    T(aux_part)
-    T(aux_reset)
-    T(mma12_aux_queue)
-    T(mma12_aux_linear)
-    T(mma12_part_cus)
-    T(mma_moe_unpack)
-    T(mma12_moe_unpack)
-    T(moe_way)
-    T(mma_moe_workspace)
-    T(mma_moe)
-    T(mma12_moe_workspace)
-    T(mma12_moe)
-    T(attn_decode_workspace)
-    T(attn_decode)
-    T(kv_leaf_bytes)
-    T(kv_extra_bytes)
-    T(kv_second_bytes)
-    T(kv_write)
-    T(kv_release)
-    T(kv_unpack)
-    T(kv_gather)
-    T(kv_work_put)
-    T(kv_decode_shares)
-    T(kv_decode_workspace)
-    T(kv_decode)
-    T(kv_floor_set)
-    T(f8_size_workspace)
-    T(f8_size)
-    T(f8_pack)
-    T(f8_unpack)
-    T(f8_unpack_experts)
-    T(f8_linear_workspace)
-    T(f8_moe_workspace)
-    T(f8_moe)
-    T(f8_linear)
-    T(f8h_size)
-    T(f8h_pack)
-    T(f8h_unpack)
-    T(f8h_linear)
-    T(f8h_moe)
-    T(f8h_plain)
-    {0, 0, nullptr}};
-#undef T
-constexpr bool unique_ids() {
-    constexpr uint32_t ids[] = {fnv1a("cuda_version"), fnv1a("api_version"), fnv1a("error_string"), fnv1a("pass_a"), fnv1a("pass_b"), fnv1a("decode"), fnv1a("gemv"), fnv1a("fast_gemv"), fnv1a("fast_decode"), fnv1a("fast_gemm_workspace"), fnv1a("fast_gemm"), fnv1a("fast_bgemv_workspace"), fnv1a("fast_bgemv"), fnv1a("mma_gemm_workspace"), fnv1a("mma_gemm"), fnv1a("mma12_gemm_workspace"), fnv1a("mma12_gemm"), fnv1a("mma_gemm_x1_workspace"), fnv1a("mma_gemm_x1"), fnv1a("mma12_gemm_x1_workspace"), fnv1a("mma12_gemm_x1"), fnv1a("mma12_gemm_x2_workspace"), fnv1a("mma12_gemm_x2"), fnv1a("mma12_gemm_x3_workspace"), fnv1a("mma12_gemm_x3"), fnv1a("gpu"), fnv1a("mma_way"), fnv1a("mma12_way"), fnv1a("mma_linear_workspace"), fnv1a("mma_linear"), fnv1a("mma12_linear_workspace"), fnv1a("mma12_linear"), fnv1a("hold"), fnv1a("mma_unpack"), fnv1a("mma12_unpack"), fnv1a("mma12_unpack_part"), fnv1a("mma_rows"), fnv1a("mma12_rows"), fnv1a("aux_create"), fnv1a("aux_destroy"), fnv1a("aux_part"), fnv1a("aux_reset"), fnv1a("mma12_aux_queue"), fnv1a("mma12_aux_linear"), fnv1a("mma12_part_cus"), fnv1a("mma_moe_unpack"), fnv1a("mma12_moe_unpack"), fnv1a("moe_way"), fnv1a("mma_moe_workspace"), fnv1a("mma_moe"), fnv1a("mma12_moe_workspace"), fnv1a("mma12_moe"), fnv1a("attn_decode_workspace"), fnv1a("attn_decode"), fnv1a("kv_leaf_bytes"), fnv1a("kv_extra_bytes"), fnv1a("kv_second_bytes"), fnv1a("kv_write"), fnv1a("kv_release"), fnv1a("kv_unpack"), fnv1a("kv_gather"), fnv1a("kv_work_put"), fnv1a("kv_decode_shares"), fnv1a("kv_decode_workspace"), fnv1a("kv_decode"), fnv1a("kv_floor_set"), fnv1a("f8_size_workspace"), fnv1a("f8_size"), fnv1a("f8_pack"), fnv1a("f8_unpack"), fnv1a("f8_unpack_experts"), fnv1a("f8_linear_workspace"), fnv1a("f8_linear"), fnv1a("f8_moe_workspace"), fnv1a("f8_moe"), fnv1a("f8h_size"), fnv1a("f8h_pack"), fnv1a("f8h_unpack"), fnv1a("f8h_linear"), fnv1a("f8h_moe"), fnv1a("f8h_plain")};
-    for (size_t i = 0; i < sizeof ids / sizeof ids[0]; i++)
-        for (size_t j = i + 1; j < sizeof ids / sizeof ids[0]; j++)
-            if (ids[i] == ids[j]) return false;
-    return true;
-}
-static_assert(unique_ids(), "two functions of the table have one id");
-
-GLYD_GPU_API const void* glyd_gpu_table(int version) { return version == GLYD_GPU_API_VERSION ? (const void*)g_table : nullptr; }
 
 #ifdef TORCH_EXTENSION_NAME
 // The pybind module: the C API on tensors, on the current stream of their

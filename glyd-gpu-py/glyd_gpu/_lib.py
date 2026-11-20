@@ -109,44 +109,21 @@ def kv_second_aux_at(aux=KV_AUX):
 X1 = 4  # glyd_gpu.h's GLYD_GPU_ROUTE_BIG: the prompt kernel
 
 
-class _Entry(ctypes.Structure):
-    """A pair of the library's table (glyd_gpu_table): a function's id and its address."""
-
-    _fields_ = [("id", ctypes.c_uint32), ("reserved", ctypes.c_uint32), ("fn", ctypes.c_void_p)]
-
-
-def table_id(name):
-    """A function's id in the library's table: the 32-bit FNV-1a hash of its name without `glyd_gpu_` (0 made 1)."""
-    h = 2166136261
-    for b in name.encode():
-        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
-    return h or 1
-
-
 def load(path):
     """The library at path, for the functions below: refused where its C API is another version (ctypes does not
-    check a call's arguments). A library exports the public header's functions and glyd_gpu_table alone: every other
-    function is the table's, by an id (table_id)."""
+    check a call's arguments). Every function is the library's, by its name."""
     global _lib, _error_string, _cuda_version
     lib = ctypes.CDLL(path)
     v = getattr(lib, "glyd_gpu_api_version", None)
     v = v() if v is not None else 1
     if v != API_VERSION:
         raise RuntimeError(f"{path}: its C API is version {v}, this package's is {API_VERSION}: build the library from this package's release (gpu/build_lib.sh), or unset GLYD_GPU_LIB")
-    lib.glyd_gpu_table.argtypes, lib.glyd_gpu_table.restype = [ctypes.c_int], ctypes.POINTER(_Entry)
-    table = lib.glyd_gpu_table(API_VERSION)
-    if not table:
-        raise RuntimeError(f"{path}: its table is for another version of the C API")
-    by_id, i = {}, 0
-    while table[i].id:
-        by_id[table[i].id] = table[i].fn
-        i += 1
 
     def find(name, args, result=ctypes.c_int):
-        fn = by_id.get(table_id(name))
-        if not fn:
-            raise RuntimeError(f"{path}: no function {name}: a library of another build")
-        return ctypes.CFUNCTYPE(result, *args)(fn)
+        try:
+            return ctypes.CFUNCTYPE(result, *args)(("glyd_gpu_" + name, lib))
+        except AttributeError:
+            raise RuntimeError(f"{path}: no function glyd_gpu_{name}: a library of another build") from None
 
     for name, args in _ARGS.items():
         _fn[name] = find(name, args + [_P])

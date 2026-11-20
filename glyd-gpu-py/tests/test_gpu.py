@@ -282,7 +282,7 @@ def test_c_header():
     called.update({f"glyd_gpu_{n}_workspace": ("int", [c.c_int64] * k + [c.POINTER(c.c_size_t)]) for n, k in lib["_SIZES"].items()})
     called.update({f"glyd_gpu_{n}": ("int", a) for n, a in lib["_PLAIN"].items()})  # (no stream: the routes)
     called.update({f"glyd_gpu_{n}": ("int", a) for n, a in lib["_AUX"].items()})  # (the route SPLIT's ring: each list whole)
-    called.update(glyd_gpu_api_version=("int", []), glyd_gpu_cuda_version=("int", []), glyd_gpu_error_string=("const char*", [c.c_int]), glyd_gpu_table=("const void*", [c.c_int]))
+    called.update(glyd_gpu_api_version=("int", []), glyd_gpu_cuda_version=("int", []), glyd_gpu_error_string=("const char*", [c.c_int]))
     assert declared == called, [n for n in sorted(set(declared) | set(called)) if declared.get(n) != called.get(n)]
     assert int(re.search(r"#define GLYD_GPU_API_VERSION (\d+)", h).group(1)) == lib["API_VERSION"], "GLYD_GPU_API_VERSION is not _lib.py's API_VERSION"
     # the routes' numbers and a GPU's classes: kernels.py's and _lib.py's the header's
@@ -297,8 +297,6 @@ def test_c_header():
         defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"], defines["GLYD_GPU_L4"], defines["GLYD_GPU_L40S"], defines["GLYD_GPU_PCIE"], defines["GLYD_GPU_GH200"], defines["GLYD_GPU_H100"], defines["GLYD_GPU_WITH_SPLIT"])
     cu = open(os.path.join(gpu, "glyd_gpu.cu")).read()
     assert set(re.findall(r"GLYD_GPU_(?:API|INTERNAL) [^(]*?(glyd_gpu_\w+)\(", cu)) == set(declared), "glyd_gpu.cu's C API is not glyd_gpu.h's"
-    table = {f"glyd_gpu_{n}" for n in re.findall(r"^    T\((\w+)\)$", cu, flags=re.M)}  # (glyd_gpu_table's list: every function but itself, each once)
-    assert table == set(declared) - {"glyd_gpu_table"} and len(re.findall(r"^    T\(\w+\)$", cu, flags=re.M)) == len(table), sorted(table ^ (set(declared) - {"glyd_gpu_table"}))
 
 
 NEUTRAL_CUBIN = [".text.gk_3", ".nv.info.gk_3", ".nv.shared.gk_3", ".nv.constant0.gk_3", ".nv.capmerc.text.gk_3", ".nv.callgraph", ".debug_frame", ".rela.debug_frame", ".nv.merc.rela.text.gk_3"]
