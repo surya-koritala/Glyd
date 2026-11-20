@@ -1838,4 +1838,32 @@ mod tests {
         assert!(recall_in(&root, &model, "swift", &lp.gpu).is_none() && recall_in(&root, &model, lp.level, "NVIDIA L4").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The GPU job's script (scripts/ci_plan_check.py) accepts the report of a load that took what the plan said, from the JSON `fit --json` prints, and fails one that took
+    /// more of the GPU than planned or loaded another plan.
+    #[test]
+    fn the_gpu_check_reads_the_plan_and_the_report() {
+        let dir = model_dir("check", "gemma-4-12B", &fixture("gemma4_12b_config.json"));
+        let model = format!("{}:kestrel", dir.to_str().unwrap());
+        let f = planned(&args(&["fit", &model, "--machine", "rtx4080s"])).unwrap();
+        let c = f.plan.chosen.as_ref().unwrap();
+        let lp = c.load.as_ref().unwrap();
+        let out = std::env::temp_dir().join(format!("glyd-plan-check-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        let run = |report: String| {
+            std::fs::write(out.join("fit.json"), c.json("m", &f.machine)).unwrap();
+            std::fs::write(out.join("loaded.json"), report).unwrap();
+            let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci_plan_check.py");
+            std::process::Command::new("python3").arg(script).arg(out.join("fit.json")).arg(out.join("loaded.json")).output()
+        };
+        let Ok(ok) = run(lp.report("m", lp.weights_on_gpu() + 1000, lp.gpu_total() - lp.reserve - (300 << 20))) else { return }; // (no python3 here)
+        assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stdout));
+        let over = run(lp.report("m", lp.weights_on_gpu(), lp.gpu_total() - lp.reserve + (1 << 30))).unwrap();
+        assert!(!over.status.success() && String::from_utf8_lossy(&over.stdout).contains("the load took"), "{}", String::from_utf8_lossy(&over.stdout));
+        let mut other = lp.clone();
+        other.context = 4096;
+        let wrong = run(other.report("m", other.weights_on_gpu(), 0)).unwrap();
+        assert!(!wrong.status.success() && String::from_utf8_lossy(&wrong.stdout).contains("context"));
+        let _ = std::fs::remove_dir_all(&out);
+    }
 }
