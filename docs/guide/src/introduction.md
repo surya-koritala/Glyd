@@ -18,7 +18,7 @@ tokens, with an OpenAI and Anthropic compatible server and a chat page.
 
 ## How it works
 
-1. You name a model: `google/gemma-4-12B-it`, or a path.
+1. You name a model: `gemma4:12b`, `google/gemma-4-12B-it`, or a path.
 2. `fit` reads the model's config and plans a level, where the weights go and how much context fits.
 3. On the first run Glyd downloads the model, packs it for your GPU and builds the KV tables.
 4. The kernels read the packed weights and decode them as they compute. Nothing is unpacked into memory first.
@@ -28,7 +28,7 @@ The design is in [docs/architecture.md](https://github.com/surya-koritala/Glyd/b
 
 ## How to use it
 
-[Install](install.md), then [first run](first-run.md): three commands. [Choosing a level](levels.md) when the model does not
+[Install](install.md), then [first run](first-run.md): a few commands. [Choosing a level](levels.md) when the model does not
 fit. [Serving](serve.md) and [connecting tools](tools.md) to use it from other programs.
 
 ## What runs today
@@ -48,16 +48,15 @@ Not yet: Windows, macOS, aarch64 and CPU-only engines. AMD is a development buil
 5. [Connecting tools](tools.md)
 6. [Several GPUs and Starlings](multi-gpu.md)
 7. [Condor](condor.md)
-8. [Troubleshooting](troubleshooting.md), by what `glyd-engine doctor` prints
+8. [Troubleshooting](troubleshooting.md), by what `glyd doctor` prints
 9. [Models](models.md)
 10. [The model catalog](catalog.md)
 
-## The command is `glyd-engine`
+## The command is `glyd`
 
-The engine's program is `glyd-engine`. Its messages say `glyd`, because the front-door program that will hold these
-commands under that name is not on main yet. The commands on these pages work with `glyd-engine`. Where `glyd` (the file
-compressor) is installed beside `glyd-engine` and the Python tool is not, `glyd run`, `serve`, `doctor`, `login`, `fetch`,
-`preflight`, `prepare`, `supports`, `costs` and `rates` go to the engine. `fit` is `glyd-engine fit` only.
+Since v0.33.0 `glyd` is one program with the engine linked in: `run`, `serve`, `pull`, `ls`, `rm`, `service`, `ps`, `stop`, `fit`,
+`doctor`, `login`, `connect`, `supports`, `preflight` and the rest. `glyd-engine` is a link to it that keeps the engine's older
+command line. File compression is the same program: `glyd FILE -o FILE.glyd`.
 
 ## Benchmarks
 

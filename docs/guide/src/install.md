@@ -9,29 +9,10 @@
 | Linux aarch64 (Grace, Jetson, DGX Spark) | Refused: the engine has not run on an aarch64 computer. File compression only. |
 | macOS, Apple GPU | Refused: Apple GPUs are not supported yet. File compression only. |
 | Windows | Nothing is built or tested. [Condor](condor.md) has PowerShell scripts for NVIDIA GPUs on Windows. |
-| AMD (RDNA 3 and 4) | A development build: `GLYD_HIP=1 cargo build --release -p glyd-engine`. Not in releases. |
+| AMD (RDNA 3 and 4) | A development build: `GLYD_HIP=1 cargo build --release -p glyd --features engine`. Not in releases. |
 | No GPU | Refused: "no GPU was found: the engine's CPU backend is not built yet". |
 
-The refusals are what `glyd-engine run` prints (exit 3). `glyd-engine doctor` says what the machine has.
-
-## Build from source
-
-This is the way that works on main today. It needs Linux x86_64, git, the Rust toolchain (the repository pins 1.97.1 and
-rustup fetches it), and for the GPU kernels the CUDA toolkit with `nvcc` (12.8 or newer).
-
-```bash
-git clone https://github.com/surya-koritala/Glyd && cd Glyd
-cargo build --release -p glyd-engine
-bash gpu/build_lib.sh target/release
-target/release/glyd-engine doctor
-```
-
-- `cargo build` finds `nvcc` on the PATH, or at `$NVCC`. Without one it builds an engine with no CUDA kernels and warns.
-  The kernels are built for Ampere, Ada and Hopper (`GLYD_ENGINE_ARCHS="80 86 89 90a"` is the default); set
-  `GLYD_ENGINE_ARCHS="89"` to build for one architecture, which is quicker.
-- `gpu/build_lib.sh DIR` writes the GPU library, `libglyd_gpu_cuda13.so`, into `DIR`. The engine looks for it beside
-  its own program, then in the loader's path; `GLYD_GPU_LIB=/path/to/it` names it.
-- The engine needs the NVIDIA driver only. It does not link the CUDA runtime.
+The refusals are what `glyd run` prints (exit 3). `glyd doctor` says what the machine has.
 
 ## The release script
 
@@ -39,11 +20,44 @@ target/release/glyd-engine doctor
 curl -LsSf https://getglyd.com/install.sh | sh
 ```
 
-On Linux with an NVIDIA GPU, the current release (v0.32.1) installs the Python tool with vLLM and PyTorch (about 8 GB) as an
-isolated uv tool. In that release `glyd run` goes through vLLM, except on the GPUs listed on the [Models](models.md) page,
-where it hands the model to the engine. On a Mac or a machine with no NVIDIA GPU it installs the compression program.
+On Linux x86_64 with an NVIDIA GPU, the v0.33.0 script installs `glyd` with the engine and its GPU library in one folder
+(about 100 MB, no Python, no PyTorch), checks each download against the release's sha256, and ends with `glyd doctor`. It
+also sets up the background service as a user unit of your account (see [Serving](serve.md)); `GLYD_NO_SERVICE=1` in front of
+`sh` leaves that out. `GLYD_WITH_VLLM=1` adds the Python tool with vLLM and PyTorch (about 8 GB), for the bf16 models the
+engine does not run.
 
-## Not on main yet
+On a Mac, or a machine with no NVIDIA GPU, it installs the file compression program only.
 
-v0.33.0 is the first release built only from this repository, with the engine installed without Python
-([#129](https://github.com/surya-koritala/Glyd/issues/129)). Until it is out, build from source for the engine.
+The copy of the script at getglyd.com is replaced with the v0.33.0 one when the site is next published from this repository.
+Until then it installs v0.32.1, which goes through vLLM. To install v0.33.0 now, take the script from its tag:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/surya-koritala/Glyd/v0.33.0/scripts/install.sh | sh
+```
+
+The release has the engine bundles `glyd-engine-v0.33.0-linux-x86_64.tar.gz` and its `.sha256`
+([releases](https://github.com/surya-koritala/Glyd/releases/tag/v0.33.0)).
+
+## Build from source
+
+Linux x86_64, git, the Rust toolchain (the repository pins 1.97.1 and rustup fetches it), and for the GPU kernels the CUDA
+toolkit with `nvcc` (12.8 or newer).
+
+```bash
+git clone https://github.com/surya-koritala/Glyd && cd Glyd
+cargo build --release -p glyd --features engine
+bash gpu/build_lib.sh target/release
+target/release/glyd doctor
+```
+
+- `-p glyd --features engine` builds `glyd` with the engine linked in: `run`, `serve`, `pull`, `ls`, `fit`, `doctor` and the
+  rest are its own commands. `cargo build --release -p glyd-engine` builds the engine's own program, `glyd-engine`, which has
+  the older command line without `pull`, `ls`, `rm` and the service.
+- The build finds `nvcc` on the PATH, or at `$NVCC`. Without one it builds without CUDA kernels and warns. The kernels are
+  built for Ampere, Ada and Hopper (`GLYD_ENGINE_ARCHS="80 86 89 90a"` is the default); `GLYD_ENGINE_ARCHS="89"` builds for one
+  architecture, which is quicker.
+- `gpu/build_lib.sh DIR` writes the GPU library, `libglyd_gpu_cuda13.so`, into `DIR`. The engine looks for it beside its own
+  program, then in the loader's path; `GLYD_GPU_LIB=/path/to/it` names it.
+- The engine needs the NVIDIA driver only. It does not link the CUDA runtime.
+
+The rest of the guide writes `glyd`. With a source build, run it as `target/release/glyd`.

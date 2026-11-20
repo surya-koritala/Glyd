@@ -1,12 +1,26 @@
 # First run
 
-Three commands, from the folder you built in (or with `glyd-engine` on your PATH):
+A few commands (with a source build, `target/release/glyd`):
 
 ```bash
-glyd-engine doctor                       # what this computer has: GPU, driver, library, disk, Hub
-glyd-engine fit google/gemma-4-12B-it    # the plan for this GPU, before anything is downloaded
-glyd-engine run google/gemma-4-12B-it    # download, pack, then a chat in the terminal and at http://localhost:8000
+glyd doctor                       # what this computer has: GPU, driver, library, disk, Hub
+glyd fit gemma4:12b               # the plan for this GPU, before anything is downloaded
+glyd run gemma4:12b               # download, pack, then a chat in the terminal and at http://localhost:8000
 ```
+
+## Names
+
+A model is a Hub id (`google/gemma-4-12B-it`), a directory, a GGUF file, or a short name: `NAME[:SIZE][:LEVEL]`, for example
+`gemma4`, `qwen3.8:27b`, `gemma4:12b:wren`. A tag of letters only is a level, so `:27b` is a size. Without a size, the family's
+default is taken. `glyd ls --all` lists the names and what each is:
+
+```bash
+glyd ls --all        # name, level, size on disk, repo; "not pulled" for a name not downloaded
+glyd pull gemma4:12b # download a model by name or Hub id
+glyd rm gemma4:12b   # take it out of the cache
+```
+
+Short names offer models released in the last six months. An older model still works by its Hub id.
 
 ## doctor
 
@@ -30,7 +44,7 @@ It lists every level the model runs at with its size on your GPU, and marks the 
 memory bandwidth, for a short prompt and one user. `--machine NAME` plans for another computer (`rtx4060-laptop`, `rtx4080s`,
 `rtx4090`, `2x3090`, `l4`, `a6000`, `a100-80g`, `h100`, `8xh100`, `rx7900xtx`, `m4max-64g`, `dgx-spark`, `strix-halo-128g`), so
 you can see the plan before you buy or rent. `--context N` and `--users N` change what it plans for.
-`glyd-engine preflight MODEL` says whether the engine will certainly run the model here (exit 0 yes, 3 no with the reason).
+`glyd preflight MODEL` says whether the engine will certainly run the model here (exit 0 yes, 3 no with the reason).
 
 ## run
 
@@ -40,6 +54,6 @@ from the packed copy.
 - `--prompt "TEXT"` gives one answer and exits. `--no-think` turns a thinking model's thinking off.
 - `MODEL:LEVEL` picks a level: [Choosing a level](levels.md). `--context N` sets the context.
 - The chat page is at `http://localhost:8000` while it runs: the same server as [serve](serve.md).
-- A gated model needs a Hugging Face token: `glyd-engine login`, or `HF_TOKEN` in the environment.
+- A gated model needs a Hugging Face token: `glyd login`, or `HF_TOKEN` in the environment.
 - The packed models are in `$GLYD_CACHE` (default `~/.cache/glyd`), the downloads in the Hub cache (`$HF_HOME`, default
   `~/.cache/huggingface`). Set either to put them on another drive.
