@@ -209,3 +209,154 @@ fn muse_attention_against_muse_ref() {
         assert_close(&got, &want, BF16_TOL, &format!("Muse attention layer {l} against muse_ref"));
     }
 }
+
+/// Kimi-K3's FFNs against `kimi_ref`: the dense situ MLP of layer 0 and the latent MoE of layer 1 (sigmoid + choice bias, top-4 of 16,
+/// renormed, the experts MXFP4 in a latent of 128, the summed latent normed with two roundings, a shared expert).
+#[test]
+fn kimi_k3_ffns_against_kimi_ref() {
+    use crate::kimi_ref::{mxfp4, random, RefKimi};
+    let dir = std::env::temp_dir().join(format!("glyd-runtime-kimi-moe-{}", std::process::id()));
+    random(&dir, 1, false, 2).unwrap();
+    let theirs = RefKimi::load(&dir).unwrap();
+    let ck = Checkpoint::open(&dir).unwrap();
+    let c = &theirs.c;
+    let situ = Mlp { act: Act::Situ { beta: c.situ.0, linear: c.situ.1 }, gated: true, bias: false, clamp: None };
+    let q = |l: usize| format!("language_model.model.layers.{l}");
+    // the dense layer
+    let mut p = Params::new();
+    for r in ["gate", "up", "down"] {
+        put(&mut p, &ck, r, &format!("{}.mlp.{r}_proj.weight", q(0)));
+    }
+    // the MoE layer
+    let f = format!("{}.block_sparse_moe", q(1));
+    let mut pm = Params::new();
+    put(&mut pm, &ck, "router", &format!("{f}.gate.weight"));
+    put(&mut pm, &ck, "choice_bias", &format!("{f}.gate.e_score_correction_bias"));
+    put(&mut pm, &ck, "latent_down", &format!("{f}.routed_expert_down_proj.weight"));
+    put(&mut pm, &ck, "latent_up", &format!("{f}.routed_expert_up_proj.weight"));
+    put(&mut pm, &ck, "latent_norm_out", &format!("{f}.routed_expert_norm.weight"));
+    for r in ["gate", "up", "down"] {
+        put(&mut pm, &ck, &format!("shared_{r}"), &format!("{f}.shared_experts.{r}_proj.weight"));
+    }
+    let fp4 = |n: &str| -> (usize, usize, Vec<f32>) {
+        let sh = ck.get(&format!("{n}.weight_packed")).unwrap().1.shape.clone();
+        let (rows, cols) = (sh[0] as usize, sh[1] as usize * 2);
+        (rows, cols, mxfp4(&ck.read(&format!("{n}.weight_packed")).unwrap(), &ck.read(&format!("{n}.weight_scale")).unwrap(), rows, cols).unwrap())
+    };
+    let e = &c.experts;
+    let (mut gu, mut down) = (Vec::new(), Vec::new());
+    let (mut inter, mut lat) = (0, 0);
+    for x in 0..e.experts {
+        let (i, l, w1) = fp4(&format!("{f}.experts.{x}.w1"));
+        (inter, lat) = (i, l);
+        gu.extend(w1);
+        gu.extend(fp4(&format!("{f}.experts.{x}.w3")).2);
+        down.extend(fp4(&format!("{f}.experts.{x}.w2")).2);
+    }
+    pm.put("experts_gate_up", &[e.experts, 2 * inter, lat], gu);
+    pm.put("experts_down", &[e.experts, lat, inter], down);
+    let m = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: None,
+            top_k: e.top_k,
+            renorm: e.renorm,
+            scale: e.scale,
+            hash: false,
+        },
+        experts: e.experts,
+        expert: situ,
+        shared: Some(situ),
+        shared_gate: false,
+        latent: Some(Latent { dim: lat, norm_in: None, expert_norm: None, norm_out: Some(Norm { rounding: Rounding::Twice, ..Norm::rms(c.eps) }) }),
+    };
+    let (mut want, mut got, mut want_m, mut got_m) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for t in 0..4 {
+        let x: Vec<f32> = fill(&format!("x{t}"), c.hidden, -1.0, 1.0).into_iter().map(bf16).collect();
+        want.extend(theirs.ffn_of(0, &x));
+        got.extend(super::ffn::mlp(&situ, &p, "", &x).unwrap());
+        want_m.extend(theirs.ffn_of(1, &x));
+        got_m.extend(super::ffn::moe(&m, &pm, &x, 0).unwrap());
+    }
+    assert_close(&got, &want, BF16_TOL, "Kimi-K3 situ MLP against kimi_ref");
+    assert_close(&got_m, &want_m, BF16_TOL, "Kimi-K3 latent MoE against kimi_ref");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Muse Spark's latent MoE against `muse_ref`: sigmoid of the logits times the output multiplier with a choice bias, a (1+w)-normed
+/// latent input, each expert's output normed with its input scaled by (1+w), no shared expert.
+#[test]
+fn muse_moe_against_muse_ref() {
+    use crate::muse::ConfigMuse;
+    use crate::muse_ref::RefMuse;
+    let text = r#"{"architectures": ["MuseSparkForConditionalGeneration"], "model_type": "muse_spark", "text_config": {"model_type": "muse_spark_text", "hidden_size": 128, "num_hidden_layers": 1,
+        "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 32, "intermediate_size": 256, "moe_hidden_size": 64, "moe_intermediate_size": 48, "num_local_experts": 8,
+        "num_experts_per_tok": 3, "num_shared_experts": 0, "vocab_size": 256, "max_position_embeddings": 4096, "sliding_window": 3, "hidden_act": "silu", "attention_bias": false,
+        "layer_types": ["full_attention"], "layer_rope_theta": [0],
+        "mlp_layer_types": ["sparse"], "rope_parameters": {"rope_theta": 500000.0, "rope_type": "default"}, "rms_norm_eps": 1e-05, "post_norm_eps": 1e-08,
+        "qk_scale_factor": 5.4730064863875, "output_multiplier": 0.5, "final_logit_softcapping": 20.0, "residual_gate_temperature": 0.3, "routed_scaling_factor": 1.25,
+        "bos_token_id": 0, "eos_token_id": 1, "tie_word_embeddings": false}}"#;
+    let c = ConfigMuse::parse(text, "test", None).unwrap();
+    let (d, lat, inter, ne) = (c.hidden, c.latent, c.inter, c.experts);
+    let bfv = |v: Vec<f32>| v.into_iter().map(bf16).collect::<Vec<_>>();
+    let g = |n: &str, k: usize, lo: f32, hi: f32| bfv(fill(n, k, lo, hi));
+    let a = |cols: usize| (3.0 / cols as f32).sqrt();
+    let w = [
+        fill("router", ne * d, -4.0 * a(d), 4.0 * a(d)),
+        fill("bias", ne, 0.0, 0.1),
+        g("pre", lat * d, -a(d), a(d)),
+        g("w_pre", lat, -0.1, 0.1),
+        g("gu", ne * 2 * inter * lat, -a(lat), a(lat)),
+        g("down", ne * lat * inter, -a(inter), a(inter)),
+        g("w_post_e", lat, -0.1, 0.1),
+        g("post", d * lat, -a(lat), a(lat)),
+    ];
+    let theirs = RefMuse::moe_only(c.clone(), vec![w.clone()]);
+    let mut p = Params::new();
+    for (i, (role, shape)) in [
+        ("router", vec![ne, d]),
+        ("choice_bias", vec![ne]),
+        ("latent_down", vec![lat, d]),
+        ("latent_norm_in", vec![lat]),
+        ("experts_gate_up", vec![ne, 2 * inter, lat]),
+        ("experts_down", vec![ne, lat, inter]),
+        ("expert_norm", vec![lat]),
+        ("latent_up", vec![d, lat]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        p.put(role, &shape, w[i].clone());
+    }
+    let m = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: c.out_mult,
+            bias: true,
+            groups: None,
+            top_k: c.top_k,
+            renorm: true,
+            scale: c.route_scale,
+            hash: false,
+        },
+        experts: ne,
+        expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },
+        shared: None,
+        shared_gate: false,
+        latent: Some(Latent {
+            dim: lat,
+            norm_in: Some(Norm::rms_plus_one(c.eps)),
+            expert_norm: Some(Norm { weight: NormWeight::InputPlusOne, ..Norm::rms(c.post_eps) }),
+            norm_out: None,
+        }),
+    };
+    let (mut want, mut got) = (Vec::new(), Vec::new());
+    for t in 0..4 {
+        let h = g(&format!("h{t}"), d, -1.0, 1.0);
+        want.extend(theirs.moe_of(0, &h));
+        got.extend(super::ffn::moe(&m, &p, &h, 0).unwrap());
+    }
+    assert_close(&got, &want, BF16_TOL, "Muse latent MoE against muse_ref");
+}

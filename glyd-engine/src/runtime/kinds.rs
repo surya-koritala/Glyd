@@ -141,13 +141,19 @@ impl Rope {
 }
 
 /// The activation of an output gate or a gated MLP.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Act {
     Sigmoid,
     Silu,
     GeluTanh,
     Gelu,
     Relu2,
+    /// Kimi-K3's situ, a gated pair's act(g, u) = beta tanh(g / beta) sigmoid(g) linear tanh(u / linear); as a single activation, its
+    /// gate factor.
+    Situ {
+        beta: f32,
+        linear: f32,
+    },
 }
 
 /// Where an attention output gate's values come from.
@@ -305,45 +311,70 @@ pub enum Mixer {
     Mamba2(Mamba2),
 }
 
-/// A dense MLP: `down(act(gate x) * (up x))` when gated, `down(act(up x))` otherwise. Roles `gate`, `up`, `down` (and `*_bias`).
+/// A dense MLP: `down(act(gate x) * (up x))` when gated, `down(act(up x))` otherwise.
+///
+/// Roles `gate` and `up` [inter, in] (or `gate_up` [2 inter, in], the gate's rows first), `down` [out, inter], and their `_bias` with
+/// `bias`. In a MoE the same roles prefixed `shared_` are the shared expert.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mlp {
     pub act: Act,
     pub gated: bool,
     pub bias: bool,
-    /// SwiGLU limits: the gate clamped above and the up both ways (DeepSeek-V4, GLM's dense layers).
+    /// SwiGLU limits: the gate clamped above and the up both ways (DeepSeek-V4).
     pub clamp: Option<f32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RouterScore {
     Softmax,
     Sigmoid,
+    /// sqrt(softplus(x)) (DeepSeek-V4)
     SqrtSoftplus,
 }
 
+/// How a MoE layer picks a token's experts and weighs them. Roles `router` [experts, hidden]; `choice_bias` [experts] with `bias`;
+/// `hash` [vocab, top_k] (expert ids as values) with `hash`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Router {
     pub score: RouterScore,
-    /// A per-expert bias added for the choice only (role `bias`).
+    /// The logits' factor before the score (Muse: its output multiplier).
+    pub logit_scale: f32,
+    /// A per-expert bias added to the scores for the choice only (sigmoid and sqrt-softplus routers).
     pub bias: bool,
+    /// (groups, groups kept): a group's score is the sum of its two best (biased) scores; experts of the other groups are not chosen.
     pub groups: Option<(usize, usize)>,
     pub top_k: usize,
+    /// The chosen scores divided by their sum (+ 1e-20).
     pub renorm: bool,
     pub scale: f32,
-    /// Hash routing for the first layers: the token id picks the experts (role `hash` [vocab, top_k]).
+    /// Hash routing (DeepSeek-V4's first layers): the token id picks the experts from the table, the scores still weigh them.
     pub hash: bool,
 }
 
-/// A mixture of experts. Roles `router` [experts, hidden], per expert `experts.{e}.gate/up/down`, `shared.gate/up/down`, and for a
-/// latent MoE `latent_down` [latent, hidden], `latent_up` [hidden, latent].
+/// A latent MoE: experts run in a smaller space between two projections. Roles `latent_down` [dim, hidden], `latent_up` [hidden, dim],
+/// and the norms' weights `latent_norm_in`, `expert_norm`, `latent_norm_out` [dim].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Latent {
+    pub dim: usize,
+    /// On the projected input (Muse's pre-expert norm).
+    pub norm_in: Option<Norm>,
+    /// On each expert's output before it is weighed (Muse's post-expert norm).
+    pub expert_norm: Option<Norm>,
+    /// On the weighed sum before the up projection (Kimi-K3).
+    pub norm_out: Option<Norm>,
+}
+
+/// A mixture of experts. Roles: the router's; `experts_gate_up` [experts, 2 inter, in] (or `experts_up` [experts, inter, in] when the
+/// expert MLP is not gated), `experts_down` [experts, out, inter]; the shared expert's `shared_*`; with `shared_gate`, `shared_router`
+/// [1, hidden] (the shared output times sigmoid of it: Qwen3.5/3.8 MoE, Condor).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Moe {
     pub router: Router,
     pub experts: usize,
     pub expert: Mlp,
     pub shared: Option<Mlp>,
-    pub latent: Option<usize>,
+    pub shared_gate: bool,
+    pub latent: Option<Latent>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

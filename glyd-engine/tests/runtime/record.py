@@ -63,7 +63,9 @@ def ranges(name, shape):
 def fill_module(m, plus_one_norms=False):
     specs = {}
     with torch.no_grad():
-        for name, p in m.named_parameters():
+        # (the routers' choice biases are buffers)
+        params = list(m.named_parameters()) + [(n, b) for n, b in m.named_buffers() if n.endswith("e_score_correction_bias")]
+        for name, p in params:
             lo, hi = ranges(name, list(p.shape))
             if plus_one_norms and "norm" in name and p.dim() == 1:
                 lo, hi = (-0.2, 0.2)
@@ -213,7 +215,72 @@ def glm53_mla():
           "GlmMoeDsaAttention (indexer top-k past the prompt)", c.hidden_size, specs, out)
 
 
+def mlp_case(case, what, source, module, hidden, plus_one_norms=False):
+    specs = fill_module(module, plus_one_norms)
+    x, _ = inputs(hidden)
+    write(case, what, source, hidden, specs, module(x))
+
+
+def gemma4_mlp():
+    from transformers.models.gemma4 import modeling_gemma4 as M
+
+    c = gemma4_config()
+    mlp_case("gemma4_mlp", "gemma-4-12B MLP: GELU-tanh gated, 64 -> 128", "Gemma4TextMLP", M.Gemma4TextMLP(c, 0).eval(), c.hidden_size)
+
+
+def glm53_moe():
+    from transformers.models.glm_moe_dsa import modeling_glm_moe_dsa as M
+    from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
+
+    # GLM-5.3's MoE: sigmoid scores with a choice bias, top-8 of 256 in groups, renormed, x2.5, one shared expert. Here top-2 of 8 in 4
+    # groups keeping 2 (so the group limit removes experts), inter 32.
+    c = GlmMoeDsaConfig(hidden_size=64, n_routed_experts=8, num_experts_per_tok=2, n_group=4, topk_group=2, routed_scaling_factor=2.5,
+                        norm_topk_prob=True, n_shared_experts=1, moe_intermediate_size=32, num_hidden_layers=1, hidden_act="silu")
+    m = M.GlmMoeDsaMoE(c).eval()
+    specs = fill_module(m)
+    x, _ = inputs(c.hidden_size)
+    write("glm53_moe", "GLM-5.3 MoE: sigmoid + choice bias, 4 groups keep 2, top-2 of 8, renorm x2.5, one shared expert",
+          "GlmMoeDsaMoE", c.hidden_size, specs, m(x))
+
+
+def dsv4_moe(layer, case):
+    from transformers.models.deepseek_v4 import modeling_deepseek_v4 as M
+    from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+
+    # DeepSeek-V4's MoE: sqrt-softplus scores, a choice bias, hash routing (a token-id table) in the first layers, SwiGLU limit 10,
+    # renormed, one shared expert. Here top-2 of 8, inter 32, a vocabulary of 32.
+    c = DeepseekV4Config(hidden_size=64, num_local_experts=8, num_experts_per_tok=2, intermediate_size=32, vocab_size=32, num_hidden_layers=2,
+                         mlp_layer_types=["hash_moe", "moe"], scoring_func="sqrtsoftplus", swiglu_limit=1.0, routed_scaling_factor=1.5)
+    m = M.DeepseekV4SparseMoeBlock(c, layer).eval()
+    specs = fill_module(m)
+    hash_table = [[(t * 5 + j * 3) % 8 for j in range(2)] for t in range(32)]
+    if m.is_hash:
+        m.gate.tid2eid.copy_(torch.tensor(hash_table))
+    ids = [(t * 11 + 3) % 32 for t in range(T)]
+    x, _ = inputs(c.hidden_size)
+    out = m(x, torch.tensor(ids).view(1, T))
+    write(case, f"DeepSeek-V4 MoE layer ({c.mlp_layer_types[layer]}): sqrt-softplus, top-2 of 8, SwiGLU limit 1, x1.5, one shared expert",
+          "DeepseekV4SparseMoeBlock", c.hidden_size, specs, out, {"token_ids": ids, "hash": hash_table if m.is_hash else None})
+
+
+def qwen38_moe():
+    from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe as M
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeTextConfig
+
+    # Qwen3.8-2.4T-A95B's MoE (the Qwen3.5 MoE architecture): softmax top-k, renormed, a shared expert gated by sigmoid of its own
+    # router. Here top-3 of 8, inter 32, shared 48.
+    c = Qwen3_5MoeTextConfig(hidden_size=64, num_experts=8, num_experts_per_tok=3, moe_intermediate_size=32, shared_expert_intermediate_size=48,
+                             num_hidden_layers=1)
+    mlp_case("qwen38_moe", "Qwen3.8 MoE: softmax top-3 of 8, renormed, sigmoid-gated shared expert", "Qwen3_5MoeSparseMoeBlock",
+             M.Qwen3_5MoeSparseMoeBlock(c).eval(), c.hidden_size)
+
+
 CASES = {
+    "gemma4_mlp": gemma4_mlp,
+    "glm53_moe": glm53_moe,
+    "dsv4_hash_moe": lambda: dsv4_moe(0, "dsv4_hash_moe"),
+    "dsv4_moe": lambda: dsv4_moe(1, "dsv4_moe"),
+    "qwen38_moe": qwen38_moe,
     "qwen38_attention": qwen38_attention,
     "qwen38_gdn": qwen38_gdn,
     "gemma4_sliding": lambda: gemma4_attention(0, "gemma4_sliding", "gemma-4-12B sliding layer: GQA, head dim 16, window 4, rope theta 1e4, q/k/v norm"),

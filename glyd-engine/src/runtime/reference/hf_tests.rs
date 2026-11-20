@@ -2,7 +2,7 @@
 //! a causal prompt of a few tokens, the same generated weights on both sides.
 
 use super::testing::{assert_close, Fixture};
-use super::{attention, linear, mla, Params, HF_TOL};
+use super::{attention, ffn, linear, mla, Params, HF_TOL};
 use crate::runtime::kinds::*;
 
 /// The fixture's tensors under their roles.
@@ -207,4 +207,89 @@ fn glm53_latent_attention() {
     );
     let mut c = mla::LatentCache::default();
     check(&f, "GLM-5.3 MLA", |h, pos| mla::step(&m, &p, &mut c, h, pos).unwrap());
+}
+
+#[test]
+fn gemma4_mlp() {
+    let f = Fixture::load("gemma4_mlp");
+    let m = Mlp { act: Act::GeluTanh, gated: true, bias: false, clamp: None };
+    let p = params(&f, &[("gate", "gate_proj.weight"), ("up", "up_proj.weight"), ("down", "down_proj.weight")]);
+    check(&f, "gemma-4 MLP", |h, _| ffn::mlp(&m, &p, "", h).unwrap());
+}
+
+/// A MoE fixture's experts and shared expert under their roles (`shared` the shared expert's module name).
+fn moe_params(f: &Fixture, shared: &str, more: &[(&str, &str)]) -> Params {
+    let names = [
+        ("router".to_string(), "gate.weight".to_string()),
+        ("experts_gate_up".into(), "experts.gate_up_proj".into()),
+        ("experts_down".into(), "experts.down_proj".into()),
+        ("shared_gate".into(), format!("{shared}.gate_proj.weight")),
+        ("shared_up".into(), format!("{shared}.up_proj.weight")),
+        ("shared_down".into(), format!("{shared}.down_proj.weight")),
+    ];
+    let mut map: Vec<(&str, &str)> = names.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    map.extend_from_slice(more);
+    params(f, &map)
+}
+
+fn silu_mlp(clamp: Option<f32>) -> Mlp {
+    Mlp { act: Act::Silu, gated: true, bias: false, clamp }
+}
+
+#[test]
+fn glm53_moe() {
+    let f = Fixture::load("glm53_moe");
+    let m = Moe {
+        router: Router { score: RouterScore::Sigmoid, logit_scale: 1.0, bias: true, groups: Some((4, 2)), top_k: 2, renorm: true, scale: 2.5, hash: false },
+        experts: 8,
+        expert: silu_mlp(None),
+        shared: Some(silu_mlp(None)),
+        shared_gate: false,
+        latent: None,
+    };
+    let p = moe_params(&f, "shared_experts", &[("choice_bias", "gate.e_score_correction_bias")]);
+    check(&f, "GLM-5.3 MoE", |h, _| ffn::moe(&m, &p, h, 0).unwrap());
+    // the group limit matters here: without it some token picks other experts
+    let free = Moe { router: Router { groups: None, ..m.router.clone() }, ..m.clone() };
+    let d = f.usize("hidden");
+    let got: Vec<f32> = f.input().chunks(d).flat_map(|h| ffn::moe(&free, &p, h, 0).unwrap()).collect();
+    assert!(super::testing::rel(&got, &f.f32s("output")) > 1e-3);
+}
+
+#[test]
+fn deepseek_v4_moe() {
+    for (case, hash) in [("dsv4_hash_moe", true), ("dsv4_moe", false)] {
+        let f = Fixture::load(case);
+        let m = Moe {
+            router: Router { score: RouterScore::SqrtSoftplus, logit_scale: 1.0, bias: !hash, groups: None, top_k: 2, renorm: true, scale: 1.5, hash },
+            experts: 8,
+            expert: silu_mlp(Some(1.0)),
+            shared: Some(silu_mlp(Some(1.0))),
+            shared_gate: false,
+            latent: None,
+        };
+        let mut p = moe_params(&f, "shared_experts", if hash { &[] } else { &[("choice_bias", "gate.e_score_correction_bias")] });
+        if hash {
+            let t: Vec<f32> = f.j["hash"].as_array().unwrap().iter().flat_map(|r| r.as_array().unwrap().iter().map(|e| e.as_u64().unwrap() as f32)).collect();
+            p.put("hash", &[t.len() / 2, 2], t);
+        }
+        let ids: Vec<u32> = f.j["token_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        let mut tok = ids.iter();
+        check(&f, case, |h, _| ffn::moe(&m, &p, h, *tok.next().unwrap()).unwrap());
+    }
+}
+
+#[test]
+fn qwen38_moe() {
+    let f = Fixture::load("qwen38_moe");
+    let m = Moe {
+        router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 3, renorm: true, scale: 1.0, hash: false },
+        experts: 8,
+        expert: silu_mlp(None),
+        shared: Some(silu_mlp(None)),
+        shared_gate: true,
+        latent: None,
+    };
+    let p = moe_params(&f, "shared_expert", &[("shared_router", "shared_expert_gate.weight")]);
+    check(&f, "Qwen3.8 MoE", |h, _| ffn::moe(&m, &p, h, 0).unwrap());
 }
