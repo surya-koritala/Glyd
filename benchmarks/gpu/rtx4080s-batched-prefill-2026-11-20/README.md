@@ -46,14 +46,13 @@ Decode tokens/s a user and in all are unchanged at every load (the table of the 
 ## Where it still fails the bar (`scripts/gpu_bar.py`)
 
 - **Short prompts, 4 and 8 at once, 6% to 21% behind:** the requests of a burst arrive over 40 to 60 ms (tokenizing and templating one after another), so a first pass takes the first one or two
-  (20 ms) and the rest follow; a pass of more than 128 rows takes the library's decode-ahead route (42 ms for 213 to 251 rows against 24 ms for 70 to 108), which is the cost of the last pass.
-- **2,000-token prompts, 4% to 9% behind (one user too: 0.371 against 0.357 s):** the engine's own prompt products run at 88 TFLOPS against vLLM's 92 (cuBLAS on this card gives the same 372 ms
-  here: `--profile-prefill` above). Closing it is kernel work on the gate-and-up and down products, not scheduling; no change here moves it.
+  (20 ms) and the rest follow; a pass of more than about 128 rows takes the library's decode-ahead route (41 to 43 ms for 143 to 251 rows against 25 ms for 108), which is the cost of the last pass.
+- **2,000-token prompts, 4% to 9% behind (one user too: 0.371 against 0.357 s):** the engine's own prompt products run at 88 TFLOPS against vLLM's 92 (`bench --profile-prefill`: 372 ms of GPU time for 2,000 tokens, 95% of it the four products). Closing it is kernel work on the gate-and-up and down products, not scheduling; no change here moves it.
 
 ## Replies
 
 One request at a time is **bit for bit** what it was (10 prompts of 96 tokens, cold cache and with the prompts' pages found: tokens and logprobs identical to the engine of main, `compare.py`). With the
-default, concurrent replies are the same bit for bit as alone (decode rows do not change a row's bits; that record's `old-alone` against `old-together`: 10 of 10). With `GLYD_ENGINE_BATCH_PREFILL=1` a pass
+default (decode skip only), concurrent replies are the same bit for bit as alone and as main's (10 of 10, cold and warm, `def-together` against `old-alone`). With `GLYD_ENGINE_BATCH_PREFILL=1` a pass
 of more than 64 rows takes the products' route its row count gives, not the one each prompt takes alone, so the logits differ in the last bits: in `glyd-engine batchcheck` (passes of 2 to 8 sequences,
 with and without earlier pages) **140 of 140 sequences give the same token, 4 are bit for bit (passes of at most 64 rows), 136 have logits within 0.19 of alone's** (about 1 to 2 bf16 steps at the
 logits' size); over 96 tokens, 8 of 10 (cold) and 7 of 10 (warm) replies are token for token the same as alone's, the others part at a near tie (token 36, 40 or 67, logprobs within 0.16). That is why it is
