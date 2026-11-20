@@ -1796,13 +1796,21 @@ fn load_dynamic(
     let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
     // Kimi-K3 where the GPUs do not hold its experts: the expert cache (each GPU's room after the other weights as places for its layers' experts, every expert in the computer's memory)
     let ctx = a.num("context", 8192usize).map_err(|e| Refusal::new(e.0, "--context 8192"))?;
-    // (a development build's GLYD_TP=1: every layer across all the GPUs, or GLYD_TP_GPUS's, src/dynamic/tp.rs)
+    // (every layer across the GPUs, src/dynamic/tp.rs: by default on datacenter GPUs that reach each other directly, where no split is asked for; a
+    // development build's GLYD_TP=1 or 0 says so itself, GLYD_TP_GPUS which GPUs)
     let tp_room: Vec<(i32, u64)> = match crate::tune!("GLYD_TP_GPUS") {
         Some(v) => room.iter().copied().filter(|r| v.split(',').any(|x| x.trim().parse::<i32>().ok() == Some(r.0))).collect(),
         None => room.clone(),
     };
-    let across =
-        matches!(family, "Kimi-K3" | "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") && tp_room.len() > 1 && crate::tune!("GLYD_TP").as_deref() == Some("1");
+    let devs: Vec<i32> = tp_room.iter().map(|r| r.0).collect();
+    let across = matches!(family, "Kimi-K3" | "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark")
+        && tp_room.len() > 1
+        && !chosen
+        && match crate::tune!("GLYD_TP").as_deref() {
+            Some("1") => true,
+            Some(_) => false,
+            None => matches!(family, "Kimi-K3" | "DeepSeek-V4") && hbm(&gpus) && crate::dynamic::tp::reach(&devs),
+        };
     let cache = if family == "Kimi-K3" && cut.is_none() && !chosen {
         Some(if across { kimi_cache_tp(&dir, &tp_room, &name, ctx, hbm(&gpus))? } else { kimi_cache(&dir, nl, &room, &name, ctx, hbm(&gpus))? })
     } else {

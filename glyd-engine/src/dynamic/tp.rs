@@ -28,6 +28,10 @@ const BLOCKS: usize = 16;
 /// A sender's room in a GPU's staging, a parity: a gather of more rows goes in pieces of as many rows as fit; a block's share of it.
 const CAP: usize = 4 << 20;
 const SUB: usize = CAP / BLOCKS;
+/// kernels/tp.cu's tp_gather_ll: a block's words of a sender's room, a parity (4 of them a 16-byte vector), and the most a sender's slice of a gather of that
+/// kind has (8 KB a block): a decode step's gathers take it, a prompt chunk's the regular one.
+const LL_SUB: usize = 2048;
+const LL_MAX: usize = BLOCKS * LL_SUB * 4;
 /// Streams a GPU gathers on (each its own sequence of gathers): the engine's and the shared expert's beside it.
 const CHANNELS: usize = 2;
 /// The bytes a matrix has at least for its rows to be sliced (a smaller one every GPU holds whole: its product is shorter than a gather). A development build's
@@ -37,7 +41,7 @@ const MIN_BYTES: usize = 16 << 20;
 /// What the GPUs' threads share while they set up: the GPUs, and each one's staging and flags to tell the others.
 pub struct Group {
     devices: Vec<i32>,
-    posted: Mutex<Vec<Option<[[u64; 2]; CHANNELS]>>>,
+    posted: Mutex<Vec<Option<[[u64; 3]; CHANNELS]>>>,
     barrier: Meet,
     /// Two places of the group on one GPU (a check on a machine with one): each gather waits for every place's thread to come to it first, as a place's
     /// allocation on that GPU waits for the other place's gather already spinning there.
@@ -112,6 +116,7 @@ impl Meet {
 struct Chan {
     _stage: Buf,
     flags: Buf,
+    _ll: Buf,
     ctr: Buf,
     tab: Buf,
     temp: RefCell<(Buf, Vec<Buf>)>,
@@ -123,6 +128,7 @@ pub struct Comm {
     pub n: usize,
     group: Arc<Group>,
     gather: Kernel,
+    gather_ll: Option<Kernel>,
     ch: Vec<Chan>,
     streams: RefCell<Vec<Stream>>,
     min_bytes: usize,
@@ -137,6 +143,18 @@ thread_local! {
 
 /// The first GPU's gathers so far (every GPU of a group makes the same): `bench` counts a step's, the formula of src/ceiling.rs is checked by them.
 pub static GATHERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Whether every GPU of `devices` can write to every other directly (peer access), as the layers across GPUs need.
+pub fn reach(devices: &[i32]) -> bool {
+    let Ok(d) = driver() else { return false };
+    devices.iter().all(|&a| {
+        devices.iter().filter(|&&b| b != a).all(|&b| {
+            let mut can = 0;
+            // SAFETY: a host out-pointer.
+            unsafe { (d.cuDeviceCanAccessPeer)(&mut can, a, b) == 0 && can != 0 }
+        })
+    })
+}
 
 /// The group this thread's GPU is in (None: a GPU on its own).
 pub fn comm() -> Option<Rc<Comm>> {
@@ -170,35 +188,42 @@ impl Comm {
             ch.push(Chan {
                 _stage: Buf::new(2 * n * CAP)?,
                 flags: Buf::zeroed(n * BLOCKS * 4)?,
+                _ll: Buf::zeroed(2 * n * BLOCKS * LL_SUB * 8)?,
                 ctr: Buf::zeroed(BLOCKS * 4)?,
-                tab: Buf::new(2 * n * 8)?,
+                tab: Buf::new(3 * n * 8)?,
                 temp: RefCell::new((Buf::new(16)?, Vec::new())),
             });
         }
-        let mine: [[u64; 2]; CHANNELS] = std::array::from_fn(|c| [ch[c]._stage.ptr, ch[c].flags.ptr]);
+        let mine: [[u64; 3]; CHANNELS] = std::array::from_fn(|c| [ch[c]._stage.ptr, ch[c].flags.ptr, ch[c]._ll.ptr]);
         g.posted.lock().map_err(|_| Error("the GPUs' group is poisoned".into()))?[rank] = Some(mine);
         g.barrier.wait()?;
         let all = g.posted.lock().map_err(|_| Error("the GPUs' group is poisoned".into()))?.clone();
         for (c, chan) in ch.iter().enumerate() {
-            let mut tab = vec![0u64; 2 * n];
+            let mut tab = vec![0u64; 3 * n];
             for (q, p) in all.iter().enumerate() {
                 let p = p.ok_or_else(|| Error(format!("GPU {q} of the group did not set up")))?;
-                (tab[q], tab[n + q]) = (p[c][0], p[c][1]);
+                (tab[q], tab[n + q], tab[2 * n + q]) = (p[c][0], p[c][1], p[c][2]);
             }
             chan.tab.write(0, &tab)?;
         }
         let min_bytes = crate::tune!("GLYD_TP_MIN_MB").and_then(|v| v.parse::<usize>().ok()).map_or(MIN_BYTES, |m| m << 20);
-        Ok(Rc::new(Comm {
+        // (GLYD_TP_LL=0 in a development build: every gather the regular kind, to compare)
+        let ll = crate::tune!("GLYD_TP_LL").is_none_or(|v| v != "0");
+        let gather_ll = if ll { Some(dev.kernel(kname!("tp_gather_ll"))?) } else { None };
+        let c = Rc::new(Comm {
             rank,
             n,
             group: g.clone(),
             gather: dev.kernel(kname!("tp_gather"))?,
+            gather_ll,
             ch,
             streams: RefCell::new(Vec::new()),
             min_bytes,
             emulated: false,
             seen: RefCell::new(Default::default()),
-        }))
+        });
+        c.check(dev)?;
+        Ok(c)
     }
 
     /// This GPU (`dev`) as the first of `n` GPUs would load and run a model, alone: each sliced product its slice's alone, its gathers left out, the
@@ -209,6 +234,32 @@ impl Comm {
         let m = Rc::get_mut(&mut c).ok_or_else(|| Error("an emulated group shared".into()))?;
         (m.n, m.emulated) = (n, true);
         Ok(c)
+    }
+
+    /// Two gathers of known values once at the start, one of each kind: some machines' GPU-to-GPU writes arrive wrong (docs: a cloud's multi-GPU machines),
+    /// and every product after would be wrong with them.
+    fn check(&self, dev: &Dev) -> Result<()> {
+        let word = |q: usize, i: usize| ((q * 7919 + i * 31 + 1) & 0xffff) as u16;
+        for sl in [64, LL_MAX / 2 + 64] {
+            let x = Buf::new(sl * 2)?;
+            x.write(0, &(0..sl).map(|i| word(self.rank, i)).collect::<Vec<u16>>())?;
+            let y = Buf::zeroed(self.n * sl * 2)?;
+            // SAFETY: both buffers live on this GPU, of these sizes; every GPU of the group makes the same two gathers.
+            unsafe { self.gather(dev.stream, x.ptr, 1, sl, y.ptr, self.n * sl)? };
+            dev.sync()?;
+            let mut got = vec![0u16; self.n * sl];
+            y.read(0, &mut got)?;
+            if let Some(q) = (0..self.n).find(|&q| (0..sl).any(|i| got[q * sl + i] != word(q, i))) {
+                let d = self.group.devices.get(q).copied().unwrap_or(-1);
+                return err(format!(
+                    "GPU {} reads what GPU {d} wrote to it wrong: the GPUs' direct writes to each other do not arrive intact on this machine",
+                    dev.ordinal
+                ));
+            }
+        }
+        // (the engine's streams take the channels from the first again: every GPU made these gathers on the first, in the same turn)
+        self.streams.borrow_mut().clear();
+        Ok(())
     }
 
     /// The one `T` of the group: made by the first GPU's thread that asks, the same for every other.
@@ -290,8 +341,17 @@ impl Comm {
         while r0 < m {
             let rn = piece.min(m - r0);
             let (xs, ys) = (x + (r0 * sl * 2) as u64, y + (r0 * ld * 2) as u64);
-            let blocks = (rn * sl * 2).div_ceil(SUB).clamp(1, BLOCKS) as u32;
-            launch!(self.gather, [blocks, 1, 1], [256, 1, 1], s; xs, rn as i32, (sl / 8) as i32, ys, (ld / 8) as i64, self.rank as i32, self.n as i32, c.tab.ptr, c.flags.ptr, c.ctr.ptr, (SUB / 16) as i64)?;
+            let bytes = rn * sl * 2;
+            match &self.gather_ll {
+                Some(k) if bytes <= LL_MAX => {
+                    let blocks = bytes.div_ceil(LL_SUB * 4).clamp(1, BLOCKS) as u32;
+                    launch!(k, [blocks, 1, 1], [256, 1, 1], s; xs, rn as i32, (sl / 8) as i32, ys, (ld / 8) as i64, self.rank as i32, self.n as i32, c.tab.ptr, c.ctr.ptr, LL_SUB as i64)?;
+                }
+                _ => {
+                    let blocks = bytes.div_ceil(SUB).clamp(1, BLOCKS) as u32;
+                    launch!(self.gather, [blocks, 1, 1], [256, 1, 1], s; xs, rn as i32, (sl / 8) as i32, ys, (ld / 8) as i64, self.rank as i32, self.n as i32, c.tab.ptr, c.flags.ptr, c.ctr.ptr, (SUB / 16) as i64)?;
+                }
+            }
             r0 += rn;
         }
         Ok(())
