@@ -396,7 +396,9 @@ impl Sampler {
         if self.gram.is_some() && self.p.top_k > 0 {
             // (a grammar leaves a share of the row, often most of it: the top-k is taken in one pass, the logits with their tokens beside them, a buffer of twice k cut to k each time it fills, and the k-th
             // largest logit so far a floor that the rest must pass; the order is the one below's, the larger logit first and, of equal ones, the smaller token)
-            let (k, by) = (self.p.top_k, |a: &(f32, u32), b: &(f32, u32)| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+            // (a request's top_k is any number: no more than the row has)
+            let (k, by) =
+                (self.p.top_k.min(l.len()), |a: &(f32, u32), b: &(f32, u32)| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
             let mut c: Vec<(f32, u32)> = Vec::with_capacity(2 * k + 1);
             let mut floor = f32::NEG_INFINITY;
             for (i, &x) in l.iter().enumerate() {

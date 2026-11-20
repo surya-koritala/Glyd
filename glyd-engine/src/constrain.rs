@@ -526,7 +526,8 @@ mod tests {
         let mut masked = vec![0.0f32; width];
         c.start().apply(&mut masked);
         assert!(masked.iter().any(|&x| x == f32::NEG_INFINITY) && masked.iter().any(|&x| x == 0.0));
-        for (top_k, top_p, min_p) in [(5, 1.0, 0.0), (0, 0.9, 0.0), (3, 0.8, 0.0), (0, 1.0, 0.1), (100, 1.0, 0.0)] {
+        for (top_k, top_p, min_p) in [(5, 1.0, 0.0), (0, 0.9, 0.0), (3, 0.8, 0.0), (0, 1.0, 0.1), (100, 1.0, 0.0), (usize::MAX, 1.0, 0.0), (1 << 62, 0.9, 0.0)]
+        {
             for seed in 0..20u64 {
                 let row: Vec<f32> = (0..width).map(|t| ((t * 7919 + seed as usize * 13) % 101) as f32 / 10.0).collect();
                 let p = Params { temperature: 0.9, top_k, top_p, min_p, seed, ..Params::default() };
