@@ -46,7 +46,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/job-home/.config/systemd/user"
           # (Ubuntu's spice-vdagent user unit has a bad key that fails the unit-file check; the PC is no VM, so mask it for the job)
           ln -s /dev/null "$RUNNER_TEMP/job-home/.config/systemd/user/spice-vdagent.service"
-          { echo "HOME=$RUNNER_TEMP/job-home"; echo "TMPDIR=$(mktemp -d /tmp/starlings-ci.XXXXXX)"; echo "CARGO_TARGET_DIR=$RUNNER_WORKSPACE/target"; } >> "$GITHUB_ENV"
+          { echo "HOME=$RUNNER_TEMP/job-home"; echo "TMPDIR=$(mktemp -d /tmp/starlings-ci.XXXXXX)"; echo "CARGO_TARGET_DIR=$RUNNER_WORKSPACE/target"; echo "CARGO_BUILD_JOBS=8"; } >> "$GITHUB_ENV"
       - name: Set initial branch name
         working-directory: ${{ github.workspace }}
         run: |

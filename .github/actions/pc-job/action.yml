@@ -15,4 +15,7 @@ runs:
           echo "AGENT_TOOLSDIRECTORY=$RUNNER_TEMP/job-toolcache"
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/job-cache"
           echo "TMPDIR=$RUNNER_TEMP/job-tmp"
+          # (the PC has 32 threads, other work (GPU jobs, benchmarks) and 60 GB: a job's builds and tests take a quarter of it, not every core)
+          echo "CARGO_BUILD_JOBS=8"
+          echo "RUST_TEST_THREADS=8"
         } >> "$GITHUB_ENV"

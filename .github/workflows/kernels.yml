@@ -23,7 +23,10 @@ jobs:
     name: The engine's kernels compile (nvcc 13, no GPU)
     runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (its own container on either; never the PC for a fork's pull request)
     timeout-minutes: 40
-    container: nvidia/cuda:13.0.3-devel-rockylinux8
+    container:
+      image: nvidia/cuda:13.0.3-devel-rockylinux8
+      # (a cap on the container's memory, swap included, so that ptxas cannot take the whole machine where this runs on glyd-pc: a global out-of-memory took it down on Nov 20)
+      options: --memory=28g --memory-swap=28g
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -36,6 +39,9 @@ jobs:
           key: kernels-compiled-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml') }}
       - name: nvcc for sm_80, 86, 89, 90a, 100 and 120
         if: steps.memo.outputs.cache-hit != 'true'
+        env:
+          # (nvcc processes at once besides sm_89's: 3 on GitHub's 4 cores; 2 on the owner's PC, which has other jobs' work and benchmarks to leave room for)
+          NVCC_JOBS: ${{ runner.environment == 'self-hosted' && '2' || '3' }}
         run: |
           set -e
           dnf install -y -q --disablerepo="cuda*" --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils
@@ -44,7 +50,7 @@ jobs:
           # (the six architectures at once, one nvcc each: the runner has the cores for it, and it took the sum of them one after the other)
           nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_89 -Xptxas -v -o /tmp/engine_89.cubin engine.cu > /tmp/ptxas.txt 2>&1 &
           p89=$!
-          printf '%s\n' 80 86 90a 100 120 | xargs -P 3 -I{} nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_{} -o /tmp/engine_{}.cubin engine.cu
+          printf '%s\n' 80 86 90a 100 120 | xargs -P "$NVCC_JOBS" -I{} nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_{} -o /tmp/engine_{}.cubin engine.cu
           wait "$p89" || { cat /tmp/ptxas.txt; exit 1; }
           grep -A3 -E "entry function '(rmsnorm1p|rmsnorm1p_add|q35_prep|attn256|attn256_split|attn256_merge|conv_silu|gdn_recurrent|gdn_chunk|gated_norm|small_linear)'" /tmp/ptxas.txt || true
           mkdir -p /tmp/kernels-compiled && date -u > /tmp/kernels-compiled/at
