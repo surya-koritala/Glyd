@@ -27,7 +27,7 @@ log-probability is the log-softmax of the whole row); `GLYD_ENGINE_HOST_SAMPLING
 (Nemotron 3 Super's own sampling) the sum of the row's exponentials too, are made behind the step and copied with its token; a top-p that the 64 do not reach, or come too near to tell, has the row read.
 
 The release build (`cargo build --release --no-default-features`, `GLYD_ENGINE_RELEASE=1`: release-gpu.yml's engine job; machine code for sm_80, 86, 89, 90a, 100 and 120, stripped) has the commands above and `GLYD_CACHE`, `GLYD_GPU_LIB` and `GLYD_API_KEY`
-as the variables it reads. The commands below, and every `GLYD_ENGINE_*` variable of this file, are a development build's (the default features: the `dev` feature), left out of the release build to keep it small;
+as the variables it reads, and `GLYD_ENGINE_BATCH_PREFILL=0` (the prompts of up to 8 requests that arrive together run in one pass by default, so a reply's last bits can differ from the same prompt's alone; `=0` runs one prompt a pass and keeps every reply identical to solo; a deterministic mode is planned in #206). The commands below, and every `GLYD_ENGINE_*` variable of this file, are a development build's (the default features: the `dev` feature), left out of the release build to keep it small;
 `tune!("NAME")` is how the sources read a variable of a development build. Every build keeps the kernels' own names (release builds up to v0.32.1 renamed them and were gated for leaks; the source is open now).
 
 The development commands: `pack MODEL OUT`, `generate DIR PROMPT`, `check`/`score` (greedy tokens and teacher-forced scores for a vLLM reference, `tools/ref_vllm.py`), `bench`, `info`, `kvcal MODEL OUT`

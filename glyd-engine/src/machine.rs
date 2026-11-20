@@ -74,9 +74,12 @@ pub const FULL_TOOL: &str = "install the full glyd, which runs it another way: c
 /// The GPUs `glyd run` hands a model to the engine on, one line each: the word the driver's name for the GPU holds (a whole word: "L4" is not an L40S, "H100" is not an H200) and the GPU's compute capability.
 ///
 /// THE SPEED BAR: a GPU is here only where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory (the engine serves up to 8 users at once, so
-/// `glyd serve` is vLLM's, whatever is here), and has run on the GPU. Measurements decide it, not what the engine can run: it is EMPTY until they are made, and while it is empty every model runs as
+/// `glyd serve` is vLLM's, whatever is here), and has run on the GPU. Measurements decide it, not what the engine can run: it was EMPTY until they were made (the first line, the RTX 4080 SUPER, is of 2026-11-20), and while it is empty every model runs as
 /// it did in v0.28 (vLLM). Every GPU not named here, and every compute capability, runs vLLM. Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9)),` (docs/adding-a-gpu.md: `scripts/gpu_bar.py` reads the two measurement files).
-pub const GPUS: &[(&str, (i32, i32))] = &[];
+pub const GPUS: &[(&str, (i32, i32))] = &[
+    // measured 2026-11-20 on glyd-pc, Qwen3-8B, 1, 4 and 8 users at once with short, 2,000 and 4,000-token prompts, 5 runs of each engine: benchmarks/gpu/rtx4080s-bar-2026-11-20
+    ("RTX 4080 SUPER", (8, 9)),
+];
 
 /// The architectures of the computers the engine has run on (`std::env::consts::ARCH`): a GH200 is a Grace computer, and the engine has not run on one.
 pub const ARCHS: &[&str] = &["x86_64"];
@@ -375,7 +378,10 @@ mod tests {
             }
             let r = gpu_refusal(&g, "x86_64", false).unwrap_or_else(|| panic!("{name} was not refused"));
             assert!(
-                r.code == 3 && r.what.contains(name) && r.what.contains("measured at least as fast as vLLM") && r.fix == "vLLM runs the model on this GPU",
+                r.code == 3
+                    && r.what.contains(name)
+                    && (r.what.contains("measured at least as fast as vLLM") || r.what.contains("has not run on"))
+                    && r.fix == "vLLM runs the model on this GPU",
                 "{r:?}"
             );
         }
@@ -577,6 +583,23 @@ mod tests {
     }
 
     /// `doctor` fails on a driver below `DRIVER_MIN` and says the update; a new enough one passes.
+    /// The RTX 4080 SUPER is measured (benchmarks/gpu/rtx4080s-bar-2026-11-20): it is on the list by the name the driver gives, and its neighbours, which are not measured, are not.
+    #[test]
+    fn the_rtx_4080_super_is_listed_and_its_neighbours_are_not() {
+        let on = |name: &str, cc| on_list(GPUS, &gpu(name, cc, 16, 13000));
+        assert!(on("NVIDIA GeForce RTX 4080 SUPER", (8, 9)));
+        for (no, cc) in [
+            ("NVIDIA GeForce RTX 4080", (8, 9)),
+            ("NVIDIA GeForce RTX 4090", (8, 9)),
+            ("NVIDIA GeForce RTX 4070 SUPER", (8, 9)),
+            ("NVIDIA GeForce RTX 4080 SUPER", (8, 6)),
+        ] {
+            assert!(!on(no, cc), "{no}");
+        }
+        FORCE_VLLM.with(|f| f.set(Some(true)));
+        assert!(gpu_refusal(&gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 13000), "x86_64", false).is_none());
+    }
+
     #[test]
     fn doctor_fails_a_driver_below_the_minimum() {
         FORCE_VLLM.with(|f| f.set(Some(false)));
