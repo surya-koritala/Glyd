@@ -81,7 +81,7 @@ jobs:
             exit 0
           fi
           "$E" bench --compare "$base" result.json --history "/cache/bench/history-$GPU"
-      - name: The gate fails a slowdown (its own test: the result with every speed at 80%)
+      - name: The gate fails a slowdown (its own test, the result with every speed at 80%)
         if: github.event_name != 'push'
         run: |
           base="/cache/bench/main-$GPU.json"
