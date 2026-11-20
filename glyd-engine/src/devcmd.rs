@@ -79,6 +79,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "bench" => cmd_bench(a),
         "score" => cmd_score(a),
         "rowcheck" => cmd_rowcheck(a),
+        "batchcheck" => cmd_batchcheck(a),
         "kvtest" => cmd_kvtest(a),
         "stress" => cmd_stress(a),
         "recompute" => cmd_recompute(a),
@@ -581,6 +582,72 @@ fn cmd_rowcheck(a: &Args) -> Result<()> {
         }
     );
     if bad {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Prompt chunks run several to a pass (`prefill_batch`) against each alone (`prefill_chunk`): the logits of every sequence's last token and its token, bit for bit, for batches of 2 to 8 sequences of up to 64 tokens,
+/// some starting after earlier pages. Exit status 1 where any differs.
+fn cmd_batchcheck(a: &Args) -> Result<()> {
+    use glyd_engine::model::PrefillJob;
+    let mut o = a.opts()?;
+    o.users = 8;
+    o.pool = o.pool.max(o.ctx);
+    let (mut e, _, _) = open_dir_with(a, o)?;
+    let per = 24usize;
+    let lens = [35usize, 20, 48, 33, 64, 18, 50, 27];
+    let starts = [0usize, 0, 0, 0, 0, 0, 0, 0];
+    let with_starts = [0usize, 16, 0, 32, 16, 0, 48, 16];
+    // (passes of at most 64 rows in all take the library's route as each does alone: bit for bit the same; larger ones the route their rows give: the same token, the logits within noise)
+    let (mut exact, mut near, mut bad, mut worst) = (0, 0, 0, 0f32);
+    for (name, st) in [("from the start", starts), ("after earlier pages", with_starts)] {
+        let toks = |k: usize| -> Vec<u32> { (0..st[k] + lens[k]).map(|i| 1 + ((k * 7919 + i * 104_729) % 4000) as u32).collect() };
+        let pages: Vec<Vec<i32>> = (0..8).map(|k| (0..per).map(|j| (k * per + j) as i32).collect()).collect();
+        let mut alone: Vec<(Vec<f32>, u32)> = Vec::new();
+        for k in 0..8 {
+            let t = toks(k);
+            if st[k] > 0 {
+                e.prefill_chunk(&pages[k], 0, &t[..st[k]], false)?;
+            }
+            let s = e.prefill_chunk(&pages[k], st[k], &t[st[k]..], true)?.expect("a sample");
+            alone.push((e.read_logits_row(0)?, s.token));
+        }
+        for b in 2..=8usize {
+            for shift in [0usize, 3] {
+                let ks: Vec<usize> = (0..b).map(|j| (j + shift) % 8).collect();
+                for &k in &ks {
+                    if st[k] > 0 {
+                        e.prefill_chunk(&pages[k], 0, &toks(k)[..st[k]], false)?;
+                    }
+                }
+                let ts: Vec<Vec<u32>> = ks.iter().map(|&k| toks(k)).collect();
+                let jobs: Vec<PrefillJob> =
+                    ks.iter().enumerate().map(|(j, &k)| PrefillJob { pages: &pages[k], start: st[k], tokens: &ts[j][st[k]..], last: true }).collect();
+                let rows: usize = jobs.iter().map(|j| j.tokens.len()).sum();
+                let out = e.prefill_batch(&jobs)?;
+                for (j, &k) in ks.iter().enumerate() {
+                    let l = e.read_logits_row(j)?;
+                    let tok = out[j].expect("a sample").token;
+                    let d = l.iter().zip(&alone[k].0).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+                    if tok != alone[k].1 {
+                        bad += 1;
+                        println!("{name}: {b} in a pass ({rows} rows): sequence {k} in row {j}: token {tok}, alone {}", alone[k].1);
+                    } else if d == 0.0 {
+                        exact += 1;
+                    } else if rows <= 64 {
+                        bad += 1;
+                        println!("{name}: {b} in a pass ({rows} rows, one route): sequence {k}: logits differ by {d}");
+                    } else {
+                        near += 1;
+                        worst = worst.max(d);
+                    }
+                }
+            }
+        }
+    }
+    println!("sequences in passes of 2 to 8: {exact} bit for bit as alone, {near} the same token with logits within {worst} of alone's (passes of more than 64 rows), {bad} wrong");
+    if bad > 0 {
         std::process::exit(1);
     }
     Ok(())

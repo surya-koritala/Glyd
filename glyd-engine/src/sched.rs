@@ -7,7 +7,7 @@
 
 use crate::ffi::Result;
 use crate::kv::{chain_key, Lost, Pager, ALONE_MESSAGE, PAGE};
-use crate::model::{Engine, Finish, Reply, Row, Sample, MAX_ROWS};
+use crate::model::{Engine, Finish, PrefillJob, Reply, Row, Sample, FUSED_ROWS, MAX_ROWS};
 use crate::sampler::{logprobs_of, Lp, Sampler};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
@@ -45,6 +45,18 @@ pub trait Backend {
     fn eos(&self) -> Vec<i64>;
     /// `tokens` at positions `start` on into `pages`; with `last`, the sample after the final token.
     fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>>;
+    /// The most sequences whose prompt chunks `prefill_many` runs in one pass (1: one at a time, as `prefill`).
+    fn prefill_rows(&self) -> usize {
+        1
+    }
+    /// The most tokens a chunk has to run in a pass with others (each of the others' too; a longer one is run alone).
+    fn prefill_together(&self) -> usize {
+        usize::MAX
+    }
+    /// The chunks of several sequences' prompts in one pass: the sample after each that is `last`, in order (the logits and candidates of the j-th of them are row j, as a decode step's).
+    fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
+        jobs.iter().map(|j| self.prefill(j.pages, j.start, j.tokens, j.last)).collect()
+    }
     /// One step of the rows: the sample after each.
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>>;
     /// The logits behind the last sample of row `row`.
@@ -80,6 +92,22 @@ impl Backend for &mut Engine {
     }
     fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
         self.prefill_chunk(pages, start, tokens, last)
+    }
+    fn prefill_rows(&self) -> usize {
+        // (GLYD_ENGINE_BATCH_PREFILL=1: the prompts of up to 8 sequences in a pass. Not by default: a pass of more than 64 rows takes the products' route its rows give, so a reply may then differ in the last
+        // bits of its logits, and at a near tie in its tokens, from the one the sequence has alone; a server with one request at a time gives the same bits either way)
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "1")) {
+            MAX_ROWS
+        } else {
+            1
+        }
+    }
+    fn prefill_together(&self) -> usize {
+        FUSED_ROWS
+    }
+    fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
+        self.prefill_batch(jobs)
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         self.decode_batch(rows)
@@ -178,6 +206,10 @@ struct Seq {
 /// Times a sequence's step may be taken back for a lost block before it ends with an error (the extra memory is shared: one that is still lost after this many waits does not fit it).
 pub const MAX_TRIES: u32 = 6;
 
+/// The most tokens a prompt pass has for the round's decode step to wait on the prompts that are coming in, and the most rounds in a row it does.
+const SHORT_PASS: usize = 256;
+const MAX_SKIPS: u32 = 4;
+
 pub struct Sched<B: Backend> {
     be: B,
     pager: Pager,
@@ -190,9 +222,12 @@ pub struct Sched<B: Backend> {
     /// Events for the requests, sent in batches by a thread of their own.
     pending: Vec<(Sender<Ev>, Ev)>,
     emit: Sender<Vec<(Sender<Ev>, Ev)>>,
-    /// GLYD_ENGINE_TRACE_SCHED: a line to stderr for every step taken back and every request ended for it (to see why).
+    /// GLYD_ENGINE_TRACE_SCHED: a line to stderr for every step taken back and every request ended for it (to see why), and for every prompt pass.
     #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     trace: bool,
+    /// The tokens of the last prompt pass, and the rounds in a row that gave their decode step up for the prompts that came in (see `tick`).
+    pass_tokens: usize,
+    skips: u32,
 }
 
 impl<B: Backend> Sched<B> {
@@ -220,6 +255,8 @@ impl<B: Backend> Sched<B> {
             eos,
             stats: Stats::default(),
             trace: crate::tune!("GLYD_ENGINE_TRACE_SCHED").is_some(),
+            pass_tokens: 0,
+            skips: 0,
         }
     }
 
@@ -313,11 +350,24 @@ impl<B: Backend> Sched<B> {
         let t = std::time::Instant::now();
         let ta = std::time::Instant::now();
         self.reap()?;
+        let came = self.stats.prompt;
         self.admit()?;
+        let admitted = self.stats.prompt != came;
         self.stats.admit_ns += ta.elapsed().as_nanos() as u64;
+        let passes = self.stats.prefill_rounds;
+        self.pass_tokens = 0;
         self.prefill_step()?;
         // (the first token of a prompt that ended goes to its request now, not after the round's decode step)
         self.flush();
+        // Requests that come in together are taken in over a few milliseconds: after a short pass for prompts that were taken in this round, the next round takes in the rest before the decode step
+        // (which would be 17 ms of the earlier prompts' decoding between the passes), at most MAX_SKIPS rounds in a row so that a sequence that is decoding is never left for long.
+        if admitted && self.stats.prefill_rounds != passes && self.pass_tokens <= SHORT_PASS && self.skips < MAX_SKIPS {
+            self.skips += 1;
+            self.stats.tick_ns += t.elapsed().as_nanos() as u64;
+            self.gauges();
+            return Ok(());
+        }
+        self.skips = 0;
         self.decode_step()?;
         self.flush();
         self.stats.tick_ns += t.elapsed().as_nanos() as u64;
@@ -610,37 +660,83 @@ impl<B: Backend> Sched<B> {
         None
     }
 
-    /// One chunk of the oldest sequence that is still on its prompt; at the prompt's end, its first token.
+    /// One chunk of the oldest sequence that is still on its prompt, and with it the prompts of the next ones that are still on theirs, as many as the backend runs in one pass and a chunk's tokens hold (each of those
+    /// a whole rest of its prompt, so that no sequence is cut differently for it); at a prompt's end, its first token.
     fn prefill_step(&mut self) -> Result<()> {
-        let Some(i) = self.active.iter().position(|s| s.prefilling) else { return Ok(()) };
-        let id = self.active[i].id;
-        let n = (self.active[i].tokens.len() - self.active[i].done).min(self.be.chunk());
-        let upto = self.active[i].done + n;
-        if !self.ensure_pages(id, upto)? {
+        let at = |a: &Vec<Seq>, id: u64| a.iter().position(|s| s.id == id);
+        let cands: Vec<u64> = self.active.iter().filter(|s| s.prefilling).take(self.be.prefill_rows().max(1)).map(|s| s.id).collect();
+        let budget = self.be.chunk();
+        let together = self.be.prefill_together();
+        let mut picks: Vec<(u64, usize)> = Vec::new();
+        let mut used = 0;
+        for id in cands {
+            let Some(i) = at(&self.active, id) else { continue };
+            let left = self.active[i].tokens.len() - self.active[i].done;
+            let n = if picks.is_empty() { left.min(budget) } else { left };
+            if n == 0 || used + n > budget || (!picks.is_empty() && n > together) {
+                break;
+            }
+            let upto = self.active[i].done + n;
+            if !self.ensure_pages(id, upto)? {
+                continue;
+            }
+            picks.push((id, n));
+            used += n;
+            if n > together {
+                break; // (too long to run with others: alone)
+            }
+        }
+        // (the pages of a later one may have been taken from an earlier one, which went back to wait)
+        picks
+            .retain(|&(id, n)| at(&self.active, id).is_some_and(|i| self.active[i].prefilling && self.active[i].pages.len() * PAGE >= self.active[i].done + n));
+        if picks.is_empty() {
             return Ok(());
         }
-        let i = self.active.iter().position(|s| s.id == id).expect("still active");
-        let s = &self.active[i];
-        let last = s.done + n == s.tokens.len();
+        let jobs: Vec<PrefillJob> = picks
+            .iter()
+            .map(|&(id, n)| {
+                let s = &self.active[at(&self.active, id).expect("a picked sequence")];
+                PrefillJob { pages: &s.pages, start: s.done, tokens: &s.tokens[s.done..s.done + n], last: s.done + n == s.tokens.len() }
+            })
+            .collect();
         let t = std::time::Instant::now();
-        let sample = self.be.prefill(&s.pages, s.done, &s.tokens[s.done..s.done + n], last)?;
+        let samples = self.be.prefill_many(&jobs)?;
+        if self.trace {
+            eprintln!(
+                "sched {:.3} prefill pass of {} sequences, {} tokens, {:.1} ms; {} active, {} waiting",
+                crate::monitor::clock(),
+                jobs.len(),
+                used,
+                t.elapsed().as_secs_f64() * 1e3,
+                self.active.len(),
+                self.waiting.len()
+            );
+        }
+        drop(jobs);
         self.stats.prefill_ns += t.elapsed().as_nanos() as u64;
         self.stats.prefill_rounds += 1;
-        // what the chunk could not store exactly: not used, whatever it was told (the sequence is sent back, with any other that holds such a block)
+        self.pass_tokens = used;
+        // what the chunks could not store exactly: not used, whatever they were told (the sequence is sent back, with any other that holds such a block)
         let hit = self.after_step()?;
-        let mine = hit.contains(&id);
+        let mine: Vec<bool> = picks.iter().map(|(id, _)| hit.contains(id)).collect();
         self.take_back(&hit)?;
-        if mine {
-            return Ok(());
-        }
-        let i = self.active.iter().position(|s| s.id == id).expect("still active");
-        self.active[i].done += n;
-        self.publish(i);
-        if let Some(sample) = sample {
-            self.active[i].prefilling = false;
-            let (tok, lp) = self.pick(i, sample, 0)?;
-            if let Some(f) = self.accept(i, tok, lp) {
-                self.finish(i, f)?;
+        let mut row = 0;
+        for (k, &(id, n)) in picks.iter().enumerate() {
+            let sample = samples.get(k).copied().flatten();
+            let my_row = row;
+            row += sample.is_some() as usize;
+            if mine[k] {
+                continue;
+            }
+            let Some(i) = at(&self.active, id) else { continue };
+            self.active[i].done += n;
+            self.publish(i);
+            if let Some(sample) = sample {
+                self.active[i].prefilling = false;
+                let (tok, lp) = self.pick(i, sample, my_row)?;
+                if let Some(f) = self.accept(i, tok, lp) {
+                    self.finish(i, f)?;
+                }
             }
         }
         Ok(())
@@ -731,6 +827,9 @@ pub(crate) mod tests {
         /// A model that says these tokens after any prompt (then the end token 0), for the tests of what is made of a reply's text; `script_from` is the length of the prompt it was begun after.
         pub script: Option<Vec<u32>>,
         pub script_from: usize,
+        /// How many sequences' prompt chunks `prefill_many` takes in one pass (1: one at a time), and the passes of more than one it has made.
+        pub batch: usize,
+        pub batches: usize,
     }
 
     /// A row of logits (2,048 tokens) in which `token` is the largest and the one after it the second.
@@ -774,6 +873,8 @@ pub(crate) mod tests {
                 prefilled: Default::default(),
                 script: None,
                 script_from: 0,
+                batch: 1,
+                batches: 0,
             }
         }
         /// The token after `toks` (`n` of them): the hash, or the script's word for this place.
@@ -856,6 +957,22 @@ pub(crate) mod tests {
                 self.rows = vec![row_of(s.token)];
             }
             Ok(sample)
+        }
+        fn prefill_rows(&self) -> usize {
+            self.batch
+        }
+        fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
+            let (mut out, mut rows) = (Vec::new(), Vec::new());
+            for j in jobs {
+                let s = self.prefill(j.pages, j.start, j.tokens, j.last)?;
+                rows.extend(s.map(|x| row_of(x.token)));
+                out.push(s);
+            }
+            if !rows.is_empty() {
+                self.rows = rows;
+            }
+            self.batches += (jobs.len() > 1) as usize;
+            Ok(out)
         }
         fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
             std::thread::sleep(self.decode_delay);
@@ -940,6 +1057,28 @@ pub(crate) mod tests {
 
     fn prompt(seed: u32, n: usize) -> Vec<u32> {
         (0..n as u32).map(|i| 1 + (seed * 7919 + i * 104_729) % 4000).collect()
+    }
+
+    /// Prompts run several to a pass give every sequence the tokens it has alone, whatever the mix of lengths, a shared start, sampling from the logits' rows, and a pool too small for all of them.
+    #[test]
+    fn prompts_run_together_give_the_tokens_they_give_alone() {
+        for (pages, chunk, batch) in [(64, 32, 8), (64, 200, 8), (64, 200, 3), (14, 64, 8)] {
+            let mut be = Fake::new(pages, chunk);
+            be.batch = batch;
+            be.gpu_top = batch == 3;
+            let mut s = Sched::new(be, 8);
+            let mut prompts: Vec<Vec<u32>> = (0..8).map(|k| prompt(k, 3 + 11 * k as usize)).collect();
+            prompts.push(prompts[3].clone()); // (one that begins as an earlier one does: its pages are found)
+            prompts.push(prompt(50, 90)); // (longer than a chunk where the chunk is 32)
+            let rxs: Vec<_> = prompts.iter().map(|p| add(&mut s, p.clone(), 20).0).collect();
+            run(&mut s);
+            for (p, rx) in prompts.iter().zip(&rxs) {
+                let (got, f) = collect(rx);
+                assert_eq!(got, reference(p, 20), "{pages} pages, chunk {chunk}, {batch} to a pass");
+                assert_eq!(f, Finish::Length);
+            }
+            assert!(s.be.batches > 0, "no pass took more than one prompt ({pages} pages, chunk {chunk}, {batch} to a pass)");
+        }
     }
 
     #[test]

@@ -70,6 +70,11 @@ struct Verify {
 /// Sequences a decode step takes at most.
 pub const MAX_ROWS: usize = 8;
 
+/// The most rows of a product the library's own route takes whatever the GPU (`decoded_way`: past it a product may take the decoded matrix's way). A prompt chunk of at most this many tokens is run with others in one pass
+/// (a longer one is its own: it is compute-bound, and the weights are read once for it). Where the pass has more rows than this, its products take the route their row count gives, which is not the route each chunk's alone
+/// took: the logits differ in the last bits (a few hundredths of a logprob at most), as they do between any two routes.
+pub const FUSED_ROWS: usize = 64;
+
 /// The pages `start` .. `start + n` (a sequence's room, for the checks that give a sequence pages of their own).
 pub fn first_pages(start: usize, n: usize) -> Vec<i32> {
     (start..start + n).map(|p| p as i32).collect()
@@ -92,6 +97,27 @@ pub(crate) enum Head {
     None,
     Last,
     All,
+    /// The rows `Engine::picked` names (the last rows of the sequences of a prompt batch), in that order.
+    Rows,
+}
+
+/// One sequence's part of a prompt batch (`Engine::prefill_batch`): its tokens are rows `off` .. `off + n` of the batch, they start at position `start` of the sequence, the pages before them (`earlier` of them) are at
+/// `gather_off` in the gather list.
+#[derive(Clone, Copy)]
+struct Part {
+    off: usize,
+    n: usize,
+    start: usize,
+    earlier: usize,
+    gather_off: usize,
+}
+
+/// One sequence's prompt chunk in a batch of them: `tokens` at positions `start` on, into `pages`; where `last`, the token after the chunk is wanted.
+pub struct PrefillJob<'a> {
+    pub pages: &'a [i32],
+    pub start: usize,
+    pub tokens: &'a [u32],
+    pub last: bool,
 }
 
 /// A prompt chunk's attention: the chunk starts at `start` in its sequence; the earlier pages are the list at `gather` (int32 on the device), the chunk's own keys go to the staging cache at the slots `lslots`.
@@ -300,6 +326,9 @@ pub struct Engine {
     pub work_bytes: usize,
     /// A step's profile: an event after every launch, labelled (set by `profile_step`).
     marks: RefCell<Option<Vec<(&'static str, Ev)>>>,
+    /// The sequences of the prompt batch being run (empty: one sequence's chunk, as `Flash` says), and the rows whose logits it is to give.
+    parts: RefCell<Vec<Part>>,
+    picked: RefCell<Vec<usize>>,
     /// A row of the chunk being run whose residual stream is dumped after every layer (debugging: GLYD_ENGINE_DUMP=position, in `score`).
     dump_row: std::cell::Cell<Option<usize>>,
     dumped: RefCell<Vec<Vec<u16>>>,
@@ -492,7 +521,7 @@ impl Engine {
         let bt_stride = (window / 16) as i64;
         let host = Pinned::new(HOST_BATCH + MAX_ROWS * bt_stride as usize * 4)?;
         let (bstate, btab) = (Buf::zeroed(128)?, Buf::zeroed(MAX_ROWS * bt_stride as usize * 4)?);
-        let (lslots, gpages, rel) = (Buf::zeroed(8 * c)?, Buf::zeroed(4 * stage_blocks as usize)?, Buf::zeroed(4 * kv.nblocks.max(1) as usize)?);
+        let (lslots, gpages, rel) = (Buf::zeroed(8 * c)?, Buf::zeroed(4 * stage_blocks as usize * MAX_ROWS)?, Buf::zeroed(4 * kv.nblocks.max(1) as usize)?);
         let mut e = Engine {
             dev,
             lib,
@@ -557,6 +586,8 @@ impl Engine {
             cached: Vec::new(),
             work_bytes,
             marks: RefCell::new(None),
+            parts: RefCell::new(Vec::new()),
+            picked: RefCell::new(Vec::new()),
             dump_row: std::cell::Cell::new(None),
             dumped: RefCell::new(Vec::new()),
         };
@@ -649,7 +680,7 @@ impl Engine {
     /// Whether a product of `m` rows by `p` takes the decoded matrix's way: the library's route says DECODE or AHEAD (a long prompt, where decoding W once and multiplying by a dense product is the faster, on
     /// the GPUs it is measured on), or `m` is past GLYD_ENGINE_DECODE_FROM.
     unsafe fn decoded_way(&self, p: &PackBuf, m: usize) -> Result<bool> {
-        if (self.blas.is_none() && !self.own) || m <= 64 || p.pack.cols % 64 != 0 {
+        if (self.blas.is_none() && !self.own) || m <= FUSED_ROWS || p.pack.cols % 64 != 0 {
             return Ok(false);
         }
         if self.decode_from.is_some_and(|d| m >= d) {
@@ -830,6 +861,52 @@ impl Engine {
                     )?;
                 }
                 match flash {
+                    Some(Flash { .. }) if !self.parts.borrow().is_empty() => {
+                        // a batch of prompts: each sequence's earlier pages decoded to the staging cache, its keys and values put after them, our causal kernel on that; the rows of every
+                        // other layer's work (products, norms, rope, the cache write) were for all of them at once
+                        let Some(Flash { gather, lslots, .. }) = flash else { unreachable!() };
+                        let (hd2, kv2) = ((c.heads * hd * 2) as u64, (kvh * hd * 2) as u64);
+                        for p in self.parts.borrow().iter() {
+                            if p.earlier > 0 {
+                                self.lib.kv_gather(
+                                    &self.kv.geom,
+                                    self.kv.pools[l].ptr,
+                                    self.kv.kbase[l].ptr,
+                                    self.kv.vbase[l].ptr,
+                                    gather + 4 * p.gather_off as u64,
+                                    self.iota.ptr,
+                                    p.earlier as i64,
+                                    self.stage.ptr,
+                                    s,
+                                )?;
+                            }
+                            self.lib.kv_stage_put(
+                                &self.kv.geom,
+                                self.ko.ptr + p.off as u64 * kv2,
+                                (kvh * hd) as i64,
+                                self.qkv.ptr + ((c.heads + kvh) * hd * 2) as u64 + (p.off * qkv_w * 2) as u64,
+                                qkv_w as i64,
+                                lslots + 8 * p.off as u64,
+                                p.n as i64,
+                                self.stage.ptr,
+                                self.stage_blocks,
+                                s,
+                            )?;
+                            self.kern.prefill_attn(
+                                s,
+                                self.qo.ptr + p.off as u64 * hd2,
+                                (c.heads * hd) as i32,
+                                self.stage.ptr,
+                                self.attn.ptr + p.off as u64 * hd2,
+                                (c.heads * hd) as i32,
+                                p.n as i32,
+                                p.start as i32,
+                                c.heads as i32,
+                                kvh as i32,
+                            )?;
+                        }
+                        self.mark("prompt attention (a batch)")?;
+                    }
                     Some(Flash { start, gather, lslots }) => {
                         // a prompt chunk: the earlier pages decoded to bf16, the chunk's own keys and values put after them, our causal kernel on that
                         let earlier = (start as i64 + 15) / 16;
@@ -908,7 +985,24 @@ impl Engine {
             self.lin(&ly.down, self.m.ptr, n, self.d.ptr)?;
             self.mark("down product")?;
         }
-        if head != Head::None {
+        if head == Head::Rows {
+            // the last row of each sequence of a prompt batch
+            let rows = self.picked.borrow().clone();
+            for (j, &r) in rows.iter().enumerate() {
+                let (at, to) = ((r * hid * 2) as u64, (j * hid * 2) as u64);
+                self.kern.rmsnorm_add(s, self.x.ptr + at, self.d.ptr + at, self.w.norm.ptr, self.hlast.ptr + to, 1, hid_i, eps)?;
+            }
+            let k = rows.len();
+            self.mark("final norm")?;
+            self.lin(self.w.lm_head(), self.hlast.ptr, k, self.logits.ptr)?;
+            self.mark("LM head product")?;
+            self.kern.argmax_rows(s, self.logits.ptr, c.vocab as i32, k as u32, self.tok.ptr, self.val.ptr)?;
+            self.mark("argmax")?;
+            if !self.host_sampling {
+                self.kern.topk_rows(s, self.logits.ptr, c.vocab as i32, k as u32, self.topk_tok.ptr, self.topk_val.ptr)?;
+                self.mark("top candidates")?;
+            }
+        } else if head != Head::None {
             // the last row, or every row (a step of several sequences)
             let (first, rows) = if head == Head::Last { ((n - 1) * hid * 2, 1) } else { (0, n) };
             let first = first as u64;
@@ -1192,6 +1286,115 @@ impl Engine {
             return Ok(None);
         }
         Ok(Some(self.read_sample(false)?))
+    }
+
+    /// Prompt chunks of several sequences in one pass (1 to MAX_ROWS of them, `chunk` tokens in all): the products, norms, rope and cache writes run on all their rows at once (the weights are read once, not once a
+    /// sequence), the attention on each sequence's rows as `prefill_chunk` does it. The sample after each chunk that is `last`, in order of the jobs (None for the rest); the logits of a sample are row `j` of `read_logits_row`
+    /// where it is the j-th `last` (as the rows of a decode step are).
+    pub fn prefill_batch(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
+        if let [j] = jobs {
+            return Ok(vec![self.prefill_chunk(j.pages, j.start, j.tokens, j.last)?]);
+        }
+        if jobs.is_empty() || jobs.len() > MAX_ROWS {
+            return err(format!("{} sequences in a prompt batch: 1 to {MAX_ROWS}", jobs.len()));
+        }
+        if self.attn_decode {
+            return err("the prompt's attention through the decode kernel is for checking one sequence");
+        }
+        if let Some(j) = jobs.iter().find(|j| j.tokens.len() > FUSED_ROWS) {
+            return err(format!("a chunk of {} tokens in a batch: up to {FUSED_ROWS} run together", j.tokens.len()));
+        }
+        let total: usize = jobs.iter().map(|j| j.tokens.len()).sum();
+        if total == 0 || total > self.chunk || jobs.iter().any(|j| j.tokens.is_empty()) {
+            return err(format!("{total} tokens in a batch of chunks of at most {}", self.chunk));
+        }
+        let (mut tokens, mut pos, mut slots, mut lslots, mut lens, mut gather) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut parts, mut picked, mut fresh, mut touched) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for j in jobs {
+            let (start, n) = (j.start, j.tokens.len());
+            if start + n > self.capacity() || j.pages.len() * 16 < start + n {
+                return err(format!("{} tokens in {} blocks, where the window holds {}", start + n, j.pages.len(), self.capacity()));
+            }
+            if (start + n).div_ceil(16) as i64 > self.stage_blocks {
+                return err(format!("{} tokens, where the work cache of a prompt's attention holds {}", start + n, self.stage_blocks * 16));
+            }
+            let earlier = start.div_ceil(16);
+            parts.push(Part { off: tokens.len(), n, start, earlier, gather_off: gather.len() });
+            gather.extend_from_slice(&j.pages[..earlier]);
+            for i in 0..n {
+                let p = start + i;
+                pos.push(p as i32);
+                slots.push(j.pages[p / 16] as i64 * 16 + (p % 16) as i64);
+                lslots.push(p as i64);
+                lens.push((p + 1) as i32);
+            }
+            tokens.extend_from_slice(j.tokens);
+            if j.last {
+                picked.push(tokens.len() - 1);
+            }
+            fresh.extend((start.div_ceil(16)..(start + n).div_ceil(16)).map(|b| j.pages[b]));
+            touched.extend((start / 16..(start + n).div_ceil(16)).map(|b| (j.pages[b], (start + n - 16 * b).min(16))));
+        }
+        if gather.len() > self.stage_blocks as usize * MAX_ROWS {
+            return err(format!("{} earlier blocks in a batch", gather.len()));
+        }
+        self.dev.sync()?; // (the arrays below are read by the previous step's kernels until then)
+        self.pos.write(0, &pos)?;
+        self.slots.write(0, &slots)?;
+        self.lslots.write(0, &lslots)?;
+        self.lens.write(0, &lens)?;
+        if !gather.is_empty() {
+            self.gpages.write(0, &gather)?;
+        }
+        let k = picked.len();
+        *self.parts.borrow_mut() = parts;
+        *self.picked.borrow_mut() = picked;
+        let flash = Flash { start: 0, gather: self.gpages.ptr, lslots: self.lslots.ptr };
+        let p = self.host.ptr as *mut u8;
+        // SAFETY: live buffers of the engine, sized for a chunk; the stream orders every step; the pinned buffer holds what the copies of a decode step do.
+        let run = unsafe {
+            (|| -> Result<()> {
+                self.embed(&tokens)?;
+                self.forward_ex(
+                    total,
+                    self.pos.ptr,
+                    self.slots.ptr,
+                    self.lens.ptr,
+                    self.kv.block_table.ptr,
+                    0,
+                    0,
+                    if k > 0 { Head::Rows } else { Head::None },
+                    Some(flash),
+                    None,
+                )?;
+                if k > 0 {
+                    copy_d2h_async(p.add(512) as *mut _, self.tok.ptr, 4 * k, self.dev.stream)?;
+                    copy_d2h_async(p.add(768) as *mut _, self.val.ptr, 4 * k, self.dev.stream)?;
+                    if !self.host_sampling {
+                        copy_d2h_async(p.add(HOST_TOPK_TOK) as *mut _, self.topk_tok.ptr, 4 * TOPK * k, self.dev.stream)?;
+                        copy_d2h_async(p.add(HOST_TOPK_VAL) as *mut _, self.topk_val.ptr, 4 * TOPK * k, self.dev.stream)?;
+                    }
+                }
+                self.queue_head()
+            })()
+        };
+        self.parts.borrow_mut().clear();
+        run?;
+        self.dev.sync()?;
+        self.after_step(&fresh, &touched)?;
+        let mut row = 0;
+        Ok(jobs
+            .iter()
+            .map(|j| {
+                j.last.then(|| {
+                    // SAFETY: the pinned bytes were just written.
+                    let s =
+                        unsafe { Sample { token: *(p.add(512 + 4 * row) as *const i32) as u32, logit: *(p.add(768 + 4 * row) as *const f32), logprob: None } };
+                    row += 1;
+                    s
+                })
+            })
+            .collect())
     }
 
     /// One decode step of several sequences (1 to MAX_ROWS): each row's token at the sequence's next position, its keys and values written into the sequence's pages; the token that follows each, by the largest logit
