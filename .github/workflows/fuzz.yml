@@ -50,6 +50,7 @@ concurrency:
 
 env:
   # the compiler the sanitizers need, and the tool, both pinned
+  # (`cargo +TOOLCHAIN fuzz`: the repository's rust-toolchain.toml pins the stable the other jobs build with)
   NIGHTLY: nightly-2026-07-20
   CARGO_FUZZ: 0.13.2
 
@@ -79,15 +80,15 @@ jobs:
           path: ~/.cargo/bin/cargo-fuzz
           key: cargo-fuzz-${{ env.CARGO_FUZZ }}-${{ env.NIGHTLY }}
       - if: steps.tool.outputs.cache-hit != 'true'
-        run: cargo install cargo-fuzz --version "$CARGO_FUZZ" --locked
+        run: cargo "+$NIGHTLY" install cargo-fuzz --version "$CARGO_FUZZ" --locked
       - name: Build
-        run: cd fuzz && cargo fuzz build  # (debug assertions and overflow checks on: the default)
+        run: cd fuzz && cargo "+$NIGHTLY" fuzz build  # (debug assertions and overflow checks on: the default)
       - id: list
         name: The targets
         env:
           ASKED: ${{ github.event.inputs.targets }}
         run: |
-          all=$(cd fuzz && cargo fuzz list)
+          all=$(cd fuzz && cargo "+$NIGHTLY" fuzz list)
           if [ -n "$ASKED" ]; then
             for t in $ASKED; do echo "$all" | grep -qx "$t" || { echo "no target $t"; exit 1; }; done
             all=$(echo "$ASKED" | tr ' ' '\n')
@@ -96,7 +97,7 @@ jobs:
       - name: Binaries
         run: |
           mkdir -p bins
-          for t in $(cd fuzz && cargo fuzz list); do cp "fuzz/target/x86_64-unknown-linux-gnu/release/$t" bins/; done
+          for t in $(cd fuzz && cargo "+$NIGHTLY" fuzz list); do cp "fuzz/target/x86_64-unknown-linux-gnu/release/$t" bins/; done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fuzz-bins
