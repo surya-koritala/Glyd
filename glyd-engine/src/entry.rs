@@ -11,7 +11,7 @@ pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [-
 
 /// The commands of the engine that `glyd` takes as its own where the engine is linked (the same words as `glyd-engine`'s): what a model is run, served, fetched, packed-for-this-GPU, checked or costed with.
 pub const COMMANDS: &[&str] =
-    &["run", "serve", "connect", "doctor", "login", "supports", "preflight", "fetch", "pull", "verify", "prepare", "costs", "rates", "fit", "rangeworker"];
+    &["run", "serve", "connect", "doctor", "login", "supports", "preflight", "fetch", "pull", "ls", "rm", "verify", "prepare", "costs", "rates", "fit", "rangeworker"];
 
 /// glibc's allocator told to keep freed buffers up to 32 MB (its largest such setting) in the heap and not hand freed memory back: a load's threads (one a GPU,
 /// each with its packers) free buffers of a few MB to tens of MB by the thousand, and every unmapping stops every CPU the process runs on to flush its TLB (the
@@ -47,6 +47,11 @@ pub fn main(prog: &str, args: Vec<String>, dev: Dev) -> ! {
 }
 
 pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
+    // a model given by its short name (qwen3.5:27b) is its Hub repo from here on (src/models.rs)
+    if let Err(e) = crate::models::resolve_args(&mut a) {
+        eprintln!("{prog}: {e}");
+        std::process::exit(1);
+    }
     // a model given as a GGUF file (or a Hub repo of GGUF files) is read as a Hugging Face directory (src/gguf.rs)
     if let Some(code) = crate::gguf::resolve_args(&mut a) {
         std::process::exit(code);
@@ -74,8 +79,11 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("login") => std::process::exit(crate::cli::login(&a)),
         Some("supports") => std::process::exit(crate::cli::supports(&a)),
         Some("preflight") => std::process::exit(crate::cli::preflight(&a)),
-        // (`pull` is the Hub download under its new name; src/models.rs takes it over for names)
-        Some("fetch" | "pull") => std::process::exit(crate::cli::fetch(&a)),
+        Some("fetch") => std::process::exit(crate::cli::fetch(&a)),
+        // the models in the cache: downloaded by name (a level's pre-packed repo where there is one), listed with their level and size, removed (src/models.rs)
+        Some("pull") => std::process::exit(crate::models::pull(&a)),
+        Some("ls" | "list") => std::process::exit(crate::models::ls(&a)),
+        Some("rm") => std::process::exit(crate::models::rm(&a)),
         Some("verify") => std::process::exit(crate::cli::verify(&a)),
         Some("prepare") => std::process::exit(crate::cli::prepare_cmd(&a)),
         // the cost profile of a model at a level, and this machine's memory tiers (docs/cost-profile.md)
