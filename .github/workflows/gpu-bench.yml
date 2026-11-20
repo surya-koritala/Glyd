@@ -14,7 +14,7 @@ on:
     inputs:
       model:
         type: string
-        default: Qwen/Qwen3-8B
+        default: google/gemma-4-12B-it:wren
 
 permissions:
   contents: read
@@ -47,8 +47,8 @@ jobs:
       NVCC: /usr/local/cuda/bin/nvcc
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-      BENCH_MODEL: ${{ inputs.model || 'Qwen/Qwen3-8B' }}
-      BENCH_WEIGHTS_GIB: "10.3"                    # (Qwen3-8B lossless as the engine holds it: the ceiling's bytes)
+      BENCH_MODEL: ${{ inputs.model || 'google/gemma-4-12B-it:wren' }}
+      BENCH_WEIGHTS_GIB: "6.3"                     # (Gemma 4 12B at the wren level as the engine holds it: the ceiling's bytes)
     steps:
       - name: Tools
         run: |
@@ -68,7 +68,7 @@ jobs:
           gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr -c 'A-Za-z0-9\n' '-' | sed 's/-*$//')
           echo "GPU=$gpu" >> "$GITHUB_ENV"
           for attempt in 1 2 3; do
-            "$E" bench "$BENCH_MODEL" --suite gate --runs 5 --weights-gib "$BENCH_WEIGHTS_GIB" --label "${GITHUB_REPOSITORY}@${GITHUB_SHA::10} ${GITHUB_EVENT_NAME}" --out result.json
+            "$E" bench "$BENCH_MODEL" --suite gate --runs 5 --no-draft --weights-gib "$BENCH_WEIGHTS_GIB" --label "${GITHUB_REPOSITORY}@${GITHUB_SHA::10} ${GITHUB_EVENT_NAME}" --out result.json
             busy=$(python3 -c 'import json;print(json.load(open("result.json"))["contention"]["busy_before"])')
             [ "$busy" = "False" ] && break
             echo "the GPU was busy before attempt $attempt: another job on it. Waiting a minute."

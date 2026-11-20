@@ -1,6 +1,6 @@
 # Logits tests
 
-Every model family the engine runs has a fixture of reference logits, and `glyd-engine logitscheck` compares the engine's logits with it. The GPU job (`.github/workflows/gpu-tests.yml`) runs it on every merge to main and on every pull request labeled `gpu`; on the RTX 4080 SUPER runner the whole suite takes about 25 s with the checkpoints cached. The code is `src/logits.rs`, the fixtures are `tests/logits/`.
+Every model family the engine runs has a fixture of reference logits, and `glyd-engine logitscheck` compares the engine's logits with it. The GPU job (`.github/workflows/gpu-tests.yml`) runs it on every merge to main and on every pull request labeled `gpu`; on the RTX 4080 SUPER runner the whole suite takes about 25 s (no checkpoint is downloaded: every case is a random model). The code is `src/logits.rs`, the fixtures are `tests/logits/`.
 
 ## What is compared
 
@@ -15,8 +15,8 @@ A fixture holds fixed tokens: a prompt of 24, 12 decode steps (each fed the toke
 
 | Case | Family | Model | Reference | Levels |
 | :--- | :--- | :--- | :--- | :--- |
-| `qwen3` | Qwen3 dense | Qwen/Qwen3-0.6B (Hub cache) | transformers, bf16 on the RTX 4080 SUPER | penguin (KL) |
-| `qwen35` | Qwen3.5 (Gated DeltaNet and attention) | Qwen/Qwen3.5-0.8B (Hub cache) | transformers, bf16 on the RTX 4080 SUPER | penguin, kestrel, swift, wren (KL) |
+| `qwen3` | Qwen3 dense (the dense engine's architecture; no recent release uses it) | random, Qwen3-0.6B's layout, 4 layers | transformers, bf16 on the same random weights | penguin (KL) |
+| `qwen35` | Qwen3.5 family (Gated DeltaNet and gated attention: Qwen3.8-27B's layout) | random, 0.8B's widths, 4 layers | transformers, bf16 on the same random weights | penguin, kestrel, swift, wren (KL) |
 | `muse` | Muse Spark | random, 4 layers, 16 experts | the CPU reference, `src/muse_ref.rs` | penguin (KL) |
 | `kimi` | Kimi-K3 (delta attention, latent attention, MoE) | random, 8 layers | `src/kimi_ref.rs` | penguin (KL) |
 | `deepseek-v4` | DeepSeek-V4 | random, 5 layers | `src/dsv4_ref.rs` | penguin (KL) |
@@ -25,7 +25,7 @@ A fixture holds fixed tokens: a prompt of 24, 12 decode steps (each fed the toke
 | `glm` | GLM-5.3-Flash | random toy, experts at kestrel | the engine's own bits | kestrel (bits) |
 | `qwen4x` | Qwen3.8-Flash-Next | random tiny of `tools/qwen4x_ref.py`'s layout, experts at kestrel | the engine's own bits | kestrel (bits) |
 
-The big releases do not fit a 16 GB card (Muse, Kimi, DeepSeek, GLM, Nemotron 3 Super, Gemma 4 12B and 31B), so a random model of the family's layout stands in, with a fixed seed: the layer kinds, the routers and the heads are the real ones, the weights are not. A random model's logits are close to flat and its expert choices have near ties, so the CPU references agree with the engine on the best token less often than a trained model's do (the existing `musecheck`, `kimicheck`, `dsv4check` print the same); the KL bounds for those are wide and the bits fixtures carry the sensitivity. Where the case has no reference of another implementation (gemma4, nemotron-h, glm, qwen4x) the fixture is the engine's own output at the commit that recorded it, and says so: it guards a rewrite against changing the numbers, it does not say the numbers are right. The families' kernel checks against transformers (`kcheck*`, `qxtoy`, `g4check`, `nhtoy`, `glmtoy`) say that.
+Only models released in the last six months are tested, and those are all larger than a 16 GB card holds (Qwen3.8-27B, Qwen3.8-Flash-Next, GLM-5.3-Flash, Muse-Spark-Open, Kimi-K3, DeepSeek-V4, Gemma 4 12B), so every case is a random model of the layout. The big releases do not fit a 16 GB card (Muse, Kimi, DeepSeek, GLM, Nemotron 3 Super, Gemma 4 12B and 31B), so a random model of the family's layout stands in, with a fixed seed: the layer kinds, the routers and the heads are the real ones, the weights are not. A random model's logits are close to flat and its expert choices have near ties, so the CPU references agree with the engine on the best token less often than a trained model's do (the existing `musecheck`, `kimicheck`, `dsv4check` print the same); the KL bounds for those are wide and the bits fixtures carry the sensitivity. Where the case has no reference of another implementation (gemma4, nemotron-h, glm, qwen4x) the fixture is the engine's own output at the commit that recorded it, and says so: it guards a rewrite against changing the numbers, it does not say the numbers are right. The families' kernel checks against transformers (`kcheck*`, `qxtoy`, `g4check`, `nhtoy`, `glmtoy`) say that.
 
 ## Commands
 
