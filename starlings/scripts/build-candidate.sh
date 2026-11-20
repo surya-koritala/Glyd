@@ -75,7 +75,8 @@ output=$1
 [[ "$output" == /* ]] || output="$PWD/$output"
 [[ ! -e "$output" && ! -L "$output" ]] || { printf 'NEW_OUTPUT_REQUIRED\n' >&2; exit 2; }
 [[ -d $(dirname "$output") ]] || { printf 'OUTPUT_PARENT_REQUIRED\n' >&2; exit 2; }
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# (the repository root: Starlings' crates are members of its workspace, with the one Cargo.lock and target directory)
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"
 [[ -z $(git status --porcelain) ]] || { printf 'CLEAN_SOURCE_REQUIRED\n' >&2; exit 2; }
 revision=$(git rev-parse --verify HEAD)
