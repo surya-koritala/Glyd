@@ -634,9 +634,10 @@ fn redact_keyed(s: &str) -> String {
                     .sum::<usize>();
                 let v = &s[j..j + value];
                 let plain = v.is_empty()
-                    || v.starts_with('<')
-                    || v.contains("<redacted>")
-                    || (TOKEN_PREFIXES.contains(&v) && s[j + value..].starts_with("<redacted>"))
+                    // (only a value that is already wholly redacted, or is the marker `<set>`: a secret that merely contains or sits beside one is redacted)
+                    || v == "<redacted>"
+                    || v == "<set>"
+                    || TOKEN_PREFIXES.iter().any(|p| v.strip_prefix(p) == Some("<redacted>"))
                     || matches!(v, "null" | "true" | "false" | "none" | "found")
                     || v.eq_ignore_ascii_case("bearer")
                     || v.eq_ignore_ascii_case("basic")
@@ -966,6 +967,8 @@ mod tests {
             ("/Users/alice/.cache/glyd and /Users/alice/models", "~/.cache/glyd and ~/models"),
             ("password=hunter2", "password=<redacted>"),
             ("password=pa<ss>word123 next", "password=<redacted> next"),
+            ("password=<redacted>tail-secret1", "password=<redacted>"),
+            ("api_key=<x>secretvalue1", "api_key=<redacted>"),
             ("GLYD_API_KEY=<set>", "GLYD_API_KEY=<set>"),
             ("GLYD_API_KEY=abcdefghijkl in the log", "GLYD_API_KEY=<redacted> in the log"),
             ("Environment=VLLM_API_KEY=s3cr3tvalue", "Environment=VLLM_API_KEY=<redacted>"),
