@@ -16,6 +16,7 @@ pub mod attention;
 pub mod ffn;
 pub mod linear;
 pub mod mla;
+pub mod model;
 pub mod mtp;
 pub mod norm;
 pub mod rope;
@@ -388,6 +389,10 @@ impl RefLayer {
             match &self.block.residual {
                 Residual::Add => xt.iter_mut().zip(&o).for_each(|(x, &o)| *x += o),
                 Residual::AddScaled(s) => xt.iter_mut().zip(&o).for_each(|(x, &o)| *x += s * o),
+                Residual::AddThenScale => {
+                    let s = self.p.vec("res_scale")?[0];
+                    xt.iter_mut().zip(&o).for_each(|(x, &o)| *x = (*x + o) * s);
+                }
                 Residual::Gated(g) => {
                     let (a, b) = residual_gate(self.p.vec("res_gate")?, g.temperature);
                     for (i, x) in xt.iter_mut().enumerate() {
@@ -462,9 +467,8 @@ impl Backend for Ref {
             Body::Mixer(Mixer::Mla(m)) => m.rope.as_ref(),
             _ => None,
         };
-        if rope.is_some_and(|r| r.mrope.is_some()) {
-            return err(format!("layer {}: M-RoPE (image positions) is not in the reference yet; text positions are plain rope", layer.index));
-        }
+        // (M-RoPE: the reference's positions are text positions, the same on every axis, which is plain rope)
+        let _ = rope;
         let mut p = Params::new();
         for r in roles(b) {
             if let Some(t) = w.f32(&r) {

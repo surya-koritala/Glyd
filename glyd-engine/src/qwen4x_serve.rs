@@ -567,6 +567,7 @@ pub fn http(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     // (the address the program chooses is this computer's own: the checks that keep other web pages' scripts away are on; an address the user names is theirs)
     // (/health says "loading" until the model can serve: a script that waits for it does not send its first request into the load)
     let loading = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    crate::ops::drain_on_sigterm(crate::ops::Life::global(), std::time::Duration::from_secs(a.num("drain-timeout", crate::ops::DRAIN_SECONDS)?), |_| {});
     let addr = server::listen_loading(&format!("{host}:{port}"), &name, window, key, server::is_loopback_addr(host), tx.clone(), loading.clone())?;
     println!("Qwen3.8-Flash-Next on Glyd: the chat at http://{addr}/, the API at http://{addr}/v1 (OpenAI and Anthropic). Loading the model...");
     let (e, caches) = load(snap, pack_dir, a)?;

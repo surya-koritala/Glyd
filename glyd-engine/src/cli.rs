@@ -450,17 +450,19 @@ struct Ready {
     gpu: Gpu,
 }
 
-/// Sequences a server runs at once: --users, else 4 (1 to 8).
+/// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; the dense Qwen3 engine takes at most MAX_ROWS of them, a level's engine as many as its memory holds).
 fn users_of(a: &Args) -> Done<usize> {
-    let n: usize = a.num("users", 4usize).map_err(|e| Refusal::new(e.0, "Give a number from 1 to 8: --users 4"))?;
-    if !(1..=crate::model::MAX_ROWS).contains(&n) {
-        return Err(Refusal::new(format!("--users {n}: 1 to {} sequences at once", crate::model::MAX_ROWS), "Give a number from 1 to 8: --users 4"));
+    use crate::sched::MAX_USERS;
+    let n: usize = a.num("users", 4usize).map_err(|e| Refusal::new(e.0, format!("Give a number from 1 to {MAX_USERS}: --users 4")))?;
+    if !(1..=MAX_USERS).contains(&n) {
+        return Err(Refusal::new(format!("--users {n}: 1 to {MAX_USERS} sequences at once"), format!("Give a number from 1 to {MAX_USERS}: --users 4")));
     }
     Ok(n)
 }
 
 fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
-    let users = if several { users_of(a)? } else { 1 };
+    // (the dense engine's decode step takes at most MAX_ROWS rows)
+    let users = if several { users_of(a)?.min(crate::model::MAX_ROWS) } else { 1 };
     let t0 = Instant::now();
     let gpu = gpu_pick()?;
     // (the machine checks of every other path: the CPU architecture, the driver, a MIG slice)
@@ -573,6 +575,8 @@ fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<st
     let host = a.flag("host").unwrap_or("127.0.0.1").to_string();
     let port: u16 = a.num("port", 8000u16)?;
     let explicit = a.has("port");
+    // SIGTERM stops the server taking requests and lets those in flight end (up to --drain-timeout seconds), then ends the process
+    crate::ops::drain_on_sigterm(crate::ops::Life::global(), std::time::Duration::from_secs(a.num("drain-timeout", crate::ops::DRAIN_SECONDS)?), |_| {});
     // the checks of the Host and the Origin are on for every address of this computer's own, a loopback one the user names included; an address that is not is open to the network, with the key (or the user's word) it was let start with
     let local_only = server::is_loopback_addr(&host);
     for p in port..=port.saturating_add(if explicit { 0 } else { 20 }) {
@@ -774,13 +778,31 @@ pub fn serve(a: &Args) -> i32 {
     0
 }
 
-/// `serve MODEL:kestrel` (or `:swift`): the lossy level loaded as run loads it, served to one user at a time.
+/// `serve MODEL:kestrel` (or `:swift`): the lossy level loaded as run loads it, served by the scheduler to up to --users sequences at once where the engine is a step of several (src/dynamic/rows.rs: Gemma 4),
+/// else to one user at a time.
 fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>) -> i32 {
-    let (mut e, tok, chat, defaults, vocab, line, info) = match load_lossy(a, layout, &name, ui) {
+    let (mut e, tok, chat, defaults, vocab, line, mut info) = match load_lossy(a, layout, &name, ui) {
         Ok(x) => x,
         Err(r) => return fail(ui, &r),
     };
     ui.borrow_mut().line(&line);
+    let users = match users_of(a) {
+        Ok(u) => u,
+        Err(r) => return fail(ui, &r),
+    };
+    let several = match e.as_step(users) {
+        Ok(s) => s.map(|(k, _)| k),
+        Err(err) => return fail(ui, &cannot(err)),
+    };
+    if let Some(k) = several {
+        ui.borrow_mut().line(&format!(
+            "Up to {k} users at once{}.",
+            if k < users { format!(" (the GPU's free memory holds {k} of the {users} asked for)") } else { String::new() }
+        ));
+        if let Some(i) = &mut info {
+            (i.concurrency, i.refused, i.held) = (k, &[], e.held());
+        }
+    }
     let (tx, rx) = mpsc::channel();
     let window = e.capacity();
     let addr = match listen(a, &name, window, tx.clone()) {
@@ -793,7 +815,12 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>) -> i32 
     STATUS.ready();
     access_notes(ui, a);
     ui.borrow_mut().line(&format!("{name} is served at http://{addr}: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it."));
-    server::work_gen(&mut *e, Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused: server::ONE_AT_A_TIME }), &rx, &tx);
+    let refused = if several.is_some() { &[][..] } else { server::ONE_AT_A_TIME };
+    let shared = Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused });
+    match e.as_step(users) {
+        Ok(Some((k, step))) => server::work_with(&mut crate::sched::Sched::new(step, k), shared, &rx, &tx),
+        _ => server::work_gen(&mut *e, shared, &rx, &tx),
+    }
     0
 }
 
@@ -1373,7 +1400,11 @@ fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: 
     let reserve = reserve_of(free);
     let fixed = weights + rings + draft + LOSSY_WORK + reserve;
     let room = (free.saturating_sub(fixed) / per.max(1)) as usize;
-    let ctx = asked.unwrap_or_else(|| room.min(LOSSY_CTX)).min(cfg.max_pos.max(LOSSY_MIN_CTX)) / 16 * 16;
+    // (served with no draft model, the scheduler gives each of --users a room of its own, its sliding layers' rings and its context (src/dynamic/rows.rs): the context not asked for is what the room gives
+    // each of them, at least LOSSY_MIN_CTX (where that leaves room for fewer, the server takes fewer))
+    let users = if draft == 0 && a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? as u64 } else { 1 };
+    let each = (free.saturating_sub(fixed + rings * (users - 1)) / (per.max(1) * users)) as usize;
+    let ctx = asked.unwrap_or_else(|| each.max(LOSSY_MIN_CTX).min(room).min(LOSSY_CTX)).min(cfg.max_pos.max(LOSSY_MIN_CTX)) / 16 * 16;
     if ctx < LOSSY_MIN_CTX.min(asked.unwrap_or(LOSSY_MIN_CTX)) || ctx > room {
         let fix = "lose programs that use the GPU (nvidia-smi lists them), ask for less context (--context 4096), run without the draft model (--no-draft), or use a GPU with more memory";
         // (penguin that does not fit, of a model with a wren repo that does: that repo first, with its draft model, at the shortest context a plan takes)
@@ -1402,11 +1433,11 @@ fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: 
         level: level_name(layout),
         layout,
         context: ctx,
-        users: 1,
+        users: users as usize,
         chunk: GEMMA_CHUNK,
         weights,
         bf16,
-        kv: rings + ctx as u64 * per,
+        kv: users * (rings + ctx as u64 * per),
         work: LOSSY_WORK,
         draft,
         reserve,
@@ -2930,6 +2961,20 @@ mod tests {
             (Some("glyd/gemma-4-31B-wren"), Some("glyd/gemma-4-31B-wren"))
         );
         assert_eq!((gemma_wren("glyd/gemma-4-12B-base-penguin"), gemma_wren("Qwen/Qwen3.8-27B")), (None, None));
+        // (served to --users at once with no draft model: each user's room and context fit beside the others'; run, and a context asked for, keep one user's)
+        let free = 14u64 << 30;
+        let at = |argv: &[&str]| lossy_plan_with(&args(argv), model, Layout::Int4, text, None, free, "NVIDIA GeForce RTX 4080 SUPER", None, None).unwrap();
+        let cfg = crate::model_gemma4::ConfigG4::parse(text, None, false).unwrap();
+        let (one, eight) = (at(&["run", model, "--no-draft"]), at(&["serve", model, "--users", "8", "--no-draft"]));
+        assert_eq!((one.context, one.users), (LOSSY_CTX, 1));
+        assert!(eight.context >= LOSSY_MIN_CTX && eight.context < one.context && eight.users == 8, "{}", eight.context);
+        let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, eight.context);
+        assert_eq!(eight.kv, 8 * (rings + eight.context as u64 * per));
+        assert!(eight.weights + LOSSY_WORK + eight.reserve + eight.kv <= free, "8 users at {} tokens", eight.context);
+        assert_eq!(at(&["serve", model, "--users", "1", "--no-draft"]).context, LOSSY_CTX);
+        assert_eq!(at(&["serve", model, "--users", "8", "--no-draft", "--ctx", "8192"]).context, 8192);
+        // (a draft model to come with the download: drafted, one user at a time, the context of one)
+        assert_eq!(at(&["serve", model, "--users", "8"]).users, 1);
         // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; other models without one take the lossless route of old)
         assert_eq!(run_level(model, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(run_level(model, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));

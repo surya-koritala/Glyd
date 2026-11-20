@@ -422,6 +422,8 @@ pub enum Residual {
     Gated(GateP),
     Streams(StreamsP),
     DepthMix(DepthMixP),
+    /// x = (x + o) s with the scalar of role `res_scale` [1]: gemma-4's per-layer scalar after the feed-forward block.
+    AddThenScale,
 }
 
 /// Norm roles in a block: `norm_in`, `norm_out`.
