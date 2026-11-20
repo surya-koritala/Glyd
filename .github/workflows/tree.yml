@@ -1,9 +1,10 @@
 name: Tree
-# The source tree stays source (scripts/check_tree.sh): on every pull request and push to main, whatever paths it touches.
+# The source tree stays source (scripts/check_tree.sh): on every pull request, merge queue entry and push to main, whatever paths it touches.
 on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 permissions:
   contents: read
 jobs:

@@ -6,6 +6,12 @@ CI here runs on GitHub's free runners (`ubuntu-latest`, `ubuntu-24.04`, `ubuntu-
 rust-cache keys carry the lock file's hash, so every `Cargo.lock` change adds a copy of each job's cache (about 2 GB in all); delete the old ones
 (`gh api -X DELETE repos/OWNER/REPO/actions/caches/ID`, older duplicates of a key and caches of merged pull requests first) before evictions slow the runs.
 
+## Merging
+
+Main has a merge queue. Merge with `gh pr merge <N> --merge`, which enqueues the pull request (the queue builds it on top of the latest main and the entries ahead,
+and runs `CI result`, `Tree size` and `signoff` on that); never with `--admin`, which skips the queue. Only `ci.yml`, `tree.yml` and `dco.yml` run for the
+queue (`merge_group`): the GPU workflows do not, because they are not required and glyd-pc runs one job at a time.
+
 ## What can land on glyd-pc
 
 | Workflow | Jobs | Routed by | Container |

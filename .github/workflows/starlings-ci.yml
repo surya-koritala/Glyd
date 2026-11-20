@@ -1,6 +1,10 @@
 name: Starlings CI
 
 on:
+  # (nightly and by hand: the full matrix, every OS; a push to main and a pull request run Linux x86_64 alone, which is what takes a PR's time)
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
   push:
     branches: [main]
     paths: ['starlings/**', '.github/workflows/starlings-*.yml']
@@ -28,8 +32,9 @@ jobs:
     name: ${{ matrix.partition == 'all' && format('Core ({0})', matrix.os) || format('Windows {0}', matrix.partition) }}
     strategy:
       fail-fast: false
-      # (pull requests: Linux; main: every OS. macOS minutes count 10x and Windows 2x against the org's Actions minutes, used up on Oct 20)
-      matrix: ${{ fromJSON(github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-ci') && '{"os":["ubuntu-latest"],"partition":["all"]}' || '{"os":["ubuntu-latest","ubuntu-24.04-arm","macos-latest"],"partition":["all"],"include":[{"os":"windows-latest","partition":"default"},{"os":"windows-latest","partition":"backend"},{"os":"windows-latest","partition":"lifecycle"}]}') }}
+      # (Linux x86_64 on a push to main and on a pull request; every OS nightly, by hand, and on a pull request with the full-ci label. macOS (9.6 min) and Windows take longer
+      # than Linux, and most of that is the tests' own time, not the build, which the cache below already restores.)
+      matrix: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && '{"os":["ubuntu-latest","ubuntu-24.04-arm","macos-latest"],"partition":["all"],"include":[{"os":"windows-latest","partition":"default"},{"os":"windows-latest","partition":"backend"},{"os":"windows-latest","partition":"lifecycle"}]}' || '{"os":["ubuntu-latest"],"partition":["all"]}') }}
     # (Linux x64 runs on the owner's PC when CI_RUNNER is '["self-hosted","glyd-pc"]', for pushes and same-repo PRs only: fork code never runs there)
     runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.CI_RUNNER && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || matrix.os }}
     timeout-minutes: 10
