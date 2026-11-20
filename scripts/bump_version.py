@@ -12,7 +12,7 @@ same version. The argument or tag may be in either spelling (a leading v is allo
 own ecosystem's, and --check fails on a file in the other's. Only X.Y.Z and its alpha, beta and rc
 pre-releases (X.Y.Zrc3, X.Y.Za1, X.Y.Zb2) exist here.
 
-What carries it: the four Cargo.toml (and glyd-store's dependency on glyd), the four glyd entries in
+What carries it: the four Cargo.toml (and glyd-store's dependency on glyd, and glyd's on glyd-engine), the four glyd entries in
 Cargo.lock, pyproject.toml (and its extras' pins of glyd-gpu), glyd/__init__.py, glyd-gpu-py's pyproject.toml and glyd_gpu/__init__.py and scripts/install.sh (the release it installs), in every version. In a release (X.Y.Z) also ROADMAP.md
 and docs/index.html, where they name the current release, and CHANGELOG.md's heading
 (`## Unreleased` or `## vX.Y.Z (Unreleased)` becomes `## vX.Y.Z` with the date). Formula/glyd.rb is not
@@ -37,6 +37,7 @@ CODE = [
     ("Cargo.toml", "cargo", r'^version = "(?P<v>[^"]+)"', 1),
     ("glyd-store/Cargo.toml", "cargo", r'^version = "(?P<v>[^"]+)"', 1),
     ("glyd-store/Cargo.toml", "cargo", r'^glyd = \{ version = "(?P<v>[^"]+)"', 1),
+    ("Cargo.toml", "cargo", r'^glyd-engine = \{ path = "glyd-engine", version = "(?P<v>[^"]+)"', 1),  # (the engine linked into glyd: cargo-deny wants a version on a path dependency of a public crate)
     ("glyd-gpu/Cargo.toml", "cargo", r'^version = "(?P<v>[^"]+)"', 1),
     ("glyd-engine/Cargo.toml", "cargo", r'^version = "(?P<v>[^"]+)"', 1),  # the engine ships in the glyd-gpu wheels, as glyd-engine's own version
     ("Cargo.lock", "cargo", r'^name = "glyd(?:-engine|-gpu|-store)?"\nversion = "(?P<v>[^"]+)"', 4),

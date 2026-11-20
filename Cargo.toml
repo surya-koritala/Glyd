@@ -34,7 +34,7 @@ engine = ["dep:glyd-engine"]
 [dependencies]
 preflate-rs = { package = "glyd-preflate", path = "third_party/preflate-rs", version = "0.7.6", optional = true }
 lepton_jpeg = { version = "=0.5.8", optional = true }
-glyd-engine = { path = "glyd-engine", optional = true, default-features = false }
+glyd-engine = { path = "glyd-engine", version = "0.32.1", optional = true, default-features = false }
 
 # The reference codecs are linked by the benchmark examples and tests
 # only; the library and the CLI carry none of them.
