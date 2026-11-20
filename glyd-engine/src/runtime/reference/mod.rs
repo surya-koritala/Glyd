@@ -259,6 +259,43 @@ pub fn residual_gate(g: &[f32], temperature: f32) -> (Vec<f32>, Vec<f32>) {
         .unzip()
 }
 
+/// mHC's weights for one token: the input's weights over the streams (pre), the output's (post) and the streams' mixing comb[j][k]
+/// (from stream j into stream k), from the streams x [n, hidden] (transformers' `DeepseekV4HyperConnection`).
+pub fn hc_weights(s: &crate::runtime::kinds::StreamsP, p: &Params, x: &[f32]) -> Result<(Vec<f32>, Vec<f32>, Vec<Vec<f32>>)> {
+    let n = s.streams;
+    let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + s.norm_eps).sqrt();
+    let xn: Vec<f32> = x.iter().map(|v| v * r).collect();
+    let (f, base, scale) = (p.vec("hc_fn")?, p.vec("hc_base")?, p.vec("hc_scale")?);
+    if f.len() != (2 + n) * n * x.len() || base.len() != (2 + n) * n || scale.len() != 3 {
+        return err(format!("mHC weights of {}, {} and {} values for {n} streams of {}", f.len(), base.len(), scale.len(), x.len() / n));
+    }
+    let w = matvec(f, x.len(), &xn);
+    let pre: Vec<f32> = (0..n).map(|i| sigmoid(w[i] * scale[0] + base[i]) + s.eps).collect();
+    let post: Vec<f32> = (0..n).map(|i| 2.0 * sigmoid(w[n + i] * scale[1] + base[n + i])).collect();
+    let mut comb: Vec<Vec<f32>> = (0..n)
+        .map(|j| {
+            let mut row: Vec<f32> = (0..n).map(|k| w[2 * n + j * n + k] * scale[2] + base[2 * n + j * n + k]).collect();
+            softmax(&mut row);
+            row.iter().map(|v| v + s.eps).collect()
+        })
+        .collect();
+    let cols = |c: &mut Vec<Vec<f32>>| {
+        for k in 0..n {
+            let z: f32 = (0..n).map(|j| c[j][k]).sum::<f32>() + s.eps;
+            (0..n).for_each(|j| c[j][k] /= z);
+        }
+    };
+    cols(&mut comb);
+    for _ in 1..s.sinkhorn_iters {
+        for row in comb.iter_mut() {
+            let z: f32 = row.iter().sum::<f32>() + s.eps;
+            row.iter_mut().for_each(|v| *v /= z);
+        }
+        cols(&mut comb);
+    }
+    Ok((pre, post, comb))
+}
+
 /// A sequence's state in one layer.
 pub enum SeqState {
     Attention(attention::KvCache),
@@ -308,11 +345,26 @@ impl RefLayer {
     /// for a block that does not read them.
     pub fn forward(&mut self, positions: &[u32], seqs: &[u32], tokens: &[u32], x: &mut [f32]) -> Result<()> {
         let d = self.hidden;
-        if x.len() != positions.len() * d || seqs.len() != positions.len() {
-            return err(format!("a step of {} values for {} tokens of width {d}", x.len(), positions.len()));
+        if seqs.len() != positions.len() {
+            return err(format!("{} sequence slots for {} tokens", seqs.len(), positions.len()));
         }
-        for (t, xt) in x.chunks_mut(d).enumerate() {
-            let h = norm::norm(&self.block.norm_in, xt, self.p.opt("norm_in"), self.p.opt("norm_in_bias"));
+        let width = match &self.block.residual {
+            Residual::Streams(s) => s.streams * d,
+            _ => d,
+        };
+        if x.len() != positions.len() * width {
+            return err(format!("a step of {} values for {} tokens of width {width}", x.len(), positions.len()));
+        }
+        for (t, xt) in x.chunks_mut(width).enumerate() {
+            let (input, hc) = match &self.block.residual {
+                Residual::Streams(s) => {
+                    let (pre, post, comb) = hc_weights(s, &self.p, xt)?;
+                    let input: Vec<f32> = (0..d).map(|i| (0..s.streams).map(|j| pre[j] * xt[j * d + i]).sum()).collect();
+                    (input, Some((post, comb)))
+                }
+                _ => (xt.to_vec(), None),
+            };
+            let h = norm::norm(&self.block.norm_in, &input, self.p.opt("norm_in"), self.p.opt("norm_in_bias"));
             let mut o = self.body(seqs[t], positions[t], tokens.get(t).copied().unwrap_or(0), &h)?;
             if let Some(n) = self.block.norm_out {
                 o = norm::norm(&n, &o, self.p.opt("norm_out"), self.p.opt("norm_out_bias"));
@@ -324,6 +376,15 @@ impl RefLayer {
                     let (a, b) = residual_gate(self.p.vec("res_gate")?, g.temperature);
                     for (i, x) in xt.iter_mut().enumerate() {
                         *x = a[i] * *x + b[i] * o[i];
+                    }
+                }
+                Residual::Streams(s) => {
+                    let (post, comb) = hc.expect("the streams' weights");
+                    let old = xt.to_vec();
+                    for k in 0..s.streams {
+                        for i in 0..d {
+                            xt[k * d + i] = post[k] * o[i] + (0..s.streams).map(|j| comb[j][k] * old[j * d + i]).sum::<f32>();
+                        }
                     }
                 }
                 r => return err(format!("the reference has no residual rule {r:?} yet")),

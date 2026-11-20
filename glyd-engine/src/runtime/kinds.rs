@@ -395,11 +395,17 @@ pub struct GateP {
     pub temperature: f32,
 }
 
-/// n residual streams mixed per block (mHC with Sinkhorn on GLM-5.3 and DeepSeek-V4; Condor's gated residuals).
+/// n residual streams mixed per block: mHC (GLM-5.3, DeepSeek-V4). The block's input is a weighted sum of the streams; its output is
+/// spread back over them with the Sinkhorn-projected mixing of the streams. Roles `hc_fn` [(2 + n) n, n hidden], `hc_base` [(2 + n) n],
+/// `hc_scale` [3]. Condor's gated residuals are a second form of this rule, not in the reference yet.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StreamsP {
     pub streams: usize,
     pub sinkhorn_iters: usize,
+    /// hc_eps
+    pub eps: f32,
+    /// The weightless RMS norm of the flattened streams before the mixing weights.
+    pub norm_eps: f32,
 }
 
 /// Kimi-K3's depth mix: a block's input is a softmax over the embedding and the completed blocks of `block` layers.

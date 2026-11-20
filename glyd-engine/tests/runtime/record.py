@@ -344,7 +344,28 @@ def glm53_mtp():
           "tools/glm_ref.py mtp_forward with GlmMoeDsaAttention and GlmMoeDsaMoE inside", d, specs, g.f32(out), {"token_ids": toks})
 
 
+def dsv4_mhc():
+    """DeepSeek-V4's mHC residual around one sublayer, as DeepseekV4DecoderLayer applies it: the streams' weighted input through the
+    norm and the sublayer (an MLP here: the residual rule does not depend on the body), then post x out + comb^T x streams."""
+    from transformers.models.deepseek_v4 import modeling_deepseek_v4 as M
+    from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+
+    c = DeepseekV4Config(hidden_size=64, intermediate_size=32, swiglu_limit=10.0, hc_mult=4, hc_sinkhorn_iters=20, hc_eps=1e-6, rms_norm_eps=1e-6,
+                         num_hidden_layers=1)
+    hc, norm, mlp = M.DeepseekV4HyperConnection(c).eval(), M.DeepseekV4RMSNorm(64, eps=1e-6).eval(), M.DeepseekV4MLP(c).eval()
+    specs = fill_module(hc, prefix="hc.")
+    specs.update(fill_module(norm, prefix="norm."))
+    specs.update(fill_module(mlp, prefix="mlp."))
+    n, d = 4, 64
+    x = torch.from_numpy(fill("input", T * n * d, -1.0, 1.0)).view(1, T, n, d)
+    post, comb, collapsed = hc(x)
+    out = post.unsqueeze(-1) * mlp(norm(collapsed)).unsqueeze(-2) + torch.matmul(comb.transpose(-1, -2), x)
+    write("dsv4_mhc", "DeepSeek-V4 mHC around a sublayer: 4 streams of 64, 20 Sinkhorn iterations", "DeepseekV4HyperConnection, DeepseekV4RMSNorm, DeepseekV4MLP",
+          n * d, specs, out.reshape(1, T, n * d))
+
+
 CASES = {
+    "dsv4_mhc": dsv4_mhc,
     "glm53_mtp": glm53_mtp,
     "rope_scaling": rope_scaling,
     "gemma4_mlp": gemma4_mlp,
