@@ -24,7 +24,7 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
 - A Hub name with a level reads the base model's config.json (the cache, else the Hub) and loads glyd/NAME-LEVEL from the
   cache (else downloads it). Offline, give the snapshot directory: nothing else is read.
 - The address is 127.0.0.1:8000, or the next free port up to 8020; `--port N` is that port or a refusal. `--host H`
-  listens on H and turns the Host and Origin checks off. `--ollama-port N` also listens on N (Ollama's own is 11434), only
+  listens on H: an address that is not this computer's own (0.0.0.0, a LAN address) needs `GLYD_API_KEY` (or `--api-key`) or `--insecure-no-auth`, else it is a refusal before the model loads. `--allowed-origins URL,URL` lets those pages' scripts call the API (CORS answers for exactly those origins, never `*`; with none listed CORS is off), `--allowed-hosts NAME,NAME` adds names the Host may be. `--ollama-port N` also listens on N (Ollama's own is 11434), only
   where N is free (else it says so and goes on): for the programs that look for Ollama at its port; Ollama's API is at
   the server's own port too.
 - The GPU is the one with the most free memory of those CUDA_VISIBLE_DEVICES shows. The context is `--ctx N` (`--context`);
@@ -56,8 +56,8 @@ driver's again when the process is gone (the record: 2,223 MiB used before the s
 
 - With a key, every path under `/v1` needs `Authorization: Bearer KEY` (the scheme in any case), else
   `401` (`{"error": {"message": ..., "type": "authentication_error", "param": null, "code": "invalid_api_key"}}`, with `WWW-Authenticate: Bearer`). `/`, `/health` and `/stats` are open. The key is compared as SHA-256 digests in constant time.
-- Without `--host`: a Host that is not localhost, 127.0.0.1 or [::1] is 421, an Origin that is not the server's own is 403
-  (a CORS preflight too). A program that sends no Origin (curl, the OpenAI libraries) is answered.
+- On this computer's own address (the default, and a loopback `--host`): a Host that is not localhost, 127.0.0.1, [::1], a container's name for this computer (`host.docker.internal`, `gateway.docker.internal`, `kubernetes.docker.internal`, `host.containers.internal`, `host.lima.internal`, `host.minikube.internal`) or a name in `--allowed-hosts` is 421. On every address an Origin that is not the server's own (`http://` and the Host; `https://` too where the server is open to the network, for a proxy that ends TLS) or one in `--allowed-origins` is 403 (a CORS preflight too). A program that sends no Origin (curl, the OpenAI libraries) is answered.
+- Limits: a body of 16 MiB (413), a header block of 64 KiB or 256 headers (431), 64 connections at once (503), the request line and headers within 30 s and the body within 120 s (408), a write to a client that reads nothing 60 s.
 
 ## Endpoints
 
@@ -98,7 +98,7 @@ The default address is `http://127.0.0.1:8000` (`--port N` for another; if 8000 
 
 A container on Linux reaches a server on this computer's own address only from the host's network: `docker run --network=host -e PORT=3000 -e OLLAMA_BASE_URL=http://127.0.0.1:8000 -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 ... ghcr.io/open-webui/open-webui:main`.
 Docker Desktop (macOS, Windows) and Podman reach it as `host.docker.internal` and `host.containers.internal`; the Host check answers those two names (it still refuses every other name and every other site's Origin), and
-the address stays this computer's own. A server on another interface (`--host 0.0.0.0`) turns the Host and Origin checks off: give it a key.
+the address stays this computer's own. A server on another interface (`--host 0.0.0.0`) needs a key (or `--insecure-no-auth`), answers any Host (or those of `--allowed-hosts`) and still refuses another page's Origin. On Linux, Docker's `host.docker.internal:host-gateway` reaches the Docker bridge, not 127.0.0.1: use `--host 172.17.0.1` (with a key) or `--network=host`. WSL reaches a server on Windows' 127.0.0.1 as `localhost` (mirrored networking or localhost forwarding); another name goes in `--allowed-hosts`.
 
 The clients are checked in `tests/clients/`: `run.sh URL [KEY]` runs the OpenAI, Anthropic, Ollama, LangChain and Open Responses checks (the HTTP tests of the Open Responses compliance suite, with every response and stream event checked against the specification's schema in `tests/clients/openresponses/`), each with the newest release of its library, against a running server; `openwebui_check.py`
 checks an Open WebUI container. Claude Code and Open WebUI were run against Qwen3-8B on an RTX 4080 SUPER for v0.34.0 (the numbers are in the pull request).
@@ -230,8 +230,12 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
   (Qwen, Kimi-style hermes, Nemotron): the arguments follow the tool's schema. The tokens the grammar does not allow are taken out of
   each step's row of logits (llguidance), so the reply is valid or ends with `finish_reason` `length`. A schema or grammar that cannot
   be compiled, and two forms at once, are 400 in words. A request with none is sampled as before. `guided_whitespace_pattern` is refused.
-- On a level's engine (`concurrency: 1`), `logprobs` and `min_tokens` are refused: it gives no log-probabilities and has no
-  least length. `fields.refused` says so.
+- On a level's engine that runs one request at a time (`concurrency: 1`: a model with a draft model, or split across GPUs, and the
+  families the scheduler does not batch yet), `logprobs` and `min_tokens` are refused: it gives no log-probabilities and has no
+  least length. `fields.refused` says so. Gemma 4, Qwen3.8 dense (the Qwen3.5 layout) and Muse Spark on one GPU are served by the
+  scheduler to `--users` at once (`limits.concurrency`), with both. `GLYD_ENGINE_BATCH_PREFILL=0` makes every reply the one the same
+  request alone gets: prompts run one a pass, and Muse Spark's decode steps one sequence each (its experts' products differ in the last
+  bits at several rows).
 - A field this server does not know is answered without it, and said once on stderr.
 - `model` is not checked: one model is served, and the reply names it.
 - The context holds the prompt and the reply. A prompt of the context's size or more is refused; with `max_tokens` (or
@@ -352,8 +356,8 @@ on purpose:
 1. Loading: the port is bound only once the model is loaded. Before that a connection is refused; there is no 503 while
    loading. The status file (`--status-file`) says `ready`, or the reason of a refusal.
 2. `/health` is open: it answers 200 with or without the key. The refusal without a key holds for every path under `/v1`.
-3. There is no `/props`. `/v1/glyd/info` has the build, the context per request (`limits.context_tokens`), one request
-   at a time (`limits.concurrency: 1`) and the model; it has no chat-template capability flags.
+3. There is no `/props`. `/v1/glyd/info` has the build, the context per request (`limits.context_tokens`), the requests it runs
+   at once (`limits.concurrency`) and the model; it has no chat-template capability flags.
 4. `/v1/models`'s id, and every reply's `model`, is MODEL as typed: the directory's path where a directory is served.
    There is no served-model-name flag, and a request's `model` is not checked.
 5. The final usage needs `stream_options: {"include_usage": true}`.

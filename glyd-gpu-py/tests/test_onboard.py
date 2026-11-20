@@ -2324,7 +2324,7 @@ def test_install_sh_on_a_gpu_machine():
                 assert re.fullmatch(rf"uv tool install --managed-python --python 3\.12 --constraints \S+/constraints\.txt glyd\[vllm\]=={re.escape(V)}", install), install
                 assert "--force" not in install and "--prerelease" not in install  # (uv itself refuses to replace what it did not make; a new pin is a reinstall)
                 assert "uv tool dir --bin" in r.calls and r.calls[-1] == "glyd doctor" and not r.err.strip(), (r.calls, r.err)
-                assert "Next: glyd run Qwen/Qwen3.5-9B" in r.out
+                assert "Next: glyd run google/gemma-4-12B-it" in r.out  # (the installer's own line: a model released in the last six months)
                 assert not glob.glob(os.path.join(i.tmpdir, "*"))  # (the temporary folder is gone)
                 assert not [f for f in os.listdir(i.home) if f in (".bashrc", ".zshenv", ".zshrc", ".profile", ".bash_profile")]  # (no startup file of its own)
     with Inst(nvidia="595.91.07") as i:  # the constraints uv was given are the list in the script, which is the acceptance run's
@@ -2612,7 +2612,7 @@ def test_the_server_is_started_local_only_unless_a_host_was_chosen():
 
         with Patched(pf__setup_checks=lambda gpus=None: (L4_GPU, []), pf__probe_gpus=lambda: [L4_GPU], pf__load_model=lambda name: mm, pf__check_disk=lambda m: None,
                      pf__pick_port=lambda host, port, explicit: 8123, run__download=lambda m, ui: None, run__launch=launch, run__wait_ready=lambda *a, **k: None):
-            for argv, extra, mode in ((["fake/Model-1B"], [], "run"), (["fake/Model-1B"], [], "serve"), (["fake/Model-1B", "--host", "0.0.0.0"], [], "serve"),
+            for argv, extra, mode in ((["fake/Model-1B"], [], "run"), (["fake/Model-1B"], [], "serve"), (["fake/Model-1B", "--host", "0.0.0.0", "--insecure-no-auth"], [], "serve"),
                                       (["fake/Model-1B"], ["--host", "127.0.0.1"], "serve"), (["fake/Model-1B"], ["--host", "127.0.0.1"], "run")):
                 run.start(run.parse(mode, argv), extra, mode, run.Ui(Sink()))
         assert seen == [(True, "1", "127.0.0.1"), (True, "1", "127.0.0.1"), (False, None, "0.0.0.0"), (False, None, "127.0.0.1"), (False, None, "127.0.0.1")], seen
@@ -2638,7 +2638,13 @@ def test_the_open_server_warning_names_what_stays_open():
         with Patched(pf__setup_checks=lambda gpus=None: (L4_GPU, []), pf__probe_gpus=lambda: [L4_GPU], pf__load_model=lambda name: mm, pf__check_disk=lambda m: None, pf__pick_port=lambda host, port, explicit: 8123,
                      run__download=lambda m, ui: None, run__wait_ready=lambda *a, **k: None, run__launch=lambda *a, **k: (open(a[5], "w").close(), run.Server(srv.base, a[5], Proc(None)))[1]):
             ui = run.Ui(Sink())
-            run.start(run.parse("serve", ["fake/Model-1B", "--host", "0.0.0.0"]), [], "serve", ui, environ={})
+            try:  # (an address that is not this computer's own, with no key and no --insecure-no-auth: refused, before anything is downloaded)
+                run.start(run.parse("serve", ["fake/Model-1B", "--host", "0.0.0.0"]), [], "serve", ui, environ={})
+                raise AssertionError("an open server with no key was started")
+            except pf.Refusal as r:
+                assert "no API key" in r.what and "--insecure-no-auth" in r.fix and "VLLM_API_KEY" in r.fix
+            ui = run.Ui(Sink())
+            run.start(run.parse("serve", ["fake/Model-1B", "--host", "0.0.0.0", "--insecure-no-auth"]), [], "serve", ui, environ={})
             assert "Note: listening on 0.0.0.0" in ui.f.text() and "plain HTTP" in ui.f.text() and "There is no API key" in ui.f.text()
             ui = run.Ui(Sink())
             run.start(run.parse("serve", ["fake/Model-1B", "--host", "0.0.0.0"]), [], "serve", ui, environ={"VLLM_API_KEY": "k"})
