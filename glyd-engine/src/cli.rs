@@ -25,7 +25,7 @@ use crate::status::{Status, STATUS};
 use crate::store;
 use crate::tok::Tok;
 use crate::ui::{fmt_time, gb, gib, Done, Refusal, Ui};
-use crate::weights::{best_layout, choose_layout, packed_bytes, packed_layout, v7_manifest, Config, Layout};
+use crate::weights::{choose_layout, packed_bytes, packed_layout, v7_manifest, Config, Layout};
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::save::Source;
 use std::cell::RefCell;
@@ -2419,85 +2419,9 @@ pub fn driver_problem(g: &Gpu) -> Option<String> {
     (g.driver < machine::DRIVER_MIN).then(|| format!("too old: {}", machine::driver_fix(g.driver, "run the model with vLLM")))
 }
 
-pub fn doctor(_a: &Args) -> i32 {
-    let say = |k: &str, v: String| println!("  {k:<14}{v}");
-    println!("glyd engine {VERSION}");
-    let mut bad = 0;
-    match Dev::probe_all().ok().and_then(|all| machine::pick(&all).cloned().map(|g| (all.len(), g))) {
-        Some((n, g)) => {
-            say(
-                "GPU",
-                format!(
-                    "{} (compute capability {}.{}), {} free of {}; the driver runs CUDA {}.{}",
-                    g.name,
-                    g.cc.0,
-                    g.cc.1,
-                    gib(g.free),
-                    gib(g.total),
-                    g.driver / 1000,
-                    g.driver % 1000 / 10
-                ),
-            );
-            if g.cc.0 < 8 {
-                say("", "older than the engine runs on (Ampere or newer)".to_string());
-                bad += 1;
-            }
-            if let Some(fix) = driver_problem(&g) {
-                say("driver", fix);
-                bad += 1;
-            }
-            if n > 1 {
-                say("", format!("{n} GPUs: the one with the most free memory is used (CUDA_VISIBLE_DEVICES names the ones to choose from)"));
-            }
-            let (l, why) = best_layout(g.cc, g.total, 0, 0);
-            say("layout", format!("{} (the default here: {why}); --layout {} for the other", l.name(), if l == Layout::Tiered { "mma12" } else { "mma" }));
-        }
-        None => {
-            say("GPU", format!("none usable: {}", Dev::probe(0).err().map_or("the driver shows none".to_string(), |e| e.0)));
-            bad += 1;
-        }
-    }
-    match crate::ffi::Lib::find() {
-        Ok(l) => say("GPU library", l.path.clone()),
-        Err(e) => {
-            say("GPU library", format!("not found: {}", e.0));
-            bad += 1;
-        }
-    }
-    match Blas::find() {
-        Some(b) => say("cuBLAS", format!("found ({}): long prompts run through it", b.path)),
-        None => say("cuBLAS", "not found: long prompts use the engine's own products (a little slower)".to_string()),
-    }
-    let cache = store::cache_root();
-    say("cache", format!("{} ({} free)", cache.display(), probe_free(&cache)));
-    let hubdir = hub::hub_cache();
-    say("models", format!("{} ({} free)", hubdir.display(), probe_free(&hubdir)));
-    let h = Hub::from_env();
-    say("Hub token", if h.has_token() { "found".to_string() } else { "none (public models only; glyd login for a gated one)".to_string() });
-    if !hub::offline() {
-        match h.list("Qwen/Qwen3-0.6B", "main") {
-            Ok(_) => say("Hub", format!("{} reachable", h.endpoint())),
-            Err(e) => {
-                say("Hub", format!("{}: {e}", h.endpoint()));
-                bad += 1;
-            }
-        }
-    } else {
-        say("Hub", "offline (HF_HUB_OFFLINE)".to_string());
-    }
-    if bad == 0 {
-        println!("Everything glyd run needs is here.");
-        0
-    } else {
-        println!("{bad} thing(s) to fix.");
-        1
-    }
-}
-
-fn probe_free(p: &Path) -> String {
-    let mut q = p.to_path_buf();
-    while !q.exists() && q.pop() {}
-    hub::disk_free(&q).map_or("unknown".to_string(), gb)
+/// `glyd doctor [--json] [--bundle [FILE]]`: src/doctor.rs.
+pub fn doctor(a: &Args) -> i32 {
+    crate::doctor::run(a)
 }
 
 /// The terminal's echo off while a secret is typed, and back on however the read ends (Ctrl-C included: the handler puts the terminal back before it leaves).

@@ -1016,7 +1016,7 @@ fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize) -> Candidate
 
 /// The option the ladder takes: in the levels' order, the first in GPU memory alone with at least `PREFERRED_CTX` of context, else the first with
 /// experts in RAM at that context; only then a shorter context (a model held in 4,096 tokens is a poorer run than one level down at 32,768).
-fn choose(options: &[Candidate], max_ctx: usize) -> Option<Candidate> {
+pub(crate) fn choose(options: &[Candidate], max_ctx: usize) -> Option<Candidate> {
     let in_vram = |o: &&Candidate| matches!(o.placement, Some(Placement::Gpu(_) | Placement::Split(_)));
     let roomy = |o: &&Candidate| o.placement.is_some() && o.context >= PREFERRED_CTX.min(max_ctx);
     (options.iter().find(|o| in_vram(o) && roomy(o)))
@@ -1146,6 +1146,60 @@ pub fn fit_cmd(a: &crate::args::Args) -> i32 {
     }
 }
 
+/// Each level's plan `run` would load for MODEL on `machine`, or the reason it would not (the same functions: src/cli.rs `size`), in the family's order of
+/// levels: None where no level of this family is sized by its loader yet, or the machine has no GPU. `probed`: the machine is this computer (its GPUs'
+/// reach of each other is asked of the driver), else a datacenter machine's is taken as NVLink's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn exact_options(
+    a: &crate::args::Args,
+    model: &str,
+    config: &str,
+    level: Option<&'static str>,
+    fam: &'static crate::support::Support,
+    sh: &Shape,
+    machine: &Machine,
+    users: usize,
+    probed: bool,
+) -> Option<(Vec<Candidate>, Vec<crate::ui::Refusal>)> {
+    let main = (0..machine.devices.len()).min_by_key(|&i| (std::cmp::Reverse(machine.devices[i].free), i))?;
+    let target = Target::of(&machine.devices[main], main as i32, Some(machine.ram_free));
+    // (the GPUs the dynamic route uses: Ampere or newer; they reach each other directly where this computer says so, or as a datacenter machine's NVLink does)
+    let devs: Vec<Target> =
+        machine.devices.iter().enumerate().filter(|(_, d)| d.cc.0 >= 8).map(|(i, d)| Target::of(d, i as i32, Some(machine.ram_free))).collect();
+    let linked = machine.devices.iter().all(|d| d.cc.1 == 0 && (8..=10).contains(&d.cc.0));
+    let reach = move |g: &[i32]| if probed { crate::dynamic::tp::reach(g) } else { linked };
+    let tries: Vec<&'static str> = match level {
+        Some(l) => vec![l],
+        None => fam.levels_now(model),
+    };
+    let (mut refusals, mut options, mut sized) = (Vec::new(), Vec::new(), false);
+    for l in tries {
+        match crate::cli::size(a, model, config, l, &devs, &target, &reach, users) {
+            Ok(Some(lp)) => {
+                sized = true;
+                options.push(candidate_of(lp, sh, machine, main));
+            }
+            Ok(None) => {}
+            Err(r) => {
+                sized = true;
+                options.push(Candidate {
+                    level: l,
+                    bits: 0.0,
+                    weights: 0,
+                    placement: None,
+                    context: 0,
+                    kv: 0,
+                    tok_s: 0.0,
+                    why: Some(r.what.clone()),
+                    load: None,
+                });
+                refusals.push(r);
+            }
+        }
+    }
+    sized.then_some((options, refusals))
+}
+
 /// What `fit` works out of its arguments: the model, the machine, the plan, and the refusal `run` would give (its reason, after the plan is printed).
 pub struct Planned {
     pub model: String,
@@ -1202,55 +1256,16 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     let mut p = plan(&sh, &machine, ask);
     let mut refusal = None;
     // where run's own sizing covers the family: the plan `run` would load at each level, or the refusal it would give (the same functions: src/cli.rs `size`)
-    if let Some(main) = (0..machine.devices.len()).min_by_key(|&i| (std::cmp::Reverse(machine.devices[i].free), i)) {
-        let target = Target::of(&machine.devices[main], main as i32, Some(machine.ram_free));
-        // (the GPUs the dynamic route uses: Ampere or newer; they reach each other directly where this computer says so, or as a datacenter machine's NVLink does)
-        let devs: Vec<Target> =
-            machine.devices.iter().enumerate().filter(|(_, d)| d.cc.0 >= 8).map(|(i, d)| Target::of(d, i as i32, Some(machine.ram_free))).collect();
-        let probed = a.flag("machine").is_none();
-        let linked = machine.devices.iter().all(|d| d.cc.1 == 0 && (8..=10).contains(&d.cc.0));
-        let reach = move |g: &[i32]| if probed { crate::dynamic::tp::reach(g) } else { linked };
-        let tries: Vec<&'static str> = match level {
-            Some(l) => vec![l],
-            None => fam.levels_now(model),
-        };
-        let mut refusals = Vec::new();
-        let mut options = Vec::new();
-        let mut sized = false;
-        for l in tries {
-            match crate::cli::size(a, model, &config, l, &devs, &target, &reach, users) {
-                Ok(Some(lp)) => {
-                    sized = true;
-                    options.push(candidate_of(lp, &sh, &machine, main));
-                }
-                Ok(None) => {}
-                Err(r) => {
-                    sized = true;
-                    options.push(Candidate {
-                        level: l,
-                        bits: 0.0,
-                        weights: 0,
-                        placement: None,
-                        context: 0,
-                        kv: 0,
-                        tok_s: 0.0,
-                        why: Some(r.what.clone()),
-                        load: None,
-                    });
-                    refusals.push(r);
-                }
-            }
-        }
-        if sized {
-            let max_ctx = context.unwrap_or(fam.default_ctx.unwrap_or(TARGET_CTX).min(sh.max_ctx)).min(fam.max_ctx.unwrap_or(usize::MAX));
-            p.chosen = choose(&options, max_ctx);
-            p.options = options;
-            p.notes.retain(|n| !n.starts_with("nothing fits"));
-            if p.chosen.is_none() {
-                p.notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M5)".into());
-                // (what `run` says of the level it would take: the first one asked, else the lossless one)
-                refusal = refusals.into_iter().next();
-            }
+    let probed = a.flag("machine").is_none();
+    if let Some((options, refusals)) = exact_options(a, model, &config, level, fam, &sh, &machine, users, probed) {
+        let max_ctx = context.unwrap_or(fam.default_ctx.unwrap_or(TARGET_CTX).min(sh.max_ctx)).min(fam.max_ctx.unwrap_or(usize::MAX));
+        p.chosen = choose(&options, max_ctx);
+        p.options = options;
+        p.notes.retain(|n| !n.starts_with("nothing fits"));
+        if p.chosen.is_none() {
+            p.notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M5)".into());
+            // (what `run` says of the level it would take: the first one asked, else the lossless one)
+            refusal = refusals.into_iter().next();
         }
     }
     // (the machine's refusal first: `run` checks the GPU before it sizes anything)

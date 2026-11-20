@@ -16,9 +16,9 @@ body:
   - type: textarea
     id: doctor
     attributes:
-      label: Output of `glyd-engine doctor`
-      description: Run it on the machine where the bug happens and paste everything it prints.
-      render: text
+      label: Output of `glyd doctor --json`
+      description: Run it on the machine where the bug happens and paste everything it prints, or run `glyd doctor --bundle` and attach the file it writes (tokens, keys and your home folder are taken out of it; read it before you post).
+      render: json
     validations:
       required: true
   - type: input
