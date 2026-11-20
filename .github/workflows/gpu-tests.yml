@@ -32,6 +32,7 @@ jobs:
     env:
       HF_HOME: /cache/hf
       CARGO_HOME: /cache/cargo
+      RUSTUP_HOME: /cache/rustup                  # (the toolchain too: else every run downloads it)
       CARGO_TARGET_DIR: /cache/target-sm${{ inputs.archs }}
       GLYD_ENGINE_ARCHS: ${{ inputs.archs }}
       NVCC: /usr/local/cuda/bin/nvcc
@@ -47,12 +48,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      - name: The checkout's files get the times their content last changed (so cargo builds what changed, not the checkout)
+        run: python3 scripts/ci_restore_mtimes.py "/cache/mtimes-sm${{ inputs.archs }}.json"
       - name: Build the engine (development build, kernels for sm_${{ inputs.archs }}) and the GPU library
-        run: |
-          cargo build --release --locked -p glyd-engine
-          bash gpu/build_lib.sh "$CARGO_TARGET_DIR/gpu"
-          echo "GLYD_GPU_LIB=$(ls "$CARGO_TARGET_DIR"/gpu/libglyd_gpu_cuda*.so | head -1)" >> "$GITHUB_ENV"
-          echo "E=$CARGO_TARGET_DIR/release/glyd-engine" >> "$GITHUB_ENV"
+        run: bash scripts/ci_gpu_build.sh
       - name: Kernel checks (no model)
         run: |
           "$E" --version
