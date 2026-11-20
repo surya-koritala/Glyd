@@ -28,8 +28,10 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   where N is free (else it says so and goes on): for the programs that look for Ollama at its port; Ollama's API is at
   the server's own port too.
 - The GPU is the one with the most free memory of those CUDA_VISIBLE_DEVICES shows. The context is `--ctx N` (`--context`);
-  without it, what fits, up to 32,768 at a level. A level's engine runs one request at a time (the others wait in order);
-  the lossless engine runs `--users N` at once (1 to 8, 4 if not given).
+  without it, what fits, up to 32,768 at a level (served to several users, what fits each of them, at least 4,096). `--users N`
+  (4 if not given) is how many requests run at once: 1 to 8 on the lossless Qwen3 engine; 1 to 64 for Gemma 4, Qwen3.8 dense
+  and Muse Spark on one GPU, as many as the GPU's memory holds (the server says how many); the other level engines run one
+  request at a time (the others wait in order).
 - A model too big for one GPU (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark) uses all the GPUs shown. On datacenter
   GPUs (A100, H100, B200) that reach each other directly, Kimi-K3 and DeepSeek-V4 put every layer across all of them:
   each GPU holds a slice of every big matrix and the slices are gathered GPU to GPU, so every GPU works on every token.
