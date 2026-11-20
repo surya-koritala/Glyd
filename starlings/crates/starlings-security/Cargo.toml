@@ -1,14 +1,15 @@
 [package]
 name = "starlings-security"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-publish.workspace = true
-repository.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+repository = "https://github.com/surya-koritala/Glyd"
+license = "Apache-2.0"
 
-[lints]
-workspace = true
+# (not the root's [workspace.lints]: Starlings forbids unsafe code and is clean under clippy's defaults with -D warnings, which the root's allow-list is not for)
+[lints.rust]
+unsafe_code = "forbid"
 
 [dependencies]
 starlings-protocol.workspace = true
