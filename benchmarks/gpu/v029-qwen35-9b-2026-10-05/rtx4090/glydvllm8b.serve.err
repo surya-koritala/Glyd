@@ -1,1 +1,0 @@
-glyd serve: the engine serves up to 8 users at once and vLLM more (GLYD_ENGINE=1 runs the engine); using vLLM.

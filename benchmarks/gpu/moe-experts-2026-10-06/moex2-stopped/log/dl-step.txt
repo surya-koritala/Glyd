@@ -1,7 +1,0 @@
-stepfun-ai/Step-3.5-Flash: 804 tensors; the slice: 32 tensors of layers [0]..[1] and 3 outside the layers, 11.04 GiB (BF16 11.04, F32 0.00)
-model-00001-of-00004.safetensors: 29 tensors, 2.60 GiB so far, 49 s
-model-00002-of-00004.safetensors: 1 tensors, 5.41 GiB so far, 59 s
-model-00003-of-00004.safetensors: 1 tensors, 8.23 GiB so far, 68 s
-model-00004-of-00004.safetensors: 1 tensors, 11.04 GiB so far, 77 s
-/root/w/step: 32 tensors, 11.04 GiB, 4 small files, ends of a sample checked against the source: ok, 79 s
-exit 0

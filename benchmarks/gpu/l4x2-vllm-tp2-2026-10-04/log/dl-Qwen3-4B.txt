@@ -1,3 +1,0 @@
-Fetching 10 files:   0%|          | 0/10 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 10 files:  40%|████      | 4/10 [00:00<00:00, 38.87it/s]Fetching 10 files:  80%|████████  | 8/10 [00:00<00:00,  7.34it/s]Fetching 10 files:  80%|████████  | 8/10 [00:20<00:00,  7.34it/s]Fetching 10 files:  90%|█████████ | 9/10 [01:28<00:15, 15.30s/it]Fetching 10 files: 100%|██████████| 10/10 [01:32<00:00, 13.08s/it]Fetching 10 files: 100%|██████████| 10/10 [01:32<00:00,  9.26s/it]
-exit 0: 8060899111 bytes in 93 s (at +112 s)

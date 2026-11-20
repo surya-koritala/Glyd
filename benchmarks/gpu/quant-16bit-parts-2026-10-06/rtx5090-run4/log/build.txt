@@ -1,6 +1,0 @@
-/root/w/src/gpu/glyd_gpu.cu(6352): warning #177-D: variable "f8c::VBUF" was declared but never referenced
-  constexpr int VBUF = 464;
-                ^
-
-Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
-

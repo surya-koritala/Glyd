@@ -1,2 +1,0 @@
-after start: 20862 MiB
-idle after warm-up: 21222 MiB

@@ -1,7 +1,0 @@
-END=5700
-QP_MODELS="RedHatAI/Qwen3.5-9B-FP8-dynamic
-google/gemma-4-12B-it-qat-w4a16-ct|--steps stock
-RedHatAI/Qwen3.5-9B-quantized.w8a8|--steps stock"
-QP_KEEP="RedHatAI/Qwen3.5-9B-FP8-dynamic"
-Q8_MODELS="RedHatAI/Qwen3.5-9B-FP8-dynamic|graphq|--pin"
-QP_MODELS2="QuantTrio/Qwen3.5-9B-AWQ|--dtype bfloat16"

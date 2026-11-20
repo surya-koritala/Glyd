@@ -1,3 +1,0 @@
-Qwen3.5-9B: about 5.8 GiB on the GPU at the swift level (about 5.5 bits per weight, not lossless), in place of 16.7 GiB of bf16.
-Ready in 2s: Qwen3.5-9B on the NVIDIA GeForce RTX 4080 SUPER, 5.8 GiB of weights, 4096 tokens of context, one user at a time.
-Qwen/Qwen3.5-9B:swift is served at http://127.0.0.1:8238: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it.

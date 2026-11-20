@@ -1,1 +1,0 @@
-NVIDIA L40S (compute 8.9)

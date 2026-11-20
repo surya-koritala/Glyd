@@ -1,5 +1,0 @@
-  stock-1: ok
-  stock-2: ok
-  op-1: ok
-INFO: diag[pinned: stock-2 against stock-1]: the four prompts the same bits; the sweep (the first position that differs, by prompt length): 16: -, 24: -, 32: -, 48: -, 64: -, 128: -, 256: -, 512: -, 1024: -, 1860: -; compiled code acfa16f34cac (17 files) against 2a7b58362b23; autotuners: 0 of 0 took another config
-INFO: diag[pinned: op-1 against stock-1]: the four prompts the same bits; the sweep (the first position that differs, by prompt length): 16: -, 24: -, 32: -, 48: -, 64: -, 128: -, 256: -, 512: -, 1024: -, 1860: -; compiled code 953cec6ff425 (18 files) against 2a7b58362b23; autotuners: 0 of 0 took another config

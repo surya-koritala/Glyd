@@ -1,1 +1,0 @@
-kv_bits: 38 of 40 outputs the same bits; differ: ['status', 'pool']

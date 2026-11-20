@@ -1,9 +1,0 @@
-01:31 created 34p9j90eexdn8i (NVIDIA GeForce RTX 5090)
-ssh on pod 34p9j90eexdn8i ready after 39s: ssh reachable at 74.2.96.214:11480
-01:32 ssh ready at 74.2.96.214:11480 after 43 s
-NVIDIA GeForce RTX 5090, 595.91.07, 32607 MiB
-01:32 job started
-01:59 job done
-terminating 34p9j90eexdn8i
-pods left: [('3fswej1wxqjkxy', 'glyd-bench-v29-4090', 'RUNNING')]
-28 min

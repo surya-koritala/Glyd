@@ -1,7 +1,0 @@
-venv: rc=0 6 s (job minute 0)
-download: rc=0 89 s (job minute 1)
-pyenv: rc=0 151 s (job minute 2)
-prep: rc=0 20 s (job minute 2)
-selftest: rc=0 36 s (job minute 3)
-run: rc=0 780 s (job minute 16)
-report: rc=0 2 s (job minute 16)

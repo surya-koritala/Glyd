@@ -1,2 +1,0 @@
-prefill ms of the 3 timed runs: 381.0, 376.9, 369.6
-{"prompt_tokens":1024,"new_tokens":64,"prefill_ms":376.9,"decode_ms_mean":45.049,"decode_ms_p50":45.071,"decode_ms_p99":45.274,"decode_tokens_per_s":22.20,"load_s":2.19,"weights_gib":10.340,"cache_tokens":4096,"graph":true}

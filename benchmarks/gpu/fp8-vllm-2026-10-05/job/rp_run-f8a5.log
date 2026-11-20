@@ -1,9 +1,0 @@
-18:14 created xrysithauij0sh (NVIDIA GeForce RTX 4090)
-ssh on pod xrysithauij0sh ready after 23s: ssh reachable at 213.173.108.42:19837
-18:14 ssh ready at 213.173.108.42:19837 after 30 s
-NVIDIA GeForce RTX 4090, 580.173.02, 24564 MiB
-18:14 job started
-18:30 job done
-terminating xrysithauij0sh
-pods left: []
-16 min

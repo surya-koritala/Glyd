@@ -93,9 +93,9 @@ afterwards (every Linear layer's matrix packed and
 unpacked bit for bit; perplexity on enwik8 and MMLU on 300 questions,
 bf16 against Glyd in the same run; H100 SXM, 2026-09-26, and an A10 and
 an H100 PCIe, 2026-09-27; logs in
-[benchmarks/gpu/popular-h100-2026-09-26](benchmarks/gpu/popular-h100-2026-09-26),
+[benchmarks/gpu/popular-h100-2026-09-26](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/popular-h100-2026-09-26),
 [open-models-a10-2026-09-27](benchmarks/gpu/open-models-a10-2026-09-27) and
-[lambda-gpu_1x_h100_pcie-20260926-213544](benchmarks/gpu/lambda-gpu_1x_h100_pcie-20260926-213544)):
+[lambda-gpu_1x_h100_pcie-20260926-213544](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/lambda-gpu_1x_h100_pcie-20260926-213544)):
 
 | Model | Matrices in bf16 | ⚡&nbsp;**Glyd** | Perplexity, bf16&nbsp;→&nbsp;Glyd | MMLU, bf16&nbsp;→&nbsp;Glyd |
 | :--- | ---: | ---: | ---: | ---: |
@@ -527,7 +527,7 @@ small objects with dictionaries trained on other days' data; a real S3
 round trip (compress, upload, download, decompress, sha256) costed at list
 prices. Method: [docs/benchmarks/README.md](docs/benchmarks/README.md);
 results with every table: [docs/benchmarks/suite-2026-09-21.md](docs/benchmarks/suite-2026-09-21.md);
-raw rows: [benchmarks/suite/](benchmarks/suite/).
+raw rows: [benchmarks/suite/](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/suite).
 
 The short version: `--max` stores 2.2% less than zstd -3 over the corpus
 (24% less on JSON events), decodes 3–7× faster with 8 cores and 1.10×
@@ -684,7 +684,7 @@ the chosen level in parallel 32 MB units, and rebuilds the bytes
 exactly. Anything else is left as it is.
 
 The 8.7 GB benchmark corpus, 10 cores, every decode byte-checked
-(`examples/bench_suite.rs`, rows in [`benchmarks/suite/m1-max-v0.4.0/`](benchmarks/suite/m1-max-v0.4.0/)):
+(`examples/bench_suite.rs`, rows in [`benchmarks/suite/m1-max-v0.4.0/`](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/suite/m1-max-v0.4.0)):
 
 | Data | Glyd&nbsp;‑‑max | Glyd&nbsp;‑‑ultra | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | zstd&nbsp;-3 | zstd&nbsp;-19 | **‑‑ultra&nbsp;‑r vs zstd&nbsp;-19** |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -710,7 +710,7 @@ of 6,500-8,700 for plain `--max`.
 Telemetry is where the multiples are. Measurements as rows (a cluster
 trace, daily weather, taxi trips) in CSV or as JSON lines
 (`scripts/download_ext_corpus.sh`, 128 MB slices, 10 cores, rows in
-[`benchmarks/suite/m1-max-v0.4.0/bench_suite_ext2.txt`](benchmarks/suite/m1-max-v0.4.0/bench_suite_ext2.txt)):
+[`benchmarks/suite/m1-max-v0.4.0/bench_suite_ext2.txt`](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/suite/m1-max-v0.4.0/bench_suite_ext2.txt)):
 
 | Data | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | zstd&nbsp;-3 | zstd&nbsp;-19 | **‑‑max&nbsp;‑r vs zstd&nbsp;-3** | **‑‑ultra&nbsp;‑r vs zstd&nbsp;-19** |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |

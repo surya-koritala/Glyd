@@ -1,9 +1,0 @@
-19:48 created 87n1u0xag7uguo (NVIDIA GeForce RTX 4090)
-ssh on pod 87n1u0xag7uguo ready after 18s: ssh reachable at 47.47.180.28:19238
-19:48 ssh ready at 47.47.180.28:19238 after 23 s
-NVIDIA GeForce RTX 4090, 580.159.04, 24564 MiB
-19:48 job started
-20:09 job done
-terminating 87n1u0xag7uguo
-pods left: [('w75ltmzt5q8fbu', 'glyd-bench-f8a7', 'RUNNING')]
-21 min

@@ -1,2 +1,0 @@
-glyd: ok (296 s) weights 10.96 GiB, KV 166,074 tokens, tok/s {"1": 83.5, "8": 569.37, "32": 1532.55, "64": 2127.03}
-PACKED: 132 layers, 5.49 GiB bf16 held in 3.68 GiB (1.80 GiB saved); products of 4 against F.linear: worst relative error 3.05e-03; largest 16-bit left: VocabParallelEmbedding / UnquantizedEmbeddingMethod / weight / bfloat16 1.89 GiB; ColumnParallelLinear / GlydLinearMethod / weight / bfloat16 0.25 GiB; Embedding / NoneType / weight / bfloat16 0.00 GiB

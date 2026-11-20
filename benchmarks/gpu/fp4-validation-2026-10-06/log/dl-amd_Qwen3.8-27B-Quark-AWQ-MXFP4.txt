@@ -1,4 +1,0 @@
-Fetching 12 files:   0%|          | 0/12 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 12 files:  17%|█▋        | 2/12 [00:00<00:00, 17.65it/s]Fetching 12 files:  50%|█████     | 6/12 [00:00<00:00, 29.46it/s]Fetching 12 files:  92%|█████████▏| 11/12 [00:00<00:00, 10.03it/s]Fetching 12 files:  92%|█████████▏| 11/12 [00:20<00:00, 10.03it/s]Fetching 12 files: 100%|██████████| 12/12 [00:27<00:00,  3.77s/it]Fetching 12 files: 100%|██████████| 12/12 [00:27<00:00,  2.27s/it]
-/root/w/hf/hub/models--amd--Qwen3.8-27B-Quark-AWQ-MXFP4/snapshots/5233554c5fa56afda40150556b95573c2d7d29c0
-exit 0 after 28 s; 9.7M

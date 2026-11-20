@@ -1,2 +1,0 @@
-F8_END=2520
-F8_PLAN="qwen4:eager,graph glm3:eager,compile whole:eager,graph"

@@ -1,8 +1,0 @@
-glyd serve: the engine serves up to 8 users at once and vLLM more (GLYD_ENGINE=1 runs the engine); using vLLM.
-gemma-4-12B-it: 16.6 GB on the GPU with Glyd, instead of 23.9 GB, which does not fit the 25.3 GB your GPU has free.
-gemma-4-12B-it is downloaded already.
-Settings: 186,368-token context (the most that fits), compiled mode (CUDA graphs), 92% of GPU memory (23.2 GB), tool calls (gemma4), thinking shown apart (gemma4).
-Loading gemma-4-12B-it with Glyd: 16.6 GB instead of 23.9 GB...
-glyd: the server stopped while starting: transformers.integrations.heterogeneity.configuration_utils.AmbiguousGlobalPerLayerAttributeError: 'num_key_value_heads' is a per-layer attribute and may vary across layers. Access it via the individual layer configs instead (e.g. config.pe.
-  Report it at https://github.com/surya-koritala/Glyd/issues with the log if it persists
-  The server's log: /root/.local/state/glyd/logs/serve-20261006-044502.log

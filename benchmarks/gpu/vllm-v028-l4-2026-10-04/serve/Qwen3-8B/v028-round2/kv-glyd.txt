@@ -1,5 +1,0 @@
-glyd: mma layout, the KV cache lossless (tables /home/ubuntu/p28/gc-v028-q8/kv/kvtab-9055d4f0344aaded.npz)
-glyd: the embedding and the LM head packed too
-Model loading took 10.47 GiB memory and 28.297178 seconds
-GPU KV cache size: 79,600 tokens, Maximum concurrency for 4,096 tokens per request: 19.43x
-20228 MiB, 23034 MiB

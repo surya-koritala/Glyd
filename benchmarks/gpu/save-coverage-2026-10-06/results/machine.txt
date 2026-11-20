@@ -1,6 +1,0 @@
-name, compute_cap, driver_version, memory.total [MiB]
-NVIDIA L40S, 8.9, 580.159.03, 46068 MiB
-128
-               total        used        free      shared  buff/cache   available
-Mem:            1007         177         240          33         630         830
-overlay         150G  159M  150G   1% /

@@ -1,116 +1,0 @@
-+ for r in deepseek-ai/DeepSeek-V4-Flash nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 glyd/nemotron-3-hummingbird zai-org/GLM-5.3-Flash
-++ date +%s
-+ t=1792591070
-+ HF_HUB_ENABLE_HF_TRANSFER=1
-+ /home/ubuntu/.local/bin/hf download deepseek-ai/DeepSeek-V4-Flash
-/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
-  warnings.warn(
-[90mHint: The `hf-cli` skill is not installed. Run `hf skills add -g` to teach your AI agents how to use the `hf` CLI.[0m
-Fetching 73 files:   0%|          | 0/73 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 73 files:   4%|▍         | 3/73 [00:00<00:02, 29.01it/s]Fetching 73 files:  18%|█▊        | 13/73 [00:00<00:00, 62.92it/s]Fetching 73 files:  33%|███▎      | 24/73 [00:00<00:02, 23.57it/s]Fetching 73 files:  38%|███▊      | 28/73 [00:20<00:01, 23.57it/s]Fetching 73 files:  40%|███▉      | 29/73 [00:20<00:47,  1.09s/it]Fetching 73 files:  41%|████      | 30/73 [00:23<00:53,  1.24s/it]Fetching 73 files:  45%|████▌     | 33/73 [00:27<00:48,  1.20s/it]Fetching 73 files:  48%|████▊     | 35/73 [00:28<00:42,  1.13s/it]Fetching 73 files:  51%|█████     | 37/73 [00:34<00:55,  1.54s/it]Fetching 73 files:  52%|█████▏    | 38/73 [00:38<01:03,  1.82s/it]Fetching 73 files:  55%|█████▍    | 40/73 [00:38<00:45,  1.37s/it]Fetching 73 files:  59%|█████▉    | 43/73 [00:41<00:35,  1.19s/it]Fetching 73 files:  62%|██████▏   | 45/73 [00:47<00:45,  1.63s/it]Fetching 73 files:  64%|██████▍   | 47/73 [00:49<00:39,  1.50s/it]Fetching 73 files:  66%|██████▌   | 48/73 [00:50<00:35,  1.41s/it]Fetching 73 files:  68%|██████▊   | 50/73 [00:54<00:34,  1.52s/it]Fetching 73 files:  70%|██████▉   | 51/73 [00:56<00:37,  1.69s/it]Fetching 73 files:  71%|███████   | 52/73 [00:57<00:33,  1.60s/it]Fetching 73 files:  73%|███████▎  | 53/73 [00:59<00:32,  1.62s/it]Fetching 73 files:  74%|███████▍  | 54/73 [01:01<00:34,  1.83s/it]Fetching 73 files:  75%|███████▌  | 55/73 [01:02<00:25,  1.43s/it]Fetching 73 files:  78%|███████▊  | 57/73 [01:03<00:16,  1.03s/it]Fetching 73 files:  79%|███████▉  | 58/73 [01:04<00:17,  1.17s/it]Fetching 73 files:  81%|████████  | 59/73 [01:06<00:19,  1.36s/it]Fetching 73 files:  82%|████████▏ | 60/73 [01:09<00:21,  1.67s/it]Fetching 73 files:  84%|████████▎ | 61/73 [01:11<00:21,  1.79s/it]Fetching 73 files:  85%|████████▍ | 62/73 [01:12<00:17,  1.59s/it]Fetching 73 files:  86%|████████▋ | 63/73 [01:13<00:15,  1.54s/it]Fetching 73 files:  88%|████████▊ | 64/73 [01:14<00:10,  1.13s/it]Fetching 73 files:  89%|████████▉ | 65/73 [01:14<00:06,  1.20it/s]Fetching 73 files:  92%|█████████▏| 67/73 [01:18<00:08,  1.39s/it]Fetching 73 files:  93%|█████████▎| 68/73 [01:19<00:07,  1.46s/it]Fetching 73 files:  96%|█████████▌| 70/73 [01:20<00:02,  1.05it/s]Fetching 73 files: 100%|██████████| 73/73 [01:25<00:00,  1.25s/it]Fetching 73 files: 100%|██████████| 73/73 [01:25<00:00,  1.17s/it]
-++ date +%s
-+ echo 'deepseek-ai/DeepSeek-V4-Flash exit 0 in 86 s'
-deepseek-ai/DeepSeek-V4-Flash exit 0 in 86 s
-+ for r in deepseek-ai/DeepSeek-V4-Flash nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 glyd/nemotron-3-hummingbird zai-org/GLM-5.3-Flash
-++ date +%s
-+ t=1792591156
-+ HF_HUB_ENABLE_HF_TRANSFER=1
-+ /home/ubuntu/.local/bin/hf download nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
-/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
-  warnings.warn(
-Fetching 30 files:   0%|          | 0/30 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 30 files:   7%|▋         | 2/30 [00:00<00:01, 15.56it/s]Fetching 30 files:  30%|███       | 9/30 [00:00<00:01, 11.37it/s]Fetching 30 files:  37%|███▋      | 11/30 [00:19<00:45,  2.38s/it]Fetching 30 files:  40%|████      | 12/30 [00:21<00:44,  2.47s/it]Fetching 30 files:  43%|████▎     | 13/30 [00:24<00:43,  2.55s/it]Fetching 30 files:  47%|████▋     | 14/30 [00:26<00:38,  2.41s/it]Fetching 30 files:  50%|█████     | 15/30 [00:27<00:31,  2.09s/it]Fetching 30 files:  53%|█████▎    | 16/30 [00:28<00:24,  1.77s/it]Fetching 30 files:  57%|█████▋    | 17/30 [00:34<00:37,  2.89s/it]Fetching 30 files:  60%|██████    | 18/30 [00:34<00:25,  2.14s/it]Fetching 30 files:  67%|██████▋   | 20/30 [00:34<00:12,  1.25s/it]Fetching 30 files:  73%|███████▎  | 22/30 [00:35<00:07,  1.08it/s]Fetching 30 files:  77%|███████▋  | 23/30 [00:35<00:05,  1.33it/s]Fetching 30 files:  80%|████████  | 24/30 [00:37<00:05,  1.16it/s]Fetching 30 files:  83%|████████▎ | 25/30 [00:38<00:04,  1.08it/s]Fetching 30 files:  90%|█████████ | 27/30 [00:39<00:02,  1.21it/s]Fetching 30 files:  93%|█████████▎| 28/30 [00:40<00:01,  1.14it/s]Fetching 30 files:  97%|█████████▋| 29/30 [00:41<00:00,  1.31it/s]Fetching 30 files: 100%|██████████| 30/30 [00:45<00:00,  1.62s/it]Fetching 30 files: 100%|██████████| 30/30 [00:45<00:00,  1.50s/it]
-++ date +%s
-+ echo 'nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 exit 0 in 45 s'
-nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 exit 0 in 45 s
-+ for r in deepseek-ai/DeepSeek-V4-Flash nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 glyd/nemotron-3-hummingbird zai-org/GLM-5.3-Flash
-++ date +%s
-+ t=1792591201
-+ HF_HUB_ENABLE_HF_TRANSFER=1
-+ /home/ubuntu/.local/bin/hf download glyd/nemotron-3-hummingbird
-/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
-  warnings.warn(
-Fetching 22 files:   0%|          | 0/22 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 22 files:   0%|          | 0/22 [00:16<?, ?it/s]
-Traceback (most recent call last):
-  File "/home/ubuntu/.local/bin/hf", line 8, in <module>
-    sys.exit(main())
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/cli/hf.py", line 167, in main
-    app(windows_expand_args=False)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/click/core.py", line 1631, in __call__
-    return self.main(*args, **kwargs)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/click/core.py", line 1552, in main
-    rv = self.invoke(ctx)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/cli/_cli_utils.py", line 132, in invoke
-    return super().invoke(ctx)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/click/core.py", line 2032, in invoke
-    return _process_result(sub_ctx.command.invoke(sub_ctx))
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/click/core.py", line 1415, in invoke
-    return ctx.invoke(self.callback, **ctx.params)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/click/core.py", line 910, in invoke
-    return callback(*args, **kwargs)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/cli/_framework.py", line 365, in handler
-    return func(**call_kwargs)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/cli/download.py", line 228, in download
-    _print_result(run_download())
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/cli/download.py", line 187, in run_download
-    return snapshot_download(
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 89, in _inner_fn
-    return fn(*args, **kwargs)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/utils/_http.py", line 276, in _inner
-    return fn(*args, **kwargs)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/_snapshot_download.py", line 541, in snapshot_download
-    hf_thread_map(
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/utils/tqdm.py", line 441, in hf_thread_map
-    results[future_to_index[future]] = future.result()
-  File "/usr/lib/python3.10/concurrent/futures/_base.py", line 451, in result
-    return self.__get_result()
-  File "/usr/lib/python3.10/concurrent/futures/_base.py", line 403, in __get_result
-    raise self._exception
-  File "/usr/lib/python3.10/concurrent/futures/thread.py", line 58, in run
-    result = self.fn(*self.args, **self.kwargs)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/_snapshot_download.py", line 521, in _inner_hf_hub_download
-    hf_hub_download(  # type: ignore
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 89, in _inner_fn
-    return fn(*args, **kwargs)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/utils/_http.py", line 276, in _inner
-    return fn(*args, **kwargs)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1047, in hf_hub_download
-    return _hf_hub_download_to_cache_dir(
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1285, in _hf_hub_download_to_cache_dir
-    _download_to_tmp_and_move(
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 2032, in _download_to_tmp_and_move
-    http_get(
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 89, in _inner_fn
-    return fn(*args, **kwargs)
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 459, in http_get
-    for chunk in response.iter_bytes(chunk_size=constants.DOWNLOAD_CHUNK_SIZE):
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/httpx2/_models.py", line 893, in iter_bytes
-    for decoded in decoder.decode(raw_bytes):
-  File "/home/ubuntu/.local/lib/python3.10/site-packages/httpx2/_decoders.py", line 191, in decode
-    decompressed = self._decompress(data, output_buffer_limit=output_buffer_limit)
-TypeError: process() takes no keyword arguments
-++ date +%s
-+ echo 'glyd/nemotron-3-hummingbird exit 1 in 17 s'
-glyd/nemotron-3-hummingbird exit 1 in 17 s
-+ for r in deepseek-ai/DeepSeek-V4-Flash nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 glyd/nemotron-3-hummingbird zai-org/GLM-5.3-Flash
-++ date +%s
-+ t=1792591218
-+ HF_HUB_ENABLE_HF_TRANSFER=1
-+ /home/ubuntu/.local/bin/hf download zai-org/GLM-5.3-Flash
-/home/ubuntu/.local/lib/python3.10/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
-  warnings.warn(
-Fetching 74 files:   0%|          | 0/74 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 74 files:   3%|▎         | 2/74 [00:00<00:04, 17.24it/s]Fetching 74 files:   9%|▉         | 7/74 [00:00<00:02, 31.49it/s]Fetching 74 files:  11%|█         | 8/74 [00:20<00:02, 31.49it/s]Fetching 74 files:  12%|█▏        | 9/74 [00:25<04:10,  3.85s/it]Fetching 74 files:  15%|█▍        | 11/74 [00:26<03:00,  2.87s/it]Fetching 74 files:  18%|█▊        | 13/74 [00:32<03:01,  2.97s/it]Fetching 74 files:  20%|██        | 15/74 [00:36<02:31,  2.57s/it]Fetching 74 files:  23%|██▎       | 17/74 [00:37<01:56,  2.04s/it]Fetching 74 files:  24%|██▍       | 18/74 [00:40<02:05,  2.24s/it]Fetching 74 files:  26%|██▌       | 19/74 [00:41<01:42,  1.87s/it]Fetching 74 files:  27%|██▋       | 20/74 [00:43<01:48,  2.01s/it]Fetching 74 files:  28%|██▊       | 21/74 [00:45<01:42,  1.94s/it]Fetching 74 files:  30%|██▉       | 22/74 [01:01<04:51,  5.60s/it]Fetching 74 files:  31%|███       | 23/74 [01:03<03:53,  4.58s/it]Fetching 74 files:  32%|███▏      | 24/74 [01:08<03:54,  4.69s/it]Fetching 74 files:  34%|███▍      | 25/74 [01:09<02:57,  3.62s/it]Fetching 74 files:  36%|███▋      | 27/74 [01:10<01:45,  2.24s/it]Fetching 74 files:  38%|███▊      | 28/74 [01:14<01:59,  2.59s/it]Fetching 74 files:  41%|████      | 30/74 [01:18<01:43,  2.36s/it]Fetching 74 files:  42%|████▏     | 31/74 [01:20<01:38,  2.29s/it]Fetching 74 files:  43%|████▎     | 32/74 [01:21<01:23,  1.98s/it]Fetching 74 files:  45%|████▍     | 33/74 [01:29<02:32,  3.71s/it]Fetching 74 files:  46%|████▌     | 34/74 [01:33<02:31,  3.79s/it]Fetching 74 files:  47%|████▋     | 35/74 [01:35<02:03,  3.16s/it]Fetching 74 files:  49%|████▊     | 36/74 [01:36<01:38,  2.60s/it]Fetching 74 files:  51%|█████▏    | 38/74 [01:37<01:00,  1.67s/it]Fetching 74 files:  55%|█████▌    | 41/74 [01:41<00:48,  1.48s/it]Fetching 74 files:  57%|█████▋    | 42/74 [01:48<01:22,  2.58s/it]Fetching 74 files:  59%|█████▉    | 44/74 [01:50<00:56,  1.89s/it]Fetching 74 files:  61%|██████    | 45/74 [01:53<01:03,  2.20s/it]Fetching 74 files:  62%|██████▏   | 46/74 [01:55<01:01,  2.20s/it]Fetching 74 files:  64%|██████▎   | 47/74 [01:59<01:07,  2.52s/it]Fetching 74 files:  65%|██████▍   | 48/74 [02:01<01:01,  2.36s/it]Fetching 74 files:  66%|██████▌   | 49/74 [02:01<00:45,  1.83s/it]Fetching 74 files:  68%|██████▊   | 50/74 [02:05<00:55,  2.33s/it]Fetching 74 files:  69%|██████▉   | 51/74 [02:08<01:00,  2.62s/it]Fetching 74 files:  70%|███████   | 52/74 [02:11<01:02,  2.85s/it]Fetching 74 files:  72%|███████▏  | 53/74 [02:14<00:55,  2.65s/it]Fetching 74 files:  73%|███████▎  | 54/74 [02:14<00:41,  2.08s/it]Fetching 74 files:  76%|███████▌  | 56/74 [02:19<00:39,  2.19s/it]Fetching 74 files:  78%|███████▊  | 58/74 [02:23<00:33,  2.11s/it]Fetching 74 files:  80%|███████▉  | 59/74 [02:24<00:27,  1.80s/it]Fetching 74 files:  81%|████████  | 60/74 [02:26<00:26,  1.86s/it]Fetching 74 files:  82%|████████▏ | 61/74 [02:30<00:34,  2.62s/it]Fetching 74 files:  85%|████████▌ | 63/74 [02:36<00:30,  2.74s/it]Fetching 74 files:  88%|████████▊ | 65/74 [02:36<00:15,  1.74s/it]Fetching 74 files:  89%|████████▉ | 66/74 [02:37<00:11,  1.41s/it]Fetching 74 files:  92%|█████████▏| 68/74 [02:38<00:06,  1.10s/it]Fetching 74 files:  95%|█████████▍| 70/74 [02:44<00:06,  1.72s/it]Fetching 74 files:  96%|█████████▌| 71/74 [02:44<00:04,  1.54s/it]Fetching 74 files:  97%|█████████▋| 72/74 [02:45<00:02,  1.43s/it]Fetching 74 files:  99%|█████████▊| 73/74 [02:46<00:01,  1.16s/it]Fetching 74 files: 100%|██████████| 74/74 [02:46<00:00,  1.04s/it]Fetching 74 files: 100%|██████████| 74/74 [02:46<00:00,  2.26s/it]
-++ date +%s
-+ echo 'zai-org/GLM-5.3-Flash exit 0 in 167 s'
-zai-org/GLM-5.3-Flash exit 0 in 167 s
-+ du -sh /home/ubuntu/.cache/huggingface/hub/CACHEDIR.TAG /home/ubuntu/.cache/huggingface/hub/blobs /home/ubuntu/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4-Flash /home/ubuntu/.cache/huggingface/hub/models--glyd--nemotron-3-hummingbird /home/ubuntu/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 /home/ubuntu/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash
-4.0K	/home/ubuntu/.cache/huggingface/hub/CACHEDIR.TAG
-521G	/home/ubuntu/.cache/huggingface/hub/blobs
-12M	/home/ubuntu/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4-Flash
-60K	/home/ubuntu/.cache/huggingface/hub/models--glyd--nemotron-3-hummingbird
-1.1M	/home/ubuntu/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
-8.7M	/home/ubuntu/.cache/huggingface/hub/models--zai-org--GLM-5.3-Flash
-+ echo 'downloads done'
-downloads done

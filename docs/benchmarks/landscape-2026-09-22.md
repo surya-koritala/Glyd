@@ -10,7 +10,7 @@ Glyd from commit 4cd8ceb with `-s`. Text-like inputs are the first
 of the original through each CLI, files read and written included;
 four inputs were measured at once, each by one codec at a time.
 Made by `scripts/landscape.py`; rows in
-[`benchmarks/landscape/m1-max-2026-09-22/`](../../benchmarks/landscape/m1-max-2026-09-22/),
+[`benchmarks/landscape/m1-max-2026-09-22/`](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/landscape/m1-max-2026-09-22),
 tables regenerated with `scripts/landscape.py --report rows.jsonl`.
 
 **Smallest output of all 22 codec settings: Glyd on 17 of 24 inputs,

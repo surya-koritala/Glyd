@@ -1,5 +1,0 @@
-rustup: rc=0 12 s
-venv: rc=0 57 s
-download: rc=0 (from the bucket)
-lib: rc=0 453 s
-build: rc=0 146 s

@@ -1,3 +1,0 @@
-serve_q35_9b up in 192 s, GPU memory used 20860 MiB
-serve_granite42_8b up in 69 s, GPU memory used 22312 MiB
-serve_minicpm5_2b up in 55 s, GPU memory used 22596 MiB

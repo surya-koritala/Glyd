@@ -1,9 +1,0 @@
-NVIDIA A100-SXM4-80GB (sm_80): weights 37.696 GiB (75.2% of the checkpoint's 50.098 GiB for the same tensors; 348 vision and MTP tensors not loaded; layout Twelve), states 0.143 GiB, KV cache 1024 positions 0.062 GiB, workspaces 0.647 GiB, 38.96 of 79.25 GiB in use; study fraction bits 3; this GPU storage does not implement the experimental format
-wikitext-test-offset-0: 256 scored tokens, mean NLL 1.509522
-wikitext-test-offset-42383: 256 scored tokens, mean NLL 1.688823
-wikitext-test-offset-84766: 256 scored tokens, mean NLL 2.141423
-wikitext-test-offset-127149: 256 scored tokens, mean NLL 2.352805
-wikitext-test-offset-169532: 256 scored tokens, mean NLL 1.463846
-wikitext-test-offset-211915: 256 scored tokens, mean NLL 2.416902
-wikitext-test-offset-254298: 256 scored tokens, mean NLL 2.049996
-wikitext-test-offset-296681: 256 scored tokens, mean NLL 1.854725

@@ -1,2 +1,0 @@
-ok: 43 s of load: the last 10 s 66 C at most, SM clock 1278 MHz, 362 W, thermal slowdown in 0 of them, power cap in 9
-done

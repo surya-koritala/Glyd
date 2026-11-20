@@ -1,1 +1,0 @@
-GPU KV cache size: 122,880 tokens;Maximum concurrency for 4,096 tokens per request: 30.00x;Model loading took 12.01 GiB;

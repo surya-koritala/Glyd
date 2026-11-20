@@ -1,5 +1,0 @@
-MiniMaxAI/MiniMax-M3: 23416 tensors; the slice: 437 tensors of layers [0]..[3] and 3 outside the layers, 20.26 GiB (BF16 20.25, F32 0.00)
-model-00001-of-00006.safetensors: 1 tensors, 2.29 GiB so far, 48 s
-model-00002-of-00006.safetensors: 31 tensors, 6.25 GiB so far, 61 s
-model-00003-of-00006.safetensors: 114 tensors, 10.24 GiB so far, 98 s
-model-00004-of-00006.safetensors: 113 tensors, 14.21 GiB so far, 152 s

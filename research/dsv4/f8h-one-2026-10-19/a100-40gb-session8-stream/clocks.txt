@@ -1,9 +1,0 @@
-    Clocks
-        Graphics                          : 1245 MHz
-        SM                                : 1245 MHz
-        Memory                            : 1215 MHz
---
-    Max Clocks
-        Graphics                          : 1410 MHz
-        SM                                : 1410 MHz
-        Memory                            : 1215 MHz

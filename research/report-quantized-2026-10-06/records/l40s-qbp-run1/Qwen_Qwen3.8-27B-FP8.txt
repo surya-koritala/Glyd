@@ -1,5 +1,0 @@
-stock-eager: ok (214 s) weights 28.9 GiB, KV 87,220 tokens
-glyd-exact: ok (101 s) weights 28.74 GiB, KV 88,666 tokens
-stock: FAILED to start: ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (164). Each decode sequence requires one Mamba cache block, so CUDA graph capture cannot proceed. Please lower max_num_seqs to at most 164 or increase gpu_memory_utilization. (227 s) weights 28.9 GiB, KV 79,028 tokens
-glyd: FAILED to start: ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (183). Each decode sequence requires one Mamba cache block, so CUDA graph capture cannot proceed. Please lower max_num_seqs to at most 183 or increase gpu_memory_utilization. (231 s) weights 27.95 GiB, KV 88,184 tokens
-EXACT PASS: Glyd exact eager against stock eager, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 707 tokens, one image chat; 83 of 83 packs verified bit for bit

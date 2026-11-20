@@ -1,5 +1,0 @@
-Qwen/Qwen3.5-9B
-google/gemma-4-12B-it
-google/gemma-4-E4B-it
-nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16
-ibm-granite/granite-4.2-8b

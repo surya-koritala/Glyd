@@ -1,6 +1,0 @@
-NVIDIA RTX 4000 Ada Generation, 580.65.06, 20475 MiB
-128
-torch 2.8.0+cu128 12.8 True
-glyd_gpu ok 175578
-glyd 0.28.0
-SIMD: AVX2

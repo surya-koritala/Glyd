@@ -1,5 +1,0 @@
-score_int4_mse 0.016 GPU-hours
-score_gptq4 0.196 GPU-hours
-score_gptq4_act 0.193 GPU-hours
-score_awq4 0.162 GPU-hours
-score steps total 0.568 GPU-hours

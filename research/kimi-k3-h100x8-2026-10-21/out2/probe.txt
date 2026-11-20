@@ -1,8 +1,0 @@
-NVIDIA A100-SXM4-80GB (sm_80): Kimi-K3 on the dynamic engine, 4 layers, weights 0.008 GiB (layout mma), KV 0.000 GiB (1024 positions), 0.43 of 79.25 GiB in use
-   0 token     1: reference  3269 (1.7344), engine  3269 (1.7344), largest difference 0.0078; closest expert choice 0.02656
-   1 token    11: reference  3812 (1.7812), engine  3812 (1.7891), largest difference 0.0674; closest expert choice 0.02435
-   2 token    48: reference   882 (2.2344), engine   882 (2.2188), largest difference 0.0547; closest expert choice 0.03217
-   3 token   882: reference  2229 (1.7500), engine  2229 (1.7500), largest difference 0.0234; closest expert choice 0.03616
-decode: 4 of 4 steps choose the reference's token; the largest logit difference 0.0674
-steps differing past 0.3: 0 (median closest choice NaN); the others 4 (0.03217)
-prompt of 4 in chunks of 64: reference 2229 engine 2229, largest logit difference 0.0234

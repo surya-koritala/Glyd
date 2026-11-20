@@ -1,216 +1,0 @@
-Loading weights:   0%|          | 0/1184 [00:00<?, ?it/s]Loading weights:   0%|          | 1/1184 [00:00<04:31,  4.36it/s]Loading weights:   0%|          | 2/1184 [00:00<05:40,  3.47it/s]Loading weights:   1%|▏         | 15/1184 [00:00<00:37, 31.36it/s]Loading weights:   3%|▎         | 37/1184 [00:00<00:15, 73.37it/s]Loading weights:   4%|▍         | 48/1184 [00:00<00:15, 74.98it/s]Loading weights:   6%|▌         | 67/1184 [00:01<00:10, 102.37it/s]Loading weights:   7%|▋         | 82/1184 [00:01<00:10, 108.48it/s]Loading weights:   8%|▊         | 99/1184 [00:01<00:09, 118.85it/s]Loading weights:  10%|▉         | 116/1184 [00:01<00:08, 125.05it/s]Loading weights:  11%|█▏        | 134/1184 [00:01<00:07, 135.03it/s]Loading weights:  13%|█▎        | 149/1184 [00:01<00:07, 130.90it/s]Loading weights:  14%|█▍        | 167/1184 [00:01<00:07, 143.23it/s]Loading weights:  16%|█▌        | 185/1184 [00:01<00:06, 150.52it/s]Loading weights:  17%|█▋        | 201/1184 [00:01<00:07, 139.53it/s]Loading weights:  18%|█▊        | 216/1184 [00:02<00:06, 139.95it/s]Loading weights:  20%|█▉        | 231/1184 [00:02<00:06, 139.37it/s]Loading weights:  21%|██        | 250/1184 [00:02<00:06, 150.56it/s]Loading weights:  22%|██▏       | 266/1184 [00:02<00:07, 130.64it/s]Loading weights:  24%|██▍       | 284/1184 [00:02<00:06, 136.14it/s]Loading weights:  26%|██▌       | 305/1184 [00:02<00:05, 152.36it/s]Loading weights:  27%|██▋       | 321/1184 [00:02<00:06, 133.48it/s]Loading weights:  28%|██▊       | 336/1184 [00:02<00:06, 137.43it/s]Loading weights:  30%|██▉       | 352/1184 [00:03<00:06, 136.63it/s]Loading weights:  31%|███       | 367/1184 [00:03<00:06, 126.59it/s]Loading weights:  32%|███▏      | 383/1184 [00:03<00:06, 128.80it/s]Loading weights:  34%|███▍      | 405/1184 [00:03<00:05, 145.88it/s]Loading weights:  35%|███▌      | 420/1184 [00:03<00:05, 133.05it/s]Loading weights:  37%|███▋      | 438/1184 [00:03<00:05, 144.29it/s]Loading weights:  38%|███▊      | 453/1184 [00:03<00:05, 138.14it/s]Loading weights:  40%|███▉      | 470/1184 [00:03<00:05, 140.18it/s]Loading weights:  41%|████▏     | 490/1184 [00:04<00:04, 147.33it/s]Loading weights:  43%|████▎     | 505/1184 [00:04<00:04, 141.56it/s]Loading weights:  44%|████▍     | 520/1184 [00:04<00:04, 138.37it/s]Loading weights:  46%|████▌     | 539/1184 [00:04<00:04, 148.40it/s]Loading weights:  47%|████▋     | 554/1184 [00:04<00:04, 146.31it/s]Loading weights:  48%|████▊     | 570/1184 [00:04<00:04, 147.35it/s]Loading weights:  49%|████▉     | 585/1184 [00:04<00:05, 117.24it/s]Loading weights:  51%|█████     | 598/1184 [00:04<00:05, 108.76it/s]Loading weights:  52%|█████▏    | 612/1184 [00:05<00:05, 108.84it/s]Loading weights:  53%|█████▎    | 625/1184 [00:05<00:05, 111.24it/s]Loading weights:  54%|█████▍    | 637/1184 [00:05<00:05, 96.33it/s] Loading weights:  55%|█████▍    | 650/1184 [00:05<00:05, 90.43it/s]Loading weights:  56%|█████▌    | 665/1184 [00:05<00:05, 93.94it/s]Loading weights:  57%|█████▋    | 678/1184 [00:05<00:05, 92.35it/s]Loading weights:  58%|█████▊    | 688/1184 [00:05<00:05, 89.98it/s]Loading weights:  59%|█████▉    | 702/1184 [00:06<00:05, 88.54it/s]Loading weights:  60%|██████    | 716/1184 [00:06<00:04, 97.26it/s]Loading weights:  61%|██████▏   | 726/1184 [00:06<00:04, 95.04it/s]Loading weights:  62%|██████▏   | 736/1184 [00:06<00:06, 73.75it/s]Loading weights:  64%|██████▍   | 755/1184 [00:06<00:04, 96.79it/s]Loading weights:  65%|██████▍   | 766/1184 [00:06<00:04, 91.15it/s]Loading weights:  66%|██████▌   | 781/1184 [00:06<00:03, 102.61it/s]Loading weights:  67%|██████▋   | 793/1184 [00:07<00:05, 78.11it/s] Loading weights:  68%|██████▊   | 807/1184 [00:07<00:04, 89.51it/s]Loading weights:  69%|██████▉   | 818/1184 [00:07<00:04, 86.54it/s]Loading weights:  70%|██████▉   | 828/1184 [00:07<00:04, 81.75it/s]Loading weights:  71%|███████   | 837/1184 [00:07<00:04, 70.06it/s]Loading weights:  71%|███████▏  | 845/1184 [00:07<00:04, 71.23it/s]Loading weights:  78%|███████▊  | 921/1184 [00:07<00:01, 230.80it/s]Loading weights:  89%|████████▉ | 1057/1184 [00:08<00:00, 511.52it/s]Loading weights:  99%|█████████▉| 1175/1184 [00:08<00:00, 671.62it/s]Loading weights: 100%|██████████| 1184/1184 [00:08<00:00, 145.33it/s]
-/usr/local/lib/python3.12/dist-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.5.0) or chardet (6.0.0.post1)/charset_normalizer (3.4.3) doesn't match a supported version!
-  warnings.warn(
-`pretrained` model kwarg is not of type `str`. Many other model arguments may be ignored. Please do not launch via accelerate or use `parallelize=True` if passing an existing model this way.
-Passed an already-initialized model through `pretrained`, assuming single-process call to evaluate() or custom distributed integration
-[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
-[transformers] `chunk_gated_delta_rule` is falling back to its reference PyTorch implementation because `flash-linear-attention` is not installed. This is correct but much slower; install `flash-linear-attention` for the optimized kernel.
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 64}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 128}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 192}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 256}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 320}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 384}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 448}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 512}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 576}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 640}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 704}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 768}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 832}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 896}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 960}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 1024}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 1088}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 1152}
-{"arm": "candidate-a", "task": "arc_challenge", "completed_questions": 1172}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1236}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1300}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1364}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1428}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1492}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1556}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1620}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1684}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1748}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1812}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1876}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 1940}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2004}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2068}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2132}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2196}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2260}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2324}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2388}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2452}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2516}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2580}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2644}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2708}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2772}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2836}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2900}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 2964}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 3028}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 3092}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 3156}
-{"arm": "candidate-a", "task": "hellaswag", "completed_questions": 3220}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3284}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3348}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3412}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3476}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3540}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3604}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3668}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3732}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3796}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3860}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3924}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 3988}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 4052}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 4116}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 4180}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 4244}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 4308}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 4372}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 4436}
-{"arm": "candidate-a", "task": "winogrande", "completed_questions": 4487}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 4551}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 4615}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 4679}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 4743}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 4807}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 4871}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 4935}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 4999}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5063}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5127}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5191}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5255}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5319}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5383}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5447}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5511}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5575}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5639}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5703}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5767}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5831}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5895}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 5959}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 6023}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 6087}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 6151}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 6215}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 6279}
-{"arm": "candidate-a", "task": "piqa", "completed_questions": 6325}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6389}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6453}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6517}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6581}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6645}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6709}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6773}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6837}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6901}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 6965}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7029}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7093}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7157}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7221}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7285}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7349}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7413}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7477}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7541}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7605}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7669}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7733}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7797}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7861}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7925}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 7989}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8053}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8117}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8181}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8245}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8309}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8373}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8437}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8501}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8565}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8629}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8693}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8757}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8821}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8885}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 8949}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9013}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9077}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9141}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9205}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9269}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9333}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9397}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9461}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9525}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9589}
-{"arm": "candidate-a", "task": "boolq", "completed_questions": 9595}
-{"arm": "candidate-a", "task": "mmlu_abstract_algebra", "completed_questions": 9659}
-{"arm": "candidate-a", "task": "mmlu_anatomy", "completed_questions": 9723}
-{"arm": "candidate-a", "task": "mmlu_astronomy", "completed_questions": 9787}
-{"arm": "candidate-a", "task": "mmlu_business_ethics", "completed_questions": 9851}
-{"arm": "candidate-a", "task": "mmlu_clinical_knowledge", "completed_questions": 9915}
-{"arm": "candidate-a", "task": "mmlu_college_biology", "completed_questions": 9979}
-{"arm": "candidate-a", "task": "mmlu_college_chemistry", "completed_questions": 10043}
-{"arm": "candidate-a", "task": "mmlu_college_computer_science", "completed_questions": 10107}
-{"arm": "candidate-a", "task": "mmlu_college_mathematics", "completed_questions": 10171}
-{"arm": "candidate-a", "task": "mmlu_college_medicine", "completed_questions": 10235}
-{"arm": "candidate-a", "task": "mmlu_college_physics", "completed_questions": 10299}
-{"arm": "candidate-a", "task": "mmlu_computer_security", "completed_questions": 10363}
-{"arm": "candidate-a", "task": "mmlu_conceptual_physics", "completed_questions": 10427}
-{"arm": "candidate-a", "task": "mmlu_econometrics", "completed_questions": 10491}
-{"arm": "candidate-a", "task": "mmlu_electrical_engineering", "completed_questions": 10555}
-{"arm": "candidate-a", "task": "mmlu_elementary_mathematics", "completed_questions": 10619}
-{"arm": "candidate-a", "task": "mmlu_formal_logic", "completed_questions": 10683}
-{"arm": "candidate-a", "task": "mmlu_global_facts", "completed_questions": 10747}
-{"arm": "candidate-a", "task": "mmlu_high_school_biology", "completed_questions": 10811}
-{"arm": "candidate-a", "task": "mmlu_high_school_chemistry", "completed_questions": 10875}
-{"arm": "candidate-a", "task": "mmlu_high_school_computer_science", "completed_questions": 10939}
-{"arm": "candidate-a", "task": "mmlu_high_school_european_history", "completed_questions": 11003}
-{"arm": "candidate-a", "task": "mmlu_high_school_geography", "completed_questions": 11067}
-{"arm": "candidate-a", "task": "mmlu_high_school_government_and_politics", "completed_questions": 11131}
-{"arm": "candidate-a", "task": "mmlu_high_school_macroeconomics", "completed_questions": 11195}
-{"arm": "candidate-a", "task": "mmlu_high_school_mathematics", "completed_questions": 11259}
-{"arm": "candidate-a", "task": "mmlu_high_school_microeconomics", "completed_questions": 11323}
-{"arm": "candidate-a", "task": "mmlu_high_school_physics", "completed_questions": 11387}
-{"arm": "candidate-a", "task": "mmlu_high_school_psychology", "completed_questions": 11451}
-{"arm": "candidate-a", "task": "mmlu_high_school_statistics", "completed_questions": 11515}
-{"arm": "candidate-a", "task": "mmlu_high_school_us_history", "completed_questions": 11579}
-{"arm": "candidate-a", "task": "mmlu_high_school_world_history", "completed_questions": 11643}
-{"arm": "candidate-a", "task": "mmlu_human_aging", "completed_questions": 11707}
-{"arm": "candidate-a", "task": "mmlu_human_sexuality", "completed_questions": 11771}
-{"arm": "candidate-a", "task": "mmlu_international_law", "completed_questions": 11835}
-{"arm": "candidate-a", "task": "mmlu_jurisprudence", "completed_questions": 11899}
-{"arm": "candidate-a", "task": "mmlu_logical_fallacies", "completed_questions": 11963}
-{"arm": "candidate-a", "task": "mmlu_machine_learning", "completed_questions": 12027}
-{"arm": "candidate-a", "task": "mmlu_management", "completed_questions": 12091}
-{"arm": "candidate-a", "task": "mmlu_marketing", "completed_questions": 12155}
-{"arm": "candidate-a", "task": "mmlu_medical_genetics", "completed_questions": 12219}
-{"arm": "candidate-a", "task": "mmlu_miscellaneous", "completed_questions": 12283}
-{"arm": "candidate-a", "task": "mmlu_moral_disputes", "completed_questions": 12347}
-{"arm": "candidate-a", "task": "mmlu_moral_scenarios", "completed_questions": 12411}
-{"arm": "candidate-a", "task": "mmlu_nutrition", "completed_questions": 12475}
-{"arm": "candidate-a", "task": "mmlu_philosophy", "completed_questions": 12539}
-{"arm": "candidate-a", "task": "mmlu_prehistory", "completed_questions": 12603}
-{"arm": "candidate-a", "task": "mmlu_professional_accounting", "completed_questions": 12667}
-{"arm": "candidate-a", "task": "mmlu_professional_law", "completed_questions": 12731}
-{"arm": "candidate-a", "task": "mmlu_professional_medicine", "completed_questions": 12795}
-{"arm": "candidate-a", "task": "mmlu_professional_psychology", "completed_questions": 12859}
-{"arm": "candidate-a", "task": "mmlu_public_relations", "completed_questions": 12923}
-{"arm": "candidate-a", "task": "mmlu_security_studies", "completed_questions": 12987}
-{"arm": "candidate-a", "task": "mmlu_sociology", "completed_questions": 13051}
-{"arm": "candidate-a", "task": "mmlu_us_foreign_policy", "completed_questions": 13115}
-{"arm": "candidate-a", "task": "mmlu_virology", "completed_questions": 13179}
-{"arm": "candidate-a", "task": "mmlu_world_religions", "completed_questions": 13243}

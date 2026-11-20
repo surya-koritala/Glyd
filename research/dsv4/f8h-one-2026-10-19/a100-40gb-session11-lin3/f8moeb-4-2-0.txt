@@ -1,2 +1,0 @@
-16 experts of 2048 x 4096, 4 a token, 1 to 33 tokens: the largest difference 0.446 bf16 steps of a row's largest value
-one token: 55.5 us for 29.6 MB of its experts' weights (534 GB/s)

@@ -1,3 +1,0 @@
-name, compute_cap, driver_version, memory.total [MiB]
-NVIDIA GeForce RTX 4090, 8.9, 580.65.06, 24564 MiB
-21:47:25 (+1 s) vLLM 0.30.0, nvcc, the library (sm_89)

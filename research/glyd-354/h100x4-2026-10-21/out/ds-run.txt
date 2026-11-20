@@ -1,3 +1,0 @@
-DeepSeek-V4-Flash (DeepSeek-V4): about 145.3 GiB on the GPUs at the penguin level (lossless: the release's weights exactly); layers 0..11 on GPU 0 (NVIDIA H100 80GB HBM3), layers 11..22 on GPU 1 (NVIDIA H100 80GB HBM3), layers 22..33 on GPU 2 (NVIDIA H100 80GB HBM3), layers 33..43 on GPU 3 (NVIDIA H100 80GB HBM3).
-Ready in 3m15s: DeepSeek-V4-Flash on 4 GPUs, 145.3 GiB of weights, 8192 tokens of context, one user at a time.
-The capital of France is Paris.

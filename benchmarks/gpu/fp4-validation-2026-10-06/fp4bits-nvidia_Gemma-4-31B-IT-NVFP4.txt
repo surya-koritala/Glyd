@@ -1,4 +1,0 @@
-fp4_bits nvidia/Gemma-4-31B-IT-NVFP4: 30.39 GiB of safetensors; kind | tensors | code GiB | bits a code packed | order-0 | plain patches | option: GiB saved (smaller packs only) | of the checkpoint | kernel bit for bit
-  mlp | 180 | 9.690 | 4.0293 | 3.9702 | 207684 of 1270080 | 0.0000 | 0.00% | all
-  all | 180 | 9.690 | 4.0293 | 3.9702 | 207684 of 1270080 | 0.0000 | 0.00% | all
-fp4_bits: all bit for bit (20.4 s)

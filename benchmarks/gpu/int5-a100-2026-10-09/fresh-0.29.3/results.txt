@@ -1,6 +1,0 @@
-NVIDIA A100-SXM4-80GB, 580.126.16, 81920 MiB
-install: rc=0 79 s
-glyd: glyd 0.29.3; glyd-gpu: 0.29.3
-first run (download, pack, answer): rc=0 335 s
-second run: rc=0 137 s
-done

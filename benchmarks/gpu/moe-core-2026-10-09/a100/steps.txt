@@ -1,8 +1,0 @@
-rustup: rc=0 8 s (job minute 0)
-engine: rc=0 85 s (job minute 1)
-lib: rc=0 306 s from the start
-emu: rc=1 0 s (job minute 5)
-selftest: rc=0 8 s (job minute 5)
-moecheck: rc=0 17 s (job minute 5)
-speed: rc=0 6 s (job minute 5)
-torch: rc=0 3 s (job minute 5)

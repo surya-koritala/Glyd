@@ -1,6 +1,0 @@
-Gemma 4 12B-it QAT at wren (i4x, exact to google/gemma-4-12B-it-qat-q4_0-unquantized), RTX 4080 SUPER, engine 130353c6, 2026-10-15 19:00 ET
-pack: 329 packs exact, 6.4 GB, 45 s; glyd verify PASS (7 s), one flipped bit FAILS
-g4spec 12b-i4x ref-31b-qat.json --draft D --ctx 4096 --chunk 256 --tokens 256 (5 prompts, greedy; first line QAT draft, second the non-QAT draft)
-loaded in 10.8 s: NVIDIA GeForce RTX 4080 SUPER (sm_89): Gemma 4 48 layers, weights 6.284 GiB (layout i4x), KV 0.453 GiB (4096 positions, 1280 in the sliding layers), 7.93 of 15.57 GiB in use; draft model 0.321 GiB, 4 draft tokens a round
-plain 82.5 tok/s, drafted 231.8 tok/s (2.81x), 3.69 tokens a round, outputs the same
-plain 82.5 tok/s, drafted 200.1 tok/s (2.42x), 3.18 tokens a round, outputs the same

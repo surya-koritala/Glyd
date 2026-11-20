@@ -1,9 +1,0 @@
-16:57 created 9wxpgqirqi4fjl (NVIDIA H100 80GB HBM3)
-ssh on pod 9wxpgqirqi4fjl ready after 30s: ssh reachable at 103.207.149.118:19617
-16:57 ssh ready at 103.207.149.118:19617 after 39 s
-NVIDIA H100 80GB HBM3, 580.126.09, 81559 MiB
-16:57 job started
-17:02 job done
-terminating 9wxpgqirqi4fjl
-pods left: [('r2val1ns6zbqye', 'glyd-bench-f8a2', 'RUNNING')]
-5 min

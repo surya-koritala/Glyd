@@ -1,7 +1,0 @@
-loaded in 2.9 s
-glyd kvcal: 20 documents, sequences of 8192 tokens, 36 layers
-glyd kvcal: pass 1 of 3 (1 s)
-glyd kvcal: pass 2 of 3 (1 s)
-glyd kvcal: pass 3 of 3 (4 s)
-glyd kvcal: 8192 positions; values that compress poorly, worst kind left out: K 0.0132%, V 0.0183%; 151936 tokens checked: 0 need the lossless cache's second extra memory (6 s)
-/home/ubuntu/results/engine-h100/kvtab-8192.safetensors

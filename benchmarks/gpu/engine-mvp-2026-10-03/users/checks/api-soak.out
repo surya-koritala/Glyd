@@ -1,3 +1,0 @@
-cold replies: ['Autumn arrives with a gentle breeze, pai', 'The first word of the text is:', '5', 'The text describes the implementation of', 'Code for model calibration.', 'KV Cache Calibration']
-129 rounds in 126 s: {'ok': 124, 'refused': 16, 'left': 17}; /health 200; GPU memory 13650 -> 13650 MiB
-all ok

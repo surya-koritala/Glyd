@@ -1,9 +1,0 @@
-PASS tc_eq: the embedding and the LM head packed (1 pack, 1 expected; shard rows [32000]), every lookup the checkpoint's row bit for bit on 1 rank, each product within 1e-2 (3.1e-03) and the same bits twice
-PASS tc_eq: the first token of every prompt bf16's where bf16's margin is over 0.1 (1 of 4)
-PASS tc_eq: prompt logprobs within 0.0064 on average of bf16's (at most 0.05; the largest 0.031)
-PASS tc_eq: exact: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit; the tied model stays as vLLM runs it ([('model.embed_tokens', 'UnquantizedEmbeddingMethod'), ('lm_head', 'UnquantizedEmbeddingMethod')])
-PASS tc_ne: the embedding and the LM head packed (2 packs, 2 expected; shard rows [32000]), every lookup the checkpoint's row bit for bit on 1 rank, each product within 1e-2 (2.9e-03) and the same bits twice
-PASS tc_ne: the first token of every prompt bf16's where bf16's margin is over 0.1 (2 of 4)
-PASS tc_ne: prompt logprobs within 0.0064 on average of bf16's (at most 0.05; the largest 0.027)
-PASS tc_ne: exact: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit; the tied model stays as vLLM runs it ([('model.embed_tokens', 'UnquantizedEmbeddingMethod'), ('lm_head', 'UnquantizedEmbeddingMethod')])
-tables_check: all passed (8 checks)

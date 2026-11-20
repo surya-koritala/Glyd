@@ -1,5 +1,0 @@
-stock-eager: FAILED to start: RuntimeError: Ninja build failed. Ninja output:
-ninja: Entering directory `/root/.cache/flashinfer/0.6.18.post1/120f/cached_ops/fp4_gemm_cutlass_sm120'
-[1/18]  /root/w/venv/lib/python3.12/site-packages/nvidia/cu13/bin/nvcc --generate-dependencies-with-compile -MF /root/.cache/flashinfer/0.6.18.post1 (296 s) weights 19.92 GiB
-glyd-exact: ok (201 s) weights 19.81 GiB, KV 56,380 tokens
-stock: ok (160 s) weights 19.92 GiB, KV 54,452 tokens, tok/s {"1": 67.52, "32": 796.28}

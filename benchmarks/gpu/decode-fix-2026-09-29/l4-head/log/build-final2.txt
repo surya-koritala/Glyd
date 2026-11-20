@@ -1,2 +1,0 @@
-/home/ubuntu/dfx/w/final2/lib/libglyd_gpu_cuda13.so
-exit 0

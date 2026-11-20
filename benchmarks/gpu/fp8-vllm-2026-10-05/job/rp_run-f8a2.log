@@ -1,9 +1,0 @@
-16:56 created r2val1ns6zbqye (NVIDIA GeForce RTX 4090)
-ssh on pod r2val1ns6zbqye ready after 23s: ssh reachable at 213.173.102.233:14414
-16:56 ssh ready at 213.173.102.233:14414 after 29 s
-NVIDIA GeForce RTX 4090, 580.173.02, 24564 MiB
-16:56 job started
-17:18 job done
-terminating r2val1ns6zbqye
-pods left: []
-23 min

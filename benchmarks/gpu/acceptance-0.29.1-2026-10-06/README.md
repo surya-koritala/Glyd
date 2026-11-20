@@ -18,7 +18,7 @@ Logs whose original extension was `.log` are retained as `.txt`. Earlier attempt
 ## Earlier runs
 
 The published release as a user installs it: `install.sh` of public tag v0.29.1 (raw GitHub, sha256 `79ea9e3d...6a152`, `GLYD_VERSION` 0.29.1),
-which installs `glyd[vllm]==0.29.1` and `glyd-gpu==0.29.1` from PyPI ([published-artifacts.txt](published-artifacts.txt): the wheels and their sha256
+which installs `glyd[vllm]==0.29.1` and `glyd-gpu==0.29.1` from PyPI ([published-artifacts.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-0.29.1-2026-10-06/published-artifacts.txt): the wheels and their sha256
 as PyPI lists them), vLLM 0.30.0, torch 2.13.0, transformers 5.18.0. Two Runpod RTX 4090 pods (secure cloud, Ubuntu 24.04), each with the CUDA toolkit
 (`/usr/local/cuda*`), uv/uvx and gcc moved out of the way first, the commands run as a user that is not root (`acc`), in a stripped environment.
 The script is `gpu/vllm/acceptance.sh` of private tag v0.29.1 (c6ad9ac7), unpacked as `gpu/gate` beside its README and `scripts/install*`

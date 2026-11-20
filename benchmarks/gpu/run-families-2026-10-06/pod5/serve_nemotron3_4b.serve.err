@@ -1,8 +1,0 @@
-glyd serve: the engine serves up to 8 users at once and vLLM more (GLYD_ENGINE=1 runs the engine); using vLLM.
-NVIDIA-Nemotron-3-Nano-4B-BF16: 5.7 GB on the GPU with Glyd, instead of 7.9 GB; your GPU has 25.2 GB free.
-NVIDIA-Nemotron-3-Nano-4B-BF16 is downloaded already.
-Settings: 262,144-token context (the model's own limit), compiled mode (CUDA graphs), 88% of GPU memory (22.2 GB), tool calls (qwen3_coder), thinking shown apart (nemotron_v3).
-Loading NVIDIA-Nemotron-3-Nano-4B-BF16 with Glyd: 5.7 GB instead of 7.9 GB...
-glyd: the server stopped while starting: the GPU ran out of memory while loading the model.
-  Close programs that use the GPU (nvidia-smi lists them), or run a smaller model
-  The server's log: /root/.local/state/glyd/logs/serve-20261006-120625.log

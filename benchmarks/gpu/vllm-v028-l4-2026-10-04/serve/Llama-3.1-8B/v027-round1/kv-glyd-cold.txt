@@ -1,6 +1,0 @@
-glyd: the lossless KV cache takes tables of /home/ubuntu/hf/hub/models--NousResearch--Meta-Llama-3.1-8B/snapshots/1f47e50cdbe801ad8a5174156ec3a0655108fb9f for 4,096 positions, made once on vLLM itself (first start: about 1-2 minutes on an L4, then kept in /home/ubuntu/p28/gc-v027-llama/kv); its log: kvtab-1b1202edb0506459.log
-glyd: the KV cache's tables for /home/ubuntu/hf/hub/models--NousResearch--Meta-Llama-3.1-8B/snapshots/1f47e50cdbe801ad8a5174156ec3a0655108fb9f made in 109 s: /home/ubuntu/p28/gc-v027-llama/kv/kvtab-1b1202edb0506459.npz
-glyd: mma layout, the KV cache lossless (tables /home/ubuntu/p28/gc-v027-llama/kv/kvtab-1b1202edb0506459.npz)
-Model loading took 11.39 GiB memory and 15.107347 seconds
-GPU KV cache size: 62,784 tokens, Maximum concurrency for 4,096 tokens per request: 15.33x
-19544 MiB, 23034 MiB

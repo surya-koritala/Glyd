@@ -1,4 +1,0 @@
-stock: ok (305 s) weights 20.37 GiB, KV 485,668 tokens, tok/s {"1": 154.96, "32": 1338.97}
-glyd: ok (301 s) weights 19.84 GiB, KV 500,297 tokens, tok/s {"1": 159.93, "32": 1350.37}
-PACKED: 111 layers (111 verified bit for bit as packed), 1.77 GiB bf16 held in 1.19 GiB (0.58 GiB saved); products of 4 against F.linear: worst relative error 3.19e-03; largest 16-bit left: Embedding / NoneType / weight / bfloat16 0.00 GiB; Conv3dLayer / NoneType / weight / bfloat16 0.00 GiB
-STOCK -> GLYD: weights 20.37 -> 19.84 GiB; KV tokens 485668 -> 500297; 1 user 154.96 -> 159.93 tok/s (1.032x); 32 users 1338.97 -> 1350.37 tok/s (1.009x); greedy agreement 0.668

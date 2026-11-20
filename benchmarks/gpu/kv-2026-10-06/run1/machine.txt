@@ -1,9 +1,0 @@
-Linux 6.8.0-134-generic #134~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue Jun 30 14:05:04 UTC  x86_64 GNU/Linux
-name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
-NVIDIA GeForce RTX 4090, 8.9, 580.173.02, 24564 MiB, 3105 MHz, 450.00 W
-Model name:                              AMD Ryzen 9 7950X 16-Core Processor
-32
-               total        used        free      shared  buff/cache   available
-Mem:             124          27          46           0          52          97
-overlay         150G   19M  150G   1% /
-Tue Oct  6 04:42:24 UTC 2026

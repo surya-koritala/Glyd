@@ -1,3 +1,0 @@
-glyd run: Qwen/Qwen3.8-27B on glyd-engine (GLYD_ENGINE=0: vLLM instead).
-Qwen3.8-27B: about 20.5 GiB on the GPU with --lossy (about 6.5 bits per weight, not lossless), in place of 50.1 GiB of bf16.
-Ready in 2m03s: Qwen3.8-27B on the NVIDIA A100-SXM4-80GB, 20.5 GiB of weights, 32768 tokens of context, one user at a time.

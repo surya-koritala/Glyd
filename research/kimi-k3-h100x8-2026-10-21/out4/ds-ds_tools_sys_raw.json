@@ -1,1 +1,0 @@
-{"id":"cmpl-3","object":"text_completion","created":1792624152,"model":"deepseek-ai/DeepSeek-V4-Flash","choices":[{"index":0,"text":"{\"city\": \"Paris\", \"unit\": \"c\"}","logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":306,"completion_tokens":13,"total_tokens":319}}

@@ -1,5 +1,0 @@
-NVIDIA H100 80GB HBM3: copy 3172.8 GB/s; 48 layout mma, the first 12 layers' matrices, one row
-   q/k/v   8704 x 3840   43.0 MB     36.6 us  1174.2 GB/s   37.0% of the copy rate
-       o   3840 x 8192   24.8 MB     25.7 us   967.5 GB/s   30.5% of the copy rate
- gate_up  30720 x 3840   159.6 MB    100.3 us  1591.1 GB/s   50.1% of the copy rate
-    down   3840 x 15360  79.8 MB     55.3 us  1443.5 GB/s   45.5% of the copy rate

@@ -1,1 +1,0 @@
-The engine of the holds after the first four (batch F on) was built from a6b0aa88 on branch engine-mvp (the programs of batches B and C from the commits before it: 14cae05e and its parents; the sources of each hold are in the branch history). The head after this record is the commit that adds it.

@@ -1,1 +1,0 @@
-glyd: FAILED to start: OutOfMemoryError: CUDA out of memory. Tried to allocate 12.25 GiB. GPU 0 has a total capacity of 23.52 GiB of which 4.37 GiB is free. Including non-PyTorch memory, this process has 19.14 GiB memory in use. Of the allocated memory 18.59 GiB is allocated by PyTorch, and 68.62 MiB is reserved by PyTorc (195 s) weights 18.25 GiB

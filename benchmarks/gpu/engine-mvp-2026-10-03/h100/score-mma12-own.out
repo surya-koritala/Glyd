@@ -1,2 +1,0 @@
-loaded in 2.6 s: NVIDIA H100 80GB HBM3 (sm_90): weights 11.48 GiB (75.3% of bf16's 15.26), cache 4096 tokens (0.43 GiB), workspaces 874 MiB, 13.36 of 79.18 GiB in use
-1535 positions scored in 0.1 s

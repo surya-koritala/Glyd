@@ -1,4 +1,0 @@
-stock: ok (319 s) weights 21.12 GiB, KV 453,485 tokens, tok/s {"1": 117.08, "32": 1328.66}
-glyd: ok (335 s) weights 19.97 GiB, KV 481,572 tokens, tok/s {"1": 145.48, "32": 1390.09}
-PACKED: 272 layers (272 verified bit for bit as packed), 5.33 GiB bf16 held in 3.61 GiB (1.73 GiB saved); products of 4 against F.linear: worst relative error 3.03e-03; largest 16-bit left: RoutedExperts / AutoGPTQMoEMethod / w13_scales / bfloat16 0.31 GiB; RoutedExperts / AutoGPTQMoEMethod / w2_scales / bfloat16 0.16 GiB; Embedding / NoneType / weight / bfloat16 0.00 GiB
-STOCK -> GLYD: weights 21.12 -> 19.97 GiB; KV tokens 453485 -> 481572; 1 user 117.08 -> 145.48 tok/s (1.243x); 32 users 1328.66 -> 1390.09 tok/s (1.046x); greedy agreement 0.75

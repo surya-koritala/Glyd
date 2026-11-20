@@ -1,3 +1,0 @@
-END=4800
-QP_MODELS="nvidia/Gemma-4-31B-IT-NVFP4|--steps stock,glyd
-(then Qwen/Qwen3.8-27B-FP8 ..., stopped while it loaded to add the fused run's verification)"

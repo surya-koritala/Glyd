@@ -6,8 +6,8 @@ Two Runpod pods (RTX 4090, Ada sm_89, 24 GB), vLLM 0.30.0, torch 2.13.0+cu130, t
 
 | Run | Pod | Commit | What |
 | :-- | :-- | :-- | :-- |
-| [run1](run1) | kv26a, 26 min, $0.32 | 070eaf0e | the plugin's tests, the kernels' checks, head size 128's bits against main's library, the decode kernel at head size 256 against FlashAttention 2, Qwen3.5-9B with vLLM's cache and kv lossless (its tables made on the first start), verify under churn, `vllm serve` at 1, 8, 32, 64 requests at once and all at once ([job.sh](job.sh)) |
-| [run2](run2) | kv26b, 12 min, $0.15 | 2ad2e80c (main merged) | kv lossless against vLLM's cache at the same block size (704), vLLM's cache twice; the kernels' checks with main's library and the branch's, twice each ([job2.sh](job2.sh)) |
+| [run1](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run1) | kv26a, 26 min, $0.32 | 070eaf0e | the plugin's tests, the kernels' checks, head size 128's bits against main's library, the decode kernel at head size 256 against FlashAttention 2, Qwen3.5-9B with vLLM's cache and kv lossless (its tables made on the first start), verify under churn, `vllm serve` at 1, 8, 32, 64 requests at once and all at once ([job.sh](job.sh)) |
+| [run2](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run2) | kv26b, 12 min, $0.15 | 2ad2e80c (main merged) | kv lossless against vLLM's cache at the same block size (704), vLLM's cache twice; the kernels' checks with main's library and the branch's, twice each ([job2.sh](job2.sh)) |
 | run3 | kv26c, 8 min, $0.10 | 9c6c01aa | stopped: at 05:27 UTC the owner paused bf16 GPU work to save the last Runpod credits (`rp_budget/ALLOW`), and the pod was deleted during its first engine start. Not retried ([job3.sh](job3.sh): the KV cache's tokens in a fixed 6 GiB at 8,192 and 32,768 tokens, and vLLM's own greedy spread when only the batch changes) |
 
 Spend: $0.58 of the track's $25.
@@ -26,21 +26,21 @@ Spend: $0.58 of the track's $25.
 ## Results
 
 **Every value exact.**
-- The kernels' checks ([run1/kernels.out](run1/kernels.out)): 15 of 15 at head size 256 pass: every 16-bit pattern as an exception (~2% of 5.2 M values) back bit for bit in the page's arena and in the escape pool's
+- The kernels' checks ([run1/kernels.out](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run1/kernels.out)): 15 of 15 at head size 256 pass: every 16-bit pattern as an exception (~2% of 5.2 M values) back bit for bit in the page's arena and in the escape pool's
   chunks (its books agree with the pages'), raw pages with heavy tokens bit for bit (the raw pool's books agree), the staging cache [blocks, 16, 4, 512] bit for bit, the staging put, decode attention within
   0.0044 of an fp32 reference at 1 to 8 query heads a KV head and 1, 2, 4, 16 KV heads, with chunks, raw pages and fixed splits; a sequence's bits its own alone, batched and padded; the merge in the kernel or
   apart and the next page ahead or not the same bits; a CUDA graph's replay the bits of a call. Head size 128's 81 checks: 80 pass in run1, 81 of 81 in both branch runs of run2.
 - The one head-128 failure is not this branch's: "the escape pool: 64 chunks ... 65 chunks taken at most" (the high-water status word over-counts by one when a chunk freed by a page's losing warp is taken again
-  before the count is lowered). main's library failed it in both of run2's runs ([run2/kernels-main-1.out](run2/kernels-main-1.out), [-2](run2/kernels-main-2.out)), the branch's passed it in both.
+  before the count is lowered). main's library failed it in both of run2's runs ([run2/kernels-main-1.out](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run2/kernels-main-1.out), [-2](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run2/kernels-main-2.out)), the branch's passed it in both.
 - Head size 128 unchanged: the outputs of unpack, gather and 36 decode configurations (G 1, 4, 8; the library's splits and 1, 7, 64; merge in the kernel or apart; next page ahead or not) are the same bits with
-  main's library and the branch's ([run1/bits.txt](run1/bits.txt): 38 of 38 outputs; the pool's bytes and status words differ as its chunks are taken in a racing order, in two runs of either library alike).
+  main's library and the branch's ([run1/bits.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run1/bits.txt): 38 of 38 outputs; the pool's bytes and status words differ as its chunks are taken in a racing order, in two runs of either library alike).
 - `verify` (a bf16 shadow of every layer's cache, every write and every context read back compared) under churn: 48 requests of 200 to 3,000 tokens on a cache of 48 blocks, blocks passing between the cache
-  groups, requests preempted: 4,326,752,256 values compared, 145,648 pages, no difference; 28,996 pages cleared before reuse ([run1/hybrid-verify.out](run1/hybrid-verify.out)).
-- Against vLLM's own cache at the same block size (704: a hybrid model's prompt steps and prefix hits follow the block size) ([run2/compare-stock704-kv.txt](run2/compare-stock704-kv.txt)):
+  groups, requests preempted: 4,326,752,256 values compared, 145,648 pages, no difference; 28,996 pages cleared before reuse ([run1/hybrid-verify.out](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run1/hybrid-verify.out)).
+- Against vLLM's own cache at the same block size (704: a hybrid model's prompt steps and prefix hits follow the block size) ([run2/compare-stock704-kv.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run2/compare-stock704-kv.txt)):
   - prompt logprobs **17,906 of 17,906 bit for bit** (7 prompts of 64 to 7,000 tokens, chunked prefill in steps of 2,048: the later chunks read the earlier ones' pages);
   - prefix hits: the same tokens cached (2,816 in each of 6 requests), the first tokens' 5 logprobs **6 of 6 bit for bit**;
   - greedy decoding (Glyd's decode kernel, not FlashAttention's sums): 4 of 13 sequences the same to the end, 527 of 1,280 tokens before the first that differs; vLLM's cache run twice: 13 of 13 the same
-    ([run2/compare-stock704-stock704b.txt](run2/compare-stock704-stock704b.txt)). vLLM's own spread when only the batch changes was run3's, not measured.
+    ([run2/compare-stock704-stock704b.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run2/compare-stock704-stock704b.txt)). vLLM's own spread when only the batch changes was run3's, not measured.
   - At vLLM's default block (528) the prompts are stepped otherwise and nothing is comparable bit for bit (run1: 723 of 17,906; the prefix hits cache 2,640 tokens against 2,816).
 
 **More tokens in the KV cache.**
@@ -55,7 +55,7 @@ Spend: $0.58 of the track's $25.
 1.18x the tokens at `--gpu-memory-utilization 0.9` (kv lossless's reserves, 46 MiB and 81 MiB, inside the same memory). The pools a start made varied with the start (vLLM's cache at block 704 got 312
 blocks on the pod's first start and 387 on its third in run2): run3's fixed 6 GiB was to take that out; not measured.
 
-**Speed** (`vllm serve`, random 1,024 tokens in, 256 out, `--max-num-seqs 128`, one pass each, run1 [summary-serve.txt](run1/summary-serve.txt)):
+**Speed** (`vllm serve`, random 1,024 tokens in, 256 out, `--max-num-seqs 128`, one pass each, run1 [summary-serve.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run1/summary-serve.txt)):
 
 | Load | vLLM's cache req/s | kv lossless req/s | output tok/s | TTFT median ms | TPOT median ms |
 | :-- | --: | --: | :-- | :-- | :-- |
@@ -67,11 +67,11 @@ blocks on the pod's first start and 387 on its third in run2): run3's fixed 6 Gi
 
 Tokens a second at least vLLM's at every load; the time to the first token 5% and 2% longer at 1 and 8 requests at once (one pass each). So `auto` stays off for these models: kv lossless is opt-in.
 
-**The decode kernel alone** (one layer of Qwen3.5-9B: 4 KV heads of 256, 4 query heads each; in a CUDA graph; [run1/bench256.json](run1/bench256.json)): 1.35x to 1.56x faster than FlashAttention 2 at every shape
+**The decode kernel alone** (one layer of Qwen3.5-9B: 4 KV heads of 256, 4 query heads each; in a CUDA graph; [run1/bench256.json](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run1/bench256.json)): 1.35x to 1.56x faster than FlashAttention 2 at every shape
 (1x1,024 9.9 against 15.4 us; 1x8,192 34.9 / 52.2; 8x4,096 115.0 / 157.4; 64x1,024 218.1 / 298.9; 32x4,096 430.8 / 580.4); the write of a step's token 2.4 to 5.8 us a layer against vLLM's 1.4 to 1.6.
 
 **First start:** the tables at 8,192 positions in 189 s (the model's load 63 s, the text 2 s and 2 s, the vocabulary's 248,320 rows 121 s); worst kind of text left out K 0.0103%, V 0.0311%; no token needs the
-second reserve ([run1/tables.txt](run1/tables.txt)).
+second reserve ([run1/tables.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/kv-2026-10-06/run1/tables.txt)).
 
 ## Not done
 

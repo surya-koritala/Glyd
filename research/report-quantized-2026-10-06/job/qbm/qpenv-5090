@@ -1,5 +1,0 @@
-END=7800
-QP_MODELS="nvidia/Qwen3.8-27B-NVFP4|--max-num-seqs 64
-nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4|--max-num-seqs 64
-QuantTrio/Qwen3.6-35B-A3B-AWQ|--dtype bfloat16 --max-num-seqs 64
-RedHatAI/Qwen3.5-9B-quantized.w8a8|--max-num-seqs 64"

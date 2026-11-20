@@ -1,9 +1,0 @@
-2026-10-08T11:35:27Z start environment (cap 600s)
-2026-10-08T11:36:07Z pass environment
-2026-10-08T11:36:07Z start model-download (cap 1200s)
-2026-10-08T11:39:52Z pass model-download
-2026-10-08T11:39:52Z start candidate-a7 (cap 2700s)
-2026-10-08T12:10:43Z pass candidate-a7
-2026-10-08T12:10:43Z start report (cap 120s)
-2026-10-08T12:10:45Z pass report
-2026-10-08T12:10:45Z completed fixed-choice quality arm candidate-a7 against the retained references

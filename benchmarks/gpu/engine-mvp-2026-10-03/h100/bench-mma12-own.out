@@ -1,7 +1,0 @@
-loaded in 2.4 s: NVIDIA H100 80GB HBM3 (sm_90): weights 11.48 GiB (75.3% of bf16's 15.26), cache 4096 tokens (0.43 GiB), workspaces 874 MiB, 13.36 of 79.18 GiB in use
-KV cache: nothing lost
-prefill ms of the 3 timed runs: 35.5, 36.2, 36.3
-{"prompt_tokens":1024,"new_tokens":64,"prefill_ms":36.2,"decode_ms_mean":6.151,"decode_ms_p50":6.143,"decode_ms_p99":6.263,"decode_tokens_per_s":162.57,"load_s":2.41,"weights_gib":11.482,"cache_tokens":4096,"graph":true}
-KV cache: nothing lost
-prefill ms of the 3 timed runs: 170.5, 170.9, 171.3
-{"prompt_tokens":3500,"new_tokens":64,"prefill_ms":170.9,"decode_ms_mean":6.279,"decode_ms_p50":6.273,"decode_ms_p99":6.381,"decode_tokens_per_s":159.26,"load_s":2.41,"weights_gib":11.482,"cache_tokens":4096,"graph":true}

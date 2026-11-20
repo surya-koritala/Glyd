@@ -1,1 +1,0 @@
-bandwidth: 7168 x 18432 e4m3 on NVIDIA H100 80GB HBM3: unpack 189.0 us = 699 GB/s of e4m3 written (1280 GB/s with the packed bytes read; runs of 200: 189.1, 189.1, 189.0, 189.0, 189.1 us); pack 0.4 ms best of 4 (0.4 ms median, the size query's wait and the allocations in); 6.647 bits a value, 0 plain patches

@@ -1,7 +1,0 @@
-18:59:29 start /home/ubuntu/w/out/slice.txt
-19:04:08 end /home/ubuntu/w/out/slice.txt exit 0
-19:04:08 start /home/ubuntu/w/out/layers.txt
-19:15:54 end /home/ubuntu/w/out/layers.txt exit 0
-19:15:54 start /home/ubuntu/w/out/check-128.txt
-19:29:26 end /home/ubuntu/w/out/check-128.txt exit 0
-19:29:26 start /home/ubuntu/w/out/check-16.txt

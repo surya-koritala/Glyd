@@ -2,8 +2,8 @@
 
 The same gate as v0.27.0's, run against what was published: `glyd[vllm]==0.28.0rc1` from PyPI (the wheels uv downloads: glyd 2.2 MiB and glyd-gpu 28.9 MiB; both are pre-releases, `pip install glyd` and `pip install glyd-gpu`
 still give 0.27.0), `install.sh` as the release branch has it (`release-0.28.0`, raw GitHub; the file of tag v0.28.0rc1 too, byte for byte), and the Rust `glyd` of the pre-release's linux-x86_64 tarball (sha256 checked). The machine is
-the AWS L4 (24 GB, Ada, sm_89), driver 595.91.07 (CUDA 13.2), clean Ubuntu 26.04 containers with no CUDA toolkit and no gcc, as a user that is not root. What the artifacts are, with hashes: [published-artifacts.txt](published-artifacts.txt).
-The script is `gpu/vllm/acceptance.sh` of the private branch `acceptance-028` (e8506743: private main 11c0661f and [scripts/acceptance-028.patch](scripts/acceptance-028.patch)). Every run took the model's files from the box's
+the AWS L4 (24 GB, Ada, sm_89), driver 595.91.07 (CUDA 13.2), clean Ubuntu 26.04 containers with no CUDA toolkit and no gcc, as a user that is not root. What the artifacts are, with hashes: [published-artifacts.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/published-artifacts.txt).
+The script is `gpu/vllm/acceptance.sh` of the private branch `acceptance-028` (e8506743: private main 11c0661f and [scripts/acceptance-028.patch](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/scripts/acceptance-028.patch)). Every run took the model's files from the box's
 Hugging Face cache; the packages came from PyPI.
 
 | Run (`runs/NAME/`) | Command | Result |
@@ -23,10 +23,10 @@ the install is what the script pins, `0.28.0rc1` (and `--pip-refusal` now instal
   uv's output has `Downloading glyd-gpu (28.9MiB)` and `Downloading glyd (2.2MiB)`, 201 packages, `glyd==0.28.0rc1` and `glyd-gpu==0.28.0rc1` in the resolved list, ziglang 0.16.0 where there is no compiler, and **every one of the 199 other
   packages at the version the script's own list gives**; no pre-release among the dependencies but opentelemetry's betas. No shell startup file touched where `~/.local/bin` was on PATH; the update (`install.sh` again) said its profile edit first
   where it was not.
-- **A clean `pip install "glyd[vllm]==0.28.0rc1"` resolves to the packages of 0.27.0's** but glyd itself and glyd-gpu ([resolve/diff.txt](resolve/diff.txt): pip 26.2.1, CPython 3.12.3, x86_64, 200 packages each; `glyd` 0.27.0 -> 0.28.0rc1, `glyd-gpu`
+- **A clean `pip install "glyd[vllm]==0.28.0rc1"` resolves to the packages of 0.27.0's** but glyd itself and glyd-gpu ([resolve/diff.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/resolve/diff.txt): pip 26.2.1, CPython 3.12.3, x86_64, 200 packages each; `glyd` 0.27.0 -> 0.28.0rc1, `glyd-gpu`
   0.27.0 -> 0.28.0rc1, nothing else differs). The pip install without a compiler (`--pip-refusal`, in both GPU-card runs) stops with "vLLM needs a C compiler to start ... Install one: sudo apt install build-essential python3-dev", on 0.28.0rc1's own `glyd run`.
-- **The published wheels pass the wheel gate** ([wheel-gate.txt](wheel-gate.txt), [gate.out](gate.out)): `check_wheel.py` of the release commit, on the x86_64 and the aarch64 glyd-gpu wheel as PyPI serves them (sha256 as PyPI's), with cuobjdump (CUDA 13.4.92): nothing wrong.
-- **Old saves** ([oldsave/](oldsave/), below).
+- **The published wheels pass the wheel gate** ([wheel-gate.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/wheel-gate.txt), [gate.out](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/gate.out)): `check_wheel.py` of the release commit, on the x86_64 and the aarch64 glyd-gpu wheel as PyPI serves them (sha256 as PyPI's), with cuobjdump (CUDA 13.4.92): nothing wrong.
+- **Old saves** ([oldsave/](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/oldsave), below).
 - **At a 16 GB card's memory (14.8 GB free), Qwen3-8B**: `glyd doctor` says it fits with a 17,408-token context; `glyd run` chose 17,408 tokens at 62% (14.7 GB), vLLM logged 19,440 KV tokens and 10.38 GiB for the model (v0.27.0: 11,264 tokens, 12,960 KV tokens,
   11.39 GiB); `glyd serve` up in 56 s (Ready in 53 s). The first `glyd run` of the first run was Ready in 3 min 11 s: loading the weights took 126.7 s because the box had just booted and the model's 16 GB came off a cold disk (every later start loaded them in 25.6 to 25.9 s,
   and the served run's `glyd run` was Ready in 1 min 11 s).
@@ -37,25 +37,25 @@ the install is what the script pins, `0.28.0rc1` (and `--pip-refusal` now instal
   Python tool, and a `glyd serve` under `nohup` survives SIGHUP; the server refuses another site's Origin and a rebinding Host; a server with an API key (as `-- --api-key` and as `VLLM_API_KEY`) keeps the key off every command line and log; a prompt full of
   escape sequences comes out with none; a conversation past the window is said so; and, at 24 GB, Ctrl-C while the model loads (once and twice), the engine killed under a terminal chat's answer, and `uv tool uninstall glyd`.
 
-## Old saves ([oldsave/](oldsave/), [scripts/oldsave_run.sh](scripts/oldsave_run.sh))
+## Old saves ([oldsave/](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/oldsave), [scripts/oldsave_run.sh](scripts/oldsave_run.sh))
 
 Two virtual environments on the box, `glyd[gpu]==0.27.0` and `glyd[gpu]==0.28.0rc1` from PyPI, each with install.sh's list of package versions as constraints (torch 2.13.0, transformers 5.18.0 ...): they differ in glyd and glyd-gpu alone
-([oldsave/freeze-v027.txt](oldsave/freeze-v027.txt), [freeze-v028rc1.txt](oldsave/freeze-v028rc1.txt)). Qwen3-0.6B, four short prompts, greedy, 32 new tokens at most.
+([oldsave/freeze-v027.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/oldsave/freeze-v027.txt), [freeze-v028rc1.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/oldsave/freeze-v028rc1.txt)). Qwen3-0.6B, four short prompts, greedy, 32 new tokens at most.
 
 1. **A smallest-layout save by glyd-gpu 0.27.0** (`from_pretrained(.., layout="mma")`, `save_pretrained(.., layout="mma")`): format `glyd-v1`, 112 packs; 0.27.0 loads it again with `verify=True` (198 packed tensors checked, 114 saved as they are) and answers as it
-   did in memory ([logs/1-make-027.txt](oldsave/logs/1-make-027.txt)).
+   did in memory ([logs/1-make-027.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/oldsave/logs/1-make-027.txt)).
 2. **0.28.0rc1 loads that save with `verify=True`** (198 checked, 114 hashed, 0 unhashed) and its greedy answers are **token for token 0.27.0's, 4 of 4** (against the answers of 0.27.0's model in memory and of its save loaded):
-   `'Paris'` to "What is the capital of France? Answer in one word.", `'17 + 25 = 42.'`, `'The quick brown fox jumps over the fence.'`, and a 23-token sentence about the sea ([logs/2-load-028rc1.txt](oldsave/logs/2-load-028rc1.txt)).
+   `'Paris'` to "What is the capital of France? Answer in one word.", `'17 + 25 = 42.'`, `'The quick brown fox jumps over the fence.'`, and a 23-token sentence about the sea ([logs/2-load-028rc1.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/oldsave/logs/2-load-028rc1.txt)).
 3. **A glyd-v4 save made by 0.28.0rc1** (`save_pretrained`: `glyd-v4`, 112 packs; and `glyd pack`: its 198 tensors checked, and `glyd verify` of 0.28.0rc1 passes it): 0.28.0rc1 loads it with `verify=True` and answers the same 4 of 4. The v4 save of the Hub's model and the
    v4 save of the old save as loaded (packed again as it loads) are the same bytes (one `model.safetensors`, sha256 `c30b9b8c2e41...`).
 4. **0.27.0 refuses the glyd-v4 save, in words**: `glyd.from_pretrained(path)` of 0.27.0 raises
-   `ValueError: .../glyd.json: format 'glyd-v4'; this glyd reads glyd-v1 and glyd-v2 and glyd-v3` ([logs/3-refuse-027.txt](oldsave/logs/3-refuse-027.txt)). `glyd verify PATH` of 0.27.0 (exit 1) ends with the same line, for the `save_pretrained` save and
-   for the `glyd pack` one alike, after the Python traceback 0.27.0 does not catch ([logs/4-verify-027.txt](oldsave/logs/4-verify-027.txt), [7-verify-027-cli-save.txt](oldsave/logs/7-verify-027-cli-save.txt)): those two tracebacks are
+   `ValueError: .../glyd.json: format 'glyd-v4'; this glyd reads glyd-v1 and glyd-v2 and glyd-v3` ([logs/3-refuse-027.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/oldsave/logs/3-refuse-027.txt)). `glyd verify PATH` of 0.27.0 (exit 1) ends with the same line, for the `save_pretrained` save and
+   for the `glyd pack` one alike, after the Python traceback 0.27.0 does not catch ([logs/4-verify-027.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/oldsave/logs/4-verify-027.txt), [7-verify-027-cli-save.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/oldsave/logs/7-verify-027-cli-save.txt)): those two tracebacks are
    0.27.0's own handling of the refusal, the case under test, and not a failure of 0.28.0rc1 (which printed no traceback in any run, outside the deliberate Ctrl-C cases).
 
 ## Warnings and tracebacks
 
-`python3 post_warnings.py .` over each run's server logs (`runs/*/glyd-logs`, [warnings.txt](warnings.txt)); the acceptance itself fails a run on a traceback before a shutdown line or an allocator out-of-memory warning in the first four logs
+`python3 post_warnings.py .` over each run's server logs (`runs/*/glyd-logs`, [warnings.txt](https://github.com/surya-koritala/Glyd/blob/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/warnings.txt)); the acceptance itself fails a run on a traceback before a shutdown line or an allocator out-of-memory warning in the first four logs
 (`glyd run` once, `glyd serve` once and with a key twice):
 
 | Run | Server logs checked | Tracebacks | Allocator OOM warnings | `warning:` in the install output | WARNING lines besides vLLM's own notices |

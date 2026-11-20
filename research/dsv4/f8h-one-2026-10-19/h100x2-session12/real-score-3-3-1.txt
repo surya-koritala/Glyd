@@ -1,2 +1,0 @@
-loaded in 305 s: stage 0: NVIDIA H100 80GB HBM3 (sm_90): DeepSeek-V4 on the dynamic engine, 0..22 of 43 layers, weights 73.971 GiB (layout mma), KV 0.016 GiB (4096 positions), 74.98 of 79.18 GiB in use; stage 1: NVIDIA H100 80GB HBM3 (sm_90): DeepSeek-V4 on the dynamic engine, 22..43 of 43 layers, weights 70.797 GiB (layout mma), KV 0.015 GiB (4096 positions), 71.81 of 79.18 GiB in use
-517 tokens of /home/ubuntu/dc/score-text.txt: mean log-probability -0.8010, perplexity 2.228 (14.3 ms a token)

@@ -1,2 +1,0 @@
-glyd: ok (308 s) weights 7.63 GiB, KV 35,682 tokens, tok/s {"1": 97.7, "8": 560.93, "32": 1146.17, "64": 1000.65}
-PACKED: 3 layers, 1.92 GiB bf16 held in 1.26 GiB (0.66 GiB saved); products of 1 against F.linear: worst relative error 2.53e-03; largest 16-bit left: MergedColumnParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16 0.33 GiB; RowParallelLinear / CompressedTensorsLinearMethod / weight_scale / bfloat16 0.16 GiB; ReplicatedLinear / UnquantizedLinearMethod / weight / bfloat16 0.03 GiB

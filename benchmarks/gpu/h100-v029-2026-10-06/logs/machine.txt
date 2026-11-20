@@ -1,8 +1,0 @@
-Tue Oct  6 05:03:25 UTC 2026
-NVIDIA H100 80GB HBM3, 81559 MiB, 580.126.09
-x86_64
-PRETTY_NAME="Ubuntu 24.04.3 LTS"
-224
-               total        used        free      shared  buff/cache   available
-Mem:            2015         108         920           2        1005        1907
-overlay         400G   16M  400G   1% /

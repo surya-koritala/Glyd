@@ -1,1 +1,0 @@
-{"model": "google/gemma-4-12B-it", "max_model_len": 124928, "tool_call": true, "tool_result_turn": true, "thinking": true, "long_prompt": true, "ok": true}

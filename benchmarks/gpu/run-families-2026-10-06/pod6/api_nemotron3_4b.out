@@ -1,1 +1,0 @@
-{"model": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16", "max_model_len": 262144, "tool_call": true, "tool_result_turn": true, "thinking": true, "long_prompt": true, "ok": true}

@@ -1,8 +1,0 @@
-Linux 6.8.0-139-generic #139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026 x86_64 GNU/Linux
-name, compute_cap, driver_version, memory.total [MiB]
-NVIDIA GeForce RTX 5090, 12.0, 595.91.07, 32607 MiB
-128
-               total        used        free      shared  buff/cache   available
-Mem:             503          35         175           0         294         467
-overlay          80G   18M   80G   1% /
-Tue Oct  6 12:38:31 UTC 2026

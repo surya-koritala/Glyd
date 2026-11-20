@@ -1,4 +1,0 @@
-/root/w/src/gpu/glyd_gpu.cu:41:10: fatal error: glyd_gpu.h: No such file or directory
-   41 | #include "glyd_gpu.h"  // every definition of the C API below held to its declaration there
-      |          ^~~~~~~~~~~~
-compilation terminated.

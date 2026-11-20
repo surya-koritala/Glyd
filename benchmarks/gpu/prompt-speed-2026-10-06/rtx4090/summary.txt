@@ -1,9 +1,0 @@
-NVIDIA GeForce RTX 4090, compute 8.9 (sm_89)
-vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | NVIDIA GeForce RTX 4090 (8, 9)
-nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
-tree 161e60ad
-
-######## steps
-05:14:51 (+89 s) env
-05:17:20 (+238 s) build: real	2m24.113s; C API 15 | GPU code 1089
-05:17:26 (+244 s) self-test exit 0 (every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too))

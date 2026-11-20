@@ -1,1 +1,0 @@
-{"spec": {"make_long": true, "model": "Qwen/Qwen3.5-0.8B", "tp": 1, "mp": false}, "error": "FileNotFoundError: [Errno 2] No such file or directory: 'ninja'"}

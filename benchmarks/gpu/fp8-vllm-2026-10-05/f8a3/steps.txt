@@ -1,8 +1,0 @@
-17:29:50 (+517 s) env: 516 s
-17:30:35 (+562 s) tests: exit 0 (36 ok; 0 tracebacks)
-17:45:19 (+1446 s) qwen4 (diag): exit 0: INFO: diag[not pinned: stock-2 against stock-1]: the four prompts the same bits; the sweep (the first position|INFO: diag[not pinned: stock-3 against stock-1]: the four prompts the same bits; the sweep (the first position|INFO: diag[not pinned: op-1 against stock-1]: the four prompts the same bits; the sweep (the first position th|INFO: diag[not pinned: op-2 against stock-1]: the four prompts the same bits; the sweep (the first position th|
-17:50:36 (+1763 s) qwen4 (diagpin): exit 0: INFO: diag[pinned: stock-2 against stock-1]: the four prompts the same bits; the sweep (the first position tha|INFO: diag[pinned: op-1 against stock-1]: the four prompts the same bits; the sweep (the first position that d|
-17:50:36 (+1763 s) qwen4 (check): not run, 397 s left
-17:50:36 (+1763 s) glm3 (check): not run, 397 s left
-17:50:36 (+1763 s) qwen4 (check): not run, 397 s left
-17:50:36 (+1763 s) done

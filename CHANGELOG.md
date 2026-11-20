@@ -758,7 +758,7 @@ every earlier format.
   INT64_MAX - 1; v0.25.0 gave another route there, on every GPU).
 - This release's code (dc490e4) built by build_lib.sh and checked on an L4: the self-test, xcheck.py, check_capi.py
   (also with `GLYD_DEC_MIN` 1000 and 3000), test_gpu.py and the crate's tests pass
-  ([benchmarks/gpu/decode-fix-2026-09-29/l4-head](benchmarks/gpu/decode-fix-2026-09-29/l4-head)).
+  ([benchmarks/gpu/decode-fix-2026-09-29/l4-head](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/gpu/decode-fix-2026-09-29/l4-head)).
 
 ## v0.25.0 — 2026-09-29
 

@@ -1,216 +1,0 @@
-INFO 10-06 14:57:16 [api_utils.py:286] non-default args: {'dtype': 'bfloat16', 'max_model_len': 8192, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.9, 'max_num_seqs': 64, 'disable_log_stats': True, 'model': '/root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8'}
-WARNING 10-06 14:57:16 [arg_utils.py:1812] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
-INFO 10-06 14:57:16 [model.py:692] Resolved architecture: NemotronHForCausalLM
-INFO 10-06 14:57:16 [model.py:2030] Using max model len 8192
-INFO 10-06 14:57:18 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=8192.
-INFO 10-06 14:57:18 [config.py:676] Updating mamba_ssm_cache_dtype to 'float32' for NemotronH model
-INFO 10-06 14:57:18 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
-INFO 10-06 14:57:21 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='/root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8', speculative_config=None, tokenizer='/root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=compressed-tensors, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/root/q8w/m/RedHatAI__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::qwen4_exp_ple_short_conv', 'vllm::qwen4_exp_qsa_with_output', 'vllm::linear_attention', 'vllm::qwen_gdn_attention_core', 'vllm::qwen_gdn_attention_core_fused_norm_packed', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::hpc_rope_norm_forward', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 128, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
-INFO 10-06 14:57:22 [parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///root/q8w/tmp/vllm_dist_355176951e3140d580f2d84f401f6ff1 backend=nccl
-INFO 10-06 14:57:22 [parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank 0, EPLB rank N/A
-INFO 10-06 14:57:22 [gpu_worker.py:441] Using V2 Model Runner
-INFO 10-06 14:57:23 [model_runner.py:396] Loading model from scratch...
-INFO 10-06 14:57:23 [__init__.py:758] Selected CutlassFP8ScaledMMLinearKernel for CompressedTensorsW8A8Fp8
-INFO 10-06 14:57:23 [fp8.py:438] Using TRITON Fp8 MoE backend out of potential backends: ['AITER', 'FLASHINFER_TRTLLM', 'FLASHINFER_CUTLASS', 'DEEPGEMM', 'VLLM_CUTLASS', 'TRITON', 'MARLIN', 'HUMMING', 'BATCHED_DEEPGEMM', 'BATCHED_VLLM_CUTLASS', 'BATCHED_TRITON', 'XPU', 'CPU', 'HPC'].
-INFO 10-06 14:57:26 [cuda.py:538] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
-INFO 10-06 14:57:26 [flash_attn.py:1116] Using FlashAttention version 2
-INFO 10-06 14:57:26 [weight_utils.py:895] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 30.08 GiB. Available RAM: 78.76 GiB.
-INFO 10-06 14:57:26 [weight_utils.py:918] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
-Loading safetensors checkpoint shards:   0% Completed | 0/2 [00:00<?, ?it/s]
-WARNING 10-06 14:57:26 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:27 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:27 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:27 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:28 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:28 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:28 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:29 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:29 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:29 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:30 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:30 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:30 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:31 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:31 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-Loading safetensors checkpoint shards:  50% Completed | 1/2 [00:04<00:04,  4.92s/it]
-WARNING 10-06 14:57:32 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:32 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:33 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:33 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:33 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:34 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:34 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:34 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-WARNING 10-06 14:57:35 [routed_experts.py:1050] Unexpected gate/up projection names: up_proj, . Fused gate/up mapping will be skipped.
-Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:08<00:00,  4.24s/it]
-Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:08<00:00,  4.34s/it]
-
-INFO 10-06 14:57:36 [default_loader.py:430] Loading weights took 9.28 seconds
-INFO 10-06 14:57:36 [fp8_utils.py:1491] Found input_scales that are not equal for fp8 MoE layer. Using the maximum across experts for each layer.
-INFO 10-06 14:57:36 [fp8.py:740] Using MoEPrepareAndFinalizeNoDPEPModular
-INFO 10-06 14:57:37 [model_runner.py:428] Model loading took 30.2 GiB memory and 14.604066 seconds
-INFO 10-06 14:57:37 [topk_topp_sampler.py:62] FlashInfer top-p/top-k sampling disabled via VLLM_USE_FLASHINFER_SAMPLER=0.
-INFO 10-06 14:57:37 [interface.py:933] Setting attention block size to 2096 tokens to ensure that attention page size is >= mamba page size.
-INFO 10-06 14:57:37 [interface.py:957] Padding mamba page size by 0.58% to ensure that mamba page size and attention page size are exactly equal.
-INFO 10-06 14:57:37 [utils.py:320] Using LBNHC KV cache layout.
-INFO 10-06 14:57:45 [backends.py:1094] Using cache directory: /root/.cache/vllm/torch_compile_cache/7da1896ac1/rank_0_0/backbone for vLLM's torch.compile
-INFO 10-06 14:57:45 [backends.py:1155] Dynamo bytecode transform time: 6.82 s
-/root/q8w/venv/lib/python3.12/site-packages/torch/_inductor/compile_fx.py:321: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance.
-  warnings.warn(
-INFO 10-06 14:57:52 [backends.py:393] Compiling a graph for compile range (1, 8192) takes 7.17 s
-INFO 10-06 14:57:56 [backends.py:920] collected artifacts: 30 entries, 5 artifacts, 5543855 bytes total
-INFO 10-06 14:57:56 [decorators.py:719] saved AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/7e021afc26c140582c9143c9886f50ccef9e04c577aa6f0c08c784ccc203533f/rank_0_0/model
-INFO 10-06 14:57:56 [monitor.py:53] torch.compile took 17.60 s in total
-INFO 10-06 14:57:56 [mamba_mixer2.py:615] Warming up Mamba2 SSD Triton kernels...
-Autotuning kernel _chunk_cumsum_fwd_kernel with config BLOCK_SIZE_H: 2, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_cumsum_fwd_kernel with config BLOCK_SIZE_H: 4, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_cumsum_fwd_kernel with config BLOCK_SIZE_H: 8, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_cumsum_fwd_kernel with config BLOCK_SIZE_H: 16, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_cumsum_fwd_kernel with config BLOCK_SIZE_H: 32, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_cumsum_fwd_kernel with config BLOCK_SIZE_H: 64, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Triton autotuning for function _chunk_cumsum_fwd_kernel,
-with key as (128, 64, 'torch.bfloat16', 'torch.float32', 'torch.bfloat16', 'torch.float32', 'torch.float32', 'torch.int32'),
-finished after 2.92s,
-best config selected: BLOCK_SIZE_H: 2, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None;
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 256, BLOCK_SIZE_K: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning failed with out of resource: shared memory, Required: 132096, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 256, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None
-Autotuning kernel _chunk_state_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 4, maxnreg: None
-Triton autotuning for function _chunk_state_fwd_kernel,
-with key as (64, 128, 128, 'torch.bfloat16', 'torch.bfloat16', 'torch.float32', 'torch.float32', 'torch.float32', 'torch.int32'),
-finished after 8.24s,
-best config selected: BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 4, maxnreg: None;
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 512, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 1024, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 2048, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Triton autotuning for function _state_passing_fwd_kernel,
-with key as (8192, 'torch.float32', 'torch.float32', 'torch.float32', 'torch.int32'),
-finished after 1.45s,
-best config selected: BLOCK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None;
-Autotuning kernel _bmm_chunk_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 256, BLOCK_SIZE_K: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _bmm_chunk_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 256, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _bmm_chunk_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _bmm_chunk_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _bmm_chunk_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _bmm_chunk_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _bmm_chunk_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None
-Autotuning kernel _bmm_chunk_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None
-Autotuning kernel _bmm_chunk_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 4, maxnreg: None
-Triton autotuning for function _bmm_chunk_fwd_kernel,
-with key as (128, 128, False, 'torch.bfloat16', 'torch.bfloat16', 'torch.float32', 'torch.int32'),
-finished after 4.01s,
-best config selected: BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None;
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 256, BLOCK_SIZE_K: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning failed with out of resource: shared memory, Required: 148480, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 256, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning failed with out of resource: shared memory, Required: 140800, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning failed with out of resource: shared memory, Required: 108032, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 4, maxnreg: None
-Triton autotuning for function _chunk_scan_fwd_kernel,
-with key as (128, 64, 128, True, 'torch.float32', 'torch.bfloat16', 'torch.bfloat16', 'torch.float32', 'torch.float32', 'torch.int32', 'torch.bfloat16', 'torch.float32', 'torch.bfloat16', 'torch.int32'),
-finished after 24.94s,
-best config selected: BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None;
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 64, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 128, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 256, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 512, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 1024, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _state_passing_fwd_kernel with config BLOCK_SIZE: 2048, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Triton autotuning for function _state_passing_fwd_kernel,
-with key as (8192, 'torch.float32', 'torch.float32', 'torch.float32', 'torch.float32', 'torch.int32'),
-finished after 1.54s,
-best config selected: BLOCK_SIZE: 2048, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None;
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 1, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 2, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 256, BLOCK_SIZE_K: 64, num_warps: 8, num_ctas: 1, num_stages: 3, maxnreg: None
-Autotuning failed with out of resource: shared memory, Required: 163840, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 256, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning failed with out of resource: shared memory, Required: 147456, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning failed with out of resource: shared memory, Required: 140800, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 128, BLOCK_SIZE_K: 64, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning failed with out of resource: shared memory, Required: 108032, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 128, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 4, num_ctas: 1, num_stages: 4, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 32, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None
-Autotuning kernel _chunk_scan_fwd_kernel with config BLOCK_SIZE_M: 64, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 4, maxnreg: None
-Triton autotuning for function _chunk_scan_fwd_kernel,
-with key as (128, 64, 128, True, 'torch.float32', 'torch.bfloat16', 'torch.bfloat16', 'torch.float32', 'torch.float32', 'torch.int32', 'torch.bfloat16', 'torch.float32', 'torch.bfloat16', 'torch.float32', 'torch.int32'),
-finished after 23.85s,
-best config selected: BLOCK_SIZE_M: 32, BLOCK_SIZE_N: 64, BLOCK_SIZE_K: 32, num_warps: 2, num_ctas: 1, num_stages: 5, maxnreg: None;
-WARNING 10-06 14:59:05 [fused_moe.py:1167] Using default MoE config. Performance might be sub-optimal! Config file not found at /root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/configs/E=128,N=1856,device_name=NVIDIA_L40S,dtype=fp8_w8a8.json
-INFO 10-06 14:59:07 [monitor.py:81] Initial profiling/warmup run took 70.85 s
-WARNING 10-06 14:59:09 [kv_cache_utils.py:1556] Add 1 padding layers, may waste at most 4.35% KV cache memory
-INFO 10-06 14:59:09 [ssu_dispatch.py:505] Using triton Mamba SSU backend.
-Capturing CUDA graphs (PIECEWISE):   0%|          | 0/19 [00:00<?, ?it/s]Capturing CUDA graphs (PIECEWISE):   5%|▌         | 1/19 [00:01<00:31,  1.77s/it]WARNING 10-06 14:59:11 [mamba_ssm.py:108] Using default Mamba SSU config. Performance might be sub-optimal! Config file not found at /root/q8w/venv/lib/python3.12/site-packages/vllm/model_executor/layers/mamba/ops/configs/selective_state_update/headdim=64,dstate=128,device_name=NVIDIA_L40S,cache_dtype=float32.json
-Capturing CUDA graphs (PIECEWISE):  11%|█         | 2/19 [00:02<00:20,  1.19s/it]Capturing CUDA graphs (PIECEWISE):  16%|█▌        | 3/19 [00:03<00:13,  1.16it/s]Capturing CUDA graphs (PIECEWISE):  21%|██        | 4/19 [00:03<00:09,  1.56it/s]Capturing CUDA graphs (PIECEWISE):  26%|██▋       | 5/19 [00:04<00:12,  1.16it/s]Capturing CUDA graphs (PIECEWISE):  32%|███▏      | 6/19 [00:04<00:08,  1.54it/s]Capturing CUDA graphs (PIECEWISE):  37%|███▋      | 7/19 [00:05<00:06,  2.00it/s]Capturing CUDA graphs (PIECEWISE):  42%|████▏     | 8/19 [00:05<00:04,  2.39it/s]Capturing CUDA graphs (PIECEWISE):  47%|████▋     | 9/19 [00:06<00:05,  1.84it/s]Capturing CUDA graphs (PIECEWISE):  53%|█████▎    | 10/19 [00:06<00:03,  2.45it/s]Capturing CUDA graphs (PIECEWISE):  58%|█████▊    | 11/19 [00:06<00:02,  3.19it/s]Capturing CUDA graphs (PIECEWISE):  63%|██████▎   | 12/19 [00:06<00:01,  3.96it/s]Capturing CUDA graphs (PIECEWISE):  68%|██████▊   | 13/19 [00:07<00:02,  2.47it/s]Capturing CUDA graphs (PIECEWISE):  79%|███████▉  | 15/19 [00:07<00:01,  3.79it/s]Capturing CUDA graphs (PIECEWISE):  84%|████████▍ | 16/19 [00:07<00:00,  4.46it/s]Capturing CUDA graphs (PIECEWISE):  89%|████████▉ | 17/19 [00:08<00:00,  2.77it/s]Capturing CUDA graphs (PIECEWISE):  95%|█████████▍| 18/19 [00:08<00:00,  3.43it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 19/19 [00:09<00:00,  1.99it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 19/19 [00:09<00:00,  2.03it/s]
-Capturing CUDA graphs (FULL):   0%|          | 0/2 [00:00<?, ?it/s]Capturing CUDA graphs (FULL):  50%|█████     | 1/2 [00:00<00:00,  9.74it/s]Capturing CUDA graphs (FULL): 100%|██████████| 2/2 [00:00<00:00,  9.87it/s]Capturing CUDA graphs (FULL): 100%|██████████| 2/2 [00:00<00:00,  9.84it/s]
-INFO 10-06 14:59:19 [model_runner.py:1066] Graph capturing finished in 11 secs, took 0.23 GiB
-INFO 10-06 14:59:20 [gpu_worker.py:640] Available KV cache memory: 8.04 GiB
-INFO 10-06 14:59:20 [gpu_worker.py:655] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9000 is equivalent to --gpu-memory-utilization=0.8940 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9060. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
-WARNING 10-06 14:59:20 [kv_cache_utils.py:1556] Add 1 padding layers, may waste at most 4.35% KV cache memory
-INFO 10-06 14:59:20 [kv_cache_utils.py:2395] GPU KV cache size: 686,080 tokens, Maximum concurrency for 8,192 tokens per request: 83.75x
-INFO 10-06 14:59:20 [kernel_warmup.py:172] JIT kernel warmup starting.
-INFO 10-06 14:59:20 [kernel_warmup.py:185] JIT kernel warmup finished in 0.00s.
-INFO 10-06 14:59:20 [mamba_triton_warmup.py:42] Warmed Mamba batch_memcpy_kernel.
-Capturing CUDA graphs (PIECEWISE):   0%|          | 0/19 [00:00<?, ?it/s]Capturing CUDA graphs (PIECEWISE):   5%|▌         | 1/19 [00:00<00:06,  2.92it/s]Capturing CUDA graphs (PIECEWISE):  11%|█         | 2/19 [00:00<00:04,  3.42it/s]Capturing CUDA graphs (PIECEWISE):  16%|█▌        | 3/19 [00:00<00:04,  3.35it/s]Capturing CUDA graphs (PIECEWISE):  21%|██        | 4/19 [00:01<00:04,  3.71it/s]Capturing CUDA graphs (PIECEWISE):  26%|██▋       | 5/19 [00:01<00:04,  3.33it/s]Capturing CUDA graphs (PIECEWISE):  32%|███▏      | 6/19 [00:01<00:03,  3.56it/s]Capturing CUDA graphs (PIECEWISE):  37%|███▋      | 7/19 [00:01<00:03,  3.93it/s]Capturing CUDA graphs (PIECEWISE):  42%|████▏     | 8/19 [00:02<00:02,  4.09it/s]Capturing CUDA graphs (PIECEWISE):  53%|█████▎    | 10/19 [00:02<00:01,  5.71it/s]Capturing CUDA graphs (PIECEWISE):  63%|██████▎   | 12/19 [00:02<00:01,  6.93it/s]Capturing CUDA graphs (PIECEWISE):  68%|██████▊   | 13/19 [00:02<00:00,  7.34it/s]Capturing CUDA graphs (PIECEWISE):  74%|███████▎  | 14/19 [00:02<00:00,  7.66it/s]Capturing CUDA graphs (PIECEWISE):  79%|███████▉  | 15/19 [00:02<00:00,  8.04it/s]Capturing CUDA graphs (PIECEWISE):  84%|████████▍ | 16/19 [00:02<00:00,  8.40it/s]Capturing CUDA graphs (PIECEWISE):  89%|████████▉ | 17/19 [00:03<00:00,  8.77it/s]Capturing CUDA graphs (PIECEWISE):  95%|█████████▍| 18/19 [00:03<00:00,  9.06it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 19/19 [00:03<00:00,  9.20it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 19/19 [00:03<00:00,  5.78it/s]
-Capturing CUDA graphs (FULL):   0%|          | 0/11 [00:00<?, ?it/s]Capturing CUDA graphs (FULL):   9%|▉         | 1/11 [00:00<00:01,  9.07it/s]Capturing CUDA graphs (FULL):  18%|█▊        | 2/11 [00:00<00:00,  9.53it/s]Capturing CUDA graphs (FULL):  27%|██▋       | 3/11 [00:00<00:00,  9.65it/s]Capturing CUDA graphs (FULL):  36%|███▋      | 4/11 [00:00<00:00,  9.71it/s]Capturing CUDA graphs (FULL):  45%|████▌     | 5/11 [00:00<00:00,  9.72it/s]Capturing CUDA graphs (FULL):  55%|█████▍    | 6/11 [00:00<00:00,  9.43it/s]Capturing CUDA graphs (FULL):  64%|██████▎   | 7/11 [00:00<00:00,  9.57it/s]Capturing CUDA graphs (FULL):  82%|████████▏ | 9/11 [00:00<00:00,  9.98it/s]Capturing CUDA graphs (FULL): 100%|██████████| 11/11 [00:01<00:00, 10.22it/s]Capturing CUDA graphs (FULL): 100%|██████████| 11/11 [00:01<00:00,  9.89it/s]
-INFO 10-06 14:59:48 [model_runner.py:1066] Graph capturing finished in 5 secs, took 0.12 GiB
-INFO 10-06 14:59:48 [gpu_worker.py:825] CUDA graph pool memory: 0.12 GiB (actual), 0.27 GiB (estimated), difference: 0.14 GiB (114.1%).
-INFO 10-06 14:59:48 [gpu_worker.py:888] Free memory on device (43.97/44.39 GiB) on startup. Desired GPU memory utilization is (0.9, 39.95 GiB). Actual usage is 31.07 GiB for consumed memory (weights + non-torch), 0.85 GiB for peak activation, and 0.12 GiB for CUDAGraph memory. Replace gpu_memory_utilization config with `--kv-cache-memory=8342656615` (7.77 GiB) to fit into requested memory, or `--kv-cache-memory=12653883392` (11.78 GiB) to fully utilize gpu memory. Current kv cache memory in use is 8.04 GiB.
-INFO 10-06 14:59:49 [jit_monitor.py:85] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
-INFO 10-06 14:59:49 [torch_utils.py:287] Reducing Torch threads from 64 to 1 for serving. Set OMP_NUM_THREADS in the external environment to override.
-INFO 10-06 14:59:49 [core.py:372] init engine (profile, create kv cache, warmup model) took 132.09 s (compilation: 17.60 s)
-INFO 10-06 14:59:49 [kv_cache_utils.py:748] kv cache group sizes [8192, 8192, 8192, 8192, 2096]
-INFO 10-06 14:59:49 [kv_cache_utils.py:749] kv lcm block sizes 1073152
-INFO 10-06 14:59:51 [hf.py:642] Detected the chat template content format to be 'string'. You can set `--chat-template-content-format` to override this.
-WARNING 10-06 14:59:52 [jit_monitor.py:141] Triton kernel JIT compilation during inference: _topk_log_softmax_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
-WARNING 10-06 15:00:00 [jit_monitor.py:141] Triton kernel JIT compilation during inference: _causal_conv1d_fwd_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
-[rank0]:[W1006 15:00:27.545790796 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

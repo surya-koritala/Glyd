@@ -1,4 +1,0 @@
-stock-eager: ok (187 s) weights 8.28 GiB, KV 35,378 tokens
-glyd-exact: ok (138 s) weights 8.26 GiB, KV 35,417 tokens
-stock: ok (277 s) weights 8.28 GiB, KV 33,498 tokens, tok/s {"1": 91.76, "32": 1116.96}
-EXACT PASS: Glyd exact eager against stock eager, tokens and top-5 logprobs of 8 prompts, prompt_logprobs of 725 tokens, one image chat; 1 of 1 packs verified bit for bit
