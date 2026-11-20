@@ -779,6 +779,8 @@ struct Server {
     local_only: bool,
     port: u16,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    /// Draining (SIGTERM) and the requests for a model in flight.
+    life: Arc<crate::ops::Life>,
 }
 
 const PAGE: &str = "<!doctype html><meta charset=utf-8><title>glyd</title><body style=\"font:16px system-ui;max-width:40em;margin:3em auto\"><h1>glyd</h1><p>The service is up. It loads a model when a request names one and unloads it when it is idle.</p><p>Models: <a href=\"/v1/models\">/v1/models</a> &middot; what is loaded: <a href=\"/v1/glyd/service\">/v1/glyd/service</a>. Download one with <code>glyd pull qwen3</code>.</p>";
@@ -789,6 +791,16 @@ fn model_of(body: &[u8]) -> Option<String> {
 }
 
 impl Server {
+    /// The service's metrics: its own state (what is loaded, draining, the requests in flight and refused); a model's tokens and latencies are on that model's own server.
+    fn metrics(&self) -> String {
+        let mut o = crate::ops::render(&crate::ops::State { model: "", ready: true, life: &self.life, engine: false });
+        o.push_str(&format!(
+            "# HELP glyd_service_models_loaded Models the service holds loaded now.\n# TYPE glyd_service_models_loaded gauge\nglyd_service_models_loaded {}\n",
+            self.pool.loaded().len()
+        ));
+        o
+    }
+
     /// Whether a control request carries the MAC of this account's secret, for this port, this request and a time within a minute.
     fn control_ok(&self, req: &Request, path: &str) -> bool {
         let Some((ts, mac)) = req.header("x-glyd-auth").and_then(|h| h.split_once('.')) else { return false };
@@ -831,7 +843,7 @@ impl Server {
         if let Some((code, why)) = crate::server::refusal(req.header("host").unwrap_or(""), req.header("origin").unwrap_or(""), self.local_only) {
             return error(&mut s, code, &why);
         }
-        let is_api = path.starts_with("/v1/");
+        let is_api = path.starts_with("/v1/") || path == "/metrics";
         if is_api && !key_ok(&self.key, req.header("authorization")) {
             return error(&mut s, 401, "an API key is needed: Authorization: Bearer KEY");
         }
@@ -846,6 +858,10 @@ impl Server {
                 respond(&mut s, 200, "application/json", &serde_json::json!({"status": "ok", "service": "glyd", "proof": proof}).to_string());
             }
             ("GET", "/") => respond(&mut s, 200, "text/html; charset=utf-8", PAGE),
+            // (ready: the service takes requests, it loads a model when one asks; not while it drains)
+            ("GET" | "HEAD", "/ready") if self.life.draining() => respond(&mut s, 503, "application/json", "{\"status\":\"draining\"}"),
+            ("GET" | "HEAD", "/ready") => respond(&mut s, 200, "application/json", "{\"status\":\"ready\"}"),
+            ("GET", "/metrics") => respond(&mut s, 200, crate::ops::CONTENT_TYPE, &self.metrics()),
             ("GET", "/v1/models") => respond(&mut s, 200, "application/json", &self.models_json()),
             ("GET", "/v1/glyd/service") => respond(&mut s, 200, "application/json", &self.pool.status_json(self.port)),
             // (stopping the service and unloading a model are this account's to do: they carry the secret; another user of the computer who reaches the port is refused)
@@ -871,6 +887,12 @@ impl Server {
                 self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
             }
             ("POST", p) if p.starts_with("/v1/") => {
+                // (a request for a model is in flight until its answer ends, and is not taken while the service drains)
+                crate::ops::request(p);
+                let Some(_inflight) = self.life.enter() else {
+                    crate::ops::refused(503);
+                    return error(&mut s, 503, "the service is shutting down: it takes no new requests");
+                };
                 let name = model_of(&req.body).unwrap_or_default();
                 let local = (self.local)();
                 let spec = match spec_of(&name, &self.manifest, &local) {
@@ -952,7 +974,7 @@ fn serve(
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let sv = Arc::new(Server { pool, manifest, local, key, secret, local_only, port: bound.port(), stop: stop.clone() });
+    let sv = Arc::new(Server { pool, manifest, local, key, secret, local_only, port: bound.port(), stop: stop.clone(), life: Arc::default() });
     let accept = sv.clone();
     std::thread::spawn(move || {
         for conn in listener.incoming() {
@@ -1068,6 +1090,16 @@ pub fn run(a: &Args) -> i32 {
         keep_alive.map_or("never".to_string(), human),
         log_dir().display()
     );
+    // SIGTERM: no new requests, the ones in flight finish (up to --drain-timeout seconds), the models are unloaded, the process ends
+    let drain_bound = match a.num("drain-timeout", crate::ops::DRAIN_SECONDS) {
+        Ok(n) => Duration::from_secs(n),
+        Err(e) => {
+            eprintln!("glyd service: {e}");
+            return 1;
+        }
+    };
+    let held = sv.clone();
+    crate::ops::drain_on_sigterm(sv.life.clone(), drain_bound, move |_| held.pool.shutdown());
     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(200));
     }

@@ -466,13 +466,20 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/pc-job
-      - name: Short temp folder on the PC
+      - name: Private home and temp folder on the PC
         if: runner.environment == 'self-hosted'
         run: |
-          # (TMPDIR short: systemd-analyze binds sockets under it, and a Unix socket path is at most 108 bytes; Ubuntu's spice-vdagent user unit has a bad key that fails its unit-file check)
+          # (Starlings' tests refuse a directory to create in that is not the runner's own or is writable by its group or others, and the PC's runners may have a umask of 002: everything
+          # here is 0700 and the runner's. TMPDIR is short because systemd-analyze binds sockets under it and a Unix socket path is at most 108 bytes; Ubuntu's spice-vdagent user unit has a bad
+          # key that fails its unit-file check, so it is masked for the job.)
+          was=$(umask)
+          umask 077
           mkdir -p "$HOME/.config/systemd/user"
-          ln -s /dev/null "$HOME/.config/systemd/user/spice-vdagent.service"
-          echo "TMPDIR=$(mktemp -d /tmp/starlings-ci.XXXXXX)" >> "$GITHUB_ENV"
+          ln -sf /dev/null "$HOME/.config/systemd/user/spice-vdagent.service"
+          tmp=$(mktemp -d /tmp/starlings-ci.XXXXXX)
+          chmod 700 "$HOME" "$HOME/.config" "$HOME/.config/systemd" "$HOME/.config/systemd/user" "$tmp" "$RUNNER_TEMP/job-cache"
+          echo "TMPDIR=$tmp" >> "$GITHUB_ENV"
+          echo "user $(id -un) uid $(id -u), the runner's umask $was:"; stat -c '%A %U %n' "$HOME" "$tmp" /tmp "$RUNNER_TEMP"
       - run: git config --global init.defaultBranch main
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -500,9 +507,12 @@ jobs:
           cargo clippy -p 'starlings-*' --all-targets --locked -- -D warnings
           cargo clippy -p 'starlings-*' --all-targets --all-features --locked -- -D warnings
       - name: Tests
-        run: cargo test -p 'starlings-*' --locked -- --nocapture
+        run: |
+          umask 077  # (the directories the tests make are private whatever the runner's umask)
+          cargo test -p 'starlings-*' --locked -- --nocapture
       - name: Tests with every feature (the development backend), the daemon with the stand-in engine
         run: |
+          umask 077
           cargo test -p starlings-cli -p starlings-adapters --all-features --lib --bins --test cli --locked -- --nocapture
           cargo test -p starlings-cli --all-features --test daemon catalog_service_ --locked -- --nocapture
           cargo test -p starlings-cli --all-features --test daemon pipeline_fake_engine --locked -- --nocapture

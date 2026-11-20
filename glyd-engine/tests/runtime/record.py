@@ -364,7 +364,97 @@ def dsv4_mhc():
           n * d, specs, out.reshape(1, T, n * d))
 
 
+VOCAB = 64
+
+
+def fill_model(model, plus_one_norms=False):
+    """Every parameter (and the persistent float buffers) of a whole model by its checkpoint name; stacked experts by each expert's
+    released names (`experts.{e}.gate_proj.weight`, ...), as the description's weight map reads them."""
+    specs = {}
+
+    def gen(name, shape, lo=None, hi=None):
+        if lo is None:
+            lo, hi = ranges(name, shape)
+            if plus_one_norms and "norm" in name and len(shape) == 1 and not name.endswith("linear_attn.norm.weight"):
+                lo, hi = (-0.2, 0.2)
+        if name.endswith("layer_scalar"):
+            lo, hi = (0.5, 1.5)
+        specs[name] = {"shape": list(shape), "lo": lo, "hi": hi}
+        return torch.from_numpy(fill(name, int(np.prod(shape)), lo, hi)).view(*shape)
+
+    with torch.no_grad():
+        items = list(model.named_parameters()) + [(n, b) for n, b in model.named_buffers() if n.endswith("layer_scalar")]
+        for name, p in items:
+            if name.endswith("experts.gate_up_proj"):
+                base = name[: -len("gate_up_proj")]
+                e, two_i, h = p.shape
+                for x in range(e):
+                    p[x] = torch.cat([gen(f"{base}{x}.gate_proj.weight", [two_i // 2, h]), gen(f"{base}{x}.up_proj.weight", [two_i // 2, h])])
+            elif name.endswith("experts.down_proj"):
+                base = name[: -len("down_proj")]
+                for x in range(p.shape[0]):
+                    p[x] = gen(f"{base}{x}.down_proj.weight", list(p.shape[1:]))
+            else:
+                p.copy_(gen(name, list(p.shape)))
+    return specs
+
+
+def model_case(case, what, model, plus_one_norms=False):
+    model.eval()
+    specs = fill_model(model, plus_one_norms)
+    toks = [(t * 13 + 5) % VOCAB for t in range(T)]
+    logits = model(torch.tensor(toks).view(1, T)).logits
+    write(case, what, type(model).__name__, VOCAB, specs, logits, {"config": json.loads(model.config.to_json_string()), "token_ids": toks})
+
+
+def qwen38_model():
+    from transformers.models.qwen3_5 import modeling_qwen3_5 as M
+
+    c = qwen38_config()
+    c.vocab_size = VOCAB
+    model_case("qwen38_model", "Qwen3.8 dense at reduced widths: 3 Gated DeltaNet layers and a gated attention layer", M.Qwen3_5ForCausalLM(c), True)
+
+
+def qwen38_moe_model():
+    from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe as M
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeTextConfig
+
+    c = Qwen3_5MoeTextConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=2, head_dim=32, num_hidden_layers=4, vocab_size=VOCAB,
+                             rms_norm_eps=1e-6, linear_num_key_heads=2, linear_num_value_heads=4, linear_key_head_dim=16, linear_value_head_dim=16,
+                             linear_conv_kernel_dim=4, num_experts=8, num_experts_per_tok=3, moe_intermediate_size=32, shared_expert_intermediate_size=48,
+                             rope_parameters={"rope_type": "default", "rope_theta": 10_000_000.0, "partial_rotary_factor": 0.25},
+                             layer_types=["linear_attention", "linear_attention", "linear_attention", "full_attention"])
+    c._attn_implementation = "eager"
+    model_case("qwen38_moe_model", "Qwen3.8 MoE at reduced widths: softmax top-3 of 8 with a gated shared expert in every layer",
+               M.Qwen3_5MoeForCausalLM(c), True)
+
+
+def gemma4_model():
+    from transformers.models.gemma4 import modeling_gemma4 as M
+
+    c = gemma4_config()
+    c.vocab_size = VOCAB
+    c.final_logit_softcapping = 30.0
+    c.tie_word_embeddings = True
+    model_case("gemma4_model", "gemma-4-12B at reduced widths: a sliding and a global layer, tied head, softcap 30", M.Gemma4ForCausalLM(c))
+
+
+def llama_model():
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    c = LlamaConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=2, num_hidden_layers=2, intermediate_size=128, vocab_size=VOCAB,
+                    rms_norm_eps=1e-5, tie_word_embeddings=True, max_position_embeddings=131072,
+                    rope_parameters={"rope_type": "llama3", "rope_theta": 500_000.0, "factor": 8.0, "low_freq_factor": 1.0, "high_freq_factor": 4.0,
+                                     "original_max_position_embeddings": 8192})
+    c._attn_implementation = "eager"
+    model_case("llama_model", "Llama 3.2 layout at reduced widths: GQA, llama3 rope, tied head", LlamaForCausalLM(c))
+
+
 CASES = {
+    "qwen38_model": qwen38_model,
+    "qwen38_moe_model": qwen38_moe_model,
+    "gemma4_model": gemma4_model,
+    "llama_model": llama_model,
     "dsv4_mhc": dsv4_mhc,
     "glm53_mtp": glm53_mtp,
     "rope_scaling": rope_scaling,
