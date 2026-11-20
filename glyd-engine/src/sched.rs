@@ -208,6 +208,7 @@ pub struct Stats {
     pub ended_alone: u64,
     pub ended_tries: u64,
     /// Steps by the number of rows they had (index 0 unused: 1 to 8), and the rounds that ran a prompt chunk.
+    /// Decode steps by their rows: 0 to 7, and 8 or more in the last.
     pub by_rows: [u64; MAX_ROWS + 1],
     pub prefill_rounds: u64,
 }
@@ -304,6 +305,9 @@ struct Seq {
     solo: bool,
 }
 
+/// The most sequences a slot step runs at once (the rows of a pass's head).
+pub const MAX_USERS: usize = 64;
+
 /// Times a sequence's step may be taken back for a lost block before it ends with an error (the extra memory is shared: one that is still lost after this many waits does not fit it).
 pub const MAX_TRIES: u32 = 6;
 
@@ -335,11 +339,15 @@ pub struct Sched<B: ModelStep> {
 }
 
 impl<B: ModelStep> Sched<B> {
-    /// A scheduler for up to `users` sequences at a step (1 to MAX_ROWS, and at most a slot step's slots).
+    /// A scheduler for up to `users` sequences at a step: 1 to MAX_ROWS on pages (the dense engine's decode step), at most a slot step's slots and MAX_USERS on slots (their rooms are what the
+    /// memory holds).
     pub fn new(be: B, users: usize) -> Sched<B> {
         let slots = be.slots();
         let pager = Pager::new(if slots.is_some() { 0 } else { be.pages() });
-        let users = slots.map_or(users, |k| users.min(k)).clamp(1, MAX_ROWS);
+        let users = match slots {
+            Some(k) => users.min(k).clamp(1, MAX_USERS),
+            None => users.clamp(1, MAX_ROWS),
+        };
         let eos = be.eos();
         let (emit, batches) = std::sync::mpsc::channel::<Vec<(Sender<Ev>, Ev)>>();
         std::thread::spawn(move || {
@@ -1916,12 +1924,12 @@ pub(crate) mod tests {
     /// empty again at the end.
     #[test]
     fn a_slot_step_gives_each_sequence_its_tokens_alone() {
-        for (slots, users, batch, chunk) in [(1, 4, 1, 16), (3, 4, 1, 16), (4, 4, 4, 16), (4, 8, 4, 64), (8, 8, 8, 7)] {
+        for (slots, users, batch, chunk) in [(1, 4, 1, 16), (3, 4, 1, 16), (4, 4, 4, 16), (4, 8, 4, 64), (8, 8, 8, 7), (24, 64, 24, 512)] {
             let mut f = SlotFake::new(slots, 256, chunk);
             f.batch = batch;
             let mut s = Sched::new(f, users);
             assert_eq!(s.users(), users.min(slots));
-            let reqs: Vec<(Vec<u32>, usize)> = (0..9).map(|k| (prompt(k as u32 + 1, 3 + 11 * k), 5 + 3 * k)).collect();
+            let reqs: Vec<(Vec<u32>, usize)> = (0..slots.max(9) + 3).map(|k| (prompt(k as u32 + 1, 3 + 11 * (k % 9)), 5 + 3 * (k % 9))).collect();
             let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
             run(&mut s);
             for ((p, n), rx) in reqs.iter().zip(&rx) {

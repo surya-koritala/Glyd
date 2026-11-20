@@ -123,6 +123,8 @@ jobs:
             GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck "$c" --users 4 --level penguin
             "$E" usercheck "$c" --users 4 --level penguin
           done
+          # (more users than the dense engine's 8 rows: 16 at once, prompts one a pass)
+          GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 16 --level penguin
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

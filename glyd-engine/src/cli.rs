@@ -393,17 +393,19 @@ struct Ready {
     gpu: Gpu,
 }
 
-/// Sequences a server runs at once: --users, else 4 (1 to 8).
+/// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; the dense Qwen3 engine takes at most MAX_ROWS of them, a level's engine as many as its memory holds).
 fn users_of(a: &Args) -> Done<usize> {
-    let n: usize = a.num("users", 4usize).map_err(|e| Refusal::new(e.0, "Give a number from 1 to 8: --users 4"))?;
-    if !(1..=crate::model::MAX_ROWS).contains(&n) {
-        return Err(Refusal::new(format!("--users {n}: 1 to {} sequences at once", crate::model::MAX_ROWS), "Give a number from 1 to 8: --users 4"));
+    use crate::sched::MAX_USERS;
+    let n: usize = a.num("users", 4usize).map_err(|e| Refusal::new(e.0, format!("Give a number from 1 to {MAX_USERS}: --users 4")))?;
+    if !(1..=MAX_USERS).contains(&n) {
+        return Err(Refusal::new(format!("--users {n}: 1 to {MAX_USERS} sequences at once"), format!("Give a number from 1 to {MAX_USERS}: --users 4")));
     }
     Ok(n)
 }
 
 fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
-    let users = if several { users_of(a)? } else { 1 };
+    // (the dense engine's decode step takes at most MAX_ROWS rows)
+    let users = if several { users_of(a)?.min(crate::model::MAX_ROWS) } else { 1 };
     let t0 = Instant::now();
     let gpu = gpu_pick()?;
     // (the machine checks of every other path: the CPU architecture, the driver, a MIG slice)
