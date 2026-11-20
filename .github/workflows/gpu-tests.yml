@@ -70,6 +70,12 @@ jobs:
           out=$("$E" run "${{ inputs.model }}" --prompt "What is 17 + 25? Answer with the number only." --no-think)
           echo "$out"
           echo "$out" | grep -q 42
+      - name: The plan is what loads (${{ inputs.model }}; fit on this GPU, the plan run took, and the GPU's memory the load used)
+        run: |
+          "$E" fit "${{ inputs.model }}" --json > /tmp/fit.json
+          cat /tmp/fit.json
+          GLYD_PLAN_REPORT=/tmp/loaded.json "$E" run "${{ inputs.model }}" --prompt "Say hello." --no-think > /dev/null
+          python3 scripts/ci_plan_check.py /tmp/fit.json /tmp/loaded.json
       - name: The OpenAI, Anthropic and Ollama clients and the Open Responses schema against a served ${{ inputs.client_model }} (chat, streams, tools, thinking, JSON schema; tests/clients)
         run: |
           python3 -m venv /tmp/clients && /tmp/clients/bin/pip install -q openai anthropic ollama requests jsonschema
@@ -89,6 +95,10 @@ jobs:
           wait "$server" 2> /dev/null || true
           [ "$status" = 0 ] || tail -40 /tmp/serve.log
           exit "$status"
+      - name: glyd doctor on this GPU (the bundle: every check, the sample plan, nothing secret)
+        run: |
+          "$E" doctor --bundle /tmp/doctor-bundle.json
+          python3 scripts/ci_doctor_check.py /tmp/doctor-bundle.json
       - name: The lossless KV cache (a random Qwen3 dense model made here, which kvtest reads as the dense engine's cache)
         run: |
           "$E" logitsmodel qwen3 /tmp/qwen3-standin
