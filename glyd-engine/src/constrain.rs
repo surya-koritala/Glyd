@@ -6,7 +6,7 @@
 use llguidance::api::TopLevelGrammar;
 use llguidance::{Matcher, ParserFactory};
 use std::sync::{Arc, Mutex};
-use toktrie::{TokEnv, TokRxInfo, TokTrie, TokenizerEnv};
+use toktrie::{SimpleVob, TokEnv, TokRxInfo, TokTrie, TokenizerEnv};
 
 /// What a reply must be.
 #[derive(Clone, Debug, PartialEq)]
@@ -140,37 +140,41 @@ pub struct Gram {
 }
 
 impl Gram {
-    /// The tokens that may be chosen next: a row of `vocab` flags. Where the grammar is complete the end tokens may be chosen (and where nothing more can follow, they alone); where it has gone wrong
-    /// (the matcher cannot say) they alone, so that the reply ends and does not go on past the grammar.
-    pub fn allowed(&mut self) -> Vec<bool> {
+    /// The tokens that may be chosen next. Where the grammar is complete the end tokens may be chosen (and where nothing more can follow, they alone); where it has gone wrong (the matcher cannot say)
+    /// they alone, so that the reply ends and does not go on past the grammar.
+    pub fn mask(&mut self) -> SimpleVob {
         self.masks += 1;
-        let mut ok = vec![false; self.vocab];
-        let mask = if self.m.is_stopped() { None } else { self.m.compute_mask().ok() };
-        let mut ends = mask.is_none();
-        if let Some(mask) = mask {
-            mask.iter_set_entries(|i| {
-                if let Some(x) = ok.get_mut(i) {
-                    *x = true;
-                }
-            });
-            ends = self.ends.iter().any(|&e| ok.get(e as usize) == Some(&true));
-        }
-        if ends {
+        let made = if self.m.is_stopped() { None } else { self.m.compute_mask().ok() };
+        let mut mask = made.clone().unwrap_or_else(|| SimpleVob::alloc(self.vocab));
+        if made.is_none() || self.ends.iter().any(|&e| mask.is_allowed(e)) {
             for &e in &self.ends {
-                if let Some(x) = ok.get_mut(e as usize) {
-                    *x = true;
+                if (e as usize) < mask.len() {
+                    mask.allow_token(e);
                 }
             }
         }
-        ok
+        mask
+    }
+
+    /// The tokens that may be chosen next, a flag for each of the row's `vocab`.
+    pub fn allowed(&mut self) -> Vec<bool> {
+        let mask = self.mask();
+        (0..self.vocab).map(|i| mask.is_allowed(i as u32)).collect()
     }
 
     /// Takes the logits of the tokens the grammar does not allow out of `logits` (negative infinity).
     pub fn apply(&mut self, logits: &mut [f32]) {
-        let ok = self.allowed();
-        for (x, &ok) in logits.iter_mut().zip(ok.iter().chain(std::iter::repeat(&false))) {
-            if !ok {
-                *x = f32::NEG_INFINITY;
+        let mask = self.mask();
+        let words = mask.as_slice();
+        for (i, chunk) in logits.chunks_mut(32).enumerate() {
+            let w = words.get(i).copied().unwrap_or(0);
+            if w == u32::MAX {
+                continue;
+            }
+            for (b, x) in chunk.iter_mut().enumerate() {
+                if (w >> b) & 1 == 0 || i * 32 + b >= mask.len() {
+                    *x = f32::NEG_INFINITY;
+                }
             }
         }
     }
@@ -490,5 +494,37 @@ mod tests {
         let body = text.strip_suffix("}\n</tool_call>").unwrap_or_else(|| panic!("{text}"));
         let v: serde_json::Value = serde_json::from_str(body).unwrap();
         assert!(v["city"].is_string(), "{text}");
+    }
+
+    /// The tokenizers of the model families, from the directories `GLYD_TEST_TOKENIZERS` names (separated by `:`; a model's directory with its tokenizer.json or tiktoken.model, and its config.json): each writes a JSON
+    /// document, as it tokenizes it, and the grammar of the document's schema allows every token and ends accepting. Skipped where the variable is not set.
+    #[test]
+    fn every_tokenizer_writes_json_the_grammar_allows() {
+        let Some(dirs) = std::env::var_os("GLYD_TEST_TOKENIZERS") else { return };
+        let schema = r#"{"type":"object","properties":{"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"n":{"type":"integer"},"x":{"type":"number"},"ok":{"type":"boolean"},"kind":{"enum":["a","b"]},"nested":{"type":"object","properties":{"k":{"type":"null"}}}},"required":["name"]}"#;
+        let doc = r#"{"name": "Zoë \"quoted\" 日本語 😀\n", "tags": ["x", "yz", ""], "n": -12, "x": 3.5e2, "ok": true, "kind": "b", "nested": {"k": null}}"#;
+        let compact = doc.replace(": ", ":").replace(", ", ",");
+        for dir in std::env::split_paths(&dirs) {
+            let tok = crate::tok::Tok::load(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            let g = tok.grammars(tok.vocab_size() + 64).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            let c = g.compile(&Spec::JsonSchema(schema.into())).unwrap();
+            for text in [doc, compact.as_str()] {
+                let ids = tok.encode_with(text, false).unwrap();
+                let mut gram = c.start();
+                for (i, &t) in ids.iter().enumerate() {
+                    let ok = gram.allowed();
+                    assert!(
+                        ok[t as usize],
+                        "{}: token {i} ({:?}, after {:?}) is not allowed",
+                        dir.display(),
+                        tok.decode(&[t]).unwrap(),
+                        tok.decode(&ids[..i]).unwrap()
+                    );
+                    gram.consume(t);
+                }
+                assert!(gram.accepting(), "{}: the document is not whole", dir.display());
+                assert!(gram.allowed().iter().filter(|&&x| x).count() <= 8, "{}: after the document only the end (and white space) may follow", dir.display());
+            }
+        }
     }
 }

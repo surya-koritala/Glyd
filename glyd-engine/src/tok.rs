@@ -113,6 +113,11 @@ impl Tok {
         Ok(out)
     }
 
+    /// The tokens the tokenizer names, the added ones with them.
+    pub fn vocab_size(&self) -> usize {
+        self.t.get_vocab_size(true)
+    }
+
     pub fn encode(&self, text: &str) -> Result<Vec<u32>> {
         self.encode_with(text, true)
     }
@@ -424,5 +429,37 @@ pub(crate) mod tests {
             vec![0, 0, 1, 2],
             "(what the engine did with a template that has a bos_token: two BOS, had it passed the token)"
         );
+    }
+
+    /// The bytes of each token, as the families' tokenizers write them: SentencePiece's (`\u{2581}` for a space, `<0xNN>` for a byte, Gemma's), byte-level BPE's (GPT-2's letters for bytes, Qwen's and DeepSeek's), and a
+    /// token that is added and not special (`<tool_call>`) as the text it is; a special one is marked, and one the tokenizer has no name for is.
+    #[test]
+    fn the_bytes_of_the_tokens_of_each_kind_of_tokenizer() {
+        let marker = toktrie::TokTrie::SPECIAL_TOKEN_MARKER;
+        let spm = r#"{"version":"1.0","truncation":null,"padding":null,
+            "added_tokens":[{"id":0,"content":"<pad>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true},{"id":5,"content":"<tool_call>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":false}],
+            "normalizer":null,"pre_tokenizer":null,"post_processor":null,
+            "decoder":{"type":"Sequence","decoders":[{"type":"Replace","pattern":{"String":"\u2581"},"content":" "},{"type":"ByteFallback"},{"type":"Fuse"}]},
+            "model":{"type":"BPE","dropout":null,"unk_token":null,"continuing_subword_prefix":null,"end_of_word_suffix":null,"fuse_unk":false,"byte_fallback":true,
+              "vocab":{"<pad>":0,"\u2581hello":1,"<0x0A>":2,"\u2581":3,"\u00e9":4,"<tool_call>":5},"merges":[]}}"#;
+        let t = Tok::of(Tokenizer::from_bytes(spm.as_bytes()).unwrap(), Path::new("."));
+        let b = t.token_bytes(8).unwrap();
+        assert_eq!(b[1], b" hello");
+        assert_eq!(b[2], vec![10]);
+        assert_eq!(b[3], b" ");
+        assert_eq!(b[4], "é".as_bytes());
+        assert_eq!(b[5], b"<tool_call>");
+        assert_eq!(b[0], [&[marker][..], b"<pad>"].concat());
+        // (the rows are wider than the tokenizer: the extra tokens are named, special)
+        assert_eq!(b[6][0], marker);
+        assert_eq!(b.len(), 8);
+        // byte-level BPE: the letter for a space is \u0120, for a new line \u010a, and two bytes of a letter are two letters
+        let bl = r#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":{"type":"ByteLevel","add_prefix_space":false,"trim_offsets":true,"use_regex":true},
+            "post_processor":null,"decoder":{"type":"ByteLevel","add_prefix_space":true,"trim_offsets":true,"use_regex":true},
+            "model":{"type":"BPE","dropout":null,"unk_token":null,"continuing_subword_prefix":null,"end_of_word_suffix":null,"fuse_unk":false,"byte_fallback":false,
+              "vocab":{"a":0,"\u0120a":1,"\u010a":2,"\u00c3\u00a9":3},"merges":[]}}"#;
+        let t = Tok::of(Tokenizer::from_bytes(bl.as_bytes()).unwrap(), Path::new("."));
+        let b = t.token_bytes(4).unwrap();
+        assert_eq!((b[0].as_slice(), b[1].as_slice(), b[2].as_slice(), b[3].as_slice()), (&b"a"[..], &b" a"[..], &b"\n"[..], "é".as_bytes()));
     }
 }
