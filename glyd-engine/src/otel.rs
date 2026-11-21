@@ -207,6 +207,20 @@ pub fn config_from(get: &dyn Fn(&str) -> Option<String>) -> Option<Config> {
     Some(Config { url, headers, service: var("OTEL_SERVICE_NAME").unwrap_or_else(|| "glyd".to_string()) })
 }
 
+/// A URL as it may be said in a log: scheme, host, port and path, with no user name, password or query (a collector's key may be in any of them).
+pub fn shown(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let (host, path) = rest.split_once('/').map_or((rest, ""), |(h, p)| (h, p));
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let path = if path.is_empty() { String::new() } else { format!("/{path}") };
+    if scheme.is_empty() {
+        format!("{host}{path}")
+    } else {
+        format!("{scheme}://{host}{path}")
+    }
+}
+
 impl Exporter {
     pub fn start(cfg: Config) -> Exporter {
         let (tx, rx) = sync_channel::<Msg>(4096);
@@ -275,7 +289,12 @@ fn run(cfg: Config, rx: Receiver<Msg>, exported: Arc<AtomicU64>, dropped: Arc<At
                 dropped.fetch_add(batch.len() as u64, Relaxed);
                 if last_said.is_none_or(|t| t.elapsed() > Duration::from_secs(30)) {
                     last_said = Some(Instant::now());
-                    eprintln!("glyd: traces: could not send {} spans to {}: {e}", batch.len(), cfg.url);
+                    eprintln!(
+                        "glyd: traces: could not send {} spans to {}: {}",
+                        batch.len(),
+                        shown(&cfg.url),
+                        e.to_string().replace(&cfg.url, &shown(&cfg.url))
+                    );
                 }
             }
         }
@@ -322,9 +341,9 @@ pub fn init_from_env() {
         let get = |k: &str| std::env::var(k).ok();
         let Some(cfg) = config_from(&get) else { return };
         if let Some(p) = get("OTEL_EXPORTER_OTLP_PROTOCOL").filter(|p| p.trim() != "http/json" && !p.trim().is_empty()) {
-            eprintln!("glyd: traces: OTEL_EXPORTER_OTLP_PROTOCOL={p}: only http/json is sent (to {})", cfg.url);
+            eprintln!("glyd: traces: OTEL_EXPORTER_OTLP_PROTOCOL={p}: only http/json is sent (to {})", shown(&cfg.url));
         }
-        eprintln!("glyd: traces: spans per request (queue, prefill, decode) go to {} as service {}", cfg.url, cfg.service);
+        eprintln!("glyd: traces: spans per request (queue, prefill, decode) go to {} as service {}", shown(&cfg.url), cfg.service);
         install(Exporter::start(cfg));
     });
 }
@@ -460,6 +479,15 @@ mod tests {
         // ids are different for every span and every trace
         let ids: std::collections::HashSet<_> = spans.iter().map(|s| s["spanId"].as_str().unwrap()).collect();
         assert_eq!(ids.len(), 4);
+    }
+
+    /// What is said of the collector's URL carries no secret: no user name or password, no query, no fragment.
+    #[test]
+    fn a_collectors_url_is_said_without_its_secrets() {
+        assert_eq!(shown("https://user:pass@collector.example:4318/v1/traces?api_key=abc#frag"), "https://collector.example:4318/v1/traces");
+        assert_eq!(shown("http://127.0.0.1:4318/v1/traces"), "http://127.0.0.1:4318/v1/traces");
+        assert_eq!(shown("http://token@host"), "http://host");
+        assert_eq!(shown("http://host?k=v"), "http://host");
     }
 
     #[test]
