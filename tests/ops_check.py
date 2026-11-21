@@ -96,7 +96,7 @@ threading.Thread(target=collector.serve_forever, daemon=True).start()
 
 log = open("/tmp/ops-serve.log", "w")
 env = dict(os.environ, OTEL_EXPORTER_OTLP_ENDPOINT=f"http://127.0.0.1:{collector.server_port}", OTEL_SERVICE_NAME="glyd-ci")
-proc = subprocess.Popen([ENGINE, "serve", MODEL, "--port", str(PORT), "--ctx", "4096", "--users", "2", "--no-draft", "--drain-timeout", str(DRAIN_BOUND)], stdout=log, stderr=subprocess.STDOUT, env=env)
+proc = subprocess.Popen([ENGINE, "serve", MODEL, "--port", str(PORT), "--ctx", "4096", "--users", "2", "--no-draft", "--ollama-port", str(PORT + 1), "--drain-timeout", str(DRAIN_BOUND)], stdout=log, stderr=subprocess.STDOUT, env=env)
 
 # ---- alive, then ready once the model is loaded ----
 t0 = time.time()
@@ -115,6 +115,12 @@ print(f"ready after {time.time() - t0:.0f} s")
 assert get("/health")[0] == 200, "/health"
 st, body = get("/ready")
 assert (st, json.loads(body)["status"]) == (200, "ready"), (st, body)
+
+# ---- a default `glyd serve` listens on this computer's own address and nowhere else (P11, #222) ----
+scan = subprocess.run([sys.executable, "scripts/listener_scan.py", str(proc.pid)], capture_output=True, text=True)
+print(scan.stdout.strip())
+assert scan.returncode == 0, f"a listener that is not on this computer's own address:\n{scan.stdout}{scan.stderr}"
+assert f":{PORT}" in scan.stdout and f":{PORT + 1}" in scan.stdout, "the scan did not see the server's port and Ollama's"
 
 # ---- the metrics, after one request whole and one streamed ----
 before = samples(get("/metrics")[1])
