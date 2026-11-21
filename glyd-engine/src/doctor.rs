@@ -258,10 +258,10 @@ pub const MATRIX: &[Failure] = &[
     Failure {
         class: "no NVIDIA driver, or no GPU visible to the process",
         check: "gpu",
-        fix: "Check nvidia-smi; install driver 580 or newer; in a container give it the GPU (--gpus all); an empty CUDA_VISIBLE_DEVICES hides every GPU",
+        fix: "Check nvidia-smi; install a current NVIDIA driver (glyd doctor names the oldest this build runs on); in a container give it the GPU (--gpus all); an empty CUDA_VISIBLE_DEVICES hides every GPU",
     },
     Failure { class: "GPU older than Ampere", check: "gpu-age", fix: "Nothing on this card: RTX 30 series and later, A10, A100, L4, L40S and H100 run" },
-    Failure { class: "driver older than CUDA 13", check: "driver", fix: "Update the NVIDIA driver to 580 or newer (sudo ubuntu-drivers install, then reboot)" },
+    Failure { class: "driver older than the engine's kernels", check: "driver", fix: "Update the NVIDIA driver to the version `glyd doctor` names (sudo ubuntu-drivers install, then reboot)" },
     Failure {
         class: "GPU library not found",
         check: "gpu-library",
@@ -408,7 +408,7 @@ pub fn checks(f: &Facts) -> Vec<Check> {
     v.push(check("backend-cpu", "backend CPU", Status::Note, "not built yet (ROADMAP V4): without a GPU glyd compresses files", None));
     // a refusal that the GPU and driver checks above do not already say (AMD, Apple, an Arm computer)
     if let (Some(g), Some(r)) = (&main, &refusal) {
-        if g.cc.0 >= 8 && g.driver >= machine::DRIVER_MIN {
+        if g.cc.0 >= 8 && g.driver >= machine::driver_min(g.cc) {
             v.push(check("machine", "machine", Status::Fail, r.what.clone(), Some(&r.fix)));
         }
     } else if let (None, Some(r)) = (&main, &refusal) {

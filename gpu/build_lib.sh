@@ -7,6 +7,7 @@
 # (all but the TMA kernel, which is Hopper's: sm_90a alone). The name carries
 # the CUDA major version: libglyd_gpu_cuda13.so.
 #   bash gpu/build_lib.sh [OUT_DIR]      (default: next to glyd_gpu_dev.py)
+# GLYD_GPU_COMPRESS=none|size|...: the fatbin's compression in a release build (default size).
 # GLYD_GPU_NVCC_THREADS=N: nvcc's threads for the compile (default 0: one an architecture; a CI runner of 2 cores and 7 GB takes 2).
 # GLYD_GPU_RELEASE=1 (the release build, glyd-gpu-py/build.sh): machine code for those architectures and no PTX,
 # no line or debug information, the library stripped, GLYD_RELEASE defined (the default plans' kernels alone, no tuning variables) and the
@@ -36,7 +37,8 @@ if [ "${GLYD_GPU_RELEASE:-0}" = 1 ]; then
     # The library as v0.32.1 shipped it: the default plans' kernels alone and no tuning variables (-DGLYD_RELEASE), no PTX, and the device code
     # compressed for size. v0.33.0's (everything compiled in, Ampere's PTX, the compiler's default compression) was 159 MB (CUDA 12.8) and 63 MB
     # (CUDA 13) a library: a wheel of 181 MB, which PyPI refuses (100 MB). Now 24 MB each. A fatbin compressed for size needs a driver of CUDA 12.4 (550) or newer.
-    RELEASE=(-DGLYD_RELEASE --compress-mode=size)
+    # GLYD_GPU_COMPRESS=none: the device code not compressed at all (the engine bundle's CUDA 12 library: a driver below CUDA 12.4 cannot read a compressed fatbin)
+    RELEASE=(-DGLYD_RELEASE --compress-mode=${GLYD_GPU_COMPRESS:-size})
     PTX=()
 fi
 # The kernels' flags as PyTorch's extension build has them (the same code; CUDA's headers as system

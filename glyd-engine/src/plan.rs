@@ -615,14 +615,15 @@ fn backend_of(m: &Machine, main: usize) -> (String, Vec<String>) {
     let mut notes = Vec::new();
     let d0 = &m.devices[main];
     let backend = match d0.vendor {
-        Vendor::Nvidia if d0.driver >= crate::machine::DRIVER_MIN => format!("CUDA (driver CUDA {}.{})", d0.driver / 1000, d0.driver % 1000 / 10),
+        Vendor::Nvidia if d0.driver >= crate::machine::driver_min(d0.cc) => format!("CUDA (driver CUDA {}.{})", d0.driver / 1000, d0.driver % 1000 / 10),
         Vendor::Nvidia => {
             notes.push(format!(
-                "the driver supports CUDA {}.{}: the engine's kernels need 13.0 (driver 580) until the CUDA 12 build (ROADMAP P6)",
+                "the driver supports CUDA {}.{}: the engine's kernels need {}",
                 d0.driver / 1000,
-                d0.driver % 1000 / 10
+                d0.driver % 1000 / 10,
+                crate::machine::driver_need(d0.cc)
             ));
-            "CUDA 12 (planned)".into()
+            "CUDA (driver too old)".into()
         }
         Vendor::Amd => "ROCm/HIP (development build)".into(),
         Vendor::Apple => "Metal via MLX (planned, ROADMAP V3)".into(),
@@ -1454,7 +1455,13 @@ mod tests {
         } else {
             assert!(p.chosen.is_none() && p.options[0].why.is_some(), "{p:?}");
         }
-        assert!(p.notes.iter().any(|n| n.contains("CUDA 12 build")));
+        // (the preset's driver is CUDA 12's: a build with CUDA 13's kernels alone says what it needs; one with CUDA 12's runs on it)
+        assert_eq!(
+            p.notes.iter().any(|n| n.contains("the engine's kernels need CUDA 13.0 (driver 580 or newer)")),
+            !crate::machine::KERNELS12,
+            "{:?}",
+            p.notes
+        );
         // Qwen3-32B lossless on one 48 GB card (README: bf16 needs two); two 24 GB cards hold it at kestrel, split; one 24 GB card at a lower level
         let q32 = Shape::from_config(QWEN3_32B).unwrap();
         let p = plan(&q32, &Machine::preset("a6000").unwrap(), Ask::default());

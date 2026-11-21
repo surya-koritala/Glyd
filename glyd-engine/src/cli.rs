@@ -173,6 +173,34 @@ fn gpu_pick() -> Done<Gpu> {
     Ok(g)
 }
 
+/// The machine code this build carries (`sm_80 sm_86 ...`, build.rs), or "none" for a build without kernels.
+pub fn build_code() -> &'static str {
+    match env!("GLYD_ENGINE_SASS") {
+        "" => "none",
+        s => s,
+    }
+}
+
+/// What is said of a GPU the build has no machine code for: its compute capability and the code the build carries (the driver is new enough, so the driver is not the fix).
+pub fn no_code_for(gpu: &Gpu) -> String {
+    format!(
+        "this build has no code for {} (compute capability {}.{}): it carries {} and the PTX of compute_89, which the driver compiles for a newer GPU, and it failed here",
+        gpu.name,
+        gpu.cc.0,
+        gpu.cc.1,
+        build_code()
+    )
+}
+
+/// The way out of `no_code_for`: a build for this GPU, or vLLM.
+pub fn no_code_fix(gpu: &Gpu) -> String {
+    let arch = format!("{}{}", gpu.cc.0, gpu.cc.1);
+    machine::instead(
+        &format!("Build the engine for this GPU (GLYD_ENGINE_ARCHS={arch} cargo build --release -p glyd-engine, CUDA toolkit 13), or use the vLLM-based glyd"),
+        &format!("Build the engine for this GPU (GLYD_ENGINE_ARCHS={arch} cargo build --release -p glyd-engine, CUDA toolkit 13): {}", machine::FULL_TOOL),
+    )
+}
+
 /// An error from loading the engine in words (memory, a driver too old for the kernels), as the driver words it ("cuMemAlloc: out of memory (2)": the call, its text and its status). Whatever it
 /// is, the engine is not the only way to run the model: status 3.
 fn engine_refusal(e: crate::ffi::Error, name: &str, fit: &LoadPlan, gpu: &Gpu) -> Refusal {
@@ -187,15 +215,21 @@ fn engine_refusal(e: crate::ffi::Error, name: &str, fit: &LoadPlan, gpu: &Gpu) -
             ),
         );
     }
-    // (the images the driver cannot read: 200 and 218, one for no machine code for this GPU: 209, and one for a toolchain newer than the driver: 222)
+    // (209: no machine code for this GPU, where the driver is new enough for the build's kernels; the images the driver cannot read: 200 and 218; a toolchain newer than the driver: 222)
+    let no_image = t.contains("no kernel image") || status == Some(209);
+    if no_image && gpu.driver >= machine::driver_min(gpu.cc) {
+        return Refusal::unsupported(no_code_for(gpu), no_code_fix(gpu));
+    }
     if ["no kernel image", "kernel image is invalid", "unsupported toolchain", "unsupported_ptx", "invalid_image"].iter().any(|w| t.contains(w))
         || matches!(status, Some(200 | 209 | 218 | 222))
     {
+        let need = machine::driver_need(gpu.cc);
+        let series = machine::driver_series(machine::driver_min(gpu.cc));
         return Refusal::unsupported(
             format!("the GPU's driver cannot run the engine's kernels ({})", e.0),
             machine::instead(
-                "Update the NVIDIA driver (the engine's kernels are built for CUDA 13: driver 580 or newer), or use the vLLM-based glyd",
-                "Update the NVIDIA driver to 580 or newer: on Ubuntu `sudo apt install nvidia-driver-580` and reboot, elsewhere the installer at https://www.nvidia.com/drivers",
+                &format!("Update the NVIDIA driver (the engine's kernels need {need}), or use the vLLM-based glyd"),
+                &format!("Update the NVIDIA driver to {series} or newer: on Ubuntu `sudo apt install nvidia-driver-{series}` and reboot, elsewhere the installer at https://www.nvidia.com/drivers"),
             ),
         );
     }
@@ -2462,9 +2496,9 @@ pub fn verify(a: &Args) -> i32 {
     }
 }
 
-/// What `doctor` says of a driver below `DRIVER_MIN` (the engine's kernels are CUDA 13's): what it runs, what the engine needs and the exact update; None where it is new enough.
+/// What `doctor` says of a driver below `machine::driver_min` (this build's kernels are CUDA 13's, and CUDA 12's where it has them): what it runs, what the engine needs and the exact update; None where it is new enough.
 pub fn driver_problem(g: &Gpu) -> Option<String> {
-    (g.driver < machine::DRIVER_MIN).then(|| format!("too old: {}", machine::driver_fix(g.driver, "run the model with vLLM")))
+    (g.driver < machine::driver_min(g.cc)).then(|| format!("too old: {}", machine::driver_fix(g.driver, g.cc, "run the model with vLLM")))
 }
 
 /// `glyd doctor [--json] [--bundle [FILE]]`: src/doctor.rs.
@@ -3303,7 +3337,8 @@ mod tests {
             ("cuMemAlloc: CUDA error 2 (2)", "ran out of memory"),
             ("no room for a KV cache", "ran out of memory"),
             ("cuModuleLoadData: device kernel image is invalid (200)", "driver cannot run the engine's kernels"),
-            ("cuModuleLoadData: no kernel image is available for execution on the device (209)", "driver cannot run the engine's kernels"),
+            // (no machine code for this GPU, on a driver the build runs on: the GPU is what the build lacks, not the driver)
+            ("cuModuleLoadData: no kernel image is available for execution on the device (209)", "this build has no code for NVIDIA L4"),
             ("cuModuleLoadData: the provided PTX was compiled with an unsupported toolchain. (222)", "driver cannot run"),
             ("cuModuleLoadData: CUDA error 222 (222)", "driver cannot run"),
             ("Glyd's GPU library not found (set GLYD_GPU_LIB): nothing", "library not found"),
@@ -3313,6 +3348,11 @@ mod tests {
             assert!(r.code == CANNOT && r.what.contains(text), "{e}: {r}");
         }
         assert!(said("cuMemAlloc: out of memory (2)").what.contains("22.0 GiB were free"));
+        // the same error on a driver below the build's minimum is the driver's
+        let old = Gpu { driver: machine::driver_min(g.cc) - 1, ..g.clone() };
+        let r =
+            engine_refusal(crate::ffi::Error("cuModuleLoadData: no kernel image is available for execution on the device (209)".into()), "Qwen3-8B", &f, &old);
+        assert!(r.what.contains("driver cannot run the engine's kernels") && r.fix.contains("Update the NVIDIA driver"), "{r}");
     }
 
     /// A refusal before the engine is up goes into the file `--status-file` names, as one line, and not to the terminal, whatever its status (the program that started the engine runs the model

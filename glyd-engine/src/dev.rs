@@ -9,6 +9,21 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 static FATBIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine.fatbin"));
 #[cfg(no_kernels)]
 static FATBIN: &[u8] = &[];
+/// The kernels built a second time by CUDA 12's nvcc (build.rs, NVCC12: not compressed, so that a driver of CUDA 12.2 reads them); empty where there is none.
+#[cfg(not(no_kernels))]
+static FATBIN12: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine12.fatbin"));
+#[cfg(no_kernels)]
+static FATBIN12: &[u8] = &[];
+
+/// The fatbin a driver of CUDA version `driver` (13000 for 13.0) loads: CUDA 12's where the build has one and the driver reports CUDA 12 (or `force12`: GLYD_ENGINE_CUDA=12, to run it on a
+/// newer driver, which reads it as well), else the main one.
+fn pick_fatbin<'a>(driver: i32, force12: bool, main: &'a [u8], cuda12: &'a [u8]) -> &'a [u8] {
+    if !cuda12.is_empty() && (driver < 13000 || force12) {
+        cuda12
+    } else {
+        main
+    }
+}
 
 /// A GPU as the driver reports it, before an engine is built on it.
 #[derive(Clone, Debug)]
@@ -176,9 +191,14 @@ impl Dev {
         // SAFETY: a host out-pointer; 1: CU_STREAM_NON_BLOCKING.
         unsafe { cu("cuStreamCreate", (d.cuStreamCreate)(&mut s, 1))? };
         let mut module = std::ptr::null_mut();
-        if !FATBIN.is_empty() {
+        let mut version = 0;
+        // SAFETY: a host out-pointer.
+        unsafe { cu("cuDriverGetVersion", (d.cuDriverGetVersion)(&mut version))? };
+        let force12 = std::env::var("GLYD_ENGINE_CUDA").is_ok_and(|v| v.trim() == "12");
+        let fatbin = pick_fatbin(version, force12, FATBIN, FATBIN12);
+        if !fatbin.is_empty() {
             // SAFETY: the fatbin nvcc made, which lives for the process.
-            unsafe { cu("cuModuleLoadData", (d.cuModuleLoadData)(&mut module, FATBIN.as_ptr() as *const c_void))? };
+            unsafe { cu("cuModuleLoadData", (d.cuModuleLoadData)(&mut module, fatbin.as_ptr() as *const c_void))? };
         }
         Ok(Dev { ordinal, name, cc: (major, minor), sms, total_mem: total, stream: s, module, ctx })
     }
@@ -753,5 +773,23 @@ impl Drop for Side {
             // SAFETY: made in new, destroyed once.
             unsafe { (d.cuStreamDestroy_v2)(self.stream) };
         }
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::pick_fatbin;
+
+    /// A driver that reports CUDA 12 loads the CUDA 12 fatbin where the build has one; CUDA 13's driver loads the main one unless CUDA 12 is asked for; a build without one has one choice.
+    #[test]
+    fn the_fatbin_follows_the_drivers_cuda_version() {
+        let (main, c12) = (&b"13"[..], &b"12"[..]);
+        assert_eq!(pick_fatbin(12020, false, main, c12), c12);
+        assert_eq!(pick_fatbin(12090, false, main, c12), c12);
+        assert_eq!(pick_fatbin(13000, false, main, c12), main);
+        assert_eq!(pick_fatbin(13020, false, main, c12), main);
+        assert_eq!(pick_fatbin(13020, true, main, c12), c12);
+        assert_eq!(pick_fatbin(12020, false, main, &[]), main);
+        assert_eq!(pick_fatbin(13020, true, main, &[]), main);
     }
 }

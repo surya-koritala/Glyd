@@ -127,14 +127,15 @@ dynamic at the layer-kind boundary; nothing is generic over the backend engine-w
 
 | Backend | Kernels | Libraries | State |
 | :--- | :--- | :--- | :--- |
-| CUDA | `glyd-engine/kernels/*.cu`, `gpu/glyd_gpu.cu` (mma.sync, cp.async; wgmma on H100/H200) | cuBLAS(Lt) when present; NCCL planned (C2a) | sm_80-sm_120, driver ≥ 580, Linux x86_64; the default only on measured GPUs (S10) |
+| CUDA | `glyd-engine/kernels/*.cu`, `gpu/glyd_gpu.cu` (mma.sync, cp.async; wgmma on H100/H200) | cuBLAS(Lt) when present; NCCL planned (C2a) | sm_80-sm_120, driver ≥ 535 (570 for Blackwell; a build with CUDA 13's kernels alone: 580), Linux x86_64; the default only on measured GPUs (S10) |
 | ROCm/HIP | the same sources through `gpu/hip.h` (tensor ops emulated today); wave64 and MFMA paths for CDNA | hipBLASLt, RCCL planned | RDNA 3/4 development builds (`GLYD_HIP=1`); CDNA to do |
 | Metal | MLX via `mlx-c` for dense ops; Glyd's formats as custom Metal kernels | MLX | To do |
 | CPU | AVX2, AVX-512, NEON (`cpu_*.rs`) | none | Experts only; whole models to do |
 
 The engine opens the driver at run time (`glyd-engine/src/ffi.rs`), but the vendor is a build-time choice today
-(`cfg(glyd_hip)`). The target is a small core that downloads the signed kernel bundle for the machine's vendor (P7b),
-CUDA 12 and 13 builds chosen by driver version, and PTX so GPUs newer than the build still run (P6).
+(`cfg(glyd_hip)`). The release carries the engine's kernels twice, built with CUDA 13 (compressed) and CUDA 12.9 (not compressed, so that a driver of
+CUDA 12.2 reads them), and the GPU library for both; the driver's version picks (`dev.rs`, `ffi.rs`), and the release build adds the compute_89 PTX so
+a GPU newer than the machine code still runs (P6). The target is a small core that downloads the signed kernel bundle for the machine's vendor (P7b).
 
 ## Build or reuse
 

@@ -52,6 +52,12 @@ from_tarball() {   # glyd-engine-vX.Y.Z-linux-ARCH.tar.gz: glyd-engine, libglyd_
   local d; d=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)
   install -m 755 "$d/glyd-engine" "$H/bin/glyd-engine"
   install -m 644 "$d/$LIB" "$H/lib/$LIB"
+  # a bundle from 0.33.2 on also holds the CUDA 12 library (not compressed), which a driver older than R580 (CUDA 13) takes
+  if [ -f "$d/libglyd_gpu_cuda12.so" ]; then
+    install -m 644 "$d/libglyd_gpu_cuda12.so" "$H/lib/libglyd_gpu_cuda12.so"
+    drv=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2> /dev/null | head -n 1 | cut -d. -f1 || true)
+    case $drv in '' | *[!0-9]*) ;; *) [ "$drv" -ge 580 ] || LIB=libglyd_gpu_cuda12.so ;; esac
+  fi
   rm -rf "$tmp"
   write_env
 }

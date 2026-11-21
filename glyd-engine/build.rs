@@ -3,7 +3,11 @@
 // the fatbin is empty and the CUDA paths report that the build has no kernels (`cargo check` works on any machine).
 //
 // GLYD_ENGINE_ARCHS: the architectures to build for, as nvcc's numbers (default "80 86 89 90a", and the compute_80 PTX); NVCC: the compiler.
-// GLYD_ENGINE_RELEASE=1 (release.yml): the machine code alone, for 80, 86, 89, 90a, 100 and 120 (no PTX); a build without nvcc, or with an nvcc that has no Blackwell, is an error.
+// GLYD_ENGINE_RELEASE=1 (release-gpu.yml): the machine code for 80, 86, 89, 90a, 100 and 120 and the compute_89 PTX (a GPU newer than these gets its code compiled by the driver); a build without nvcc,
+// or with an nvcc that has no Blackwell, is an error.
+// NVCC12: a CUDA 12.9 (or newer 12) nvcc, with the one in NVCC (CUDA 13) or on PATH: the kernels are built a second time, uncompressed (a fatbin compressed for size needs a driver of
+// CUDA 12.4 or newer), as engine12.fatbin, which the binary loads on a driver that reports CUDA 12 (cfg `kernels12`: dev.rs picks by the driver's version, machine.rs says what the build runs on).
+// Without NVCC12 the build carries the one nvcc's kernels, and the cfg `kernels12` where that nvcc is CUDA 12's.
 // Every build keeps the names engine.cu gives its kernels (the source is open: a release build is this source as it reads).
 //
 // GLYD_HIP=1: AMD GPUs in place of NVIDIA's. kernels/engine.cu by hipcc (HIPCC: hipcc, or a script that runs a clang with HIP as hipcc would) as code objects for RDNA 3 and 4 in
@@ -79,13 +83,17 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GLYD_SOURCE_COMMIT");
     println!("cargo:rustc-env=GLYD_SOURCE_COMMIT={}", env::var("GLYD_SOURCE_COMMIT").unwrap_or_default());
     println!("cargo::rustc-check-cfg=cfg(no_kernels)");
+    println!("cargo::rustc-check-cfg=cfg(kernels12)");
+    println!("cargo:rerun-if-env-changed=NVCC12");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let out = out_dir.join("engine.fatbin");
+    std::fs::write(out_dir.join("engine12.fatbin"), b"").unwrap(); // (dev.rs embeds both; the second is empty unless NVCC12 built it)
     let release = env::var_os("GLYD_ENGINE_RELEASE").is_some_and(|v| v == "1");
     if release && env::var_os("GLYD_ENGINE_LINEINFO").is_some() {
         panic!("GLYD_ENGINE_RELEASE=1 with GLYD_ENGINE_LINEINFO: a release build has no line information in its machine code");
     }
     if env::var_os("GLYD_HIP").is_some_and(|v| v == "1") {
+        println!("cargo:rustc-env=GLYD_ENGINE_SASS="); // (no NVIDIA machine code in an AMD build)
         hip(&out);
         return;
     }
@@ -94,6 +102,7 @@ fn main() {
             panic!("GLYD_ENGINE_RELEASE=1: no nvcc found (set NVCC or CUDA_HOME): a release build has its CUDA kernels");
         }
         std::fs::write(&out, b"").unwrap();
+        println!("cargo:rustc-env=GLYD_ENGINE_SASS=");
         println!("cargo:rustc-cfg=no_kernels");
         println!("cargo:warning=glyd-engine: no nvcc found (set NVCC or CUDA_HOME): built without its CUDA kernels");
         return;
@@ -110,27 +119,66 @@ fn main() {
             archs.push_str(&format!(" {a}"));
         }
     }
-    // the fatbin compressed (nvcc 12.4 on; the driver decompresses at load): about a third of the size; where this nvcc has no such flag, as it is
-    let build = |compress: bool| {
-        let mut cmd = Command::new(&nvcc);
-        cmd.args(["-fatbin", "-O3", "-std=c++17", "--expt-relaxed-constexpr", "-o"]).arg(&out);
+    // one fatbin of kernels/engine.cu by `nvcc` for `archs`: CUDA 13's compressed for size (nvcc 12.4 on knows the flag; where it fails, as it is), CUDA 12's not compressed at all
+    // (a driver below CUDA 12.4 cannot read a compressed fatbin); the compute_89 PTX in a release build, and in a development build the compute_80 PTX
+    let fatbin = |nvcc: &Path, out: &Path, archs: &str, compress: bool, uncompressed: bool| {
+        let mut cmd = Command::new(nvcc);
+        cmd.args(["-fatbin", "-O3", "-std=c++17", "--expt-relaxed-constexpr", "-o"]).arg(out);
         if env::var_os("GLYD_ENGINE_LINEINFO").is_some() {
             cmd.arg("-lineinfo"); // (for a profiler: it makes the fatbin several times larger)
         }
         if compress {
             cmd.arg("--compress-mode=size");
+        } else if uncompressed {
+            cmd.arg("--compress-mode=none");
         }
         for a in archs.split_whitespace() {
             cmd.arg("-gencode").arg(format!("arch=compute_{a},code=sm_{a}"));
         }
-        // and the Ampere PTX, which a driver compiles for a GPU newer than these (not in a release build: the machine code alone)
-        if !release && archs.split_whitespace().any(|a| a == "80") {
+        if release {
+            // (PTX for a GPU newer than these: the driver compiles it at load, where a release build would otherwise refuse the GPU)
+            cmd.arg("-gencode").arg("arch=compute_89,code=compute_89");
+        } else if archs.split_whitespace().any(|a| a == "80") {
+            // (a development build: the Ampere PTX, which a driver compiles for a GPU newer than these)
             cmd.arg("-gencode").arg("arch=compute_80,code=compute_80");
         }
         cmd.arg("kernels/engine.cu");
         cmd.status().unwrap_or_else(|e| panic!("{}: {e}", nvcc.display()))
     };
-    if !build(true).success() && !build(false).success() {
+    let major = |nvcc: &Path| {
+        let v = Command::new(nvcc).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        v.split("release ").nth(1).and_then(|s| s.split('.').next()).and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(13)
+    };
+    let primary12 = major(&nvcc) < 13;
+    if !fatbin(&nvcc, &out, &archs, !primary12, primary12).success() && !fatbin(&nvcc, &out, &archs, false, primary12).success() {
         panic!("nvcc failed on kernels/engine.cu");
     }
+    // the second fatbin, for drivers that report CUDA 12 (empty without NVCC12)
+    let out12 = out_dir.join("engine12.fatbin");
+    std::fs::write(&out12, b"").unwrap();
+    let mut kernels12 = primary12;
+    if let Some(nvcc12) = env::var_os("NVCC12").map(PathBuf::from) {
+        if major(&nvcc12) >= 13 {
+            panic!("NVCC12={}: this nvcc is CUDA {}'s, not 12's", nvcc12.display(), major(&nvcc12));
+        }
+        let known12 = Command::new(&nvcc12).arg("--list-gpu-arch").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        // (Blackwell's code needs CUDA 12.8: the build refuses an older one, as the CUDA 13 build refuses an nvcc without it)
+        let archs12: Vec<&str> =
+            archs.split_whitespace().filter(|a| known12.lines().any(|l| l.trim() == format!("compute_{}", a.trim_end_matches('a')))).collect(); // (nvcc lists compute_90, and takes 90a)
+        if release && archs12.len() != archs.split_whitespace().count() {
+            panic!(
+                "GLYD_ENGINE_RELEASE=1: NVCC12 has no compute_{{{}}}: a release build needs CUDA 12.8 or newer",
+                archs.split_whitespace().filter(|a| !archs12.contains(a)).collect::<Vec<_>>().join(", ")
+            );
+        }
+        if !fatbin(&nvcc12, &out12, &archs12.join(" "), false, true).success() {
+            panic!("nvcc ({}) failed on kernels/engine.cu", nvcc12.display());
+        }
+        kernels12 = true;
+    }
+    if kernels12 {
+        println!("cargo:rustc-cfg=kernels12");
+    }
+    // the machine code the binary carries, which the refusal of a GPU it has no code for says
+    println!("cargo:rustc-env=GLYD_ENGINE_SASS={}", archs.split_whitespace().map(|a| format!("sm_{a}")).collect::<Vec<_>>().join(" "));
 }

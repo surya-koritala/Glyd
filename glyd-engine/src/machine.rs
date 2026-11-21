@@ -7,8 +7,51 @@ use crate::dev::Gpu;
 use crate::ui::{gb, Refusal};
 use crate::weights::Config;
 
-/// The CUDA version a driver of the series 580 reports (13.0): the engine's kernels are built with CUDA 13 and run on no older driver.
+/// The CUDA version a driver of the series 580 reports (13.0): what a build with CUDA 13's kernels alone runs on.
 pub const DRIVER_MIN: i32 = 13000;
+
+/// Whether this build carries CUDA 12's kernels too (build.rs: NVCC12 built them, or the nvcc was CUDA 12's: cfg `kernels12`): it then runs on a driver of CUDA 12.2 (series 535), and on
+/// CUDA 12.8 (570) for Blackwell, whose code CUDA 12 has from 12.8.
+pub const KERNELS12: bool = cfg!(kernels12);
+
+/// The oldest driver, as the CUDA version it reports, that a build runs a GPU of compute capability `cc` on: where it has CUDA 12's kernels 12.2 (Blackwell, compute capability 10 and 12: 12.8), else 13.0.
+pub const fn driver_min_for(kernels12: bool, cc: (i32, i32)) -> i32 {
+    if !kernels12 {
+        DRIVER_MIN
+    } else if cc.0 >= 10 {
+        12080
+    } else {
+        12020
+    }
+}
+
+/// `driver_min_for` this build.
+pub fn driver_min(cc: (i32, i32)) -> i32 {
+    driver_min_for(KERNELS12, cc)
+}
+
+/// The driver series that reports CUDA version `cuda` (13000 for 13.0): 580 for CUDA 13.0, 575 for 12.9, 570 for 12.8, 550 for 12.4, 535 for 12.2.
+pub fn driver_series(cuda: i32) -> i32 {
+    match cuda {
+        13000.. => 580,
+        12090.. => 575,
+        12080.. => 570,
+        12040.. => 550,
+        12020.. => 535,
+        _ => 525,
+    }
+}
+
+/// "CUDA 13.0 (driver 580 or newer)": what the engine needs on a GPU of compute capability `cc`, as the refusals say it.
+pub fn driver_need(cc: (i32, i32)) -> String {
+    driver_need_for(KERNELS12, cc)
+}
+
+/// `driver_need` for a build with or without CUDA 12's kernels.
+pub fn driver_need_for(kernels12: bool, cc: (i32, i32)) -> String {
+    let min = driver_min_for(kernels12, cc);
+    format!("CUDA {}.{} (driver {} or newer)", min / 1000, min % 1000 / 10, driver_series(min))
+}
 
 /// Where `glyd run` looks for the Python tool (the one with vLLM): the directories of PATH, where `uv tool install` puts programs (UV_TOOL_BIN_DIR, XDG_BIN_HOME) and ~/.local/bin.
 fn tool_dirs() -> Vec<std::path::PathBuf> {
@@ -209,14 +252,10 @@ fn refusal_on(table: &[Entry], archs: &[&str], g: &Gpu, arch: &str, asked: bool,
             unmeasured_fix(),
         ));
     }
-    if g.driver < DRIVER_MIN {
+    if g.driver < driver_min(g.cc) {
         return Some(cannot(
-            format!(
-                "the NVIDIA driver here runs CUDA {}.{}, and this engine's kernels need CUDA 13 (driver 580 or newer)",
-                g.driver / 1000,
-                g.driver % 1000 / 10
-            ),
-            driver_fix(g.driver, "run the model with vLLM"),
+            format!("the NVIDIA driver here runs CUDA {}.{}, and this engine's kernels need {}", g.driver / 1000, g.driver % 1000 / 10, driver_need(g.cc)),
+            driver_fix(g.driver, g.cc, "run the model with vLLM"),
         ));
     }
     if !asked && !on_list(table, g, family) {
@@ -241,13 +280,13 @@ fn unmeasured_fix() -> String {
     )
 }
 
-/// The exact update for a driver below `DRIVER_MIN` (`driver`: the CUDA version it reports, 12080 for 12.8): the series to install and how, and where vLLM is installed the other way out.
-pub fn driver_fix(driver: i32, with_vllm: &str) -> String {
+/// The exact update for a driver below `driver_min(cc)` (`driver`: the CUDA version it reports, 12080 for 12.8): the series to install and how, and where vLLM is installed the other way out.
+pub fn driver_fix(driver: i32, cc: (i32, i32), with_vllm: &str) -> String {
     let have = format!("the driver here runs CUDA {}.{}", driver / 1000, driver % 1000 / 10);
+    let series = driver_series(driver_min(cc));
     let update = format!(
-        "{have}; the engine's kernels need CUDA {}.{} (driver 580 or newer): on Ubuntu `sudo apt install nvidia-driver-580` (or `sudo ubuntu-drivers install`) and reboot, elsewhere the installer at https://www.nvidia.com/drivers",
-        DRIVER_MIN / 1000,
-        DRIVER_MIN % 1000 / 10
+        "{have}; the engine's kernels need {}: on Ubuntu `sudo apt install nvidia-driver-{series}` (or `sudo ubuntu-drivers install`) and reboot, elsewhere the installer at https://www.nvidia.com/drivers",
+        driver_need(cc)
     );
     instead(&format!("{update}, or {with_vllm}"), &update)
 }
@@ -407,6 +446,7 @@ mod tests {
     /// (and the fix is vLLM), a GPU it names has a compute capability the engine runs on, and the shipped list is no more than a decision of measurements: where it is empty, every GPU is refused first for the bar,
     /// whatever else is wrong with it, with no list to name.
     #[test]
+    #[cfg(not(kernels12))] // (a driver of CUDA 12.x is below this build's minimum only where it carries CUDA 13's kernels alone)
     fn the_engine_is_used_only_where_it_is_measured_at_least_as_fast_as_vllm() {
         FORCE_VLLM.with(|f| f.set(Some(true)));
         for (word, cc, families) in GPUS {
@@ -492,6 +532,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(kernels12))] // (a driver of CUDA 12.x is below this build's minimum only where it carries CUDA 13's kernels alone)
     fn every_reason_a_gpu_is_refused_for_and_the_order_they_are_said_in() {
         let ok = gpu("NVIDIA L4", (8, 9), 22, 13000);
         let said = |g: Gpu, arch: &str| refusal_on(TABLE, ARCHS, &g, arch, false, "Qwen3").map(|r| (r.code, r.what));
@@ -578,6 +619,7 @@ mod tests {
     }
     /// Where vLLM is not installed (the Rust install alone), no refusal sends the user to it: each says what the Rust install can do, which is a Qwen3 model, the engine by name, or the whole tool.
     #[test]
+    #[cfg(not(kernels12))] // (a driver of CUDA 12.x is below this build's minimum only where it carries CUDA 13's kernels alone)
     fn a_refusal_names_vllm_only_where_it_is_installed() {
         let l4 = gpu("NVIDIA L4", (8, 9), 22, 13000);
         let old = gpu("NVIDIA L4", (8, 9), 22, 12080);
@@ -663,10 +705,39 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(kernels12))] // (a driver of CUDA 12.x is below this build's minimum only where it carries CUDA 13's kernels alone)
     fn doctor_fails_a_driver_below_the_minimum() {
         FORCE_VLLM.with(|f| f.set(Some(false)));
         let said = crate::cli::driver_problem(&gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 12080)).unwrap();
         assert!(said.contains("runs CUDA 12.8") && said.contains("driver 580 or newer") && said.contains("sudo apt install nvidia-driver-580"), "{said}");
         assert!(crate::cli::driver_problem(&gpu("x", (8, 9), 16, DRIVER_MIN)).is_none() && crate::cli::driver_problem(&gpu("x", (8, 9), 16, 13020)).is_none());
+    }
+    /// A build with CUDA 12's kernels runs on a driver of CUDA 12.2 (535), Blackwell on 12.8 (570); a build with CUDA 13's alone on 13.0 (580), whatever the GPU.
+    #[test]
+    fn the_driver_minimum_follows_the_kernels_the_build_carries() {
+        for cc in [(8, 0), (8, 6), (8, 9), (9, 0)] {
+            assert_eq!(driver_min_for(true, cc), 12020, "{cc:?}");
+            assert_eq!(driver_min_for(false, cc), 13000, "{cc:?}");
+        }
+        for cc in [(10, 0), (12, 0), (12, 1)] {
+            assert_eq!(driver_min_for(true, cc), 12080, "{cc:?}");
+            assert_eq!(driver_min_for(false, cc), 13000, "{cc:?}");
+        }
+        assert_eq!(driver_need_for(true, (8, 9)), "CUDA 12.2 (driver 535 or newer)");
+        assert_eq!(driver_need_for(true, (12, 0)), "CUDA 12.8 (driver 570 or newer)");
+        assert_eq!(driver_need_for(false, (8, 9)), "CUDA 13.0 (driver 580 or newer)");
+        for (cuda, series) in [(12000, 525), (12020, 535), (12040, 550), (12060, 550), (12080, 570), (12090, 575), (13000, 580), (13020, 580)] {
+            assert_eq!(driver_series(cuda), series, "{cuda}");
+        }
+    }
+
+    /// A GPU the build has no code for is told so, with the code the build carries and the way out; the driver is not the fix.
+    #[test]
+    fn a_gpu_with_no_code_is_not_told_to_update_the_driver() {
+        let g = gpu("NVIDIA GeForce RTX 3050", (8, 6), 6, 13020);
+        let said = crate::cli::no_code_for(&g);
+        assert!(said.contains("this build has no code for NVIDIA GeForce RTX 3050") && said.contains("8.6") && !said.contains("update"), "{said}");
+        let fix = crate::cli::no_code_fix(&g);
+        assert!(fix.contains("GLYD_ENGINE_ARCHS=86") && !fix.to_lowercase().contains("driver"), "{fix}");
     }
 }

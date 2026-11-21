@@ -156,14 +156,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-latest, name: linux-x86_64, cuda: "12.8.2"}
-          - {os: ubuntu-latest, name: linux-x86_64, cuda: "13.0.3"}
-          - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "12.8.2"}
-          - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "13.0.3"}
+          # the wheels' libraries (device code compressed for size: a driver of CUDA 12.4 or newer reads CUDA 12's) ...
+          - {os: ubuntu-latest, name: linux-x86_64, cuda: "12.8.2", compress: size, artifact: gpu-lib}
+          - {os: ubuntu-latest, name: linux-x86_64, cuda: "13.0.3", compress: size, artifact: gpu-lib}
+          - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "12.8.2", compress: size, artifact: gpu-lib}
+          - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "13.0.3", compress: size, artifact: gpu-lib}
+          # ... and the engine bundle's CUDA 12 library, not compressed at all, which a driver of CUDA 12.2 (R535) reads (no size limit on a GitHub release)
+          - {os: ubuntu-latest, name: linux-x86_64, cuda: "12.9.1", compress: none, artifact: bundle-lib}
+          - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "12.9.1", compress: none, artifact: bundle-lib}
     runs-on: ${{ matrix.os }}
     container: nvidia/cuda:${{ matrix.cuda }}-devel-rockylinux8
     env:
       GLYD_GPU_RELEASE: "1"
+      GLYD_GPU_COMPRESS: ${{ matrix.compress }}
       GLYD_GPU_NVCC_THREADS: "2" # (the runner has 2 cores and 7 GB: one nvcc thread an architecture would be 6)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -195,7 +200,7 @@ jobs:
           cd lib && for f in libglyd_gpu_cuda*.so; do sha256sum "$f" > "$f.sha256"; done && cat ./*.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gpu-lib-${{ matrix.name }}-cuda${{ matrix.cuda }}
+          name: ${{ matrix.artifact }}-${{ matrix.name }}-cuda${{ matrix.cuda }}
           path: |
             lib/*.so
             lib/*.sha256
@@ -237,7 +242,11 @@ jobs:
           source /opt/rh/gcc-toolset-13/enable
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION"
           source "$HOME/.cargo/env"
-          rustc --version; nvcc --version | tail -2
+          # CUDA 12.9's nvcc beside CUDA 13's (the cuda repository of the image): the engine's kernels are built a second time, not compressed, for drivers that report CUDA 12
+          # (NVCC12: build.rs; the binary loads the one the driver's version asks for)
+          dnf install -y -q --setopt=install_weak_deps=False cuda-nvcc-12-9 cuda-cudart-devel-12-9
+          export NVCC12=/usr/local/cuda-12.9/bin/nvcc
+          rustc --version; nvcc --version | tail -2; "$NVCC12" --version | tail -2
           export RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=cargo --remap-path-prefix=$HOME/.rustup=rustup"
           time cargo build --release --locked -p glyd-engine --no-default-features
           mkdir engine && cp target/release/glyd-engine engine/
@@ -293,7 +302,11 @@ jobs:
         with:
           name: gpu-lib-${{ matrix.name }}-cuda13.0.3
           path: lib
-      - name: The tarball (glyd with the engine linked, glyd-engine as a link to it, libglyd_gpu_cuda13.so, LICENSE) and its sha256
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bundle-lib-${{ matrix.name }}-cuda12.9.1
+          path: lib12
+      - name: The tarball (glyd with the engine linked, glyd-engine as a link to it, libglyd_gpu_cuda13.so and the not compressed libglyd_gpu_cuda12.so, LICENSE) and its sha256
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           NAME: ${{ matrix.name }}
@@ -301,9 +314,11 @@ jobs:
           set -euo pipefail
           (cd engine && sha256sum -c glyd-engine.sha256)
           (cd lib && sha256sum -c libglyd_gpu_cuda13.so.sha256)
+          (cd lib12 && sha256sum -c libglyd_gpu_cuda12.so.sha256)
           d="glyd-engine-v$VERSION-$NAME"
           mkdir -p "out/$d"
-          cp engine/glyd lib/libglyd_gpu_cuda13.so "out/$d/"
+          # (the engine loads the library of the driver's CUDA version: 13 from a driver of CUDA 13, else 12; a driver of CUDA 12.2 or newer reads the not compressed 12)
+          cp engine/glyd lib/libglyd_gpu_cuda13.so lib12/libglyd_gpu_cuda12.so "out/$d/"
           cp glyd-engine/LICENSE "out/$d/LICENSE"
           chmod +x "out/$d/glyd"
           # (the engine's old command: this program under that name, which it takes for the engine's command line; install.sh and condor/tools/install.sh copy it)
