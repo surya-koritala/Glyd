@@ -15,7 +15,8 @@ pre-releases (X.Y.Zrc3, X.Y.Za1, X.Y.Zb2) exist here.
 What carries it: the four Cargo.toml (and glyd-store's dependency on glyd, and glyd's on glyd-engine), the four glyd entries in
 Cargo.lock, pyproject.toml (and its extras' pins of glyd-gpu), glyd/__init__.py, glyd-gpu-py's pyproject.toml and glyd_gpu/__init__.py and scripts/install.sh and scripts/install.ps1 (the release they install), in every version. In a release (X.Y.Z) also ROADMAP.md
 and docs/index.html, where they name the current release, and CHANGELOG.md's heading
-(`## Unreleased` or `## vX.Y.Z (Unreleased)` becomes `## vX.Y.Z` with the date). Formula/glyd.rb is not
+(`## Unreleased` or `## vX.Y.Z (Unreleased)` becomes `## vX.Y.Z` with the date), with the entries waiting in
+changelog.d/ (one file per pull request) put under it, newest first, and their files removed. Formula/glyd.rb is not
 here: it needs the release's files to exist, see scripts/bump_formula.py.
 """
 import argparse
@@ -23,6 +24,7 @@ import datetime
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -31,6 +33,7 @@ PRE = {"a": "alpha", "b": "beta", "rc": "rc"}  # PEP 440's letter, and Cargo's w
 LONG = {"a": "a", "alpha": "a", "b": "b", "beta": "b", "rc": "rc"}
 DASH = "—"
 CHANGELOG = "CHANGELOG.md"
+FRAGMENTS = "changelog.d"  # one file per pull request (FRAGMENTS/README.md says how); a release puts them in CHANGELOG.md
 
 # (file, ecosystem, pattern with the version in group v, matches expected)
 CODE = [
@@ -108,6 +111,32 @@ def problems(root, want=None):
     return bad
 
 
+def fragments(root):
+    """changelog.d's entries, newest first (by the commit that added each; by name outside git or for a tie)."""
+    files = sorted(f for f in (root / FRAGMENTS).glob("*.md") if f.name != "README.md")
+
+    def added(f):
+        try:
+            out = subprocess.run(["git", "-C", str(root), "log", "--diff-filter=A", "--format=%ct", "-1", "--", str(f.relative_to(root))],
+                                 capture_output=True, text=True, check=True).stdout.strip()
+            return int(out or 0)
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return 0
+
+    return sorted(files, key=lambda f: (-added(f), f.name))
+
+
+def gather(text, files):
+    """CHANGELOG text with the fragments' entries put first under its `## Unreleased`-style heading (the first `## `)."""
+    entries = "".join(f.read_text(encoding="utf-8").strip() + "\n" for f in files if f.read_text(encoding="utf-8").strip())
+    if not entries:
+        return text
+    m = re.search(r"^## .*\n\n?", text, re.M)
+    if not m:
+        sys.exit(f"{CHANGELOG}: no '## ' heading to put changelog.d's entries under")
+    return text[:m.end()] + entries + "\n" + text[m.end():]
+
+
 def bump(root, version, date):
     """Set every file to version (a release: dated `date`); the files changed."""
     want = parse(version)
@@ -128,10 +157,16 @@ def bump(root, version, date):
         files[CHANGELOG], k = re.subn(head, f"## v{v} {DASH} {date.isoformat()}", read(root, CHANGELOG), flags=re.M)
         if k != 1:
             sys.exit(f"{CHANGELOG}: {k} headings '## Unreleased' or '## v{v} (Unreleased)', expected 1")
+        frags = fragments(root)
+        files[CHANGELOG] = gather(files[CHANGELOG], frags)
+    else:
+        frags = []
     changed = [p for p, t in files.items() if t != read(root, p)]
     for p in changed:
         (root / p).write_text(files[p], encoding="utf-8")
-    return changed
+    for f in frags:  # their entries are in CHANGELOG.md now
+        f.unlink()
+    return changed + [str(f.relative_to(root)) for f in frags]
 
 
 def selftest():
@@ -172,8 +207,14 @@ def selftest():
         bump(root, "v9.9.9-rc.2", day)  # rc to rc
         assert not problems(root) and "9.9.9rc2" in read(root, "bindings/python/pyproject.toml")
 
-        changed = bump(root, "9.9.9", day)  # the release: the docs and the heading too (v0.25.1's ten files, the engine's Cargo.toml, and the installer's pin)
-        assert not problems(root) and len(changed) == 14, changed
+        (root / FRAGMENTS).mkdir(exist_ok=True)
+        (root / FRAGMENTS / "README.md").write_text("how\n", encoding="utf-8")
+        (root / FRAGMENTS / "a-thing.md").write_text("- A thing.\n", encoding="utf-8")
+        (root / FRAGMENTS / "b-other.md").write_text("- Another thing.\n\n", encoding="utf-8")
+        changed = bump(root, "9.9.9", day)  # the release: the docs and the heading too (v0.25.1's ten files, the engine's Cargo.toml, and the installer's pin), and changelog.d's two entries
+        assert not problems(root) and len(changed) == 16, changed
+        assert f"## v9.9.9 {DASH} 2031-02-03\n\n- A thing.\n- Another thing.\n\n" in read(root, CHANGELOG), read(root, CHANGELOG)[:300]
+        assert [f.name for f in (root / FRAGMENTS).iterdir()] == ["README.md"]
         assert f"## v9.9.9 {DASH} 2031-02-03\n" in read(root, CHANGELOG) and "(Unreleased)" not in read(root, CHANGELOG)
         assert "(v9.9.9, 2031-02-03)" in read(root, "ROADMAP.md")
         assert "CLI; v9.9.9, February 2031." in read(root, "docs/index.html")
