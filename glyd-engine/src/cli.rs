@@ -12,7 +12,6 @@ use crate::levels::{self, is_qat, layout_for, QAT_WREN};
 pub use crate::levels::{packed_repo, ship_layout, short_name};
 use crate::machine;
 use crate::model::{Engine, Opts};
-use crate::model35::{Engine35, Opts35};
 use crate::model_nh::{EngineNh, OptsNh};
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::offload::{CachePlan, ExpertStore};
@@ -1747,12 +1746,6 @@ fn load_lossy(
             let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
             (Box::new(e), bytes, vocab)
         }
-    } else if crate::tune!("GLYD_Q35_DYNAMIC").is_some_and(|v| v == "0") {
-        // (a development build's way back to the hand-written engine, to compare)
-        let o = Opts35 { weight_transform: None, ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout), chunked: true };
-        let e = Engine35::new(&dir, &o).map_err(oom)?;
-        let (bytes, vocab) = (e.w.bytes, e.w.cfg.vocab);
-        (Box::new(e), bytes, vocab)
     } else {
         // the dynamic engine (GLY-326): Qwen3.5's description
         let o = crate::dynamic::Opts { ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout) };

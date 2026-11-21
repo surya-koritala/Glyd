@@ -142,7 +142,7 @@ jobs:
       - name: Each lossy level's KL from penguin against its threshold (Qwen3.5, Gemma 4 and Nemotron-H random models; kestrel, swift, wren; logits.rs levelcheck)
         run: |
           "$E" levelcheck --fixtures glyd-engine/tests/logits
-      - name: The hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor (R3b's parity record; logits.rs paritycheck)
+      - name: The hand-written Gemma 4 and Nemotron-H engines against the description executor (R3b's parity record; logits.rs paritycheck)
         run: |
           # (the same random model, prompt and decode tokens as each R7 fixture, at each level it bounds that the hand-written engine runs)
           "$E" paritycheck --fixtures glyd-engine/tests/logits
