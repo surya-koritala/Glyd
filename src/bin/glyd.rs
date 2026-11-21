@@ -6,18 +6,8 @@ use std::time::Instant;
 fn print_usage() {
     eprintln!(
         r#"Glyd: LLM weights and KV cache compressed without loss, the engine that runs them, and compression for files
-Usage: glyd run MODEL[:LEVEL]       chat with a model in the terminal and at one URL (MODEL: a Hub repo, a directory or a GGUF file)
-       glyd serve MODEL[:LEVEL]     the OpenAI-compatible API and the chat page
-       glyd pull MODEL              download a model by name (gemma4, qwen3.8:27b, gemma4:12b:wren) or Hub id
-       glyd ls [--all] | rm MODEL   the models downloaded, with their level and size; take one out of the cache
-       glyd service [install]       the background service: models load on request and unload when idle (install: at every login)
-       glyd ps | stop MODEL|--all   what the service holds; a model unloaded now
-       glyd fit MODEL               what a run of MODEL would do on this computer, before anything is downloaded
-       glyd doctor | login          what this computer has for it; save a Hugging Face token
-       glyd supports | preflight | prepare | costs | rates | rangeworker   the engine's other commands (glyd run --help)
-       glyd cluster                 one model across computers (not yet: ROADMAP.md, M5)
-       glyd pack MODEL OUT | glyd verify PATH   a model's weights for Glyd's GPU layouts, packed and checked on the CPU
-       glyd compress|decompress FILE [-o OUT]   compress or decompress a file: Glyd's file codec (docs/codec/README.md; the options below; `glyd [OPTIONS] FILE` is the same)
+Usage: glyd COMMAND [ARGS]   (glyd help COMMAND says more of one; glyd man prints the manual page)
+{commands}       glyd compress|decompress FILE [-o OUT]   compress or decompress a file: Glyd's file codec (docs/codec/README.md; the options below; `glyd [OPTIONS] FILE` is the same)
        (the store, which compresses across objects, is the glyd-store command)
        The engine is in this program where it was built with it (glyd --version says so), else the glyd-engine command beside it or on PATH.
        On a computer with the Python tool and vLLM, run and serve are its where the engine does not take the model; GLYD_ENGINE=1
@@ -70,7 +60,8 @@ Examples:
     cat large.json | glyd -c > large.json.glyd
     cat large.json.glyd | glyd -d > large.json
     glyd -b dataset.bin
-"#
+"#,
+        commands = glyd::cmdtable::overview()
     );
 }
 
@@ -499,6 +490,24 @@ fn main() -> io::Result<()> {
     }
     if args.len() == 1 {
         print_usage();
+        return Ok(());
+    }
+    // `glyd man` is the manual page and `glyd help [COMMAND]` the help, both made from the command table (src/cmdtable.rs); a file named man or help is ./man
+    if matches!(args[1].as_str(), "man" | "help") && !Path::new(&args[1]).exists() {
+        if args[1] == "man" {
+            print!("{}", glyd::cmdtable::man());
+            return Ok(());
+        }
+        match args.get(2).map(String::as_str) {
+            None => print_usage(),
+            Some(c) => match glyd::cmdtable::help(c) {
+                Some(h) => print!("{h}"),
+                None => {
+                    eprintln!("glyd help: {c} is not a command of glyd (glyd --help lists them)");
+                    std::process::exit(1);
+                }
+            },
+        }
         return Ok(());
     }
     match route(&args[1], &Facts::read(&args[1])) {

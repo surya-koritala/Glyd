@@ -2269,9 +2269,21 @@ pub fn supports(a: &Args) -> i32 {
     let ui = RefCell::new(Ui::new());
     let Ok(model) = a.need(1, "MODEL") else { return 1 };
     match config_text(model).and_then(|t| supported(&short_name(model), &t)) {
+        Ok(()) if a.has("json") => {
+            println!("{}", serde_json::json!({"model": model, "ok": true, "exit": 0, "supported": true}));
+            0
+        }
         Ok(()) => 0,
+        Err(r) if a.has("json") => json_refusal(&ui, model, &r),
         Err(r) => fail(&ui, &r),
     }
+}
+
+/// A refusal as `--json` says it: on the standard output, with the exit status it has (3: not supported, 1: not told).
+fn json_refusal(ui: &RefCell<Ui>, model: &str, r: &Refusal) -> i32 {
+    ui.borrow_mut().clear_live();
+    println!("{}", serde_json::json!({"model": model, "ok": false, "exit": r.code, "reason": r.what, "fix": r.fix}));
+    r.code
 }
 
 /// Whether the engine will certainly run MODEL on this computer, said before anything is downloaded: exit 0 where it will (one line on stdout says on what), 3 where it will not (the reason on
@@ -2292,9 +2304,14 @@ pub fn preflight(a: &Args) -> i32 {
     match check(a, &ui) {
         Ok(line) => {
             ui.borrow_mut().clear_live();
-            println!("{line}");
+            if a.has("json") {
+                println!("{}", serde_json::json!({"model": a.pos.get(1), "ok": true, "exit": 0, "line": line}));
+            } else {
+                println!("{line}");
+            }
             0
         }
+        Err(r) if a.has("json") => json_refusal(&ui, a.pos.get(1).map_or("", String::as_str), &r),
         Err(r) => fail(&ui, &r),
     }
 }
