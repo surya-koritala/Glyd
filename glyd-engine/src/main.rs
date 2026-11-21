@@ -4,7 +4,7 @@
 //!                                                             what `glyd run` starts: the model made ready on the first run (downloaded, packed for this GPU,
 //!                                                             its KV tables made), then a chat in the terminal and at one URL, or one answer with --prompt
 //!                                                             LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5), wren (about 4.5)
-//!                                                             or hummingbird (Nemotron 3 Super's experts at about 3)
+//!                                                             or hummingbird (a mixture of experts' routed experts at about 3)
 //!                                                             --expert-cache GIB: Nemotron 3 Super with its experts in the computer's memory and a cache of them in GIB GiB of the GPU's (without it, the cache is what the GPU has left when it cannot hold the model)
 //!                                                             --cpu-threads N: the threads that compute the experts that are not on the GPU (the computer's cores less two)
 //!                                                             --host-memory GIB|auto: the computer's memory the experts may take (auto: what it has free, less 6 GiB for the system); the Hummingbird level keeps the rest of its
