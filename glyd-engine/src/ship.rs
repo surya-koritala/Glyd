@@ -253,7 +253,7 @@ fn machine(text: &str) -> minijinja::Value {
         })
         .collect();
     let gpu = get("gpu");
-    minijinja::Value::from_iter([
+    minijinja::Value::from_pairs([
         ("gpu", minijinja::Value::from(gpu.split(',').next().unwrap_or("?").trim().to_string())),
         ("driver", minijinja::Value::from(gpu.rsplit(',').next().unwrap_or("?").trim().to_string())),
         ("cpu", minijinja::Value::from(get("cpu"))),
@@ -282,7 +282,7 @@ fn card(a: &Args, model: &str, level: &str, draft: Option<&str>, repo: &Path, me
     }
     let name = model.rsplit('/').next().unwrap_or(model);
     let minor = env!("CARGO_PKG_VERSION").rsplitn(2, '.').nth(1).unwrap_or(env!("CARGO_PKG_VERSION")).to_string();
-    let ctx = minijinja::Value::from_iter([
+    let ctx = minijinja::Value::from_pairs([
         ("base", minijinja::Value::from(model.to_string())),
         ("title", minijinja::Value::from(a.flag("title").unwrap_or(name).to_string())),
         ("repo", minijinja::Value::from(a.flag("repo").map_or_else(|| crate::levels::packed_repo(model, level), str::to_string))),
@@ -295,7 +295,7 @@ fn card(a: &Args, model: &str, level: &str, draft: Option<&str>, repo: &Path, me
         ("machines", minijinja::Value::from(machines)),
     ]);
     let mut env = minijinja::Environment::new();
-    env.set_trim_blocks(true);
+    env.set_syntax(minijinja::syntax::SyntaxConfig::builder().trim_blocks(true).build().map_err(|e| Error(e.to_string()))?);
     env.add_template("card", CARD).map_err(|e| Error(format!("ship_card.md.j2: {e}")))?;
     let text = env.get_template("card").and_then(|t| t.render(ctx)).map_err(|e| Error(format!("ship_card.md.j2: {e}")))?;
     let out = repo.join("README.md");
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(draft_repo("Qwen/Qwen3.5-9B"), None);
         // (a machine's file as measure writes it, rendered through the template)
         let m = machine("gpu=NVIDIA GeForce RTX 4090, 24564 MiB, 580.159.04\ncpu=AMD EPYC 7282\nram=504 GiB\nwhen=2026-10-16\nglyd=0.32.0\nabout=about 14.9 GiB on the GPU at the penguin level (about 10.8 bits per weight, lossless: every weight is the original's), in place of 22.2 GiB of bf16.\nready=Ready in 21s\nrow=Chat (short prompt)|34|0.02|89.8|512\nrow=4K prompt|3839|0.71|97.5|191\nmemory=17556 MiB, 24564 MiB\neval=GSM8K|72|75\n");
-        let ctx = minijinja::Value::from_iter([
+        let ctx = minijinja::Value::from_pairs([
             ("base", minijinja::Value::from("google/gemma-4-12B-it")),
             ("title", minijinja::Value::from("Gemma 4 12B")),
             ("repo", minijinja::Value::from("glyd/gemma-4-12B-penguin")),
@@ -329,7 +329,7 @@ mod tests {
             ("machines", minijinja::Value::from(vec![m])),
         ]);
         let mut env = minijinja::Environment::new();
-        env.set_trim_blocks(true);
+        env.set_syntax(minijinja::syntax::SyntaxConfig::builder().trim_blocks(true).build().unwrap());
         env.add_template("card", CARD).unwrap();
         let t = env.get_template("card").unwrap().render(ctx).unwrap();
         assert!(t.starts_with("---\nlicense: apache-2.0\n"), "{t}");
