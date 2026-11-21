@@ -839,21 +839,25 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>) -> i32 
         Ok(u) => u,
         Err(r) => return fail(ui, &r),
     };
-    let several = match e.as_step(users) {
-        Ok(s) => s.map(|(k, _)| k),
+    // (the step's window: the context, or less where its paged memory holds less for one sequence alone)
+    let (several, step_window) = match e.as_step(users) {
+        Ok(s) => (s.as_ref().map(|(k, _)| *k), s.map(|(_, st)| st.window())),
         Err(err) => return fail(ui, &cannot(err)),
     };
+    let window = step_window.map_or(e.capacity(), |w| w.min(e.capacity()));
     if let Some(k) = several {
         ui.borrow_mut().line(&format!(
             "Up to {k} users at once{}.",
             if k < users { format!(" (the GPU's free memory holds {k} of the {users} asked for)") } else { String::new() }
         ));
+        if window < e.capacity() {
+            ui.borrow_mut().line(&format!("A request holds up to {window} tokens of the {} of context: the GPU's memory holds no more for one.", e.capacity()));
+        }
         if let Some(i) = &mut info {
-            (i.concurrency, i.refused, i.held) = (k, &[], e.held());
+            (i.concurrency, i.refused, i.held, i.window) = (k, &[], e.held(), window);
         }
     }
     let (tx, rx) = mpsc::channel();
-    let window = e.capacity();
     let addr = match listen(a, &name, window, tx.clone()) {
         Ok(x) => x,
         Err(r) => return fail(ui, &r),
