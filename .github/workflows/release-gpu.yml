@@ -211,7 +211,8 @@ jobs:
           if-no-files-found: error
       - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)
         if: always() && runner.environment == 'self-hosted'
-        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE"
+        # (the temp folder too: the runner cleans it as its user before the next job, and leaves it where it cannot)
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
 
   engine:
     # Glyd's own engine, glyd-engine (Rust, glyd-engine/): its release build (--no-default-features: none of a development build's commands or tuning variables
@@ -287,7 +288,8 @@ jobs:
           if-no-files-found: error
       - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)
         if: always() && runner.environment == 'self-hosted'
-        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE"
+        # (the temp folder too: the runner cleans it as its user before the next job, and leaves it where it cannot)
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
 
   engine-bundle:
     # Glyd's engine with its GPU library (CUDA 13), a tarball for each Linux architecture: what install.sh puts beside the compression program on
@@ -550,7 +552,8 @@ jobs:
           if-no-files-found: error
       - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)
         if: always() && runner.environment == 'self-hosted'
-        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE"
+        # (the temp folder too: the runner cleans it as its user before the next job, and leaves it where it cannot)
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
 
   collect:
     # Every wheel of every architecture and Python, together: the count the plan asked for, all of this version, and what PyPI refuses
