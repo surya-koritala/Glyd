@@ -85,18 +85,16 @@ one with a tag: `glyd run google/gemma-4-12B-it:wren`. The KV cache is lossless 
 
 | Family | Levels |
 | :--- | :--- |
-| Gemma 4 (QAT checkpoints too) | penguin, kestrel, swift, wren |
-| Qwen 3 dense | penguin |
-| Qwen 3.5, 3.6 and 3.8 dense | kestrel, swift, wren |
-| Nemotron 3 and 3.5 | every level (hummingbird on Nemotron 3) |
-| Kimi K3 | penguin |
-| GLM 5.3 Flash | penguin |
-| DeepSeek V4 | penguin |
-| Muse Spark | penguin |
+| Gemma | penguin, kestrel, swift, wren |
+| Qwen | penguin, kestrel, swift, wren |
+| Nemotron | penguin, kestrel, swift, wren, hummingbird |
+| Kimi | penguin |
+| GLM | penguin |
+| DeepSeek | penguin |
+| Muse | penguin |
 
-Any size or fine-tune of these architectures runs, from the Hub or from 16-bit GGUF files. A family's newer architecture
-needs its own support until the single runtime of [M2](ROADMAP.md) makes a new architecture a description instead of code.
-`glyd fit MODEL` answers for a specific model; `glyd pull`, `glyd ls` and `glyd rm` manage the ones you have.
+Any size or fine-tune of a supported architecture runs, from the Hub or from 16-bit GGUF files. `glyd fit MODEL` says which
+levels a specific model runs at on your machine; `glyd pull`, `glyd ls` and `glyd rm` manage the ones you have.
 
 ## Serving and tools
 
