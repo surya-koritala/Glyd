@@ -119,6 +119,24 @@ jobs:
         run: |
           "$E" doctor --bundle /tmp/doctor-bundle.json
           python3 scripts/ci_doctor_check.py /tmp/doctor-bundle.json
+      - name: The clients against a random model made here (Qwen3.8's layout, a character-level tokenizer, its chat template; tests/clients/tiny_check.py), whatever its weights write
+        run: |
+          [ -x /tmp/clients/bin/python ] || python3 -m venv /tmp/clients
+          /tmp/clients/bin/pip install -q openai anthropic ollama requests jsonschema langchain-openai langchain-anthropic langchain-ollama
+          "$E" logitsmodel qwen35 /tmp/tiny-qwen --servable
+          "$E" serve /tmp/tiny-qwen --port 8351 --ctx 1024 > /tmp/tiny-serve.log 2>&1 &
+          server=$!
+          for _ in $(seq 1 300); do
+            curl -sf http://127.0.0.1:8351/v1/models > /dev/null && break
+            kill -0 "$server" 2> /dev/null || { cat /tmp/tiny-serve.log; exit 1; }
+            sleep 2
+          done
+          status=0
+          /tmp/clients/bin/python tests/clients/tiny_check.py http://127.0.0.1:8351 || status=1
+          kill "$server" 2> /dev/null || true
+          wait "$server" 2> /dev/null || true
+          [ "$status" = 0 ] || tail -40 /tmp/tiny-serve.log
+          exit "$status"
       - name: The lossless KV cache (a random Qwen3 dense model made here, which kvtest reads as the dense engine's cache)
         run: |
           "$E" logitsmodel qwen3 /tmp/qwen3-standin

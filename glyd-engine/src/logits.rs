@@ -1252,9 +1252,65 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
 pub fn make_model(a: &crate::args::Args) -> Result<()> {
     let c = find_case(a.need(1, "CASE")?)?;
     match c.weights {
-        Weights::Random(make) => make(Path::new(a.need(2, "DIR")?)),
+        Weights::Random(make) => {
+            let dir = Path::new(a.need(2, "DIR")?);
+            make(dir)?;
+            // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; the Qwen3.8 layout's, which is the one with a template made)
+            if a.has("servable") {
+                if c.id != "qwen35" {
+                    return err(format!("--servable: only the qwen35 case has a chat template made (not {})", c.id));
+                }
+                write_serving_files(dir, include_str!("../tests/fixtures/chat_qwen38_tools.jinja"))?;
+            }
+            Ok(())
+        }
         Weights::Hub(id) => err(format!("{}: a real model ({id}), not a random one", c.id)),
     }
+}
+
+/// The tokens of a servable random model: Qwen's own special ones in the places the random config's end token (id 2) wants them, then every printable ASCII character and the new line and tab, one each. A text with
+/// another character is the unknown token's. A reply of such a model is random characters, and a grammar can spell JSON and a tool call in them.
+fn tiny_tokens() -> Vec<(String, bool)> {
+    let mut t: Vec<(String, bool)> = [
+        ("<unk>", false),
+        ("<|im_start|>", true),
+        ("<|im_end|>", true),
+        ("<|endoftext|>", true),
+        ("<think>", false),
+        ("</think>", false),
+        ("<tool_call>", false),
+        ("</tool_call>", false),
+    ]
+    .iter()
+    .map(|(n, s)| (n.to_string(), *s))
+    .collect();
+    t.push(("\n".into(), false));
+    t.push(("\t".into(), false));
+    t.extend((32u8..127).map(|b| ((b as char).to_string(), false)));
+    t
+}
+
+/// A random model's directory made servable: `tokenizer.json` (a character-level one over `tiny_tokens`), `tokenizer_config.json` with `template` as its chat template and `<|im_end|>` as its end token, and
+/// `generation_config.json` (the end token's id).
+pub fn write_serving_files(dir: &Path, template: &str) -> Result<()> {
+    let io = |r: std::io::Result<()>| r.map_err(|e| Error(format!("{}: {e}", dir.display())));
+    let tokens = tiny_tokens();
+    let vocab: serde_json::Map<String, Value> = tokens.iter().enumerate().map(|(i, (n, _))| (n.clone(), json!(i))).collect();
+    let added: Vec<Value> = tokens
+        .iter()
+        .enumerate()
+        .filter(|(i, (n, _))| *i > 0 && n.starts_with('<') && n.len() > 1)
+        .map(
+            |(i, (n, special))| json!({"id": i, "content": n, "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": special}),
+        )
+        .collect();
+    let tok = json!({"version": "1.0", "truncation": null, "padding": null, "added_tokens": added, "normalizer": null,
+        "pre_tokenizer": {"type": "Split", "pattern": {"Regex": "[\\s\\S]"}, "behavior": "Isolated", "invert": false}, "post_processor": null, "decoder": {"type": "Fuse"},
+        "model": {"type": "WordLevel", "vocab": vocab, "unk_token": "<unk>"}});
+    io(std::fs::write(dir.join("tokenizer.json"), tok.to_string()))?;
+    let config = json!({"chat_template": template, "eos_token": "<|im_end|>", "bos_token": null, "unk_token": "<unk>", "tokenizer_class": "PreTrainedTokenizerFast", "model_max_length": 4096});
+    io(std::fs::write(dir.join("tokenizer_config.json"), config.to_string()))?;
+    io(std::fs::write(dir.join("generation_config.json"), json!({"eos_token_id": 2, "do_sample": true, "temperature": 0.7, "top_p": 0.9}).to_string()))
 }
 
 /// `logitsbound FIXTURE LEVEL=BOUND...`: the fixture's bounds replaced (bits, or kl:MEAN:MAX:TOP1), from what a run measured.

@@ -105,7 +105,7 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 - [ ] P12 Fuzz the engine's parsers ([#224](https://github.com/surya-koritala/Glyd/issues/224))
 - [ ] P14 User documentation site ([#225](https://github.com/surya-koritala/Glyd/issues/225))
 - [ ] P15 Model catalog: ownership and review ([#226](https://github.com/surya-koritala/Glyd/issues/226))
-- [ ] P17 Tools connect with default settings ([#227](https://github.com/surya-koritala/Glyd/issues/227))
+- [x] P17 Tools connect with default settings ([#227](https://github.com/surya-koritala/Glyd/issues/227))
 - [ ] P18 aarch64 Linux: GH200, GB200, DGX Spark and Jetson ([#228](https://github.com/surya-koritala/Glyd/issues/228))
 - [x] P19 The codec's place: crate, CLI and docs ([#229](https://github.com/surya-koritala/Glyd/issues/229))
 
