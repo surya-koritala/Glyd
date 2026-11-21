@@ -1147,8 +1147,26 @@ mod tests {
         std::thread::spawn(move || {
             for s in l.incoming().flatten().take(PREFIXES) {
                 let mut s = s;
-                let mut buf = [0u8; 8192];
-                let _ = s.read(&mut buf);
+                // (the whole request, headers and body, is read before the answer: a socket closed with a request unread is reset on Windows, and the answer is lost with it)
+                let (mut req, mut buf) = (Vec::new(), [0u8; 4096]);
+                loop {
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    req.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&req).to_string();
+                    let Some(end) = text.find("\r\n\r\n") else {
+                        if n == 0 {
+                            break;
+                        }
+                        continue;
+                    };
+                    let len = text[..end]
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok()))
+                        .unwrap_or(0);
+                    if req.len() >= end + 4 + len || n == 0 {
+                        break;
+                    }
+                }
                 let body = r#"{"choices":[{"logprobs":{"top_logprobs":[{" the":-0.5,"a":-1.5}]}}]}"#;
                 let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
             }
