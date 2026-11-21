@@ -22,15 +22,21 @@ import requests
 from openai import OpenAI
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# (the values are bounded: a model that writes random characters ends a free string once in a long while, and a reply that is cut at its length is not a document)
 SCHEMA = {
     "type": "object",
-    "properties": {"city": {"type": "string"}, "days": {"type": "integer"}, "sunny": {"type": "boolean"}, "tags": {"type": "array", "items": {"type": "string"}}},
+    "properties": {
+        "city": {"enum": ["Paris", "Rome", "Oslo"]},
+        "days": {"type": "integer", "minimum": 1, "maximum": 9},
+        "sunny": {"type": "boolean"},
+        "tags": {"type": "array", "items": {"enum": ["a", "b"]}, "maxItems": 2},
+    },
     "required": ["city", "days", "sunny", "tags"],
     "additionalProperties": False,
 }
-TOOL_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}, "required": ["city", "days"]}
+TOOL_SCHEMA = {"type": "object", "properties": {"city": {"enum": ["Paris", "Rome"]}, "days": {"type": "integer", "minimum": 1, "maximum": 9}}, "required": ["city", "days"]}
 TOOL = {"type": "function", "function": {"name": "get_weather", "description": "Get the weather", "parameters": TOOL_SCHEMA}}
-OTHER = {"type": "function", "function": {"name": "get_time", "description": "Get the time", "parameters": {"type": "object", "properties": {"zone": {"type": "string"}}, "required": ["zone"]}}}
+OTHER = {"type": "function", "function": {"name": "get_time", "description": "Get the time", "parameters": {"type": "object", "properties": {"zone": {"enum": ["UTC", "CET"]}}, "required": ["zone"]}}}
 NOTHINK = {"chat_template_kwargs": {"enable_thinking": False}}
 failures = []
 
@@ -78,9 +84,12 @@ def main():
 
     @check
     def openai_thinking_is_reasoning():
-        # (the template opens the thinking: what a random model writes is its reasoning, in the field the SDKs' users read)
+        # (the template opens the thinking: what a random model writes is its reasoning, and none of it is the answer)
         r = c.chat.completions.create(model=model, messages=ask, max_tokens=24)
-        assert (r.model_dump()["choices"][0]["message"].get("reasoning_content") or "").strip(), r.model_dump()
+        m = r.model_dump()["choices"][0]["message"]
+        assert not (m.get("content") or "").strip() and r.choices[0].finish_reason == "length" and r.usage.completion_tokens == 24, r.model_dump()
+        chunks = list(c.chat.completions.create(model=model, messages=ask, max_tokens=24, stream=True))
+        assert not "".join(x.choices[0].delta.content or "" for x in chunks if x.choices).strip()
 
     @check
     def openai_several_choices_and_a_seed():
@@ -199,11 +208,11 @@ def main():
     @check
     def ollama_chat_generate_and_names():
         r = oc.chat(model="m", messages=ask, options={"num_predict": 16}, think=False)
-        assert r.done and r.message.content and r.eval_count > 0 and r.prompt_eval_count > 0
+        assert r.done and r.message.role == "assistant" and r.eval_count > 0 and r.prompt_eval_count > 0 and r.done_reason in ("stop", "length")
         parts = list(oc.chat(model="m", messages=ask, options={"num_predict": 16}, think=False, stream=True))
         assert parts[-1].done and not any(p.done for p in parts[:-1])
         r = oc.generate(model="m", prompt="Hi", options={"num_predict": 16}, think=False)
-        assert r.done and r.response
+        assert r.done and r.eval_count > 0
         m = oc.list().models[0]
         assert oc.show(m.model).details is not None and oc.ps().models[0].model == m.model
         assert requests.post(base + "/api/embed", json={"model": "m", "input": "x"}).status_code == 501

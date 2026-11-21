@@ -125,7 +125,7 @@ jobs:
           /tmp/clients/bin/pip install -q openai anthropic ollama requests jsonschema langchain-openai langchain-anthropic langchain-ollama
           "$E" logitsmodel qwen35 /tmp/tiny-qwen --servable
           # (the Qwen3.5 layout runs at the lossy levels in this engine)
-          "$E" serve /tmp/tiny-qwen:kestrel --port 8351 --ctx 1024 > /tmp/tiny-serve.log 2>&1 &
+          "$E" serve /tmp/tiny-qwen:kestrel --port 8351 --ctx 4096 > /tmp/tiny-serve.log 2>&1 &
           server=$!
           for _ in $(seq 1 300); do
             curl -sf http://127.0.0.1:8351/v1/models > /dev/null && break
