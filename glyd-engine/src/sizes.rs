@@ -91,11 +91,12 @@ pub struct Table {
 impl Table {
     /// A directory's safetensors files, by their headers.
     pub fn from_dir(dir: &Path) -> Result<Table, String> {
-        // (a planning directory made from a GGUF holds its tensors in a file of its own)
-        if let Some(t) = Table::read(&dir.join(GGUF_TENSORS)) {
-            return Ok(t);
-        }
-        let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        // (the files' own headers first: a table file beside real weights is not believed. A planning directory made from a GGUF (`gguf::plan_dir`) has no weights, and holds its
+        // tensors in a file of its own)
+        let ck = match glyd_gpu::safetensors::Checkpoint::open(dir) {
+            Ok(ck) => ck,
+            Err(e) => return Table::read(&dir.join(GGUF_TENSORS)).ok_or_else(|| format!("{}: {e}", dir.display())),
+        };
         let mut rows: Vec<Row> = ck
             .files
             .iter()
@@ -276,6 +277,21 @@ pub(crate) mod tests {
         assert_eq!(c("mtp.fc.weight"), Part::Mtp);
         assert_eq!(c("model.layers.61.eh_proj.weight"), Part::Mtp, "a layer past the model's");
         assert_eq!(c("model.norm.weight"), Part::Other);
+    }
+
+    /// A table file in a directory that has weights is not believed: the weights' own headers are the sizes; a planning directory with none reads its table file.
+    #[test]
+    fn a_table_file_does_not_override_the_weights_headers() {
+        let dir = std::env::temp_dir().join(format!("glyd-sizes-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = Table { rows: vec![Row { name: "model.embed_tokens.weight".into(), dtype: "BF16".into(), shape: vec![1], bytes: 2 }] };
+        fake.write(&dir.join(GGUF_TENSORS));
+        assert_eq!(Table::from_dir(&dir).unwrap(), fake, "no weights: the planning directory's table");
+        std::fs::write(dir.join("model.safetensors"), safetensors(&[("model.embed_tokens.weight", "BF16", &[64, 32])])).unwrap();
+        let t = Table::from_dir(&dir).unwrap();
+        assert_eq!((t.rows.len(), t.rows[0].bytes), (1, 64 * 32 * 2), "the weights' headers, not the file beside them");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
