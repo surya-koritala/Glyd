@@ -31,6 +31,8 @@ mod responses;
 
 const PAGE: &str = include_str!("../data/chat.html");
 const MAX_BODY: usize = 16 << 20;
+/// The requests for the engine that may be in flight at once (a thread each); the next is answered 503 with `Retry-After`.
+const MAX_IN_FLIGHT: usize = 8192;
 /// The sequences one request may make (its prompts times `n`).
 const MAX_CHOICES: usize = 64;
 
@@ -135,7 +137,7 @@ pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Reje
         ask_method: None,
         ask_headers: None,
     };
-    let mut headers = 0;
+    let (mut headers, mut length_seen) = (0, false);
     while head_line(r, &mut budget, &mut buf)? && buf != b"\r\n" && buf != b"\n" {
         headers += 1;
         if headers > MAX_HEADERS {
@@ -145,7 +147,15 @@ pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Reje
         let low = line.to_ascii_lowercase();
         let value = line.split_once(':').map(|(_, v)| v.trim().to_string()).unwrap_or_default();
         if let Some(v) = low.strip_prefix("content-length:") {
-            h.len = v.trim().parse().unwrap_or(0);
+            // (one Content-Length, all digits: a request whose body's end is in doubt is refused, never read as one thing here and another by what is in front of it)
+            let v = v.trim();
+            if length_seen || v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+                return Err((400, "the request's Content-Length is repeated or is not a number".to_string()));
+            }
+            length_seen = true;
+            h.len = v.parse().map_err(|_| (413, format!("the request's body is over {} MiB", MAX_BODY >> 20)))?;
+        } else if low.starts_with("transfer-encoding:") {
+            return Err((400, "a request body with a Transfer-Encoding is not taken: send it with a Content-Length".to_string()));
         } else if low.starts_with("authorization:") {
             h.auth = Some(value);
         } else if low.starts_with("x-api-key:") {
@@ -2033,6 +2043,12 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
         || path.starts_with("/api/");
     if to_engine {
         crate::ops::request(&path);
+        // (requests being answered are bounded as the connections are: each holds a thread of its own while the engine makes its reply)
+        if life.inflight() >= MAX_IN_FLIGHT {
+            crate::ops::refused(503);
+            let body = error_body("the server is answering as many requests as it takes: try again", 503);
+            return respond_with(&mut *s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
+        }
         match life.enter() {
             Some(g) => req.inflight = Some(g),
             None => {
@@ -3463,6 +3479,52 @@ pub(crate) mod tests {
         let t = std::time::Instant::now();
         while state(&id) != "ended" {
             assert!(t.elapsed() < Duration::from_secs(10), "the sequence of a client that went is still running");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// A request whose body's end is in doubt is refused (400), on a connection that is kept or not: a repeated Content-Length, one that is not a number, and a Transfer-Encoding (which this server
+    /// does not read) would each be read one way here and another by a proxy in front of it.
+    #[test]
+    fn an_ambiguous_body_length_is_refused() {
+        let head = |t: &str| read_head(&mut BufReader::new(t.as_bytes())).err().map(|e| e.0);
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5\r\ncontent-length: 6\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: +5\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5, 5\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length:\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 99999999999999999999\r\n\r\n"), Some(413));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\n"), None, "one is fine");
+        // and over the wire, on a connection that asked to be kept
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen_timed(Times::default(), tx);
+        for bad in ["Content-Length: 2\r\nContent-Length: 2", "Transfer-Encoding: chunked"] {
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n{bad}\r\n\r\n{{}}").as_bytes()).unwrap();
+            assert_eq!(raw_status(&mut c).0, 400, "{bad}");
+        }
+    }
+
+    /// A client that sends more than the beginning of a next request while its answer is being made is let go, and its sequence with it (what it sent is not held without bound).
+    #[test]
+    fn a_client_that_floods_while_it_is_answered_is_let_go() {
+        let mut f = Fake::new(64, 32);
+        f.decode_delay = Duration::from_millis(20);
+        let addr = serve_fake(f, None, 4);
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":400,"temperature":0,"stream":true}"#;
+        let (r, id) = first_event(addr, body);
+        let mut c = r.into_inner();
+        let junk = vec![b'x'; 256 << 10];
+        let _ = c.write_all(&junk);
+        let state = |id: &str| -> String {
+            let (st, _, b) = ask(addr, "GET", &format!("/v1/glyd/requests/{id}"), &[("Host", "x")]);
+            assert_eq!(st, 200, "{b}");
+            at(&json::parse(&b).unwrap(), &["state"]).as_str().unwrap_or("").to_string()
+        };
+        let t = std::time::Instant::now();
+        while state(&id) != "ended" {
+            assert!(t.elapsed() < Duration::from_secs(10), "the sequence of a client that flooded is still running");
             std::thread::sleep(Duration::from_millis(50));
         }
     }

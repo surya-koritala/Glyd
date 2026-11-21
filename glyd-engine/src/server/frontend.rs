@@ -21,6 +21,19 @@ pub const IDLE: Duration = Duration::from_secs(60);
 /// Requests answered by the process so far: a reply's id names one of them (/v1/glyd/requests/ID finds it).
 static REQUESTS: AtomicU64 = AtomicU64::new(0);
 
+/// What the server holds of requests' bodies at once, in bytes: a body waits for its share before it is read (and holds it until its answer ends), so that connections without a cap do not
+/// hold more memory than this between them (the server this replaces held at most 64 connections' worth).
+const BODY_BUDGET_BYTES: usize = 1 << 30;
+static BODY_BUDGET: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(BODY_BUDGET_BYTES);
+
+/// The most connections open at once: far past what a load needs, and under what a process's files allow; the next is answered 503 and let go. (There is no cap in the sense of the 64 it had: a
+/// connection that sends nothing is closed by its time, so these are connections that are doing something.)
+pub const MAX_OPEN: usize = 50_000;
+static OPEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How much a client may send while its answer is made (the beginning of its next request): past it the connection is let go.
+const PIPELINE_CAP: usize = MAX_HEAD;
+
 /// The listen queue's length asked for: connections that arrive together wait in it until they are accepted (the system holds it to its own limit: Linux's 4096, macOS's 128).
 const BACKLOG: u32 = 4096;
 
@@ -43,9 +56,19 @@ pub(crate) fn serve(addr: &str, make: impl FnOnce(u16) -> Ctx) -> std::io::Resul
         rt.block_on(async move {
             loop {
                 match listener.accept().await {
-                    Ok((sock, _)) => {
+                    Ok((mut sock, _)) => {
+                        if OPEN.fetch_add(1, Ordering::SeqCst) >= MAX_OPEN {
+                            OPEN.fetch_sub(1, Ordering::SeqCst);
+                            crate::ops::refused(503);
+                            let out = response_bytes(503, "application/json", "Retry-After: 1\r\n", error_body("too many connections", 503).as_bytes());
+                            let _ = timeout(Duration::from_secs(1), sock.write_all(&out)).await;
+                            continue;
+                        }
                         let ctx = ctx.clone();
-                        tokio::spawn(connection(sock, ctx));
+                        tokio::spawn(async move {
+                            connection(sock, ctx).await;
+                            OPEN.fetch_sub(1, Ordering::SeqCst);
+                        });
                     }
                     // (out of file descriptors, or a connection reset before it was taken: the next one is tried after a moment)
                     Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
@@ -181,8 +204,26 @@ async fn connection(sock: tokio::net::TcpStream, ctx: Ctx) {
         if h.expect {
             let _ = timeout(WRITE_TIMEOUT, wr.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")).await;
         }
-        // the body, within BODY_TIMEOUT of the head's end
+        // the body: its share of what the server holds of bodies first (held until the answer ends), then within the time of the head's end
         let until = tokio::time::Instant::now() + ctx.times.body;
+        let _share = if h.len > 0 {
+            match tokio::time::timeout_at(until, BODY_BUDGET.acquire_many(h.len as u32)).await {
+                Ok(Ok(p)) => Some(p),
+                _ => {
+                    crate::ops::refused(503);
+                    let out = response_bytes(
+                        503,
+                        "application/json",
+                        "Retry-After: 1\r\n",
+                        error_body("the server holds as many request bodies as it takes: try again", 503).as_bytes(),
+                    );
+                    let _ = timeout(WRITE_TIMEOUT, wr.write_all(&out)).await;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         while buf.len() < h.len {
             match read_more(&mut rd, &mut buf, until).await {
                 Ok(Some(_)) => {}
@@ -248,7 +289,14 @@ async fn connection(sock: tokio::net::TcpStream, ctx: Ctx) {
                         client_ok = false;
                         break;
                     }
-                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        if buf.len() > PIPELINE_CAP {
+                            // (more than the beginning of a next request, sent while an answer is made: the connection is let go, and what answers it is told)
+                            client_ok = false;
+                            break;
+                        }
+                    }
                 }
             }
         }
