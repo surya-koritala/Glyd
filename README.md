@@ -33,13 +33,13 @@ and disk you have, and serves it with OpenAI-, Anthropic- and Ollama-compatible 
 Linux (x86_64 or aarch64) with an NVIDIA GPU and its driver:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/surya-koritala/Glyd/main/scripts/install.sh | sh
+curl -LsSf https://getglyd.com/install.sh | sh
 ```
 
 Windows x86_64 (preview), in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/surya-koritala/Glyd/main/scripts/install.ps1 | iex
+irm https://getglyd.com/install.ps1 | iex
 ```
 
 Then:
