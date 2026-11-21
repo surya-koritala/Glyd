@@ -772,7 +772,10 @@ mod tests {
             for e in f["models"].as_array().unwrap() {
                 let who = format!("{}:{}", f["name"].as_str().unwrap(), e["size"].as_str().unwrap());
                 assert!(e["license"].as_str().is_some_and(|l| !l.is_empty()), "{who}: no \"license\"");
-                assert!(e["gated"].is_boolean() || matches!(e["gated"].as_str(), Some("auto" | "manual")), "{who}: no \"gated\" (true, false, \"auto\" or \"manual\")");
+                assert!(
+                    e["gated"].is_boolean() || matches!(e["gated"].as_str(), Some("auto" | "manual")),
+                    "{who}: no \"gated\" (true, false, \"auto\" or \"manual\")"
+                );
                 let measured = e.get("measured").unwrap_or_else(|| panic!("{who}: no \"measured\" (a record in the repository, or null where there is none)"));
                 if let Some(path) = measured.as_str() {
                     assert!(root.join(path).exists(), "{who}: \"measured\" {path} is not in the repository");
@@ -785,7 +788,10 @@ mod tests {
         assert!(n >= 19, "{n} entries");
         // a manifest with a wrong field is refused with the reason
         let bad = |field: &str| {
-            Manifest::parse(&format!("{{\"version\":1,\"families\":[{{\"name\":\"x\",\"models\":[{{\"size\":\"1b\",\"repo\":\"a/b\",\"default\":true,{field}}}]}}]}}")).unwrap_err()
+            Manifest::parse(&format!(
+                "{{\"version\":1,\"families\":[{{\"name\":\"x\",\"models\":[{{\"size\":\"1b\",\"repo\":\"a/b\",\"default\":true,{field}}}]}}]}}"
+            ))
+            .unwrap_err()
         };
         assert!(bad("\"license\":\"\"").contains("license"));
         assert!(bad("\"gated\":\"yes\"").contains("gated"));
