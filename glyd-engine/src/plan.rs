@@ -576,9 +576,25 @@ const MTP_GAIN: f64 = 1.7;
 /// together are what its loader needed before the planner drove it: nothing that ran then is refused now.
 pub const CONTEXT_FLOOR: u64 = 768 << 20;
 
-/// The reserve of a GPU with `free` bytes free (the same on every GPU: other programs do not take more of a larger one).
-pub fn reserve_of(_free: u64) -> u64 {
-    CONTEXT_FLOOR
+/// What a GPU under Windows' WDDM keeps free beyond `CONTEXT_FLOOR`: the display and the programs open on it take memory the driver gives them first, and an allocation of ours that no longer fits is
+/// not refused but paged into system memory, which makes the run many times slower. A first figure, to be set from a measurement on a Windows GPU (the testing phase), not from one.
+pub const WDDM_EXTRA: u64 = 1 << 30;
+
+static WDDM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Says that a GPU of this computer runs under WDDM (dev.rs `Dev::probe_all` sets it): every plan then keeps `WDDM_EXTRA` more free.
+pub fn set_wddm(on: bool) {
+    WDDM.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `reserve_of` for a GPU that is, or is not, under WDDM.
+pub fn reserve_with(_free: u64, wddm: bool) -> u64 {
+    CONTEXT_FLOOR + if wddm { WDDM_EXTRA } else { 0 }
+}
+
+/// The reserve of a GPU with `free` bytes free (the same on every GPU: other programs do not take more of a larger one; a WDDM GPU keeps `WDDM_EXTRA` more).
+pub fn reserve_of(free: u64) -> u64 {
+    reserve_with(free, WDDM.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// What a GPU has for the model's weights, its cache and the engine's `work`.
@@ -1847,6 +1863,16 @@ mod tests {
     /// ones: src/logits.rs) packed on the CPU at each layout the paths run, and the bytes the packed directory holds. The plan sizes a lossy level from the
     /// config alone before anything is downloaded (within 3%: a pack's tail words and the small tensors) and from the directory's own bytes once it is packed.
     #[cfg(feature = "dev")] // (the random models are a development build's: src/logits.rs)
+    /// A GPU under WDDM keeps `WDDM_EXTRA` more free than another (its plans take that much less), and the room a plan has shrinks by it.
+    #[test]
+    fn a_wddm_gpu_keeps_more_free() {
+        let free = 15u64 << 30;
+        assert_eq!(reserve_with(free, false), CONTEXT_FLOOR);
+        assert_eq!(reserve_with(free, true), CONTEXT_FLOOR + WDDM_EXTRA);
+        assert!(reserve_with(free, true) > reserve_with(free, false));
+        assert_eq!(free - reserve_with(free, false) - (free - reserve_with(free, true)), WDDM_EXTRA);
+    }
+
     #[test]
     fn the_plan_weighs_what_the_packer_writes() {
         use crate::weights::Layout;

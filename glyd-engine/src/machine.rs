@@ -289,7 +289,7 @@ pub fn wddm_note(name: &str, free: u64, total: u64) -> (String, String) {
             gb(free),
             gb(total)
         ),
-        "Set NVIDIA Control Panel, Manage 3D settings, CUDA - Sysmem Fallback Policy, to 'Prefer No Sysmem Fallback' (driver 536 or newer): an allocation that does not fit then fails with the memory said; close programs that hold GPU memory (the browser, games) before a large model".to_string(),
+        format!("The plans keep {} more of the GPU free here than on Linux. Set NVIDIA Control Panel, Manage 3D settings, CUDA - Sysmem Fallback Policy, to 'Prefer No Sysmem Fallback' (driver 536 or newer): an allocation that does not fit then fails with the memory said; close programs that hold GPU memory (the browser, games) before a large model", gb(crate::plan::WDDM_EXTRA)),
     )
 }
 
