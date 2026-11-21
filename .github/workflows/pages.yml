@@ -40,7 +40,8 @@ permissions:
 # A pull request's build has its own group, so a push to main does not replace it in the queue.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.ref) || 'pages' }}
-  cancel-in-progress: false
+  # (a pull request's older build is cancelled by its newer one; a deploy is never cancelled)
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   MDBOOK_VERSION: "0.4.52"
