@@ -297,12 +297,7 @@ fn run(cfg: Config, rx: Receiver<Msg>, exported: Arc<AtomicU64>, dropped: Arc<At
                 dropped.fetch_add(batch.len() as u64, Relaxed);
                 if last_said.is_none_or(|t| t.elapsed() > Duration::from_secs(30)) {
                     last_said = Some(Instant::now());
-                    eprintln!(
-                        "glyd: traces: could not send {} spans to {}: {}",
-                        batch.len(),
-                        shown(&cfg.url),
-                        e.to_string().replace(&cfg.url, &shown(&cfg.url))
-                    );
+                    eprintln!("glyd: traces: could not send {} spans to {}: {}", batch.len(), shown(&cfg.url), why(&e));
                 }
             }
         }
