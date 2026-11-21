@@ -72,7 +72,7 @@ jobs:
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: "pip install glyd==V (retry: PyPI can lag the release)"
@@ -132,7 +132,7 @@ jobs:
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: "pip install glyd[vllm]==V (retry: PyPI can lag the release)"
