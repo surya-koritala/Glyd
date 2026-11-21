@@ -80,7 +80,9 @@ fn listeners(pid: u32) -> Vec<(u32, std::net::IpAddr, u16)> {
     let mut out = Vec::new();
     for p in pids {
         for fd in std::fs::read_dir(format!("/proc/{p}/fd")).into_iter().flatten().flatten() {
-            if let Some(ino) = std::fs::read_link(fd.path()).ok().and_then(|l| l.to_str().and_then(|s| s.strip_prefix("socket:[")?.strip_suffix(']')?.parse::<u64>().ok())) {
+            if let Some(ino) =
+                std::fs::read_link(fd.path()).ok().and_then(|l| l.to_str().and_then(|s| s.strip_prefix("socket:[")?.strip_suffix(']')?.parse::<u64>().ok()))
+            {
                 out.extend(all.iter().filter(|(i, _, _)| *i == ino).map(|(_, ip, port)| (p, *ip, *port)));
             }
         }
