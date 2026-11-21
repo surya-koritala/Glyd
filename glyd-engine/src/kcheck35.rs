@@ -258,8 +258,8 @@ fn attn_case(t: &mut Tally, k: &Kern35, dev: &Dev, r: &mut Rng, p0: usize, n: us
     let (nqi, nki, ni) = (nq as i32, nk as i32, n as i32);
     // SAFETY: buffers made here of the sizes the kernels read and write; read after a synchronize.
     unsafe {
-        k.attn(dev.stream, qb.ptr, nqi * 256, gb.ptr, stride as i32, kb.ptr, vb.ptr, pb.ptr, ob.ptr, nqi * 256, ni, nqi, nki)?;
-        k.attn_decode(dev.stream, qb.ptr, nqi * 256, gb.ptr, stride as i32, kb.ptr, vb.ptr, pb.ptr, ob1.ptr, nqi * 256, ni, nqi, nki, part.ptr)?;
+        k.attn(dev.stream, qb.ptr, nqi * 256, gb.ptr, stride as i32, kb.ptr, vb.ptr, pb.ptr, ob.ptr, nqi * 256, ni, nqi, nki, 0u64)?;
+        k.attn_decode(dev.stream, qb.ptr, nqi * 256, gb.ptr, stride as i32, kb.ptr, vb.ptr, pb.ptr, ob1.ptr, nqi * 256, ni, nqi, nki, part.ptr, 0u64)?;
     }
     dev.sync()?;
     t.rel(&format!("attention {what}: a prompt's rows, times sigmoid(gate), against the CPU"), &down(&ob, want.len())?, &want, 1e-2, true);
@@ -391,6 +391,7 @@ pub fn run() -> Result<bool> {
                 nq as i32,
                 nk as i32,
                 eps,
+                0u64,
             )?
         };
         dev.sync()?;

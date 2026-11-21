@@ -112,11 +112,12 @@ impl Kern35 {
         nq: i32,
         nk: i32,
         eps: f32,
+        tab: u64,
     ) -> Result<()> {
         if !(1..=64).contains(&half) {
             return err(format!("a rotary of {} dims: not supported", 2 * half));
         }
-        launch!(self.prep, [n, (nq + 2 * nk) as u32, 1], [128, 1, 1], s; qkv, stride, qw, kw, cos, sin, half, pos, qo, kc, vc, nq, nk, eps)
+        launch!(self.prep, [n, (nq + 2 * nk) as u32, 1], [128, 1, 1], s; qkv, stride, qw, kw, cos, sin, half, pos, qo, kc, vc, nq, nk, eps, tab)
     }
 
     /// The causal attention of n query rows over the cache, times sigmoid(gate), into out.
@@ -139,6 +140,7 @@ impl Kern35 {
         n: i32,
         nq: i32,
         nk: i32,
+        tab: u64,
     ) -> Result<()> {
         if nk == 0 || nq % nk != 0 || nq / nk > 16 {
             return err(format!("{nq} query heads over {nk} key-value heads: not supported"));
@@ -147,7 +149,7 @@ impl Kern35 {
         let r = if n == 1 { 1 } else { (16 / g).max(1) };
         let smem = (AT_KB * (AT_KS + 128) + 128 * (r * g) as u32) * 4;
         let sl2 = (1.0f64 / 16.0 * std::f64::consts::LOG2_E) as f32;
-        launch!(self.attn, [((n + r - 1) / r) as u32, nk as u32, 1], [(32 * r * g) as u32, 1, 1], smem smem, s; q, qs, gate, gs, kc, vc, pos, out, os, n, nq, nk, r, sl2)
+        launch!(self.attn, [((n + r - 1) / r) as u32, nk as u32, 1], [(32 * r * g) as u32, 1, 1], smem smem, s; q, qs, gate, gs, kc, vc, pos, out, os, n, nq, nk, r, sl2, tab)
     }
 
     /// A decode step's attention (n rows, each its own sequence position), the keys in ATTN_SPLITS parts at once, then combined: `part` holds n nq ATTN_SPLITS ATTN_PART floats.
@@ -171,6 +173,7 @@ impl Kern35 {
         nq: i32,
         nk: i32,
         part: u64,
+        tab: u64,
     ) -> Result<()> {
         if nk == 0 || nq % nk != 0 || nq / nk > 16 {
             return err(format!("{nq} query heads over {nk} key-value heads: not supported"));
@@ -179,7 +182,7 @@ impl Kern35 {
         let smem = (AT_KB * (AT_KS + 128) + 128 * g) * 4;
         let sl2 = (1.0f64 / 16.0 * std::f64::consts::LOG2_E) as f32;
         let splits = ATTN_SPLITS as i32;
-        launch!(self.attn_split, [n as u32, nk as u32, ATTN_SPLITS as u32], [32 * g, 1, 1], smem smem, s; q, qs, kc, vc, pos, n, nq, nk, sl2, part, splits)?;
+        launch!(self.attn_split, [n as u32, nk as u32, ATTN_SPLITS as u32], [32 * g, 1, 1], smem smem, s; q, qs, kc, vc, pos, n, nq, nk, sl2, part, splits, tab)?;
         launch!(self.attn_merge, [n as u32, nq as u32, 1], [256, 1, 1], s; part, splits, gate, gs, out, os, nq)
     }
 
@@ -1072,6 +1075,7 @@ impl Engine35 {
                         nq,
                         nk,
                         eps,
+                        0u64,
                     )?;
                     self.mark("attention: q/k norm, rotary, cache write")?;
                     if n == 1 {
@@ -1090,9 +1094,10 @@ impl Engine35 {
                             nq,
                             nk,
                             self.attn_part.ptr,
+                            0u64,
                         )?;
                     } else {
-                        self.k35.attn(s, self.qo.ptr, nq * 256, self.mix.ptr, full_w, kc, vc, pos, self.att.ptr, nq * 256, n as i32, nq, nk)?;
+                        self.k35.attn(s, self.qo.ptr, nq * 256, self.mix.ptr, full_w, kc, vc, pos, self.att.ptr, nq * 256, n as i32, nq, nk, 0u64)?;
                     }
                     self.mark("attention: attention")?;
                     self.lin(&ly.mats[1], self.att.ptr, n, self.o.ptr)?;

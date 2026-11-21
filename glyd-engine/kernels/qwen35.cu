@@ -53,15 +53,18 @@ extern "C" __global__ void rmsnorm1p_add(bf16* x, const bf16* y, const bf16* w, 
 // A full-attention layer's qkv row [n, stride]: each query head's 256 query values then its 256 gate values (nq heads), then nk key heads, then nk value heads (256 each).
 // Query and key heads: the norm with (1 + w) over the head, then the rotary on its first 2 half dims (pairs i, i + half; cos and sin bf16 [max_pos, half]), the rest as normed,
 // one rounding; query heads to qo [n, nq 256], key heads to the cache kc [positions, nk, 256] at the row's position; value heads copied to vc. Block (row, head), 128 threads.
+// A key's place in the cache: through the sequence's block table where it has one (16-token blocks of a pool: src/dynamic/pages.rs), else its position.
+__device__ __forceinline__ size_t q35_place(const int* tab, int p) { return tab ? (size_t)tab[p >> 4] * 16 + (p & 15) : (size_t)p; }
+
 extern "C" __global__ void q35_prep(const bf16* qkv, int stride, const bf16* qw, const bf16* kw, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* qo, bf16* kc, bf16* vc, int nq, int nk,
-                                    float eps) {
+                                    float eps, const int* tab) {
     const int t = blockIdx.x, hh = blockIdx.y, i = threadIdx.x;
     const bf16* row = qkv + (size_t)t * stride;
     const int p = pos[t];
     if (hh >= nq + nk) {
         const int j = hh - nq - nk;
         const bf16* x = row + nq * 512 + nk * 256 + j * 256;
-        bf16* o = vc + ((size_t)p * nk + j) * 256;
+        bf16* o = vc + (q35_place(tab, p) * nk + j) * 256;
         o[i] = x[i];
         o[i + 128] = x[i + 128];
         return;
@@ -81,7 +84,7 @@ extern "C" __global__ void q35_prep(const bf16* qkv, int stride, const bf16* qw,
         const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
         a = i < half ? nrm[i] * c - nrm[i + half] * sv : nrm[i] * c + nrm[i - half] * sv;
     }
-    bf16* o = isq ? qo + (size_t)t * nq * 256 + hh * 256 : kc + ((size_t)p * nk + (hh - nq)) * 256;
+    bf16* o = isq ? qo + (size_t)t * nq * 256 + hh * 256 : kc + (q35_place(tab, p) * nk + (hh - nq)) * 256;
     o[i] = f2b(a);
     o[i + 128] = f2b(b);
 }
@@ -105,7 +108,7 @@ __device__ __forceinline__ float warp_max(float v) {
 // part [(t nq + h) S + z][258] (outputs, then the maximum in log2 units, then the sum); attn256_merge combines the parts.
 template <bool SPLIT>
 __device__ __forceinline__ void attn256_t(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int os, int n, int nq, int nk, int R,
-                                          float sl2, float* part, int S) {
+                                          float sl2, float* part, int S, const int* tab) {
     extern __shared__ uint32_t sm[];
     uint32_t* Ks = sm;
     uint32_t* Vs = Ks + AT_KB * AT_KS;
@@ -142,7 +145,7 @@ __device__ __forceinline__ void attn256_t(const bf16* q, int qs, const bf16* gat
             const bool isv = c >= AT_KB * 32;
             const int cc = isv ? c - AT_KB * 32 : c, j = cc >> 5, part_ = cc & 31;
             uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < kmax) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + ((size_t)(k0 + j) * nk + kvh) * 256)[part_];
+            if (k0 + j < kmax) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + (q35_place(tab, k0 + j) * nk + kvh) * 256)[part_];
             if (isv) {
                 *reinterpret_cast<uint4*>(Vs + j * 128 + part_ * 4) = v;
             } else {
@@ -208,13 +211,13 @@ __device__ __forceinline__ void attn256_t(const bf16* q, int qs, const bf16* gat
 }
 
 extern "C" __global__ void __launch_bounds__(512) attn256(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int os, int n, int nq, int nk,
-                                                         int R, float sl2) {
-    attn256_t<false>(q, qs, gate, gs, kc, vc, pos, out, os, n, nq, nk, R, sl2, nullptr, 1);
+                                                         int R, float sl2, const int* tab) {
+    attn256_t<false>(q, qs, gate, gs, kc, vc, pos, out, os, n, nq, nk, R, sl2, nullptr, 1, tab);
 }
 
 // A decode step's attention in S parts of the keys (grid n, nk, S; R = 1): see attn256_t.
-extern "C" __global__ void __launch_bounds__(512) attn256_parts(const bf16* q, int qs, const bf16* kc, const bf16* vc, const int* pos, int n, int nq, int nk, float sl2, float* part, int S) {
-    attn256_t<true>(q, qs, nullptr, 0, kc, vc, pos, nullptr, 0, n, nq, nk, 1, sl2, part, S);
+extern "C" __global__ void __launch_bounds__(512) attn256_parts(const bf16* q, int qs, const bf16* kc, const bf16* vc, const int* pos, int n, int nq, int nk, float sl2, float* part, int S, const int* tab) {
+    attn256_t<true>(q, qs, nullptr, 0, kc, vc, pos, nullptr, 0, n, nq, nk, 1, sl2, part, S, tab);
 }
 
 // The S parts of attn256_split combined: out = bf16(bf16(sum of the parts' outputs, each times 2^(its maximum - the largest) / the sum likewise) * sigmoid(gate)). Block (row, query
