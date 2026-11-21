@@ -2739,6 +2739,7 @@ impl EngineQx {
             nq as i32,
             nk as i32,
             c.eps,
+            0u64,
         )?;
         self.lin(&ly.mats[2], self.h.ptr, n, self.ixqk.ptr)?;
         crate::tmark!(s, "attn: indexer product");
@@ -2748,7 +2749,7 @@ impl EngineQx {
         let qs = nq * c.head_dim;
         // (a few rows, a decode step's or a verification's, always through the picks: the same launches at any position, which a graph replays)
         if n > SPEC_ROWS && start + n <= c.ix_tokens() {
-            self.k35.attn(s, self.qo.ptr, qs as i32, self.mix.ptr, qd as i32, kc, vc, pos, self.core.ptr, qs as i32, n as i32, nq as i32, nk as i32)?;
+            self.k35.attn(s, self.qo.ptr, qs as i32, self.mix.ptr, qd as i32, kc, vc, pos, self.core.ptr, qs as i32, n as i32, nq as i32, nk as i32, 0u64)?;
         } else {
             let (pmax, ksel) = (self.ctx / c.ix_block, c.ix_budget / c.ix_block);
             if self.ctx > c.ix_tokens() && c.ix_heads == 4 {

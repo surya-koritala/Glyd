@@ -469,6 +469,14 @@ def released_case(case, what, model, text_only=True):
             with safe_open(os.path.join(d, fn), "pt") as f:
                 for name in f.keys():
                     shape = list(f.get_slice(name).get_shape())
+                    if name.endswith("tid2eid"):
+                        # hash routing's table: distinct experts per token, as integers
+                        vocab_n, k = shape
+                        experts = model.config.n_routed_experts
+                        ints = [[(t * 5 + j * 3) % experts for j in range(k)] for t in range(vocab_n)]
+                        tensors[name] = torch.tensor(ints, dtype=torch.int64)
+                        specs[name] = {"shape": shape, "ints": [x for row in ints for x in row]}
+                        continue
                     if text_only and ".visual." in name or name.startswith("model.visual."):
                         lo, hi = (-0.1, 0.1)
                     else:
@@ -528,7 +536,27 @@ def glm53flash_model():
     released_case("glm53flash_model", "GLM-5.3-Flash at reduced widths: KDA, NoPE MLA, MoE, 4 mHC streams", M.Glm5NextForConditionalGeneration(c))
 
 
+def dsv4_model():
+    from transformers.models.deepseek_v4 import modeling_deepseek_v4 as M
+    from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+
+    # DeepSeek-V4's layout at reduced widths, small enough that a 7-token prompt exercises every part: a window of 4, a CSA layer of
+    # ratio 2 whose indexer keeps 2 entries, an HCA layer of ratio 4, hash routing in the first MoE layer, 4 mHC streams.
+    c = DeepseekV4Config(hidden_size=64, num_attention_heads=4, head_dim=32, qk_rope_head_dim=8, partial_rotary_factor=0.25, q_lora_rank=32,
+                         o_lora_rank=16, o_groups=2, num_hidden_layers=3,
+                         layer_types=["sliding_attention", "compressed_sparse_attention", "heavily_compressed_attention"],
+                         mlp_layer_types=["hash_moe", "moe", "moe"], compress_rates={"compressed_sparse_attention": 2, "heavily_compressed_attention": 4},
+                         sliding_window=4, index_n_heads=2, index_head_dim=16, index_topk=2, n_routed_experts=8, num_experts_per_tok=2,
+                         moe_intermediate_size=32, vocab_size=VOCAB, pad_token_id=0, hc_mult=4, swiglu_limit=1.0, routed_scaling_factor=1.5,
+                         rope_parameters={"main": {"rope_type": "default", "rope_theta": 10_000.0, "partial_rotary_factor": 0.25},
+                                          "compress": {"rope_type": "default", "rope_theta": 160_000.0, "partial_rotary_factor": 0.25}})
+    c._attn_implementation = "eager"
+    released_case("dsv4_model", "DeepSeek-V4 at reduced widths: window 4, CSA ratio 2 with a top-2 indexer, HCA ratio 4, hash MoE, 4 mHC streams",
+                  M.DeepseekV4ForCausalLM(c))
+
+
 CASES = {
+    "dsv4_model": dsv4_model,
     "glm53_model": glm53_model,
     "glm53flash_model": glm53flash_model,
     "qwen38_model": qwen38_model,

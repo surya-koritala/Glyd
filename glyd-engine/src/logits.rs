@@ -1043,6 +1043,142 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
+// ---- the hand-written engines against the description path (R3b, #137)
+
+/// Qwen3.5's hand-written engine (`model35.rs`).
+struct Legacy35(crate::model35::Engine35);
+
+impl Run for Legacy35 {
+    fn describe(&self) -> String {
+        self.0.describe()
+    }
+    fn reset(&mut self) -> Result<()> {
+        self.0.reset()
+    }
+    fn prefill(&mut self, t: &[u32]) -> Result<()> {
+        self.0.prefill(t, false).map(|_| ())
+    }
+    fn step(&mut self, t: u32) -> Result<()> {
+        self.0.step(t, false).map(|_| ())
+    }
+    fn logits(&mut self) -> Result<Vec<f32>> {
+        self.0.logits()
+    }
+}
+
+/// Nemotron-H's hand-written engine (`model_nh.rs`).
+struct LegacyNh(crate::model_nh::EngineNh);
+
+impl Run for LegacyNh {
+    fn describe(&self) -> String {
+        self.0.describe()
+    }
+    fn reset(&mut self) -> Result<()> {
+        self.0.reset()
+    }
+    fn prefill(&mut self, t: &[u32]) -> Result<()> {
+        self.0.prefill(t).map(|_| ())
+    }
+    fn step(&mut self, t: u32) -> Result<()> {
+        self.0.step(t).map(|_| ())
+    }
+    fn logits(&mut self) -> Result<Vec<f32>> {
+        self.0.logits()
+    }
+}
+
+fn qwen35_legacy(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    let o = crate::model35::Opts35 { weight_transform: None, ctx: 1024, chunk: 64, graph: false, device: 0, layout: level_layout(level)?, chunked: true };
+    Ok(Box::new(Legacy35(crate::model35::Engine35::new(dir, &o)?)))
+}
+
+fn nemotron_legacy(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    let layout = level_layout(level)?;
+    let o = crate::model_nh::OptsNh { ctx: 1024, chunk: 64, graph: false, device: 0, layout, chunked: true, only: None };
+    let make = crate::moe_nh::factory(layout.unwrap_or(Layout::Tiered));
+    Ok(Box::new(LegacyNh(crate::model_nh::EngineNh::new(dir, &o, Some(&make))?)))
+}
+
+/// Gemma 4 on the description executor, as `serve` runs it (no draft model).
+fn gemma4_dyn(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    let c = crate::model_gemma4::ConfigG4::load(dir)?;
+    let o = DynOpts { ctx: 1024, chunk: 64, graph: false, device: 0, layout: level_layout(level)? };
+    boxed(Dyn::new(dir, crate::dynamic::gemma4::describe(&c), None, &o))
+}
+
+/// The cases whose families still have a hand-written engine: (case, the hand-written engine, the description path).
+type Pair = (&'static str, fn(&Path, &str) -> Result<Box<dyn Run>>, fn(&Path, &str) -> Result<Box<dyn Run>>);
+
+fn legacy_pairs() -> Vec<Pair> {
+    vec![("qwen35", qwen35_legacy, qwen35_engine), ("gemma4", gemma4_engine, gemma4_dyn), ("nemotron-h", nemotron_legacy, nemotron_engine)]
+}
+
+/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each family that still has a hand-written engine (Qwen3.5, Gemma 4, Nemotron-H) on
+/// it and on the description executor, the same random model, prompt and decode tokens as its R7 fixture, at each level the fixture bounds
+/// that the hand-written engine runs: rows with the same bits, the same best token, KL of the description path from the hand-written one.
+/// The record R3b deletes the engines on (docs/design/runtime.md §7: no old path survives its parity record). Exit 1 where a row's best
+/// token differs or KL passes 1e-3.
+pub fn parity(a: &crate::args::Args) -> Result<()> {
+    let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
+    let pairs: Vec<Pair> = legacy_pairs().into_iter().filter(|p| want.is_empty() || want.contains(&p.0)).collect();
+    if !want.is_empty() && pairs.len() != want.len() {
+        return err(format!("cases: {}", legacy_pairs().iter().map(|p| p.0).collect::<Vec<_>>().join(", ")));
+    }
+    let (fixtures, scratch, only_level) = (fixtures_dir(a), Scratch::new(a)?, a.flag("level"));
+    let mut failed = Vec::new();
+    for (id, legacy, desc) in pairs {
+        let c = find_case(id)?;
+        let dir = model_dir(&c, &scratch.dir)?;
+        let fx = Fixture::read(&fixture_files(&fixtures, id)?[0])?;
+        let mut levels: Vec<String> = Vec::new();
+        for p in fixture_files(&fixtures, id)? {
+            for b in Fixture::read(&p)?.bounds {
+                if !levels.contains(&b.level) && only_level.is_none_or(|l| l == b.level) {
+                    levels.push(b.level);
+                }
+            }
+        }
+        for level in levels {
+            let mut old = match legacy(&dir, &level) {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("SKIP {id:12} {level:8} the hand-written engine does not run it: {}", e.0);
+                    continue;
+                }
+            };
+            let old_rows = drive(old.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
+            drop(old);
+            let mut new = desc(&dir, &level)?;
+            let new_rows = drive(new.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
+            let arg = |v: &[f32]| v.iter().enumerate().fold(0, |b, (j, &x)| if x > v[b] { j } else { b });
+            let (mut same_bits, mut same_best, mut max_kl, mut max_d) = (0usize, 0usize, 0f64, 0f32);
+            for (o, n) in old_rows.iter().zip(&new_rows) {
+                same_bits += (o == n) as usize;
+                same_best += (arg(o) == arg(n)) as usize;
+                max_kl = max_kl.max(kl_of(&Row::from_logits(o)?, n));
+                max_d = o.iter().zip(n).fold(max_d, |m, (x, y)| m.max((x - y).abs()));
+            }
+            let rows = old_rows.len();
+            let ok = same_best == rows && max_kl <= 1e-3;
+            println!(
+                "{} {id:12} {level:8} {rows:3} rows: bits-equal {same_bits}, best token {same_best}/{rows}, KL max {max_kl:.2e}, largest logit difference {max_d:.4}",
+                if ok { "PASS" } else { "FAIL" }
+            );
+            if !ok {
+                failed.push(format!("{id} at {level}"));
+            }
+        }
+    }
+    if failed.is_empty() {
+        println!("the description path gives the hand-written engines' tokens");
+        Ok(())
+    } else {
+        println!("OFF: {}", failed.join(", "));
+        drop(scratch);
+        std::process::exit(1);
+    }
+}
+
 /// `logitsmodel CASE DIR`: the case's random model made in DIR (a model to run the other checks on: `kvtest DIR`, `run DIR`).
 pub fn make_model(a: &crate::args::Args) -> Result<()> {
     let c = find_case(a.need(1, "CASE")?)?;

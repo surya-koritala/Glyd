@@ -242,16 +242,34 @@ pub struct Mla {
     pub indexer: Option<Indexer>,
 }
 
-/// DeepSeek-V4's attention: one latent KV head, a sliding window plus per-layer compressed entries. Not in `Ref` yet.
+/// DeepSeek-V4's attention: one KV head of `head_dim` whose keys are its values (K = V), `heads` query heads, rope on the trailing
+/// `rope_dim` of each head (interleaved pairs), learned sinks, a sliding window, and on compressing layers the compressed entries of every
+/// closed window of `ratio` tokens: each entry the per-channel softmax-weighted sum of its tokens' projections (`overlap`: the previous
+/// window's tokens' first half of the channels with this window's second half, over 2 `ratio` tokens), normed and rotated at the window's
+/// first position. With an indexer a query sees only the `top_k` entries it scores highest. The output is rotated back at the query's
+/// position, then goes through `o_groups` grouped low-rank products (`o_a`) and `o_b`.
+///
+/// Roles: `q_a` [q_lora, hidden], `q_a_norm` [q_lora], `q_b` [heads head_dim, q_lora], `kv` [head_dim, hidden], `kv_norm` [head_dim],
+/// `o_a` [o_groups o_lora, heads head_dim / o_groups], `o_b` [hidden, o_groups o_lora], `sinks` [heads]; with a ratio `comp_kv`,
+/// `comp_gate` [(1 + overlap) head_dim, hidden], `comp_ape` [ratio, (1 + overlap) head_dim], `comp_norm` [head_dim]; with an indexer
+/// the same four as `idx_kv`, `idx_gate`, `idx_ape`, `idx_norm` at the indexer's head dim, `idx_q_b` [heads head_dim, q_lora] and
+/// `idx_weights` [heads, hidden]. The query's per-head norm has no weight.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Comp {
     pub heads: usize,
     pub head_dim: usize,
+    pub q_lora: usize,
+    pub o_groups: usize,
+    pub o_lora: usize,
     pub window: usize,
+    /// 0: the window alone.
     pub ratio: usize,
-    pub rope: Option<Rope>,
+    pub overlap: bool,
+    /// Rope of the window's queries and keys (DeepSeek-V4's "main" on window-only layers, "compress" with YaRN on compressing ones),
+    /// over the trailing `dim` of each head; the compressed entries and the indexer use it too.
+    pub rope: Rope,
     pub indexer: Option<Indexer>,
-    pub sinks: bool,
+    pub norm_eps: f32,
 }
 
 /// Which delta rule a linear-attention layer runs.
@@ -471,6 +489,9 @@ pub enum Collapse {
     Mean,
     /// The depth mix of every source with the model's roles `out_mix_norm`, `out_mix_proj` (Kimi-K3).
     DepthMix,
+    /// DeepSeek-V4's hyper-head: a weighted sum of the streams, the weights sigmoid(`out_hc_fn` rms(streams) `out_hc_scale` +
+    /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]).
+    Weighted { eps: f32, norm_eps: f32 },
 }
 
 /// A draft head: a few blocks after a projection of [embedding of the next token, the model's last hidden state] (R6).

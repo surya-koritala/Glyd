@@ -1590,6 +1590,7 @@ impl Dyn {
                     nq as i32,
                     nk as i32,
                     eps,
+                    self.table(ring),
                 )?;
                 self.mark("attention: q/k norm, rotary, cache write")
             }
@@ -1604,9 +1605,25 @@ impl Dyn {
                 // (a verify pass's rows by the decode step's kernel, each row at its own position: a step's sums)
                 let vpart = self.vpart.as_ref().filter(|_| self.verifying.get() && n > 1).map(|v| v.ptr);
                 if n == 1 || vpart.is_some() {
-                    self.k35.attn_decode(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk, vpart.unwrap_or(self.part35.ptr))?;
+                    self.k35.attn_decode(
+                        s,
+                        qo,
+                        qs,
+                        gate,
+                        stride as i32,
+                        kc,
+                        vc,
+                        pos.1,
+                        att,
+                        qs,
+                        n as i32,
+                        nq,
+                        nk,
+                        vpart.unwrap_or(self.part35.ptr),
+                        self.table(ring),
+                    )?;
                 } else {
-                    self.k35.attn(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk)?;
+                    self.k35.attn(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk, self.table(ring))?;
                 }
                 self.mark("attention: attention")
             }
@@ -1837,14 +1854,14 @@ impl Dyn {
                 let (kc, vc) = self.cache(ring);
                 let (mix, qo) = (p.slot(Slot::Mix) + self.rows_before(stride), p.slot(Slot::Qo) + self.rows_before(nq * 64));
                 let (c, sn) = (self.ropes[0].0.ptr, self.ropes[0].1.ptr);
-                launch!(k.qk, [nu, ((nq + 2 * nk) as u32).div_ceil(8), 1], [256, 1, 1], s; mix, stride as i32, qo, kc, vc, c, sn, pos.0, self.ring_cap[ring] as i32, nq as i32, nk as i32, rope as i32, scale, eps)?;
+                launch!(k.qk, [nu, ((nq + 2 * nk) as u32).div_ceil(8), 1], [256, 1, 1], s; mix, stride as i32, qo, kc, vc, c, sn, pos.0, self.ring_cap[ring] as i32, nq as i32, nk as i32, rope as i32, scale, eps, self.table(ring))?;
                 self.mark("attention: q/k norm, rotary, cache write")
             }
             Op::MuseAttn { ring, nq, nk, window } => {
                 let k = &self.kmuse;
                 let (kc, vc) = self.cache(ring);
                 let (qo, att) = (p.slot(Slot::Qo) + self.rows_before(nq * 64), p.slot(Slot::Att) + self.rows_before(nq * 64));
-                launch!(k.attn, [nu, nk as u32, 1], [(32 * (nq / nk)) as u32, 1, 1], s; qo, kc, vc, pos.1, att, self.ring_cap[ring] as i32, nq as i32, nk as i32, window as i32)?;
+                launch!(k.attn, [nu, nk as u32, 1], [(32 * (nq / nk)) as u32, 1, 1], s; qo, kc, vc, pos.1, att, self.ring_cap[ring] as i32, nq as i32, nk as i32, window as i32, self.table(ring))?;
                 self.mark(if window > 0 { "attention (sliding)" } else { "attention (global)" })
             }
             Op::MuseOGate { stride, goff, nq } => {

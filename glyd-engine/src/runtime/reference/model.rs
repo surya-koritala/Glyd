@@ -63,20 +63,7 @@ pub struct RefModel {
 }
 
 impl RefModel {
-    pub fn load(d: &Described, raw: Tensors) -> Result<RefModel> {
-        // FP8 matrices times their block scales
-        let dequant = |name: &str| -> Option<(Vec<usize>, Vec<f32>)> {
-            let (shape, mut v) = raw(name)?;
-            if d.fp8.contains(name) {
-                let (ss, sc) = raw(&format!("{name}_scale_inv"))?;
-                let (cols, b) = (shape[1], d.fp8_block);
-                for (i, x) in v.iter_mut().enumerate() {
-                    *x *= sc[(i / cols / b) * ss[1] + (i % cols) / b];
-                }
-            }
-            Some((shape, v))
-        };
-        let src: Tensors = &dequant;
+    pub fn load(d: &Described, src: Tensors) -> Result<RefModel> {
         let desc = d.desc.clone();
         let (es, embed) = get(src, &d.embed)?;
         if es != [desc.vocab, desc.hidden] {
@@ -161,6 +148,14 @@ impl RefModel {
                 Collapse::None if n == 1 => xt.to_vec(),
                 Collapse::None => return err(format!("{n} residual streams and no collapse into the head")),
                 Collapse::Mean => (0..d).map(|i| (0..n).map(|j| xt[j * d + i]).sum::<f32>() / n as f32).collect(),
+                Collapse::Weighted { eps, norm_eps } => {
+                    let (f, base, sc) = (self.p.vec("out_hc_fn")?, self.p.vec("out_hc_base")?, self.p.vec("out_hc_scale")?[0]);
+                    let r = 1.0 / (xt.iter().map(|v| v * v).sum::<f32>() / xt.len() as f32 + norm_eps).sqrt();
+                    let flat: Vec<f32> = xt.iter().map(|v| v * r).collect();
+                    let mixes = super::matvec(f, flat.len(), &flat);
+                    let pre: Vec<f32> = (0..n).map(|j| super::sigmoid(mixes[j] * sc + base[j]) + eps).collect();
+                    (0..d).map(|i| (0..n).map(|j| pre[j] * xt[j * d + i]).sum()).collect()
+                }
                 Collapse::DepthMix => {
                     let mut all: Vec<&[f32]> = sources[t].iter().map(|s| &s[..]).collect();
                     all.extend(partial[t].as_deref());

@@ -12,7 +12,10 @@ __device__ __forceinline__ float mu_rs64(float a, float b, float eps) {
 // The heads of each row of qkvg [n, stride] (q: nq heads, then k: nk, v: nk; channels of 64): each q and k head normed without a weight (eps), q times `scale` (rounded), the rotary where `rope` (rotate_half;
 // cos and sin rounded to bf16, each product and the sum rounded, transformers' bf16 arithmetic) at the row's position; the queries into qo [n, nq, 64], the keys and values into the ring kc, vc [cap, nk, 64] at
 // the position modulo cap. A warp a head (nq + 2 nk of them), a lane 2 channels (i and i + 32: the rotary's pair).
-extern "C" __global__ void muse_qk(const bf16* qkvg, int stride, bf16* qo, bf16* kc, bf16* vc, const float* cs, const float* sn, const int* pos, int cap, int nq, int nk, int rope, float scale, float eps) {
+// A key's place in a ring: through the sequence's block table where it has one (src/dynamic/pages.rs), else its slot p % cap.
+__device__ __forceinline__ size_t mu_place(const int* tab, int p, int cap) { return tab ? (size_t)tab[p >> 4] * 16 + (p & 15) : (size_t)(p % cap); }
+
+extern "C" __global__ void muse_qk(const bf16* qkvg, int stride, bf16* qo, bf16* kc, bf16* vc, const float* cs, const float* sn, const int* pos, int cap, int nq, int nk, int rope, float scale, float eps, const int* tab) {
     const int t = blockIdx.x, w = blockIdx.y * (blockDim.x >> 5) + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (w >= nq + 2 * nk) return;
     const bf16* x = qkvg + (size_t)t * stride + (size_t)w * MU_HD;
@@ -38,9 +41,9 @@ extern "C" __global__ void muse_qk(const bf16* qkvg, int stride, bf16* qo, bf16*
     if (w < nq) {
         o = qo + ((size_t)t * nq + w) * MU_HD;
     } else if (w < nq + nk) {
-        o = kc + ((size_t)(p % cap) * nk + (w - nq)) * MU_HD;
+        o = kc + (mu_place(tab, p, cap) * nk + (w - nq)) * MU_HD;
     } else {
-        o = vc + ((size_t)(p % cap) * nk + (w - nq - nk)) * MU_HD;
+        o = vc + (mu_place(tab, p, cap) * nk + (w - nq - nk)) * MU_HD;
     }
     o[lane] = f2b(a);
     o[lane + 32] = f2b(b);
@@ -48,7 +51,7 @@ extern "C" __global__ void muse_qk(const bf16* qkvg, int stride, bf16* qo, bf16*
 
 // The attention of row t's queries (qo [n, nq, 64]) over the keys and values of the ring (kc, vc [cap, nk, 64]) at positions max(0, p - window + 1) .. p (window 0: from 0), scale 64^-1/2, the softmax in fp32,
 // the output rounded once into att [n, nq, 64]. Block (row, key-value head), a warp each of its nq / nk query heads, a lane 2 channels; the keys in order (an online softmax).
-extern "C" __global__ void muse_attn(const bf16* qo, const bf16* kc, const bf16* vc, const int* pos, bf16* att, int cap, int nq, int nk, int window) {
+extern "C" __global__ void muse_attn(const bf16* qo, const bf16* kc, const bf16* vc, const int* pos, bf16* att, int cap, int nq, int nk, int window, const int* tab) {
     const int t = blockIdx.x, kv = blockIdx.y, w = threadIdx.x >> 5, lane = threadIdx.x & 31, g = nq / nk;
     if (w >= g) return;
     const int h = kv * g + w, p = pos[t];
@@ -57,10 +60,10 @@ extern "C" __global__ void muse_attn(const bf16* qo, const bf16* kc, const bf16*
     const int first = window > 0 ? max(0, p - window + 1) : 0;
     float m = -INFINITY, l = 0.f, oa = 0.f, ob = 0.f;
     for (int j = first; j <= p; j++) {
-        const bf16* k = kc + ((size_t)(j % cap) * nk + kv) * MU_HD;
+        const bf16* k = kc + (mu_place(tab, j, cap) * nk + kv) * MU_HD;
         const float s = warp_sum(qa * b2f(k[lane]) + qb * b2f(k[lane + 32])) * 0.125f;
         const float mn = fmaxf(m, s), c = expf(m - mn), e = expf(s - mn);
-        const bf16* v = vc + ((size_t)(j % cap) * nk + kv) * MU_HD;
+        const bf16* v = vc + (mu_place(tab, j, cap) * nk + kv) * MU_HD;
         l = l * c + e;
         oa = oa * c + e * b2f(v[lane]);
         ob = ob * c + e * b2f(v[lane + 32]);

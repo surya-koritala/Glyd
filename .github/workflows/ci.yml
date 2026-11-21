@@ -89,6 +89,7 @@ jobs:
       rust: ${{ steps.diff.outputs.rust }}
       hip: ${{ steps.diff.outputs.hip }}
       starlings: ${{ steps.diff.outputs.starlings }}
+      workflows: ${{ steps.diff.outputs.workflows }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -115,6 +116,7 @@ jobs:
                 echo "hip=true"
                 echo "platforms=true"
                 echo "starlings=true"
+                echo "workflows=true"
               } >> "$GITHUB_OUTPUT"
               exit 0 ;;
           esac
@@ -128,6 +130,8 @@ jobs:
             esac
           done < "$RUNNER_TEMP/changed"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+          # (a workflow file or an action: actionlint reads them all)
+          if grep -Eq '^\.github/(workflows|actions)/' "$RUNNER_TEMP/changed"; then echo "workflows=true" >> "$GITHUB_OUTPUT"; else echo "workflows=false" >> "$GITHUB_OUTPUT"; fi
           # (the Versions agree job also runs tools/report/report.py's self-test)
           if [ "$code" = true ] || grep -Eq '^tools/report/' "$RUNNER_TEMP/changed"; then
             echo "versions=true" >> "$GITHUB_OUTPUT"
@@ -532,12 +536,31 @@ jobs:
           cargo test -p starlings-cli --all-features --test daemon catalog_service_ --locked -- --nocapture
           cargo test -p starlings-cli --all-features --test daemon pipeline_fake_engine --locked -- --nocapture
 
+  # The workflow files parse and their expressions are right (actionlint, pinned and checked): a broken file in .github/workflows breaks the workflow that has it, and
+  # nothing else notices (the GPU workflows do not run on a pull request without their label). Runs when a workflow or action changes, and on main.
+  workflows:
+    name: Workflow files (actionlint)
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: |
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          # (the syntax and the expressions; the shell and Python style checks of the scripts inside are off)
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes= -color
+
   # The one check to require on main: it waits for every job above, and passes when each succeeded or was skipped (a pull request that changes only docs skips the
   # heavy ones, so it reports in seconds), and fails when one failed or was cancelled.
   result:
     name: CI result
     if: always()
-    needs: [changes, codec, lint, versions, rust, engine, engine-release, platform, msrv, hip, starlings]
+    needs: [changes, codec, lint, versions, rust, engine, engine-release, platform, msrv, hip, starlings, workflows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
