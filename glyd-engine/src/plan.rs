@@ -453,7 +453,7 @@ pub struct Ask {
     /// The model's family as `run` treats it (src/support.rs): its levels, where its weights may go, its context. None:
     /// any level and placement (the planner's own view, as for a model no path runs yet).
     pub family: Option<&'static crate::support::Support>,
-    /// The checkpoint is quantization-aware (`levels::is_qat`): its wren runs in every build.
+    /// The checkpoint is quantization-aware (`levels::is_qat`): its wren is exact (a pre-packed repo of the release's own four-bit weights).
     pub qat: bool,
 }
 
@@ -655,12 +655,12 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
     let same: Vec<usize> = (0..m.devices.len()).filter(|&i| m.devices[i].vendor == d0.vendor).collect();
     let gain = if sh.mtp { MTP_GAIN } else { 1.0 };
-    // (wren on a checkpoint that is not quantization-aware is a development build's: offered only where this build runs it, or asked)
+    // (every level the family runs, or the one asked)
     let levels: Vec<&'static str> = levels::LEVELS
         .iter()
         .map(|l| l.name)
         .filter(|n| ask.level.map_or(levels::names_now().contains(n), |a| a == *n))
-        .filter(|n| fam.is_none_or(|f| f.allows(n, ask.qat)))
+        .filter(|n| fam.is_none_or(|f| f.allows(n)))
         .collect();
     let mut options = Vec::new();
     for &level in &levels {
@@ -1449,12 +1449,8 @@ mod tests {
         let p = plan(&q9, &Machine::preset("rtx4090").unwrap(), Ask::default());
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("penguin", Some(Placement::Gpu(0))));
         let p = plan(&q9, &Machine::preset("rtx4060-laptop").unwrap(), Ask::default());
-        // (the lossy engines keep 2 GiB of an 8 GB card: swift's 5.8 GiB of weights do not fit beside them, so only wren does, which a release build runs on QAT checkpoints alone)
-        if levels::PREVIEW {
-            assert!(chosen(&p).level != "penguin" && p.options[0].why.is_some(), "{p:?}");
-        } else {
-            assert!(p.chosen.is_none() && p.options[0].why.is_some(), "{p:?}");
-        }
+        // (the lossy engines keep 2 GiB of an 8 GB card: swift's 5.8 GiB of weights do not fit beside them, so only wren does)
+        assert!(chosen(&p).level != "penguin" && p.options[0].why.is_some(), "{p:?}");
         // (the preset's driver is CUDA 12's: a build with CUDA 13's kernels alone says what it needs; one with CUDA 12's runs on it)
         assert_eq!(
             p.notes.iter().any(|n| n.contains("the engine's kernels need CUDA 13.0 (driver 580 or newer)")),
@@ -1468,13 +1464,9 @@ mod tests {
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("penguin", Some(Placement::Gpu(0))));
         let p = plan(&q32, &Machine::preset("2x3090").unwrap(), Ask::default());
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("kestrel", Some(Placement::Split(vec![0, 1]))));
-        // (one 24 GB card: only wren holds it, which a release build runs on QAT checkpoints alone)
+        // (one 24 GB card: only wren holds it)
         let p = plan(&q32, &Machine::preset("rtx4090").unwrap(), Ask::default());
-        if levels::PREVIEW {
-            assert_eq!(chosen(&p).level, "wren")
-        } else {
-            assert!(p.chosen.is_none(), "{p:?}")
-        }
+        assert_eq!(chosen(&p).level, "wren");
         // the 180B MoE fits no 16 GB card at any level but in RAM; on eight H100s it is lossless, split
         let qx = Shape::from_config(&fixture("qwen4x_config.json")).unwrap();
         let p = plan(&qx, &Machine::preset("rtx4080s").unwrap(), Ask::default());
@@ -1526,7 +1518,7 @@ mod tests {
                 for level in std::iter::once(None).chain(row.levels_now(model).into_iter().map(Some)) {
                     let p = plan(&sh, &m, Ask { level, family: Some(row), qat, ..Default::default() });
                     for o in &p.options {
-                        assert!(row.allows(o.level, qat), "{model} on {preset}: {} is not a level {} runs at", o.level, row.name);
+                        assert!(row.allows(o.level), "{model} on {preset}: {} is not a level {} runs at", o.level, row.name);
                         match &o.placement {
                             Some(Placement::Split(_)) => assert!(row.split_levels.contains(&o.level), "{model} on {preset}: split at {}", o.level),
                             Some(Placement::ExpertsInRam { .. }) => {

@@ -128,6 +128,9 @@ jobs:
           # (a random model of each family's layout with its layer kinds, made here: only models released in the last six months are used, and those are larger than a 16 GB card holds; a fixture's bound is the
           # reference's KL, or the same bits as the engine's own recorded output on this GPU generation)
           "$E" logitscheck --fixtures glyd-engine/tests/logits
+      - name: Each lossy level's KL from penguin against its threshold (Qwen3.5, Gemma 4 and Nemotron-H random models; kestrel, swift, wren; logits.rs levelcheck)
+        run: |
+          "$E" levelcheck --fixtures glyd-engine/tests/logits
       - name: The hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor (R3b's parity record; logits.rs paritycheck)
         run: |
           # (the same random model, prompt and decode tokens as each R7 fixture, at each level it bounds that the hand-written engine runs)

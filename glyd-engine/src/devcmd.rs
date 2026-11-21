@@ -31,7 +31,7 @@
 //!   glyd-engine recompute DIR [--ctx N] [--tables T]         the keys and values of a sequence made by its steps against those made by running it again as a prompt
 //!   glyd-engine topkcheck                                     the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
-//!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; usercheck CASE [--users 4] [--level L]: the case's random model (gemma4, qwen35) served by the scheduler, each reply alone and at once against the one-at-a-time reply; paritycheck [CASE...] [--level L]: the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor on their R7 fixtures' tokens (R3b)
+//!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; usercheck CASE [--users 4] [--level L]: the case's random model (gemma4, qwen35) served by the scheduler, each reply alone and at once against the one-at-a-time reply; paritycheck [CASE...] [--level L]: the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor on their R7 fixtures' tokens (R3b); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on the Qwen3.5, Gemma 4 and Nemotron-H random models, against the per-level thresholds
 //!   glyd-engine kcheck IN_DIR OUT_DIR                        the kernels on inputs tools/kcheck.py wrote
 //!   glyd-engine bandwidth [--gib N]                           the GPU's streaming read bandwidth
 //!   glyd-engine rangecheck MODEL[:level] [--prompt 1024] [--new 256] [--cut L | --cuts A,B] [--ctx N] [--chunk N] [--workers [--sessions 2]]   a Qwen3.5 model whole, then as stages of layers chained in this process and (--workers) as worker processes
@@ -136,6 +136,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "nhlayers" => glyd_engine::kcheck_nh::layers(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
         "logitscheck" => glyd_engine::logits::check(a),
         "paritycheck" => glyd_engine::logits::parity(a),
+        "levelcheck" => glyd_engine::logits::level_check(a),
         "logitsrecord" => glyd_engine::logits::record(a),
         "logitsbound" => glyd_engine::logits::set_bounds(a),
         "logitsmodel" => glyd_engine::logits::make_model(a),
