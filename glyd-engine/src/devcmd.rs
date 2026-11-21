@@ -1,6 +1,8 @@
 //! The commands of a development build (`--features dev`, the default): the checks, the proofs and the measurements. A release build has none of them.
 //!
 //!   glyd-engine pack MODEL OUT [--threads N] [--layout auto|mma|mma12|i6|i5|i4]   pack a checkpoint (every matrix, the embedding too); i6, i5 and i4: a lossy level's glyd-v7 directory (Qwen3.5, Nemotron 3 Super: at i4 its experts in four-bit codes, every other matrix in six-bit ones; GLM-5.3-Flash)
+//!   glyd-engine pack MODEL OUT --layout hummingbird --usage FILE [--threads N]   a mixture of experts the description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3, Muse Spark, Qwen3.5/3.8 MoE) at the
+//!                                                             hummingbird level (src/hb_pack.rs): each expert's bits from FILE's counts (calibrate-experts), its rows coded in Rust, the rest copied
 //!   glyd-engine pack MODEL OUT --layout hummingbird --codes DIR [--threads N]   Nemotron 3 Super at the Hummingbird level (src/hbpack.rs): its routed experts' neuron rows from the export in DIR (nemotron_hbr.py --export) in codebook rows of 3 and 2 bits,
 //!                                                             the signs of each layer's rotation beside them, every other matrix six-bit; glyd-gpu verify decodes the directory
 //!   glyd-engine hbtoy MODEL OUT [--seed N] [--share PERCENT]   a tiny Nemotron-H model (nemotron_ref.py moetoy's toy/) packed at the Hummingbird level from a random export (OUT/export, PERCENT of the experts at 3 bits, the rest at 2) into OUT/packed
@@ -753,7 +755,16 @@ fn cmd_pack(a: &Args) -> Result<()> {
     use glyd_engine::weights::Layout;
     let model = a.need(1, "MODEL")?;
     if a.flag("layout") == Some("hummingbird") {
-        let codes = a.flag("codes").ok_or_else(|| Error("--layout hummingbird needs --codes DIR, an export of the experts' neuron rows".into()))?;
+        // (a model the description builder maps, from the corpus pass's counts: src/hb_pack.rs; Nemotron 3 Super from an export: src/hbpack.rs)
+        if let Some(usage) = a.flag("usage") {
+            return glyd_engine::hb_pack::run(model, Path::new(a.need(2, "OUT")?), a.num("threads", 16usize)?, Path::new(usage));
+        }
+        let codes = a.flag("codes").ok_or_else(|| {
+            Error(
+                "--layout hummingbird needs --usage FILE (the counts glyd-engine calibrate-experts writes), or --codes DIR for Nemotron 3 Super's export"
+                    .into(),
+            )
+        })?;
         return glyd_engine::hbpack::run(model, Path::new(a.need(2, "OUT")?), a.num("threads", 16usize)?, Path::new(codes));
     }
     let src = glyd_gpu::save::Source::find(model).map_err(|e| Error(e.to_string()))?;
