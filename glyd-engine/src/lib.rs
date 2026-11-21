@@ -94,6 +94,7 @@ pub mod kimi_ref;
 pub mod kv;
 pub mod kvcal;
 #[cfg(feature = "dev")]
+pub mod kvshapes;
 pub mod kvtest;
 pub mod levels;
 #[cfg(feature = "dev")]
