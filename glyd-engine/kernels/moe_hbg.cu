@@ -322,3 +322,23 @@ extern "C" __global__ void __launch_bounds__(256) hbg_unrot(const float* part, c
         for (int q = 0; q < 4; q++) rows[(size_t)i * W + c + q] = f2b((float)signs[c + q] * (scale * v[q]));
     }
 }
+
+// The expert cache's tables for a call (src/moe.rs `MoeLayer::hb_cached`): for each pair j of the call (ids [pairs], the router's choices), its expert's group and place in that group's pool of places, from the places the store gave each
+// group's pairs (way0, way1 [pairs] int64: a place, or -1 where the pair is not that group's on the GPU): group_of[e] = 0 and local_of[e] = way0[j], or 1 and way1[j], or 255 (no group: the host computes the pair, and the products skip it).
+// The pairs of one expert carry the same place, so the writes of an expert's pairs are of the same values; the entries of the experts not in the call are not read. A thread a pair, blocks of 256.
+extern "C" __global__ void __launch_bounds__(256) hbg_tables(const long long* ids, const long long* way0, const long long* way1, unsigned char* group_of, unsigned short* local_of, int pairs, int E) {
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= pairs) return;
+    const long long e = ids[j];
+    if (e < 0 || e >= E) return;
+    const long long w0 = way0[j], w1 = way1[j];
+    if (w0 >= 0) {
+        group_of[e] = 0;
+        local_of[e] = (unsigned short)w0;
+    } else if (w1 >= 0) {
+        group_of[e] = 1;
+        local_of[e] = (unsigned short)w1;
+    } else {
+        group_of[e] = 255;
+    }
+}

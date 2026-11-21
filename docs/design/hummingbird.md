@@ -64,6 +64,14 @@ A pair goes to its group's kernels by two small tables, `group_of` [E] and `loca
   group at its real bytes, so a 3-bit expert costs 1.4 times a 2-bit one to copy.
 - `Costs` keep a host pair time per format; the copy-or-compute choice is per expert and per format, as the M2 design already says.
 
+Built (`src/hbg_store.rs`): a cached layer's two groups are pools of places on the GPU, and for each call of at most 64 tokens the store
+(`ExpertStore::run_groups_at`) reads the router's choices once, copies misses into free places or keeps them for the host, and a small
+kernel (`hbg_tables`) points each expert of the call at its place, or at no group where the host computes it. The products and the
+plan stay over the layer's own expert numbers, so the activation and sum kernels are the resident layer's. The host computes its pairs
+from the host tier as it holds them (`cpu_hbg::store_pairs`) and its sums join the GPU's before R^T (after Muse Spark's normed sum).
+Where the computer's memory holds less than all the experts, each group keeps its share in memory and reads the rest from the layer's
+expert file in direct reads (`HbgDisk`). A step with such a layer is not captured in a graph.
+
 The planner sizes a layer's experts as 0.4 x 3-bit + 0.6 x 2-bit bytes (the recipe's share) until it has read the directory, then by
 the directory's own counts.
 

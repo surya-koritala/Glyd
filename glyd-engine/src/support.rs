@@ -106,7 +106,7 @@ pub static TABLE: [Support; 9] = [
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
         split_levels: PENGUIN_HB,
-        experts_in_ram_levels: PENGUIN,
+        experts_in_ram_levels: PENGUIN_HB,
     },
     Support {
         family: Family::Glm,
@@ -116,7 +116,7 @@ pub static TABLE: [Support; 9] = [
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
         split_levels: PENGUIN_HB,
-        experts_in_ram_levels: NONE,
+        experts_in_ram_levels: &["hummingbird"],
     },
     Support {
         family: Family::DeepSeekV4,
@@ -126,7 +126,7 @@ pub static TABLE: [Support; 9] = [
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
         split_levels: PENGUIN_HB,
-        experts_in_ram_levels: NONE,
+        experts_in_ram_levels: &["hummingbird"],
     },
     Support {
         family: Family::Muse,
@@ -136,7 +136,7 @@ pub static TABLE: [Support; 9] = [
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
         split_levels: PENGUIN_HB,
-        experts_in_ram_levels: NONE,
+        experts_in_ram_levels: &["hummingbird"],
     },
     Support {
         family: Family::FlashNext,

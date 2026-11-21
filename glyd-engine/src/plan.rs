@@ -493,7 +493,8 @@ pub enum Placement {
     /// Layers split over these GPUs, in proportion to their room.
     Split(Vec<usize>),
     /// A mixture of experts' experts in the computer's memory, a cache of them on the GPU; `hit`: the share of expert reads the cache serves.
-    ExpertsInRam { gpu: usize, cache: u64, hit: f64 },
+    /// `disk`: the bytes of experts the computer's memory does not hold, read from the packed directory as the router asks for them (0: none).
+    ExpertsInRam { gpu: usize, cache: u64, hit: f64, disk: u64 },
 }
 
 /// One level and placement considered.
@@ -525,8 +526,8 @@ impl Candidate {
         let placement = match &self.placement {
             Some(Placement::Gpu(i)) => serde_json::json!({"kind": "gpu", "gpus": [i]}),
             Some(Placement::Split(g)) => serde_json::json!({"kind": "split", "gpus": g}),
-            Some(Placement::ExpertsInRam { gpu, cache, hit }) => {
-                serde_json::json!({"kind": "experts_in_ram", "gpus": [gpu], "cache_bytes": cache, "hit_rate": hit})
+            Some(Placement::ExpertsInRam { gpu, cache, hit, disk }) => {
+                serde_json::json!({"kind": "experts_in_ram", "gpus": [gpu], "cache_bytes": cache, "hit_rate": hit, "disk_bytes": disk})
             }
             None => serde_json::Value::Null,
         };
@@ -565,6 +566,8 @@ const EFF_CPU: f64 = 0.70;
 const SYNC_PER_MOE_LAYER: f64 = 0.20e-3;
 /// The share of expert reads a cache holding a share `f` of the experts serves: experts are used unevenly (Condor: 70-76% at about a quarter).
 const HIT_EXPONENT: f64 = 0.23;
+/// The rate an expert's bytes come from an NVMe disk in direct reads of whole experts, 16 in flight (src/disk.rs), GB/s: a planning figure.
+pub const DISK_GBS: f64 = 3.0;
 /// Tokens a step makes with a draft head that proposes one and is accepted 80-90% of the time, after its cost.
 const MTP_GAIN: f64 = 1.7;
 
@@ -786,8 +789,13 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         // already uses the computer's memory: there RAM is the same memory, counted once)
         if sh.is_moe() && !d0.unified && fam.is_none_or(|f| f.experts_in_ram_levels.contains(&level)) {
             let ram = (m.ram_free as f64 - 4.0 * GIB) * 0.9;
-            let min_cache = 0.05 * experts;
-            if experts > ram {
+            // (a family the description builder maps at hummingbird, src/hbg_store.rs: its cache and its memory hold a token's experts in every layer at least; elsewhere the cache a twentieth of the experts)
+            let generic_hb = level == "hummingbird" && sh.arch != "NemotronHForCausalLM";
+            let token = sh.routed_active() * ebits / 8.0;
+            let min_cache = if generic_hb { token } else { 0.05 * experts };
+            // (the hummingbird level's experts are read from their files where the computer's memory does not hold them all: the disk tier)
+            let disk = if level == "hummingbird" && experts > ram && ram >= token.max(experts / 1000.0) { experts - ram } else { 0.0 };
+            if experts > ram && disk == 0.0 {
                 options.push(option(
                     None,
                     0,
@@ -802,8 +810,10 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
                 let active = sh.routed_active() * ebits / 8.0;
                 let gpu_t = (read - active * (1.0 - hit)) / (d0.bandwidth * GB * eff);
                 let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
-                let t = gpu_t.max(cpu_t) + SYNC_PER_MOE_LAYER * sh.moe_layers as f64;
-                options.push(option(Some(Placement::ExpertsInRam { gpu: main, cache: cache as u64, hit }), ctx, gain / t, None));
+                // (the misses the memory does not hold, at the disk's rate: the experts uniformly over the tiers)
+                let disk_t = active * (1.0 - hit) * (disk / experts) / (DISK_GBS * GB);
+                let t = gpu_t.max(cpu_t + disk_t) + SYNC_PER_MOE_LAYER * sh.moe_layers as f64;
+                options.push(option(Some(Placement::ExpertsInRam { gpu: main, cache: cache as u64, hit, disk: disk as u64 }), ctx, gain / t, None));
                 continue;
             }
         }
@@ -1073,13 +1083,17 @@ fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize) -> Candidate
             gpu: sp.devices.first().map_or(main, |&d| d as usize),
             cache: sp.gpu_bytes,
             hit: (sp.places.iter().min().copied().unwrap_or(0) as f64 / sp.experts_per_layer.max(1) as f64).min(1.0).powf(HIT_EXPONENT),
+            disk: lp.disk_bytes(),
         },
         (Some(sp), _) if sp.devices.len() > 1 => Placement::Split(sp.devices.iter().map(|&d| d as usize).collect()),
         (Some(sp), _) => Placement::Gpu(sp.devices.first().map_or(main, |&d| d as usize)),
         (None, None) => Placement::Gpu(main),
-        (None, Some(c)) => {
-            Placement::ExpertsInRam { gpu: main, cache: c.gpu_bytes(), hit: (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT) }
-        }
+        (None, Some(c)) => Placement::ExpertsInRam {
+            gpu: main,
+            cache: c.gpu_bytes(),
+            hit: (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT),
+            disk: lp.disk_bytes(),
+        },
     };
     Candidate {
         level: lp.level,
@@ -1168,9 +1182,15 @@ fn where_(p: &Placement, m: &Machine) -> String {
     match p {
         Placement::Gpu(i) => format!("GPU {i} ({})", m.devices[*i].name),
         Placement::Split(g) => format!("split over GPUs {}", g.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")),
-        Placement::ExpertsInRam { cache, hit, .. } => {
+        Placement::ExpertsInRam { cache, hit, disk: 0, .. } => {
             format!("experts in RAM, a {} cache on the GPU (~{:.0}% of expert reads), the CPU computes the rest", gb(*cache), hit * 100.0)
         }
+        Placement::ExpertsInRam { cache, hit, disk, .. } => format!(
+            "experts in RAM and {} on the disk, a {} cache on the GPU (~{:.0}% of expert reads), the CPU computes the rest",
+            gb(*disk),
+            gb(*cache),
+            hit * 100.0
+        ),
     }
 }
 
@@ -1474,6 +1494,37 @@ mod tests {
         let nh = Shape { arch: "NemotronHForCausalLM".into(), expert_width: 1024, release_bits: 16.0, expert_release_bits: 0.0, ..d.clone() };
         assert_eq!(level_bits("hummingbird", &nh, dev), Some((6.0, 2.9)));
         assert!(level_bits("hummingbird", &Shape { expert_width: 2688, ..nh }, dev).is_none());
+    }
+
+    /// A described family at hummingbird on a consumer GPU (GLM-5.3-Flash's shape, 288 experts of 4,096 x 2,048 on 45 layers): its experts in RAM with a cache of the busiest on the GPU where the computer's memory holds
+    /// them, the rest on the disk where it does not (the disk's share named), refused where the memory holds less than a token's experts in every layer; the cache's floor a token's experts, not a twentieth of them.
+    #[test]
+    fn hummingbird_puts_a_described_familys_experts_in_ram_and_on_the_disk() {
+        let glm = r#"{"model_type": "glm5_next_text", "hidden_size": 4096, "num_hidden_layers": 45, "num_attention_heads": 64, "n_routed_experts": 288, "num_experts_per_tok": 8,
+            "moe_intermediate_size": 2048, "first_k_dense_replace": 3, "vocab_size": 154880, "quantization_config": {"quant_method": "fp8"}}"#;
+        let sh = Shape::from_config(glm).unwrap();
+        let fam = crate::support::row(crate::support::Family::Glm);
+        let ask = Ask { level: Some("hummingbird"), family: Some(fam), ..Default::default() };
+        let mut m = Machine::preset("rtx4080s").unwrap();
+        let experts = sh.routed * hummingbird_expert_bits(sh.expert_width) / 8.0;
+        // memory for all of them: experts in RAM, nothing on the disk
+        m.ram_free = (experts * 1.3) as u64 + (8 << 30);
+        let p = plan(&sh, &m, ask);
+        let c = chosen(&p);
+        assert!(matches!(c.placement, Some(Placement::ExpertsInRam { disk: 0, .. })) && c.level == "hummingbird", "{p:?}");
+        // half of them: the rest on the disk, and slower
+        m.ram_free = (experts * 0.5) as u64;
+        let q = plan(&sh, &m, ask);
+        let Some(Placement::ExpertsInRam { disk, .. }) = chosen(&q).placement else { panic!("{q:?}") };
+        assert!(disk > 0 && (disk as f64) < experts * 0.6 && chosen(&q).tok_s < c.tok_s, "{q:?}");
+        assert!(text("GLM-5.3-Flash", &sh, &m, &q).contains("on the disk"));
+        // less than a token's experts in every layer: refused
+        m.ram_free = (sh.routed_active() * hummingbird_expert_bits(sh.expert_width) / 8.0 * 0.5) as u64 + (4 << 30);
+        assert!(plan(&sh, &m, ask).chosen.is_none());
+        // the penguin level of the same family keeps its experts on the GPUs (its row has no RAM there)
+        m.ram_free = 512 << 30;
+        let pg = plan(&sh, &m, Ask { level: Some("penguin"), family: Some(fam), ..Default::default() });
+        assert!(!pg.options.iter().any(|o| matches!(o.placement, Some(Placement::ExpertsInRam { .. }))), "{pg:?}");
     }
 
     /// A config.json that says a number of layers no model has was an allocation of that many entries (a panic, or the process killed for its memory), and is an error.

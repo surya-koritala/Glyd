@@ -191,6 +191,11 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
 
 /// Stage `st` of the model (its layers; the embedding where it is the first, the head where the last).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
+    load_stage_hb(dir, o, st, None)
+}
+
+/// `load_stage` with a hummingbird directory's experts in the expert cache (`caching`: the stage's places and memory, src/hbg_store.rs).
+pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let c = ConfigV4::load(dir)?;
     if c.head_dim != 512
         || c.rope_dim != 64
@@ -210,6 +215,7 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     let ck = io(Checkpoint::open(dir))?;
     // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
     let hb = crate::hb_pack::HbDir::open(dir)?;
+    let store = caching.map(crate::hbg_store::store_for);
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
     let layout = o.layout.unwrap_or(Layout::Tiered);
     let (d, hd, nh, ch) = (c.hidden, c.head_dim, c.heads, o.chunk.max(1));
@@ -396,7 +402,10 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         // bits a weight), else the FP4 layout as released (4.25), else five-bit runs (5.5; GLYD_V4_FP4=0 asks for them); packed on all the cores (an expert's pack is its rows of the stacked matrix's:
         // block layouts have fixed strides), then joined
         // (a group of GPUs: the FP4 layouts alone, each expert's rows sliced)
-        let hbx = crate::hb_pack::HbDir::experts_for(hb.as_ref(), l, tpr.is_some())?;
+        // (the host's pairs of the cache: the release's SwiGLU with its clamp, weighed after the second product, where the GPU weighs the activation and rounds it to FP8)
+        let act = Act::SwiGlu { limit: (c.swiglu_limit > 0.0).then_some(c.swiglu_limit) };
+        let hbx =
+            crate::hbg_store::hb_layer(hb.as_ref(), l, tpr.is_some(), caching.zip(store.as_ref()), act, crate::cpu_hbg::Finish::Rotated, dev.ordinal, c.top_k)?;
         let (up, down) = if hbx.is_some() {
             (ExpertStack::shape_only(e, 2 * i, d), ExpertStack::shape_only(e, d, i))
         } else {
@@ -543,7 +552,7 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         };
         let block = moe.len();
         let layer = match hbx {
-            Some(x) => MoeLayer::new_hb(cfg, w.router, w.bias, None, x, Some(shared))?,
+            Some(x) => x.into_layer(cfg, w.router, w.bias, None, Some(shared))?,
             None => MoeLayer::new(cfg, w, Some(shared))?,
         };
         moe.push(Box::new(V4Moe(match shared8 {

@@ -543,6 +543,18 @@ impl HbDir {
         self.layers.iter().find(|l| l.block == block)
     }
 
+    /// The signs of the MoE layer at block `block`'s rotation (its file's `glyd_rot_signs`), held to the record.
+    pub fn read_signs(&self, block: usize) -> Result<Vec<i8>> {
+        let r = self.layer(block).ok_or_else(|| Error(format!("{}: no experts for block {block}", self.dir.display())))?;
+        let f = io(File::open(&self.dir.join(&r.file)))?;
+        let t = f.get("glyd_rot_signs").ok_or_else(|| Error(format!("{}: no glyd_rot_signs", r.file)))?;
+        let signs: Vec<i8> = io(f.read(t))?.into_iter().map(|b| b as i8).collect();
+        if signs.len() != r.width || signs.iter().any(|&s| s != 1 && s != -1) {
+            return err(format!("{}: glyd_rot_signs are not {} signs", r.file, r.width));
+        }
+        Ok(signs)
+    }
+
     /// The MoE layer at block `block` read whole: its signs and each expert's two matrices, held to the record.
     pub fn read_layer(&self, block: usize) -> Result<LayerRows> {
         let r = self.layer(block).ok_or_else(|| Error(format!("{}: no experts for block {block}", self.dir.display())))?;

@@ -373,7 +373,11 @@ impl MoeBlock for KimiMoe {
     }
 
     fn graphable(&self) -> bool {
-        true
+        !self.layer.reads_host()
+    }
+
+    fn reads_host(&self) -> bool {
+        self.layer.reads_host()
     }
 
     fn bytes(&self) -> usize {
@@ -689,6 +693,12 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
 
 /// Stage `st` with `places` of each mixture-of-experts layer's experts on the GPU (None, or as many as it has: all; fewer: the expert cache, its host tier pinned).
 pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) -> Result<Dyn> {
+    load_with_caching(dir, o, st, places, None)
+}
+
+/// `load_with_places`, a hummingbird directory's experts in the expert cache where `caching` is given (the stage's places and memory, src/hbg_store.rs; `places` is the penguin level's cache's and goes with no hummingbird
+/// directory).
+pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let c = ConfigKimi::load(dir)?;
     let (kd, md) = (&c.kda, &c.mla);
     if kd.dim != crate::model_glm::GM_D || c.hidden % 64 != 0 || c.hidden > 8192 || md.kv_rank > 512 || (md.kv_rank + md.rope) % 64 != 0 {
@@ -698,6 +708,7 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
     let ck = io(Checkpoint::open(dir))?;
     // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's, all on the GPU)
     let hb = crate::hb_pack::HbDir::open(dir)?;
+    let hb_store = caching.map(crate::hbg_store::store_for);
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
     let layout = o.layout.unwrap_or(Layout::Tiered);
     let (h, p) = (c.hidden, c.prefix);
@@ -895,9 +906,20 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
             // all on the GPU, or places for `p` of them and every expert in the computer's memory, packed there straight from the checkpoint (pack_into_host)
             let slots = places.filter(|&p| p < e.experts);
             let mut tp_places = None;
-            let hbx = crate::hb_pack::HbDir::experts_for(hb.as_ref(), l, tpr.is_some())?;
+            let hbx = crate::hbg_store::hb_layer(
+                hb.as_ref(),
+                l,
+                tpr.is_some(),
+                caching.zip(hb_store.as_ref()),
+                cfg.act,
+                crate::cpu_hbg::Finish::Rotated,
+                dev.ordinal,
+                e.top_k,
+            )?;
             if hbx.is_some() && slots.is_some() {
-                return err(format!("{f}: a hummingbird directory's experts are all on the GPU: the expert cache takes the penguin level so far"));
+                return err(format!(
+                    "{f}: a hummingbird directory's experts are in the hummingbird expert cache (src/hbg_store.rs), not the penguin level's places"
+                ));
             }
             let (up, down) = if hbx.is_some() {
                 (ExpertStack::shape_only(e.experts, 2 * e.inter, e.latent), ExpertStack::shape_only(e.experts, e.latent, e.inter))
@@ -1028,7 +1050,7 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
             };
             let sh = Shared { inter: si, up: PackBuf::shape_only(2 * si, h)?, down: sd, gate: None };
             let layer = match hbx {
-                Some(x) => MoeLayer::new_hb(cfg, w.router, w.bias, None, x, Some(sh))?,
+                Some(x) => x.into_layer(cfg, w.router, w.bias, None, Some(sh))?,
                 None => MoeLayer::new(cfg, w, Some(sh))?,
             };
             let b = KimiMoe {
