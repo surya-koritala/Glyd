@@ -276,8 +276,13 @@ pub struct Shape {
     pub window: usize,
     /// Recurrent state per sequence (linear attention, Mamba), bytes.
     pub state: f64,
-    /// Bits a weight of the release has (16 for bf16; 8 for FP8; about 4.25 for FP4 releases).
+    /// Bits a weight of the release has (16 for bf16; 8 for FP8; about 4.25 for FP4 releases): every part's but the routed experts'.
     pub release_bits: f64,
+    /// Bits a routed expert's weight has as released, where it differs from the rest (Kimi-K3's MXFP4, DeepSeek-V4's FP4 experts:
+    /// 4.25); 0: the same as `release_bits`.
+    pub expert_release_bits: f64,
+    /// The width the routed experts read (the hidden size, or the latent of a latent mixture of experts).
+    pub expert_width: usize,
     /// A draft head (multi-token prediction) the engine drafts with.
     pub mtp: bool,
 }
@@ -292,6 +297,20 @@ impl Shape {
 
     pub fn is_moe(&self) -> bool {
         self.experts > 0
+    }
+
+    /// Bits a routed expert's weight has as released.
+    pub fn expert_bits_released(&self) -> f64 {
+        if self.expert_release_bits > 0.0 {
+            self.expert_release_bits
+        } else {
+            self.release_bits
+        }
+    }
+
+    /// The release's bytes: the routed experts at their bits, the rest at theirs.
+    pub fn release_bytes(&self) -> f64 {
+        (self.embed + self.head + self.dense) * self.release_bits / 8.0 + self.routed * self.expert_bits_released() / 8.0
     }
 
     /// The routed experts' parameters a token reads (top-k of them in each MoE layer).
@@ -344,14 +363,15 @@ impl Shape {
             vec!["full_attention".to_string(); layers]
         };
         let experts = u("num_experts").max(u("num_local_experts")).max(u("n_routed_experts"));
-        let topk = u("num_experts_per_tok");
+        let topk = u("num_experts_per_tok").max(u("num_experts_per_token"));
         let moe_inter = n("moe_intermediate_size").unwrap_or(0.0);
         let shared_inter = n("shared_expert_intermediate_size")
             .or_else(|| n("moe_shared_expert_intermediate_size"))
             .unwrap_or(moe_inter * n("n_shared_experts").unwrap_or(0.0));
         let gated = if model_type.contains("nemotron") { 2.0 } else { 3.0 }; // (Nemotron-H's MLPs are relu²: two matrices)
                                                                              // (a latent mixture of experts, Nemotron 3 Super's: the experts work on a narrower vector, projected down and up around them)
-        let latent = n("moe_latent_size").unwrap_or(0.0);
+                                                                             // (Kimi-K3's `routed_expert_hidden_size` and Muse Spark's `moe_hidden_size` are the same: the experts' width)
+        let latent = n("moe_latent_size").or_else(|| n("routed_expert_hidden_size")).or_else(|| n("moe_hidden_size")).unwrap_or(0.0);
         let expert_width = if latent > 0.0 { latent } else { hf };
         let first_dense = u("first_k_dense_replace");
         // attention
@@ -419,19 +439,28 @@ impl Shape {
         sh.embed = vocab * hf;
         sh.head = if tied { 0.0 } else { vocab * hf };
         sh.max_ctx = u("max_position_embeddings").max(4096);
-        let quant = root.get("quantization_config").and_then(|q| q.get("quant_method")).and_then(Value::as_str).unwrap_or("");
+        // (the release's quantization: the config's, or its text model's, where Kimi-K3 keeps it)
+        let qc = root.get("quantization_config").or_else(|| t.get("quantization_config"));
+        let quant = qc.and_then(|q| q.get("quant_method")).and_then(Value::as_str).unwrap_or("");
         sh.release_bits = match quant {
             "fp8" => 8.0,
             "mxfp4" | "nvfp4" => 4.25,
             _ => 16.0,
         };
+        // (FP4 experts beside the rest: DeepSeek-V4's `expert_dtype`, and compressed-tensors' MXFP4 or NVFP4 groups, which Kimi-K3 puts on its
+        // routed experts alone and the rest left bf16)
+        let format = qc.and_then(|q| q.get("format")).and_then(Value::as_str).unwrap_or("");
+        if s("expert_dtype").as_deref() == Some("fp4") || (quant == "compressed-tensors" && format.contains("fp4")) {
+            sh.expert_release_bits = 4.25;
+        }
+        sh.expert_width = expert_width as usize;
         sh.mtp = n("mtp_num_hidden_layers").or_else(|| n("num_nextn_predict_layers")).unwrap_or(0.0) > 0.0;
         Ok(sh)
     }
 
     /// The same model with its parameters scaled to the checkpoint's bytes (model.safetensors.index.json's total_size), where known.
     pub fn scaled_to(mut self, total_bytes: f64) -> Shape {
-        let ours = self.params() * self.release_bits / 8.0;
+        let ours = self.release_bytes();
         if total_bytes > 0.0 && ours > 0.0 {
             let k = total_bytes / ours;
             for p in [&mut self.embed, &mut self.head, &mut self.dense, &mut self.routed] {
@@ -453,7 +482,7 @@ pub struct Ask {
     /// The model's family as `run` treats it (src/support.rs): its levels, where its weights may go, its context. None:
     /// any level and placement (the planner's own view, as for a model no path runs yet).
     pub family: Option<&'static crate::support::Support>,
-    /// The checkpoint is quantization-aware (`levels::is_qat`): its wren runs in every build.
+    /// The checkpoint is quantization-aware (`levels::is_qat`): its wren is exact (a pre-packed repo of the release's own four-bit weights).
     pub qat: bool,
 }
 
@@ -610,24 +639,52 @@ fn room(d: &Device) -> u64 {
     room_of(d.free).saturating_sub(LOSSY_WORK)
 }
 
+/// Bits a routed expert's weight takes at the hummingbird level for experts of `width` (docs/design/hummingbird.md): the recipe hb40's
+/// share at 3 bits and the rest at 2, a row of `width` codes with a bf16 scale a run of 32 and a codebook of its own (2^bits bf16 entries).
+pub fn hummingbird_expert_bits(width: usize) -> f64 {
+    let w = width.max(32) as f64;
+    let at = |b: i32| b as f64 + 0.5 + (1u32 << b) as f64 * 16.0 / w;
+    let share = crate::moe_hb::HB40_THREE_BIT_PERCENT as f64 / 100.0;
+    share * at(3) + (1.0 - share) * at(2)
+}
+
 /// Bits a weight of each part takes at a level: (everything else, the routed experts). None: the level does not apply.
+///
+/// Hummingbird applies to a mixture of experts whose experts' bits as released are above its own (Kimi-K3's MXFP4 and DeepSeek-V4's FP4
+/// at 4.25, GLM's FP8, bf16): Nemotron 3 Super's directories (src/hbpack.rs) hold every other matrix six-bit, and its kernels take experts
+/// on a latent that is a power of two from 128 to 1,024 (src/moe_hb.rs: not Nemotron 3.5 Lightning, whose experts read its width of
+/// 2,688); the families the description builder maps (src/hb_pack.rs) keep every other matrix as at penguin.
 fn level_bits(level: &str, sh: &Shape, d: &Device) -> Option<(f64, f64)> {
-    let lossless_bits = if sh.release_bits <= 8.0 {
-        sh.release_bits
-    } else if matches!(d.cc, (8, 0) | (9, 0) | (10, 0)) {
-        12.04 // (A100, H100, B200 take the 12-bit layout: it is the faster there)
-    } else {
-        10.75
+    let lossless = |release: f64| {
+        if release <= 8.0 {
+            release
+        } else if matches!(d.cc, (8, 0) | (9, 0) | (10, 0)) {
+            12.04 // (A100, H100, B200 take the 12-bit layout: it is the faster there)
+        } else {
+            10.75
+        }
     };
+    let (rest, experts) = (lossless(sh.release_bits), lossless(sh.expert_bits_released()));
+    if level == "hummingbird" {
+        let eb = hummingbird_expert_bits(sh.expert_width);
+        if !sh.is_moe() || eb >= sh.expert_bits_released() {
+            return None;
+        }
+        if sh.arch == "NemotronHForCausalLM" {
+            let w = sh.expert_width;
+            return (w.is_power_of_two() && (128..=1024).contains(&w) && 6.0 < sh.release_bits).then_some((6.0, 2.9));
+        }
+        return Some((rest, eb));
+    }
     let b = match level {
-        "penguin" => (lossless_bits, lossless_bits),
+        "penguin" => return Some((rest, experts)),
         "kestrel" => (6.5, 6.5),
         "swift" => (5.5, 5.5),
         "wren" => (4.5, 4.5),
-        "hummingbird" if sh.is_moe() => (6.0, 2.9),
         _ => return None,
     };
-    (b.0 < sh.release_bits).then_some(b).or((level == "penguin").then_some(b))
+    // (a uniform level is below every part's bits as released, or it does not apply)
+    (b.0 < sh.release_bits && b.1 < sh.expert_bits_released()).then_some(b)
 }
 
 /// The backend the machine's GPU `main` runs on, and what its generation or driver says against it.
@@ -675,12 +732,12 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
     let same: Vec<usize> = (0..m.devices.len()).filter(|&i| m.devices[i].vendor == d0.vendor).collect();
     let gain = if sh.mtp { MTP_GAIN } else { 1.0 };
-    // (wren on a checkpoint that is not quantization-aware is a development build's: offered only where this build runs it, or asked)
+    // (every level the family runs, or the one asked)
     let levels: Vec<&'static str> = levels::LEVELS
         .iter()
         .map(|l| l.name)
         .filter(|n| ask.level.map_or(levels::names_now().contains(n), |a| a == *n))
-        .filter(|n| fam.is_none_or(|f| f.allows(n, ask.qat)))
+        .filter(|n| fam.is_none_or(|f| f.allows(n)))
         .collect();
     let mut options = Vec::new();
     for &level in &levels {
@@ -1361,6 +1418,49 @@ mod tests {
     /// Qwen3-32B's config (Qwen3ForCausalLM), as the Hub has it.
     const QWEN3_32B: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 5120, "intermediate_size": 25600, "num_hidden_layers": 64, "num_attention_heads": 64, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "tie_word_embeddings": false, "max_position_embeddings": 40960}"#;
 
+    /// The routed experts' bits as released apart from the rest's (Kimi-K3's MXFP4 in its text config's compressed-tensors, DeepSeek-V4's
+    /// `expert_dtype`), Kimi-K3's and Muse Spark's names for the experts' width and Kimi-K3's for the choices a token; and hummingbird offered
+    /// where its expert bits are below the release's, with every other part as at penguin, and not where the experts are already at its bits.
+    #[test]
+    fn experts_have_their_own_release_bits_and_hummingbird_applies_below_them() {
+        let kimi = r#"{"architectures": ["KimiK3ForConditionalGeneration"], "text_config": {"model_type": "kimi_linear", "hidden_size": 7168, "num_hidden_layers": 4,
+            "num_attention_heads": 96, "vocab_size": 163840, "num_experts": 896, "num_experts_per_token": 16, "moe_intermediate_size": 3072, "routed_expert_hidden_size": 3584,
+            "first_k_dense_replace": 1, "intermediate_size": 33792, "quantization_config": {"quant_method": "compressed-tensors", "format": "mxfp4-pack-quantized"}}}"#;
+        let k = Shape::from_config(kimi).unwrap();
+        assert_eq!((k.topk, k.expert_width, k.release_bits, k.expert_bits_released()), (16, 3584, 16.0, 4.25));
+        assert!((k.routed - 3.0 * 896.0 * 3.0 * 3072.0 * 3584.0).abs() < 1.0, "{}", k.routed);
+        let dsv4 = r#"{"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4", "hidden_size": 4096, "num_hidden_layers": 4, "num_attention_heads": 64,
+            "n_routed_experts": 256, "num_experts_per_tok": 6, "moe_intermediate_size": 2048, "expert_dtype": "fp4", "quantization_config": {"quant_method": "fp8"}}"#;
+        let d = Shape::from_config(dsv4).unwrap();
+        assert_eq!((d.release_bits, d.expert_bits_released(), d.expert_width), (8.0, 4.25, 4096));
+        let glm = r#"{"model_type": "glm5_next_text", "hidden_size": 4096, "num_hidden_layers": 4, "num_attention_heads": 64, "n_routed_experts": 288,
+            "num_experts_per_tok": 8, "moe_intermediate_size": 2048, "quantization_config": {"quant_method": "fp8"}}"#;
+        let g = Shape::from_config(glm).unwrap();
+        assert_eq!((g.release_bits, g.expert_bits_released()), (8.0, 8.0));
+        // the release's bytes: each part at its bits
+        assert!((k.release_bytes() - ((k.embed + k.head + k.dense) * 2.0 + k.routed * 4.25 / 8.0)).abs() < 1.0);
+        // hummingbird's expert bits by width: 2.99 at 1,024, 2.92 at 3,584 and 4,096
+        assert!((hummingbird_expert_bits(1024) - (0.4 * 3.625 + 0.6 * 2.5625)).abs() < 1e-9);
+        assert!((2.91..2.93).contains(&hummingbird_expert_bits(4096)) && (2.91..2.93).contains(&hummingbird_expert_bits(3584)));
+        let h100 = Machine::preset("h100").unwrap();
+        let dev = &h100.devices[0];
+        for (s, rest) in [(&k, 12.04), (&d, 8.0), (&g, 8.0)] {
+            let (b, e) = level_bits("hummingbird", s, dev).unwrap();
+            assert_eq!(b, rest);
+            assert!((e - hummingbird_expert_bits(s.expert_width)).abs() < 1e-12);
+            assert_eq!(level_bits("penguin", s, dev).unwrap().1, s.expert_bits_released().min(12.04));
+        }
+        // the uniform levels are not offered where they would raise the experts' bits (MXFP4 at 4.25 against kestrel's 6.5)
+        assert!(level_bits("kestrel", &k, dev).is_none() && level_bits("wren", &d, dev).is_none());
+        // experts released at hummingbird's bits or fewer: nothing to gain
+        let low = Shape { expert_release_bits: 2.5, ..d.clone() };
+        assert!(level_bits("hummingbird", &low, dev).is_none());
+        // Nemotron-H: the kernels' latent (Nemotron 3 Super's 1,024) takes it, Nemotron 3.5 Lightning's width of 2,688 does not
+        let nh = Shape { arch: "NemotronHForCausalLM".into(), expert_width: 1024, release_bits: 16.0, expert_release_bits: 0.0, ..d.clone() };
+        assert_eq!(level_bits("hummingbird", &nh, dev), Some((6.0, 2.9)));
+        assert!(level_bits("hummingbird", &Shape { expert_width: 2688, ..nh }, dev).is_none());
+    }
+
     /// A config.json that says a number of layers no model has was an allocation of that many entries (a panic, or the process killed for its memory), and is an error.
     #[test]
     fn a_config_with_a_billion_layers_is_an_error() {
@@ -1477,12 +1577,8 @@ mod tests {
         let p = plan(&q9, &Machine::preset("rtx4090").unwrap(), Ask::default());
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("penguin", Some(Placement::Gpu(0))));
         let p = plan(&q9, &Machine::preset("rtx4060-laptop").unwrap(), Ask::default());
-        // (the lossy engines keep 2 GiB of an 8 GB card: swift's 5.8 GiB of weights do not fit beside them, so only wren does, which a release build runs on QAT checkpoints alone)
-        if levels::PREVIEW {
-            assert!(chosen(&p).level != "penguin" && p.options[0].why.is_some(), "{p:?}");
-        } else {
-            assert!(p.chosen.is_none() && p.options[0].why.is_some(), "{p:?}");
-        }
+        // (the lossy engines keep 2 GiB of an 8 GB card: swift's 5.8 GiB of weights do not fit beside them, so only wren does)
+        assert!(chosen(&p).level != "penguin" && p.options[0].why.is_some(), "{p:?}");
         // (the preset's driver is CUDA 12's: a build with CUDA 13's kernels alone says what it needs; one with CUDA 12's runs on it)
         assert_eq!(
             p.notes.iter().any(|n| n.contains("the engine's kernels need CUDA 13.0 (driver 580 or newer)")),
@@ -1496,13 +1592,9 @@ mod tests {
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("penguin", Some(Placement::Gpu(0))));
         let p = plan(&q32, &Machine::preset("2x3090").unwrap(), Ask::default());
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("kestrel", Some(Placement::Split(vec![0, 1]))));
-        // (one 24 GB card: only wren holds it, which a release build runs on QAT checkpoints alone)
+        // (one 24 GB card: only wren holds it)
         let p = plan(&q32, &Machine::preset("rtx4090").unwrap(), Ask::default());
-        if levels::PREVIEW {
-            assert_eq!(chosen(&p).level, "wren")
-        } else {
-            assert!(p.chosen.is_none(), "{p:?}")
-        }
+        assert_eq!(chosen(&p).level, "wren");
         // the 180B MoE fits no 16 GB card at any level but in RAM; on eight H100s it is lossless, split
         let qx = Shape::from_config(&fixture("qwen4x_config.json")).unwrap();
         let p = plan(&qx, &Machine::preset("rtx4080s").unwrap(), Ask::default());
@@ -1554,7 +1646,7 @@ mod tests {
                 for level in std::iter::once(None).chain(row.levels_now(model).into_iter().map(Some)) {
                     let p = plan(&sh, &m, Ask { level, family: Some(row), qat, ..Default::default() });
                     for o in &p.options {
-                        assert!(row.allows(o.level, qat), "{model} on {preset}: {} is not a level {} runs at", o.level, row.name);
+                        assert!(row.allows(o.level), "{model} on {preset}: {} is not a level {} runs at", o.level, row.name);
                         match &o.placement {
                             Some(Placement::Split(_)) => assert!(row.split_levels.contains(&o.level), "{model} on {preset}: split at {}", o.level),
                             Some(Placement::ExpertsInRam { .. }) => {
