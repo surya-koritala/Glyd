@@ -4,11 +4,11 @@
 
 | Machine | What you get |
 | :--- | :--- |
-| Linux x86_64, NVIDIA Ampere or newer, driver 580 or newer | The engine: `run`, `serve`, `fit`, `doctor`. |
+| Linux x86_64, NVIDIA Ampere or newer, driver 535 or newer (570 for Blackwell; 580 for a build with CUDA 13 kernels alone) | The engine: `run`, `serve`, `fit`, `doctor`. |
 | Linux x86_64, NVIDIA older than Ampere (Turing and before) | Refused: "older than the engine runs on". |
 | Linux aarch64 (Grace, Jetson, DGX Spark) | Refused: the engine has not run on an aarch64 computer. File compression only. |
 | macOS, Apple GPU | Refused: Apple GPUs are not supported yet. File compression only. |
-| Windows | Nothing is built or tested. [Condor](condor.md) has PowerShell scripts for NVIDIA GPUs on Windows. |
+| Windows x86_64, NVIDIA Ampere or newer, driver 535 or newer | From v0.34.0 a zip with `glyd.exe` (the engine linked in) and the GPU libraries, and `install.ps1` (below). The release workflow builds it and installs it on a runner with no GPU; a first chat on a Windows GPU is still to be shown ([#159](https://github.com/surya-koritala/Glyd/issues/159)). [Condor](condor.md) has PowerShell scripts for its own model. |
 | AMD (RDNA 3 and 4) | A development build: `GLYD_HIP=1 cargo build --release -p glyd --features engine`. Not in releases. |
 | No GPU | Refused: "no GPU was found: the engine's CPU backend is not built yet". |
 
@@ -37,6 +37,29 @@ curl -LsSf https://raw.githubusercontent.com/surya-koritala/Glyd/v0.33.0/scripts
 
 The release has the engine bundles `glyd-engine-v0.33.0-linux-x86_64.tar.gz` and its `.sha256`
 ([releases](https://github.com/surya-koritala/Glyd/releases/tag/v0.33.0)).
+
+## Windows
+
+```powershell
+irm https://getglyd.com/install.ps1 | iex
+```
+
+The script downloads the release's `glyd-engine-vX.Y.Z-windows-x86_64.zip`, checks it against the `.sha256` beside it, puts `glyd.exe` and the GPU
+libraries (CUDA 13 and CUDA 12; the engine loads the one the driver's version asks for) in `%LOCALAPPDATA%\Glyd`, adds that folder to your user PATH, and runs
+`glyd doctor`. No administrator rights. `$env:GLYD_RELEASE_URL` (a mirror or a folder), `$env:GLYD_VERSION`, `$env:GLYD_HOME` and `$env:GLYD_NO_PATH = '1'`
+change where it reads from and writes to.
+
+## Unsigned downloads
+
+The Windows and macOS programs of a release are not code-signed or notarized: the certificates are the owner's to get ([#223](https://github.com/surya-koritala/Glyd/issues/223)).
+Expect these warnings, which do not mean the file is bad:
+
+- Windows SmartScreen, "Windows protected your PC", for `glyd.exe` or the installer: More info, then Run anyway.
+- macOS Gatekeeper, "cannot be opened because the developer cannot be verified", for the `glyd` program of the tarball: `xattr -d com.apple.quarantine glyd`, or allow it in
+  System Settings, Privacy & Security. (Homebrew's `glyd` is not quarantined.)
+
+Check the file instead of trusting a warning: every release file is attested and signed by the workflow that built it, with no key of ours
+(`gh attestation verify`, or `cosign` with the `.sigstore.json` beside the file). [Verifying a release](../../verify-releases.md) has the commands.
 
 ## Build from source
 
