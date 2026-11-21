@@ -322,6 +322,8 @@ struct Seq {
     /// When it was sent to the scheduler and when its last token was written (the metrics' first-token and between-token times).
     began: std::time::Instant,
     last_token: Option<std::time::Instant>,
+    /// The sequence's clock for its trace (queue, prompt pass, decode).
+    trace: crate::otel::Clock,
 }
 
 /// The most sequences a slot step runs at once (the rows of a pass's head).
@@ -441,6 +443,7 @@ impl<B: ModelStep> Sched<B> {
         if self.trace {
             eprintln!("sched {:.4} submit {} ({} tokens)", crate::monitor::clock(), self.next_id, s.prompt.len());
         }
+        let prompt_len = s.prompt.len();
         self.waiting.push_back(Seq {
             id: self.next_id,
             out: s.out,
@@ -461,6 +464,7 @@ impl<B: ModelStep> Sched<B> {
             solo: false,
             began: std::time::Instant::now(),
             last_token: None,
+            trace: crate::otel::Clock::new(prompt_len),
         });
         self.gauges();
     }
@@ -551,7 +555,7 @@ impl<B: ModelStep> Sched<B> {
     /// Every sequence ended with `msg`, the pages all free again.
     pub fn fail(&mut self, msg: &str) {
         for s in self.active.drain(..).chain(self.waiting.drain(..)) {
-            crate::ops::ended("error", s.began);
+            crate::ops::finished("error", s.began, &s.trace, s.generated);
             self.pending.push((s.out.clone(), Ev::End(Err(msg.to_string()))));
         }
         let _ = self.be.lost();
@@ -584,7 +588,7 @@ impl<B: ModelStep> Sched<B> {
         let gone: Vec<usize> = self.waiting.iter().enumerate().filter(|(_, s)| s.abort.load(Relaxed)).map(|(i, _)| i).collect();
         for i in gone.into_iter().rev() {
             if let Some(s) = self.waiting.remove(i) {
-                crate::ops::ended("stopped", s.began);
+                crate::ops::finished("stopped", s.began, &s.trace, s.generated);
                 self.pending.push((s.out.clone(), Ev::End(Ok(Finish::Stopped))));
             }
         }
@@ -627,13 +631,14 @@ impl<B: ModelStep> Sched<B> {
                 if self.active.is_empty() {
                     // nothing will free a page: this one never fits
                     let s = self.waiting.remove(k).expect("a waiting sequence");
-                    crate::ops::ended("error", s.began);
+                    crate::ops::finished("error", s.began, &s.trace, s.generated);
                     self.pending.push((s.out.clone(), Ev::End(Err(format!("{} tokens, where the cache holds {} blocks", s.tokens.len(), self.pager.pages())))));
                     continue;
                 }
                 break;
             }
             let mut s = self.waiting.remove(k).expect("a waiting sequence");
+            s.trace.admit();
             // the pages of an earlier sequence with the same first tokens (at least the last token is run, for the logits)
             let hit = self.pager.lookup(&s.tokens, s.tokens.len().saturating_sub(1) / PAGE);
             s.chain = 0;
@@ -666,12 +671,14 @@ impl<B: ModelStep> Sched<B> {
             self.free.as_mut().expect("a slot step").push(slot);
             if self.active.is_empty() {
                 let s = self.waiting.remove(k).expect("a waiting sequence");
+                crate::ops::finished("error", s.began, &s.trace, s.generated);
                 self.pending.push((s.out.clone(), Ev::End(Err(format!("{} tokens, where the cache holds fewer with nothing else running", s.tokens.len())))));
                 return Ok(true);
             }
             return Ok(false);
         }
         let mut s = self.waiting.remove(k).expect("a waiting sequence");
+        s.trace.admit();
         s.pages = vec![slot];
         (s.done, s.published, s.chain, s.prefilling) = (0, 0, 0, true);
         s.after.clear();
@@ -783,7 +790,7 @@ impl<B: ModelStep> Sched<B> {
                 self.stats.ended_lost += 1;
                 let mut s = self.active.remove(i);
                 self.give_back(&mut s)?;
-                crate::ops::ended("error", s.began);
+                crate::ops::finished("error", s.began, &s.trace, s.generated);
                 self.pending.push((s.out.clone(), Ev::End(Err(ALONE_MESSAGE.to_string()))));
                 continue;
             }
@@ -839,7 +846,7 @@ impl<B: ModelStep> Sched<B> {
     fn finish(&mut self, i: usize, f: Finish) -> Result<()> {
         let mut s = self.active.remove(i);
         self.give_back(&mut s)?;
-        crate::ops::ended(finish_name(f), s.began);
+        crate::ops::finished(finish_name(f), s.began, &s.trace, s.generated);
         self.pending.push((s.out.clone(), Ev::End(Ok(f))));
         Ok(())
     }
@@ -891,6 +898,7 @@ impl<B: ModelStep> Sched<B> {
         }
         self.pending.push((s.out.clone(), Ev::Token(tok)));
         crate::ops::token(s.began, &mut s.last_token);
+        s.trace.token();
         s.tokens.push(tok);
         s.generated += 1;
         if s.generated >= s.reply.max_new || s.tokens.len() > window {
@@ -1361,6 +1369,46 @@ pub(crate) mod tests {
         abort.store(true, Relaxed);
         run(&mut s);
         assert_eq!(collect(&rx).1, Finish::Stopped);
+    }
+
+    /// With a collector configured, a sequence run on the scheduler comes out of it as a request span with its queue, prompt pass and decode beneath (the process's exporter is the test's own collector: other
+    /// tests' sequences send spans there too, so the sequence is found by its prompt's length).
+    #[test]
+    fn a_sequence_is_traced_to_a_local_collector() {
+        use crate::otel::{self, Config, Exporter};
+        let col = otel::testing::collector();
+        otel::install(Exporter::start(Config { url: col.url.clone(), headers: vec![], service: "glyd-sched-test".into() }));
+        otel::set_model("fake/model");
+        let mut s = Sched::new(Fake::new(64, 32), 4);
+        let (rx, _) = add(&mut s, prompt(5, 57), 6);
+        run(&mut s);
+        let (tokens, f) = collect(&rx);
+        assert_eq!((tokens.len(), f), (6, Finish::Length));
+        otel::flush(std::time::Duration::from_secs(5));
+        let all: Vec<serde_json::Value> = col
+            .bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|(b, _)| serde_json::from_str::<serde_json::Value>(b).unwrap()["resourceSpans"][0]["scopeSpans"][0]["spans"].as_array().unwrap().clone())
+            .collect();
+        let attr = |sp: &serde_json::Value, k: &str| sp["attributes"].as_array().and_then(|a| a.iter().find(|x| x["key"] == k).map(|x| x["value"].clone()));
+        let root = all
+            .iter()
+            .find(|sp| sp["name"] == "glyd.request" && attr(sp, "glyd.prompt_tokens").is_some_and(|v| v["intValue"] == "57"))
+            .expect("the sequence's request span");
+        assert_eq!(
+            (attr(root, "glyd.generated_tokens").unwrap()["intValue"].as_str(), attr(root, "glyd.finish_reason").unwrap()["stringValue"].as_str()),
+            (Some("6"), Some("length"))
+        );
+        let parts: Vec<&str> =
+            all.iter().filter(|sp| sp["traceId"] == root["traceId"] && sp["parentSpanId"] == root["spanId"]).map(|sp| sp["name"].as_str().unwrap()).collect();
+        assert_eq!(parts, ["glyd.queue", "glyd.prefill", "glyd.decode"], "{parts:?}");
+        // the parts end where the next begins, inside the whole
+        let t = |sp: &serde_json::Value, k: &str| sp[k].as_str().unwrap().parse::<u64>().unwrap();
+        let kids: Vec<_> = all.iter().filter(|sp| sp["parentSpanId"] == root["spanId"]).collect();
+        assert!(t(kids[0], "startTimeUnixNano") >= t(root, "startTimeUnixNano") && t(kids[2], "endTimeUnixNano") <= t(root, "endTimeUnixNano"));
+        assert_eq!((t(kids[0], "endTimeUnixNano"), t(kids[1], "endTimeUnixNano")), (t(kids[1], "startTimeUnixNano"), t(kids[2], "startTimeUnixNano")));
     }
 
     #[test]
