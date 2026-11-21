@@ -20,6 +20,11 @@ updates:
     directories: ["/bindings/python", "/glyd-gpu-py"]
     schedule:
       interval: weekly
+    # The Python path is frozen and retires in M3 (F7): the ranges of vllm and huggingface-hub in glyd-gpu-py stay as they are (the bumps failed the Python jobs, and nothing in
+    # the Rust engine depends on them).
+    ignore:
+      - dependency-name: "vllm"
+      - dependency-name: "huggingface-hub"
     groups:
       pip:
         update-types: ["minor", "patch"]
