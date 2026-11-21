@@ -248,6 +248,88 @@ impl Table {
     }
 }
 
+/// A table in a form small enough to commit as a fixture: the names with their layer and expert numbers masked (`model.layers.{L}.mlp.experts.{E}.w1.weight`), a
+/// group for each distinct (mask, type, shape, bytes) with the layers it is in and how many experts it has. `expand` gives the table back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Group {
+    pub mask: String,
+    pub dtype: String,
+    pub shape: Vec<u64>,
+    pub bytes: u64,
+    /// The layers it is in (empty: no layer number in the name).
+    pub layers: Vec<usize>,
+    /// How many experts of each layer (0: the name has no expert number).
+    pub experts: usize,
+}
+
+fn mask_numbers(name: &str) -> (String, Option<usize>, Option<usize>) {
+    let (mut out, mut layer, mut expert) = (name.to_string(), None, None);
+    for (key, slot, tag) in [("layers.", 0, "{L}"), (".experts.", 1, "{E}")] {
+        if let Some(i) = out.find(key) {
+            let from = i + key.len();
+            let digits: String = out[from..].chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(n) = digits.parse::<usize>() {
+                out.replace_range(from..from + digits.len(), tag);
+                if slot == 0 {
+                    layer = Some(n)
+                } else {
+                    expert = Some(n)
+                }
+            }
+        }
+    }
+    (out, layer, expert)
+}
+
+impl Table {
+    /// The table as groups (`Group`), in a fixed order.
+    pub fn compact(&self) -> Vec<Group> {
+        let mut m: BTreeMap<(String, String, Vec<u64>, u64), (std::collections::BTreeSet<usize>, std::collections::BTreeMap<usize, usize>)> = BTreeMap::new();
+        for r in &self.rows {
+            let (mask, layer, expert) = mask_numbers(&r.name);
+            let e = m.entry((mask, r.dtype.clone(), r.shape.clone(), r.bytes)).or_default();
+            let l = layer.unwrap_or(usize::MAX);
+            e.0.insert(l);
+            if expert.is_some() {
+                *e.1.entry(l).or_insert(0) += 1;
+            }
+        }
+        m.into_iter()
+            .map(|((mask, dtype, shape, bytes), (layers, experts))| Group {
+                experts: experts.values().copied().max().unwrap_or(0),
+                layers: layers.into_iter().filter(|&l| l != usize::MAX).collect(),
+                mask,
+                dtype,
+                shape,
+                bytes,
+            })
+            .collect()
+    }
+
+    /// The table of `groups`.
+    pub fn expand(groups: &[Group]) -> Table {
+        let mut rows = Vec::new();
+        for g in groups {
+            let layers: Vec<Option<usize>> = if g.layers.is_empty() { vec![None] } else { g.layers.iter().map(|&l| Some(l)).collect() };
+            for l in layers {
+                let experts: Vec<Option<usize>> = if g.experts == 0 { vec![None] } else { (0..g.experts).map(Some).collect() };
+                for e in experts {
+                    let mut name = g.mask.clone();
+                    if let Some(l) = l {
+                        name = name.replace("{L}", &l.to_string());
+                    }
+                    if let Some(e) = e {
+                        name = name.replace("{E}", &e.to_string());
+                    }
+                    rows.push(Row { name, dtype: g.dtype.clone(), shape: g.shape.clone(), bytes: g.bytes });
+                }
+            }
+        }
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        Table { rows }
+    }
+}
+
 fn cache_file(root: &Path, repo: &str, commit: &str) -> PathBuf {
     let slug: String = format!("{repo}-{commit}").chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
     root.join("headers").join(format!("{slug}.json"))
@@ -377,5 +459,134 @@ pub(crate) mod tests {
         assert_eq!(m.log.lock().unwrap().len(), before, "the second time is the cache's");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The recorded headers: for each model the files the Hub listed (path, bytes), the index's total, the config.json and the table of tensors, compact
+    /// (tests/fixtures/headers/NAME.json; `record_header_fixtures` writes them).
+    const HEADER_FIXTURES: [(&str, &str); 4] = [
+        ("gemma-4-12B-it", include_str!("../tests/fixtures/headers/gemma-4-12B-it.json")),
+        ("Kimi-K3", include_str!("../tests/fixtures/headers/Kimi-K3.json")),
+        ("DeepSeek-V4-Flash-0731", include_str!("../tests/fixtures/headers/DeepSeek-V4-Flash-0731.json")),
+        ("Qwen3.8-27B", include_str!("../tests/fixtures/headers/Qwen3.8-27B.json")),
+    ];
+
+    fn groups_of(v: &serde_json::Value) -> Vec<Group> {
+        v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| Group {
+                mask: g["mask"].as_str().unwrap().to_string(),
+                dtype: g["dtype"].as_str().unwrap().to_string(),
+                shape: g["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect(),
+                bytes: g["bytes"].as_u64().unwrap(),
+                layers: g["layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect(),
+                experts: g["experts"].as_u64().unwrap() as usize,
+            })
+            .collect()
+    }
+
+    /// Records the headers of the recent models by ranges from the Hub (the files' headers and the small files; no weights) into tests/fixtures/headers:
+    /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures`.
+    #[test]
+    #[ignore = "needs the network: GLYD_RECORD_HEADERS=1"]
+    fn record_header_fixtures() {
+        if std::env::var_os("GLYD_RECORD_HEADERS").is_none() {
+            return;
+        }
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers");
+        std::fs::create_dir_all(&out).unwrap();
+        let hub = hub::Hub::from_env();
+        let root = std::env::temp_dir().join(format!("glyd-record-headers-{}", std::process::id()));
+        for repo in
+            ["google/gemma-4-12B-it", "moonshotai/Kimi-K3", "deepseek-ai/DeepSeek-V4-Flash-0731", "meta-models/Muse-Spark-Open-816B-A42B", "Qwen/Qwen3.8-27B"]
+        {
+            let remote = hub.list(repo, "main").unwrap_or_else(|e| panic!("{repo}: {e}"));
+            let table = match Table::from_hub_in(&root, &hub, &remote) {
+                Ok(t) => t,
+                // (a gated repo's files answer 401 without the owner's token, which this does not look for: left out, and said)
+                Err(e) if e.contains("401") => {
+                    eprintln!("{repo}: skipped, the Hub answered 401 (gated: record it with HF_TOKEN set)");
+                    continue;
+                }
+                Err(e) => panic!("{repo}: {e}"),
+            };
+            let groups = table.compact();
+            assert_eq!(Table::expand(&groups), table, "{repo}: the compact table gives the table back");
+            let listed: Vec<serde_json::Value> =
+                remote.files.iter().filter(|e| e.path.ends_with(".safetensors")).map(|e| serde_json::json!({"path": e.path, "bytes": e.size})).collect();
+            let index = hub.text(repo, &remote.commit, "model.safetensors.index.json").ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+            let config = hub.text(repo, &remote.commit, "config.json").unwrap_or_default();
+            let v = serde_json::json!({
+                "repo": repo, "commit": remote.commit, "listed_safetensors": listed,
+                "index_total_size": index.as_ref().and_then(|i| i["metadata"]["total_size"].as_u64()),
+                "config": config,
+                "groups": groups.iter().map(|g| serde_json::json!({"mask": g.mask, "dtype": g.dtype, "shape": g.shape, "bytes": g.bytes, "layers": g.layers, "experts": g.experts})).collect::<Vec<_>>(),
+            });
+            let name = repo.rsplit('/').next().unwrap();
+            std::fs::write(out.join(format!("{name}.json")), serde_json::to_string(&v).unwrap()).unwrap();
+            eprintln!("{repo}: {} tensors in {} groups, {} files", table.rows.len(), groups.len(), listed.len());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P2b's acceptance on recorded headers of the recent families (Gemma 4 12B, Kimi-K3, DeepSeek-V4, Muse Spark, Qwen3.8-27B): the tensors the headers list are the
+    /// bytes the Hub lists for the files (their headers are all that differ: under 1%, and the index's total where there is one is exactly them); the model's
+    /// shape counted from them is within 1% of the weights in them less the vision tower and a prediction head not drafted with; and the plan sized from them is made.
+    #[test]
+    fn recorded_headers_are_the_hubs_file_sizes() {
+        use crate::plan::Shape;
+        for (name, text) in HEADER_FIXTURES {
+            let v: serde_json::Value = serde_json::from_str(text).unwrap();
+            let table = Table::expand(&groups_of(&v));
+            assert_eq!(table.compact(), groups_of(&v), "{name}: the table is its compact form");
+            let listed: u64 = v["listed_safetensors"].as_array().unwrap().iter().map(|f| f["bytes"].as_u64().unwrap()).sum();
+            let total = table.total_bytes();
+            assert!(total <= listed && (listed - total) as f64 / (listed as f64) < 0.01, "{name}: {total} bytes of tensors in {listed} bytes of files");
+            if let Some(idx) = v["index_total_size"].as_u64() {
+                assert_eq!(total, idx, "{name}: the index's total size");
+            }
+            let sh = Shape::from_config(v["config"].as_str().unwrap()).unwrap().with_table(&table);
+            let layers = sh.layers;
+            let counted: f64 = table
+                .rows
+                .iter()
+                .filter(|r| match classify(&r.name, layers) {
+                    Part::Vision => false,
+                    Part::Mtp => sh.mtp,
+                    _ => true,
+                })
+                .map(|r| r.params().unwrap_or_else(|| r.bytes * 8 / sh.release_bits.max(1.0) as u64) as f64)
+                .sum();
+            assert!((sh.params() / counted - 1.0).abs() < 0.01, "{name}: {:.4e} parameters in the shape, {counted:.4e} in the tensors", sh.params());
+        }
+    }
+
+    /// The recorded headers of Kimi-K3 and DeepSeek-V4 plan over the GPUs of a machine before any file is here: the layers' bytes and the rest's are the tensors' less the
+    /// vision tower and the prediction head, and the plan fits what its GPUs have free.
+    #[test]
+    fn the_recorded_dynamic_families_are_planned_from_their_headers() {
+        let m = crate::plan::Machine::preset("8xh100").unwrap();
+        let devs: Vec<crate::plan::Target> = m.devices.iter().enumerate().map(|(i, d)| crate::plan::Target::of(d, i as i32, Some(m.ram_free))).collect();
+        let mut planned = 0;
+        for (name, text) in HEADER_FIXTURES.iter().filter(|f| f.0 == "Kimi-K3" || f.0.starts_with("DeepSeek")) {
+            let v: serde_json::Value = serde_json::from_str(text).unwrap();
+            let table = Table::expand(&groups_of(&v));
+            let config = v["config"].as_str().unwrap();
+            let family = if *name == "Kimi-K3" { "Kimi-K3" } else { "DeepSeek-V4" };
+            let nl = crate::dynamic::split::config_num(config, "num_hidden_layers").unwrap();
+            let (per, base) = crate::dynamic::split::layer_bytes_table(&table, nl, 100, 100, &|_| true);
+            let counted: u64 = table.rows.iter().filter(|r| !matches!(classify(&r.name, nl), Part::Vision | Part::Mtp)).map(|r| r.bytes).sum();
+            assert_eq!(per.iter().sum::<u64>() + base, counted, "{name}: every layer's bytes and the rest's");
+            let args = crate::args::Args::from(["run".to_string(), name.to_string()]);
+            match crate::cli::size_dynamic(&args, name, &table, config, family, &devs, Some(m.ram_free), &|_| true) {
+                Ok(p) => {
+                    assert!(p.gpu_total() <= p.free && p.spread.is_some(), "{name}");
+                    planned += 1;
+                }
+                Err(r) => assert!(r.what.contains(name), "{name}: {}", r.what),
+            }
+        }
+        assert!(planned >= 1, "one of them is planned on eight H100s");
     }
 }
