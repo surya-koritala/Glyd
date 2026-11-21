@@ -86,6 +86,8 @@ pub struct RefMuse {
     norm: Vec<f32>,
     layers: Vec<Layer>,
     pub pos: usize,
+    /// The step's closest expert choice: the smallest gap, over its layers, between the k-th choice's score (plus bias) and the next one's.
+    pub margin: std::cell::Cell<f32>,
 }
 
 impl RefMuse {
@@ -121,7 +123,15 @@ impl RefMuse {
             });
         }
         let head = t("lm_head.weight")?;
-        Ok(RefMuse { embed: t(&format!("{}embed_tokens.weight", c.prefix))?, head, norm: t(&format!("{}norm.weight", c.prefix))?, layers, c, pos: 0 })
+        Ok(RefMuse {
+            embed: t(&format!("{}embed_tokens.weight", c.prefix))?,
+            head,
+            norm: t(&format!("{}norm.weight", c.prefix))?,
+            layers,
+            c,
+            pos: 0,
+            margin: std::cell::Cell::new(f32::INFINITY),
+        })
     }
 
     fn attention(&mut self, l: usize, h: &[f32]) -> Vec<f32> {
@@ -189,6 +199,10 @@ impl RefMuse {
         let s: Vec<f32> = mul(&ly.router, d, h).iter().map(|&x| sigmoid(x * c.out_mult)).collect();
         let mut ord: Vec<usize> = (0..c.experts).collect();
         ord.sort_by(|&i, &j| (s[j] + ly.bias[j]).total_cmp(&(s[i] + ly.bias[i])).then(i.cmp(&j)));
+        if c.top_k < c.experts {
+            let gap = (s[ord[c.top_k - 1]] + ly.bias[ord[c.top_k - 1]]) - (s[ord[c.top_k]] + ly.bias[ord[c.top_k]]);
+            self.margin.set(self.margin.get().min(gap));
+        }
         ord.truncate(c.top_k);
         let tot: f32 = ord.iter().map(|&e| s[e]).sum::<f32>() + 1e-15;
         let x = rms_w(&mul(&ly.pre, d, h).into_iter().map(bf).collect::<Vec<_>>(), &ly.w_pre, c.eps);
@@ -210,6 +224,7 @@ impl RefMuse {
 
     /// One token at the next position: its logits (bf16 values, soft-capped as transformers does).
     pub fn step(&mut self, token: u32) -> Vec<f32> {
+        self.margin.set(f32::INFINITY);
         let (d, eps, pe) = (self.c.hidden, self.c.eps, self.c.post_eps);
         let mut x = rms(&self.embed[token as usize * d..][..d], eps);
         let gate = |x: &[f32], o: &[f32], (a, b): &(Vec<f32>, Vec<f32>)| -> Vec<f32> {
@@ -260,7 +275,7 @@ impl RefMuse {
                 vals: Vec::new(),
             })
             .collect();
-        RefMuse { c, embed: Vec::new(), head: Vec::new(), norm: Vec::new(), layers, pos: 0 }
+        RefMuse { c, embed: Vec::new(), head: Vec::new(), norm: Vec::new(), layers, pos: 0, margin: std::cell::Cell::new(f32::INFINITY) }
     }
 
     /// A model of MoE layers only, from each layer's router, choice bias, pre-expert projection and norm, experts' gate-up and down,

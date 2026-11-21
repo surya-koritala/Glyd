@@ -1,6 +1,8 @@
 //! Model descriptions from `config.json` (R3a, #136): a `ModelDesc` of layer kinds and the weight map that names each block role's
-//! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), gemma-4 text, and the
-//! Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3).
+//! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), gemma-4 text, GLM-5.3 and
+//! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, and the Llama-style standard
+//! architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors; a format detail such as Kimi-K3's MXFP4
+//! experts (`.weight_packed` for `.weight`) is the loader's.
 //!
 //! A config key the builder does not know fails with the key named; keys that cannot change the math (ids, dtypes, training settings)
 //! are listed in `INERT`. A decoder layer is two blocks: the mixer's, then the feed-forward's.
@@ -41,14 +43,23 @@ pub struct Described {
     pub head: Option<String>,
     /// Per block, its roles' sources.
     pub blocks: Vec<Vec<(String, Source)>>,
+    /// The model's own roles besides the embedding, final norm and head (Kimi-K3's `out_mix_norm`, `out_mix_proj`).
+    pub extra: Vec<(String, Source)>,
     /// Draft layers in the checkpoint that the description does not use yet (`mtp_num_hidden_layers`).
     pub mtp_layers: usize,
+    /// Matrices stored as FP8 with block scales: each such `x.weight` has `x.weight_scale_inv` [rows / block, cols / block].
+    pub fp8: BTreeSet<String>,
+    pub fp8_block: usize,
 }
 
 impl Described {
     /// Every checkpoint tensor the description reads.
     pub fn names(&self) -> BTreeSet<String> {
         let mut s: BTreeSet<String> = [self.embed.clone(), self.final_norm.clone()].into_iter().chain(self.head.clone()).collect();
+        for (_, src) in &self.extra {
+            s.extend(src.names());
+        }
+        s.extend(self.fp8.iter().map(|w| format!("{w}_scale_inv")));
         for b in &self.blocks {
             for (_, src) in b {
                 s.extend(src.names());
@@ -276,6 +287,11 @@ fn text(cfg: &Value) -> Result<(&Map<String, Value>, &'static str)> {
 /// The description of the model whose `config.json` is `cfg`.
 pub fn describe(cfg: &Value) -> Result<Described> {
     let (tc, prefix) = text(cfg)?;
+    match cfg.get("model_type").and_then(|v| v.as_str()) {
+        Some("kimi_k3") => return kimi(cfg, tc),
+        Some("muse_spark") => return muse(tc, prefix),
+        _ => {}
+    }
     let mt = tc.get("model_type").and_then(|v| v.as_str()).unwrap_or("");
     // (a multimodal config's tie flag can sit at the top)
     let tied_top = cfg.get("tie_word_embeddings").and_then(|v| v.as_bool());
@@ -283,6 +299,7 @@ pub fn describe(cfg: &Value) -> Result<Described> {
         "llama" | "mistral" | "qwen2" | "qwen3" => llama(tc, prefix, mt, tied_top),
         "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
+        "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, cfg.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
         m => err(format!("model_type {m} has no description builder yet")),
     }
@@ -304,7 +321,10 @@ fn finish(k: &Keys, desc: ModelDesc, prefix: &str, blocks: Vec<Vec<(String, Sour
         final_norm: format!("{prefix}norm.weight"),
         head: (!tied).then(|| "lm_head.weight".to_string()),
         blocks,
+        extra: Vec::new(),
         mtp_layers,
+        fp8: BTreeSet::new(),
+        fp8_block: 128,
     })
 }
 
@@ -363,10 +383,10 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0 },
+        embed: Embed { scale: 1.0, norm: None, streams: 1 },
         blocks,
         final_norm: Norm::rms(eps),
-        head: Head { tied, softcap: None, scale: 1.0 },
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },
         mtp: Vec::new(),
         vision: None,
         rope: Some(rp),
@@ -523,10 +543,10 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0 },
+        embed: Embed { scale: 1.0, norm: None, streams: 1 },
         blocks,
         final_norm: pn,
-        head: Head { tied, softcap: None, scale: 1.0 },
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },
         mtp: Vec::new(),
         vision: None,
         rope: Some(rp),
@@ -644,10 +664,717 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: (d as f32).sqrt() },
+        embed: Embed { scale: (d as f32).sqrt(), norm: None, streams: 1 },
         blocks,
         final_norm: n,
-        head: Head { tied, softcap, scale: 1.0 },
+        head: Head { tied, softcap, scale: 1.0, collapse: Collapse::None },
+        mtp: Vec::new(),
+        vision: None,
+        rope: None,
+    };
+    finish(&k, desc, prefix, roles, 0)
+}
+
+/// FP8 block quantization as released (`quantization_config`): which matrices hold FP8 and their block.
+struct Fp8 {
+    block: usize,
+    skip: Vec<String>,
+}
+
+impl Fp8 {
+    fn parse(q: Option<&Value>, what: &str) -> Result<Option<Fp8>> {
+        let Some(q) = q.and_then(|v| v.as_object()) else { return Ok(None) };
+        let method = q.get("quant_method").and_then(|v| v.as_str()).unwrap_or("fp8");
+        let fmt = q.get("fmt").and_then(|v| v.as_str()).unwrap_or("e4m3");
+        if method != "fp8" || fmt != "e4m3" {
+            return err(format!("{what}: quantization {method} {fmt} is not supported"));
+        }
+        let block = match q.get("weight_block_size") {
+            Some(Value::Array(a)) if a.len() == 2 && a[0] == a[1] => a[0].as_u64().unwrap_or(128) as usize,
+            Some(v) => return err(format!("{what}: weight_block_size {v}")),
+            None => 128,
+        };
+        let skip = q
+            .get("modules_to_not_convert")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        Ok(Some(Fp8 { block, skip }))
+    }
+
+    /// Whether the matrix `w` (`x.weight`, the language model's prefix dropped as the config lists modules) is FP8.
+    fn holds(&self, w: &str) -> bool {
+        let m = w.strip_suffix(".weight").unwrap_or(w).replace("language_model.", "");
+        !self.skip.iter().any(|s| m == *s || m.ends_with(&format!(".{s}")) || m.starts_with(&format!("{s}.")))
+    }
+}
+
+/// The layer kinds of a GLM config, from transformers' keys (`layer_types`) or the release's (`linear_attn_config`).
+fn glm_types(k: &Keys, layers: usize, mt: &str) -> Result<Vec<bool>> {
+    if let Some(Value::Array(a)) = k.raw("layer_types") {
+        let t: Vec<bool> = a
+            .iter()
+            .map(|x| match x.as_str() {
+                Some("linear_attention") => Ok(true),
+                Some("indexed_attention" | "deepseek_sparse_attention" | "full_attention") => Ok(false),
+                o => err(format!("{mt}: layer type {o:?}")),
+            })
+            .collect::<Result<_>>()?;
+        if t.len() < layers {
+            return err(format!("{mt}: {} layer_types for {layers} layers", t.len()));
+        }
+        return Ok(t[..layers].to_vec());
+    }
+    Ok(vec![false; layers])
+}
+
+fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, quant: Option<&Value>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let flash = mt != "glm_moe_dsa";
+    let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    k.expect("mlp_bias", &Value::Bool(false))?;
+    k.raw("quantization_config");
+    let fp8 = Fp8::parse(quant, mt)?;
+    let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
+    if let Some(sf) = k.str("scoring_func")? {
+        if sf != "sigmoid" {
+            return err(format!("{mt}: scoring_func {sf}"));
+        }
+    }
+    if let Some(tm) = k.str("topk_method")? {
+        if tm != "noaux_tc" {
+            return err(format!("{mt}: topk_method {tm}"));
+        }
+    }
+    k.expect("moe_router_dtype", &Value::from("float32"))?;
+    k.expect("moe_layer_freq", &Value::from(1))?;
+    k.opt_usize("ep_size")?;
+    let types = glm_types(&k, layers, mt)?;
+    // the release's linear-attention block (else transformers' keys)
+    let lac = match k.raw("linear_attn_config") {
+        Some(Value::Object(o)) => Some(o),
+        _ => None,
+    };
+    let lin_num = |a: &str, b: &str| -> Result<Option<usize>> {
+        match lac.and_then(|o| o.get(a)).and_then(|v| v.as_u64()) {
+            Some(v) => Ok(Some(v as usize)),
+            None => k.opt_usize(b),
+        }
+    };
+    let types = if lac.is_some() && k.m.get("layer_types").is_none() {
+        let kda: BTreeSet<u64> =
+            lac.and_then(|o| o.get("kda_layers")).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64()).collect()).unwrap_or_default();
+        (0..layers).map(|l| kda.contains(&(l as u64))).collect()
+    } else {
+        types
+    };
+    let bound = match lac.and_then(|o| o.get("gate_lower_bound")) {
+        Some(v) => v.as_f64(),
+        None => k.opt_f64("linear_lower_bound")?,
+    };
+    let lin = Linear {
+        kind: LinearKind::KimiDelta,
+        k_heads: lin_num("num_heads", "linear_num_heads")?.unwrap_or(0),
+        v_heads: lin_num("num_heads", "linear_num_heads")?.unwrap_or(0),
+        k_dim: lin_num("head_dim", "linear_head_dim")?.unwrap_or(0),
+        v_dim: lin_num("head_dim", "linear_head_dim")?.unwrap_or(0),
+        conv: lin_num("short_conv_kernel_size", "linear_conv_kernel_dim")?.unwrap_or(4),
+        decay: match bound {
+            Some(b) => Decay::Bounded(b as f32),
+            None => Decay::Softplus,
+        },
+        gate_act: Act::Sigmoid,
+        norm_eps: eps,
+        state_f32: true,
+    };
+    if types.iter().any(|&t| t) && lin.k_heads == 0 {
+        return err(format!("{mt}: linear-attention layers without their heads"));
+    }
+    // the latent attention
+    let (heads, nope, rd, vd, kvl) = (
+        k.usize("num_attention_heads")?,
+        k.usize("qk_nope_head_dim")?,
+        k.opt_usize("qk_rope_head_dim")?.unwrap_or(0),
+        k.usize("v_head_dim")?,
+        k.usize("kv_lora_rank")?,
+    );
+    k.opt_usize("num_key_value_heads")?;
+    k.opt_usize("qk_head_dim")?;
+    k.opt_usize("head_dim")?;
+    let q_lora = k.opt_usize("q_lora_rank")?;
+    let nope_only = k.bool("mla_use_nope", rd == 0)?;
+    let rope = if rd > 0 && !nope_only {
+        let mut r = match k.raw("rope_parameters") {
+            Some(Value::Object(o)) => rope(o, rd, max_pos, &format!("{mt} rope_parameters"))?,
+            _ => legacy_rope(&k, rd, max_pos)?,
+        };
+        r.style = RopeStyle::Interleaved;
+        Some(r)
+    } else {
+        k.raw("rope_parameters");
+        k.raw("rope_theta");
+        None
+    };
+    let mut scale = ((nope + rd) as f32).powf(-0.5);
+    if let Some(Rope { scaling: RopeScaling::Yarn { factor, mscale_all_dim: Some(m), .. }, .. }) = &rope {
+        let ms = if *factor <= 1.0 { 1.0 } else { 0.1 * m * factor.ln() + 1.0 };
+        scale *= (ms * ms) as f32;
+    }
+    let mla_eps = if flash { eps } else { 1e-6 };
+    let (ih, idim, itop) = (k.opt_usize("index_n_heads")?, k.opt_usize("index_head_dim")?, k.opt_usize("index_topk")?);
+    let pool = k.opt_usize("index_kpool")?.unwrap_or(1);
+    for x in ["index_kpool_always_select_tail", "index_kpool_compress", "index_share_for_mtp_iteration", "indexer_rope_interleave"] {
+        k.bool(x, true)?;
+    }
+    let itypes: Vec<String> =
+        k.raw("indexer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str().unwrap_or("full").to_string()).collect()).unwrap_or_default();
+    // the feed-forward
+    let first_dense = k.opt_usize("first_k_dense_replace")?;
+    let mlp_types: Option<Vec<bool>> = k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str() == Some("sparse")).collect());
+    k.usize("intermediate_size")?;
+    k.usize("moe_intermediate_size")?;
+    let clamp = if flash { k.opt_f64("swiglu_limit")?.map(|v| v as f32) } else { None };
+    let mlp = Mlp { act, gated: true, bias: false, clamp };
+    let ne = k.usize("n_routed_experts")?;
+    let ng = k.opt_usize("n_group")?.unwrap_or(1);
+    let tg = k.opt_usize("topk_group")?.unwrap_or(1);
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: (ng > 1).then_some((ng, tg)),
+            top_k: k.usize("num_experts_per_tok")?,
+            renorm: k.bool("norm_topk_prob", true)?,
+            scale: k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32,
+            hash: false,
+        },
+        experts: ne,
+        expert: mlp,
+        shared: (k.opt_usize("n_shared_experts")?.unwrap_or(0) > 0).then_some(mlp),
+        shared_gate: false,
+        latent: None,
+    };
+    // the residual streams (GLM-5.3-Flash)
+    let streams = if flash && k.bool("mhc", true)? {
+        Some(StreamsP {
+            streams: k.opt_usize("hc_mult")?.unwrap_or(4),
+            sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
+            eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
+            norm_eps: eps,
+        })
+    } else {
+        None
+    };
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    let n = Norm::rms(eps);
+    let fp8w = |w: String, out: &mut BTreeSet<String>| -> Source {
+        if fp8.as_ref().is_some_and(|f| f.holds(&w)) {
+            out.insert(w.clone());
+        }
+        Source::Tensor(w)
+    };
+    let mut fp8set = BTreeSet::new();
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for (l, &is_lin) in types.iter().enumerate() {
+        let p = format!("{prefix}layers.{l}");
+        let a = format!("{p}.self_attn");
+        let residual = |sub: &str, r: &mut Vec<(String, Source)>| -> Residual {
+            match streams {
+                Some(s) => {
+                    for (role, x) in [("hc_fn", "fn"), ("hc_base", "base"), ("hc_scale", "scale")] {
+                        r.push((role.to_string(), t(format!("{p}.hc_{sub}_{x}"))));
+                    }
+                    Residual::Streams(s)
+                }
+                None => Residual::Add,
+            }
+        };
+        let mut r = vec![("norm_in".to_string(), t(format!("{p}.input_layernorm.weight")))];
+        let mixer = if is_lin {
+            for (role, x) in [
+                ("q", "q_proj"),
+                ("k", "k_proj"),
+                ("v", "v_proj"),
+                ("beta", "b_proj"),
+                ("decay_a", "f_a_proj"),
+                ("decay_b", "f_b_proj"),
+                ("gate_a", "g_a_proj"),
+                ("gate_b", "g_b_proj"),
+                ("o", "o_proj"),
+            ] {
+                r.push((role.to_string(), fp8w(format!("{a}.{x}.weight"), &mut fp8set)));
+            }
+            r.push(("conv".into(), Source::Rows(["q", "k", "v"].iter().map(|x| format!("{a}.{x}_conv1d.weight")).collect())));
+            for (role, x) in [("a_log", "A_log"), ("dt_bias", "dt_bias"), ("norm", "o_norm.weight")] {
+                r.push((role.to_string(), t(format!("{a}.{x}"))));
+            }
+            Mixer::Linear(lin.clone())
+        } else {
+            match q_lora {
+                Some(_) => {
+                    r.push(("q_a".into(), fp8w(format!("{a}.q_a_proj.weight"), &mut fp8set)));
+                    r.push(("q_a_norm".into(), t(format!("{a}.q_a_layernorm.weight"))));
+                    r.push(("q_b".into(), fp8w(format!("{a}.q_b_proj.weight"), &mut fp8set)));
+                }
+                None => r.push(("q".into(), fp8w(format!("{a}.q_proj.weight"), &mut fp8set))),
+            }
+            r.push(("kv_a".into(), fp8w(format!("{a}.kv_a_proj_with_mqa.weight"), &mut fp8set)));
+            r.push(("kv_a_norm".into(), t(format!("{a}.kv_a_layernorm.weight"))));
+            r.push(("kv_b".into(), fp8w(format!("{a}.kv_b_proj.weight"), &mut fp8set)));
+            r.push(("o".into(), fp8w(format!("{a}.o_proj.weight"), &mut fp8set)));
+            let shared = itypes.get(l).is_some_and(|s| s == "shared");
+            let indexer = match (ih, idim, itop) {
+                (Some(h), Some(dim), Some(top)) => {
+                    if !shared {
+                        let ix = format!("{a}.indexer");
+                        let mut names = vec![
+                            ("indexer_wq_b", "wq_b.weight"),
+                            ("indexer_wk", "wk.weight"),
+                            ("indexer_k_norm", "k_norm.weight"),
+                            ("indexer_k_norm_bias", "k_norm.bias"),
+                            ("indexer_weights", "weights_proj.weight"),
+                        ];
+                        if flash {
+                            names.extend([("indexer_pool_ape", "index_kpool_compress_ape"), ("indexer_pool_gate", "index_kpool_compress_gate")]);
+                        }
+                        for (role, x) in names {
+                            r.push((role.to_string(), t(format!("{ix}.{x}"))));
+                        }
+                    }
+                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared })
+                }
+                _ => None,
+            };
+            Mixer::Mla(Mla {
+                heads,
+                q_lora,
+                kv_lora: kvl,
+                nope,
+                rope_dim: rd,
+                v_dim: vd,
+                rope: rope.clone(),
+                q_norm: Norm::rms(mla_eps),
+                kv_norm: Norm::rms(mla_eps),
+                gate: None,
+                scale,
+                absorbed: true,
+                indexer,
+            })
+        };
+        let res = residual("attn", &mut r);
+        blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: res });
+        roles.push(r);
+        let sparse = match (&mlp_types, first_dense) {
+            (Some(t), _) => t.get(l).copied().unwrap_or(true),
+            (None, Some(f)) => l >= f,
+            (None, None) => true,
+        };
+        let f = format!("{p}.mlp");
+        let mut r = vec![("norm_in".to_string(), t(format!("{p}.post_attention_layernorm.weight")))];
+        let body = if sparse {
+            r.push(("router".into(), t(format!("{f}.gate.weight"))));
+            r.push(("choice_bias".into(), t(format!("{f}.gate.e_score_correction_bias"))));
+            let ex = |x: &str, out: &mut BTreeSet<String>| -> Vec<String> {
+                let w = format!("{f}.experts.0.{x}_proj.weight");
+                let _ = fp8w(w, out);
+                (0..ne).map(|e| format!("{f}.experts.{e}.{x}_proj.weight")).collect()
+            };
+            let (g, u, dn) = (ex("gate", &mut fp8set), ex("up", &mut fp8set), ex("down", &mut fp8set));
+            if fp8set.contains(&format!("{f}.experts.0.gate_proj.weight")) {
+                fp8set.extend(g.iter().chain(&u).chain(&dn).cloned());
+            }
+            r.push(("experts_gate_up".into(), Source::Experts(g.into_iter().zip(u).map(|(a, b)| vec![a, b]).collect())));
+            r.push(("experts_down".into(), Source::Experts(dn.into_iter().map(|x| vec![x]).collect())));
+            if moe.shared.is_some() {
+                for x in ["gate", "up", "down"] {
+                    r.push((format!("shared_{x}"), fp8w(format!("{f}.shared_experts.{x}_proj.weight"), &mut fp8set)));
+                }
+            }
+            Body::Ffn(Ffn::Moe(moe.clone()))
+        } else {
+            for x in ["gate", "up", "down"] {
+                r.push((x.to_string(), fp8w(format!("{f}.{x}_proj.weight"), &mut fp8set)));
+            }
+            Body::Ffn(Ffn::Mlp(mlp))
+        };
+        let res = residual("ffn", &mut r);
+        blocks.push(Block { norm_in: n, body, norm_out: None, residual: res });
+        roles.push(r);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: streams.map_or(1, |s| s.streams) },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: if streams.is_some() { Collapse::Mean } else { Collapse::None } },
+        mtp: Vec::new(),
+        vision: None,
+        rope,
+    };
+    let mut out = finish(&k, desc, prefix, roles, mtp_layers)?;
+    out.fp8 = fp8set;
+    out.fp8_block = fp8.map_or(128, |f| f.block);
+    Ok(out)
+}
+
+/// The top-level keys of a multimodal config that the text model does not read.
+fn top_keys(cfg: &Value, what: &str, known: &[&str]) -> Result<()> {
+    for k in cfg.as_object().map(|m| m.keys().collect::<Vec<_>>()).unwrap_or_default() {
+        if !known.contains(&k.as_str()) && !INERT.contains(&k.as_str()) && !k.ends_with("_token_id") && !k.ends_with("_token_index") {
+            return err(format!("{what}: config key {k} is not understood by the description builder"));
+        }
+    }
+    Ok(())
+}
+
+/// Kimi-K3 (`kimi_k3`, a `kimi_linear` text model): Kimi delta attention and gated NoPE MLA, the depth mix over groups of
+/// `attn_res_block_size` layers, a dense first layer then the latent MoE, situ activations, KimiRMSNorm (two roundings).
+fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
+    let mt = "kimi_linear";
+    top_keys(cfg, "kimi_k3", &["text_config", "vision_config", "quantization_config", "tie_word_embeddings"])?;
+    let k = Keys::new(tc, mt);
+    if tc.get("model_type").and_then(|v| v.as_str()) != Some(mt) {
+        return err("kimi_k3: the text model is not kimi_linear");
+    }
+    let (d, layers, vocab, eps, tied) = common(&k, None)?;
+    if k.str("hidden_act")? != Some("situ") {
+        return err(format!("{mt}: only situ is supported"));
+    }
+    let situ = Act::Situ { beta: k.f64("activation_situ_beta")? as f32, linear: k.f64("activation_situ_linear_beta")? as f32 };
+    let mlp = Mlp { act: situ, gated: true, bias: false, clamp: None };
+    let twice = |e: f32| Norm { rounding: Rounding::Twice, ..Norm::rms(e) };
+    for (x, want) in [("mla_use_nope", true), ("mla_use_output_gate", true), ("latent_moe_use_norm", true), ("moe_renormalize", true)] {
+        if k.bool(x, want)? != want {
+            return err(format!("{mt}: {x} = {} is not supported", !want));
+        }
+    }
+    k.expect("moe_router_activation_func", &Value::from("sigmoid"))?;
+    k.expect("num_expert_group", &Value::from(1))?;
+    k.expect("topk_group", &Value::from(1))?;
+    k.expect("topk_method", &Value::from("noaux_tc"))?;
+    k.expect("moe_layer_freq", &Value::from(1))?;
+    k.expect("rope_scaling", &Value::Null)?;
+    k.opt_usize("max_position_embeddings")?;
+    let la = match k.raw("linear_attn_config") {
+        Some(Value::Object(o)) => o,
+        _ => return err(format!("{mt}: no linear_attn_config")),
+    };
+    let lk = Keys::new(la, "linear_attn_config");
+    let list = |x: &str| -> Result<BTreeSet<u64>> {
+        lk.raw(x)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_u64()).collect())
+            .ok_or_else(|| Error(format!("{mt}: no linear_attn_config.{x}")))
+    };
+    let (kda_l, full_l) = (list("kda_layers")?, list("full_attn_layers")?);
+    if (1..=layers as u64).any(|n| kda_l.contains(&n) == full_l.contains(&n)) {
+        return err(format!("{mt}: kda_layers and full_attn_layers are not the {layers} layers (1-based) split in two"));
+    }
+    if !lk.bool("use_full_rank_gate", false)? {
+        return err(format!("{mt}: a low-rank output gate in the delta attention is not supported"));
+    }
+    let (kh, kd) = (lk.usize("num_heads")?, lk.usize("head_dim")?);
+    let lin = Linear {
+        kind: LinearKind::KimiDelta,
+        k_heads: kh,
+        v_heads: kh,
+        k_dim: kd,
+        v_dim: kd,
+        conv: lk.usize("short_conv_kernel_size")?,
+        decay: Decay::Bounded(lk.f64("gate_lower_bound")? as f32),
+        gate_act: Act::Sigmoid,
+        norm_eps: 1e-5,
+        state_f32: true,
+    };
+    lk.finish()?;
+    let heads = k.usize("num_attention_heads")?;
+    k.expect("num_key_value_heads", &Value::from(heads))?;
+    let (nope, rd) = (k.usize("qk_nope_head_dim")?, k.usize("qk_rope_head_dim")?);
+    let mla = Mla {
+        heads,
+        q_lora: Some(k.usize("q_lora_rank")?),
+        kv_lora: k.usize("kv_lora_rank")?,
+        nope,
+        rope_dim: rd,
+        v_dim: k.usize("v_head_dim")?,
+        rope: None,
+        q_norm: twice(1e-6),
+        kv_norm: twice(1e-6),
+        gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: None }),
+        scale: ((nope + rd) as f32).powf(-0.5),
+        absorbed: true,
+        indexer: None,
+    };
+    let dense = k.usize("first_k_dense_replace")?;
+    k.usize("intermediate_size")?;
+    k.usize("moe_intermediate_size")?;
+    let ne = k.usize("num_experts")?;
+    let shared = k.usize("num_shared_experts")? > 0;
+    let lat = k.usize("routed_expert_hidden_size")?;
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: None,
+            top_k: k.usize("num_experts_per_token")?,
+            renorm: true,
+            scale: k.f64("routed_scaling_factor")? as f32,
+            hash: false,
+        },
+        experts: ne,
+        expert: mlp,
+        shared: shared.then_some(mlp),
+        shared_gate: false,
+        latent: Some(Latent { dim: lat, norm_in: None, expert_norm: None, norm_out: Some(twice(eps)) }),
+    };
+    let group = k.usize("attn_res_block_size")?;
+    let prefix = "language_model.model.";
+    let n = twice(eps);
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let p = format!("{prefix}layers.{l}");
+        let a = format!("{p}.self_attn");
+        let mut r = vec![
+            ("norm_in".to_string(), t(format!("{p}.input_layernorm.weight"))),
+            ("mix_norm".into(), t(format!("{p}.self_attention_res_norm.weight"))),
+            ("mix_proj".into(), t(format!("{p}.self_attention_res_proj.weight"))),
+        ];
+        let mixer = if kda_l.contains(&(l as u64 + 1)) {
+            for (role, x) in [
+                ("q", "q_proj"),
+                ("k", "k_proj"),
+                ("v", "v_proj"),
+                ("beta", "b_proj"),
+                ("decay_a", "f_a_proj"),
+                ("decay_b", "f_b_proj"),
+                ("gate", "g_proj"),
+                ("o", "o_proj"),
+            ] {
+                r.push((role.to_string(), t(format!("{a}.{x}.weight"))));
+            }
+            r.push(("conv".into(), Source::Rows(["q", "k", "v"].iter().map(|x| format!("{a}.{x}_conv1d.weight")).collect())));
+            for (role, x) in [("a_log", "A_log"), ("dt_bias", "dt_bias"), ("norm", "o_norm.weight")] {
+                r.push((role.to_string(), t(format!("{a}.{x}"))));
+            }
+            Mixer::Linear(lin.clone())
+        } else {
+            for (role, x) in [
+                ("q_a", "q_a_proj.weight"),
+                ("q_a_norm", "q_a_layernorm.weight"),
+                ("q_b", "q_b_proj.weight"),
+                ("kv_a", "kv_a_proj_with_mqa.weight"),
+                ("kv_a_norm", "kv_a_layernorm.weight"),
+                ("kv_b", "kv_b_proj.weight"),
+                ("g", "g_proj.weight"),
+                ("o", "o_proj.weight"),
+            ] {
+                r.push((role.to_string(), t(format!("{a}.{x}"))));
+            }
+            Mixer::Mla(mla.clone())
+        };
+        blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: Residual::DepthMix(DepthMixP { starts: l % group == 0 }) });
+        roles.push(r);
+        let mut r = vec![
+            ("norm_in".to_string(), t(format!("{p}.post_attention_layernorm.weight"))),
+            ("mix_norm".into(), t(format!("{p}.mlp_res_norm.weight"))),
+            ("mix_proj".into(), t(format!("{p}.mlp_res_proj.weight"))),
+        ];
+        let body = if l < dense {
+            for x in ["gate", "up", "down"] {
+                r.push((x.to_string(), t(format!("{p}.mlp.{x}_proj.weight"))));
+            }
+            Body::Ffn(Ffn::Mlp(mlp))
+        } else {
+            let f = format!("{p}.block_sparse_moe");
+            for (role, x) in [
+                ("router", "gate.weight"),
+                ("choice_bias", "gate.e_score_correction_bias"),
+                ("latent_down", "routed_expert_down_proj.weight"),
+                ("latent_up", "routed_expert_up_proj.weight"),
+                ("latent_norm_out", "routed_expert_norm.weight"),
+            ] {
+                r.push((role.to_string(), t(format!("{f}.{x}"))));
+            }
+            r.push((
+                "experts_gate_up".into(),
+                Source::Experts((0..ne).map(|e| vec![format!("{f}.experts.{e}.w1.weight"), format!("{f}.experts.{e}.w3.weight")]).collect()),
+            ));
+            r.push(("experts_down".into(), Source::Experts((0..ne).map(|e| vec![format!("{f}.experts.{e}.w2.weight")]).collect())));
+            if shared {
+                for x in ["gate", "up", "down"] {
+                    r.push((format!("shared_{x}"), t(format!("{f}.shared_experts.{x}_proj.weight"))));
+                }
+            }
+            Body::Ffn(Ffn::Moe(moe.clone()))
+        };
+        blocks.push(Block { norm_in: n, body, norm_out: None, residual: Residual::DepthMix(DepthMixP { starts: false }) });
+        roles.push(r);
+    }
+    k.finish()?;
+    Ok(Described {
+        desc: ModelDesc {
+            hidden: d,
+            vocab,
+            embed: Embed { scale: 1.0, norm: None, streams: 1 },
+            blocks,
+            final_norm: n,
+            head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::DepthMix },
+            mtp: Vec::new(),
+            vision: None,
+            rope: None,
+        },
+        embed: format!("{prefix}embed_tokens.weight"),
+        final_norm: format!("{prefix}norm.weight"),
+        head: (!tied).then(|| "language_model.lm_head.weight".to_string()),
+        blocks: roles,
+        extra: vec![
+            ("out_mix_norm".into(), t(format!("{prefix}output_attn_res_norm.weight"))),
+            ("out_mix_proj".into(), t(format!("{prefix}output_attn_res_proj.weight"))),
+        ],
+        mtp_layers: 0,
+        fp8: BTreeSet::new(),
+        fp8_block: 128,
+    })
+}
+
+/// Muse Spark (`muse_spark`): GQA with weightless q/k norms, rope and a window on the sliding layers only, a gated output with a per-head
+/// norm; a normed embedding; sandwich norms with Muse's gated residual; the latent MoE in every layer; a soft-capped head.
+fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
+    let mt = "muse_spark_text";
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, None)?;
+    let pe = k.f64("post_norm_eps")? as f32;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    k.expect("num_shared_experts", &Value::from(0))?;
+    k.opt_usize("max_position_embeddings")?;
+    k.usize("intermediate_size")?;
+    let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
+    let window = k.usize("sliding_window")?;
+    let strs = |x: &str| -> Result<Vec<String>> {
+        Ok(k.raw(x).and_then(|v| v.as_array()).ok_or_else(|| Error(format!("{mt}: no {x}")))?.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect())
+    };
+    let (lt, mlt) = (strs("layer_types")?, strs("mlp_layer_types")?);
+    if lt.len() != layers || mlt.iter().any(|m| m != "sparse") {
+        return err(format!("{mt}: layer types other than one per layer, every MLP sparse"));
+    }
+    let thetas: Vec<f64> = k
+        .raw("layer_rope_theta")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| Error(format!("{mt}: no layer_rope_theta")))?
+        .iter()
+        .map(|v| v.as_f64().unwrap_or(0.0))
+        .collect();
+    if let Some(Value::Object(rp)) = k.raw("rope_parameters") {
+        if rp.get("rope_type").and_then(|v| v.as_str()).is_some_and(|t| t != "default") {
+            return err(format!("{mt}: rope scaling is not supported"));
+        }
+    }
+    let qk = k.f64("qk_scale_factor")? as f32;
+    let out_mult = k.f64("output_multiplier")? as f32;
+    let softcap = k.opt_f64("final_logit_softcapping")?.map(|v| v as f32);
+    let temperature = k.f64("residual_gate_temperature")? as f32;
+    let (ne, lat) = (k.usize("num_local_experts")?, k.usize("moe_hidden_size")?);
+    k.usize("moe_intermediate_size")?;
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: out_mult,
+            bias: true,
+            groups: None,
+            top_k: k.usize("num_experts_per_tok")?,
+            renorm: true,
+            scale: k.f64("routed_scaling_factor")? as f32,
+            hash: false,
+        },
+        experts: ne,
+        expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },
+        shared: None,
+        shared_gate: false,
+        latent: Some(Latent {
+            dim: lat,
+            norm_in: Some(Norm::rms_plus_one(eps)),
+            expert_norm: Some(Norm { weight: NormWeight::InputPlusOne, ..Norm::rms(pe) }),
+            norm_out: None,
+        }),
+    };
+    let bare = Norm::rms_bare(eps);
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let sliding = lt[l] == "sliding_attention";
+        let theta = thetas.get(l).copied().unwrap_or(0.0);
+        if sliding != (theta > 0.0) {
+            return err(format!("{mt}: layer {l}: a rotary that is not on exactly the window's layers"));
+        }
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: sliding.then_some(window),
+            sinks: false,
+            rope: sliding.then(|| Rope::plain(theta, hd)),
+            q_norm: Some(bare),
+            k_norm: Some(bare),
+            v_norm: None,
+            gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: Some(bare) }),
+            softcap: None,
+            bias: false,
+            scale: qk / (hd as f32).sqrt(),
+            k_eq_v: false,
+            indexer: None,
+        };
+        let p = format!("{prefix}layers.{l}");
+        let mut r =
+            vec![("norm_in".to_string(), t(format!("{p}.input_layernorm.weight"))), ("res_gate".into(), t(format!("{p}.post_attention_residual_gate.gate")))];
+        for (role, x) in [("q", "q_proj"), ("k", "k_proj"), ("v", "v_proj"), ("g", "gate_proj"), ("o", "o_proj")] {
+            r.push((role.to_string(), t(format!("{p}.self_attn.{x}.weight"))));
+        }
+        blocks.push(Block {
+            norm_in: Norm::rms_plus_one(eps),
+            body: Body::Mixer(Mixer::Attention(a)),
+            norm_out: Some(Norm::rms_bare(pe)),
+            residual: Residual::Gated(GateP { temperature }),
+        });
+        roles.push(r);
+        let m = format!("{p}.mlp");
+        let mut r = vec![
+            ("norm_in".to_string(), t(format!("{p}.pre_feedforward_layernorm.weight"))),
+            ("norm_out".into(), t(format!("{p}.post_feedforward_layernorm.weight"))),
+            ("res_gate".into(), t(format!("{p}.post_feedforward_residual_gate.gate"))),
+        ];
+        for (role, x) in [
+            ("router", "gate.weight"),
+            ("choice_bias", "gate.e_score_correction_bias"),
+            ("latent_down", "pre_expert_proj.weight"),
+            ("latent_norm_in", "pre_expert_norm.weight"),
+            ("experts_gate_up", "experts.gate_up_proj"),
+            ("experts_down", "experts.down_proj"),
+            ("expert_norm", "experts.post_expert_norm.weight"),
+            ("latent_up", "post_expert_proj.weight"),
+        ] {
+            r.push((role.to_string(), t(format!("{m}.{x}"))));
+        }
+        blocks.push(Block {
+            norm_in: Norm::rms_plus_one(eps),
+            body: Body::Ffn(Ffn::Moe(moe.clone())),
+            norm_out: Some(Norm { weight: NormWeight::InputPlusOne, ..Norm::rms(pe) }),
+            residual: Residual::Gated(GateP { temperature }),
+        });
+        roles.push(r);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: Some(bare), streams: 1 },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head { tied, softcap, scale: out_mult, collapse: Collapse::None },
         mtp: Vec::new(),
         vision: None,
         rope: None,
