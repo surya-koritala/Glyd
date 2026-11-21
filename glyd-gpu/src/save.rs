@@ -1908,6 +1908,9 @@ pub fn verify(dir: &Path, threads: usize, decoder: &Decoder) -> io::Result<Verif
 }
 
 #[cfg(test)]
+mod pack_compat;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
