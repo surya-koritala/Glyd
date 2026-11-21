@@ -1,0 +1,1 @@
+- Nemotron-H now runs only on the executor that reads its description: the hand-written engine and the `GLYD_NH_DYNAMIC` switch are gone, and the `nh*` developer commands run on the executor.

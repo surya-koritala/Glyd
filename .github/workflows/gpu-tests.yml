@@ -142,7 +142,7 @@ jobs:
       - name: Each lossy level's KL from penguin against its threshold (Qwen3.5, Gemma 4 and Nemotron-H random models; kestrel, swift, wren; logits.rs levelcheck)
         run: |
           "$E" levelcheck --fixtures glyd-engine/tests/logits
-      - name: The hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor (R3b's parity record; logits.rs paritycheck)
+      - name: The hand-written Qwen3.5 and Gemma 4 engines against the description executor (R3b's parity record; logits.rs paritycheck, Nemotron-H's record is in #410 and its engine is retired)
         run: |
           # (the same random model, prompt and decode tokens as each R7 fixture, at each level it bounds that the hand-written engine runs)
           "$E" paritycheck --fixtures glyd-engine/tests/logits
@@ -157,6 +157,16 @@ jobs:
           GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 16 --level penguin
           # (paged keys and values run out: 8 users on 24 blocks a group, each sequence sent back gives its blocks back and runs again; every reply comes, none fails)
           GLYD_ENGINE_PAGES=24 "$E" usercheck gemma4 --users 8 --level penguin
+      - name: Nemotron-H's developer tools on the executor (a random M*ME model made here, nhtoy with and without the decode graph, nhoffload through the expert cache, kcheck_nh.rs)
+        run: |
+          d="$RUNNER_TEMP/nh"
+          rm -rf "$d" && mkdir -p "$d/io"
+          "$E" nhrandom "$d/model"
+          echo "4 12 6" > "$d/io/toy.txt"
+          seq 1 12 > "$d/io/ids.txt"
+          "$E" nhtoy "$d/model" "$d/io"
+          "$E" nhoffload "$d/model" "$d/io"
+          rm -rf "$d"
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

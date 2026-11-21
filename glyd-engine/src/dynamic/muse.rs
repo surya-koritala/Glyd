@@ -6,8 +6,8 @@
 use super::{Dyn, Loaded, ModelDesc, Op, Opts, Ring, Slot, Stage};
 use crate::dev::{Buf, Dev, Kernel};
 use crate::ffi::{err, Error, Result};
+use crate::kern_nh::{MoeBlock, NhHost};
 use crate::model35::Mat;
-use crate::model_nh::{MoeBlock, NhHost};
 use crate::moe::{Act, ExpertStack, MoeCfg, MoeLayer, MoeWeights, Router};
 use crate::moe_rows::Down;
 use crate::muse::{plus_one, residual_gate, ConfigMuse};

@@ -13,7 +13,6 @@ pub use crate::levels::{packed_repo, ship_layout, short_name};
 use crate::machine;
 use crate::model::{Engine, Opts};
 use crate::model35::{Engine35, Opts35};
-use crate::model_nh::{EngineNh, OptsNh};
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::offload::{CachePlan, ExpertStore};
 use crate::plan::{reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK};
@@ -1700,7 +1699,7 @@ fn load_lossy(
             (Box::new(e), bytes, vocab)
         }
     } else if plan.kind == Kind::NemotronH {
-        let o = OptsNh { ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout), chunked: true, only: None };
+        let o = crate::dynamic::Opts { ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout) };
         let store = ExpertStore::new();
         // (the experts the computer's memory does not hold stay in the packed directory: src/offload.rs `Tier`)
         if let Some(c) = plan.experts.filter(|c| c.ram < c.host_bytes()) {
@@ -1730,23 +1729,15 @@ fn load_lossy(
         }
         store.set_offload(offload);
         let (plain, cached) = (crate::moe_nh::factory(layout), plan.experts.map(|c| crate::moe_nh::factory_cached(layout, c.slots, &store)));
-        let make: crate::model_nh::MoeFactory<'_> = match &cached {
+        let make: crate::kern_nh::MoeFactory<'_> = match &cached {
             Some(f) => f,
             None => &plain,
         };
-        if crate::tune!("GLYD_NH_DYNAMIC").is_some_and(|v| v == "0") {
-            // (a development build's way back to the hand-written engine, to compare)
-            let e = EngineNh::new(&dir, &o, Some(make)).map_err(oom)?;
-            let (bytes, vocab) = (e.w.bytes, e.w.cfg.vocab);
-            (Box::new(e), bytes, vocab)
-        } else {
-            // the dynamic engine (GLY-354): Nemotron-H's description, its blocks of experts (an expert cache's) as for the hand-written one
-            let layers = crate::nemotron::ConfigNemotronH::load(&dir).map_err(cannot)?.layers;
-            let o = crate::dynamic::Opts { ctx: o.ctx, chunk: o.chunk, graph: o.graph, device: o.device, layout: o.layout };
-            let e = crate::dynamic::nemotron::load_with(&dir, &o, make, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
-            let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
-            (Box::new(e), bytes, vocab)
-        }
+        // the executor (GLY-354): Nemotron-H's description, its blocks of experts (an expert cache's) as `make` makes them
+        let layers = crate::nemotron::ConfigNemotronH::load(&dir).map_err(cannot)?.layers;
+        let e = crate::dynamic::nemotron::load_with(&dir, &o, make, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
+        let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
+        (Box::new(e), bytes, vocab)
     } else if crate::tune!("GLYD_Q35_DYNAMIC").is_some_and(|v| v == "0") {
         // (a development build's way back to the hand-written engine, to compare)
         let o = Opts35 { weight_transform: None, ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout), chunked: true };

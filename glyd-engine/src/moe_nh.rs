@@ -1,4 +1,4 @@
-//! Nemotron 3 Super's latent mixture-of-experts layer on the GPU (`NemotronHMoE`): `NhMoe`, the `MoeBlock` that model_nh.rs's layers call, built on the mixture-of-experts core (src/moe.rs, kernels/moe.cu).
+//! Nemotron 3 Super's latent mixture-of-experts layer on the GPU (`NemotronHMoE`): `NhMoe`, the `MoeBlock` that kern_nh.rs's layers call, built on the mixture-of-experts core (src/moe.rs, kernels/moe.cu).
 //! The router reads the layer's normed input at the model's width; the experts work on a latent a quarter as wide (`fc1_latent_proj` down to it before them, `fc2_latent_proj` back up after), relu squared with no
 //! gate; the shared expert reads the model's width and its output is added to the experts' once they are back at it. The arithmetic and its roundings are `tools/nemotron_ref.py`'s `moe_mixer` (checked against
 //! transformers' own NemotronHMoE there); `NhMoe::forward` is its launches in order.
@@ -11,8 +11,8 @@
 
 use crate::cpu_experts::rows_of_experts;
 use crate::ffi::{err, Error, Result, Words};
+use crate::kern_nh::{MoeBlock, NhHost};
 use crate::model35::Mat;
-use crate::model_nh::{MoeBlock, NhHost};
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
 use crate::moe_rows::{Down, RowStack, RowsJoined};
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
@@ -215,7 +215,7 @@ impl NhMoe {
     }
 }
 
-/// The factory `EngineNh::new` and the dynamic engine take: each mixture-of-experts layer is an `NhMoe` at `level` (Int6, Int5 or Int4), whatever the layout of the engine's other matrices.
+/// The factory the executor's Nemotron-H loader takes: each mixture-of-experts layer is an `NhMoe` at `level` (Int6, Int5 or Int4), whatever the layout of the engine's other matrices.
 pub fn factory(level: Layout) -> impl Fn(usize, &ConfigNemotronH, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> {
     let common = Rc::new(crate::moe_hb::HbShared::default());
     move |l, c, ck, _| {
@@ -320,7 +320,7 @@ impl NhMoeCached {
     }
 }
 
-/// The factory `EngineNh::new` and the dynamic engine take for a model whose experts do not all fit in the GPU's memory: each mixture-of-experts layer is an `NhMoeCached` with places for `slots` experts, all of them sharing `store` (whose
+/// The factory the executor's Nemotron-H loader takes for a model whose experts do not all fit in the GPU's memory: each mixture-of-experts layer is an `NhMoeCached` with places for `slots` experts, all of them sharing `store` (whose
 /// counts and hints the caller keeps); a layer of no more experts than places is an `NhMoe`.
 pub fn factory_cached(
     level: Layout,
@@ -438,7 +438,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::model_nh::{NH_N, NH_P};
+    use crate::kern_nh::{NH_N, NH_P};
     use crate::moe::expert_strides;
     use crate::nemotron::tests::{bf16_bytes, checkpoint};
     use crate::pack::nemotron_plan;
