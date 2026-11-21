@@ -2051,18 +2051,69 @@ fn penguin_only(name: &str, family: &str, model: &str) -> Refusal {
     Refusal::new(format!("{name} ({family}) runs at the penguin level only: the release's weights exactly"), format!("glyd run {base}"))
 }
 
+/// The hummingbird directory of a model on the dynamic route (src/hb_pack.rs): MODEL itself where it is one, else its pre-packed repo
+/// (`glyd/NAME-hummingbird`) where it is here, else downloaded where `ui` is given and the Hub has it; or the refusal that says how to pack it.
+fn hb_dir_for(model: &str, name: &str, family: &str, ui: Option<&RefCell<Ui>>) -> Done<PathBuf> {
+    let is_hb = |d: &Path| matches!(crate::hb_pack::HbDir::open(d), Ok(Some(_)));
+    if Path::new(model).join("glyd.json").exists() && is_hb(Path::new(model)) {
+        return Ok(PathBuf::from(model));
+    }
+    let repo = packed_repo(model, "hummingbird");
+    let held = |r: &str| Source::find(r).ok().map(|s| s.dir).filter(|d| is_hb(d));
+    if let Some(d) = held(&repo) {
+        return Ok(d);
+    }
+    if let Some(ui) = ui {
+        if let Some((hub, remote, wanted)) = store::hub_plan_packed(&repo, "hummingbird", ui)? {
+            store::download(&hub, &remote, &wanted, &repo, ui)?;
+            if let Some(d) = held(&repo) {
+                return Ok(d);
+            }
+        }
+    }
+    Err(Refusal::unsupported(
+        format!("{name} ({family}) at the hummingbird level is packed ahead, from a count of each expert's use, and there is no pre-packed {repo}"),
+        format!("Pack it: glyd-engine calibrate-experts {model} usage.json, then glyd-engine pack {model} DIR --layout hummingbird --usage usage.json, and run DIR"),
+    ))
+}
+
+/// The words a dynamic-route plan says its level in.
+fn dynamic_level_words(layout: Layout) -> &'static str {
+    if layout == Layout::Hummingbird {
+        "the hummingbird level (the routed experts at 3 and 2 bits by use, the rest the release's weights exactly)"
+    } else {
+        "the penguin level (lossless: the release's weights exactly)"
+    }
+}
+
+/// The refusal of a hummingbird directory whose experts the GPUs do not hold (the expert cache takes the penguin level's alone so far).
+fn hb_needs_gpus(name: &str, model: &str) -> Refusal {
+    Refusal::unsupported(
+        format!("{name} at the hummingbird level keeps its experts on the GPUs (the expert cache takes them at penguin only so far), and these GPUs do not hold them"),
+        format!("Run it lossless with its experts in the computer's memory: glyd run {}", model.split_once(':').map_or(model, |m| m.0)),
+    )
+}
+
 /// `preflight` of a model on the dynamic route: whether the GPUs here hold it (the cut `run` makes, where the model is downloaded; its download's
 /// size against all their room, where not) and the disk its download.
 fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {
     let name = short_name(model);
-    if layout != Layout::Tiered {
+    if !matches!(layout, Layout::Tiered | Layout::Hummingbird) {
         return Err(penguin_only(&name, family, model));
     }
+    let hb = layout == Layout::Hummingbird;
+    let level = if hb { "hummingbird" } else { "penguin" };
     let (gpus, _) = dynamic_gpus()?;
     crate::ffi::Lib::find().map_err(cannot)?;
     let room = rooms(&gpus);
     let all = room.iter().map(|r| r.1).sum::<u64>();
-    let local = if Path::new(model).join("config.json").exists() { Some(PathBuf::from(model)) } else { Source::find(model).ok().map(|s| s.dir) };
+    let local = if hb {
+        Some(hb_dir_for(model, &name, family, None)?)
+    } else if Path::new(model).join("config.json").exists() {
+        Some(PathBuf::from(model))
+    } else {
+        Source::find(model).ok().map(|s| s.dir)
+    };
     let (bytes, gpus_used) = match &local {
         Some(dir) => {
             let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
@@ -2071,6 +2122,9 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
             let p = size_dynamic(a, dir, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
             let sp = p.spread.as_ref().expect("the dynamic route's plan spreads the model");
             if sp.host_bytes > 0 {
+                if hb {
+                    return Err(hb_needs_gpus(&name, model));
+                }
                 return Ok(format!(
                     "{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory",
                     gib(p.weights_on_gpu()),
@@ -2112,11 +2166,11 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
     };
     match gpus_used {
         Some(n) => {
-            Ok(format!("{name} ({family}): about {} on {} at the penguin level", gib(bytes), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") }))
+            Ok(format!("{name} ({family}): about {} on {} at the {level} level", gib(bytes), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") }))
         }
         None => Err(Refusal::unsupported(
             format!(
-                "{name} needs about {} of GPU memory at penguin, and the {} GPU{} here have {} free",
+                "{name} needs about {} of GPU memory at {level}, and the {} GPU{} here have {} free",
                 gib(bytes),
                 gpus.len(),
                 if gpus.len() == 1 { "" } else { "s" },
@@ -2140,10 +2194,13 @@ fn load_dynamic(
 ) -> Done<(Box<dyn Gen>, Tok, Option<Chat>, Params, usize, String, Option<server::Info>)> {
     let (t0, started) = (Instant::now(), crate::monitor::clock());
     let name = short_name(model);
-    if layout != Layout::Tiered {
+    if !matches!(layout, Layout::Tiered | Layout::Hummingbird) {
         return Err(penguin_only(&name, family, model));
     }
-    let dir = if Path::new(model).join("config.json").exists() {
+    let hb = layout == Layout::Hummingbird;
+    let dir = if hb {
+        hb_dir_for(model, &name, family, Some(ui))?
+    } else if Path::new(model).join("config.json").exists() {
         PathBuf::from(model)
     } else {
         match Source::find(model) {
@@ -2164,6 +2221,9 @@ fn load_dynamic(
     let (total, coded, twelve, across, ctx) = (plan.weights_on_gpu(), sp.coded, sp.twelve, sp.across, plan.context);
     let (cuts, devices) = (sp.cuts.clone(), sp.devices.clone());
     let cache = (sp.host_bytes > 0).then_some(&sp);
+    if hb && cache.is_some() {
+        return Err(hb_needs_gpus(&name, model));
+    }
     let gpu_name = |d: i32| gpus.iter().find(|g| g.ordinal == d).map_or_else(|| format!("GPU {d}"), |g| g.name.clone());
     let mut bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
     bounds.dedup();
@@ -2173,9 +2233,10 @@ fn load_dynamic(
         devices.iter().zip(bounds.windows(2)).map(|(&d, w)| format!("layers {}..{} on GPU {d} ({})", w[0], w[1], gpu_name(d))).collect()
     };
     ui.borrow_mut().line(&format!(
-        "{name} ({family}): about {} on the GPU{} at the penguin level (lossless: the release's weights exactly); {}.",
+        "{name} ({family}): about {} on the GPU{} at {}; {}.",
         gib(total),
         if devices.len() == 1 { "" } else { "s" },
+        dynamic_level_words(layout),
         stages.join(", ")
     ));
     ui.borrow_mut().line(&format!("Plan: {}.", plan.text()));
@@ -2194,7 +2255,9 @@ fn load_dynamic(
         ui.borrow_mut().line("Its FP8 matrices are held coded (the same values in about 7 bits of 8) for it to fit; as they are, they do not.");
     }
     // (penguin's bf16 matrices in its 12-bit layout where it fits an HBM GPU: lossless as the smallest, a faster one-token product there)
-    let o = crate::dynamic::Opts { ctx, chunk: 256, graph: true, device: devices[0], layout: Some(if twelve { Layout::Twelve } else { layout }) };
+    // (a hummingbird directory holds the rest of the model as released: its matrices are packed as at penguin, and the loader reads the experts' rows itself)
+    let rest = if hb { Layout::Tiered } else { layout };
+    let o = crate::dynamic::Opts { ctx, chunk: 256, graph: true, device: devices[0], layout: Some(if twelve { Layout::Twelve } else { rest }) };
     ui.borrow_mut().status(&format!("Reading {name} and loading it onto the GPU{}...", if devices.len() == 1 { "" } else { "s" }));
     let opened = match &cache {
         Some(k) if across => crate::dynamic::split::open_kimi_tp(&dir, &o, &devices, k.places[0]),
@@ -2237,7 +2300,12 @@ fn load_dynamic(
     let info = (!served.is_empty()).then(|| {
         let held = e.held();
         let gpu = gpus.iter().find(|g| g.ordinal == devices[0]).unwrap_or(&first);
-        let about = about(served, &dir, requested(served, a.has("lossy")), "penguin", true, "penguin level: the release's weights exactly", held.as_ref(), gpu);
+        let (level, exact, words) = if hb {
+            ("hummingbird", false, "hummingbird level: the routed experts at 3 and 2 bits by use, the rest the release's weights exactly")
+        } else {
+            ("penguin", true, "penguin level: the release's weights exactly")
+        };
+        let about = about(served, &dir, requested(served, a.has("lossy")), level, exact, words, held.as_ref(), gpu);
         server::Info { about, gpu: Some(devices[0]), held, concurrency: 1, window: e.capacity(), refused: server::ONE_AT_A_TIME, started }
     });
     let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(0);

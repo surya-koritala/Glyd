@@ -562,21 +562,27 @@ impl HbDir {
         Ok(LayerRows { block, width: r.width, rot: r.rot, inter: r.inter, gated: r.gated, signs, experts })
     }
 
-    /// Bytes of the routed experts at their bits (codes, scales and codebooks).
-    pub fn experts_bytes(&self) -> u64 {
-        self.layers
+    /// Bytes of a layer's routed experts at their bits (codes, scales and codebooks).
+    pub fn bytes_of(r: &LayerRec) -> u64 {
+        let up = if r.gated { 2 * r.inter } else { r.inter };
+        r.bits
             .iter()
-            .map(|r| {
-                let up = if r.gated { 2 * r.inter } else { r.inter };
-                r.bits
-                    .iter()
-                    .map(|&b| {
-                        let (c, s, k) = cb_strides(b, r.width);
-                        ((up + r.inter) * (c + s + k)) as u64
-                    })
-                    .sum::<u64>()
+            .map(|&b| {
+                let (c, s, k) = cb_strides(b, r.width);
+                ((up + r.inter) * (c + s + k)) as u64
             })
             .sum()
+    }
+
+    /// Bytes of the routed experts at their bits.
+    pub fn experts_bytes(&self) -> u64 {
+        self.layers.iter().map(HbDir::bytes_of).sum()
+    }
+
+    /// Each MoE layer's experts' bytes by its decoder layer (the description's block over 2: a decoder layer is the mixer's block, then the
+    /// feed-forward's).
+    pub fn layer_bytes(&self) -> Vec<(usize, u64)> {
+        self.layers.iter().map(|r| (r.block / 2, HbDir::bytes_of(r))).collect()
     }
 }
 

@@ -66,6 +66,8 @@ pub const DEFAULT_CTX: usize = 8192;
 const LOSSY: &[&str] = &["kestrel", "swift", "wren"];
 const NONE: &[&str] = &[];
 const PENGUIN: &[&str] = &["penguin"];
+/// Lossless, or the routed experts at hummingbird's bits (a directory `glyd-engine pack --layout hummingbird --usage` makes: src/hb_pack.rs).
+const PENGUIN_HB: &[&str] = &["penguin", "hummingbird"];
 
 pub static TABLE: [Support; 9] = [
     Support {
@@ -115,45 +117,45 @@ pub static TABLE: [Support; 9] = [
     Support {
         family: Family::Kimi,
         name: "Kimi-K3",
-        levels: PENGUIN,
+        levels: PENGUIN_HB,
         wren: Wren::No,
-        hummingbird_packed_only: false,
+        hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: PENGUIN,
+        split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN,
     },
     Support {
         family: Family::Glm,
         name: "GLM-5.3-Flash",
-        levels: PENGUIN,
+        levels: PENGUIN_HB,
         wren: Wren::No,
-        hummingbird_packed_only: false,
+        hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: PENGUIN,
+        split_levels: PENGUIN_HB,
         experts_in_ram_levels: NONE,
     },
     Support {
         family: Family::DeepSeekV4,
         name: "DeepSeek-V4",
-        levels: PENGUIN,
+        levels: PENGUIN_HB,
         wren: Wren::No,
-        hummingbird_packed_only: false,
+        hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: PENGUIN,
+        split_levels: PENGUIN_HB,
         experts_in_ram_levels: NONE,
     },
     Support {
         family: Family::Muse,
         name: "Muse Spark",
-        levels: PENGUIN,
+        levels: PENGUIN_HB,
         wren: Wren::No,
-        hummingbird_packed_only: false,
+        hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: PENGUIN,
+        split_levels: PENGUIN_HB,
         experts_in_ram_levels: NONE,
     },
     Support {
