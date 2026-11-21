@@ -26,10 +26,14 @@ release() { # release VERSION [bundle]: a release folder in $work/rel-VERSION
   sha "$d/$name.tar.gz" > "$d/$name.tar.gz.sha256"
   if [ "${2:-}" = bundle ]; then echo '{"not":"a real bundle"}' > "$d/$name.tar.gz.sigstore.json"; fi
 }
+# (a machine with an NVIDIA GPU, glyd-pc's runners, would install the engine too: a stand-in nvidia-smi that finds no GPU keeps this to the compression program)
+mkdir -p "$work/nogpu"
+printf '#!/bin/sh\nexit 1\n' > "$work/nogpu/nvidia-smi"
+chmod +x "$work/nogpu/nvidia-smi"
 install() { # install VERSION [env...]: runs install.sh in a fresh home, prints its output, returns its status
   local v=$1; shift
   rm -rf "$work/home"; mkdir -p "$work/home"
-  env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" GLYD_VERSION="$v" GLYD_RELEASE_URL="file://$work/rel-$v" "$@" sh "$ROOT/scripts/install.sh" 2>&1
+  env -i PATH="$work/nogpu:$PATH" HOME="$work/home" TMPDIR="$work" GLYD_VERSION="$v" GLYD_RELEASE_URL="file://$work/rel-$v" "$@" sh "$ROOT/scripts/install.sh" 2>&1
 }
 fail() { echo "FAIL: $*"; exit 1; }
 
@@ -48,9 +52,9 @@ mkdir -p "$work/bin-refuse" "$work/bin-accept"
 printf '#!/bin/sh\necho "cosign: no matching signature" >&2\nexit 1\n' > "$work/bin-refuse/cosign"
 printf '#!/bin/sh\necho "$@" > "%s/cosign-args"\nexit 0\n' "$work" > "$work/bin-accept/cosign"
 chmod +x "$work/bin-refuse/cosign" "$work/bin-accept/cosign"
-if out=$(install 0.34.0 PATH="$work/bin-refuse:$PATH"); then fail "a tarball cosign refused was installed"; fi
+if out=$(install 0.34.0 PATH="$work/bin-refuse:$work/nogpu:$PATH"); then fail "a tarball cosign refused was installed"; fi
 echo "$out" | grep -q "is not signed by Glyd's release workflows" || fail "the refusal does not say why: $out"
-out=$(install 0.34.0 PATH="$work/bin-accept:$PATH") || fail "a tarball cosign accepted was not installed: $out"
+out=$(install 0.34.0 PATH="$work/bin-accept:$work/nogpu:$PATH") || fail "a tarball cosign accepted was not installed: $out"
 echo "$out" | grep -q "Signature of glyd-v0.34.0-$plat.tar.gz checked" || fail "no line for the checked signature: $out"
 grep -q -- '--certificate-identity https://github.com/surya-koritala/Glyd/.github/workflows/release.yml@refs/tags/v0.34.0 ' "$work/cosign-args" && grep -q 'token.actions.githubusercontent.com' "$work/cosign-args" || fail "cosign was not asked for release.yml at the tag v0.34.0: $(cat "$work/cosign-args")"
 echo "install.sh signature checks: ok"
