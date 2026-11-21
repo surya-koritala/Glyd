@@ -6,8 +6,9 @@ inputs:
   keep-target:
     description: >-
       A name (codec, lint, engine, ...): the job's target/ is this runner's build directory of that name, kept from job to job (a runner runs one job at a time), so a
-      build here starts from the last one instead of from GitHub's cache. One name for each kind of build, as their flags differ. Only for this repository's branches (a
-      fork's pull request never runs on the PC). Empty: target/ is the checkout's own.
+      build here starts from the last one instead of from GitHub's cache. One name for each kind of build, as their flags differ. Main's runs and the pull requests'
+      keep separate directories (a pull request's build never reaches a run on main); a Dependabot pull request keeps none; a fork's pull request never runs on the PC.
+      Empty: target/ is the checkout's own.
     default: ''
 runs:
   using: composite
@@ -30,9 +31,18 @@ runs:
       shell: bash
       env:
         NAME: ${{ inputs.keep-target }}
+        EVENT: ${{ github.event_name }}
+        ACTOR: ${{ github.actor }}
       run: |
+        # (main's runs and the pull requests' keep separate directories, so nothing a pull request's build leaves can be in a run on main; a Dependabot
+        # pull request, whose new dependencies' build scripts run in its build, keeps none)
+        if [ "$ACTOR" = "dependabot[bot]" ]; then echo "a Dependabot run builds in its checkout's own target/"; exit 0; fi
+        case "$EVENT" in
+          pull_request|pull_request_target|merge_group) scope=pr ;;
+          *) if [ "$GITHUB_REF" = refs/heads/main ]; then scope=main; else scope=pr; fi ;;
+        esac
         # (outside the checkout, which git clean empties; past 15 GB it starts over and the next build makes what it needs)
-        keep="$(dirname "$RUNNER_WORKSPACE")/_glyd-target/$NAME"
+        keep="$(dirname "$RUNNER_WORKSPACE")/_glyd-target/$scope/$NAME"
         mkdir -p "$keep"
         if [ "$(du -s --block-size=1G "$keep" | cut -f1)" -gt 15 ]; then rm -rf "$keep"; mkdir -p "$keep"; fi
         rm -rf target && ln -s "$keep" target
