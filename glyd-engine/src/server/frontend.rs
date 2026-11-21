@@ -21,10 +21,10 @@ pub const IDLE: Duration = Duration::from_secs(60);
 /// Requests answered by the process so far: a reply's id names one of them (/v1/glyd/requests/ID finds it).
 static REQUESTS: AtomicU64 = AtomicU64::new(0);
 
-/// What the server holds of requests' bodies at once, in bytes: a body waits for its share before it is read (and holds it until its answer ends), so that connections without a cap do not
+/// What the server holds of requests' bodies at once, in bytes: the bytes of a body that arrive take their share of it (held until the answer ends), so that connections without a cap do not
 /// hold more memory than this between them (the server this replaces held at most 64 connections' worth).
 const BODY_BUDGET_BYTES: usize = 1 << 30;
-static BODY_BUDGET: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(BODY_BUDGET_BYTES);
+static BODY_BUDGET: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> = std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(BODY_BUDGET_BYTES)));
 
 /// The most connections open at once: far past what a load needs, and under what a process's files allow; the next is answered 503 and let go. (There is no cap in the sense of the 64 it had: a
 /// connection that sends nothing is closed by its time, so these are connections that are doing something.)
@@ -204,27 +204,36 @@ async fn connection(sock: tokio::net::TcpStream, ctx: Ctx) {
         if h.expect {
             let _ = timeout(WRITE_TIMEOUT, wr.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")).await;
         }
-        // the body: its share of what the server holds of bodies first (held until the answer ends), then within the time of the head's end
+        // the body, within the time of the head's end; each byte that arrives is taken out of what the server holds of bodies (held until the answer ends), so that a client that says a length it
+        // does not send holds nothing for it, and one that sends it holds what it sent
         let until = tokio::time::Instant::now() + ctx.times.body;
-        let _share = if h.len > 0 {
-            match tokio::time::timeout_at(until, BODY_BUDGET.acquire_many(h.len as u32)).await {
-                Ok(Ok(p)) => Some(p),
-                _ => {
-                    crate::ops::refused(503);
-                    let out = response_bytes(
-                        503,
-                        "application/json",
-                        "Retry-After: 1\r\n",
-                        error_body("the server holds as many request bodies as it takes: try again", 503).as_bytes(),
-                    );
-                    let _ = timeout(WRITE_TIMEOUT, wr.write_all(&out)).await;
-                    return;
+        let mut share: Option<tokio::sync::OwnedSemaphorePermit> = None;
+        let mut held = 0usize;
+        loop {
+            let have = buf.len().min(h.len);
+            if have > held {
+                match tokio::time::timeout_at(until, BODY_BUDGET.clone().acquire_many_owned((have - held) as u32)).await {
+                    Ok(Ok(p)) => match share.as_mut() {
+                        Some(s) => s.merge(p),
+                        None => share = Some(p),
+                    },
+                    _ => {
+                        crate::ops::refused(503);
+                        let out = response_bytes(
+                            503,
+                            "application/json",
+                            "Retry-After: 1\r\n",
+                            error_body("the server holds as many request bodies as it takes: try again", 503).as_bytes(),
+                        );
+                        let _ = timeout(WRITE_TIMEOUT, wr.write_all(&out)).await;
+                        return;
+                    }
                 }
+                held = have;
             }
-        } else {
-            None
-        };
-        while buf.len() < h.len {
+            if buf.len() >= h.len {
+                break;
+            }
             match read_more(&mut rd, &mut buf, until).await {
                 Ok(Some(_)) => {}
                 Ok(None) => return,
@@ -235,6 +244,7 @@ async fn connection(sock: tokio::net::TcpStream, ctx: Ctx) {
                 }
             }
         }
+        let _share = share;
         let body: Vec<u8> = buf.drain(..h.len).collect();
         let head_request = h.method == "HEAD";
         let req = req_of(h, body);
