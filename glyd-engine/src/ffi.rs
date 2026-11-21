@@ -430,6 +430,7 @@ table! {
         fn glyd_gpu_kv_second_bytes(i64, i64, *mut i64) -> c_int;
         fn glyd_gpu_kv_write(*const u16, i64, *const u16, i64, *const i64, i64, *mut u8, i64, *const u8, *const u8, i64, i64, i64, *mut u8, i64, *mut u8, i64, i64, *mut u32, *mut u32, i64, i64, Stream) -> c_int;
         fn glyd_gpu_kv_release(*mut u8, i64, i64, *const i32, i64, i64, i64, i64, *mut u8, i64, *mut u8, i64, i64, *mut u32, *mut u32, i64, Stream) -> c_int;
+        fn glyd_gpu_kv_unpack(*const u8, i64, *const i32, i64, *const u8, *const u8, i64, i64, i64, *const u8, i64, *const u8, i64, *mut u16, *mut u16, Stream) -> c_int;
         fn glyd_gpu_kv_gather(*const u8, i64, *const i32, *const i32, i64, *const u8, *const u8, i64, i64, i64, *const u8, i64, *const u8, i64, *mut u16, Stream) -> c_int;
         fn glyd_gpu_kv_work_put(*const u16, i64, *const u16, i64, *const i64, i64, i64, i64, *mut u16, i64, Stream) -> c_int;
         fn glyd_gpu_kv_decode_shares(i64, i64, i64, *mut i64) -> c_int;
@@ -1171,6 +1172,33 @@ impl Lib {
             cs,
         );
         self.ck(call!("kv_release"), r)
+    }
+
+    /// The pages `pages` [n] (int32, block numbers) of the layer's pool decoded into two bf16 tensors, keys `out_k` and values `out_v`, each [n, 16, H, D] (page j's tokens at j * 16 on: NHD, as a paged attention reads a cache of separate keys and values).
+    ///
+    /// # Safety
+    /// As `kv_write`; `pages` is an int32 array of n on the device, `out_k` and `out_v` hold n pages of 16 * H * D values each.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn kv_unpack(&self, g: &KvGeom, pool: u64, kbase: u64, vbase: u64, pages: u64, n: i64, out_k: u64, out_v: u64, cs: Stream) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_unpack)(
+            pool as *const u8,
+            g.page_stride,
+            pages as *const i32,
+            n,
+            kbase as *const u8,
+            vbase as *const u8,
+            g.heads,
+            g.dim,
+            g.arena,
+            g.escape as *const u8,
+            g.nchunks,
+            g.raw as *const u8,
+            g.nslabs,
+            out_k as *mut u16,
+            out_v as *mut u16,
+            cs,
+        );
+        self.ck(call!("kv_unpack"), r)
     }
 
     /// The pages `pages` [n] (int32, block numbers) of the layer's pool decoded into the bf16 staging cache `out` [blocks, 16, H, 2 D], page j into block `dst`[j].

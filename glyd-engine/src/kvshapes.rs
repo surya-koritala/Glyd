@@ -150,6 +150,22 @@ fn shape(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
                 }
             }
         }
+        // and through unpack (what a paged attention that reads separate keys and values takes: [n][16][h][d] each, NHD)
+        let (uk, uv) = (Buf::zeroed(2 * blocks * 16 * h * d)?, Buf::zeroed(2 * blocks * 16 * h * d)?);
+        unsafe { lib.kv_unpack(&geom, pool.ptr, kbase.ptr, vbase.ptr, pages.ptr, blocks as i64, uk.ptr, uv.ptr, dev.stream)? };
+        dev.sync()?;
+        let (mut bk, mut bv) = (vec![0u16; blocks * 16 * h * d], vec![0u16; blocks * 16 * h * d]);
+        uk.read(0, &mut bk)?;
+        uv.read(0, &mut bv)?;
+        let unpacked = bk[..n * h * d] == k[..] && bv[..n * h * d] == v[..];
+        if !unpacked {
+            bad += 1;
+        }
+        println!(
+            "{} {h} heads x {d}, {label}: unpack into separate [pages][16][h][d] keys and values {}",
+            if unpacked { "ok  " } else { "FAIL" },
+            if unpacked { "equal bit for bit" } else { "differs" }
+        );
         println!(
             "{} {h} heads x {d} ({hp} pages' heads), {label}: {} values read back, {diff} differ{}; extra chunks at most {}, raw pages {}, void pages {}",
             if diff == 0 && head[11] == 0 { "ok  " } else { "FAIL" },
@@ -163,8 +179,8 @@ fn shape(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
             bad += 1;
         }
         if wild == 0 {
-            // the decode attention over the pages (a sequence of all n tokens, and one of the first 2 blocks and 3), against the host's from the same values
-            let q: Vec<u16> = (0..h * g * d).map(|_| bf16_of(((r.below(2000) as f32) - 1000.0) / 500.0)).collect();
+            // the decode attention over the pages (queries small, so that the softmax is not one token's: a wrong score moves the weights; a sequence of all n tokens, and one of the first 2 blocks and 3), against the host's from the same values
+            let q: Vec<u16> = (0..h * g * d).map(|_| bf16_of(((r.below(2000) as f32) - 1000.0) / 5000.0)).collect();
             let qbuf = Buf::new(2 * q.len())?;
             qbuf.write(0, &q)?;
             let width = (h * g * d) as i64;
