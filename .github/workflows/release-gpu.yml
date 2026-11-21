@@ -483,8 +483,8 @@ jobs:
   sign-engine:
     # Provenance, an SBOM and keyless signatures of the engine bundles that attach-engine puts on the release (.github/actions/sign-release): with id-token: write besides `publish`;
     # it builds nothing and runs pinned actions on the bundles as they are. docs/verify-releases.md says how to check them.
+    # (on every run, a build-only dispatch included: that is the dry run of the signing, whose files are the run's artifacts)
     needs: [plan, engine-bundle]
-    if: needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

@@ -85,8 +85,21 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         return Ok(());
     }
     if a.has("help") || matches!(cmd, Some("help" | "-h")) {
+        // the command's own page from the table (src/cmdtable.rs), then every option the engine has
+        let page = cmd.filter(|c| *c != "help").or(a.pos.get(1).map(String::as_str)).and_then(crate::cmdtable::help);
+        if let Some(h) = page {
+            println!("{h}\nEvery option of the engine:");
+        }
         println!("{USAGE}");
         return Ok(());
+    }
+    // a flag that the command does not take (--json on glyd run) is refused, with the commands that take it
+    if let Some(c) = cmd {
+        let given: Vec<&str> = a.flags.iter().map(|(k, _)| k.as_str()).collect();
+        if let Some(why) = crate::cmdtable::refuse_flag(c, &given) {
+            eprintln!("{prog}: {why}");
+            std::process::exit(1);
+        }
     }
     match cmd {
         // where the service is running, the chat goes through it (src/service.rs); else a process of its own as before
