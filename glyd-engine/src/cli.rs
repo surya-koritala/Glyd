@@ -2082,7 +2082,9 @@ fn hb_dir_for(model: &str, name: &str, family: &str, ui: Option<&RefCell<Ui>>) -
     }
     Err(Refusal::unsupported(
         format!("{name} ({family}) at the hummingbird level is packed ahead, from a count of each expert's use, and there is no pre-packed {repo}"),
-        format!("Pack it: glyd-engine calibrate-experts {model} usage.json, then glyd-engine pack {model} DIR --layout hummingbird --usage usage.json, and run DIR"),
+        format!(
+            "Pack it: glyd-engine calibrate-experts {model} usage.json, then glyd-engine pack {model} DIR --layout hummingbird --usage usage.json, and run DIR"
+        ),
     ))
 }
 
