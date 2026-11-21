@@ -15,8 +15,8 @@ An API key or a token given as a flag (--api-key, --hf-token) is taken off the e
 
 `glyd run MODEL:kestrel` (also `glyd run MODEL --lossy`: a Qwen3.5-family model at about 6.5 bits per weight) and `MODEL:swift` (about 5.5) run on the engine alone, as vLLM has no such path: where the engine
 does not run them, the reason is said and the command ends with status 3, and nothing runs on vLLM. The engine reads these two tags itself: they go to it as they were typed. `MODEL:penguin` is the lossless
-default: its tag is taken off before the engine and vLLM see the model (vLLM's path never sees a tag). `MODEL:hummingbird` (Nemotron 3 Super's experts at about 3 bits, on a 16 to 32 GB card) is one of these too. `glyd serve` takes
-the same tags and --lossy, and a level, a glyd-v7 directory and a glyd/ repo vLLM cannot read go to the engine without GLYD_ENGINE=1 (nothing else serves them). A tag that names no level built (wren is named, not built in a release) and --lossy with another
+default: its tag is taken off before the engine and vLLM see the model (vLLM's path never sees a tag). `MODEL:wren` (about 4.5) and `MODEL:hummingbird` (Nemotron 3 Super's experts at about 3 bits, on a 16 to 32 GB card) are of these too. `glyd serve` takes
+the same tags and --lossy, and a level, a glyd-v7 directory and a glyd/ repo vLLM cannot read go to the engine without GLYD_ENGINE=1 (nothing else serves them). A tag that names no level and --lossy with another
 level are refused with status 1, and nothing runs.
 
 The settings the vLLM path reads and the engine does not (GLYD_KV other than auto, GLYD_LAYOUT, GLYD_EXACT, GLYD_VERIFY, GLYD_FRACTION) keep the command on the vLLM path where one is set. The
@@ -39,8 +39,7 @@ ON = ("1", "on", "yes", "true", "auto")
 ASK = ("1", "on", "yes", "true")  # (of ON, what asks for the engine by name: `auto` and nothing leave it to the default)
 CANNOT = 3  # the engine's status for a model it will not run on this computer, from `preflight` and from `run` and `serve` until they are up
 PANIC = 101  # a Rust program's status where it panics
-LEVELS = ("penguin", "kestrel", "swift", "hummingbird")  # the levels built, as a tag on the model names them; kestrel (which --lossy is), swift and hummingbird are lossy, which the engine alone runs
-NOT_BUILT = ("wren",)  # named, not built yet (Glyd's levels are penguin, kestrel, swift, wren and hummingbird), but for Gemma 4: its wren is Google's QAT weights, which the engine says where it has
+LEVELS = ("penguin", "kestrel", "swift", "wren", "hummingbird")  # Glyd's levels, as a tag on the model names them; kestrel (which --lossy is), swift, wren and hummingbird are lossy, which the engine alone runs
 WITH_VALUE = ("--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables", "--api-key", "--hf-token", "--allowed-origins", "--allowed-hosts", "--drain-timeout")
 # the flags that carry a secret, which go to the engine in its environment (a command line is in `ps` and in a log): (the flag's names, the variable, what it is)
 SECRETS = ((("--api-key", "--api_key"), "GLYD_API_KEY", "API key"), (("--hf-token", "--hf_token"), "HF_TOKEN", "Hugging Face token"))
@@ -344,8 +343,8 @@ def handoff(cmd, argv, environ=None, say=None, run=subprocess.run, start=subproc
     if "--help" in argv or "-h" in argv or model is None:  # (the usage text is the vLLM path's, and so is a missing model's refusal)
         return None
     words, tag = level_of(argv)
-    if tag and tag not in LEVELS and not (tag == "wren" and is_gemma4(model_of(words))):  # (Gemma 4's wren: the engine says which of its models have one)
-        return refuse(f":{tag} is not built yet" if tag in NOT_BUILT else f":{tag} is not a level", "The levels available now: " + ", ".join(LEVELS) + " (and wren for Gemma 4)")
+    if tag and tag not in LEVELS:  # (which families run a level is the engine's to say)
+        return refuse(f":{tag} is not a level", "The levels available now: " + ", ".join(LEVELS))
     if lossy and tag not in (None, "kestrel"):
         return refuse(f"--lossy is :kestrel, not :{tag}", "Give one or the other")
     if tag == "penguin":  # (the engine's preflight and run, and vLLM, have the model without its tag)

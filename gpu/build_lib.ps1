@@ -16,7 +16,7 @@ foreach ($a in 100, 120) {
 }
 $ptx = @('-gencode', 'arch=compute_80,code=compute_80')
 $release = @()
-if ($env:GLYD_GPU_RELEASE -eq '1') { $release = @('-DGLYD_RELEASE', '--compress-mode=size'); $ptx = @() }  # (the default plans' kernels alone, no tuning variables, no PTX, device code compressed for size: build_lib.sh says why)
+if ($env:GLYD_GPU_RELEASE -eq '1') { $compress = if ($env:GLYD_GPU_COMPRESS) { $env:GLYD_GPU_COMPRESS } else { 'size' }; $release = @('-DGLYD_RELEASE', "--compress-mode=$compress"); $ptx = @() }  # (the default plans' kernels alone, no tuning variables, no PTX, device code compressed for size: build_lib.sh says why)
 $tmp = Join-Path $env:TEMP "glyd_gpu_$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 $flags = @('-O3', '-std=c++20', '--expt-relaxed-constexpr',

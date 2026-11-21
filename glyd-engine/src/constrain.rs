@@ -134,7 +134,7 @@ impl std::fmt::Debug for Constraint {
 impl Constraint {
     /// A matcher at the start of the grammar, independent of the others; a worker makes it, and the first mask, at once (the prompt's prefill runs meanwhile).
     pub fn start(self: &Arc<Self>) -> Gram {
-        let mut g = Gram { m: None, pending: None, ready: None, current: None, ends: self.ends.clone(), vocab: self.vocab, masks: 0 };
+        let mut g = Gram { m: None, cell: None, current: None, ends: self.ends.clone(), vocab: self.vocab, masks: 0 };
         g.hand_over(Src::Start(self.clone()), None);
         g
     }
@@ -146,15 +146,90 @@ enum Src {
     Start(Arc<Constraint>),
 }
 
-/// A matcher with the token it is to take, and where its next mask goes.
+/// A matcher with the token it is to take, where its next mask goes, and what the mask is made of.
 struct Job {
     m: Src,
     tok: Option<u32>,
-    out: std::sync::mpsc::Sender<Made>,
+    out: Arc<MaskCell>,
+    ends: Vec<u32>,
+    vocab: usize,
 }
 
-/// The matcher, and the mask of the tokens that may follow (None where the matcher cannot say, or has stopped).
-type Made = (Matcher, Option<SimpleVob>);
+/// What a worker leaves for a sequence: the matcher back and the mask of the tokens that may follow it. `mask` is None, and `m` too, where the worker died.
+struct CellState {
+    done: bool,
+    m: Option<Matcher>,
+    mask: Option<Arc<SimpleVob>>,
+}
+
+/// Where a worker leaves what it made, for the sequence (its matcher, `Gram::settle`) and for the engine, which may put the mask on the GPU before the step's top-k (`MaskHandle::words`) while the matcher stays.
+pub struct MaskCell {
+    st: Mutex<CellState>,
+    cv: std::sync::Condvar,
+}
+
+impl MaskCell {
+    fn new() -> Arc<MaskCell> {
+        Arc::new(MaskCell { st: Mutex::new(CellState { done: false, m: None, mask: None }), cv: std::sync::Condvar::new() })
+    }
+
+    fn finish(&self, m: Option<Matcher>, mask: Option<Arc<SimpleVob>>) {
+        let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        st.m = m;
+        st.mask = mask;
+        st.done = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) -> std::sync::MutexGuard<'_, CellState> {
+        let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        while !st.done {
+            st = self.cv.wait(st).unwrap_or_else(|e| e.into_inner());
+        }
+        st
+    }
+}
+
+/// A job's cell, finished empty if the worker dies with the job in hand (a waiting engine or sequence is then let go).
+struct Leave(Arc<MaskCell>, bool);
+
+impl Drop for Leave {
+    fn drop(&mut self) {
+        if !self.1 {
+            self.0.finish(None, None);
+        }
+    }
+}
+
+/// The mask of the next step as an engine takes it: the tokens a sequence's grammar allows, for the GPU to put on the row before its top-k (`words`: a word of 32 tokens' bits, as the kernel reads them).
+#[derive(Clone)]
+pub enum MaskHandle {
+    Pending(Arc<MaskCell>),
+    Ready(Arc<SimpleVob>),
+}
+
+impl MaskHandle {
+    /// The mask, waiting for the worker that makes it (it works beside the step: the wait is for what the GPU has not done yet); None where the worker died.
+    pub fn words(&self) -> Option<Arc<SimpleVob>> {
+        match self {
+            MaskHandle::Ready(m) => Some(m.clone()),
+            MaskHandle::Pending(c) => c.wait().mask.clone(),
+        }
+    }
+}
+
+/// The mask a grammar gives to a row, with the end tokens where the grammar is whole (and they alone where nothing more can follow, or where the matcher cannot say: the reply then ends and does not go on past the grammar).
+fn finish_mask(made: Option<SimpleVob>, ends: &[u32], vocab: usize) -> SimpleVob {
+    let mut mask = made.clone().unwrap_or_else(|| SimpleVob::alloc(vocab));
+    if made.is_none() || ends.iter().any(|&e| mask.is_allowed(e)) {
+        for &e in ends {
+            if (e as usize) < mask.len() {
+                mask.allow_token(e);
+            }
+        }
+    }
+    mask
+}
 
 /// How many threads make masks. A mask costs some 50 us and now and then a millisecond or more: they are made beside the GPU's step, not after it, so that a slow one does not hold the others up.
 const WORKERS: usize = 4;
@@ -168,7 +243,8 @@ fn workers() -> &'static std::sync::mpsc::Sender<Job> {
             let rx = rx.clone();
             let _ = std::thread::Builder::new().name(format!("glyd-mask-{i}")).spawn(move || loop {
                 let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
-                let Ok(Job { m, tok, out }) = job else { return };
+                let Ok(Job { m, tok, out, ends, vocab }) = job else { return };
+                let mut leave = Leave(out, false);
                 let mut m = match m {
                     Src::Matcher(m) => m,
                     Src::Start(c) => c.matcher.lock().unwrap_or_else(|e| e.into_inner()).deep_clone(),
@@ -176,8 +252,9 @@ fn workers() -> &'static std::sync::mpsc::Sender<Job> {
                 if let Some(t) = tok {
                     let _ = m.consume_token(t);
                 }
-                let mask = if m.is_stopped() { None } else { m.compute_mask().ok() };
-                let _ = out.send((m, mask));
+                let made = if m.is_stopped() { None } else { m.compute_mask().ok() };
+                leave.1 = true;
+                leave.0.finish(Some(m), Some(Arc::new(finish_mask(made, &ends, vocab))));
             });
         }
         tx
@@ -187,10 +264,10 @@ fn workers() -> &'static std::sync::mpsc::Sender<Job> {
 /// A sequence's place in its grammar: its matcher, which is with a worker (taking the token chosen and making the next mask) between a token and the next step's draw.
 pub struct Gram {
     m: Option<Matcher>,
-    pending: Option<std::sync::mpsc::Receiver<Made>>,
-    ready: Option<Option<SimpleVob>>,
+    /// What the worker is making (or has made) for the step to come.
+    cell: Option<Arc<MaskCell>>,
     /// The mask of the step in hand (a draw from the GPU's candidates may find it too narrow and ask again with the whole row's).
-    current: Option<SimpleVob>,
+    current: Option<Arc<SimpleVob>>,
     ends: Vec<u32>,
     vocab: usize,
     /// Masks made so far.
@@ -198,22 +275,31 @@ pub struct Gram {
 }
 
 impl Gram {
-    /// Sends the matcher to a worker with the token it takes (if any); the mask it makes is then `ready`'s, when `settle` has it back. Where no worker can be had the matcher stays and the mask is made at the draw.
+    /// Sends the matcher to a worker with the token it takes (if any); the mask it makes is then in the cell, when `settle` has the matcher back. Where no worker can be had the matcher stays and the mask is made at the draw.
     fn hand_over(&mut self, m: Src, tok: Option<u32>) {
-        let (out, rx) = std::sync::mpsc::channel();
-        if workers().send(Job { m, tok, out }).is_ok() {
-            self.pending = Some(rx);
+        let out = MaskCell::new();
+        if workers().send(Job { m, tok, out: out.clone(), ends: self.ends.clone(), vocab: self.vocab }).is_ok() {
+            self.cell = Some(out);
         }
     }
 
-    /// The matcher and its mask back from the worker, if they are out.
+    /// The matcher and the mask back from the worker, if they are out (a worker that died took the matcher: the grammar is then lost, and the reply ends).
     fn settle(&mut self) {
-        if let Some(rx) = self.pending.take() {
-            // (a worker that died took the matcher: the grammar is then lost, and the reply ends)
-            if let Ok((m, mask)) = rx.recv() {
-                self.m = Some(m);
-                self.ready = Some(mask);
+        if let Some(cell) = self.cell.take() {
+            let mut st = cell.wait();
+            self.m = st.m.take();
+            if self.current.is_none() {
+                self.current = st.mask.clone();
             }
+        }
+    }
+
+    /// The mask of the next step for an engine to put on the GPU's row (None: the grammar has none to give, as where it has just taken a token and no worker is making the next).
+    pub fn handle(&self) -> Option<MaskHandle> {
+        match (&self.current, &self.cell) {
+            (Some(m), _) => Some(MaskHandle::Ready(m.clone())),
+            (None, Some(c)) => Some(MaskHandle::Pending(c.clone())),
+            _ => None,
         }
     }
 
@@ -221,24 +307,20 @@ impl Gram {
     /// they alone, so that the reply ends and does not go on past the grammar.
     pub fn mask(&mut self) -> SimpleVob {
         if let Some(m) = &self.current {
-            return m.clone();
+            return (**m).clone();
         }
         self.masks += 1;
         self.settle();
-        let made = match self.ready.take() {
-            Some(mask) => mask,
-            None => self.m.as_mut().and_then(|m| if m.is_stopped() { None } else { m.compute_mask().ok() }),
-        };
-        let mut mask = made.clone().unwrap_or_else(|| SimpleVob::alloc(self.vocab));
-        if made.is_none() || self.ends.iter().any(|&e| mask.is_allowed(e)) {
-            for &e in &self.ends {
-                if (e as usize) < mask.len() {
-                    mask.allow_token(e);
-                }
+        let mask = match self.current.clone() {
+            Some(m) => m,
+            None => {
+                let made = self.m.as_mut().and_then(|m| if m.is_stopped() { None } else { m.compute_mask().ok() });
+                let m = Arc::new(finish_mask(made, &self.ends, self.vocab));
+                self.current = Some(m.clone());
+                m
             }
-        }
-        self.current = Some(mask.clone());
-        mask
+        };
+        (*mask).clone()
     }
 
     /// The tokens that may be chosen next, a flag for each of the row's `vocab`.
@@ -274,7 +356,6 @@ impl Gram {
             return;
         }
         self.settle();
-        self.ready = None;
         self.current = None;
         if let Some(m) = self.m.take() {
             self.hand_over(Src::Matcher(m), Some(tok));
@@ -675,6 +756,31 @@ mod tests {
             let e = read(&ToolChoice::Required, &required_text);
             assert!(e.called && e.calls[0].name == "get_weather" && e.calls[0].arguments.contains("Paris"), "{format:?}: {e:?}");
         }
+    }
+
+    /// The mask an engine is handed for the next step is the one the sequence's draw then takes, before and after the draw has it, and the sampler offers it only where its draw looks at the candidates.
+    #[test]
+    fn the_mask_an_engine_puts_on_the_gpu_is_the_draws() {
+        use crate::sampler::{Params, Sampler};
+        let c = grammars().compile(&Spec::Choice(vec!["abc".into(), "yes".into()])).unwrap();
+        let mut g = c.start();
+        let bits = |m: &SimpleVob| (0..m.len()).map(|i| m.is_allowed(i as u32)).collect::<Vec<_>>();
+        // (at the start: the worker's, waited for)
+        let first = bits(&g.handle().expect("a handle at the start").words().unwrap());
+        assert_eq!(first, g.allowed());
+        // (after the draw has the mask it is the same one, ready)
+        assert_eq!(bits(&g.handle().unwrap().words().unwrap()), first);
+        g.consume(id("abc"));
+        assert!(matches!(g.handle(), Some(MaskHandle::Pending(_))));
+        let after = bits(&g.handle().unwrap().words().unwrap());
+        assert_eq!(after, g.allowed());
+        assert!(after[end() as usize] && after.iter().filter(|&&x| x).count() == 1);
+        // the sampler: a handle where the draw looks at the GPU's candidates (greedy, or a top-k within them), none where it needs the row
+        for (temperature, top_k, handle) in [(0.0, 0, true), (0.8, 40, true), (0.8, 0, false), (0.8, 65, false)] {
+            let s = Sampler::new(Params { temperature, top_k, constraint: Some(c.clone()), ..Params::default() }, &[]);
+            assert_eq!(s.mask_handle().is_some(), handle, "temperature {temperature} top_k {top_k}");
+        }
+        assert!(Sampler::new(Params { temperature: 0.8, top_k: 40, ..Params::default() }, &[]).mask_handle().is_none());
     }
 
     /// The GPU's largest logits with the grammar's mask put on them before the cut give the token the whole row gives, wherever they give one: at every place of a grammar, at temperature 0 and with a top-k.

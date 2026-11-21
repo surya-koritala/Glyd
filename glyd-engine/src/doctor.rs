@@ -100,6 +100,8 @@ pub struct Facts {
     pub packed_models: Vec<Cached>,
     /// This binary is the development build that runs AMD GPUs (GLYD_HIP=1).
     pub hip: bool,
+    /// A GPU of the machine runs under Windows' WDDM (dev.rs `Dev::wddm`).
+    pub wddm: bool,
 }
 
 fn dir_of(p: &Path) -> Dir {
@@ -171,6 +173,7 @@ impl Facts {
             Ok(_) => Err("the driver shows none".to_string()),
             Err(e) => Err(e.0),
         };
+        let wddm = gpus.as_ref().is_ok_and(|all| all.iter().any(|g| Dev::wddm(g.ordinal)));
         let (hub_dir, cache) = (hub::hub_cache(), store::cache_root());
         let (hub_models, packed_models) = cached_models(&hub_dir, &store::packed_root());
         let h = hub::Hub::from_env();
@@ -197,6 +200,7 @@ impl Facts {
             hub_models,
             packed_models,
             hip: cfg!(glyd_hip),
+            wddm,
         }
     }
 
@@ -334,9 +338,13 @@ pub fn checks(f: &Facts) -> Vec<Check> {
                     "driver",
                     "driver",
                     Status::Ok,
-                    format!("CUDA {}.{}, the engine needs 13.0 or newer", g.driver / 1000, g.driver % 1000 / 10),
+                    format!("CUDA {}.{}, the engine needs {}", g.driver / 1000, g.driver % 1000 / 10, machine::driver_need(g.cc)),
                     None,
                 )),
+            }
+            if f.wddm {
+                let (found, fix) = machine::wddm_note(&g.name, g.free, g.total);
+                v.push(check("wddm", "WDDM", Status::Note, found, Some(&fix)));
             }
             if all.len() > 1 {
                 v.push(check(
@@ -828,6 +836,7 @@ mod tests {
             hub_models: vec![Cached { name: "google/gemma-4-12B-it".into(), bytes: 24 << 30 }],
             packed_models: vec![],
             hip: false,
+            wddm: false,
         }
     }
 
@@ -879,11 +888,25 @@ mod tests {
         f.gpus = Ok(vec![gpu("NVIDIA GeForce GTX 1080", (6, 1), 8, 7, 13000)]);
         case("pascal", f, "gpu-age", Status::Fail);
         let mut f = healthy();
-        f.gpus = Ok(vec![gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 15, 12070)]);
+        f.gpus = Ok(vec![gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 15, machine::driver_min((8, 9)) - 1)]);
         let cs = checks(&f);
         assert!(get(&cs, "driver")[0].status == Status::Fail && get(&cs, "driver")[0].found.contains("too old"), "{cs:#?}");
         assert!(get(&cs, "driver")[0].fix.is_some());
         case("old driver", f, "driver", Status::Fail);
+        // a GPU under Windows' WDDM is said so, with what it does and the setting that stops it; a machine that is not says nothing
+        let mut f = healthy();
+        f.wddm = true;
+        let cs = checks(&f);
+        let w = get(&cs, "wddm");
+        assert!(
+            w.len() == 1
+                && w[0].status == Status::Note
+                && w[0].found.contains("WDDM")
+                && w[0].found.contains("without an error")
+                && w[0].fix.as_deref().is_some_and(|x| x.contains("Sysmem Fallback Policy")),
+            "{cs:#?}"
+        );
+        assert!(get(&checks(&healthy()), "wddm").is_empty());
         let mut f = healthy();
         f.library = Err("libglyd_gpu_cuda13.so is not beside the program".into());
         case("no library", f, "gpu-library", Status::Fail);
@@ -928,6 +951,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(kernels12))] // (CUDA 12.7 is a rejected driver only for a build with CUDA 13's kernels alone)
     fn the_backends_say_detected_version_and_why_rejected() {
         let mut f = healthy();
         f.gpus = Ok(vec![gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 15, 12070)]);

@@ -1519,6 +1519,8 @@ pub struct EngineQx {
     pub sampler: std::cell::RefCell<Option<crate::sampler::Sampler>>,
     /// The candidates of up to SPEC_ROWS rows for the sampler: the rows' TOPK largest logits (tokens, values) and their sums, and the host's copy.
     samp: (Buf, Buf, Buf, Pinned),
+    /// Where the first row's grammar mask is put on the GPU (the later rows of a step follow tokens that are not chosen yet).
+    maskgpu: Option<crate::model::MaskGpu>,
     draft_p: Cell<f32>,
     dpb: std::cell::RefCell<Option<Buf>>,
     ones4: Buf,
@@ -2000,6 +2002,7 @@ impl EngineQx {
                 Buf::zeroed(8 * SPEC_ROWS)?,
                 Pinned::new(8 * crate::kern::TOPK * SPEC_ROWS + 8 * SPEC_ROWS)?,
             ),
+            maskgpu: crate::model::MaskGpu::new(cfg.vocab, 1).ok(),
             draft_p: Cell::new(1.0),
             dpb: std::cell::RefCell::new(None),
             ones4,
@@ -3319,6 +3322,10 @@ impl EngineQx {
             // SAFETY: the engine's buffers, sized for SPEC_ROWS rows; the copies complete at the synchronize.
             unsafe {
                 self.kern.topk_rows(st, logits, vocab as i32, rows as u32, tok.ptr, val.ptr)?;
+                // (a grammar's mask for the first row, whose token follows what is said so far: its candidates made again with the mask put on the row)
+                if let (Some(m), Some(g)) = (sampler.mask_handle(), &self.maskgpu) {
+                    g.apply(&self.kern, &self.dev, &[Some(m)], logits, tok.ptr, val.ptr)?;
+                }
                 copy_d2h_async(host as *mut _, tok.ptr, 4 * TOPK * rows, st)?;
                 copy_d2h_async(host.add(4 * TOPK * SPEC_ROWS) as *mut _, val.ptr, 4 * TOPK * rows, st)?;
                 if nd.mass {

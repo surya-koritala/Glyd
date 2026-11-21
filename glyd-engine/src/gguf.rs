@@ -131,6 +131,8 @@ pub struct Tensor {
     pub offset: u64,
     /// What its bytes take, where the type is known.
     pub bytes: Option<u64>,
+    /// The part of a split file it is in (0: the file itself).
+    pub part: usize,
 }
 
 impl Tensor {
@@ -310,9 +312,14 @@ impl Gguf {
             if offset % alignment != 0 {
                 return err(format!("{name}: its data at {offset}, not a multiple of the alignment {alignment}"));
             }
-            tensors.push(Tensor { name, dims, ty, offset, bytes });
+            tensors.push(Tensor { name, dims, ty, offset, bytes, part: 0 });
         }
-        let data_offset = align_up(r.p as u64, alignment).filter(|&d| d <= file_len).ok_or_else(|| Error("the file ends before its data".into()))?;
+        // (a part of a split that holds the metadata alone ends where its header does, with no padding to the alignment)
+        let data_offset = match align_up(r.p as u64, alignment) {
+            Some(d) if d <= file_len => d,
+            _ if tensors.is_empty() && r.p as u64 <= file_len => r.p as u64,
+            _ => return err("the file ends before its data"),
+        };
         let data = file_len - data_offset;
         for t in &tensors {
             if let Some(b) = t.bytes {
@@ -414,37 +421,131 @@ pub struct Description {
     pub file_type: Option<u64>,
 }
 
-/// A file mapped and parsed: the header, and the tensors' bytes in place.
+/// One file of a model, mapped.
+struct Part {
+    path: PathBuf,
+    map: Mapping,
+    data_offset: u64,
+    file_len: u64,
+}
+
+impl Part {
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: a read-only mapping of `len` bytes, alive as long as the part is.
+        unsafe { std::slice::from_raw_parts(self.map.ptr as *const u8, self.map.len) }
+    }
+}
+
+/// `NAME-00002-of-00005.gguf`: the part's name without its numbers, its number (from 1) and the parts there are.
+pub fn split_of(name: &str) -> Option<(&str, u32, u32)> {
+    let (head, of) = name.strip_suffix(".gguf")?.rsplit_once("-of-")?;
+    let (prefix, n) = head.rsplit_once('-')?;
+    let digits = |s: &str| (s.len() == 5 && s.bytes().all(|c| c.is_ascii_digit())).then(|| s.parse::<u32>().ok()).flatten();
+    let (n, m) = (digits(n)?, digits(of)?);
+    (n >= 1 && n <= m).then_some((prefix, n, m))
+}
+
+/// The name of part `n` of `m` of the split `prefix`.
+pub fn split_name(prefix: &str, n: u32, m: u32) -> String {
+    format!("{prefix}-{n:05}-of-{m:05}.gguf")
+}
+
+/// The headers of a model's files (`label` names each in an error), in the order of its parts, as one: the first file's metadata and the tensors of all, each saying which file it is in. A split's
+/// parts must say they are its parts (llama.cpp writes `split.no`, from 0, and `split.count` in each part's metadata, and the model's tensors' number in the first's).
+pub fn merge(headers: Vec<(String, Gguf)>) -> Result<Gguf> {
+    let n = headers.len();
+    let mut merged: Option<Gguf> = None;
+    for (i, (label, g)) in headers.into_iter().enumerate() {
+        if n > 1 {
+            if let Some(c) = g.u64("split.count").filter(|&c| c != n as u64) {
+                return err(format!("{label}: split.count is {c}, and its name says {n} parts"));
+            }
+            if let Some(no) = g.u64("split.no").filter(|&no| no != i as u64) {
+                return err(format!("{label}: it is part {} of the split by its metadata (split.no {no}), and part {} by its name", no + 1, i + 1));
+            }
+        }
+        match merged.as_mut() {
+            None => merged = Some(g),
+            Some(m) => {
+                for mut t in g.tensors {
+                    t.part = i;
+                    if m.tensor(&t.name).is_some() {
+                        return err(format!("{label}: {} is in two parts of the split", t.name));
+                    }
+                    m.tensors.push(t);
+                }
+            }
+        }
+    }
+    let gguf = merged.ok_or_else(|| Error("no file".into()))?;
+    if let Some(c) = gguf.u64("split.tensors.count").filter(|&c| c != gguf.tensors.len() as u64) {
+        return err(format!("split.tensors.count is {c}, and the parts have {} tensors", gguf.tensors.len()));
+    }
+    Ok(gguf)
+}
+
+/// A model's file or files, mapped and parsed: `gguf` has the first file's metadata and the tensors of all the files (each says which file it is in), and the tensors' bytes are read in place.
 pub struct File {
+    /// The first file's path.
     pub path: PathBuf,
     pub gguf: Gguf,
-    map: Mapping,
+    parts: Vec<Part>,
 }
 
 impl File {
+    /// The model at `path`: a file, or any one file of a split (`NAME-00002-of-00005.gguf`), whose others are found beside it and must all be there.
     pub fn open(path: &Path) -> Result<File> {
-        let map = Mapping::open(path)?;
-        // SAFETY: a read-only mapping of `len` bytes, alive as long as `map` is.
-        let bytes = unsafe { std::slice::from_raw_parts(map.ptr as *const u8, map.len) };
-        let gguf = Gguf::parse(bytes).map_err(|e| Error(format!("{}: {e}", path.display())))?;
-        Ok(File { path: path.to_path_buf(), gguf, map })
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let paths: Vec<PathBuf> = match split_of(&name) {
+            Some((prefix, _, m)) => (1..=m).map(|n| dir.join(split_name(prefix, n, m))).collect(),
+            None => vec![path.to_path_buf()],
+        };
+        let mut parts = Vec::new();
+        let mut headers = Vec::new();
+        for (i, p) in paths.iter().enumerate() {
+            if !p.is_file() {
+                return err(format!(
+                    "{}: {}",
+                    p.display(),
+                    if paths.len() > 1 { format!("part {} of {} of a split GGUF is not there", i + 1, paths.len()) } else { "no such file".into() }
+                ));
+            }
+            let map = Mapping::open(p)?;
+            // SAFETY: as in `Part::bytes`.
+            let bytes = unsafe { std::slice::from_raw_parts(map.ptr as *const u8, map.len) };
+            let g = Gguf::parse(bytes).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+            parts.push(Part { path: p.clone(), map, data_offset: g.data_offset, file_len: g.file_len });
+            headers.push((p.display().to_string(), g));
+        }
+        let gguf = merge(headers)?;
+        Ok(File { path: paths[0].clone(), gguf, parts })
     }
 
-    fn bytes(&self) -> &[u8] {
-        // SAFETY: as in `open`.
-        unsafe { std::slice::from_raw_parts(self.map.ptr as *const u8, self.map.len) }
+    /// The files' headers (up to their data): what names the model's contents.
+    fn header_bytes(&self) -> Vec<u8> {
+        self.parts.iter().flat_map(|p| p.file_len.to_le_bytes().into_iter().chain(p.bytes()[..p.data_offset as usize].iter().copied())).collect()
     }
 
-    /// The header's bytes (up to the data): what names the file's contents.
-    fn header_bytes(&self) -> &[u8] {
-        &self.bytes()[..self.gguf.data_offset as usize]
+    /// The files' lengths added, and each file's length and modification time as text.
+    fn stamp(&self) -> (u64, String) {
+        let one = |p: &Part| {
+            let t = std::fs::metadata(&p.path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            format!("{}:{t}", p.file_len)
+        };
+        (self.parts.iter().map(|p| p.file_len).sum(), self.parts.iter().map(one).collect::<Vec<_>>().join(","))
     }
 
     /// Tensor `t`'s bytes, in the mapping; an error for a type whose size is not known.
     pub fn data(&self, t: &Tensor) -> Result<&[u8]> {
         let n = t.bytes.ok_or_else(|| Error(format!("{}: {}, a type this does not know", t.name, t.type_name())))?;
-        let start = (self.gguf.data_offset + t.offset) as usize;
-        Ok(&self.bytes()[start..start + n as usize])
+        let p = &self.parts[t.part];
+        let start = (p.data_offset + t.offset) as usize;
+        Ok(&p.bytes()[start..start + n as usize])
     }
 }
 
@@ -481,8 +582,38 @@ pub fn hf_name(name: &str) -> Option<String> {
     Some(format!("model.layers.{n}.{to}"))
 }
 
+/// What llama.cpp's converter (conversion/*.py) does to the tensors of the recent families' checkpoints on its way to a GGUF, by GGUF architecture: the family, and what is changed. None of it
+/// can be undone bit for bit (a bf16 weight plus one is rounded again, an exponential is not a logarithm's inverse in 32 bits), or it is a layout the release's loader does not have, so a
+/// GGUF of these is not the release's checkpoint and the engine, which loads the checkpoint, does not run it.
+const CONVERTED: &[(&[&str], &str, &str)] = &[
+    (
+        &["qwen35", "qwen35moe", "qwen3next"],
+        "Qwen3.5, 3.6 and 3.8",
+        "norm weights stored as w+1, A_log as -exp(A_log), the linear attention's V heads reordered and its projections merged",
+    ),
+    (&["qwen4exp"], "Qwen3.8 Flash-Next", "norm gammas stored as w+1, projections split and merged"),
+    (&["gemma2", "gemma3", "gemma3n", "gemma4", "gemma4-assistant"], "Gemma", "norm weights stored as w+1"),
+    (
+        &["muse-spark", "muse-glimmer"],
+        "Muse Spark",
+        "norm weights stored as w+1, the output multiplier folded into the output weights, RoPE rows un-permuted, the QK norms replaced",
+    ),
+    (&["kimi-k3", "kimi-k31"], "Kimi-K3", "A_log stored as -exp(A_log), the attention residuals' norms fused into projections, experts stacked"),
+    (&["deepseek41"], "DeepSeek-V4", "engram gates folded with their scales, experts stacked"),
+    (&["glm5-next", "glm-dsa", "glm4moe"], "GLM", "experts stacked, kv_b split into k_b and v_b"),
+];
+
 /// Whether the engine reads this architecture from GGUF: Qwen3 dense, with no rope scaling.
 fn check_arch(d: &Description) -> Done<()> {
+    if let Some((_, family, what)) = CONVERTED.iter().find(|(archs, _, _)| archs.contains(&d.arch.as_str())) {
+        return Err(Refusal::unsupported(
+            format!(
+                "GGUF architecture {} ({family}): the file holds llama.cpp's converted tensors ({what}), not the release's checkpoint, and the engine runs the checkpoint",
+                d.arch
+            ),
+            "Run the model's Hugging Face checkpoint (safetensors) instead",
+        ));
+    }
     if d.arch != "qwen3" {
         return Err(Refusal::unsupported(
             format!("GGUF architecture {}: the engine reads Qwen3 dense from GGUF so far", d.arch),
@@ -540,97 +671,9 @@ pub fn generation_json(g: &Gguf) -> String {
     json::to_python(&J::Object(vec![("eos_token_id".into(), J::Array(ids))]), 2)
 }
 
-/// Qwen2's pre-tokenizer pattern (llama.cpp's `qwen2`, which Qwen3 uses).
-const QWEN2_PRE: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
-
-/// tokenizer.json and tokenizer_config.json from the vocabulary, merges, token types and chat template of a byte-level BPE (`gpt2`) model with Qwen2's pre-tokenizer: the files transformers
-/// would have, so that `Tok::load` and `Chat::load` read them as they read any model's.
+/// tokenizer.json and tokenizer_config.json from the vocabulary of `g` (src/gguf_tok.rs).
 pub fn tokenizer_files(g: &Gguf) -> Done<(String, String)> {
-    let (model, pre) = (g.str("tokenizer.ggml.model").unwrap_or(""), g.str("tokenizer.ggml.pre").unwrap_or(""));
-    if model != "gpt2" || pre != "qwen2" {
-        return Err(Refusal::unsupported(
-            format!("the GGUF's tokenizer is {model:?} with the pre-tokenizer {pre:?}: the engine builds the byte-level BPE with Qwen2's pre-tokenizer (the Qwen family's) so far"),
-            "Run the model's Hugging Face checkpoint (safetensors) instead",
-        ));
-    }
-    let list = |k: &str| -> Done<&[Value]> { g.get(k).and_then(Value::as_array).ok_or_else(|| Refusal::new(format!("the GGUF has no {k}"), "")) };
-    let (tokens, merges) = (list("tokenizer.ggml.tokens")?, list("tokenizer.ggml.merges")?);
-    let types = g.get("tokenizer.ggml.token_type").and_then(Value::as_array);
-    let ty = |i: usize| types.and_then(|t| t.get(i)).and_then(Value::as_u64).unwrap_or(1);
-    let string = |v: &Value| J::String(v.as_str().unwrap_or("").to_string());
-    let (mut vocab, mut added) = (Vec::with_capacity(tokens.len()), Vec::new());
-    for (i, t) in tokens.iter().enumerate() {
-        let Some(s) = t.as_str() else { return Err(Refusal::new(format!("tokenizer.ggml.tokens[{i}] is not a string"), "")) };
-        match ty(i) {
-            // control and user-defined tokens: the added tokens (the control ones the special ones)
-            t @ (3 | 4) => added.push(J::Object(vec![
-                ("id".into(), J::Number(i.to_string())),
-                ("content".into(), J::String(s.to_string())),
-                ("single_word".into(), J::Bool(false)),
-                ("lstrip".into(), J::Bool(false)),
-                ("rstrip".into(), J::Bool(false)),
-                ("normalized".into(), J::Bool(false)),
-                ("special".into(), J::Bool(t == 3)),
-            ])),
-            // unused (the padding up to the embedding's size) and unknown ones are not in the vocabulary
-            2 | 5 => {}
-            _ => vocab.push((s.to_string(), J::Number(i.to_string()))),
-        }
-    }
-    let byte_level = |regex: bool| {
-        J::Object(vec![
-            ("type".into(), J::String("ByteLevel".into())),
-            ("add_prefix_space".into(), J::Bool(false)),
-            ("trim_offsets".into(), J::Bool(false)),
-            ("use_regex".into(), J::Bool(regex)),
-        ])
-    };
-    let split = J::Object(vec![
-        ("type".into(), J::String("Split".into())),
-        ("pattern".into(), J::Object(vec![("Regex".into(), J::String(QWEN2_PRE.into()))])),
-        ("behavior".into(), J::String("Isolated".into())),
-        ("invert".into(), J::Bool(false)),
-    ]);
-    let tokenizer = J::Object(vec![
-        ("version".into(), J::String("1.0".into())),
-        ("truncation".into(), J::Null),
-        ("padding".into(), J::Null),
-        ("added_tokens".into(), J::Array(added)),
-        ("normalizer".into(), J::Object(vec![("type".into(), J::String("NFC".into()))])),
-        (
-            "pre_tokenizer".into(),
-            J::Object(vec![("type".into(), J::String("Sequence".into())), ("pretokenizers".into(), J::Array(vec![split, byte_level(false)]))]),
-        ),
-        ("post_processor".into(), byte_level(false)),
-        ("decoder".into(), byte_level(false)),
-        (
-            "model".into(),
-            J::Object(vec![
-                ("type".into(), J::String("BPE".into())),
-                ("dropout".into(), J::Null),
-                ("unk_token".into(), J::Null),
-                ("continuing_subword_prefix".into(), J::String(String::new())),
-                ("end_of_word_suffix".into(), J::String(String::new())),
-                ("fuse_unk".into(), J::Bool(false)),
-                ("byte_fallback".into(), J::Bool(false)),
-                ("ignore_merges".into(), J::Bool(false)),
-                ("vocab".into(), J::Object(vocab)),
-                ("merges".into(), J::Array(merges.iter().map(string).collect())),
-            ]),
-        ),
-    ]);
-    let token = |k: &str| g.u64(k).and_then(|i| tokens.get(i as usize)).map(string);
-    let mut cfg: Vec<(String, J)> = Vec::new();
-    if let Some(t) = g.str("tokenizer.chat_template") {
-        cfg.push(("chat_template".into(), J::String(t.to_string())));
-    }
-    if g.get("tokenizer.ggml.add_bos_token").and_then(Value::as_bool) == Some(true) {
-        cfg.extend(token("tokenizer.ggml.bos_token_id").map(|t| ("bos_token".to_string(), t)));
-    }
-    cfg.extend(token("tokenizer.ggml.eos_token_id").map(|t| ("eos_token".to_string(), t)));
-    cfg.extend(token("tokenizer.ggml.padding_token_id").map(|t| ("pad_token".to_string(), t)));
-    cfg.push(("tokenizer_class".into(), J::String("Qwen2Tokenizer".into())));
-    Ok((json::to_compact(&tokenizer), json::to_python(&J::Object(cfg), 2)))
+    crate::gguf_tok::files(g)
 }
 
 // ---- the weights as a safetensors file ------------------------------------------------------------------------------------------------------------
@@ -691,7 +734,10 @@ fn write_safetensors(f: &File, out: &Path) -> Done<()> {
     let mut entries = Vec::new();
     let mut plan: Vec<(&Tensor, Cast)> = Vec::new();
     let mut pos = 0u64;
-    for t in &f.gguf.tensors {
+    // (in the order of their names: the file is the same whatever the parts the tensors were in)
+    let mut sorted: Vec<&Tensor> = f.gguf.tensors.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    for t in sorted {
         let name = hf_name(&t.name).ok_or_else(|| Refusal::unsupported(format!("{}: a GGUF tensor the engine's Qwen3 loader has no name for", t.name), ""))?;
         let cast = match t.ty {
             BF16 => Cast::Copy,
@@ -759,30 +805,26 @@ pub fn materialize(path: &Path, root: &Path, log: &dyn Fn(&str)) -> Done<PathBuf
     let f = File::open(path)?;
     let g = &f.gguf;
     let d = g.description()?;
-    let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let first = f.path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    // (a split's name is its parts' without their numbers)
+    let file = split_of(&first).map_or(first.clone(), |(prefix, _, m)| format!("{prefix}.gguf ({m} parts)"));
     check_arch(&d)?;
     let q = unsupported_types(g);
     if !q.is_empty() {
         return Err(quantized_refusal(&file, &q));
     }
     let config = config_json(g, &d)?;
-    let (tokenizer, tokenizer_config) = tokenizer_files(g)?;
+    let (tokenizer, tokenizer_config) = crate::gguf_tok::files(g)?;
     let mut h = Sha256::new();
-    h.update(g.file_len.to_le_bytes());
     h.update(f.header_bytes());
     let key: String = h.finalize().iter().take(6).map(|b| format!("{b:02x}")).collect();
-    let stem = file.strip_suffix(".gguf").unwrap_or(&file);
+    let stem = split_of(&first).map_or(first.strip_suffix(".gguf").unwrap_or(&first), |(prefix, _, _)| prefix);
     let stem: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '.') { c } else { '_' }).collect();
     let dir = root.join(format!("{stem}-{key}"));
     // (the directory is the file's own while its length and modification time are the ones it was made from: the key is the header's, which a rewrite of the weights in place leaves as it was)
-    let mtime =
-        std::fs::metadata(path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+    let (size, stamp) = f.stamp();
     let source = json::to_python(
-        &J::Object(vec![
-            ("file".into(), J::String(file.clone())),
-            ("size".into(), J::Number(g.file_len.to_string())),
-            ("mtime_ns".into(), J::Number(mtime.to_string())),
-        ]),
+        &J::Object(vec![("file".into(), J::String(file.clone())), ("size".into(), J::Number(size.to_string())), ("files".into(), J::String(stamp))]),
         2,
     );
     if dir.join("model.safetensors").exists() && dir.join("config.json").exists() {
@@ -829,33 +871,46 @@ pub fn materialize(path: &Path, root: &Path, log: &dyn Fn(&str)) -> Done<PathBuf
 
 // ---- a model given as a GGUF ----------------------------------------------------------------------------------------------------------------------
 
-/// A `-00001-of-00003.gguf` file: one part of a split model.
-fn is_split(name: &str) -> bool {
-    name.strip_suffix(".gguf")
-        .and_then(|n| n.rsplit_once("-of-"))
-        .is_some_and(|(a, b)| b.len() == 5 && b.bytes().all(|c| c.is_ascii_digit()) && a.len() > 6 && a[a.len() - 5..].bytes().all(|c| c.is_ascii_digit()))
+fn base(n: &str) -> &str {
+    n.rsplit('/').next().unwrap_or(n)
 }
 
-/// Which of the GGUF files `names` (a directory's or a repo's) to run: the BF16 one, else F32, else F16 (as the names say; the file's own header decides what it is). None, with the names
-/// said, where there is no unquantized one.
-fn choose<'a>(names: &[&'a str]) -> Done<&'a str> {
-    let ggufs: Vec<&str> = names.iter().copied().filter(|n| n.ends_with(".gguf") && !n.rsplit('/').next().unwrap_or(n).starts_with("mmproj")).collect();
-    for want in ["bf16", "f32", "f16"] {
-        let hits: Vec<&str> = ggufs.iter().copied().filter(|n| n.rsplit('/').next().unwrap_or(n).to_ascii_lowercase().contains(want)).collect();
-        if let Some(n) = hits.iter().find(|n| !is_split(n)).or(hits.first()) {
-            if is_split(n) {
-                return Err(Refusal::unsupported(
-                    format!("{n} is one part of a split GGUF, which the engine does not read yet"),
-                    "Join the parts (llama.cpp's llama-gguf-split --merge) and run the file",
-                ));
+/// The names of the parts of the split whose first part is `first` (all of them, `first` the first), or the one file `first`: an error naming the parts that are missing.
+fn parts_of<'a>(names: &[&'a str], first: &'a str) -> Done<Vec<&'a str>> {
+    let Some((prefix, _, m)) = split_of(base(first)) else { return Ok(vec![first]) };
+    let dir = &first[..first.len() - base(first).len()];
+    let mut out = Vec::new();
+    for n in 1..=m {
+        let want = format!("{dir}{}", split_name(prefix, n, m));
+        match names.iter().find(|x| **x == want) {
+            Some(x) => out.push(*x),
+            None => {
+                return Err(Refusal::new(
+                    format!("part {n} of {m} of the split GGUF {first} is missing ({want})"),
+                    "Download every part of the split, into one directory",
+                ))
             }
+        }
+    }
+    Ok(out)
+}
+
+/// Which of the GGUF files `names` (a directory's or a repo's) to run: the BF16 one, else F32, else F16 (as the names say; the file's own header decides what it is); a split model is its first
+/// part (`parts_of` has the rest). An error, with the names said, where there is no unquantized one.
+fn choose<'a>(names: &[&'a str]) -> Done<&'a str> {
+    let ggufs: Vec<&str> = names.iter().copied().filter(|n| n.ends_with(".gguf") && !base(n).starts_with("mmproj")).collect();
+    // one candidate for a model: its file, or its split's first part (a model in one file before the same in parts)
+    let mut cands: Vec<&str> = ggufs.iter().copied().filter(|n| split_of(base(n)).is_none_or(|(_, k, _)| k == 1)).collect();
+    cands.sort_by_key(|n| split_of(base(n)).is_some());
+    for want in ["bf16", "f32", "f16"] {
+        if let Some(n) = cands.iter().find(|n| base(n).to_ascii_lowercase().contains(want)) {
+            parts_of(&ggufs, n)?;
             return Ok(n);
         }
     }
-    if let [only] = ggufs[..] {
-        if !is_split(only) {
-            return Ok(only);
-        }
+    if let [only] = cands[..] {
+        parts_of(&ggufs, only)?;
+        return Ok(only);
     }
     let shown: Vec<&str> = ggufs.iter().copied().take(8).collect();
     Err(Refusal::unsupported(
@@ -864,8 +919,23 @@ fn choose<'a>(names: &[&'a str]) -> Done<&'a str> {
     ))
 }
 
+/// The `.gguf` files of `dir` and of its folders (as their paths from `dir`).
 fn ggufs_in(dir: &Path) -> Vec<String> {
-    std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| n.ends_with(".gguf")).collect()).unwrap_or_default()
+    let mut v = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(name) = e.file_name().into_string() else { continue };
+        if name.ends_with(".gguf") {
+            v.push(name);
+        } else if e.path().is_dir() {
+            for f in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
+                if let Some(f) = f.file_name().to_str().filter(|f| f.ends_with(".gguf")) {
+                    v.push(format!("{name}/{f}"));
+                }
+            }
+        }
+    }
+    v.sort();
+    v
 }
 
 /// `model:level`'s model and its `:level` (an ASCII-lowercase word after the last colon), apart.
@@ -878,12 +948,71 @@ fn split_level(model: &str) -> (&str, &str) {
     }
 }
 
-/// MODEL as the engine's commands take it, made a Hugging Face directory where it is a GGUF: a `.gguf` file, a directory that holds `.gguf` files and no config.json, or a Hub repo (in the
-/// local cache, else on the Hub) that has `.gguf` files and no safetensors. Some(the directory, with MODEL's `:level` kept), or None where MODEL is not one of these.
-pub fn resolve(model: &str, log: &dyn Fn(&str)) -> Done<Option<String>> {
+/// A planning command's directory for a GGUF's headers (what `fit`, `supports`, `preflight` and `costs` read of a model: its config.json and generation_config.json), made under `root` where it is
+/// not there: the same refusals as a run's (the architecture, the quantized types), and no weights, so that nothing is read of the data. `label` names the model in a refusal.
+pub fn plan_dir(g: &Gguf, label: &str, root: &Path) -> Done<PathBuf> {
+    let d = g.description()?;
+    check_arch(&d)?;
+    let q = unsupported_types(g);
+    if !q.is_empty() {
+        return Err(quantized_refusal(label, &q));
+    }
+    let (config, generation) = (config_json(g, &d)?, generation_json(g));
+    let mut h = Sha256::new();
+    h.update(&config);
+    h.update(&generation);
+    let key: String = h.finalize().iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let stem: String =
+        label.strip_suffix(".gguf").unwrap_or(label).chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '.') { c } else { '_' }).collect();
+    let dir = root.join(format!("{stem}-{key}"));
+    if !dir.join("config.json").exists() {
+        let io = |e: std::io::Error| Refusal::new(format!("{}: {e}", dir.display()), "");
+        let tmp = root.join(format!(".tmp-{}-{stem}-{key}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).map_err(io)?;
+        std::fs::write(tmp.join("generation_config.json"), &generation).map_err(io)?;
+        std::fs::write(tmp.join("config.json"), &config).map_err(io)?;
+        if std::fs::rename(&tmp, &dir).is_err() {
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+    Ok(dir)
+}
+
+/// The headers of the GGUF files `parts` of a repo, read by ranges (nothing of the data is downloaded): each file's first bytes, doubled until its header parses.
+fn hub_headers(hub: &Hub, remote: &hub::Remote, parts: &[hub::Entry]) -> Done<Gguf> {
+    let mut headers = Vec::new();
+    for e in parts {
+        let mut n = 4u64 << 20;
+        let g = loop {
+            let bytes = hub.prefix(remote, e, n).map_err(Refusal::from)?;
+            match Gguf::parse_header(&bytes, e.size) {
+                Ok(g) => break g,
+                // (a header the bytes do not reach the end of fails where they end)
+                Err(_) if (bytes.len() as u64) < e.size && n < 1 << 30 => n *= 4,
+                Err(err) => return Err(Refusal::new(format!("{}: {err}", e.path), "")),
+            }
+        };
+        headers.push((e.path.clone(), g));
+    }
+    Ok(merge(headers)?)
+}
+
+/// MODEL as the engine's commands take it, made a Hugging Face directory where it is a GGUF: a `.gguf` file (or a part of a split), a directory that holds `.gguf` files and no config.json, or a Hub
+/// repo (in the local cache, else on the Hub) that has `.gguf` files and no safetensors. Some(the directory, with MODEL's `:level` kept), or None where MODEL is not one of these. `plan`: for a
+/// planning command (`plan_dir`): the directory has the config alone, and a repo that is not downloaded is read by its files' headers, not downloaded.
+pub fn resolve(model: &str, log: &dyn Fn(&str), plan: bool) -> Done<Option<String>> {
     let (path, level) = split_level(model);
-    let root = crate::store::cache_root().join("gguf");
-    let made = |p: &Path| materialize(p, &root, log).map(|d| Some(format!("{}{level}", d.display())));
+    let cache = crate::store::cache_root();
+    let made = |p: &Path| -> Done<Option<String>> {
+        let dir = if plan {
+            let f = File::open(p)?;
+            plan_dir(&f.gguf, &f.path.file_name().map_or_else(|| "model".into(), |n| n.to_string_lossy().into_owned()), &cache.join("gguf-plan"))?
+        } else {
+            materialize(p, &cache.join("gguf"), log)?
+        };
+        Ok(Some(format!("{}{level}", dir.display())))
+    };
     let p = Path::new(path);
     if p.is_file() && path.to_ascii_lowercase().ends_with(".gguf") {
         return made(p);
@@ -926,11 +1055,21 @@ pub fn resolve(model: &str, log: &dyn Fn(&str)) -> Done<Option<String>> {
     }
     let names: Vec<&str> = remote.files.iter().map(|e| e.path.as_str()).collect();
     let pick = choose(&names)?;
-    let entry = remote.files.iter().find(|e| e.path == pick).cloned().expect("chosen from the listing");
-    log(&format!("glyd: {path} is GGUF files: downloading {pick} ({:.1} GB)", entry.size as f64 / 1e9));
+    let wanted: Vec<hub::Entry> = parts_of(&names, pick)?.iter().filter_map(|n| remote.files.iter().find(|e| e.path == *n).cloned()).collect();
+    if plan {
+        let g = hub_headers(&hub, &remote, &wanted)?;
+        let label = format!("{path}/{}", base(pick));
+        let dir = plan_dir(&g, &label, &cache.join("gguf-plan"))?;
+        return Ok(Some(format!("{}{level}", dir.display())));
+    }
+    log(&format!(
+        "glyd: {path} is GGUF files: downloading {pick}{} ({:.1} GB)",
+        if wanted.len() > 1 { format!(" and its {} parts", wanted.len() - 1) } else { String::new() },
+        wanted.iter().map(|e| e.size).sum::<u64>() as f64 / 1e9
+    ));
     let last = std::cell::Cell::new(std::time::Instant::now());
     let snap = hub
-        .fetch(&remote, std::slice::from_ref(&entry), &|done, total| {
+        .fetch(&remote, &wanted, &|done, total| {
             if last.get().elapsed().as_secs() >= 5 {
                 last.set(std::time::Instant::now());
                 log(&format!("glyd: {pick}: {:.1} of {:.1} GB", done as f64 / 1e9, total as f64 / 1e9));
@@ -940,13 +1079,16 @@ pub fn resolve(model: &str, log: &dyn Fn(&str)) -> Done<Option<String>> {
     made(&snap.join(pick))
 }
 
-/// `glyd-engine run|serve|prepare|verify MODEL` with MODEL a GGUF (see `resolve`): MODEL replaced by its directory. Some(exit status) where it is refused, the reason said.
+/// `glyd-engine run|serve|prepare|verify|fit|supports|preflight|costs MODEL` with MODEL a GGUF (see `resolve`): MODEL replaced by its directory (a planning command's has the config alone). Some(exit
+/// status) where it is refused, the reason said.
 pub fn resolve_args(a: &mut Args) -> Option<i32> {
-    if !matches!(a.pos.first().map(String::as_str), Some("run" | "serve" | "prepare" | "verify")) {
-        return None;
-    }
+    let plan = match a.pos.first().map(String::as_str) {
+        Some("run" | "serve" | "prepare" | "verify") => false,
+        Some("fit" | "supports" | "preflight" | "costs") => true,
+        _ => return None,
+    };
     let model = a.pos.get(1)?.clone();
-    match resolve(&model, &|s| eprintln!("{s}")) {
+    match resolve(&model, &|s| eprintln!("{s}"), plan) {
         Ok(Some(dir)) => {
             a.pos[1] = dir;
             None
@@ -1053,6 +1195,11 @@ mod tests {
 
     /// A one-layer Qwen3 of hidden 4 (2 heads of 2, one kv head), a vocabulary of the 256 bytes (as the GPT-2 byte-to-unicode map spells them), `<|im_start|>`, `<|im_end|>` and `<think>`.
     fn tiny_qwen3(weights: u32, norm: u32) -> Vec<u8> {
+        tiny_parts(weights, norm, 1).remove(0)
+    }
+
+    /// `tiny_qwen3` as the `parts` files of a split: the metadata in the first (which holds no tensors where there are more files), the tensors dealt out to the others.
+    fn tiny_parts(weights: u32, norm: u32, parts: usize) -> Vec<Vec<u8>> {
         let mut vocab: Vec<String> = Vec::new();
         // the printable ASCII is its own token; the rest are not used here
         for b in 0u8..=255 {
@@ -1070,6 +1217,7 @@ mod tests {
         let mut types = vec![1i32; n_plain];
         types.extend([3, 3, 4]);
         let mut b = Build::new();
+        let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = Vec::new();
         b.s("general.architecture", "qwen3")
             .s("general.name", "Tiny")
             .u32("qwen3.context_length", 128)
@@ -1098,20 +1246,37 @@ mod tests {
                 _ => unreachable!(),
             }
         };
-        b.tensor("token_embd.weight", &[4, n], weights, &ty_bytes(weights, &w(4 * n as usize, 0.125)));
-        b.tensor("output_norm.weight", &[4], norm, &ty_bytes(norm, &[1.0, 2.0, 0.5, 4.0]));
-        b.tensor("blk.0.attn_norm.weight", &[4], norm, &ty_bytes(norm, &[1.0; 4]));
-        b.tensor("blk.0.ffn_norm.weight", &[4], norm, &ty_bytes(norm, &[1.0; 4]));
-        b.tensor("blk.0.attn_q_norm.weight", &[2], norm, &ty_bytes(norm, &[1.0; 2]));
-        b.tensor("blk.0.attn_k_norm.weight", &[2], norm, &ty_bytes(norm, &[1.0; 2]));
-        b.tensor("blk.0.attn_q.weight", &[4, 4], weights, &ty_bytes(weights, &w(16, 0.25)));
-        b.tensor("blk.0.attn_k.weight", &[4, 2], weights, &ty_bytes(weights, &w(8, 0.25)));
-        b.tensor("blk.0.attn_v.weight", &[4, 2], weights, &ty_bytes(weights, &w(8, 0.5)));
-        b.tensor("blk.0.attn_output.weight", &[4, 4], weights, &ty_bytes(weights, &w(16, 0.5)));
-        b.tensor("blk.0.ffn_gate.weight", &[4, 8], weights, &ty_bytes(weights, &w(32, 0.25)));
-        b.tensor("blk.0.ffn_up.weight", &[4, 8], weights, &ty_bytes(weights, &w(32, 0.5)));
-        b.tensor("blk.0.ffn_down.weight", &[8, 4], weights, &ty_bytes(weights, &w(32, 0.125)));
-        b.bytes()
+        tensors.push(("token_embd.weight".to_string(), vec![4, n], weights, ty_bytes(weights, &w(4 * n as usize, 0.125))));
+        tensors.push(("output_norm.weight".to_string(), vec![4], norm, ty_bytes(norm, &[1.0, 2.0, 0.5, 4.0])));
+        tensors.push(("blk.0.attn_norm.weight".to_string(), vec![4], norm, ty_bytes(norm, &[1.0; 4])));
+        tensors.push(("blk.0.ffn_norm.weight".to_string(), vec![4], norm, ty_bytes(norm, &[1.0; 4])));
+        tensors.push(("blk.0.attn_q_norm.weight".to_string(), vec![2], norm, ty_bytes(norm, &[1.0; 2])));
+        tensors.push(("blk.0.attn_k_norm.weight".to_string(), vec![2], norm, ty_bytes(norm, &[1.0; 2])));
+        tensors.push(("blk.0.attn_q.weight".to_string(), vec![4, 4], weights, ty_bytes(weights, &w(16, 0.25))));
+        tensors.push(("blk.0.attn_k.weight".to_string(), vec![4, 2], weights, ty_bytes(weights, &w(8, 0.25))));
+        tensors.push(("blk.0.attn_v.weight".to_string(), vec![4, 2], weights, ty_bytes(weights, &w(8, 0.5))));
+        tensors.push(("blk.0.attn_output.weight".to_string(), vec![4, 4], weights, ty_bytes(weights, &w(16, 0.5))));
+        tensors.push(("blk.0.ffn_gate.weight".to_string(), vec![4, 8], weights, ty_bytes(weights, &w(32, 0.25))));
+        tensors.push(("blk.0.ffn_up.weight".to_string(), vec![4, 8], weights, ty_bytes(weights, &w(32, 0.5))));
+        tensors.push(("blk.0.ffn_down.weight".to_string(), vec![8, 4], weights, ty_bytes(weights, &w(32, 0.125))));
+        let total = tensors.len();
+        let mut out: Vec<Build> = (0..parts).map(|_| Build::new()).collect();
+        for (i, o) in out.iter_mut().enumerate() {
+            if i == 0 {
+                o.meta = b.meta.clone();
+                o.n_meta = b.n_meta;
+            } else {
+                o.s("general.architecture", "qwen3");
+            }
+            if parts > 1 {
+                o.u32("split.no", i as u32).u32("split.count", parts as u32).u32("split.tensors.count", total as u32);
+            }
+        }
+        for (k, (name, ne, ty, data)) in tensors.into_iter().enumerate() {
+            let at = if parts == 1 { 0 } else { 1 + k % (parts - 1) };
+            out[at].tensor(&name, &ne, ty, &data);
+        }
+        out.iter().map(Build::bytes).collect()
     }
 
     fn temp(name: &str) -> PathBuf {
@@ -1144,6 +1309,23 @@ mod tests {
         assert_eq!(g.types(), vec![("F16".to_string(), 1), ("Q4_0".to_string(), 1)]);
         assert_eq!(g.data_offset % 32, 0);
         assert_eq!(g.data_offset + 384 + 18, bytes.len() as u64);
+    }
+
+    #[test]
+    fn a_file_of_metadata_alone_may_end_with_its_header() {
+        let mut b = Build::new();
+        b.s("general.architecture", "llama").u32("split.no", 0);
+        let bytes = b.bytes();
+        // (the header ends off the alignment, and no padding follows it)
+        let header = 24 + b.meta.len() + b.infos.len();
+        assert!(header % 32 != 0 && header < bytes.len());
+        let g = Gguf::parse(&bytes[..header]).unwrap();
+        assert_eq!((g.tensors.len(), g.data_offset, g.u64("split.no")), (0, header as u64, Some(0)));
+        // with a tensor the data must be there
+        let mut t = Build::new();
+        t.tensor("a", &[2], 0, &[0; 8]);
+        let bytes = t.bytes();
+        assert!(Gguf::parse(&bytes[..bytes.len() - 8 - 1]).is_err());
     }
 
     #[test]
@@ -1371,8 +1553,19 @@ mod tests {
         assert_eq!(choose(&["mmproj-F16.gguf", "m-BF16.gguf"]).unwrap(), "m-BF16.gguf");
         let e = choose(&["m-Q4_K_M.gguf", "m-Q8_0.gguf"]).unwrap_err().to_string();
         assert!(e.contains("m-Q4_K_M.gguf, m-Q8_0.gguf") && e.contains("no kernels for quantized"), "{e}");
-        assert!(choose(&["m-BF16-00001-of-00002.gguf", "m-BF16-00002-of-00002.gguf"]).unwrap_err().to_string().contains("split GGUF"));
-        assert!(is_split("a-00001-of-00004.gguf") && !is_split("a-of-b.gguf"));
+        // a split is its first part, and every part must be there
+        let split = ["BF16/m-BF16-00002-of-00002.gguf", "BF16/m-BF16-00001-of-00002.gguf", "m-Q4_K_M.gguf"];
+        assert_eq!(choose(&split).unwrap(), "BF16/m-BF16-00001-of-00002.gguf");
+        assert_eq!(parts_of(&split, "BF16/m-BF16-00001-of-00002.gguf").unwrap(), vec!["BF16/m-BF16-00001-of-00002.gguf", "BF16/m-BF16-00002-of-00002.gguf"]);
+        let e = choose(&["BF16/m-BF16-00001-of-00003.gguf", "BF16/m-BF16-00003-of-00003.gguf"]).unwrap_err().to_string();
+        assert!(e.contains("part 2 of 3 of the split GGUF") && e.contains("is missing"), "{e}");
+        // (a model in one file before the same in parts)
+        assert_eq!(choose(&["m-BF16-00001-of-00002.gguf", "m-BF16-00002-of-00002.gguf", "x-BF16.gguf"]).unwrap(), "x-BF16.gguf");
+        assert_eq!(split_of("a-b-00002-of-00004.gguf"), Some(("a-b", 2, 4)));
+        assert_eq!(split_of("a-00005-of-00004.gguf"), None);
+        assert_eq!(split_of("a-of-b.gguf"), None);
+        assert_eq!(split_of("model-0001-of-0004.gguf"), None);
+        assert_eq!(split_name("a-b", 2, 4), "a-b-00002-of-00004.gguf");
     }
 
     /// A real GGUF of a Qwen3 against the model's own checkpoint: `GLYD_TEST_GGUF` a BF16 GGUF file, `GLYD_TEST_CKPT` the Hugging Face directory it was made from (`cargo test gguf_against_the_checkpoint
@@ -1543,6 +1736,309 @@ mod tests {
         }
     }
 
+    /// A model in several files is one model: the metadata of the first, the tensors of all, in whatever order the parts are named.
+    #[test]
+    fn a_split_gguf_becomes_the_same_checkpoint_as_one_file() {
+        let dir = temp("split");
+        let whole = dir.join("one").join("tiny-BF16.gguf");
+        std::fs::create_dir_all(whole.parent().unwrap()).unwrap();
+        std::fs::write(&whole, tiny_qwen3(BF16, F32)).unwrap();
+        let parts = tiny_parts(BF16, F32, 3);
+        assert_eq!(parts.len(), 3);
+        // (the first part has the metadata and no tensors)
+        assert_eq!(Gguf::parse(&parts[0]).unwrap().tensors.len(), 0);
+        let split_dir = dir.join("three");
+        std::fs::create_dir_all(&split_dir).unwrap();
+        for (i, b) in parts.iter().enumerate() {
+            std::fs::write(split_dir.join(split_name("tiny-BF16", i as u32 + 1, 3)), b).unwrap();
+        }
+        let f = File::open(&split_dir.join(split_name("tiny-BF16", 2, 3))).unwrap();
+        assert_eq!((f.gguf.tensors.len(), f.gguf.str("general.name")), (13, Some("Tiny")));
+        assert!(f.gguf.tensors.iter().any(|t| t.part == 2) && f.gguf.tensors.iter().any(|t| t.part == 1));
+        let cache = dir.join("cache");
+        let (one, three) =
+            (materialize(&whole, &cache, &|_| {}).unwrap(), materialize(&split_dir.join(split_name("tiny-BF16", 1, 3)), &cache, &|_| {}).unwrap());
+        assert!(three.file_name().unwrap().to_string_lossy().starts_with("tiny-BF16-"));
+        for name in ["model.safetensors", "config.json", "tokenizer.json", "tokenizer_config.json"] {
+            assert!(std::fs::read(one.join(name)).unwrap() == std::fs::read(three.join(name)).unwrap(), "{name}");
+        }
+        // a part missing, a part that says it is another, a count that is not the parts'
+        std::fs::remove_file(split_dir.join(split_name("tiny-BF16", 3, 3))).unwrap();
+        let e = File::open(&split_dir.join(split_name("tiny-BF16", 1, 3))).err().unwrap().to_string();
+        assert!(e.contains("part 3 of 3 of a split GGUF is not there"), "{e}");
+        let bad = dir.join("bad");
+        std::fs::create_dir_all(&bad).unwrap();
+        let put = |i: u32, bytes: &[u8]| std::fs::write(bad.join(split_name("t", i, 3)), bytes).unwrap();
+        put(1, &parts[0]);
+        put(2, &parts[2]);
+        put(3, &parts[2]);
+        let e = File::open(&bad.join(split_name("t", 1, 3))).err().unwrap().to_string();
+        assert!(e.contains("part 3 of the split by its metadata (split.no 2), and part 2 by its name"), "{e}");
+        put(2, &parts[1]);
+        put(3, &parts[1]);
+        let e = File::open(&bad.join(split_name("t", 1, 3))).err().unwrap().to_string();
+        assert!(e.contains("part 2 of the split by its metadata (split.no 1), and part 3 by its name"), "{e}");
+        put(3, &tiny_parts(BF16, F32, 4)[3]);
+        let e = File::open(&bad.join(split_name("t", 1, 3))).err().unwrap().to_string();
+        assert!(e.contains("split.count is 4"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a planning command reads of a GGUF is its config and nothing of the data; a quantized one, or another architecture, is refused as a run refuses it.
+    #[test]
+    fn a_planning_directory_has_the_config_alone() {
+        let dir = temp("plan");
+        let g = Gguf::parse(&tiny_qwen3(BF16, F32)).unwrap();
+        let out = plan_dir(&g, "tiny-BF16.gguf", &dir).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        assert_eq!(names, ["config.json", "generation_config.json"]);
+        let c = crate::weights::Config::load(&out).unwrap();
+        assert_eq!((c.layers, c.hidden, c.vocab, c.eos.clone()), (1, 4, 261, vec![259]));
+        assert_eq!(plan_dir(&g, "tiny-BF16.gguf", &dir).unwrap(), out);
+        // the same config as a run's directory has
+        let file = dir.join("tiny-BF16.gguf");
+        std::fs::write(&file, tiny_qwen3(BF16, F32)).unwrap();
+        let run = materialize(&file, &dir.join("run"), &|_| {}).unwrap();
+        assert_eq!(std::fs::read(run.join("config.json")).unwrap(), std::fs::read(out.join("config.json")).unwrap());
+        // refusals, with nothing made
+        let before = std::fs::read_dir(&dir).unwrap().count();
+        let mut q = Build::new();
+        q.s("general.architecture", "qwen3").tensor("blk.0.attn_q.weight", &[256], 12, &[0; 144]);
+        let e = plan_dir(&Gguf::parse(&q.bytes()).unwrap(), "q.gguf", &dir).unwrap_err();
+        assert!(e.code == crate::ui::CANNOT && e.to_string().contains("Q4_K (1 tensors)"), "{e}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The architectures of the recent families (the keys and tensors their GGUFs have, as the files' headers show) are described, and refused with what llama.cpp's converter did to them.
+    #[test]
+    fn recent_architectures_are_described_and_refused_with_what_the_converter_did() {
+        let dir = temp("recent");
+        let cases: [(&str, &str, &str); 11] = [
+            ("qwen35", "Qwen3.5, 3.6 and 3.8", "A_log as -exp(A_log)"),
+            ("qwen35moe", "Qwen3.5, 3.6 and 3.8", "norm weights stored as w+1"),
+            ("qwen4exp", "Qwen3.8 Flash-Next", "norm gammas stored as w+1"),
+            ("gemma4", "Gemma", "norm weights stored as w+1"),
+            ("gemma4-assistant", "Gemma", "norm weights stored as w+1"),
+            ("muse-spark", "Muse Spark", "output multiplier folded"),
+            ("kimi-k3", "Kimi-K3", "experts stacked"),
+            ("kimi-k31", "Kimi-K3", "experts stacked"),
+            ("deepseek41", "DeepSeek-V4", "engram gates"),
+            ("glm5-next", "GLM", "kv_b split"),
+            ("glm-dsa", "GLM", "kv_b split"),
+        ];
+        for (arch, family, what) in cases {
+            let mut b = Build::new();
+            b.s("general.architecture", arch)
+                .u32(&format!("{arch}.block_count"), 65)
+                .u32(&format!("{arch}.context_length"), 262144)
+                .u32(&format!("{arch}.embedding_length"), 5120)
+                .u32(&format!("{arch}.attention.head_count"), 24)
+                .u32(&format!("{arch}.attention.head_count_kv"), 4)
+                .u32(&format!("{arch}.expert_count"), 128)
+                .s("tokenizer.ggml.model", "gpt2")
+                .s("tokenizer.ggml.pre", "qwen35")
+                .tensor("token_embd.weight", &[4, 3], BF16, &[0; 24])
+                .tensor("blk.0.ssm_a", &[4], F32, &[0; 16]);
+            let g = Gguf::parse(&b.bytes()).unwrap();
+            let d = g.description().unwrap();
+            assert_eq!(
+                (d.arch.as_str(), d.layers, d.hidden, d.heads, d.kv_heads, d.experts, d.context),
+                (arch, Some(65), Some(5120), Some(24), Some(4), Some(128), Some(262144))
+            );
+            let e = plan_dir(&g, "m.gguf", &dir).unwrap_err();
+            let text = e.to_string();
+            assert!(
+                e.code == crate::ui::CANNOT
+                    && text.contains(&format!("GGUF architecture {arch} ({family})"))
+                    && text.contains(what)
+                    && text.contains("not the release's checkpoint"),
+                "{arch}: {text}"
+            );
+            let file = dir.join(format!("{arch}.gguf"));
+            std::fs::write(&file, b.bytes()).unwrap();
+            assert_eq!(materialize(&file, &dir.join("run"), &|_| {}).unwrap_err().to_string(), text);
+        }
+        assert!(!dir.join("run").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The tokenizers of real GGUFs against the models' own (`GLYD_TEST_TOKENIZERS`: a directory of `NAME.head` and `NAME.size` as for `real_headers_parse_and_are_described`, with the model's
+    /// `NAME.tokenizer.json`): the same token ids and the same text back, for a battery of texts, with the special tokens.
+    #[test]
+    #[ignore = "needs GLYD_TEST_TOKENIZERS"]
+    fn tokenizers_against_the_models_own() {
+        let dir = PathBuf::from(std::env::var_os("GLYD_TEST_TOKENIZERS").expect("set GLYD_TEST_TOKENIZERS"));
+        let only = std::env::var("GLYD_TEST_ONLY").ok();
+        let mut heads: Vec<PathBuf> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "head")).collect();
+        heads.sort();
+        let texts = [
+            "Hello, world!",
+            "  leading and trailing  ",
+            " Hello",
+            "The quick brown fox jumps over the lazy dog. It's 3.14159 and 1,000,000!",
+            "fn main() {\n    println!(\"hi\");\n}\n\n\n",
+            "def f(x):\n\treturn x**2  # square\n",
+            "日本語のテキスト、中文,한국어 and emoji 🎉🚀 and Ünïcödé",
+            "e\u{301} vs é, tabs\t\tand\r\nCRLF",
+            "1234567890 ab12cd34 0.5e-3",
+            "<s>[INST] hi [/INST]</s> <|im_start|>user\nhi<|im_end|>\n<think>\n\n</think> <start_of_turn>user",
+            "a  b   c    d",
+            "x\n\n\ny \n z",
+            "",
+            "\u{a0}non-breaking\u{200b}zero",
+            "I'M YOU'RE we've THEY'LL",
+        ];
+        let mut bad: Vec<String> = Vec::new();
+        for p in &heads {
+            let name = p.file_stem().unwrap().to_string_lossy().into_owned();
+            if only.as_ref().is_some_and(|o| *o != name) {
+                continue;
+            }
+            // (TinyLlama's GGUF has every score 0: its merges' order is not in the file)
+            if name == "tinyllama" {
+                continue;
+            }
+            let len: u64 = std::fs::read_to_string(p.with_extension("size")).unwrap().trim().parse().unwrap();
+            let g = Gguf::parse_header(&std::fs::read(p).unwrap(), len).unwrap();
+            let out = temp(&format!("tok-{name}"));
+            let (tj, tc) = crate::gguf_tok::files(&g).unwrap_or_else(|e| panic!("{name}: {e}"));
+            std::fs::write(out.join("tokenizer.json"), tj).unwrap();
+            std::fs::write(out.join("tokenizer_config.json"), tc).unwrap();
+            let theirs = dir.join(format!("{name}.tokenizer.json"));
+            let ref_dir = temp(&format!("ref-{name}"));
+            std::fs::copy(&theirs, ref_dir.join("tokenizer.json")).unwrap();
+            let (mine, want) = (crate::tok::Tok::load(&out).unwrap(), crate::tok::Tok::load(&ref_dir).unwrap());
+            let mut wrong = 0;
+            let bos = g.u64("tokenizer.ggml.bos_token_id").map(|b| b as u32);
+            for text in texts {
+                // (what a GGUF does not say: the added tokens' lstrip and rstrip; whether a
+                // tokenizer that does not add the beginning-of-sequence token in its tokenizer.json has the file's say-so)
+                if name == "phi4" && text.contains("<|im_start|>") {
+                    continue;
+                }
+                for special in [true, false] {
+                    let (mut a, mut b) = (mine.encode_with(text, special).unwrap(), want.encode_with(text, special).unwrap());
+                    for v in [&mut a, &mut b] {
+                        if special && v.first().copied() == bos && bos.is_some() {
+                            v.remove(0);
+                        }
+                    }
+                    if a != b {
+                        wrong += 1;
+                        if std::env::var_os("GLYD_TEST_VERBOSE").is_some() {
+                            eprintln!("  {name}: {text:?} special={special}\n     mine {a:?}\n     want {b:?}");
+                        }
+                        if wrong <= 3 {
+                            bad.push(format!("{name}: {text:?} special={special}\n   mine {a:?}\n   want {b:?}"));
+                        }
+                    } else if mine.decode(&a).unwrap() != want.decode(&b).unwrap() {
+                        wrong += 1;
+                        bad.push(format!("{name}: {text:?} decodes {:?}, wanted {:?}", mine.decode(&a).unwrap(), want.decode(&b).unwrap()));
+                    }
+                }
+            }
+            eprintln!("{name}: {} texts x 2, {wrong} different", texts.len());
+            let _ = std::fs::remove_dir_all(&out);
+            let _ = std::fs::remove_dir_all(&ref_dir);
+        }
+        assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+    }
+
+    fn tokenizer_of(build: &Build) -> (crate::tok::Tok, PathBuf) {
+        let g = Gguf::parse(&build.bytes()).unwrap();
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = temp(&format!("toks-{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let (tj, tc) = crate::gguf_tok::files(&g).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(dir.join("tokenizer.json"), tj).unwrap();
+        std::fs::write(dir.join("tokenizer_config.json"), tc).unwrap();
+        (crate::tok::Tok::load(&dir).unwrap(), dir)
+    }
+
+    /// SentencePiece merges come out as transformers' converter makes them: by the merged piece's score, the pieces' lengths, the ties in the order of the pieces' ids.
+    #[test]
+    fn sentencepiece_merges_are_derived_from_the_scores() {
+        let pieces = ["<unk>", "<s>", "</s>", "▁", "a", "b", "▁a", "ab", "▁ab"];
+        let scores = [0.0, 0.0, 0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0];
+        let m = |l: &str, r: &str| (l.to_string(), r.to_string());
+        // ("▁ab" splits two ways, at one score: the longer left piece first)
+        assert_eq!(crate::gguf_tok::spm_merges(&pieces, &scores), vec![m("▁", "a"), m("a", "b"), m("▁a", "b"), m("▁", "ab")]);
+        // a higher score first, whatever the ids
+        let scores = [0.0, 0.0, 0.0, -1.0, -2.0, -3.0, -6.0, -5.0, -4.0];
+        assert_eq!(crate::gguf_tok::spm_merges(&pieces, &scores), vec![m("▁a", "b"), m("▁", "ab"), m("a", "b"), m("▁", "a")]);
+        // scores that were not kept (all 0): the order of the pieces' ids
+        assert_eq!(crate::gguf_tok::spm_merges(&pieces, &[0.0; 9]), vec![m("▁", "a"), m("a", "b"), m("▁", "ab"), m("▁a", "b")]);
+    }
+
+    /// A SentencePiece GGUF becomes a tokenizer that puts a ▁ before the text, falls back to bytes, adds the beginning-of-sequence token and reads the text back.
+    #[test]
+    fn a_sentencepiece_gguf_becomes_a_tokenizer() {
+        let mut pieces: Vec<String> = ["<unk>", "<s>", "</s>", "▁", "a", "b", "▁a", "ab", "▁ab"].map(String::from).to_vec();
+        pieces.extend((0..=255).map(|b| format!("<0x{b:02X}>")));
+        let v: Vec<&str> = pieces.iter().map(String::as_str).collect();
+        let mut scores = vec![0.0f32, 0.0, 0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0];
+        scores.extend(std::iter::repeat_n(0.0, 256));
+        let mut types = vec![2i32, 3, 3, 1, 1, 1, 1, 1, 1];
+        types.extend(std::iter::repeat_n(6, 256));
+        let mut b = Build::new();
+        b.s("general.architecture", "llama").s("tokenizer.ggml.model", "llama").strings("tokenizer.ggml.tokens", &v).ints("tokenizer.ggml.token_type", &types);
+        let mut sc = 6u32.to_le_bytes().to_vec();
+        sc.extend((scores.len() as u64).to_le_bytes());
+        for x in &scores {
+            sc.extend(x.to_le_bytes());
+        }
+        b.kv("tokenizer.ggml.scores", 9, sc)
+            .u32("tokenizer.ggml.bos_token_id", 1)
+            .u32("tokenizer.ggml.eos_token_id", 2)
+            .u32("tokenizer.ggml.unknown_token_id", 0);
+        let (tok, dir) = tokenizer_of(&b);
+        assert_eq!(tok.encode("ab ab").unwrap(), vec![1, 8, 8]);
+        assert_eq!(tok.encode_with("ab ab", false).unwrap(), vec![8, 8]);
+        // (a byte no piece has is its byte's piece: "é" is the bytes 0xC3 0xA9)
+        assert_eq!(tok.encode_with("a\u{e9}", false).unwrap(), vec![6, 9 + 0xC3, 9 + 0xA9]);
+        assert_eq!(tok.decode(&tok.encode_with("ab \u{e9}a", false).unwrap()).unwrap(), "ab \u{e9}a");
+        // (the text after a special token takes no ▁ of its own)
+        assert_eq!(tok.encode_with("</s>ab", true).unwrap(), vec![1, 2, 7]);
+        let cfg = std::fs::read_to_string(dir.join("tokenizer_config.json")).unwrap();
+        assert!(cfg.contains("\"bos_token\": \"<s>\"") && cfg.contains("\"unk_token\": \"<unk>\""), "{cfg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every pre-tokenizer the table names makes a tokenizer the engine loads (the expressions compile), and one it does not have is refused by name, as is a kind of tokenizer.
+    #[test]
+    fn the_pre_tokenizers_load_and_the_others_are_refused_by_name() {
+        for (names, _, _, _) in crate::gguf_pre::PRE {
+            for name in *names {
+                let mut b = Build::new();
+                b.s("general.architecture", "llama")
+                    .s("tokenizer.ggml.model", "gpt2")
+                    .s("tokenizer.ggml.pre", name)
+                    .strings("tokenizer.ggml.tokens", &["a", "b", "ab"])
+                    .strings("tokenizer.ggml.merges", &["a b"]);
+                let (tok, dir) = tokenizer_of(&b);
+                assert_eq!(tok.encode_with("ab", false).unwrap(), vec![2], "{name}");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+        let refused = |model: &str, pre: &str| {
+            let mut b = Build::new();
+            b.s("general.architecture", "llama")
+                .s("tokenizer.ggml.model", model)
+                .strings("tokenizer.ggml.tokens", &["a"])
+                .strings("tokenizer.ggml.merges", &[]);
+            if !pre.is_empty() {
+                b.s("tokenizer.ggml.pre", pre);
+            }
+            crate::gguf_tok::files(&Gguf::parse(&b.bytes()).unwrap()).unwrap_err()
+        };
+        let e = refused("gpt2", "kimi-k2");
+        assert!(e.code == crate::ui::CANNOT && e.to_string().contains("pre-tokenizer \"kimi-k2\""), "{e}");
+        assert!(refused("bert", "").to_string().contains("tokenizer is \"bert\""));
+        assert!(refused("llama", "").to_string().contains("no scores"));
+    }
+
     #[test]
     fn a_level_after_the_model_is_kept_apart() {
         assert_eq!(split_level("m.gguf:kestrel"), ("m.gguf", ":kestrel"));
@@ -1556,8 +2052,8 @@ mod tests {
         std::fs::write(dir.join("config.json"), "{}").unwrap();
         std::fs::write(dir.join("m.gguf"), "x").unwrap();
         // (a checkpoint directory with a GGUF beside its safetensors is the checkpoint)
-        assert_eq!(resolve(dir.to_str().unwrap(), &|_| {}).unwrap(), None);
-        assert_eq!(resolve("not/a/repo/at/all", &|_| {}).unwrap(), None);
+        assert_eq!(resolve(dir.to_str().unwrap(), &|_| {}, false).unwrap(), None);
+        assert_eq!(resolve("not/a/repo/at/all", &|_| {}, false).unwrap(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

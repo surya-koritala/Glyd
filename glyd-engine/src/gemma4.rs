@@ -538,6 +538,7 @@ pub(crate) struct G4Pf {
     pub(crate) shift: i32,
 }
 
+/// What the development commands need of a Gemma 4 run: the description executor, or the same split over GPUs (`g4check --split`).
 #[cfg(feature = "dev")]
 trait Pass {
     fn reset(&mut self) -> Result<()>;
@@ -637,6 +638,10 @@ fn load_dyn(dir: &Path, ctx: usize, chunk: usize, graph: bool, layout: Option<La
     crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::describe(&c), spec, &crate::dynamic::Opts { ctx, chunk, graph, device: 0, layout })
 }
 
+/// `g4check MODEL REF.json [--layout L] [--ctx N] [--chunk N] [--no-graph] [--split ...]`: the description executor against transformers' reference
+/// (research/gemma4-engine/ref_gemma4.py): each prompt read as a prompt, then its reference continuation fed token by token; at every position from the prompt's last on,
+/// the executor's top token against the reference's, and the reference's top-8 log-probabilities against the executor's for the same tokens (a lower bound of the KL
+/// divergence over them).
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     let dir = Path::new(a.need(1, "MODEL")?);
