@@ -4513,6 +4513,49 @@ pub(crate) mod tests {
         }
     }
 
+    /// The random model that `logitsmodel qwen35 DIR --servable` makes serves a client: its tokenizer reads the template's text and the characters of JSON, its template takes tools, its end token is named, and the
+    /// grammars of a JSON schema and of a forced call (Qwen3.8's XML) compile on its tokens, so that a client gets valid structured output and a valid call from weights that write random characters.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_servable_random_model_takes_grammars() {
+        let dir = std::env::temp_dir().join(format!("glyd-servable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"model_type":"qwen3_5_text","eos_token_id":2,"vocab_size":4096}"#).unwrap();
+        crate::logits::write_serving_files(&dir, include_str!("../tests/fixtures/chat_qwen38_tools.jinja")).unwrap();
+        let tok = Tok::load(&dir).unwrap();
+        let sh = Shared {
+            tok,
+            chat: Chat::load(&dir).unwrap(),
+            name: "tiny".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 4096,
+            thinking: None,
+            refused: &[],
+        };
+        assert!(sh.chat.is_some());
+        // the text: every character known, the markers one token each, the end token the config's
+        let ids = sh.tok.encode_with("<|im_start|>user\nHi {\"a\": [1, 2.5, true]}<|im_end|>", false).unwrap();
+        assert_eq!(ids[0], 1);
+        assert_eq!(*ids.last().unwrap(), 2);
+        assert!(!ids.contains(&0), "{ids:?}");
+        assert_eq!(sh.tok.decode(&ids).unwrap(), "<|im_start|>user\nHi {\"a\": [1, 2.5, true]}<|im_end|>");
+        let chat = |extra: &str| json::parse(&format!(r#"{{"messages":[{{"role":"user","content":"Weather in Paris?"}}],"max_tokens":40{extra}}}"#)).unwrap();
+        let tool = r#","tools":[{"type":"function","function":{"name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"}},"required":["city","days"]}}}]"#;
+        // a plain chat, the thinking left to the template (it opens `<think>`)
+        let p = prepare(&sh, &chat("")).unwrap();
+        assert!(p.pr.ids.len() > 5 && p.pr.in_thinking && p.r.params.constraint.is_none());
+        // a JSON schema: a grammar
+        let p = prepare(&sh, &chat(r#","response_format":{"type":"json_schema","json_schema":{"name":"w","schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}}"#)).unwrap();
+        assert!(p.r.params.constraint.is_some());
+        // a forced call: its opening in the prompt, its arguments a grammar
+        for choice in [r#","tool_choice":{"type":"function","function":{"name":"get_weather"}}"#, r#","tool_choice":"required""#] {
+            let p = prepare(&sh, &chat(&format!("{tool}{choice}"))).unwrap();
+            assert!(p.pr.text.contains("<tool_call>") && p.r.params.constraint.is_some(), "{choice}: {}", p.pr.text);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     const XML_CALL: &str = "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>";
 
     /// What a model whose template writes XML calls is shown: the tools as that template gives them, a call of the conversation and its result in XML, and the opening of a forced call (a named function's through the line after
