@@ -1,4 +1,5 @@
-# Dependency updates, weekly, with the minor and patch updates of an ecosystem in one pull request (a major update is its own). Security updates
+# Dependency updates, monthly, with the minor and patch updates of an ecosystem in one pull request (a major update is its own), and at most two open for each
+# ecosystem: every one runs the whole CI. Security updates
 # are not on this schedule: GitHub opens them as soon as an advisory is published (a repository setting).
 #
 #   cargo          the root workspace (glyd, glyd-store, glyd-gpu, glyd-engine and Starlings' crates, one Cargo.lock) and the two fuzz workspaces that have a lock file of their own
@@ -12,28 +13,32 @@ updates:
   - package-ecosystem: cargo
     directories: ["/", "/fuzz", "/starlings/fuzz"]
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 2
     groups:
       cargo:
         update-types: ["minor", "patch"]
   - package-ecosystem: pip
     directories: ["/bindings/python", "/glyd-gpu-py"]
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 2
     groups:
       pip:
         update-types: ["minor", "patch"]
   - package-ecosystem: gomod
     directory: "/bindings/go"
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 2
     groups:
       gomod:
         update-types: ["minor", "patch"]
   - package-ecosystem: github-actions
     directories: ["/", "/.github/actions/*"]
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 2
     groups:
       github-actions:
         update-types: ["minor", "patch"]

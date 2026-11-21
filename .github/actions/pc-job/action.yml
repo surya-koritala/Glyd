@@ -2,6 +2,13 @@ name: A clean job on the PC
 description: >-
   On the self-hosted runner (the owner's PC, label glyd-pc), this job's own home, tool cache, cache and temp folder, which the runner removes
   when the job ends: GitHub's machines start every job clean, and a job here must not see another's Pythons, packages or files in the PC's home.
+inputs:
+  keep-target:
+    description: >-
+      A name (codec, lint, engine, ...): the job's target/ is this runner's build directory of that name, kept from job to job (a runner runs one job at a time), so a
+      build here starts from the last one instead of from GitHub's cache. One name for each kind of build, as their flags differ. Only for this repository's branches (a
+      fork's pull request never runs on the PC). Empty: target/ is the checkout's own.
+    default: ''
 runs:
   using: composite
   steps:
@@ -19,3 +26,14 @@ runs:
           echo "CARGO_BUILD_JOBS=8"
           echo "RUST_TEST_THREADS=8"
         } >> "$GITHUB_ENV"
+    - if: runner.environment == 'self-hosted' && inputs.keep-target != ''
+      shell: bash
+      env:
+        NAME: ${{ inputs.keep-target }}
+      run: |
+        # (outside the checkout, which git clean empties; past 15 GB it starts over and the next build makes what it needs)
+        keep="$(dirname "$RUNNER_WORKSPACE")/_glyd-target/$NAME"
+        mkdir -p "$keep"
+        if [ "$(du -s --block-size=1G "$keep" | cut -f1)" -gt 15 ]; then rm -rf "$keep"; mkdir -p "$keep"; fi
+        rm -rf target && ln -s "$keep" target
+        echo "target/ is $keep ($(du -sh "$keep" | cut -f1))"
