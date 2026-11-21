@@ -47,6 +47,8 @@ runs:
         subject-checksums: ${{ inputs.dir }}/${{ inputs.sums }}
         sbom-path: ${{ inputs.dir }}/${{ inputs.sbom }}
     - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      with:
+        cosign-release: v3.1.4 # (install.sh pins the same: the bundle format and the verifier go together)
     - name: Keyless signatures of the tarballs and the list
       shell: bash
       env:

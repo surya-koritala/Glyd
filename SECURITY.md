@@ -49,6 +49,7 @@ credited in the advisory unless they ask not to be.
   stay on for a loopback `--host` too. An address that is not loopback (`--host 0.0.0.0`) does not start without an API key
   unless `--insecure-no-auth` says an open server is meant; the Origin check stays on there too, and `--allowed-hosts`
   limits the names a request may use. The service (`glyd service`) and the `--ollama-port` listener follow the same rules.
+- CI scans a default install for a listener that is not on this computer's own address: the service in `glyd-engine/tests/listeners.rs` on every push, and a default `glyd serve` with its `--ollama-port` listener in the `gpu` job (`scripts/listener_scan.py`, `tests/ops_check.py`).
 - Image URLs in a request are fetched only from public addresses: the address a name resolves to is checked where the
   connection is made, so a name that answers a public address first and a private one next (DNS rebinding) is refused.
 - An API key (`GLYD_API_KEY`, or `--api-key`) guards the `/v1` routes. It is compared as SHA-256 digests in constant

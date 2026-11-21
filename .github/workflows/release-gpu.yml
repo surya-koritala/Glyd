@@ -595,9 +595,10 @@ jobs:
   sign-engine:
     # Provenance, an SBOM and keyless signatures of the engine bundles that attach-engine puts on the release (.github/actions/sign-release): with id-token: write besides `publish`;
     # it builds nothing and runs pinned actions on the bundles as they are. docs/verify-releases.md says how to check them.
+    # (on every run, a build-only dispatch included: that is the dry run of the signing, whose files are the run's artifacts)
     # The Windows zip (engine-windows, artifact engine-bundle-windows-x86_64) is signed with them where that job succeeded; its failure does not stop the Linux bundles'.
     needs: [plan, engine-bundle, engine-windows]
-    if: ${{ always() && needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v') && needs.engine-bundle.result == 'success' }}
+    if: ${{ always() && needs.engine-bundle.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

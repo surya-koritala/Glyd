@@ -195,6 +195,57 @@ fn split_layers(layers: usize, parts: usize, least: usize, room: &dyn Fn(usize, 
     fit(lo)
 }
 
+/// The plan of a Condor load: the always-on matrices and the places of each part's cache are the weights on the GPUs, the context's keys and values, the first prompt's
+/// and a chunk's scratch are the cache and the work, and what is kept free is the reserve (`plan::CONDOR_*`; the pack's experts are in the computer's memory).
+#[allow(clippy::too_many_arguments)]
+fn condor_plan(
+    layout: Layout,
+    always_gib: f64,
+    parts: &[(i32, (usize, usize), usize, f64)],
+    ctx: usize,
+    chunk: usize,
+    stream_gib: f64,
+    headroom_gib: f64,
+    free: f64,
+    host_bytes: u64,
+    experts: usize,
+) -> crate::plan::LoadPlan {
+    use crate::plan::{CONDOR_CHUNK_GIB_PER_ROW, CONDOR_FIRST_PROMPT_GIB, CONDOR_KV_GIB_PER_TOKEN, CONDOR_MARGIN_GIB};
+    let gib = (1u64 << 30) as f64;
+    let places: u64 = parts.iter().map(|p| (p.3 * 1e9) as u64).sum();
+    let gpu_bytes = (always_gib * gib) as u64 + places;
+    let names: Vec<String> = parts.iter().map(|p| crate::dev::Dev::probe(p.0).map_or_else(|_| format!("GPU {}", p.0), |g| g.name)).collect();
+    crate::plan::LoadPlan {
+        kind: crate::plan::Kind::Condor,
+        family: "Qwen3.8-Flash-Next",
+        level: crate::levels::name_of(layout),
+        layout,
+        context: ctx,
+        users: 1,
+        chunk,
+        weights: gpu_bytes + host_bytes,
+        bf16: 0,
+        kv: (ctx as f64 * CONDOR_KV_GIB_PER_TOKEN * gib) as u64,
+        work: ((CONDOR_FIRST_PROMPT_GIB + chunk as f64 * CONDOR_CHUNK_GIB_PER_ROW + stream_gib) * gib) as u64,
+        draft: 0,
+        reserve: ((CONDOR_MARGIN_GIB + headroom_gib) * gib) as u64,
+        free: free as u64,
+        gpu: names.join(", "),
+        experts: None,
+        spread: Some(crate::plan::Spread {
+            cuts: parts.iter().skip(1).map(|p| (p.1).0).collect(),
+            devices: parts.iter().map(|p| p.0).collect(),
+            across: false,
+            coded: false,
+            twelve: false,
+            places: parts.iter().map(|p| p.2).collect(),
+            experts_per_layer: experts,
+            host_bytes,
+            gpu_bytes,
+        }),
+    }
+}
+
 /// The engine with its experts in the cache, as `qwenserve` loads it (and the development commands that run the whole model).
 pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)> {
     // (the always-on matrices at four bits by default: gated on the reference's acceptance and GSM8K as i6 was, and a token's bytes fewer)
@@ -264,11 +315,7 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     };
     // (the always-on matrices at the layout and what the first calls make: measured at i6 with 0.28 GiB left free after the load, i5 and i4 short of that; i6 0.15 more since the drafts' graphs
     // ran out at 0.11-0.15 GiB free on the 4080 (2026-10-19: a trellis pack's two more places a layer were enough to fail cuGraphInstantiate))
-    let always = match layout {
-        Layout::Int4 => 2.6,
-        Layout::Int5 => 3.05,
-        _ => 3.55,
-    } + if hi.is_some_and(|h| h != layout) { 0.35 } else { 0.0 };
+    let always = crate::plan::condor_always_gib(layout, hi.is_some_and(|h| h != layout));
     let place = layers.iter().map(|&l| pack.place_bytes(l)).max().unwrap_or(1);
     // (a prompt layer by layer, `--whole` rows at most (0: in chunks through all the layers): each row's streams, position, n-gram row and stream weights, and the experts' set; the streaming prefill's ring and buffers)
     // (a prompt layer by layer by default, up to 32,768 rows a part: 32K tokens in under 10 s; --whole 0 for chunks through all the layers)
@@ -282,9 +329,12 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     // (measured on the 4080 at chunk 1024, ctx 33000, i6: 1.5 GiB was left free with 1.2 more reserved than this; chunk 128 against 1024: 0.28 GiB more left free after a prompt, so a row of the chunk
     // holds 0.335 MB and the rest of the old 1.2 GB is the room the first prompt and decode use)
     let headroom = a.num("headroom-gb", 0.0f64)?;
-    let reserve = always + 0.886 + chunk as f64 * 0.000335 + ctx as f64 * 28e-6 + 0.3 + stream + headroom;
+    use crate::plan::{
+        CONDOR_CHUNK_GIB_PER_ROW as PER_ROW, CONDOR_FIRST_PROMPT_GIB as FIRST, CONDOR_KV_GIB_PER_TOKEN as PER_TOKEN, CONDOR_MARGIN_GIB as MARGIN,
+    };
+    let reserve = always + FIRST + chunk as f64 * PER_ROW + ctx as f64 * PER_TOKEN + MARGIN + stream + headroom;
     // (a part's own of it, where the model is split over GPUs: the scratch of a chunk and the room the first prompt and decode use)
-    let fixed = 0.886 + chunk as f64 * 0.000335 + 0.3 + stream + headroom;
+    let fixed = FIRST + chunk as f64 * PER_ROW + MARGIN + stream + headroom;
     // (the MTP head by default, --no-mtp for none)
     let mtp = !a.has("no-mtp") && c.mtp_layers > 0 && pack.has(c.layers);
     let per_gb = |gb: f64, n: usize| ((gb * 1e9) / (n as f64 * place as f64)) as usize;
@@ -310,7 +360,7 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
             frees[p]
                 - fixed
                 - if gpus[..p].contains(&gpus[p]) { 0.25 } else { 0.0 }
-                - (always - head + ctx as f64 * 28e-6) * n as f64 / n_all
+                - (always - head + ctx as f64 * PER_TOKEN) * n as f64 / n_all
                 - if p == last { head } else { 0.0 }
         };
         let places = |p: usize, n: usize| room_gib(p, n).max(0.5) * gib / ((n + (p == last && mtp) as usize) as f64 * place as f64);
@@ -351,6 +401,10 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     };
     let (gb, slots) = (parts.iter().map(|p| p.3).sum::<f64>(), parts.iter().map(|p| p.2).min().unwrap_or(0));
     crate::monitor::places(gb, slots);
+    // the plan this load takes, in the one plan type (src/plan.rs): what the formulas above left each GPU for places, with their terms as the plan's parts
+    let start_free = if gpus.len() == 1 { free * gib } else { frees.iter().sum::<f64>() * gib };
+    let plan = condor_plan(layout, always, &parts, ctx, chunk, stream, headroom, start_free, pack.expert_bytes() as u64, c.experts);
+    log(&format!("Plan: {}", plan.text()));
     // (the host's experts for the misses by default, the copies on a thread of their own: --mode, --no-async-copies)
     let mode = a.flag("mode").map_or(Some(Mode::Cpu), Mode::parse).ok_or_else(|| Error("--mode: copy, cpu, split or auto".into()))?;
     let od = Offload::default();
@@ -445,6 +499,16 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     while let Some(x) = at {
         weights += x.w.bytes;
         at = x.front.as_deref();
+    }
+    // (what the load took of the GPUs against the plan: the numbers the planner is calibrated on, remembered for `fit`)
+    let mut distinct = gpus.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    let after: u64 = distinct.iter().filter_map(|&g| crate::dev::Dev::probe(g).ok()).map(|g| g.free).sum();
+    let used = (start_free as u64).saturating_sub(after);
+    crate::plan::remember_in(&crate::store::cache_root(), &snap.to_string_lossy(), &plan, weights as u64, used);
+    if let Some(path) = crate::tune!("GLYD_PLAN_REPORT") {
+        let _ = std::fs::write(path, plan.report(&snap.to_string_lossy(), weights as u64, used));
     }
     let always = weights.saturating_sub(caches.commons.iter().map(|c| c.places_bytes.get()).sum()) as f64;
     let mean = pack.expert_bytes() as f64 / ((layers.len() + mtp as usize) * c.experts).max(1) as f64;
@@ -1574,5 +1638,27 @@ mod tests {
         assert_eq!(split_layers(48, 3, 2, &room(vec![12000.0, 12000.0, 12000.0])), Some(vec![16, 32]));
         assert!(split_layers(48, 2, 2, &room(vec![12000.0, 10000.0])).is_some_and(|c| c[0] > 24));
         assert_eq!(split_layers(48, 2, 40, &room(vec![1000.0, 12000.0])), None);
+    }
+
+    /// Condor's memory terms are the plan's: on a GPU of `free` GiB the always-on matrices, the places the formulas leave, the cache of the context, the work and the
+    /// margin add up to the free memory (the places are what is left after the others), as one `LoadPlan`; the constants are the ones the formulas read.
+    #[test]
+    fn condor_is_one_plan_with_the_plans_constants() {
+        use crate::plan::{condor_always_gib, CONDOR_CHUNK_GIB_PER_ROW, CONDOR_FIRST_PROMPT_GIB, CONDOR_KV_GIB_PER_TOKEN, CONDOR_MARGIN_GIB};
+        let gib = (1u64 << 30) as f64;
+        // (the RTX 4080 SUPER's run: four-bit matrices, the attention and the head at five, a context of 33,536, a chunk of 128)
+        let (free, ctx, chunk) = (15.2f64, 33536usize, 128usize);
+        let always = condor_always_gib(Layout::Int4, true);
+        assert_eq!(always, 2.6 + 0.35);
+        let reserve = always + CONDOR_FIRST_PROMPT_GIB + chunk as f64 * CONDOR_CHUNK_GIB_PER_ROW + ctx as f64 * CONDOR_KV_GIB_PER_TOKEN + CONDOR_MARGIN_GIB;
+        let gb = (free - reserve) * gib / 1e9;
+        let parts = vec![(0, (0, 48), 130usize, gb)];
+        let p = condor_plan(Layout::Int4, always, &parts, ctx, chunk, 0.0, 0.0, free * gib, 60 << 30, 512);
+        assert_eq!((p.kind, p.family, p.level, p.context, p.users), (crate::plan::Kind::Condor, "Qwen3.8-Flash-Next", "wren", ctx, 1));
+        assert!((p.gpu_total() as f64 - free * gib).abs() < (1 << 20) as f64, "{} against {}", p.gpu_total(), free * gib);
+        let sp = p.spread.as_ref().unwrap();
+        assert_eq!((sp.devices.clone(), sp.places.clone(), sp.host_bytes, sp.experts_per_layer), (vec![0], vec![130], 60 << 30, 512));
+        assert_eq!(p.weights, sp.gpu_bytes + (60 << 30));
+        assert!(p.text().contains("tokens of context") && p.json("m").contains("glyd-plan/1"));
     }
 }

@@ -253,8 +253,9 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
 - A reply can be held to a grammar, on every model the server runs: `response_format` (`json_object`, `json_schema`; the schema holds
   whether or not `strict` is set), vLLM's `structured_outputs` (`json`, `regex`, `choice`, `grammar`, `json_object`) and its
   `guided_json`, `guided_regex`, `guided_choice` and `guided_grammar` (a Lark grammar, or llguidance's grammar list as JSON), and a
-  forced tool call (`tool_choice` naming a function, or `required`) for the models whose calls are hermes-style JSON or XML
-  (Qwen, Kimi-style hermes, Nemotron): the arguments follow the tool's schema. The tokens the grammar does not allow are taken out of
+  forced tool call (`tool_choice` naming a function, or `required`) in the call formats of Qwen, Nemotron, GLM and DeepSeek-V4 (hermes
+  JSON, XML, GLM's `<arg_key>` and DSML): the function is one of the request's and the arguments follow its schema. Kimi's, Gemma's
+  and Muse's calls are in their own markup and are opened by the prompt only. The tokens the grammar does not allow are taken out of
   each step's row of logits (llguidance), so the reply is valid or ends with `finish_reason` `length`. A schema or grammar that cannot
   be compiled, and two forms at once, are 400 in words. A request with none is sampled as before. `guided_whitespace_pattern` is refused.
 - On a level's engine that runs one request at a time (`concurrency: 1`: a model with a draft model, or split across GPUs, and the
