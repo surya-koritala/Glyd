@@ -1527,6 +1527,24 @@ mod tests {
         assert!(!pg.options.iter().any(|o| matches!(o.placement, Some(Placement::ExpertsInRam { .. }))), "{pg:?}");
     }
 
+    /// R12: DeepSeek-V4 at penguin keeps its FP4 experts in RAM with a cache of the busiest on the GPU where the GPU does not hold them all and the computer's memory does; with less memory than its experts it is refused at
+    /// penguin (the disk tier is the hummingbird level's) and runs at hummingbird with the rest on the disk.
+    #[test]
+    fn deepseek_v4_keeps_its_fp4_experts_in_ram_at_penguin() {
+        let v4 = r#"{"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4", "hidden_size": 4096, "num_hidden_layers": 43, "num_attention_heads": 64,
+            "n_routed_experts": 256, "num_experts_per_tok": 6, "moe_intermediate_size": 2048, "vocab_size": 129280, "expert_dtype": "fp4", "quantization_config": {"quant_method": "fp8"}}"#;
+        let sh = Shape::from_config(v4).unwrap();
+        let fam = crate::support::row(crate::support::Family::DeepSeekV4);
+        let mut m = Machine::preset("rtx4090").unwrap();
+        m.ram_free = 256 << 30;
+        let p = plan(&sh, &m, Ask { level: Some("penguin"), family: Some(fam), ..Default::default() });
+        assert!(matches!(chosen(&p).placement, Some(Placement::ExpertsInRam { disk: 0, .. })), "{p:?}");
+        m.ram_free = 96 << 30;
+        assert!(plan(&sh, &m, Ask { level: Some("penguin"), family: Some(fam), ..Default::default() }).chosen.is_none());
+        let hb = plan(&sh, &m, Ask { level: Some("hummingbird"), family: Some(fam), ..Default::default() });
+        assert!(matches!(chosen(&hb).placement, Some(Placement::ExpertsInRam { disk, .. }) if disk > 0), "{hb:?}");
+    }
+
     /// A config.json that says a number of layers no model has was an allocation of that many entries (a panic, or the process killed for its memory), and is an error.
     #[test]
     fn a_config_with_a_billion_layers_is_an_error() {

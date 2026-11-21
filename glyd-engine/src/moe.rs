@@ -602,6 +602,13 @@ impl HbCache {
     }
 }
 
+/// A layer's experts in the expert cache (src/offload.rs `ExpertStore`, docs/design/runtime.md §6): the store, the layer's number there, and the GPU the layer runs on. The layer's stacks are the cache's places.
+pub struct ExpertCache {
+    pub store: std::rc::Rc<crate::offload::ExpertStore>,
+    pub layer: usize,
+    pub ordinal: i32,
+}
+
 /// How a hummingbird layer in the cache sums its pairs (`MoeLayer::hb_cached`): linear in the experts' outputs with the router's weights (the families' `experts_via`), with the weights in the activation (DeepSeek-V4's release, `act_w`:
 /// `ones` fp32 [t k] for the sum), or each expert's output normed before it is weighed (Muse Spark: the input scale `post_w`, `eps`, the pairs' rows `inv`).
 #[derive(Clone, Copy, Debug)]
@@ -625,6 +632,8 @@ pub struct MoeLayer {
     pub hb: Option<HbgExperts>,
     /// Where `hb`'s experts are in the expert cache's places, the computer's memory holding them all (or some, the rest read from the packed directory): the store and the layer's groups there (`with_hb_cache`).
     pub hb_cache: Option<HbCache>,
+    /// Where the experts of the stacks (`ExpertStack::pooled`: the cache's places) are in the expert cache, every one in the computer's memory: the store, the layer's number there, the GPU (`with_cache`; R12, #232).
+    pub cache: Option<ExpertCache>,
 }
 
 impl MoeLayer {
@@ -672,7 +681,7 @@ impl MoeLayer {
                 return err("the shared expert's gate is smaller than its input");
             }
         }
-        Ok(MoeLayer { cfg, w, shared, f8: None, shared8: None, hb: None, hb_cache: None })
+        Ok(MoeLayer { cfg, w, shared, f8: None, shared8: None, hb: None, hb_cache: None, cache: None })
     }
 
     /// The shared expert's matrices in the FP8 format (`shared8`): the shapes of `shared`'s, which holds them alone.
@@ -778,9 +787,42 @@ impl MoeLayer {
         Ok(self)
     }
 
-    /// Whether a call reads the router's choices on the host (the hummingbird experts in the expert cache): no graph captures it.
+    /// The layer with its experts in the expert cache (R12, #232): its stacks are places (`ExpertStack::pooled`) the store copies the experts the router asks for into, every expert being in the computer's memory (or on
+    /// the disk); each call reads the router's choices on the host, so a step with it is not captured in a graph. The families' forwards (`experts_via`, `forward_release`, `forward_muse`) run their products over the places.
+    pub fn with_cache(mut self, cache: ExpertCache) -> Result<MoeLayer> {
+        if self.hb.is_some() || self.f8.is_some() || self.w.up.slots >= self.cfg.experts || self.w.up.slots == 0 {
+            return err(format!(
+                "an expert cache for a layer whose experts are not in places of its own ({} places for {} experts{})",
+                self.w.up.slots,
+                self.cfg.experts,
+                if self.f8.is_some() { ", FP8 as released" } else { "" }
+            ));
+        }
+        self.cache = Some(cache);
+        Ok(self)
+    }
+
+    /// Whether a call reads the router's choices on the host (the experts in the expert cache): no graph captures it.
     pub fn reads_host(&self) -> bool {
-        self.hb_cache.is_some()
+        self.hb_cache.is_some() || self.cache.is_some()
+    }
+
+    /// The call of the expert cache for `t` tokens whose choices the router made (`ids`, `wts` of the scratch; `z` the experts' input as the host reads it): the store reads the choices, copies the misses into places (in waves
+    /// where a call has more experts than places) or keeps them for the host where it has a half, `products` runs the products over the places of a wave (`way`, the waves), and `experts_sum` adds the host's sums.
+    ///
+    /// # Safety
+    /// As `route`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn cached(&self, sc: &MoeScratch, s: Stream, z: u64, t: usize, y: u64, products: &mut dyn FnMut(usize) -> Result<()>) -> Result<()> {
+        let c = self.cache.as_ref().ok_or_else(|| crate::ffi::Error("no expert cache".into()))?;
+        let call = crate::offload::Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: t, pairs: t * self.cfg.router.top_k };
+        let at = crate::offload::At { ordinal: c.ordinal, stream: s };
+        c.store.run_at(c.layer, at, &call, &mut |stage, _, waves, hy| match stage {
+            crate::offload::Stage::Products if hy.gpu => products(waves),
+            // (every pair the host's: the sum is its sums alone)
+            crate::offload::Stage::Products => crate::dev::memset_async(y, 0, t * self.cfg.hidden * 2, s),
+            crate::offload::Stage::Sum => self.experts_sum(sc, s, t, y, hy.ids, hy.extra),
+        })
     }
 
     /// Device bytes of the layer's weights.
@@ -846,6 +888,10 @@ impl MoeLayer {
     pub unsafe fn experts_via(&self, lib: &Lib, sc: &MoeScratch, s: Stream, x: u64, t: usize, y: u64, way: Option<u64>, calls: usize) -> Result<()> {
         if self.hb_cache.is_some() && way.is_none() && calls <= 1 {
             return self.hb_cached(lib, sc, s, x, t, y, HbSum::Linear);
+        }
+        if self.cache.is_some() && way.is_none() && calls <= 1 {
+            self.check_tokens(sc, t)?;
+            return self.cached(sc, s, x, t, y, &mut |waves| self.experts_products(lib, sc, s, x, t, y, Some(sc.way.ptr), waves));
         }
         self.experts_products(lib, sc, s, x, t, y, way, calls)?;
         self.experts_sum(sc, s, t, y, 0, 0)
@@ -1135,6 +1181,34 @@ impl MoeLayer {
         if self.hb_cache.is_some() {
             return self.hb_cached(lib, sc, s, x, t, y, HbSum::Muse { post_w, eps, inv });
         }
+        if let Some(cache) = &self.cache {
+            // (in calls whose pairs are no more than the places: each one's experts in one wave, every row of the sum the call's own)
+            let tn_max = (self.w.up.slots / k).max(1);
+            for t0 in (0..t).step_by(tn_max) {
+                let tn = (t - t0).min(tn_max);
+                let (ids, wts, xs, ys) =
+                    (sc.ids.ptr + (t0 * k * 8) as u64, sc.wts.ptr + (t0 * k * 4) as u64, x + (t0 * c.hidden * 2) as u64, y + (t0 * c.hidden * 2) as u64);
+                let pairs = tn * k;
+                let call = crate::offload::Call { ids, wts, z: xs, way: sc.way.ptr, part: sc.cpu.ptr, tokens: tn, pairs };
+                let at = crate::offload::At { ordinal: cache.ordinal, stream: s };
+                cache.store.run_at(cache.layer, at, &call, &mut |stage, _, waves, hy| {
+                    if stage != crate::offload::Stage::Products {
+                        return Ok(());
+                    }
+                    if waves > 1 || !hy.gpu || hy.ids != 0 {
+                        return err("Muse Spark's experts in the cache: every pair of a call on the GPU in one wave");
+                    }
+                    let (ei, ti, ki) = (e as i64, tn as i64, k as i64);
+                    lib.moe_way(sc.way.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
+                    moe_tp(lib, &self.w.up, ei, xs, ti, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+                    launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
+                    moe_tp(lib, down, ei, sc.h.ptr, ti, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+                    launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
+                    launch!(sc.k.mu_sum, [tn as u32, 1, 1], [256, 1, 1], s; sc.a.ptr, inv, ids, wts, post_w, ys, k as i32, c.hidden as i32, eps)
+                })?;
+            }
+            return Ok(());
+        }
         let (ei, tt, ki, pairs) = (e as i64, t as i64, k as i64, t * k);
         lib.moe_way(sc.ids.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
         if let Some(hb) = &self.hb {
@@ -1205,6 +1279,15 @@ impl MoeLayer {
         crate::tmark!(s, "moe: router");
         if self.hb_cache.is_some() {
             self.hb_cached(lib, sc, s, hq, t, y, HbSum::Release { ones, lim, fp8 })?;
+        } else if self.cache.is_some() {
+            // (the expert cache: the products over the places of each wave, the weights in the activation, the sum's pairs the call's)
+            self.cached(sc, s, hq, t, y, &mut |waves| {
+                let (ei, tt, ki, pairs) = (e as i64, t as i64, k as i64, t * k);
+                lib.moe_way(sc.way.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
+                moe_tp(lib, &self.w.up, ei, hq, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+                launch!(sc.k.act_w, [pairs as u32, (c.inter as u32 / 128).div_ceil(4), 1], [128, 1, 1], s; sc.a.ptr, sc.h.ptr, sc.plan.ptr, sc.wts.ptr, e as i32, c.inter as i32, lim, fp8 as i32)?;
+                moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, ones, if waves > 1 { sc.ids.ptr } else { sc.way.ptr }, y, t, sc, s)
+            })?;
         } else {
             let (ei, tt, ki, pairs) = (e as i64, t as i64, k as i64, t * k);
             lib.moe_way(sc.ids.ptr, pairs as i64, ei, sc.plan.ptr, s)?;

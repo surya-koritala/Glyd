@@ -581,9 +581,9 @@ pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: 
     )
 }
 
-/// A hummingbird directory (src/hb_pack.rs) of any family of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says (src/hbg_store.rs: places on its GPU, the
-/// computer's memory, the disk).
-pub fn open_hb_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
+/// A model of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says: a hummingbird directory's (src/hbg_store.rs: places on its GPU, the computer's memory, the disk),
+/// or the release's where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4).
+pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
     let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
     let (nl, eos) = match family(&text) {
         Some("Muse Spark") => {

@@ -406,6 +406,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         let act = Act::SwiGlu { limit: (c.swiglu_limit > 0.0).then_some(c.swiglu_limit) };
         let hbx =
             crate::hbg_store::hb_layer(hb.as_ref(), l, tpr.is_some(), caching.zip(store.as_ref()), act, crate::cpu_hbg::Finish::Rotated, dev.ordinal, c.top_k)?;
+        let mut tiered = None;
         let (up, down) = if hbx.is_some() {
             (ExpertStack::shape_only(e, 2 * i, d), ExpertStack::shape_only(e, d, i))
         } else {
@@ -476,13 +477,26 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
                     if tpr.is_some() { " (across GPUs, the five-bit runs are not taken)" } else { "" }
                 ));
             }
-            let mut up = ExpertStack::upload(&Joined::of(&ups.iter().collect::<Vec<_>>())?)?;
-            let mut down = ExpertStack::upload(&Joined::of(&downs.iter().collect::<Vec<_>>())?)?;
+            let (ju, jd) = (Joined::of(&ups.iter().collect::<Vec<_>>())?, Joined::of(&downs.iter().collect::<Vec<_>>())?);
             drop((ups, downs));
-            if let Some((_, n)) = tpr {
-                (up.tp_rows, down.tp_rows) = (up.rows * n, down.rows * n);
+            match caching.zip(store.as_ref()) {
+                // (the expert cache, R12: places for `places` experts a layer, every expert in the computer's memory, the misses copied in)
+                Some((cg, st)) => {
+                    if tpr.is_some() || cg.ram.is_some() {
+                        return err("DeepSeek-V4's experts in the expert cache: on one GPU a stage, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
+                    }
+                    let (u, d, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, st, l, dev.ordinal, None)?;
+                    tiered = Some(cache);
+                    (u, d)
+                }
+                None => {
+                    let (mut up, mut down) = (ExpertStack::upload(&ju)?, ExpertStack::upload(&jd)?);
+                    if let Some((_, n)) = tpr {
+                        (up.tp_rows, down.tp_rows) = (up.rows * n, down.rows * n);
+                    }
+                    (up, down)
+                }
             }
-            (up, down)
         };
         // the shared expert: as released in the FP8 format where the level holds FP8 so (its gate and up stacked, its down), else the bf16 it decodes to, packed
         let shared8 = if exact8 {
@@ -553,7 +567,10 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         let block = moe.len();
         let layer = match hbx {
             Some(x) => x.into_layer(cfg, w.router, w.bias, None, Some(shared))?,
-            None => MoeLayer::new(cfg, w, Some(shared))?,
+            None => match tiered {
+                Some(cache) => MoeLayer::new(cfg, w, Some(shared))?.with_cache(cache)?,
+                None => MoeLayer::new(cfg, w, Some(shared))?,
+            },
         };
         moe.push(Box::new(V4Moe(match shared8 {
             Some((u, dn)) => layer.with_shared8(u, dn)?,

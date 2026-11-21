@@ -2394,14 +2394,21 @@ impl ExpertStore {
     /// # Safety
     /// The addresses of `call` are live device buffers of the sizes it names; the engine's stream is `dev`'s, and `body` queues work on it alone.
     pub unsafe fn run(&self, layer: usize, dev: &Dev, call: &Call, body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>) -> Result<()> {
-        self.run_early(layer, dev, call, &mut || Ok(()), body)
+        self.run_early_at(layer, At::of(dev), call, &mut || Ok(()), body)
     }
 
-    /// `run`, with `early` given the engine's stream right after the router's choices have been asked for and before the host waits for them: the GPU work of the layer that does not need the choices (the shared expert)
-    /// is queued there and runs while the host reads the choices and plans, instead of before the host's wait.
+    /// `run` on the GPU `at` (a layer that holds no `Dev`: `moe::MoeLayer`).
     ///
     /// # Safety
-    /// As `run`; `early` queues work on the engine's stream alone and does not use the store.
+    /// As `run`.
+    pub unsafe fn run_at(&self, layer: usize, at: At, call: &Call, body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>) -> Result<()> {
+        self.run_early_at(layer, at, call, &mut || Ok(()), body)
+    }
+
+    /// `run_early_at` on a `Dev`.
+    ///
+    /// # Safety
+    /// As `run`.
     pub unsafe fn run_early(
         &self,
         layer: usize,
@@ -2410,7 +2417,23 @@ impl ExpertStore {
         early: &mut dyn FnMut() -> Result<()>,
         body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
     ) -> Result<()> {
-        let s = dev.stream;
+        self.run_early_at(layer, At::of(dev), call, early, body)
+    }
+
+    /// `run`, with `early` given the engine's stream right after the router's choices have been asked for and before the host waits for them: the GPU work of the layer that does not need the choices (the shared expert)
+    /// is queued there and runs while the host reads the choices and plans, instead of before the host's wait.
+    ///
+    /// # Safety
+    /// As `run`; `early` queues work on the engine's stream alone and does not use the store.
+    pub unsafe fn run_early_at(
+        &self,
+        layer: usize,
+        at: At,
+        call: &Call,
+        early: &mut dyn FnMut() -> Result<()>,
+        body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
+    ) -> Result<()> {
+        let s = at.stream;
         let pairs = call.pairs;
         let (needed, host_ids, host_wts, hybrid) = {
             let mut guard = self.inner.borrow_mut();
@@ -2424,7 +2447,7 @@ impl ExpertStore {
                 && ly.cpu.as_ref().is_some_and(|c| matches!(c.half, HostHalf::Rows(_) | HostHalf::Cb2(..) | HostHalf::Fp4 { .. }))
                 && (1..=CPU_TOKENS).contains(&call.tokens)
                 && pairs.is_multiple_of(call.tokens);
-            cuda.reserve(pairs, if hybrid { call.tokens * hidden * 2 } else { 0 }, if hybrid { call.tokens * hidden * 4 } else { 0 }, At::of(dev))?;
+            cuda.reserve(pairs, if hybrid { call.tokens * hidden * 2 } else { 0 }, if hybrid { call.tokens * hidden * 4 } else { 0 }, at)?;
             crate::tmark!(s, "store: choices requested");
             copy_d2h_async(cuda.ids.ptr, call.ids, pairs * 8, s)?;
             if hybrid {
@@ -2455,9 +2478,9 @@ impl ExpertStore {
                     && matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Cb2(..)))
             };
             if overlap {
-                return self.run_hybrid_overlap(layer, dev, call, &needed, &host_ids, &host_wts, false, body);
+                return self.run_hybrid_overlap(layer, at, call, &needed, &host_ids, &host_wts, false, body);
             }
-            return self.run_hybrid(layer, dev, call, &needed, &host_ids, &host_wts, body);
+            return self.run_hybrid(layer, at, call, &needed, &host_ids, &host_wts, body);
         }
         let waves = self.inner.borrow().layers[layer].as_ref().expect("a layer").cache.waves(&needed);
         for (w, wave) in waves.iter().enumerate() {
@@ -2466,7 +2489,7 @@ impl ExpertStore {
                 let inner = &mut *guard;
                 if w > 0 {
                     // (the last wave's places and the host buffer of its pairs' places are free once the engine's stream has run it)
-                    dev.sync()?;
+                    at.sync()?;
                 }
                 let cuda = inner.cuda.as_mut().expect("the copy stream");
                 let ly = inner.layers[layer].as_mut().expect("a layer");
@@ -2512,7 +2535,7 @@ impl ExpertStore {
     unsafe fn run_hybrid_overlap(
         &self,
         layer: usize,
-        dev: &Dev,
+        at: At,
         call: &Call,
         needed: &[u16],
         host_ids: &[i64],
@@ -2521,7 +2544,7 @@ impl ExpertStore {
         body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
     ) -> Result<()> {
         use crate::cpu_cb::{GlmExpert, GlmPair};
-        let s = dev.stream;
+        let s = at.stream;
         let (pairs, k) = (call.pairs, call.pairs / call.tokens);
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;
@@ -2745,7 +2768,7 @@ impl ExpertStore {
             (distinct(&host_ids, ly.cache.experts()), host_ids, host_wts)
         };
         early()?;
-        self.run_hybrid_overlap(layer, dev, call, &needed, &host_ids, &host_wts, true, &mut |stage, _, _, hy| match stage {
+        self.run_hybrid_overlap(layer, At::of(dev), call, &needed, &host_ids, &host_wts, true, &mut |stage, _, _, hy| match stage {
             Stage::Products => products(hy),
             Stage::Sum => Ok(()),
         })
@@ -2947,14 +2970,14 @@ impl ExpertStore {
     unsafe fn run_hybrid(
         &self,
         layer: usize,
-        dev: &Dev,
+        at: At,
         call: &Call,
         needed: &[u16],
         host_ids: &[i64],
         host_wts: &[f32],
         body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
     ) -> Result<()> {
-        let s = dev.stream;
+        let s = at.stream;
         let (pairs, k) = (call.pairs, call.pairs / call.tokens);
         let dropped;
         // the plan: the experts that get a place (the hits, and the misses `plan` copies), the pairs of the others, the misses worth a place behind the call

@@ -157,6 +157,15 @@ jobs:
           GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 16 --level penguin
           # (paged keys and values run out: 8 users on 24 blocks a group, each sequence sent back gives its blocks back and runs again; every reply comes, none fails)
           GLYD_ENGINE_PAGES=24 "$E" usercheck gemma4 --users 8 --level penguin
+      - name: The expert cache against every expert on the GPU (R12 and hummingbird; a random DeepSeek-V4 and its hummingbird directory; tiering.rs tiercheck)
+        run: |
+          # (copy mode: the products over the cache's places are the resident layer's, so every logit is the same bits; the host's pairs are printed, not held to bits)
+          "$E" dsv4random /tmp/v4-tier
+          "$E" tiercheck /tmp/v4-tier --places 2
+          "$E" calibrate-experts /tmp/v4-tier /tmp/v4-tier-usage.json --tokens 512 --context 256 --synthetic
+          "$E" pack /tmp/v4-tier /tmp/v4-tier-hb --layout hummingbird --usage /tmp/v4-tier-usage.json
+          "$E" tiercheck /tmp/v4-tier-hb --places 2
+          "$E" tiercheck /tmp/v4-tier-hb --places 2 --mode cpu
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true
