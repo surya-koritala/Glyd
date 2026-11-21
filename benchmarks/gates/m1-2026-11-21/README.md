@@ -63,11 +63,12 @@ across users yet (the 8-user cell's first token, 6 to 17 s, is the queue).
 | :--- | :--- | :--- |
 | `p6/ada-r565/` | RTX 4060 Ti 16 GB, 565.57.01 (CUDA 12.7) | PASS: doctor picks the CUDA 12 library, a first answer, serve |
 | `p6/blackwell-r595/` | RTX 5060 Ti 16 GB, 595.112.07 (CUDA 13.2) | FAIL: `cuLaunchKernel: too many resources requested for launch (701)`, with either library |
+| `p6/blackwell-r595-rc5/` | RTX 5060 Ti 16 GB, 595.104.02 (CUDA 13.2) | PASS, release candidate 5 (main with #510): doctor picks the CUDA 13 library, a first answer, the same answer with CUDA 12 forced, serve |
 
 The Blackwell failure was the engine's: on sm_120 the compiler gave `g4_add_norm` 80 registers a thread (53 on sm_89), and it is
 launched with 1,024 threads, so the block needed 81,920 of the SM's 65,536. Fixed in this pull request with `__launch_bounds__(1024)`
 (64 registers, 40 bytes spilled; `moe_logits`, at 72, gets its 256 too), and kernels.yml now fails on any kernel past 64 registers
-without launch bounds, on all six architectures (`scripts/check_kernel_regs.py`). The release candidate after it is checked on
-an RTX 5060 Ti again before v0.34.0.
+without launch bounds, on all six architectures (`scripts/check_kernel_regs.py`). Release candidate 5 (release-gpu.yml run
+44951868958, main at #510's merge) passes on an RTX 5060 Ti with R595: `p6/blackwell-r595-rc5/`.
 
 Windows 11 ships in v0.34.0 as a preview; its gate (`m1-gate.ps1`) runs on a cloud Windows GPU when one is available.
