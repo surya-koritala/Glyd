@@ -454,27 +454,20 @@ pub fn layer_bytes(dir: &Path, nl: usize, f8_pct: u64) -> Result<(Vec<u64>, u64)
 
 /// As `layer_bytes`, of the tensors whose names `keep` keeps.
 pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> Result<(Vec<u64>, u64)> {
-    let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let (mut per, mut base) = (vec![0u64; nl], 0u64);
-    for f in &ck.files {
-        for (name, t) in &f.tensors {
-            if ["mtp", "vision", "visual", "audio", "multi_modal"].iter().any(|w| name.contains(w)) || !keep(name) {
-                continue;
-            }
-            let matrix = t.shape.len() == 2 && t.shape.iter().all(|&d| d >= 256);
-            let b = match t.dtype.as_str() {
-                "BF16" if matrix => t.bytes * bf16_pct / 100,
-                "F8_E4M3" if matrix => t.bytes * f8_pct / 100,
-                _ => t.bytes,
-            };
-            match layer_of(name) {
-                Some(l) if l < nl => per[l] += b,
-                Some(_) => {} // (a layer past the model's: a multi-token-prediction one)
-                None => base += b,
-            }
+    let table = crate::sizes::Table::from_dir(dir).map_err(Error)?;
+    Ok(layer_bytes_table(&table, nl, f8_pct, bf16_pct, keep))
+}
+
+/// `layer_bytes_where` of a table of tensors (src/sizes.rs: a directory's, or the Hub's by ranges before the files are here).
+pub fn layer_bytes_table(table: &crate::sizes::Table, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> (Vec<u64>, u64) {
+    table.per_layer(nl, &|r| keep(&r.name), &|r| {
+        let matrix = r.shape.len() == 2 && r.shape.iter().all(|&d| d >= 256);
+        match r.dtype.as_str() {
+            "BF16" if matrix => r.bytes * bf16_pct / 100,
+            "F8_E4M3" if matrix => r.bytes * f8_pct / 100,
+            _ => r.bytes,
         }
-    }
-    Ok((per, base))
+    })
 }
 
 /// The bytes `layer_bytes` gives and the cut `plan_cuts` makes over `room`: on HBM GPUs (`hbm`) the FP8 matrices in layout H's plain packs and, for a loader
@@ -483,18 +476,30 @@ pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep
 /// `Layout::Twelve` the load's); elsewhere coded and tiered, their only layouts. No cut where nothing fits.
 #[allow(clippy::type_complexity)]
 pub fn fit(dir: &Path, nl: usize, room: &[(i32, u64)], hbm: bool, twelve: bool) -> Result<((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool)> {
+    Ok(fit_table(&crate::sizes::Table::from_dir(dir).map_err(Error)?, nl, room, hbm, twelve))
+}
+
+/// `fit` of a table of tensors (src/sizes.rs).
+#[allow(clippy::type_complexity)]
+pub fn fit_table(
+    table: &crate::sizes::Table,
+    nl: usize,
+    room: &[(i32, u64)],
+    hbm: bool,
+    twelve: bool,
+) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
     if hbm {
         for (f8, twelve) in [(PLAIN_PCT, twelve), (PLAIN_PCT, false), (CODED_PCT, twelve)] {
-            let b = layer_bytes_where(dir, nl, f8, if twelve { TWELVE_PCT } else { TIERED_PCT }, &|_| true)?;
+            let b = layer_bytes_table(table, nl, f8, if twelve { TWELVE_PCT } else { TIERED_PCT }, &|_| true);
             if let Some(c) = plan_cuts(&b.0, b.1, room) {
-                return Ok((b, Some(c), f8 == CODED_PCT, twelve));
+                return (b, Some(c), f8 == CODED_PCT, twelve);
             }
         }
     }
-    let coded = layer_bytes(dir, nl, CODED_PCT)?;
+    let coded = layer_bytes_table(table, nl, CODED_PCT, TIERED_PCT, &|_| true);
     let cut = plan_cuts(&coded.0, coded.1, room);
     let switched = hbm && cut.is_some();
-    Ok((coded, cut, switched, false))
+    (coded, cut, switched, false)
 }
 
 /// A model whose experts the GPUs do not all hold (Kimi-K3's 1.4 TB on 8x 80 GB): its layers over the GPUs of `room` in order, each layer taking its bytes
@@ -582,12 +587,6 @@ pub fn open_kimi_tp(dir: &Path, o: &Opts, devices: &[i32], places: usize) -> Res
     )?))
 }
 
-/// The layer a tensor's name is of (`...layers.12....`).
-pub(crate) fn layer_of(name: &str) -> Option<usize> {
-    let rest = &name[name.find("layers.")? + 7..];
-    rest.split('.').next()?.parse().ok()
-}
-
 /// Where to cut layers of `per` bytes (the rest, `base`, half with the first stage and half with the last) over GPUs with `room` bytes each (ordinal, room):
 /// the one with the most room where it holds the whole model, else consecutive layers over the GPUs in order, each GPU's share of the bytes as its
 /// share of the room. None: they do not hold it.
@@ -633,7 +632,8 @@ fn cut_by_share(per: &[u64], base: u64, room: &[(i32, u64)]) -> Option<(Vec<usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{fit, layer_bytes, layer_of, plan_cuts, TWELVE_PCT};
+    use super::{fit, layer_bytes, plan_cuts, TWELVE_PCT};
+    use crate::sizes::layer_of;
 
     #[test]
     fn cuts_follow_the_room() {
