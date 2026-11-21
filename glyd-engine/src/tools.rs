@@ -75,7 +75,12 @@ pub enum Format {
     Glm,
     /// Muse's ATEM blocks (see `ATEM`).
     Atem,
+    /// Llama 3.1 and later: `{"name": NAME, "parameters": {...}}` (`"arguments"` too) as the whole reply or after `<|python_tag|>`, several separated by `; ` (vLLM's `llama3_json` parser).
+    Json,
 }
+
+/// What Llama 3.1+ writes before a call (and what its template mentions).
+pub(crate) const PYTHON_TAG: &str = "<|python_tag|>";
 
 impl Format {
     /// The format of a chat template's tool calls: DSML where it writes `｜DSML｜`, GLM's where it writes `<arg_key>`, XML where it writes `<function=`, else hermes.
@@ -83,6 +88,9 @@ impl Format {
         // (Kimi-K3's and Gemma 4's replies are read through reader::Reader, which writes their calls as hermes ones)
         if template.is_xtml() || template.is_gemma() {
             return Format::Hermes;
+        }
+        if template.mentions(PYTHON_TAG) && template.mentions("\"parameters\": dictionary of argument name") {
+            return Format::Json;
         }
         if template.mentions("<atem:function_calls>") {
             Format::Atem
@@ -99,7 +107,10 @@ impl Format {
 
     /// The text that opens a reply's calls.
     pub fn open(self) -> &'static str {
-        self.tags().open
+        match self {
+            Format::Json => PYTHON_TAG,
+            _ => self.tags().open,
+        }
     }
 
     pub(crate) fn tags(self) -> &'static Tags {
@@ -317,6 +328,8 @@ pub fn forced_prefix(choice: &ToolChoice, format: Format) -> Option<String> {
     match (choice, format) {
         (ToolChoice::Required, Format::Hermes) => Some(format!("{OPEN}\n{{\"name\": \"")),
         (ToolChoice::Named(n), Format::Hermes) => Some(format!("{OPEN}\n{{\"name\": {}, \"arguments\": ", py_dumps(&Value::from(n.as_str())))),
+        (ToolChoice::Required, Format::Json) => Some("{\"name\": \"".to_string()),
+        (ToolChoice::Named(n), Format::Json) => Some(format!("{{\"name\": {}, \"parameters\": ", py_dumps(&Value::from(n.as_str())))),
         (ToolChoice::Required, Format::Xml) => Some(format!("{OPEN}\n{FN_OPEN}")),
         (ToolChoice::Named(n), Format::Xml) => Some(format!("{OPEN}\n{FN_OPEN}{n}>\n")),
         (ToolChoice::Required, Format::Dsml) => Some(format!("\n\n{DSML_OPEN}\n")),
@@ -350,6 +363,7 @@ pub fn extract(text: &str, format: Format, tools: &[Value]) -> Extracted {
         Format::Hermes => extract_hermes(text),
         Format::Xml | Format::Dsml | Format::Atem => extract_xml(text, tools, format),
         Format::Glm => extract_glm(text, tools),
+        Format::Json => extract_json(text),
     };
     for c in &mut e.calls {
         c.name = known_name(&c.name, tools);
@@ -388,7 +402,70 @@ fn extract_hermes(text: &str) -> Extracted {
     Extracted { called: true, calls, content }
 }
 
-/// GLM's blocks of `text`: each `<tool_call>`'s inside (to its `</tool_call>`, or to the end: not closed), where it starts and ends.
+/// The JSON object at the start of `s` (a `{`): its value and where it ends, None where it is not whole (or not JSON). The braces are counted outside strings.
+fn json_object(s: &str) -> Option<(Value, usize)> {
+    if !s.starts_with('{') {
+        return None;
+    }
+    let (mut depth, mut in_str, mut esc) = (0usize, false, false);
+    for (i, c) in s.char_indices() {
+        if in_str {
+            match (esc, c) {
+                (true, _) => esc = false,
+                (false, '\\') => esc = true,
+                (false, '"') => in_str = false,
+                _ => {}
+            }
+        } else {
+            match c {
+                '"' => in_str = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return json::parse(&s[..=i]).ok().map(|v| (v, i + 1));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// The calls of a Llama 3.1+ reply as far as it is whole: the objects (each with a `name` and its `parameters` or `arguments`), separated by `;`, after an optional `<|python_tag|>`; the calls, and where the text
+/// that is not one begins (None: all of it is calls, or `None` calls and a start of 0 for a reply that does not begin as a call).
+fn json_calls(text: &str) -> (Vec<Call>, Option<usize>) {
+    let body_from = if text.starts_with(PYTHON_TAG) { PYTHON_TAG.len() } else { 0 };
+    if !text[body_from..].starts_with('{') {
+        return (Vec::new(), Some(0));
+    }
+    let (mut calls, mut pos) = (Vec::new(), body_from);
+    while pos < text.len() {
+        let Some((v, end)) = json_object(&text[pos..]) else { return (calls, Some(pos)) };
+        let (Some(name), Some(args)) = (v.get("name").and_then(Value::as_str), v.get("parameters").or_else(|| v.get("arguments"))) else {
+            return (calls, Some(pos));
+        };
+        calls.push(Call { name: name.to_string(), arguments: py_dumps(args) });
+        pos += end;
+        // (calls are separated by `;`)
+        let rest = &text[pos..];
+        pos += rest.len() - rest.trim_start_matches([';', ' ', '\n']).len();
+    }
+    (calls, None)
+}
+
+/// A Llama 3.1+ reply's tool calls, as vLLM's `llama3_json` parser reads the whole text: a reply that begins with `<|python_tag|>` or `{` is JSON calls, one or several; if any of it is not a call there are no calls and all the
+/// text is content, and nothing fails.
+fn extract_json(text: &str) -> Extracted {
+    let (calls, rest) = json_calls(text);
+    if rest.is_some() || calls.is_empty() {
+        return Extracted { called: false, calls: vec![], content: Some(text.to_string()) };
+    }
+    Extracted { called: true, calls, content: None }
+}
+
+/// GLM's blocks of `text`: each `<tool_call>`'s inside's inside (to its `</tool_call>`, or to the end: not closed), where it starts and ends.
 fn glm_blocks(text: &str) -> Vec<(usize, usize, &str, bool)> {
     let (mut out, mut pos) = (Vec::new(), 0);
     while let Some(r) = text[pos..].find(OPEN) {
@@ -708,6 +785,7 @@ impl ToolStream {
                     out.push(ToolEv::Content(self.text[b.from..b.to].to_string()));
                 }
             }
+            Format::Json => {}
             Format::Glm => {
                 // (a last block not closed: a call where it reads as one, else its text)
                 let blocks: Vec<(String, bool, Option<Call>)> =
@@ -764,7 +842,42 @@ impl ToolStream {
         out
     }
 
+    /// A Llama 3.1+ reply as it grows: a reply that does not begin as a call (`<|python_tag|>` or `{`) is content from its first character (a start of the tag is held back); a call is sent whole (its name and its
+    /// arguments) when its object is whole; text after the calls that is not one is content at the end.
+    fn json_step(&mut self, last: bool) -> Vec<ToolEv> {
+        let mut out = Vec::new();
+        let (calls, rest) = json_calls(&self.text);
+        if calls.is_empty() && rest == Some(0) {
+            // (not a call, or not yet: the start of the tag waits)
+            let held = !last && PYTHON_TAG.starts_with(self.text.as_str());
+            if !held && self.text.len() > self.sent {
+                out.push(ToolEv::Content(self.text[self.sent..].to_string()));
+                self.sent = self.text.len();
+            }
+            return out;
+        }
+        for (i, c) in calls.into_iter().enumerate().skip(self.calls.len()) {
+            let name = known_name(&c.name, &self.tools);
+            self.calls.push(Started { name: Some(name.clone()), streamed: c.arguments.clone(), params: 0, closed: true });
+            self.emitted = true;
+            out.push(ToolEv::Start { index: i, id: new_id(), name });
+            out.push(ToolEv::Args { index: i, args: c.arguments });
+        }
+        if let (true, Some(at)) = (last, rest) {
+            // (what is left at the end: an object that never closed, or one that is no call)
+            let from = at.max(self.sent);
+            if from < self.text.len() {
+                out.push(ToolEv::Content(self.text[from..].to_string()));
+                self.sent = self.text.len();
+            }
+        }
+        out
+    }
+
     fn step(&mut self, last: bool) -> Vec<ToolEv> {
+        if self.format == Format::Json {
+            return self.json_step(last);
+        }
         let mut out = Vec::new();
         let open = self.format.open();
         let found = self.text.find(open);
@@ -786,6 +899,7 @@ impl ToolStream {
             Format::Hermes => self.hermes_calls(&mut out),
             Format::Xml | Format::Dsml | Format::Atem => self.xml_calls(&mut out),
             Format::Glm => self.glm_calls(&mut out),
+            Format::Json => {}
         }
         out
     }
