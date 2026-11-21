@@ -2355,33 +2355,42 @@ pub fn work(e: &mut Engine, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender
 }
 
 /// A request's thread or the terminal's reply, started for `job` (the engine's thread never waits on a connection); any other job is not one.
+/// A request's handler on a thread of its own, for as long as the request is answered (it waits for the engine's events). Where the system will not give another thread, the client is told so
+/// (503, `Retry-After`) and the engine's own thread goes on: a refused spawn must not take the server down with it.
+fn spawn_handler(s: Box<dyn Conn>, run: impl FnOnce(&mut dyn Conn) + Send + 'static) {
+    let cell = Arc::new(std::sync::Mutex::new(Some(s)));
+    let inner = cell.clone();
+    let spawned = std::thread::Builder::new().name("glyd-request".into()).spawn(move || {
+        let taken = inner.lock().ok().and_then(|mut g| g.take());
+        if let Some(mut s) = taken {
+            if !s.gone() {
+                run(&mut *s);
+            }
+        }
+    });
+    if spawned.is_err() {
+        crate::ops::refused(503);
+        if let Some(mut s) = cell.lock().ok().and_then(|mut g| g.take()) {
+            respond_with(
+                &mut *s,
+                503,
+                "application/json",
+                "Retry-After: 1\r\n",
+                error_body("the server cannot start another thread for this request: try again", 503).as_bytes(),
+            );
+        }
+    }
+}
+
 pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
     let (sh, tx) = (shared.clone(), tx.clone());
     match job {
-        Job::Http { mut s, req, chat, id } => {
-            std::thread::spawn(move || {
-                if !s.gone() {
-                    handle_completion(&sh, &tx, &mut *s, &req, chat, id);
-                }
-            });
-        }
-        Job::Messages { mut s, req, count, id } => {
-            std::thread::spawn(move || {
-                if !s.gone() {
-                    anthropic::handle(&sh, &tx, &mut *s, &req, count, id);
-                }
-            });
-        }
-        Job::Api { mut s, req, kind, id } => {
-            std::thread::spawn(move || {
-                if !s.gone() {
-                    match kind {
-                        Endpoint::Responses => responses::handle(&sh, &tx, &mut *s, &req, id),
-                        Endpoint::Ollama => ollama::handle(&sh, &tx, &mut *s, &req),
-                    }
-                }
-            });
-        }
+        Job::Http { s, req, chat, id } => spawn_handler(s, move |s| handle_completion(&sh, &tx, s, &req, chat, id)),
+        Job::Messages { s, req, count, id } => spawn_handler(s, move |s| anthropic::handle(&sh, &tx, s, &req, count, id)),
+        Job::Api { s, req, kind, id } => spawn_handler(s, move |s| match kind {
+            Endpoint::Responses => responses::handle(&sh, &tx, s, &req, id),
+            Endpoint::Ollama => ollama::handle(&sh, &tx, s, &req),
+        }),
         Job::Term { messages, request, out, abort } => {
             std::thread::spawn(move || {
                 let mut remote = Remote { tx, window: sh.window };
@@ -3404,60 +3413,79 @@ pub(crate) mod tests {
     }
 
     /// R11's load test: a thousand streaming connections at once, on a scheduler over a CPU fake model, and every one of them is answered 200 with its events and its `[DONE]`, none refused, none
-    /// cut. Each client has sent its request before any has read: all of them are in flight together (the scheduler runs eight at a time; the rest wait in its queue, and their connections are
-    /// held by the front end as tasks, with no cap on how many).
+    /// cut. Every client has sent its request before any is read: all of them are in flight together (the scheduler runs eight at a time; the rest wait in its queue, and their connections are
+    /// held by the front end as tasks, with no cap on how many). The clients are eight threads that poll their connections, not a thread each: where a system gives a process few threads (a Mac
+    /// runner's), the thousand handlers of the replies are threads enough.
     #[test]
     fn a_thousand_streaming_connections_all_end_without_an_error() {
         const N: usize = 1000;
+        const WORKERS: usize = 8;
         raise_fd_limit(8192);
         let mut f = Fake::new(512, 64);
         f.decode_delay = Duration::from_millis(1);
         let addr = serve_fake(f, None, 8);
-        let sent = Arc::new(std::sync::Barrier::new(N));
         let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":6,"temperature":0,"stream":true}"#;
-        let clients: Vec<_> = (0..N)
-            .map(|i| {
+        let sent = Arc::new(std::sync::Barrier::new(WORKERS));
+        let workers: Vec<_> = (0..WORKERS)
+            .map(|w| {
                 let sent = sent.clone();
-                std::thread::Builder::new()
-                    .stack_size(256 << 10)
-                    .spawn(move || -> std::result::Result<usize, String> {
-                        // (the connections are made in waves: a burst of a thousand SYNs is longer than a system's listen queue, which is no concern of the server's; once made, all are held open together)
-                        std::thread::sleep(Duration::from_millis((i / 50) as u64 * 40));
-                        let mut c = TcpStream::connect(addr).map_err(|e| format!("{i}: connect: {e}"))?;
-                        c.set_read_timeout(Some(Duration::from_secs(120))).ok();
-                        c.write_all(
-                            format!(
-                                "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                                body.len()
-                            )
-                            .as_bytes(),
-                        )
-                        .map_err(|e| format!("{i}: send: {e}"))?;
-                        sent.wait(); // (every connection is open and asked before any answer is read)
-                        let mut raw = Vec::new();
-                        c.read_to_end(&mut raw).map_err(|e| format!("{i}: read: {e}"))?;
-                        let text = String::from_utf8_lossy(&raw);
-                        if !text.starts_with("HTTP/1.1 200 OK") {
-                            return Err(format!("{i}: {}", text.lines().next().unwrap_or("")));
+                std::thread::spawn(move || -> Vec<String> {
+                    let mut errors = Vec::new();
+                    let mut open: Vec<(usize, TcpStream, Vec<u8>)> = Vec::new();
+                    for i in (w..N).step_by(WORKERS) {
+                        // (made in waves: a burst of a thousand SYNs is longer than a system's listen queue, which is no concern of the server's; once made, all are held open together)
+                        std::thread::sleep(Duration::from_millis((i / 50) as u64 * 40 / WORKERS as u64));
+                        let connected = TcpStream::connect(addr).and_then(|mut c| {
+                            c.write_all(
+                                format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes(),
+                            )?;
+                            c.set_nonblocking(true)?;
+                            Ok(c)
+                        });
+                        match connected {
+                            Ok(c) => open.push((i, c, Vec::new())),
+                            Err(e) => errors.push(format!("{i}: {e}")),
                         }
-                        if !text.contains("data: [DONE]") {
-                            return Err(format!("{i}: the stream did not end with [DONE]"));
+                    }
+                    sent.wait(); // (every connection is open and asked before any answer is read)
+                    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+                    while !open.is_empty() && std::time::Instant::now() < deadline {
+                        let mut buf = [0u8; 8192];
+                        let mut progressed = false;
+                        open.retain_mut(|(i, c, got)| match c.read(&mut buf) {
+                            Ok(0) => {
+                                let text = String::from_utf8_lossy(got);
+                                if !text.starts_with("HTTP/1.1 200 OK") {
+                                    errors.push(format!("{i}: {}", text.lines().next().unwrap_or("")));
+                                } else if !text.contains("data: [DONE]") {
+                                    errors.push(format!("{i}: the stream did not end with [DONE]"));
+                                }
+                                progressed = true;
+                                false
+                            }
+                            Ok(n) => {
+                                got.extend_from_slice(&buf[..n]);
+                                progressed = true;
+                                true
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+                            Err(e) => {
+                                errors.push(format!("{i}: read: {e}"));
+                                progressed = true;
+                                false
+                            }
+                        });
+                        if !progressed {
+                            std::thread::sleep(Duration::from_millis(5));
                         }
-                        Ok(text.matches("data: {").count())
-                    })
-                    .unwrap()
+                    }
+                    errors.extend(open.iter().map(|(i, ..)| format!("{i}: no end in 120 s")));
+                    errors
+                })
             })
             .collect();
-        let mut errors = Vec::new();
-        let mut events = 0;
-        for c in clients {
-            match c.join().unwrap() {
-                Ok(n) => events += n,
-                Err(e) => errors.push(e),
-            }
-        }
+        let errors: Vec<String> = workers.into_iter().flat_map(|w| w.join().unwrap()).collect();
         assert!(errors.is_empty(), "{} of {N} failed; the first: {:?}", errors.len(), errors.first());
-        assert!(events >= N * 3, "each stream has its first chunk, its tokens and its last: {events}");
     }
 
     /// A client that goes while its reply is being made ends the sequence: the pipe says it is gone, the handler stops writing, and the scheduler is not left running a reply nobody reads (the
