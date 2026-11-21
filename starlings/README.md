@@ -2,7 +2,7 @@
 
 One model across several GPUs: two cards in one machine, or machines on one LAN. Each GPU holds a contiguous range of
 layers; tokens cross between stages once per step, and the output is the same tokens the whole model gives on one card.
-Becomes `glyd cluster` ([ROADMAP.md](../ROADMAP.md), M5).
+Becomes `glyd cluster` ([ROADMAP.md](../ROADMAP.md), M4).
 
 **Beta:** 2 GPUs, 2 machines, NVIDIA on Linux, Qwen3.5-family models. Guide: [docs/beta.md](docs/beta.md).
 

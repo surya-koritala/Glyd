@@ -823,7 +823,7 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     }
     let chosen = choose(&options, max_ctx);
     if chosen.is_none() {
-        notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M5)".into());
+        notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M4)".into());
     }
     Plan { backend, chosen, options, notes }
 }
@@ -1349,7 +1349,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         p.options = options;
         p.notes.retain(|n| !n.starts_with("nothing fits"));
         if p.chosen.is_none() {
-            p.notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M5)".into());
+            p.notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M4)".into());
             // (what `run` says of the level it would take: the first one asked, else the lossless one)
             refusal = refusals.into_iter().next();
         }
