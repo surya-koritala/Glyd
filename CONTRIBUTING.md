@@ -5,7 +5,8 @@ quality is a measurement someone can repeat. Open an issue before anything beyon
 [SECURITY.md](SECURITY.md), not a public issue.
 
 New here? Issues labeled [good first issue](https://github.com/surya-koritala/Glyd/labels/good%20first%20issue) are small and say
-which files to start in. The labels are listed in [docs/labels.md](docs/labels.md). Questions about an issue go in the issue.
+which files to start in. The labels are listed in [docs/labels.md](docs/labels.md). Questions about an issue go in the issue; other questions, ideas and
+help with using Glyd go in [Discussions](https://github.com/surya-koritala/Glyd/discussions).
 
 ## Build
 
