@@ -209,7 +209,24 @@ __device__ __forceinline__ unsigned bf16_key(unsigned short b) {
     return (b & 0x8000u) ? (~b & 0xFFFFu) : (b | 0x8000u);
 }
 
-extern "C" __global__ void __launch_bounds__(1024) topk64_bf16(const bf16* logits, int V, int* tok, float* val) {
+// Eight logits of row at chunk c (16 bytes), those the row's mask `mrow` (V bits, a token's in word token / 32, bit token % 32; null: no mask) does not allow put at 0xFFFF, the bits whose key is the least (a grammar's mask, as the host puts -inf on them): they
+// are chosen last, and only where the row allows fewer than TOPK tokens, in the index order; the host drops what its mask does not allow.
+__device__ __forceinline__ uint4 load_chunk(const unsigned short* row, int c, const unsigned* mrow) {
+    uint4 q = *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
+    if (mrow) {
+        const unsigned mb = (mrow[c >> 2] >> ((c & 3) * 8)) & 0xFFu;
+        if (mb != 0xFFu) {
+            unsigned short* p = reinterpret_cast<unsigned short*>(&q);
+#pragma unroll
+            for (int k = 0; k < 8; k++)
+                if (!((mb >> k) & 1u)) p[k] = 0xFFFFu;
+        }
+    }
+    return q;
+}
+
+// `mask` (or null): per row `words` words, the first nonzero where the row is held to a mask (else the row is as if there were none), then the mask's bits (V / 32 rounded up words).
+__device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok, float* val, const unsigned* mask, int words) {
     __shared__ unsigned hist[256];
     __shared__ unsigned hist32[256 * 32];  // a lane's counters apart from the other lanes' (the values of a row crowd into a few bins: counters shared by a warp's lanes would be updated one lane at a time)
     __shared__ unsigned sel[5];  // the high byte, the numbers above its bin, then the low byte, how many equal ones to take, the numbers above the threshold
@@ -219,12 +236,13 @@ extern "C" __global__ void __launch_bounds__(1024) topk64_bf16(const bf16* logit
     __shared__ unsigned run[2];
     const unsigned short* row = reinterpret_cast<const unsigned short*>(logits) + (size_t)blockIdx.x * V;
     const int nch = V / 8;  // 16-byte loads
+    const unsigned* mrow = (mask && mask[(size_t)blockIdx.x * words] != 0u) ? mask + (size_t)blockIdx.x * words + 1 : nullptr;
     // pass 1: the high bytes
     const int lane0 = threadIdx.x & 31;
     for (int i = threadIdx.x; i < 256 * 32; i += blockDim.x) hist32[i] = 0;
     __syncthreads();
     for (int c = threadIdx.x; c < nch; c += blockDim.x) {
-        const uint4 q = *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
+        const uint4 q = load_chunk(row, c, mrow);
         const unsigned short* p = reinterpret_cast<const unsigned short*>(&q);
 #pragma unroll
         for (int k = 0; k < 8; k++) atomicAdd(&hist32[(bf16_key(p[k]) >> 8) * 32 + lane0], 1u);
@@ -252,7 +270,7 @@ extern "C" __global__ void __launch_bounds__(1024) topk64_bf16(const bf16* logit
     for (int i = threadIdx.x; i < 256 * 32; i += blockDim.x) hist32[i] = 0;
     __syncthreads();
     for (int c = threadIdx.x; c < nch; c += blockDim.x) {
-        const uint4 q = *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
+        const uint4 q = load_chunk(row, c, mrow);
         const unsigned short* p = reinterpret_cast<const unsigned short*>(&q);
 #pragma unroll
         for (int k = 0; k < 8; k++) {
@@ -290,7 +308,7 @@ extern "C" __global__ void __launch_bounds__(1024) topk64_bf16(const bf16* logit
         unsigned short bits[8];
         unsigned gm = 0, em = 0;  // bit k: element k is above the threshold, equal to it
         if (c < nch) {
-            const uint4 q = *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
+            const uint4 q = load_chunk(row, c, mrow);
             const unsigned short* p = reinterpret_cast<const unsigned short*>(&q);
 #pragma unroll
             for (int k = 0; k < 8; k++) {
@@ -362,6 +380,15 @@ extern "C" __global__ void __launch_bounds__(1024) topk64_bf16(const bf16* logit
         tok[blockIdx.x * TOPK + rank] = ij;
         val[blockIdx.x * TOPK + rank] = __uint_as_float((unsigned)s_bits[j] << 16);
     }
+}
+
+extern "C" __global__ void __launch_bounds__(1024) topk64_bf16(const bf16* logits, int V, int* tok, float* val) {
+    topk64_impl(logits, V, tok, val, nullptr, 0);
+}
+
+// `topk64_bf16` with a mask per row (see `topk64_impl`): `words` is the row's words in `mask`, 1 + (V + 31) / 32.
+extern "C" __global__ void __launch_bounds__(1024) topk64_bf16_masked(const bf16* logits, int V, int* tok, float* val, const unsigned* mask, int words) {
+    topk64_impl(logits, V, tok, val, mask, words);
 }
 
 // The sum over each row of V bf16 logits [rows, V] of exp((x - max) / temp): the normalizer of the host's top-p cut over a row's largest logits (src/sampler.rs). The difference and the quotient in fp32 as the host forms them (the same

@@ -65,7 +65,6 @@ def parse_support(text):
             {
                 "name": field("name").strip('"'),
                 "levels": str_list(field("levels"), consts),
-                "wren": field("wren").split("::")[-1],
                 "hb_packed": field("hummingbird_packed_only") == "true",
                 "default_ctx": field("default_ctx"),
                 "max_ctx": field("max_ctx"),
@@ -104,9 +103,7 @@ def ctx_words(r, default_ctx, lossy_ctx, max_ctx):
 def levels_words(r):
     out = []
     for l in r["levels"]:
-        if l == "wren":
-            out.append("wren" + {"No": "", "DevBuild": " (dev build)", "QatOrDevBuild": " (QAT checkpoint, or dev build)"}[r["wren"]])
-        elif l == "hummingbird" and r["hb_packed"]:
+        if l == "hummingbird" and r["hb_packed"]:
             out.append("hummingbird (pre-packed)")
         else:
             out.append(l)
@@ -169,7 +166,7 @@ def main():
         + ", ".join(f"`{a}`" for a, f in archs_of.items() if f == "Qwen35")
         + ". Any other kind is refused with exit 3 and the reason."
     )
-    o.append("- `wren` runs in a development build, which is what `cargo build --release -p glyd-engine` makes. A release build leaves it out, except for a quantization-aware checkpoint, where it is exact.")
+    o.append("- Every build runs every level a family lists, wren included (since v0.34.0). On a quantization-aware checkpoint (Google's `-qat-` releases) wren is exact: the release's own four-bit weights.")
     o.append("- A level a family does not list is refused: `glyd run zai-org/GLM-5.3-Flash:swift` stops and says GLM-5.3-Flash runs at penguin.")
     o.append(f"- The context is at most {n(max_ctx)} tokens (the KV tables' largest tier), and never more than the model's own limit.")
     o.append("- `glyd supports MODEL` answers for one model: exit 0 where the engine runs its kind, 3 where it does not.")

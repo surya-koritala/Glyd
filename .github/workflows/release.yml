@@ -312,6 +312,17 @@ jobs:
         with:
           name: signatures
           path: out
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+          sparse-checkout: glyd-engine/models.json
+          path: src
+      - name: The model names, for glyd names update
+        # glyd-engine/models.json and its sha256 are assets of the release: `glyd names update` fetches the latest release's (releases/latest/download/models.json) and keeps it only where the sha256 matches
+        run: |
+          cp src/glyd-engine/models.json out/models.json
+          (cd out && sha256sum models.json > models.json.sha256 && cat models.json.sha256)
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}

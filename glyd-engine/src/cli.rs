@@ -1337,6 +1337,15 @@ fn lossy_plan_inner(
             return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
         }
         let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), unrun_fix()))?;
+        // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024, Nemotron 3 Super's: src/moe_hb.rs; the
+        // experts of a model with no latent, Nemotron 3.5 Lightning's, read its width)
+        let l = cfg.moe.latent;
+        if layout == Layout::Hummingbird && !(l.is_power_of_two() && (128..=1024).contains(&l)) {
+            return Err(Refusal::unsupported(
+                format!("{name}: the hummingbird level takes Nemotron-H experts on a latent of 128 to 1,024 (Nemotron 3 Super's); this model's experts read its width of {}", cfg.hidden),
+                format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
+            ));
+        }
         (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos)
     } else {
         if layout == Layout::Hummingbird {
@@ -2843,7 +2852,7 @@ mod tests {
         std::fs::remove_dir_all(&l).unwrap();
     }
 
-    /// A level is the tag after the model's last ':' when that is all ASCII letters, in any case, and it comes off; --lossy is kestrel; a name that is no level built, and --lossy with another level, are
+    /// A level is the tag after the model's last ':' when that is all ASCII letters, in any case, and it comes off; --lossy is kestrel; a name that is no level, and --lossy with another level, are
     /// refused (status 1); a model with no tag (a Hub name, a path whose text after a ':' has a '/' or more) is as it is.
     /// The Hub repo of a model at a level is `glyd/NAME-LEVEL` (glyd-gpu-py's test_engine_packed.py pins the same examples), and a pre-packed repo's own name is its level.
     #[test]
@@ -2881,17 +2890,6 @@ mod tests {
             ("Wren", Some(Layout::Int4)),
             ("HUMMINGBIRD", Some(Layout::Hummingbird)),
         ] {
-            if !levels::PREVIEW && tag.eq_ignore_ascii_case("wren") {
-                // (a release build: wren is not built; hummingbird is)
-                let r = level(&format!("{m}:{tag}"), false).unwrap_err();
-                assert!(
-                    r.code == 1
-                        && r.what == format!(":{} is not built yet", tag.to_lowercase())
-                        && r.fix == "The levels available now: penguin, kestrel, swift, hummingbird",
-                    "{tag}: {r}"
-                );
-                continue;
-            }
             assert_eq!(level(&format!("{m}:{tag}"), false).unwrap(), (m, layout), "{tag}");
         }
         assert_eq!(level("/models/mine:swift", false).unwrap(), ("/models/mine", Some(Layout::Int5)));
@@ -2930,8 +2928,8 @@ mod tests {
             assert_eq!(level(plain, false).unwrap(), (plain, None), "{plain}");
             assert_eq!(level(plain, true).unwrap(), (plain, Some(Layout::Int6)), "{plain}");
         }
-        // --lossy is :kestrel: with another level it is refused; a name that is no level built is refused as it is
-        for tag in ["penguin", "swift", "SWIFT", "wren", "hummingbird"].into_iter().filter(|t| levels::PREVIEW || *t != "wren") {
+        // --lossy is :kestrel: with another level it is refused; a name that is no level is refused as it is
+        for tag in ["penguin", "swift", "SWIFT", "wren", "hummingbird"] {
             let r = level(&format!("{m}:{tag}"), true).unwrap_err();
             assert!(r.code == 1 && r.what == format!("--lossy is :kestrel, not :{}", tag.to_lowercase()), "{tag}: {r}");
         }
@@ -3256,7 +3254,6 @@ mod tests {
     /// holds 20 GiB of them whatever the computer has (and 100 is all of them); more than the computer has free less the reserve, and less than a step's choices in each width of each layer (3.4 GiB), are refused with the
     /// figures; the wren level, which has no packed directory to read experts from, keeps its refusal; a model with no experts is told so.
     #[test]
-    #[cfg(feature = "dev")] // (Nemotron 3 Super runs in a development build only: levels::PREVIEW)
     fn the_computers_memory_for_the_experts_is_asked_for_in_gib() {
         let text = include_str!("../tests/fixtures/nemotron_h_config.json");
         let model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16";

@@ -1,6 +1,10 @@
 //! The commands of a development build (`--features dev`, the default): the checks, the proofs and the measurements. A release build has none of them.
 //!
 //!   glyd-engine pack MODEL OUT [--threads N] [--layout auto|mma|mma12|i6|i5|i4]   pack a checkpoint (every matrix, the embedding too); i6, i5 and i4: a lossy level's glyd-v7 directory (Qwen3.5, Nemotron 3 Super: at i4 its experts in four-bit codes, every other matrix in six-bit ones; GLM-5.3-Flash)
+//!   glyd-engine calibrate-experts MODEL OUT [--tokens 32768] [--devices 0,1 --split CUTS] [--context 4096]   hummingbird's corpus pass (src/hb_usage.rs): the model on the engine over the
+//!                                                             calibration corpus, each MoE layer's router choices counted per expert into the usage file OUT
+//!   glyd-engine pack MODEL OUT --layout hummingbird --usage FILE [--threads N]   a mixture of experts the description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3, Muse Spark, Qwen3.5/3.8 MoE) at the
+//!                                                             hummingbird level (src/hb_pack.rs): each expert's bits from FILE's counts (calibrate-experts), its rows coded in Rust, the rest copied
 //!   glyd-engine pack MODEL OUT --layout hummingbird --codes DIR [--threads N]   Nemotron 3 Super at the Hummingbird level (src/hbpack.rs): its routed experts' neuron rows from the export in DIR (nemotron_hbr.py --export) in codebook rows of 3 and 2 bits,
 //!                                                             the signs of each layer's rotation beside them, every other matrix six-bit; glyd-gpu verify decodes the directory
 //!   glyd-engine hbtoy MODEL OUT [--seed N] [--share PERCENT]   a tiny Nemotron-H model (nemotron_ref.py moetoy's toy/) packed at the Hummingbird level from a random export (OUT/export, PERCENT of the experts at 3 bits, the rest at 2) into OUT/packed
@@ -31,7 +35,7 @@
 //!   glyd-engine recompute DIR [--ctx N] [--tables T]         the keys and values of a sequence made by its steps against those made by running it again as a prompt
 //!   glyd-engine topkcheck                                     the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
-//!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; usercheck CASE [--users 4] [--level L]: the case's random model (gemma4, qwen35) served by the scheduler, each reply alone and at once against the one-at-a-time reply; paritycheck [CASE...] [--level L]: the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor on their R7 fixtures' tokens (R3b)
+//!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; usercheck CASE [--users 4] [--level L]: the case's random model (gemma4, qwen35) served by the scheduler, each reply alone and at once against the one-at-a-time reply; paritycheck [CASE...] [--level L]: the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor on their R7 fixtures' tokens (R3b); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on the Qwen3.5, Gemma 4 and Nemotron-H random models, against the per-level thresholds
 //!   glyd-engine kcheck IN_DIR OUT_DIR                        the kernels on inputs tools/kcheck.py wrote
 //!   glyd-engine bandwidth [--gib N]                           the GPU's streaming read bandwidth
 //!   glyd-engine rangecheck MODEL[:level] [--prompt 1024] [--new 256] [--cut L | --cuts A,B] [--ctx N] [--chunk N] [--workers [--sessions 2]]   a Qwen3.5 model whole, then as stages of layers chained in this process and (--workers) as worker processes
@@ -74,6 +78,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "pack" => cmd_pack(a),
         "ship" => glyd_engine::ship::run(a),
         "hbtoy" => cmd_hbtoy(a),
+        "calibrate-experts" => cmd_calibrate_experts(a),
         "chat" => std::process::exit(glyd_engine::cli::run(&Args::from(std::env::args().skip(1).chain(["--chat".to_string()])))),
         "generate" => cmd_run(a),
         "check" => cmd_check(a),
@@ -136,6 +141,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "nhlayers" => glyd_engine::kcheck_nh::layers(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
         "logitscheck" => glyd_engine::logits::check(a),
         "paritycheck" => glyd_engine::logits::parity(a),
+        "levelcheck" => glyd_engine::logits::level_check(a),
         "logitsrecord" => glyd_engine::logits::record(a),
         "logitsbound" => glyd_engine::logits::set_bounds(a),
         "logitsmodel" => glyd_engine::logits::make_model(a),
@@ -752,7 +758,16 @@ fn cmd_pack(a: &Args) -> Result<()> {
     use glyd_engine::weights::Layout;
     let model = a.need(1, "MODEL")?;
     if a.flag("layout") == Some("hummingbird") {
-        let codes = a.flag("codes").ok_or_else(|| Error("--layout hummingbird needs --codes DIR, an export of the experts' neuron rows".into()))?;
+        // (a model the description builder maps, from the corpus pass's counts: src/hb_pack.rs; Nemotron 3 Super from an export: src/hbpack.rs)
+        if let Some(usage) = a.flag("usage") {
+            return glyd_engine::hb_pack::run(model, Path::new(a.need(2, "OUT")?), a.num("threads", 16usize)?, Path::new(usage));
+        }
+        let codes = a.flag("codes").ok_or_else(|| {
+            Error(
+                "--layout hummingbird needs --usage FILE (the counts glyd-engine calibrate-experts writes), or --codes DIR for Nemotron 3 Super's export"
+                    .into(),
+            )
+        })?;
         return glyd_engine::hbpack::run(model, Path::new(a.need(2, "OUT")?), a.num("threads", 16usize)?, Path::new(codes));
     }
     let src = glyd_gpu::save::Source::find(model).map_err(|e| Error(e.to_string()))?;
@@ -773,6 +788,29 @@ fn cmd_pack(a: &Args) -> Result<()> {
 }
 
 /// `hbtoy MODEL OUT`: MODEL a tiny Nemotron-H model (`nemotron_ref.py moetoy`'s toy/ directory, bf16), a random export for its experts in OUT/export and the model packed at the Hummingbird level from it into OUT/packed.
+/// `calibrate-experts MODEL OUT [--tokens N] [--devices 0,1] [--split CUTS] [--context N]`: hummingbird's corpus pass (src/hb_usage.rs).
+fn cmd_calibrate_experts(a: &Args) -> Result<()> {
+    let list = |k: &str| -> Result<Vec<usize>> {
+        a.flag(k).map_or(Ok(Vec::new()), |v| {
+            v.split(',').map(|x| x.trim().parse::<usize>().map_err(|_| Error(format!("--{k} {v}: numbers separated by commas")))).collect()
+        })
+    };
+    let devices: Vec<i32> = list("devices")?.into_iter().map(|d| d as i32).collect();
+    let cuts = list("split")?;
+    let devices = if devices.is_empty() { vec![0] } else { devices };
+    if devices.len() != cuts.len() + 1 {
+        return err(format!("{} GPUs for {} cuts: one more GPU than cuts", devices.len(), cuts.len()));
+    }
+    glyd_engine::hb_usage::run(
+        a.need(1, "MODEL")?,
+        Path::new(a.need(2, "OUT")?),
+        a.num("tokens", glyd_engine::hb_usage::TOKENS)?,
+        &devices,
+        &cuts,
+        a.num("context", 4096usize)?,
+    )
+}
+
 fn cmd_hbtoy(a: &Args) -> Result<()> {
     let model = a.need(1, "MODEL")?;
     let out = Path::new(a.need(2, "OUT")?);

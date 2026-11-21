@@ -11,6 +11,7 @@ Starlings, the multi-machine runner (starlings/). All of it is under the Apache 
 Releases v0.29.0 to v0.32.1 were published under the Business Source License 1.1, and earlier releases under the licenses named in
 their tags; the code as it is in this repository is under the Apache License 2.0.
 
-Third-party code in third_party/ keeps its own license (third_party/README.md). Datasets excerpted under benchmarks/ and research/
+Third-party code in third_party/ keeps its own license (third_party/README.md). The table of byte-level BPE pre-tokenizer regular expressions in glyd-engine/src/gguf_pre.rs is
+llama.cpp's (MIT License, Copyright (c) 2023-2026 The ggml authors). Datasets excerpted under benchmarks/ and research/
 (evaluation questions and prompts from public benchmarks) keep their own licenses; model weights are not in this repository, and
 packed models on the Hugging Face Hub carry their base model's license.

@@ -329,11 +329,13 @@ pub struct RefLayer {
     pub hidden: usize,
     pub p: Params,
     pub seqs: HashMap<u32, SeqState>,
+    /// A MoE block's choices, each token's in turn, where a pass counts them (`hb_usage::count_on_ref`).
+    pub routes: Option<Vec<usize>>,
 }
 
 impl RefLayer {
     pub fn new(block: Block, hidden: usize, p: Params) -> RefLayer {
-        RefLayer { block, hidden, p, seqs: HashMap::new() }
+        RefLayer { block, hidden, p, seqs: HashMap::new(), routes: None }
     }
 
     /// The body on the normed inputs of one token (the sequence's state advanced).
@@ -361,7 +363,13 @@ impl RefLayer {
                 comp::step(c, p, s, h, pos)
             }
             Body::Ffn(Ffn::Mlp(m)) => ffn::mlp(m, p, "", h),
-            Body::Ffn(Ffn::Moe(m)) => ffn::moe(m, p, h, token),
+            Body::Ffn(Ffn::Moe(m)) => {
+                let (y, ids) = ffn::moe_routed(m, p, h, token)?;
+                if let Some(r) = self.routes.as_mut() {
+                    r.extend(ids);
+                }
+                Ok(y)
+            }
             _ => err("the reference has no such kind yet"),
         }
     }

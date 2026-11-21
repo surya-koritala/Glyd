@@ -195,6 +195,64 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
                 println!("DIFFERENT: {name}, {label}: first at {at}: host {:?}, kernel {:?}", want[at], got[at]);
             }
         }
+        // the masked top-k (a grammar's mask put on each row before the cut): on every row above, with masks of every density, against the host's order of the row with the tokens the mask does not allow put last (as the
+        // sampler's mask puts -inf on them), token and logit bit for bit; and the unmasked candidates' allowed tokens, which are the first of the allowed ones (what the sampler draws from where it has no masked ones)
+        if k.has_masked_topk() {
+            let words = 1 + v.div_ceil(32);
+            for (kind, density) in
+                [("all allowed", 1.0f64), ("half", 0.5), ("5%", 0.05), ("10 tokens", -10.0), ("one token", -1.0), ("none", 0.0), ("flag off", 0.5)]
+            {
+                let mut allowed: Vec<Vec<bool>> = Vec::new();
+                for _ in 0..n {
+                    let a: Vec<bool> = if density < 0.0 {
+                        let mut a = vec![false; v];
+                        for _ in 0..(-density as usize) {
+                            a[(rnd() % v as u64) as usize] = true;
+                        }
+                        a
+                    } else {
+                        (0..v).map(|_| (rnd() % 1_000_000) as f64 / 1_000_000.0 < density).collect()
+                    };
+                    allowed.push(a);
+                }
+                let mut mw = vec![0u32; n * words];
+                for (r, a) in allowed.iter().enumerate() {
+                    mw[r * words] = (kind != "flag off") as u32;
+                    for (t, _) in a.iter().enumerate().filter(|(_, &x)| x) {
+                        mw[r * words + 1 + t / 32] |= 1 << (t % 32);
+                    }
+                }
+                let mask = Buf::new(4 * mw.len())?;
+                mask.write(0, &mw)?;
+                let (mt, mv) = (Buf::zeroed(4 * n * crate::kern::TOPK)?, Buf::zeroed(4 * n * crate::kern::TOPK)?);
+                // SAFETY: live buffers of the sizes the kernel reads and writes; the stream is synchronized before they are read.
+                unsafe { k.topk_rows_masked(dev.stream, logits.ptr, v as i32, n as u32, mt.ptr, mv.ptr, mask.ptr, words as i32)? };
+                dev.sync()?;
+                let (mut gt, mut gv) = (vec![0i32; n * crate::kern::TOPK], vec![0f32; n * crate::kern::TOPK]);
+                mt.read(0, &mut gt)?;
+                mv.read(0, &mut gv)?;
+                for (i, (label, row)) in rows.iter().enumerate() {
+                    checked += 1;
+                    let kept: Vec<u16> =
+                        if kind == "flag off" { row.clone() } else { row.iter().zip(&allowed[i]).map(|(&b, &ok)| if ok { b } else { 0xFFFF }).collect() };
+                    let want = host_top(&kept);
+                    let got: Vec<(i32, f32)> = (0..crate::kern::TOPK).map(|j| (gt[i * crate::kern::TOPK + j], gv[i * crate::kern::TOPK + j])).collect();
+                    let same = want.iter().zip(&got).all(|(a, b)| a.0 == b.0 && a.1.to_bits() == b.1.to_bits());
+                    // (the allowed tokens of the unmasked candidates come first among the masked ones: both are in the order the row gives them)
+                    let plain: Vec<i32> = host_top(row).iter().map(|c| c.0).filter(|&t| kind == "flag off" || allowed[i][t as usize]).collect();
+                    let prefix =
+                        got.iter().map(|c| c.0).filter(|&t| kind == "flag off" || allowed[i][t as usize]).take(plain.len()).collect::<Vec<_>>() == plain;
+                    if !same || !prefix {
+                        bad += 1;
+                        let at = want.iter().zip(&got).position(|(a, b)| a.0 != b.0 || a.1.to_bits() != b.1.to_bits()).unwrap_or(0);
+                        println!("DIFFERENT: {name}, {label}, masked ({kind}): first at {at}: host {:?}, kernel {:?}; the unmasked candidates' allowed ones lead: {prefix}", want[at], got[at]);
+                    }
+                }
+            }
+        } else {
+            bad += 1;
+            println!("DIFFERENT: the kernels have no masked top-k");
+        }
         // the sum of the exponentials, on the rows with no infinity, at three temperatures (each row's largest, as the argmax leaves it, given)
         let at = |b: u16| f32::from_bits((b as u32) << 16);
         let maxes: Vec<f32> = rows.iter().map(|r| r.1.iter().map(|&b| at(b)).fold(f32::NEG_INFINITY, f32::max)).collect();

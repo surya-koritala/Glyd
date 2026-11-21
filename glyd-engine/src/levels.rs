@@ -27,12 +27,9 @@ pub static LEVELS: [Level; 5] = [
     Level { name: "hummingbird", layout: Some(Layout::Hummingbird), bits: "2-4 on experts", lossless: false },
 ];
 
-/// Wren on a checkpoint that is not quantization-aware runs in a development build only (`--features dev`, the default).
-pub const PREVIEW: bool = cfg!(feature = "dev");
-
-/// The names of the levels this build runs (a release build's without wren, which still runs exact on a QAT checkpoint).
+/// The names of the levels every build runs (wren too since v0.34.0: before it a release build ran wren on QAT checkpoints alone).
 pub fn names_now() -> Vec<&'static str> {
-    LEVELS.iter().map(|l| l.name).filter(|&n| PREVIEW || n != "wren").collect()
+    LEVELS.iter().map(|l| l.name).collect()
 }
 
 /// The level named `name`, in any case.
@@ -57,16 +54,14 @@ pub struct TagError {
 }
 
 /// MODEL without its tag, and the layout of its level (None: lossless). `--lossy` is `:kestrel`. A pre-packed repo's own name
-/// (`glyd/NAME-swift`) is its level. Refused: a tag that is no level this build runs (wren is run exact on a QAT checkpoint in
-/// any build), and `--lossy` with another level.
+/// (`glyd/NAME-swift`) is its level. Refused: a tag that is no level, and `--lossy` with another level.
 pub fn parse(model: &str, lossy: bool) -> Result<(&str, Option<Layout>), TagError> {
     let (rest, tag) = split_tag(model);
     let Some(tag) = tag else {
         return Ok((model, lossy.then_some(Layout::Int6).or_else(|| repo_level(model))));
     };
-    let Some(level) = by_name(&tag).filter(|l| names_now().contains(&l.name) || (l.name == "wren" && is_qat(rest))) else {
-        let what = if tag == "wren" { format!(":{tag} is not built yet") } else { format!(":{tag} is not a level") };
-        return Err(TagError { what, fix: format!("The levels available now: {}", names_now().join(", ")) });
+    let Some(level) = by_name(&tag) else {
+        return Err(TagError { what: format!(":{tag} is not a level"), fix: format!("The levels available now: {}", names_now().join(", ")) });
     };
     if lossy && level.layout != Some(Layout::Int6) {
         return Err(TagError { what: format!("--lossy is :kestrel, not :{}", level.name), fix: "Give one or the other".into() });

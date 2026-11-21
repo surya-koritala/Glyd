@@ -1446,6 +1446,24 @@ impl Dyn {
     /// One operation of part `p` on n rows (op `i` of layer `l`), the queries at positions `pos.0` and the keys read up to `pos.1` (the same for the big model;
     /// a draft model's query and last key differ); `head`: the rows the LM head reads after the last layer.
     #[allow(clippy::too_many_arguments)]
+    /// Hummingbird's corpus pass (src/hb_usage.rs): a MoE operation's router choices of its `n` rows read back and counted for layer `l`; a
+    /// layer whose experts are in a cache that routes on its own is said to be missed.
+    fn record_routes(&self, p: &Part, l: usize, op: &Op, n: usize) -> Result<()> {
+        let block = match *op {
+            Op::Moe { block } | Op::MuseMoe { block, .. } | Op::V4Moe { block, .. } => block,
+            _ => return Ok(()),
+        };
+        let Some((layer, _)) = p.moe[block].resident() else {
+            crate::hb_usage::missed(l);
+            return Ok(());
+        };
+        let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
+        self.dev.sync()?;
+        let mut ids = vec![0i64; n * layer.cfg.router.top_k];
+        sc.ids.read(0, &mut ids)?;
+        crate::hb_usage::record(l, layer.cfg.experts, &ids)
+    }
+
     unsafe fn op(&self, p: &Part, l: usize, i: usize, op: &Op, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
         let s = self.dev.stream;
         let (nu, eps, hid) = (n as u32, p.d.eps, p.d.hidden as i32);
@@ -2079,6 +2097,9 @@ impl Dyn {
                     continue;
                 }
                 self.op(p, l, i, op, n, pos, head)?;
+                if crate::hb_usage::recording() && std::ptr::eq(p, &self.big) {
+                    self.record_routes(p, l, op, n)?;
+                }
                 if probe && !seen {
                     for (k, b) in p.slots.iter().enumerate() {
                         let w = p.d.widths[k].min(b.bytes / 2);
@@ -2688,6 +2709,7 @@ impl crate::conv::Gen for Dyn {
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
         self.top.ask = sampler.top_need();
+        self.top.mask = sampler.mask_handle();
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         let eos = self.big.d.eos.clone();
@@ -2724,6 +2746,7 @@ impl crate::conv::Gen for Dyn {
                 return Ok((out, Finish::Length));
             }
             self.top.ask = sampler.top_need();
+            self.top.mask = sampler.mask_handle();
             s = self.step(tok)?;
         }
     }

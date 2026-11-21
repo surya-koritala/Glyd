@@ -10,7 +10,7 @@ same as `:kestrel`.
 | penguin | about 10.8 | yes | The release's weights, bit for bit, packed smaller than bf16. |
 | kestrel | 6.5 | no | The closest lossy level. |
 | swift | 5.5 | no | Smaller again. |
-| wren | 4.5 | no | The smallest dense level. Exact on a quantization-aware checkpoint; a development build otherwise. |
+| wren | 4.5 | no | The smallest dense level. Exact on a quantization-aware checkpoint (Google's `-qat-` releases). |
 | hummingbird | 2 to 4 on the experts | no | A mixture of experts' experts at 2 to 4 bits by use. Pre-packed. |
 
 Which families run at which level is on the [Models](models.md) page. A level a family does not run is refused.

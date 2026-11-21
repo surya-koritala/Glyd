@@ -59,6 +59,6 @@ or signed by anything else is not installed. A release before 0.34.0 has no sign
 
 ## What is not covered yet
 
-- Platform code signing (Windows Authenticode, Apple notarization) needs certificates that only the owner can get: [#223](https://github.com/surya-koritala/Glyd/issues/223).
+- Platform code signing (Windows Authenticode, Apple notarization) needs certificates that only the owner can get: [#223](https://github.com/surya-koritala/Glyd/issues/223). Until then Windows SmartScreen and macOS Gatekeeper warn about the downloaded programs (`glyd.exe`: More info, Run anyway; `glyd` on a Mac: `xattr -d com.apple.quarantine glyd`); the attestations and signatures above are how to check that a file is the release's.
 - The later backend downloaders (P7b) and `glyd update` (P21) will use the same check.
 - Reproducible builds and a SLSA level beyond GitHub's provenance: D6b ([#259](https://github.com/surya-koritala/Glyd/issues/259)).
