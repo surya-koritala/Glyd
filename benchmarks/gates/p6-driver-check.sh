@@ -14,9 +14,9 @@ G="$(cd "$BUNDLE" && pwd)/glyd"; CURL="$(command -v curl || true)"; FAILS=0; DET
 note() { printf '%-5s %-26s %s\n' "$1" "$2" "$3"; DETAIL="$DETAIL$1 $2: $3; "; [ "$1" = FAIL ] && FAILS=$((FAILS + 1)); return 0; }
 
 # 1. the driver
-read -r NAME DRV < <(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2> /dev/null | head -1 | awk -F', ' '{gsub(/ /,"_",$1); print $1, $2}')
+read -r NAME DRV MEM < <(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2> /dev/null | head -1 | awk -F', ' '{gsub(/ /,"_",$1); gsub(/ /,"",$3); print $1, $2, $3}')
 [ -n "${DRV:-}" ] || { echo "no nvidia-smi: not a machine for this check"; exit 2; }
-MAJOR="${DRV%%.*}"; SERIES="r$MAJOR"; note PASS "1 driver" "$NAME, driver $DRV ($(nvidia-smi 2> /dev/null | sed -n 's/.*CUDA Version: *\([0-9.]*\).*/CUDA \1/p' | head -1))"
+MAJOR="${DRV%%.*}"; SERIES="r$MAJOR"; note PASS "1 driver" "$NAME ${MEM:-?}, driver $DRV ($(nvidia-smi 2> /dev/null | sed -n 's/.*CUDA Version: *\([0-9.]*\).*/CUDA \1/p' | head -1))"
 
 # 2. the version
 v="$("$G" --version 2>&1)"; code=$?
@@ -56,6 +56,6 @@ if [ "$MAJOR" -lt 535 ]; then
 else note SKIP "7 too old" "no driver below R535 here"; fi
 
 S=PASS; [ "$FAILS" = 0 ] || S=FAIL
-printf '%s\tdriver-%s\t%s %s; %s\n' "$S" "$SERIES" "$NAME" "$DRV" "$DETAIL" > "$OUT/driver-$SERIES.result"
+printf '%s\tdriver-%s\t%s %s; %s\n' "$S" "$SERIES" "$NAME ${MEM:-?}" "$DRV" "$DETAIL" > "$OUT/driver-$SERIES.result"
 echo "---"; echo "$S: $OUT/driver-$SERIES.result"
 [ "$FAILS" = 0 ]
