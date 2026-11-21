@@ -12,7 +12,7 @@ use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Words};
 use crate::kcheck::top_vs_row;
 use crate::kern::Kern;
-use crate::model_nh::{EngineNh, KernNh, OptsNh, SsdWs, NH_N, NH_P};
+use crate::kern_nh::{KernNh, SsdWs, NH_N, NH_P};
 use crate::moe_nh::factory;
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::offload::{CachePlan, HostMemory, Mode, Offload};
@@ -139,7 +139,7 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     let (kv, out, part, pre) = (
         Buf::zeroed(na * nk * 256 * 2)?,
         Buf::zeroed(na * nq * 128 * 2)?,
-        Buf::zeroed(nq * crate::model_nh::NH_SPLITS * 130 * 4)?,
+        Buf::zeroed(nq * crate::kern_nh::NH_SPLITS * 130 * 4)?,
         Buf::zeroed(na * nq * 128 * 2)?,
     );
     // SAFETY: as above.
@@ -170,36 +170,42 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---- nhlayers ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// ---- nhlayers -------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-/// The cases of IO/spec.json, {"chunk": N, "level": 4 | 5 | 6, "cases": [{"name", "layer", "mode": "prefill" | "decode" | "mixed", "calls": [tokens a call] (prefill), "tokens": N (decode, mixed), "prefill": N (mixed),
-/// "graph": whether single tokens are replayed from a CUDA graph, "recurrent": the scan token by token}]}: each case a layer's mixer on the first rows of DIR/x.bin (the residual input, bf16 [rows, hidden]),
-/// the layer's own norm first; "level": the bits of the level a mixture-of-experts layer's matrices are held at (6, 5 or 4; default 6). Written per case: stage outputs of every row (`mix`: the in_proj's output, `conv`,
-/// `gn`: the gated norm's, `out` for a Mamba-2 layer; `qkv`, `attn`, `out` for an attention layer; `h`: the layer's normed input, `z`: the first latent projection's, `y`: the experts' sum, `out` for a
-/// mixture-of-experts layer, with the experts the router chose, `ids` int64 [rows, k], and their weights, `wts` fp32), and at the end the state (`ssm` fp32, `cstate` bf16; the cache's `kv`).
+/// The cases of IO/spec.json, {"chunk": N, "level": 4 | 5 | 6, "cases": [{"name", "layer", "mode": "prefill" | "decode" | "mixed", "calls": [rows...] | "tokens": N | "prefill": N, "graph": whether single tokens are
+/// replayed from a CUDA graph}]}: each case a layer of the model (the second and later: the first reads the embedding), alone as a stage of the executor (the layers before it are not loaded), its input the rows of DIR/x.bin (the residual stream at that layer: the layer
+/// adds the previous layer's output to it as the executor's layers do, here nothing) in the calls the case says, one after another with the layer's state carried from call to call. `level`: the bits of the level a
+/// mixture-of-experts layer's matrices are held at (6, 5 or 4). Written: IO/NAME.out.bin, the layer's output (the mixer's, before it is added to the residual; bf16 [rows, hidden]) for tools/nemotron_ref.py
+/// `layers check` to compare with the layer run alone from its input on PyTorch. (The stages inside a layer, its state and the experts the router chose were dumped by the hand-written engine this replaces: the kernels
+/// they ran are the executor's, `nhkernels` checks them one by one and the whole models of R7's fixtures and `nhtoy` check them together.)
 pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
+    use crate::dynamic::{Slot, Stage};
     let spec = json::parse(&io(std::fs::read_to_string(outd.join("spec.json")))?).map_err(|e| Error(format!("spec.json: {e}")))?;
     let cases = spec.get("cases").and_then(Value::as_array).ok_or_else(|| Error("spec.json: no cases".into()))?;
     let get = |c: &Value, k: &str| c.get(k).and_then(Value::as_u64).map(|x| x as usize);
-    let mut wanted: Vec<usize> = cases.iter().filter_map(|c| get(c, "layer")).collect();
-    wanted.sort_unstable();
-    wanted.dedup();
     let xb = io(std::fs::read(dir.join("x.bin")))?;
-    let hid = ConfigNemotronH::load(dir)?.hidden;
+    let cfg = ConfigNemotronH::load(dir)?;
+    let hid = cfg.hidden;
     let total = xb.len() / 2 / hid;
-    let o = OptsNh { ctx: total + 64, chunk: get(&spec, "chunk").unwrap_or(512), graph: false, only: Some(wanted), ..Default::default() };
+    let chunk = get(&spec, "chunk").unwrap_or(512);
     let make = factory(level_of(get(&spec, "level"))?);
-    let mut e = EngineNh::new(dir, &o, Some(&make))?;
-    let c = e.w.cfg.clone();
-    println!("{}", e.describe());
     let x_words: Vec<u16> = xb.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect();
-    let s = e.dev.stream;
+    // (a layer is loaded once for each way a case runs it: a graph for single rows or not)
+    let mut loaded: std::collections::HashMap<(usize, bool), crate::dynamic::Dyn> = std::collections::HashMap::new();
     for case in cases {
         let name = case.get("name").and_then(Value::as_str).ok_or_else(|| Error("a case has no name".into()))?;
         let l = get(case, "layer").ok_or_else(|| Error(format!("{name}: no layer")))?;
         let mode = case.get("mode").and_then(Value::as_str).unwrap_or("prefill");
         let graph = case.get("graph").and_then(Value::as_bool).unwrap_or(false);
-        let kind = e.w.layers[l].as_ref().map(|ly| ly.kind).ok_or_else(|| Error(format!("{name}: layer {l} is not loaded")))?;
+        if l >= cfg.layers {
+            return err(format!("{name}: layer {l} of {}", cfg.layers));
+        }
+        let kind = cfg.kinds[l];
+        if l == 0 {
+            // (layer 0 starts with the embedding's norm, which belongs to the model's first stage: its input is a token's embedding, not a residual stream)
+            println!("case {name}: layer 0 is the model's first stage (it reads the embedding): not run here, `nhtoy` runs it");
+            continue;
+        }
         // the calls: (first row, rows)
         let mut calls: Vec<(usize, usize)> = Vec::new();
         let mut at = 0;
@@ -224,97 +230,43 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
             return err(format!("{name}: {at} rows, where x.bin has {total}"));
         }
         if let Some(&(_, n)) = calls.iter().max_by_key(|c| c.1) {
-            if n > e.chunk() {
-                return err(format!("{name}: a call of {n} rows, where the chunk is {}", e.chunk()));
+            if n > chunk {
+                return err(format!("{name}: a call of {n} rows, where the chunk is {chunk}"));
             }
         }
-        e.reset()?;
-        e.chunked = !case.get("recurrent").and_then(Value::as_bool).unwrap_or(false);
-        let eps = c.eps;
-        let (qkv_w, att_w) = ((c.heads + 2 * c.kv_heads) * c.head_dim, c.heads * c.head_dim);
-        // the stages dumped: (name, width of a row), and the engine's buffer each is read from
-        let live: Vec<(&str, usize, &crate::dev::Buf)> = match kind {
-            NhKind::Mamba => vec![("mix", c.in_rows(), &e.mix), ("conv", c.conv_dim(), &e.xc), ("gn", c.inner(), &e.core), ("out", hid, &e.o)],
-            NhKind::Attention => vec![("qkv", qkv_w, &e.mix), ("attn", att_w, &e.att), ("out", hid, &e.o)],
-            NhKind::Moe => vec![("h", hid, &e.h), ("z", c.moe.latent, &e.mix), ("y", c.moe.latent, &e.xc), ("out", hid, &e.o)],
+        let e = match loaded.entry((l, graph)) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let o = crate::dynamic::Opts { ctx: total + 64, chunk, graph, device: 0, layout: None };
+                v.insert(crate::dynamic::nemotron::load_with(dir, &o, &make, Stage { layers: (l, l + 1), first: false, last: false })?)
+            }
         };
-        let mut got: Vec<Vec<u16>> = vec![Vec::new(); live.len()];
-        // (a mixture-of-experts layer's experts and their weights, a call after another)
-        let mut chosen: (Vec<i64>, Vec<f32>) = (Vec::new(), Vec::new());
-        let mut graph_exec: Option<crate::dev::Graph> = None;
+        e.reset()?;
+        let slots = e.boundary();
+        let mut out: Vec<u16> = Vec::new();
         let t0 = Instant::now();
-        let mut spent = 0.0;
         for &(a, n) in &calls {
-            e.x.write(0, &x_words[a * hid..(a + n) * hid])?;
-            let ly = e.w.layers[l].as_ref().expect("a loaded layer");
-            let t1 = Instant::now();
-            if n == 1 && graph {
-                if graph_exec.is_none() {
-                    // (the scratch of the mixture-of-experts layers is made by the first call of one: before the capture and not in it, as the engine's warm-up step does)
-                    if kind == NhKind::Moe && e.moe_scratch.get().is_none() {
-                        // SAFETY: as below; the layer has no state, and the call is waited for.
-                        unsafe {
-                            e.kern.rmsnorm(s, e.x.ptr, ly.norm.ptr, e.h.ptr, 1, hid as i32, eps)?;
-                            e.mixer(l, 1, e.st.ptr, 0)?;
-                        }
-                        e.dev.sync()?;
-                    }
-                    // SAFETY: live buffers of the engine, sized for a chunk; nothing runs during a capture.
-                    let g = e.dev.capture(|| unsafe {
-                        e.kern.rmsnorm(s, e.x.ptr, ly.norm.ptr, e.h.ptr, 1, hid as i32, eps)?;
-                        e.mixer(l, 1, e.st.ptr, 0)
-                    })?;
-                    graph_exec = Some(g);
-                }
-                e.st.write(0, &[a as i32])?;
-                graph_exec.as_ref().expect("a graph").launch(s)?;
-            } else {
-                let pos: Vec<i32> = (a..a + n).map(|p| p as i32).collect();
-                e.pos.write(0, &pos)?;
-                // SAFETY: as above; the stream orders every step.
-                unsafe {
-                    e.kern.rmsnorm(s, e.x.ptr, ly.norm.ptr, e.h.ptr, n as u32, hid as i32, eps)?;
-                    e.mixer(l, n, e.pos.ptr, a)?;
+            // the stage's input: the residual X, and zeros for what the previous layer would have left to add
+            let mut io_rows: Vec<u16> = Vec::new();
+            for &(sl, w) in &slots {
+                if sl == Slot::X {
+                    io_rows.extend_from_slice(&x_words[a * hid..(a + n) * hid]);
+                } else {
+                    io_rows.extend(std::iter::repeat_n(0u16, n * w));
                 }
             }
-            e.dev.sync()?;
-            spent += t1.elapsed().as_secs_f64();
-            for (i, (_, width, buf)) in live.iter().enumerate() {
-                let mut v = vec![0u16; n * width];
-                buf.read(0, &mut v)?;
-                got[i].extend(v);
-            }
-            if kind == NhKind::Moe {
-                let sc = e.moe_scratch.get().ok_or_else(|| Error(format!("{name}: the mixture-of-experts layer made no scratch")))?;
-                let (mut ids, mut wts) = (vec![0i64; n * c.moe.top_k], vec![0f32; n * c.moe.top_k]);
-                sc.ids.read(0, &mut ids)?;
-                sc.wts.read(0, &mut wts)?;
-                chosen.0.extend(ids);
-                chosen.1.extend(wts);
+            e.stage_rows(&vec![0u32; n], a, &mut io_rows, 0)?;
+            // the layer's output: what it hands the next layer to add (Slot::O)
+            let mut off = 0;
+            for &(sl, w) in &slots {
+                if sl == Slot::O {
+                    out.extend_from_slice(&io_rows[off..off + n * w]);
+                }
+                off += n * w;
             }
         }
-        for (i, (nm, _, _)) in live.iter().enumerate() {
-            save_bytes(outd, &format!("{name}.{nm}.bin"), &got[i])?;
-        }
-        let idx = e.w.layers[l].as_ref().expect("a loaded layer").idx;
-        match kind {
-            NhKind::Mamba => {
-                save(outd, &format!("{name}.ssm.bin"), &e.ssm, idx * c.m_heads * NH_P * NH_N * 4, c.m_heads * NH_P * NH_N * 4)?;
-                save(outd, &format!("{name}.cstate.bin"), &e.convst, idx * 3 * c.conv_dim() * 2, 3 * c.conv_dim() * 2)?;
-            }
-            NhKind::Attention => save(outd, &format!("{name}.kv.bin"), &e.kv, idx * e.ctx() * c.kv_heads * 256 * 2, at * c.kv_heads * 256 * 2)?,
-            NhKind::Moe => {
-                save_bytes(outd, &format!("{name}.ids.bin"), &chosen.0)?;
-                save_bytes(outd, &format!("{name}.wts.bin"), &chosen.1)?;
-            }
-        }
-        println!(
-            "case {name}: layer {l} ({kind:?}), {} calls, {at} rows: {:.1} ms in the layer ({:.3} ms a call), {:.1} ms with the dumps",
-            calls.len(),
-            spent * 1e3,
-            spent * 1e3 / calls.len().max(1) as f64,
-            t0.elapsed().as_secs_f64() * 1e3
-        );
+        save_bytes(outd, &format!("{name}.out.bin"), &out)?;
+        println!("case {name}: layer {l} ({kind:?}), {} calls, {at} rows: {:.1} ms with the dump", calls.len(), t0.elapsed().as_secs_f64() * 1e3);
     }
     Ok(())
 }
@@ -344,14 +296,15 @@ pub fn toy(dir: &Path, outd: &Path, cache: Option<(&str, Offload)>) -> Result<()
     let mut offload = [cache.map_or(Offload::default(), |c| c.1)];
     host_setup(places.as_ref(), &mut offload)?;
     for (graph, tag) in [(true, "graph"), (false, "eager")].into_iter().filter(|(graph, _)| *graph != places.is_some()) {
-        let o = OptsNh { ctx: total + 16, chunk: 128, graph, ..Default::default() };
+        let o = crate::dynamic::Opts { ctx: total + 16, chunk: 128, graph, device: 0, layout: None };
         let store = crate::offload::ExpertStore::new();
         store.set_offload(offload[0]);
-        let make: Box<dyn Fn(usize, &ConfigNemotronH, &Checkpoint, Layout) -> Result<Box<dyn crate::model_nh::MoeBlock>>> = match places {
+        let make: Box<dyn Fn(usize, &ConfigNemotronH, &Checkpoint, Layout) -> Result<Box<dyn crate::kern_nh::MoeBlock>>> = match places {
             Some(plan) => Box::new(crate::moe_nh::factory_cached(level, plan.slots, &store)),
             None => Box::new(factory(level)),
         };
-        let mut e = EngineNh::new(dir, &o, Some(&*make))?;
+        let cfg = ConfigNemotronH::load(dir)?;
+        let mut e = crate::dynamic::nemotron::load_with(dir, &o, &*make, crate::dynamic::Stage::whole(cfg.layers))?;
         if graph != e.has_graph() {
             return err(format!("the decode graph was asked for: {graph}, the engine has one: {}", e.has_graph()));
         }
@@ -361,7 +314,7 @@ pub fn toy(dir: &Path, outd: &Path, cache: Option<(&str, Offload)>) -> Result<()
         // the sampler's candidates for each step, as `Gen::reply` asks for them with a top-p alone (the 64 largest logits and the sum of the exponentials, at temperature 0.7), against the row the step left
         e.top.ask = Some(Need { temperature: 0.7, mass: true });
         let mut tops = 0usize;
-        let mut grab = |e: &EngineNh, logits: &mut Vec<u16>| -> Result<()> {
+        let mut grab = |e: &crate::dynamic::Dyn, logits: &mut Vec<u16>| -> Result<()> {
             let row: Vec<u16> = e.logits()?.into_iter().map(|f| (f.to_bits() >> 16) as u16).collect();
             if let Some(top) = e.top.read() {
                 top_vs_row(&top, &row, 0.7)
@@ -392,7 +345,7 @@ pub fn toy(dir: &Path, outd: &Path, cache: Option<(&str, Offload)>) -> Result<()
             println!("{tag}: {}", store.report()?);
         }
         if tops == 0 {
-            println!("{tag}: candidates: none made (the vocabulary of {} is not a multiple of 8 of at least 64)", e.w.cfg.vocab);
+            println!("{tag}: candidates: none made (the vocabulary of {} is not a multiple of 8 of at least 64)", cfg.vocab);
         } else {
             println!(
                 "{tag}: candidates: the 64 largest logits and the sum of their exponentials, as the sampler is given them, are the row's in all {tops} rows"
@@ -654,35 +607,35 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
     let (cfg, whole) = (ConfigNemotronH::load(dir)?, |c: &ConfigNemotronH| crate::dynamic::Stage::whole(c.layers));
     for (what, chunk, prompt, steps) in &runs {
         println!("== {what}");
-        let o = |graph| OptsNh { ctx: prompt.len() + steps.len() + 16, chunk: *chunk, graph, ..Default::default() };
-        let dyo = crate::dynamic::Opts { ctx: prompt.len() + steps.len() + 16, chunk: *chunk, graph: true, device: 0, layout: None };
+        let o = |graph| crate::dynamic::Opts { ctx: prompt.len() + steps.len() + 16, chunk: *chunk, graph, device: 0, layout: None };
         let make = factory(level);
-        let mut e = EngineNh::new(dir, &o(false), Some(&make))?;
+        // every expert on the GPU, the decode step launched one kernel at a time: the reference every cache below is held to
+        let mut e = crate::dynamic::nemotron::load_with(dir, &o(false), &make, whole(&cfg))?;
         println!("all there: {}", e.describe());
         let reference = run(&mut e, prompt, steps, None)?;
         drop(e);
-        let mut g = EngineNh::new(dir, &o(true), Some(&make))?;
+        let mut g = crate::dynamic::nemotron::load_with(dir, &o(true), &make, whole(&cfg))?;
         if !g.has_graph() {
             println!("FAIL all there: no decode graph was captured");
             ok = false;
         }
         ok &= verdict("all there, as a graph", &run(&mut g, prompt, steps, None)?, &reference);
         drop(g);
-        // the dynamic engine (GLY-354), all there and over each cache below: the hand-written engine's logits
-        let mut d = crate::dynamic::nemotron::load_with(dir, &dyo, &make, whole(&cfg))?;
-        ok &= verdict("dynamic engine, all there", &run(&mut d, prompt, steps, None)?, &reference);
-        drop(d);
         for &n in slots {
             let store = ExpertStore::new();
             if let Some(o) = host {
                 store.set_offload(o);
             }
             let make = factory_cached(level, n, &store);
-            let mut e = EngineNh::new(dir, &o(true), Some(&make))?;
-            let (experts, layers) = (e.w.cfg.moe.experts, e.w.cfg.layers_of(NhKind::Moe) * if hummingbird { 2 } else { 1 });
+            let mut e = crate::dynamic::nemotron::load_with(dir, &o(true), &make, whole(&cfg))?;
+            let (experts, layers) = (cfg.moe.experts, cfg.layers_of(NhKind::Moe) * if hummingbird { 2 } else { 1 });
             println!("{n} places a layer of {experts}: {}", e.describe());
-            if n < experts && e.has_graph() {
-                println!("FAIL {n} places: the decode step was captured in a graph with blocks that read the router's choices on the host");
+            // (a graph where every expert is on the GPU alone: blocks that read the router's choices on the host are not captured)
+            if (n < experts) == e.has_graph() {
+                println!(
+                    "FAIL {n} places: a decode graph {} (it is one where every expert is on the GPU alone)",
+                    if e.has_graph() { "was captured" } else { "was not captured" }
+                );
                 ok = false;
             }
             let hinted = n < experts;
@@ -730,22 +683,6 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
                 }
             }
             drop(e);
-            let store = ExpertStore::new();
-            if let Some(o) = host {
-                store.set_offload(o);
-            }
-            let make = factory_cached(level, n, &store);
-            let mut d = crate::dynamic::nemotron::load_with(dir, &dyo, &make, whole(&cfg))?;
-            if (n < experts) == d.has_graph() {
-                println!(
-                    "FAIL dynamic engine, {n} places: a decode graph {} (it is one where every expert is on the GPU alone)",
-                    if d.has_graph() { "was captured" } else { "was not captured" }
-                );
-                ok = false;
-            }
-            for pass in ["first pass", "second pass, the cache warm"] {
-                ok &= verdict(&format!("dynamic engine, {n} places, {pass}"), &run(&mut d, prompt, steps, None)?, &reference);
-            }
         }
     }
     if tolerant && (hummingbird || down.row_bits().is_some()) && !host_used {
@@ -761,7 +698,7 @@ type Run<'a> = &'a dyn Fn(&mut dyn Pass, &[u32], &[u32], Option<(&crate::offload
 
 /// The cache of `n` places run through its passes twice (see `offload`'s `memory`): with every expert in the computer's memory and with `budget` bytes of the directory's `all` bytes of experts, in `mode` with the planner's times
 /// held; true if every pass of the second is the first's to the bit and it read experts from the packed directory.
-/// What a pass reads of an engine: the hand-written one or the dynamic one.
+/// What a pass reads of an engine.
 trait Pass {
     fn reset(&mut self) -> Result<()>;
     fn prefill(&mut self, t: &[u32]) -> Result<crate::model::Sample>;
@@ -787,12 +724,11 @@ macro_rules! pass_for {
         }
     };
 }
-pass_for!(EngineNh);
 pass_for!(crate::dynamic::Dyn);
 
 fn on_disk(
     dir: &Path,
-    o: &OptsNh,
+    o: &crate::dynamic::Opts,
     level: Layout,
     n: usize,
     (prompt, steps): (&[u32], &[u32]),
@@ -807,8 +743,9 @@ fn on_disk(
         store.hold_costs();
         store.set_host_memory(bytes.map(|bytes| HostMemory { bytes, total: all }));
         let make = factory_cached(level, n, &store);
-        let mut e = EngineNh::new(dir, o, Some(&make))?;
-        let (experts, layers) = (e.w.cfg.moe.experts, e.w.cfg.layers_of(NhKind::Moe) * 2);
+        let cfg = ConfigNemotronH::load(dir)?;
+        let mut e = crate::dynamic::nemotron::load_with(dir, o, &make, crate::dynamic::Stage::whole(cfg.layers))?;
+        let (experts, layers) = (cfg.moe.experts, cfg.layers_of(NhKind::Moe) * 2);
         let mut passes = Vec::new();
         for (pass, hints) in [("first pass", false), ("second pass, the cache warm", false), ("with hints between the steps", true)] {
             passes.push((pass, run(&mut e, prompt, steps, hints.then_some((&*store, layers, experts)))?));

@@ -607,6 +607,9 @@ def layers_check(mini, io_dir, dt_min=0.0, device=None):
         if l not in Ws:
             Ws[l] = load_layer(tensors, l, dev)
         W = Ws[l]
+        if l == 0 and not os.path.exists(f"{io_dir}/{name}.out.bin"):
+            print(f"skip {name}: layer 0 is the model's first stage (nhtoy runs it)")
+            continue
         if not os.path.exists(f"{io_dir}/{name}.out.bin"):
             print(f"FAIL {name}: the engine wrote nothing")
             ok = False
@@ -616,6 +619,17 @@ def layers_check(mini, io_dir, dt_min=0.0, device=None):
         x = x_all[:T]
         eng = lambda stage, width, dtype=BF: get(f"{io_dir}/{name}.{stage}.bin", (T, width), dtype).to(dev)
         print(f"-- {name}: layer {l} ({ {'M': 'Mamba-2', '*': 'attention', 'E': 'mixture of experts'}[cfg['kinds'][l]] }), {len(calls)} calls, {T} rows")
+        # the executor's `nhlayers` writes the layer's output alone (the stages inside it, its state and the router's choice were the hand-written engine's dumps): the layer from its input, reference alone
+        if not any(os.path.exists(f"{io_dir}/{name}.{stage}.bin") for stage in ("mix", "h", "qkv")):
+            out = eng("out", hid)
+            if mamba:
+                whole = mamba_layer(x, W, cfg, dict(conv=torch.zeros(3, cd, dtype=BF, device=dev), ssm=torch.zeros(cfg["heads"], P, N, device=dev)), True, dt_min)
+            elif cfg["kinds"][l] == "E":
+                whole = moe_layer(x, W, cfg)  # (a router that picks the other of two experts at a near tie moves a row: the bound is the layers' own)
+            else:
+                whole, _ = attention_layer(x, W, cfg)
+            ok &= stats("  the layer from its input, reference alone", out, whole, 1e-1)
+            continue
         if mamba:
             mix, conv, gn, out = eng("mix", cfg["heads"] * P + cd + cfg["heads"]), eng("conv", cd), eng("gn", di), eng("out", hid)
             h = rmsnorm(x, W["norm"], cfg["eps"])

@@ -19,11 +19,11 @@ pub mod tp_cache;
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Ev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result};
 use crate::kern::{norm_threads, Kern};
+use crate::kern_nh::{KernNh, MoeBlock, SsdWs, NH_PART, NH_SPLITS};
 use crate::launch;
 use crate::model::{embed_plan, Sample, TopGpu};
 use crate::model35::{Kern35, Mat, ATTN_PART, ATTN_SPLITS};
 use crate::model_gemma4::{attn_smem, fa_smem, pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS, FA512B_SMEM, PART_WARPS, SPLITS};
-use crate::model_nh::{KernNh, MoeBlock, SsdWs, NH_PART, NH_SPLITS};
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -895,7 +895,7 @@ struct Verify {
 }
 
 // ponytail: the big model's buffers; a draft model's own where one has a block of experts
-impl crate::model_nh::NhHost for Dyn {
+impl crate::kern_nh::NhHost for Dyn {
     fn dev(&self) -> &Dev {
         &self.dev
     }

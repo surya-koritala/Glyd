@@ -887,7 +887,7 @@ fn offload_variants(a: &Args) -> Result<Vec<glyd_engine::offload::Offload>> {
 fn open_nh(
     a: &Args,
     dir: &Path,
-) -> Result<(glyd_engine::model_nh::EngineNh, f64, Option<std::rc::Rc<glyd_engine::offload::ExpertStore>>, Vec<glyd_engine::offload::Offload>)> {
+) -> Result<(glyd_engine::dynamic::Dyn, f64, Option<std::rc::Rc<glyd_engine::offload::ExpertStore>>, Vec<glyd_engine::offload::Offload>)> {
     use glyd_engine::offload::Mode;
     use glyd_engine::weights::Layout;
     let t0 = Instant::now();
@@ -898,12 +898,12 @@ fn open_nh(
             .filter(|l| matches!(l, Layout::Int6 | Layout::Int5 | Layout::Int4))
             .ok_or_else(|| Error("a Nemotron-H model runs in six-, five- or four-bit codes: --layout i6, i5 or i4, or a directory `pack` made".into()))?,
     };
-    let o = glyd_engine::model_nh::OptsNh {
+    let o = glyd_engine::dynamic::Opts {
         ctx: a.num("ctx", 4096usize)?,
         chunk: a.num("chunk", 2048usize)?,
         graph: !a.has("no-graph"),
+        device: 0,
         layout: Some(level),
-        ..Default::default()
     };
     let cfg = glyd_engine::nemotron::ConfigNemotronH::load(dir)?;
     let mut variants = offload_variants(a)?;
@@ -921,11 +921,11 @@ fn open_nh(
     let loading = variants.iter().copied().find(|v| v.mode != Mode::Copy).unwrap_or(variants[0]);
     store.set_offload(loading);
     let (plain, cached) = (glyd_engine::moe_nh::factory(level), places.map(|p| glyd_engine::moe_nh::factory_cached(level, p.slots, &store)));
-    let make: glyd_engine::model_nh::MoeFactory<'_> = match &cached {
+    let make: glyd_engine::kern_nh::MoeFactory<'_> = match &cached {
         Some(f) => f,
         None => &plain,
     };
-    let e = glyd_engine::model_nh::EngineNh::new(dir, &o, Some(make))?;
+    let e = glyd_engine::dynamic::nemotron::load_with(dir, &o, make, glyd_engine::dynamic::Stage::whole(cfg.layers))?;
     store.set_offload(variants[0]);
     Ok((e, t0.elapsed().as_secs_f64(), places.map(|_| store), variants))
 }
@@ -1048,7 +1048,7 @@ fn cmd_run_nh(a: &Args, dir: &Path) -> Result<()> {
         let t1 = Instant::now();
         // (the second half of the steps timed apart too: a cold cache fills in the first)
         let (mid, mut half) = (1 + (new.max(2) - 1) / 2, None);
-        while out.len() < new && (ignore_eos || !e.w.cfg.eos.contains(&(s.token as i64))) {
+        while out.len() < new && (ignore_eos || !e.desc().eos.contains(&(s.token as i64))) {
             s = e.step(s.token)?;
             out.push(s);
             if out.len() == mid {
@@ -1180,9 +1180,8 @@ fn cmd_run35(a: &Args, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A Nemotron-H model on the old engine or the dynamic one (its experts all on the GPU).
+/// A Nemotron-H model on the executor, on one GPU or split across several.
 enum NhRun {
-    Old(Box<glyd_engine::model_nh::EngineNh>),
     New(Box<glyd_engine::dynamic::Dyn>),
     Split(Box<glyd_engine::dynamic::split::Split>),
 }
@@ -1190,7 +1189,6 @@ enum NhRun {
 impl NhRun {
     fn reset(&mut self) -> Result<()> {
         match self {
-            NhRun::Old(e) => e.reset(),
             NhRun::New(e) => e.reset(),
             NhRun::Split(e) => e.reset(),
         }
@@ -1198,7 +1196,6 @@ impl NhRun {
 
     fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::model::Sample> {
         match self {
-            NhRun::Old(e) => e.prefill(t),
             NhRun::New(e) => e.prefill(t),
             NhRun::Split(e) => e.prefill(t),
         }
@@ -1206,15 +1203,14 @@ impl NhRun {
 
     fn step(&mut self, t: u32) -> Result<glyd_engine::model::Sample> {
         match self {
-            NhRun::Old(e) => e.step(t),
             NhRun::New(e) => e.step(t),
             NhRun::Split(e) => e.step(t),
         }
     }
 }
 
-/// `check MODEL PROMPTS.json OUT.json --layout LEVEL [--dynamic]` on a Nemotron-H model: the greedy tokens and each one's logit (OUT.json {"tokens", "logits", "long_..."}), by the old engine or the
-/// dynamic one, its experts at LEVEL (penguin or a lossy level) all on the GPU: the two engines' files compare to the digit.
+/// `check MODEL PROMPTS.json OUT.json --layout LEVEL [--split CUTS --devices GPUS]` on a Nemotron-H model: the greedy tokens and each one's logit (OUT.json {"tokens", "logits", "long_..."}) on the
+/// executor, its experts at LEVEL (penguin or a lossy level) all on the GPU (the hand-written engine this once compared with is retired: its parity record is R7's fixtures and `paritycheck`'s).
 fn cmd_check_nh(a: &Args, dir: &Path) -> Result<()> {
     let pf = a.need(2, "PROMPTS.json")?;
     let of = a.need(3, "OUT.json")?;
@@ -1238,19 +1234,14 @@ fn cmd_check_nh(a: &Args, dir: &Path) -> Result<()> {
             glyd_engine::dynamic::nemotron::load_stage(&d, o, level, st)
         });
         NhRun::Split(Box::new(glyd_engine::dynamic::split::Split::with(c.layers, c.eos.clone(), &cuts, &devices, &o, make)?))
-    } else if a.has("dynamic") {
+    } else {
         let o = glyd_engine::dynamic::Opts { ctx, chunk, graph: !a.has("no-graph"), device: 0, layout: Some(level) };
         NhRun::New(Box::new(glyd_engine::dynamic::nemotron::load(dir, &o, level)?))
-    } else {
-        let o = glyd_engine::model_nh::OptsNh { ctx, chunk, graph: !a.has("no-graph"), layout: Some(level), ..Default::default() };
-        let make = glyd_engine::moe_nh::factory(level);
-        NhRun::Old(Box::new(glyd_engine::model_nh::EngineNh::new(dir, &o, Some(&make))?))
     };
     let load = t0.elapsed().as_secs_f64();
     eprintln!(
         "loaded in {load:.1} s: {}",
         match &e {
-            NhRun::Old(x) => x.describe(),
             NhRun::New(x) => x.describe(),
             NhRun::Split(x) => x.describe(),
         }
