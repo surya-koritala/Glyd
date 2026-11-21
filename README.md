@@ -1,91 +1,145 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/glyd-mark-white.svg">
-    <img src="docs/img/glyd-mark.svg" alt="Glyd" width="48">
+    <img src="docs/img/glyd-mark.svg" alt="Glyd" width="56">
   </picture>
 </p>
 
 <h1 align="center">Glyd</h1>
 
-<p align="center"><strong>Compress and run open LLMs on your GPUs, end to end.</strong></p>
+<p align="center"><strong>Fast, compressed inference for open LLMs, from a laptop GPU to multi-GPU servers.</strong></p>
 
 <p align="center">
-Glyd packs a model's weights and KV cache losslessly, fits the model to the GPUs you have, and runs and serves it on its
-own Rust engine. It works from one consumer card to a multi-GPU server. Apache-2.0.
+  <a href="https://pypi.org/project/glyd/"><img alt="PyPI" src="https://img.shields.io/pypi/v/glyd?label=PyPI&color=orange"></a>
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-green.svg"></a>
+  <a href="https://pypistats.org/packages/glyd"><img alt="Downloads" src="https://img.shields.io/pypi/dm/glyd?label=Downloads&color=blue"></a>
+  <a href="https://huggingface.co/glyd"><img alt="Models on Hugging Face" src="https://img.shields.io/badge/Models-Hugging_Face-yellow"></a>
 </p>
 
 <p align="center">
-  <a href="https://surya-koritala.github.io/Glyd/">Docs</a> ·
+  <a href="https://surya-koritala.github.io/Glyd/guide/">Docs</a> ·
+  <a href="https://huggingface.co/glyd">Models</a> ·
   <a href="ROADMAP.md">Roadmap</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a> ·
-  <a href="SECURITY.md">Security</a>
+  <a href="https://github.com/surya-koritala/Glyd/discussions">Discussions</a> ·
+  <a href="https://github.com/surya-koritala/Glyd/releases">Releases</a>
 </p>
 
-## Features
+Glyd is an open-source inference engine for large language models, written in Rust with its own CUDA kernels. It
+compresses a model's weights and KV cache, losslessly or at a lossy level you choose, plans the model to the GPUs, RAM
+and disk you have, and serves it with OpenAI-, Anthropic- and Ollama-compatible APIs. One program, no Python.
 
-- **Lossless compression.** Weights and KV cache take less GPU memory and are decoded bit for bit inside the GPU
-  kernels. `glyd-engine verify` checks any packed model against the original.
-- **Lossy levels.** When lossless is not enough: kestrel, swift and wren (about 6.5, 5.5 and 4.5 bits per weight), and
-  hummingbird for mixture-of-experts layers.
-- **Fit to your machine.** `glyd-engine fit` plans the level, context length and placement before anything downloads.
-- **Many GPUs.** Split a model's layers across GPUs, or share every layer across them. Starlings (beta) extends this
-  across machines.
-- **Serving.** OpenAI- and Anthropic-compatible APIs, JSON-schema and tool-call constraints, and a chat page.
-- **Model families.** Qwen, Gemma, GLM, Kimi, DeepSeek, Muse and Nemotron. `glyd-engine supports MODEL` answers for a
-  specific model.
+## Get started
 
-## How it works
-
-1. **Plan.** Glyd reads the model's config and file headers, then your GPUs, RAM and disk, and picks a level, a context
-   length and where each part of the model lives.
-2. **Pack.** Each weight matrix is packed once for your GPU and cached. Lossless packs are verified equal to the
-   original tensors.
-3. **Run.** The engine's CUDA kernels decode packed weights and KV cache as they compute, so the full-size weights never
-   sit in GPU memory. For mixture-of-experts models, busy experts stay on the GPU, the rest move between RAM and NVMe,
-   and the CPU computes the misses.
-4. **Serve.** Responses stream through the API or the chat page.
-
-Design notes: [docs/architecture.md](docs/architecture.md).
-
-## Quick start
-
-Linux x86_64 with an NVIDIA GPU (Ampere or newer, driver 580 or newer). Building needs the CUDA toolkit; running needs
-only the driver.
+Linux (x86_64 or aarch64) with an NVIDIA GPU and its driver:
 
 ```bash
-git clone https://github.com/surya-koritala/Glyd && cd Glyd
-cargo build --release -p glyd-engine
-target/release/glyd-engine fit google/gemma-4-12B-it:kestrel    # the plan for this machine
-target/release/glyd-engine run google/gemma-4-12B-it:kestrel    # chat in the terminal and at http://localhost:8000
+curl -LsSf https://raw.githubusercontent.com/surya-koritala/Glyd/main/scripts/install.sh | sh
 ```
 
-Or install a release, with no Python and no toolkit (about 100 MB):
+Windows x86_64 (preview), in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/surya-koritala/Glyd/main/scripts/install.ps1 | iex
+```
+
+Then:
 
 ```bash
-curl -LsSf https://getglyd.com/install.sh | sh
+glyd fit google/gemma-4-12B-it      # the plan for this machine: level, context, where each part lives
+glyd run google/gemma-4-12B-it      # chat in the terminal and at http://localhost:8000
+glyd serve google/gemma-4-12B-it    # the API for your tools; glyd connect says how to point them at it
 ```
 
-On the engine alone, `glyd run MODEL` is the engine's. With the Python tool installed (`GLYD_WITH_VLLM=1`), `glyd run` goes to
-the engine only on the GPU it has been measured on, the RTX 4080 SUPER ([#214](https://github.com/surya-koritala/Glyd/issues/214)),
-and to the frozen vLLM path on the others, or for a model the engine does not run; `GLYD_ENGINE=1` forces the engine,
-`GLYD_ENGINE=0` keeps vLLM.
+`glyd run` loads the plan `glyd fit` prints. Pre-packed models download from [huggingface.co/glyd](https://huggingface.co/glyd);
+any other model is packed on your machine once. The [guide](https://surya-koritala.github.io/Glyd/guide/) covers installs, levels,
+serving, tools and troubleshooting.
+
+## Compression levels
+
+| Level | Bits per weight | Lossless | What it is |
+| :--- | :--- | :--- | :--- |
+| **penguin** | about 10.8 | yes | the release's weights, bit for bit (an FP8 or FP4 release is kept as released) |
+| **kestrel** | 6.5 | no | 6-bit codes and a scale for every 32 weights |
+| **swift** | 5.5 | no | 5-bit codes |
+| **wren** | 4.5 | no | 4-bit codes; exact on a quantization-aware checkpoint (Gemma 4 QAT) |
+| **hummingbird** | 2 to 3 on experts | no | mixture-of-experts layers: the busiest experts at 3 bits, the rest at 2 |
+
+The planner picks the best level that fits: penguin where the model fits, else the highest lossy level that does. Ask for
+one with a tag: `glyd run google/gemma-4-12B-it:wren`. The KV cache is lossless at 12 bits a value.
+
+## Supported hardware
+
+| Platform | Hardware | Status |
+| :--- | :--- | :--- |
+| NVIDIA, Linux | Ampere, Ada, Hopper and Blackwell: RTX 30/40/50 series, RTX A-series and Ada, A100, L4, L40S, H100, H200, B200; driver R535 or newer (Blackwell R570) | supported |
+| NVIDIA, Linux aarch64 | GH200, GB200, DGX Spark, Jetson Thor | built and planned as x86_64 is; measured runs are on the roadmap |
+| NVIDIA, Windows | the same GPUs | preview |
+| Several GPUs | layers split or shared across the GPUs of one machine; mixture-of-experts experts in RAM and on NVMe | supported |
+| Several machines | one model across computers ([Starlings](starlings/), becoming `glyd cluster`) | beta |
+| AMD | RDNA 3 and 4 | development build (`GLYD_HIP=1`) |
+| Apple Silicon, CPU-only | | on the [roadmap](ROADMAP.md) |
+
+`glyd doctor` checks a machine and says what to fix.
+
+## Supported models
+
+| Family | Levels |
+| :--- | :--- |
+| Gemma 4 (QAT checkpoints too) | penguin, kestrel, swift, wren |
+| Qwen 3 dense | penguin |
+| Qwen 3.5, 3.6 and 3.8 dense | kestrel, swift, wren |
+| Nemotron 3 and 3.5 | every level (hummingbird on Nemotron 3) |
+| Kimi K3 | penguin |
+| GLM 5.3 Flash | penguin |
+| DeepSeek V4 | penguin |
+| Muse Spark | penguin |
+
+Any size or fine-tune of these architectures runs, from the Hub or from 16-bit GGUF files. A family's newer architecture
+needs its own support until the single runtime of [M2](ROADMAP.md) makes a new architecture a description instead of code.
+`glyd fit MODEL` answers for a specific model; `glyd pull`, `glyd ls` and `glyd rm` manage the ones you have.
+
+## Serving and tools
+
+| Area | What Glyd has |
+| :--- | :--- |
+| APIs | OpenAI (Chat Completions, Responses), Anthropic Messages, Ollama |
+| Structured output | JSON schema, JSON mode and forced tool calls, constrained on the GPU |
+| Tools | Open WebUI, Continue, Claude Code, the OpenAI, Anthropic and Ollama SDKs, LangChain (`glyd connect`) |
+| Background service | loads a model on the first request, unloads it when idle (`glyd service`) |
+| Operations | health and readiness, Prometheus metrics, OpenTelemetry traces, draining on shutdown |
+| Security | listens on localhost by default, API keys, Host and Origin checks; signed releases |
 
 ## File compression
 
-Glyd also ships the compressor it began with, for the files that fill object storage: `glyd compress FILE -o OUT`,
+Glyd began as a lossless compressor for the files that fill object storage, and still ships it: `glyd compress FILE -o OUT`,
 `glyd decompress`, a store that compresses across objects (`glyd-store`), and the `glyd` crate. It is separate from the
-engine and its formats are unchanged: [docs/codec/README.md](docs/codec/README.md).
+engine: [docs/codec/README.md](docs/codec/README.md).
 
-## Status
+## Development and contributing
 
-Runs today on NVIDIA GPUs under Linux; AMD RDNA 3/4 is a development build. Windows, macOS, Apple Silicon and CPU-only
-are on the [roadmap](ROADMAP.md). Large mixture-of-experts models on one consumer GPU: [condor/](condor/).
+Contributions are welcome, from bug fixes and docs to model support and kernels.
 
-## Contributing
+```bash
+git clone https://github.com/surya-koritala/Glyd && cd Glyd
+cargo build --release -p glyd --features engine   # glyd with the engine linked; its kernels need the CUDA toolkit (12.8 or newer)
+cargo test -p glyd-engine                          # host-side tests, no GPU needed
+```
+
+1. Fork the repository and branch from `main`. For larger changes, open an issue or a
+   [discussion](https://github.com/surya-koritala/Glyd/discussions) first.
+2. Add tests with the change. Commits carry a DCO sign-off (`git commit -s`).
+3. Open a pull request saying what changed and how you tested it.
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the
-[good first issues](https://github.com/surya-koritala/Glyd/labels/good%20first%20issue). Commits carry a DCO sign-off.
-Questions, ideas and show-and-tell: [Discussions](https://github.com/surya-koritala/Glyd/discussions).
+[good first issues](https://github.com/surya-koritala/Glyd/labels/good%20first%20issue). Design notes:
+[docs/architecture.md](docs/architecture.md).
+
+## Community
+
+- **Questions and ideas:** [GitHub Discussions](https://github.com/surya-koritala/Glyd/discussions).
+- **Plans:** the [roadmap](ROADMAP.md), with one GitHub milestone per release.
+- **Security reports:** [SECURITY.md](SECURITY.md).
+- **Governance and the name:** [GOVERNANCE.md](GOVERNANCE.md).
 
 ## License
 
