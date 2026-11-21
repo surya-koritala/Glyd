@@ -3,7 +3,6 @@
 //! their refusals, so `fit` never plans a run that `run` refuses. The machine's side (vendor, compute capability, driver,
 //! CPU architecture) is `machine`, on the same constants `machine::gpu_refusal` uses.
 
-use crate::levels;
 use crate::machine::{driver_min, driver_need, ARCHS, MAX_CONTEXT};
 use crate::plan::{Machine, Vendor};
 use crate::ui::Refusal;
@@ -27,24 +26,13 @@ pub enum Family {
     FlashNext,
 }
 
-/// When `wren` (4.5 bits) runs for a family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Wren {
-    No,
-    /// In a development build (`levels::PREVIEW`).
-    DevBuild,
-    /// In a development build, or exactly for a quantization-aware checkpoint (`levels::is_qat`).
-    QatOrDevBuild,
-}
-
 /// One family's row.
 #[derive(Debug)]
 pub struct Support {
     pub family: Family,
     pub name: &'static str,
-    /// The levels `run` takes this family at (wren as `wren` says).
+    /// The levels `run` takes this family at, in every build.
     pub levels: &'static [&'static str],
-    pub wren: Wren,
     /// The hummingbird level comes as a pre-packed download or directory only (its experts' codes are made apart).
     pub hummingbird_packed_only: bool,
     /// The context `run` takes where none is asked: Some(n), n tokens (less where the model's own limit is lower);
@@ -74,7 +62,6 @@ pub static TABLE: [Support; 9] = [
         family: Family::Qwen3,
         name: "Qwen3",
         levels: PENGUIN,
-        wren: Wren::No,
         hummingbird_packed_only: false,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: Some(MAX_CONTEXT),
@@ -85,7 +72,6 @@ pub static TABLE: [Support; 9] = [
         family: Family::Qwen35,
         name: "Qwen3.5",
         levels: LOSSY,
-        wren: Wren::DevBuild,
         hummingbird_packed_only: false,
         default_ctx: None,
         max_ctx: None,
@@ -96,7 +82,6 @@ pub static TABLE: [Support; 9] = [
         family: Family::NemotronH,
         name: "Nemotron-H",
         levels: &["penguin", "kestrel", "swift", "wren", "hummingbird"],
-        wren: Wren::DevBuild,
         hummingbird_packed_only: true,
         default_ctx: None,
         max_ctx: None,
@@ -107,7 +92,6 @@ pub static TABLE: [Support; 9] = [
         family: Family::Gemma4,
         name: "Gemma 4",
         levels: &["penguin", "kestrel", "swift", "wren"],
-        wren: Wren::QatOrDevBuild,
         hummingbird_packed_only: false,
         default_ctx: None,
         max_ctx: None,
@@ -118,7 +102,6 @@ pub static TABLE: [Support; 9] = [
         family: Family::Kimi,
         name: "Kimi-K3",
         levels: PENGUIN_HB,
-        wren: Wren::No,
         hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
@@ -129,7 +112,6 @@ pub static TABLE: [Support; 9] = [
         family: Family::Glm,
         name: "GLM-5.3-Flash",
         levels: PENGUIN_HB,
-        wren: Wren::No,
         hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
@@ -140,7 +122,6 @@ pub static TABLE: [Support; 9] = [
         family: Family::DeepSeekV4,
         name: "DeepSeek-V4",
         levels: PENGUIN_HB,
-        wren: Wren::No,
         hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
@@ -151,7 +132,6 @@ pub static TABLE: [Support; 9] = [
         family: Family::Muse,
         name: "Muse Spark",
         levels: PENGUIN_HB,
-        wren: Wren::No,
         hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
@@ -162,7 +142,6 @@ pub static TABLE: [Support; 9] = [
         family: Family::FlashNext,
         name: "Qwen3.8-Flash-Next",
         levels: NONE,
-        wren: Wren::No,
         hummingbird_packed_only: false,
         default_ctx: None,
         max_ctx: None,
@@ -177,20 +156,15 @@ pub fn row(family: Family) -> &'static Support {
 }
 
 impl Support {
-    /// Whether `run` takes this family at `level` in this build (`model`: the name asked, for a QAT checkpoint's wren).
-    pub fn runs_at(&self, level: &str, model: &str) -> bool {
-        self.allows(level, levels::is_qat(model))
+    /// Whether `run` takes this family at `level` (`model`: the name asked; every build runs a family's levels since v0.34.0, wren
+    /// included, which a release build ran on quantization-aware checkpoints alone before).
+    pub fn runs_at(&self, level: &str, _model: &str) -> bool {
+        self.allows(level)
     }
 
-    /// `runs_at` for a checkpoint that is quantization-aware or not.
-    pub fn allows(&self, level: &str, qat: bool) -> bool {
+    /// Whether `level` is one of this family's.
+    pub fn allows(&self, level: &str) -> bool {
         self.levels.contains(&level)
-            && (level != "wren"
-                || match self.wren {
-                    Wren::No => false,
-                    Wren::DevBuild => levels::PREVIEW,
-                    Wren::QatOrDevBuild => levels::PREVIEW || qat,
-                })
     }
 
     /// The levels this build runs this family at, for `model`.
@@ -347,7 +321,7 @@ mod tests {
         for l in ["penguin", "kestrel", "swift", "hummingbird"] {
             assert!(check(&n, "nvidia/N", "N", l).is_ok(), "{l}");
         }
-        assert_eq!(check(&n, "nvidia/N", "N", "wren").is_ok(), levels::PREVIEW);
+        assert!(check(&n, "nvidia/N", "N", "wren").is_ok(), "wren runs in every build");
         let x = check(&fixture("qwen4x_config.json"), "Qwen/X", "X", "penguin").unwrap_err();
         assert!(x.fix.contains("condor/README.md"), "{x:?}");
         let g = fixture("gemma4_12b_config.json");

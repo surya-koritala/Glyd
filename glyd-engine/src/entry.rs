@@ -4,10 +4,7 @@
 use crate::args::Args;
 use crate::ffi::{err, Result};
 
-#[cfg(feature = "dev")]
 pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | connect [TOOL] | doctor [--json | --bundle [FILE]] [--no-logs] | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5), wren (about 4.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
-#[cfg(not(feature = "dev"))] // (wren runs in a development build only)
-pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | connect [TOOL] | doctor [--json | --bundle [FILE]] [--no-logs] | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
 
 /// The commands of the engine that `glyd` takes as its own where the engine is linked (the same words as `glyd-engine`'s): what a model is run, served, fetched, packed-for-this-GPU, checked or costed with.
 pub const COMMANDS: &[&str] = &[
@@ -26,6 +23,7 @@ pub const COMMANDS: &[&str] = &[
     "ps",
     "stop",
     "bench",
+    "names",
     "verify",
     "prepare",
     "costs",
@@ -119,6 +117,7 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("pull") => std::process::exit(crate::models::pull(&a)),
         Some("ls" | "list") => std::process::exit(crate::models::ls(&a)),
         Some("rm") => std::process::exit(crate::models::rm(&a)),
+        Some("names") => std::process::exit(crate::models::names_cmd(&a)),
         // the background service: models loaded on request and unloaded when idle; what it holds; a model unloaded (src/service.rs)
         Some("service") => std::process::exit(crate::service::run(&a)),
         Some("ps") => std::process::exit(crate::service::ps(&a)),

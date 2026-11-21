@@ -60,7 +60,7 @@ Flags: \-\-all, \-\-port N
 .B glyd service [install | uninstall | status | stop]
 The background service: models load on request and unload when idle.
 .br
-With no word it runs in the foreground; install makes it a user unit started at login (systemd, launchd; Windows runs it by hand). docs/service.md.
+With no word it runs in the foreground; install makes it a user unit started at login (systemd, launchd; on Windows a scheduled task of the user's, at logon). docs/service.md.
 .br
 Flags: \-\-port N, \-\-host ADDRESS, \-\-keep\-alive TIME, \-\-max\-loaded N, \-\-context N, \-\-users N, \-\-json
 .TP
@@ -77,6 +77,13 @@ What this computer has for running models, each check with the line that fixes i
 \-\-bundle writes the same as one file to attach to an issue.
 .br
 Flags: \-\-machine NAME|FILE, \-\-json
+.TP
+.B glyd names [update]
+The model names (gemma4, qwen3.8:27b, ...) and their Hub repos; update fetches the latest release's.
+.br
+A name that is not known is looked up once a day in the latest release's manifest (GLYD_NO_REFRESH=1 stops that); the fetched file is checked against the sha256 the release lists.
+.br
+Flags: \-\-json
 .TP
 .B glyd login
 Save a Hugging Face token (for a gated model).

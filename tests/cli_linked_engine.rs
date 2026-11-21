@@ -110,3 +110,22 @@ fn the_help_the_man_page_and_the_flag_refusals_are_made_from_the_command_table()
     let o = run(&g, &["ls", "--json"], &d, &[]);
     assert!(text(&o.stdout).starts_with("{\"models\":["), "{}", text(&o.stdout));
 }
+
+#[test]
+fn the_names_are_listed_and_an_update_that_cannot_be_fetched_says_why() {
+    let d = install("names");
+    let g = d.join("glyd");
+    let o = run(&g, &["names"], &d, &[]);
+    let out = text(&o.stdout);
+    assert!(out.contains("gemma4:12b *") && out.contains("google/gemma-4-12B-it") && out.contains("(older)") && out.contains("deepseek:v4-flash"), "{out}");
+    assert!(out.find("gemma4:12b").unwrap() < out.find("qwen3:8b").unwrap(), "the recent names first: {out}");
+    let o = run(&g, &["names", "--json"], &d, &[]);
+    assert!(text(&o.stdout).starts_with("{\"families\":[") || text(&o.stdout).contains("\"updated\":\"2026-"), "{}", text(&o.stdout));
+    // offline (HF_HUB_OFFLINE): nothing is fetched, and a name that is none does not try
+    let o = run(&g, &["names", "update"], &d, &[("HF_HUB_OFFLINE", "1")]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("HF_HUB_OFFLINE is set"), "{}", text(&o.stderr));
+    let o = run(&g, &["pull", "nosuchmodel"], &d, &[("HF_HUB_OFFLINE", "1")]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("no such model name"), "{}", text(&o.stderr));
+}

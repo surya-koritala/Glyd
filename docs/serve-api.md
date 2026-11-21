@@ -15,8 +15,7 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
     --ctx 4096 --port 8238 --status-file /run/glyd.status  # offline: the directory alone is read
 ```
 
-- `MODEL:level` takes penguin (lossless), kestrel, swift, hummingbird (Nemotron 3 Super), and wren (a development build;
-  Gemma 4's QAT checkpoints in a release). A tag that names no level is refused (exit 1). A level the engine does not run
+- `MODEL:level` takes penguin (lossless), kestrel, swift, wren and hummingbird (Nemotron 3 Super). A tag that names no level is refused (exit 1). A level the engine does not run
   for the model, or a model that does not fit, is refused with the reason (exit 3, on stderr and in the status file).
   Nothing is changed for you: the model, the level and the precision are the ones asked for, or the start fails.
 - `glyd serve` of a level, a glyd-v7 directory or a glyd/ repo vLLM cannot read goes to the engine without GLYD_ENGINE=1.

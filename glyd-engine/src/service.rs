@@ -26,6 +26,8 @@ pub const DEFAULT_PORT: u16 = 11434;
 pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(300);
 /// How many models the service holds at once (the least recently used idle one is unloaded to make room).
 pub const DEFAULT_MAX_LOADED: usize = 2;
+/// The ceiling where the GPU's memory can be read (models are then held by memory, and this only stops a runaway).
+pub const MAX_LOADED_BY_MEMORY: usize = 16;
 /// How long a request waits for a place where every loaded model is in use.
 const DEFAULT_WAIT_FOR_ROOM: Duration = Duration::from_secs(30);
 /// How long a model may take to load before the request that waits for it is answered with a refusal (a 100 GB model on a slow disk takes long).
@@ -159,7 +161,17 @@ fn random_hex(bytes: usize) -> String {
     let mut b = vec![0u8; bytes];
     #[cfg(unix)]
     let got = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).is_ok();
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let got = {
+        // (the system's own source, BCryptGenRandom with the system-preferred generator)
+        #[link(name = "bcrypt")]
+        extern "system" {
+            fn BCryptGenRandom(algorithm: *mut std::ffi::c_void, buffer: *mut u8, count: u32, flags: u32) -> i32;
+        }
+        // SAFETY: the buffer is `b`'s own bytes, and the count is its length.
+        unsafe { BCryptGenRandom(std::ptr::null_mut(), b.as_mut_ptr(), b.len() as u32, 2) == 0 }
+    };
+    #[cfg(not(any(unix, windows)))]
     let got = false;
     if !got {
         // (no system source: the keys of std's hasher, which the system seeds, one for each eight bytes)
@@ -423,13 +435,53 @@ struct Entry {
 #[derive(Default)]
 struct State {
     entries: Vec<Entry>,
+    /// What each model took of the GPU's memory when it loaded, in bytes (kept when it is unloaded: the next load makes room for as much).
+    footprints: std::collections::HashMap<String, u64>,
     /// Models being loaded now: a second request for one waits for the first's load.
     loading: HashSet<String>,
 }
 
+/// How much of the GPU's memory is free, where the system says: the service holds models by memory (each one's footprint is measured when it loads) and keeps `max_loaded` as a ceiling.
+pub trait Probe: Send + Sync {
+    fn free_bytes(&self) -> Option<u64>;
+}
+
+/// No reading of the GPU's memory (a Mac, an AMD GPU, no driver): models are held by count alone.
+pub struct NoProbe;
+
+impl Probe for NoProbe {
+    fn free_bytes(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// `nvidia-smi`'s reading: the most memory free on any GPU (a model is put on the GPU with the most free, as a run does), in bytes.
+pub struct NvidiaSmi;
+
+/// The most free MiB of the lines `nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits` prints, in bytes.
+pub fn parse_free_mib(out: &str) -> Option<u64> {
+    out.lines().filter_map(|l| l.trim().parse::<u64>().ok()).max().map(|mib| mib << 20)
+}
+
+impl Probe for NvidiaSmi {
+    fn free_bytes(&self) -> Option<u64> {
+        let o = std::process::Command::new("nvidia-smi")
+            .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        o.status.success().then(|| parse_free_mib(&String::from_utf8_lossy(&o.stdout))).flatten()
+    }
+}
+
+/// The memory a loaded model's GPU must keep free beside it (the driver's and the other programs' share).
+pub const DEFAULT_MARGIN: u64 = 768 << 20;
+
 pub struct Config {
     pub keep_alive: Option<Duration>,
     pub max_loaded: usize,
+    /// The free memory left after a model is loaded, which a load makes room for.
+    pub margin: u64,
     /// How long a request waits for a place where every loaded model is in use, before it is answered 503.
     pub wait_for_room: Duration,
 }
@@ -442,6 +494,7 @@ pub struct Lease {
 
 pub struct Pool {
     backend: Box<dyn Backend>,
+    probe: Box<dyn Probe>,
     state: Mutex<State>,
     changed: Condvar,
     cfg: Config,
@@ -454,8 +507,8 @@ fn victim(entries: &[(Instant, usize)]) -> Option<usize> {
 }
 
 impl Pool {
-    pub fn new(backend: Box<dyn Backend>, cfg: Config) -> Pool {
-        Pool { backend, state: Mutex::new(State::default()), changed: Condvar::new(), cfg, started: Instant::now() }
+    pub fn new(backend: Box<dyn Backend>, probe: Box<dyn Probe>, cfg: Config) -> Pool {
+        Pool { backend, probe, state: Mutex::new(State::default()), changed: Condvar::new(), cfg, started: Instant::now() }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -504,10 +557,25 @@ impl Pool {
                 }
             }
         }
+        // memory: where this model's footprint is known (it has been loaded before), the least recently used idle models go until it fits beside what is free (and the margin)
+        let free_before = self.probe.free_bytes();
+        if let (Some(need), Some(free)) = (st.footprints.get(&key).copied(), free_before) {
+            let mut projected = free;
+            while projected < need + self.cfg.margin {
+                let view: Vec<(Instant, usize)> = st.entries.iter().map(|e| (e.last_used, e.in_flight)).collect();
+                let Some(i) = victim(&view) else { break };
+                let e = st.entries.remove(i);
+                projected += st.footprints.get(&e.spec.arg).copied().unwrap_or(0);
+                stopped.push(e);
+            }
+        }
         drop(st);
+        let evicted = !stopped.is_empty();
         for mut e in stopped {
             e.handle.stop();
         }
+        // (what is free is read after the models that made room have ended: a footprint is the memory a load took)
+        let mut free_before = if evicted { self.probe.free_bytes() } else { free_before };
         let mut result = self.backend.start(spec);
         if result.is_err() {
             // (a load that fails may be for want of memory: the idle models go, and it is tried once more)
@@ -523,15 +591,22 @@ impl Pool {
                 for mut e in idle {
                     e.handle.stop();
                 }
+                free_before = self.probe.free_bytes(); // (the footprint is what the load that worked took)
                 result = self.backend.start(spec);
             }
         }
+        let free_after = self.probe.free_bytes();
         let mut st = self.lock();
         st.loading.remove(&key);
         let out = match result {
             Ok(handle) => {
                 let port = handle.port();
                 let now = Instant::now();
+                if let (Some(b), Some(a)) = (free_before, free_after) {
+                    if b > a {
+                        st.footprints.insert(key.clone(), b - a);
+                    }
+                }
                 st.entries.push(Entry { spec: spec.clone(), handle, started: now, last_used: now, in_flight: 1, requests: 0 });
                 Ok(Lease { port, key })
             }
@@ -604,14 +679,14 @@ impl Pool {
                 let idle = now.duration_since(e.last_used);
                 serde_json::json!({
                     "name": e.spec.name, "model": e.spec.arg, "loaded_secs": now.duration_since(e.started).as_secs(), "idle_secs": idle.as_secs(),
-                    "in_flight": e.in_flight, "requests": e.requests,
+                    "in_flight": e.in_flight, "requests": e.requests, "gpu_bytes": st.footprints.get(&e.spec.arg),
                     "unload_in_secs": self.cfg.keep_alive.filter(|_| e.in_flight == 0).map(|k| k.saturating_sub(idle).as_secs()),
                 })
             })
             .collect();
         serde_json::json!({
             "service": "glyd", "version": env!("CARGO_PKG_VERSION"), "port": port, "up_secs": self.started.elapsed().as_secs(),
-            "keep_alive_secs": self.cfg.keep_alive.map(|k| k.as_secs()), "max_loaded": self.cfg.max_loaded, "models": models,
+            "keep_alive_secs": self.cfg.keep_alive.map(|k| k.as_secs()), "max_loaded": self.cfg.max_loaded, "gpu_free_bytes": self.probe.free_bytes(), "models": models,
         })
         .to_string()
     }
@@ -1020,7 +1095,21 @@ pub fn run(a: &Args) -> i32 {
         }
         None => {}
     }
-    let (keep_alive, max_loaded) = match (a.flag("keep-alive").map_or(Ok(Some(DEFAULT_KEEP_ALIVE)), parse_duration), a.num("max-loaded", DEFAULT_MAX_LOADED)) {
+    // started by the scheduled task of Windows: no console window of its own to keep
+    #[cfg(windows)]
+    if a.has("background") {
+        extern "system" {
+            fn FreeConsole() -> i32;
+        }
+        // SAFETY: FreeConsole takes no argument and only detaches this process from its console.
+        unsafe {
+            FreeConsole();
+        }
+    }
+    let (keep_alive, max_loaded) = match (
+        a.flag("keep-alive").map_or(Ok(Some(DEFAULT_KEEP_ALIVE)), parse_duration),
+        a.num("max-loaded", if NvidiaSmi.free_bytes().is_some() { MAX_LOADED_BY_MEMORY } else { DEFAULT_MAX_LOADED }),
+    ) {
         (Ok(k), Ok(m)) => (k, m),
         (Err(e), _) => {
             eprintln!("glyd service: --keep-alive {e}");
@@ -1055,7 +1144,8 @@ pub fn run(a: &Args) -> i32 {
     }
     let pool = Pool::new(
         Box::new(Processes { context: a.flag("context").map(str::to_string), users: a.flag("users").map(str::to_string) }),
-        Config { keep_alive, max_loaded, wait_for_room: DEFAULT_WAIT_FOR_ROOM },
+        Box::new(NvidiaSmi),
+        Config { keep_alive, max_loaded, margin: DEFAULT_MARGIN, wait_for_room: DEFAULT_WAIT_FOR_ROOM },
     );
     let secret = match ensure_secret() {
         Ok(s) => s,
@@ -1165,15 +1255,16 @@ pub fn ps(a: &Args) -> i32 {
         return 0;
     }
     let w = models.iter().map(|m| m["name"].as_str().unwrap_or("").len()).max().unwrap_or(4).max(4);
-    println!("{:<w$}  {:>8}  {:>8}  {:>8}  {:>6}  UNLOADS IN", "NAME", "LOADED", "IDLE", "REQUESTS", "ACTIVE");
+    println!("{:<w$}  {:>8}  {:>8}  {:>8}  {:>6}  {:>9}  UNLOADS IN", "NAME", "LOADED", "IDLE", "REQUESTS", "ACTIVE", "GPU");
     for m in &models {
         println!(
-            "{:<w$}  {:>8}  {:>8}  {:>8}  {:>6}  {}",
+            "{:<w$}  {:>8}  {:>8}  {:>8}  {:>6}  {:>9}  {}",
             m["name"].as_str().unwrap_or(""),
             secs(m.get("loaded_secs")).unwrap_or_default(),
             secs(m.get("idle_secs")).unwrap_or_default(),
             m["requests"].to_string(),
             m["in_flight"].to_string(),
+            m["gpu_bytes"].as_u64().map_or("-".to_string(), |b| format!("{:.1} GiB", b as f64 / (1u64 << 30) as f64)),
             secs(m.get("unload_in_secs")).unwrap_or("-".into())
         );
     }
@@ -1301,8 +1392,45 @@ fn unit_path() -> PathBuf {
     }
 }
 
+/// The scheduled task that is the service on Windows: a task of this user, run at every logon with the user's own rights (no administrator), which is what a user-level service is there.
+const TASK: &str = "GlydService";
+
+/// The command a task runs: the program and the service's flags, each quoted where it has a space (`--background` lets the service let go of the console it is started with).
+pub fn task_command(exe: &str, flags: &[String]) -> String {
+    let q = |w: &str| if w.contains([' ', '\t']) { format!("\"{w}\"") } else { w.to_string() };
+    std::iter::once(q(exe)).chain(["service".to_string(), "--background".to_string()]).chain(flags.iter().map(|f| q(f))).collect::<Vec<_>>().join(" ")
+}
+
+/// The arguments of `schtasks` that make task `name` run `exe` at logon (replacing one of that name).
+pub fn schtasks_create_args(name: &str, exe: &str, flags: &[String]) -> Vec<String> {
+    ["/Create", "/F", "/SC", "ONLOGON", "/RL", "LIMITED", "/TN", name, "/TR"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain(std::iter::once(task_command(exe, flags)))
+        .collect()
+}
+
+fn task_exists(name: &str) -> bool {
+    sh("schtasks", &["/Query", "/TN", name])
+}
+
+fn task_create(name: &str, exe: &str, flags: &[String]) -> bool {
+    let args = schtasks_create_args(name, exe, flags);
+    sh("schtasks", &args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// The task ended where it runs and removed.
+fn task_delete(name: &str) -> bool {
+    let _ = sh("schtasks", &["/End", "/TN", name]);
+    sh("schtasks", &["/Delete", "/F", "/TN", name])
+}
+
 fn installed() -> bool {
-    unit_path().is_file()
+    if cfg!(windows) {
+        task_exists(TASK)
+    } else {
+        unit_path().is_file()
+    }
 }
 
 fn sh(prog: &str, args: &[&str]) -> bool {
@@ -1326,7 +1454,9 @@ fn uid() -> String {
 }
 
 fn manager_stop() -> bool {
-    if cfg!(target_os = "macos") {
+    if cfg!(windows) {
+        sh("schtasks", &["/End", "/TN", TASK])
+    } else if cfg!(target_os = "macos") {
         sh("launchctl", &["bootout", &format!("gui/{}", uid()), &unit_path().to_string_lossy()])
     } else {
         sh("systemctl", &["--user", "stop", "glyd.service"])
@@ -1369,22 +1499,23 @@ fn install(a: &Args) -> i32 {
     }
     let flags = service_flags(a);
     let path = unit_path();
-    if cfg!(windows) {
-        eprintln!("glyd service install: the Windows service is not here yet (ROADMAP.md, M1 P3). `glyd service` runs the service in a terminal, and Task Scheduler can start it at logon.");
-        return 1;
-    }
-    let text =
-        if cfg!(target_os = "macos") { launchd_plist(&exe, &flags, &log_dir().join("service.log").to_string_lossy()) } else { systemd_unit(&exe, &flags) };
-    if let Some(d) = path.parent() {
-        let _ = std::fs::create_dir_all(d);
-    }
     let _ = std::fs::create_dir_all(log_dir());
-    if let Err(e) = std::fs::write(&path, text) {
-        eprintln!("glyd service install: {}: {e}", path.display());
-        return 1;
+    if !cfg!(windows) {
+        let text =
+            if cfg!(target_os = "macos") { launchd_plist(&exe, &flags, &log_dir().join("service.log").to_string_lossy()) } else { systemd_unit(&exe, &flags) };
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        if let Err(e) = std::fs::write(&path, text) {
+            eprintln!("glyd service install: {}: {e}", path.display());
+            return 1;
+        }
     }
     let port = port_of(a).unwrap_or(DEFAULT_PORT);
-    let ok = if cfg!(target_os = "macos") {
+    let ok = if cfg!(windows) {
+        // (a scheduled task of this user, at every logon, and started now)
+        task_create(TASK, &exe, &flags) && sh("schtasks", &["/Run", "/TN", TASK])
+    } else if cfg!(target_os = "macos") {
         let domain = format!("gui/{}", uid());
         let _ = sh("launchctl", &["bootout", &domain, &path.to_string_lossy()]);
         sh("launchctl", &["bootstrap", &domain, &path.to_string_lossy()])
@@ -1396,7 +1527,7 @@ fn install(a: &Args) -> i32 {
     if !ok {
         eprintln!(
             "glyd service install: {} is written, but the system's service manager would not start it (no systemd user session here?). Run it with: glyd service{}",
-            path.display(),
+            if cfg!(windows) { format!("the scheduled task {TASK}") } else { path.display().to_string() },
             flags.iter().map(|f| format!(" {f}")).collect::<String>()
         );
         return 1;
@@ -1420,6 +1551,19 @@ fn install(a: &Args) -> i32 {
 }
 
 fn uninstall() -> i32 {
+    if cfg!(windows) {
+        if !task_exists(TASK) {
+            println!("The service is not installed");
+            return 0;
+        }
+        return if task_delete(TASK) {
+            println!("The service is stopped and removed (the scheduled task {TASK})");
+            0
+        } else {
+            eprintln!("glyd service uninstall: schtasks would not remove the task {TASK}");
+            1
+        };
+    }
     let path = unit_path();
     if !path.is_file() {
         println!("The service is not installed");
@@ -1759,7 +1903,7 @@ mod tests {
     }
 
     fn pool(f: &Arc<Fakes>, keep: Option<Duration>, max: usize) -> Pool {
-        Pool::new(Box::new(f.clone()), Config { keep_alive: keep, max_loaded: max, wait_for_room: Duration::ZERO })
+        Pool::new(Box::new(f.clone()), Box::new(NoProbe), Config { keep_alive: keep, max_loaded: max, margin: 0, wait_for_room: Duration::ZERO })
     }
 
     #[test]
@@ -1851,7 +1995,11 @@ mod tests {
     #[test]
     fn two_different_models_that_arrive_together_do_not_both_take_the_last_place() {
         let f = Arc::new(Fakes { delay: Duration::from_millis(150), ..Arc::try_unwrap(Fakes::new()).ok().unwrap() });
-        let p = Arc::new(Pool::new(Box::new(f.clone()), Config { keep_alive: None, max_loaded: 1, wait_for_room: Duration::from_secs(5) }));
+        let p = Arc::new(Pool::new(
+            Box::new(f.clone()),
+            Box::new(NoProbe),
+            Config { keep_alive: None, max_loaded: 1, margin: 0, wait_for_room: Duration::from_secs(5) },
+        ));
         let ts: Vec<_> = ["a/a", "a/b"]
             .iter()
             .map(|n| {
@@ -2107,5 +2255,152 @@ mod tests {
         assert_eq!(ask("a/z"), 200);
         assert_eq!(sv.pool.loaded(), ["a/y", "a/z"]);
         sv.pool.shutdown();
+    }
+
+    // ---- models held by the GPU's memory ----------------------------------------------------------------------------------------------------------------------
+
+    /// A GPU of `total` units, and what each model takes of it.
+    struct Gpu {
+        free: std::sync::atomic::AtomicU64,
+        sizes: Vec<(&'static str, u64)>,
+        failed_loads: AtomicUsize,
+    }
+
+    impl Probe for Arc<Gpu> {
+        fn free_bytes(&self) -> Option<u64> {
+            Some(self.free.load(Ordering::SeqCst))
+        }
+    }
+
+    struct OnGpu {
+        inner: Arc<Fakes>,
+        gpu: Arc<Gpu>,
+    }
+
+    struct Held {
+        inner: Box<dyn Handle>,
+        gpu: Arc<Gpu>,
+        size: u64,
+        held: bool,
+    }
+
+    impl Handle for Held {
+        fn port(&self) -> u16 {
+            self.inner.port()
+        }
+        fn alive(&mut self) -> bool {
+            self.inner.alive()
+        }
+        fn stop(&mut self) {
+            if std::mem::replace(&mut self.held, false) {
+                self.gpu.free.fetch_add(self.size, Ordering::SeqCst);
+            }
+            self.inner.stop();
+        }
+    }
+
+    impl Backend for OnGpu {
+        fn start(&self, spec: &Spec) -> Result<Box<dyn Handle>, String> {
+            let size = self.gpu.sizes.iter().find(|(n, _)| *n == spec.arg).map_or(0, |(_, b)| *b);
+            if self.gpu.free.load(Ordering::SeqCst) < size {
+                self.gpu.failed_loads.fetch_add(1, Ordering::SeqCst);
+                return Err("out of memory".into());
+            }
+            self.gpu.free.fetch_sub(size, Ordering::SeqCst);
+            Ok(Box::new(Held { inner: self.inner.start(spec)?, gpu: self.gpu.clone(), size, held: true }))
+        }
+    }
+
+    fn gpu_pool(total: u64, sizes: &[(&'static str, u64)], max: usize) -> (Pool, Arc<Gpu>) {
+        let gpu = Arc::new(Gpu { free: total.into(), sizes: sizes.to_vec(), failed_loads: AtomicUsize::new(0) });
+        let pool = Pool::new(
+            Box::new(OnGpu { inner: Fakes::new(), gpu: gpu.clone() }),
+            Box::new(gpu.clone()),
+            Config { keep_alive: None, max_loaded: max, margin: 0, wait_for_room: Duration::ZERO },
+        );
+        (pool, gpu)
+    }
+
+    #[test]
+    fn models_that_fit_the_gpu_together_are_all_held_and_each_footprint_is_measured() {
+        let (p, gpu) = gpu_pool(10, &[("a/a", 3), ("a/b", 3), ("a/c", 3)], 16);
+        for n in ["a/a", "a/b", "a/c"] {
+            let l = p.acquire(&spec(n)).unwrap();
+            p.release(l);
+        }
+        assert_eq!(p.loaded(), ["a/a", "a/b", "a/c"], "by memory three fit; the count would have been the limit");
+        assert_eq!(gpu.free.load(Ordering::SeqCst), 1);
+        let st: serde_json::Value = serde_json::from_str(&p.status_json(1)).unwrap();
+        assert_eq!((st["models"][0]["gpu_bytes"].as_u64(), st["gpu_free_bytes"].as_u64()), (Some(3), Some(1)));
+        p.shutdown();
+    }
+
+    #[test]
+    fn a_model_that_was_loaded_before_makes_room_before_its_load_not_after_a_failed_one() {
+        let (p, gpu) = gpu_pool(10, &[("a/a", 4), ("a/b", 4), ("a/c", 4)], 16);
+        for n in ["a/a", "a/b"] {
+            let l = p.acquire(&spec(n)).unwrap();
+            p.release(l);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // c has no footprint yet: its load fails for want of room, the idle models go and it is tried again (the retry)
+        let l = p.acquire(&spec("a/c")).unwrap();
+        p.release(l);
+        assert_eq!(p.loaded(), ["a/c"]);
+        assert_eq!(gpu.failed_loads.load(Ordering::SeqCst), 1);
+        // a and b are known now: bringing b back needs 4, 6 are free; then a needs 4 and 2 are free: the least recently used idle model (c) goes first, with no failed load
+        let l = p.acquire(&spec("a/b")).unwrap();
+        p.release(l);
+        let l = p.acquire(&spec("a/a")).unwrap();
+        p.release(l);
+        assert_eq!(gpu.failed_loads.load(Ordering::SeqCst), 1, "no load failed after the footprints were known");
+        assert_eq!(p.loaded(), ["a/b", "a/a"]);
+        assert_eq!(gpu.free.load(Ordering::SeqCst), 2);
+        p.shutdown();
+        assert_eq!(gpu.free.load(Ordering::SeqCst), 10);
+    }
+
+    #[test]
+    fn a_model_in_use_is_not_unloaded_for_memory() {
+        let (p, gpu) = gpu_pool(10, &[("a/a", 6), ("a/b", 6)], 16);
+        let a = p.acquire(&spec("a/a")).unwrap(); // (in use)
+        let err = p.acquire(&spec("a/b")).err().expect("b does not fit beside a, which is in use");
+        assert_eq!(err.0, 503);
+        assert!(err.1.contains("out of memory"), "{}", err.1);
+        assert_eq!(p.loaded(), ["a/a"]);
+        assert_eq!(gpu.free.load(Ordering::SeqCst), 4);
+        p.release(a);
+        p.shutdown();
+    }
+
+    #[test]
+    fn the_free_memory_is_the_most_any_gpu_has() {
+        assert_eq!(parse_free_mib("1024\n15000\n300\n"), Some(15000 << 20));
+        assert_eq!(parse_free_mib(""), None);
+        assert_eq!(parse_free_mib("No devices were found\n"), None);
+    }
+
+    #[test]
+    fn the_windows_task_runs_the_program_at_logon_with_the_users_own_rights() {
+        let flags = vec!["--port".to_string(), "11435".to_string(), "--keep-alive".to_string(), "10m".to_string()];
+        assert_eq!(task_command("C:\\Users\\a b\\glyd.exe", &flags), "\"C:\\Users\\a b\\glyd.exe\" service --background --port 11435 --keep-alive 10m");
+        assert_eq!(task_command("glyd.exe", &[]), "glyd.exe service --background");
+        let args = schtasks_create_args("GlydService", "C:\\g\\glyd.exe", &flags);
+        assert_eq!(&args[..9], ["/Create", "/F", "/SC", "ONLOGON", "/RL", "LIMITED", "/TN", "GlydService", "/TR"]);
+        assert_eq!(args[9], "C:\\g\\glyd.exe service --background --port 11435 --keep-alive 10m");
+        assert!(!args.iter().any(|a| a == "/RU" || a == "HIGHEST"), "no other account, no elevation");
+    }
+
+    /// On a Windows runner: the task is made, found and removed by the same calls `glyd service install` and `uninstall` make (it is never run: the program here is the test's).
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_task_is_made_found_and_removed() {
+        let name = format!("GlydServiceTest{}", std::process::id());
+        let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        assert!(!task_exists(&name));
+        assert!(task_create(&name, &exe, &["--port".to_string(), "11999".to_string()]), "schtasks /Create");
+        assert!(task_exists(&name), "schtasks /Query");
+        assert!(task_delete(&name), "schtasks /Delete");
+        assert!(!task_exists(&name));
     }
 }
