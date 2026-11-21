@@ -1,0 +1,39 @@
+# Dependency updates, weekly, with the minor and patch updates of an ecosystem in one pull request (a major update is its own). Security updates
+# are not on this schedule: GitHub opens them as soon as an advisory is published (a repository setting).
+#
+#   cargo          the root workspace (glyd, glyd-store, glyd-gpu, glyd-engine and Starlings' crates, one Cargo.lock) and the two fuzz workspaces that have a lock file of their own
+#   pip            the two Python packages (bindings/python, glyd-gpu-py)
+#   gomod          the Go binding
+#   github-actions the workflows and the composite actions in .github/actions
+#
+# Not listed: condor/ (scripts, no manifest) and research/ (experiments, no lock files).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories: ["/", "/fuzz", "/starlings/fuzz"]
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: pip
+    directories: ["/bindings/python", "/glyd-gpu-py"]
+    schedule:
+      interval: weekly
+    groups:
+      pip:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: gomod
+    directory: "/bindings/go"
+    schedule:
+      interval: weekly
+    groups:
+      gomod:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: github-actions
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        update-types: ["minor", "patch"]

@@ -38,8 +38,28 @@ fn manifest() -> &'static crate::models::Manifest {
     M.get_or_init(crate::models::Manifest::load)
 }
 
+/// A name with its separators as `/`: a Windows path (`C:\Users\me\models\Qwen3-8B`) is one the same as a Unix one.
+fn unix(name: &str) -> String {
+    name.replace('\\', "/")
+}
+
+/// Whether a name is a path (written with `/`): rooted, relative with a dot, under `~`, or a Windows drive's (`C:/`).
+fn is_path(name: &str) -> bool {
+    let b = name.as_bytes();
+    name.starts_with(['/', '~'])
+        || name.starts_with("./")
+        || name.starts_with("../")
+        || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/')
+}
+
+/// The last name of a path (a trailing separator ignored).
+fn last_name(name: &str) -> &str {
+    name.trim_end_matches('/').rsplit('/').next().unwrap_or(name)
+}
+
 /// The Hub repo (`ORG/NAME`) a served model's name is: the repo of a Hub cache's directory, or a name that is one (a level's tag, `:swift`, cut); None for a path or a name that is neither.
 fn repo_of(name: &str) -> Option<String> {
+    let name = &unix(name);
     if let Some(repo) = name.split('/').find_map(|p| p.strip_prefix("models--")) {
         return Some(repo.replace("--", "/"));
     }
@@ -96,6 +116,7 @@ pub(super) fn listed_name(name: &str) -> String {
             (None, None) => format!("{}:latest", model.to_ascii_lowercase()),
         };
     }
+    let path = unix(name);
     if let Some(repo) = repo_of(name) {
         let found =
             manifest().families.iter().find_map(|f| f.models.iter().find(|e| e.repo.eq_ignore_ascii_case(&repo)).map(|e| format!("{}:{}", f.name, e.size)));
@@ -104,8 +125,8 @@ pub(super) fn listed_name(name: &str) -> String {
         }
     }
     let base = match repo_of(name) {
-        Some(repo) if !name.contains(':') || name.starts_with('/') => repo,
-        _ if name.starts_with('/') || name.starts_with("./") => name.trim_end_matches('/').rsplit('/').next().unwrap_or(name).to_string(),
+        Some(repo) if !name.contains(':') || is_path(&path) => repo,
+        _ if is_path(&path) => last_name(&path).to_string(),
         _ => name.to_string(),
     };
     if base.contains(':') {
@@ -141,9 +162,7 @@ fn parameter_size(name: &str) -> String {
 
 /// Whether a name asks for the model that is served: the same repo, with a tag or without, in any case, a name that ends the served one's, or a short name of the manifest (`qwen3:8b`, `qwen3`) that is its repo.
 fn is_served(asked: &str, name: &str) -> bool {
-    let norm = |n: &str| {
-        repo_of(n).unwrap_or_else(|| n.trim_end_matches('/').rsplit('/').next().unwrap_or(n).trim_end_matches(":latest").to_string()).to_ascii_lowercase()
-    };
+    let norm = |n: &str| repo_of(n).unwrap_or_else(|| last_name(&unix(n)).trim_end_matches(":latest").to_string()).to_ascii_lowercase();
     let (a, b) = (norm(asked), norm(name));
     if a == b || b.rsplit('/').next() == Some(a.as_str()) {
         return true;
@@ -789,6 +808,13 @@ mod tests {
         assert!(is_served("my-model-3b", &m) && is_served("my-model-3b:f16", &m) && !is_served("my-model-3b:bf16", &m));
         assert_eq!(listed_name(&made("p", "Plain.gguf")), "plain:latest");
         assert_eq!(listed_name(&made("s", "Big-Model-F32.gguf (3 parts)")), "big-model:f32");
+        // a Windows path is a path as a Unix one is: its last name (not the whole path), and the repo of a Hub cache's directory
+        let win = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\glyd-ollama-none-1772";
+        assert_eq!(listed_name(win), "glyd-ollama-none-1772:latest");
+        assert_eq!(listed_name("C:/models/Qwen3-0.6B/"), "Qwen3-0.6B:latest");
+        assert_eq!(listed_name("C:\\hub\\models--Qwen--Qwen3-8B\\snapshots\\abc"), "qwen3:8b");
+        assert_eq!(listed_name("D:\\hub\\models--acme--Thing-1B\\snapshots\\abc"), "acme/Thing-1B:latest");
+        assert!(is_served("glyd-ollama-none-1772", win) && is_served("qwen3:8b", "C:\\hub\\models--Qwen--Qwen3-8B\\snapshots\\abc"));
         // a directory with no such file is the name it had
         let none = std::env::temp_dir().join(format!("glyd-ollama-none-{}", std::process::id()));
         std::fs::create_dir_all(&none).unwrap();

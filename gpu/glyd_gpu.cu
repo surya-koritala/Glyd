@@ -9065,7 +9065,9 @@ __global__ void __launch_bounds__(LNT, C) f8h_lin3_kernel(const F8Lin P) {
 #define GLYD_GPU_API extern "C" __attribute__((visibility("hidden")))  // the pybind module's own
 #define GLYD_GPU_INTERNAL GLYD_GPU_API
 #elif defined(_WIN32)
-#define GLYD_GPU_API extern "C" __declspec(dllexport)
+// (exported by the module-definition file build_lib.ps1 writes from this file's own definitions: the header declares each function plainly, and nvcc refuses a definition that adds
+// __declspec(dllexport) to a declaration without it)
+#define GLYD_GPU_API extern "C"
 #define GLYD_GPU_INTERNAL GLYD_GPU_API
 #else
 #define GLYD_GPU_API extern "C" __attribute__((visibility("default")))
