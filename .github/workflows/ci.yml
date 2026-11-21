@@ -398,6 +398,7 @@ jobs:
           python3 scripts/bump_version.py --check
           python3 scripts/bump_version.py --selftest
           python3 tools/report/report.py --selftest
+          bash scripts/check_install_verify.sh
 
   rust:
     name: The Rust glyd-gpu crate

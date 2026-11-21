@@ -869,7 +869,7 @@ fn constraint_of(sh: &Shared, v: &Value, api: &Api) -> std::result::Result<Optio
             ToolChoice::Required => None,
             _ => return None,
         };
-        // (Kimi-K3's and Gemma 4's own markup: a forced call is opened by the prompt, and goes without a grammar)
+        // (Kimi-K3's, Gemma 4's and Muse's own markup: a forced call is opened by the prompt, and goes without a grammar; `constrain::call_grammar` has ATEM's block too, for the named call of Muse, which waits for its end token to be known)
         let c = sh.chat.as_ref().filter(|c| !c.is_xtml() && !c.is_gemma() && !c.is_muse())?;
         crate::constrain::call_grammar(&t.list, named.as_deref(), Format::of(c)).map(Spec::Grammar)
     });
