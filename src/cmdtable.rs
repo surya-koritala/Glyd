@@ -79,7 +79,7 @@ pub const CMDS: &[Cmd] = &[
         name: "service",
         args: "[install | uninstall | status | stop]",
         summary: "the background service: models load on request and unload when idle",
-        detail: "With no word it runs in the foreground; install makes it a user unit started at login (systemd, launchd; Windows runs it by hand). docs/service.md.",
+        detail: "With no word it runs in the foreground; install makes it a user unit started at login (systemd, launchd; on Windows a scheduled task of the user's, at logon). docs/service.md.",
         flags: &["port", "host", "keep-alive", "max-loaded", "context", "users", "json"],
     },
     Cmd {

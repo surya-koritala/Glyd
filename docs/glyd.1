@@ -60,7 +60,7 @@ Flags: \-\-all, \-\-port N
 .B glyd service [install | uninstall | status | stop]
 The background service: models load on request and unload when idle.
 .br
-With no word it runs in the foreground; install makes it a user unit started at login (systemd, launchd; Windows runs it by hand). docs/service.md.
+With no word it runs in the foreground; install makes it a user unit started at login (systemd, launchd; on Windows a scheduled task of the user's, at logon). docs/service.md.
 .br
 Flags: \-\-port N, \-\-host ADDRESS, \-\-keep\-alive TIME, \-\-max\-loaded N, \-\-context N, \-\-users N, \-\-json
 .TP

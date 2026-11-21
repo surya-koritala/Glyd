@@ -72,6 +72,7 @@ const SWITCHES: &[&str] = &[
     "one",
     "decode",
     "json",
+    "background",
     "all",
     "insecure-no-auth",
 ];
@@ -89,6 +90,7 @@ const SWITCHES: &[&str] = &[
     "no-gpu",
     "costs",
     "json",
+    "background",
     "all",
     "compare",
     "bar",
