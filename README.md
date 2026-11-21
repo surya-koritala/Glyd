@@ -10,9 +10,10 @@
 <p align="center"><strong>Fast, compressed inference for open LLMs, from a laptop GPU to multi-GPU servers.</strong></p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache_2.0-blue.svg"></a>
-  <a href="https://github.com/surya-koritala/Glyd/releases"><img alt="Release" src="https://img.shields.io/github/v/release/surya-koritala/Glyd"></a>
-  <a href="https://huggingface.co/glyd"><img alt="Models on Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97-models-yellow"></a>
+  <a href="https://pypi.org/project/glyd/"><img alt="PyPI" src="https://img.shields.io/pypi/v/glyd?label=PyPI&color=orange"></a>
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-green.svg"></a>
+  <a href="https://pypistats.org/packages/glyd"><img alt="Downloads" src="https://img.shields.io/pypi/dm/glyd?label=Downloads&color=blue"></a>
+  <a href="https://huggingface.co/glyd"><img alt="Models on Hugging Face" src="https://img.shields.io/badge/Models-Hugging_Face-yellow"></a>
 </p>
 
 <p align="center">
