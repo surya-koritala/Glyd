@@ -15,6 +15,11 @@ static FATBIN12: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine12.fatb
 #[cfg(no_kernels)]
 static FATBIN12: &[u8] = &[];
 
+/// `Dev::wddm` from what is read: `windows` the operating system, `tcc` the TCC attribute (1: the TCC mode, which a datacenter card on Windows can be put in; 0: a display driver, WDDM).
+pub(crate) fn wddm_from(windows: bool, tcc: Option<i32>) -> bool {
+    windows && tcc == Some(0)
+}
+
 /// The seconds GPU discovery may take (`GLYD_PROBE_TIMEOUT`: a number, 0 for no limit): 30 on Windows, where a first call into the driver can stall for the antivirus or a sleeping GPU,
 /// and no limit elsewhere.
 pub(crate) fn probe_timeout(env: Option<&str>, windows: bool) -> u64 {
@@ -82,6 +87,16 @@ impl Dev {
             cu("cuDeviceGetAttribute", (d.cuDeviceGetAttribute)(&mut v, 97, dev))?;
         }
         Ok(v as u32)
+    }
+
+    /// Whether GPU `ordinal` runs under Windows' WDDM (the display driver model: the memory it has is the card's and, past that, system memory the driver pages in without an error): on Windows, a
+    /// GPU that is not in the TCC mode (CU_DEVICE_ATTRIBUTE_TCC_DRIVER, 17). False elsewhere and where the driver does not say.
+    pub fn wddm(ordinal: i32) -> bool {
+        let Ok(d) = driver() else { return false };
+        let (mut dev, mut tcc) = (0, -1);
+        // SAFETY: host out-pointers; 17 is the TCC attribute's number.
+        let ok = unsafe { (d.cuDeviceGet)(&mut dev, ordinal) == 0 && (d.cuDeviceGetAttribute)(&mut tcc, 17, dev) == 0 };
+        wddm_from(cfg!(windows), ok.then_some(tcc))
     }
 
     /// The compute capability as a pair (major, minor).
@@ -809,6 +824,15 @@ mod pick_tests {
     use super::pick_fatbin;
 
     /// A driver that reports CUDA 12 loads the CUDA 12 fatbin where the build has one; CUDA 13's driver loads the main one unless CUDA 12 is asked for; a build without one has one choice.
+    #[test]
+    fn wddm_is_a_windows_gpu_that_is_not_in_the_tcc_mode() {
+        use super::wddm_from;
+        assert!(wddm_from(true, Some(0)));
+        assert!(!wddm_from(true, Some(1)), "TCC is not WDDM");
+        assert!(!wddm_from(true, None), "the driver did not say");
+        assert!(!wddm_from(false, Some(0)), "Linux reports 0 and has no WDDM");
+    }
+
     #[test]
     fn discovery_gives_up_on_a_driver_that_stalls() {
         use super::{probe_timeout, within};
