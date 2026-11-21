@@ -447,6 +447,17 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
             }
             rules.push(format!("start: ({}) \"}}\" \"\\n\" \"</tool_call>\"", alts.join(" | ")));
         }
+        Format::Json => {
+            for t in &pick {
+                let body = format!("%json{}", parameters_of(t));
+                // (named: the prompt holds the name, and the reply begins at the parameters)
+                alts.push(match named {
+                    Some(_) => body,
+                    None => format!("{} {}", lark_str(&format!("{}\", \"parameters\": ", name_of(t)?)), body),
+                });
+            }
+            rules.push(format!("start: ({}) \"}}\"", alts.join(" | ")));
+        }
         Format::Xml => {
             for (i, t) in pick.iter().enumerate() {
                 let mut params = Vec::new();

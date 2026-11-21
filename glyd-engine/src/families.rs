@@ -11,6 +11,7 @@ const QWEN38: &str = include_str!("../tests/fixtures/chat_qwen38_tools.jinja");
 const GLM53: &str = include_str!("../tests/fixtures/chat_glm53_tools.jinja");
 const GEMMA4: &str = include_str!("../tests/fixtures/chat_gemma4_tools.jinja");
 const MUSE: &str = include_str!("../tests/fixtures/chat_muse_atem.jinja");
+const LLAMA31: &str = include_str!("../tests/fixtures/chat_llama31_tools.jinja");
 
 /// The tool the conversation calls: a string, an integer, a number, a boolean, a list and an object of its parameters.
 const TOOL: &str = r#"{"type":"function","function":{"name":"plan_trip","description":"Plan a trip","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"},"budget":{"type":"number"},"refundable":{"type":"boolean"},"stops":{"type":"array","items":{"type":"string"}},"prefs":{"type":"object"}},"required":["city"]}}}"#;
@@ -397,4 +398,60 @@ fn every_family_token_by_token() {
             assert_eq!(s.finish, "tool_calls", "{family}, tokens of {n}");
         }
     }
+}
+
+/// Llama 3.1+: `{"name": NAME, "parameters": {...}}` as the assistant's whole reply (vLLM's `llama3_json`), ended by `<|eot_id|>`; no reasoning. The call, with `<|python_tag|>` before it, and several calls with `; `
+/// between, read as well; a reply that is not a call is content; the arguments arrive whole, when the object is.
+#[test]
+fn llama_3_1() {
+    let t = rendered(LLAMA31, vec![]);
+    let chat = Chat::from_template(LLAMA31).unwrap();
+    assert_eq!(Format::of(&chat), Format::Json);
+    let turn = cut(&t, "<|start_header_id|>assistant<|end_header_id|>\n\n", "<|eot_id|>");
+    let call = turn.strip_prefix("<|start_header_id|>assistant<|end_header_id|>\n\n").unwrap().strip_suffix("<|eot_id|>").unwrap();
+    assert!(call.starts_with("{\"name\": \"plan_trip\", \"parameters\": "), "{call}");
+    round_trip(call, Format::Json);
+    // (what the model writes for a built-in tool: the tag first)
+    round_trip(&format!("{}{call}", crate::tools::PYTHON_TAG), Format::Json);
+    // two calls, `; ` between
+    let two = format!("{call}; {call}");
+    assert_eq!(whole(&two, Format::Json).len(), 2);
+    for n in [1, 5, 1000] {
+        let calls = streamed(&two, Format::Json, n);
+        assert_eq!(calls.len(), 2, "pieces of {n}: {calls:?}");
+        for c in calls {
+            assert_eq!(c.name, "plan_trip");
+            same_json(&c.arguments, ARGS);
+        }
+    }
+    // a reply that is not a call is content, whole and in pieces; so is one whose object is no call
+    for text in ["The weather is fine.", "{\"colour\": \"red\"}", "<|python_tag|>brave_search.call(query=\"x\")"] {
+        let e = tools::extract(text, Format::Json, &tools());
+        assert!(!e.called && e.content.as_deref() == Some(text), "{text}: {e:?}");
+        for n in [1, 4] {
+            let mut s = ToolStream::new(Format::Json, &tools());
+            let mut content = String::new();
+            let chars: Vec<char> = text.chars().collect();
+            for c in chars.chunks(n) {
+                for ev in s.feed(&c.iter().collect::<String>()) {
+                    if let ToolEv::Content(x) = ev {
+                        content.push_str(&x);
+                    }
+                }
+            }
+            for ev in s.finish() {
+                if let ToolEv::Content(x) = ev {
+                    content.push_str(&x);
+                }
+            }
+            assert_eq!((content.as_str(), s.emitted), (text, false), "pieces of {n}");
+        }
+    }
+    // a call that never closes is content at the end, and no call was sent
+    let cut_off = &call[..call.len() - 3];
+    assert!(!tools::extract(cut_off, Format::Json, &tools()).called);
+    // a forced call: the prefix the prompt ends with, and the grammar of what follows
+    let prefix = tools::forced_prefix(&tools::ToolChoice::Named("plan_trip".into()), Format::Json).unwrap();
+    assert_eq!(prefix, "{\"name\": \"plan_trip\", \"parameters\": ");
+    assert!(crate::constrain::call_grammar(&tools(), Some("plan_trip"), Format::Json).unwrap().contains("%json"));
 }
