@@ -313,15 +313,24 @@ impl Sampler {
     fn need(&self, n: usize) -> Option<Need> {
         let p = &self.p;
         if n == 0
-            || p.temperature <= 0.0
             || p.repetition_penalty != 1.0
             || p.presence_penalty != 0.0
             || p.frequency_penalty != 0.0
             || !p.logit_bias.is_empty()
             || !p.allowed.is_empty()
-            || self.gram.is_some()
             || self.suppressing()
         {
+            return None;
+        }
+        if self.gram.is_some() {
+            // (a grammar: the largest allowed candidate, or a top-k of the allowed ones, where the candidates hold enough of them: `sample_grammar`)
+            return match p.temperature {
+                t if t <= 0.0 => Some(Need { temperature: 0.0, mass: false }),
+                t if (1..=n).contains(&p.top_k) => Some(Need { temperature: t, mass: false }),
+                _ => None,
+            };
+        }
+        if p.temperature <= 0.0 {
             return None;
         }
         match p.top_k {
@@ -329,6 +338,12 @@ impl Sampler {
             0 if p.top_p < 1.0 && p.min_p == 0.0 => Some(Need { temperature: p.temperature, mass: true }),
             _ => None,
         }
+    }
+
+    /// The mask of the next draw's grammar, for a GPU that makes `kern::TOPK` candidates to put on the row before its top-k, where the draw looks at the candidates (`top_need`): the candidates then hold the draw's tokens
+    /// wherever the grammar allows that many (`sample_grammar`). None: no grammar, or a draw of the whole row.
+    pub fn mask_handle(&self) -> Option<crate::constrain::MaskHandle> {
+        self.top_need().and(self.gram.as_ref()?.handle())
     }
 
     /// What the next draw asks of a GPU that makes `kern::TOPK` candidates (None: it reads the whole row).
@@ -341,6 +356,9 @@ impl Sampler {
     /// then to be had and `sample` used), the generator untouched.
     pub fn sample_top(&mut self, cands: &[(u32, f32)], mass: Option<f64>) -> Option<u32> {
         let need = self.need(cands.len())?;
+        if self.gram.is_some() {
+            return self.sample_grammar(cands);
+        }
         let tok = if need.mass {
             self.draw_mass(cands, mass?)?
         } else {
@@ -362,6 +380,38 @@ impl Sampler {
         }
         DRAWS[0].fetch_add(1, Relaxed);
         Ok(self.sample(&row()?))
+    }
+
+    /// The next token under a grammar from the row's largest logits `cands` (largest first, equal logits by the smaller token), the grammar's mask put on them before the top-k cut: the same token `sample` gives from the
+    /// whole row, where the candidates hold the draw's: the first allowed one of them at temperature 0, else the top-k of the allowed ones (k allowed candidates, or every allowed token among them, or the one the grammar allows: an
+    /// allowed token past the candidates is smaller than all of them). None where they do not (the whole row is then read), the generator untouched.
+    fn sample_grammar(&mut self, cands: &[(u32, f32)]) -> Option<u32> {
+        let mask = self.gram.as_mut()?.mask();
+        let total = mask.num_set();
+        let greedy = self.p.temperature <= 0.0;
+        let k = if greedy { 1 } else { self.p.top_k };
+        let (mut toks, mut vals) = (Vec::new(), Vec::new());
+        for &(t, v) in cands {
+            if mask.is_allowed(t) {
+                toks.push(t);
+                vals.push(v);
+                if toks.len() == k {
+                    break;
+                }
+            }
+        }
+        let tok = if total == 1 && !greedy {
+            // (one token may follow: no logit is looked at)
+            self.finish_draw(vec![mask.first_bit_set()? as u32], vec![0.0])
+        } else if toks.is_empty() || (toks.len() < k && toks.len() < total) {
+            return None;
+        } else if greedy {
+            toks[0]
+        } else {
+            self.finish_draw(toks, vals)
+        };
+        self.note(tok);
+        Some(tok)
     }
 
     /// A draw with a top-p and no top-k from the largest logits `cands` and `mass`, the sum over the row of their exponentials: the token the whole row gives, or None where the cut is not the same for every sum within

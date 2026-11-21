@@ -82,10 +82,10 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 
 - [x] R0 One levels module ([#132](https://github.com/surya-koritala/Glyd/issues/132))
 - [ ] R8 glyd bench: one benchmark harness with a regression gate ([#133](https://github.com/surya-koritala/Glyd/issues/133))
-- [ ] R5a Constrained decoding with llguidance ([#143](https://github.com/surya-koritala/Glyd/issues/143))
+- [x] R5a Constrained decoding with llguidance ([#143](https://github.com/surya-koritala/Glyd/issues/143))
 - [x] R5b Tool-call and reasoning parsers for every family ([#144](https://github.com/surya-koritala/Glyd/issues/144))
 - [x] R7 Per-model logits tests on every merge ([#146](https://github.com/surya-koritala/Glyd/issues/146))
-- [ ] P1 One binary: glyd with the engine linked ([#147](https://github.com/surya-koritala/Glyd/issues/147))
+- [x] P1 One binary: glyd with the engine linked ([#147](https://github.com/surya-koritala/Glyd/issues/147))
 - [ ] P16 One capability matrix for fit, run and refusals ([#221](https://github.com/surya-koritala/Glyd/issues/221))
 - [ ] P2a The plan is what loads, on today's paths ([#148](https://github.com/surya-koritala/Glyd/issues/148))
 - [ ] P11 Secure defaults for every listener ([#222](https://github.com/surya-koritala/Glyd/issues/222))

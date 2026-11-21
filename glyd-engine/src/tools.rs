@@ -17,15 +17,15 @@ const DSML_OPEN: &str = "<｜DSML｜tool_calls>";
 
 /// The tags of a format whose calls are blocks of functions of parameters: XML's, and DeepSeek-V4's DSML (`<｜DSML｜tool_calls>`, in it `<｜DSML｜invoke name="NAME">`, in that
 /// `<｜DSML｜parameter name="KEY" string="true|false">VALUE</｜DSML｜parameter>`).
-struct Tags {
-    open: &'static str,
-    close: &'static str,
-    func: &'static str,
+pub(crate) struct Tags {
+    pub(crate) open: &'static str,
+    pub(crate) close: &'static str,
+    pub(crate) func: &'static str,
     /// The end of a function's name.
-    named: &'static str,
-    func_end: &'static str,
-    param: &'static str,
-    param_end: &'static str,
+    pub(crate) named: &'static str,
+    pub(crate) func_end: &'static str,
+    pub(crate) param: &'static str,
+    pub(crate) param_end: &'static str,
 }
 
 const XML: Tags = Tags { open: OPEN, close: CLOSE, func: FN_OPEN, named: ">", func_end: FN_CLOSE, param: PARAM_OPEN, param_end: PARAM_CLOSE };
@@ -102,7 +102,7 @@ impl Format {
         self.tags().open
     }
 
-    fn tags(self) -> &'static Tags {
+    pub(crate) fn tags(self) -> &'static Tags {
         match self {
             Format::Dsml => &DSML,
             Format::Atem => &ATEM,

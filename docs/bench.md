@@ -88,5 +88,5 @@ least the second's within 3%, its peak memory lower; a pass prints the line for 
 
 ## Not yet
 
-- Quality (KL against a reference on a fixed text set, a small eval): the logits fixtures of `glyd-engine/docs/logits-tests.md` are the fixed text and the references; the harness does not run them into its result yet.
+- Quality: `--quality` takes the next-token distribution (the top 20 log-probabilities of a raw completion of one token) after 48 prefixes of one fixed text and keeps them in the result; `--quality-ref RESULT.json` gives the KL against a reference result's (mean, largest, and at how many prefixes the best token is the same), and `bench --compare` holds a candidate to its base's (a mean past `--kl-max`, 0.005, or the best token changed at more than 5% of the prefixes is a regression). It needs a server that returns `logprobs` on completions (the engine's, vLLM, llama.cpp). Not yet: the logits fixtures' references of `glyd-engine/docs/logits-tests.md` in the result, and a reference result on a recent model (needs a GPU run: a rental).
 - 64 and 256 at once: the `full` suite asks for them; the server answers as many as it takes.

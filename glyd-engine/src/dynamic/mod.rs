@@ -2688,6 +2688,7 @@ impl crate::conv::Gen for Dyn {
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
         self.top.ask = sampler.top_need();
+        self.top.mask = sampler.mask_handle();
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         let eos = self.big.d.eos.clone();
@@ -2724,6 +2725,7 @@ impl crate::conv::Gen for Dyn {
                 return Ok((out, Finish::Length));
             }
             self.top.ask = sampler.top_need();
+            self.top.mask = sampler.mask_handle();
             s = self.step(tok)?;
         }
     }

@@ -134,7 +134,7 @@ impl std::fmt::Debug for Constraint {
 impl Constraint {
     /// A matcher at the start of the grammar, independent of the others; a worker makes it, and the first mask, at once (the prompt's prefill runs meanwhile).
     pub fn start(self: &Arc<Self>) -> Gram {
-        let mut g = Gram { m: None, pending: None, ready: None, ends: self.ends.clone(), vocab: self.vocab, masks: 0 };
+        let mut g = Gram { m: None, cell: None, current: None, ends: self.ends.clone(), vocab: self.vocab, masks: 0 };
         g.hand_over(Src::Start(self.clone()), None);
         g
     }
@@ -146,15 +146,90 @@ enum Src {
     Start(Arc<Constraint>),
 }
 
-/// A matcher with the token it is to take, and where its next mask goes.
+/// A matcher with the token it is to take, where its next mask goes, and what the mask is made of.
 struct Job {
     m: Src,
     tok: Option<u32>,
-    out: std::sync::mpsc::Sender<Made>,
+    out: Arc<MaskCell>,
+    ends: Vec<u32>,
+    vocab: usize,
 }
 
-/// The matcher, and the mask of the tokens that may follow (None where the matcher cannot say, or has stopped).
-type Made = (Matcher, Option<SimpleVob>);
+/// What a worker leaves for a sequence: the matcher back and the mask of the tokens that may follow it. `mask` is None, and `m` too, where the worker died.
+struct CellState {
+    done: bool,
+    m: Option<Matcher>,
+    mask: Option<Arc<SimpleVob>>,
+}
+
+/// Where a worker leaves what it made, for the sequence (its matcher, `Gram::settle`) and for the engine, which may put the mask on the GPU before the step's top-k (`MaskHandle::words`) while the matcher stays.
+pub struct MaskCell {
+    st: Mutex<CellState>,
+    cv: std::sync::Condvar,
+}
+
+impl MaskCell {
+    fn new() -> Arc<MaskCell> {
+        Arc::new(MaskCell { st: Mutex::new(CellState { done: false, m: None, mask: None }), cv: std::sync::Condvar::new() })
+    }
+
+    fn finish(&self, m: Option<Matcher>, mask: Option<Arc<SimpleVob>>) {
+        let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        st.m = m;
+        st.mask = mask;
+        st.done = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) -> std::sync::MutexGuard<'_, CellState> {
+        let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        while !st.done {
+            st = self.cv.wait(st).unwrap_or_else(|e| e.into_inner());
+        }
+        st
+    }
+}
+
+/// A job's cell, finished empty if the worker dies with the job in hand (a waiting engine or sequence is then let go).
+struct Leave(Arc<MaskCell>, bool);
+
+impl Drop for Leave {
+    fn drop(&mut self) {
+        if !self.1 {
+            self.0.finish(None, None);
+        }
+    }
+}
+
+/// The mask of the next step as an engine takes it: the tokens a sequence's grammar allows, for the GPU to put on the row before its top-k (`words`: a word of 32 tokens' bits, as the kernel reads them).
+#[derive(Clone)]
+pub enum MaskHandle {
+    Pending(Arc<MaskCell>),
+    Ready(Arc<SimpleVob>),
+}
+
+impl MaskHandle {
+    /// The mask, waiting for the worker that makes it (it works beside the step: the wait is for what the GPU has not done yet); None where the worker died.
+    pub fn words(&self) -> Option<Arc<SimpleVob>> {
+        match self {
+            MaskHandle::Ready(m) => Some(m.clone()),
+            MaskHandle::Pending(c) => c.wait().mask.clone(),
+        }
+    }
+}
+
+/// The mask a grammar gives to a row, with the end tokens where the grammar is whole (and they alone where nothing more can follow, or where the matcher cannot say: the reply then ends and does not go on past the grammar).
+fn finish_mask(made: Option<SimpleVob>, ends: &[u32], vocab: usize) -> SimpleVob {
+    let mut mask = made.clone().unwrap_or_else(|| SimpleVob::alloc(vocab));
+    if made.is_none() || ends.iter().any(|&e| mask.is_allowed(e)) {
+        for &e in ends {
+            if (e as usize) < mask.len() {
+                mask.allow_token(e);
+            }
+        }
+    }
+    mask
+}
 
 /// How many threads make masks. A mask costs some 50 us and now and then a millisecond or more: they are made beside the GPU's step, not after it, so that a slow one does not hold the others up.
 const WORKERS: usize = 4;
@@ -168,7 +243,8 @@ fn workers() -> &'static std::sync::mpsc::Sender<Job> {
             let rx = rx.clone();
             let _ = std::thread::Builder::new().name(format!("glyd-mask-{i}")).spawn(move || loop {
                 let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
-                let Ok(Job { m, tok, out }) = job else { return };
+                let Ok(Job { m, tok, out, ends, vocab }) = job else { return };
+                let mut leave = Leave(out, false);
                 let mut m = match m {
                     Src::Matcher(m) => m,
                     Src::Start(c) => c.matcher.lock().unwrap_or_else(|e| e.into_inner()).deep_clone(),
@@ -176,8 +252,9 @@ fn workers() -> &'static std::sync::mpsc::Sender<Job> {
                 if let Some(t) = tok {
                     let _ = m.consume_token(t);
                 }
-                let mask = if m.is_stopped() { None } else { m.compute_mask().ok() };
-                let _ = out.send((m, mask));
+                let made = if m.is_stopped() { None } else { m.compute_mask().ok() };
+                leave.1 = true;
+                leave.0.finish(Some(m), Some(Arc::new(finish_mask(made, &ends, vocab))));
             });
         }
         tx
@@ -187,8 +264,10 @@ fn workers() -> &'static std::sync::mpsc::Sender<Job> {
 /// A sequence's place in its grammar: its matcher, which is with a worker (taking the token chosen and making the next mask) between a token and the next step's draw.
 pub struct Gram {
     m: Option<Matcher>,
-    pending: Option<std::sync::mpsc::Receiver<Made>>,
-    ready: Option<Option<SimpleVob>>,
+    /// What the worker is making (or has made) for the step to come.
+    cell: Option<Arc<MaskCell>>,
+    /// The mask of the step in hand (a draw from the GPU's candidates may find it too narrow and ask again with the whole row's).
+    current: Option<Arc<SimpleVob>>,
     ends: Vec<u32>,
     vocab: usize,
     /// Masks made so far.
@@ -196,43 +275,52 @@ pub struct Gram {
 }
 
 impl Gram {
-    /// Sends the matcher to a worker with the token it takes (if any); the mask it makes is then `ready`'s, when `settle` has it back. Where no worker can be had the matcher stays and the mask is made at the draw.
+    /// Sends the matcher to a worker with the token it takes (if any); the mask it makes is then in the cell, when `settle` has the matcher back. Where no worker can be had the matcher stays and the mask is made at the draw.
     fn hand_over(&mut self, m: Src, tok: Option<u32>) {
-        let (out, rx) = std::sync::mpsc::channel();
-        if workers().send(Job { m, tok, out }).is_ok() {
-            self.pending = Some(rx);
+        let out = MaskCell::new();
+        if workers().send(Job { m, tok, out: out.clone(), ends: self.ends.clone(), vocab: self.vocab }).is_ok() {
+            self.cell = Some(out);
         }
     }
 
-    /// The matcher and its mask back from the worker, if they are out.
+    /// The matcher and the mask back from the worker, if they are out (a worker that died took the matcher: the grammar is then lost, and the reply ends).
     fn settle(&mut self) {
-        if let Some(rx) = self.pending.take() {
-            // (a worker that died took the matcher: the grammar is then lost, and the reply ends)
-            if let Ok((m, mask)) = rx.recv() {
-                self.m = Some(m);
-                self.ready = Some(mask);
+        if let Some(cell) = self.cell.take() {
+            let mut st = cell.wait();
+            self.m = st.m.take();
+            if self.current.is_none() {
+                self.current = st.mask.clone();
             }
+        }
+    }
+
+    /// The mask of the next step for an engine to put on the GPU's row (None: the grammar has none to give, as where it has just taken a token and no worker is making the next).
+    pub fn handle(&self) -> Option<MaskHandle> {
+        match (&self.current, &self.cell) {
+            (Some(m), _) => Some(MaskHandle::Ready(m.clone())),
+            (None, Some(c)) => Some(MaskHandle::Pending(c.clone())),
+            _ => None,
         }
     }
 
     /// The tokens that may be chosen next. Where the grammar is complete the end tokens may be chosen (and where nothing more can follow, they alone); where it has gone wrong (the matcher cannot say)
     /// they alone, so that the reply ends and does not go on past the grammar.
     pub fn mask(&mut self) -> SimpleVob {
+        if let Some(m) = &self.current {
+            return (**m).clone();
+        }
         self.masks += 1;
         self.settle();
-        let made = match self.ready.take() {
-            Some(mask) => mask,
-            None => self.m.as_mut().and_then(|m| if m.is_stopped() { None } else { m.compute_mask().ok() }),
-        };
-        let mut mask = made.clone().unwrap_or_else(|| SimpleVob::alloc(self.vocab));
-        if made.is_none() || self.ends.iter().any(|&e| mask.is_allowed(e)) {
-            for &e in &self.ends {
-                if (e as usize) < mask.len() {
-                    mask.allow_token(e);
-                }
+        let mask = match self.current.clone() {
+            Some(m) => m,
+            None => {
+                let made = self.m.as_mut().and_then(|m| if m.is_stopped() { None } else { m.compute_mask().ok() });
+                let m = Arc::new(finish_mask(made, &self.ends, self.vocab));
+                self.current = Some(m.clone());
+                m
             }
-        }
-        mask
+        };
+        (*mask).clone()
     }
 
     /// The tokens that may be chosen next, a flag for each of the row's `vocab`.
@@ -268,7 +356,7 @@ impl Gram {
             return;
         }
         self.settle();
-        self.ready = None;
+        self.current = None;
         if let Some(m) = self.m.take() {
             self.hand_over(Src::Matcher(m), Some(tok));
         }
@@ -322,44 +410,50 @@ fn name_of(tool: &glyd_gpu::json::Value) -> Option<&str> {
     tool.get("function").and_then(|f| f.get("name")).and_then(glyd_gpu::json::Value::as_str)
 }
 
-/// The Lark grammar of what a forced call's reply holds after the opening the prompt ends with (`tools::forced_prefix`), where its format is one the grammar knows: hermes (the arguments are JSON of the tool's
-/// schema) and XML (each parameter written as `<parameter=NAME>`, a string as it is, any other value as JSON). `named`: the function, where the call is of one (else the reply names it, among `tools`).
+/// The Lark grammar of what a forced call's reply holds after the opening the prompt ends with (`tools::forced_prefix`), for every format: hermes (the arguments are JSON of the tool's schema), XML (each parameter written as
+/// `<parameter=NAME>`, a string as it is, any other value as JSON), GLM (`<arg_key>NAME</arg_key><arg_value>VALUE</arg_value>`), and the blocks of invokes of DeepSeek-V4 (DSML) and Muse (ATEM: a parameter's `string` flag
+/// says whether its value is text or JSON, DSML's). A string is the text up to its closing tag (`text`, a lazy rule: a lexeme of any characters would take the rest of the call too), any other value JSON of the property's
+/// schema; the parameters are the tool's, in any order and any number. `named`: the function, where the call is of one (else the reply names it, among `tools`).
 pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format: crate::tools::Format) -> Option<String> {
     use crate::tools::Format;
-    let pick: Vec<&glyd_gpu::json::Value> = match named {
+    use glyd_gpu::json::Value;
+    let pick: Vec<&Value> = match named {
         Some(n) => vec![tools.iter().find(|t| name_of(t) == Some(n))?],
         None => tools.iter().collect(),
     };
     if pick.is_empty() {
         return None;
     }
+    // (a tool's parameters: each name, and whether its value is text)
+    let props = |t: &Value| -> Vec<(String, bool, String)> {
+        match t.get("function").and_then(|f| f.get("parameters")).and_then(|p| p.get("properties")) {
+            Some(Value::Object(o)) => {
+                o.iter().map(|(k, p)| (k.clone(), p.get("type").and_then(Value::as_str) == Some("string"), glyd_gpu::json::to_compact(p))).collect()
+            }
+            _ => Vec::new(),
+        }
+    };
     let mut rules = Vec::new();
     let mut alts = Vec::new();
     match format {
         Format::Hermes => {
-            for (i, t) in pick.iter().enumerate() {
+            for t in &pick {
                 let body = format!("%json{}", parameters_of(t));
                 // (named: the prompt holds the name, and the reply begins at the arguments)
                 alts.push(match named {
                     Some(_) => body,
                     None => format!("{} {}", lark_str(&format!("{}\", \"arguments\": ", name_of(t)?)), body),
                 });
-                let _ = i;
             }
             rules.push(format!("start: ({}) \"}}\" \"\\n\" \"</tool_call>\"", alts.join(" | ")));
         }
         Format::Xml => {
             for (i, t) in pick.iter().enumerate() {
-                let props = t.get("function").and_then(|f| f.get("parameters")).and_then(|p| p.get("properties"));
                 let mut params = Vec::new();
-                if let Some(glyd_gpu::json::Value::Object(o)) = props {
-                    for (k, p) in o {
-                        let string = p.get("type").and_then(glyd_gpu::json::Value::as_str) == Some("string");
-                        let value = if string { "text".to_string() } else { format!("%json{}", glyd_gpu::json::to_compact(p)) };
-                        // (the text rule takes the end of the parameter with it)
-                        let end = if string { String::new() } else { format!(" {}", lark_str("\n</parameter>\n")) };
-                        params.push(format!("{} {}{}", lark_str(&format!("<parameter={k}>\n")), value, end));
-                    }
+                for (k, string, schema) in props(t) {
+                    let head = lark_str(&format!("<parameter={k}>\n"));
+                    // (the text rule takes the end of the parameter with it)
+                    params.push(if string { format!("{head} text") } else { format!("{head} %json{schema} {}", lark_str("\n</parameter>\n")) });
                 }
                 let rule = format!("params{i}");
                 rules.push(if params.is_empty() { format!("{rule}: \"\"") } else { format!("{rule}: ({})*", params.join(" | ")) });
@@ -369,11 +463,57 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
                     None => format!("{} {rule} {end}", lark_str(&format!("{}>\n", name_of(t)?))),
                 });
             }
-            // (a string is the text up to the parameter's end: a lexeme of any characters would take the rest of the call too)
             rules.insert(0, format!("start: {}", alts.join(" | ")));
             rules.push("text[stop=\"\\n</parameter>\\n\"]: /(?s:.*)/".to_string());
         }
-        _ => return None,
+        Format::Glm => {
+            for (i, t) in pick.iter().enumerate() {
+                let mut params = Vec::new();
+                for (k, string, schema) in props(t) {
+                    let head = format!("ws {} ws \"<arg_value>\"", lark_str(&format!("<arg_key>{k}</arg_key>")));
+                    params.push(if string { format!("{head} text") } else { format!("{head} %json{schema} \"</arg_value>\"") });
+                }
+                let rule = format!("params{i}");
+                rules.push(if params.is_empty() { format!("{rule}: \"\"") } else { format!("{rule}: ({})*", params.join(" | ")) });
+                alts.push(match named {
+                    Some(_) => rule,
+                    None => format!("{} {rule}", lark_str(name_of(t)?)),
+                });
+            }
+            rules.insert(0, format!("start: ({}) ws \"</tool_call>\"", alts.join(" | ")));
+            // (white space as literals: a lexeme of it after a `text` that ends at its stop is not read as one)
+            rules.push("ws: (\"\\n\" | \" \")*".to_string());
+            // (the stop takes the new line the templates write after it: a token may end past the stop, but not a lexeme that is read as ending at it)
+            rules.push("text[stop=\"</arg_value>\\n\"]: /(?s:.*)/".to_string());
+        }
+        Format::Dsml | Format::Atem => {
+            let tg = format.tags();
+            let dsml = format == Format::Dsml;
+            for (i, t) in pick.iter().enumerate() {
+                let mut params = Vec::new();
+                for (k, string, schema) in props(t) {
+                    let flag = |s: bool| if dsml { format!("{k}\" string=\"{s}\">") } else { format!("{k}\">") };
+                    params.push(if string {
+                        format!("{} text ws", lark_str(&format!("{}{}", tg.param, flag(true))))
+                    } else {
+                        format!("{} %json{schema} {} ws", lark_str(&format!("{}{}", tg.param, flag(false))), lark_str(tg.param_end))
+                    });
+                }
+                let rule = format!("params{i}");
+                rules.push(if params.is_empty() { format!("{rule}: \"\"") } else { format!("{rule}: ({})*", params.join(" | ")) });
+                let body = format!("ws {rule} {} ws", lark_str(tg.func_end));
+                alts.push(match named {
+                    Some(_) => body,
+                    None => format!("{} {body}", lark_str(&format!("{}{}{}", tg.func, name_of(t)?, tg.named))),
+                });
+            }
+            // (a named call is the one invoke the prompt opened; else one or more)
+            let invokes = if named.is_some() { alts.join(" | ") } else { format!("({})+", alts.join(" | ")) };
+            rules.insert(0, format!("start: {invokes} {}", lark_str(tg.close)));
+            // (white space as literals: a lexeme of it after a `text` that ends at its stop is not read as one)
+            rules.push("ws: (\"\\n\" | \" \")*".to_string());
+            rules.push(format!("text[stop={}]: /(?s:.*)/", lark_str(&format!("{}\n", tg.param_end))));
+        }
     }
     Some(rules.join("\n"))
 }
@@ -497,7 +637,8 @@ mod tests {
                 // (a grammar is no greedy step: the GPU's largest logit is not the choice, nor are its largest logits the draw's whole)
                 assert!(!p.greedy());
                 let mut s = Sampler::new(p, &[]);
-                assert!(s.top_need().is_none());
+                // (the GPU's largest logits serve a draw that looks at no more of the row than they hold)
+                assert_eq!(s.top_need().is_some(), temperature <= 0.0 || (1..=64).contains(&top_k));
                 let mut out = Vec::new();
                 for step in 0..20 {
                     let logits: Vec<f32> =
@@ -542,6 +683,152 @@ mod tests {
                 assert_eq!(by_grammar.sample(&row), by_hand.sample(&m), "top_k {top_k} top_p {top_p} min_p {min_p} seed {seed}");
             }
         }
+    }
+
+    /// Forced calls in every format: the grammar takes the call a model writes after the prompt's opening (`tools::forced_prefix`), each byte allowed and the call whole at its end, and the reader of calls (`tools::extract`)
+    /// reads from prefix and reply the one call asked for. The tools: one with a string, an integer and an object parameter, and one with none.
+    #[test]
+    fn forced_calls_of_every_format_are_the_calls_the_reader_reads() {
+        use crate::tools::{extract, forced_prefix, Format, ToolChoice};
+        let tools = glyd_gpu::json::parse(
+            r#"[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"},"opts":{"type":"object","properties":{"hourly":{"type":"boolean"}}}},"required":["city"]}}},
+                {"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{}}}}]"#,
+        )
+        .unwrap();
+        let tools = tools.as_array().unwrap();
+        let g =
+            Grammars::new((0..=255u8).map(|b| vec![b]).chain([[&[TokTrie::SPECIAL_TOKEN_MARKER][..], b"<|end|>"].concat()]).collect(), &[256], 300).unwrap();
+        let (dsml, atem) = (Format::Dsml.tags(), Format::Atem.tags());
+        let weather = |city: &str| format!("{{\"city\": \"{city}\", \"days\": 3, \"opts\": {{\"hourly\": true}}}}");
+        // (what the model writes after the prefix: for get_weather, named and then required, and for ping, named)
+        let cases: Vec<(Format, String, String, String)> = vec![
+            (
+                Format::Hermes,
+                format!("{}}}\n</tool_call>", weather("Zürich")),
+                "get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>".into(),
+                "{}}\n</tool_call>".into(),
+            ),
+            (
+                Format::Xml,
+                "<parameter=city>\nSão Paulo, \"Brazil\"\n</parameter>\n<parameter=days>\n3\n</parameter>\n<parameter=opts>\n{\"hourly\": true}\n</parameter>\n</function>\n</tool_call>".into(),
+                "get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>".into(),
+                "</function>\n</tool_call>".into(),
+            ),
+            (
+                Format::Glm,
+                "\n<arg_key>city</arg_key>\n<arg_value>São Paulo</arg_value>\n<arg_key>days</arg_key>\n<arg_value>3</arg_value>\n<arg_key>opts</arg_key>\n<arg_value>{\"hourly\": true}</arg_value>\n</tool_call>".into(),
+                "get_weather\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n</tool_call>".into(),
+                "</tool_call>".into(),
+            ),
+            (
+                Format::Dsml,
+                format!("<｜DSML｜parameter name=\"city\" string=\"true\">São Paulo</｜DSML｜parameter>\n<｜DSML｜parameter name=\"days\" string=\"false\">3</｜DSML｜parameter>\n</｜DSML｜invoke>\n{}", dsml.close),
+                format!("{}get_weather\">\n<｜DSML｜parameter name=\"city\" string=\"true\">Paris</｜DSML｜parameter>\n</｜DSML｜invoke>\n{}", dsml.func, dsml.close),
+                format!("\n</｜DSML｜invoke>\n{}", dsml.close),
+            ),
+            (
+                Format::Atem,
+                format!("<atem:parameter name=\"city\">São Paulo</atem:parameter>\n<atem:parameter name=\"days\">3</atem:parameter>\n</atem:invoke>\n{}", atem.close),
+                format!("{}get_weather\">\n<atem:parameter name=\"city\">Paris</atem:parameter>\n</atem:invoke>\n{}", atem.func, atem.close),
+                format!("</atem:invoke>\n{}", atem.close),
+            ),
+        ];
+        for (format, named_text, required_text, ping_text) in cases {
+            let walk_text = |named: Option<&str>, text: &str| {
+                let lark = call_grammar(tools, named, format).unwrap_or_else(|| panic!("{format:?}: no grammar"));
+                let c = g.compile(&Spec::Grammar(lark.clone())).unwrap_or_else(|e| panic!("{format:?} {named:?}: {e}\n{lark}"));
+                let mut gram = c.start();
+                for (i, &b) in text.as_bytes().iter().enumerate() {
+                    assert!(gram.allowed()[b as usize], "{format:?} {named:?}: byte {i} of {text:?} ({:?}) is not allowed", &text[..i]);
+                    gram.consume(b as u32);
+                }
+                assert!(gram.accepting(), "{format:?} {named:?}: {text:?} is not whole");
+            };
+            walk_text(Some("get_weather"), &named_text);
+            walk_text(None, &required_text);
+            walk_text(Some("ping"), &ping_text);
+            // (the reader: the prompt's opening and the reply make the call)
+            let read = |choice: &ToolChoice, text: &str| extract(&format!("{}{text}", forced_prefix(choice, format).unwrap()), format, tools);
+            let named = ToolChoice::Named("get_weather".into());
+            let e = read(&named, &named_text);
+            assert!(e.called && e.calls.len() == 1 && e.calls[0].name == "get_weather", "{format:?}: {e:?}");
+            assert!(e.calls[0].arguments.contains("São Paulo") || e.calls[0].arguments.contains("Zürich"), "{format:?}: {e:?}");
+            let e = read(&ToolChoice::Required, &required_text);
+            assert!(e.called && e.calls[0].name == "get_weather" && e.calls[0].arguments.contains("Paris"), "{format:?}: {e:?}");
+        }
+    }
+
+    /// The mask an engine is handed for the next step is the one the sequence's draw then takes, before and after the draw has it, and the sampler offers it only where its draw looks at the candidates.
+    #[test]
+    fn the_mask_an_engine_puts_on_the_gpu_is_the_draws() {
+        use crate::sampler::{Params, Sampler};
+        let c = grammars().compile(&Spec::Choice(vec!["abc".into(), "yes".into()])).unwrap();
+        let mut g = c.start();
+        let bits = |m: &SimpleVob| (0..m.len()).map(|i| m.is_allowed(i as u32)).collect::<Vec<_>>();
+        // (at the start: the worker's, waited for)
+        let first = bits(&g.handle().expect("a handle at the start").words().unwrap());
+        assert_eq!(first, g.allowed());
+        // (after the draw has the mask it is the same one, ready)
+        assert_eq!(bits(&g.handle().unwrap().words().unwrap()), first);
+        g.consume(id("abc"));
+        assert!(matches!(g.handle(), Some(MaskHandle::Pending(_))));
+        let after = bits(&g.handle().unwrap().words().unwrap());
+        assert_eq!(after, g.allowed());
+        assert!(after[end() as usize] && after.iter().filter(|&&x| x).count() == 1);
+        // the sampler: a handle where the draw looks at the GPU's candidates (greedy, or a top-k within them), none where it needs the row
+        for (temperature, top_k, handle) in [(0.0, 0, true), (0.8, 40, true), (0.8, 0, false), (0.8, 65, false)] {
+            let s = Sampler::new(Params { temperature, top_k, constraint: Some(c.clone()), ..Params::default() }, &[]);
+            assert_eq!(s.mask_handle().is_some(), handle, "temperature {temperature} top_k {top_k}");
+        }
+        assert!(Sampler::new(Params { temperature: 0.8, top_k: 40, ..Params::default() }, &[]).mask_handle().is_none());
+    }
+
+    /// The GPU's largest logits with the grammar's mask put on them before the cut give the token the whole row gives, wherever they give one: at every place of a grammar, at temperature 0 and with a top-k.
+    #[test]
+    fn a_draw_from_the_candidates_is_the_draw_from_the_row() {
+        use crate::sampler::{Params, Sampler};
+        let c = grammars()
+            .compile(&Spec::JsonSchema(
+                r#"{"type":"object","properties":{"ab":{"type":"integer"},"yes":{"type":"boolean"}},"required":["ab"],"additionalProperties":false}"#.into(),
+            ))
+            .unwrap();
+        let width = vocab().len() + 5;
+        let (mut some, mut none) = (0, 0);
+        for (temperature, top_k) in [(0.0, 0), (0.9, 1), (0.9, 5), (1.2, 40), (0.9, 64)] {
+            for seed in 0..12u64 {
+                let p = Params { temperature, top_k, seed, constraint: Some(c.clone()), ..Params::default() };
+                let (mut by_top, mut by_row) = (Sampler::new(p.clone(), &[]), Sampler::new(p, &[]));
+                // (the grammar is walked as far as it goes, the same tokens in both)
+                for step in 0..40 {
+                    let row: Vec<f32> = (0..width).map(|t| (((t * 7919 + step * 31 + seed as usize * 13) % 211) as f32 / 8.0).floor() / 4.0 - 3.0).collect();
+                    let mut by: Vec<u32> = (0..width as u32).collect();
+                    by.sort_by(|&a, &b| row[b as usize].partial_cmp(&row[a as usize]).unwrap().then(a.cmp(&b)));
+                    let cands: Vec<(u32, f32)> = by[..64].iter().map(|&i| (i, row[i as usize])).collect();
+                    let want = by_row.sample(&row);
+                    let got = match by_top.top_need() {
+                        Some(_) => by_top.sample_top(&cands, None),
+                        None => None,
+                    };
+                    let tok = match got {
+                        Some(t) => {
+                            some += 1;
+                            assert_eq!(t, want, "temperature {temperature} top_k {top_k} seed {seed} step {step}");
+                            t
+                        }
+                        None => {
+                            none += 1;
+                            // (the whole row is read: the draw is the same one, the generator where it was)
+                            assert_eq!(by_top.sample(&row), want, "temperature {temperature} top_k {top_k} seed {seed} step {step}");
+                            want
+                        }
+                    };
+                    if tok == end() {
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(some > 50 && none > 0, "{some} draws from the candidates, {none} from the row");
     }
 
     /// A least length does not hold a reply that the grammar has ended past its end: the end token is chosen where nothing else may be.
@@ -626,7 +913,6 @@ mod tests {
             g.compile(&Spec::Grammar(lark.clone())).unwrap_or_else(|e| panic!("{format:?} {named:?}: {e}\n{lark}"));
         }
         assert!(call_grammar(tools, Some("nope"), crate::tools::Format::Hermes).is_none());
-        assert!(call_grammar(tools, None, crate::tools::Format::Glm).is_none());
         // a named hermes call, after its opening: the arguments, as the schema says, and the close
         let lark = call_grammar(tools, Some("get_weather"), crate::tools::Format::Hermes).unwrap();
         let c = g.compile(&Spec::Grammar(lark)).unwrap();
@@ -684,6 +970,22 @@ mod tests {
                     "<parameter=city>\nSão Paulo, \"Brazil\"\n</parameter>\n<parameter=days>\n3\n</parameter>\n<parameter=opts>\n{\"hourly\": true}\n</parameter>\n</function>\n</tool_call>",
                 ),
                 (crate::tools::Format::Xml, None, "get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>"),
+                (
+                    crate::tools::Format::Glm,
+                    Some("get_weather"),
+                    "\n<arg_key>city</arg_key>\n<arg_value>Zürich</arg_value>\n<arg_key>days</arg_key>\n<arg_value>3</arg_value>\n</tool_call>",
+                ),
+                (crate::tools::Format::Glm, None, "get_weather\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n</tool_call>"),
+                (
+                    crate::tools::Format::Dsml,
+                    Some("get_weather"),
+                    "<｜DSML｜parameter name=\"city\" string=\"true\">Zürich</｜DSML｜parameter>\n<｜DSML｜parameter name=\"days\" string=\"false\">3</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+                ),
+                (
+                    crate::tools::Format::Atem,
+                    None,
+                    "<atem:invoke name=\"get_weather\">\n<atem:parameter name=\"city\">Paris</atem:parameter>\n</atem:invoke>\n</atem:function_calls>",
+                ),
             ] {
                 let lark = call_grammar(tools, named, format).unwrap();
                 let c = g.compile(&Spec::Grammar(lark)).unwrap_or_else(|e| panic!("{}: {format:?}: {e}", dir.display()));

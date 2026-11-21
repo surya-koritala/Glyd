@@ -82,3 +82,31 @@ fn with_the_python_tool_the_link_beside_is_the_engine_it_is_told_about() {
     symlink("glyd", d.join("glyd-engine")).unwrap();
     assert_eq!(go(&d).trim(), format!("python glyd: engine={} args=run m", d.join("glyd-engine").display()));
 }
+
+#[test]
+fn the_help_the_man_page_and_the_flag_refusals_are_made_from_the_command_table() {
+    let d = install("table");
+    let g = d.join("glyd");
+    // glyd help COMMAND, and the command's --help, say the table's page (then the engine's options)
+    let o = run(&g, &["help", "fit"], &d, &[]);
+    assert!(text(&o.stdout).starts_with("Usage: glyd fit MODEL[:LEVEL]") && text(&o.stdout).contains("--machine NAME|FILE"), "{}", text(&o.stdout));
+    let o = run(&g, &["ps", "--help"], &d, &[]);
+    assert!(text(&o.stdout).starts_with("Usage: glyd ps") && text(&o.stdout).contains("Every option of the engine:"), "{}", text(&o.stdout));
+    // the manual page is the table's, and the one in docs/ is it
+    let o = run(&g, &["man"], &d, &[]);
+    assert_eq!(text(&o.stdout), fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/glyd.1")).unwrap());
+    // a flag a command does not take is refused, naming the commands that take it
+    let o = run(&g, &["run", "gemma4", "--json"], &d, &[]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        text(&o.stderr).contains("--json is not a flag of this command") && text(&o.stderr).contains("ls, ps, service, fit, doctor"),
+        "{}",
+        text(&o.stderr)
+    );
+    let o = run(&g, &["ls", "--machine", "h100"], &d, &[]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("fit, doctor, bench"), "{}", text(&o.stderr));
+    // and `ls --json` is JSON
+    let o = run(&g, &["ls", "--json"], &d, &[]);
+    assert!(text(&o.stdout).starts_with("{\"models\":["), "{}", text(&o.stdout));
+}
