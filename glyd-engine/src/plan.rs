@@ -568,6 +568,9 @@ const SYNC_PER_MOE_LAYER: f64 = 0.20e-3;
 const HIT_EXPONENT: f64 = 0.23;
 /// The rate an expert's bytes come from an NVMe disk in direct reads of whole experts, 16 in flight (src/disk.rs), GB/s: a planning figure.
 pub const DISK_GBS: f64 = 3.0;
+
+/// The rate a GPU reads pinned host memory over its link (PCIe 4.0 x16, pinned copies), GB/s: a planning figure for the dense layers in the computer's memory, which every step reads whole.
+pub const LINK_GBS: f64 = 25.0;
 /// Tokens a step makes with a draft head that proposes one and is accepted 80-90% of the time, after its cost.
 const MTP_GAIN: f64 = 1.7;
 
@@ -894,6 +897,9 @@ pub struct Spread {
     pub host_bytes: u64,
     /// The bytes the GPUs hold of the model (its weights, and the places' experts).
     pub gpu_bytes: u64,
+    /// The last layers whose dense matrices are in the computer's memory (src/dense_ram.rs: one stage, P2d's rung after the experts), and their bytes there.
+    pub dense: usize,
+    pub dense_bytes: u64,
 }
 
 /// The one plan: what `fit` prints before anything is downloaded and what `run`, `serve` and `preflight` load. Every field is bytes
@@ -1017,6 +1023,9 @@ impl LoadPlan {
                     sp.experts_per_layer,
                     gb(sp.host_bytes)
                 );
+            }
+            if sp.dense > 0 {
+                s += &format!(", the last {} layers' dense matrices ({}) in the computer's memory", sp.dense, gb(sp.dense_bytes));
             }
             if sp.coded {
                 s += ", FP8 matrices coded";

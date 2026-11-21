@@ -1822,7 +1822,7 @@ fn kimi_cache(
     ctx: usize,
     twelve: bool,
     host: Option<u64>,
-) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize)> {
+) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, (usize, u64))> {
     let c = crate::kimi::ConfigKimi::load(dir).map_err(cannot)?;
     // (its bf16 matrices in the 12-bit layout where `twelve`: an HBM GPU's faster product, a few hundred places fewer)
     let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
@@ -1853,7 +1853,10 @@ fn kimi_cache(
             "A machine with that much memory runs it",
         ));
     }
-    let Some((cuts, devices, places)) = crate::dynamic::split::places_plan(&dense, base, &c.moe, room, expert, e.experts, e.top_k) else {
+    // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
+    let ram = crate::dynamic::split::ram_bytes(dir, nl, "Kimi-K3", crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+    let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &c.moe, room, expert, e.experts, e.top_k, &ram)
+    else {
         return Err(Refusal::unsupported(
             format!(
                 "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
@@ -1863,10 +1866,16 @@ fn kimi_cache(
         ));
     };
     let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-    let on_gpus = dense.iter().sum::<u64>()
+    let on_gpus = dense.iter().sum::<u64>() - freed
         + base
         + bounds.windows(2).zip(&places).map(|(w, &p)| c.moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * expert).sum::<u64>();
-    Ok((cuts, devices, places, on_gpus, all, e.experts))
+    Ok((cuts, devices, places, on_gpus, all, e.experts, (held, ram_held(&ram, &dense, held))))
+}
+
+/// The bytes the last `held` layers' dense matrices take in the computer's memory (`split::places_plan_dense`'s layers).
+fn ram_held(ram: &[u64], dense: &[u64], held: usize) -> u64 {
+    let n = ram.len().min(dense.len());
+    (n - held.min(n)..n).map(|l| ram[l].min(dense[l])).sum()
 }
 
 /// A hummingbird directory's expert cache on the dynamic route (src/hbg_store.rs) where its GPUs do not hold all its experts, for any family: each layer's weights besides its experts and its share of the cache for `ctx` tokens
@@ -1883,7 +1892,7 @@ fn hb_cache(
     ctx: usize,
     twelve: bool,
     host: Option<u64>,
-) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, u64)> {
+) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, u64, (usize, u64))> {
     let hb = crate::hb_pack::HbDir::open(dir).map_err(cannot)?.ok_or_else(|| cannot(format!("{}: not a hummingbird directory", dir.display())))?;
     let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
     let (mut dense, base) = crate::dynamic::split::layer_bytes_with(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|_| true, false).map_err(cannot)?;
@@ -1916,7 +1925,11 @@ fn hb_cache(
             "A machine with more memory runs it",
         ));
     }
-    let Some((cuts, devices, places)) = crate::dynamic::split::places_plan(&dense, base, &moe, room, mean, experts, sh.topk.max(1)) else {
+    // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
+    let family = crate::dynamic::split::family(text).unwrap_or("");
+    let rb = crate::dynamic::split::ram_bytes(dir, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+    let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &moe, room, mean, experts, sh.topk.max(1), &rb)
+    else {
         return Err(Refusal::unsupported(
             format!(
                 "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
@@ -1926,10 +1939,10 @@ fn hb_cache(
         ));
     };
     let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-    let on_gpus = dense.iter().sum::<u64>()
+    let on_gpus = dense.iter().sum::<u64>() - freed
         + base
         + bounds.windows(2).zip(&places).map(|(w, &p)| moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * mean).sum::<u64>();
-    Ok((cuts, devices, places, on_gpus, all, experts, ram))
+    Ok((cuts, devices, places, on_gpus, all, experts, ram, (held, ram_held(&rb, &dense, held))))
 }
 
 /// A release's expert cache on the dynamic route where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4 experts; GLM-5.3-Flash's FP8 ones, each packed on its own in places of
@@ -1946,7 +1959,7 @@ fn release_cache(
     ctx: usize,
     twelve: bool,
     host: Option<u64>,
-) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize)> {
+) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, (usize, u64))> {
     let expert = |n: &str| n.contains(".experts.");
     let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
     let (mut dense, base) = crate::dynamic::split::layer_bytes_where(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !expert(n)).map_err(cannot)?;
@@ -1964,7 +1977,11 @@ fn release_cache(
             "A machine with that much memory runs it, or its hummingbird level, whose experts the disk holds too",
         ));
     }
-    let Some((cuts, devices, places)) = crate::dynamic::split::places_plan(&dense, base, &moe, room, mean, experts, sh.topk.max(1)) else {
+    // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
+    let family = crate::dynamic::split::family(text).unwrap_or("");
+    let rb = crate::dynamic::split::ram_bytes(dir, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+    let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &moe, room, mean, experts, sh.topk.max(1), &rb)
+    else {
         return Err(Refusal::unsupported(
             format!(
                 "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
@@ -1974,10 +1991,10 @@ fn release_cache(
         ));
     };
     let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-    let on_gpus = dense.iter().sum::<u64>()
+    let on_gpus = dense.iter().sum::<u64>() - freed
         + base
         + bounds.windows(2).zip(&places).map(|(w, &p)| moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * mean).sum::<u64>();
-    Ok((cuts, devices, places, on_gpus, all, experts))
+    Ok((cuts, devices, places, on_gpus, all, experts, (held, ram_held(&rb, &dense, held))))
 }
 
 /// `kimi_cache` with every layer across all the GPUs of `room` (src/dynamic/tp.rs): each GPU holds its slice of the rows of each big matrix (the embedding
@@ -2106,17 +2123,25 @@ pub(crate) fn size_dynamic(
     let release_cached = matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") && !hb && cut.is_none() && !chosen;
     let across = across && !hb && !release_cached;
     let mut ram = None;
+    // (the last layers' dense matrices in the computer's memory where a token's experts do not fit beside them on one GPU: how many, their bytes)
+    let mut dense_ram = (0usize, 0u64);
     let cache = if hb && cut.is_none() && !chosen {
         let k = hb_cache(dir, text, nl, &room, &name, ctx, hbm, host)?;
-        ram = Some(k.6);
+        (ram, dense_ram) = (Some(k.6), k.7);
         Some((k.0, k.1, k.2, k.3, k.4, k.5))
     } else if release_cached {
         // (R12: its experts in the cache, every one in the computer's memory)
         let k = release_cache(dir, text, nl, &room, &name, ctx, hbm, host)?;
-        ram = Some(k.4);
-        Some(k)
+        (ram, dense_ram) = (Some(k.4), k.6);
+        Some((k.0, k.1, k.2, k.3, k.4, k.5))
     } else if kimi && !hb && cut.is_none() && !chosen {
-        Some(if across { kimi_cache_tp(dir, &tp_room, &name, ctx, hbm, host)? } else { kimi_cache(dir, nl, &room, &name, ctx, hbm, host)? })
+        Some(if across {
+            kimi_cache_tp(dir, &tp_room, &name, ctx, hbm, host)?
+        } else {
+            let k = kimi_cache(dir, nl, &room, &name, ctx, hbm, host)?;
+            dense_ram = k.6;
+            (k.0, k.1, k.2, k.3, k.4, k.5)
+        })
     } else {
         None
     };
@@ -2169,7 +2194,7 @@ pub(crate) fn size_dynamic(
         context: ctx,
         users: 1,
         chunk: 256,
-        weights: total + host_bytes,
+        weights: total + host_bytes + dense_ram.1,
         bf16: 0,
         kv: 0,
         work,
@@ -2188,6 +2213,8 @@ pub(crate) fn size_dynamic(
             experts_per_layer: cache.as_ref().map_or(0, |k| k.5),
             host_bytes,
             gpu_bytes: total,
+            dense: dense_ram.0,
+            dense_bytes: dense_ram.1,
         }),
     })
 }
@@ -2403,6 +2430,15 @@ fn load_dynamic(
         };
         ui.borrow_mut().line(&format!("{n} experts of {} a layer are on the GPUs, chosen as the router asks for them; {held}.", k.experts_per_layer));
     }
+    if sp.dense > 0 {
+        // (P2d's rung after the experts: every step reads these layers whole over the link)
+        let ms = sp.dense_bytes as f64 / (crate::plan::LINK_GBS * 1e9) * 1e3;
+        ui.borrow_mut().line(&format!(
+            "The last {} layers' dense matrices ({}) are in the computer's memory too, each copied to the GPU before it runs: about {ms:.0} ms more a token.",
+            sp.dense,
+            gib(sp.dense_bytes)
+        ));
+    }
     if coded {
         // (the release's FP8 bytes plain do not fit these GPUs: coded, exactly the same values, in about 7 of 8 bits)
         crate::ffi::Lib::find().and_then(|l| l.f8h_plain(Some(false))).map_err(cannot)?;
@@ -2422,10 +2458,10 @@ fn load_dynamic(
             &o,
             &cuts,
             &devices,
-            k.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: 0 }).collect(),
+            k.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect(),
         ),
         Some(k) if across => crate::dynamic::split::open_kimi_tp(&dir, &o, &devices, k.places[0]),
-        Some(k) => crate::dynamic::split::open_kimi(&dir, &o, &cuts, &devices, k.places.clone()),
+        Some(k) => crate::dynamic::split::open_kimi(&dir, &o, &cuts, &devices, k.places.clone(), sp.dense),
         None if across => crate::dynamic::split::open_tp(&dir, &o, &devices),
         None => crate::dynamic::split::open(&dir, &o, &cuts, &devices),
     };
@@ -2930,8 +2966,10 @@ mod tests {
         let sh = crate::plan::Shape::from_config(&text).unwrap();
         let kv = ((sh.kv_full * 16.0 + sh.kv_sliding * 16f64.min(sh.window.max(1) as f64) + sh.state) / nl as f64) as u64 * nl as u64;
         let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
-        let (cuts, devices, places, on_gpus, got_all, experts) =
+        let (cuts, devices, places, on_gpus, got_all, experts, dense) =
             release_cache(&dir, &text, nl, &room, "tiny", 16, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        // (room for a token's experts beside the layers' weights: no dense layer in the computer's memory; DeepSeek-V4's loader keeps none there)
+        assert_eq!(dense, (0, 0));
         assert!(cuts.is_empty() && devices == vec![0] && places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
         assert_eq!(got_all, all);
         assert!(on_gpus <= room[0].1);
@@ -2968,14 +3006,15 @@ mod tests {
         let sh = crate::plan::Shape::from_config(&text).unwrap();
         let kv = ((sh.kv_full * 16.0 + sh.kv_sliding * 16f64.min(sh.window.max(1) as f64) + sh.state) / nl as f64) as u64 * nl as u64;
         let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
-        let (cuts, devices, places, on_gpus, got_all, experts, ram) =
+        let (cuts, devices, places, on_gpus, got_all, experts, ram, dense) =
             hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        assert_eq!(dense, (0, 0));
         assert!(cuts.is_empty() && devices == vec![0] && places.len() == 1, "{cuts:?} {devices:?} {places:?}");
         assert!(places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
         assert_eq!((got_all, ram), (all, all));
         assert!(on_gpus <= room[0].1);
         // memory for half of them: the rest on the disk
-        let (.., ram) = hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(all / 2 + HOST_MARGIN)).unwrap();
+        let (.., ram, _) = hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(all / 2 + HOST_MARGIN)).unwrap();
         assert_eq!(ram, all / 2);
         // none to give: refused
         let e = hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(HOST_MARGIN)).unwrap_err();
