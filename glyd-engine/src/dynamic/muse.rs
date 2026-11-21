@@ -87,7 +87,7 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     load_stage_hb(dir, o, st, None)
 }
 
-/// `load_stage` with a hummingbird directory's experts in the expert cache (`hc`: the stage's places and memory, src/hbg_store.rs).
+/// `load_stage` with its experts in the expert cache (`hc`: the stage's places and memory): a hummingbird directory's (src/hbg_store.rs), or the release's lossless experts (src/tiering.rs `cached_tiered`).
 pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let c = ConfigMuse::load(dir)?;
     if c.head_dim != 64 || c.hidden > 8192 || c.latent > 4096 || c.top_k > 32 {
@@ -191,6 +191,22 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         let finish = crate::cpu_hbg::Finish::Normed { signs: Vec::new(), rot: 0, w: post, eps: c.post_eps };
         let layer = match crate::hbg_store::hb_layer(hb.as_ref(), l, sl.is_some(), hc.zip(store.as_ref()), cfg.act, finish, dev.ordinal, cfg.router.top_k)? {
             Some(x) => x.into_layer(cfg, router, Some(bias), None, None)?,
+            // (R12: the release's experts in the expert cache, every one in the computer's memory: each stack's one lossless pack in the tiered layout, whatever the level of the rest, cut per expert)
+            None if hb.is_none() && hc.is_some() => {
+                let (Some(cg), Some(store)) = (hc, store.as_ref()) else { unreachable!("a stage's cache has its store") };
+                if sl.is_some() || cg.ram.is_some() {
+                    return err("Muse Spark's experts in the expert cache: a layer on one GPU, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
+                }
+                let places = |n: &str, rows: usize, cols: usize| -> Result<crate::tiering::TieredPlaces> {
+                    let w = words(&read(&format!("{m}.experts.{n}"))?);
+                    let p = glyd_gpu::pack::pack_tiered_checked(&w, e * rows, cols)
+                        .ok_or_else(|| Error(format!("{m}.experts.{n}: decoded to other bits than its weights")))?;
+                    crate::tiering::TieredPlaces::of(&p, e)
+                };
+                let (pu, pd) = (places("gate_up_proj", 2 * inter, lat)?, places("down_proj", lat, inter)?);
+                let (up, down, cache) = crate::tiering::cached_tiered(&pu, &pd, cg.places, store, l, dev.ordinal)?;
+                MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?.with_cache(cache)?
+            }
             None => {
                 let (up, down) = (stack("gate_up_proj", 2 * inter, lat)?, stack("down_proj", lat, inter)?);
                 MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?

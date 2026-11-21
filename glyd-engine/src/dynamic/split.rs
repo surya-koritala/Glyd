@@ -599,10 +599,7 @@ pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachin
             (c.layers, c.eos.clone())
         }
         Some("Nemotron-H") | None => {
-            return err(format!(
-                "{}: not a family whose hummingbird experts the expert cache takes (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark)",
-                dir.display()
-            ))
+            return err(format!("{}: not a family whose experts the expert cache takes (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark)", dir.display()))
         }
         Some(_) => {
             let c = crate::deepseek_v4::ConfigV4::load(dir)?;

@@ -51,6 +51,7 @@ _ARGS = {  # each function's arguments before its stream
     "mma_moe_unpack": _PACK + [_I64, _I64, _I64, _I64, _P, _P],
     "mma12_moe_unpack": _PACK + [_I64, _I64, _I64, _I64, _P, _P],
     "mma_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
+    "mma_moe_placed": _PACK + [_I64, _I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
     "mma12_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
     "mma_linear": _PACK + [_I64, _I64, _P, _I64, _P, _P, _I64, _P, _SZ, _P],
     "mma12_linear": _PACK + [_I64, _I64, _P, _I64, _P, _P, _I64, _P, _SZ, _P],
@@ -84,7 +85,7 @@ _AUX = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a 
 }
 
 
-API_VERSION = 16  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 17  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 KV_AUX = 2040  # places of each of the status's two rings, where a caller does not size them
 KV_AUX_AT = 16  # the void ring's first place in the status
 KV_STATUS_WORDS = KV_AUX_AT + 2 * KV_AUX  # a lossless KV cache's status words (glyd_gpu.h) at KV_RING: counters, then the ring of lost blocks and the ring of blocks with a raw page

@@ -172,6 +172,9 @@ jobs:
           # (GLM-5.3-Flash's FP8 experts as released: each packed on its own in places, the heads made the place's; a call's pairs no more than the places)
           "$E" glmrandom /tmp/glm-f8 --fp8
           "$E" tiercheck /tmp/glm-f8 --places 6
+          # (Muse Spark's lossless experts: the stack's tiered pack cut per expert, each place its own block entries; glyd_gpu_mma_moe_placed)
+          "$E" muserandom /tmp/muse-tier
+          "$E" tiercheck /tmp/muse-tier --places 6
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

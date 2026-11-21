@@ -383,7 +383,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
-pub const API_VERSION: c_int = 16;
+pub const API_VERSION: c_int = 17;
 
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {
@@ -423,6 +423,7 @@ table! {
         fn glyd_gpu_f8h_plain(c_int) -> c_int;
         fn glyd_gpu_mma_moe_workspace(i64, i64, i64, i64, i64, i64, i64, *mut usize) -> c_int;
         fn glyd_gpu_mma_moe(*const u8, *const u8, *const i32, *const u32, i64, i64, i64, *const u16, i64, i64, i64, *const i32, i64, *const u16, *const c_void, i64, *const i64, *mut u16, *mut c_void, usize, *mut c_int, Stream) -> c_int;
+        fn glyd_gpu_mma_moe_placed(*const u8, *const u8, *const i32, *const u32, i64, i64, i64, i64, *const u16, i64, i64, i64, *const i32, i64, *const u16, *const c_void, i64, *const i64, *mut u16, *mut c_void, usize, *mut c_int, Stream) -> c_int;
         fn glyd_gpu_mma12_moe_workspace(i64, i64, i64, i64, i64, i64, i64, *mut usize) -> c_int;
         fn glyd_gpu_mma12_moe(*const u8, *const u32, *const i32, *const u32, i64, i64, i64, *const u16, i64, i64, i64, *const i32, i64, *const u16, *const c_void, i64, *const i64, *mut u16, *mut c_void, usize, *mut c_int, Stream) -> c_int;
         fn glyd_gpu_kv_leaf_bytes(i64, i64, i64, *mut i64) -> c_int;
@@ -1054,6 +1055,61 @@ impl Lib {
             ),
         };
         self.ck(call!("moe"), r)
+    }
+
+    /// `moe` over an expert cache's places of a tiered-layout stack (glyd_gpu_mma_moe_placed: each place its own block entries, `stride` bytes of blocks a place); the weights, ids and the rest as `moe`'s.
+    ///
+    /// # Safety
+    /// As `moe`; `w`'s block entries [places][steps an expert + 1] and blocks [places][stride].
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn moe_placed(
+        &self,
+        w: &Pack,
+        stride: u64,
+        experts: i64,
+        x: u64,
+        t: i64,
+        k: i64,
+        gather: bool,
+        plan: u64,
+        act: i64,
+        weights: u64,
+        ids: u64,
+        y: u64,
+        ws: u64,
+        ws_bytes: usize,
+        done: u64,
+        cs: Stream,
+    ) -> Result<()> {
+        let Words::Tiered { blocks, block_base, tiers } = w.words else {
+            return err("an expert cache's places of a 12-bit pack: the tiered layout alone is placed");
+        };
+        let r = (self.api.glyd_gpu_mma_moe_placed)(
+            w.data as *const u8,
+            blocks as *const u8,
+            block_base as *const i32,
+            tiers.as_ptr(),
+            stride as i64,
+            experts,
+            w.rows / experts,
+            w.cols,
+            x as *const u16,
+            t,
+            k,
+            gather as i64,
+            plan as *const i32,
+            act,
+            std::ptr::null(),
+            weights as *const c_void,
+            1,
+            ids as *const i64,
+            y as *mut u16,
+            ws as *mut c_void,
+            ws_bytes,
+            done as *mut c_int,
+            cs,
+        );
+        self.ck(call!("moe_placed"), r)
     }
 
     /// A page's bytes for `h` heads of `d` channels with an arena of `a` entries.

@@ -292,6 +292,8 @@ pub struct ExpertStack {
     pub bytes: usize,
     /// An expert's whole rows where the stack holds this GPU's slice of each expert's (src/dynamic/tp.rs: a product is gathered after it); 0: whole experts.
     pub tp_rows: usize,
+    /// Where the stack is an expert cache's places of a tiered pack (`placed`, src/tiering.rs `TieredPlaces`): a place's bytes of blocks; 0 otherwise.
+    pub placed: u64,
     _bufs: Keep,
 }
 
@@ -299,6 +301,7 @@ pub struct ExpertStack {
 #[allow(dead_code)]
 enum Keep {
     Bufs([Buf; 2]),
+    Placed([Buf; 3]),
     Pack(crate::weights::PackBuf),
     None,
 }
@@ -326,6 +329,7 @@ impl ExpertStack {
             scale_stride: 0,
             bytes: p.bytes,
             tp_rows: 0,
+            placed: 0,
             _bufs: Keep::Pack(p),
         })
     }
@@ -333,7 +337,7 @@ impl ExpertStack {
     /// No experts' buffers, the shape alone: a layer whose experts are held in another format (`MoeLayer::f8`).
     pub fn shape_only(experts: usize, rows: usize, cols: usize) -> ExpertStack {
         let pack = Pack { data: 0, words: Words::Tiered { blocks: 0, block_base: 0, tiers: [0; 3] }, rows: (experts * rows) as i64, cols: cols as i64 };
-        ExpertStack { pack, experts, slots: experts, rows, cols, tag: 0, data_stride: 0, scale_stride: 0, bytes: 0, tp_rows: 0, _bufs: Keep::None }
+        ExpertStack { pack, experts, slots: experts, rows, cols, tag: 0, data_stride: 0, scale_stride: 0, bytes: 0, tp_rows: 0, placed: 0, _bufs: Keep::None }
     }
 
     /// The experts of `j` copied to the GPU.
@@ -358,7 +362,20 @@ impl ExpertStack {
         }
         let pack = Pack { data: data.ptr, words: Words::Tiered { blocks: scales.ptr, block_base: 0, tiers }, rows: (experts * rows) as i64, cols: cols as i64 };
         let bytes = data.bytes + scales.bytes;
-        Ok(ExpertStack { pack, experts, slots: experts, rows, cols, tag, data_stride, scale_stride, bytes, tp_rows: 0, _bufs: Keep::Bufs([data, scales]) })
+        Ok(ExpertStack {
+            pack,
+            experts,
+            slots: experts,
+            rows,
+            cols,
+            tag,
+            data_stride,
+            scale_stride,
+            bytes,
+            tp_rows: 0,
+            placed: 0,
+            _bufs: Keep::Bufs([data, scales]),
+        })
     }
 
     /// Room for `slots` experts' matrices [rows, cols] in a block layout, standing for a layer's `experts` (zeroed): the pack the library's grouped products read has `experts` experts' rows, and a plan made of
@@ -371,7 +388,38 @@ impl ExpertStack {
         let (data, scales) = (Buf::zeroed(slots * data_stride as usize)?, Buf::zeroed(slots * scale_stride as usize)?);
         let pack = Pack { data: data.ptr, words: Words::Tiered { blocks: scales.ptr, block_base: 0, tiers }, rows: (experts * rows) as i64, cols: cols as i64 };
         let bytes = data.bytes + scales.bytes;
-        Ok(ExpertStack { pack, experts, slots, rows, cols, tag, data_stride, scale_stride, bytes, tp_rows: 0, _bufs: Keep::Bufs([data, scales]) })
+        Ok(ExpertStack { pack, experts, slots, rows, cols, tag, data_stride, scale_stride, bytes, tp_rows: 0, placed: 0, _bufs: Keep::Bufs([data, scales]) })
+    }
+
+    /// `slots` places for `experts` experts [rows, cols] of a stack in the tiered layout (`tiers` its pack's), each place an expert's steps (`data_stride` bytes), its blocks (`stride` bytes, `scale_stride`) and its own
+    /// block entries (steps + 1): the store copies an expert's bytes of each into a place (src/tiering.rs `TieredPlaces`), the products read them by glyd_gpu_mma_moe_placed (`moe_tp`). Zeros until then.
+    pub fn placed(tiers: [u32; 3], experts: usize, slots: usize, rows: usize, cols: usize, stride: u64) -> Result<ExpertStack> {
+        if slots == 0 || slots > experts || !rows.is_multiple_of(64) || !cols.is_multiple_of(16) || !stride.is_multiple_of(4) || stride == 0 {
+            return err(format!("{slots} places for {experts} tiered experts of {rows} x {cols}, blocks of {stride} bytes a place"));
+        }
+        let steps = rows / 64 * (cols / 16);
+        let (data, blocks, entries) = (Buf::zeroed(slots * steps * 1280)?, Buf::zeroed(slots * stride as usize)?, Buf::zeroed(slots * (steps + 1) * 4)?);
+        let pack = Pack {
+            data: data.ptr,
+            words: Words::Tiered { blocks: blocks.ptr, block_base: entries.ptr, tiers },
+            rows: (experts * rows) as i64,
+            cols: cols as i64,
+        };
+        let bytes = data.bytes + blocks.bytes + entries.bytes;
+        Ok(ExpertStack {
+            pack,
+            experts,
+            slots,
+            rows,
+            cols,
+            tag: tiers[0] >> 24,
+            data_stride: (steps * 1280) as u64,
+            scale_stride: stride,
+            bytes,
+            tp_rows: 0,
+            placed: stride,
+            _bufs: Keep::Placed([data, blocks, entries]),
+        })
     }
 
     /// An expert's whole rows: `tp_rows` where the stack holds slices of them, else its own.
@@ -1503,6 +1551,9 @@ unsafe fn moe_tp(
     sc: &MoeScratch,
     s: Stream,
 ) -> Result<()> {
+    if st.placed > 0 {
+        return lib.moe_placed(&st.pack, st.placed, e, x, t, k, first, plan, act, wts, ids, y, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s);
+    }
     if st.tp_rows == 0 {
         return lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, y, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s);
     }
