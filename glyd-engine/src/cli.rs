@@ -1337,6 +1337,15 @@ fn lossy_plan_inner(
             return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
         }
         let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), unrun_fix()))?;
+        // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024, Nemotron 3 Super's: src/moe_hb.rs; the
+        // experts of a model with no latent, Nemotron 3.5 Lightning's, read its width)
+        let l = cfg.moe.latent;
+        if layout == Layout::Hummingbird && !(l.is_power_of_two() && (128..=1024).contains(&l)) {
+            return Err(Refusal::unsupported(
+                format!("{name}: the hummingbird level takes Nemotron-H experts on a latent of 128 to 1,024 (Nemotron 3 Super's); this model's experts read its width of {}", cfg.hidden),
+                format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
+            ));
+        }
         (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos)
     } else {
         if layout == Layout::Hummingbird {
