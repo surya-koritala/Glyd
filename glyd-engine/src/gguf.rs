@@ -671,6 +671,11 @@ pub fn generation_json(g: &Gguf) -> String {
     json::to_python(&J::Object(vec![("eos_token_id".into(), J::Array(ids))]), 2)
 }
 
+/// tokenizer.json and tokenizer_config.json from the vocabulary of `g` (src/gguf_tok.rs).
+pub fn tokenizer_files(g: &Gguf) -> Done<(String, String)> {
+    crate::gguf_tok::files(g)
+}
+
 // ---- the weights as a safetensors file ------------------------------------------------------------------------------------------------------------
 
 /// A half-precision float as an f32.
