@@ -31,8 +31,8 @@ own Rust engine. It works from one consumer card to a multi-GPU server. Apache-2
 - **Many GPUs.** Split a model's layers across GPUs, or share every layer across them. Starlings (beta) extends this
   across machines.
 - **Serving.** OpenAI- and Anthropic-compatible APIs, JSON-schema and tool-call constraints, and a chat page.
-- **Model families.** Qwen, Gemma, GLM, Kimi, DeepSeek, Muse and Nemotron. `glyd-engine fit MODEL[:LEVEL]` says what a specific
-  model needs and where it would run; `glyd-engine supports MODEL` says whether the lossless Qwen3 path runs it.
+- **Model families.** Qwen, Gemma, GLM, Kimi, DeepSeek, Muse and Nemotron. `glyd-engine supports MODEL` answers for a
+  specific model.
 
 ## How it works
 
@@ -58,8 +58,6 @@ cargo build --release -p glyd-engine
 target/release/glyd-engine fit google/gemma-4-12B-it:kestrel    # the plan for this machine
 target/release/glyd-engine run google/gemma-4-12B-it:kestrel    # chat in the terminal and at http://localhost:8000
 ```
-
-On a computer with no GPU, `fit` plans for another one: add `--machine rtx4080s` (or another preset: `--machine nonsense` lists them).
 
 Or install a release, with no Python and no toolkit (about 100 MB):
 
