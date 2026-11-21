@@ -1,4 +1,4 @@
-name: Release
+name: Release (glyd)
 
 # On a version tag: build the CLIs, the shared libraries and the Python wheels
 # for Linux (x86_64, aarch64: glibc 2.28, manylinux_2_28) and macOS (arm64),

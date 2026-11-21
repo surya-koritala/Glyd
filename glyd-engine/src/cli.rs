@@ -2475,11 +2475,12 @@ pub(crate) fn config_text(model: &str) -> Done<String> {
     ))
 }
 
-/// Whether the engine runs MODEL: exit 0 where it does, 3 (with the reason on stderr) where it does not, 1 where that cannot be told. The kind of model alone: no GPU is looked at (`preflight` looks at the computer).
+/// Whether the engine runs MODEL: exit 0 where it does, 3 (with the reason on stderr) where it does not, 1 where that cannot be told. The kind of model, and its level where one is asked (`MODEL:LEVEL`, or
+/// `--lossy`), against the table `fit` and `run` read (src/support.rs): no GPU is looked at (`preflight` looks at the computer).
 pub fn supports(a: &Args) -> i32 {
     let ui = RefCell::new(Ui::new());
     let Ok(model) = a.need(1, "MODEL") else { return 1 };
-    match config_text(model).and_then(|t| supported(&short_name(model), &t)) {
+    match supports_check(model, a.has("lossy")) {
         Ok(()) if a.has("json") => {
             println!("{}", serde_json::json!({"model": model, "ok": true, "exit": 0, "supported": true}));
             0
@@ -2488,6 +2489,27 @@ pub fn supports(a: &Args) -> i32 {
         Err(r) if a.has("json") => json_refusal(&ui, model, &r),
         Err(r) => fail(&ui, &r),
     }
+}
+
+/// `supports`' answer for `tagged` (MODEL with its level, if one is asked): the family, at the level where there is one, and for Qwen3 the settings its path does not run. A model packed at a level (a glyd-v7
+/// directory, a pre-packed repo) is at its own.
+fn supports_check(tagged: &str, lossy: bool) -> Done<()> {
+    let (model, layout) = level(tagged, lossy)?;
+    // (a level is asked by a tag or --lossy; the lossless one has no layout, so a tag's presence says it)
+    let asked = (model.len() != tagged.len() || layout.is_some()).then(|| layout.map_or("penguin", level_name));
+    let name = short_name(model);
+    let text = config_text(model)?;
+    if v7_layout(model)?.is_some() || levels::repo_level(model).is_some() {
+        return Ok(());
+    }
+    let family = crate::support::family(&text, &name)?;
+    if let Some(level) = asked {
+        crate::support::check(&text, model, &name, level)?;
+    }
+    if family == crate::support::Family::Qwen3 {
+        supported(&name, &text)?;
+    }
+    Ok(())
 }
 
 /// A refusal as `--json` says it: on the standard output, with the exit status it has (3: not supported, 1: not told).
@@ -3043,6 +3065,71 @@ mod tests {
         ] {
             let r = supported("m", &with(setting)).unwrap_err();
             assert!(r.code == CANNOT && r.what.contains(said), "{setting}: {r}");
+        }
+    }
+
+    fn fixture_dir(name: &str, file: &str) -> PathBuf {
+        dir_with(name, &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/").to_string() + file).unwrap())
+    }
+
+    /// `supports` takes MODEL:LEVEL and every family the table has: a recent family at a lossy level runs, and a refusal says the levels the family does run.
+    #[test]
+    fn supports_takes_a_level_and_every_family_of_the_table() {
+        let g = fixture_dir("supports-g4", "gemma4_12b_config.json");
+        let gp = g.to_str().unwrap();
+        // Gemma 4 12B: no level, a lossy one, --lossy, every level of its row
+        assert!(supports_check(gp, false).is_ok());
+        for l in ["penguin", "kestrel", "swift", "wren"] {
+            assert!(supports_check(&format!("{gp}:{l}"), false).is_ok(), "{l}");
+        }
+        assert!(supports_check(gp, true).is_ok());
+        let e = supports_check(&format!("{gp}:hummingbird"), false).unwrap_err();
+        assert!(
+            e.code == 3
+                && e.what.ends_with("(Gemma 4) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird")
+                && e.fix.starts_with("Run it lossless: glyd run "),
+            "{e:?}"
+        );
+        // a tag that is no level is an error of the command line, not "not supported"
+        let e = supports_check(&format!("{gp}:sparrow"), false).unwrap_err();
+        assert!(e.code == 1 && e.what.contains(":sparrow is not a level"), "{e:?}");
+        let e = supports_check(&format!("{gp}:swift"), true).unwrap_err();
+        assert!(e.what.contains("--lossy is :kestrel"), "{e:?}");
+        // Qwen3.5 to 3.8 runs at its lossy levels alone
+        let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
+        let first = match &q35 {
+            Value::Object(m) => m[0].1.clone(),
+            Value::Array(a) => a[0].clone(),
+            other => other.clone(),
+        };
+        let q = dir_with("supports-q35", &json::to_compact(&first));
+        let qp = q.to_str().unwrap();
+        assert!(supports_check(qp, false).is_ok());
+        assert!(supports_check(&format!("{qp}:swift"), false).is_ok());
+        let e = supports_check(&format!("{qp}:penguin"), false).unwrap_err();
+        assert!(
+            e.code == 3
+                && e.what.ends_with("(Qwen3.5) runs at the kestrel, swift and wren levels in this engine, not penguin")
+                && e.fix == format!("Run it at the kestrel level: glyd run {qp}:kestrel"),
+            "{e:?}"
+        );
+        // Qwen3 is lossless alone, and keeps its own refusals; another kind of model keeps its words at any level
+        let q3 = dir_with("supports-q3", QWEN3);
+        let q3p = q3.to_str().unwrap();
+        assert!(supports_check(&format!("{q3p}:penguin"), false).is_ok());
+        let e = supports_check(&format!("{q3p}:swift"), false).unwrap_err();
+        assert!(e.code == 3 && e.what.ends_with("(Qwen3) runs at the penguin level in this engine, not swift"), "{e:?}");
+        let scaled = dir_with("supports-scaled", r#"{"architectures": ["Qwen3ForCausalLM"], "rope_scaling": {"type": "yarn"}}"#);
+        assert!(supports_check(scaled.to_str().unwrap(), false).unwrap_err().what.contains("rope scaling"));
+        let l = dir_with("supports-llama", r#"{"architectures": ["LlamaForCausalLM"]}"#);
+        for tag in ["", ":kestrel"] {
+            let e = supports_check(&format!("{}{tag}", l.to_str().unwrap()), false).unwrap_err();
+            assert!(e.code == 3 && e.what.contains("is a LlamaForCausalLM model, and this engine runs Qwen3 models so far"), "{e:?}");
+        }
+        // a model that cannot be read is "not told", whatever the level
+        assert_eq!(supports_check("/nonexistent/model:kestrel", false).unwrap_err().code, 1);
+        for d in [g, q, q3, scaled, l] {
+            std::fs::remove_dir_all(d).unwrap();
         }
     }
 

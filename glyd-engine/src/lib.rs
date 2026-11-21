@@ -128,6 +128,7 @@ pub mod nemotron;
 pub mod offload;
 pub mod ops;
 pub mod os;
+pub mod otel;
 pub mod pack;
 pub mod pixels;
 pub mod plan;
