@@ -330,8 +330,23 @@ fn plan_for(a: &Args, cfg: &Config, name: &str, t: &Target, packed: Option<Layou
         Some(l) => (l, "as packed".to_string()),
         None => choose_layout(a.layout()?, t.cc, t.total, cfg.matrix_bytes(), 0),
     };
-    let fit = fit::plan(cfg, name, &t.name, t.free, layout, asked, users, dense_product(t.cc))?;
+    // (what the last load of this model here took beyond its plan is planned as already taken: `calibrated`)
+    let extra = calibration(name, levels::name_of(layout), &t.name);
+    let mut fit = fit::plan(cfg, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc))?;
+    calibrated(&mut fit, t.free, extra);
     Ok((layout, why, fit))
+}
+
+/// The bytes of this GPU's free memory the planner takes as already used for `model` at `level`: what the last load took beyond its plan (src/plan.rs
+/// `calibration_in`; the one-GPU paths' only: the others' loads do not count their weights apart).
+fn calibration(model: &str, level: &str, gpu: &str) -> u64 {
+    crate::plan::calibration_in(&store::cache_root(), model, level, gpu)
+}
+
+/// `plan` made for the GPU's free memory less `extra`, said as it is: the free memory as it was, and `extra` a part of the reserve.
+pub(crate) fn calibrated(p: &mut LoadPlan, free: u64, extra: u64) {
+    p.free = free;
+    p.reserve += extra;
 }
 
 /// The plan `run` loads MODEL (its config.json `text`) at `level` on the GPU `t`, with the flags of `a`, or the refusal `run` gives: what `fit` prints
@@ -1280,6 +1295,25 @@ pub(crate) fn lossy_plan(a: &Args, model: &str, layout: Layout, text: &str, gen:
 /// computer's memory and a cache of them on the GPU (`offloaded`); it is refused, with the memory it needs of each, where the GPU or the computer has too little for that.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lossy_plan_with(
+    a: &Args,
+    model: &str,
+    layout: Layout,
+    text: &str,
+    gen: Option<&str>,
+    free: u64,
+    gpu: &str,
+    packed: Option<&Path>,
+    host: Option<u64>,
+) -> Done<LoadPlan> {
+    // (what the last load of this model here took beyond its plan is planned as already taken: `calibrated`)
+    let extra = calibration(&short_name(model), level_name(layout), gpu);
+    let mut p = lossy_plan_inner(a, model, layout, text, gen, free.saturating_sub(extra), gpu, packed, host)?;
+    calibrated(&mut p, free, extra);
+    Ok(p)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lossy_plan_inner(
     a: &Args,
     model: &str,
     layout: Layout,
@@ -2254,9 +2288,21 @@ pub fn supports(a: &Args) -> i32 {
     let ui = RefCell::new(Ui::new());
     let Ok(model) = a.need(1, "MODEL") else { return 1 };
     match config_text(model).and_then(|t| supported(&short_name(model), &t)) {
+        Ok(()) if a.has("json") => {
+            println!("{}", serde_json::json!({"model": model, "ok": true, "exit": 0, "supported": true}));
+            0
+        }
         Ok(()) => 0,
+        Err(r) if a.has("json") => json_refusal(&ui, model, &r),
         Err(r) => fail(&ui, &r),
     }
+}
+
+/// A refusal as `--json` says it: on the standard output, with the exit status it has (3: not supported, 1: not told).
+fn json_refusal(ui: &RefCell<Ui>, model: &str, r: &Refusal) -> i32 {
+    ui.borrow_mut().clear_live();
+    println!("{}", serde_json::json!({"model": model, "ok": false, "exit": r.code, "reason": r.what, "fix": r.fix}));
+    r.code
 }
 
 /// Whether the engine will certainly run MODEL on this computer, said before anything is downloaded: exit 0 where it will (one line on stdout says on what), 3 where it will not (the reason on
@@ -2277,9 +2323,14 @@ pub fn preflight(a: &Args) -> i32 {
     match check(a, &ui) {
         Ok(line) => {
             ui.borrow_mut().clear_live();
-            println!("{line}");
+            if a.has("json") {
+                println!("{}", serde_json::json!({"model": a.pos.get(1), "ok": true, "exit": 0, "line": line}));
+            } else {
+                println!("{line}");
+            }
             0
         }
+        Err(r) if a.has("json") => json_refusal(&ui, a.pos.get(1).map_or("", String::as_str), &r),
         Err(r) => fail(&ui, &r),
     }
 }

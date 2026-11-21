@@ -1,6 +1,7 @@
 pub mod bits;
 pub mod c_api;
 pub mod cm;
+pub mod cmdtable;
 #[cfg(feature = "deflate")]
 pub mod deflate;
 pub mod dict;

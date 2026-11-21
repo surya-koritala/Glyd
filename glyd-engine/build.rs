@@ -3,7 +3,7 @@
 // the fatbin is empty and the CUDA paths report that the build has no kernels (`cargo check` works on any machine).
 //
 // GLYD_ENGINE_ARCHS: the architectures to build for, as nvcc's numbers (default "80 86 89 90a", and the compute_80 PTX); NVCC: the compiler.
-// GLYD_ENGINE_RELEASE=1 (release-gpu.yml): the machine code for 80, 86, 89, 90a, 100 and 120 and the compute_89 PTX (a GPU newer than these gets its code compiled by the driver); a build without nvcc,
+// GLYD_ENGINE_RELEASE=1 (release-gpu.yml): the machine code for 80, 86, 89, 90a, 100 and 120 (and 110, Jetson Thor, in an aarch64 build) and the compute_89 PTX (a GPU newer than these gets its code compiled by the driver); a build without nvcc,
 // or with an nvcc that has no Blackwell, is an error.
 // NVCC12: a CUDA 12.9 (or newer 12) nvcc, with the one in NVCC (CUDA 13) or on PATH: the kernels are built a second time, uncompressed (a fatbin compressed for size needs a driver of
 // CUDA 12.4 or newer), as engine12.fatbin, which the binary loads on a driver that reports CUDA 12 (cfg `kernels12`: dev.rs picks by the driver's version, machine.rs says what the build runs on).
@@ -117,6 +117,12 @@ fn main() {
                 panic!("GLYD_ENGINE_RELEASE=1: this nvcc has no compute_{a} (CUDA 12.8 on): a release build needs it");
             }
             archs.push_str(&format!(" {a}"));
+        }
+        // Jetson Thor (sm_110, CUDA 13) is an Arm computer: the aarch64 build takes its machine code, which an x86_64 build would carry for no GPU it can run on.
+        // (sm_120 is built as it is, not as the family target sm_120f: for these kernels the two are the same machine code, byte for byte in size and in the list nvcc's cuobjdump gives,
+        // and sm_120 code runs on compute capability 12.0 and 12.1, GB10 included; the sm_120a code that does not run on 12.1 is not built.)
+        if env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "aarch64") && has("110") {
+            archs.push_str(" 110");
         }
     }
     // one fatbin of kernels/engine.cu by `nvcc` for `archs`: CUDA 13's compressed for size (nvcc 12.4 on knows the flag; where it fails, as it is), CUDA 12's not compressed at all

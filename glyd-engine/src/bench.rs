@@ -1,12 +1,12 @@
 //! `glyd bench`: one benchmark harness (R8). It puts fixed prompts at fixed concurrencies on an OpenAI-compatible server over HTTP and writes the speed as JSON, `glyd-bench/1` (docs/bench.md).
 //!
 //!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full | --loads short:1,4k:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
-//!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P] [--no-draft] [--eval gsm8k[:N]]
+//!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P] [--no-draft] [--eval gsm8k[:N]] [--quality [--quality-ref RESULT.json]]
 //!       starts `serve MODEL` of this program (or measures the server at --against, whatever program it is: vLLM, llama.cpp, SGLang) and measures each load: per load, one warm-up round and `runs` rounds
 //!       of N simultaneous requests, every prompt different from its first token on (no prefix to share). Time to first token, inter-token latency, decode tokens/s a user and in all, prefill tokens/s,
 //!       each as the runs' mean, standard deviation, median and the runs themselves; the peak GPU memory; and the decode rate as a share of the ceiling (the weights' bytes a token over the memory's
 //!       bandwidth: the engine's own weights from /v1/glyd/info, else --weights-gib).
-//!   glyd-engine bench --compare BASE.json CAND.json [--history DIR] [--z 3] [--floor 0.003] [--synthetic F]
+//!   glyd-engine bench --compare BASE.json CAND.json [--history DIR] [--z 3] [--floor 0.003] [--kl-max 0.005] [--synthetic F]
 //!       the regression gate: each metric of each load of CAND against BASE's, a regression where it is worse by more than the noise band: z times the measured spread of the runs of both files
 //!       (the standard error of two medians) and, where DIR holds earlier results on the same machine, of the medians from one session to another. Exit 0 within the band, 1 a regression, 2 not
 //!       decided (a result taken while the GPU was busy). --synthetic F: CAND's speeds scaled by F first (the gate's own test: 0.9 is a 10% slowdown).
@@ -548,7 +548,7 @@ pub fn measure(a: &Args) -> Result<()> {
         }
         cells.push(cell);
     }
-    let quality = a.flag("eval").map(|e| match e.strip_prefix("gsm8k") {
+    let mut quality = a.flag("eval").map(|e| match e.strip_prefix("gsm8k") {
         Some(rest) => {
             let n = rest.strip_prefix(':').and_then(|n| n.parse::<usize>().ok()).unwrap_or(30);
             let r = gsm8k(&agent, &url, &model, n);
@@ -559,6 +559,30 @@ pub fn measure(a: &Args) -> Result<()> {
         }
         None => json!({"error": format!("--eval {e}: gsm8k or gsm8k:N")}),
     });
+    if a.has("quality") {
+        // (the next-token distribution after fixed prefixes of one text: what a reference server gave, and how far this one is from it)
+        let rows = next_token_rows(&agent, &url, &model);
+        let mut q = json!({"next_token": rows});
+        if let Some(rf) = a.flag("quality-ref") {
+            let reference = load(rf)?;
+            q["kl_vs_ref"] = kl_vs_ref(&reference["quality"]["next_token"], &q["next_token"]);
+            if !quiet {
+                eprintln!(
+                    "quality: KL against {rf}: mean {} max {} (best token the reference's at {} of {})",
+                    q["kl_vs_ref"]["mean"], q["kl_vs_ref"]["max"], q["kl_vs_ref"]["top1_agree"], q["kl_vs_ref"]["prefixes"]
+                );
+            }
+        }
+        match quality.as_mut() {
+            Some(o) => {
+                o["next_token"] = q["next_token"].take();
+                if !q["kl_vs_ref"].is_null() {
+                    o["kl_vs_ref"] = q["kl_vs_ref"].take();
+                }
+            }
+            None => quality = Some(q),
+        }
+    }
     let peak_mib = peak.finish();
     let after = gpu_now();
     let result = json!({
@@ -668,6 +692,86 @@ fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
     });
     let (c, d) = (correct.into_inner(), done.into_inner());
     json!({"source": "openai/gsm8k test, first problems", "problems": d, "correct": c, "accuracy": if d > 0 { c as f64 / d as f64 } else { f64::NAN }})
+}
+
+// ---- quality: the next token after fixed prefixes of one text
+
+/// A text of about 330 words; its prefixes are the contexts the next-token distributions are taken at.
+const PASSAGE: &str = "The lighthouse keeper climbed the spiral stairs every evening at dusk, a lantern swinging from one hand and a notebook tucked under the other arm. \
+From the gallery he could see the whole harbour: the fishing boats nosing back to their moorings, the ferry drawing a long white line across the grey water, \
+and beyond the breakwater the open sea, which that night was calm enough to hold the first stars like coins in a dish. He wrote down the wind, the swell and the \
+visibility in a small neat hand, then trimmed the wick, wound the clockwork and listened for the soft click that told him the great lens had begun to turn. \
+Somewhere below a door closed, a kettle began to sing, and the beam swept out over the dark water, steady as a promise, reaching for ships that would never know his name. \
+In the morning the harbour master would telephone for the report, and the keeper would read it out in the same even voice he used for the weather and the tides. \
+Nobody asked how the night had been, and he did not offer; the work was the lamp, and the lamp had burned. Years earlier an engineer had arrived with a crate of \
+instruments and a plan to automate the light, and for a week the two men had argued politely over tea about whether a machine could be trusted with something so quiet. \
+The engineer left with his measurements and a jar of the keeper's plum jam, and the light stayed as it was, though the keeper sometimes thought about the plan on long nights. \
+When the storms came in autumn the whole tower hummed like a struck bell, and he slept in the lamp room with a blanket over his knees, waking at every change in the sound. \
+In spring the gulls returned to the rail of the gallery and argued with him about the cleaning, and he gave up each year a little sooner than the last.";
+
+/// A prefix count, and the words the first prefix has: the prefixes grow by the same number of words to the whole text.
+const PREFIXES: usize = 48;
+const TOP: usize = 20;
+
+/// Each prefix of PASSAGE as a raw completion of one token at temperature 0, its top 20 log-probabilities: rows of [token, logprob] pairs. A prefix that fails is an empty row.
+fn next_token_rows(agent: &ureq::Agent, url: &str, model: &str) -> Value {
+    let words: Vec<&str> = PASSAGE.split_whitespace().collect();
+    let first = 24usize.min(words.len());
+    let step = (words.len() - first) / (PREFIXES - 1);
+    let mut rows = Vec::new();
+    for i in 0..PREFIXES {
+        let n = (first + i * step).min(words.len());
+        let body = json!({"model": model, "prompt": words[..n].join(" "), "max_tokens": 1, "temperature": 0, "logprobs": TOP});
+        let pairs: Vec<Value> = agent
+            .post(&format!("{url}/v1/completions"))
+            .header("Content-Type", "application/json")
+            .send(body.to_string())
+            .ok()
+            .and_then(|mut r| r.body_mut().read_to_string().ok())
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v["choices"][0]["logprobs"]["top_logprobs"][0].as_object().map(|o| o.iter().map(|(k, x)| json!([k, x])).collect()))
+            .unwrap_or_default();
+        rows.push(Value::Array(pairs));
+    }
+    json!({"prefixes": PREFIXES, "top": TOP, "words_first": first, "words_step": step, "rows": rows})
+}
+
+/// KL(reference || candidate) over the reference's top tokens and the rest as one bin, for one prefix; the candidate's probability of a token it did not list is its smallest listed one.
+fn kl_row(reference: &[(String, f64)], cand: &[(String, f64)]) -> Option<(f64, bool)> {
+    if reference.is_empty() || cand.is_empty() {
+        return None;
+    }
+    let floor = cand.iter().map(|c| c.1).fold(f64::INFINITY, f64::min);
+    let (mut kl, mut p_sum, mut q_sum) = (0f64, 0f64, 0f64);
+    for (tok, lp) in reference {
+        let lq = cand.iter().find(|c| &c.0 == tok).map_or(floor - 1.0, |c| c.1);
+        let p = lp.exp();
+        kl += p * (lp - lq);
+        p_sum += p;
+        q_sum += lq.exp();
+    }
+    let (pt, qt) = ((1.0 - p_sum).max(0.0), (1.0 - q_sum).max(0.0));
+    if pt > 1e-9 {
+        kl += pt * (pt / qt.max(1e-300)).ln();
+    }
+    let best = |v: &[(String, f64)]| v.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map(|x| x.0.clone());
+    Some((kl.max(0.0), best(reference) == best(cand)))
+}
+
+fn pairs_of(row: &Value) -> Vec<(String, f64)> {
+    row.as_array().into_iter().flatten().filter_map(|p| Some((p[0].as_str()?.to_string(), p[1].as_f64()?))).collect()
+}
+
+/// The candidate's next-token rows against the reference's: mean and largest KL, and at how many prefixes the best token is the reference's.
+pub fn kl_vs_ref(reference: &Value, cand: &Value) -> Value {
+    let (r, c) = (reference["rows"].as_array().cloned().unwrap_or_default(), cand["rows"].as_array().cloned().unwrap_or_default());
+    let per: Vec<(f64, bool)> = r.iter().zip(&c).filter_map(|(a, b)| kl_row(&pairs_of(a), &pairs_of(b))).collect();
+    if per.is_empty() {
+        return json!({"error": "no prefix has a distribution in both", "prefixes": 0});
+    }
+    let mean = per.iter().map(|x| x.0).sum::<f64>() / per.len() as f64;
+    let max = per.iter().map(|x| x.0).fold(0.0, f64::max);
+    json!({"prefixes": per.len(), "mean": (mean * 1e6).round() / 1e6, "max": (max * 1e6).round() / 1e6, "top1_agree": per.iter().filter(|x| x.1).count()})
 }
 
 // ---- the gate
@@ -814,6 +918,24 @@ pub fn compare(a: &Args) -> Result<i32> {
                 ""
             };
             println!("{:<12} {:<20} {:>10.3} {:>10.3} {:>+8.1}% {:>8.1}%  {verdict}", format!("{kind} x{conc}"), m, mb, mc, -worse * 100.0, band * 100.0);
+        }
+    }
+    // quality: the candidate's next-token distributions against the base's (the same prefixes of the same text); a regression past --kl-max (0.005 mean) or a best token that changes at more than 5% of the prefixes
+    let (bq, cq) = (&base["quality"]["next_token"], &cand["quality"]["next_token"]);
+    if bq["rows"].is_array() && cq["rows"].is_array() {
+        let k = kl_vs_ref(bq, cq);
+        let (mean, n, agree) = (k["mean"].as_f64().unwrap_or(f64::NAN), k["prefixes"].as_u64().unwrap_or(0), k["top1_agree"].as_u64().unwrap_or(0));
+        let kl_max: f64 = a.num("kl-max", 0.005)?;
+        let bad = mean > kl_max || (n > 0 && (agree as f64) < 0.95 * n as f64);
+        println!(
+            "{:<12} {:<20} KL mean {mean:.2e} max {}, best token the base's at {agree} of {n}{}",
+            "quality",
+            "next token",
+            k["max"],
+            if bad { "  REGRESSION" } else { "" }
+        );
+        if bad {
+            regressions.push(format!("quality: next-token KL {mean:.2e} (bound {kl_max:.0e}), best token kept at {agree} of {n} prefixes"));
         }
     }
     println!("{} earlier results of this GPU and model in the history", history.len());
@@ -999,6 +1121,69 @@ mod tests {
         let (a, b) = (prompt("1k", 1).unwrap(), prompt("1k", 2).unwrap());
         assert!(a.len() > 4000 && a != b && a[..3] != b[..3]);
         assert!(prompt("9k", 1).is_err());
+    }
+
+    #[test]
+    fn kl_of_next_token_rows_is_zero_for_the_same_server_and_grows_with_a_shifted_distribution() {
+        let row = |lps: &[f64]| json!(lps.iter().enumerate().map(|(i, l)| json!([format!("t{i}"), l])).collect::<Vec<_>>());
+        let lp = |ps: &[f64]| ps.iter().map(|p| p.ln()).collect::<Vec<f64>>();
+        let a = json!({"rows": [row(&lp(&[0.5, 0.2, 0.1, 0.05])), row(&lp(&[0.4, 0.3, 0.1, 0.1]))]});
+        let same = kl_vs_ref(&a, &a);
+        assert!(same["mean"].as_f64().unwrap() < 1e-9 && same["top1_agree"] == 2, "{same}");
+        // the best token swapped: the distribution moved
+        let b = json!({"rows": [row(&lp(&[0.1, 0.5, 0.2, 0.05])), row(&lp(&[0.4, 0.3, 0.1, 0.1]))]});
+        let moved = kl_vs_ref(&a, &b);
+        assert!(moved["mean"].as_f64().unwrap() > 0.05 && moved["top1_agree"] == 1, "{moved}");
+        // a failed prefix (an empty row) is left out, not counted as agreement
+        let c = json!({"rows": [json!([]), row(&lp(&[0.4, 0.3, 0.1, 0.1]))]});
+        assert_eq!(kl_vs_ref(&a, &c)["prefixes"], 1);
+    }
+
+    #[test]
+    fn the_next_token_rows_are_read_from_a_completions_answer() {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten().take(PREFIXES) {
+                let mut s = s;
+                // (the whole request, headers and body, is read before the answer: a socket closed with a request unread is reset on Windows, and the answer is lost with it)
+                let (mut req, mut buf) = (Vec::new(), [0u8; 4096]);
+                loop {
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    req.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&req).to_string();
+                    let Some(end) = text.find("\r\n\r\n") else {
+                        if n == 0 {
+                            break;
+                        }
+                        continue;
+                    };
+                    let len = text[..end]
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok()))
+                        .unwrap_or(0);
+                    if req.len() >= end + 4 + len || n == 0 {
+                        break;
+                    }
+                }
+                let body = r#"{"choices":[{"logprobs":{"top_logprobs":[{" the":-0.5,"a":-1.5}]}}]}"#;
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        let rows = next_token_rows(&agent(), &format!("http://127.0.0.1:{port}"), "m");
+        assert_eq!(rows["rows"].as_array().unwrap().len(), PREFIXES);
+        assert_eq!(rows["rows"][0].as_array().unwrap().len(), 2);
+        assert!(kl_vs_ref(&rows, &rows)["mean"].as_f64().unwrap() < 1e-9);
+    }
+
+    #[test]
+    fn the_prompt_prefixes_grow_and_end_at_the_whole_text() {
+        let words = PASSAGE.split_whitespace().count();
+        assert!(words >= 300, "{words}");
+        let first = 24usize;
+        let step = (words - first) / (PREFIXES - 1);
+        assert!(first + (PREFIXES - 1) * step <= words && first + (PREFIXES - 1) * step + PREFIXES > words);
     }
 
     #[test]

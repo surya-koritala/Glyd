@@ -253,8 +253,8 @@ jobs:
   sign:
     # Provenance, an SBOM and keyless signatures of the files the release gets (.github/actions/sign-release): the one job besides publish-pypi with id-token: write; it builds nothing,
     # takes the build's files as they are, and runs pinned actions only. docs/verify-releases.md says how to check them.
+    # (on every run, a build-only dispatch included: that is the dry run of the signing, whose files are the run's artifacts)
     needs: [plan, build]
-    if: needs.plan.outputs.publish == 'true' && (github.event_name == 'push' || inputs.tag != '')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
