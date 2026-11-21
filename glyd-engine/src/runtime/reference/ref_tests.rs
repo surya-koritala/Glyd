@@ -379,8 +379,19 @@ fn depth_mix_against_kimi_ref() {
 /// decoded where its `.weight` is asked for.
 fn checkpoint_source(ck: &Checkpoint) -> impl Fn(&str) -> Option<(Vec<usize>, Vec<f32>)> + '_ {
     move |name: &str| {
-        if ck.get(name).is_some() {
-            return Some(tensor(ck, name));
+        if let Some((_, t)) = ck.get(name) {
+            return Some(match t.dtype.as_str() {
+                // (a hash table's expert ids; DeepSeek-V4's FP8 matrices and FP4 experts, decoded with their scales)
+                "I64" => (
+                    t.shape.iter().map(|&d| d as usize).collect(),
+                    ck.read(name).ok()?.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f32).collect(),
+                ),
+                "F8_E4M3" | "I8" => {
+                    let (sh, v) = crate::dsv4_ref::tensor_of(ck, name).ok()?;
+                    (sh.iter().map(|&d| d as usize).collect(), v)
+                }
+                _ => tensor(ck, name),
+            });
         }
         let base = name.strip_suffix(".weight")?;
         let (_, t) = ck.get(&format!("{base}.weight_packed"))?;
@@ -401,14 +412,15 @@ fn checkpoint_source(ck: &Checkpoint) -> impl Fn(&str) -> Option<(Vec<usize>, Ve
 const WHOLE_TOL: f32 = 8e-2;
 const MARGIN: f32 = 0.02;
 
-/// `theirs` makes a fresh reference: its step gives a token's logits and the step's routing margin.
-fn whole_model(dir: &std::path::Path, theirs: &mut dyn FnMut() -> Box<dyn FnMut(u32) -> (Vec<f32>, f32)>, vocab: usize, tol: f32, what: &str) {
+/// `theirs` makes a fresh reference: its step gives a token's logits and the step's routing margin. The search starts at prompt `first`
+/// of the list (the one the reference picked when the test was written; loading a reference is the test's cost) and goes on from there.
+fn whole_model(dir: &std::path::Path, theirs: &mut dyn FnMut() -> Box<dyn FnMut(u32) -> (Vec<f32>, f32)>, vocab: usize, first: u32, tol: f32, what: &str) {
     use crate::runtime::{describe::describe, reference::model::RefModel};
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
     let d = describe(&cfg).unwrap_or_else(|e| panic!("{what}: {}", e.0));
     let ck = Checkpoint::open(dir).unwrap();
     let src = checkpoint_source(&ck);
-    for c in 0..64u32 {
+    for c in first..first + 64 {
         let toks: Vec<u32> = (0..3).map(|i| ((c * 977 + i * 131 + 7) as usize % vocab) as u32).collect();
         let mut step = theirs();
         let steps: Vec<(Vec<f32>, f32)> = toks.iter().map(|&t| step(t)).collect();
@@ -442,6 +454,7 @@ fn kimi_k3_model_described() {
             })
         },
         vocab,
+        0,
         WHOLE_TOL,
         "Kimi-K3",
     );
@@ -465,8 +478,44 @@ fn muse_spark_model_described() {
             })
         },
         vocab,
+        10,
         WHOLE_TOL,
         "Muse Spark",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DeepSeek-V4's release format: the random checkpoint of `dsv4_ref` (the release's names, FP8 matrices and FP4 experts with their
+/// scales, a ratio of 4 being the overlapping windows with the indexer) is named exactly by the description, and gives `RefV4`'s logits
+/// (its simulated quantizations off) on prompts whose expert and indexer choices are clear of rounding.
+#[test]
+fn deepseek_v4_release_described() {
+    use crate::dsv4_ref::{random, RefV4};
+    use crate::runtime::describe::describe;
+    use std::collections::BTreeSet;
+    let dir = std::env::temp_dir().join(format!("glyd-runtime-dsv4-model-{}", std::process::id()));
+    random(&dir, None).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.0));
+    let ck = Checkpoint::open(&dir).unwrap();
+    let names: BTreeSet<String> = ck.names().map(String::from).collect();
+    assert_eq!(d.names(), names, "the weight map");
+    let vocab = d.desc.vocab;
+    whole_model(
+        &dir,
+        &mut || {
+            let d2 = dir.clone();
+            let mut r = RefV4::load(&d2, false).unwrap();
+            Box::new(move |t| {
+                let l = r.step(t);
+                let (me, mi) = r.margin.get();
+                (l, me.min(mi))
+            })
+        },
+        vocab,
+        15,
+        WHOLE_TOL,
+        "DeepSeek-V4",
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

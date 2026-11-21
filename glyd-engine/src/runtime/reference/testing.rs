@@ -64,6 +64,9 @@ impl Fixture {
         assert!(t.is_object(), "the fixture has no tensor {name}");
         let shape: Vec<usize> = t["shape"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
         let n = shape.iter().product();
+        if let Some(ints) = t["ints"].as_array() {
+            return (shape, ints.iter().map(|v| v.as_f64().unwrap() as f32).collect());
+        }
         (shape, fill(name, n, t["lo"].as_f64().unwrap() as f32, t["hi"].as_f64().unwrap() as f32))
     }
 

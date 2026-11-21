@@ -13,6 +13,7 @@
 //! match its bf16 kernel bit for bit.
 
 pub mod attention;
+pub mod comp;
 pub mod ffn;
 pub mod linear;
 pub mod mla;
@@ -206,6 +207,7 @@ fn roles(b: &Block) -> Vec<String> {
         Body::Mixer(Mixer::Attention(_)) => &["q", "k", "v", "o", "g"],
         Body::Mixer(Mixer::Mla(_)) => &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g"],
         Body::Mixer(Mixer::Linear(_)) => &["qkv", "q", "k", "v", "beta", "decay", "gate", "o"],
+        Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
         Body::Ffn(_) => &[
             "gate",
             "up",
@@ -318,6 +320,7 @@ pub enum SeqState {
     Attention(attention::KvCache),
     Mla(mla::LatentCache),
     Linear(linear::LinearState),
+    Comp(comp::CompState),
 }
 
 /// One block on the reference backend: its weights, and each sequence's cache or state by slot.
@@ -351,6 +354,11 @@ impl RefLayer {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Linear(linear::LinearState::new(l)));
                 let SeqState::Linear(s) = st else { return err("a sequence's state is not a linear state") };
                 linear::step(l, p, s, h)
+            }
+            Body::Mixer(Mixer::Compressed(c)) => {
+                let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Comp(comp::CompState::default()));
+                let SeqState::Comp(s) = st else { return err("a sequence's state is not a compressed attention's") };
+                comp::step(c, p, s, h, pos)
             }
             Body::Ffn(Ffn::Mlp(m)) => ffn::mlp(m, p, "", h),
             Body::Ffn(Ffn::Moe(m)) => ffn::moe(m, p, h, token),
