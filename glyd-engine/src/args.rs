@@ -10,6 +10,7 @@ const SWITCHES: &[&str] = &[
     "no-graph",
     "no-draft",
     "compare",
+    "quality",
     "bar",
     "cpu-ref",
     "list-cases",
@@ -92,6 +93,7 @@ const SWITCHES: &[&str] = &[
     "all",
     "compare",
     "bar",
+    "quality",
     "no-draft",
     "insecure-no-auth",
 ];
