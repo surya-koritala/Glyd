@@ -65,10 +65,10 @@ pub mod glm;
 pub mod glm_cb;
 #[cfg(feature = "dev")]
 pub mod glm_serve;
-#[cfg(feature = "dev")]
 pub mod hb_codec;
 pub mod hb_pack;
 pub mod hb_usage;
+#[cfg(feature = "dev")]
 pub mod hbpack;
 pub mod hub;
 #[cfg(feature = "dev")]
