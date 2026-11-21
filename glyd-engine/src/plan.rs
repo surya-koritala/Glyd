@@ -1751,7 +1751,11 @@ mod tests {
         let v = json::parse(fixture).unwrap();
         let (mut header, mut at) = (String::from("{"), 0u64);
         for (name, t) in v.get("tensors").and_then(Value::as_object).unwrap() {
-            let (dtype, shape) = (t.as_array().unwrap()[0].as_str().unwrap(), t.as_array().unwrap()[1].as_u64s().unwrap());
+            let (dtype, mut shape) = (t.as_array().unwrap()[0].as_str().unwrap(), t.as_array().unwrap()[1].as_u64s().unwrap());
+            // (a sparse file where the system makes them, else the shapes' large dimensions cut by 16 so that the file is under a GiB: a Windows runner's disk is not 15 GiB)
+            if cfg!(windows) {
+                shape.iter_mut().filter(|d| **d >= 256).for_each(|d| *d /= 16);
+            }
             let width = match dtype {
                 "F32" => 4,
                 "F8_E4M3" | "I8" | "U8" => 1,

@@ -43,12 +43,13 @@ def str_list(expr, consts):
     return re.findall(r'"([^"]*)"', m.group(1))
 
 
-def parse_support(text):
+def parse_support(text, plan_text):
     consts = {}
     for m in re.finditer(r"^const (\w+): &\[&str\] = (.+?);$", text, re.M):
         consts[m.group(1)] = re.findall(r'"([^"]*)"', m.group(2))
     default_ctx = const_int(text, "DEFAULT_CTX")
-    lossy_ctx = const_int(text, "LOSSY_CTX")
+    # (the lossy paths' most context is the planner's constant, which support.rs re-exports)
+    lossy_ctx = const_int(plan_text, "LOSSY_CTX")
     m = re.search(r"pub static TABLE: \[Support; (\d+)\] = \[(.*?)\n\];", text, re.S)
     if not m:
         die("no `pub static TABLE: [Support; N]` in support.rs")
@@ -127,7 +128,7 @@ def commit():
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs" / "guide" / "src" / "models.md"
     sup = read("support.rs")
-    rows, default_ctx, lossy_ctx = parse_support(sup)
+    rows, default_ctx, lossy_ctx = parse_support(sup, read("plan.rs"))
     levels = parse_levels(read("levels.rs"))
     mach = read("machine.rs")
     drv = const_int(mach.replace("pub const DRIVER_MIN: i32", "pub const DRIVER_MIN: usize"), "DRIVER_MIN")
