@@ -1859,10 +1859,6 @@ mod tests {
             .sum()
     }
 
-    /// The plan's weights against what the loader makes of a model: a tiny Qwen3 and a tiny Qwen3.5-family model (random weights, the shapes of the real
-    /// ones: src/logits.rs) packed on the CPU at each layout the paths run, and the bytes the packed directory holds. The plan sizes a lossy level from the
-    /// config alone before anything is downloaded (within 3%: a pack's tail words and the small tensors) and from the directory's own bytes once it is packed.
-    #[cfg(feature = "dev")] // (the random models are a development build's: src/logits.rs)
     /// A GPU under WDDM keeps `WDDM_EXTRA` more free than another (its plans take that much less), and the room a plan has shrinks by it.
     #[test]
     fn a_wddm_gpu_keeps_more_free() {
@@ -1873,6 +1869,10 @@ mod tests {
         assert_eq!(free - reserve_with(free, false) - (free - reserve_with(free, true)), WDDM_EXTRA);
     }
 
+    /// The plan's weights against what the loader makes of a model: a tiny Qwen3 and a tiny Qwen3.5-family model (random weights, the shapes of the real
+    /// ones: src/logits.rs) packed on the CPU at each layout the paths run, and the bytes the packed directory holds. The plan sizes a lossy level from the
+    /// config alone before anything is downloaded (within 3%: a pack's tail words and the small tensors) and from the directory's own bytes once it is packed.
+    #[cfg(feature = "dev")] // (the random models are a development build's: src/logits.rs)
     #[test]
     fn the_plan_weighs_what_the_packer_writes() {
         use crate::weights::Layout;
