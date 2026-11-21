@@ -12,4 +12,5 @@ Say what you could not test (another GPU, Windows, macOS, a model you do not hav
 - [ ] Anything written by an earlier version still decodes (a format change comes with a fixture in `tests/data/legacy/` and a line in `docs/codec/spec.md`).
 - [ ] A new model or kernel has a logits test against the CPU reference.
 - [ ] One change in this pull request, in the style of the code around it.
+- [ ] A user-facing change has its entry in a new `changelog.d/<slug>.md` (not in CHANGELOG.md).
 - [ ] Every commit carries `Signed-off-by:` (`git commit -s`), certifying the [Developer Certificate of Origin](../DCO).
