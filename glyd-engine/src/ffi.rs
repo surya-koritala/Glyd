@@ -568,6 +568,9 @@ impl Pack {
     }
 }
 
+/// `KvGeom::dim` with this set: a tensor held in the keys' tile layout alone (no V tile; glyd_gpu.h).
+pub const KV_ONE_STREAM: i64 = 1 << 16;
+
 /// The paged KV cache's geometry and pools, as the kernels take them (a layer's pool is passed per call).
 #[derive(Clone, Copy, Debug)]
 pub struct KvGeom {

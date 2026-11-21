@@ -3,7 +3,7 @@
 //! the decode attention (`glyd_gpu_kv_decode`) against attention computed on the host from the same values. No model: `glyd-engine kvshapes`, in the GPU job.
 
 use crate::dev::{Buf, Dev};
-use crate::ffi::{KvGeom, Lib, Result};
+use crate::ffi::{KvGeom, Lib, Result, KV_ONE_STREAM};
 
 struct Rng(u64);
 
@@ -235,6 +235,78 @@ fn shape(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
     Ok(bad == 0)
 }
 
+/// One stream: a tensor [n][h][d] held in the keys' layout alone (a latent padded to 5 heads of 128: Kimi-K3's 576 values; keys that are the values: Gemma's global layers), written with no value, read back
+/// into one tensor and compared bit for bit; its page is smaller by the V tiles; and the calls that cannot take it refuse it.
+fn one_stream(lib: &Lib, dev: &Dev, h: usize, d: usize, pad: usize) -> Result<bool> {
+    const A: i64 = 15;
+    const RING: i64 = 256;
+    let hp = (h * d / 128) as i64;
+    let n: usize = 16 * 5 + 7;
+    let blocks = n.div_ceil(16);
+    let two = lib.kv_page_bytes(h as i64, d as i64, A)?;
+    let one = lib.kv_page_bytes(h as i64, d as i64 | KV_ONE_STREAM, A)?;
+    let (nchunks, nslabs) = (4096i64, 64i64);
+    let pool = Buf::zeroed(one as usize * blocks)?;
+    let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
+    let raw = Buf::zeroed(lib.kv_raw_bytes(nslabs, hp)? as usize)?;
+    let status = Buf::zeroed(4 * (16 + 2 * RING) as usize)?;
+    let geom = KvGeom { heads: h as i64, dim: d as i64 | KV_ONE_STREAM, arena: A, page_stride: one, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs };
+    let mut r = Rng(0xA5A5_5A5A_1234_4321 ^ (h * 1000 + d) as u64);
+    let mut bad = 0;
+    for (label, far, wild) in [("tame", 15, 0), ("wild", 15, 5)] {
+        let mut k = values(&mut r, n, h, d, far, wild);
+        // (the padding of a latent: the last `pad` channels of every token are zero)
+        for t in 0..n {
+            for c in d - pad..d {
+                k[(t * h + h - 1) * d + c] = 0;
+            }
+        }
+        let kb = bases(&k, n, h, d);
+        let (kbuf, kbase) = (Buf::new(2 * k.len())?, Buf::new(kb.len())?);
+        kbuf.write(0, &k)?;
+        kbase.write(0, &kb)?;
+        let slots: Vec<i64> = (0..n as i64).collect();
+        let sl = Buf::new(8 * n)?;
+        sl.write(0, &slots)?;
+        let stride = (h * d) as i64;
+        // SAFETY: live buffers of the sizes the kernels read and write; the stream is synchronized before the results are read.
+        unsafe { lib.kv_write(&geom, pool.ptr, kbase.ptr, 0, 0, kbuf.ptr, stride, 0, 0, sl.ptr, n as i64, status.ptr, 0, 0, RING, dev.stream)? };
+        let ids: Vec<i32> = (0..blocks as i32).collect();
+        let pages = Buf::new(4 * blocks)?;
+        pages.write(0, &ids)?;
+        let out = Buf::zeroed(2 * blocks * 16 * h * d)?;
+        unsafe { lib.kv_unpack(&geom, pool.ptr, kbase.ptr, 0, pages.ptr, blocks as i64, out.ptr, 0, dev.stream)? };
+        dev.sync()?;
+        let mut head = [0u32; 16];
+        status.read(0, &mut head)?;
+        let mut back = vec![0u16; blocks * 16 * h * d];
+        out.read(0, &mut back)?;
+        let diff = back[..n * h * d].iter().zip(&k).filter(|(a, b)| a != b).count();
+        let ok = diff == 0 && head[11] == 0;
+        println!(
+            "{} one stream {h} heads x {d} ({hp} pages' heads, {pad} padding channels), {label}: {} values read back, {diff} differ; page {one} bytes against {two} for two streams; raw pages {}, void pages {}",
+            if ok { "ok  " } else { "FAIL" },
+            n * h * d,
+            head[10],
+            head[11]
+        );
+        if !ok || one >= two {
+            bad += 1;
+        }
+    }
+    // the calls that read or write two streams refuse one
+    let refused = unsafe {
+        let ids = Buf::new(8)?;
+        lib.kv_gather(&geom, pool.ptr, 0, 0, ids.ptr, ids.ptr, 1, ids.ptr, dev.stream).is_err()
+            && lib.kv_decode_workspace(1, h as i64, 4, d as i64 | KV_ONE_STREAM, 1).is_err()
+    };
+    println!("{} one stream: gather and decode refuse it", if refused { "ok  " } else { "FAIL" });
+    if !refused {
+        bad += 1;
+    }
+    Ok(bad == 0)
+}
+
 /// Every shape; false where any differs.
 pub fn run() -> Result<bool> {
     let dev = Dev::new(0)?;
@@ -242,6 +314,10 @@ pub fn run() -> Result<bool> {
     let mut ok = true;
     for (h, d, g) in [(8, 128, 4), (4, 256, 4), (8, 256, 8), (2, 512, 4), (4, 512, 8), (8, 512, 4)] {
         ok &= shape(&lib, &dev, h, d, g)?;
+    }
+    // one stream: a 576-value latent in 5 heads of 128 (64 channels of padding), keys that are the values in 2 heads of 512 and one of 256
+    for (h, d, pad) in [(5, 128, 64), (2, 512, 0), (1, 256, 0)] {
+        ok &= one_stream(&lib, &dev, h, d, pad)?;
     }
     println!("{}", if ok { "the lossless KV cache of every head dimension reads back bit for bit and decodes" } else { "FAILED" });
     Ok(ok)
