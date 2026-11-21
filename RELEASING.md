@@ -27,7 +27,8 @@ bird: penguin, kestrel, swift, wren, hummingbird.
 
 ## Release day (one repository: surya-koritala/Glyd)
 
-1. `scripts/bump_version.py X.Y.Z` (every Cargo.toml, both pyproject.toml, the installer's pin), CHANGELOG `## Unreleased` → `## vX.Y.Z`.
+1. `scripts/bump_version.py X.Y.Z` (every Cargo.toml, both pyproject.toml, the installer's pin), CHANGELOG `## Unreleased` → `## vX.Y.Z`,
+   with every `changelog.d/*.md` entry put under it and the files removed.
    PR to main, CI green.
 2. `scripts/release_ready.sh X.Y.Z` on the merge commit, then tag `vX.Y.Z` there, push the tag, and right away
    `gh release create vX.Y.Z --verify-tag --notes-file notes.md` (notes below): both workflows upload to that release.
