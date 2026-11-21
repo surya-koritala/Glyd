@@ -1,0 +1,1 @@
+- Forced tool calls in the XML, GLM, DSML and Atem formats limit a parameter given only an `enum` (or a `const`) to one of its values as text. The reader takes such a parameter as text, and before this a model could write the value in JSON quotes, which the reader kept as part of the value.
