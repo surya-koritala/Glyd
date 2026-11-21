@@ -424,15 +424,27 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
     if pick.is_empty() {
         return None;
     }
-    // (a tool's parameters: each name, and whether its value is text)
-    let props = |t: &Value| -> Vec<(String, bool, String)> {
+    // (a tool's parameters: each name, whether its value is text (the reader's rule: `tools::is_text`), its schema, and the values a text parameter is limited to by an `enum`
+    // or a `const`, as the text the reader takes: a string's characters, any other value's JSON)
+    let props = |t: &Value| -> Vec<(String, bool, String, Option<Vec<String>>)> {
         match t.get("function").and_then(|f| f.get("parameters")).and_then(|p| p.get("properties")) {
-            Some(Value::Object(o)) => {
-                o.iter().map(|(k, p)| (k.clone(), p.get("type").and_then(Value::as_str) == Some("string"), glyd_gpu::json::to_compact(p))).collect()
-            }
+            Some(Value::Object(o)) => o
+                .iter()
+                .map(|(k, p)| {
+                    let as_text = |v: &Value| v.as_str().map_or_else(|| glyd_gpu::json::to_compact(v), str::to_string);
+                    let values = match (p.get("enum"), p.get("const")) {
+                        (Some(Value::Array(vs)), _) if !vs.is_empty() => Some(vs.iter().map(as_text).collect()),
+                        (_, Some(c)) => Some(vec![as_text(c)]),
+                        _ => None,
+                    };
+                    (k.clone(), crate::tools::is_text(p), glyd_gpu::json::to_compact(p), values)
+                })
+                .collect(),
             _ => Vec::new(),
         }
     };
+    // (a text value limited to its values, each one a literal)
+    let one_of = |values: &[String]| format!("({})", values.iter().map(|v| lark_str(v)).collect::<Vec<_>>().join(" | "));
     let mut rules = Vec::new();
     let mut alts = Vec::new();
     match format {
@@ -450,10 +462,15 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
         Format::Xml => {
             for (i, t) in pick.iter().enumerate() {
                 let mut params = Vec::new();
-                for (k, string, schema) in props(t) {
+                for (k, string, schema, values) in props(t) {
                     let head = lark_str(&format!("<parameter={k}>\n"));
+                    let end = lark_str("\n</parameter>\n");
                     // (the text rule takes the end of the parameter with it)
-                    params.push(if string { format!("{head} text") } else { format!("{head} %json{schema} {}", lark_str("\n</parameter>\n")) });
+                    params.push(match (string, values) {
+                        (true, Some(vs)) => format!("{head} {} {end}", one_of(&vs)),
+                        (true, None) => format!("{head} text"),
+                        (false, _) => format!("{head} %json{schema} {end}"),
+                    });
                 }
                 let rule = format!("params{i}");
                 rules.push(if params.is_empty() { format!("{rule}: \"\"") } else { format!("{rule}: ({})*", params.join(" | ")) });
@@ -469,9 +486,13 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
         Format::Glm => {
             for (i, t) in pick.iter().enumerate() {
                 let mut params = Vec::new();
-                for (k, string, schema) in props(t) {
+                for (k, string, schema, values) in props(t) {
                     let head = format!("ws {} ws \"<arg_value>\"", lark_str(&format!("<arg_key>{k}</arg_key>")));
-                    params.push(if string { format!("{head} text") } else { format!("{head} %json{schema} \"</arg_value>\"") });
+                    params.push(match (string, values) {
+                        (true, Some(vs)) => format!("{head} {} \"</arg_value>\"", one_of(&vs)),
+                        (true, None) => format!("{head} text"),
+                        (false, _) => format!("{head} %json{schema} \"</arg_value>\""),
+                    });
                 }
                 let rule = format!("params{i}");
                 rules.push(if params.is_empty() { format!("{rule}: \"\"") } else { format!("{rule}: ({})*", params.join(" | ")) });
@@ -491,12 +512,12 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
             let dsml = format == Format::Dsml;
             for (i, t) in pick.iter().enumerate() {
                 let mut params = Vec::new();
-                for (k, string, schema) in props(t) {
+                for (k, string, schema, values) in props(t) {
                     let flag = |s: bool| if dsml { format!("{k}\" string=\"{s}\">") } else { format!("{k}\">") };
-                    params.push(if string {
-                        format!("{} text ws", lark_str(&format!("{}{}", tg.param, flag(true))))
-                    } else {
-                        format!("{} %json{schema} {} ws", lark_str(&format!("{}{}", tg.param, flag(false))), lark_str(tg.param_end))
+                    params.push(match (string, values) {
+                        (true, Some(vs)) => format!("{} {} {} ws", lark_str(&format!("{}{}", tg.param, flag(true))), one_of(&vs), lark_str(tg.param_end)),
+                        (true, None) => format!("{} text ws", lark_str(&format!("{}{}", tg.param, flag(true)))),
+                        (false, _) => format!("{} %json{schema} {} ws", lark_str(&format!("{}{}", tg.param, flag(false))), lark_str(tg.param_end)),
                     });
                 }
                 let rule = format!("params{i}");
@@ -755,6 +776,66 @@ mod tests {
             assert!(e.calls[0].arguments.contains("São Paulo") || e.calls[0].arguments.contains("Zürich"), "{format:?}: {e:?}");
             let e = read(&ToolChoice::Required, &required_text);
             assert!(e.called && e.calls[0].name == "get_weather" && e.calls[0].arguments.contains("Paris"), "{format:?}: {e:?}");
+        }
+    }
+
+    /// A parameter limited by an `enum` and given no `type` (as clients write them) is text to the readers of the XML, GLM, DSML and Atem calls: the grammar lets a model write one
+    /// of its values as text and nothing else (not the value in JSON quotes, which the reader would keep as part of the text), and the reader reads that value. The client
+    /// matrix's `get_time` found it on a GPU: a random model wrote `"CET"` and the call's zone was the five characters.
+    #[test]
+    fn an_enum_parameter_is_one_of_its_values_as_text() {
+        use crate::tools::{extract, forced_prefix, Format, ToolChoice};
+        let tools = glyd_gpu::json::parse(
+            r#"[{"type":"function","function":{"name":"get_time","parameters":{"type":"object","properties":{"zone":{"enum":["UTC","CET"]},"n":{"type":"integer","enum":[1,2]}},"required":["zone"]}}}]"#,
+        )
+        .unwrap();
+        let tools = tools.as_array().unwrap();
+        let g =
+            Grammars::new((0..=255u8).map(|b| vec![b]).chain([[&[TokTrie::SPECIAL_TOKEN_MARKER][..], b"<|end|>"].concat()]).collect(), &[256], 300).unwrap();
+        let (dsml, atem) = (Format::Dsml.tags(), Format::Atem.tags());
+        let cases: Vec<(Format, String, String)> = vec![
+            (
+                Format::Xml,
+                "<parameter=zone>\nCET\n</parameter>\n<parameter=n>\n2\n</parameter>\n</function>\n</tool_call>".into(),
+                "<parameter=zone>\n\"".into(),
+            ),
+            (
+                Format::Glm,
+                "\n<arg_key>zone</arg_key>\n<arg_value>CET</arg_value>\n<arg_key>n</arg_key>\n<arg_value>2</arg_value>\n</tool_call>".into(),
+                "\n<arg_key>zone</arg_key>\n<arg_value>\"".into(),
+            ),
+            (
+                Format::Dsml,
+                format!("<｜DSML｜parameter name=\"zone\" string=\"true\">CET</｜DSML｜parameter>\n<｜DSML｜parameter name=\"n\" string=\"false\">2</｜DSML｜parameter>\n</｜DSML｜invoke>\n{}", dsml.close),
+                "<｜DSML｜parameter name=\"zone\" string=\"true\">\"".into(),
+            ),
+            (
+                Format::Atem,
+                format!("<atem:parameter name=\"zone\">CET</atem:parameter>\n<atem:parameter name=\"n\">2</atem:parameter>\n</atem:invoke>\n{}", atem.close),
+                "<atem:parameter name=\"zone\">\"".into(),
+            ),
+        ];
+        for (format, good, quoted) in cases {
+            let lark = call_grammar(tools, Some("get_time"), format).unwrap();
+            let c = g.compile(&Spec::Grammar(lark.clone())).unwrap_or_else(|e| panic!("{format:?}: {e}\n{lark}"));
+            // (the bytes of `text` the grammar takes from its start, and whether it is whole there)
+            let takes = |text: &str| {
+                let mut gram = c.start();
+                for (i, &b) in text.as_bytes().iter().enumerate() {
+                    if !gram.allowed()[b as usize] {
+                        return (i, false);
+                    }
+                    gram.consume(b as u32);
+                }
+                (text.len(), gram.accepting())
+            };
+            assert_eq!(takes(&good), (good.len(), true), "{format:?}: {good:?}\n{lark}");
+            assert_eq!(takes(&quoted).0, quoted.len() - 1, "{format:?}: a quote opens the value\n{lark}");
+            let e = extract(&format!("{}{good}", forced_prefix(&ToolChoice::Named("get_time".into()), format).unwrap()), format, tools);
+            assert!(e.called && e.calls.len() == 1, "{format:?}: {e:?}");
+            let args = glyd_gpu::json::parse(&e.calls[0].arguments).unwrap();
+            assert_eq!(args.get("zone").and_then(glyd_gpu::json::Value::as_str), Some("CET"), "{format:?}: {e:?}");
+            assert_eq!(args.get("n").map(glyd_gpu::json::to_compact).as_deref(), Some("2"), "{format:?}: {e:?}");
         }
     }
 
