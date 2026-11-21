@@ -1233,6 +1233,7 @@ impl crate::conv::Gen for EngineG4 {
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
         self.top.ask = sampler.top_need();
+        self.top.mask = sampler.mask_handle();
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         if self.drafting() {
@@ -1268,6 +1269,7 @@ impl crate::conv::Gen for EngineG4 {
                 return Ok((out, Finish::Length));
             }
             self.top.ask = sampler.top_need();
+            self.top.mask = sampler.mask_handle();
             s = self.step(tok)?;
         }
     }

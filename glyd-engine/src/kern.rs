@@ -78,6 +78,8 @@ pub struct Kern {
     silu_mul: Kernel,
     argmax: Kernel,
     topk: Kernel,
+    /// `topk` with a mask per row (a grammar's): None where the kernels have none.
+    topk_masked: Option<Kernel>,
     expsum: Kernel,
     count_diff: Kernel,
     logsumexp: Kernel,
@@ -145,6 +147,7 @@ impl Kern {
             silu_mul: dev.kernel(kname!("silu_mul"))?,
             argmax: dev.kernel(kname!("argmax_bf16"))?,
             topk: dev.kernel(kname!("topk64_bf16"))?,
+            topk_masked: dev.kernel(kname!("topk64_bf16_masked")).ok(),
             expsum: dev.kernel(kname!("expsum_bf16"))?,
             count_diff: dev.kernel(kname!("count_diff_u16"))?,
             logsumexp: dev.kernel(kname!("logsumexp_bf16"))?,
@@ -403,6 +406,26 @@ impl Kern {
             return crate::ffi::err(format!("vocabulary {v}: not supported"));
         }
         launch!(self.topk, [rows, 1, 1], [1024, 1, 1], s; logits, v, tok, val)
+    }
+
+    /// Whether the kernels have `topk_rows_masked`.
+    pub fn has_masked_topk(&self) -> bool {
+        self.topk_masked.is_some()
+    }
+
+    /// `topk_rows` with a mask per row: row r's flags and bits at `mask`[r * `words` ..] (uint32; `words` = 1 + ceil(v / 32): the first word nonzero where the row is held to its bits, a token's bit in word 1 + token / 32,
+    /// bit token % 32), a token whose bit is clear ranking below every other (the row as if its logit were -inf). Where fewer than TOPK tokens are allowed the rest of the candidates are tokens that are not (the host
+    /// drops them by its own mask). Err where the kernels have no such kernel.
+    ///
+    /// # Safety
+    /// As `topk_rows`; `mask` holds `rows * words` words.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn topk_rows_masked(&self, s: Stream, logits: u64, v: i32, rows: u32, tok: u64, val: u64, mask: u64, words: i32) -> Result<()> {
+        let Some(k) = &self.topk_masked else { return crate::ffi::err("these kernels have no masked top-k") };
+        if v % 8 != 0 || v < TOPK as i32 {
+            return crate::ffi::err(format!("vocabulary {v}: not supported"));
+        }
+        launch!(k, [rows, 1, 1], [1024, 1, 1], s; logits, v, tok, val, mask, words)
     }
 
     /// The sum over each of `rows` rows of v logits of exp((x - max) / temperature), the normalizer of a top-p cut over the row's largest logits: row r's into `out`[r] (f64). `maxv`[r] (f32): the row's largest, as `argmax_rows` leaves it.
