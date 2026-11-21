@@ -340,6 +340,12 @@ impl Sampler {
         }
     }
 
+    /// The mask of the next draw's grammar, for a GPU that makes `kern::TOPK` candidates to put on the row before its top-k, where the draw looks at the candidates (`top_need`): the candidates then hold the draw's tokens
+    /// wherever the grammar allows that many (`sample_grammar`). None: no grammar, or a draw of the whole row.
+    pub fn mask_handle(&self) -> Option<crate::constrain::MaskHandle> {
+        self.top_need().and(self.gram.as_ref()?.handle())
+    }
+
     /// What the next draw asks of a GPU that makes `kern::TOPK` candidates (None: it reads the whole row).
     pub fn top_need(&self) -> Option<Need> {
         self.need(crate::kern::TOPK)
