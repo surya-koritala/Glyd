@@ -61,6 +61,8 @@ mod families;
 pub mod ffi;
 pub mod fit;
 pub mod gguf;
+pub mod gguf_pre;
+pub mod gguf_tok;
 pub mod glm;
 pub mod glm_cb;
 #[cfg(feature = "dev")]

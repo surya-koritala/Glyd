@@ -56,6 +56,9 @@ every earlier format.
   `preflight` and `costs` take a GGUF too, a Hub repo of them by its files' headers (nothing of the weights is downloaded). A GGUF of another architecture is refused by name; of the recent families
   (Qwen3.5 to 3.8, Gemma, Muse Spark, Kimi-K3, DeepSeek-V4, GLM) it says what llama.cpp's converter did to the tensors (norm weights stored plus one, exponentials folded, experts stacked), which
   is why it is not the release's checkpoint, and the engine runs the checkpoint.
+- A GGUF's tokenizer is built as the model's own tokenizer.json: byte-level BPE with any of llama.cpp's pre-tokenizers (the Qwen, Llama 3, GLM, DeepSeek, Phi and GPT-4o families' among them; src/gguf_pre.rs)
+  and SentencePiece (Mistral, Gemma), whose merges come from the pieces' scores as transformers' converter makes them. Token ids and decoded text are the models' own on ten models' tokenizers
+  (checked against their Hugging Face files). Another kind of tokenizer, or a pre-tokenizer the table has not, is refused by name.
 - Repository: concise developer docs (`docs/architecture.md`, `ROADMAP.md`, `CONTRIBUTING.md`); codec research records moved
   under `research/codec/`, engine design notes under `glyd-engine/docs/design/`. CI split by path (`ci.yml`, `python.yml`,
   `kernels.yml`); GPU tests on a self-hosted GPU machine (`gpu.yml`) or an ephemeral cloud instance (`gpu-cloud.yml`).
