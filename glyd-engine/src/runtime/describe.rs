@@ -47,9 +47,9 @@ pub struct Described {
     pub extra: Vec<(String, Source)>,
     /// Draft layers in the checkpoint that the description does not use yet (`mtp_num_hidden_layers`).
     pub mtp_layers: usize,
-    /// Matrices stored as FP8 with block scales: each such `x.weight` has `x.weight_scale_inv` [rows / block, cols / block].
-    pub fp8: BTreeSet<String>,
-    pub fp8_block: usize,
+    /// Matrices stored quantized (FP8 blocks as released, FP4 experts), each with the tensor of its scales. The weight map names them;
+    /// decoding a stored format is the tensor source's job.
+    pub scales: std::collections::BTreeMap<String, String>,
 }
 
 impl Described {
@@ -59,7 +59,7 @@ impl Described {
         for (_, src) in &self.extra {
             s.extend(src.names());
         }
-        s.extend(self.fp8.iter().map(|w| format!("{w}_scale_inv")));
+        s.extend(self.scales.values().cloned());
         for b in &self.blocks {
             for (_, src) in b {
                 s.extend(src.names());
@@ -290,6 +290,7 @@ pub fn describe(cfg: &Value) -> Result<Described> {
     match cfg.get("model_type").and_then(|v| v.as_str()) {
         Some("kimi_k3") => return kimi(cfg, tc),
         Some("muse_spark") => return muse(tc, prefix),
+        Some("deepseek_v4") => return deepseek_v4(tc),
         _ => {}
     }
     let mt = tc.get("model_type").and_then(|v| v.as_str()).unwrap_or("");
@@ -323,8 +324,7 @@ fn finish(k: &Keys, desc: ModelDesc, prefix: &str, blocks: Vec<Vec<(String, Sour
         blocks,
         extra: Vec::new(),
         mtp_layers,
-        fp8: BTreeSet::new(),
-        fp8_block: 128,
+        scales: Default::default(),
     })
 }
 
@@ -1016,8 +1016,8 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         rope,
     };
     let mut out = finish(&k, desc, prefix, roles, mtp_layers)?;
-    out.fp8 = fp8set;
-    out.fp8_block = fp8.map_or(128, |f| f.block);
+    out.scales = fp8set.into_iter().map(|w| (w.clone(), format!("{w}_scale_inv"))).collect();
+    let _ = fp8.map(|f| f.block);
     Ok(out)
 }
 
@@ -1237,8 +1237,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
             ("out_mix_proj".into(), t(format!("{prefix}output_attn_res_proj.weight"))),
         ],
         mtp_layers: 0,
-        fp8: BTreeSet::new(),
-        fp8_block: 128,
+        scales: Default::default(),
     })
 }
 
@@ -1380,4 +1379,248 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
         rope: None,
     };
     finish(&k, desc, prefix, roles, 0)
+}
+
+/// DeepSeek-V4 (`deepseek_v4`): the compressed attention (`kinds::Comp`), MoE with hash routing in the first layers then sqrt-softplus
+/// with a choice bias, SwiGLU limits, 4 mHC streams and the weighted hyper-head. Two config flavours: the release's (`compress_ratios`
+/// per layer, a ratio of 4 being the overlapping windows with the indexer; `num_hash_layers`; YaRN `rope_scaling` and
+/// `compress_rope_theta` on the compressing layers; FP8 matrices and FP4 experts with `.scale` tensors; names without a prefix) and
+/// transformers' (`layer_types`, `compress_rates`, `rope_parameters` main and compress, `mlp_layer_types`; names under `model.`).
+fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
+    let mt = "deepseek_v4";
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, None)?;
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    k.expect("mlp_bias", &Value::Bool(false))?;
+    k.expect("scoring_func", &Value::from("sqrtsoftplus"))?;
+    k.expect("topk_method", &Value::from("noaux_tc"))?;
+    k.expect("num_key_value_heads", &Value::from(1))?;
+    k.expect("n_shared_experts", &Value::from(1))?;
+    k.expect("norm_topk_prob", &Value::Bool(true))?;
+    k.expect("router_jitter_noise", &Value::from(0.0))?;
+    k.raw("architectures");
+    let released = k.m.contains_key("compress_ratios");
+    let fp4 = k.str("expert_dtype")? == Some("fp4");
+    let fp8 = Fp8::parse(k.raw("quantization_config"), mt)?.is_some();
+    let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
+    k.opt_f64("partial_rotary_factor")?;
+    let (q_lora, o_lora, o_groups, window) =
+        (k.usize("q_lora_rank")?, k.usize("o_lora_rank")?, k.usize("o_groups")?, k.opt_usize("sliding_window")?.unwrap_or(128));
+    let (ih, idim, itop) = (k.usize("index_n_heads")?, k.usize("index_head_dim")?, k.usize("index_topk")?);
+    let (ne, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
+    k.usize("moe_intermediate_size")?;
+    let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0).map(|l| l as f32);
+    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
+    let streams = StreamsP {
+        streams: k.usize("hc_mult")?,
+        sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
+        eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
+        norm_eps: eps,
+    };
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    // each layer's compression ratio and whether it is CSA (overlap and indexer), its rope, and whether its MoE is hash-routed
+    let (ratios, csa, hash, main_rope, comp_rope): (Vec<usize>, Vec<bool>, Vec<bool>, Rope, Rope) = if released {
+        let r: Vec<usize> =
+            k.raw("compress_ratios").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_u64().unwrap_or(0) as usize).collect()).unwrap_or_default();
+        if r.len() < layers {
+            return err(format!("{mt}: {} compress_ratios for {layers} layers", r.len()));
+        }
+        let r = r[..layers].to_vec();
+        let nh = k.opt_usize("num_hash_layers")?.unwrap_or(0);
+        let mut main = Rope::plain(k.opt_f64("rope_theta")?.unwrap_or(10_000.0), rd);
+        main.style = RopeStyle::Interleaved;
+        let mut comp_m = Map::new();
+        if let Some(Value::Object(o)) = k.raw("rope_scaling") {
+            comp_m = o.clone();
+        }
+        comp_m.insert("rope_theta".into(), Value::from(k.opt_f64("compress_rope_theta")?.unwrap_or(160_000.0)));
+        // (the release's model.py stretches the frequencies only: YaRN without the attention factor transformers puts on cos and sin)
+        if comp_m.contains_key("factor") && !comp_m.contains_key("attention_factor") {
+            comp_m.insert("attention_factor".into(), Value::from(1.0));
+        }
+        let mut comp = rope(&comp_m, rd, max_pos, &format!("{mt} rope_scaling"))?;
+        comp.style = RopeStyle::Interleaved;
+        (r.clone(), r.iter().map(|&x| x == 4).collect(), (0..layers).map(|l| l < nh).collect(), main, comp)
+    } else {
+        let rates = match k.raw("compress_rates") {
+            Some(Value::Object(o)) => o.clone(),
+            _ => Map::new(),
+        };
+        let rate = |t: &str| rates.get(t).and_then(|v| v.as_u64()).map(|x| x as usize);
+        let types: Vec<String> = k
+            .raw("layer_types")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| Error(format!("{mt}: no layer_types")))?
+            .iter()
+            .map(|x| x.as_str().unwrap_or("").to_string())
+            .collect();
+        let mut r = Vec::new();
+        for t in types.iter().take(layers) {
+            r.push(match t.as_str() {
+                "sliding_attention" => 0,
+                "compressed_sparse_attention" | "heavily_compressed_attention" => rate(t).ok_or_else(|| Error(format!("{mt}: no compress_rates.{t}")))?,
+                o => return err(format!("{mt}: layer type {o}")),
+            });
+        }
+        let mlp: Vec<String> =
+            k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect()).unwrap_or_default();
+        let rp = match k.raw("rope_parameters") {
+            Some(Value::Object(o)) => o.clone(),
+            _ => return err(format!("{mt}: no rope_parameters")),
+        };
+        let one = |t: &str| -> Result<Rope> {
+            let o = rp.get(t).and_then(|v| v.as_object()).ok_or_else(|| Error(format!("{mt}: no rope_parameters.{t}")))?;
+            let mut o = o.clone();
+            o.insert("partial_rotary_factor".into(), Value::from(1.0));
+            let mut r = rope(&o, rd, max_pos, &format!("{mt} rope_parameters.{t}"))?;
+            r.style = RopeStyle::Interleaved;
+            Ok(r)
+        };
+        k.opt_f64("rope_theta")?;
+        k.opt_f64("compress_rope_theta")?;
+        (
+            r,
+            types.iter().take(layers).map(|t| t == "compressed_sparse_attention").collect(),
+            (0..layers).map(|l| mlp.get(l).is_some_and(|m| m == "hash_moe")).collect(),
+            one("main")?,
+            one("compress")?,
+        )
+    };
+    let (p0, names): (&str, [&str; 4]) = if released {
+        ("", ["embed.weight", "norm.weight", "head.weight", "hc_head_"])
+    } else {
+        ("model.", ["model.embed_tokens.weight", "model.norm.weight", "head.weight", "model.hc_head.hc_"])
+    };
+    let kv_norm = if released { "kv_norm" } else { "norm" };
+    let mut scales = std::collections::BTreeMap::new();
+    let q8 = |w: String, scales: &mut std::collections::BTreeMap<String, String>| -> Source {
+        if fp8 && released {
+            scales.insert(w.clone(), w.replace(".weight", ".scale"));
+        }
+        t(w)
+    };
+    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let p = format!("{p0}layers.{l}");
+        let a = format!("{p}.attn");
+        let (ratio, is_csa) = (ratios[l], csa[l]);
+        let mut r = vec![("norm_in".to_string(), t(format!("{p}.attn_norm.weight")))];
+        for (role, x) in [("q_a", "wq_a"), ("q_b", "wq_b"), ("kv", "wkv"), ("o_a", "wo_a"), ("o_b", "wo_b")] {
+            r.push((role.to_string(), q8(format!("{a}.{x}.weight"), &mut scales)));
+        }
+        r.push(("q_a_norm".into(), t(format!("{a}.q_norm.weight"))));
+        r.push(("kv_norm".into(), t(format!("{a}.{kv_norm}.weight"))));
+        r.push(("sinks".into(), t(format!("{a}.attn_sink"))));
+        let pool = |pre: &str, at: &str, r: &mut Vec<(String, Source)>| {
+            for (role, x) in [("kv", "wkv.weight"), ("gate", "wgate.weight"), ("ape", "ape"), ("norm", "norm.weight")] {
+                r.push((format!("{pre}_{role}"), t(format!("{at}.{x}"))));
+            }
+        };
+        if ratio > 0 {
+            pool("comp", &format!("{a}.compressor"), &mut r);
+        }
+        if ratio > 0 && is_csa {
+            pool("idx", &format!("{a}.indexer.compressor"), &mut r);
+            r.push(("idx_q_b".into(), q8(format!("{a}.indexer.wq_b.weight"), &mut scales)));
+            r.push(("idx_weights".into(), t(format!("{a}.indexer.weights_proj.weight"))));
+        }
+        for (role, x) in [("hc_fn", "fn"), ("hc_base", "base"), ("hc_scale", "scale")] {
+            r.push((role.to_string(), t(format!("{p}.hc_attn_{x}"))));
+        }
+        let c = Comp {
+            heads,
+            head_dim: hd,
+            q_lora,
+            o_groups,
+            o_lora,
+            window,
+            ratio,
+            overlap: ratio > 0 && is_csa,
+            rope: if ratio > 0 { comp_rope.clone() } else { main_rope.clone() },
+            indexer: (ratio > 0 && is_csa).then_some(Indexer { heads: ih, head_dim: idim, top_k: itop, block: ratio, shared: false }),
+            norm_eps: eps,
+        };
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });
+        roles.push(r);
+        let f = format!("{p}.ffn");
+        let mut r = vec![("norm_in".to_string(), t(format!("{p}.ffn_norm.weight"))), ("router".into(), t(format!("{f}.gate.weight")))];
+        if hash[l] {
+            r.push(("hash".into(), t(format!("{f}.gate.tid2eid"))));
+        } else {
+            r.push(("choice_bias".into(), t(format!("{f}.gate.bias"))));
+        }
+        let ex = |w: &str, scales: &mut std::collections::BTreeMap<String, String>| -> Vec<String> {
+            (0..ne)
+                .map(|e| {
+                    let n = format!("{f}.experts.{e}.{w}.weight");
+                    if fp4 && released {
+                        scales.insert(n.clone(), n.replace(".weight", ".scale"));
+                    }
+                    n
+                })
+                .collect()
+        };
+        let (w1, w3, w2) = (ex("w1", &mut scales), ex("w3", &mut scales), ex("w2", &mut scales));
+        r.push(("experts_gate_up".into(), Source::Experts(w1.into_iter().zip(w3).map(|(g, u)| vec![g, u]).collect())));
+        r.push(("experts_down".into(), Source::Experts(w2.into_iter().map(|x| vec![x]).collect())));
+        for (role, x) in [("shared_gate", "w1"), ("shared_up", "w3"), ("shared_down", "w2")] {
+            let w = format!("{f}.shared_experts.{x}.weight");
+            if fp8 && released {
+                scales.insert(w.clone(), w.replace(".weight", ".scale"));
+            }
+            r.push((role.to_string(), t(w)));
+        }
+        for (role, x) in [("hc_fn", "fn"), ("hc_base", "base"), ("hc_scale", "scale")] {
+            r.push((role.to_string(), t(format!("{p}.hc_ffn_{x}"))));
+        }
+        let moe = Moe {
+            router: Router { score: RouterScore::SqrtSoftplus, logit_scale: 1.0, bias: !hash[l], groups: None, top_k, renorm: true, scale, hash: hash[l] },
+            experts: ne,
+            expert: mlp,
+            shared: Some(mlp),
+            shared_gate: false,
+            latent: None,
+        };
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
+        roles.push(r);
+    }
+    for x in [
+        "expert_dtype",
+        "quantization_config",
+        "rope_scaling",
+        "num_hash_layers",
+        "compress_ratios",
+        "rope_theta",
+        "compress_rope_theta",
+        "layer_types",
+        "mlp_layer_types",
+        "compress_rates",
+        "rope_parameters",
+    ] {
+        k.raw(x);
+    }
+    k.finish()?;
+    Ok(Described {
+        desc: ModelDesc {
+            hidden: d,
+            vocab,
+            embed: Embed { scale: 1.0, norm: None, streams: streams.streams },
+            blocks,
+            final_norm: Norm::rms(eps),
+            head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps } },
+            mtp: Vec::new(),
+            vision: None,
+            rope: None,
+        },
+        embed: names[0].to_string(),
+        final_norm: names[1].to_string(),
+        head: (!tied).then(|| names[2].to_string()),
+        blocks: roles,
+        extra: ["fn", "base", "scale"].iter().map(|x| (format!("out_hc_{x}"), t(format!("{}{x}", names[3])))).collect(),
+        mtp_layers,
+        scales,
+    })
 }

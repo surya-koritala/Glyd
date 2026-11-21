@@ -132,3 +132,32 @@ fn released_glm53_flash_config() {
     assert!(missing.is_empty() && extra.is_empty(), "not described: {missing:?}; not in the checkpoint: {extra:?}");
     assert_eq!((d.mtp_layers, d.desc.embed.streams), (1, 4));
 }
+
+#[test]
+fn deepseek_v4_model() {
+    model("dsv4_model", MODEL_TOL);
+}
+
+/// The DeepSeek-V4 fixture exercises the compressed entries and the indexer's choice: without them (a window alone) the logits differ.
+#[test]
+fn deepseek_v4_compression_matters() {
+    use super::kinds::{Body, Mixer};
+    let f = Fixture::load("dsv4_model");
+    let mut d = describe(&f.j["config"]).unwrap();
+    let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
+    let toks: Vec<u32> = f.j["token_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let mut keep_all = d.clone();
+    for (b, b2) in d.desc.blocks.iter_mut().zip(keep_all.desc.blocks.iter_mut()) {
+        if let (Body::Mixer(Mixer::Compressed(c)), Body::Mixer(Mixer::Compressed(c2))) = (&mut b.body, &mut b2.body) {
+            c.ratio = 0;
+            if let Some(ix) = &mut c2.indexer {
+                ix.top_k = 1000;
+            }
+        }
+    }
+    let want = f.f32s("output");
+    let window_only = RefModel::load(&d, &src).unwrap().forward(&toks, 0).unwrap().concat();
+    let every_entry = RefModel::load(&keep_all, &src).unwrap().forward(&toks, 0).unwrap().concat();
+    assert!(super::reference::testing::rel(&window_only, &want) > 1e-3);
+    assert!(super::reference::testing::rel(&every_entry, &want) > 1e-4);
+}
