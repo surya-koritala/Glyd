@@ -256,7 +256,7 @@ def main():
             call = m.invoke("What is the weather in Paris?").tool_calls[0]
             assert call["name"] == "get_weather"
             valid_call(call["args"], TOOL_SCHEMA)
-        out = models[0].with_structured_output(SCHEMA, method="json_schema", strict=True).invoke("Weather in Paris?")
+        out = models[0].with_structured_output({"title": "weather", **SCHEMA}, method="json_schema", strict=True).invoke("Weather in Paris?")
         valid(out)
 
     print(f"{len(failures)} failed" if failures else "all passed")
