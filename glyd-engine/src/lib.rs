@@ -35,6 +35,7 @@ pub mod cli;
 /// The commands and their flags as one table, the file of the root crate (src/cmdtable.rs): the help, the man page and the flags a command refuses are made from it.
 #[path = "../../src/cmdtable.rs"]
 pub mod cmdtable;
+pub mod conn;
 pub mod connect;
 pub mod constrain;
 pub mod conv;
@@ -55,6 +56,7 @@ pub mod draft_loop;
 #[cfg(feature = "dev")]
 pub mod dsv4_ref;
 pub mod dynamic;
+pub mod engine_api;
 pub mod entry;
 pub mod f8;
 #[cfg(test)]
