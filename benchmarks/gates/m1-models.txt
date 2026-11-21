@@ -1,0 +1,15 @@
+# The M1 gate's pinned models: MODEL | released | 8gb | 16gb | 24gb | note
+# Each tier is what the engine's planner answers on a machine of that size (benchmarks/gates/m1-gate.sh --plan-only --machine rtx4060-laptop | rtx4080s | rtx4090 checks it):
+# (the release build's planner: the wren level is a development build's, so the 8 GB tier has no level that holds a recent model; that is the owner's to decide, see the gate plan)
+# run = the model loads and gives a first token within 2 minutes, refuse = `glyd run` says in a few lines why it does not and exits non-zero.
+# Every model was released after 2026-05-20 (createdAt on the Hub: the owner's rule, models older than six months are not tested).
+google/gemma-4-12B-it | 2026-05-23 | refuse | run | run | dense; the 16 GB plan is kestrel
+google/gemma-4-12B-it-qat-w4a16-ct | 2026-06-05 | refuse | run | run | the QAT checkpoint, held bit for bit
+nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 | 2026-08-01 | refuse | run | run | Mamba-2 hybrid MoE; experts in RAM on 8 GB only at wren (a development build's level), hummingbird on 16 GB
+Qwen/Qwen3.8-27B | 2026-08-05 | refuse | refuse | run | dense Qwen3.5 family
+Qwen/Qwen3.8-Flash-Next | 2026-08-24 | refuse | refuse | refuse | Condor's model: glyd run takes it with P8
+Qwen/Qwen-AgentWorld-35B-A3B | 2026-06-22 | refuse | refuse | refuse | Qwen3.5 MoE
+zai-org/GLM-5.3-Flash | 2026-08-25 | refuse | refuse | refuse | 328B MoE
+meta-models/Muse-Glimmer-30B | 2026-08-09 | refuse | refuse | refuse | Muse Glimmer
+deepseek-ai/DeepSeek-V4-Flash-DSpark | 2026-06-27 | refuse | refuse | refuse | 167B MoE
+moonshotai/Kimi-K3 | 2026-06-13 | refuse | refuse | refuse | 2.8 TB checkpoint
