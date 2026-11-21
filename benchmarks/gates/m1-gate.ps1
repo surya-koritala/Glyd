@@ -2,7 +2,7 @@
 The M1 gate on a clean Windows machine with only the NVIDIA driver: the PowerShell twin of m1-gate.sh (same steps, same list, same result lines; no Python anywhere: PowerShell reads the JSON).
   powershell -File benchmarks\gates\m1-gate.ps1 [-Tier 8gb|16gb|24gb] [-Models FILE] [-Glyd glyd.exe] [-InstallCmd "..."] [-Out DIR] [-Ext DIR] [-Limit 120]
   powershell -File benchmarks\gates\m1-gate.ps1 -PlanOnly -Machine rtx4080s [-Glyd glyd.exe]
--InstallCmd: the command that installs glyd (no installer is published for Windows yet: P7c; give the one that unpacks the release's glyd.exe, or install by hand and omit it).
+-InstallCmd: the command that installs glyd; by default scripts\install.ps1 of this checkout (the release's Windows installer, which installs the Windows zip), where it exists; else install by hand and omit it.
 -Ext: NAME.result files ("PASS|FAIL|SKIP<TAB>NAME<TAB>detail"): driver-r535, driver-r550, driver-r570, p2a-no-oom, r5a-schema-real-weights, r8-reference-gpu-results, p17-open-webui, p17-continue, p17-openai-sdk.
 Exit status 0 only where nothing FAILs and no row is blocked on packs. Not yet run on Windows (the machine is the AWS one of the gate plan): the first run may need fixes.
 #>
@@ -51,6 +51,8 @@ $shim = Join-Path $Out "nopython"; New-Item -ItemType Directory -Force -Path $sh
 foreach ($n in "python", "python3", "pip", "pip3", "py") { Set-Content -Path (Join-Path $shim "$n.cmd") -Value "@echo %0 %* >> `"$called`"`r`n@exit /b 127" }
 $env:PATH = "$shim;$env:PATH"
 
+$defaultInstaller = Join-Path $PSScriptRoot "..\..\scripts\install.ps1"   # (the release's Windows installer, P6/P7: it installs the Windows zip)
+if (-not $InstallCmd -and (Test-Path $defaultInstaller)) { $InstallCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$defaultInstaller`"" }
 if ($InstallCmd) {
     $t0 = Get-Date; & cmd /c $InstallCmd *> (Join-Path $Out "install.log")
     if ($LASTEXITCODE -eq 0) { Step "PASS" "install" ("{0:N0} s: {1}" -f ((Get-Date) - $t0).TotalSeconds, $InstallCmd) } else { Step "FAIL" "install" "failed: see $Out\install.log" }
