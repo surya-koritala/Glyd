@@ -4514,6 +4514,7 @@ pub(crate) mod tests {
 
     /// The random model that `logitsmodel qwen35 DIR --servable` makes serves a client: its tokenizer reads the template's text and the characters of JSON, its template takes tools, its end token is named, and the
     /// grammars of a JSON schema and of a forced call (Qwen3.8's XML) compile on its tokens, so that a client gets valid structured output and a valid call from weights that write random characters.
+    #[cfg(feature = "dev")]
     #[test]
     fn a_servable_random_model_takes_grammars() {
         let dir = std::env::temp_dir().join(format!("glyd-servable-{}", std::process::id()));
