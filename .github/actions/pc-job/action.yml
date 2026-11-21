@@ -16,7 +16,9 @@ runs:
     - if: runner.environment == 'self-hosted'
       shell: bash
       run: |
-        for d in home toolcache cache tmp; do mkdir -p "$RUNNER_TEMP/job-$d"; done
+        # (from nothing each time: a job cut short (cancelled) leaves its half-installed toolchains here, and a later job on this runner would
+        # take them as installed: "missing manifest in toolchain")
+        for d in home toolcache cache tmp; do rm -rf "$RUNNER_TEMP/job-$d"; mkdir -p "$RUNNER_TEMP/job-$d"; done
         {
           echo "HOME=$RUNNER_TEMP/job-home"
           echo "RUNNER_TOOL_CACHE=$RUNNER_TEMP/job-toolcache"

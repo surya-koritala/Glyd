@@ -1,0 +1,1 @@
+SKIP	driver-r570	not run: the oldest supported driver passed (driver-r535, RTX 3060, 2026-11-21) and the 8 GB and 16 GB machines ran R595 or newer

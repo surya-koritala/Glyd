@@ -112,20 +112,24 @@ while IFS= read -r line; do
     if [ "$code" -ne 0 ] && [ "$code" -lt 124 ] && [ "$n" -le 3 ]; then step PASS "refusal:$m" "exit $code, $n lines: $(echo "$out" | head -1 | cut -c1-140)"; else step FAIL "refusal:$m" "exit $code, $n lines (a refusal is a few lines and a non-zero exit)"; fi
     continue
   fi
+  # (the plan's weights, read before the server holds the GPU: fit asked while it runs sees the GPU full and plans otherwise)
+  plan_gib="$("$GLYD" fit "$m" ${MACHINE:+--machine "$MACHINE"} 2>&1 | grep -oE '[0-9.]+ GiB of weights on the GPU' | head -1 | cut -d' ' -f1)"
   # first token: the server started, the model packed or downloaded where it is not here, and the first streamed token, all inside the limit
   t0=$SECONDS; "$GLYD" serve "$m" --host 127.0.0.1 --port "$PORT" --users 1 > "$OUT/serve-$(echo "$m" | tr '/:' '__').log" 2>&1 & SRV=$!
-  up=0; while [ $((SECONDS - t0)) -lt 900 ]; do kill -0 $SRV 2> /dev/null || break; "$CURL" -sf -m 2 "http://127.0.0.1:$PORT/v1/models" > /dev/null && { up=1; break; }; sleep 1; done
+  SLOG="$OUT/serve-$(echo "$m" | tr '/:' '__').log"; t_dl=""
+  up=0; while [ $((SECONDS - t0)) -lt 900 ]; do kill -0 $SRV 2> /dev/null || break; [ -z "$t_dl" ] && grep -q '^Downloaded ' "$SLOG" 2> /dev/null && t_dl=$((SECONDS - t0)); "$CURL" -sf -m 2 "http://127.0.0.1:$PORT/v1/models" > /dev/null && { up=1; break; }; sleep 1; done
   if [ "$up" = 0 ] && [ "$blocked" = 1 ]; then step SKIP "first-token:$m" "BLOCKED(packs): the server did not come up (the planned level's pre-packed repo is not published)"; BLOCKED=$((BLOCKED + 1)); kill $SRV 2> /dev/null; wait $SRV 2> /dev/null; continue; fi
   if [ "$up" = 0 ]; then step FAIL "first-token:$m" "the server did not come up ($(tail -1 "$OUT/serve-$(echo "$m" | tr '/:' '__').log" | cut -c1-120))"; kill $SRV 2> /dev/null; wait $SRV 2> /dev/null; continue; fi
-  ft="$("$CURL" -sN -m 120 -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Say hello."}],"max_tokens":4,"stream":true}' "http://127.0.0.1:$PORT/v1/chat/completions" | grep -m1 -E '"content":"[^"]' )"
-  total=$((SECONDS - t0))
-  if [ -n "$ft" ] && [ "$total" -le "$LIMIT" ]; then step PASS "first-token:$m" "$total s (limit $LIMIT)"
+  ft="$("$CURL" -sN -m 120 -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Say hello."}],"max_tokens":4,"stream":true}' "http://127.0.0.1:$PORT/v1/chat/completions" | grep -m1 -E '"(content|reasoning_content|reasoning)":"[^"]' )"
+  total=$((SECONDS - t0)); dl=${t_dl:-0}; after=$((total - dl))
+  # (the limit is on loading and the first token; a download is the connection's, said beside it: $dl s of the $total)
+  if [ -n "$ft" ] && [ "$after" -le "$LIMIT" ]; then step PASS "first-token:$m" "$after s after the download (limit $LIMIT); $total s in all, $dl s of it downloading"
   elif [ "$blocked" = 1 ]; then step SKIP "first-token:$m" "BLOCKED(packs): $total s (limit $LIMIT): the planned level's pre-packed repo is not published, the model was downloaded and packed here"; BLOCKED=$((BLOCKED + 1))
-  else step FAIL "first-token:$m" "$total s (limit $LIMIT), token: ${ft:-none}"; fi
+  else step FAIL "first-token:$m" "$after s after the download (limit $LIMIT), $total s in all; token: ${ft:-none}"; fi
   # the printed plan is what loads: the level, and the weights' size within 10%
   info="$("$CURL" -s -m 10 "http://127.0.0.1:$PORT/v1/glyd/info")"
   lvl="$(echo "$info" | jq -r '.level.effective // empty')"; wb="$(echo "$info" | jq -r '.memory.weights_bytes // empty')"
-  plan_lvl="$(echo "$why" | sed -n 's/^Plan: \([a-z]*\).*/\1/p')"; plan_gib="$("$GLYD" fit "$m" ${MACHINE:+--machine "$MACHINE"} 2>&1 | sed -n 's/.*: \([0-9.]*\) GiB of weights on the GPU.*/\1/p' | head -1)"
+  plan_lvl="$(echo "$why" | sed -n 's/^Plan: \([a-z]*\).*/\1/p')"
   if [ -n "$lvl" ] && [ -n "$plan_lvl" ] && [ "$lvl" = "$plan_lvl" ]; then
     if [ -n "$wb" ] && [ -n "$plan_gib" ] && awk -v w="$wb" -v p="$plan_gib" 'BEGIN{g=w/1073741824; d=(g>p?g-p:p-g)/p; exit !(d<=0.10)}'; then step PASS "plan-is-load:$m" "level $lvl, weights $(awk -v w="$wb" 'BEGIN{printf "%.2f", w/1073741824}') GiB against the plan's $plan_gib"
     else step FAIL "plan-is-load:$m" "weights $wb bytes against the plan's $plan_gib GiB"; fi

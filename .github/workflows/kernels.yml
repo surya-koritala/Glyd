@@ -56,4 +56,5 @@ jobs:
           mkdir -p /tmp/kernels-compiled && date -u > /tmp/kernels-compiled/at
       - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)
         if: always() && runner.environment == 'self-hosted'
-        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE"
+        # (the temp folder too: the runner cleans it as its user before the next job, and leaves it where it cannot)
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
