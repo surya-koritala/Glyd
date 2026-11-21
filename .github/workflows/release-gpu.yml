@@ -428,7 +428,7 @@ jobs:
           Get-Content "out\$d.zip.sha256"; Get-ChildItem out | Select-Object Name, Length
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: engine-windows-x86_64
+          name: engine-bundle-windows-x86_64
           path: |
             out/*.zip
             out/*.zip.sha256
@@ -584,8 +584,9 @@ jobs:
   sign-engine:
     # Provenance, an SBOM and keyless signatures of the engine bundles that attach-engine puts on the release (.github/actions/sign-release): with id-token: write besides `publish`;
     # it builds nothing and runs pinned actions on the bundles as they are. docs/verify-releases.md says how to check them.
-    needs: [plan, engine-bundle]
-    if: needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v')
+    # The Windows zip (engine-windows, artifact engine-bundle-windows-x86_64) is signed with them where that job succeeded; its failure does not stop the Linux bundles'.
+    needs: [plan, engine-bundle, engine-windows]
+    if: ${{ always() && needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v') && needs.engine-bundle.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -619,7 +620,7 @@ jobs:
     # The engine bundles (engine-bundle: glyd with the engine linked, glyd-engine as a link to it, libglyd_gpu_cuda13.so, LICENSE, a tarball for each Linux architecture, and its sha256) attached to this
     # repository's GitHub release of the tag: what install.sh and condor/tools/install.sh download on Linux with an NVIDIA GPU. release.yml makes the release
     # (its attach job); this job waits up to 30 minutes for it, then uploads, replacing assets of the same name.
-    # The Windows zip (engine-windows: glyd.exe, the two GPU library DLLs; not signed yet: P13) goes up too where that job succeeded; its failure does not hold the Linux bundles back.
+    # The Windows zip (engine-windows: glyd.exe, the two GPU library DLLs; attested and signed like the tarballs, but not code-signed: P13) goes up with them where that job succeeded; its failure does not hold the Linux bundles back.
     needs: [plan, engine-bundle, sign-engine, engine-windows]
     if: ${{ always() && needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v') && needs.engine-bundle.result == 'success' && needs.sign-engine.result == 'success' }}
     runs-on: ubuntu-latest
@@ -635,11 +636,6 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: engine-signatures
-          path: bundles
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        if: needs.engine-windows.result == 'success'
-        with:
-          name: engine-windows-x86_64
           path: bundles
       - name: Upload to the release
         env:
