@@ -7,8 +7,8 @@ name: Install check
 #
 # The GPU half is the glyd-gpu package (compiled wheels, published by release-gpu.yml on the
 # same tag, which tests them before it publishes): its extras are checked as a user installs
-# them, that they bring glyd-gpu of this version. No GPU runners here: the gpu extra is checked for its
-# wheel resolving and its GPU-free CLI (`python -m glyd_gpu fit`) only.
+# them, that they bring glyd-gpu of this version. No GPU runner for these: the gpu extra is checked for its
+# wheel resolving and its GPU-free CLI (`python -m glyd_gpu fit`) only. One job runs on the GPU runner of vars.GPU_RUNNER (installer-gpu: the Rust-only install and a first answer).
 on:
   release:
     types: [published]
@@ -205,6 +205,66 @@ jobs:
           echo "$out" | head -4
           echo "$out" | grep -qE 'needs Linux with an NVIDIA GPU|not installed here' || { echo "glyd run did not say what it needs"; exit 1; }
           echo "installer: glyd $V, round trip ok, glyd run says what it needs"
+
+  # The Rust-only install on the GPU runner (vars.GPU_RUNNER: the owner's PC, CI only), as a user with an NVIDIA GPU and no Python tools runs it: the release's own scripts/install.sh with its
+  # defaults, which installs the compression program and Glyd's engine (the tarballs, sha256 and signature checked) and no Python, then `glyd run` of a small recent model to a first
+  # answer. In a fresh container of the CUDA image (so a clean machine each time: no home, no uv, no earlier install), with the Hub cache of the other GPU jobs (/cache/hf) so the
+  # model is downloaded once, no background service, and the memory cap every GPU job has. Where the machine's NVIDIA driver is not loaded this fails at nvidia-smi: the
+  # machine's state, not the release's.
+  installer-gpu:
+    name: installer on the GPU runner (Rust only, first token)
+    needs: version
+    if: vars.GPU_RUNNER != ''
+    runs-on: ${{ fromJSON(vars.GPU_RUNNER) }}
+    timeout-minutes: 90
+    container:
+      image: nvidia/cuda:13.0.3-devel-ubuntu24.04
+      options: --gpus all -v glyd-ci-cache:/cache --memory=28g --memory-swap=28g
+    env:
+      V: ${{ needs.version.outputs.version }}
+      HF_HOME: /cache/hf
+      GLYD_NO_SERVICE: "1"
+      GLYD_ENGINE: "1"
+      MODEL: google/gemma-4-12B-it:kestrel
+    steps:
+      - name: Tools (a clean Ubuntu has curl; this image has not)
+        run: |
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates git > /dev/null
+          nvidia-smi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          persist-credentials: false
+      - name: "sh scripts/install.sh (retry: the release's assets can lag the release)"
+        run: |
+          set -e
+          if [ ! -f scripts/install.sh ]; then echo "v$V has no scripts/install.sh: nothing to check"; exit 0; fi
+          ok=0
+          for i in $(seq 1 40); do
+            if sh scripts/install.sh > install.log 2>&1; then cat install.log; ok=1; break; fi
+            cat install.log
+            echo "install.sh did not finish (attempt $i/40: the release's assets can lag the release); retrying in 30s"
+            sleep 30
+          done
+          [ "$ok" = 1 ] || { echo "scripts/install.sh never finished"; exit 1; }
+          grep -q "Glyd's engine (Rust, no Python" install.log || { echo "install.sh did not take the Rust-only path"; exit 1; }
+      - name: No Python was installed, and glyd is the release
+        run: |
+          set -e
+          [ -f scripts/install.sh ] || exit 0
+          export PATH="$HOME/.local/bin:$PATH"
+          [ ! -e "$HOME/.local/share/uv" ] && ! command -v uv > /dev/null || { echo "the Rust-only install put uv or Python tools in"; exit 1; }
+          glyd --version | grep -q "glyd $V" || { echo "glyd --version does not say $V"; glyd --version; exit 1; }
+          command -v glyd-engine > /dev/null || { echo "no glyd-engine beside glyd"; exit 1; }
+      - name: glyd run, a first answer from the engine
+        run: |
+          set -e
+          [ -f scripts/install.sh ] || exit 0
+          export PATH="$HOME/.local/bin:$PATH"
+          out=$(glyd run "$MODEL" --prompt "What is 17 + 25? Answer with the number only." --no-think)
+          echo "$out"
+          echo "$out" | grep -q 42 || { echo "no 42 in the answer"; exit 1; }
+          echo "installer on the GPU runner: glyd $V, $MODEL answered"
 
   homebrew:
     needs: version
