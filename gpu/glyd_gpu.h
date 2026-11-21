@@ -394,8 +394,9 @@ int glyd_gpu_attn_decode(const uint16_t* q, int64_t D, const uint8_t* kd, const 
  * The lossless 12-bit KV cache (glyd_gpu's vLLM plugin, kv: lossless): a pool of pages, a page the K and V of 16
  * consecutive tokens of H kv heads (1 to 32) of D = 128 channels, every bf16 value held in 12 bits and read back bit
  * for bit. D = 256 (H 1 to 16) is held as 2 H heads of 128, a head's channels 0-127 the page's head 2 h and 128-255 its
- * head 2 h + 1 (kbase, vbase [H][256] are those heads' [2 H][128]): every function below takes the model's H and D, and
- * the page's heads are 2 H where it says H (kv_second_bytes takes the page's heads). A value is its bf16 low byte as it is and a 4-bit code for the high byte: the sign and an offset 0-7 from
+ * head 2 h + 1 (kbase, vbase [H][256] are those heads' [2 H][128]); D = 512 (H 1 to 8) as 4 H heads of 128, the same way (decode: a page
+ * is four warps', their scores summed in the order of the halves): every function below takes the model's H and D, and
+ * the page's heads are 2 H (D = 256) or 4 H (D = 512) where it says H (kv_second_bytes takes the page's heads). A value is its bf16 low byte as it is and a 4-bit code for the high byte: the sign and an offset 0-7 from
  * a base, the window of 8 values of exponent >> 1 that holds the most of the (layer, head, channel)'s values in other
  * text (kbase, vbase: uint8 [H][D] a layer, each 0 to 120); a value outside its window is an exception: an entry in its
  * head's header (three inline), else in its page's list of entries, whose first A are in the page (its arena) and the rest

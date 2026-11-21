@@ -6618,7 +6618,7 @@ __device__ __forceinline__ void load_buf(Buf& c, const AttnParams& P, int b, int
 }
 
 // PIPE: the next page's loads are issued before the page in hand is computed (two pages of raw data a warp in registers). FUSE: the last CTA of a (sequence, kv head) to write its partial merges
-// them all (the arithmetic of combine_kernel, which a launch of its own does otherwise). HALVES 2: a head of 256 channels, a page two warps' (AttnParams).
+// them all (the arithmetic of combine_kernel, which a launch of its own does otherwise). HALVES 2 and 4: a head of 256 or 512 channels, a page two or four warps' (AttnParams).
 template <bool PIPE, bool FUSE, int HALVES>
 __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
     constexpr int DO = D * HALVES;   // a query head's channels
@@ -6672,19 +6672,27 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
         float s[4] = {0.f, 0.f, 0.f, 0.f};  // tokens g (s[0], s[1]) and g + 8 (s[2], s[3]) of heads 2q, 2q + 1
 #pragma unroll
         for (int i = 0; i < 8; i++) mma(s, f[i].x, f[i].y, f[i].z, f[i].w, qb0[i], qb1[i]);
-        if constexpr (HALVES == 2) {  // the two halves' scores summed: the pair's warps each add the other's to its own (a + b is b + a, bit for bit: both hold the same sums)
+        if constexpr (HALVES >= 2) {  // the halves' scores summed: each of a page's warps adds the others' to its own, in the order of the halves, so that all of them hold the same sums bit for bit
             __shared__ float4 s_x[2][NW][32];
             s_x[par][warp][lane] = make_float4(s[0], s[1], s[2], s[3]);
 #if defined(__HIP_PLATFORM_AMD__)
-            __trap();  // (no named barriers on RDNA: heads of 256 channels are CUDA's alone)
+            __trap();  // (no named barriers on RDNA: heads of 256 channels and more are CUDA's alone)
 #else
-            asm volatile("bar.sync %0, 64;" ::"r"(1 + pw) : "memory");  // (the pair's two warps alone; a buffer is written again two pages on, after the pair has passed the next barrier)
+            asm volatile("bar.sync %0, %1;" ::"r"(1 + pw), "r"(HALVES * 32) : "memory");  // (the page's warps alone; a buffer is written again two pages on, after the warps have passed the next barrier)
 #endif
-            const float4 x = s_x[par][warp ^ 1][lane];
-            s[0] += x.x;
-            s[1] += x.y;
-            s[2] += x.z;
-            s[3] += x.w;
+            if constexpr (HALVES == 2) {
+                const float4 x = s_x[par][warp ^ 1][lane];  // (a + b is b + a, bit for bit)
+                s[0] += x.x;
+                s[1] += x.y;
+                s[2] += x.z;
+                s[3] += x.w;
+            } else {  // 4 halves: (h0 + h1) + (h2 + h3), the same expression in every warp
+                const float4 x0 = s_x[par][pw * HALVES][lane], x1 = s_x[par][pw * HALVES + 1][lane], x2 = s_x[par][pw * HALVES + 2][lane], x3 = s_x[par][pw * HALVES + 3][lane];
+                s[0] = (x0.x + x1.x) + (x2.x + x3.x);
+                s[1] = (x0.y + x1.y) + (x2.y + x3.y);
+                s[2] = (x0.z + x1.z) + (x2.z + x3.z);
+                s[3] = (x0.w + x1.w) + (x2.w + x3.w);
+            }
             par ^= 1;
         }
         float x0 = s[0] * P.sl2, x1 = s[1] * P.sl2, x2 = s[2] * P.sl2, x3 = s[3] * P.sl2;
@@ -11181,9 +11189,9 @@ static int64_t kv_splits(int64_t B, int64_t H, int64_t max_pages, int dev) {
     return std::min(want, cap);
 }
 
-// A head of 256 channels is held as two of the page's heads of 128 (channels 0-127, then 128-255): kv_heads(H, D) of them a page, at most 32.
-static bool kv_shape_ok(int64_t H, int64_t D, int64_t A) { return H >= 1 && ((D == kvc::D && H <= 32) || (D == 2 * kvc::D && H <= 16)) && A >= 0 && A <= 1023; }
-static int kv_heads(int64_t H, int64_t D) { return (int)(D == 2 * kvc::D ? 2 * H : H); }
+// A head of 256 or 512 channels is held as two or four of the page's heads of 128 (channels 0-127, then 128-255 ...): kv_heads(H, D) of them a page, at most 32.
+static bool kv_shape_ok(int64_t H, int64_t D, int64_t A) { return H >= 1 && (D == kvc::D || D == 2 * kvc::D || D == 4 * kvc::D) && H * (D / kvc::D) <= 32 && A >= 0 && A <= 1023; }
+static int kv_heads(int64_t H, int64_t D) { return (int)(H * (D / kvc::D)); }
 static bool kv_escape_ok(const void* escape, int64_t nchunks) { return nchunks >= 0 && nchunks <= (1 << 30) && (nchunks == 0 || (escape && (uintptr_t)escape % 16 == 0)); }
 static bool kv_raw_ok(const void* raw, int64_t nslabs) { return nslabs >= 0 && nslabs <= (1 << 30) && (nslabs == 0 || (raw && (uintptr_t)raw % 16 == 0)); }
 
@@ -11252,8 +11260,9 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_gather(const uint8_t* pool, int64_t page_strid
     if (!pages || !dst || !kbase || !vbase || !out || (uintptr_t)out % 4) return cudaErrorInvalidValue;
     const kvc::EscapePool E = kvc::esc_of((uint8_t*)escape, nchunks);
     const unsigned grid = (unsigned)((n * HP + 3) / 4);
-    if (HP == H) kvc::gather_kernel<1><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
-    else kvc::gather_kernel<2><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
+    if (D == kvc::D) kvc::gather_kernel<1><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
+    else if (D == 2 * kvc::D) kvc::gather_kernel<2><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
+    else kvc::gather_kernel<4><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
     return cudaGetLastError();
 }
 
@@ -11263,7 +11272,8 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_work_put(const uint16_t* key, int64_t key_stri
     if (!n) return 0;
     if (!key || !value || !slots || !out || key_stride < H * D || value_stride < H * D || key_stride % 2 || value_stride % 2 || (uintptr_t)key % 4 || (uintptr_t)value % 4 || (uintptr_t)out % 4) return cudaErrorInvalidValue;
     if (D == kvc::D) kvc::stage_put_kernel<kvc::D><<<(unsigned)n, 128, 0, cs>>>(key, key_stride, value, value_stride, slots, blocks * kvc::PT, (int)H, out);
-    else kvc::stage_put_kernel<2 * kvc::D><<<(unsigned)n, 128, 0, cs>>>(key, key_stride, value, value_stride, slots, blocks * kvc::PT, (int)H, out);
+    else if (D == 2 * kvc::D) kvc::stage_put_kernel<2 * kvc::D><<<(unsigned)n, 128, 0, cs>>>(key, key_stride, value, value_stride, slots, blocks * kvc::PT, (int)H, out);
+    else kvc::stage_put_kernel<4 * kvc::D><<<(unsigned)n, 128, 0, cs>>>(key, key_stride, value, value_stride, slots, blocks * kvc::PT, (int)H, out);
     return cudaGetLastError();
 }
 
@@ -11307,8 +11317,9 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode(const uint16_t* q, int64_t q_stride, co
             kvc::combine_kernel<HV * kvc::D><<<(unsigned)(B * H), 256, 0, cs>>>(P.ws_ml, P.ws_o, bf(out), out_stride, (int)H, (int)G, (int)splits, P.ppc_min, P.pfloor, seq_lens);
         }
     };
-    if (HP == H) launch(std::integral_constant<int, 1>{});
-    else launch(std::integral_constant<int, 2>{});
+    if (D == kvc::D) launch(std::integral_constant<int, 1>{});
+    else if (D == 2 * kvc::D) launch(std::integral_constant<int, 2>{});
+    else launch(std::integral_constant<int, 4>{});
     return cudaGetLastError();
 }
 
