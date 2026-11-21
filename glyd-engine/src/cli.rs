@@ -2843,7 +2843,7 @@ mod tests {
         std::fs::remove_dir_all(&l).unwrap();
     }
 
-    /// A level is the tag after the model's last ':' when that is all ASCII letters, in any case, and it comes off; --lossy is kestrel; a name that is no level built, and --lossy with another level, are
+    /// A level is the tag after the model's last ':' when that is all ASCII letters, in any case, and it comes off; --lossy is kestrel; a name that is no level, and --lossy with another level, are
     /// refused (status 1); a model with no tag (a Hub name, a path whose text after a ':' has a '/' or more) is as it is.
     /// The Hub repo of a model at a level is `glyd/NAME-LEVEL` (glyd-gpu-py's test_engine_packed.py pins the same examples), and a pre-packed repo's own name is its level.
     #[test]
@@ -2881,17 +2881,6 @@ mod tests {
             ("Wren", Some(Layout::Int4)),
             ("HUMMINGBIRD", Some(Layout::Hummingbird)),
         ] {
-            if !levels::PREVIEW && tag.eq_ignore_ascii_case("wren") {
-                // (a release build: wren is not built; hummingbird is)
-                let r = level(&format!("{m}:{tag}"), false).unwrap_err();
-                assert!(
-                    r.code == 1
-                        && r.what == format!(":{} is not built yet", tag.to_lowercase())
-                        && r.fix == "The levels available now: penguin, kestrel, swift, hummingbird",
-                    "{tag}: {r}"
-                );
-                continue;
-            }
             assert_eq!(level(&format!("{m}:{tag}"), false).unwrap(), (m, layout), "{tag}");
         }
         assert_eq!(level("/models/mine:swift", false).unwrap(), ("/models/mine", Some(Layout::Int5)));
@@ -2930,8 +2919,8 @@ mod tests {
             assert_eq!(level(plain, false).unwrap(), (plain, None), "{plain}");
             assert_eq!(level(plain, true).unwrap(), (plain, Some(Layout::Int6)), "{plain}");
         }
-        // --lossy is :kestrel: with another level it is refused; a name that is no level built is refused as it is
-        for tag in ["penguin", "swift", "SWIFT", "wren", "hummingbird"].into_iter().filter(|t| levels::PREVIEW || *t != "wren") {
+        // --lossy is :kestrel: with another level it is refused; a name that is no level is refused as it is
+        for tag in ["penguin", "swift", "SWIFT", "wren", "hummingbird"] {
             let r = level(&format!("{m}:{tag}"), true).unwrap_err();
             assert!(r.code == 1 && r.what == format!("--lossy is :kestrel, not :{}", tag.to_lowercase()), "{tag}: {r}");
         }
@@ -3256,7 +3245,6 @@ mod tests {
     /// holds 20 GiB of them whatever the computer has (and 100 is all of them); more than the computer has free less the reserve, and less than a step's choices in each width of each layer (3.4 GiB), are refused with the
     /// figures; the wren level, which has no packed directory to read experts from, keeps its refusal; a model with no experts is told so.
     #[test]
-    #[cfg(feature = "dev")] // (Nemotron 3 Super runs in a development build only: levels::PREVIEW)
     fn the_computers_memory_for_the_experts_is_asked_for_in_gib() {
         let text = include_str!("../tests/fixtures/nemotron_h_config.json");
         let model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16";
