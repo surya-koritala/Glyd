@@ -1070,8 +1070,8 @@ mod tests {
 }
 
 /// `nhrandom OUT [--latent N] [--experts E]`: a random Nemotron-H model at Nemotron 3.5 Lightning's widths (Mamba-2, attention and mixture-of-experts layers "M*ME", E experts (16) of 6 a token, a vocabulary of
-/// 4,096; with a latent of N, Super's kind of layer), every tensor the loader reads in its dtype and shape (config.json, model.safetensors): where the real model does not fit, the two engines are
-/// compared on it (`check --dynamic`).
+/// 4,096; with a latent of N, Super's kind of layer), every tensor the loader reads in its dtype and shape (config.json, model.safetensors): where the real model does not fit, `nhtoy` and `nhoffload` run it
+/// (the GPU job does).
 pub fn random(out: &Path, latent: usize, experts: usize) -> Result<()> {
     let lat = if latent > 0 { latent.to_string() } else { "null".into() };
     let text = format!(
