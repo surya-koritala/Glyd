@@ -65,6 +65,8 @@ above). `gpu-cloud.yml` starts a cloud instance for a run you ask for; it never 
 - **Speed, size, quality.** Before and after on the same machine, with the command: `glyd-engine bench` (docs/bench.md), `costs`, `rates`
   for the engine; `examples/bench_suite.rs`, `scripts/bench_versions.sh` for the codec. Results go in `benchmarks/`.
 - **Scope.** One change per pull request; code that reads like the code around it.
+- **Changelog.** A user-facing change adds its entry as a new file, `changelog.d/<slug>.md`, not an edit of CHANGELOG.md
+  ([changelog.d/README.md](changelog.d/README.md)); the release puts the entries together.
 
 ## Adding a model
 
