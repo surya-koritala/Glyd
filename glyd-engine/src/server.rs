@@ -5,6 +5,7 @@
 
 use crate::chat::{Chat, Message};
 use crate::choice::{Cfg, Choice, Delta, Done, ToolsCfg};
+use crate::conn::Conn;
 use crate::constrain::Spec;
 use crate::conv::{Gen, Outcome, Request, Talk};
 use crate::ffi::{err, Error, Result};
@@ -15,20 +16,23 @@ use crate::tok::Tok;
 use crate::tools::{self, Format, ToolChoice, ToolEv, Tools};
 use crate::wire;
 use glyd_gpu::json::{self, Value};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::io::{BufRead, Read, Write};
+#[cfg(test)]
+use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
 mod anthropic;
+mod frontend;
 mod ollama;
 mod responses;
 
 const PAGE: &str = include_str!("../data/chat.html");
 const MAX_BODY: usize = 16 << 20;
-const MAX_CONNECTIONS: usize = 64;
+/// The requests for the engine that may be in flight at once (a thread each); the next is answered 503 with `Retry-After`.
+const MAX_IN_FLIGHT: usize = 8192;
 /// The sequences one request may make (its prompts times `n`).
 const MAX_CHOICES: usize = 64;
 
@@ -51,11 +55,11 @@ pub struct Req {
 /// What the engine's thread is asked to do.
 pub enum Job {
     /// A completions request, its connection open for the reply.
-    Http { s: TcpStream, req: Req, chat: bool, id: u64 },
+    Http { s: Box<dyn Conn>, req: Req, chat: bool, id: u64 },
     /// An Anthropic Messages request (`count`: /v1/messages/count_tokens), its connection open for the reply.
-    Messages { s: TcpStream, req: Req, count: bool, id: u64 },
+    Messages { s: Box<dyn Conn>, req: Req, count: bool, id: u64 },
     /// A request of one of the other APIs (`Endpoint`), its connection open for the reply.
-    Api { s: TcpStream, req: Req, kind: Endpoint, id: u64 },
+    Api { s: Box<dyn Conn>, req: Req, kind: Endpoint, id: u64 },
     /// A reply for the terminal's chat: its pieces (and, last, how it ended) come back on `out`.
     Term { messages: Vec<Message>, request: Request, out: Sender<Piece>, abort: Arc<AtomicBool> },
     /// A sequence for the scheduler (what a request's thread sends: `Remote`).
@@ -133,7 +137,7 @@ pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Reje
         ask_method: None,
         ask_headers: None,
     };
-    let mut headers = 0;
+    let (mut headers, mut length_seen) = (0, false);
     while head_line(r, &mut budget, &mut buf)? && buf != b"\r\n" && buf != b"\n" {
         headers += 1;
         if headers > MAX_HEADERS {
@@ -143,7 +147,15 @@ pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Reje
         let low = line.to_ascii_lowercase();
         let value = line.split_once(':').map(|(_, v)| v.trim().to_string()).unwrap_or_default();
         if let Some(v) = low.strip_prefix("content-length:") {
-            h.len = v.trim().parse().unwrap_or(0);
+            // (one Content-Length, all digits: a request whose body's end is in doubt is refused, never read as one thing here and another by what is in front of it)
+            let v = v.trim();
+            if length_seen || v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+                return Err((400, "the request's Content-Length is repeated or is not a number".to_string()));
+            }
+            length_seen = true;
+            h.len = v.parse().map_err(|_| (413, format!("the request's body is over {} MiB", MAX_BODY >> 20)))?;
+        } else if low.starts_with("transfer-encoding:") {
+            return Err((400, "a request body with a Transfer-Encoding is not taken: send it with a Content-Length".to_string()));
         } else if low.starts_with("authorization:") {
             h.auth = Some(value);
         } else if low.starts_with("x-api-key:") {
@@ -164,31 +176,19 @@ pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Reje
 }
 
 /// How long a client has to send its request line and headers, and then its body, and how long a write may wait on a client that reads nothing: a connection that sends a byte a minute is not let
-/// to hold one of the MAX_CONNECTIONS for ever (the time is of the whole, not of each read).
+/// to hold a connection for ever (the time is of the whole, not of each read).
 pub const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
 pub const BODY_TIMEOUT: Duration = Duration::from_secs(120);
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// A read of `s` that waits no longer than `until`: the stream's timeout is what is left of it, and past it the read fails as a timeout does.
-pub fn read_until_deadline(s: &mut TcpStream, until: std::time::Instant, buf: &mut [u8]) -> std::io::Result<usize> {
+/// A read of `s` that waits no longer than `until`: the stream's timeout is what is left of it, and past it the read fails as a timeout does (the background service's proxy reads its requests so).
+pub fn read_until_deadline(s: &mut std::net::TcpStream, until: std::time::Instant, buf: &mut [u8]) -> std::io::Result<usize> {
     let left = until.saturating_duration_since(std::time::Instant::now());
     if left.is_zero() {
         return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the client was too slow"));
     }
     s.set_read_timeout(Some(left))?;
     s.read(buf)
-}
-
-/// A TcpStream whose reads end at a time (`read_until_deadline`), for the BufReader that reads a request.
-struct Deadline {
-    s: TcpStream,
-    until: std::time::Instant,
-}
-
-impl Read for Deadline {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        read_until_deadline(&mut self.s, self.until, buf)
-    }
 }
 
 /// The status a failed read is answered with: 408 where the client was too slow, else 400.
@@ -199,43 +199,12 @@ pub fn read_failure(e: &std::io::Error) -> Rejected {
     }
 }
 
-fn read_request(s: &mut TcpStream) -> std::result::Result<Option<Req>, Rejected> {
-    read_request_within(s, HEAD_TIMEOUT, BODY_TIMEOUT)
-}
-
-/// `read_request` with the times given: the head within `head`, the body within `body` of its end.
-fn read_request_within(s: &mut TcpStream, head: Duration, body: Duration) -> std::result::Result<Option<Req>, Rejected> {
-    let bad = |e: std::io::Error| read_failure(&e);
-    s.set_write_timeout(Some(WRITE_TIMEOUT)).ok();
-    let mut r = BufReader::new(Deadline { s: s.try_clone().map_err(bad)?, until: std::time::Instant::now() + head });
-    let Some(h) = read_head(&mut r)? else { return Ok(None) };
-    if h.len > MAX_BODY {
-        return Err((413, format!("the request's body is over {} MiB", MAX_BODY >> 20)));
-    }
-    if h.expect {
-        s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").ok();
-    }
-    r.get_mut().until = std::time::Instant::now() + body;
-    let mut body = vec![0u8; h.len];
-    r.read_exact(&mut body).map_err(bad)?;
+/// The request a head and its body make.
+fn req_of(h: Head, body: Vec<u8>) -> Req {
     let preflight = if h.method == "OPTIONS" && !h.origin.is_empty() { h.ask_method.map(|m| (m, h.ask_headers)) } else { None };
     // (the key as `x-api-key` is the same key as a bearer token: the Authorization header, where both come, is the one read)
     let auth = h.auth.or(h.x_api_key.map(|k| format!("Bearer {k}")));
-    Ok(Some(Req { method: h.method, path: h.path, body, auth, host: h.host, origin: h.origin, preflight, cors: String::new(), inflight: None }))
-}
-
-/// After an answer that was sent before the request was read to its end (a header block past its bounds): the end of the connection that sends no more, and what the client still sends read and thrown away
-/// for a few seconds, so that the answer is not lost to a reset (closing with unread data) while the client is writing. Nothing of it is kept.
-fn drain(s: &mut TcpStream) {
-    let _ = s.shutdown(std::net::Shutdown::Write);
-    s.set_read_timeout(Some(Duration::from_millis(500))).ok();
-    let (end, mut sink) = (std::time::Instant::now() + Duration::from_secs(3), [0u8; 16 << 10]);
-    while std::time::Instant::now() < end {
-        match s.read(&mut sink) {
-            Ok(n) if n > 0 => {}
-            _ => break,
-        }
-    }
+    Req { method: h.method, path: h.path, body, auth, host: h.host, origin: h.origin, preflight, cors: String::new(), inflight: None }
 }
 
 fn status_text(code: u16) -> &'static str {
@@ -255,20 +224,27 @@ fn status_text(code: u16) -> &'static str {
     }
 }
 
-fn respond(s: &mut TcpStream, code: u16, ctype: &str, body: &[u8]) {
+fn respond(s: &mut dyn Conn, code: u16, ctype: &str, body: &[u8]) {
     respond_with(s, code, ctype, "", body);
 }
 
 /// `respond` with more header lines (each ending in CRLF).
-fn respond_with(s: &mut TcpStream, code: u16, ctype: &str, extra: &str, body: &[u8]) {
-    let head = format!(
+fn respond_with(s: &mut dyn Conn, code: u16, ctype: &str, extra: &str, body: &[u8]) {
+    // (the head and the body in one write: the answer is one chunk of the pipe to the client)
+    s.write_all(&response_bytes(code, ctype, extra, body)).ok();
+}
+
+/// A whole answer: its head (the headers of every answer, `extra` more, each ending in CRLF; `Connection: close` is the handler's word for the front end to make `keep-alive` where it keeps the
+/// connection) and its body.
+fn response_bytes(code: u16, ctype: &str, extra: &str, body: &[u8]) -> Vec<u8> {
+    let mut out = format!(
         "HTTP/1.1 {code} {}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n",
         status_text(code),
         body.len()
-    );
-    if s.write_all(head.as_bytes()).is_ok() {
-        s.write_all(body).ok();
-    }
+    )
+    .into_bytes();
+    out.extend_from_slice(body);
+    out
 }
 
 /// The names this server answers to where it is on this computer's own address: the Host of a request must be one of them (the name a page whose DNS points at this computer has is not).
@@ -445,7 +421,7 @@ fn cors_headers_with(local_only: bool, port: u16, origin: &str, allowed: &Access
 }
 
 /// A CORS preflight's answer as Starlette's CORSMiddleware gives it (vLLM's): 200 `OK` with what is allowed where the origin is, 400 `Disallowed CORS origin` where it is not (a method outside the list too).
-fn preflight(s: &mut TcpStream, local_only: bool, port: u16, origin: &str, method: &str, headers: Option<&str>) {
+fn preflight(s: &mut dyn Conn, local_only: bool, port: u16, origin: &str, method: &str, headers: Option<&str>) {
     const METHODS: [&str; 7] = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
     let allowed = cors_allowed(local_only, port, origin, access());
     let mut failures = Vec::new();
@@ -1510,8 +1486,8 @@ fn start_as(sh: &Shared, tx: &Sender<Job>, o: &Value, chat: bool, hide_reasoning
 }
 
 /// One completions request on `s`: chat (messages) or plain (a prompt); or, at /v1/glyd/tokenize, the count of its prompt's tokens alone (a chat's where it has messages), made as its reply's would be.
-fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, chat: bool, id: u64) {
-    let bad = |s: &mut TcpStream, msg: &str| respond_with(s, 400, "application/json", &req.cors, error_body(msg, 400).as_bytes());
+fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req, chat: bool, id: u64) {
+    let bad = |s: &mut dyn Conn, msg: &str| respond_with(s, 400, "application/json", &req.cors, error_body(msg, 400).as_bytes());
     let v = match std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()) {
         Some(v) => v,
         None => return bad(s, "the body is not JSON"),
@@ -1858,7 +1834,7 @@ fn warn_unknown(v: &Value, chat: bool) {
 }
 
 /// The headers of a streamed reply, and (a chat's) the first chunk of every choice, which carries the role.
-fn start_stream(s: &mut TcpStream, head: &str, chat: bool, api: &Api, cors: &str) -> bool {
+fn start_stream(s: &mut dyn Conn, head: &str, chat: bool, api: &Api, cors: &str) -> bool {
     let h = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
     );
@@ -1887,7 +1863,7 @@ fn start_stream(s: &mut TcpStream, head: &str, chat: bool, api: &Api, cors: &str
 /// False where the client has gone.
 #[allow(clippy::too_many_arguments)]
 fn stream_chunk(
-    s: &mut TcpStream,
+    s: &mut dyn Conn,
     cors: &str,
     started: &mut bool,
     head: &str,
@@ -1928,31 +1904,21 @@ fn stream_chunk(
 const WAIT_TICK: Duration = Duration::from_secs(1);
 
 /// A comment of a server-sent stream (clients skip it): a stream that waits shows it is alive.
-fn sse_comment(s: &mut TcpStream) -> bool {
+fn sse_comment(s: &mut dyn Conn) -> bool {
     s.write_all(b"b\r\n: waiting\n\n\r\n").and_then(|_| s.flush()).is_ok()
 }
 
+/// Whether the client of a connection has closed it (a request that waited in line for a reply nobody reads).
+fn client_gone(s: &dyn Conn) -> bool {
+    s.gone()
+}
+
 /// A server-sent event as one chunk of the chunked body.
-fn sse(s: &mut TcpStream, data: &str) -> std::io::Result<()> {
+fn sse(s: &mut dyn Conn, data: &str) -> std::io::Result<()> {
     let ev = format!("data: {data}\n\n");
     // one write for the chunk (its size, the event, the line end): three small ones would wait on each other's acknowledgements
     s.write_all(format!("{:x}\r\n{ev}\r\n", ev.len()).as_bytes())?;
     s.flush()
-}
-
-/// Whether the client of a connection has closed it (a request that waited in line for a reply nobody reads).
-fn client_gone(s: &TcpStream) -> bool {
-    if s.set_nonblocking(true).is_err() {
-        return true;
-    }
-    let mut b = [0u8; 1];
-    let gone = match s.peek(&mut b) {
-        Ok(0) => true,
-        Ok(_) => false,
-        Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
-    };
-    let _ = s.set_nonblocking(false);
-    gone
 }
 
 /// Listens on `addr` (host:port): a thread accepts, a thread of its own reads each connection. The page, the health check and the model list are answered there; a completions request is
@@ -1989,31 +1955,11 @@ pub fn listen_with_life(
 ) -> Result<std::net::SocketAddr> {
     crate::ops::init();
     crate::otel::set_model(name);
-    let listener = TcpListener::bind(addr).map_err(|e| Error(format!("{addr}: {e}")))?;
-    let bound = listener.local_addr().map_err(|e| Error(e.to_string()))?;
-    let name = Arc::new(name.to_string());
     let key = Arc::new(key.map(|k| key_digest(&k)));
-    let live = Arc::new(AtomicUsize::new(0));
-    let (port, guard) = (bound.port(), local_only);
-    // (the connections are counted for the process, not the server: a reply's id names one request of the process, which /v1/glyd/requests/ID finds)
-    static CONNECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    std::thread::spawn(move || {
-        for conn in listener.incoming() {
-            let Ok(mut s) = conn else { continue };
-            let _ = s.set_nodelay(true);
-            if live.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-                live.fetch_sub(1, Ordering::SeqCst);
-                respond(&mut s, 503, "application/json", error_body("too many connections", 503).as_bytes());
-                continue;
-            }
-            let id = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
-            let (tx, name, live, key, loading, life) = (tx.clone(), name.clone(), live.clone(), key.clone(), loading.clone(), life.clone());
-            std::thread::spawn(move || {
-                route(s, &name, window, &key, (guard, port), &tx, id, &loading, &life);
-                live.fetch_sub(1, Ordering::SeqCst);
-            });
-        }
-    });
+    let name = Arc::new(name.to_string());
+    // (the connections are the front end's: tasks of its own runtime, with no cap on how many; what answers a request runs on threads, as before)
+    let bound = frontend::serve(addr, move |port| Ctx { name, window, key, local_only, port, tx, loading, life, times: Times::default() })
+        .map_err(|e| Error(format!("{addr}: {e}")))?;
     Ok(bound)
 }
 
@@ -2024,36 +1970,53 @@ fn forbidden_body(why: &str, code: u16) -> String {
 
 /// One connection's request. The checks come in the order of the Python server's layers: the Host and the Origin where the server is on this computer's own address (everything is refused for them, the page too), a CORS
 /// preflight, the key for the API.
-#[allow(clippy::too_many_arguments)]
-fn route(
-    mut s: TcpStream,
-    name: &str,
-    window: usize,
-    key: &Option<[u8; 32]>,
-    (local_only, port): (bool, u16),
-    tx: &Sender<Job>,
-    id: u64,
-    loading: &AtomicBool,
-    life: &Arc<crate::ops::Life>,
-) {
-    let mut req = match read_request(&mut s) {
-        Ok(Some(r)) => r,
-        Ok(None) => return,
-        Err((code, why)) => {
-            crate::ops::refused(code);
-            respond(&mut s, code, "application/json", error_body(&why, code).as_bytes());
-            if code == 431 {
-                drain(&mut s);
-            }
-            return;
-        }
-    };
+/// What the server answers a request under: its model's name and window, its key, whether it is on its own address only, the engine's queue, and its life.
+#[derive(Clone)]
+pub(crate) struct Ctx {
+    pub name: Arc<String>,
+    pub window: usize,
+    pub key: Arc<Option<[u8; 32]>>,
+    pub local_only: bool,
+    pub port: u16,
+    pub tx: Sender<Job>,
+    pub loading: Arc<AtomicBool>,
+    pub life: Arc<crate::ops::Life>,
+    pub times: Times,
+}
+
+/// The times the front end gives a connection: for the head of a request (of the whole of it), for its body, and for the next request of a connection that has been answered.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Times {
+    pub head: Duration,
+    pub body: Duration,
+    pub idle: Duration,
+}
+
+impl Default for Times {
+    fn default() -> Times {
+        Times { head: HEAD_TIMEOUT, body: BODY_TIMEOUT, idle: frontend::IDLE }
+    }
+}
+
+/// The job sent to the engine's thread, and where it fails to go (the engine is not running) the connection given back, to say so.
+fn send_job(tx: &Sender<Job>, job: Job) -> std::result::Result<(), Box<dyn Conn>> {
+    tx.send(job).map_err(|e| match e.0 {
+        Job::Http { s, .. } | Job::Messages { s, .. } | Job::Api { s, .. } => s,
+        _ => unreachable!("only a request with a connection is sent here"),
+    })
+}
+
+/// A request that was read, answered: the checks come in the order of the Python server's layers (the Host and the Origin where the server is on this computer's own address, everything is
+/// refused for them, a preflight too; the key for the API), then the request is answered here (the page, the health checks, the model list) or sent to the engine's thread with its connection.
+pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
+    let (name, window, key, (local_only, port), tx, loading, life) =
+        (ctx.name.as_str(), ctx.window, &*ctx.key, (ctx.local_only, ctx.port), &ctx.tx, &*ctx.loading, &ctx.life);
     if let Some((code, why)) = refusal(&req.host, &req.origin, local_only) {
         crate::ops::refused(code);
-        return respond(&mut s, code, "application/json", forbidden_body(&why, code).as_bytes());
+        return respond(&mut *s, code, "application/json", forbidden_body(&why, code).as_bytes());
     }
     if let Some((method, headers)) = &req.preflight {
-        return preflight(&mut s, local_only, port, &req.origin, method, headers.as_deref());
+        return preflight(&mut *s, local_only, port, &req.origin, method, headers.as_deref());
     }
     req.cors = cors_headers(local_only, port, &req.origin);
     let path = req.path.split('?').next().unwrap_or("").to_string();
@@ -2072,7 +2035,7 @@ fn route(
             error_body("Incorrect API key provided: the server's key is needed as `Authorization: Bearer <key>`.", 401)
         };
         crate::ops::refused(401);
-        return respond_with(&mut s, 401, "application/json", &format!("{cors}WWW-Authenticate: Bearer\r\n"), body.as_bytes());
+        return respond_with(&mut *s, 401, "application/json", &format!("{cors}WWW-Authenticate: Bearer\r\n"), body.as_bytes());
     }
     // a request for an API that goes to the engine is counted as in flight until its answer ends, and is not taken while the server drains (a 503 that says so: the load balancer's next try goes elsewhere)
     let to_engine = (req.method == "POST"
@@ -2080,12 +2043,18 @@ fn route(
         || path.starts_with("/api/");
     if to_engine {
         crate::ops::request(&path);
+        // (requests being answered are bounded as the connections are: each holds a thread of its own while the engine makes its reply)
+        if life.inflight() >= MAX_IN_FLIGHT {
+            crate::ops::refused(503);
+            let body = error_body("the server is answering as many requests as it takes: try again", 503);
+            return respond_with(&mut *s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
+        }
         match life.enter() {
             Some(g) => req.inflight = Some(g),
             None => {
                 crate::ops::refused(503);
                 let body = error_body("the server is shutting down: it takes no new requests", 503);
-                return respond_with(&mut s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
+                return respond_with(&mut *s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
             }
         }
     }
@@ -2119,89 +2088,92 @@ fn route(
                         Some("woff2") => "font/woff2",
                         _ => "application/octet-stream",
                     };
-                    respond_with(&mut s, 200, kind, &cors, &b);
+                    respond_with(&mut *s, 200, kind, &cors, &b);
                 }
-                None => respond_with(&mut s, 404, "application/json", &cors, error_body("not found", 404).as_bytes()),
+                None => respond_with(&mut *s, 404, "application/json", &cors, error_body("not found", 404).as_bytes()),
             }
         }
-        ("GET", "/v1/glyd/status") if crate::monitor::on() => respond_with(&mut s, 200, "application/json", &cors, crate::monitor::json(name).as_bytes()),
+        ("GET", "/v1/glyd/status") if crate::monitor::on() => respond_with(&mut *s, 200, "application/json", &cors, crate::monitor::json(name).as_bytes()),
         ("GET", "/v1/glyd/info") => match INFO.get() {
-            Some(i) => respond_with(&mut s, 200, "application/json", &cors, info_json(i).as_bytes()),
-            None => respond_with(&mut s, 404, "application/json", &cors, error_body("this server has no description (glyd serve gives one)", 404).as_bytes()),
+            Some(i) => respond_with(&mut *s, 200, "application/json", &cors, info_json(i).as_bytes()),
+            None => respond_with(&mut *s, 404, "application/json", &cors, error_body("this server has no description (glyd serve gives one)", 404).as_bytes()),
         },
         (m @ ("GET" | "POST"), p) if p.starts_with("/v1/glyd/requests/") => {
             let rest = &p["/v1/glyd/requests/".len()..];
             let answer = match (m, rest.strip_suffix("/cancel")) {
                 ("POST", Some(id)) => track_cancel(id, "asked"),
                 ("GET", None) => track_status(rest),
-                _ => return respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes()),
+                _ => return respond_with(&mut *s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes()),
             };
             match answer {
-                Some(b) => respond_with(&mut s, 200, "application/json", &cors, b.as_bytes()),
-                None => {
-                    respond_with(&mut s, 404, "application/json", &cors, error_body("no request has this id (the last 64 that ended are kept)", 404).as_bytes())
-                }
+                Some(b) => respond_with(&mut *s, 200, "application/json", &cors, b.as_bytes()),
+                None => respond_with(
+                    &mut *s,
+                    404,
+                    "application/json",
+                    &cors,
+                    error_body("no request has this id (the last 64 that ended are kept)", 404).as_bytes(),
+                ),
             }
         }
         ("GET", "/health" | "/v1/health") if loading.load(Ordering::Relaxed) => {
-            respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"loading\"}")
+            respond_with(&mut *s, 503, "application/json", &cors, b"{\"status\":\"loading\"}")
         }
-        ("GET", "/health" | "/v1/health") => respond_with(&mut s, 200, "application/json", &cors, b"{\"status\":\"ok\"}"),
+        ("GET", "/health" | "/v1/health") => respond_with(&mut *s, 200, "application/json", &cors, b"{\"status\":\"ok\"}"),
         // (ready: the model is loaded and the server is not draining; `/health` says only that the process is up)
-        ("GET" | "HEAD", "/ready") if loading.load(Ordering::Relaxed) => respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"loading\"}"),
-        ("GET" | "HEAD", "/ready") if life.draining() => respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"draining\"}"),
-        ("GET" | "HEAD", "/ready") => respond_with(&mut s, 200, "application/json", &cors, b"{\"status\":\"ready\"}"),
+        ("GET" | "HEAD", "/ready") if loading.load(Ordering::Relaxed) => respond_with(&mut *s, 503, "application/json", &cors, b"{\"status\":\"loading\"}"),
+        ("GET" | "HEAD", "/ready") if life.draining() => respond_with(&mut *s, 503, "application/json", &cors, b"{\"status\":\"draining\"}"),
+        ("GET" | "HEAD", "/ready") => respond_with(&mut *s, 200, "application/json", &cors, b"{\"status\":\"ready\"}"),
         ("GET", "/metrics") => {
             let ready = !loading.load(Ordering::Relaxed);
             let text = crate::ops::render(&crate::ops::State { model: name, ready, life, engine: true });
-            respond_with(&mut s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
+            respond_with(&mut *s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
         }
-        ("GET", "/stats") => respond_with(&mut s, 200, "application/json", &cors, stats_json().as_bytes()),
+        ("GET", "/stats") => respond_with(&mut *s, 200, "application/json", &cors, stats_json().as_bytes()),
         ("GET", "/v1/models") => {
             let body =
                 format!("{{\"object\":\"list\",\"data\":[{}],\"has_more\":false,\"first_id\":{1},\"last_id\":{1}}}", model_json(name, window), jstr(name));
-            respond_with(&mut s, 200, "application/json", &cors, body.as_bytes());
+            respond_with(&mut *s, 200, "application/json", &cors, body.as_bytes());
         }
         ("POST", p @ ("/v1/chat/completions" | "/v1/completions" | "/v1/glyd/tokenize")) => {
             let chat = p == "/v1/chat/completions";
-            if let Err(e) = tx.send(Job::Http { s: s.try_clone().expect("a connection clones"), req, chat, id }) {
-                respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
-                drop(e);
+            if let Err(mut s) = send_job(tx, Job::Http { s, req, chat, id }) {
+                respond(&mut *s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
             }
         }
         ("GET", p) if p.starts_with("/v1/models/") => {
             // (one model, as the OpenAI SDKs' `models.retrieve` asks: the model's name may hold slashes)
             let asked = p["/v1/models/".len()..].replace("%2F", "/").replace("%2f", "/").replace("%3A", ":").replace("%3a", ":");
             if asked == name {
-                respond_with(&mut s, 200, "application/json", &cors, model_json(name, window).as_bytes());
+                respond_with(&mut *s, 200, "application/json", &cors, model_json(name, window).as_bytes());
             } else {
-                respond_with(&mut s, 404, "application/json", &cors, error_body(&format!("The model `{asked}` does not exist"), 404).as_bytes());
+                respond_with(&mut *s, 404, "application/json", &cors, error_body(&format!("The model `{asked}` does not exist"), 404).as_bytes());
             }
         }
         // (Ollama's API: the key guards it as it guards /v1; its errors are its own, `{"error": "..."}`)
         (_, p) if p.starts_with("/api/") => {
-            if tx.send(Job::Api { s: s.try_clone().expect("a connection clones"), req, kind: Endpoint::Ollama, id }).is_err() {
-                respond_with(&mut s, 503, "application/json", &cors, b"{\"error\":\"the engine is not running\"}");
+            if let Err(mut s) = send_job(tx, Job::Api { s, req, kind: Endpoint::Ollama, id }) {
+                respond_with(&mut *s, 503, "application/json", &cors, b"{\"error\":\"the engine is not running\"}");
             }
         }
         ("POST", "/v1/responses") => {
-            if tx.send(Job::Api { s: s.try_clone().expect("a connection clones"), req, kind: Endpoint::Responses, id }).is_err() {
-                respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
+            if let Err(mut s) = send_job(tx, Job::Api { s, req, kind: Endpoint::Responses, id }) {
+                respond(&mut *s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
             }
         }
         ("POST", p @ ("/v1/messages" | "/v1/messages/count_tokens")) => {
             let count = p.ends_with("count_tokens");
-            if tx.send(Job::Messages { s: s.try_clone().expect("a connection clones"), req, count, id }).is_err() {
-                respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
+            if let Err(mut s) = send_job(tx, Job::Messages { s, req, count, id }) {
+                respond(&mut *s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
             }
         }
         (_, "/v1/messages" | "/v1/messages/count_tokens") => {
-            respond_with(&mut s, 405, "application/json", &cors, anthropic::anthropic_body(405, "method not allowed").as_bytes())
+            respond_with(&mut *s, 405, "application/json", &cors, anthropic::anthropic_body(405, "method not allowed").as_bytes())
         }
         (_, "/v1/chat/completions") | (_, "/v1/completions") | (_, "/v1/models") | (_, "/v1/responses") | (_, "/v1/glyd/tokenize") | (_, "/v1/glyd/info") => {
-            respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes())
+            respond_with(&mut *s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes())
         }
-        _ => respond_with(&mut s, 404, "application/json", &cors, error_body(&format!("Invalid URL ({} {path})", req.method), 404).as_bytes()),
+        _ => respond_with(&mut *s, 404, "application/json", &cors, error_body(&format!("Invalid URL ({} {path})", req.method), 404).as_bytes()),
     }
 }
 
@@ -2278,7 +2250,7 @@ fn info_json(i: &Info) -> String {
             ("max_body_bytes", num(MAX_BODY)),
             ("max_header_bytes", num(MAX_HEAD)),
             ("max_headers", num(MAX_HEADERS)),
-            ("max_connections", num(MAX_CONNECTIONS)),
+            ("max_connections", Value::Null), // (no cap: the connections are the front end's tasks)
             ("read_timeout_seconds", num(30)),
         ]),
     ));
@@ -2383,33 +2355,42 @@ pub fn work(e: &mut Engine, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender
 }
 
 /// A request's thread or the terminal's reply, started for `job` (the engine's thread never waits on a connection); any other job is not one.
+/// A request's handler on a thread of its own, for as long as the request is answered (it waits for the engine's events). Where the system will not give another thread, the client is told so
+/// (503, `Retry-After`) and the engine's own thread goes on: a refused spawn must not take the server down with it.
+fn spawn_handler(s: Box<dyn Conn>, run: impl FnOnce(&mut dyn Conn) + Send + 'static) {
+    let cell = Arc::new(std::sync::Mutex::new(Some(s)));
+    let inner = cell.clone();
+    let spawned = std::thread::Builder::new().name("glyd-request".into()).spawn(move || {
+        let taken = inner.lock().ok().and_then(|mut g| g.take());
+        if let Some(mut s) = taken {
+            if !s.gone() {
+                run(&mut *s);
+            }
+        }
+    });
+    if spawned.is_err() {
+        crate::ops::refused(503);
+        if let Some(mut s) = cell.lock().ok().and_then(|mut g| g.take()) {
+            respond_with(
+                &mut *s,
+                503,
+                "application/json",
+                "Retry-After: 1\r\n",
+                error_body("the server cannot start another thread for this request: try again", 503).as_bytes(),
+            );
+        }
+    }
+}
+
 pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
     let (sh, tx) = (shared.clone(), tx.clone());
     match job {
-        Job::Http { mut s, req, chat, id } => {
-            std::thread::spawn(move || {
-                if !client_gone(&s) {
-                    handle_completion(&sh, &tx, &mut s, &req, chat, id);
-                }
-            });
-        }
-        Job::Messages { mut s, req, count, id } => {
-            std::thread::spawn(move || {
-                if !client_gone(&s) {
-                    anthropic::handle(&sh, &tx, &mut s, &req, count, id);
-                }
-            });
-        }
-        Job::Api { mut s, req, kind, id } => {
-            std::thread::spawn(move || {
-                if !client_gone(&s) {
-                    match kind {
-                        Endpoint::Responses => responses::handle(&sh, &tx, &mut s, &req, id),
-                        Endpoint::Ollama => ollama::handle(&sh, &tx, &mut s, &req),
-                    }
-                }
-            });
-        }
+        Job::Http { s, req, chat, id } => spawn_handler(s, move |s| handle_completion(&sh, &tx, s, &req, chat, id)),
+        Job::Messages { s, req, count, id } => spawn_handler(s, move |s| anthropic::handle(&sh, &tx, s, &req, count, id)),
+        Job::Api { s, req, kind, id } => spawn_handler(s, move |s| match kind {
+            Endpoint::Responses => responses::handle(&sh, &tx, s, &req, id),
+            Endpoint::Ollama => ollama::handle(&sh, &tx, s, &req),
+        }),
         Job::Term { messages, request, out, abort } => {
             std::thread::spawn(move || {
                 let mut remote = Remote { tx, window: sh.window };
@@ -2624,6 +2605,7 @@ fn engine_failed(e: &str) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::io::BufReader;
 
     #[test]
     fn json_strings() {
@@ -3313,63 +3295,309 @@ pub(crate) mod tests {
         assert!(cors_headers_with(true, 8000, "http://localhost:8000", &Access::default()).contains("http://localhost:8000"));
     }
 
-    /// A client that sends its request slowly is let wait for the time that is given the whole of it, not for each read: a request that stops, or goes a byte at a time, is answered 408 and its connection is let go.
+    /// The process's limit of open files raised (each test connection is two: a macOS default of 256 holds no thousand connections).
+    #[cfg(unix)]
+    pub(crate) fn raise_fd_limit(want: u64) {
+        #[repr(C)]
+        struct Rlimit {
+            cur: u64,
+            max: u64,
+        }
+        extern "C" {
+            fn getrlimit(resource: i32, r: *mut Rlimit) -> i32;
+            fn setrlimit(resource: i32, r: *const Rlimit) -> i32;
+        }
+        #[cfg(target_os = "macos")]
+        const NOFILE: i32 = 8;
+        #[cfg(not(target_os = "macos"))]
+        const NOFILE: i32 = 7;
+        let mut r = Rlimit { cur: 0, max: 0 };
+        // SAFETY: getrlimit and setrlimit read and write the struct, which has the layout of rlimit on the 64-bit Unixes the tests run on.
+        unsafe {
+            if getrlimit(NOFILE, &mut r) == 0 && r.cur < want {
+                r.cur = want.min(if r.max == 0 { want } else { r.max });
+                setrlimit(NOFILE, &r);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn raise_fd_limit(_: u64) {}
+
+    /// A server on a free port with the times given, for the tests of what the front end does with a slow client.
+    fn listen_timed(times: Times, tx: Sender<Job>) -> std::net::SocketAddr {
+        frontend::serve("127.0.0.1:0", move |port| Ctx {
+            name: Arc::new("m".into()),
+            window: 4096,
+            key: Arc::new(None),
+            local_only: true,
+            port,
+            tx,
+            loading: Arc::new(AtomicBool::new(false)),
+            life: Arc::default(),
+            times,
+        })
+        .unwrap()
+    }
+
+    /// What a server answers a request written to it in pieces: (the status, the whole of what it sent), read to its end.
+    fn raw_status(c: &mut TcpStream) -> (u16, String) {
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut out = String::new();
+        let _ = c.read_to_string(&mut out);
+        (out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0), out)
+    }
+
+    /// A client that sends its request slowly is let wait for the time that is given the whole of it, not for each read: a request that stops, or goes a byte at a time, is answered 408 and its
+    /// connection is let go; a whole request, sent at once, is answered.
     #[test]
     fn a_slow_request_is_timed_out_as_a_whole() {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen_timed(Times { head: Duration::from_millis(300), body: Duration::from_millis(300), idle: Duration::from_secs(5) }, tx);
         // a head that never ends
         let mut c = TcpStream::connect(addr).unwrap();
-        let (mut s, _) = l.accept().unwrap();
         c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n").unwrap();
         let t = std::time::Instant::now();
-        let r = read_request_within(&mut s, Duration::from_millis(300), Duration::from_secs(5));
-        assert_eq!(r.err().map(|e| e.0), Some(408));
+        assert_eq!(raw_status(&mut c).0, 408);
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
         // a head that goes a byte every 100 ms: each read is in time, the whole is not
         let mut c = TcpStream::connect(addr).unwrap();
-        let (mut s, _) = l.accept().unwrap();
+        let mut w = c.try_clone().unwrap();
         let drip = std::thread::spawn(move || {
             for b in b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nX-Slow: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".iter() {
-                if c.write_all(&[*b]).is_err() {
+                if w.write_all(&[*b]).is_err() {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
         });
         let t = std::time::Instant::now();
-        let r = read_request_within(&mut s, Duration::from_millis(500), Duration::from_secs(5));
-        assert_eq!(r.err().map(|e| e.0), Some(408));
+        assert_eq!(raw_status(&mut c).0, 408);
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
-        drop(s);
+        drop(c);
         drip.join().unwrap();
         // a body that stops short of its Content-Length
         let mut c = TcpStream::connect(addr).unwrap();
-        let (mut s, _) = l.accept().unwrap();
         c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n{\"a\"").unwrap();
-        let r = read_request_within(&mut s, Duration::from_secs(5), Duration::from_millis(300));
-        assert_eq!(r.err().map(|e| e.0), Some(408));
-        // a whole request, sent at once, is read
+        assert_eq!(raw_status(&mut c).0, 408);
+        // a whole request, sent at once, is answered
         let mut c = TcpStream::connect(addr).unwrap();
-        let (mut s, _) = l.accept().unwrap();
-        c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}").unwrap();
-        let r = read_request_within(&mut s, Duration::from_millis(300), Duration::from_millis(300)).unwrap().unwrap();
-        assert_eq!((r.method.as_str(), r.body.as_slice()), ("POST", &b"{}"[..]));
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        let (st, out) = raw_status(&mut c);
+        assert!(st == 200 && out.contains("{\"status\":\"ok\"}"), "{out}");
     }
 
-    /// The server does not hold more than MAX_CONNECTIONS connections that send nothing: the next one is answered 503 and let go, and a connection that has been given up on frees its place.
+    /// There is no cap on connections: a thousand that send nothing are held (a task each, and no thread), the server answers a request from another meanwhile, and each of them is answered 408 and
+    /// let go by its time.
     #[test]
-    fn connections_are_capped() {
+    fn idle_connections_are_held_without_a_cap_and_closed_by_their_time() {
+        raise_fd_limit(8192);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let addr = listen("127.0.0.1:0", "m", 4096, None, true, tx).unwrap();
-        let idle: Vec<TcpStream> = (0..MAX_CONNECTIONS).map(|_| TcpStream::connect(addr).unwrap()).collect();
-        std::thread::sleep(Duration::from_millis(300)); // (the accepting thread counts each)
-        let mut over = TcpStream::connect(addr).unwrap();
-        over.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut out = String::new();
-        over.read_to_string(&mut out).unwrap();
-        assert!(out.starts_with("HTTP/1.1 503 Service Unavailable"), "{out}");
-        drop(idle);
+        let addr = listen_timed(Times { head: Duration::from_secs(2), body: Duration::from_secs(2), idle: Duration::from_secs(2) }, tx);
+        let idle: Vec<TcpStream> = (0..1000).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        assert_eq!(raw_status(&mut c).0, 200, "answered beside a thousand idle connections");
+        // none of them was refused: the time ends them (a connection that sent nothing is let go without an answer)
+        let mut closed = 0;
+        for mut i in idle {
+            i.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut out = Vec::new();
+            let _ = i.read_to_end(&mut out);
+            // (answered 408 and let go, as a connection that sent a part of a request is; one that was kept after an answer and sent nothing is let go with no word)
+            if out.is_empty() || out.starts_with(b"HTTP/1.1 408") {
+                closed += 1;
+            }
+        }
+        assert_eq!(closed, 1000);
+    }
+
+    /// R11's load test: a thousand streaming connections at once, on a scheduler over a CPU fake model, and every one of them is answered 200 with its events and its `[DONE]`, none refused, none
+    /// cut. Every client has sent its request before any is read: all of them are in flight together (the scheduler runs eight at a time; the rest wait in its queue, and their connections are
+    /// held by the front end as tasks, with no cap on how many). The clients are eight threads that poll their connections, not a thread each: where a system gives a process few threads (a Mac
+    /// runner's), the thousand handlers of the replies are threads enough.
+    #[test]
+    fn a_thousand_streaming_connections_all_end_without_an_error() {
+        const N: usize = 1000;
+        const WORKERS: usize = 8;
+        raise_fd_limit(8192);
+        let mut f = Fake::new(512, 64);
+        f.decode_delay = Duration::from_millis(1);
+        let addr = serve_fake(f, None, 8);
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":6,"temperature":0,"stream":true}"#;
+        let sent = Arc::new(std::sync::Barrier::new(WORKERS));
+        let workers: Vec<_> = (0..WORKERS)
+            .map(|w| {
+                let sent = sent.clone();
+                std::thread::spawn(move || -> Vec<String> {
+                    let mut errors = Vec::new();
+                    let mut open: Vec<(usize, TcpStream, Vec<u8>)> = Vec::new();
+                    for i in (w..N).step_by(WORKERS) {
+                        // (made in waves: a burst of a thousand SYNs is longer than a system's listen queue, which is no concern of the server's; once made, all are held open together)
+                        std::thread::sleep(Duration::from_millis((i / 50) as u64 * 40 / WORKERS as u64));
+                        let connected = TcpStream::connect(addr).and_then(|mut c| {
+                            c.write_all(
+                                format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes(),
+                            )?;
+                            c.set_nonblocking(true)?;
+                            Ok(c)
+                        });
+                        match connected {
+                            Ok(c) => open.push((i, c, Vec::new())),
+                            Err(e) => errors.push(format!("{i}: {e}")),
+                        }
+                    }
+                    sent.wait(); // (every connection is open and asked before any answer is read)
+                    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+                    while !open.is_empty() && std::time::Instant::now() < deadline {
+                        let mut buf = [0u8; 8192];
+                        let mut progressed = false;
+                        open.retain_mut(|(i, c, got)| match c.read(&mut buf) {
+                            Ok(0) => {
+                                let text = String::from_utf8_lossy(got);
+                                if !text.starts_with("HTTP/1.1 200 OK") {
+                                    errors.push(format!("{i}: {}", text.lines().next().unwrap_or("")));
+                                } else if !text.contains("data: [DONE]") {
+                                    errors.push(format!("{i}: the stream did not end with [DONE]"));
+                                }
+                                progressed = true;
+                                false
+                            }
+                            Ok(n) => {
+                                got.extend_from_slice(&buf[..n]);
+                                progressed = true;
+                                true
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+                            Err(e) => {
+                                errors.push(format!("{i}: read: {e}"));
+                                progressed = true;
+                                false
+                            }
+                        });
+                        if !progressed {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
+                    errors.extend(open.iter().map(|(i, ..)| format!("{i}: no end in 120 s")));
+                    errors
+                })
+            })
+            .collect();
+        let errors: Vec<String> = workers.into_iter().flat_map(|w| w.join().unwrap()).collect();
+        assert!(errors.is_empty(), "{} of {N} failed; the first: {:?}", errors.len(), errors.first());
+    }
+
+    /// A client that goes while its reply is being made ends the sequence: the pipe says it is gone, the handler stops writing, and the scheduler is not left running a reply nobody reads (the
+    /// request's record, `/v1/glyd/requests/ID`, says it ended).
+    #[test]
+    fn a_client_that_disconnects_ends_its_sequence() {
+        let mut f = Fake::new(64, 32);
+        f.decode_delay = Duration::from_millis(20);
+        let addr = serve_fake(f, None, 4);
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":400,"temperature":0,"stream":true}"#;
+        let (r, id) = first_event(addr, body);
+        let state = |id: &str| -> String {
+            let (st, _, b) = ask(addr, "GET", &format!("/v1/glyd/requests/{id}"), &[("Host", "x")]);
+            assert_eq!(st, 200, "{b}");
+            at(&json::parse(&b).unwrap(), &["state"]).as_str().unwrap_or("").to_string()
+        };
+        assert_eq!(state(&id), "running", "the reply is being made");
+        drop(r); // the client goes
+        let t = std::time::Instant::now();
+        while state(&id) != "ended" {
+            assert!(t.elapsed() < Duration::from_secs(10), "the sequence of a client that went is still running");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// A request whose body's end is in doubt is refused (400), on a connection that is kept or not: a repeated Content-Length, one that is not a number, and a Transfer-Encoding (which this server
+    /// does not read) would each be read one way here and another by a proxy in front of it.
+    #[test]
+    fn an_ambiguous_body_length_is_refused() {
+        let head = |t: &str| read_head(&mut BufReader::new(t.as_bytes())).err().map(|e| e.0);
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5\r\ncontent-length: 6\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: +5\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5, 5\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length:\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 99999999999999999999\r\n\r\n"), Some(413));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\n"), None, "one is fine");
+        // and over the wire, on a connection that asked to be kept
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen_timed(Times::default(), tx);
+        for bad in ["Content-Length: 2\r\nContent-Length: 2", "Transfer-Encoding: chunked"] {
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n{bad}\r\n\r\n{{}}").as_bytes()).unwrap();
+            assert_eq!(raw_status(&mut c).0, 400, "{bad}");
+        }
+    }
+
+    /// A client that sends more than the beginning of a next request while its answer is being made is let go, and its sequence with it (what it sent is not held without bound).
+    #[test]
+    fn a_client_that_floods_while_it_is_answered_is_let_go() {
+        let mut f = Fake::new(64, 32);
+        f.decode_delay = Duration::from_millis(20);
+        let addr = serve_fake(f, None, 4);
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":400,"temperature":0,"stream":true}"#;
+        let (r, id) = first_event(addr, body);
+        let mut c = r.into_inner();
+        let junk = vec![b'x'; 256 << 10];
+        let _ = c.write_all(&junk);
+        let state = |id: &str| -> String {
+            let (st, _, b) = ask(addr, "GET", &format!("/v1/glyd/requests/{id}"), &[("Host", "x")]);
+            assert_eq!(st, 200, "{b}");
+            at(&json::parse(&b).unwrap(), &["state"]).as_str().unwrap_or("").to_string()
+        };
+        let t = std::time::Instant::now();
+        while state(&id) != "ended" {
+            assert!(t.elapsed() < Duration::from_secs(10), "the sequence of a client that flooded is still running");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// One connection carries as many requests as the client sends while it asks for `Connection: keep-alive` and each answer has a length, and ends with one that does not (a stream); a client that
+    /// asks for nothing, or for `close`, gets the connection closed after its answer.
+    #[test]
+    fn a_connection_is_kept_for_the_next_request() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen_timed(Times::default(), tx);
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        // reads one answer with a Content-Length: (status, its head, its body)
+        let mut one = || {
+            let mut head = String::new();
+            loop {
+                let mut l = String::new();
+                r.read_line(&mut l).unwrap();
+                head.push_str(&l);
+                if l == "\r\n" || l.is_empty() {
+                    break;
+                }
+            }
+            let len: usize = head.to_ascii_lowercase().lines().find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap())).unwrap_or(0);
+            let mut body = vec![0u8; len];
+            r.read_exact(&mut body).unwrap();
+            (head.split_whitespace().nth(1).unwrap().to_string(), head, String::from_utf8(body).unwrap())
+        };
+        for i in 0..5 {
+            c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n").unwrap();
+            let (st, head, body) = one();
+            assert_eq!((st.as_str(), body.as_str()), ("200", "{\"status\":\"ok\"}"), "request {i}");
+            assert!(head.contains("Connection: keep-alive"), "{head}");
+        }
+        // two requests sent together are answered in turn
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\nGET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n").unwrap();
+        assert_eq!(one().2, "{\"status\":\"ok\"}");
+        assert_eq!(one().2, "{\"status\":\"ready\"}");
+        // `Connection: close` is answered with the connection closed
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+        let (_, head, _) = one();
+        assert!(head.contains("Connection: close"), "{head}");
+        let mut b = [0u8; 4];
+        assert_eq!(r.read(&mut b).unwrap(), 0, "the server closed it");
     }
 
     /// `/health` says the process is up, `/ready` that the model is loaded (200 `ready`; 503 `loading` where the server listens while it loads), `/metrics` is Prometheus's text format with the families an operator
@@ -3515,7 +3743,7 @@ pub(crate) mod tests {
     }
 
     /// A connection whose request is written on a thread of its own while this one reads the answer (a server that answers before it has read it all must be read from at once); what came back.
-    fn send_raw(addr: std::net::SocketAddr, write: impl FnOnce(&mut TcpStream) + Send + 'static) -> String {
+    fn send_raw(addr: std::net::SocketAddr, write: impl FnOnce(&mut dyn Conn) + Send + 'static) -> String {
         let mut c = TcpStream::connect(addr).unwrap();
         let mut w = c.try_clone().unwrap();
         let t = std::thread::spawn(move || write(&mut w));
@@ -3562,7 +3790,7 @@ pub(crate) mod tests {
         assert!(first(&out).starts_with("HTTP/1.1 431"), "{}", &out[..out.len().min(300)]);
         // 300 headers, 257 of them too many; 256 are within the bound
         let many = |n: usize| {
-            move |w: &mut TcpStream| {
+            move |w: &mut dyn Conn| {
                 let h: String = (0..n).map(|i| format!("X-N{i}: 1\r\n")).collect();
                 let _ = w.write_all(format!("GET /v1/models HTTP/1.1\r\nHost: x\r\n{h}\r\n").as_bytes());
             }
@@ -3573,14 +3801,14 @@ pub(crate) mod tests {
         assert!(first(&send_raw(addr, many(255))).starts_with("HTTP/1.1 401"), "within the count the key is asked for");
         // 60 KiB in one header is within the bound: the key is asked for, and with it the request is answered
         let big = |auth: &'static str| {
-            move |w: &mut TcpStream| {
+            move |w: &mut dyn Conn| {
                 let _ = w.write_all(format!("GET /v1/models HTTP/1.1\r\nHost: x\r\nX-Pad: {}\r\n{auth}\r\n", "a".repeat(60 << 10)).as_bytes());
             }
         };
         assert!(first(&send_raw(addr, big(""))).starts_with("HTTP/1.1 401"));
         assert!(first(&send_raw(addr, big("Authorization: Bearer secret\r\n"))).starts_with("HTTP/1.1 200"));
         // the bound is the block's, not a line's: two headers of 40 KiB are 80 KiB
-        let two = |w: &mut TcpStream| {
+        let two = |w: &mut dyn Conn| {
             let pad = "a".repeat(40 << 10);
             let _ = w.write_all(format!("GET /v1/models HTTP/1.1\r\nHost: x\r\nX-A: {pad}\r\nX-B: {pad}\r\n\r\n").as_bytes());
         };

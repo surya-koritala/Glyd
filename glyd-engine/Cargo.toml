@@ -25,6 +25,8 @@ ureq = "3"
 llguidance = { version = "1.9.1", default-features = false, features = ["lark", "referencing", "ahash"] }
 toktrie = "1.9.1"
 serde_json = "1"
+# the front end of the server (src/frontend.rs): the connections, their keep-alive and their timeouts are tasks; the handlers of the answers stay on threads of their own
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
 
 [[bin]]
 name = "glyd-engine"

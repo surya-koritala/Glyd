@@ -85,6 +85,12 @@ SIGTERM drains: the server stops taking requests (every new one for an API is `5
 
 Traces: with `OTEL_EXPORTER_OTLP_ENDPOINT` (a base URL; `/v1/traces` is added) or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (the whole URL) set, every sequence sends a span `glyd.request` (attributes `gen_ai.request.model`, `glyd.prompt_tokens`, `glyd.generated_tokens`, `glyd.finish_reason`; status error where it ended in an error) with the children `glyd.queue` (waiting for room; absent at a level that has no scheduler's queue), `glyd.prefill` (the prompt, to the first token) and `glyd.decode` (first token to the end), as OTLP over HTTP with JSON, batched by a thread of their own (up to 100 spans or a second). `OTEL_EXPORTER_OTLP_HEADERS` (`k=v,k2=v2`) carries a collector's key, `OTEL_SERVICE_NAME` (default `glyd`) names the service, `OTEL_SDK_DISABLED=true` turns it off. Off with no endpoint: nothing is sent. A collector that is down is said on stderr at most every 30 s, the spans are dropped and counted (`glyd_trace_spans_dropped_total`, `glyd_trace_spans_exported_total`), and no request is slowed. Only `http/json` is sent (the protocol variable is read and said where it asks for another); a request's incoming `traceparent` is not yet its span's parent.
 
+## Connections
+
+The connections are tasks of an async front end (tokio; `glyd-engine/src/server/frontend.rs`), not threads: there is no cap on how many are open, and a connection that waits for its request, for its reply or for a slow client to read costs a task. What the client sends is read within bounds (the head within 30 s of the first byte, in 64 KiB and 256 headers; the body within 120 s; an answer's write within 60 s), and a connection that sends nothing is answered 408 and closed by its time. A client that sends `Connection: keep-alive` and gets an answer with a `Content-Length` keeps the connection for its next request (60 s idle); an answer that streams (server-sent events, Ollama's lines) ends its connection, and a client that sends no word of it is answered and closed, as before. What a client sends while it is answered is held to 64 KiB (past it the connection is let go); the bodies of requests share 1 GiB; there are at most 50,000 open connections and 8,192 requests in flight, and the next is answered 503 with `Retry-After`. A request with a repeated or non-numeric `Content-Length`, or with a `Transfer-Encoding`, is refused 400. A client that disconnects while its reply is being made ends the sequence: the engine does not go on generating for nobody. A client that reads slowly holds back the thread that writes its answer (a pipe of 64 chunks sits between them), not memory.
+
+Every API front end (OpenAI's completions, Anthropic's Messages, OpenAI's Responses, Ollama's) asks the engine through one request-level interface (`glyd-engine/src/engine_api.rs`: `submit` a request, read its `Stream`, `cancel` it, `stats`). The load test (`a_thousand_streaming_connections_all_end_without_an_error`) holds 1,000 streaming connections at once on a scheduler over a CPU fake model: all are answered 200 with their events and their `[DONE]`.
+
 ## Endpoints
 
 | | key | |
@@ -207,7 +213,7 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
               "state":"fp32 (the delta rule's), bf16 (the convolution's)"},
  "device":{"ordinal":0,"name":"NVIDIA GeForce RTX 4080 SUPER","compute_capability":"8.9","cuda":"13.2","driver":"595.91.07"},
  "limits":{"context_tokens":4096,"concurrency":1,"max_choices":64,"max_body_bytes":16777216,"max_header_bytes":65536,
-           "max_headers":256,"max_connections":64,"read_timeout_seconds":30},
+           "max_headers":256,"max_connections":null,"read_timeout_seconds":30},
  "fields":{"read":[...38],"no_effect":[...12],"refused":[...38]},
  "state":"ready","error":null,"requests":{"running":0,"cancelling":0},
  "memory":{"gpu":0,"measured_at":1792451421.629,"engine_bytes":6987473708,"weights_bytes":6200345608,"kv_bytes":134217728,

@@ -6,7 +6,7 @@
 use super::*;
 use tools::obj;
 
-fn fail(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
+fn fail(s: &mut dyn Conn, cors: &str, code: u16, msg: &str) {
     respond_with(s, code, "application/json", cors, error_body(msg, code).as_bytes());
 }
 
@@ -352,7 +352,7 @@ enum Cur {
 
 /// The events of a streamed response, each with its number in the order they go: one output item is open at a time, its events sent as the deltas come.
 struct Events<'a> {
-    s: &'a mut TcpStream,
+    s: &'a mut dyn Conn,
     seq: u64,
     /// The items that are done, as JSON (the response's output where it ends).
     done: Vec<String>,
@@ -530,7 +530,7 @@ impl Events<'_> {
 }
 
 /// One Responses request on `s`.
-pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, id: u64) {
+pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req, id: u64) {
     let cors = req.cors.as_str();
     let Some(v) = std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()).filter(|v| matches!(v, Value::Object(_))) else {
         return fail(s, cors, 400, "the body is not a JSON object");
