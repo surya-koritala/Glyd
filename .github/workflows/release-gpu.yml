@@ -164,12 +164,15 @@ jobs:
           # ... and the engine bundle's CUDA 12 library, not compressed at all, which a driver of CUDA 12.2 (R535) reads (no size limit on a GitHub release)
           - {os: ubuntu-latest, name: linux-x86_64, cuda: "12.9.1", compress: none, artifact: bundle-lib}
           - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "12.9.1", compress: none, artifact: bundle-lib}
-    runs-on: ${{ matrix.os }}
-    container: nvidia/cuda:${{ matrix.cuda }}-devel-rockylinux8
+    runs-on: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || matrix.os }}  # (x86_64 Linux on glyd-pc where CI_RUNNER is set: the owner's PC, not GitHub's 2-core runners; aarch64 stays on GitHub's arm runners)
+    container:
+      image: nvidia/cuda:${{ matrix.cuda }}-devel-rockylinux8
+      # (on glyd-pc a cap on the container's memory, swap included, and its cores, as kernels.yml has: ptxas cannot take the machine)
+      options: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && '--memory=10g --memory-swap=10g --cpus=8' || '' }}
     env:
       GLYD_GPU_RELEASE: "1"
       GLYD_GPU_COMPRESS: ${{ matrix.compress }}
-      GLYD_GPU_NVCC_THREADS: "2" # (the runner has 2 cores and 7 GB: one nvcc thread an architecture would be 6)
+      GLYD_GPU_NVCC_THREADS: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && '4' || '2' }} # (GitHub's runner has 2 cores and 7 GB: one nvcc thread an architecture would be 6; glyd-pc's container has 8 cores and 10 GB)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -205,6 +208,9 @@ jobs:
             lib/*.so
             lib/*.sha256
           if-no-files-found: error
+      - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)
+        if: always() && runner.environment == 'self-hosted'
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE"
 
   engine:
     # Glyd's own engine, glyd-engine (Rust, glyd-engine/): its release build (--no-default-features: none of a development build's commands or tuning variables
@@ -223,8 +229,11 @@ jobs:
         include:
           - {os: ubuntu-latest, name: linux-x86_64}
           - {os: ubuntu-24.04-arm, name: linux-aarch64}
-    runs-on: ${{ matrix.os }}
-    container: nvidia/cuda:13.0.3-devel-rockylinux8
+    runs-on: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || matrix.os }}  # (x86_64 Linux on glyd-pc where CI_RUNNER is set: the owner's PC, not GitHub's 2-core runners; aarch64 stays on GitHub's arm runners)
+    container:
+      image: nvidia/cuda:13.0.3-devel-rockylinux8
+      # (on glyd-pc a cap on the container's memory, swap included, and its cores, as kernels.yml has: ptxas cannot take the machine)
+      options: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && '--memory=10g --memory-swap=10g --cpus=8' || '' }}
     env:
       GLYD_ENGINE_RELEASE: "1"
       GLYD_SOURCE_COMMIT: ${{ github.sha }}
@@ -274,13 +283,16 @@ jobs:
             engine/glyd
             engine/glyd-engine.sha256
           if-no-files-found: error
+      - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)
+        if: always() && runner.environment == 'self-hosted'
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE"
 
   engine-bundle:
     # Glyd's engine with its GPU library (CUDA 13), a tarball for each Linux architecture: what install.sh puts beside the compression program on
     # Linux with an NVIDIA GPU, with no Python (GLY-353). The very files the wheels hold (the engine and gpu-lib jobs built and checked them; their
     # sha256 are checked again here); RELEASING.md's step attaches the tarballs and their sha256 to the public repository's release.
     needs: [plan, engine, gpu-lib]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -463,8 +475,11 @@ jobs:
         include:
           - {arch: x86_64, os: ubuntu-latest, name: linux-x86_64}
           - {arch: aarch64, os: ubuntu-24.04-arm, name: linux-aarch64}
-    runs-on: ${{ matrix.os }}
-    container: quay.io/pypa/manylinux_2_28_${{ matrix.arch }}
+    runs-on: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || matrix.os }}  # (x86_64 Linux on glyd-pc where CI_RUNNER is set: the owner's PC, not GitHub's 2-core runners; aarch64 stays on GitHub's arm runners)
+    container:
+      image: quay.io/pypa/manylinux_2_28_${{ matrix.arch }}
+      # (on glyd-pc a cap on the container's memory, swap included, and its cores, as kernels.yml has: ptxas cannot take the machine)
+      options: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && '--memory=10g --memory-swap=10g --cpus=8' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -530,6 +545,9 @@ jobs:
           name: wheels-${{ matrix.name }}
           path: glyd-gpu-py/dist/*.whl
           if-no-files-found: error
+      - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)
+        if: always() && runner.environment == 'self-hosted'
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE"
 
   collect:
     # Every wheel of every architecture and Python, together: the count the plan asked for, all of this version, and what PyPI refuses
