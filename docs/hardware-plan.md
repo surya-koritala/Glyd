@@ -66,7 +66,7 @@ Total for one pass of M0: **$4.54**.
 
 ### M1 (v0.34.0)
 
-Gate: On clean Ubuntu 24.04 and Windows 11 machines with only the NVIDIA driver (an 8 GB laptop GPU, a 16 GB desktop GPU, and one on the oldest supported driver): install to first token in under 2 minutes for 10 pinned models; the plan is what loads; Open WebUI, Continue and an OpenAI SDK client connect; JSON-schema output is valid on all 10.
+Gate: On clean Ubuntu 24.04 and Windows 11 machines with only the NVIDIA driver (an 8 GB laptop GPU, a 16 GB desktop GPU, and one on the oldest supported driver): install to first token in under 2 minutes for 10 pinned models; the plan is what loads; Open WebUI, Continue and an OpenAI SDK client connect; JSON-schema output is valid on every pinned model that runs.
 
 | Run | Devices | Covered by | Started by | Hours | Rate | Cost |
 | :--- | :--- | :--- | :--- | ---: | :--- | ---: |

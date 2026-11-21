@@ -136,7 +136,7 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 
 Re-scoped on 2026-11-21 (owner's decision): P13 (#223) moved to M3, so v0.34.0 ships unsigned with a note on the release page; P18 keeps the end of the blanket aarch64 refusal and the Arm CPU expert kernels, and its GH200 and DGX Spark runs moved to M5a (#459).
 
-Gate: On clean Ubuntu 24.04 and Windows 11 machines with only the NVIDIA driver (an 8 GB laptop GPU, a 16 GB desktop GPU, and one machine on the oldest supported driver): install → first token in under 2 minutes for a pinned list of 10 models the engine runs (`benchmarks/gates/m1-models.txt`, pre-packed repos present); the printed plan is what loads; Open WebUI, Continue and an OpenAI SDK client connect with default settings; JSON-schema output is valid on all 10; an Apple or AMD machine gets a one-line answer saying what to do; no Python anywhere.
+Gate: On clean Ubuntu 24.04 and Windows 11 machines with only the NVIDIA driver (an 8 GB laptop GPU, a 16 GB desktop GPU, and one machine on the oldest supported driver): install → first token in under 2 minutes for the pinned models the engine runs (`benchmarks/gates/m1-models.txt`, pre-packed repos present); the printed plan is what loads; Open WebUI, Continue and an OpenAI SDK client connect with default settings; JSON-schema output is valid on every pinned model that runs; an Apple or AMD machine gets a one-line answer saying what to do; no Python anywhere.
 
 ---
 
