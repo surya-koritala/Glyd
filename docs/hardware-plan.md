@@ -11,7 +11,7 @@ unless the row says where they come from. The tables count a pass of each gate o
 | Machine | What it is | Used for |
 | :--- | :--- | :--- |
 | glyd-pc | RTX 4080 SUPER 16 GB (sm_89), 60 GB RAM, Ubuntu, driver reporting CUDA 13.2 ([record](../benchmarks/gpu/rtx4080s-qwen3-8b-engine-2026-11-20/README.md)). The self-hosted runner `vars.GPU_RUNNER` names (`tools/ci/setup-gpu-runner.sh`) | `gpu.yml`; the 16 GB consumer tier |
-| The owner's Mac | MacBook Pro, Apple M1 Max | Metal and macOS checks, by hand; covers the M1 row of M4 |
+| The owner's Mac | MacBook Pro, Apple M1 Max | Metal and macOS checks, by hand; covers the M1 row of M5a |
 | Lambda | Account with credits. 8x A100, 8x H100 and 1x H100 runs were made through its API (`scripts/gpu_lambda.sh`, `research/*/launch.sh`, `go.sh`) | Datacenter GPUs, 8-GPU nodes |
 | Vast.ai | Account with credits. Consumer cards, rented by offer | RTX 3000, 4000 and 5000 series; Windows VM offers were not checked |
 | AWS | Account with credits. `gpu-cloud.yml` starts a GPU runner, but its role and variables are not set up ([#128](https://github.com/surya-koritala/Glyd/issues/128)) | L4, A10G, L40S, T4; Windows GPU instances |
@@ -82,22 +82,23 @@ Total for one pass of M1: **$5.00**.
 
 ### M2 (v0.35.0)
 
-Gate: 64 concurrent requests through one scheduler on an RTX 4080 SUPER and an L4 with logits matching the CPU reference; Kimi-K3, DeepSeek-V4 and GLM-5.3 keep single-user parity on their reference hardware; no `glyd bench` regression; every pack since v0.29 loads.
+Gate: 64 concurrent requests through one scheduler on an RTX 4080 SUPER and an L4 with logits matching the CPU reference; Kimi-K3, DeepSeek-V4 and GLM-5.3 keep single-user parity on their reference hardware; no `glyd bench` regression; every pack since v0.29 loads; 1x H100 occupancy canary recorded (`P20`).
 
 | Run | Devices | Covered by | Started by | Hours | Rate | Cost |
 | :--- | :--- | :--- | :--- | ---: | :--- | ---: |
 | 64 concurrent requests, logits against the CPU reference | RTX 4080 SUPER | glyd-pc | `gpu.yml` by hand, then `glyd bench` (R8) | 2 | owned | $0 |
 | The same on an L4 | L4 24 GB | AWS g6.xlarge | `gpu-cloud.yml`, by hand | 2 | AWS $0.8048/h | $1.61 |
+| 1x H100 single-token and batched occupancy canary (`P20`, `V8a`) | 1x H100 80 GB | Lambda 1x H100 SXM | by hand | 1 | Lambda $4.89/h | $4.89 |
 | Kimi-K3 single-user parity | 8x A100 80 GB | Lambda 8x A100 80 GB | a copy of `research/kimi-k3-a100-2026-10-22b/go.sh` | 2.5 | Lambda $3.19 per GPU-h x 8 | $63.80 |
 | DeepSeek-V4 single-user parity | 8x A100 80 GB (8x H100 if it does not fit) | Lambda 8x A100 80 GB | the same script, another bundle | 2.5 | Lambda $3.19 per GPU-h x 8 | $63.80 |
 | GLM-5.3 single-user parity | 8x A100 80 GB | Lambda 8x A100 80 GB | the same script, another bundle | 2.5 | Lambda $3.19 per GPU-h x 8 | $63.80 |
 | Every published pack since v0.29 still loads; `glyd bench` against the floor | RTX 4080 SUPER | glyd-pc | by hand | 1 | owned | $0 |
 
-Total for one pass of M2: **$193.01**.
+Total for one pass of M2: **$197.90**.
 
 ### M3 (v0.36.0)
 
-Gate: A dated snapshot of the top 50 text-generation models runs; the 10 most-pulled local models run, including from GGUF; every installer channel passes; consumer benchmarks per VRAM tier.
+Gate: A dated snapshot of the top 50 text-generation models runs; the 10 most-pulled local models run (including canonical GGUF quants); top-15 curated pre-packed repos hit first token with zero local pack wait (`P25`); Claude Code, Continue and Open WebUI pass tool-call checks; every installer channel passes; consumer benchmarks per VRAM tier.
 
 | Run | Devices | Covered by | Started by | Hours | Rate | Cost |
 | :--- | :--- | :--- | :--- | ---: | :--- | ---: |
@@ -113,46 +114,56 @@ Gate: A dated snapshot of the top 50 text-generation models runs; the 10 most-pu
 
 Total for one pass of M3: **$327.31**.
 
-### M4 (v0.37.0)
+### M4 (v0.37.0 — Many GPUs, many machines)
 
-Gate: Per device, the subset of the M3 set that fits passes with KL within the threshold against CUDA: T4, L4, RTX 4080 SUPER, A100, H100, DGX Spark; RX 7900 XTX, RX 9070 XT, Strix Halo, MI300X; Apple M1 and M4; CPU x86_64 and arm64.
+Gate: Two consumer machines run a model neither holds alone at the predicted speed (+-10%); a 600B-class MoE on one 8x H100 node with experts in host RAM (EP decode within 15% of SGLang); tensor parallel on 2 GPUs at least 1.7x one GPU; one 8-GPU node serves the OpenAI API with DP replicas, metrics, compressed streaming cold start (`C7`), and <5 s sleep-to-RAM wake (`C8`).
 
 | Run | Devices | Covered by | Started by | Hours | Rate | Cost |
 | :--- | :--- | :--- | :--- | ---: | :--- | ---: |
-| Per device: the M3 subset that fits, KL against the CUDA run: T4 | T4 16 GB | AWS g4dn.xlarge | `gpu-cloud.yml` or by hand | 2 | AWS $0.526/h | $1.05 |
-| L4 | L4 24 GB | AWS g6.xlarge | `gpu-cloud.yml` or by hand | 2 | AWS $0.8048/h | $1.61 |
+| Two consumer machines run a model neither holds alone, at the speed `glyd fit` predicts | 2 machines with one GPU each, a LAN between them | AWS 2x g6.xlarge in one placement group | `glyd cluster` on both, by hand | 3 | AWS 2 x $0.8048/h | $4.83 |
+| GeForce multi-GPU without peer access (C2e) | 2x RTX 4090 in one box | Vast.ai 2x RTX 4090 offer | by hand | 2 | Vast 2 x median $0.469/h | $1.88 |
+| Tensor parallel on 2 GPUs at least 1.7x one GPU | 2x H100 SXM (NVLink) | Lambda 2x H100 SXM | by hand | 1.5 | Lambda $4.79 per GPU-h x 2 | $14.37 |
+| 600B-class MoE on 8x H100 with experts in host RAM; 8-GPU OpenAI server, streaming load (`C7`) and sleep-to-RAM (`C8`) | 8x H100 80 GB | Lambda 8x H100 SXM | by hand, a script like `go.sh` | 7 | Lambda $4.59 per GPU-h x 8 | $257.04 |
+
+Total for one pass of M4: **$278.11**.
+
+### M5a (v0.38.0 — Apple Silicon, CPU and desktop extras)
+
+Gate: Apple M1 and M4 (Metal via `mlx-c` + Glyd Metal kernels) and CPU x86_64/arm64 pass KL thresholds against CUDA on the fitting M3 subset; macOS arm64 builds pass install checks; Vision (`F2a`), Embeddings (`F2b`), Batched LoRA (`F4`) and Speculative Decoding (`R6`) pass logits and `glyd bench` gates.
+
+| Run | Devices | Covered by | Started by | Hours | Rate | Cost |
+| :--- | :--- | :--- | :--- | ---: | :--- | ---: |
+| Apple M1 and M4: fitting M3 subset, KL against CUDA | Apple silicon | owner's machine | by hand | 4 | owned | $0 |
+| CPU x86_64 and arm64 | no GPU | GitHub-hosted (x86_64 and arm64 Linux) | `ci.yml`, automatic | 0.5 | free in a public repository | $0 |
+| Vision, Embeddings, Batched LoRA and Spec Decode gates | RTX 4080 SUPER + L4 24 GB | glyd-pc + AWS g6.xlarge | `gpu.yml` / `gpu-cloud.yml` | 2 | AWS $0.8048/h | $1.61 |
+
+Total for one pass of M5a: **$1.61**.
+
+### M5b (v0.39.0 — AMD ROCm and older NVIDIA)
+
+Gate (runs in parallel as hardware/contributors become available; does not block M4, M5a or NVIDIA 1.0): Per device, the subset of the M3 set that fits passes KL thresholds against CUDA: T4 (`sm_75`), L4, RTX 4080 SUPER, A100, H100, DGX Spark; RX 7900 XTX, RX 9070 XT, Strix Halo, MI300X; `P7b` downloads signed backend bundles cleanly.
+
+| Run | Devices | Covered by | Started by | Hours | Rate | Cost |
+| :--- | :--- | :--- | :--- | ---: | :--- | ---: |
+| Per device: the M3 subset that fits, KL against CUDA: T4 (`V5`) | T4 16 GB | AWS g4dn.xlarge | `gpu-cloud.yml` or by hand | 2 | AWS $0.526/h | $1.05 |
+| L4 (regression baseline) | L4 24 GB | AWS g6.xlarge | `gpu-cloud.yml` or by hand | 2 | AWS $0.8048/h | $1.61 |
 | RTX 4080 SUPER | RTX 4080 SUPER | glyd-pc | `gpu.yml` | 2 | owned | $0 |
 | A100 | A100 40 GB | Lambda 1x A100 SXM 40 GB | by hand | 2 | Lambda $1.99/h | $3.98 |
 | H100 | H100 80 GB | Lambda 1x H100 SXM | by hand | 2 | Lambda $4.89/h | $9.78 |
 | DGX Spark | GB10, aarch64 | owner's machine (none rentable) | by hand | 2 | gap: see below | $0 |
-| RX 7900 XTX, RX 9070 XT, Strix Halo | RDNA 3, RDNA 4, RDNA 3.5 APU | owner's machine (none rentable) | by hand | 6 | gap: see below | $0 |
-| MI300X | MI300X 192 GB | owner's machine or a provider outside these four | by hand | 2 | not priced: none of the four lists it | not priced |
-| Apple M1 and M4 | Apple silicon | owner's machine | by hand | 4 | owned | $0 |
-| CPU x86_64 and arm64 | no GPU | GitHub-hosted (x86_64 and arm64 Linux) | `ci.yml`, automatic | 0.5 | free in a public repository | $0 |
+| RX 7900 XTX, RX 9070 XT, Strix Halo (`V1`) | RDNA 3, RDNA 4, RDNA 3.5 APU | owner's machine (none rentable) | by hand | 6 | gap: see below | $0 |
+| MI300X (`V2`) | MI300X 192 GB | owner's machine or a provider outside these four | by hand | 2 | not priced: none of the four lists it | not priced |
 
-Total for one pass of M4: **$16.42**.
-
-### M5 (v0.38.0)
-
-Gate: Two consumer machines run a model neither holds alone at the predicted speed (+-10%); a 600B-class MoE on one 8x H100 node with experts in host RAM; tensor parallel on 2 GPUs at least 1.7x one GPU; one 8-GPU node serves the OpenAI API with replicas and metrics.
-
-| Run | Devices | Covered by | Started by | Hours | Rate | Cost |
-| :--- | :--- | :--- | :--- | ---: | :--- | ---: |
-| Two consumer machines run a model neither holds alone, at the speed `glyd fit` predicts | 2 machines with one GPU each, a LAN between them | AWS 2x g6.xlarge in one placement group | `starlings` on both, by hand | 3 | AWS 2 x $0.8048/h | $4.83 |
-| GeForce multi-GPU without peer access (C2e) | 2x RTX 4090 in one box | Vast.ai 2x RTX 4090 offer | by hand | 2 | Vast 2 x median $0.469/h | $1.88 |
-| Tensor parallel on 2 GPUs at least 1.7x one GPU | 2x H100 SXM (NVLink) | Lambda 2x H100 SXM | by hand | 1.5 | Lambda $4.79 per GPU-h x 2 | $14.37 |
-| 600B-class MoE on 8x H100 with experts in host RAM; one 8-GPU node serves the OpenAI API with replicas and metrics | 8x H100 80 GB | Lambda 8x H100 SXM | by hand, a script like `go.sh` | 7 | Lambda $4.59 per GPU-h x 8 | $257.04 |
-
-Total for one pass of M5: **$278.11**.
+Total for one pass of M5b: **$16.42**.
 
 ### M6 (v1.0.0)
 
-Gate: Stable surface with CI compatibility checks; llm-d routes to Glyd pods by prefix-cache hits; a Helm install passes readiness on a GPU cluster; SBOM and provenance; a published comparison with vLLM and SGLang per quality tier on H100 and B200.
+Gate: Stable surface with CI compatibility checks; llm-d routes to Glyd pods by prefix-cache hits; a Helm install passes readiness on a GPU cluster; SBOM and provenance; a published comparison with vLLM and SGLang per quality tier on H100 (and B200 once `V8a` covers `sm_100` standard dense/FP8/NVFP4 GEMMs — never benchmark `mma.sync` against `tcgen05`).
 
 | Run | Devices | Covered by | Started by | Hours | Rate | Cost |
 | :--- | :--- | :--- | :--- | ---: | :--- | ---: |
 | Comparison with vLLM and SGLang, per quality tier, on H100 | 1x H100 80 GB | Lambda 1x H100 SXM | by hand, configs and logs kept | 8 | Lambda $4.89/h | $39.12 |
-| The same on B200 | 1x B200 180 GB | Lambda 1x B200 | by hand, configs and logs kept | 8 | Lambda $7.99/h | $63.92 |
+| The same on B200 (requires `V8a` `sm_100` kernels) | 1x B200 180 GB | Lambda 1x B200 | by hand, configs and logs kept | 8 | Lambda $7.99/h | $63.92 |
 | Helm install passes readiness; llm-d routes by prefix-cache hit | 2 GPU nodes in one cluster | AWS 2x g6.xlarge (cluster control plane not priced here) | by hand | 4 | AWS 2 x $0.8048/h | $6.44 |
 | Compatibility checks, SBOM and provenance | none (no GPU) | GitHub-hosted | `ci.yml` and release workflows, automatic | 0.5 | free in a public repository | $0 |
 
@@ -160,42 +171,43 @@ Total for one pass of M6: **$109.48**.
 
 ## Total per release gate
 
-The two-machine rows of M5 and M6 use AWS L4 instances as a proxy for two consumer machines on a LAN.
+The two-machine rows of M4 and M6 use AWS L4 instances as a proxy for two consumer machines on a LAN.
 
 | Gate | One pass | Budget (1.5x) | Largest row |
 | :--- | ---: | ---: | :--- |
 | M0, v0.33.0 | $4.54 | $6.81 | Three AWS GPU CI runs, $3.67 |
 | M1, v0.34.0 | $5.00 | $7.50 | Two Windows runs on AWS, $4.36 |
-| M2, v0.35.0 | $193.01 | $289.51 | Three 8x A100 runs, $191.40 |
+| M2, v0.35.0 | $197.90 | $296.85 | Three 8x A100 runs, $191.40 |
 | M3, v0.36.0 | $327.31 | $490.97 | 8x H100 for the large models, $293.76 |
-| M4, v0.37.0 | $16.42 | $24.63 | One H100, $9.78 |
-| M5, v0.38.0 | $278.11 | $417.17 | One 8x H100 session, $257.04 |
+| M4, v0.37.0 | $278.11 | $417.17 | One 8x H100 session, $257.04 |
+| M5a, v0.38.0 | $1.61 | $2.42 | L4 Vision/LoRA/SpecDecode gate, $1.61 |
+| M5b, v0.39.0 | $16.42 | $24.63 | One H100 parity baseline, $9.78 |
 | M6, v1.0.0 | $109.48 | $164.22 | B200 comparison, $63.92 |
-| All seven | $933.87 | $1,400.81 | |
+| All eight | $940.37 | $1,410.56 | |
 
 The budget is one and a half passes, for a retry. Past runs lost whole attempts to causes unrelated to the code: a PyPI index
 that was ten minutes stale, a run stopped to save credits
 ([benchmarks/gpu/big-moe-2026-10-06](../benchmarks/gpu/big-moe-2026-10-06/README.md)).
 
-The large costs are the 8-GPU rows (M2, M3, M5). A download dominates them: on 2026-10-06 a 250 GB checkpoint took 874 s on a rented
+The large costs are the 8-GPU rows (M2, M3, M4). A download dominates them: on 2026-10-06 a 250 GB checkpoint took 874 s on a rented
 host, about 0.29 GB/s ([same record](../benchmarks/gpu/big-moe-2026-10-06/README.md)). At that rate a 1.2 TB bf16 checkpoint takes about
 70 minutes, which at $36.72 an hour is $43 before the first token. A persistent filesystem on the provider keeps the weights between runs and costs
-less than the re-download; its price is not in this plan.
+less than the re-download; its price is not in this plan. Compressed streaming and peer-to-peer weight distribution (`C7` in M4) addresses this directly.
 
 ## Devices no rental covers
 
 These need a machine the owner buys or borrows. The issue ([#219](https://github.com/surya-koritala/Glyd/issues/219)) lists them as
-"own".
+"own". This hardware gap is why AMD ROCm was split into M5b so it never blocks M4 (NVIDIA multi-GPU), M5a (Apple/CPU) or M6 (1.0).
 
 | Device | Gate | Why no rental |
 | :--- | :--- | :--- |
-| DGX Spark | M4 | Not on Lambda, AWS or Vast.ai |
-| RX 7900 XTX, RX 9070 XT | M4 | No Vast.ai offer on 2026-11-20; Lambda and AWS have none |
-| Strix Halo | M4 | Not on any of the four |
-| MI300X | M4 | No offer on Lambda, AWS or Vast.ai; needs a provider outside these four, not priced here |
+| DGX Spark | M5b | Not on Lambda, AWS or Vast.ai |
+| RX 7900 XTX, RX 9070 XT | M5b | No Vast.ai offer on 2026-11-20; Lambda and AWS have none |
+| Strix Halo | M5b | Not on any of the four |
+| MI300X | M5b | No offer on Lambda, AWS or Vast.ai; needs a provider outside these four, not priced here |
 | Windows 11 with an 8 GB or 16 GB GeForce | M1 | AWS Windows GPU instances have 16 GB (T4, refused until V5) or 24 GB; Windows VM offers on Vast.ai were not checked |
 | A laptop GPU | M1 | Only desktop parts are rented; a desktop card with the same memory stands in |
-| Apple M1 and M4, Metal | M4 | The owner's Mac covers one chip. AWS Mac Dedicated Hosts have a 24-hour minimum |
+| Apple M1 and M4, Metal | M5a | The owner's Mac covers one chip. AWS Mac Dedicated Hosts have a 24-hour minimum |
 | GH200, GB200 | M1 (P18) | GH200 is on Lambda at $2.59 per hour; GB200 is not in the four |
 
 ## Automatic and manual

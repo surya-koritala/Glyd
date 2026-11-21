@@ -48,5 +48,5 @@ starlings join --model glyd/Qwen3.8-27B-swift               # second machine: en
 - Measurements are in [starlings/benchmarks](https://github.com/surya-koritala/Glyd/tree/main/starlings/benchmarks).
 - One GPU for both halves works and is slower than the whole model: it proves the setup.
 
-Starlings becomes `glyd cluster` in M5 ([ROADMAP](https://github.com/surya-koritala/Glyd/blob/main/ROADMAP.md)). It is not
+Starlings becomes `glyd cluster` in M4 ([ROADMAP](https://github.com/surya-koritala/Glyd/blob/main/ROADMAP.md)). It is not
 part of the engine's `serve` yet.
