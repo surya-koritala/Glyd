@@ -56,21 +56,21 @@ Released, on main and planned are listed apart.
 
 One public repository for all of Glyd under Apache-2.0; a release built entirely from it that installs and runs without Python; docs that match the code; and the engineering baseline: security updates, lints, CI on every OS, GPU CI on real hardware.
 
-- [x] S7 Security updates: rustls and Dependabot for every manifest ([#211](https://github.com/surya-koritala/Glyd/issues/211))
-- [ ] S1 Merge the monorepo branch and retire the predecessor repositories ([#126](https://github.com/surya-koritala/Glyd/issues/126))
+- [ ] S7 Security updates: rustls and Dependabot for every manifest ([#211](https://github.com/surya-koritala/Glyd/issues/211))
+- [x] S1 Merge the monorepo branch and retire the predecessor repositories ([#126](https://github.com/surya-koritala/Glyd/issues/126))
 - [ ] S2 Self-hosted GPU runner for gpu.yml ([#127](https://github.com/surya-koritala/Glyd/issues/127))
 - [ ] S3 Ephemeral cloud GPU runners for gpu-cloud.yml ([#128](https://github.com/surya-koritala/Glyd/issues/128))
 - [ ] S4 Release v0.33.0 from this repository ([#129](https://github.com/surya-koritala/Glyd/issues/129))
-- [ ] S8 Rust baseline: toolchain, clippy, rustfmt, cargo-deny, all crates tested in CI ([#212](https://github.com/surya-koritala/Glyd/issues/212))
+- [x] S8 Rust baseline: toolchain, clippy, rustfmt, cargo-deny, all crates tested in CI ([#212](https://github.com/surya-koritala/Glyd/issues/212))
 - [ ] S6 Required checks and branch protection on main ([#131](https://github.com/surya-koritala/Glyd/issues/131))
 - [ ] S9 Windows and macOS compile and unit-test CI ([#213](https://github.com/surya-koritala/Glyd/issues/213))
 - [ ] S10 The engine on by default where it has been measured ([#214](https://github.com/surya-koritala/Glyd/issues/214))
 - [ ] S11 Docs and repository identity match the code ([#215](https://github.com/surya-koritala/Glyd/issues/215))
-- [ ] S12 Security policy for the inference product ([#216](https://github.com/surya-koritala/Glyd/issues/216))
+- [x] S12 Security policy for the inference product ([#216](https://github.com/surya-koritala/Glyd/issues/216))
 - [ ] S13 Community: discussions, issue templates, triage, first issues ([#217](https://github.com/surya-koritala/Glyd/issues/217))
 - [ ] S14 Governance: maintainers, decisions and trademark ([#218](https://github.com/surya-koritala/Glyd/issues/218))
-- [ ] S15 Hardware access plan for CI and release gates ([#219](https://github.com/surya-koritala/Glyd/issues/219))
-- [ ] S16 One kernel ABI check and no closed-source leftovers ([#220](https://github.com/surya-koritala/Glyd/issues/220))
+- [x] S15 Hardware access plan for CI and release gates ([#219](https://github.com/surya-koritala/Glyd/issues/219))
+- [x] S16 One kernel ABI check and no closed-source leftovers ([#220](https://github.com/surya-koritala/Glyd/issues/220))
 
 Gate: A tag on main produces every release artifact from this repository, including the engine tarballs the installer downloads; on a clean Linux machine with an NVIDIA driver, install.sh gives a first token from the engine without Python; no open security advisory in any lockfile; Linux, Windows and macOS compile CI and GPU CI are green.
 
@@ -83,21 +83,21 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 - [x] R0 One levels module ([#132](https://github.com/surya-koritala/Glyd/issues/132))
 - [ ] R8 glyd bench: one benchmark harness with a regression gate ([#133](https://github.com/surya-koritala/Glyd/issues/133))
 - [ ] R5a Constrained decoding with llguidance ([#143](https://github.com/surya-koritala/Glyd/issues/143))
-- [ ] R5b Tool-call and reasoning parsers for every family ([#144](https://github.com/surya-koritala/Glyd/issues/144))
-- [ ] R7 Per-model logits tests on every merge ([#146](https://github.com/surya-koritala/Glyd/issues/146))
+- [x] R5b Tool-call and reasoning parsers for every family ([#144](https://github.com/surya-koritala/Glyd/issues/144))
+- [x] R7 Per-model logits tests on every merge ([#146](https://github.com/surya-koritala/Glyd/issues/146))
 - [ ] P1 One binary: glyd with the engine linked ([#147](https://github.com/surya-koritala/Glyd/issues/147))
 - [ ] P16 One capability matrix for fit, run and refusals ([#221](https://github.com/surya-koritala/Glyd/issues/221))
 - [ ] P2a The plan is what loads, on today's paths ([#148](https://github.com/surya-koritala/Glyd/issues/148))
 - [ ] P11 Secure defaults for every listener ([#222](https://github.com/surya-koritala/Glyd/issues/222))
 - [ ] P3 Background service: load on request, unload when idle ([#152](https://github.com/surya-koritala/Glyd/issues/152))
 - [ ] P4 Model names, manifest and pull/ls/rm ([#153](https://github.com/surya-koritala/Glyd/issues/153))
-- [ ] P5a OpenAI API completeness: Responses, errors, streaming options ([#154](https://github.com/surya-koritala/Glyd/issues/154))
-- [ ] P5b Anthropic Messages API: full streaming events and tool use ([#155](https://github.com/surya-koritala/Glyd/issues/155))
+- [x] P5a OpenAI API completeness: Responses, errors, streaming options ([#154](https://github.com/surya-koritala/Glyd/issues/154))
+- [x] P5b Anthropic Messages API: full streaming events and tool use ([#155](https://github.com/surya-koritala/Glyd/issues/155))
 - [ ] P5c Ollama-compatible API ([#156](https://github.com/surya-koritala/Glyd/issues/156))
 - [ ] P6 CUDA 12 and CUDA 13 builds chosen at run time ([#158](https://github.com/surya-koritala/Glyd/issues/158))
 - [ ] P13 Code-signing identities for Windows and macOS ([#223](https://github.com/surya-koritala/Glyd/issues/223))
 - [ ] P7a Windows x86_64 release of the engine ([#159](https://github.com/surya-koritala/Glyd/issues/159))
-- [ ] P10 glyd doctor and a support bundle ([#165](https://github.com/surya-koritala/Glyd/issues/165))
+- [x] P10 glyd doctor and a support bundle ([#165](https://github.com/surya-koritala/Glyd/issues/165))
 - [ ] F3a GGUF reader ([#176](https://github.com/surya-koritala/Glyd/issues/176))
 - [x] C5 Starlings crates into the main workspace ([#199](https://github.com/surya-koritala/Glyd/issues/199))
 - [ ] D3 Metrics, health, readiness and drain ([#204](https://github.com/surya-koritala/Glyd/issues/204))
@@ -107,7 +107,7 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 - [ ] P15 Model catalog: ownership and review ([#226](https://github.com/surya-koritala/Glyd/issues/226))
 - [ ] P17 Tools connect with default settings ([#227](https://github.com/surya-koritala/Glyd/issues/227))
 - [ ] P18 aarch64 Linux: GH200, GB200, DGX Spark and Jetson ([#228](https://github.com/surya-koritala/Glyd/issues/228))
-- [ ] P19 The codec's place: crate, CLI and docs ([#229](https://github.com/surya-koritala/Glyd/issues/229))
+- [x] P19 The codec's place: crate, CLI and docs ([#229](https://github.com/surya-koritala/Glyd/issues/229))
 
 Gate: On clean Ubuntu 24.04 and Windows 11 machines with only the NVIDIA driver (an 8 GB laptop GPU, a 16 GB desktop GPU, and one machine on the oldest supported driver): install → first token in under 2 minutes for a pinned list of 10 models the engine runs (`benchmarks/gates/m1-models.txt`, pre-packed repos present); the printed plan is what loads; Open WebUI, Continue and an OpenAI SDK client connect with default settings; JSON-schema output is valid on all 10; an Apple or AMD machine gets a one-line answer saying what to do; no Python anywhere.
 

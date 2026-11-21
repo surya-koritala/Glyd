@@ -450,7 +450,87 @@ def llama_model():
     model_case("llama_model", "Llama 3.2 layout at reduced widths: GQA, llama3 rope, tied head", LlamaForCausalLM(c))
 
 
+def released_case(case, what, model, text_only=True):
+    """A whole model in its checkpoint's own format: transformers writes the tiny model with `save_pretrained` (its reverse conversion
+    gives the released tensor names), every tensor is regenerated from its released name, and `from_pretrained` loads them back through
+    transformers' conversion. The fixture keeps the config.json transformers wrote and the released names."""
+    import shutil
+    import tempfile
+
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    d = tempfile.mkdtemp()
+    try:
+        model.save_pretrained(d)
+        specs, tensors = {}, {}
+        files = [f for f in os.listdir(d) if f.endswith(".safetensors")]
+        for fn in files:
+            with safe_open(os.path.join(d, fn), "pt") as f:
+                for name in f.keys():
+                    shape = list(f.get_slice(name).get_shape())
+                    if text_only and ".visual." in name or name.startswith("model.visual."):
+                        lo, hi = (-0.1, 0.1)
+                    else:
+                        lo, hi = ranges(name, shape)
+                        if name.endswith("e_score_correction_bias"):
+                            lo, hi = (-0.5, 0.5)
+                    tensors[name] = torch.from_numpy(fill(name, int(np.prod(shape)), lo, hi)).view(*shape).contiguous()
+                    if not name.startswith("model.visual."):
+                        specs[name] = {"shape": shape, "lo": lo, "hi": hi}
+            os.remove(os.path.join(d, fn))
+        for f in os.listdir(d):
+            if f.endswith(".index.json"):
+                os.remove(os.path.join(d, f))
+        save_file(tensors, os.path.join(d, "model.safetensors"), metadata={"format": "pt"})
+        cfg = json.load(open(os.path.join(d, "config.json")))
+        loaded = type(model).from_pretrained(d, dtype=torch.float32).eval()
+        loaded.config._attn_implementation = "eager"
+        for sub in ("text_config",):
+            if hasattr(loaded.config, sub):
+                getattr(loaded.config, sub)._attn_implementation = "eager"
+        toks = [(t * 13 + 5) % VOCAB for t in range(T)]
+        logits = loaded(input_ids=torch.tensor(toks).view(1, T)).logits
+        write(case, what, type(model).__name__ + " (save_pretrained, from_pretrained)", VOCAB, specs, logits, {"config": cfg, "token_ids": toks})
+    finally:
+        shutil.rmtree(d)
+
+
+def glm53_model():
+    from transformers.models.glm_moe_dsa import modeling_glm_moe_dsa as M
+    from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
+
+    # GLM-5.3's layout: MLA with the DSA indexer (top 2,048: every token of a short prompt), dense first layers then MoE (sigmoid +
+    # choice bias, groups, renorm x2.5, a shared expert), interleaved rope on the shared key part.
+    c = GlmMoeDsaConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=4, q_lora_rank=32, kv_lora_rank=16, qk_nope_head_dim=8,
+                        qk_rope_head_dim=8, v_head_dim=8, num_hidden_layers=3, first_k_dense_replace=1, mlp_layer_types=["dense", "sparse", "sparse"],
+                        indexer_types=["full", "full", "full"], layer_types=["indexed_attention"] * 3, index_topk=64, index_n_heads=2, index_head_dim=16,
+                        n_routed_experts=8, num_experts_per_tok=2, n_group=4, topk_group=2, routed_scaling_factor=2.5, n_shared_experts=1,
+                        moe_intermediate_size=32, intermediate_size=128, vocab_size=VOCAB, pad_token_id=0, rms_norm_eps=1e-5,
+                        rope_parameters={"rope_type": "default", "rope_theta": 10_000.0})
+    c._attn_implementation = "eager"
+    released_case("glm53_model", "GLM-5.3 at reduced widths: MLA with the DSA indexer, a dense layer, two MoE layers", M.GlmMoeDsaForCausalLM(c))
+
+
+def glm53flash_model():
+    from transformers.models.glm5_next import modeling_glm5_next as M
+    from transformers.models.glm5_next.configuration_glm5_next import Glm5NextConfig
+
+    # GLM-5.3-Flash's layout: 3 KDA layers to one NoPE MLA (with the pooled-key indexer), 4 mHC streams with 20 Sinkhorn iterations and the
+    # streams' mean at the end, a dense first layer then MoE with SwiGLU limit 10.
+    tc = dict(hidden_size=64, num_attention_heads=4, num_key_value_heads=4, q_lora_rank=32, kv_lora_rank=16, qk_nope_head_dim=16, qk_rope_head_dim=0,
+              v_head_dim=16, num_hidden_layers=4, layer_types=["linear_attention", "linear_attention", "linear_attention", "indexed_attention"],
+              mlp_layer_types=["dense", "sparse", "sparse", "sparse"], indexer_types=["full"] * 4, linear_num_heads=4, linear_head_dim=16,
+              intermediate_size=128, moe_intermediate_size=32, n_routed_experts=8, num_experts_per_tok=2, vocab_size=VOCAB, pad_token_id=0,
+              index_topk=64, index_n_heads=2, index_head_dim=16, hc_mult=4, rms_norm_eps=1e-5)
+    c = Glm5NextConfig(text_config=tc, vision_config=dict(depth=1, hidden_size=32, intermediate_size=64, num_heads=2, out_hidden_size=64))
+    c.text_config._attn_implementation = "eager"
+    released_case("glm53flash_model", "GLM-5.3-Flash at reduced widths: KDA, NoPE MLA, MoE, 4 mHC streams", M.Glm5NextForConditionalGeneration(c))
+
+
 CASES = {
+    "glm53_model": glm53_model,
+    "glm53flash_model": glm53flash_model,
     "qwen38_model": qwen38_model,
     "qwen38_moe_model": qwen38_moe_model,
     "gemma4_model": gemma4_model,

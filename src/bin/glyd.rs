@@ -17,14 +17,14 @@ Usage: glyd run MODEL[:LEVEL]       chat with a model in the terminal and at one
        glyd supports | preflight | prepare | costs | rates | rangeworker   the engine's other commands (glyd run --help)
        glyd cluster                 one model across computers (not yet: ROADMAP.md, M5)
        glyd pack MODEL OUT | glyd verify PATH   a model's weights for Glyd's GPU layouts, packed and checked on the CPU
-       glyd [OPTIONS] [INPUT] [-o OUTPUT]       compress or decompress a file (the options below)
+       glyd compress|decompress FILE [-o OUT]   compress or decompress a file: Glyd's file codec (docs/codec/README.md; the options below; `glyd [OPTIONS] FILE` is the same)
        (the store, which compresses across objects, is the glyd-store command)
        The engine is in this program where it was built with it (glyd --version says so), else the glyd-engine command beside it or on PATH.
        On a computer with the Python tool and vLLM, run and serve are its where the engine does not take the model; GLYD_ENGINE=1
        uses the engine on any GPU it runs on, GLYD_ENGINE=0 keeps vLLM; a file named run is ./run
 Exit status: 0 done, 1 an error, 3 not supported (glyd supports MODEL: the engine does not run it)
 
-Options:
+File compression options (the codec; `glyd compress` is -c, `glyd decompress` is -d):
     -c, --compress         Compress input (default if output is .glyd)
     -1, --fast             Fast level: LZ4-class compression speed, ratio ~2.10
     -t, --turbo            Turbo level: fastest decode, ~6% less ratio
@@ -57,8 +57,9 @@ Options:
     -h, --help             Print this help message
 
 Examples:
-    glyd input.tar -o input.tar.glyd
-    glyd -d input.tar.glyd -o input.tar
+    glyd compress input.tar -o input.tar.glyd
+    glyd decompress input.tar.glyd -o input.tar
+    glyd input.tar -o input.tar.glyd          (the same as compress: -c is the default for an output that ends in .glyd)
     glyd --base dump-monday.sql dump-tuesday.sql -o tuesday.glyd
     glyd -d --base dump-monday.sql tuesday.glyd -o dump-tuesday.sql
     glyd --pack events/*.json -o events.glyd
@@ -486,7 +487,11 @@ fn run_linked_engine(_: Vec<String>) -> ! {
 }
 
 fn main() -> io::Result<()> {
-    let args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = env::args().collect();
+    // `glyd compress` and `glyd decompress` are the file codec's commands by name (`-c` and `-d`); a file of those names (./compress) is still taken as a file
+    if args.len() > 1 && matches!(args[1].as_str(), "compress" | "decompress") && !Path::new(&args[1]).exists() {
+        args[1] = if args[1] == "compress" { "-c" } else { "-d" }.to_string();
+    }
     // `glyd-engine`, a link to this program (or a copy of it) where the engine is linked: the engine's own command line, as the program of that name had it
     #[cfg(feature = "engine")]
     if env::args_os().next().is_some_and(|a| Path::new(&a).file_stem().is_some_and(|s| s == "glyd-engine")) {

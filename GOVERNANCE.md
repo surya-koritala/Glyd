@@ -21,7 +21,7 @@ a second and third one can join without rewriting it.
   it costs. Anyone can comment. A maintainer decides when the discussion has settled, and writes the decision in the
   issue.
 - **Compatibility is a rule, not a vote.** A change may not make files that an earlier version wrote unreadable
-  (see [docs/spec.md](docs/spec.md)). A claim about speed, size or quality needs a measurement others can repeat.
+  (see [docs/codec/spec.md](docs/codec/spec.md)). A claim about speed, size or quality needs a measurement others can repeat.
 - **Disagreement.** With one maintainer, the maintainer decides. With several, they try to agree in the issue. If they
   cannot after seven days, a majority of the maintainers decides. A tie goes to the owner.
 - **Security reports** are handled privately by the maintainers, as [SECURITY.md](SECURITY.md) describes.

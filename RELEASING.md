@@ -37,7 +37,8 @@ bird: penguin, kestrel, swift, wren, hummingbird.
      (`glyd-engine-vX.Y.Z-linux-*.tar.gz` and their `.sha256`: `glyd` with the engine linked, `glyd-engine` as a link to it, the GPU
      library) attached to the same GitHub release (`attach-engine`), which `install.sh` and `condor/tools/install.sh` download.
    PyPI's trusted publisher for `glyd-gpu` must name this repository and `release-gpu.yml` (environment `pypi`).
-4. Check the release page has the CLI tarballs, the wheels and both engine bundles.
+4. Check the release page has the CLI tarballs, the wheels and both engine bundles, each tarball's `.sigstore.json`, `SHA256SUMS`, `SHA256SUMS-engine` and the two SBOMs
+   (`*.spdx.json`), and verify one tarball as a user would (docs/verify-releases.md).
 5. (reserved)
 6. Hugging Face: flip the release's model repos to public, tag each `vX.Y.Z`.
 7. Homebrew formula PR + tap commit.

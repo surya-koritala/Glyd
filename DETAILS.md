@@ -1,6 +1,6 @@
 # Glyd: measurements and the codec
 
-The measured results for the GPU package and the file codec and store, each with the machine and a link to its log. The
+The measured results for the GPU package and the file codec and store, each with the machine and a link to its log. The codec is described in [docs/codec/README.md](docs/codec/README.md). The
 engine is described in [README.md](README.md) and [docs/architecture.md](docs/architecture.md). Everything under "AI models
 on fewer GPUs" and "Serving with vLLM" was measured on the Python package and the vLLM plugin (frozen), not on
 `glyd-engine`. Raw logs that left the tree in [#265](https://github.com/surya-koritala/Glyd/pull/265) are at commit
@@ -347,7 +347,7 @@ against the old one (`--base`).
 Every number in this README is measured on public data, every decode
 compared byte for byte with its input, against the reference codec on the
 same machine and thread count in the same run. The full program and its
-results: [docs/benchmarks/suite-2026-09-21.md](docs/benchmarks/suite-2026-09-21.md).
+results: [docs/codec/benchmarks/suite-2026-09-21.md](docs/codec/benchmarks/suite-2026-09-21.md).
 
 **The table everyone uses** — the 8.7 GB real-data corpus (logs, JSON
 events, SQL dumps, Parquet) on AWS Graviton3, ratio · compress MB/s ·
@@ -423,7 +423,7 @@ against zstd -3's $73.3 and zstd -19's $102; at ten reads a month
 month `--max` **$178** against zstd -3's $191 (its reads now cost less
 CPU than zstd's), while `--max -r` is $289: record-mode reads spend 2×
 the CPU rebuilding the columns
-([report](docs/benchmarks/suite-2026-09-21.md)). At the scale of
+([report](docs/codec/benchmarks/suite-2026-09-21.md)). At the scale of
 object storage (hundreds of exabytes) every 1% fewer bytes is about $250
 million a year at list price; the percentages above are what to multiply.
 
@@ -443,7 +443,7 @@ the CLIs, the shared and static libraries and `glyd.h` for Linux
 x86_64, Linux aarch64 and macOS arm64, plus a Python wheel for each.
 Bindings: [Python](bindings/python/README.md), [Go](bindings/go/glyd.go)
 (cgo over `include/glyd.h`), C (`include/glyd.h`). Formats:
-[docs/spec.md](docs/spec.md). lzbench: `contrib/lzbench/setup.sh <checkout>`.
+[docs/codec/spec.md](docs/codec/spec.md). lzbench: `contrib/lzbench/setup.sh <checkout>`.
 
 ```bash
 glyd --max  events.json -o events.glyd            # the zstd -3 slot: fewer bytes, 3-7x faster reads
@@ -505,13 +505,13 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 | **‑‑max**&nbsp;(‑9) | The zstd -3 slot: fewer bytes, 3–7× faster reads on a server | v9 format: 8-way interleaved Huffman literals, tANS sequences with repeat offsets, a double-fast parse over an 8 MB window (zstd -3's, one rule stricter), blocks cut where the bytes' statistics change |
 | **‑‑max&nbsp;‑‑long**&nbsp;(‑L) | Events, logs, anything that repeats itself across an input | The same, with a 128 MB long-distance matcher run once before the parse (as `zstd --long`): 3–29% fewer bytes on events and logs, at a third more write time |
 | **‑‑max&nbsp;‑‑dense**&nbsp;(‑D) | Objects written once and read rarely (the store's) | `--long`, in 128 MB units parsed in stripes on all cores: one core's bytes at any core count, 5–9% fewer on files of a few hundred MB; reads scale only with the units |
-| **‑‑ultra**&nbsp;(‑19) | Write once, read many: datasets, release assets | v9 format on an optimal parse: binary-tree finder, every position priced in the coder's own bits ([design](docs/design/ultra-parse.md)) |
-| **‑‑cold**&nbsp;(‑C) | Stored for years, read rarely: archives, compliance holds, the last copy | Context mixing: every bit predicted from eleven contexts (byte orders, the word, the column, the JSON key, the longest earlier match) with bit histories, mixed by two small networks, coded arithmetically; 32 MB units in parallel, 1–1.3 MB/s per core each way ([design](docs/design/format-v7.md#the-cold-level-context-mixing)) |
+| **‑‑ultra**&nbsp;(‑19) | Write once, read many: datasets, release assets | v9 format on an optimal parse: binary-tree finder, every position priced in the coder's own bits ([design](docs/codec/design/ultra-parse.md)) |
+| **‑‑cold**&nbsp;(‑C) | Stored for years, read rarely: archives, compliance holds, the last copy | Context mixing: every bit predicted from eleven contexts (byte orders, the word, the column, the JSON key, the longest earlier match) with bit histories, mixed by two small networks, coded arithmetically; 32 MB units in parallel, 1–1.3 MB/s per core each way ([design](docs/codec/design/format-v7.md#the-cold-level-context-mixing)) |
 
 | Mode | Use it for | How it works |
 | :--- | :--- | :--- |
-| **‑r** record mode | Logs of any shape, SQL dumps, CSV/TSV, JSON lines | Detects the shape (delimited lines, dumps, JSON lines, or templates for logs of varying shape), turns each field, key path or template slot into a typed stream (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those with the level in 32 MB units, rebuilds exactly ([design](docs/design/format-v7.md#record-mode-v040-typed-columns-before-the-level)) |
-| **‑‑base** base mode | Versions: nightly dumps, snapshots, images, source trees | Parses each 32 MB of the new version with the region of the old one that holds its content (found through a coarse map of the base) as history; the stream decodes with the same base ([design](docs/design/format-v7.md#base-mode-v050-a-version-compressed-against-the-last-one)) |
+| **‑r** record mode | Logs of any shape, SQL dumps, CSV/TSV, JSON lines | Detects the shape (delimited lines, dumps, JSON lines, or templates for logs of varying shape), turns each field, key path or template slot into a typed stream (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those with the level in 32 MB units, rebuilds exactly ([design](docs/codec/design/format-v7.md#record-mode-v040-typed-columns-before-the-level)) |
+| **‑‑base** base mode | Versions: nightly dumps, snapshots, images, source trees | Parses each 32 MB of the new version with the region of the old one that holds its content (found through a coarse map of the base) as history; the stream decodes with the same base ([design](docs/codec/design/format-v7.md#base-mode-v050-a-version-compressed-against-the-last-one)) |
 
 All levels write one container; the decoder reads any mix. Blocks are
 256 KB; the parallel paths cut the input into units (one per core, up to
@@ -528,8 +528,8 @@ SQL dumps and Parquet; zstd -3, zstd -19 and LZ4 on the same AWS machines
 (Graviton3 c7g.2xlarge and Sapphire Rapids c7i.2xlarge) and thread counts;
 small objects with dictionaries trained on other days' data; a real S3
 round trip (compress, upload, download, decompress, sha256) costed at list
-prices. Method: [docs/benchmarks/README.md](docs/benchmarks/README.md);
-results with every table: [docs/benchmarks/suite-2026-09-21.md](docs/benchmarks/suite-2026-09-21.md);
+prices. Method: [docs/codec/benchmarks/README.md](docs/codec/benchmarks/README.md);
+results with every table: [docs/codec/benchmarks/suite-2026-09-21.md](docs/codec/benchmarks/suite-2026-09-21.md);
 raw rows: [benchmarks/suite/](https://github.com/surya-koritala/Glyd/tree/7d9e9be6f33395f39421304b33c9f8481afa5962/benchmarks/suite).
 
 The short version: `--max` stores 2.2% less than zstd -3 over the corpus
@@ -544,7 +544,7 @@ at 500–645 MB/s on 8 cores; `--ultra -r` 11% less than zstd -19.
 Every codec's own CLI on one thread, every decode compared byte for
 byte with its input. Green: Glyd's file is smaller.
 
-![Compression benchmark: Glyd --max bytes against zstd -3 on logs, SQL dumps, JSON, gzip, zip, jar, Office documents, PDF, PNG, JPEG, text, executables and Parquet](docs/benchmarks/charts/bytes-fast-tier.svg)
+![Compression benchmark: Glyd --max bytes against zstd -3 on logs, SQL dumps, JSON, gzip, zip, jar, Office documents, PDF, PNG, JPEG, text, executables and Parquet](docs/codec/benchmarks/charts/bytes-fast-tier.svg)
 
 | Data | vs zstd -3 (`--max`) | vs zstd -19, xz, brotli -11 (`--ultra`) |
 | :--- | :--- | :--- |
@@ -557,7 +557,7 @@ re-created bit for bit. On plain text and executables it is
 zstd-class: within 2% at the fast tier, 1–15% larger than xz and
 brotli -11 at their strongest. Every codec's speed, the strong-tier
 and ratio-against-speed charts, and lz4, bzip2, zpaq and JPEG XL:
-[docs/benchmarks/landscape-2026-09-22.md](docs/benchmarks/landscape-2026-09-22.md).
+[docs/codec/benchmarks/landscape-2026-09-22.md](docs/codec/benchmarks/landscape-2026-09-22.md).
 
 ## The store: compression across objects
 
@@ -592,7 +592,7 @@ order), every object read back and compared:
 | GitHub events (12 hours) | 9.4 GB | 875 MB | 670 MB | 1.3× (no object is a version of another) |
 | **The bucket** | **39.2 GB** | **6,132 MB (6.4×)** | **1,334 MB (29.4×)** | **4.6× smaller** |
 
-At a terabyte ([report](docs/benchmarks/store-gate-2026-09-24.md)):
+At a terabyte ([report](docs/codec/benchmarks/store-gate-2026-09-24.md)):
 1,192 objects, 1.18 TB — 400 kernel point releases, every hour of
 GitHub events in January 2024, five English Wikipedia dumps' tables,
 six Ubuntu images — put through the store into S3 from one 16-vCPU
@@ -679,7 +679,7 @@ by one with `--max` ($40 with zstd -3) and $2.8–3.0 with base mode
 Byte-level matching is a plateau: on real data zstd -19, xz and Glyd
 `--ultra` land within a few percent of each other. The redundancy of a
 log or a table dump is not in nearby bytes but in the same field of
-every record. `glyd -r` (record mode, [design](docs/design/format-v7.md#record-mode-v040-typed-columns-before-the-level))
+every record. `glyd -r` (record mode, [design](docs/codec/design/format-v7.md#record-mode-v040-typed-columns-before-the-level))
 detects delimited lines, SQL dumps and JSON lines, turns them into one
 typed stream per field or key path (integer, decimal and date-time
 deltas, dictionaries with recency ranks, text), compresses those with
@@ -1066,10 +1066,10 @@ one typed stream per field before the level; base mode lays a region of
 the old version before each unit as history and lets the decoder read it
 in place.
 
-Design: [docs/design/format-v7.md](docs/design/format-v7.md) (formats v7–v9,
+Design: [docs/codec/design/format-v7.md](docs/codec/design/format-v7.md) (formats v7–v9,
 dictionaries, record mode, the matcher, base mode) and
-[docs/design/ultra-parse.md](docs/design/ultra-parse.md). Every
-measurement, refuted idea and floor: [docs/engineering-notes.md](docs/engineering-notes.md),
+[docs/codec/design/ultra-parse.md](docs/codec/design/ultra-parse.md). Every
+measurement, refuted idea and floor: [docs/codec/engineering-notes.md](docs/codec/engineering-notes.md),
 [research/codec/CHANGELOG-BENCH.md](research/codec/CHANGELOG-BENCH.md) and
 [research/codec/experiments/structure/README.md](research/codec/experiments/structure/README.md). What
 comes next: [research/codec/ROADMAP.md](research/codec/ROADMAP.md).

@@ -8,14 +8,24 @@
 //! What a step of several sequences supports is decided per description (`Dyn::batchable`): every operation must be one that acts row by row, or one of the cache operations below that knows where a
 //! sequence's rows begin. A description with another runs its sequences one pass each, concurrently but not batched.
 
+use super::pages::{Pages, BLOCK};
 use super::{Dyn, Op};
-use crate::dev::{copy_d2d_async, memset_async};
+use crate::dev::{copy_d2d_async, memset_async, Buf};
 use crate::ffi::{err, Result};
 use crate::model::FUSED_ROWS;
 use crate::sched::{ModelStep, PrefillJob, Row, Sample};
 
+/// Paged keys and values: the blocks every sequence holds, each ring's layer group, and each sequence's block tables on the GPU ([slot][group], int32 a BLOCK of tokens).
+pub(super) struct Paged {
+    pages: Pages,
+    group: Vec<usize>,
+    tabs: Vec<Vec<Buf>>,
+}
+
 /// One sequence's rows in a pass over several: the first row, how many, where its tokens begin in the sequence, and its caches and recurrent states.
 pub(super) struct Part {
+    /// The sequence (its index in `Dyn::seqs`, its latent attention caches' too).
+    pub slot: usize,
     pub row0: usize,
     pub rows: usize,
     pub start: usize,
@@ -43,6 +53,21 @@ pub(super) fn row_wise(op: &Op) -> bool {
             | Op::MuseGate { .. }
             | Op::MuseOGate { .. }
             | Op::MuseMoe { .. }
+            | Op::KdaOut { .. }
+            | Op::LinearAt { .. }
+            | Op::KimiParts { .. }
+            | Op::KimiMixNorm { .. }
+            | Op::KimiAdd { .. }
+            | Op::KimiEarly { .. }
+            | Op::Situ { .. }
+            | Op::SwiGluClamp { .. }
+            | Op::Moe { .. }
+            | Op::GlmStreams
+            | Op::GlmPre { .. }
+            | Op::GlmPost
+            | Op::GlmHead { .. }
+            // (a latent attention block runs its products over every row and its caches' parts by sequence itself: `GlmHost::seq_rows`)
+            | Op::Mla { .. }
             | Op::Nop
     )
 }
@@ -60,6 +85,8 @@ fn by_sequence(op: &Op) -> bool {
             | Op::GdnDelta { .. }
             | Op::MuseQk { .. }
             | Op::MuseAttn { .. }
+            | Op::KdaConv { .. }
+            | Op::KdaDelta { .. }
     )
 }
 
@@ -76,6 +103,111 @@ impl Dyn {
             Some(k) => (self.parts[k].kc + off, self.parts[k].vc + off),
             None => (self.kc.ptr + off, self.vc.ptr + off),
         }
+    }
+
+    /// Ring `ring`'s block table for the sequence an operation runs on now (0: the ring is a room of its own, addressed position modulo its capacity).
+    pub(super) fn table(&self, ring: usize) -> u64 {
+        let Some(pg) = &self.paged else { return 0 };
+        let slot = self.at.get().map_or(self.seq, |k| self.parts[k].slot);
+        pg.tabs[slot][pg.group[ring]].ptr
+    }
+
+    /// Whether this description's keys and values can be paged: every operation that touches a ring reads it through a block table (Gemma 4's), with no draft model, the whole model on one GPU.
+    fn pageable(&self) -> bool {
+        let d = &self.big.d;
+        self.draft.is_none()
+            && self.stage.first
+            && self.stage.last
+            && std::iter::once(&d.first)
+                .chain(d.layers.iter().flatten())
+                .all(|op| op.ring().is_none() || matches!(op, Op::QkvPrep { .. } | Op::Attention { .. }))
+            && d.layers.iter().flatten().any(|op| op.ring().is_some())
+            && crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
+    }
+
+    /// The rings' keys and values moved to pools of blocks shared by `users` sequences, as large as the GPU's free memory leaves (`keep` of it kept): a sliding group no more than every
+    /// user's window and a chunk, the full groups the rest. Each ring's room in kc and vc is then its group's blocks; the sequences' tables name every entry block 0 until they grow.
+    fn page(&mut self, users: usize) -> Result<()> {
+        let rings = &self.big.d.rings;
+        let mut windows: Vec<usize> = Vec::new();
+        let mut group = Vec::with_capacity(rings.len());
+        for (r, ring) in rings.iter().enumerate() {
+            let w = if self.ring_cap[r] == 0 { usize::MAX } else { ring.window };
+            if !windows.contains(&w) {
+                windows.push(w);
+            }
+            group.push(windows.iter().position(|&x| x == w).expect("just added"));
+        }
+        // a token's bytes in each group (its keys or its values, every ring of the group)
+        let mut per = vec![0usize; windows.len()];
+        for (r, ring) in rings.iter().enumerate() {
+            if self.ring_cap[r] > 0 {
+                per[group[r]] += ring.nk * ring.d * 2;
+            }
+        }
+        let keep: Vec<Option<usize>> = windows.iter().map(|&w| (w > 0 && w != usize::MAX).then_some(w + self.chunk)).collect();
+        let most: Vec<usize> = keep.iter().map(|k| users * (k.map_or(self.ctx, |k| k.min(self.ctx)).div_ceil(BLOCK) + 1)).collect();
+        // the old rooms given back first
+        self.dev.sync()?;
+        let graphed = self.graph.take().is_some();
+        (self.kc, self.vc) = (Buf::zeroed(4)?, Buf::zeroed(4)?);
+        let tab_bytes = users * windows.len() * self.ctx.div_ceil(BLOCK) * 4;
+        let (free, _) = self.dev.mem_info()?;
+        const KEEP: usize = 512 << 20;
+        let budget = free.saturating_sub(KEEP + tab_bytes) / 2;
+        // as many blocks in every group (a block of a group is BLOCK tokens of every layer in it), the sliding groups capped and what they leave to the full ones
+        let all: usize = per.iter().sum::<usize>().max(1) * BLOCK;
+        let even = budget / all;
+        let mut blocks: Vec<usize> = most.iter().map(|&m| even.min(m)).collect();
+        let left = budget - blocks.iter().zip(&per).map(|(b, p)| b * p * BLOCK).sum::<usize>();
+        let full_per: usize = keep.iter().zip(&per).filter(|(k, _)| k.is_none()).map(|(_, p)| p * BLOCK).sum();
+        if full_per > 0 {
+            let more = left / full_per;
+            for (g, k) in keep.iter().enumerate() {
+                if k.is_none() {
+                    blocks[g] = (blocks[g] + more).min(most[g]);
+                }
+            }
+        }
+        // (a development build's GLYD_ENGINE_PAGES: at most that many blocks a group, to run the memory out on purpose)
+        if let Some(cap) = crate::tune!("GLYD_ENGINE_PAGES").and_then(|v| v.parse::<usize>().ok()) {
+            blocks.iter_mut().for_each(|b| *b = (*b).min(cap));
+        }
+        if blocks.iter().any(|&b| b < 2) {
+            return err(format!("paged keys and values: {:.1} GiB of GPU memory free leave too few blocks ({blocks:?})", free as f64 / (1u64 << 30) as f64));
+        }
+        // each ring's room: its group's blocks (one more: block 0, which every entry no sequence holds names)
+        let (mut off, mut ring_off) = (0u64, Vec::with_capacity(rings.len()));
+        for (r, ring) in rings.iter().enumerate() {
+            ring_off.push(off);
+            if self.ring_cap[r] > 0 {
+                off += ((blocks[group[r]] + 1) * BLOCK * ring.nk * ring.d * 2) as u64;
+            }
+        }
+        (self.kc, self.vc) = (Buf::zeroed(off as usize)?, Buf::zeroed(off as usize)?);
+        self.ring_off = ring_off;
+        let tabs = (0..users)
+            .map(|_| (0..windows.len()).map(|_| Buf::zeroed(self.ctx.div_ceil(BLOCK) * 4)).collect::<Result<Vec<_>>>())
+            .collect::<Result<Vec<_>>>()?;
+        let counts: Vec<u32> = blocks.iter().map(|&b| (b + 1) as u32).collect();
+        self.paged = Some(Paged { pages: Pages::new(&counts, &keep, users, self.ctx), group, tabs });
+        // (sequence 0's graph again, on the pools and its tables)
+        if graphed {
+            self.capture_graph()?;
+        }
+        Ok(())
+    }
+
+    /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for).
+    fn upload_tables(&mut self, slot: usize) -> Result<()> {
+        let Some(pg) = &mut self.paged else { return Ok(()) };
+        for g in 0..pg.pages.groups() {
+            if let Some((lo, hi)) = pg.pages.take_dirty(slot, g) {
+                let v: Vec<i32> = pg.pages.table(slot, g)[lo..hi].iter().map(|&b| b as i32).collect();
+                pg.tabs[slot][g].write(lo * 4, &v)?;
+            }
+        }
+        Ok(())
     }
 
     /// Recurrent state `i`: the sequence's an operation runs on now in a pass over several, else the selected sequence's.
@@ -125,6 +257,14 @@ impl Dyn {
     fn part_of(&self, slot: usize, row0: usize, rows: usize, start: usize) -> Result<Part> {
         let (kc, vc, states) = if slot == self.seq {
             (self.kc.ptr, self.vc.ptr, self.states.iter().map(|b| b.ptr).collect())
+        } else if self.paged.is_some() {
+            // (paged: every sequence's blocks are in the pools; its tables say which)
+            let s = self
+                .seqs
+                .get(slot)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| crate::ffi::Error(format!("sequence {slot}: this engine holds {}", self.seqs.len())))?;
+            (self.kc.ptr, self.vc.ptr, s.states.iter().map(|b| b.ptr).collect())
         } else {
             let s = self
                 .seqs
@@ -133,7 +273,7 @@ impl Dyn {
                 .ok_or_else(|| crate::ffi::Error(format!("sequence {slot}: this engine holds {}", self.seqs.len())))?;
             (s.kc.ptr, s.vc.ptr, s.states.iter().map(|b| b.ptr).collect())
         };
-        Ok(Part { row0, rows, start, kc, vc, states })
+        Ok(Part { slot, row0, rows, start, kc, vc, states })
     }
 
     /// Sequence `slot` empty again: no tokens, its states zeroed (its cache is overwritten as it runs).
@@ -220,8 +360,12 @@ impl Dyn {
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
     /// engine runs one sequence only (a draft model, a stage of a split model, a family `add_seqs` refuses).
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
-        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, and Muse Spark on one GPU; the other MoE families' latent attention and delta rules are not by sequence yet)
-        if self.draft.is_some() || !self.stage.first || !self.stage.last || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark") {
+        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, and Muse Spark, Kimi-K3 and GLM-5.3-Flash on one GPU; DeepSeek-V4's compressed entries are not by sequence yet)
+        if self.draft.is_some()
+            || !self.stage.first
+            || !self.stage.last
+            || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash")
+        {
             return Ok(None);
         }
         if self.seqs.len() > 1 {
@@ -232,7 +376,14 @@ impl Dyn {
         if users > 1 {
             self.set_head_rows(users)?;
         }
-        let per = (self.kc.bytes + self.vc.bytes + self.states.iter().map(|b| b.bytes).sum::<usize>()).max(1);
+        if self.pageable() {
+            // (keys and values in pools of blocks: a user takes the blocks its tokens fill, so the users asked for all have a sequence, and the memory decides how many tokens they hold together)
+            self.page(users)?;
+            self.add_seqs(users - 1)?;
+            return Ok(Some(users));
+        }
+        let mla: usize = self.big.mla.iter().map(|b| b.seq_bytes(self.ctx)).sum();
+        let per = (self.kc.bytes + self.vc.bytes + self.states.iter().map(|b| b.bytes).sum::<usize>() + mla).max(1);
         let (free, _) = self.dev.mem_info()?;
         // (room kept for the products' workspaces and the driver)
         const KEEP: usize = 512 << 20;
@@ -332,7 +483,21 @@ impl ModelStep for Dyn {
     fn release(&mut self, pages: &[i32]) -> Result<()> {
         for &p in pages {
             self.empty(p as usize)?;
+            if let Some(pg) = &mut self.paged {
+                pg.pages.release(p as usize);
+                self.dev.sync()?;
+                self.upload_tables(p as usize)?;
+            }
         }
         Ok(())
+    }
+    fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
+        let Some(pg) = &mut self.paged else { return Ok(true) };
+        if !pg.pages.grow(slot as usize, upto) {
+            return Ok(false);
+        }
+        self.dev.sync()?;
+        self.upload_tables(slot as usize)?;
+        Ok(true)
     }
 }

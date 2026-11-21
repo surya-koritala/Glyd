@@ -181,7 +181,10 @@ pub struct Indexer {
     pub heads: usize,
     pub head_dim: usize,
     pub top_k: usize,
+    /// Tokens a pooled key covers (GLM-5.3-Flash's `index_kpool`; 1: a key per token).
     pub block: usize,
+    /// The layer reuses the previous indexer layer's choice and has no indexer weights (GLM's `indexer_types` "shared").
+    pub shared: bool,
 }
 
 /// MHA, GQA, MQA attention.
@@ -408,10 +411,13 @@ pub struct StreamsP {
     pub norm_eps: f32,
 }
 
-/// Kimi-K3's depth mix: a block's input is a softmax over the embedding and the completed blocks of `block` layers.
+/// Kimi-K3's depth mix: a block's input is a softmax mix of the sources so far (the embedding and each completed group of layers'
+/// sum) and the current group's partial sum, scored by the query `mix_norm` * `mix_proj` (roles, [hidden]) against each source's RMS
+/// norm; the block's output adds to the partial sum. The executor keeps the sources: a block that `starts` a group first closes the
+/// partial sum into a source.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DepthMixP {
-    pub block: usize,
+    pub starts: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -440,13 +446,31 @@ pub struct Block {
 pub struct Embed {
     /// Gemma: x sqrt(hidden).
     pub scale: f32,
+    /// A norm of the embedding (Muse: weightless RMS).
+    pub norm: Option<Norm>,
+    /// Residual streams the embedding is copied into (mHC: 4); 1 for a plain residual.
+    pub streams: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Head {
     pub tied: bool,
     pub softcap: Option<f32>,
+    /// The logits' factor before the soft-cap (Muse's output multiplier).
     pub scale: f32,
+    /// How the residual becomes the final norm's input.
+    pub collapse: Collapse,
+}
+
+/// The residual stream(s) into the final norm.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Collapse {
+    /// The one stream.
+    None,
+    /// The streams' mean (GLM-5.3-Flash).
+    Mean,
+    /// The depth mix of every source with the model's roles `out_mix_norm`, `out_mix_proj` (Kimi-K3).
+    DepthMix,
 }
 
 /// A draft head: a few blocks after a projection of [embedding of the next token, the model's last hidden state] (R6).

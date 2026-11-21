@@ -70,6 +70,12 @@ the engine only on the GPU it has been measured on, the RTX 4080 SUPER ([#214](h
 and to the frozen vLLM path on the others, or for a model the engine does not run; `GLYD_ENGINE=1` forces the engine,
 `GLYD_ENGINE=0` keeps vLLM.
 
+## File compression
+
+Glyd also ships the compressor it began with, for the files that fill object storage: `glyd compress FILE -o OUT`,
+`glyd decompress`, a store that compresses across objects (`glyd-store`), and the `glyd` crate. It is separate from the
+engine and its formats are unchanged: [docs/codec/README.md](docs/codec/README.md).
+
 ## Status
 
 Runs today on NVIDIA GPUs under Linux; AMD RDNA 3/4 is a development build. Windows, macOS, Apple Silicon and CPU-only
