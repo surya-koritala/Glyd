@@ -47,6 +47,22 @@ impl Pages {
         (self.pools[g].free.len(), self.pools[g].blocks as usize - 1)
     }
 
+    /// The most tokens one sequence can hold with nothing else holding blocks: a full group's blocks (but block 0) a BLOCK each; a sliding group no limit where it holds a window and a chunk
+    /// (and the blocks they straddle), else what its blocks hold less one. None: no group limits it.
+    pub fn capacity(&self) -> Option<usize> {
+        self.pools
+            .iter()
+            .filter_map(|p| {
+                let usable = p.blocks as usize - 1;
+                match p.keep {
+                    None => Some(usable * BLOCK),
+                    Some(k) if usable >= k.div_ceil(BLOCK) + 1 => None,
+                    Some(_) => Some(usable.saturating_sub(1) * BLOCK),
+                }
+            })
+            .min()
+    }
+
     /// The table entries sequence `slot` needs to hold its first `upto` tokens in group `g`: from the first a step may still read to the last.
     fn span(&self, g: usize, upto: usize) -> (usize, usize) {
         let hi = upto.div_ceil(BLOCK);
@@ -173,6 +189,21 @@ mod tests {
         assert_eq!(p.take_dirty(0, 0), Some((4, 8)));
         // sliding: blocks 1..4 taken at 50 tokens; at 120, 1..4 given back and 5..8 taken
         assert_eq!(p.take_dirty(0, 1), Some((1, 8)));
+    }
+
+    /// One sequence alone holds what the capacity says and no more: the full group's blocks bound it, a sliding group with a window and a chunk's blocks does not.
+    #[test]
+    fn a_sequence_alone_holds_its_capacity() {
+        let p = Pages::new(&[33, 9], &[None, Some(96)], 1, 4096);
+        assert_eq!(p.capacity(), Some(32 * BLOCK));
+        let mut p = Pages::new(&[33, 9], &[None, Some(96)], 1, 4096);
+        assert!(p.grow(0, 32 * BLOCK) && !p.grow(0, 32 * BLOCK + 1));
+        // a sliding pool too small for its window: it bounds the sequence instead
+        let mut q = Pages::new(&[1000, 5], &[None, Some(96)], 1, 4096);
+        let cap = q.capacity().unwrap();
+        assert!(cap == 3 * BLOCK && q.grow(0, cap));
+        // neither bounds it: none
+        assert_eq!(Pages::new(&[1000, 9], &[Some(64), Some(96)], 1, 4096).capacity(), None);
     }
 
     /// Many sequences growing and ending at random never share a block, never lose one, and a failed growth leaves no trace.

@@ -401,8 +401,13 @@ impl Dyn {
 }
 
 impl ModelStep for Dyn {
+    /// The context, or where the pools hold less for one sequence alone, that: a reply that reaches it ends there (its length), and a sequence alone always fits, so one sent back for room
+    /// always runs again (an admitted request never fails for the memory).
     fn window(&self) -> usize {
-        self.ctx
+        match self.paged.as_ref().and_then(|p| p.pages.capacity()) {
+            Some(c) => self.ctx.min(c),
+            None => self.ctx,
+        }
     }
     fn chunk(&self) -> usize {
         self.chunk
