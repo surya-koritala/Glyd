@@ -8,7 +8,7 @@
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::Result;
-use crate::model35::{Kern35, ATTN_SPLITS};
+use crate::kern35::{Kern35, ATTN_SPLITS};
 use crate::qwen35_ref::{bf16, conv_step, delta_step, gated_norm, l2norm, sigmoid, softplus};
 
 struct Rng(u64);

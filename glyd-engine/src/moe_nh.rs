@@ -11,7 +11,7 @@
 
 use crate::cpu_experts::rows_of_experts;
 use crate::ffi::{err, Error, Result, Words};
-use crate::model35::Mat;
+use crate::kern35::Mat;
 use crate::model_nh::{MoeBlock, NhHost};
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
 use crate::moe_rows::{Down, RowStack, RowsJoined};

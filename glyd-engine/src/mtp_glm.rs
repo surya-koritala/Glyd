@@ -8,7 +8,7 @@
 use crate::dev::Buf;
 use crate::ffi::{err, Error, Result};
 use crate::glm::ConfigGlm;
-use crate::model35::Mat;
+use crate::kern35::Mat;
 use crate::model_glm::{EngineGlm, MlaBlock, MlaFactory, MoeBlock, MoeFactory};
 use crate::qwen35::Pack35;
 use crate::weights::{as_bytes, read_pack, upload_bytes, upload_packed, v7_manifest, Layout};

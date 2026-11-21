@@ -12,7 +12,6 @@ use crate::levels::{self, is_qat, layout_for, QAT_WREN};
 pub use crate::levels::{packed_repo, ship_layout, short_name};
 use crate::machine;
 use crate::model::{Engine, Opts};
-use crate::model35::{Engine35, Opts35};
 use crate::model_nh::{EngineNh, OptsNh};
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::offload::{CachePlan, ExpertStore};
@@ -90,7 +89,7 @@ fn level(model: &str, lossy: bool) -> Done<(&str, Option<Layout>)> {
 /// Whether MODEL is a Gemma 4 model: a directory whose config says so, or a Hub name of one (google/gemma-4-..., glyd/gemma-4-...).
 fn is_gemma4_model(model: &str) -> bool {
     match std::fs::read_to_string(Path::new(model).join("config.json")) {
-        Ok(text) => crate::model_gemma4::is_gemma4(&text),
+        Ok(text) => crate::gemma4::is_gemma4(&text),
         Err(_) => short_name(model).to_ascii_lowercase().starts_with("gemma-4"),
     }
 }
@@ -1327,7 +1326,7 @@ fn lossy_plan_inner(
 ) -> Done<LoadPlan> {
     let name = short_name(model);
     let tag = level_name(layout);
-    if crate::model_gemma4::is_gemma4(text) {
+    if crate::gemma4::is_gemma4(text) {
         return gemma_plan(a, &name, tag, layout, text, gen, free, gpu, packed);
     }
     // the matrices and the tensors kept as they are, what a sequence holds (its states, a token's KV) and the longest context
@@ -1465,7 +1464,7 @@ fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: 
             format!("Run it lossless (penguin) or at the kestrel or swift level: glyd run {name}:kestrel"),
         ));
     }
-    let cfg = crate::model_gemma4::ConfigG4::parse(text, gen, false).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), ""))?;
+    let cfg = crate::gemma4::ConfigG4::parse(text, gen, false).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), ""))?;
     let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
     let (weights, bf16) = cfg.weight_bytes(layout, ck.as_ref());
     // (a model not on this computer yet comes as its pre-packed repo, which holds its draft model: planned with it, the larger of the two plans)
@@ -1678,27 +1677,19 @@ fn load_lossy(
         if let Some((d, k)) = &draft {
             ui.borrow_mut().line(&format!("Drafting with {} ({k} tokens a round; --no-draft runs without it).", d.display()));
         }
-        if crate::tune!("GLYD_G4_DYNAMIC").is_some_and(|v| v == "0") {
-            // (a development build's way back to the hand-written engine, to compare)
-            let o = crate::model_gemma4::OptsG4 { ctx: plan.context, chunk: GEMMA_CHUNK, graph: true, device: gpu.ordinal, layout: Some(layout), draft };
-            let e = crate::model_gemma4::EngineG4::new(&dir, &o).map_err(oom)?;
-            let (bytes, vocab) = (e.w.bytes, e.w.cfg.vocab);
-            (Box::new(e), bytes, vocab)
-        } else {
-            // the dynamic engine (GLY-326): Gemma 4's description and, where one is found, its draft model's
-            let c = crate::model_gemma4::ConfigG4::load(&dir).map_err(cannot)?;
-            let spec = match &draft {
-                Some((d, k)) => {
-                    let dc = crate::model_gemma4::ConfigG4::load_for(d, true).map_err(cannot)?;
-                    Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&dc, &c), k: *k })
-                }
-                None => None,
-            };
-            let o = crate::dynamic::Opts { ctx: plan.context, chunk: GEMMA_CHUNK, graph: true, device: gpu.ordinal, layout: Some(layout) };
-            let e = crate::dynamic::Dyn::new(&dir, crate::dynamic::gemma4::describe(&c), spec, &o).map_err(oom)?;
-            let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
-            (Box::new(e), bytes, vocab)
-        }
+        // the dynamic engine (GLY-326): Gemma 4's description and, where one is found, its draft model's
+        let c = crate::gemma4::ConfigG4::load(&dir).map_err(cannot)?;
+        let spec = match &draft {
+            Some((d, k)) => {
+                let dc = crate::gemma4::ConfigG4::load_for(d, true).map_err(cannot)?;
+                Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&dc, &c), k: *k })
+            }
+            None => None,
+        };
+        let o = crate::dynamic::Opts { ctx: plan.context, chunk: GEMMA_CHUNK, graph: true, device: gpu.ordinal, layout: Some(layout) };
+        let e = crate::dynamic::Dyn::new(&dir, crate::dynamic::gemma4::describe(&c), spec, &o).map_err(oom)?;
+        let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
+        (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::NemotronH {
         let o = OptsNh { ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout), chunked: true, only: None };
         let store = ExpertStore::new();
@@ -1747,12 +1738,6 @@ fn load_lossy(
             let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
             (Box::new(e), bytes, vocab)
         }
-    } else if crate::tune!("GLYD_Q35_DYNAMIC").is_some_and(|v| v == "0") {
-        // (a development build's way back to the hand-written engine, to compare)
-        let o = Opts35 { weight_transform: None, ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout), chunked: true };
-        let e = Engine35::new(&dir, &o).map_err(oom)?;
-        let (bytes, vocab) = (e.w.bytes, e.w.cfg.vocab);
-        (Box::new(e), bytes, vocab)
     } else {
         // the dynamic engine (GLY-326): Qwen3.5's description
         let o = crate::dynamic::Opts { ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout) };
@@ -2513,7 +2498,7 @@ pub fn fetch(a: &Args) -> i32 {
             e => Refusal::new(format!("cannot read {model} from the Hugging Face Hub ({e})"), "Check the network connection and run this again"),
         })?;
         // (a pre-packed level's model is one the levels' engines run, which the run checks; so is a Gemma 4 model, its draft model too, which runs penguin without a tag)
-        if packed.is_none() && dynamic.is_none() && !crate::model_gemma4::is_gemma4(&text) {
+        if packed.is_none() && dynamic.is_none() && !crate::gemma4::is_gemma4(&text) {
             supported(&short_name(model), &text)?;
         }
         store::download(&hub, &remote, &wanted, model, &ui)
@@ -3134,7 +3119,7 @@ mod tests {
         // (served to --users at once with no draft model: each user's room and context fit beside the others'; run, and a context asked for, keep one user's)
         let free = 14u64 << 30;
         let at = |argv: &[&str]| lossy_plan_with(&args(argv), model, Layout::Int4, text, None, free, "NVIDIA GeForce RTX 4080 SUPER", None, None).unwrap();
-        let cfg = crate::model_gemma4::ConfigG4::parse(text, None, false).unwrap();
+        let cfg = crate::gemma4::ConfigG4::parse(text, None, false).unwrap();
         let (one, eight) = (at(&["run", model, "--no-draft"]), at(&["serve", model, "--users", "8", "--no-draft"]));
         assert_eq!((one.context, one.users), (LOSSY_CTX, 1));
         assert!(eight.context >= LOSSY_MIN_CTX && eight.context < one.context && eight.users == 8, "{}", eight.context);

@@ -791,7 +791,7 @@ pub fn bench(a: &Args) -> Result<()> {
         let (e0, e1) = (Ev::new()?, Ev::new()?);
         if a.has("check") {
             // the two passes in slices of n rows against the one-pass kernel (Kern35::delta, fp32) over 4 n rows from a zero state: the outputs' and the final state's relative errors, and two runs alike
-            let k35 = crate::model35::Kern35::load(&dev)?;
+            let k35 = crate::kern35::Kern35::load(&dev)?;
             let m = 4 * n;
             let (xc4, ba4) = (up(&bf(rnd(m * cd * 2)))?, up(&bf(rnd(m * 2 * nv * 2)))?);
             let (st_r, out_r) = (Buf::zeroed(nv * 128 * 128 * 4)?, Buf::zeroed(m * nv * 128 * 2)?);

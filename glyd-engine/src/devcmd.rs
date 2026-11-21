@@ -47,7 +47,6 @@
 //!   glyd-engine kcheck35                                      Qwen3.5's kernels against the CPU reference (src/kcheck35.rs)
 //!   glyd-engine moecheck [CASE...] [--speed] [--no-check] [--dump DIR | --cpu-dump DIR]   the mixture-of-experts layer (src/moe.rs) against the CPU reference on random routers and Int5, Int6 and Int4 experts, and its speed (src/kcheck_moe.rs)
 //!   glyd-engine cpuexperts [--bits 4|5|6] [--threads N] [--kernel auto|scalar|neon|avx2|avx512] [--experts N] [--pairs N] [--reps N] [--tokens N] [--misses M,M,...]   the CPU half of the sparse experts (src/cpu_experts.rs) timed on this computer: Nemotron 3 Super's experts made at random, pairs a second and GB/s read, a decode token's time for M missed experts
-//!   glyd-engine dump35 DIR IDS.json OUT.json [--ctx N]        a Qwen3.5 model's residual stream after every layer, the last token of the prompt (tools/ref_dump35.py compares it with transformers')
 //!   glyd-engine nhkernels IN_DIR OUT_DIR                      Nemotron's kernels on the inputs tools/nemotron_ref.py wrote (src/kcheck_nh.rs); nhlayers DIR IO_DIR: layers of the real model or of a random tiny one with mixture-of-experts layers; nhtoy DIR IO_DIR [--expert-cache GIB|auto|auto:GIB] [--offload-mode MODE] [--cpu-threads N]: a few of its layers as a model (or the whole model through the expert cache, one eager run); nhdecode DIR OUT_DIR --layers L,L [--tokens N]: some layers of a glyd-v7 directory decoded to bf16; nhrandom OUT [--latent N]: a random model at Nemotron 3.5 Lightning's widths
 //!   glyd-engine diskcheck DIR [--reads N] [--depth N]         the disk a Hummingbird directory is on, as the SSD tier reads it: random whole experts, page cache bypassed, one at a time and 16 at a time, MB/s (src/disk.rs); no GPU
 //!   glyd-engine nhoffload DIR IO_DIR [--slots N,N,...] [--offload-mode cpu|split|auto] [--cpu-threads N] [--host-memory GIB,GIB,...]   the random tiny model run with all its experts on the GPU and through the expert cache (src/offload.rs) with N places a layer: the
@@ -56,8 +55,8 @@
 //!                                                             memory and with no more than that many GiB of them (the rest read from the directory), every logit the same to the bit in the mode asked for
 //!   glyd-engine glmkernels IN_DIR OUT_DIR                     GLM-5.3-Flash's kernels on the inputs tools/glm_ref.py wrote (src/kcheck_glm.rs); glmlayers DIR IO_DIR: whole layers of the real model or of a random tiny one; glmtoy DIR IO_DIR: the tiny model whole; glmmtpreal SNAPSHOT REF_DIR OUT_DIR --layout i6|i5|i4: the real MTP head on the reference's hidden states; glmreal SNAPSHOT REF_DIR OUT_DIR --layers FIRST:END --layout i6|i5|i4 [--teacher]: the real model's layers one at a time against a reference's streams; glmmtp DIR IO_DIR: the MTP head on the tiny model's hidden states; glmspec DIR IO_DIR: a draft verified in one pass and the delta rules rewound after it, the tokens the same as greedy decode's whatever the drafts; glmprof DIR --layers L,L [--ctx N] [--reps N]: where a decode step of a layer spends its time, stage by stage in a graph's replay; glmdequant DIR OUT_DIR [--match TEXT]: its FP8 matrices as the loader reads them (bf16); glmdecode DIR OUT_DIR --layers L,L --layout i6|i5|i4: the packs of a mixture-of-experts layer's block decoded to bf16
 //!
-//! `generate`, `check` and `bench` run a Qwen3.5 model (its config.json says so: a directory in the Hub's layout, or a Hub id in the cache) on src/model35.rs, one sequence,
-//! packed in memory as it loads (--layout auto|mma|mma12); GLYD_ENGINE_GDN=recurrent runs a prompt's linear attention token by token instead of in chunks.
+//! `generate`, `check` and `bench` run a Qwen3.5 model (its config.json says so: a directory in the Hub's layout, or a Hub id in the cache) on the description executor
+//! (src/dynamic/qwen35.rs), one sequence, packed in memory as it loads (--layout auto|mma|mma12).
 //!
 //! DIR is a directory `pack` made, with kv-tables.safetensors beside it (tools/npz_to_tables.py).
 
@@ -136,7 +135,6 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "fp4bench" => glyd_engine::cpu_fp4::bench(&a),
         "rangecheck" => glyd_engine::dynamic::range::rangecheck(a),
         "cb2check" => glyd_engine::cpu_cb::check_pack(Path::new(a.need(1, "PACK_DIR")?), a.num("layer", 3usize)?, a.num("expert", 0usize)?),
-        "dump35" => cmd_dump35(a),
         "nhkernels" => glyd_engine::kcheck_nh::kernels(Path::new(a.need(1, "IN_DIR")?), Path::new(a.need(2, "OUT_DIR")?)),
         "nhlayers" => glyd_engine::kcheck_nh::layers(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
         "logitscheck" => glyd_engine::logits::check(a),
@@ -271,13 +269,13 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             }
             Ok(())
         }
-        "g4check" => glyd_engine::model_gemma4::check(a),
-        "i4xcheck" => glyd_engine::model_gemma4::i4x_check(a),
-        "g4spec" => glyd_engine::model_gemma4::spec_check(a),
-        "g4tok" => glyd_engine::model_gemma4::tok_check(a),
-        "g4score" => glyd_engine::model_gemma4::score(a),
-        "g4prefill" => glyd_engine::model_gemma4::prefill_prof(a),
-        "g4fatest" => glyd_engine::model_gemma4::fa_test(a),
+        "g4check" => glyd_engine::gemma4::check(a),
+        "i4xcheck" => glyd_engine::gemma4::i4x_check(a),
+        "g4spec" => glyd_engine::gemma4::spec_check(a),
+        "g4tok" => glyd_engine::gemma4::tok_check(a),
+        "g4score" => glyd_engine::gemma4::score(a),
+        "g4prefill" => glyd_engine::gemma4::prefill_prof(a),
+        "g4fatest" => glyd_engine::gemma4::fa_test(a),
         "qxbench" => glyd_engine::kcheck_qwen4x::bench(a),
         "qxprod" => glyd_engine::kcheck_qwen4x::bench_products(a),
         "qxtq" => glyd_engine::qx_trellis::cmd(a),
@@ -778,7 +776,7 @@ fn cmd_pack(a: &Args) -> Result<()> {
         return err("GLM-5.3-Flash is packed at a lossy level: --layout i6 or i5");
     }
     // (a Gemma 4 model has no Qwen3 config either: its layout is the one asked, penguin's where none is)
-    let gemma = glyd_engine::model_gemma4::ConfigG4::load(&src.dir).is_ok();
+    let gemma = glyd_engine::gemma4::ConfigG4::load(&src.dir).is_ok();
     let layout = match a.layout()?.filter(|l| gemma || matches!(l, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3)) {
         Some(l) => l,
         None if gemma => Layout::Tiered,
@@ -1149,21 +1147,33 @@ fn qwen35_dir(a: &Args) -> Option<std::path::PathBuf> {
     glyd_engine::qwen35::Config35::load(&d).ok().map(|_| d)
 }
 
-fn open35(a: &Args, dir: &Path) -> Result<(glyd_engine::model35::Engine35, f64)> {
+/// A Qwen3.5-family model on the description executor (the hand-written engine is gone: R3b, #137).
+fn open35(a: &Args, dir: &Path) -> Result<(glyd_engine::dynamic::Dyn, f64)> {
     let t0 = Instant::now();
-    let layout = a.layout()?;
-    let o = glyd_engine::model35::Opts35 {
-        // --layout a: Candidate A, every bf16 weight rounded to three fraction bits (the quality screens' arm), its matrices compact
-        weight_transform: if layout == Some(glyd_gpu::save::Layout::Compact) { Some(glyd_engine::model35::round_a_all) } else { None },
+    let o = glyd_engine::dynamic::Opts {
         ctx: a.num("ctx", 4096usize)?,
         chunk: a.num("chunk", 2048usize)?,
         graph: !a.has("no-graph"),
         device: 0,
-        layout,
-        chunked: glyd_engine::tune!("GLYD_ENGINE_GDN").as_deref() != Some("recurrent"),
+        layout: a.layout()?,
     };
-    let e = glyd_engine::model35::Engine35::new(dir, &o)?;
+    let e = glyd_engine::dynamic::qwen35::load(dir, &o)?;
     Ok((e, t0.elapsed().as_secs_f64()))
+}
+
+/// Up to `new` greedy tokens after `ids` (stopping at an end token unless `ignore_eos`).
+fn greedy(e: &mut glyd_engine::dynamic::Dyn, ids: &[u32], new: usize, ignore_eos: bool) -> Result<Vec<u32>> {
+    let eos = e.desc().eos.clone();
+    e.reset()?;
+    let mut s = e.prefill(ids)?;
+    let mut out = Vec::new();
+    loop {
+        out.push(s.token);
+        if out.len() >= new || (!ignore_eos && eos.contains(&(s.token as i64))) {
+            return Ok(out);
+        }
+        s = e.step(s.token)?;
+    }
 }
 
 fn cmd_run35(a: &Args, dir: &Path) -> Result<()> {
@@ -1173,10 +1183,9 @@ fn cmd_run35(a: &Args, dir: &Path) -> Result<()> {
     eprintln!("loaded in {load:.1} s: {}", e.describe());
     let ids = tok.encode(prompt)?;
     let t0 = Instant::now();
-    let out = e.generate(&ids, a.num("new", 64usize)?, a.has("ignore-eos"), false)?;
-    let toks: Vec<u32> = out.iter().map(|s| s.token).collect();
+    let toks = greedy(&mut e, &ids, a.num("new", 64usize)?, a.has("ignore-eos"))?;
     println!("{prompt}{}", tok.decode(&toks)?);
-    eprintln!("{} prompt tokens, {} generated in {:.2} s", ids.len(), out.len(), t0.elapsed().as_secs_f64());
+    eprintln!("{} prompt tokens, {} generated in {:.2} s", ids.len(), toks.len(), t0.elapsed().as_secs_f64());
     Ok(())
 }
 
@@ -1431,44 +1440,7 @@ fn cmd_check35_dyn(a: &Args, dir: &Path) -> Result<()> {
 
 /// As `check` (PROMPTS.json: {"prompts": [[ids]...], "long_prompts": ...}), on a Qwen3.5 model.
 fn cmd_check35(a: &Args, dir: &Path) -> Result<()> {
-    if a.has("dynamic") {
-        return cmd_check35_dyn(a, dir);
-    }
-    let pf = a.need(2, "PROMPTS.json")?;
-    let of = a.need(3, "OUT.json")?;
-    let v = json::parse(&std::fs::read_to_string(pf).map_err(|e| Error(format!("{pf}: {e}")))?).map_err(|e| Error(format!("{pf}: {e}")))?;
-    let new = a.num("new", 64usize)?;
-    let (mut e, load) = open35(a, dir)?;
-    eprintln!("loaded in {load:.1} s: {}", e.describe());
-    let mut body = String::from("{");
-    for (key, out_key) in [("prompts", ""), ("long_prompts", "long_")] {
-        let Some(list) = v.get(key).and_then(Value::as_array) else { continue };
-        let prompts: Vec<Vec<u32>> = list
-            .iter()
-            .map(|p| p.as_u64s().map(|v| v.into_iter().map(|x| x as u32).collect()).ok_or_else(|| Error(format!("{pf}: a prompt is not a list of token ids"))))
-            .collect::<Result<_>>()?;
-        let (mut tokens, mut lps) = (Vec::new(), Vec::new());
-        for p in &prompts {
-            let out = e.generate(p, new, a.has("ignore-eos"), true)?;
-            tokens.push(out.iter().map(|s| s.token.to_string()).collect::<Vec<_>>().join(","));
-            lps.push(out.iter().map(|s| format!("{:.6}", s.logprob.unwrap_or(f32::NAN))).collect::<Vec<_>>().join(","));
-        }
-        body.push_str(&format!(
-            "\"{out_key}tokens\":[{}],\"{out_key}logprobs\":[{}],",
-            tokens.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(","),
-            lps.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(",")
-        ));
-        eprintln!("{} {key} of up to {} tokens, {} new tokens each", prompts.len(), prompts.iter().map(Vec::len).max().unwrap_or(0), new);
-    }
-    body.push_str(&format!(
-        "\"load_s\":{load:.2},\"weights_bytes\":{},\"checkpoint_bytes\":{},\"gpu_mem_used\":{}}}\n",
-        e.w.bytes,
-        e.w.ckpt_bytes,
-        e.mem_used()
-    ));
-    std::fs::write(of, body).map_err(|e| Error(format!("{of}: {e}")))?;
-    eprintln!("{of}");
-    Ok(())
+    cmd_check35_dyn(a, dir)
 }
 
 /// One user on a Qwen3.5 model: a prompt of N random tokens (report::random_prompt, as tools/ref_speed.py's), timed `reps` times (the median), then `new` tokens a step at a time.
@@ -1484,14 +1456,14 @@ fn cmd_bench35(a: &Args, dir: &Path) -> Result<()> {
     let (mut e, load) = open35(a, dir)?;
     eprintln!("loaded in {load:.1} s: {}", e.describe());
     for n in ns {
-        let prompt = report::random_prompt(n, e.w.cfg.vocab);
-        e.generate(&prompt[..prompt.len().min(64)], 4, true, false)?; // (lazy initializations out of the timing)
+        let prompt = report::random_prompt(n, e.desc().vocab);
+        greedy(&mut e, &prompt[..prompt.len().min(64)], 4, true)?; // (lazy initializations out of the timing)
         let mut pre = Vec::new();
         let mut s = None;
         for _ in 0..=reps {
             e.reset()?;
             let t0 = Instant::now();
-            s = Some(e.prefill(&prompt, false)?);
+            s = Some(e.prefill(&prompt)?);
             pre.push(t0.elapsed().as_secs_f64() * 1e3);
         }
         pre.remove(0); // (the first: the large products' first use)
@@ -1502,52 +1474,22 @@ fn cmd_bench35(a: &Args, dir: &Path) -> Result<()> {
         let mut ms = Vec::with_capacity(new);
         for _ in 1..new {
             let t = Instant::now();
-            tok = e.step(tok, false)?.token;
+            tok = e.step(tok)?.token;
             ms.push(t.elapsed().as_secs_f64() * 1e3);
-        }
-        if a.has("profile") {
-            let rows = e.profile_steps(tok, 20)?;
-            eprintln!("one decode step's GPU time by kind of work (eager, 20 steps' mean, at {} tokens):", e.n);
-            let total = rows.last().map_or(1.0, |r| r.1);
-            for (label, t, k) in &rows {
-                eprintln!("  {t:7.3} ms {:5.1}%  {k:4} launches  {label}", 100.0 * t / total);
-            }
         }
         let mean = ms.iter().sum::<f64>() / ms.len().max(1) as f64;
         ms.sort_by(|x, y| x.partial_cmp(y).unwrap());
         let p = |q: f64| ms[((ms.len() - 1) as f64 * q) as usize];
         let gib = |b: usize| b as f64 / (1u64 << 30) as f64;
         println!(
-            "{{\"prompt_tokens\":{n},\"new_tokens\":{new},\"prefill_ms\":{prefill_ms:.1},\"prefill_ms_all\":[{}],\"decode_ms_mean\":{mean:.3},\"decode_ms_p50\":{:.3},\"decode_ms_p99\":{:.3},\"decode_tokens_per_s\":{:.2},\"load_s\":{load:.2},\"weights_gib\":{:.3},\"checkpoint_gib\":{:.3},\"states_gib\":{:.3},\"kv_gib\":{:.3},\"gpu_mem_used_gib\":{:.3},\"layout\":\"{:?}\",\"graph\":{}}}",
+            "{{\"prompt_tokens\":{n},\"new_tokens\":{new},\"prefill_ms\":{prefill_ms:.1},\"prefill_ms_all\":[{}],\"decode_ms_mean\":{mean:.3},\"decode_ms_p50\":{:.3},\"decode_ms_p99\":{:.3},\"decode_tokens_per_s\":{:.2},\"load_s\":{load:.2},\"weights_gib\":{:.3},\"graph\":{}}}",
             pre.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(","),
             p(0.5),
             p(0.99),
             1000.0 / mean,
-            gib(e.w.bytes),
-            gib(e.w.ckpt_bytes),
-            gib(e.ssm.bytes + e.convst.bytes),
-            gib(e.kc.bytes + e.vc.bytes),
-            gib(e.mem_used()),
-            e.w.layout,
+            gib(e.weights_bytes()),
             e.has_graph()
         );
     }
     Ok(())
-}
-
-/// IDS.json: {"ids": [token ids]}; OUT.json: {"layers": [[hidden values of the prompt's last token]...]} (the residual stream after each layer but the last, then the final norm's output).
-fn cmd_dump35(a: &Args) -> Result<()> {
-    let dir = qwen35_dir(a).ok_or_else(|| Error("dump35: not a Qwen3.5 model".into()))?;
-    let pf = a.need(2, "IDS.json")?;
-    let of = a.need(3, "OUT.json")?;
-    let v = json::parse(&std::fs::read_to_string(pf).map_err(|e| Error(format!("{pf}: {e}")))?).map_err(|e| Error(format!("{pf}: {e}")))?;
-    let ids: Vec<u32> = v.get("ids").and_then(Value::as_u64s).ok_or_else(|| Error(format!("{pf}: no ids")))?.into_iter().map(|x| x as u32).collect();
-    let (mut e, _) = open35(a, &dir)?;
-    e.reset()?;
-    let mut layers = Vec::new();
-    let s = e.prefill_dump(&ids, true, Some(&mut layers))?;
-    let rows: Vec<String> =
-        layers.iter().map(|l| format!("[{}]", l.iter().map(|&b| format!("{}", f32::from_bits((b as u32) << 16))).collect::<Vec<_>>().join(","))).collect();
-    std::fs::write(of, format!("{{\"token\":{},\"logprob\":{},\"layers\":[{}]}}\n", s.token, s.logprob.unwrap_or(f32::NAN), rows.join(",")))
-        .map_err(|e| Error(format!("{of}: {e}")))
 }

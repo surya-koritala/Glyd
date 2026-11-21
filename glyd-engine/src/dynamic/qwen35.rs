@@ -1,11 +1,11 @@
 //! Qwen3.5 (dense: 9B, 27B; Qwen3.6-27B, Qwen3.8-27B) as a description: Gated DeltaNet layers and gated full-attention layers, the (1 + w) norms,
-//! the SiLU MLP, the final norm on the last row (models/qwen3_5; the arithmetic is the kernels', as model35.rs runs them). Its weights load by
-//! model35.rs's loader (the small matrices it keeps dense, the fp32 parameters, the gated norm's weight as vLLM holds it), handed over as they are.
+//! the SiLU MLP, the final norm on the last row (models/qwen3_5; the arithmetic is the kernels', as src/kern35.rs names them). Its weights load by
+//! src/kern35.rs's loader (the small matrices it keeps dense, the fp32 parameters, the gated norm's weight as vLLM holds it), handed over as they are.
 
 use super::{Dyn, ModelDesc, Op, Opts, Ring, Rope, Slot, Stage};
 use crate::dev::Dev;
 use crate::ffi::{err, Result};
-use crate::model35::{Mat, Weights35};
+use crate::kern35::{Mat, Weights35};
 use crate::qwen35::Kind;
 use std::path::Path;
 
@@ -132,7 +132,7 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         eps: c.eps,
         max_pos: c.max_pos,
         widths,
-        // (the loader's own lists: model35.rs names and packs the tensors)
+        // (the loader's own lists: src/kern35.rs names and packs the tensors)
         mats: Vec::new(),
         small: Vec::new(),
         ropes: vec![Rope { theta: c.rope_theta, dim: c.rotary_dim, pairs: c.rotary_dim / 2 }],

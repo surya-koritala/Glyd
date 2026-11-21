@@ -1,7 +1,7 @@
 //! GLM-5.3-Flash on the GPU, one sequence: four residual streams per token, each layer two blocks (`x = mix(x, block(norm(collapse(x))))`, the mixing weights learned from the streams: mHC), the first a token mixer (Kimi delta
 //! attention, or the latent attention over the keys an indexer picks, src/mla_glm.rs: `MlaBlock` is the slot it plugs in by, and `NoMla` the stand-in for a model loaded without one) and the second a dense MLP (layers 0 to 2) or a mixture of experts
 //! (`MoeBlock`, src/moe_glm.rs: the block on the mixture-of-experts core; `NoMoe` the stand-in for a model loaded without one), then the mean of the streams, the final norm and the LM head. The Kimi delta layers and the
-//! streams' kernels are this file and kernels/glm.cu; a prompt in chunks and a decode step as one CUDA graph, greedy tokens. Kimi delta attention is the Gated DeltaNet of src/model35.rs with a decay for each key channel
+//! streams' kernels are this file and kernels/glm.cu; a prompt in chunks and a decode step as one CUDA graph, greedy tokens. Kimi delta attention is the Gated DeltaNet of kernels/qwen35.cu with a decay for each key channel
 //! (g = -5 sigmoid(exp(A_log) (f_b(f_a(x)) + dt_bias))), three convolutions side by side (q, k and v: `conv_silu`, the engine's), l2-normed q and k, and a sigmoid-gated norm of its outputs.
 //! The weights are a glyd-v7 directory's (`glyd-engine pack MODEL OUT --layout i6|i5`) or a Hub-format directory's (FP8 with 128 x 128 block scales or bf16: a matrix is packed as it loads, from the bf16 it dequantises to).
 //! The layers' math: tools/glm_ref.py; the config and tensor names: src/glm.rs.
@@ -10,9 +10,9 @@ use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, memset_async, B
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern::Kern;
+use crate::kern35::Mat;
 use crate::launch;
 use crate::model::{embed_plan, Sample};
-use crate::model35::Mat;
 use crate::moe::{Act, MoeKern, MoeScratch};
 use crate::qwen35::Pack35;
 use crate::weights::{choose_layout, ordered, upload_bytes, upload_packed, v7_manifest, Layout, PackBuf};
