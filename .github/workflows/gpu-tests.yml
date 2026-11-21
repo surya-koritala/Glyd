@@ -166,6 +166,9 @@ jobs:
           "$E" pack /tmp/v4-tier /tmp/v4-tier-hb --layout hummingbird --usage /tmp/v4-tier-usage.json
           "$E" tiercheck /tmp/v4-tier-hb --places 2
           "$E" tiercheck /tmp/v4-tier-hb --places 2 --mode cpu
+          # (GLM-5.3-Flash at a block level: its experts in places of the level's layout)
+          "$E" glmrandom /tmp/glm-tier
+          "$E" tiercheck /tmp/glm-tier --places 2 --layout i6
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

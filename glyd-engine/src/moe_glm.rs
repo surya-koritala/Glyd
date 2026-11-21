@@ -295,8 +295,25 @@ impl GlmMoe {
         let f8 = f8.filter(|_| matches!(level, Layout::Tiered | Layout::Twelve) && f8_experts(ck, c, l));
         let h = read_layer_with(l, c, ck, level, f8.is_some())?;
         let (router, bias) = (upload_bytes(&h.router)?, Some(upload_bytes(&h.bias)?));
+        // (R12: the block levels' experts in the expert cache where the stage has one; FP8 and lossless experts are each of their own bytes, not yet in places)
+        let mut tiered = None;
         let (up, down) = match h.experts {
-            Experts::Block(u, d) => (ExpertStack::upload(&u)?, ExpertStack::upload(&d)?),
+            Experts::Block(u, d) => match caching {
+                Some((cg, store, ordinal)) => {
+                    if cg.ram.is_some() {
+                        return err("GLM's experts in the expert cache at a block level: every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
+                    }
+                    let (su, sd, cache) = crate::tiering::cached_stacks(&u, &d, cg.places, store, l, ordinal, None)?;
+                    tiered = Some(cache);
+                    (su, sd)
+                }
+                None => (ExpertStack::upload(&u)?, ExpertStack::upload(&d)?),
+            },
+            Experts::Lossless(..) | Experts::F8 if caching.is_some() => {
+                return err(
+                    "GLM's experts in the expert cache: at the block levels (kestrel, swift, wren) and at hummingbird so far; penguin's are R12's next piece",
+                );
+            }
             Experts::Lossless(u, d) => {
                 (ExpertStack::lossless(upload_packed(u)?, c.experts.experts)?, ExpertStack::lossless(upload_packed(d)?, c.experts.experts)?)
             }
@@ -319,7 +336,13 @@ impl GlmMoe {
         };
         let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
         let w = MoeWeights { router, bias, escale: None, up, down: Down::Block(down) };
-        Ok(GlmMoe { layer: MoeLayer::new(moe_cfg(c), w, Some(shared))? })
+        let layer = MoeLayer::new(moe_cfg(c), w, Some(shared))?;
+        Ok(GlmMoe {
+            layer: match tiered {
+                Some(cache) => layer.with_cache(cache)?,
+                None => layer,
+            },
+        })
     }
 }
 
