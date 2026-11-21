@@ -132,6 +132,30 @@ fn run_level(model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
     Ok(v7_level(model, v7_layout(model)?, asked)?.or_else(|| (is_gemma4_model(model) || dynamic_family(model).is_some()).then_some(Layout::Tiered)))
 }
 
+/// The level `fit` plans for MODEL on this machine (plan.rs `planned`, with this command's own flags: --users, --ctx), as a layout: penguin's is the lossless one. None where the planner
+/// chooses nothing (the run's own refusal says why) or cannot read the model now.
+fn planner_level(a: &Args, model: &str) -> Option<Layout> {
+    let mut q = a.clone();
+    if let Some(m) = q.pos.get_mut(1) {
+        *m = model.to_string();
+    }
+    let chosen = crate::plan::planned(&q).ok()?.plan.chosen?;
+    Some(levels::by_name(chosen.level)?.layout.unwrap_or(Layout::Tiered))
+}
+
+/// The level run, serve and preflight load MODEL at (`run_level`), where nothing is asked the one `fit` printed: a Gemma 4 model or a family of the dynamic route takes
+/// penguin by default (`run_level`), which a 16 GB card cannot hold for Gemma 4 12B; the planner's level is what the printed plan said would load (P16, #221). A tag, --lossy,
+/// a glyd-v7 directory and a pre-packed repo are their own level.
+fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
+    let layout = run_level(model, asked)?;
+    if asked.is_none() && !a.has("lossy") && layout == Some(Layout::Tiered) && v7_layout(model)?.is_none() && levels::repo_level(model).is_none() {
+        if let Some(planned) = planner_level(a, model) {
+            return Ok(Some(planned));
+        }
+    }
+    Ok(layout)
+}
+
 /// The family of a model the dynamic engine runs from its release (DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Nemotron-H; GLY-354), by its config; None for
 /// another path's, a glyd-v7 directory's, or a config not to be had (offline).
 fn dynamic_family(model: &str) -> Option<&'static str> {
@@ -771,7 +795,7 @@ fn about(
 /// MODEL's level (its tag, or --lossy), before anything reads the model; the args are given back with the model without its tag. A glyd-v7 directory is a lossy level's packs: it runs at its own level, or the one asked if that is the same.
 fn tagged(a: &Args) -> Done<(Args, Option<Layout>)> {
     let (model, layout) = level(a.pos.get(1).map_or("", String::as_str), a.has("lossy")).map(|(m, l)| (m.to_string(), l))?;
-    let layout = run_level(&model, layout)?;
+    let layout = load_level(a, &model, layout)?;
     table_check(&model, layout)?;
     let mut a = a.clone();
     if let Some(m) = a.pos.get_mut(1) {
@@ -2400,7 +2424,7 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
         None => (None, None),
     };
     let layout = match model {
-        Some(m) => run_level(m, layout)?,
+        Some(m) => load_level(a, m, layout)?,
         None => layout,
     };
     if let Some(m) = model {
@@ -3165,6 +3189,22 @@ mod tests {
         assert_eq!(run_level(model, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(run_level(model, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
         assert_eq!(run_level("Qwen/Qwen3-8B", None).unwrap(), None);
+    }
+
+    /// Run, serve and preflight without a tag load the level `fit` plans (P16, the M1 gate on an 8 GB card): Gemma 4 12B on a 16 GB card is kestrel, which the card holds,
+    /// not penguin, which it does not; on a 24 GB card penguin. A tag is its own level.
+    #[test]
+    fn an_untagged_model_loads_the_level_fit_plans() {
+        let dir = std::env::temp_dir().join(format!("glyd-load-level-{}", std::process::id())).join("gemma-4-12B-it");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), include_str!("../tests/fixtures/gemma4_12b_config.json")).unwrap();
+        let m = dir.to_str().unwrap();
+        let on = |machine: &str| Args::from(["serve", m, "--machine", machine].iter().map(|s| s.to_string()));
+        assert_eq!(planner_level(&on("rtx4080s"), m), Some(Layout::Int6));
+        assert_eq!(load_level(&on("rtx4080s"), m, None).unwrap(), Some(Layout::Int6));
+        assert_eq!(load_level(&on("rtx4090"), m, None).unwrap(), Some(Layout::Tiered));
+        assert_eq!(load_level(&on("rtx4080s"), m, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     #[test]

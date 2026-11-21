@@ -82,7 +82,12 @@ export PATH="$SHIM:$PATH"
 if [ "$SKIP_INSTALL" = 0 ]; then
   t0=$SECONDS; if "$SH" -c "$INSTALL_CMD" > "$OUT/install.log" 2>&1; then step PASS install "$((SECONDS - t0)) s: $INSTALL_CMD"; else step FAIL install "failed after $((SECONDS - t0)) s: see $OUT/install.log"; fi
 fi
-if ! "$GLYD" --version > "$OUT/version.txt" 2>&1; then step FAIL glyd-version "$GLYD --version failed"; fi
+# (a fresh shell after the install has ~/.local/bin on PATH where it exists (Ubuntu's ~/.profile): where glyd is not on this shell's PATH, the gate runs the
+# one the installer linked there, as a user's next terminal would)
+if ! command -v "$GLYD" > /dev/null 2>&1 && [ -x "$HOME/.local/bin/glyd" ]; then GLYD="$HOME/.local/bin/glyd"; fi
+# (without a glyd that runs, every later step would pass or fail for the wrong reason: the gate stops here)
+if ! "$GLYD" --version > "$OUT/version.txt" 2>&1; then step FAIL glyd-version "$GLYD --version failed: the gate stops"; echo "---"; echo "the gate stopped: $GLYD does not run"; exit 1; fi
+step PASS glyd-version "$(head -1 "$OUT/version.txt") ($GLYD)"
 
 # ---- no NVIDIA: Apple or AMD get one line saying what to do
 if ! command -v nvidia-smi > /dev/null 2>&1; then
@@ -104,7 +109,7 @@ while IFS= read -r line; do
   step PASS "plan:$m" "$got: $why"
   if [ "$got" = refuse ]; then
     out="$(timeout 60 "$GLYD" run "$m" --prompt hi 2>&1)"; code=$?; n="$(echo "$out" | grep -c .)"
-    if [ "$code" -ne 0 ] && [ "$n" -le 3 ]; then step PASS "refusal:$m" "exit $code, $n lines: $(echo "$out" | head -1 | cut -c1-140)"; else step FAIL "refusal:$m" "exit $code, $n lines (a refusal is a few lines and a non-zero exit)"; fi
+    if [ "$code" -ne 0 ] && [ "$code" -lt 124 ] && [ "$n" -le 3 ]; then step PASS "refusal:$m" "exit $code, $n lines: $(echo "$out" | head -1 | cut -c1-140)"; else step FAIL "refusal:$m" "exit $code, $n lines (a refusal is a few lines and a non-zero exit)"; fi
     continue
   fi
   # first token: the server started, the model packed or downloaded where it is not here, and the first streamed token, all inside the limit
