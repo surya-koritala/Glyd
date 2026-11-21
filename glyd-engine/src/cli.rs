@@ -1581,7 +1581,7 @@ fn load_lossy(
     let model = a.need(1, "MODEL")?.to_string();
     match dynamic_family(&model) {
         Some("Nemotron-H") if layout != Layout::Tiered => {}
-        Some(family) => return load_dynamic(a, &model, family, layout, served, ui),
+        Some(family) => return load_dynamic(a, &model, family, hb_level(&model, layout), served, ui),
         None => {}
     }
     let mut layout = layout_for(&model, layout);
@@ -2088,6 +2088,15 @@ fn hb_dir_for(model: &str, name: &str, family: &str, ui: Option<&RefCell<Ui>>) -
     ))
 }
 
+/// The level a dynamic-route MODEL is run at: a hummingbird directory's own where no other level is asked.
+fn hb_level(model: &str, layout: Layout) -> Layout {
+    if layout == Layout::Tiered && matches!(crate::hb_pack::HbDir::open(Path::new(model)), Ok(Some(_))) {
+        Layout::Hummingbird
+    } else {
+        layout
+    }
+}
+
 /// The words a dynamic-route plan says its level in.
 fn dynamic_level_words(layout: Layout) -> &'static str {
     if layout == Layout::Hummingbird {
@@ -2494,7 +2503,7 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
 fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {
     match dynamic_family(model) {
         Some("Nemotron-H") if layout != Layout::Tiered => {}
-        Some(family) => return check_dynamic(a, model, family, layout, ui),
+        Some(family) => return check_dynamic(a, model, family, hb_level(model, layout), ui),
         None => {}
     }
     let text = config_text(model)?;

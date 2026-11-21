@@ -90,6 +90,8 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     }
     let dev = Dev::new(o.device)?;
     let ck = io(Checkpoint::open(dir))?;
+    // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
+    let hb = crate::hb_pack::HbDir::open(dir)?;
     let layout = o.layout.unwrap_or(Layout::Tiered);
     let (d, nq, nk, hd, lat, inter, e) = (c.hidden, c.heads, c.kv_heads, c.head_dim, c.latent, c.inter, c.experts);
     let read = |n: &str| io(ck.read(n));
@@ -162,7 +164,6 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             st.tp_rows = rows;
             Ok(st)
         };
-        let (up, down) = (stack("gate_up_proj", 2 * inter, lat)?, stack("down_proj", lat, inter)?);
         let router = upload_bytes(&read(&format!("{m}.gate.weight"))?)?;
         let bias = upload_bytes(&read(&format!("{m}.gate.e_score_correction_bias"))?)?;
         // (the clamp of an infinite limit: the activation is the kernel's, so the products are not fused)
@@ -175,7 +176,14 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             act: Act::SwiGlu { limit: Some(f32::INFINITY) },
         };
         let block = l_.moe.len();
-        l_.moe.push(Box::new(MuseMoe(MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?)));
+        let layer = match crate::hb_pack::HbDir::experts_for(hb.as_ref(), l, sl.is_some())? {
+            Some(x) => MoeLayer::new_hb(cfg, router, Some(bias), None, x, None)?,
+            None => {
+                let (up, down) = (stack("gate_up_proj", 2 * inter, lat)?, stack("down_proj", lat, inter)?);
+                MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?
+            }
+        };
+        l_.moe.push(Box::new(MuseMoe(layer)));
         let ring = rings.len();
         rings.push(Ring { d: hd, nk, window: if c.sliding[l] { c.window } else { 0 } });
         let mut ops = vec![
