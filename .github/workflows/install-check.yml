@@ -174,7 +174,7 @@ jobs:
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.tag }}
       - name: "sh scripts/install.sh (retry: the release's assets can lag the release)"
@@ -231,7 +231,7 @@ jobs:
         run: |
           apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates git > /dev/null
           nvidia-smi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.tag }}
           persist-credentials: false
@@ -313,7 +313,7 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
