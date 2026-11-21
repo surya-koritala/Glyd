@@ -449,7 +449,10 @@ mod tests {
         let grace = gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000);
         assert!(refusal_on(TABLE, ARCHS, &grace, "aarch64", false, "Qwen3").is_none() && refusal_on(TABLE, ARCHS, &grace, "x86_64", false, "Qwen3").is_none());
         let off = gpu("NVIDIA B200", (10, 0), 180, 13000);
-        assert_eq!(refusal_on(TABLE, ARCHS, &off, "aarch64", false, "Qwen3").map(|r| r.what), refusal_on(TABLE, ARCHS, &off, "x86_64", false, "Qwen3").map(|r| r.what));
+        assert_eq!(
+            refusal_on(TABLE, ARCHS, &off, "aarch64", false, "Qwen3").map(|r| r.what),
+            refusal_on(TABLE, ARCHS, &off, "x86_64", false, "Qwen3").map(|r| r.what)
+        );
         assert!(refusal_on(TABLE, ARCHS, &grace, "riscv64", false, "Qwen3").unwrap().what.contains("has not run on riscv64 computers"));
         // the shipped list: an L4 is handed models by the line `("L4", (8, 9), &["Qwen3"])`, which is all it takes
         let l4 = gpu("NVIDIA L4", (8, 9), 22, 13000);

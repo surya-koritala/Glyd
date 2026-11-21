@@ -292,7 +292,7 @@ pub fn machine(m: &Machine) -> Option<Refusal> {
     if !ARCHS.contains(&m.arch.as_str()) {
         return Some(Refusal::unsupported(
             format!("the engine has not run on a {} computer yet", m.arch),
-            format!("It runs on {} (aarch64: ROADMAP P18)", ARCHS.join(", ")),
+            format!("It runs on {} computers", ARCHS.join(" and ")),
         ));
     }
     if d.driver < driver_min(d.cc) {
@@ -353,11 +353,17 @@ mod tests {
     fn the_machine_side_matches_gpu_refusal() {
         let ok = Machine::preset("rtx4080s").unwrap();
         assert!(machine(&ok).is_none());
-        for (name, word) in [("rx7900xtx", "AMD"), ("m4max-64g", "Apple"), ("dgx-spark", "aarch64")] {
+        for (name, word) in [("rx7900xtx", "AMD"), ("m4max-64g", "Apple")] {
             let r = machine(&Machine::preset(name).unwrap()).unwrap_or_else(|| panic!("{name}"));
             assert!(r.what.contains(word) || r.fix.contains(word), "{name}: {r:?}");
             assert_eq!(r.code, crate::ui::CANNOT);
         }
+        // (a DGX Spark is an aarch64 computer, which the engine runs on as on an x86_64 one; an architecture it is not built for is refused)
+        assert!(machine(&Machine::preset("dgx-spark").unwrap()).is_none());
+        let mut other = Machine::preset("rtx4080s").unwrap();
+        other.arch = "riscv64".into();
+        let r = machine(&other).unwrap();
+        assert!(r.what.contains("riscv64") && r.fix.contains("x86_64 and aarch64"), "{r:?}");
         let mut old = Machine::preset("rtx4080s").unwrap();
         old.devices[0].driver = 12070;
         assert!(machine(&old).unwrap().what.contains("CUDA 12.7"));
