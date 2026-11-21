@@ -4,7 +4,7 @@
 //! CPU architecture) is `machine`, on the same constants `machine::gpu_refusal` uses.
 
 use crate::levels;
-use crate::machine::{ARCHS, DRIVER_MIN, MAX_CONTEXT};
+use crate::machine::{driver_min, driver_need, ARCHS, MAX_CONTEXT};
 use crate::plan::{Machine, Vendor};
 use crate::ui::Refusal;
 use glyd_gpu::json::{self, Value};
@@ -299,16 +299,10 @@ pub fn machine(m: &Machine) -> Option<Refusal> {
             format!("It runs on {} (aarch64: ROADMAP P18)", ARCHS.join(", ")),
         ));
     }
-    if d.driver < DRIVER_MIN {
+    if d.driver < driver_min(d.cc) {
         return Some(Refusal::unsupported(
-            format!(
-                "the driver supports CUDA {}.{}: the engine's kernels need CUDA {}.{} (driver 580 or newer)",
-                d.driver / 1000,
-                d.driver % 1000 / 10,
-                DRIVER_MIN / 1000,
-                DRIVER_MIN % 1000 / 10
-            ),
-            "Update the NVIDIA driver (https://www.nvidia.com/drivers); older drivers come with the CUDA 12 build (ROADMAP P6)",
+            format!("the driver supports CUDA {}.{}: the engine's kernels need {}", d.driver / 1000, d.driver % 1000 / 10, driver_need(d.cc)),
+            format!("Update the NVIDIA driver to {} or newer (https://www.nvidia.com/drivers)", crate::machine::driver_series(driver_min(d.cc))),
         ));
     }
     None

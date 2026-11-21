@@ -130,14 +130,14 @@ python_tool_here() {
   return 1
 }
 
-# The NVIDIA driver against DRIVER_MIN: a warning, the install goes on.
+# The NVIDIA driver against the engine's minimum (ENGINE_DRIVER_MIN: DRIVER_MIN, or 535 where the release's bundle carries the CUDA 12 library): a warning, the install goes on.
 driver_check() {
   driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n 1 | tr -d ' ' || true)
   major=${driver%%.*}
   case "$major" in
     '' | *[!0-9]*) ;;
-    *) if [ "$major" -lt "$DRIVER_MIN" ]; then
-         warn "your NVIDIA driver ($driver) is older than $DRIVER_MIN, which Glyd's GPU code needs (CUDA 13). Before you run a model, update it (Ubuntu: sudo apt install nvidia-driver-$DRIVER_MIN, then reboot)."
+    *) if [ "$major" -lt "${ENGINE_DRIVER_MIN:-$DRIVER_MIN}" ]; then
+         warn "your NVIDIA driver ($driver) is older than ${ENGINE_DRIVER_MIN:-$DRIVER_MIN}, which Glyd's GPU code needs. Before you run a model, update it (Ubuntu: sudo apt install nvidia-driver-${ENGINE_DRIVER_MIN:-$DRIVER_MIN}, then reboot)."
        fi ;;
   esac
 }
@@ -171,6 +171,11 @@ install_engine() {
   tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/$one" "$ename/libglyd_gpu_cuda13.so" "$ename/LICENSE" \
     || die "the engine's tarball is not laid out as this installer expects ($ename/$one, ...): run this again, or take it from $REPO/releases."
   cp "$tmp/e/$ename/libglyd_gpu_cuda13.so" "$cli"/ && cp "$tmp/e/$ename/LICENSE" "$cli/LICENSE-engine" || die "could not write to $cli."
+  # a release from 0.33.2 also holds the CUDA 12 library (not compressed), which the engine loads on a driver older than CUDA 13 (down to R535)
+  if tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/libglyd_gpu_cuda12.so" >/dev/null 2>&1; then
+    cp "$tmp/e/$ename/libglyd_gpu_cuda12.so" "$cli"/ || die "could not write to $cli."
+    ENGINE_DRIVER_MIN=535  # (CUDA 12.2: Blackwell GPUs need 570)
+  fi
   if [ "$one" = glyd ]; then
     cp "$tmp/e/$ename/glyd" "$cli/glyd.new" && chmod +x "$cli/glyd.new" && mv -f "$cli/glyd.new" "$cli/glyd" || die "could not write to $cli."
     ln -sf glyd "$cli/glyd-engine"  # (glyd takes the name it is started by for the engine's own command line)
