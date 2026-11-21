@@ -307,6 +307,25 @@ pub enum Refreshed {
 
 /// The newest manifest of the release, checked against the sha256 the release lists, kept in `dest` where it is later than `have` (the one in use). `fetch` gets a URL's bytes (a test's is a table).
 pub fn refresh_with(fetch: &dyn Fn(&str) -> Result<Vec<u8>, String>, url: &str, dest: &Path, have: &str) -> Result<Refreshed, String> {
+    refresh_on(fetch, url, dest, have, &today())
+}
+
+/// The date today (UTC) as YYYY-MM-DD.
+pub fn today() -> String {
+    let days = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400) as i64;
+    // (civil date from days since 1970-01-01: Howard Hinnant's algorithm)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (d, m) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+    format!("{:04}-{:02}-{:02}", yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// `refresh_with` as of `today`: a manifest dated after tomorrow is not kept (a date far ahead would keep every later manifest out).
+fn refresh_on(fetch: &dyn Fn(&str) -> Result<Vec<u8>, String>, url: &str, dest: &Path, have: &str, today: &str) -> Result<Refreshed, String> {
     let body = fetch(url).map_err(|e| format!("{url}: {e}"))?;
     let sums = fetch(&format!("{url}.sha256")).map_err(|e| format!("{url}.sha256: {e}"))?;
     let want = String::from_utf8_lossy(&sums).split_whitespace().next().unwrap_or("").to_ascii_lowercase();
@@ -319,6 +338,9 @@ pub fn refresh_with(fetch: &dyn Fn(&str) -> Result<Vec<u8>, String>, url: &str, 
     }
     let text = String::from_utf8(body).map_err(|_| "the manifest is not text".to_string())?;
     let m = Manifest::parse(&text)?;
+    if m.updated.as_str() > next_day(today).as_str() {
+        return Err(format!("the manifest is dated {}, which is after {today}: not kept", m.updated));
+    }
     if m.updated.as_str() <= have {
         return Ok(Refreshed::UpToDate);
     }
@@ -328,6 +350,25 @@ pub fn refresh_with(fetch: &dyn Fn(&str) -> Result<Vec<u8>, String>, url: &str, 
     let tmp = dest.with_extension("json.part");
     std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, dest)).map_err(|e| format!("{}: {e}", dest.display()))?;
     Ok(Refreshed::Updated { from: have.to_string(), to: m.updated })
+}
+
+/// The day after `d` (YYYY-MM-DD), to the day count of a month's longest (a day past the end of a month is the 1st of the next: the comparison is by text).
+fn next_day(d: &str) -> String {
+    let parts: Vec<u32> = d.split('-').filter_map(|p| p.parse().ok()).collect();
+    let [y, m, day] = parts[..] else { return d.to_string() };
+    let dim = match m {
+        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if day < dim {
+        format!("{y:04}-{m:02}-{:02}", day + 1)
+    } else if m < 12 {
+        format!("{y:04}-{:02}-01", m + 1)
+    } else {
+        format!("{:04}-01-01", y + 1)
+    }
 }
 
 /// One GET over HTTPS (redirects followed: a release's download is one), the body to a megabyte.
@@ -952,7 +993,7 @@ mod tests {
         assert!(!dest.exists());
         // later, and listed: kept
         assert_eq!(
-            refresh_with(&served(body.clone(), sha(body.as_bytes())), url, &dest, "2026-11-20"),
+            refresh_on(&served(body.clone(), sha(body.as_bytes())), url, &dest, "2026-11-20", "2027-01-01"),
             Ok(Refreshed::Updated { from: "2026-11-20".into(), to: "2026-12-24".into() })
         );
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), body);
@@ -960,6 +1001,31 @@ mod tests {
         // a release with no manifest says so
         let none = |_: &str| -> Result<Vec<u8>, String> { Err("not found (the latest release carries no manifest yet)".into()) };
         assert!(refresh_with(&none, url, &dest, "").unwrap_err().contains("carries no manifest yet"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_manifest_dated_in_the_future_is_not_kept() {
+        let dir = std::env::temp_dir().join(format!("glyd-names-future-{}", std::process::id()));
+        let dest = dir.join("models.json");
+        let body = EMBEDDED.replace("\"updated\": \"2026-11-20\"", "\"updated\": \"2099-01-01\"");
+        let sum = sha(body.as_bytes());
+        let fetch = |u: &str| -> Result<Vec<u8>, String> {
+            Ok(if u.ends_with(".sha256") { format!("{sum}  models.json").into_bytes() } else { body.clone().into_bytes() })
+        };
+        let e = refresh_on(&fetch, "https://x.test/models.json", &dest, "2026-11-20", "2026-12-01").unwrap_err();
+        assert!(e.contains("which is after 2026-12-01") && !dest.exists(), "{e}");
+        // tomorrow is allowed (a release made in another time zone)
+        let near = EMBEDDED.replace("\"updated\": \"2026-11-20\"", "\"updated\": \"2026-12-02\"");
+        let sum2 = sha(near.as_bytes());
+        let fetch2 = |u: &str| -> Result<Vec<u8>, String> { Ok(if u.ends_with(".sha256") { sum2.clone().into_bytes() } else { near.clone().into_bytes() }) };
+        assert!(matches!(refresh_on(&fetch2, "https://x.test/models.json", &dest, "2026-11-20", "2026-12-01"), Ok(Refreshed::Updated { .. })));
+        assert_eq!(
+            (next_day("2026-12-31"), next_day("2024-02-28"), next_day("2026-02-28"), next_day("2026-04-30")),
+            ("2027-01-01".into(), "2024-02-29".into(), "2026-03-01".into(), "2026-05-01".into())
+        );
+        // today is a date, and it is not before this program was written
+        assert!(is_date(&today()) && today().as_str() >= "2026-11-20", "{}", today());
         std::fs::remove_dir_all(&dir).ok();
     }
 
