@@ -332,6 +332,106 @@ jobs:
             out/*.tar.gz.sha256
           if-no-files-found: error
 
+  engine-windows:
+    # glyd.exe for Windows x86_64: the compression program with Glyd's engine linked (the `engine` feature), built with CUDA 13.0.3's nvcc and CUDA 12.9.1's (NVCC12: the kernels a driver of
+    # CUDA 12 loads), and the GPU library DLLs of both (libglyd_gpu_cuda13.dll, and libglyd_gpu_cuda12.dll not compressed). The CUDA toolkits are NVIDIA's network installers, checked against
+    # the sha256 written here (and NVIDIA's md5); nothing of the toolkit ships (the DLLs link the CUDA runtime in; the engine opens nvcuda.dll). Built here, not run: no runner has a GPU.
+    # The zip and its sha256 are attached to the release by attach-engine when the build succeeded; a failure here does not hold the Linux bundles back.
+    needs: plan
+    runs-on: windows-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GLYD_ENGINE_RELEASE: "1"
+      GLYD_GPU_RELEASE: "1"
+      RUST_VERSION: "1.98.1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: The CUDA toolkits (13.0.3 and 12.9.1), nvcc and the runtime's libraries
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(
+            @{ v = '13.0.3'; sha = '6b544a8cfea2ca18cc816dacda92064dcf821a201b35185e6c14ca17ccbc026f' },
+            @{ v = '12.9.1'; sha = 'de45c336ab4e9825018b546357dc9de5ded9f89c4f5200ef52b8eeac3b1b4072' }
+          )
+          foreach ($i in $installers) {
+            $exe = "cuda_$($i.v)_windows_network.exe"
+            Invoke-WebRequest "https://developer.download.nvidia.com/compute/cuda/$($i.v)/network_installers/$exe" -OutFile $exe
+            if ((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -ne $i.sha) { throw "$exe is not the installer this workflow was written for" }
+            $p = Start-Process -FilePath ".\$exe" -ArgumentList '-s' -Wait -PassThru
+            "$exe exit code $($p.ExitCode)"
+            if ($p.ExitCode -ne 0) { throw "$exe failed" }
+          }
+          Get-ChildItem 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA' | Select-Object Name
+      - name: Build (MSVC's environment, both nvcc, the engine and glyd.exe, the two DLLs)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # the MSVC compiler nvcc takes as its host compiler: the environment of vcvars64
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && set" | ForEach-Object { if ($_ -match '^(.*?)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] } }
+          # (the runner's Visual Studio can be newer than the one a CUDA release lists: the build is checked by what it makes, not by nvcc's list)
+          $env:NVCC_APPEND_FLAGS = '-allow-unsupported-compiler'
+          $cuda = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
+          $nvcc13 = "$cuda\v13.0\bin\nvcc.exe"; $nvcc12 = "$cuda\v12.9\bin\nvcc.exe"
+          & $nvcc13 --version | Select-Object -Last 2; & $nvcc12 --version | Select-Object -Last 2
+          rustup toolchain install $env:RUST_VERSION --profile minimal --no-self-update
+          rustup default $env:RUST_VERSION
+          $env:NVCC = $nvcc13; $env:NVCC12 = $nvcc12
+          $env:GLYD_SOURCE_COMMIT = '${{ needs.plan.outputs.sha }}'
+          cargo build --release --locked -p glyd-engine --no-default-features
+          if ($LASTEXITCODE) { throw 'cargo build glyd-engine failed' }
+          cargo build --release --locked -p glyd --features engine --bin glyd
+          if ($LASTEXITCODE) { throw 'cargo build glyd failed' }
+          New-Item -ItemType Directory -Force lib13, lib12 | Out-Null
+          $env:PATH = "$cuda\v13.0\bin;$env:PATH"
+          $env:GLYD_GPU_COMPRESS = 'size'
+          & .\gpu\build_lib.ps1 -Out (Resolve-Path lib13)
+          $env:PATH = "$cuda\v12.9\bin;$($env:PATH -replace [regex]::Escape("$cuda\v13.0\bin;"), '')"
+          $env:GLYD_GPU_COMPRESS = 'none'
+          & .\gpu\build_lib.ps1 -Out (Resolve-Path lib12)
+          Get-ChildItem lib13, lib12, target\release\glyd.exe | Select-Object FullName, Length
+      - name: Check (the program starts; the system's DLLs alone; the DLLs export the C API) and the zip
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'target\release\glyd.exe'
+          & $exe --version
+          if ($LASTEXITCODE) { throw 'glyd.exe does not start' }
+          # imports: the system's DLLs only (the C runtime is linked in: .cargo/config.toml)
+          $dumpbin = (Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe | Select-Object -First 1).FullName
+          $deps = & $dumpbin /dependents $exe | Select-String -Pattern '\.dll' | ForEach-Object { $_.Line.Trim().ToLower() }
+          $deps
+          $other = $deps | Where-Object { $_ -notmatch '^(kernel32|user32|advapi32|ws2_32|bcrypt|ntdll|userenv|shell32|ole32|oleaut32|crypt32|secur32|ncrypt|msvcrt|api-ms-win-.*|iphlpapi|dbghelp|gdi32|winmm|setupapi|cfgmgr32|rpcrt4|shlwapi|version|wintrust|ucrtbase|normaliz|psapi|propsys|mswsock|dnsapi|netapi32|bcryptprimitives|cabinet)\.dll$' }
+          if ($other) { throw "glyd.exe imports more than the system's DLLs: $other" }
+          foreach ($dll in 'lib13\libglyd_gpu_cuda13.dll', 'lib12\libglyd_gpu_cuda12.dll') {
+            $exports = & $dumpbin /exports $dll | Out-String
+            foreach ($f in 'glyd_gpu_api_version', 'glyd_gpu_error_string', 'glyd_gpu_cuda_version') { if ($exports -notmatch $f) { throw "$dll does not export $f" } }
+          }
+          $d = "glyd-engine-v$($env:VERSION)-windows-x86_64"
+          New-Item -ItemType Directory -Force "out\$d" | Out-Null
+          Copy-Item $exe "out\$d\glyd.exe"; Copy-Item $exe "out\$d\glyd-engine.exe"
+          Copy-Item lib13\libglyd_gpu_cuda13.dll, lib12\libglyd_gpu_cuda12.dll "out\$d\"
+          Copy-Item glyd-engine\LICENSE "out\$d\LICENSE"
+          Compress-Archive -Path "out\$d" -DestinationPath "out\$d.zip"
+          $h = (Get-FileHash "out\$d.zip" -Algorithm SHA256).Hash.ToLower()
+          "$h  $d.zip" | Set-Content -NoNewline "out\$d.zip.sha256"
+          Get-Content "out\$d.zip.sha256"; Get-ChildItem out | Select-Object Name, Length
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: engine-windows-x86_64
+          path: |
+            out/*.zip
+            out/*.zip.sha256
+          if-no-files-found: error
+
   wheels:
     # One wheel for each architecture, for every CPython from 3.10 on (the stable ABI): every module compiled (Cython), the two libraries of the
     # architecture, the engine's program, the public header. Built in the manylinux_2_28 image (AlmaLinux 8, glibc 2.28) by CPython 3.10, the floor of its ABI, tagged
@@ -483,8 +583,9 @@ jobs:
     # The engine bundles (engine-bundle: glyd with the engine linked, glyd-engine as a link to it, libglyd_gpu_cuda13.so, LICENSE, a tarball for each Linux architecture, and its sha256) attached to this
     # repository's GitHub release of the tag: what install.sh and condor/tools/install.sh download on Linux with an NVIDIA GPU. release.yml makes the release
     # (its attach job); this job waits up to 30 minutes for it, then uploads, replacing assets of the same name.
-    needs: [plan, engine-bundle]
-    if: needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v')
+    # The Windows zip (engine-windows: glyd.exe, the two GPU library DLLs) goes up too where that job succeeded; its failure does not hold the Linux bundles back.
+    needs: [plan, engine-bundle, engine-windows]
+    if: ${{ always() && needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v') && needs.engine-bundle.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -495,6 +596,11 @@ jobs:
           pattern: engine-bundle-*
           path: bundles
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: needs.engine-windows.result == 'success'
+        with:
+          name: engine-windows-x86_64
+          path: bundles
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -503,6 +609,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -l bundles
-          (cd bundles && for f in *.tar.gz; do sha256sum -c "$f.sha256"; done)
+          (cd bundles && for f in *.tar.gz *.zip; do [ -e "$f" ] && sha256sum -c "$f.sha256"; done)
           for i in $(seq 1 60); do gh release view "$TAG" -R "$REPO" > /dev/null 2>&1 && break; echo "waiting for release $TAG ($i)"; sleep 30; done
           gh release upload "$TAG" -R "$REPO" --clobber bundles/*.tar.gz bundles/*.tar.gz.sha256
+          if ls bundles/*.zip > /dev/null 2>&1; then gh release upload "$TAG" -R "$REPO" --clobber bundles/*.zip bundles/*.zip.sha256; fi

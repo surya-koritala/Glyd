@@ -15,6 +15,21 @@ static FATBIN12: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine12.fatb
 #[cfg(no_kernels)]
 static FATBIN12: &[u8] = &[];
 
+/// The seconds GPU discovery may take (`GLYD_PROBE_TIMEOUT`: a number, 0 for no limit): 30 on Windows, where a first call into the driver can stall for the antivirus or a sleeping GPU,
+/// and no limit elsewhere.
+pub(crate) fn probe_timeout(env: Option<&str>, windows: bool) -> u64 {
+    env.and_then(|v| v.trim().parse().ok()).unwrap_or(if windows { 30 } else { 0 })
+}
+
+/// `f` run on a thread of its own, waited for `secs` seconds: its result, or None where it is still running (the thread is left to finish; it holds nothing the caller needs).
+pub(crate) fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(secs)).ok()
+}
+
 /// The fatbin a driver of CUDA version `driver` (13000 for 13.0) loads: CUDA 12's where the build has one and the driver reports CUDA 12 (or `force12`: GLYD_ENGINE_CUDA=12, to run it on a
 /// newer driver, which reads it as well), else the main one.
 fn pick_fatbin<'a>(driver: i32, force12: bool, main: &'a [u8], cuda12: &'a [u8]) -> &'a [u8] {
@@ -112,6 +127,19 @@ impl Dev {
     /// Every GPU the driver shows, as `probe` reports it (one that cannot be read is left out; where none can, the first one's error). Each holds a context of its own after this, which `release` lets go
     /// of for the GPUs not used.
     pub fn probe_all() -> Result<Vec<Gpu>> {
+        let secs = probe_timeout(std::env::var("GLYD_PROBE_TIMEOUT").ok().as_deref(), cfg!(windows));
+        if secs == 0 {
+            return Dev::probe_all_now();
+        }
+        // (a driver that stalls: Windows' first cuInit while the antivirus scans nvcuda.dll or the GPU wakes from a power state: the caller says so instead of hanging)
+        within(secs, Dev::probe_all_now).unwrap_or_else(|| {
+            err(format!(
+                "the NVIDIA driver did not answer in {secs} s (the first call into it, cuInit, or reading the GPU): wait for the antivirus or the GPU to settle and run this again, or GLYD_PROBE_TIMEOUT=0 waits as long as it takes"
+            ))
+        })
+    }
+
+    fn probe_all_now() -> Result<Vec<Gpu>> {
         let d = driver()?;
         let mut count = 0;
         // SAFETY: a host out-pointer.
@@ -781,6 +809,15 @@ mod pick_tests {
     use super::pick_fatbin;
 
     /// A driver that reports CUDA 12 loads the CUDA 12 fatbin where the build has one; CUDA 13's driver loads the main one unless CUDA 12 is asked for; a build without one has one choice.
+    #[test]
+    fn discovery_gives_up_on_a_driver_that_stalls() {
+        use super::{probe_timeout, within};
+        assert_eq!(within(5, || 7), Some(7));
+        assert_eq!(within(1, || std::thread::sleep(std::time::Duration::from_secs(3))), None);
+        assert_eq!((probe_timeout(None, true), probe_timeout(None, false)), (30, 0));
+        assert_eq!((probe_timeout(Some("5"), false), probe_timeout(Some(" 0 "), true), probe_timeout(Some("x"), true)), (5, 0, 30));
+    }
+
     #[test]
     fn the_fatbin_follows_the_drivers_cuda_version() {
         let (main, c12) = (&b"13"[..], &b"12"[..]);
