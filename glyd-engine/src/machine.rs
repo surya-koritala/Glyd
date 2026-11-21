@@ -280,6 +280,19 @@ fn unmeasured_fix() -> String {
     )
 }
 
+/// What a GPU under Windows' WDDM needs saying: it can be given more memory than it has, as system memory the driver pages in without an error, and the run is then many times slower than
+/// the plan says. `free` and `total`: the GPU's memory now and in all, in bytes. Returns what is found and the fix: the driver's setting that makes an allocation that does not fit fail.
+pub fn wddm_note(name: &str, free: u64, total: u64) -> (String, String) {
+    (
+        format!(
+            "{name} runs under Windows' WDDM: an allocation past its {} free (of {}) is given system memory without an error, and a run that does that is many times slower than the plan says",
+            gb(free),
+            gb(total)
+        ),
+        "Set NVIDIA Control Panel, Manage 3D settings, CUDA - Sysmem Fallback Policy, to 'Prefer No Sysmem Fallback' (driver 536 or newer): an allocation that does not fit then fails with the memory said; close programs that hold GPU memory (the browser, games) before a large model".to_string(),
+    )
+}
+
 /// The exact update for a driver below `driver_min(cc)` (`driver`: the CUDA version it reports, 12080 for 12.8): the series to install and how, and where vLLM is installed the other way out.
 pub fn driver_fix(driver: i32, cc: (i32, i32), with_vllm: &str) -> String {
     let have = format!("the driver here runs CUDA {}.{}", driver / 1000, driver % 1000 / 10);

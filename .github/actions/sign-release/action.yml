@@ -1,7 +1,7 @@
 name: Sign a release's files
 description: >-
-  For the release files in `dir` (tarballs and wheels): a SHA-256 list of them, an SBOM of the source (SPDX), GitHub build-provenance and SBOM attestations for each file, and
-  keyless Sigstore (cosign) signatures of every tarball and of the list, as `.sigstore.json` bundles beside them. The calling job needs `id-token: write` and
+  For the release files in `dir` (tarballs, wheels and zips): a SHA-256 list of them, an SBOM of the source (SPDX), GitHub build-provenance and SBOM attestations for each file, and
+  keyless Sigstore (cosign) signatures of every tarball and zip and of the list, as `.sigstore.json` bundles beside them. The calling job needs `id-token: write` and
   `attestations: write`, and the source checked out at the commit the files were built from (the SBOM reads its lock files).
 inputs:
   dir:
@@ -16,7 +16,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: SHA-256 of every tarball and wheel
+    - name: SHA-256 of every tarball, wheel and zip
       shell: bash
       env:
         DIR: ${{ inputs.dir }}
@@ -24,7 +24,7 @@ runs:
       run: |
         set -euo pipefail
         cd "$DIR"
-        files=$(ls -1 | grep -E '\.(tar\.gz|whl)$' | sort)
+        files=$(ls -1 | grep -E '\.(tar\.gz|whl|zip)$' | sort)
         [ -n "$files" ] || { echo "no tarball or wheel in $DIR"; exit 1; }
         # shellcheck disable=SC2086
         sha256sum $files > "$SUMS"
@@ -57,7 +57,8 @@ runs:
       run: |
         set -euo pipefail
         cd "$DIR"
-        for f in *.tar.gz "$SUMS"; do
+        for f in *.tar.gz *.zip "$SUMS"; do
+          [ -e "$f" ] || continue
           cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
         done
         ls -l
