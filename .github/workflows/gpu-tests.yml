@@ -64,7 +64,7 @@ jobs:
           "$E" kcheck35
       # (its layers are toy ones: tens of megabytes of weights and scratch a case. The GPU's memory is sampled while it runs, the peak printed, and a peak of more than 12,000 MiB of the card's 16,376 fails it:
       # the margin a 16 GB card needs for the driver and the next step)
-      - name: Every pack format decodes on this GPU (tests/data/packs: the library decodes each pack, and each tensor's sha256 is its release's; the row and codebook layouts on the CPU, as verify does)
+      - name: Every pack format in tests/data/packs decodes on this GPU, to its release's sha256 (the row and codebook layouts on the CPU, as verify does)
         run: |
           cargo build --release --locked -p glyd-gpu --bin glyd-gpu
           for d in tests/data/packs/*/; do
