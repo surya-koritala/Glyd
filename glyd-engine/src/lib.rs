@@ -67,6 +67,9 @@ pub mod glm;
 pub mod glm_cb;
 #[cfg(feature = "dev")]
 pub mod glm_serve;
+pub mod hb_codec;
+pub mod hb_pack;
+pub mod hb_usage;
 #[cfg(feature = "dev")]
 pub mod hbpack;
 pub mod hub;
@@ -122,6 +125,7 @@ pub mod nemotron;
 pub mod offload;
 pub mod ops;
 pub mod os;
+pub mod otel;
 pub mod pack;
 pub mod pixels;
 pub mod plan;

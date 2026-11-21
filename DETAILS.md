@@ -304,33 +304,6 @@ Where Glyd differs: the weights and the KV cache both held compressed on the
 GPU; the same result every run; the model on disk, fine-tunes against their
 base and training checkpoints.
 
-Side by side on one GPU, an RTX 4080 SUPER (16 GB), with Qwen3-8B, whose
-16.38 GB of bf16 does not fit it ([benchmarks/gpu/head-to-head-rtx4080s-2026-09-26](benchmarks/gpu/head-to-head-rtx4080s-2026-09-26)):
-
-| Qwen3-8B, RTX 4080 SUPER | DFloat11 | ⚡&nbsp;**Glyd**, `mma` | Glyd, `mma12` |
-| :--- | ---: | ---: | ---: |
-| Weights in GPU memory | 11.16 GB | **11.15 GB** | 12.27 GB |
-| Tokens/s at 1 / 8 / 32 / 64 sequences | 13.8 / 104.7 / 387.5 / 746.2 | **47.2 / 360.2 / 1268.6** / 1897.2 | 45.9 / 350.9 / 1259.9 / **2150.8** |
-| GPU time a token at 1 / 8 / 32 / 64 sequences | 71.4 / 74.9 / 79.9 / 81.4 ms | **19.8 / 20.6 / 22.9** / 30.6 ms | 20.4 / 21.3 / 23.2 / **26.6** ms |
-
-DFloat11 decodes each transformer block's weights to bf16 before the
-block runs (47 ms of every token here). ZipServ ships its product as a
-kernel (end to end it runs inside its own vLLM), so product against
-product, on layer 18's matrices, timed as ZipServ times itself (the L2
-cache flushed before every call), ZipServ at its best split of K; Glyd's
-`mma` at 1-32 tokens, `mma12` (12.04 bits) at 64:
-
-| Qwen3-8B, layer 18, us | Bits a weight, ZipServ / Glyd | 1 token: cuBLAS / ZipServ / Glyd | 16 tokens | 32 tokens | 64 tokens |
-| :--- | ---: | ---: | ---: | ---: | ---: |
-| q_proj, o_proj (4096 x 4096) | 11.35 / **10.81** | 73 / 57 / **56** | 73 / **57** / 58 | 74 / **58** / 62 | 77 / **69** / 73 |
-| k_proj (1024 x 4096) | 11.43 / **10.83** | 23 / 22 / **19** | 27 / 23 / **21** | 26 / **23** / 24 | 28 / **25** / 30 |
-| gate_proj (12288 x 4096) | 11.35 / **10.76** | 175 / 151 / **144** | 204 / 152 / **148** | 235 / 155 / **153** | 225 / **162** / 172 |
-| down_proj (4096 x 12288) | 11.35 / **10.75** | 176 / 153 / **147** | 208 / 154 / **150** | 228 / 155 / **153** | 214 / 187 / **181** |
-
-So: DFloat11's size at 2.9-3.4x its speed. Against ZipServ, 5% fewer
-bytes; at 1 to 16 tokens as fast or faster (within 2%), at 32 and 64
-tokens behind it on most matrices, by up to 20%.
-
 ---
 
 ## At a glance
@@ -338,8 +311,8 @@ tokens behind it on most matrices, by up to 20%.
 Underneath the GPU work, **Glyd** is a lossless compression library and CLI, written in Rust with a
 C ABI, for the workloads where storage and read CPU decide the bill:
 object storage, data lakes, logs and telemetry, backups and versioned
-exports, RPC payloads, caches. It is a drop-in alternative to **LZ4**,
-**Snappy** and **zstd**, and it does two things they do not: it turns
+exports, RPC payloads, caches. It reads and writes the same kinds of data as
+a general-purpose codec, and it does two things such a codec does not: it turns
 record-shaped data (logs, dumps, CSV, JSON lines) into typed columns
 before compressing (`-r`), and it compresses a new version of an object
 against the old one (`--base`).

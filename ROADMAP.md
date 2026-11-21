@@ -4,14 +4,14 @@ Milestones in execution order; each ships as one release. Tracks within a milest
 
 | Release | Milestone | Epic | Issues | Focus |
 | :--- | :--- | :--- | ---: | :--- |
-| v0.33.0 | [M0 Open-source baseline](https://github.com/surya-koritala/Glyd/milestone/1) | [#119](https://github.com/surya-koritala/Glyd/issues/119) | 15 | Apache-2.0 monorepo, no-Python release, CI & GPU CI |
-| v0.34.0 | [M1 Front door](https://github.com/surya-koritala/Glyd/milestone/2) | [#120](https://github.com/surya-koritala/Glyd/issues/120) | 28 | Single binary, Linux+Windows, OpenAI/Anthropic/Ollama APIs, `fit == run`, `R7`/`R8` gates |
+| v0.33.0 | [M0 Open-source baseline](https://github.com/surya-koritala/Glyd/milestone/1) | [#119](https://github.com/surya-koritala/Glyd/issues/119) | 14 | Apache-2.0 monorepo, no-Python release, CI & GPU CI |
+| v0.34.0 | [M1 Front door](https://github.com/surya-koritala/Glyd/milestone/2) | [#120](https://github.com/surya-koritala/Glyd/issues/120) | 27 | Single binary, Linux+Windows, OpenAI/Anthropic/Ollama APIs, `fit == run`, `R7`/`R8` gates |
 | v0.35.0 | [M2 One runtime](https://github.com/surya-koritala/Glyd/milestone/3) | [#121](https://github.com/surya-koritala/Glyd/issues/121) | 37 | Config-driven runtime, 64-user batching, hybrid paged/12-bit KV, CUDA seam (`R1a`), NVIDIA kernel libs (`V8a`) |
-| v0.36.0 | [M3 Core models, formats and desktop](https://github.com/surya-koritala/Glyd/milestone/4) | [#122](https://github.com/surya-koritala/Glyd/issues/122) | 26 | **Consumer launch:** Top-50 text models, canonical GGUF, FP8/FP4, long context, Condor in `glyd run`, pre-packed top-15 hub & coding-agent kit |
-| v0.37.0 | [M4 Many GPUs, many machines](https://github.com/surya-koritala/Glyd/milestone/6) | [#124](https://github.com/surya-koritala/Glyd/issues/124) | 12 | **Datacenter proof (NVIDIA):** NCCL/TP/EP/PP, SLO-aware Planner v2, `glyd cluster`, 8× H100 server, compressed streaming load, sleep-to-RAM |
-| v0.38.0 | [M5a Apple Silicon, CPU and desktop extras](https://github.com/surya-koritala/Glyd/milestone/5) | [#123](https://github.com/surya-koritala/Glyd/issues/123) | 10 | macOS/`mlx-c`/Metal kernels, whole-model CPU, Vision, Embeddings, Batched LoRA, general Spec Decode |
+| v0.36.0 | [M3 Core models, formats and desktop](https://github.com/surya-koritala/Glyd/milestone/4) | [#122](https://github.com/surya-koritala/Glyd/issues/122) | 27 | **Consumer launch:** Top-50 text models, canonical GGUF, FP8/FP4, long context, Condor in `glyd run`, pre-packed top-15 hub & coding-agent kit |
+| v0.37.0 | [M4 Many GPUs, many machines](https://github.com/surya-koritala/Glyd/milestone/6) | [#124](https://github.com/surya-koritala/Glyd/issues/124) | 13 | **Datacenter proof (NVIDIA):** NCCL/TP/EP/PP, SLO-aware Planner v2, `glyd cluster`, 8× H100 server, compressed streaming load, sleep-to-RAM |
+| v0.38.0 | [M5a Apple Silicon, CPU and desktop extras](https://github.com/surya-koritala/Glyd/milestone/5) | [#123](https://github.com/surya-koritala/Glyd/issues/123) | 11 | macOS/`mlx-c`/Metal kernels, whole-model CPU, Vision, Embeddings, Batched LoRA, general Spec Decode |
 | v0.39.0 | [M5b AMD ROCm and older NVIDIA](https://github.com/surya-koritala/Glyd/milestone/9) | [#445](https://github.com/surya-koritala/Glyd/issues/445) | 7 | HIP device layer (`R1b`), warp/fragment portability (`V0`), RDNA 3/4, Strix Halo, MI300X, AMD libs (`V8b`), Turing (`V5`), dynamic backend bundles |
-| v1.0.0 | [M6 Stable and operable](https://github.com/surya-koritala/Glyd/milestone/7) | [#125](https://github.com/surya-koritala/Glyd/issues/125) | 7 | Stable CLI/API/packs, Helm/LWS, `llm-d`/GAIE/Dynamo/SMG, deterministic mode, SBOM, published vLLM/SGLang comparison |
+| v1.0.0 | [M6 Stable and operable](https://github.com/surya-koritala/Glyd/milestone/7) | [#125](https://github.com/surya-koritala/Glyd/issues/125) | 8 | Stable CLI/API/packs, Helm/LWS, `llm-d`/GAIE/Dynamo/SMG, deterministic mode, SBOM, published vLLM/SGLang comparison |
 | after 1.0 | [Later: datacenter scale](https://github.com/surya-koritala/Glyd/milestone/8) | [#210](https://github.com/surya-koritala/Glyd/issues/210) | 7 | P/D disaggregation, NIXL RDMA, wide EP/NVL72, custom compressed `tcgen05`, RL weight updates, Vulkan, MCP |
 
 ## Why this order (guidance for agents and contributors)
@@ -77,21 +77,22 @@ One public repository for all of Glyd under Apache-2.0; a release built entirely
 
 **Why here / Agent rules:** Eliminates the closed-binary and licensing adoption blockers and establishes CI/security hygiene. Finish and close the remaining open M0 items rather than leaving them drifting while later milestones proceed.
 
-- [ ] S7 Security updates: rustls and Dependabot for every manifest ([#211](https://github.com/surya-koritala/Glyd/issues/211))
+- [x] S7 Security updates: rustls and Dependabot for every manifest ([#211](https://github.com/surya-koritala/Glyd/issues/211))
 - [x] S1 Merge the monorepo branch and retire the predecessor repositories ([#126](https://github.com/surya-koritala/Glyd/issues/126))
 - [ ] S2 Self-hosted GPU runner for gpu.yml ([#127](https://github.com/surya-koritala/Glyd/issues/127))
-- [ ] S3 Ephemeral cloud GPU runners for gpu-cloud.yml ([#128](https://github.com/surya-koritala/Glyd/issues/128))
 - [ ] S4 Release v0.33.0 from this repository ([#129](https://github.com/surya-koritala/Glyd/issues/129))
 - [x] S8 Rust baseline: toolchain, clippy, rustfmt, cargo-deny, all crates tested in CI ([#212](https://github.com/surya-koritala/Glyd/issues/212))
-- [ ] S6 Required checks and branch protection on main ([#131](https://github.com/surya-koritala/Glyd/issues/131))
-- [ ] S9 Windows and macOS compile and unit-test CI ([#213](https://github.com/surya-koritala/Glyd/issues/213))
+- [x] S6 Required checks and branch protection on main ([#131](https://github.com/surya-koritala/Glyd/issues/131))
+- [x] S9 Windows and macOS compile and unit-test CI ([#213](https://github.com/surya-koritala/Glyd/issues/213))
 - [ ] S10 The engine on by default where it has been measured ([#214](https://github.com/surya-koritala/Glyd/issues/214))
 - [ ] S11 Docs and repository identity match the code ([#215](https://github.com/surya-koritala/Glyd/issues/215))
 - [x] S12 Security policy for the inference product ([#216](https://github.com/surya-koritala/Glyd/issues/216))
-- [ ] S13 Community: discussions, issue templates, triage, first issues ([#217](https://github.com/surya-koritala/Glyd/issues/217))
-- [ ] S14 Governance: maintainers, decisions and trademark ([#218](https://github.com/surya-koritala/Glyd/issues/218))
+- [x] S13 Community: discussions, issue templates, triage, first issues ([#217](https://github.com/surya-koritala/Glyd/issues/217))
+- [x] S14 Governance: maintainers, decisions and trademark ([#218](https://github.com/surya-koritala/Glyd/issues/218))
 - [x] S15 Hardware access plan for CI and release gates ([#219](https://github.com/surya-koritala/Glyd/issues/219))
 - [x] S16 One kernel ABI check and no closed-source leftovers ([#220](https://github.com/surya-koritala/Glyd/issues/220))
+
+Re-scoped on 2026-11-21 (owner's decision): S3 (#128) moved to M4; recruiting maintainers and a required review of `.github/` changes moved to M6 (#458); S4's PyPI criterion is met by `glyd-gpu` 0.33.1 and crates.io moved to P7c (#161); S6 drops the merge queue (it needs an organization account); S9 is met by Windows and macOS CI on main, nightly and system-specific pull requests, with an issue opened when main fails.
 
 Gate: A tag on main produces every release artifact from this repository, including the engine tarballs the installer downloads; on a clean Linux machine with an NVIDIA driver, `install.sh` gives a first token from the engine without Python; no open security advisory in any lockfile; Linux, Windows and macOS compile CI and GPU CI are green.
 
@@ -120,7 +121,6 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 - [x] P5b Anthropic Messages API: full streaming events and tool use ([#155](https://github.com/surya-koritala/Glyd/issues/155))
 - [x] P5c Ollama-compatible API ([#156](https://github.com/surya-koritala/Glyd/issues/156))
 - [ ] P6 CUDA 12 and CUDA 13 builds chosen at run time ([#158](https://github.com/surya-koritala/Glyd/issues/158))
-- [ ] P13 Code-signing identities for Windows and macOS ([#223](https://github.com/surya-koritala/Glyd/issues/223))
 - [ ] P7a Windows x86_64 release of the engine ([#159](https://github.com/surya-koritala/Glyd/issues/159))
 - [x] P10 glyd doctor and a support bundle ([#165](https://github.com/surya-koritala/Glyd/issues/165))
 - [x] F3a GGUF reader ([#176](https://github.com/surya-koritala/Glyd/issues/176))
@@ -133,6 +133,8 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 - [ ] P17 Tools connect with default settings ([#227](https://github.com/surya-koritala/Glyd/issues/227))
 - [ ] P18 aarch64 Linux: GH200, GB200, DGX Spark and Jetson ([#228](https://github.com/surya-koritala/Glyd/issues/228))
 - [x] P19 The codec's place: crate, CLI and docs ([#229](https://github.com/surya-koritala/Glyd/issues/229))
+
+Re-scoped on 2026-11-21 (owner's decision): P13 (#223) moved to M3, so v0.34.0 ships unsigned with a note on the release page; P18 keeps the end of the blanket aarch64 refusal and the Arm CPU expert kernels, and its GH200 and DGX Spark runs moved to M5a (#459).
 
 Gate: On clean Ubuntu 24.04 and Windows 11 machines with only the NVIDIA driver (an 8 GB laptop GPU, a 16 GB desktop GPU, and one machine on the oldest supported driver): install → first token in under 2 minutes for a pinned list of 10 models the engine runs (`benchmarks/gates/m1-models.txt`, pre-packed repos present); the printed plan is what loads; Open WebUI, Continue and an OpenAI SDK client connect with default settings; JSON-schema output is valid on all 10; an Apple or AMD machine gets a one-line answer saying what to do; no Python anywhere.
 
@@ -219,6 +221,7 @@ Flagship consumer/prosumer NVIDIA launch: remaining core text model families, ca
 - [ ] F5 Automated pack pipeline for new releases ([#180](https://github.com/surya-koritala/Glyd/issues/180))
 - [ ] F9 Day-0 model support process ([#248](https://github.com/surya-koritala/Glyd/issues/248))
 - [ ] F10 Rust library API and C ABI for embedding ([#249](https://github.com/surya-koritala/Glyd/issues/249))
+- [ ] P13 Code-signing identities for Windows and macOS ([#223](https://github.com/surya-koritala/Glyd/issues/223))
 - [ ] P7c Installers: install.sh, winget, Homebrew, Docker ([#161](https://github.com/surya-koritala/Glyd/issues/161))
 - [ ] P21 glyd update ([#250](https://github.com/surya-koritala/Glyd/issues/250))
 - [ ] P23 Corporate networks: proxies, custom CAs, offline installs ([#252](https://github.com/surya-koritala/Glyd/issues/252))
@@ -250,6 +253,7 @@ One SLO-aware planner and runtime from 1 GPU to 8-GPU datacenter nodes and N-mac
 - [ ] C6 One 8-GPU node as a drop-in OpenAI server ([#257](https://github.com/surya-koritala/Glyd/issues/257))
 - [ ] C7 Compressed streaming and peer-to-peer weight distribution for fast cold start ([#450](https://github.com/surya-koritala/Glyd/issues/450))
 - [ ] C8 Multi-model tenancy and sleep-to-host-RAM on GPU servers ([#451](https://github.com/surya-koritala/Glyd/issues/451))
+- [ ] S3 Ephemeral cloud GPU runners for gpu-cloud.yml ([#128](https://github.com/surya-koritala/Glyd/issues/128))
 
 Gate: Two consumer machines run a model neither holds alone at the speed `glyd fit` predicted (±10%); a 600B-class MoE runs on one 8× H100 node with experts in host RAM (EP decode within 15% of SGLang); tensor parallel on 2 GPUs is at least 1.7× one GPU on a model that fits one GPU; one 8-GPU node serves through the OpenAI API with data-parallel replicas, standard metrics, compressed streaming load (`C7`), and <5 s sleep-to-RAM wake (`C8`).
 
@@ -268,6 +272,7 @@ The same `glyd run` on Apple Silicon Macs (`mlx-c` + custom Glyd Metal kernels +
 - [ ] V3a Metal backend through mlx-c ([#186](https://github.com/surya-koritala/Glyd/issues/186))
 - [ ] V3b Glyd formats as Metal kernels ([#187](https://github.com/surya-koritala/Glyd/issues/187))
 - [ ] V3c Unified-memory planning on every vendor ([#188](https://github.com/surya-koritala/Glyd/issues/188))
+- [ ] P18b aarch64 measured on GH200 and DGX Spark ([#459](https://github.com/surya-koritala/Glyd/issues/459))
 - [ ] V4 CPU backend for whole models ([#189](https://github.com/surya-koritala/Glyd/issues/189))
 - [ ] F2a Vision for every VLM family ([#174](https://github.com/surya-koritala/Glyd/issues/174))
 - [ ] F2b Embedding and reranker models ([#175](https://github.com/surya-koritala/Glyd/issues/175))
@@ -315,6 +320,7 @@ Gate: Per device (NVIDIA T4; AMD RX 7900 XTX, RX 9070 XT, Strix Halo, MI300X), t
 - [ ] D3b Helm, LeaderWorkerSet, images and dashboards ([#258](https://github.com/surya-koritala/Glyd/issues/258))
 - [ ] D6b SBOM, provenance level and reproducible builds ([#259](https://github.com/surya-koritala/Glyd/issues/259))
 - [ ] D9 Token-level engine API for Dynamo and SMG ([#260](https://github.com/surya-koritala/Glyd/issues/260))
+- [ ] S14b Maintainers besides the founder ([#458](https://github.com/surya-koritala/Glyd/issues/458))
 
 Gate: A documented stable surface with CI compatibility checks; `llm-d` routes to Glyd pods by prefix-cache hits; a Helm + LeaderWorkerSet install passes readiness on a GPU cluster; SBOM and provenance on every artifact; a comparison with vLLM and SGLang per quality tier (lossless against bf16, lossy levels against FP8 and NVFP4) on H100 (and B200 via `V8a` `sm_100` kernels), published with configs and logs whatever the result.
 

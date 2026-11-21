@@ -1988,6 +1988,7 @@ pub fn listen_with_life(
     life: Arc<crate::ops::Life>,
 ) -> Result<std::net::SocketAddr> {
     crate::ops::init();
+    crate::otel::set_model(name);
     let listener = TcpListener::bind(addr).map_err(|e| Error(format!("{addr}: {e}")))?;
     let bound = listener.local_addr().map_err(|e| Error(e.to_string()))?;
     let name = Arc::new(name.to_string());
