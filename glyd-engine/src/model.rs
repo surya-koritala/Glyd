@@ -131,6 +131,57 @@ unsafe fn read_candidates(p: *const u8, tok: usize, val: usize, row: usize) -> V
     (0..TOPK).map(|j| (*(p.add(tok + 4 * (row * TOPK + j)) as *const i32) as u32, *(p.add(val + 4 * (row * TOPK + j)) as *const f32))).collect()
 }
 
+/// The grammar masks of a step's rows on the GPU: `apply` waits for each row's mask (the workers make them beside the step), copies them to the device and, behind the step's work on the stream, makes the step's candidates again with
+/// the masked top-k kernel, over the unmasked ones the step made (a graph's, whose kernel is fixed); the host then draws from candidates that hold the allowed tokens (`Sampler::sample_grammar`). No mask for a row: the row is as the step made it.
+pub struct MaskGpu {
+    dev: Buf,
+    stage: Pinned,
+    vocab: usize,
+    /// A row's words: its flag and its V / 32 words of bits.
+    words: usize,
+    rows: usize,
+}
+
+impl MaskGpu {
+    pub fn new(vocab: usize, rows: usize) -> Result<MaskGpu> {
+        let words = 1 + vocab.div_ceil(32);
+        Ok(MaskGpu { dev: Buf::zeroed(4 * words * rows)?, stage: Pinned::new(4 * words * rows)?, vocab, words, rows })
+    }
+
+    /// Whether the masks of rows can be put on the GPU (the kernels have the masked top-k, and take the vocabulary).
+    pub fn can(&self, kern: &Kern) -> bool {
+        kern.has_masked_topk() && self.vocab.is_multiple_of(8) && self.vocab >= TOPK
+    }
+
+    /// For the rows `masks` names (None: no mask): the masked candidates of every row into `tok` and `val` (as many rows as there are masks), after the work queued on the stream. Nothing is done where no row has a mask
+    /// or a row's worker died (that row keeps its unmasked candidates, which the host's draw checks against the mask as it always did). Returns whether it made any.
+    ///
+    /// # Safety
+    /// `logits` holds a row of the vocabulary for each of `masks`, `tok` and `val` TOPK of each, all live and on the engine's stream; the stream was synchronized since the last call (the staging bytes are free).
+    pub unsafe fn apply(&self, kern: &Kern, dev: &Dev, masks: &[Option<crate::constrain::MaskHandle>], logits: u64, tok: u64, val: u64) -> Result<bool> {
+        if masks.is_empty() || masks.len() > self.rows || !self.can(kern) {
+            return Ok(false);
+        }
+        let stage = std::slice::from_raw_parts_mut(self.stage.ptr as *mut u32, self.words * masks.len());
+        let mut any = false;
+        for (r, m) in masks.iter().enumerate() {
+            let row = &mut stage[r * self.words..(r + 1) * self.words];
+            row.fill(0);
+            if let Some(vob) = m.as_ref().and_then(|m| m.words()).filter(|v| v.len() == self.vocab) {
+                row[1..1 + vob.as_slice().len().min(self.words - 1)].copy_from_slice(&vob.as_slice()[..vob.as_slice().len().min(self.words - 1)]);
+                row[0] = 1;
+                any = true;
+            }
+        }
+        if !any {
+            return Ok(false);
+        }
+        copy_h2d_async(self.dev.ptr, self.stage.ptr as *const _, 4 * self.words * masks.len(), dev.stream)?;
+        kern.topk_rows_masked(dev.stream, logits, self.vocab as i32, masks.len() as u32, tok, val, self.dev.ptr, self.words as i32)?;
+        Ok(true)
+    }
+}
+
 /// The GPU's side of the sampler's candidates for an engine with one row of logits (Qwen3.5's and Nemotron 3 Super's, whose `Gen::reply` draws on the host): behind a step that `ask` names (`Sampler::top_need`), `queue` makes the row's
 /// 64 largest logits and, for a top-p with no top-k, the sum of its exponentials, and copies them to the host in the step's one synchronize; `read` gives them. A draw then reads 520 bytes in place of the row (131,072 to
 /// 248,000 logits to copy, sort and exponentiate on the host). `off` (GLYD_ENGINE_HOST_SAMPLING=1, to compare): none are made and the row is read.
@@ -145,6 +196,9 @@ pub struct TopGpu {
     /// What the last `queue` made.
     got: Option<Need>,
     pub off: bool,
+    /// The mask of the next step's grammar (`Sampler::mask_handle`), and where it is put on the GPU.
+    pub mask: Option<crate::constrain::MaskHandle>,
+    masker: Option<MaskGpu>,
 }
 
 impl TopGpu {
@@ -158,6 +212,8 @@ impl TopGpu {
             ask: None,
             got: None,
             off: crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some(),
+            mask: None,
+            masker: MaskGpu::new(vocab, 1).ok(),
         })
     }
 
@@ -170,6 +226,10 @@ impl TopGpu {
         let Some(need) = self.got else { return Ok(()) };
         let (s, host) = (dev.stream, self.stage.ptr as *mut u8);
         kern.topk_rows(s, logits, self.vocab as i32, 1, self.tok.ptr, self.val.ptr)?;
+        // (a grammar's mask: the candidates made again with it, the mask put on the row before the top-k)
+        if let (Some(m), Some(g)) = (self.mask.take(), &self.masker) {
+            g.apply(kern, dev, &[Some(m)], logits, self.tok.ptr, self.val.ptr)?;
+        }
         copy_d2h_async(host as *mut _, self.tok.ptr, 4 * TOPK, s)?;
         copy_d2h_async(host.add(4 * TOPK) as *mut _, self.val.ptr, 4 * TOPK, s)?;
         if need.mass {
@@ -235,6 +295,9 @@ pub struct Engine {
     /// The TOPK largest logits of each row of the last step and their token indices (the sampler's candidates).
     topk_tok: Buf,
     topk_val: Buf,
+    /// The step's grammar masks, one for each row that has a sample drawn after the step (`ModelStep::masks`), and where they are put on the GPU.
+    masks: RefCell<Vec<Option<crate::constrain::MaskHandle>>>,
+    maskgpu: Option<MaskGpu>,
     lse: Buf,
     /// NVIDIA's cuBLAS where the machine has it, the scratch it multiplies a decoded matrix from (the largest matrix in bf16), and the GPU's code for the library's routes.
     blas: Option<crate::ffi::Blas>,
@@ -506,6 +569,8 @@ impl Engine {
             val,
             topk_tok,
             topk_val,
+            masks: RefCell::new(Vec::new()),
+            maskgpu: MaskGpu::new(cfg.vocab, MAX_ROWS).ok(),
             lse,
             pos,
             slots,
@@ -1331,6 +1396,7 @@ impl Engine {
                     copy_d2h_async(p.add(512) as *mut _, self.tok.ptr, 4 * k, self.dev.stream)?;
                     copy_d2h_async(p.add(768) as *mut _, self.val.ptr, 4 * k, self.dev.stream)?;
                     if !self.host_sampling {
+                        self.mask_candidates(k)?;
                         copy_d2h_async(p.add(HOST_TOPK_TOK) as *mut _, self.topk_tok.ptr, 4 * TOPK * k, self.dev.stream)?;
                         copy_d2h_async(p.add(HOST_TOPK_VAL) as *mut _, self.topk_val.ptr, 4 * TOPK * k, self.dev.stream)?;
                     }
@@ -1403,6 +1469,7 @@ impl Engine {
             copy_d2h_async(p.add(512) as *mut _, self.tok.ptr, 4 * b, self.dev.stream)?;
             copy_d2h_async(p.add(768) as *mut _, self.val.ptr, 4 * b, self.dev.stream)?;
             if !self.host_sampling {
+                self.mask_candidates(b)?;
                 copy_d2h_async(p.add(HOST_TOPK_TOK) as *mut _, self.topk_tok.ptr, 4 * TOPK * b, self.dev.stream)?;
                 copy_d2h_async(p.add(HOST_TOPK_VAL) as *mut _, self.topk_val.ptr, 4 * TOPK * b, self.dev.stream)?;
             }
@@ -1489,6 +1556,24 @@ impl Engine {
             return err(format!("attention workspace: {need} bytes for {n} rows, the buffer has {}", self.kvws.bytes));
         }
         Ok((splits, None))
+    }
+
+    /// The masks the scheduler named for this step's `rows` rows (`ModelStep::masks`, taken): the rows' candidates made again with them, behind the step's work. Nothing where it named none.
+    fn mask_candidates(&self, rows: usize) -> Result<()> {
+        let masks = std::mem::take(&mut *self.masks.borrow_mut());
+        if masks.len() != rows {
+            return Ok(());
+        }
+        if let Some(g) = &self.maskgpu {
+            // SAFETY: the rows' logits and candidates are the step's, on its stream; the stream was synchronized after the last step, whose copies read the staging bytes.
+            unsafe { g.apply(&self.kern, &self.dev, &masks, self.logits.ptr, self.topk_tok.ptr, self.topk_val.ptr)? };
+        }
+        Ok(())
+    }
+
+    /// The grammar masks of the rows the next step takes samples from (one for each, None for a row with no grammar), for the candidates (`mask_candidates`).
+    pub fn set_masks(&self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
+        *self.masks.borrow_mut() = masks;
     }
 
     /// The sampled token (and logit) after the work queued: read back; with `logprob`, its logprob too.

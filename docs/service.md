@@ -21,7 +21,7 @@ lossless KV cache) and leaves the GPU by its program ending, which frees all of 
 |---|---|
 | `--port N` | The port. Fixed (11434, where Ollama's clients also look). A port in use is an error that names the program that has it, never a move to another port. `glyd ps`, `stop` and `run` read `--port N` or `GLYD_SERVICE_PORT=N`. |
 | `--keep-alive T` | How long a model stays loaded after its last request: `90s`, `5m` (the default), `2h`, `0` (unload at once), `never`. |
-| `--max-loaded N` | Models held at once (2). A request for another unloads the least recently used one that is idle; if every one is busy the request is answered 503. A load that fails (no room on the GPU) is tried again once with the idle models unloaded. |
+| `--max-loaded N` | The most models held at once. Where the GPU's memory can be read (nvidia-smi) models are held by memory: a load first unloads the least recently used idle models until the model's footprint (measured when it first loaded) fits beside what is free, and this is only a ceiling (16). Where it cannot (a Mac, AMD), it is the count (2). A request for a model when every loaded one is busy waits up to 30 s, then is answered 503; a load that fails for want of memory is tried again once with the idle models unloaded. |
 | `--context N`, `--users N` | Passed to each model's `glyd serve`. |
 | `--host H` | An address of your choice. One that is not this computer's own needs `GLYD_API_KEY` or `--insecure-no-auth` (else the service does not start), and gives the warning `glyd serve` gives. `--allowed-origins` and `--allowed-hosts` as for `glyd serve`. |
 
@@ -45,4 +45,4 @@ lossless KV cache) and leaves the GPU by its program ending, which frees all of 
 Each model's program writes `~/.local/state/glyd/logs/service-MODEL-TIME.log`; when a model does not come up, the answer to the request says why, with the log's last lines.
 
 `glyd service install` writes `~/.config/systemd/user/glyd.service` (Linux; `loginctl enable-linger $USER` starts it at boot rather than at login) or
-`~/Library/LaunchAgents/com.getglyd.glyd.plist` (macOS). There is no Windows service yet: `glyd service` runs it in a terminal.
+`~/Library/LaunchAgents/com.getglyd.glyd.plist` (macOS), or on Windows a scheduled task `GlydService` of your own account that runs at every logon with your rights (no administrator; `glyd service uninstall` removes it). `glyd ps` shows each model's GPU memory where it is known.

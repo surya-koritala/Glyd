@@ -79,7 +79,7 @@ pub const CMDS: &[Cmd] = &[
         name: "service",
         args: "[install | uninstall | status | stop]",
         summary: "the background service: models load on request and unload when idle",
-        detail: "With no word it runs in the foreground; install makes it a user unit started at login (systemd, launchd; Windows runs it by hand). docs/service.md.",
+        detail: "With no word it runs in the foreground; install makes it a user unit started at login (systemd, launchd; on Windows a scheduled task of the user's, at logon). docs/service.md.",
         flags: &["port", "host", "keep-alive", "max-loaded", "context", "users", "json"],
     },
     Cmd {
@@ -95,6 +95,13 @@ pub const CMDS: &[Cmd] = &[
         summary: "what this computer has for running models, each check with the line that fixes it",
         detail: "--bundle writes the same as one file to attach to an issue.",
         flags: &["machine", "json"],
+    },
+    Cmd {
+        name: "names",
+        args: "[update]",
+        summary: "the model names (gemma4, qwen3.8:27b, ...) and their Hub repos; update fetches the latest release's",
+        detail: "A name that is not known is looked up once a day in the latest release's manifest (GLYD_NO_REFRESH=1 stops that); the fetched file is checked against the sha256 the release lists.",
+        flags: &["json"],
     },
     Cmd { name: "login", args: "", summary: "save a Hugging Face token (for a gated model)", detail: "The token is kept in the Hub client's own file.", flags: &[] },
     Cmd {
@@ -273,7 +280,10 @@ mod tests {
     #[test]
     fn a_command_that_does_not_take_json_or_machine_refuses_it_and_names_those_that_do() {
         let e = refuse_flag("run", &["json"]).unwrap();
-        assert!(e.contains("glyd run: --json is not a flag") && e.contains("ls, ps, service, fit, doctor, supports, preflight, bench"), "{e}");
+        assert!(e.contains("glyd run: --json is not a flag"), "{e}");
+        for takes in ["ls", "ps", "service", "fit", "doctor", "names", "supports", "preflight", "bench"] {
+            assert!(e.contains(takes), "{takes}: {e}");
+        }
         assert!(refuse_flag("ps", &["machine"]).unwrap().contains("fit, doctor, bench"));
         assert_eq!(refuse_flag("fit", &["json", "machine", "context"]), None);
         assert_eq!(refuse_flag("bench", &["json", "machine"]), None);

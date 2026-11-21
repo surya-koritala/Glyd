@@ -85,6 +85,11 @@ pub fn route(r: &Router, logits: &[f32], choice_bias: Option<&[f32]>, hash: Opti
 
 /// One token through the MoE layer (`token`: its id, for hash routing).
 pub fn moe(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<Vec<f32>> {
+    Ok(moe_routed(m, p, x, token)?.0)
+}
+
+/// `moe`, and the experts the router chose (hummingbird's corpus pass counts them: src/hb_usage.rs).
+pub fn moe_routed(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<(Vec<f32>, Vec<usize>)> {
     let logits = p.prod("router", x)?;
     if logits.len() != m.experts {
         return err(format!("a router of {} logits for {} experts", logits.len(), m.experts));
@@ -144,7 +149,7 @@ pub fn moe(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<Vec<f32>> {
         }
         y.iter_mut().zip(&so).for_each(|(a, &b)| *a += b);
     }
-    Ok(y)
+    Ok((y, ids))
 }
 
 #[cfg(test)]

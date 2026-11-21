@@ -1153,6 +1153,75 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
     }
 }
 
+/// The per-level KL thresholds of a lossy level from the lossless one (mean, max over rows), per family's random model: Qwen3.5's and
+/// Nemotron-H's are the bounds the qwen35 fixture holds for the engine against transformers in bf16 (tests/logits/qwen35.json.gz, about
+/// twice a measured run); Gemma 4's random model moves more under every rounding, kestrel too (its levels have shipped since v0.30), so
+/// its thresholds are about twice its own first measured run (RTX 4080 SUPER, 2026-11-21: mean/max KL kestrel 2.15e-2/1.03e-1, swift
+/// 3.70e-2/1.01e-1, wren 9.55e-2/2.27e-1; Nemotron-H's wren 8.5e-4/6.2e-3, its experts alone four-bit).
+pub const LEVEL_KL: [(&str, f64, f64); 3] = [("kestrel", 0.006, 0.015), ("swift", 0.025, 0.05), ("wren", 0.09, 0.14)];
+pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("swift", 0.075, 0.21), ("wren", 0.19, 0.46)];
+
+/// `levelcheck [CASE...] [--level L] [--scratch DIR]`: each family with lossy levels (Qwen3.5, Gemma 4, Nemotron-H: Nemotron 3.5
+/// Lightning's layout) on its random model at penguin and at each lossy level, the same tokens as its R7 fixture, and the KL of the
+/// lossy level's rows from penguin's against `LEVEL_KL` (`LEVEL_KL_GEMMA4` for Gemma 4). Exit 1 where one is past its threshold.
+pub fn level_check(a: &crate::args::Args) -> Result<()> {
+    let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
+    let ids: Vec<&str> = ["qwen35", "gemma4", "nemotron-h"].into_iter().filter(|c| want.is_empty() || want.contains(c)).collect();
+    if !want.is_empty() && ids.len() != want.len() {
+        return err("cases: qwen35, gemma4, nemotron-h");
+    }
+    let (fixtures, scratch, only_level) = (fixtures_dir(a), Scratch::new(a)?, a.flag("level"));
+    let mut failed = Vec::new();
+    for id in ids {
+        let c = find_case(id)?;
+        let dir = model_dir(&c, &scratch.dir)?;
+        let fx = Fixture::read(&fixture_files(&fixtures, id)?[0])?;
+        // (the description path where the family has one; Qwen3.5's lossy levels run on it, and Gemma 4's are served on it)
+        let engine: fn(&Path, &str) -> Result<Box<dyn Run>> = if id == "gemma4" { gemma4_dyn } else { c.engine };
+        let mut base = match engine(&dir, "penguin") {
+            Ok(r) => r,
+            Err(e) => {
+                println!("SKIP {id:12} penguin, the base: {}", e.0);
+                continue;
+            }
+        };
+        let base_rows = drive(base.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
+        drop(base);
+        for (level, mean_bound, max_bound) in if id == "gemma4" { LEVEL_KL_GEMMA4 } else { LEVEL_KL } {
+            if only_level.is_some_and(|l| l != level) {
+                continue;
+            }
+            let mut run = match engine(&dir, level) {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("SKIP {id:12} {level:8} {}", e.0);
+                    continue;
+                }
+            };
+            let rows = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
+            let kls: Vec<f64> = base_rows.iter().zip(&rows).map(|(b, r)| Row::from_logits(b).map(|b| kl_of(&b, r))).collect::<Result<_>>()?;
+            let (mean, max) = (kls.iter().sum::<f64>() / kls.len() as f64, kls.iter().cloned().fold(0f64, f64::max));
+            let ok = mean <= mean_bound && max <= max_bound;
+            println!(
+                "{} {id:12} {level:8} {:3} rows: KL from penguin mean {mean:.2e} (at most {mean_bound:.1e}), max {max:.2e} (at most {max_bound:.1e})",
+                if ok { "PASS" } else { "FAIL" },
+                kls.len()
+            );
+            if !ok {
+                failed.push(format!("{id} at {level}"));
+            }
+        }
+    }
+    if failed.is_empty() {
+        println!("every lossy level within its KL threshold");
+        Ok(())
+    } else {
+        println!("OFF: {}", failed.join(", "));
+        drop(scratch);
+        std::process::exit(1);
+    }
+}
+
 /// `logitsmodel CASE DIR`: the case's random model made in DIR (a model to run the other checks on: `kvtest DIR`, `run DIR`).
 pub fn make_model(a: &crate::args::Args) -> Result<()> {
     let c = find_case(a.need(1, "CASE")?)?;

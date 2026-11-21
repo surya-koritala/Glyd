@@ -114,6 +114,8 @@ pub trait ModelStep {
     fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
         jobs.iter().map(|j| self.prefill(j.pages, j.start, j.tokens, j.last)).collect()
     }
+    /// The grammar masks of the rows the next `decode`, or `prefill_many`, draws samples from (one for each, in order; None: no grammar), for a backend that makes the sampler's candidates on the GPU to put on the row before its top-k.
+    fn masks(&mut self, _masks: Vec<Option<crate::constrain::MaskHandle>>) {}
     /// One step of the rows: the sample after each.
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>>;
     /// The logits behind the last sample of row `row`.
@@ -165,6 +167,9 @@ impl ModelStep for &mut Engine {
     }
     fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
         self.prefill_batch(jobs)
+    }
+    fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
+        self.set_masks(masks)
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         self.decode_batch(rows)
@@ -267,6 +272,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
         (**self).prefill_many(jobs)
+    }
+    fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
+        (**self).masks(masks)
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         (**self).decode(rows)
@@ -934,6 +942,13 @@ impl<B: ModelStep> Sched<B> {
             .collect();
         let t = std::time::Instant::now();
         let t0 = crate::monitor::clock();
+        // (the grammar masks of the sequences whose prompt ends in this pass, in the order of their samples)
+        let masks: Vec<_> = picks
+            .iter()
+            .filter_map(|&(id, n)| at(&self.active, id).filter(|&i| self.active[i].done + n == self.active[i].tokens.len()))
+            .map(|i| self.active[i].sampler.mask_handle())
+            .collect();
+        self.be.masks(masks);
         let samples = self.be.prefill_many(&jobs)?;
         if self.trace {
             eprintln!(
@@ -995,6 +1010,8 @@ impl<B: ModelStep> Sched<B> {
             idx.iter().map(|&i| Row { token: self.active[i].tokens[self.active[i].done], pos: self.active[i].done, pages: &self.active[i].pages }).collect();
         self.stats.before_ns += tb.elapsed().as_nanos() as u64;
         let t = std::time::Instant::now();
+        let masks: Vec<_> = idx.iter().map(|&i| self.active[i].sampler.mask_handle()).collect();
+        self.be.masks(masks);
         let samples = self.be.decode(&rows)?;
         self.stats.decode_ns += t.elapsed().as_nanos() as u64;
         self.stats.steps += 1;
