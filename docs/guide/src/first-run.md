@@ -11,8 +11,13 @@ glyd run gemma4:12b               # download, pack, then a chat in the terminal 
 ## Names
 
 A model is a Hub id (`google/gemma-4-12B-it`), a directory, a GGUF file, or a short name: `NAME[:SIZE][:LEVEL]`, for example
-`gemma4`, `qwen3.8:27b`, `gemma4:12b:wren`. A tag of letters only is a level, so `:27b` is a size. Without a size, the family's
-default is taken. `glyd ls --all` lists the names and what each is:
+`gemma4`, `qwen3.8:27b`, `gemma4:12b:wren`. A tag of letters only is a level, so `:27b` is a size. Without a size, `glyd run`, `serve`, `fit` and
+`pull` pick the largest size of the family whose plan on this computer reaches 10 tokens a second and 8,192 tokens of context (the
+plan `glyd fit` shows, with the level it takes), and say so in one line:
+`glyd: gemma4 is gemma4:12b (google/gemma-4-12B-it) at kestrel: the largest size that gets 10 tokens/s and 8192 tokens of context on ..., about 38 tokens/s, 32768 context; the others: 31b: 4 tokens/s, 8192 context. To choose another: gemma4:SIZE[:LEVEL]`.
+`gemma4:31b` (a size, and `:wren` for its level) is taken as it is; a level alone (`gemma4:wren`) is asked of every size. Where no size
+reaches the floors the fastest that fits is taken and the line says so; where none fits, the refusal says why for each. `glyd fit gemma4 --machine rtx4090`
+shows the choice for another machine. `glyd ls --all` lists the names and what each is:
 
 ```bash
 glyd ls --all        # name, level, size on disk, repo; "not pulled" for a name not downloaded
