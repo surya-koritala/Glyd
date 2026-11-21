@@ -1179,13 +1179,17 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-/// The per-level KL thresholds of a lossy level from the lossless one (mean, max over rows): the bounds the qwen35 fixture holds for the
-/// engine against transformers in bf16 (tests/logits/qwen35.json.gz), set from a measured run at about twice it.
+/// The per-level KL thresholds of a lossy level from the lossless one (mean, max over rows), per family's random model: Qwen3.5's and
+/// Nemotron-H's are the bounds the qwen35 fixture holds for the engine against transformers in bf16 (tests/logits/qwen35.json.gz, about
+/// twice a measured run); Gemma 4's random model moves more under every rounding, kestrel too (its levels have shipped since v0.30), so
+/// its thresholds are about twice its own first measured run (RTX 4080 SUPER, 2026-11-21: mean/max KL kestrel 2.15e-2/1.03e-1, swift
+/// 3.70e-2/1.01e-1, wren 9.55e-2/2.27e-1; Nemotron-H's wren 8.5e-4/6.2e-3, its experts alone four-bit).
 pub const LEVEL_KL: [(&str, f64, f64); 3] = [("kestrel", 0.006, 0.015), ("swift", 0.025, 0.05), ("wren", 0.09, 0.14)];
+pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("swift", 0.075, 0.21), ("wren", 0.19, 0.46)];
 
 /// `levelcheck [CASE...] [--level L] [--scratch DIR]`: each family with lossy levels (Qwen3.5, Gemma 4, Nemotron-H: Nemotron 3.5
 /// Lightning's layout) on its random model at penguin and at each lossy level, the same tokens as its R7 fixture, and the KL of the
-/// lossy level's rows from penguin's against `LEVEL_KL`. Exit 1 where one is past its threshold.
+/// lossy level's rows from penguin's against `LEVEL_KL` (`LEVEL_KL_GEMMA4` for Gemma 4). Exit 1 where one is past its threshold.
 pub fn level_check(a: &crate::args::Args) -> Result<()> {
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
     let ids: Vec<&str> = ["qwen35", "gemma4", "nemotron-h"].into_iter().filter(|c| want.is_empty() || want.contains(c)).collect();
@@ -1209,7 +1213,7 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
         };
         let base_rows = drive(base.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
         drop(base);
-        for (level, mean_bound, max_bound) in LEVEL_KL {
+        for (level, mean_bound, max_bound) in if id == "gemma4" { LEVEL_KL_GEMMA4 } else { LEVEL_KL } {
             if only_level.is_some_and(|l| l != level) {
                 continue;
             }
