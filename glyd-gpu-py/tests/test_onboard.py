@@ -2167,7 +2167,7 @@ class Inst:
     line each), .home (the folder everything happened in)."""
 
     TOOLS = ("head", "tr", "mkdir", "cp", "chmod", "cat", "sed", "sh", "dirname", "cut", "awk", "df", "grep", "rm", "mv", "ln", "tar", "mktemp",
-             "readlink", "sha256sum", "shasum", "basename", "touch", "gzip")
+             "readlink", "sha256sum", "shasum", "basename", "touch", "gzip", "sort")
 
     def __init__(self, nvidia=None, uv=True, os_name="Linux", arch="x86_64", compiler="gcc", other_glyd=False, curl_fail=False, bad_sha=False,
                  uv_version="0.12.21", df_kb=None, on_path=False, path_extra=(), uv_fail=False, no_home=False, tool_glyd=False, foreign=None, broken_program=False):
@@ -2480,7 +2480,7 @@ def test_install_sh_where_glyd_run_has_nothing_to_run_on():
             assert ("nvidia-driver-580" in r.out) == (os_name == "Linux"), r.out  # (no driver advice for a Mac)
             assert not any(c.startswith("uv ") for c in r.calls), r.calls  # (no tool environment that holds no compression program)
             base = f"{REPO_URL}/releases/download/v{V}/glyd-v{V}-{plat}.tar.gz"
-            assert [c for c in r.calls if c.startswith("curl")] == [f"curl {base}", f"curl {base}.sha256"], r.calls
+            assert [c for c in r.calls if c.startswith("curl")] == [f"curl {base}", f"curl {base}.sha256", f"curl {base}.sigstore.json"], r.calls  # (release 0.33.1 is older than the signed ones: its signature is asked for, not found, and its sha256 alone is checked)
             for prog in ("glyd", "glyd-store"):
                 link = i.at(".local", "bin", prog)
                 assert os.path.islink(link) and os.readlink(link) == i.at(".local", "share", "glyd", "cli", prog), prog
