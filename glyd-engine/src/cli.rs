@@ -2444,7 +2444,8 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
     };
     // the GPU a run would use, its driver, and the engine's own files on it
     let gpu = gpu_pick()?;
-    let asked = std::env::var("GLYD_ENGINE_ASKED").map_or(false, |v| v.trim() == "1"); // (GLYD_ENGINE=1, passed on by glyd run and glyd serve)
+    // (GLYD_ENGINE=1, passed on by glyd run and glyd serve; or no vLLM here, so nothing for the list to choose)
+    let asked = machine::engine_chosen(std::env::var("GLYD_ENGINE_ASKED").map_or(false, |v| v.trim() == "1"));
     if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, asked, machine::QWEN3) {
         return Err(r);
     }

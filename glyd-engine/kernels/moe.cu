@@ -35,7 +35,7 @@ __device__ __forceinline__ float moe_warp_max(float v) {
 // logits [T, E] (fp32) = x [T, H] W^T for the router's bf16 W [E, H] and the rows of x (xs elements apart): fp32 sums (two bf16 multiply exactly in fp32), nothing rounded after. Block (2 experts,
 // 8 tokens), 256 threads: 4 warps an expert, each a quarter of its row of W read once for the 8 tokens, the lanes' sums added, then the quarters' in order (more blocks, a shorter chain a warp: a decode
 // step's router on a datacenter GPU waited on its row's loads one after another). H a multiple of 8; x, W and xs * 2 bytes 16-byte aligned. (Also the shared expert's gate: E = 1, W the gate's [1, H].)
-extern "C" __global__ void moe_logits(const bf16* x, int xs, const bf16* W, float* logits, int T, int E, int H) {
+extern "C" __global__ void __launch_bounds__(256) moe_logits(const bf16* x, int xs, const bf16* W, float* logits, int T, int E, int H) {
     const int w = threadIdx.x >> 5, lane = threadIdx.x & 31, e = blockIdx.x * 2 + (w >> 2), q = w & 3, t0 = blockIdx.y * 8;
     __shared__ float red[2][8][4];
     const int H8 = H >> 3, c0 = q * H8 / 4, c1 = (q + 1) * H8 / 4;
