@@ -47,9 +47,55 @@ fn repo_of(name: &str) -> Option<String> {
     (base.matches('/').count() == 1 && !base.starts_with(['/', '.', '~']) && !base.ends_with('/')).then(|| base.to_string())
 }
 
+/// The GGUF a served directory was made from (`gguf::materialize` writes `gguf-source.json` beside the config, with the file's name): the model's name without its file's `.gguf`, a split's part count and a quantization
+/// tag (`Qwen3-8B-BF16.gguf` is `Qwen3-8B`), and that tag lowercased (`bf16`). None where the name is not such a directory (a level's `:swift` after it is not part of the directory).
+fn gguf_of(name: &str) -> Option<(String, Option<String>)> {
+    static CACHE: std::sync::Mutex<Vec<(String, Option<(String, Option<String>)>)>> = std::sync::Mutex::new(Vec::new());
+    if let Some((_, hit)) = CACHE.lock().ok()?.iter().find(|(n, _)| n == name) {
+        return hit.clone();
+    }
+    let dir = std::path::Path::new(name);
+    let dir = if dir.is_dir() { dir } else { std::path::Path::new(name.rsplit_once(':').map_or(name, |(d, _)| d)) };
+    let found = std::fs::read_to_string(dir.join("gguf-source.json"))
+        .ok()
+        .and_then(|t| json::parse(&t).ok())
+        .and_then(|v| v.get("file").and_then(Value::as_str).map(str::to_string))
+        .map(|file| {
+            let file = file.split(" (").next().unwrap_or(&file);
+            let stem = file.strip_suffix(".gguf").or_else(|| file.strip_suffix(".GGUF")).unwrap_or(file);
+            // (the file's quantization is its last word: `-BF16`, `.F16`, `_F32`)
+            match stem.rfind(['-', '.', '_']).map(|i| (&stem[..i], &stem[i + 1..])) {
+                Some((model, q)) if ["bf16", "f16", "f32"].contains(&q.to_ascii_lowercase().as_str()) => (model.to_string(), Some(q.to_ascii_lowercase())),
+                _ => (stem.to_string(), None),
+            }
+        });
+    if let Ok(mut c) = CACHE.lock() {
+        if c.len() < 16 {
+            c.push((name.to_string(), found.clone()));
+        }
+    }
+    found
+}
+
+/// The short name the manifest has for a model by its repo's own name (`Qwen3-8B` of `Qwen/Qwen3-8B`): `qwen3:8b`.
+fn short_by_repo_name(model: &str) -> Option<String> {
+    manifest().families.iter().find_map(|f| {
+        f.models.iter().find(|e| e.repo.rsplit('/').next().is_some_and(|n| n.eq_ignore_ascii_case(model))).map(|e| format!("{}:{}", f.name, e.size))
+    })
+}
+
 /// The name the model has in the list: its short name in the manifest as Ollama writes one (`qwen3:8b`), else the repo (`Qwen/Qwen3-8B`) of a Hub cache's directory or the last name of a path, with a tag
 /// (`:latest`) where it has none, as Ollama's names all have one.
 pub(super) fn listed_name(name: &str) -> String {
+    // a GGUF served as a checkpoint: by its file's name, its short name in the manifest where it is a model's, and its quantization as the tag (`qwen3:8b-bf16`, `my-model:f16`)
+    if let Some((model, quant)) = gguf_of(name) {
+        return match (short_by_repo_name(&model), quant) {
+            (Some(short), Some(q)) => format!("{short}-{q}"),
+            (Some(short), None) => short,
+            (None, Some(q)) => format!("{}:{q}", model.to_ascii_lowercase()),
+            (None, None) => format!("{}:latest", model.to_ascii_lowercase()),
+        };
+    }
     if let Some(repo) = repo_of(name) {
         let found =
             manifest().families.iter().find_map(|f| f.models.iter().find(|e| e.repo.eq_ignore_ascii_case(&repo)).map(|e| format!("{}:{}", f.name, e.size)));
@@ -102,6 +148,17 @@ fn is_served(asked: &str, name: &str) -> bool {
     if a == b || b.rsplit('/').next() == Some(a.as_str()) {
         return true;
     }
+    // a GGUF: its listed name, the same without its quantization (`qwen3:8b` for `qwen3:8b-bf16`), the file's own model name, and a short name of the manifest that is the model's
+    if let Some((model, quant)) = gguf_of(name) {
+        let (listed, asked) = (listed_name(name).to_ascii_lowercase(), asked.to_ascii_lowercase());
+        let asked = asked.trim_end_matches(":latest");
+        let short = short_by_repo_name(&model);
+        return asked == listed
+            || listed.starts_with(&format!("{asked}-"))
+            || asked.rsplit('/').next() == Some(model.to_ascii_lowercase().as_str())
+            || quant.is_some_and(|q| asked.rsplit('/').next() == Some(format!("{}-{q}", model.to_ascii_lowercase()).as_str()))
+            || short.is_some_and(|s| s == asked || crate::models::resolve(asked, manifest()).ok().flatten().is_some_and(|r| r.name == s));
+    }
     match (crate::models::resolve(asked, manifest()), repo_of(name)) {
         (Ok(Some(r)), Some(served)) => r.repo.eq_ignore_ascii_case(&served),
         _ => false,
@@ -116,9 +173,12 @@ fn digest(name: &str) -> String {
 /// A model's details as the list and the show give them.
 fn details(name: &str) -> String {
     let fam = family(name);
+    let gguf = gguf_of(name);
     format!(
-        "{{\"parent_model\":\"\",\"format\":\"glyd\",\"family\":\"{fam}\",\"families\":[\"{fam}\"],\"parameter_size\":{},\"quantization_level\":\"\"}}",
-        jstr(&parameter_size(name))
+        "{{\"parent_model\":\"\",\"format\":\"{}\",\"family\":\"{fam}\",\"families\":[\"{fam}\"],\"parameter_size\":{},\"quantization_level\":{}}}",
+        if gguf.is_some() { "gguf" } else { "glyd" },
+        jstr(&parameter_size(name)),
+        jstr(&gguf.and_then(|(_, q)| q).map_or(String::new(), |q| q.to_ascii_uppercase()))
     )
 }
 
@@ -557,7 +617,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
         },
         ("POST", "/api/pull") => pull(sh, s, req),
         ("DELETE", "/api/delete") => delete(sh, s, req),
-        ("POST", "/api/embed" | "/api/embeddings") => fail(s, cors, 501, "embeddings are not served by this model yet"),
+        ("POST", "/api/embed" | "/api/embeddings") => fail(s, cors, 501, "embeddings are not served yet (F2b, issue 175): this API answers chat and generate"),
         ("POST", "/api/create" | "/api/copy" | "/api/push") | ("HEAD", "/api/blobs") => {
             fail(s, cors, 501, "this server runs the model it was started with: `glyd pull`, `glyd ls` and `glyd rm` manage the models")
         }
@@ -699,6 +759,40 @@ mod tests {
         assert!(is_served("Qwen/Qwen3-8B", "Qwen/Qwen3-8B") && is_served("qwen/qwen3-8b:latest", "Qwen/Qwen3-8B") && is_served("Qwen3-8B", "Qwen/Qwen3-8B"));
         assert!(!is_served("llama3.2", "Qwen/Qwen3-8B") && !is_served("Qwen/Qwen3-4B", "Qwen/Qwen3-8B"));
         assert_eq!(digest("a").len(), 64);
+    }
+
+    /// A GGUF served as a checkpoint (the directory `gguf::materialize` makes: `STEM-KEY` with a `gguf-source.json` that names the file): listed by the file's name, by its short name in the manifest where it is a model's, its
+    /// quantization the tag; asked for by the same names, by the model's name without the tag, and by the manifest's name.
+    #[test]
+    fn a_gguf_is_named_by_its_file_and_the_manifest() {
+        let made = |label: &str, file: &str| {
+            let d = std::env::temp_dir().join(format!("glyd-ollama-gguf-{}-{label}", std::process::id()));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("gguf-source.json"), format!("{{\"file\": {}, \"size\": 1, \"files\": \"x\"}}", jstr(file))).unwrap();
+            d.display().to_string()
+        };
+        let q = made("q", "Qwen3-8B-BF16.gguf");
+        assert_eq!(listed_name(&q), "qwen3:8b-bf16");
+        // (a level's tag after the directory is not part of it)
+        assert_eq!(listed_name(&format!("{q}:swift")), "qwen3:8b-bf16");
+        for asked in ["qwen3:8b-bf16", "qwen3:8b", "qwen3", "Qwen3-8B", "Qwen/Qwen3-8B", "qwen3:8b-BF16", "Qwen3-8B-BF16"] {
+            assert!(is_served(asked, &q), "{asked}");
+        }
+        for asked in ["qwen3:32b", "qwen3:8b-f16", "gemma4:12b", "other"] {
+            assert!(!is_served(asked, &q), "{asked}");
+        }
+        let d = details(&q);
+        assert!(d.contains("\"format\":\"gguf\"") && d.contains("\"quantization_level\":\"BF16\"") && d.contains("\"parameter_size\":\"8B\""), "{d}");
+        // a model the manifest does not have: its own name, lowercased, the quantization the tag; a file with none; a split
+        let m = made("m", "My-Model-3B-F16.gguf");
+        assert_eq!((listed_name(&m).as_str(), parameter_size(&m).as_str()), ("my-model-3b:f16", "3B"));
+        assert!(is_served("my-model-3b", &m) && is_served("my-model-3b:f16", &m) && !is_served("my-model-3b:bf16", &m));
+        assert_eq!(listed_name(&made("p", "Plain.gguf")), "plain:latest");
+        assert_eq!(listed_name(&made("s", "Big-Model-F32.gguf (3 parts)")), "big-model:f32");
+        // a directory with no such file is the name it had
+        let none = std::env::temp_dir().join(format!("glyd-ollama-none-{}", std::process::id()));
+        std::fs::create_dir_all(&none).unwrap();
+        assert_eq!(listed_name(&none.display().to_string()), format!("{}:latest", none.file_name().unwrap().to_string_lossy()));
     }
 
     /// A chat as `ollama-python` and Open WebUI read it: one object where `stream` is false; else JSON lines, the pieces of the reply, then the end with its durations and counts.
