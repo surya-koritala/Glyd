@@ -257,7 +257,7 @@ enum Route {
     EngineProgram(PathBuf),
     /// An engine command and no engine here.
     NoEngine,
-    /// `glyd cluster`, which is a stub until C3 (ROADMAP M5).
+    /// `glyd cluster`, which is a stub until C3 (ROADMAP M4).
     Cluster,
 }
 
@@ -414,7 +414,7 @@ fn go(route: Route, args: &[String]) -> ! {
             python_command(args, &extra)
         }
         Route::Cluster => {
-            eprintln!("glyd cluster: one model across computers is not in this program yet (ROADMAP.md, M5). Today it is the starlings program (starlings/README.md). A file named cluster is compressed as ./cluster.");
+            eprintln!("glyd cluster: one model across computers is not in this program yet (ROADMAP.md, M4). Today it is the starlings program (starlings/README.md). A file named cluster is compressed as ./cluster.");
             std::process::exit(3);
         }
         Route::NoEngine => {
