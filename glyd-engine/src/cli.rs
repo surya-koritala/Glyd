@@ -2422,7 +2422,7 @@ fn load_dynamic(
             &o,
             &cuts,
             &devices,
-            k.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload }).collect(),
+            k.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: 0 }).collect(),
         ),
         Some(k) if across => crate::dynamic::split::open_kimi_tp(&dir, &o, &devices, k.places[0]),
         Some(k) => crate::dynamic::split::open_kimi(&dir, &o, &cuts, &devices, k.places.clone()),

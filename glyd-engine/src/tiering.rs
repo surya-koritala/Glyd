@@ -181,7 +181,7 @@ pub fn cached_tiered(
     Ok((u, d, ExpertCache { store: store.clone(), layer, ordinal }))
 }
 
-/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--layout i6|i5|i4]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird directory) on GPU 0 with every expert there, then with
+/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--layout i6|i5|i4] [--dense N]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird directory) on GPU 0 with every expert there, then with
 /// its experts in the expert cache (`--places` a layer, every expert in the computer's memory; `--mode` the misses', copy by default): the same prompt and decode steps, and every position's logits compared. In copy mode the
 /// layers' products run over the places with the kernels of the resident layer, so the logits are the same bits (the GPU job's parity record of R12 and of hummingbird's cache); with the host computing some pairs, the largest
 /// difference is printed.
@@ -190,6 +190,8 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     use crate::ffi::Error;
     let dir = std::path::Path::new(a.need(1, "MODEL")?);
     let places = a.num("places", 2usize)?;
+    // (`--dense N`: the last N layers' dense matrices in the computer's memory too, src/dense_ram.rs)
+    let dense = a.num("dense", 0usize)?;
     let mode = match a.flag("mode") {
         Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
         None => crate::offload::Mode::Copy,
@@ -202,7 +204,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let o = crate::dynamic::Opts { ctx: n + 64, chunk: 256, graph: false, device: 0, layout: a.layout()? };
     let run = |cached: bool| -> Result<Vec<Vec<f32>>> {
         let mut e = if cached {
-            let caching = crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, ..Default::default() } };
+            let caching = crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, ..Default::default() }, dense };
             crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching])?
         } else {
             crate::dynamic::split::open(dir, &o, &[], &[0])?

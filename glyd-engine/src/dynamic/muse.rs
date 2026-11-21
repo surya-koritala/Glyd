@@ -115,6 +115,11 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
     let pack = |w: &[u16], rows: usize, cols: usize, name: &str| pack_as(w, rows, cols, name, true);
     let small_bits = |v: &[u16]| upload_bytes(as_bytes(v));
     let mut l_ = Loaded::default();
+    // (the stage's last layers' matrices in the computer's memory where the cache says so, src/dense_ram.rs: each copied into one slot before it runs)
+    let mut ram = crate::dense_ram::RamBuilder::new(crate::dense_ram::Placer::last(st.layers.0, st.layers.1, hc.map_or(0, |x| x.dense)));
+    if sl.is_some() && hc.is_some_and(|x| x.dense > 0) {
+        return err("Muse Spark's dense layers in the computer's memory: a stage on one GPU, not sliced across GPUs");
+    }
     let (mut rings, mut layers) = (Vec::new(), Vec::new());
     let put = |v: &mut Vec<Buf>, b: Buf| {
         v.push(b);
@@ -149,11 +154,19 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
             qkvg.extend(words(&read(&format!("{a}.{n}.weight"))?));
         }
         let m0 = l_.mats.len();
-        l_.mats.push(pack(&qkvg, row, d, &format!("{a}.qkvg"))?);
+        let mut mat = |mats: &mut Vec<Mat>, w: &[u16], rows: usize, cols: usize, name: &str| -> Result<()> {
+            if ram.in_ram(l) {
+                ram.push(l, mats, pack_words(w, rows, cols, layout, name)?).map(|_| ())
+            } else {
+                mats.push(pack(w, rows, cols, name)?);
+                Ok(())
+            }
+        };
+        mat(&mut l_.mats, &qkvg, row, d, &format!("{a}.qkvg"))?;
         drop(qkvg);
-        l_.mats.push(pack(&words(&read(&format!("{a}.o_proj.weight"))?), d, nq * hd, &format!("{a}.o_proj"))?);
-        l_.mats.push(pack(&words(&read(&format!("{m}.pre_expert_proj.weight"))?), lat, d, &format!("{m}.pre_expert_proj"))?);
-        l_.mats.push(pack(&words(&read(&format!("{m}.post_expert_proj.weight"))?), d, lat, &format!("{m}.post_expert_proj"))?);
+        mat(&mut l_.mats, &words(&read(&format!("{a}.o_proj.weight"))?), d, nq * hd, &format!("{a}.o_proj"))?;
+        mat(&mut l_.mats, &words(&read(&format!("{m}.pre_expert_proj.weight"))?), lat, d, &format!("{m}.pre_expert_proj"))?;
+        mat(&mut l_.mats, &words(&read(&format!("{m}.post_expert_proj.weight"))?), d, lat, &format!("{m}.post_expert_proj"))?;
         // the experts: each stacked matrix packed as one (gate and up [E 2I, latent], down [E latent, I]); the router fp32 as it is
         let stack = |n: &str, rows: usize, cols: usize| -> Result<ExpertStack> {
             let w = words(&read(&format!("{m}.experts.{n}"))?);
@@ -297,5 +310,6 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         hc: (0.0, 0),
         logit_mult: c.out_mult,
     };
+    l_.ram = ram.finish(&mut l_.mats)?;
     Dyn::from_parts(dev, desc, l_, ropes, layout, st, o)
 }

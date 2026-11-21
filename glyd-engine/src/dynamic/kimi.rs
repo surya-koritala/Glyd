@@ -746,7 +746,8 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
     }
     // a matrix packed lossless (rows not a multiple of 64: held dense, as it is); several stacked as one where `names` has more; sliced where `slice` and
     // the group of GPUs takes it
-    let pack_as = |names: &[String], slice: bool| -> Result<Mat> {
+    // (the weights of `names` stacked, this GPU's rows where `slice`: the weights, the whole rows, this GPU's rows, the columns, whether sliced)
+    let weights_as = |names: &[String], slice: bool| -> Result<(Vec<u16>, usize, usize, usize, bool)> {
         let (mut parts, mut rows, mut cols) = (Vec::new(), 0usize, 0usize);
         for n in names {
             let name = format!("{n}.weight");
@@ -777,19 +778,36 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
             w.extend(bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])));
         }
         w.resize(rn * cols, 0);
+        Ok((w, rows, rn, cols, sliced.is_some()))
+    };
+    let pack_as = |names: &[String], slice: bool| -> Result<Mat> {
+        let (w, rows, rn, cols, sliced) = weights_as(names, slice)?;
         if rows % 64 != 0 || cols % 16 != 0 {
             return Ok(Mat::Dense(upload_bytes(as_bytes(&w))?, rows, cols));
         }
         let mut pk = upload_packed(pack_words(&w, rn, cols, layout, &names[0])?)?;
-        if sliced.is_some() {
+        if sliced {
             pk.tp_rows = rows;
         }
         Ok(Mat::Packed(pk))
+    };
+    // (a matrix of a layer whose matrices are in the computer's memory, src/dense_ram.rs: packed here, its bytes kept for the slot; never sliced)
+    let host = |names: &[String]| -> Result<crate::weights::Packed> {
+        let (w, rows, _, cols, _) = weights_as(names, false)?;
+        if rows % 64 != 0 || cols % 16 != 0 {
+            return err(format!("{}: {rows} x {cols}, not a packed matrix, in the computer's memory", names[0]));
+        }
+        pack_words(&w, rows, cols, layout, &names[0])
     };
     let pack = |names: &[String]| pack_as(names, true);
     let one = |n: String| pack(&[n]);
     let small = |n: &str| -> Result<Buf> { upload_bytes(&io(ck.read(n))?) };
     let mut l_ = Loaded::default();
+    // (the stage's last layers' matrices in the computer's memory where the cache says so, src/dense_ram.rs: the delta attention's three; the latent attention's blocks keep theirs)
+    let mut ram = crate::dense_ram::RamBuilder::new(crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)));
+    if tp.is_some() && caching.is_some_and(|x| x.dense > 0) {
+        return err("Kimi-K3's dense layers in the computer's memory: a stage on one GPU, not every layer across GPUs");
+    }
     let (mut states, mut layers) = (Vec::new(), Vec::new());
     let put = |v: &mut Vec<Buf>, b: Buf| {
         v.push(b);
@@ -834,12 +852,17 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
                 let fa =
                     ck.get(&format!("{a}.f_a_proj.weight")).map(|(_, t)| t.shape[0] as usize).ok_or_else(|| Error(format!("no tensor {a}.f_a_proj.weight")))?;
                 let names = ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj"].map(|x| format!("{a}.{x}"));
-                let fused = pack(&names)?;
-                let row = fused.whole_rows();
+                if ram.in_ram(l) {
+                    for n in [names.to_vec(), vec![format!("{a}.o_proj")], vec![format!("{a}.f_b_proj")]] {
+                        ram.push(l, &mut l_.mats, host(&n)?)?;
+                    }
+                } else {
+                    l_.mats.push(pack(&names)?);
+                    l_.mats.push(one(format!("{a}.o_proj"))?);
+                    l_.mats.push(one(format!("{a}.f_b_proj"))?);
+                }
+                let row = l_.mats[m0].whole_rows();
                 (mix_w, proj_w) = (mix_w.max(row), proj_w.max(fa));
-                l_.mats.push(fused);
-                l_.mats.push(one(format!("{a}.o_proj"))?);
-                l_.mats.push(one(format!("{a}.f_b_proj"))?);
                 // (small: the three convolutions' weights as one, A_log, dt_bias (fp32), the gated norm's weight; the convolutions' and the norm's bf16 or fp32 as
                 // released (Kimi-K3's are fp32: their values, not bf16 ones), read by the kernels as they are)
                 let mut conv = Vec::new();
@@ -1187,5 +1210,6 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         hc: (0.0, 0),
         logit_mult: 0.0,
     };
+    l_.ram = ram.finish(&mut l_.mats)?;
     Dyn::from_parts(dev, d, l_, Vec::new(), layout, st, o)
 }

@@ -684,6 +684,8 @@ struct Part {
     /// The mixture-of-experts layers' blocks (`Op::Moe`'s), as the family's loader made them.
     moe: Vec<Box<dyn MoeBlock>>,
     small: Vec<Buf>,
+    /// The layers whose matrices are in the computer's memory (src/dense_ram.rs).
+    ram: Option<crate::dense_ram::DenseRam>,
     slots: Vec<Buf>,
     logits: Buf,
     tok: Buf,
@@ -709,6 +711,7 @@ impl Part {
             + self.mla.iter().map(|b| b.bytes()).sum::<usize>()
             + self.small.iter().map(|b| b.bytes).sum::<usize>()
             + self.moe.iter().map(|b| b.bytes()).sum::<usize>()
+            + self.ram.as_ref().map_or(0, |r| r.bytes().0)
     }
 
     /// The part's weights as loaded by the family's own loader, with its activations and outputs.
@@ -716,7 +719,7 @@ impl Part {
         let slots: Vec<Buf> = d.widths.iter().map(|&w| Buf::new(w.max(1) * rows * 2)).collect::<Result<_>>()?;
         let logits = Buf::new(d.vocab * out * 2)?;
         let (tok, val) = (Buf::zeroed(4 * out)?, Buf::zeroed(4 * out)?);
-        Ok(Part { d, mats: l.mats, f8: l.f8, mla: l.mla, moe: l.moe, small: l.small, slots, logits, tok, val })
+        Ok(Part { d, mats: l.mats, f8: l.f8, mla: l.mla, moe: l.moe, small: l.small, ram: l.ram, slots, logits, tok, val })
     }
 }
 
@@ -768,6 +771,8 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
 #[derive(Default)]
 pub struct Loaded {
     pub mats: Vec<Mat>,
+    /// The layers whose matrices are in the computer's memory (src/dense_ram.rs), copied into a slot before each runs.
+    pub ram: Option<crate::dense_ram::DenseRam>,
     pub f8: Vec<crate::f8::F8Mat>,
     pub small: Vec<Buf>,
     pub moe: Vec<Box<dyn MoeBlock>>,
@@ -1032,7 +1037,7 @@ impl Dyn {
         st: Stage,
         o: &Opts,
     ) -> Result<Dyn> {
-        Dyn::from_parts(dev, d, Loaded { mats, f8, small, moe, mla: Vec::new() }, ropes, layout, st, o)
+        Dyn::from_parts(dev, d, Loaded { mats, f8, small, moe, mla: Vec::new(), ram: None }, ropes, layout, st, o)
     }
 
     /// A model its family's loader put on the GPU, whatever it holds (`Loaded`).
@@ -2083,6 +2088,10 @@ impl Dyn {
         let probe = crate::tune!("GLYD_OP_PROBE").is_some();
         let mut seen = false;
         for (l, ops) in p.d.layers.iter().enumerate().take(st.layers.1).skip(st.layers.0) {
+            // (a layer whose matrices are in the computer's memory: copied into the slot on this stream first, a node of the step's graph)
+            if let Some(r) = &p.ram {
+                r.fetch(l, s)?;
+            }
             for (i, op) in ops.iter().enumerate() {
                 if !self.parts.is_empty() && !rows::row_wise(op) {
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)

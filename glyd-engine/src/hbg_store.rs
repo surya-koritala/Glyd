@@ -24,6 +24,8 @@ pub struct HbCaching {
     pub places: usize,
     pub ram: Option<HostMemory>,
     pub offload: Offload,
+    /// How many of the stage's layers, its last ones, keep their dense matrices in the computer's memory (src/dense_ram.rs: P2d's rung after the experts): 0, none.
+    pub dense: usize,
 }
 
 /// A store for a stage's layers, as `c` says.

@@ -48,6 +48,7 @@ pub mod cpu_hb;
 pub mod cpu_hbg;
 mod cpu_simd;
 pub mod deepseek_v4;
+pub mod dense_ram;
 pub mod dev;
 pub mod disk;
 pub mod doctor;

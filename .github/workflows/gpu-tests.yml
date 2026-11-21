@@ -175,6 +175,10 @@ jobs:
           # (Muse Spark's lossless experts: the stack's tiered pack cut per expert, each place its own block entries; glyd_gpu_mma_moe_placed)
           "$E" muserandom /tmp/muse-tier
           "$E" tiercheck /tmp/muse-tier --places 6
+          # (dense layers in the computer's memory, dense_ram.rs: the last two layers' matrices copied into one slot before each runs; the same bits)
+          "$E" tiercheck /tmp/muse-tier --places 6 --dense 2
+          "$E" logitsmodel kimi /tmp/kimi-tier
+          "$E" tiercheck /tmp/kimi-tier --places 4 --dense 2
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true
