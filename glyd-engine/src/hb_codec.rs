@@ -7,7 +7,7 @@
 //! - `down_t` [I, W]: row n is R d_n, d_n = down[:, n].
 //!
 //! R = (I ⊗ H_b) diag(s): H_b the orthonormal Walsh-Hadamard matrix of order b in natural (Sylvester) order on each run of b values, b the
-//! largest power of two that divides W (128 to 1,024), s the layer's signs. A row is held as glyd-gpu's codebook rows (`codebook.rs`): codes of
+//! largest power of two that divides W (32 to 1,024; the released models' widths give 128 to 1,024), s the layer's signs. A row is held as glyd-gpu's codebook rows (`codebook.rs`): codes of
 //! 2 or 3 bits, a bf16 scale a run of 32 (the run's absmax), a bf16 codebook of 2^bits entries in units of the scale (Lloyd-Max of the row's
 //! run-normalised values). A weight is scale * entry, the f32 product of two bf16 (exact).
 
@@ -17,8 +17,8 @@ use glyd_gpu::json::{self, Value};
 
 /// Values a scale covers.
 pub const RUN: usize = 32;
-/// The rotation's smallest and largest block.
-pub const MIN_BLOCK: usize = 128;
+/// The rotation's smallest block (a run: tiny test models) and its largest.
+pub const MIN_BLOCK: usize = RUN;
 pub const MAX_BLOCK: usize = 1024;
 /// The recipe hb40's share (percent) of a layer's experts at three bits.
 pub const HB40_PERCENT: usize = 40;
@@ -30,7 +30,7 @@ const LLOYD_ITERS: usize = 25;
 /// The usage file's format.
 pub const USAGE_FORMAT: &str = "glyd-hb-usage/1";
 
-/// The rotation's block for rows of `w` values: the largest power of two that divides `w`, at most 1,024; None where it is below 128.
+/// The rotation's block for rows of `w` values: the largest power of two that divides `w`, at most 1,024; None where it is below 32.
 pub fn block_of(w: usize) -> Option<usize> {
     if w == 0 {
         return None;
@@ -616,8 +616,9 @@ mod tests {
             (2560, Some(512)),
             (2688, Some(128)),
             (1024, Some(1024)),
-            (64, None),
-            (96, None),
+            (64, Some(64)),
+            (96, Some(32)),
+            (48, None),
             (0, None),
         ];
         for (w, b) in want {

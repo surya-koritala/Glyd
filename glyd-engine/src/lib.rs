@@ -67,6 +67,7 @@ pub mod glm_cb;
 pub mod glm_serve;
 #[cfg(feature = "dev")]
 pub mod hb_codec;
+pub mod hb_pack;
 pub mod hbpack;
 pub mod hub;
 #[cfg(feature = "dev")]
