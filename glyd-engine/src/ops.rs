@@ -79,6 +79,7 @@ fn start() -> Instant {
 /// Remembers when the process began (the first call is the start of `glyd_uptime_seconds`).
 pub fn init() {
     let _ = start();
+    crate::otel::init_from_env();
 }
 
 /// A request for one of the APIs is taken (`path`: its path); the label of its API.
@@ -118,10 +119,18 @@ pub fn ended(how: &str, began: Instant) {
     REQUEST_TIME.observe(began.elapsed().as_secs_f64());
 }
 
+/// A sequence ended: counted (`ended`) and, where traces are on, its spans sent (`otel::record`).
+pub fn finished(how: &str, began: Instant, clock: &crate::otel::Clock, generated: usize) {
+    ended(how, began);
+    crate::otel::record(clock, how, generated);
+}
+
 /// One request of an engine that has no scheduler (a lossy level's): its tokens, first and gaps, and its end, as the scheduler's sequences have them.
 pub struct Timer {
     began: Instant,
     last: Option<Instant>,
+    clock: crate::otel::Clock,
+    made: usize,
 }
 
 /// The prompt tokens of the requests an engine with no scheduler ran (the scheduler counts its own, `sched::SHARED`).
@@ -131,13 +140,15 @@ impl Timer {
     /// A request of `prompt` tokens begins.
     pub fn start(prompt: usize) -> Timer {
         PROMPT_TOKENS.fetch_add(prompt as u64, Relaxed);
-        Timer { began: Instant::now(), last: None }
+        Timer { began: Instant::now(), last: None, clock: crate::otel::Clock::new(prompt), made: 0 }
     }
     pub fn token(&mut self) {
         token(self.began, &mut self.last);
+        self.clock.token();
+        self.made += 1;
     }
     pub fn end(self, how: &str) {
-        ended(how, self.began);
+        finished(how, self.began, &self.clock, self.made);
     }
 }
 
@@ -289,6 +300,7 @@ pub fn drain_on_sigterm(life: Arc<Life>, bound: Duration, then: impl Fn(usize) +
             eprintln!("glyd: drain bound reached: {left} request(s) still running are ended with the process");
         }
         then(left);
+        crate::otel::flush(Duration::from_secs(5));
         if left == 0 {
             // (the last request's answer is written; the connection closes on its own before the process does)
             std::thread::sleep(Duration::from_millis(200));
@@ -379,6 +391,10 @@ pub fn render(s: &State) -> String {
         family(&mut o, "glyd_kv_cache_pages", "gauge", "Pages of the KV cache.", &one(pages));
         family(&mut o, "glyd_kv_cache_pages_used", "gauge", "Pages of the KV cache that running sequences hold.", &one(held));
         family(&mut o, "glyd_kv_cache_usage_ratio", "gauge", "Used pages of the KV cache over all of them (0 to 1).", &one(held as f64 / pages as f64));
+    }
+    if let Some((sent, dropped)) = crate::otel::counts() {
+        family(&mut o, "glyd_trace_spans_exported_total", "counter", "Spans sent to the OTLP collector.", &one(sent));
+        family(&mut o, "glyd_trace_spans_dropped_total", "counter", "Spans not sent: the collector did not take them, or the queue was full.", &one(dropped));
     }
     let gpus = gpu_memory();
     if !gpus.is_empty() {

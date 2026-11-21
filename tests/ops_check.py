@@ -6,7 +6,9 @@ is streaming stops the server taking requests (/ready 503, a new request 503), l
 Run by the `gpu` CI job (.github/workflows/gpu-tests.yml) on the model it serves for the client checks. Standard library only. Exit 0: all of it held.
 """
 
+import http.server
 import json
+import os
 import re
 import signal
 import subprocess
@@ -70,8 +72,31 @@ def histogram(s, name):
     return count, s[name + "_sum"]
 
 
+# ---- a local OTLP collector: the server's traces go here (OpenTelemetry's own variable) ----
+TRACES = []
+
+
+class Collector(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        if self.path == "/v1/traces":
+            TRACES.append(json.loads(body))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *a):
+        pass
+
+
+collector = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Collector)
+threading.Thread(target=collector.serve_forever, daemon=True).start()
+
 log = open("/tmp/ops-serve.log", "w")
-proc = subprocess.Popen([ENGINE, "serve", MODEL, "--port", str(PORT), "--ctx", "4096", "--users", "2", "--no-draft", "--drain-timeout", str(DRAIN_BOUND)], stdout=log, stderr=subprocess.STDOUT)
+env = dict(os.environ, OTEL_EXPORTER_OTLP_ENDPOINT=f"http://127.0.0.1:{collector.server_port}", OTEL_SERVICE_NAME="glyd-ci")
+proc = subprocess.Popen([ENGINE, "serve", MODEL, "--port", str(PORT), "--ctx", "4096", "--users", "2", "--no-draft", "--drain-timeout", str(DRAIN_BOUND)], stdout=log, stderr=subprocess.STDOUT, env=env)
 
 # ---- alive, then ready once the model is loaded ----
 t0 = time.time()
@@ -125,6 +150,25 @@ if kv is None:
 gpu = [v for k, v in s.items() if k.startswith("glyd_gpu_memory_used_bytes")]
 assert gpu and max(gpu) > 1 << 28, f"the GPU's memory in use: {gpu}"
 print(f"metrics ok: first token {1000 * ttft[1] / ttft[0]:.0f} ms mean, {1000 * tpot[1] / tpot[0]:.1f} ms a token, KV {"%.3f used of %d pages" % (s["glyd_kv_cache_usage_ratio"], kv) if kv else "not told"}, GPU {max(gpu) / 2**30:.1f} GiB")
+
+# ---- the traces: a request span for each request, with its prompt pass and decode beneath (the collector got them within a few seconds) ----
+t = time.time()
+while time.time() - t < 15:
+    spans = [sp for body in TRACES for rs in body["resourceSpans"] for ss in rs["scopeSpans"] for sp in ss["spans"]]
+    roots = [sp for sp in spans if sp["name"] == "glyd.request"]
+    if len(roots) >= 2:
+        break
+    time.sleep(0.5)
+assert len(roots) >= 2, f"the collector got {len(spans)} spans: {[sp['name'] for sp in spans]}"
+service = {a["key"]: a["value"] for rs in TRACES[0]["resourceSpans"] for a in rs["resource"]["attributes"]}
+assert service["service.name"]["stringValue"] == "glyd-ci", service
+for root in roots[:2]:
+    kids = {sp["name"] for sp in spans if sp.get("parentSpanId") == root["spanId"] and sp["traceId"] == root["traceId"]}
+    assert {"glyd.prefill", "glyd.decode"} <= kids, f"the parts of a request: {kids}"
+    attrs = {a["key"]: a["value"] for a in root["attributes"]}
+    assert int(attrs["glyd.generated_tokens"]["intValue"]) > 0 and attrs["glyd.finish_reason"]["stringValue"] in ("stop", "length"), attrs
+assert "glyd_trace_spans_exported_total" in get("/metrics")[1]
+print(f"traces ok: {len(roots)} requests, {len(spans)} spans in the collector")
 
 # ---- the drain: SIGTERM while a reply is streaming ----
 result = {}
