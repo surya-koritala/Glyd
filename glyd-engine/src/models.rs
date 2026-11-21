@@ -98,6 +98,21 @@ impl Manifest {
                     }
                     Some(d) => return Err(format!("{name}:{size}: \"released\" {d} is not YYYY-MM-DD")),
                 };
+                // license, gated and measured: what the catalog says of an entry (docs/guide/src/catalog.md). A manifest from before them still parses; the repository's own is
+                // checked to have them all (the test below). Where they are there they must be what they say.
+                if m.get("license").is_some_and(|l| !l.as_str().is_some_and(|l| !l.is_empty())) {
+                    return Err(format!("{name}:{size}: \"license\" is not a license name"));
+                }
+                match m.get("gated") {
+                    None | Some(serde_json::Value::Bool(_)) => {}
+                    Some(serde_json::Value::String(g)) if g == "auto" || g == "manual" => {}
+                    Some(_) => return Err(format!("{name}:{size}: \"gated\" is true, false, \"auto\" or \"manual\"")),
+                }
+                match m.get("measured") {
+                    None | Some(serde_json::Value::Null) => {}
+                    Some(serde_json::Value::String(r)) if !r.is_empty() && !r.starts_with('/') && !r.contains("..") => {}
+                    Some(_) => return Err(format!("{name}:{size}: \"measured\" is null or a path in the repository")),
+                }
                 models.push(Entry { size, repo, default: m.get("default").and_then(|x| x.as_bool()).unwrap_or(false), released });
             }
             if models.is_empty() || models.iter().filter(|e| e.default).count() != 1 {
@@ -744,6 +759,38 @@ mod tests {
                 assert!(levels::split_tag(&format!("{}:{}", f.name, e.size)).1.is_none(), "{}:{} would be read as a level", f.name, e.size);
             }
         }
+    }
+
+    /// The catalog's rule (docs/guide/src/catalog.md, P15): every entry of the repository's manifest names its license, says whether the Hub gates it, and says where the engine
+    /// was measured on it (a record in the repository that exists) or that it was not (null).
+    #[test]
+    fn every_entry_says_its_license_whether_it_is_gated_and_where_it_was_measured() {
+        let v: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut n = 0;
+        for f in v["families"].as_array().unwrap() {
+            for e in f["models"].as_array().unwrap() {
+                let who = format!("{}:{}", f["name"].as_str().unwrap(), e["size"].as_str().unwrap());
+                assert!(e["license"].as_str().is_some_and(|l| !l.is_empty()), "{who}: no \"license\"");
+                assert!(e["gated"].is_boolean() || matches!(e["gated"].as_str(), Some("auto" | "manual")), "{who}: no \"gated\" (true, false, \"auto\" or \"manual\")");
+                let measured = e.get("measured").unwrap_or_else(|| panic!("{who}: no \"measured\" (a record in the repository, or null where there is none)"));
+                if let Some(path) = measured.as_str() {
+                    assert!(root.join(path).exists(), "{who}: \"measured\" {path} is not in the repository");
+                } else {
+                    assert!(measured.is_null(), "{who}: \"measured\" is a path or null");
+                }
+                n += 1;
+            }
+        }
+        assert!(n >= 19, "{n} entries");
+        // a manifest with a wrong field is refused with the reason
+        let bad = |field: &str| {
+            Manifest::parse(&format!("{{\"version\":1,\"families\":[{{\"name\":\"x\",\"models\":[{{\"size\":\"1b\",\"repo\":\"a/b\",\"default\":true,{field}}}]}}]}}")).unwrap_err()
+        };
+        assert!(bad("\"license\":\"\"").contains("license"));
+        assert!(bad("\"gated\":\"yes\"").contains("gated"));
+        assert!(bad("\"measured\":\"../x\"").contains("measured"));
+        assert!(Manifest::parse("{\"version\":1,\"families\":[{\"name\":\"x\",\"models\":[{\"size\":\"1b\",\"repo\":\"a/b\",\"default\":true,\"license\":\"mit\",\"gated\":\"manual\",\"measured\":null}]}]}").is_ok());
     }
 
     #[test]

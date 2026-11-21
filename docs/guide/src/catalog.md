@@ -37,16 +37,24 @@ Every item is a file or a command in the pull request.
 | :--- | :--- |
 | The kind runs | `glyd supports MODEL` exits 0, and the family has a row in `support.rs` with its test (`every_family_is_told_apart` in the same file reads a fixture `config.json`). |
 | A logits test | The engine's top-k logits and KL against a stored reference on a fixed prompt, for a small checkpoint of the family. The per-family harness is R7 ([#146](https://github.com/surya-koritala/Glyd/issues/146)) and is not merged. Until it is, attach the output of the family's check command (`glyd-engine kcheck`, `check`; [CONTRIBUTING.md](https://github.com/surya-koritala/Glyd/blob/main/CONTRIBUTING.md)) and say so. |
-| A measured run | `glyd run` or `serve` on named hardware, in `benchmarks/gpu/MACHINE-MODEL-DATE/` with a README: the machine, the driver, the engine's commit, the command, the tokens/s, the memory in use, and the log. `benchmarks/gpu/rtx4080s-qwen3-8b-engine-2026-11-20` is the form to copy; the model in a new run is one from the last six months. |
+| A measured run | `glyd run` or `serve` on named hardware, in `benchmarks/gpu/MACHINE-MODEL-DATE/` with a README: the machine, the driver, the engine's commit, the command, the tokens/s, the memory in use, and the log. The entry's `measured` points at it. `benchmarks/gpu/rtx4080s-qwen3-8b-engine-2026-11-20` is the form to copy; the model in a new run is one from the last six months. |
 | Quality, for a lossy level | KL from bf16 and top-1 agreement on the pinned WikiText-2 text, by `research/lossy-2026/kld_study.py` as in `benchmarks/weights/kld-q56-2026-10-09`, with the FP8 checkpoint beside it where one exists. |
-| License and gating | The model's license, its link, and whether the Hub gates it, recorded in the pull request. If the license allows redistributing derived weights, a pre-packed repo may be published and its card carries the base license (as `cards/nemotron-3-hummingbird.LICENSE` does). If it does not, the model is listed as run-from-the-original-repo only. A gated model's message names the license page and `glyd login`. |
+| License and gating | The model's license, its link, and whether the Hub gates it, recorded in the manifest entry (`license`, `gated`). If the license allows redistributing derived weights, a pre-packed repo may be published and its card carries the base license (as `cards/nemotron-3-hummingbird.LICENSE` does). If it does not, the model is listed as run-from-the-original-repo only. A gated model's message names the license page and `glyd login`. |
 | A card | `cards/NAME-LEVEL.json` with `size_gb`, the speed on each GPU measured, `kl_bf16`, the date and the Glyd version and commit. A card has only what was measured. |
 
 The Models page needs no edit: it is generated from `support.rs`.
 
-A manifest entry has a name, aliases, a size and a repo today. The license, a gated flag and a link to the measured run are
-not fields yet. Adding them, with a check that refuses an entry without them, is open work on
-[#226](https://github.com/surya-koritala/Glyd/issues/226).
+Every entry in `glyd-engine/models.json` carries three fields, and a test in `glyd-engine/src/models.rs`
+(`every_entry_says_its_license_whether_it_is_gated_and_where_it_was_measured`) fails CI if one is missing:
+
+| Field | What it says |
+| :--- | :--- |
+| `license` | The model's license, as the Hub names it (`apache-2.0`, `mit`, or the license's own name where the Hub says `other`). |
+| `gated` | `false`, or `"auto"` or `"manual"` as the Hub says: the download needs a login and an accepted license. |
+| `measured` | A record in this repository where the engine ran this model, which must exist, or `null` where there is none. |
+
+A `null` is the honest answer for a model nobody has run the engine on, and it keeps that entry from being shown. A manifest
+from before these fields still loads: the program only checks that a field, where it is there, is well formed.
 
 ## How a review goes
 
