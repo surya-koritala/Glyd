@@ -10,5 +10,8 @@
 - [Several GPUs and Starlings](multi-gpu.md)
 - [Condor: a big MoE on one GPU](condor.md)
 - [Troubleshooting](troubleshooting.md)
+- [API reference](api.md)
+- [The background service](service.md)
 - [Models](models.md)
 - [The model catalog](catalog.md)
+- [Checking a machine: the M1 gate](gate.md)
