@@ -277,7 +277,7 @@ jobs:
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c # 2026.07.10.1
+      - uses: Homebrew/actions/setup-homebrew@ceec4e8419bb3c97ce96e9dda7738499ed5f869d # 2026.11.14.1
       - name: "brew tap and install (retry: the formula PR can follow the release by minutes)"
         run: |
           set -e
