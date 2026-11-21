@@ -12,7 +12,7 @@
 set -u
 
 TIER=""; MODELS="$(dirname "$0")/m1-models.txt"; GLYD="${GLYD:-glyd}"; INSTALL_CMD='curl -LsSf https://getglyd.com/install.sh | sh'; SKIP_INSTALL=0
-OUT="${TMPDIR:-/tmp}/m1-gate-$$"; EXT=""; LIMIT=120; PLAN_ONLY=0; MACHINE=""; PORT=18734
+OUT=""; EXT=""; LIMIT=120; PLAN_ONLY=0; MACHINE=""; PORT=18734
 REQUIRED_EXT="driver-r535 driver-r550 driver-r570 p2a-no-oom r5a-schema-real-weights r8-reference-gpu-results p17-open-webui p17-continue p17-openai-sdk"
 
 while [ $# -gt 0 ]; do
@@ -24,7 +24,12 @@ while [ $# -gt 0 ]; do
     *) echo "m1-gate.sh: $1: not an option (--help)"; exit 2 ;;
   esac
 done
-mkdir -p "$OUT"; RESULTS="$OUT/results.tsv"; : > "$RESULTS"; FAILS=0
+if [ -z "$OUT" ]; then OUT="$(mktemp -d "${TMPDIR:-/tmp}/m1-gate.XXXXXX")" || exit 2   # (a directory made new, 0700: not a name another user could have made first)
+elif [ -e "$OUT" ] && [ ! -O "$OUT" ]; then echo "m1-gate.sh: $OUT exists and is not yours"; exit 2
+else mkdir -p "$OUT" && chmod 700 "$OUT" || exit 2; fi
+RESULTS="$OUT/results.tsv"; : > "$RESULTS"; FAILS=0
+# (the tools the gate runs, by their absolute paths, before the shims are put on PATH)
+SH="$(command -v sh)"; CURL="$(command -v curl || true)"; JQ="$(command -v jq || true)"
 
 step() { # STATUS NAME DETAIL
   printf '%-5s %-34s %s\n' "$1" "$2" "$3"; printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$RESULTS"
@@ -68,14 +73,14 @@ fi
 case "$TIER" in 8gb) col=3 ;; 16gb) col=4 ;; 24gb) col=5 ;; "") col=0 ;; *) echo "--tier 8gb, 16gb or 24gb"; exit 2 ;; esac
 
 # python and pip are shimmed for the whole run: a call is a FAIL
-SHIM="$OUT/nopython"; mkdir -p "$SHIM"; CALLED="$OUT/python-called"; : > "$CALLED"
+SHIM="$OUT/nopython"; mkdir "$SHIM" && chmod 700 "$SHIM" || exit 2; CALLED="$OUT/python-called"; : > "$CALLED"
 for p in python python3 pip pip3; do printf '#!/bin/sh\necho "$0 $*" >> "%s"\nexit 127\n' "$CALLED" > "$SHIM/$p"; chmod +x "$SHIM/$p"; done
 export PATH="$SHIM:$PATH"
-command -v jq > /dev/null 2>&1 || { step FAIL jq "jq is not installed (apt-get install jq): the gate reads JSON with it, not with Python"; exit 1; }
+[ -n "$JQ" ] || { step FAIL jq "jq is not installed (apt-get install jq): the gate reads JSON with it, not with Python"; exit 1; }
 
 # ---- install
 if [ "$SKIP_INSTALL" = 0 ]; then
-  t0=$SECONDS; if sh -c "$INSTALL_CMD" > "$OUT/install.log" 2>&1; then step PASS install "$((SECONDS - t0)) s: $INSTALL_CMD"; else step FAIL install "failed after $((SECONDS - t0)) s: see $OUT/install.log"; fi
+  t0=$SECONDS; if "$SH" -c "$INSTALL_CMD" > "$OUT/install.log" 2>&1; then step PASS install "$((SECONDS - t0)) s: $INSTALL_CMD"; else step FAIL install "failed after $((SECONDS - t0)) s: see $OUT/install.log"; fi
 fi
 if ! "$GLYD" --version > "$OUT/version.txt" 2>&1; then step FAIL glyd-version "$GLYD --version failed"; fi
 
@@ -89,7 +94,7 @@ fi
 # ---- each pinned model
 SCHEMA='{"type":"object","properties":{"city":{"type":"string"},"population":{"type":"integer"},"coastal":{"type":"boolean"}},"required":["city","population","coastal"],"additionalProperties":false}'
 chat() { # BODY -> stdout
-  curl -s -m 120 -H 'Content-Type: application/json' -d "$1" "http://127.0.0.1:$PORT/v1/chat/completions"
+  "$CURL" -s -m 120 -H 'Content-Type: application/json' -d "$1" "http://127.0.0.1:$PORT/v1/chat/completions"
 }
 while IFS= read -r line; do
   m="$(field "$line" 1)"; want="$([ "$col" != 0 ] && field "$line" "$col" || echo "")"
@@ -103,13 +108,13 @@ while IFS= read -r line; do
   fi
   # first token: the server started, the model packed or downloaded where it is not here, and the first streamed token, all inside the limit
   t0=$SECONDS; "$GLYD" serve "$m" --host 127.0.0.1 --port "$PORT" --users 1 > "$OUT/serve-$(echo "$m" | tr '/:' '__').log" 2>&1 & SRV=$!
-  up=0; while [ $((SECONDS - t0)) -lt 900 ]; do kill -0 $SRV 2> /dev/null || break; curl -sf -m 2 "http://127.0.0.1:$PORT/v1/models" > /dev/null && { up=1; break; }; sleep 1; done
+  up=0; while [ $((SECONDS - t0)) -lt 900 ]; do kill -0 $SRV 2> /dev/null || break; "$CURL" -sf -m 2 "http://127.0.0.1:$PORT/v1/models" > /dev/null && { up=1; break; }; sleep 1; done
   if [ "$up" = 0 ]; then step FAIL "first-token:$m" "the server did not come up ($(tail -1 "$OUT/serve-$(echo "$m" | tr '/:' '__').log" | cut -c1-120))"; kill $SRV 2> /dev/null; wait $SRV 2> /dev/null; continue; fi
-  ft="$(curl -sN -m 120 -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Say hello."}],"max_tokens":4,"stream":true}' "http://127.0.0.1:$PORT/v1/chat/completions" | grep -m1 -E '"content":"[^"]' )"
+  ft="$("$CURL" -sN -m 120 -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Say hello."}],"max_tokens":4,"stream":true}' "http://127.0.0.1:$PORT/v1/chat/completions" | grep -m1 -E '"content":"[^"]' )"
   total=$((SECONDS - t0))
   if [ -n "$ft" ] && [ "$total" -le "$LIMIT" ]; then step PASS "first-token:$m" "$total s (limit $LIMIT)"; else step FAIL "first-token:$m" "$total s (limit $LIMIT), token: ${ft:-none}"; fi
   # the printed plan is what loads: the level, and the weights' size within 10%
-  info="$(curl -s -m 10 "http://127.0.0.1:$PORT/v1/glyd/info")"
+  info="$("$CURL" -s -m 10 "http://127.0.0.1:$PORT/v1/glyd/info")"
   lvl="$(echo "$info" | jq -r '.level.effective // empty')"; wb="$(echo "$info" | jq -r '.memory.weights_bytes // empty')"
   plan_lvl="$(echo "$why" | sed -n 's/^Plan: \([a-z]*\).*/\1/p')"; plan_gib="$("$GLYD" fit "$m" ${MACHINE:+--machine "$MACHINE"} 2>&1 | sed -n 's/.*: \([0-9.]*\) GiB of weights on the GPU.*/\1/p' | head -1)"
   if [ -n "$lvl" ] && [ -n "$plan_lvl" ] && [ "$lvl" = "$plan_lvl" ]; then
