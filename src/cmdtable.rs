@@ -280,7 +280,10 @@ mod tests {
     #[test]
     fn a_command_that_does_not_take_json_or_machine_refuses_it_and_names_those_that_do() {
         let e = refuse_flag("run", &["json"]).unwrap();
-        assert!(e.contains("glyd run: --json is not a flag") && e.contains("ls, ps, service, fit, doctor, supports, preflight, bench"), "{e}");
+        assert!(e.contains("glyd run: --json is not a flag"), "{e}");
+        for takes in ["ls", "ps", "service", "fit", "doctor", "names", "supports", "preflight", "bench"] {
+            assert!(e.contains(takes), "{takes}: {e}");
+        }
         assert!(refuse_flag("ps", &["machine"]).unwrap().contains("fit, doctor, bench"));
         assert_eq!(refuse_flag("fit", &["json", "machine", "context"]), None);
         assert_eq!(refuse_flag("bench", &["json", "machine"]), None);
