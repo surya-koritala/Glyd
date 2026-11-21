@@ -1,0 +1,1 @@
+SKIP	p17-continue	not run here (an editor extension); Continue speaks the OpenAI chat and completions API that the client matrix checks

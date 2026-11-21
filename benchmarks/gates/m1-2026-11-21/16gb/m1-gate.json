@@ -1,0 +1,177 @@
+[
+  {
+    "status": "PASS",
+    "step": "machine",
+    "detail": "NVIDIA RTX A4000, 16376 MiB, 580.178.04; tier 16gb; 503 GiB RAM; Ubuntu 24.04.5 LTS"
+  },
+  {
+    "status": "PASS",
+    "step": "install",
+    "detail": "13 s: GLYD_VERSION=0.33.1 GLYD_ENGINE_TARBALL=/root/glyd-engine-v0.33.1-linux-x86_64.tar.gz sh /root/install.sh"
+  },
+  {
+    "status": "PASS",
+    "step": "glyd-version",
+    "detail": "glyd 0.33.1 (/root/.local/bin/glyd)"
+  },
+  {
+    "status": "PASS",
+    "step": "plan:google/gemma-4-12B-it",
+    "detail": "run: Plan: kestrel (6.5 bits) · GPU 0 (NVIDIA RTX A4000) · 32768 tokens of context · ~24 tokens/s"
+  },
+  {
+    "status": "PASS",
+    "step": "first-token:google/gemma-4-12B-it",
+    "detail": "11 s after the download (limit 120); 71 s in all, 60 s of it downloading"
+  },
+  {
+    "status": "FAIL",
+    "step": "plan-is-load:google/gemma-4-12B-it",
+    "detail": "weights 10067392440 bytes against the plan's  GiB"
+  },
+  {
+    "status": "PASS",
+    "step": "json-schema:google/gemma-4-12B-it",
+    "detail": "{\"city\":\"Tokyo\",\"population\":13929286,\"coastal\":true}"
+  },
+  {
+    "status": "PASS",
+    "step": "plan:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+    "detail": "run: Plan: kestrel (6.3 bits) · experts in RAM, a 11.3 GiB cache on the GPU (~86% of expert reads), the CPU computes the rest · 32768 tokens of context · ~89 tokens/s"
+  },
+  {
+    "status": "PASS",
+    "step": "first-token:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+    "detail": "42 s after the download (limit 120); 155 s in all, 113 s of it downloading"
+  },
+  {
+    "status": "FAIL",
+    "step": "plan-is-load:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+    "detail": "weights 13929125640 bytes against the plan's  GiB"
+  },
+  {
+    "status": "PASS",
+    "step": "json-schema:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+    "detail": "{\"city\": \"Tokyo\", \"population\": 37400068, \"coastal\": true}"
+  },
+  {
+    "status": "PASS",
+    "step": "plan:Qwen/Qwen3.8-27B",
+    "detail": "refuse: Plan: none fits"
+  },
+  {
+    "status": "PASS",
+    "step": "refusal:Qwen/Qwen3.8-27B",
+    "detail": "exit 3, 2 lines: glyd: Qwen3.8-27B (Qwen3.5) runs at the kestrel, swift and wren levels in this engine, not penguin."
+  },
+  {
+    "status": "PASS",
+    "step": "plan:Qwen/Qwen3.8-Flash-Next",
+    "detail": "refuse: glyd: Qwen3.8-Flash-Next (Qwen3.8-Flash-Next) does not run with glyd run yet."
+  },
+  {
+    "status": "PASS",
+    "step": "refusal:Qwen/Qwen3.8-Flash-Next",
+    "detail": "exit 3, 2 lines: glyd: Qwen3.8-Flash-Next (Qwen3.8-Flash-Next) does not run with glyd run yet."
+  },
+  {
+    "status": "PASS",
+    "step": "plan:Qwen/Qwen-AgentWorld-35B-A3B",
+    "detail": "refuse: glyd: Qwen-AgentWorld-35B-A3B is a Qwen3_5MoeForConditionalGeneration model, and this engine runs Qwen3 models so far."
+  },
+  {
+    "status": "PASS",
+    "step": "refusal:Qwen/Qwen-AgentWorld-35B-A3B",
+    "detail": "exit 3, 2 lines: glyd: Qwen-AgentWorld-35B-A3B is a Qwen3_5MoeForConditionalGeneration model, and this engine runs Qwen3 models so far."
+  },
+  {
+    "status": "PASS",
+    "step": "plan:zai-org/GLM-5.3-Flash",
+    "detail": "refuse: Plan: none fits"
+  },
+  {
+    "status": "PASS",
+    "step": "refusal:zai-org/GLM-5.3-Flash",
+    "detail": "exit 1, 2 lines: glyd: the disk holding /root/.cache/huggingface/hub has 124.0 GB left, and 328.4 GB are to be downloaded."
+  },
+  {
+    "status": "PASS",
+    "step": "plan:meta-models/Muse-Glimmer-30B",
+    "detail": "refuse: glyd: Muse-Glimmer-30B is a MuseGlimmerForConditionalGeneration model, and this engine runs Qwen3 models so far."
+  },
+  {
+    "status": "PASS",
+    "step": "refusal:meta-models/Muse-Glimmer-30B",
+    "detail": "exit 3, 2 lines: glyd: Muse-Glimmer-30B is a MuseGlimmerForConditionalGeneration model, and this engine runs Qwen3 models so far."
+  },
+  {
+    "status": "PASS",
+    "step": "plan:deepseek-ai/DeepSeek-V4-Flash-DSpark",
+    "detail": "refuse: Plan: none fits"
+  },
+  {
+    "status": "PASS",
+    "step": "refusal:deepseek-ai/DeepSeek-V4-Flash-DSpark",
+    "detail": "exit 1, 2 lines: glyd: the disk holding /root/.cache/huggingface/hub has 124.0 GB left, and 166.9 GB are to be downloaded."
+  },
+  {
+    "status": "PASS",
+    "step": "plan:moonshotai/Kimi-K3",
+    "detail": "refuse: Plan: none fits"
+  },
+  {
+    "status": "PASS",
+    "step": "refusal:moonshotai/Kimi-K3",
+    "detail": "exit 1, 2 lines: glyd: the disk holding /root/.cache/huggingface/hub has 124.0 GB left, and 1561.0 GB are to be downloaded."
+  },
+  {
+    "status": "PASS",
+    "step": "no-python",
+    "detail": "no call to python or pip during the run"
+  },
+  {
+    "status": "PASS",
+    "step": "ext:driver-r535",
+    "detail": "NVIDIA_GeForce_RTX_3060 12288MiB 535.154.05; PASS 1 driver: NVIDIA_GeForce_RTX_3060 12288MiB, driver 535.154.05 (CUDA 12.2); PASS 2 --version: glyd 0.33.1; PASS 3 doctor:   GPU library   /root/b/libglyd_gpu_cuda12.so; PASS 4 run: Hello, I hope you're well. ; SKIP 5 cuda12 = unforced: driver 535.154.05 is below 580: the unforced run is the CUDA 12 one; PASS 6 serve: HTTP 200: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion\",\"created\":1795288421,\"model\":\"glyd/gemma-4-1; SKIP 7 too old: no driver below R535 here; "
+  },
+  {
+    "status": "SKIP",
+    "step": "ext:driver-r550",
+    "detail": "not run: the oldest supported driver passed (driver-r535, RTX 3060, 2026-11-21) and the 8 GB and 16 GB machines ran R595 or newer"
+  },
+  {
+    "status": "SKIP",
+    "step": "ext:driver-r570",
+    "detail": "not run: the oldest supported driver passed (driver-r535, RTX 3060, 2026-11-21) and the 8 GB and 16 GB machines ran R595 or newer"
+  },
+  {
+    "status": "SKIP",
+    "step": "ext:p2a-no-oom",
+    "detail": "measured by this gate's plan-is-load steps (the planned level and weights loaded, no OOM) on the 8 GB and 16 GB machines"
+  },
+  {
+    "status": "SKIP",
+    "step": "ext:r5a-schema-real-weights",
+    "detail": "measured by this gate's json-schema steps on the real weights of every model that runs"
+  },
+  {
+    "status": "SKIP",
+    "step": "ext:r8-reference-gpu-results",
+    "detail": "glyd bench results are added from the 16 GB machine's run"
+  },
+  {
+    "status": "SKIP",
+    "step": "ext:p17-open-webui",
+    "detail": "not run here (no Docker in a Vast container); Open WebUI in a container with default settings was checked on Linux by hand in #325"
+  },
+  {
+    "status": "SKIP",
+    "step": "ext:p17-continue",
+    "detail": "not run here (an editor extension); Continue speaks the OpenAI chat and completions API that the client matrix checks"
+  },
+  {
+    "status": "PASS",
+    "step": "ext:p17-openai-sdk",
+    "detail": "the client matrix (OpenAI SDK chat, stream, usage, JSON schema, forced tools, Responses) passed against google/gemma-4-12B-it:kestrel served on the RTX 4080 SUPER: https://github.com/surya-koritala/Glyd/actions/runs/44936778841"
+  }
+]

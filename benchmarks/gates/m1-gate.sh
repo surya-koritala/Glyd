@@ -112,6 +112,8 @@ while IFS= read -r line; do
     if [ "$code" -ne 0 ] && [ "$code" -lt 124 ] && [ "$n" -le 3 ]; then step PASS "refusal:$m" "exit $code, $n lines: $(echo "$out" | head -1 | cut -c1-140)"; else step FAIL "refusal:$m" "exit $code, $n lines (a refusal is a few lines and a non-zero exit)"; fi
     continue
   fi
+  # (the plan's weights, read before the server holds the GPU: fit asked while it runs sees the GPU full and plans otherwise)
+  plan_gib="$("$GLYD" fit "$m" ${MACHINE:+--machine "$MACHINE"} 2>&1 | grep -oE '[0-9.]+ GiB of weights on the GPU' | head -1 | cut -d' ' -f1)"
   # first token: the server started, the model packed or downloaded where it is not here, and the first streamed token, all inside the limit
   t0=$SECONDS; "$GLYD" serve "$m" --host 127.0.0.1 --port "$PORT" --users 1 > "$OUT/serve-$(echo "$m" | tr '/:' '__').log" 2>&1 & SRV=$!
   SLOG="$OUT/serve-$(echo "$m" | tr '/:' '__').log"; t_dl=""
@@ -127,7 +129,7 @@ while IFS= read -r line; do
   # the printed plan is what loads: the level, and the weights' size within 10%
   info="$("$CURL" -s -m 10 "http://127.0.0.1:$PORT/v1/glyd/info")"
   lvl="$(echo "$info" | jq -r '.level.effective // empty')"; wb="$(echo "$info" | jq -r '.memory.weights_bytes // empty')"
-  plan_lvl="$(echo "$why" | sed -n 's/^Plan: \([a-z]*\).*/\1/p')"; plan_gib="$("$GLYD" fit "$m" ${MACHINE:+--machine "$MACHINE"} 2>&1 | grep -oE '[0-9.]+ GiB of weights on the GPU' | head -1 | cut -d' ' -f1)"
+  plan_lvl="$(echo "$why" | sed -n 's/^Plan: \([a-z]*\).*/\1/p')"
   if [ -n "$lvl" ] && [ -n "$plan_lvl" ] && [ "$lvl" = "$plan_lvl" ]; then
     if [ -n "$wb" ] && [ -n "$plan_gib" ] && awk -v w="$wb" -v p="$plan_gib" 'BEGIN{g=w/1073741824; d=(g>p?g-p:p-g)/p; exit !(d<=0.10)}'; then step PASS "plan-is-load:$m" "level $lvl, weights $(awk -v w="$wb" 'BEGIN{printf "%.2f", w/1073741824}') GiB against the plan's $plan_gib"
     else step FAIL "plan-is-load:$m" "weights $wb bytes against the plan's $plan_gib GiB"; fi
