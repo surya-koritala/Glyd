@@ -880,6 +880,7 @@ impl NhMoeHb {
                 expert_rows: c.inter,
                 sparse: true,
                 slice: 1,
+                hb: 0,
             };
             let _ = e.moe_scratch().set(MoeScratch::for_shapes(e.dev(), e.lib(), &[shape], e.chunk())?);
         }
