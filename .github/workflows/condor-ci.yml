@@ -7,6 +7,10 @@ on:
     paths: ['condor/**', '.github/workflows/condor-ci.yml']
 permissions:
   contents: read
+# a pull request's older run is cancelled by its newer one; any other run is a group of its own, so none is cancelled or held back (as ci.yml)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 jobs:
   check:
     runs-on: ubuntu-24.04

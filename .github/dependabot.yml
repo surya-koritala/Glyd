@@ -23,6 +23,11 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 2
+    # The Python path is frozen and retires in M3 (F7): the ranges of vllm and huggingface-hub in glyd-gpu-py stay as they are (the bumps failed the Python jobs, and nothing in
+    # the Rust engine depends on them).
+    ignore:
+      - dependency-name: "vllm"
+      - dependency-name: "huggingface-hub"
     groups:
       pip:
         update-types: ["minor", "patch"]

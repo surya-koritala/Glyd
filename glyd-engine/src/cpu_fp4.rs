@@ -51,6 +51,17 @@ pub fn rows(kernel: Kernel, w: &Fp4View, x: &[f32], r0: usize, r1: usize, y: &mu
         }
         return;
     }
+    #[cfg(target_arch = "aarch64")]
+    if kernel == Kernel::Neon {
+        // SAFETY: NEON is in every aarch64 target Rust builds for; the slices are checked above and by `is_valid`.
+        unsafe {
+            let xv = x_vectors_neon(x, w.cols / 16);
+            for rb in r0 / 64..r1 / 64 {
+                block_neon(w, &xv, rb, &mut y[rb * 64 - r0..][..64]);
+            }
+        }
+        return;
+    }
     let _ = kernel;
     for rb in r0 / 64..r1 / 64 {
         block_scalar(w, x, rb, &mut y[rb * 64 - r0..][..64]);
@@ -175,6 +186,112 @@ unsafe fn x_vectors(x: &[f32], ks: usize) -> Vec<[std::arch::x86_64::__m256; 4]>
                     xs[8 * jh + 4 + h],
                     xs[8 * jh + 6 + h],
                 )
+            };
+            [xp(0, 0), xp(0, 1), xp(1, 0), xp(1, 1)]
+        })
+        .collect()
+}
+
+/// The top two bytes of each E2M1 code's fp32 value (the other two are 0), for NEON's table lookups.
+#[cfg(target_arch = "aarch64")]
+const E2M1_TOP: [[u8; 16]; 2] = {
+    let mut t = [[0u8; 16]; 2];
+    let mut c = 0;
+    while c < 16 {
+        let bits = E2M1_BITS[c];
+        t[0][c] = (bits >> 24) as u8;
+        t[1][c] = (bits >> 16) as u8;
+        c += 1;
+    }
+    t
+};
+
+/// The E2M1 values' fp32 bits (E2M1's, as a constant expression).
+#[cfg(target_arch = "aarch64")]
+const E2M1_BITS: [u32; 16] = [
+    0x0000_0000,
+    0x3F00_0000,
+    0x3F80_0000,
+    0x3FC0_0000,
+    0x4000_0000,
+    0x4040_0000,
+    0x4080_0000,
+    0x40C0_0000,
+    0x8000_0000,
+    0xBF00_0000,
+    0xBF80_0000,
+    0xBFC0_0000,
+    0xC000_0000,
+    0xC040_0000,
+    0xC080_0000,
+    0xC0C0_0000,
+];
+
+/// `block_scalar` four lanes at a time on NEON: lanes 4 g .. 4 g + 3 (t = 0 .. 3, rows 8 n + g) of a step, their two words of a half (q = 2 qh and 2 qh + 1) split apart by one
+/// de-interleaving load, each code's value by two table lookups (its float's top bytes) times the columns' x for those lanes (`xv`), summed over a run of two steps in four
+/// accumulators (n = 4 qh .. 4 qh + 3) held in registers, then times the run's scale of each row; a row's four lanes added at the block's end. Arm's server and desktop cores
+/// (Neoverse V2 in Grace, N2, the GB10's) run SVE2 at 128 bits, NEON's width, so NEON is the kernel there too.
+///
+/// # Safety
+/// The slices are as `rows` checks, `xv` holds `cols / 16` steps' four vectors.
+#[cfg(target_arch = "aarch64")]
+unsafe fn block_neon(w: &Fp4View, xv: &[[std::arch::aarch64::float32x4_t; 4]], rb: usize, out: &mut [f32]) {
+    use std::arch::aarch64::*;
+    let ks = w.cols / 16;
+    let (t3, t2) = (vld1q_u8(E2M1_TOP[0].as_ptr()), vld1q_u8(E2M1_TOP[1].as_ptr()));
+    let fifteen = vdupq_n_u32(15);
+    // (a code in the low byte of each 32-bit lane: the value's top bytes looked up there, the lane's other bytes look up code 0's, which are 0)
+    let value = |c: uint32x4_t| -> float32x4_t {
+        let i = vreinterpretq_u8_u32(c);
+        let hi = vshlq_n_u32::<24>(vreinterpretq_u32_u8(vqtbl1q_u8(t3, i)));
+        let lo = vshlq_n_u32::<16>(vreinterpretq_u32_u8(vqtbl1q_u8(t2, i)));
+        vreinterpretq_f32_u32(vorrq_u32(hi, lo))
+    };
+    let mut total = [vdupq_n_f32(0.0); 64];
+    for run in 0..ks / 2 {
+        for qh in 0..2 {
+            for g in 0..8 {
+                let mut acc = [vdupq_n_f32(0.0); 4];
+                for k in 2 * run..2 * run + 2 {
+                    let d = w.data.as_ptr().add((rb * ks + k) * INT4_STEP_BYTES + 8 * (4 * g + 32 * qh)) as *const u32;
+                    let words = vld2q_u32(d);
+                    let x4 = &xv[k];
+                    for (qm, word) in [words.0, words.1].into_iter().enumerate() {
+                        for p4 in 0..4 {
+                            let (j, jh) = ((4 * qm + p4) / 2, p4 % 2);
+                            for h in 0..2 {
+                                let c = vandq_u32(vshlq_u32(word, vdupq_n_s32(-((4 * p4 + 16 * h) as i32))), fifteen);
+                                acc[j] = vfmaq_f32(acc[j], value(c), x4[2 * jh + h]);
+                            }
+                        }
+                    }
+                }
+                for (j, a) in acc.iter().enumerate() {
+                    let r = 8 * (4 * qh + j) + g;
+                    total[r] = vfmaq_n_f32(total[r], *a, w.scale(rb * 64 + r, 2 * run));
+                }
+            }
+        }
+    }
+    for (o, t) in out.iter_mut().zip(&total) {
+        let v = [vgetq_lane_f32::<0>(*t), vgetq_lane_f32::<1>(*t), vgetq_lane_f32::<2>(*t), vgetq_lane_f32::<3>(*t)];
+        *o = (v[0] + v[1]) + (v[2] + v[3]);
+    }
+}
+
+/// The columns' x of every step for `block_neon`: for each (jh, h) at 2 jh + h, lane t holds column 8 jh + 2 t + h.
+///
+/// # Safety
+/// x holds 16 a step.
+#[cfg(target_arch = "aarch64")]
+unsafe fn x_vectors_neon(x: &[f32], ks: usize) -> Vec<[std::arch::aarch64::float32x4_t; 4]> {
+    use std::arch::aarch64::*;
+    (0..ks)
+        .map(|k| {
+            let xs = &x[16 * k..16 * k + 16];
+            let xp = |jh: usize, h: usize| {
+                let v = [xs[8 * jh + h], xs[8 * jh + 2 + h], xs[8 * jh + 4 + h], xs[8 * jh + 6 + h]];
+                vld1q_f32(v.as_ptr())
             };
             [xp(0, 0), xp(0, 1), xp(1, 0), xp(1, 1)]
         })

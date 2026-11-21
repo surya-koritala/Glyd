@@ -6,55 +6,110 @@
       "name": "gemma4",
       "aliases": ["gemma-4", "gemma"],
       "models": [
-        { "size": "12b", "repo": "google/gemma-4-12B-it", "default": true, "released": "2026-05-23" },
-        { "size": "31b", "repo": "google/gemma-4-31B-it", "released": "2026-03-11" }
+        {
+          "size": "12b", "repo": "google/gemma-4-12B-it", "default": true, "released": "2026-05-23",
+          "license": "apache-2.0", "gated": false, "measured": "benchmarks/gpu/rtx4080s-gemma4-12b-2026-11-20"
+        },
+        {
+          "size": "31b", "repo": "google/gemma-4-31B-it", "released": "2026-03-11",
+          "license": "apache-2.0", "gated": false, "measured": null
+        }
       ]
     },
     {
       "name": "qwen3.8",
       "aliases": ["qwen-3.8", "qwen"],
       "models": [
-        { "size": "27b", "repo": "Qwen/Qwen3.8-27B", "default": true, "released": "2026-08-05" },
-        { "size": "flash-next", "repo": "Qwen/Qwen3.8-Flash-Next", "released": "2026-08-24" }
+        {
+          "size": "27b", "repo": "Qwen/Qwen3.8-27B", "default": true, "released": "2026-08-05",
+          "license": "apache-2.0", "gated": false, "measured": "benchmarks/gpu/int6-l40-2026-10-09"
+        },
+        {
+          "size": "flash-next", "repo": "Qwen/Qwen3.8-Flash-Next", "released": "2026-08-24",
+          "license": "qwen-community-1.0", "gated": false, "measured": "condor/results/v0.2.4"
+        }
       ]
     },
     {
       "name": "glm",
       "aliases": ["glm5.3", "glm-5.3"],
-      "models": [{ "size": "5.3-flash", "repo": "zai-org/GLM-5.3-Flash", "default": true, "released": "2026-08-25" }]
+      "models": [
+        {
+          "size": "5.3-flash", "repo": "zai-org/GLM-5.3-Flash", "default": true, "released": "2026-08-25",
+          "license": "mit", "gated": false, "measured": "research/glyd-354/h100x4-2026-10-21"
+        }
+      ]
     },
     {
       "name": "kimi",
       "aliases": ["kimi-k3"],
-      "models": [{ "size": "k3", "repo": "moonshotai/Kimi-K3", "default": true, "released": "2026-06-13" }]
+      "models": [
+        {
+          "size": "k3", "repo": "moonshotai/Kimi-K3", "default": true, "released": "2026-06-13",
+          "license": "kimi-k3", "gated": false, "measured": "research/kimi-k3-a100-2026-10-22b"
+        }
+      ]
     },
     {
       "name": "muse",
       "aliases": ["muse-spark", "muse-spark-open"],
-      "models": [{ "size": "816b-a42b", "repo": "meta-models/Muse-Spark-Open-816B-A42B", "default": true, "released": "2026-09-15" }]
+      "models": [
+        {
+          "size": "816b-a42b", "repo": "meta-models/Muse-Spark-Open-816B-A42B", "default": true, "released": "2026-09-15",
+          "license": "muse-model-license", "gated": "manual", "measured": null
+        }
+      ]
     },
     {
       "name": "deepseek",
       "aliases": ["deepseek-v4", "deepseek-v4-flash"],
-      "models": [{ "size": "v4-flash", "repo": "deepseek-ai/DeepSeek-V4-Flash-0731", "default": true, "released": "2026-07-31" }]
+      "models": [
+        {
+          "size": "v4-flash", "repo": "deepseek-ai/DeepSeek-V4-Flash-0731", "default": true, "released": "2026-07-31",
+          "license": "mit", "gated": false, "measured": "research/tp-8xa100-2026-10-22"
+        }
+      ]
     },
     {
       "name": "qwen3.6",
       "legacy": true,
       "aliases": ["qwen-3.6"],
-      "models": [{ "size": "27b", "repo": "Qwen/Qwen3.6-27B", "default": true, "released": "2026-04-21" }]
+      "models": [
+        {
+          "size": "27b", "repo": "Qwen/Qwen3.6-27B", "default": true, "released": "2026-04-21",
+          "license": "apache-2.0", "gated": false, "measured": null
+        }
+      ]
     },
     {
       "name": "qwen3.5",
       "legacy": true,
       "aliases": ["qwen-3.5"],
       "models": [
-        { "size": "0.8b", "repo": "Qwen/Qwen3.5-0.8B", "released": "2026-02-28" },
-        { "size": "2b", "repo": "Qwen/Qwen3.5-2B", "released": "2026-02-28" },
-        { "size": "4b", "repo": "Qwen/Qwen3.5-4B", "released": "2026-02-27" },
-        { "size": "9b", "repo": "Qwen/Qwen3.5-9B", "default": true, "released": "2026-02-27" },
-        { "size": "27b", "repo": "Qwen/Qwen3.5-27B", "released": "2026-02-24" },
-        { "size": "35b-a3b", "repo": "Qwen/Qwen3.5-35B-A3B", "released": "2026-02-24" }
+        {
+          "size": "0.8b", "repo": "Qwen/Qwen3.5-0.8B", "released": "2026-02-28",
+          "license": "apache-2.0", "gated": false, "measured": null
+        },
+        {
+          "size": "2b", "repo": "Qwen/Qwen3.5-2B", "released": "2026-02-28",
+          "license": "apache-2.0", "gated": false, "measured": null
+        },
+        {
+          "size": "4b", "repo": "Qwen/Qwen3.5-4B", "released": "2026-02-27",
+          "license": "apache-2.0", "gated": false, "measured": null
+        },
+        {
+          "size": "9b", "repo": "Qwen/Qwen3.5-9B", "default": true, "released": "2026-02-27",
+          "license": "apache-2.0", "gated": false, "measured": null
+        },
+        {
+          "size": "27b", "repo": "Qwen/Qwen3.5-27B", "released": "2026-02-24",
+          "license": "apache-2.0", "gated": false, "measured": null
+        },
+        {
+          "size": "35b-a3b", "repo": "Qwen/Qwen3.5-35B-A3B", "released": "2026-02-24",
+          "license": "apache-2.0", "gated": false, "measured": null
+        }
       ]
     },
     {
@@ -62,16 +117,30 @@
       "legacy": true,
       "aliases": ["qwen-3"],
       "models": [
-        { "size": "0.6b", "repo": "Qwen/Qwen3-0.6B", "released": "2025-04-27" },
-        { "size": "8b", "repo": "Qwen/Qwen3-8B", "default": true, "released": "2025-04-27" },
-        { "size": "32b", "repo": "Qwen/Qwen3-32B", "released": "2025-04-27" }
+        {
+          "size": "0.6b", "repo": "Qwen/Qwen3-0.6B", "released": "2025-04-27",
+          "license": "apache-2.0", "gated": false, "measured": null
+        },
+        {
+          "size": "8b", "repo": "Qwen/Qwen3-8B", "default": true, "released": "2025-04-27",
+          "license": "apache-2.0", "gated": false, "measured": "benchmarks/gpu/rtx4080s-qwen3-8b-engine-2026-11-20"
+        },
+        {
+          "size": "32b", "repo": "Qwen/Qwen3-32B", "released": "2025-04-27",
+          "license": "apache-2.0", "gated": false, "measured": null
+        }
       ]
     },
     {
       "name": "nemotron3",
       "legacy": true,
       "aliases": ["nemotron-3", "nemotron"],
-      "models": [{ "size": "120b-a12b", "repo": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "default": true, "released": "2026-03-10" }]
+      "models": [
+        {
+          "size": "120b-a12b", "repo": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "default": true, "released": "2026-03-10",
+          "license": "nvidia-nemotron-open-model-license", "gated": false, "measured": "benchmarks/gpu/nh-hb-4090-2026-10-10"
+        }
+      ]
     }
   ]
 }

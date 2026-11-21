@@ -6,7 +6,7 @@
 use super::*;
 use tools::obj;
 
-fn fail(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
+fn fail(s: &mut dyn Conn, cors: &str, code: u16, msg: &str) {
     respond_with(s, code, "application/json", cors, error_body(msg, code).as_bytes());
 }
 
@@ -352,7 +352,7 @@ enum Cur {
 
 /// The events of a streamed response, each with its number in the order they go: one output item is open at a time, its events sent as the deltas come.
 struct Events<'a> {
-    s: &'a mut TcpStream,
+    s: &'a mut dyn Conn,
     seq: u64,
     /// The items that are done, as JSON (the response's output where it ends).
     done: Vec<String>,
@@ -442,6 +442,24 @@ impl Events<'_> {
         self.send(kind, vec![("output_index", index), ("item", v)])
     }
 
+    /// A message item opened with its (empty) text part: `output_item.added` and `content_part.added`, as the text's own events then refer to them (a client that keeps the response as the events build it needs the part to be there).
+    fn open_text(&mut self) -> bool {
+        let id = item_id("msg");
+        let mut ok = self.raw_item("response.output_item.added", &message_item(&id, "in_progress", None));
+        let index = self.index();
+        ok &= self.send(
+            "response.content_part.added",
+            vec![
+                ("item_id", Value::from(id.as_str())),
+                ("output_index", index),
+                ("content_index", Value::from(0u64)),
+                ("part", json::parse("{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[],\"logprobs\":[]}").unwrap_or(Value::Null)),
+            ],
+        );
+        self.cur = Some(Cur::Text { id, text: String::new() });
+        ok
+    }
+
     /// What a delta adds: thinking, answer text, and calls, each in an item of its own kind (a change of kind ends the open item and begins another).
     fn delta(&mut self, d: &Delta) -> bool {
         let mut ok = true;
@@ -469,19 +487,7 @@ impl Events<'_> {
         if !d.content.is_empty() {
             if !matches!(self.cur, Some(Cur::Text { .. })) {
                 ok &= self.close();
-                let id = item_id("msg");
-                ok &= self.raw_item("response.output_item.added", &message_item(&id, "in_progress", None));
-                let index = self.index();
-                ok &= self.send(
-                    "response.content_part.added",
-                    vec![
-                        ("item_id", Value::from(id.as_str())),
-                        ("output_index", index),
-                        ("content_index", Value::from(0u64)),
-                        ("part", json::parse("{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[],\"logprobs\":[]}").unwrap_or(Value::Null)),
-                    ],
-                );
-                self.cur = Some(Cur::Text { id, text: String::new() });
+                ok &= self.open_text();
             }
             if let Some(Cur::Text { id, text }) = &mut self.cur {
                 text.push_str(&d.content);
@@ -524,7 +530,7 @@ impl Events<'_> {
 }
 
 /// One Responses request on `s`.
-pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, id: u64) {
+pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req, id: u64) {
     let cors = req.cors.as_str();
     let Some(v) = std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()).filter(|v| matches!(v, Value::Object(_))) else {
         return fail(s, cors, 400, "the body is not a JSON object");
@@ -558,10 +564,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                         let mut fine = ev.delta(&last) && ev.close();
                         if ev.done.is_empty() {
                             // (a reply with no words: the message is there, empty, as OpenAI's is)
-                            let id = item_id("msg");
-                            fine = fine && ev.raw_item("response.output_item.added", &message_item(&id, "in_progress", None));
-                            ev.cur = Some(Cur::Text { id, text: String::new() });
-                            fine = fine && ev.close();
+                            fine = fine && ev.open_text() && ev.close();
                         }
                         let (status, reason) =
                             status_of(if ev.done.iter().any(|i| i.contains("\"type\":\"function_call\"")) { "tool_calls" } else { done.finish_reason });
@@ -810,6 +813,26 @@ mod tests {
             (Some("response.incomplete"), Some("max_output_tokens")),
             "{body}"
         );
+    }
+
+    /// A reply with no words still has its message, with the text part opened before the text's events refer to it: a client that builds the response from the events (the SDK's stream helper) indexes the part.
+    #[test]
+    fn an_empty_reply_opens_its_text_part() {
+        let addr = serve_script("<|im_end|>");
+        let (st, body) = ask(addr, r#"{"input":"hi","stream":true,"max_output_tokens":50,"reasoning":{"effort":"none"}}"#);
+        assert_eq!(st, 200, "{body}");
+        let kinds: Vec<String> = events(&body).iter().map(|e| at(e, &["type"]).as_str().unwrap().to_string()).collect();
+        let pos = |k: &str| kinds.iter().position(|x| x == k).unwrap_or_else(|| panic!("no {k} in {kinds:?}"));
+        assert!(
+            pos("response.output_item.added") < pos("response.content_part.added") && pos("response.content_part.added") < pos("response.output_text.done"),
+            "{kinds:?}"
+        );
+        assert!(
+            pos("response.output_text.done") < pos("response.content_part.done") && pos("response.content_part.done") < pos("response.output_item.done"),
+            "{kinds:?}"
+        );
+        let last = events(&body).pop().unwrap();
+        assert_eq!(at(&last, &["response", "output", "0", "content", "0", "type"]).as_str(), Some("output_text"), "{body}");
     }
 
     /// A call of a function: a `function_call` item with the call's id, the function's name and its arguments as the string they are, in the whole response and in the stream (the arguments in deltas, then whole).

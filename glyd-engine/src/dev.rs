@@ -163,6 +163,8 @@ impl Dev {
         if all.is_empty() {
             return Dev::probe(0).map(|g| vec![g]);
         }
+        // (a GPU under WDDM pages what does not fit into system memory without an error: the plans keep more of it free)
+        crate::plan::set_wddm(all.iter().any(|g| Dev::wddm(g.ordinal)));
         Ok(all)
     }
 

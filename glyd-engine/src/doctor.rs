@@ -910,9 +910,13 @@ mod tests {
         let mut f = healthy();
         f.library = Err("libglyd_gpu_cuda13.so is not beside the program".into());
         case("no library", f, "gpu-library", Status::Fail);
+        // (aarch64 is planned as x86_64: a healthy computer passes on it; an architecture the engine is not built for fails)
         let mut f = healthy();
         f.arch = "aarch64".into();
-        case("arm", f, "machine", Status::Fail);
+        assert!(checks(&f).iter().filter(|c| c.id == "machine").all(|c| c.status == Status::Ok), "aarch64");
+        let mut f = healthy();
+        f.arch = "riscv64".into();
+        case("another architecture", f, "machine", Status::Fail);
         let mut f = healthy();
         f.ram = Some((8 << 30, 5 << 30));
         case("little memory", f, "ram", Status::Note);

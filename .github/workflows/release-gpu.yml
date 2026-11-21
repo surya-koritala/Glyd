@@ -408,7 +408,10 @@ jobs:
           & $exe --version
           if ($LASTEXITCODE) { throw 'glyd.exe does not start' }
           # imports: the system's DLLs only (the C runtime is linked in: .cargo/config.toml)
-          $dumpbin = (Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe | Select-Object -First 1).FullName
+          # (dumpbin of the Visual Studio vswhere finds, the 64-bit host's: Visual Studio 2022 lives under Program Files, not Program Files (x86))
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = (Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1).FullName
+          if (-not $dumpbin) { throw "dumpbin.exe not found under $vs" }
           $deps = & $dumpbin /dependents $exe | Select-String -Pattern '\.dll' | ForEach-Object { $_.Line.Trim().ToLower() }
           $deps
           $other = $deps | Where-Object { $_ -notmatch '^(kernel32|user32|advapi32|ws2_32|bcrypt|ntdll|userenv|shell32|ole32|oleaut32|crypt32|secur32|ncrypt|msvcrt|api-ms-win-.*|iphlpapi|dbghelp|gdi32|winmm|setupapi|cfgmgr32|rpcrt4|shlwapi|version|wintrust|ucrtbase|normaliz|psapi|propsys|mswsock|dnsapi|netapi32|bcryptprimitives|cabinet)\.dll$' }

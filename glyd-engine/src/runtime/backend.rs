@@ -130,7 +130,7 @@ pub struct StepCx<'a, B: Backend + ?Sized> {
 /// A captured step (a CUDA or HIP graph); backends that cannot capture return None from `capture`.
 pub struct Captured;
 
-/// All-reduce, all-gather, all-to-all across a backend's devices (M5).
+/// All-reduce, all-gather, all-to-all across a backend's devices (M4).
 pub trait Collective {}
 
 pub trait Backend: Send + Sync {

@@ -49,8 +49,10 @@ Not yet: Windows, macOS, aarch64 and CPU-only engines. AMD is a development buil
 6. [Several GPUs and Starlings](multi-gpu.md)
 7. [Condor](condor.md)
 8. [Troubleshooting](troubleshooting.md), by what `glyd doctor` prints
-9. [Models](models.md)
-10. [The model catalog](catalog.md)
+9. [API reference](api.md) and [the background service](service.md), generated from `docs/serve-api.md` and `docs/service.md`
+10. [Models](models.md), generated from `glyd-engine/src/support.rs`
+11. [The model catalog](catalog.md)
+12. [Checking a machine](gate.md): the M1 gate, step by step
 
 ## The command is `glyd`
 

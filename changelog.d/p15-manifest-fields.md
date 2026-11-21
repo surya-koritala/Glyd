@@ -1,0 +1,1 @@
+- The model manifest (`glyd-engine/models.json`) says for every model its license, whether the Hub gates it, and the record in `benchmarks/` or `research/` where the engine ran it (`null` where none); a test fails if an entry lacks one. The guide's catalog page has the process.
