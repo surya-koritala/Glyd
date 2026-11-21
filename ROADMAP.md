@@ -100,7 +100,7 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 - [x] P10 glyd doctor and a support bundle ([#165](https://github.com/surya-koritala/Glyd/issues/165))
 - [ ] F3a GGUF reader ([#176](https://github.com/surya-koritala/Glyd/issues/176))
 - [x] C5 Starlings crates into the main workspace ([#199](https://github.com/surya-koritala/Glyd/issues/199))
-- [ ] D3 Metrics, health, readiness and drain ([#204](https://github.com/surya-koritala/Glyd/issues/204))
+- [x] D3 Metrics, health, readiness and drain ([#204](https://github.com/surya-koritala/Glyd/issues/204))
 - [ ] D6 Signed releases and attestations ([#207](https://github.com/surya-koritala/Glyd/issues/207))
 - [ ] P12 Fuzz the engine's parsers ([#224](https://github.com/surya-koritala/Glyd/issues/224))
 - [ ] P14 User documentation site ([#225](https://github.com/surya-koritala/Glyd/issues/225))
