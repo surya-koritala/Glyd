@@ -1,0 +1,2 @@
+- The engine runs Gemma 4 on Blackwell consumer GPUs (RTX 50 series): `g4_add_norm` needed more registers than a 1,024-thread block has on sm_120 ("too many resources requested for launch"); kernels.yml now fails on any kernel past 64 registers without launch bounds.
+- With the Rust install alone (no vLLM), `glyd run` uses the engine on every GPU it supports, not only the measured ones; the refusals' "full glyd" line installs with `GLYD_WITH_VLLM=1`.

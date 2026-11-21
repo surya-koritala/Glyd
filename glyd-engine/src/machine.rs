@@ -112,7 +112,13 @@ pub fn instead(with_vllm: &str, rust_only: &str) -> String {
 }
 
 /// The Rust-only install's way to the models and GPUs the engine does not run: the whole tool.
-pub const FULL_TOOL: &str = "install the full glyd, which runs it another way: curl -LsSf https://getglyd.com/install.sh | sh";
+pub const FULL_TOOL: &str = "install the full glyd, which runs it another way: curl -LsSf https://getglyd.com/install.sh | GLYD_WITH_VLLM=1 sh";
+
+/// Whether a run skips the measured list (`GPUS`): the user asked for the engine by name (`asked`: GLYD_ENGINE=1), or vLLM is not installed. The list chooses between the engine and vLLM where
+/// both are here; with the Rust install alone (no Python: the installer's default) the engine is what there is, and it runs on every GPU it supports, measured or not (#214).
+pub fn engine_chosen(asked: bool) -> bool {
+    asked || !vllm_installed()
+}
 
 /// A line of the list: the word the driver's name for the GPU holds, the GPU's compute capability, and the model families the engine is measured on there.
 pub type Entry = (&'static str, (i32, i32), &'static [&'static str]);
@@ -129,7 +135,7 @@ pub const ANY_FAMILY: &str = "";
 ///
 /// THE SPEED BAR: a family is here on a GPU only where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory (the engine serves up to 8 users at once, so
 /// `glyd serve` is vLLM's, whatever is here), and has run on the GPU. Measurements decide it, not what the engine can run: it was EMPTY until they were made (the first line, the RTX 4080 SUPER, is of 2026-11-20), and while it is empty every model runs as
-/// it did in v0.28 (vLLM). Every GPU not named here, and every compute capability, runs vLLM. Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9), &["Qwen3"]),` (docs/adding-a-gpu.md: `scripts/gpu_bar.py` reads the two measurement files).
+/// it did in v0.28 (vLLM). Where vLLM is installed, every GPU not named here, and every compute capability, runs vLLM; with the Rust install alone the engine runs on every GPU it supports (`engine_chosen`). Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9), &["Qwen3"]),` (docs/adding-a-gpu.md: `scripts/gpu_bar.py` reads the two measurement files).
 pub const GPUS: &[Entry] = &[
     // measured 2026-11-20 on glyd-pc, Qwen3-8B, 1, 4 and 8 users at once with short, 2,000 and 4,000-token prompts, 5 runs of each engine: benchmarks/gpu/rtx4080s-bar-2026-11-20
     ("RTX 4080 SUPER", (8, 9), &["Qwen3"]),
@@ -701,6 +707,19 @@ mod tests {
         assert!(gpu_refusal(&g, "x86_64", true, "Gemma4").is_none() && gpu_refusal(&g, "x86_64", true, ANY_FAMILY).is_none());
         let table: &[Entry] = &[("L4", (8, 9), &["Qwen3", "Gemma4"]), ("H100", (9, 0), &["Qwen3"])];
         assert!(on_list(table, &gpu("NVIDIA L4", (8, 9), 22, 13000), "Gemma4") && !on_list(table, &gpu("NVIDIA H100 80GB HBM3", (9, 0), 80, 13000), "Gemma4"));
+    }
+
+    /// The list chooses between the engine and vLLM: with the Rust install alone (no vLLM) an unmeasured GPU runs the engine, and where vLLM is installed it runs vLLM unless the engine is asked for.
+    #[test]
+    fn the_list_chooses_only_where_vllm_is_installed() {
+        let g = gpu("NVIDIA GeForce RTX 4090", (8, 9), 24, 13000);
+        FORCE_VLLM.with(|f| f.set(Some(false)));
+        assert!(engine_chosen(false) && engine_chosen(true));
+        assert!(gpu_refusal(&g, "x86_64", engine_chosen(false), QWEN3).is_none());
+        FORCE_VLLM.with(|f| f.set(Some(true)));
+        assert!(!engine_chosen(false) && engine_chosen(true));
+        assert!(gpu_refusal(&g, "x86_64", engine_chosen(false), QWEN3).is_some() && gpu_refusal(&g, "x86_64", engine_chosen(true), QWEN3).is_none());
+        assert!(FULL_TOOL.contains("GLYD_WITH_VLLM=1 sh"), "{FULL_TOOL}");
     }
 
     #[test]

@@ -40,7 +40,10 @@ bird: penguin, kestrel, swift, wren, hummingbird.
    PyPI's trusted publisher for `glyd-gpu` must name this repository and `release-gpu.yml` (environment `pypi`).
 4. Check the release page has the CLI tarballs, the wheels and both engine bundles, each tarball's `.sigstore.json`, `SHA256SUMS`, `SHA256SUMS-engine` and the two SBOMs
    (`*.spdx.json`), and verify one tarball as a user would (docs/verify-releases.md).
-5. (reserved)
+5. getglyd.com: the owner puts the tag's `scripts/install.sh` and `scripts/install.ps1` at the site's root (content type
+   `text/plain`, `Cache-Control: no-cache`) and invalidates `/install.sh` and `/install.ps1` in its CDN; the site does not follow
+   the repository, so `curl -LsSf https://getglyd.com/install.sh | sh` installs the last version uploaded. Then check both:
+   `curl -fsSL https://getglyd.com/install.sh | cmp - <(git show vX.Y.Z:scripts/install.sh)`, and the same for `install.ps1`.
 6. Hugging Face: flip the release's model repos to public, tag each `vX.Y.Z`.
 7. Homebrew formula PR + tap commit.
 8. Site PR (owner approves).

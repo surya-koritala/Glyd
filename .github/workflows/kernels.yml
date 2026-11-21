@@ -3,10 +3,10 @@ name: Kernels compile
 on:
   push:
     branches: [main]
-    paths: ['glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml']
+    paths: ['glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml', 'scripts/check_kernel_regs.py']
   pull_request:
     branches: [main]
-    paths: ['glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml']
+    paths: ['glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml', 'scripts/check_kernel_regs.py']
   workflow_dispatch:
 
 permissions:
@@ -36,7 +36,7 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
         with:
           path: /tmp/kernels-compiled
-          key: kernels-compiled-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml') }}
+          key: kernels-compiled-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml', 'scripts/check_kernel_regs.py') }}
       - name: nvcc for sm_80, 86, 89, 90a, 100 and 120
         if: steps.memo.outputs.cache-hit != 'true'
         env:
@@ -50,8 +50,12 @@ jobs:
           # (the six architectures at once, one nvcc each: the runner has the cores for it, and it took the sum of them one after the other)
           nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_89 -Xptxas -v -o /tmp/engine_89.cubin engine.cu > /tmp/ptxas.txt 2>&1 &
           p89=$!
-          printf '%s\n' 80 86 90a 100 120 | xargs -P "$NVCC_JOBS" -I{} nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_{} -o /tmp/engine_{}.cubin engine.cu
+          printf '%s\n' 80 86 90a 100 120 | xargs -P "$NVCC_JOBS" -I{} sh -c 'nvcc -cubin -O3 -std=c++17 --expt-relaxed-constexpr -arch=sm_{} -Xptxas -v -o /tmp/engine_{}.cubin engine.cu > /tmp/ptxas_{}.txt 2>&1 || { cat /tmp/ptxas_{}.txt; exit 1; }'
           wait "$p89" || { cat /tmp/ptxas.txt; exit 1; }
+          # A kernel past 64 registers a thread names its block size, on every architecture: a 1,024-thread launch of one that doesn't fails
+          # ("too many resources requested for launch"). sm_120's compiler gave g4_add_norm 80 (sm_89's 53), and an RTX 5060 Ti could not run Gemma 4.
+          for a in 89 80 86 90a 100 120; do f=/tmp/ptxas_$a.txt; [ "$a" = 89 ] && f=/tmp/ptxas.txt; echo "sm_$a:"; /usr/libexec/platform-python ../../scripts/check_kernel_regs.py "$f" . || bad=1; done
+          [ -z "$bad" ]
           grep -A3 -E "entry function '(rmsnorm1p|rmsnorm1p_add|q35_prep|attn256|attn256_split|attn256_merge|conv_silu|gdn_recurrent|gdn_chunk|gated_norm|small_linear)'" /tmp/ptxas.txt || true
           mkdir -p /tmp/kernels-compiled && date -u > /tmp/kernels-compiled/at
       - name: The workspace back to the runner's user (the container wrote it as root; the PC's next job cleans it as that user)

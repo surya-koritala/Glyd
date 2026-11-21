@@ -79,7 +79,7 @@ extern "C" __global__ void g4_embed_norm(bf16* x, float scale, const bf16* w, bf
 // The sandwich residual of a sublayer: x = bf16(x + bf16(rmsnorm(y) * wpost)); where `scalar`, x = bf16(x * scalar[0]) (the layer's scalar, at the end of a layer); where `wnext`,
 // out = bf16(rmsnorm(x) * wnext) (the next norm: the feed-forward's pre-norm, the next layer's input norm or the final norm). Two reductions, one block a row.
 // blockIdx.y above 0: `pf`'s prefetch.
-extern "C" __global__ void g4_add_norm(bf16* x, const bf16* y, const bf16* wpost, const bf16* scalar, const bf16* wnext, bf16* out, int K, float eps, G4Pf pf) {
+extern "C" __global__ void __launch_bounds__(1024) g4_add_norm(bf16* x, const bf16* y, const bf16* wpost, const bf16* scalar, const bf16* wnext, bf16* out, int K, float eps, G4Pf pf) {
     if (blockIdx.y > 0) return g4_pf(pf, (blockIdx.y - 1) * gridDim.x + blockIdx.x, (gridDim.y - 1) * gridDim.x);
     bf16* xr = x + (size_t)blockIdx.x * K;
     const bf16* yr = y + (size_t)blockIdx.x * K;
@@ -652,7 +652,7 @@ extern "C" __global__ void g4_embed_norm_x32(const bf16* x, float scale, const b
     }
 }
 
-extern "C" __global__ void g4_add_norm_x32(float* xf, const bf16* y, const bf16* wpost, const bf16* scalar, const bf16* wnext, bf16* out, int K, float eps) {
+extern "C" __global__ void __launch_bounds__(1024) g4_add_norm_x32(float* xf, const bf16* y, const bf16* wpost, const bf16* scalar, const bf16* wnext, bf16* out, int K, float eps) {
     float* fr = xf + (size_t)blockIdx.x * K;
     const bf16* yr = y + (size_t)blockIdx.x * K;
     float v[RN_PER_THREAD];

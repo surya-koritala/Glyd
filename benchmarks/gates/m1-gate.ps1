@@ -57,7 +57,12 @@ if ($InstallCmd) {
     $t0 = Get-Date; & cmd /c $InstallCmd *> (Join-Path $Out "install.log")
     if ($LASTEXITCODE -eq 0) { Step "PASS" "install" ("{0:N0} s: {1}" -f ((Get-Date) - $t0).TotalSeconds, $InstallCmd) } else { Step "FAIL" "install" "failed: see $Out\install.log" }
 }
-$v = (& $Glyd --version 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { Step "FAIL" "glyd-version" "$Glyd --version failed" }
+# (the installer puts glyd in %LOCALAPPDATA%\Glyd and on the user's PATH, which this session's PATH does not have yet: the gate runs that glyd)
+$installed = Join-Path $(if ($env:GLYD_HOME) { $env:GLYD_HOME } else { Join-Path $env:LOCALAPPDATA "Glyd" }) "glyd.exe"
+if (-not (Get-Command $Glyd -ErrorAction SilentlyContinue) -and (Test-Path $installed)) { $Glyd = $installed }
+$v = try { (& $Glyd --version 2>&1 | Out-String) } catch { "" }
+if (-not $v -or $LASTEXITCODE -ne 0) { Step "FAIL" "glyd-version" "$Glyd --version failed: the gate stops"; Write-Host "---"; Write-Host "the gate stopped: $Glyd does not run"; exit 1 }
+Set-Content -Path (Join-Path $Out "version.txt") -Value $v
 
 if (-not $smi) {
     $first = (Rows | Select-Object -First 1)[0]; $o = (& $Glyd run $first --prompt hi 2>&1 | Out-String); $code = $LASTEXITCODE; $n = ($o -split "`r?`n" | Where-Object { $_ }).Count
@@ -73,20 +78,25 @@ foreach ($r in Rows) {
     Step "PASS" "plan:$m" "${got}: $($p[1])"
     if ($got -eq "refuse") {
         $o = (& $Glyd run $m --prompt hi 2>&1 | Out-String); $code = $LASTEXITCODE; $n = ($o -split "`r?`n" | Where-Object { $_ }).Count
-        if ($code -ne 0 -and $n -le 3) { Step "PASS" "refusal:$m" "exit $code, $n lines: $(($o -split "`n")[0])" } else { Step "FAIL" "refusal:$m" "exit $code, $n lines (a refusal is a few lines and a non-zero exit)" }
+        # (a refusal exits with its code, 1 to 123; a crash's code is not one)
+        if ($code -gt 0 -and $code -lt 124 -and $n -le 3) { Step "PASS" "refusal:$m" "exit $code, $n lines: $(($o -split "`n")[0])" } else { Step "FAIL" "refusal:$m" "exit $code, $n lines (a refusal is a few lines and a non-zero exit)" }
         continue
     }
     $t0 = Get-Date; $log = Join-Path $Out ("serve-" + ($m -replace "[/:]", "_") + ".log")
     $srv = Start-Process -FilePath $Glyd -ArgumentList @("serve", $m, "--host", "127.0.0.1", "--port", $port, "--users", 1) -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError "$log.err"
-    $up = $false
-    while (((Get-Date) - $t0).TotalSeconds -lt 900 -and -not $srv.HasExited) { try { Invoke-RestMethod "$base/v1/models" -TimeoutSec 2 | Out-Null; $up = $true; break } catch { Start-Sleep 1 } }
+    $up = $false; $tDl = $null
+    while (((Get-Date) - $t0).TotalSeconds -lt 900 -and -not $srv.HasExited) {
+        # (when the download ends: the serve log's "Downloaded " line, on either stream)
+        if ($null -eq $tDl -and (Select-String -Path $log, "$log.err" -Pattern "^Downloaded " -Quiet -ErrorAction SilentlyContinue)) { $tDl = [int]((Get-Date) - $t0).TotalSeconds }
+        try { Invoke-RestMethod "$base/v1/models" -TimeoutSec 2 | Out-Null; $up = $true; break } catch { Start-Sleep 1 } }
     if (-not $up) { if ($blocked) { Step "SKIP" "first-token:$m" "BLOCKED(packs): the server did not come up (the planned level's pre-packed repo is not published)"; $script:Blocked++ } else { Step "FAIL" "first-token:$m" "the server did not come up" }; if (-not $srv.HasExited) { $srv.Kill() }; continue }
     $body = '{"messages":[{"role":"user","content":"Say hello."}],"max_tokens":4,"stream":true}'
-    $tok = (& curl.exe -sN -m 120 -H "Content-Type: application/json" -d $body "$base/v1/chat/completions" | Select-String -Pattern '"content":"[^"]' -List | Select-Object -First 1)
-    $total = [int]((Get-Date) - $t0).TotalSeconds
-    if ($tok -and $total -le $Limit) { Step "PASS" "first-token:$m" "$total s (limit $Limit)" }
+    $tok = (& curl.exe -sN -m 120 -H "Content-Type: application/json" -d $body "$base/v1/chat/completions" | Select-String -Pattern '"(content|reasoning_content|reasoning)":"[^"]' -List | Select-Object -First 1)
+    $total = [int]((Get-Date) - $t0).TotalSeconds; $dl = if ($null -ne $tDl) { $tDl } else { 0 }; $after = $total - $dl
+    # (the limit is on loading and the first token; a download is the connection's, said beside it)
+    if ($tok -and $after -le $Limit) { Step "PASS" "first-token:$m" "$after s after the download (limit $Limit); $total s in all, $dl s of it downloading" }
     elseif ($blocked) { Step "SKIP" "first-token:$m" "BLOCKED(packs): $total s (limit $Limit): the planned level's pre-packed repo is not published"; $script:Blocked++ }
-    else { Step "FAIL" "first-token:$m" "$total s (limit $Limit), token: $(if ($tok) { 'yes' } else { 'none' })" }
+    else { Step "FAIL" "first-token:$m" "$after s after the download (limit $Limit), $total s in all; token: $(if ($tok) { 'yes' } else { 'none' })" }
     $info = try { Invoke-RestMethod "$base/v1/glyd/info" -TimeoutSec 10 } catch { $null }
     $lvl = $info.level.effective; $wb = $info.memory.weights_bytes
     $planLvl = if ($p[1] -match "^Plan: ([a-z]+)") { $Matches[1] } else { "" }
