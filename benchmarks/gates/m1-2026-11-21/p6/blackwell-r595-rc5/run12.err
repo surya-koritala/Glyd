@@ -1,0 +1,4 @@
+gemma-4-12B-wren: about 6.3 GiB on the GPU at the wren level (about 4.5 bits per weight, the QAT checkpoint's weights bit for bit), in place of 22.2 GiB of bf16.
+Plan: wren level, 32768 tokens of context: 6.3 GiB of weights on the GPU, 1.0 GiB of cache, 1.2 GiB for the engine's work, 0.6 GiB for the draft model, 0.8 GiB kept free; 9.9 GiB of the NVIDIA GeForce RTX 5060 Ti's 15.3 GiB free.
+Drafting with /root/.cache/huggingface/hub/models--glyd--gemma-4-12B-wren/snapshots/0471aa8cf4771d431d6e1e37a35a49f060633c97/draft (8 tokens a round; --no-draft runs without it).
+Ready in 7s: gemma-4-12B-wren on the NVIDIA GeForce RTX 5060 Ti, 6.3 GiB of weights, 32768 tokens of context, one user at a time.

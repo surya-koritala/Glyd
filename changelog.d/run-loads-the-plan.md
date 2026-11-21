@@ -1,1 +1,0 @@
-- `glyd run`, `glyd serve` and `glyd preflight` without a level tag now load the level `glyd fit` plans for the machine. Before, a Gemma 4 model or a model on the dynamic route took the lossless level, so Gemma 4 12B on a 16 GB card, or Nemotron 3.5 Lightning on an 8 GB card, was refused although `fit` showed a plan that fits.

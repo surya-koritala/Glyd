@@ -1,1 +1,0 @@
-- The aarch64 release build's CUDA 12 kernels leave out Jetson Thor (sm_110), which only CUDA 13 targets and which no driver reporting CUDA 12 runs. Before this, the aarch64 release build stopped because CUDA 12 had no sm_110.
