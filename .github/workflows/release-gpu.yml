@@ -1,4 +1,4 @@
-name: Release
+name: Release (GPU and engine)
 
 # glyd-gpu's wheels. On a pushed v* tag: build the CUDA libraries (CUDA 12 and 13, on each architecture) and Glyd's engine (glyd-engine, the release build
 # of the Rust program, with its CUDA 13 kernels), build the compiled wheel of each

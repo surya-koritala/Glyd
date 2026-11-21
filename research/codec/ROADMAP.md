@@ -1,8 +1,6 @@
 # Roadmap
 
-The product plan for all of Glyd (the engine on NVIDIA, AMD and Apple; Condor and Starlings in one program; Rust only;
-how it compares with Ollama, vLLM, SGLang and exo): [docs/PLAN.md](docs/PLAN.md); the adoption strategy and the audit of
-what is missing: [docs/ADOPTION.md](docs/ADOPTION.md).
+The plan for all of Glyd (the engine, Condor and Starlings in one program) is [ROADMAP.md](../../ROADMAP.md) at the top of the repository.
 
 The next releases, in order, and how releases are supported:
 [getglyd.com/roadmap](https://getglyd.com/roadmap/). This file is the codec's research plan.
@@ -14,7 +12,7 @@ number that was not reproduced.
 ## Where the codec stood (v0.32.1, 2026-10-17)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
-([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
+([report](../../docs/codec/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
 3.85) at 0.77× its write speed and 7× its read speed; `--ultra` 4.66
 (zstd -19 4.66); `--max -r` 4.71 at 643 MB/s; `--ultra -r` 5.22.
 Telemetry with `-r`: 2.5–3.5× fewer bytes than zstd -3; application and
@@ -35,7 +33,7 @@ Qwen3.8-27B and Gemma 4 26B-A4B 32.8% smaller, bit for bit. The GPU work by rele
 [getglyd.com/roadmap](https://getglyd.com/roadmap/).
 Work on the GPU is bf16 only now. FP8 checkpoints load as they are; on FP8
 files cut from 2026 models the codec takes 19.1-30.3% off
-([benchmarks/weights/model-files-2026-10-05](benchmarks/weights/model-files-2026-10-05)). A terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
+([benchmarks/weights/model-files-2026-10-05](../../benchmarks/weights/model-files-2026-10-05)). A terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
 
 Measured floors, not to be retried: JSON API events and crawl indexes
 are 20–65% hashes and random ids once compressed (typed columns gain
@@ -58,7 +56,7 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
    endpoint; v0.11.0). Multipart upload (v0.11.1): 64 MB parts on 8
    connections, aborted whole on any failure. Rebuild (v0.11.2): the
    directory remade from the bucket alone. The gate
-   (v0.12.0, [report](docs/benchmarks/store-gate-2026-09-22.md)): 1.18
+   (v0.12.0, [report](../../docs/codec/benchmarks/store-gate-2026-09-22.md)): 1.18
    TB, 1,192 objects, 49.0 GB stored against zstd -3's 153.5 GB,
    every object back byte-exact, rebuilt from the bucket and verified;
    put 150 MB/s, get 186 MB/s on one im4gn.4xlarge. Left: overlapping
