@@ -44,8 +44,17 @@ pub struct Family {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Manifest {
+    /// The date the manifest was made (YYYY-MM-DD; empty where it says none): of two, the later one is the program's.
+    pub updated: String,
     pub families: Vec<Family>,
 }
+
+fn is_date(d: &str) -> bool {
+    d.len() == 10 && d.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() })
+}
+
+/// Where a newer manifest is had from: the latest release of the repository carries models.json and its sha256 (release.yml).
+pub const RELEASE_URL: &str = "https://github.com/surya-koritala/Glyd/releases/latest/download/models.json";
 
 /// A name without case and without `-`, `_`, `.` and spaces: `Qwen-3.5`, `qwen3.5` and `qwen35` are one.
 fn norm(s: &str) -> String {
@@ -102,22 +111,45 @@ impl Manifest {
             }
             families.push(fam);
         }
-        Ok(Manifest { families })
+        let updated = match v.get("updated").and_then(|x| x.as_str()) {
+            None => String::new(),
+            Some(d) if is_date(d) => d.to_string(),
+            Some(d) => return Err(format!("\"updated\" {d} is not YYYY-MM-DD")),
+        };
+        Ok(Manifest { updated, families })
     }
 
-    /// The manifest this program has: the file `$GLYD_MODELS` names, else `<cache>/models.json` where there is one, else the repository's; a file that is not a manifest is said and left.
+    /// The manifest this program has: the file `$GLYD_MODELS` names; else the later of the program's own and the one `glyd names update` fetched (`<cache>/models.json`), so a new release's
+    /// manifest is not hidden by an old fetched one. A file that is not a manifest is said and left.
     pub fn load() -> Manifest {
-        let file = std::env::var_os("GLYD_MODELS")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| Some(store::cache_root().join("models.json")).filter(|p| p.is_file()));
-        if let Some(p) = file {
+        if let Some(p) = std::env::var_os("GLYD_MODELS").filter(|v| !v.is_empty()).map(PathBuf::from) {
             match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| Manifest::parse(&t)) {
                 Ok(m) => return m,
                 Err(e) => eprintln!("glyd: {} is not a model manifest ({e}): the one in this program is used", p.display()),
             }
         }
-        Manifest::parse(EMBEDDED).expect("the manifest in the repository (glyd-engine/models.json) parses")
+        let cached = store::cache_root().join("models.json");
+        let text = cached.is_file().then(|| std::fs::read_to_string(&cached).map_err(|e| e.to_string())).transpose();
+        match text {
+            Ok(t) => Manifest::newest(EMBEDDED, t.as_deref(), &cached),
+            Err(e) => {
+                eprintln!("glyd: {}: {e}: the manifest in this program is used", cached.display());
+                Manifest::newest(EMBEDDED, None, &cached)
+            }
+        }
+    }
+
+    /// The later of the program's manifest and a fetched one's text (the program's where they are of one date, or the fetched one is not a manifest, which is said).
+    fn newest(embedded: &str, fetched: Option<&str>, from: &Path) -> Manifest {
+        let own = Manifest::parse(embedded).expect("the manifest in the repository (glyd-engine/models.json) parses");
+        match fetched.map(Manifest::parse) {
+            Some(Ok(m)) if m.updated > own.updated => m,
+            Some(Err(e)) => {
+                eprintln!("glyd: {} is not a model manifest ({e}): the one in this program is used", from.display());
+                own
+            }
+            _ => own,
+        }
     }
 
     fn family(&self, name: &str) -> Option<&Family> {
@@ -247,7 +279,7 @@ pub fn resolve_args(a: &mut Args) -> Result<(), String> {
     }
     let Some(arg) = a.pos.get(1).cloned() else { return Ok(()) };
     // (`verify PATH` and `rm`'s Hub ids are taken as they are: only a name the manifest has changes)
-    match resolve(&arg, &Manifest::load()) {
+    match resolve_refreshing(&arg) {
         Ok(Some(r)) => {
             eprintln!("glyd: {arg} is {}{}", r.repo, r.level.as_deref().map(|l| format!(" at level {l}")).unwrap_or_default());
             a.pos[1] = r.model();
@@ -258,6 +290,153 @@ pub fn resolve_args(a: &mut Args) -> Result<(), String> {
         Err(_) if matches!(a.pos[0].as_str(), "verify") => Ok(()),
         Err(e) => Err(e),
     }
+}
+
+// ---- a manifest from the release ------------------------------------------------------------------------------------------------------------------------------
+
+/// What `glyd names update` found.
+#[derive(Debug, PartialEq)]
+pub enum Refreshed {
+    /// A newer manifest was fetched and kept: the date it replaced and its own.
+    Updated {
+        from: String,
+        to: String,
+    },
+    UpToDate,
+}
+
+/// The newest manifest of the release, checked against the sha256 the release lists, kept in `dest` where it is later than `have` (the one in use). `fetch` gets a URL's bytes (a test's is a table).
+pub fn refresh_with(fetch: &dyn Fn(&str) -> Result<Vec<u8>, String>, url: &str, dest: &Path, have: &str) -> Result<Refreshed, String> {
+    let body = fetch(url).map_err(|e| format!("{url}: {e}"))?;
+    let sums = fetch(&format!("{url}.sha256")).map_err(|e| format!("{url}.sha256: {e}"))?;
+    let want = String::from_utf8_lossy(&sums).split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    let got = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(&body).iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    if want != got {
+        return Err(format!("the manifest's sha256 is {got}, and the release lists {}: not kept", if want.is_empty() { "none" } else { &want }));
+    }
+    let text = String::from_utf8(body).map_err(|_| "the manifest is not text".to_string())?;
+    let m = Manifest::parse(&text)?;
+    if m.updated.as_str() <= have {
+        return Ok(Refreshed::UpToDate);
+    }
+    if let Some(d) = dest.parent() {
+        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    let tmp = dest.with_extension("json.part");
+    std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, dest)).map_err(|e| format!("{}: {e}", dest.display()))?;
+    Ok(Refreshed::Updated { from: have.to_string(), to: m.updated })
+}
+
+/// One GET over HTTPS (redirects followed: a release's download is one), the body to a megabyte.
+fn http_get(url: &str) -> Result<Vec<u8>, String> {
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_connect(Some(std::time::Duration::from_secs(10)))
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .build(),
+    );
+    let resp = agent.get(url).call().map_err(|e| match e {
+        ureq::Error::StatusCode(404) => "not found (the latest release carries no manifest yet)".to_string(),
+        e => e.to_string(),
+    })?;
+    resp.into_body().with_config().limit(1 << 20).read_to_vec().map_err(|e| e.to_string())
+}
+
+/// The manifest of the latest release fetched into the cache (`glyd names update`).
+pub fn refresh() -> Result<Refreshed, String> {
+    if crate::hub::offline() {
+        return Err("HF_HUB_OFFLINE is set: nothing is fetched".into());
+    }
+    refresh_with(&http_get, RELEASE_URL, &store::cache_root().join("models.json"), &Manifest::load().updated)
+}
+
+/// Whether a refresh may be tried now for a name that is not in the manifest: not offline, not switched off (GLYD_NO_REFRESH), and not tried in the last day (`stamp`: the text of the
+/// file that holds the seconds of the last try).
+pub fn refresh_due(stamp: Option<&str>, now: u64, off: bool) -> bool {
+    !off && stamp.and_then(|s| s.trim().parse::<u64>().ok()).is_none_or(|t| now.saturating_sub(t) >= 86_400)
+}
+
+/// `resolve`, and where the name is not known, once a day the release's newer manifest is fetched and the name tried again (a model released after this program was built).
+fn resolve_refreshing(arg: &str) -> Result<Option<Resolved>, String> {
+    match resolve(arg, &Manifest::load()) {
+        Err(first) => {
+            let stamp_path = store::cache_root().join("models.refreshed");
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let off = std::env::var_os("GLYD_NO_REFRESH").is_some_and(|v| !v.is_empty()) || crate::hub::offline();
+            if !refresh_due(std::fs::read_to_string(&stamp_path).ok().as_deref(), now, off) {
+                return Err(first);
+            }
+            if let Some(d) = stamp_path.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(&stamp_path, now.to_string()); // (tried, hit or miss: not again for a day)
+            match refresh() {
+                Ok(Refreshed::Updated { to, .. }) => {
+                    eprintln!("glyd: the name is not known here: fetched the release's newer model names ({to})");
+                    resolve(arg, &Manifest::load())
+                }
+                _ => Err(first),
+            }
+        }
+        ok => ok,
+    }
+}
+
+/// `glyd names [update] [--json]`: the names the manifest has, with their repos and release dates and where the manifest is from; `update` fetches the latest release's.
+pub fn names_cmd(a: &Args) -> i32 {
+    if a.pos.get(1).map(String::as_str) == Some("update") {
+        return match refresh() {
+            Ok(Refreshed::Updated { from, to }) => {
+                println!(
+                    "Model names updated: {} -> {to} ({})",
+                    if from.is_empty() { "built in".to_string() } else { from },
+                    store::cache_root().join("models.json").display()
+                );
+                0
+            }
+            Ok(Refreshed::UpToDate) => {
+                println!("The model names are up to date ({})", Manifest::load().updated);
+                0
+            }
+            Err(e) => {
+                eprintln!("glyd names update: {e}");
+                1
+            }
+        };
+    }
+    if let Some(w) = a.pos.get(1) {
+        eprintln!("glyd names: {w}: no such word (update fetches the latest release's names)");
+        return 1;
+    }
+    let m = Manifest::load();
+    if a.has("json") {
+        let fams: Vec<serde_json::Value> = m
+            .families
+            .iter()
+            .map(|f| {
+                let models: Vec<serde_json::Value> =
+                    f.models.iter().map(|e| serde_json::json!({"size": e.size, "repo": e.repo, "default": e.default, "released": e.released})).collect();
+                serde_json::json!({"name": f.name, "aliases": f.aliases, "legacy": f.legacy, "models": models})
+            })
+            .collect();
+        println!("{}", serde_json::json!({"version": MANIFEST_VERSION, "updated": m.updated, "families": fams}));
+        return 0;
+    }
+    println!("{:<26} {:<12} REPO", "NAME", "RELEASED");
+    for f in m.families.iter().filter(|f| !f.legacy).chain(m.families.iter().filter(|f| f.legacy)) {
+        for e in &f.models {
+            let n = format!("{}:{}{}", f.name, e.size, if e.default { " *" } else { "" });
+            println!("{n:<26} {:<12} {}{}", e.released.as_deref().unwrap_or("-"), e.repo, if f.legacy { "  (older)" } else { "" });
+        }
+    }
+    println!(
+        "\n* is the default of a name with no size. Manifest of {} (glyd names update fetches the latest release's).",
+        if m.updated.is_empty() { "no date" } else { &m.updated }
+    );
+    0
 }
 
 // ---- what is in the cache ------------------------------------------------------------------------------------------------------------------------------------
@@ -719,5 +898,85 @@ mod tests {
         assert_eq!(rm(&["rm"]), 1);
         std::fs::remove_dir_all(cache).ok();
         std::fs::remove_dir_all(packed).ok();
+    }
+
+    #[test]
+    fn the_later_manifest_is_the_programs() {
+        let make = |d: &str, size: &str| {
+            format!("{{\"version\":1,\"updated\":\"{d}\",\"families\":[{{\"name\":\"x\",\"models\":[{{\"size\":\"{size}\",\"repo\":\"a/b\",\"default\":true}}]}}]}}")
+        };
+        let from = Path::new("models.json");
+        // fetched later: it is used; earlier, the same day or none: the program's
+        assert_eq!(Manifest::newest(&make("2026-11-20", "own"), Some(&make("2026-12-01", "new")), from).families[0].models[0].size, "new");
+        assert_eq!(Manifest::newest(&make("2026-11-20", "own"), Some(&make("2026-10-01", "old")), from).families[0].models[0].size, "own");
+        assert_eq!(Manifest::newest(&make("2026-11-20", "own"), Some(&make("2026-11-20", "same")), from).families[0].models[0].size, "own");
+        assert_eq!(Manifest::newest(&make("2026-11-20", "own"), Some("not a manifest"), from).families[0].models[0].size, "own");
+        assert_eq!(Manifest::newest(&make("2026-11-20", "own"), None, from).families[0].models[0].size, "own");
+        // the one in the repository has its date
+        assert!(manifest().updated.as_str() >= "2026-11-20");
+        assert!(Manifest::parse("{\"version\":1,\"updated\":\"yesterday\",\"families\":[]}").unwrap_err().contains("YYYY-MM-DD"));
+    }
+
+    fn sha(b: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    #[test]
+    fn a_manifest_from_the_release_is_kept_only_when_its_sha256_is_the_listed_one_and_it_is_later() {
+        let dir = std::env::temp_dir().join(format!("glyd-names-refresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dest = dir.join("models.json");
+        let body = EMBEDDED.replace("\"updated\": \"2026-11-20\"", "\"updated\": \"2026-12-24\"");
+        assert_ne!(body, EMBEDDED);
+        let url = "https://example.test/models.json";
+        let served = |body: String, sum: String| {
+            move |u: &str| -> Result<Vec<u8>, String> {
+                if u == url {
+                    Ok(body.clone().into_bytes())
+                } else if u == format!("{url}.sha256") {
+                    Ok(format!("{sum}  models.json\n").into_bytes())
+                } else {
+                    Err(format!("unexpected {u}"))
+                }
+            }
+        };
+        // a wrong sha256: nothing is kept
+        let e = refresh_with(&served(body.clone(), "0".repeat(64)), url, &dest, "2026-11-20").unwrap_err();
+        assert!(e.contains("not kept") && !dest.exists(), "{e}");
+        // not a manifest, though its sha256 is right
+        let junk = "{\"version\":9}".to_string();
+        assert!(refresh_with(&served(junk.clone(), sha(junk.as_bytes())), url, &dest, "").unwrap_err().contains("update glyd") && !dest.exists());
+        // the same date as the one in use: up to date, nothing written
+        assert_eq!(refresh_with(&served(EMBEDDED.to_string(), sha(EMBEDDED.as_bytes())), url, &dest, "2026-11-20"), Ok(Refreshed::UpToDate));
+        assert!(!dest.exists());
+        // later, and listed: kept
+        assert_eq!(
+            refresh_with(&served(body.clone(), sha(body.as_bytes())), url, &dest, "2026-11-20"),
+            Ok(Refreshed::Updated { from: "2026-11-20".into(), to: "2026-12-24".into() })
+        );
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), body);
+        assert!(!dest.with_extension("json.part").exists());
+        // a release with no manifest says so
+        let none = |_: &str| -> Result<Vec<u8>, String> { Err("not found (the latest release carries no manifest yet)".into()) };
+        assert!(refresh_with(&none, url, &dest, "").unwrap_err().contains("carries no manifest yet"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_name_is_looked_up_again_in_the_release_at_most_once_a_day() {
+        assert!(refresh_due(None, 1_000_000, false));
+        assert!(refresh_due(Some("garbage"), 1_000_000, false));
+        assert!(!refresh_due(Some("999000"), 1_000_000, false), "tried a thousand seconds ago");
+        assert!(refresh_due(Some("900000"), 1_000_000, false), "tried more than a day ago");
+        assert!(!refresh_due(None, 1_000_000, true), "switched off or offline");
+    }
+
+    #[test]
+    fn deepseek_is_the_v4_flash_the_engine_runs_and_not_a_family_it_does_not() {
+        let m = manifest();
+        // DeepseekV4ForCausalLM (dynamic/deepseek_v4.rs): V4-Flash-0731; the V4.1 repos are another architecture (DeepseekV41ForCausalLM), which the engine does not run
+        assert_eq!(resolve("deepseek", &m).unwrap().unwrap().repo, "deepseek-ai/DeepSeek-V4-Flash-0731");
+        assert!(m.families.iter().flat_map(|f| &f.models).all(|e| !e.repo.contains("V4.1")));
     }
 }

@@ -96,6 +96,13 @@ pub const CMDS: &[Cmd] = &[
         detail: "--bundle writes the same as one file to attach to an issue.",
         flags: &["machine", "json"],
     },
+    Cmd {
+        name: "names",
+        args: "[update]",
+        summary: "the model names (gemma4, qwen3.8:27b, ...) and their Hub repos; update fetches the latest release's",
+        detail: "A name that is not known is looked up once a day in the latest release's manifest (GLYD_NO_REFRESH=1 stops that); the fetched file is checked against the sha256 the release lists.",
+        flags: &["json"],
+    },
     Cmd { name: "login", args: "", summary: "save a Hugging Face token (for a gated model)", detail: "The token is kept in the Hub client's own file.", flags: &[] },
     Cmd {
         name: "supports",

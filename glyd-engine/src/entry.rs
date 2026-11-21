@@ -26,6 +26,7 @@ pub const COMMANDS: &[&str] = &[
     "ps",
     "stop",
     "bench",
+    "names",
     "verify",
     "prepare",
     "costs",
@@ -119,6 +120,7 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("pull") => std::process::exit(crate::models::pull(&a)),
         Some("ls" | "list") => std::process::exit(crate::models::ls(&a)),
         Some("rm") => std::process::exit(crate::models::rm(&a)),
+        Some("names") => std::process::exit(crate::models::names_cmd(&a)),
         // the background service: models loaded on request and unloaded when idle; what it holds; a model unloaded (src/service.rs)
         Some("service") => std::process::exit(crate::service::run(&a)),
         Some("ps") => std::process::exit(crate::service::ps(&a)),

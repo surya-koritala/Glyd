@@ -78,6 +78,13 @@ What this computer has for running models, each check with the line that fixes i
 .br
 Flags: \-\-machine NAME|FILE, \-\-json
 .TP
+.B glyd names [update]
+The model names (gemma4, qwen3.8:27b, ...) and their Hub repos; update fetches the latest release's.
+.br
+A name that is not known is looked up once a day in the latest release's manifest (GLYD_NO_REFRESH=1 stops that); the fetched file is checked against the sha256 the release lists.
+.br
+Flags: \-\-json
+.TP
 .B glyd login
 Save a Hugging Face token (for a gated model).
 .br
