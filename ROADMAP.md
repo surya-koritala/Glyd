@@ -98,7 +98,7 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 - [ ] P13 Code-signing identities for Windows and macOS ([#223](https://github.com/surya-koritala/Glyd/issues/223))
 - [ ] P7a Windows x86_64 release of the engine ([#159](https://github.com/surya-koritala/Glyd/issues/159))
 - [x] P10 glyd doctor and a support bundle ([#165](https://github.com/surya-koritala/Glyd/issues/165))
-- [ ] F3a GGUF reader ([#176](https://github.com/surya-koritala/Glyd/issues/176))
+- [x] F3a GGUF reader ([#176](https://github.com/surya-koritala/Glyd/issues/176))
 - [x] C5 Starlings crates into the main workspace ([#199](https://github.com/surya-koritala/Glyd/issues/199))
 - [ ] D3 Metrics, health, readiness and drain ([#204](https://github.com/surya-koritala/Glyd/issues/204))
 - [ ] D6 Signed releases and attestations ([#207](https://github.com/surya-koritala/Glyd/issues/207))
