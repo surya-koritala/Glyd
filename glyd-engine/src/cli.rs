@@ -784,6 +784,82 @@ fn tagged(a: &Args) -> Done<(Args, Option<Layout>)> {
     Ok((a, layout))
 }
 
+/// What a command does with the degrade steps the ladder asks about (src/plan.rs `ladder`): take them (`--yes`, or `GLYD_DEGRADE=yes`), ask (a terminal, `run` alone;
+/// the default), or refuse (`GLYD_DEGRADE=no`, or no one to ask: `serve`, the service, a run with no terminal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Degrade {
+    Take,
+    Ask,
+    Refuse,
+}
+
+/// `yes`: the flag `--yes`; `config`: GLYD_DEGRADE's value (`yes`, `ask`, `no`); `can_ask`: this command may stop for an answer and has a terminal for it.
+pub(crate) fn degrade_decision(yes: bool, config: Option<&str>, can_ask: bool) -> Degrade {
+    match (yes, config.map(str::to_ascii_lowercase).as_deref()) {
+        (true, _) | (_, Some("yes" | "y" | "true" | "1")) => Degrade::Take,
+        (_, Some("no" | "n" | "false" | "0" | "refuse")) => Degrade::Refuse,
+        _ if can_ask => Degrade::Ask,
+        _ => Degrade::Refuse,
+    }
+}
+
+/// Before the model is loaded: the ladder from the level asked for (src/plan.rs), said in the first lines where a step is taken, and the steps the user must agree to
+/// asked about (a lower level, or a step over a third of the speed): taken with `--yes`, asked in `run` at a terminal, else refused with the steps named (the same
+/// status `run` gave before the ladder, so a program that started the engine can run the model another way). `interactive`: `run`, which may ask.
+/// Returns the arguments and level the load goes on with: the lower level a step took, else those it was given.
+pub(crate) fn degrade_gate(a: &Args, model: &str, layout: Option<Layout>, interactive: bool, ui: &RefCell<Ui>) -> Done<(Args, Option<Layout>)> {
+    let same = || Ok((a.clone(), layout));
+    // (a glyd-v7 directory or a pre-packed repo is at its own level; a model whose config is not to be had is the paths' own to say)
+    if v7_layout(model)?.is_some() || levels::repo_level(model).is_some() {
+        return same();
+    }
+    let Ok(text) = config_text(model) else { return same() };
+    let name = short_name(model);
+    let Ok(family) = crate::support::family(&text, &name) else { return same() };
+    let row = crate::support::row(family);
+    let machine = crate::plan::Machine::probe();
+    let Ok(sh) = crate::plan::Shape::from_config(&text) else { return same() };
+    let asked = layout.map_or("penguin", level_name);
+    if !row.levels_now(model).contains(&asked) {
+        return same();
+    }
+    let users = if a.pos.first().is_some_and(|c| c == "serve") { users_of(a).unwrap_or(1) } else { 1 };
+    let Some((_, target, devs, reach)) = crate::plan::sizing_inputs(&machine, true) else { return same() };
+    let want = a.flag("context").and_then(|c| c.parse().ok()).unwrap_or_else(|| row.default_ctx.unwrap_or(LOSSY_CTX).min(sh.max_ctx));
+    let size = |l: &'static str| size(a, model, &text, l, &devs, &target, &*reach, users);
+    let ladder = crate::plan::ladder(&sh, &machine, row, model, asked, want, &size);
+    if ladder.is_as_asked() || ladder.plan.is_none() || ladder.steps.is_empty() {
+        return same();
+    }
+    ui.borrow_mut().line(ladder.report().trim_end());
+    if !ladder.needs_confirmation() {
+        return same();
+    }
+    let chosen = ladder.plan.as_ref().map(|p| p.level).unwrap_or(asked);
+    let can_ask = interactive && std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    let take = match degrade_decision(a.has("yes"), std::env::var("GLYD_DEGRADE").ok().as_deref(), can_ask) {
+        Degrade::Take => true,
+        Degrade::Ask => {
+            eprint!("Take these steps? [y/N] ");
+            let mut answer = String::new();
+            let _ = std::io::stdin().read_line(&mut answer);
+            matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        }
+        Degrade::Refuse => false,
+    };
+    if !take {
+        return Err(Refusal::unsupported(
+            format!("{name} does not load at the {asked} level as asked on this machine; it loads at {chosen} with the steps above, which need your word"),
+            format!(
+                "Take them: add --yes (or set GLYD_DEGRADE=yes); or choose the level yourself: glyd run {}:{chosen}",
+                level(model, false).map_or(model, |m| m.0)
+            ),
+        ));
+    }
+    let layout = if chosen == asked { layout } else { levels::layout_of(chosen).map(|l| layout_for(model, l)) };
+    Ok((a.clone(), layout))
+}
+
 pub fn serve(a: &Args) -> i32 {
     let ui = RefCell::new(Ui::new());
     let started = crate::monitor::clock();
@@ -795,7 +871,11 @@ pub fn serve(a: &Args) -> i32 {
     // the level is run's, read before the GPU is looked at; the name served keeps the tag
     let given = a.pos.get(1).cloned().unwrap_or_default();
     let asked = requested(&given, a.has("lossy"));
-    let (a, layout) = match tagged(a) {
+    // (a server never stops for an answer: a step it asks about is taken only with --yes)
+    let (a, layout) = match tagged(a).and_then(|(a, l)| {
+        let model = a.pos.get(1).cloned().unwrap_or_default();
+        degrade_gate(&a, &model, l, false, &ui)
+    }) {
         Ok(x) => x,
         Err(r) => return fail(&ui, &r),
     };
@@ -909,7 +989,10 @@ pub fn run(a: &Args) -> i32 {
     if let Err(r) = access_check(a) {
         return fail(&ui, &r);
     }
-    let (a, layout) = match tagged(a) {
+    let (a, layout) = match tagged(a).and_then(|(a, l)| {
+        let model = a.pos.get(1).cloned().unwrap_or_default();
+        degrade_gate(&a, &model, l, true, &ui)
+    }) {
         Ok(x) => x,
         Err(r) => return fail(&ui, &r),
     };
@@ -3421,6 +3504,22 @@ mod tests {
     }
 
     /// The plan of a model on a GPU is a status 3 wherever it fails for the computer or the model (not for what the user typed): the memory, the context, the shape.
+
+    /// What a command does with a step it asks about: `--yes` and `GLYD_DEGRADE=yes` take it; a terminal in `run` is asked; `serve`, the service, a pipe and `GLYD_DEGRADE=no` refuse.
+    #[test]
+    fn a_step_that_asks_is_taken_asked_or_refused_by_who_can_answer() {
+        use Degrade::*;
+        assert_eq!(degrade_decision(true, None, false), Take, "--yes, whoever runs");
+        assert_eq!(degrade_decision(false, Some("yes"), false), Take);
+        assert_eq!(degrade_decision(false, Some("YES"), true), Take);
+        assert_eq!(degrade_decision(false, None, true), Ask, "a terminal in run");
+        assert_eq!(degrade_decision(false, Some("ask"), true), Ask);
+        assert_eq!(degrade_decision(false, None, false), Refuse, "serve, the service, a pipe: nobody to ask");
+        assert_eq!(degrade_decision(false, Some("ask"), false), Refuse);
+        assert_eq!(degrade_decision(false, Some("no"), true), Refuse, "the config says never");
+        assert_eq!(degrade_decision(true, Some("no"), true), Take, "the flag is this run's word");
+    }
+
     #[test]
     fn what_a_model_needs_of_a_gpu_is_decided_before_anything_is_downloaded() {
         let cfg = Config::parse(QWEN3, "config.json", None).unwrap();

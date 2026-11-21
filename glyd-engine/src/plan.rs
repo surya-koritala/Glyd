@@ -1080,6 +1080,189 @@ fn speed_of(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan) -> f64 {
     }
 }
 
+/// Decode tokens/s of `level` with every weight on the GPU `main` (the speed a run at that level would have if it fitted).
+fn ideal_speed(sh: &Shape, m: &Machine, main: usize, level: &str) -> f64 {
+    let d0 = &m.devices[main];
+    let Some((bits, ebits)) = level_bits(level, sh, d0) else { return 0.0 };
+    let eff = if level == "penguin" && sh.release_bits > 8.0 { EFF_LOSSLESS } else { EFF_LOSSY };
+    let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
+    let read = ((sh.head.max(if sh.head == 0.0 { sh.embed } else { 0.0 }) + sh.dense) * bits + sh.routed_active() * ebits) / 8.0 + kv_read;
+    (if sh.mtp { MTP_GAIN } else { 1.0 }) * d0.bandwidth * GB * eff / read
+}
+
+// ---- the degrade ladder ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/// A step that costs more than this share of the speed (percent) is asked about before it is taken.
+pub const CONFIRM_COST_PCT: f64 = 30.0;
+
+/// What the ladder takes, in the order it takes them (ROADMAP P2d): the KV cache's type (this engine's cache has one, lossless), a shorter context down to the floor,
+/// experts in the computer's memory, dense layers in it (R12: not built), then a lower level, then a refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StepKind {
+    ShorterContext,
+    ExpertsInRam,
+    LowerLevel,
+}
+
+/// One step of the ladder: what it does, what it costs of the speed (percent, negative where it is faster), and whether it is asked about first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub kind: StepKind,
+    pub what: String,
+    pub cost_pct: f64,
+    /// Asked about: a cost over `CONFIRM_COST_PCT` of the speed, or any lower level (it is no longer the level asked for).
+    pub confirm: bool,
+}
+
+/// The ladder from the level asked for: the steps it takes before the model loads, the plan that loads (None: no step loads it, or the paths' sizing is not exact
+/// for this model), the first refusal where none does, and the steps this build does not have.
+#[derive(Debug)]
+pub struct Ladder {
+    pub asked: &'static str,
+    pub context: usize,
+    pub steps: Vec<Step>,
+    pub plan: Option<LoadPlan>,
+    pub refusal: Option<crate::ui::Refusal>,
+}
+
+/// What this build has not got of the ladder's order.
+pub const UNAVAILABLE: [&str; 2] = [
+    "the KV cache's type: this engine's cache has one type (lossless), so there is no step to a smaller one",
+    "dense layers in the computer's memory (ROADMAP R12): not built, so the ladder goes from experts to a lower level",
+];
+
+impl Ladder {
+    /// Whether the model loads as asked (no step), and whether any step is asked about.
+    pub fn is_as_asked(&self) -> bool {
+        self.plan.is_some() && self.steps.is_empty()
+    }
+
+    pub fn needs_confirmation(&self) -> bool {
+        self.steps.iter().any(|s| s.confirm)
+    }
+
+    /// The ladder as `fit --json` has it: every step with its cost, and the plan it loads (`degrade` of `glyd-plan/1`).
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "asked": self.asked,
+            "as_asked": self.is_as_asked(),
+            "loads": self.plan.is_some(),
+            "level": self.plan.as_ref().map(|p| p.level),
+            "context": self.plan.as_ref().map(|p| p.context),
+            "needs_confirmation": self.needs_confirmation(),
+            "steps": self.steps.iter().map(|s| serde_json::json!({
+                "kind": match s.kind { StepKind::ShorterContext => "shorter_context", StepKind::ExpertsInRam => "experts_in_ram", StepKind::LowerLevel => "lower_level" },
+                "what": s.what, "cost_percent": (s.cost_pct * 10.0).round() / 10.0, "confirm": s.confirm,
+            })).collect::<Vec<_>>(),
+            "refusal": self.refusal.as_ref().map(|r| r.what.clone()),
+            "unavailable": UNAVAILABLE,
+        })
+    }
+
+    /// What `fit` and `run` say of it: nothing where the model loads as asked; else the steps in their order, which of them ask first, and the steps this build has not got.
+    pub fn report(&self) -> String {
+        if self.is_as_asked() {
+            return String::new();
+        }
+        let mut s = String::new();
+        match (&self.plan, &self.refusal) {
+            (Some(p), _) => {
+                s += &format!("The ladder, from {} at {} tokens (KV type, shorter context, experts in RAM, dense layers in RAM, lower level, refuse): it loads at the {} level, {} tokens, with\n", self.asked, self.context, p.level, p.context);
+                s += &self.text();
+                if self.needs_confirmation() {
+                    s += "  `run` asks before the steps marked; `serve`, the service and a run with no terminal take them only with --yes (or GLYD_DEGRADE=yes), else they refuse.\n";
+                }
+            }
+            (None, Some(r)) => s += &format!("The ladder, from {} at {} tokens: no step loads it ({}).\n", self.asked, self.context, r.what),
+            (None, None) => return String::new(),
+        }
+        for u in UNAVAILABLE {
+            s += &format!("  not available: {u}\n");
+        }
+        s
+    }
+
+    /// The steps as the terminal shows them.
+    pub fn text(&self) -> String {
+        let mut s = String::new();
+        for (i, st) in self.steps.iter().enumerate() {
+            let cost = if st.cost_pct > 0.5 {
+                format!("about {:.0}% slower", st.cost_pct)
+            } else if st.cost_pct < -0.5 {
+                format!("about {:.0}% faster", -st.cost_pct)
+            } else {
+                "no change in speed".to_string()
+            };
+            s += &format!("  {}. {} ({cost}){}\n", i + 1, st.what, if st.confirm { ": asks first (--yes takes it)" } else { "" });
+        }
+        s
+    }
+}
+
+/// The ladder of MODEL from `asked` at `want_ctx` tokens of context: each level from the one asked for down, asked of the loader's own sizing (`size`: the plan it
+/// loads, or the refusal it gives), the first that loads, and the steps that took it there: the context it had to shorten, the experts it keeps in the computer's
+/// memory (speed from the planner's model), the lower level. `confirm` marks the steps taken only when asked.
+pub fn ladder(
+    sh: &Shape,
+    m: &Machine,
+    fam: &crate::support::Support,
+    model: &str,
+    asked: &'static str,
+    want_ctx: usize,
+    size: &dyn Fn(&'static str) -> Result<Option<LoadPlan>, crate::ui::Refusal>,
+) -> Ladder {
+    let levels: Vec<&'static str> = fam.levels_now(model);
+    let from = levels.iter().position(|l| *l == asked).unwrap_or(0);
+    let main = (0..m.devices.len()).min_by_key(|&i| (std::cmp::Reverse(m.devices[i].free), i)).unwrap_or(0);
+    let mut refusal = None;
+    for &level in &levels[from..] {
+        match size(level) {
+            Ok(None) => return Ladder { asked, context: want_ctx, steps: vec![], plan: None, refusal },
+            Err(r) => {
+                refusal.get_or_insert(r);
+            }
+            Ok(Some(lp)) => {
+                let mut steps = Vec::new();
+                if lp.context < want_ctx {
+                    steps.push(Step {
+                        kind: StepKind::ShorterContext,
+                        what: format!("shorter context: {} tokens where {} were wanted", lp.context, want_ctx),
+                        cost_pct: 0.0,
+                        confirm: false,
+                    });
+                }
+                // (the hummingbird level is made for its experts to be in the computer's memory: that is the level asked for, not a step down from it)
+                let in_memory = lp.experts.is_some() || lp.spread.as_ref().is_some_and(|s| s.host_bytes > 0);
+                if in_memory && level != "hummingbird" && !m.devices.is_empty() {
+                    let (ideal, got) = (ideal_speed(sh, m, main, level), speed_of(sh, m, main, &lp));
+                    let cost = if ideal > 0.0 { (1.0 - got / ideal) * 100.0 } else { 0.0 };
+                    steps.push(Step {
+                        kind: StepKind::ExpertsInRam,
+                        what: format!(
+                            "experts in the computer's memory: {} there, a cache of them on the GPU",
+                            crate::ui::gib(lp.ram_bytes() + lp.disk_bytes())
+                        ),
+                        cost_pct: cost,
+                        confirm: cost > CONFIRM_COST_PCT,
+                    });
+                }
+                if level != asked && !m.devices.is_empty() {
+                    let (before, after) = (ideal_speed(sh, m, main, asked), ideal_speed(sh, m, main, level));
+                    steps.push(Step {
+                        kind: StepKind::LowerLevel,
+                        what: format!("lower level: {level} where {asked} was asked for (not the level asked for: smaller weights, not lossless)"),
+                        cost_pct: if before > 0.0 { (1.0 - after / before) * 100.0 } else { 0.0 },
+                        confirm: true,
+                    });
+                }
+                steps.sort_by_key(|s| s.kind);
+                return Ladder { asked, context: want_ctx, steps, plan: Some(lp), refusal: None };
+            }
+        }
+    }
+    Ladder { asked, context: want_ctx, steps: vec![], plan: None, refusal }
+}
+
 /// An option of the ladder from the plan `run` loads at that level.
 fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize) -> Candidate {
     let tok_s = speed_of(sh, m, main, &lp);
@@ -1255,6 +1438,18 @@ pub fn fit_cmd(a: &crate::args::Args) -> i32 {
     }
 }
 
+/// What the loaders' sizing is given of a machine: its main GPU's number, that GPU as a target, the GPUs the dynamic route uses (Ampere or newer) and whether they reach
+/// each other directly (the driver's word for this computer, else a datacenter machine's NVLink).
+#[allow(clippy::type_complexity)]
+pub(crate) fn sizing_inputs(machine: &Machine, probed: bool) -> Option<(usize, Target, Vec<Target>, Box<dyn Fn(&[i32]) -> bool>)> {
+    let main = (0..machine.devices.len()).min_by_key(|&i| (std::cmp::Reverse(machine.devices[i].free), i))?;
+    let target = Target::of(&machine.devices[main], main as i32, Some(machine.ram_free));
+    let devs: Vec<Target> =
+        machine.devices.iter().enumerate().filter(|(_, d)| d.cc.0 >= 8).map(|(i, d)| Target::of(d, i as i32, Some(machine.ram_free))).collect();
+    let linked = machine.devices.iter().all(|d| d.cc.1 == 0 && (8..=10).contains(&d.cc.0));
+    Some((main, target, devs, Box::new(move |g: &[i32]| if probed { crate::dynamic::tp::reach(g) } else { linked })))
+}
+
 /// Each level's plan `run` would load for MODEL on `machine`, or the reason it would not (the same functions: src/cli.rs `size`), in the family's order of
 /// levels: None where no level of this family is sized by its loader yet, or the machine has no GPU. `probed`: the machine is this computer (its GPUs'
 /// reach of each other is asked of the driver), else a datacenter machine's is taken as NVLink's.
@@ -1270,13 +1465,7 @@ pub(crate) fn exact_options(
     users: usize,
     probed: bool,
 ) -> Option<(Vec<Candidate>, Vec<crate::ui::Refusal>)> {
-    let main = (0..machine.devices.len()).min_by_key(|&i| (std::cmp::Reverse(machine.devices[i].free), i))?;
-    let target = Target::of(&machine.devices[main], main as i32, Some(machine.ram_free));
-    // (the GPUs the dynamic route uses: Ampere or newer; they reach each other directly where this computer says so, or as a datacenter machine's NVLink does)
-    let devs: Vec<Target> =
-        machine.devices.iter().enumerate().filter(|(_, d)| d.cc.0 >= 8).map(|(i, d)| Target::of(d, i as i32, Some(machine.ram_free))).collect();
-    let linked = machine.devices.iter().all(|d| d.cc.1 == 0 && (8..=10).contains(&d.cc.0));
-    let reach = move |g: &[i32]| if probed { crate::dynamic::tp::reach(g) } else { linked };
+    let (main, target, devs, reach) = sizing_inputs(machine, probed)?;
     let tries: Vec<&'static str> = match level {
         Some(l) => vec![l],
         None => fam.levels_now(model),
@@ -1318,6 +1507,8 @@ pub struct Planned {
     pub machine: Machine,
     pub plan: Plan,
     pub refusal: Option<crate::ui::Refusal>,
+    /// The degrade ladder from the level asked for (the family's first where none is): None where no level of the family is sized by its loader.
+    pub ladder: Option<Ladder>,
 }
 
 pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
@@ -1392,19 +1583,33 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
             )
         })
     });
-    Ok(Planned { model: model.to_string(), name, family: fam, shape: sh, machine, plan: p, refusal })
+    // the ladder from the level asked for, as `run` takes it: the steps printed with their costs, and the plan it loads (what `fit` shows first of all)
+    let asked = level.or_else(|| fam.levels_now(model).first().copied());
+    let ladder = asked.and_then(|asked| {
+        let (_, target, devs, reach) = sizing_inputs(&machine, probed)?;
+        let want = context.unwrap_or_else(|| fam.default_ctx.unwrap_or(LOSSY_CTX).min(sh.max_ctx));
+        let size = |l: &'static str| crate::cli::size(a, model, &config, l, &devs, &target, &*reach, users);
+        let lad = ladder(&sh, &machine, fam, model, asked, want, &size);
+        (lad.plan.is_some() || lad.refusal.is_some()).then_some(lad)
+    });
+    Ok(Planned { model: model.to_string(), name, family: fam, shape: sh, machine, plan: p, refusal, ladder })
 }
 
 fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
     let f = planned(a)?;
     let (model, p) = (f.model.as_str(), &f.plan);
     if a.has("json") {
-        match &p.chosen {
-            Some(c) => println!("{}", c.json(model, &f.machine)),
-            None => println!("{}", serde_json::json!({"schema": SCHEMA, "model": model, "plan": null, "notes": p.notes})),
-        }
+        let mut v: serde_json::Value = match &p.chosen {
+            Some(c) => serde_json::from_str(&c.json(model, &f.machine)).unwrap_or_default(),
+            None => serde_json::json!({"schema": SCHEMA, "model": model, "plan": null, "notes": p.notes}),
+        };
+        v["degrade"] = f.ladder.as_ref().map_or(serde_json::Value::Null, Ladder::json);
+        println!("{v}");
     } else {
         print!("{}", text(model, &f.shape, &f.machine, p));
+        if let Some(l) = &f.ladder {
+            print!("{}", l.report());
+        }
         if let Some(n) = p.chosen.as_ref().and_then(|c| remembered(&crate::store::cache_root(), model, c)) {
             println!("note: {n}");
         }
@@ -2189,5 +2394,90 @@ mod tests {
         assert!(planned_on >= 2, "{planned_on}");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&hub_dir);
+    }
+
+    /// The ladder, on a loader's answers made up: nothing to say where the model loads as asked; a shorter context is a step that costs nothing; experts in the computer's
+    /// memory a step with its cost, asked about over 30%; a lower level always asked about; and the first refusal where no level loads.
+    #[test]
+    fn the_ladder_takes_its_steps_in_order_and_prices_them() {
+        let dir = model_dir("ladder", "Nemotron-H", &fixture("nemotron_h_config.json"));
+        let model = format!("{}:swift", dir.to_str().unwrap());
+        let f = planned(&args(&["fit", &model, "--machine", "a100-80g"])).unwrap();
+        let (sh, m, fam) = (&f.shape, &f.machine, f.family);
+        // (swift's 78 GiB with its experts in the computer's memory on an 80 GB card: made whole here, the loader's answers are made up below)
+        let base = LoadPlan { experts: None, ..f.plan.chosen.as_ref().and_then(|c| c.load.clone()).expect("swift loads on 80 GB") };
+        let name = dir.to_str().unwrap();
+        let go = |asked: &'static str, want: usize, answers: Vec<(&'static str, Result<Option<LoadPlan>, String>)>| {
+            let size = |l: &'static str| match answers.iter().find(|a| a.0 == l) {
+                Some((_, Ok(p))) => Ok(p.clone()),
+                Some((_, Err(w))) => Err(crate::ui::Refusal::unsupported(w.clone(), "")),
+                None => Err(crate::ui::Refusal::unsupported(format!("no answer for {l}"), "")),
+            };
+            ladder(sh, m, fam, name, asked, want, &size)
+        };
+        // as asked: no step, nothing said
+        let l = go("swift", base.context, vec![("swift", Ok(Some(base.clone())))]);
+        assert!(l.is_as_asked() && l.steps.is_empty() && !l.needs_confirmation() && l.report().is_empty());
+        // a shorter context: the loader's, said, no cost, not asked about
+        let short = LoadPlan { context: 4096, ..base.clone() };
+        let l = go("swift", 32768, vec![("swift", Ok(Some(short.clone())))]);
+        assert_eq!(l.steps.iter().map(|s| (s.kind, s.cost_pct, s.confirm)).collect::<Vec<_>>(), vec![(StepKind::ShorterContext, 0.0, false)]);
+        assert!(l.text().contains("1. shorter context: 4096 tokens where 32768 were wanted (no change in speed)"), "{}", l.text());
+        // experts in the computer's memory: a cache of a few places is far slower than the GPU alone, a cache of most of them is not
+        let cache =
+            |slots: usize| crate::offload::CachePlan { layers: 40, experts: 512, slots, expert_bytes: 3 << 20, in_place: false, ram: 40 * 512 * (3 << 20) };
+        let tight = LoadPlan { experts: Some(cache(26)), ..base.clone() };
+        let roomy = LoadPlan { experts: Some(cache(500)), ..base.clone() };
+        let l = go("swift", base.context, vec![("swift", Ok(Some(tight)))]);
+        assert_eq!(l.steps.len(), 1);
+        assert!(
+            l.steps[0].kind == StepKind::ExpertsInRam && l.steps[0].cost_pct > CONFIRM_COST_PCT && l.steps[0].confirm && l.needs_confirmation(),
+            "{:?}",
+            l.steps
+        );
+        let tight_cost = l.steps[0].cost_pct;
+        let l = go("swift", base.context, vec![("swift", Ok(Some(roomy)))]);
+        // (a cache of nearly every expert is the cheaper step, though the host and the GPU meeting in every layer still costs: the planner's calibrated sync)
+        assert!(l.steps[0].cost_pct < tight_cost && l.steps[0].cost_pct > 0.0, "{:?} against {tight_cost}", l.steps);
+        // a lower level where the one asked is refused: asked about, whatever it costs, after the context and the experts at that level in the order
+        let lower = LoadPlan { level: "wren", context: 8192, experts: Some(cache(500)), ..base.clone() };
+        let l = go("swift", 32768, vec![("swift", Err("it needs 90 GiB".into())), ("wren", Ok(Some(lower)))]);
+        assert_eq!(l.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ShorterContext, StepKind::ExpertsInRam, StepKind::LowerLevel]);
+        assert!(l.steps[2].confirm && l.needs_confirmation() && l.plan.as_ref().unwrap().level == "wren");
+        assert!(
+            l.report().contains("it loads at the wren level") && l.report().contains("not available: dense layers in the computer's memory"),
+            "{}",
+            l.report()
+        );
+        // nothing loads: the first refusal, no plan
+        let l = go("swift", 32768, vec![("swift", Err("first".into())), ("wren", Err("second".into())), ("hummingbird", Err("third".into()))]);
+        assert!(l.plan.is_none() && l.refusal.as_ref().is_some_and(|r| r.what == "first") && l.report().contains("no step loads it (first)"));
+        // a path not sized by its loader: the ladder says nothing
+        let l = go("swift", 32768, vec![("swift", Ok(None))]);
+        assert!(l.plan.is_none() && l.steps.is_empty() && l.refusal.is_none());
+    }
+
+    /// `fit` prints the ladder from the level asked for: Gemma 4 12B lossless does not fit a 16 GB card, kestrel does, and the step is a lower level that asks; as JSON too.
+    #[test]
+    fn fit_shows_every_step_and_the_json_has_them() {
+        let dir = model_dir("ladderfit", "gemma-4-12B", &fixture("gemma4_12b_config.json"));
+        let f = planned(&args(&["fit", &format!("{}:penguin", dir.to_str().unwrap()), "--machine", "rtx4080s"])).unwrap();
+        let l = f.ladder.as_ref().expect("a ladder");
+        assert_eq!(l.asked, "penguin");
+        let p = l.plan.as_ref().expect("a lower level loads");
+        assert!(p.level != "penguin" && l.steps.iter().any(|s| s.kind == StepKind::LowerLevel && s.confirm), "{:?}", l.steps);
+        let report = l.report();
+        assert!(
+            report.starts_with("The ladder, from penguin at ")
+                && report.contains("asks first (--yes takes it)")
+                && report.contains("not available: the KV cache's type"),
+            "{report}"
+        );
+        let v = l.json();
+        assert_eq!((v["as_asked"].as_bool(), v["loads"].as_bool(), v["needs_confirmation"].as_bool()), (Some(false), Some(true), Some(true)));
+        assert!(v["steps"].as_array().unwrap().iter().any(|s| s["kind"] == "lower_level" && s["confirm"] == true));
+        // (a model that loads as asked has nothing to say)
+        let ok = planned(&args(&["fit", &format!("{}:kestrel", dir.to_str().unwrap()), "--machine", "rtx4090"])).unwrap();
+        assert!(ok.ladder.as_ref().is_some_and(Ladder::is_as_asked) && ok.ladder.unwrap().report().is_empty());
     }
 }
