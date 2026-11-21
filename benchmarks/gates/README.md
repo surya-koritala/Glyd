@@ -15,6 +15,8 @@ runs measured come in through `--ext DIR` as `NAME.result` files holding one lin
 
 `--plan-only` needs no GPU: it asks `glyd fit MODEL --machine PRESET` and compares with the file, which is how the expectations were made and how they are kept true (run it with the release build: the wren level is a development build's).
 
+`p6-driver-check.sh --bundle DIR` is P6's acceptance on one driver (R535, R550, R570: the unpacked engine bundle on a machine with only the driver: `--version`, `doctor` naming the CUDA 12 library, a first answer from `glyd/gemma-4-12B-wren`, the CUDA 12 cross-check, `serve`, and the too-old message below R535); it writes `driver-rNNN.result` for `m1-gate.sh --ext`.
+
 ## The model list
 
 Only models released in the last six months are used (the owner's rule: `createdAt` on the Hub). Of the ten pinned, the engine's planner runs 3 on a 16 GB card, 4 on 24 GB and none on 8 GB (release build); the others get its refusal
