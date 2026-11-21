@@ -82,19 +82,20 @@ one with a tag: `glyd run google/gemma-4-12B-it:wren`. The KV cache is lossless 
 
 ## Supported models
 
-| Family | Models | Levels |
-| :--- | :--- | :--- |
-| Gemma 4 | 12B, 31B, and their QAT checkpoints | penguin, kestrel, swift, wren |
-| Qwen 3.x | Qwen3 dense; Qwen3.5, 3.6 and 3.8 dense | Qwen3: penguin; 3.5 to 3.8: kestrel, swift, wren |
-| Nemotron | Nemotron 3 Super, Nemotron 3.5 Lightning | every level (hummingbird on Super) |
-| Kimi | Kimi-K3 | penguin |
-| GLM | GLM-5.3-Flash | penguin |
-| DeepSeek | DeepSeek-V4 | penguin |
-| Muse | Muse Spark | penguin |
-| Qwen MoE | Qwen3.8-Flash-Next | through [Condor](condor/) |
-| GGUF | 16-bit GGUF files of a family above: one file, split files, a folder or a Hugging Face repo | as the family runs (quantized GGUF kernels are on the roadmap) |
+| Family | Levels |
+| :--- | :--- |
+| Gemma 4 (QAT checkpoints too) | penguin, kestrel, swift, wren |
+| Qwen 3 dense | penguin |
+| Qwen 3.5, 3.6 and 3.8 dense | kestrel, swift, wren |
+| Nemotron 3 and 3.5 | every level (hummingbird on Nemotron 3) |
+| Kimi K3 | penguin |
+| GLM 5.3 Flash | penguin |
+| DeepSeek V4 | penguin |
+| Muse Spark | penguin |
 
-`glyd fit MODEL` answers for a specific model, and `glyd pull`, `glyd ls` and `glyd rm` manage the ones you have.
+Any size or fine-tune of these architectures runs, from the Hub or from 16-bit GGUF files. A family's newer architecture
+needs its own support until the single runtime of [M2](ROADMAP.md) makes a new architecture a description instead of code.
+`glyd fit MODEL` answers for a specific model; `glyd pull`, `glyd ls` and `glyd rm` manage the ones you have.
 
 ## Serving and tools
 
