@@ -426,6 +426,17 @@ jobs:
           $h = (Get-FileHash "out\$d.zip" -Algorithm SHA256).Hash.ToLower()
           "$h  $d.zip" | Set-Content -NoNewline "out\$d.zip.sha256"
           Get-Content "out\$d.zip.sha256"; Get-ChildItem out | Select-Object Name, Length
+          # the installer (scripts/install.ps1) on this zip, from a folder (GLYD_RELEASE_URL): it installs, finds the DLLs, and `glyd doctor` on a runner with no GPU says so in words
+          $env:GLYD_VERSION = $env:VERSION; $env:GLYD_RELEASE_URL = (Resolve-Path out).Path; $env:GLYD_HOME = Join-Path $PWD 'install-test'; $env:GLYD_NO_PATH = '1'
+          & .\scripts\install.ps1
+          foreach ($f in 'glyd.exe', 'glyd-engine.exe', 'libglyd_gpu_cuda13.dll', 'libglyd_gpu_cuda12.dll', 'LICENSE-engine') {
+            if (-not (Test-Path (Join-Path $env:GLYD_HOME $f))) { throw "the installer did not put $f in $env:GLYD_HOME" }
+          }
+          $v = & (Join-Path $env:GLYD_HOME 'glyd.exe') --version | Out-String
+          if ($v -notmatch [regex]::Escape($env:VERSION)) { throw "the installed glyd says: $v" }
+          $doctor = & (Join-Path $env:GLYD_HOME 'glyd.exe') doctor 2>&1 | Out-String
+          $doctor
+          if ($doctor -notmatch 'NVIDIA|GPU') { throw 'glyd doctor says nothing of the GPU' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: engine-bundle-windows-x86_64
