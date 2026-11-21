@@ -1,4 +1,4 @@
-// The benchmark suite behind docs/benchmarks: Glyd against zstd -3, zstd
+// The benchmark suite behind docs/codec/benchmarks: Glyd against zstd -3, zstd
 // -19 and LZ4 on the corpus of scripts/download_bench_corpus.sh (logs,
 // JSON, database exports, Parquet), large files and small objects, at a
 // stated thread count, repeated, every decode checked byte for byte

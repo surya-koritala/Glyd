@@ -645,7 +645,7 @@ def main():
 # ---- the lossless KV cache (--kv) ------------------------------------------------------------------------------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.join(HERE, "..", "..")
-DOCS = ("README.md", "gpu/README.md", "CHANGELOG.md", "docs/engineering-notes.md", "gpu/vllm/README.md", "docs/spec.md")  # this repository's own documents: the long prompts
+DOCS = ("README.md", "gpu/README.md", "CHANGELOG.md", "docs/codec/engineering-notes.md", "gpu/vllm/README.md", "docs/codec/spec.md")  # this repository's own documents: the long prompts
 
 
 def kv_pool(n_pages, H, A, seed=0):

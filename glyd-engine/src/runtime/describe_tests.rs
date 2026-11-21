@@ -98,3 +98,37 @@ fn unknown_keys_are_named() {
     g["text_config"]["model_type"] = "something_new".into();
     assert!(describe(&g).unwrap_err().0.contains("something_new"));
 }
+
+#[test]
+fn glm53_model() {
+    model("glm53_model", MODEL_TOL);
+}
+
+#[test]
+fn glm53_flash_model() {
+    model("glm53flash_model", MODEL_TOL);
+}
+
+/// GLM-5.3-Flash's released config describes its released checkpoint exactly: every tensor of the language model (the experts from
+/// the fixture's runs, the FP8 matrices with their block scales), less the vision tower and the MTP layer.
+#[test]
+fn released_glm53_flash_config() {
+    let d = describe(&fixture("glm5_next_config.json")).unwrap();
+    let t = fixture("glm5_next_tensors.json");
+    let mut all: BTreeSet<String> = t["tensors"].as_object().unwrap().keys().cloned().collect();
+    for run in t["runs"].as_array().unwrap() {
+        let p = run["prefix"].as_str().unwrap();
+        for e in 0..run["count"].as_u64().unwrap() {
+            for n in run["tensors"].as_object().unwrap().keys() {
+                all.insert(format!("{p}{e}.{n}"));
+            }
+        }
+    }
+    let mtp = format!("model.language_model.layers.{}.", d.desc.blocks.len() / 2);
+    let want: BTreeSet<String> = all.into_iter().filter(|n| !n.starts_with("model.visual.") && !n.starts_with(&mtp)).collect();
+    let got = d.names();
+    let missing: Vec<_> = want.difference(&got).take(8).collect();
+    let extra: Vec<_> = got.difference(&want).take(8).collect();
+    assert!(missing.is_empty() && extra.is_empty(), "not described: {missing:?}; not in the checkpoint: {extra:?}");
+    assert_eq!((d.mtp_layers, d.desc.embed.streams), (1, 4));
+}

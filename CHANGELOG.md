@@ -1225,7 +1225,7 @@ every earlier format.
   its family first needs it; then it is lifted, stored again against a
   shallower base, in place of every new family starting shallow
   (v0.14.8's rule). The terabyte gate, same corpus and instance
-  ([report](docs/benchmarks/store-gate-2026-09-24.md)): **43.61 GB,
+  ([report](docs/codec/benchmarks/store-gate-2026-09-24.md)): **43.61 GB,
   3.52× fewer bytes than zstd -3** (44.35 GB, 3.46× in v0.14.8), 27.2×
   against raw; the English Wikipedia tables 8.67 → 7.94 GB, the kernels
   as in v0.14.8 or smaller. Put 374 MB/s, read-back 486 MB/s (zstd -3's
@@ -1235,7 +1235,7 @@ every earlier format.
   shares no bytes with the checkpoint before it). Nine Pythia-410M
   checkpoints (14.6 GB): 5.88 GB in the store, where zstd -19 stores
   7.28 GB and zstd -3 8.63 GB; the last two as deltas of 501 MB, every
-  object verified ([report](docs/benchmarks/weights-2026-09-25.md)).
+  object verified ([report](docs/codec/benchmarks/weights-2026-09-25.md)).
 - Reads: the decoder no longer spins while a unit waits for the ones
   ahead of it; the unit that completes the run writes it out. Decompress
   CPU at the plain levels fell by up to 65% on 32 threads (logs `--max`
@@ -1270,14 +1270,14 @@ every earlier format.
   check failed.
 - The savings calculator re-measured at this code (LZ4, gzip, zstd -3
   and -19, four Glyd levels, decompress CPU per row; the bucket row
-  from the v0.14.8 gate): [report](docs/benchmarks/savings-2026-09-24.md).
+  from the v0.14.8 gate): [report](docs/codec/benchmarks/savings-2026-09-24.md).
 
 ## v0.14.8 — 2026-09-24
 
 - **At a terabyte: 3.46× fewer bytes than zstd -3** (3.32× in
   v0.14.7). The gate's 1,192 objects, 1.18 TB, put through the store
   into S3 from one 16-vCPU instance next to the bucket
-  ([report](docs/benchmarks/store-gate-2026-09-24.md)): 44.35 GB
+  ([report](docs/codec/benchmarks/store-gate-2026-09-24.md)): 44.35 GB
   stored against zstd -3's 153.5 GB, 26.7× against raw; put at 386
   MB/s (372 in v0.14.7, zstd -3's own put 535); every object read back
   by its own process at 464 MB/s (zstd -3's read-back 348), all 1,192
@@ -1428,7 +1428,7 @@ every earlier format.
   into the caller's buffer. The Ubuntu root's version is bounded by
   the deflate emulator, which runs at zlib's own search speed per
   thread. At a terabyte, one im4gn.4xlarge next to S3
-  ([report](docs/benchmarks/store-gate-2026-09-24.md)): put at 372
+  ([report](docs/codec/benchmarks/store-gate-2026-09-24.md)): put at 372
   MB/s (243 in the 2026-09-22 run), every object read back by its own
   process at 461 MB/s (166 before; zstd -3's own read-back on that
   instance 341), the bucket restored by one process at 603 MB/s, all
@@ -1734,7 +1734,7 @@ Fixes. Every file v0.12.0 and v0.13.0 wrote reads back with this one.
   half its fingerprints with the hour before and gained nothing from a
   full delta). Kernels put at 800–1,600 MB/s on this Mac (300–500
   before), events at 1,300–1,900; every stored byte identical. The
-  terabyte gate rerun ([report](docs/benchmarks/store-gate-2026-09-22.md)):
+  terabyte gate rerun ([report](docs/codec/benchmarks/store-gate-2026-09-22.md)):
   put 243 MB/s against 150, 1 h 21 min against 2 h 12 min, every
   object back byte-exact, the rebuild 51 min against 86.
 - Dense max level (`--dense`, `compress_into_max_dense`,
@@ -1768,7 +1768,7 @@ Fixes. Every file v0.12.0 and v0.13.0 wrote reads back with this one.
 
 ### The store at a terabyte
 
-- The gate run ([report](docs/benchmarks/store-gate-2026-09-22.md)):
+- The gate run ([report](docs/codec/benchmarks/store-gate-2026-09-22.md)):
   1,192 objects, 1.18 TB, put into S3 from one instance, 49.0 GB
   stored against zstd -3's 153.5 GB (3.13× fewer bytes, 24× against
   raw), every object read back byte-exact, the metadata directory
@@ -1888,7 +1888,7 @@ Fixes. Every file v0.12.0 and v0.13.0 wrote reads back with this one.
 
 ### Write speed, and the corpus rerun on AWS
 - The suite (`scripts/bench_aws_suite.sh`, both machines, every decode
-  checked; [docs/benchmarks/suite-2026-09-21.md](docs/benchmarks/suite-2026-09-21.md)):
+  checked; [docs/benchmarks/suite-2026-09-21.md](docs/codec/benchmarks/suite-2026-09-21.md)):
   `--max` 3.939 over the 8.7 GB corpus (zstd -3 3.851) at 1,512 MB/s
   on 8 Graviton3 cores against zstd -3's 1,969 — 0.77× (0.61× in the
   previous report), decoding at 10,413 against 1,422; one core 233
@@ -2270,7 +2270,7 @@ notes: docs/design/format-v7.md, "Format v8".
 ### Levels
 - **`--ultra` / `-19`** (format v7, same decoder): optimal parse on a
   binary-tree match finder, every position priced in the coder's own
-  bits ([design](docs/design/ultra-parse.md)). Silesia ratio 3.80 vs
+  bits ([design](docs/codec/design/ultra-parse.md)). Silesia ratio 3.80 vs
   `--max`'s 3.22; zstd -16 3.83, zstd -19 4.01 (3.91 inside Glyd's 2 MB
   window). Compresses at 4.8 MB/s; its output decodes at 2,190 MB/s,
   1.3× zstd -19's. `compress_into_ultra`, `compress_parallel_into_ultra`,

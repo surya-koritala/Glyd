@@ -60,7 +60,7 @@ above). `gpu-cloud.yml` starts a cloud instance for a run you ask for; it never 
 ## What a change must show
 
 - **Correctness.** Round trips byte-exact; format changes keep old files readable (a test reading files the released
-  version wrote, in `tests/data/legacy/`, and the format in `docs/spec.md`). A new model or kernel comes with a logits
+  version wrote, in `tests/data/legacy/`, and the format in `docs/codec/spec.md`). A new model or kernel comes with a logits
   test against the CPU reference.
 - **Speed, size, quality.** Before and after on the same machine, with the command: `glyd-engine bench` (docs/bench.md), `costs`, `rates`
   for the engine; `examples/bench_suite.rs`, `scripts/bench_versions.sh` for the codec. Results go in `benchmarks/`.

@@ -28,7 +28,7 @@
 </head>
 <body>
 <main>
-  <nav><a href="./">Glyd</a> · <a href="https://github.com/surya-koritala/Glyd">GitHub</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/savings-2026-09-24.md">how these ratios were measured</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/store-gate-2026-09-24.md">the terabyte gate</a></nav>
+  <nav><a href="./">Glyd</a> · <a href="https://github.com/surya-koritala/Glyd">GitHub</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/codec/benchmarks/savings-2026-09-24.md">how these ratios were measured</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/codec/benchmarks/store-gate-2026-09-24.md">the terabyte gate</a></nav>
   <h1>What Glyd saves you</h1>
   <p class="sub">Bytes stored scale with 1 / ratio. Measured on 2026-09-25 on an AMD Ryzen 9 7950X3D (16 cores, 32 threads) against zstd 1.5.7, LZ4 1.10.0 and gzip 1.14, Glyd at v0.14.9; the bucket row is the store's terabyte gate (v0.14.9, S3, 16 vCPU). Every Glyd output was decoded and compared with its input. Measure your own data with <code>glyd -b yourfile</code>, or a bucket with <code>glyd-store --audit s3://bucket</code>.</p>
 

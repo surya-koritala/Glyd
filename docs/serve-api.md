@@ -29,8 +29,8 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   the server's own port too.
 - The GPU is the one with the most free memory of those CUDA_VISIBLE_DEVICES shows. The context is `--ctx N` (`--context`);
   without it, what fits, up to 32,768 at a level (served to several users, what fits each of them, at least 4,096). `--users N`
-  (4 if not given) is how many requests run at once: 1 to 8 on the lossless Qwen3 engine; 1 to 64 for Gemma 4, Qwen3.8 dense
-  and Muse Spark on one GPU, as many as the GPU's memory holds (the server says how many); the other level engines run one
+  (4 if not given) is how many requests run at once: 1 to 8 on the lossless Qwen3 engine; 1 to 64 for Gemma 4, Qwen3.8 dense,
+  and Muse Spark, Kimi-K3 and GLM-5.3-Flash on one GPU, as many as the GPU's memory holds (the server says how many); the other level engines run one
   request at a time (the others wait in order).
 - A model too big for one GPU (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark) uses all the GPUs shown. On datacenter
   GPUs (A100, H100, B200) that reach each other directly, Kimi-K3 and DeepSeek-V4 put every layer across all of them:
@@ -259,10 +259,10 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
   be compiled, and two forms at once, are 400 in words. A request with none is sampled as before. `guided_whitespace_pattern` is refused.
 - On a level's engine that runs one request at a time (`concurrency: 1`: a model with a draft model, or split across GPUs, and the
   families the scheduler does not batch yet), `logprobs` and `min_tokens` are refused: it gives no log-probabilities and has no
-  least length. `fields.refused` says so. Gemma 4, Qwen3.8 dense (the Qwen3.5 layout) and Muse Spark on one GPU are served by the
+  least length. `fields.refused` says so. Gemma 4, Qwen3.8 dense (the Qwen3.5 layout), and Muse Spark, Kimi-K3 and GLM-5.3-Flash on one GPU are served by the
   scheduler to `--users` at once (`limits.concurrency`), with both. `GLYD_ENGINE_BATCH_PREFILL=0` makes every reply the one the same
-  request alone gets: prompts run one a pass, and Muse Spark's decode steps one sequence each (its experts' products differ in the last
-  bits at several rows).
+  request alone gets: prompts run one a pass, and a model with experts (Muse Spark, Kimi-K3, GLM-5.3-Flash) decodes one sequence a step (its
+  experts' products differ in the last bits at several rows). DeepSeek-V4 still runs one request at a time.
 - A field this server does not know is answered without it, and said once on stderr.
 - `model` is not checked: one model is served, and the reply names it.
 - The context holds the prompt and the reply. A prompt of the context's size or more is refused; with `max_tokens` (or

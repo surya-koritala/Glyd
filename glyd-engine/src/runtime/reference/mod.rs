@@ -381,11 +381,7 @@ impl RefLayer {
                 }
                 _ => (xt.to_vec(), None),
             };
-            let h = norm::norm(&self.block.norm_in, &input, self.p.opt("norm_in"), self.p.opt("norm_in_bias"));
-            let mut o = self.body(seqs[t], positions[t], tokens.get(t).copied().unwrap_or(0), &h)?;
-            if let Some(n) = self.block.norm_out {
-                o = norm::norm(&n, &o, self.p.opt("norm_out"), self.p.opt("norm_out_bias"));
-            }
+            let o = self.output(seqs[t], positions[t], tokens.get(t).copied().unwrap_or(0), &input)?;
             match &self.block.residual {
                 Residual::Add => xt.iter_mut().zip(&o).for_each(|(x, &o)| *x += o),
                 Residual::AddScaled(s) => xt.iter_mut().zip(&o).for_each(|(x, &o)| *x += s * o),
@@ -408,10 +404,20 @@ impl RefLayer {
                         }
                     }
                 }
-                r => return err(format!("the reference has no residual rule {r:?} yet")),
+                Residual::DepthMix(_) => return err("a depth-mix block runs in the model's executor (its sources span blocks)"),
             }
         }
         Ok(())
+    }
+
+    /// The block's output for one token's input (before the residual rule): pre-norm, body, post-norm.
+    pub fn output(&mut self, seq: u32, pos: u32, token: u32, input: &[f32]) -> Result<Vec<f32>> {
+        let h = norm::norm(&self.block.norm_in, input, self.p.opt("norm_in"), self.p.opt("norm_in_bias"));
+        let mut o = self.body(seq, pos, token, &h)?;
+        if let Some(n) = self.block.norm_out {
+            o = norm::norm(&n, &o, self.p.opt("norm_out"), self.p.opt("norm_out_bias"));
+        }
+        Ok(o)
     }
 }
 
@@ -450,9 +456,14 @@ impl Backend for Ref {
     /// Every implemented kind in any format a source decodes to f32, at the speed of plain Rust.
     fn supports(&self, kind: &KindRef, _: &Format) -> Support {
         match kind {
-            KindRef::Attention | KindRef::SlidingAttention | KindRef::Mla | KindRef::GatedDeltaNet | KindRef::KimiDelta | KindRef::Mlp | KindRef::Moe => {
-                Support::Slower("the f32 reference".into())
-            }
+            KindRef::Attention
+            | KindRef::SlidingAttention
+            | KindRef::SparseAttention
+            | KindRef::Mla
+            | KindRef::GatedDeltaNet
+            | KindRef::KimiDelta
+            | KindRef::Mlp
+            | KindRef::Moe => Support::Slower("the f32 reference".into()),
             k => Support::No(format!("no reference for {k:?} yet")),
         }
     }

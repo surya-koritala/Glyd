@@ -128,15 +128,17 @@ jobs:
           # (a random model of each family's layout with its layer kinds, made here: only models released in the last six months are used, and those are larger than a 16 GB card holds; a fixture's bound is the
           # reference's KL, or the same bits as the engine's own recorded output on this GPU generation)
           "$E" logitscheck --fixtures glyd-engine/tests/logits
-      - name: Several sequences at once on the description executor (random Gemma 4, Qwen3.5-layout and Muse Spark models, each reply against the one-at-a-time reply; logits.rs usercheck)
+      - name: Several sequences at once on the description executor (random Gemma 4, Qwen3.5-layout, Muse Spark, Kimi-K3 and GLM-5.3 models, each reply against the one-at-a-time reply; logits.rs usercheck)
         run: |
           # (prompts one a pass: every reply at once the reply alone, token for token; prompts together: counted)
-          for c in gemma4 qwen35 muse; do
+          for c in gemma4 qwen35 muse kimi glm; do
             GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck "$c" --users 4 --level penguin
             "$E" usercheck "$c" --users 4 --level penguin
           done
           # (more users than the dense engine's 8 rows: 16 at once, prompts one a pass)
           GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 16 --level penguin
+          # (paged keys and values run out: 8 users on 24 blocks a group, each sequence sent back gives its blocks back and runs again; every reply comes, none fails)
+          GLYD_ENGINE_PAGES=24 "$E" usercheck gemma4 --users 8 --level penguin
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

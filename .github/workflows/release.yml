@@ -25,7 +25,8 @@ name: Release
 #
 # Permissions: read everywhere but `attach` (it uploads to the release); `plan` also reads the
 # Actions runs (actions: read), in a step that runs nothing of the tag's tree. `publish-pypi`
-# alone has id-token: write, and runs only Python's setup, the wheels' download and PyPI's action; the
+# has id-token: write, and runs only Python's setup, the wheels' download and PyPI's action, and `sign` (id-token and attestations: write) only the
+# sign-release action on the files the build made (provenance, SBOM and Sigstore signatures: docs/verify-releases.md); the
 # crates.io token is in the environment of the one step that publishes. Every action is a commit,
 # with its version in the comment.
 on:
@@ -249,10 +250,49 @@ jobs:
           name: wheels-${{ matrix.name }}
           path: wheels/*.whl
 
+  sign:
+    # Provenance, an SBOM and keyless signatures of the files the release gets (.github/actions/sign-release): the one job besides publish-pypi with id-token: write; it builds nothing,
+    # takes the build's files as they are, and runs pinned actions only. docs/verify-releases.md says how to check them.
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true' && (github.event_name == 'push' || inputs.tag != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: tarballs-*
+          path: out
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheels-*
+          path: out
+          merge-multiple: true
+      - uses: ./.github/actions/sign-release
+        with:
+          dir: out
+          sums: SHA256SUMS
+          sbom: glyd-${{ needs.plan.outputs.label }}.spdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signatures
+          path: |
+            out/SHA256SUMS
+            out/*.sigstore.json
+            out/*.spdx.json
+
   attach:
     # The Linux builds run in the manylinux containers, which have no gh: the release takes every build's files
     # here, on the runner (v0.21.0's first run stopped at "gh: command not found").
-    needs: [plan, build]
+    needs: [plan, build, sign]
     if: needs.plan.outputs.publish == 'true' && (github.event_name == 'push' || inputs.tag != '')
     runs-on: ubuntu-latest
     permissions:
@@ -268,6 +308,10 @@ jobs:
           pattern: wheels-*
           path: out
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: signatures
+          path: out
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
