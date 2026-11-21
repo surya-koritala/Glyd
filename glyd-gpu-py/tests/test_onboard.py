@@ -2150,6 +2150,7 @@ echo "curl $url" >> "$HOME/calls.log"
 [ -z "${FAKE_CURL_FAIL:-}" ] || { echo "curl: (22) The requested URL returned error: 503" >&2; exit 22; }
 case "$url" in
   */install.sh) cp "$FAKE_DIR/uv-installer.sh" "$out" ;;
+  *.tar.gz.sigstore.json) [ -z "${FAKE_NO_SIG:-}" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }; echo '{"fake": "cosign bundle"}' > "$out" ;;
   */glyd-engine-v*.tar.gz.sha256) cp "$FAKE_DIR/engine.sha256" "$out" ;;
   */glyd-engine-v*.tar.gz) cp "$FAKE_DIR/engine.tar.gz" "$out" ;;
   *.tar.gz.sha256) cp "$FAKE_DIR/release.sha256" "$out" ;;
@@ -2188,6 +2189,8 @@ class Inst:
         script("uv", FAKE_UV, self.bindir if uv else self.fake)
         script("uv-installer.sh", FAKE_UV_INSTALLER, self.fake)
         script("curl", FAKE_CURL)
+        # (cosign: the release's signature check, from 0.34.0; it logs its call and answers FAKE_COSIGN_RC, 0 by default)
+        script("cosign", 'echo "cosign $*" >> "$HOME/calls.log"\nexit ${FAKE_COSIGN_RC:-0}\n')
         script("uname", f'case "$1" in -s) echo "{os_name}";; -m) echo "{arch}";; esac\n')
         script("nvidia-smi", f'case "$1" in -L) echo "GPU 0: NVIDIA L4";; --query-gpu=driver_version) echo "{nvidia}";; esac\n' if nvidia else "exit 9\n")
         if compiler:
@@ -2480,7 +2483,7 @@ def test_install_sh_where_glyd_run_has_nothing_to_run_on():
             assert ("nvidia-driver-580" in r.out) == (os_name == "Linux"), r.out  # (no driver advice for a Mac)
             assert not any(c.startswith("uv ") for c in r.calls), r.calls  # (no tool environment that holds no compression program)
             base = f"{REPO_URL}/releases/download/v{V}/glyd-v{V}-{plat}.tar.gz"
-            assert [c for c in r.calls if c.startswith("curl")] == [f"curl {base}", f"curl {base}.sha256", f"curl {base}.sigstore.json"], r.calls  # (release 0.33.1 is older than the signed ones: its signature is asked for, not found, and its sha256 alone is checked)
+            assert [c for c in r.calls if c.startswith("curl")] == [f"curl {base}", f"curl {base}.sha256", f"curl {base}.sigstore.json"], r.calls  # (the tarball, its sha256 and its signature)
             for prog in ("glyd", "glyd-store"):
                 link = i.at(".local", "bin", prog)
                 assert os.path.islink(link) and os.readlink(link) == i.at(".local", "share", "glyd", "cli", prog), prog
@@ -3153,6 +3156,30 @@ def test_a_loopback_address_that_was_chosen_says_what_is_off():
         finally:
             run.READY_WAIT = saved_wait
     assert said == {"default": False, "chosen": True, "flag": True}, (said, err.text())
+
+
+def test_install_sh_checks_the_signature():
+    """From 0.34.0 a release's tarballs are signed by the workflows that built them: the installer checks each with cosign against that workflow at the
+    release's tag, and stops on a tarball with no signature or one cosign refuses, unless GLYD_SKIP_VERIFY=1 (the sha256 is checked either way)."""
+    V = Inst.version()
+    with Inst(nvidia="595.91.07") as i:
+        r = i.run(env={"GLYD_WITH_VLLM": ""})
+        assert r.rc == 0, r.err
+        checks = [c for c in r.calls if c.startswith("cosign verify-blob")]
+        assert len(checks) == 2, r.calls
+        assert f"/.github/workflows/release.yml@refs/tags/v{V}" in checks[0] and f"/.github/workflows/release-gpu.yml@refs/tags/v{V}" in checks[1], checks
+        assert "Signature of glyd-v" in r.out and "Signature of glyd-engine-v" in r.out, r.out
+    with Inst(nvidia="595.91.07") as i:
+        r = i.run(env={"GLYD_WITH_VLLM": "", "FAKE_NO_SIG": "1"})
+        assert r.rc != 0 and "has no signature" in r.err and "GLYD_SKIP_VERIFY=1" in r.err, (r.rc, r.err)
+        assert not os.path.exists(i.at(".local", "bin", "glyd")), "installed without a signature"
+    with Inst(nvidia="595.91.07") as i:
+        r = i.run(env={"GLYD_WITH_VLLM": "", "FAKE_COSIGN_RC": "1"})
+        assert r.rc != 0 and "not signed by Glyd's release workflows" in r.err, (r.rc, r.err)
+    with Inst(nvidia="595.91.07") as i:
+        r = i.run(env={"GLYD_WITH_VLLM": "", "FAKE_NO_SIG": "1", "GLYD_SKIP_VERIFY": "1"})
+        assert r.rc == 0 and "GLYD_SKIP_VERIFY=1" in r.err + r.out, (r.rc, r.err)
+        assert not any(c.startswith("cosign") for c in r.calls), r.calls
 
 
 def test_install_sh_engine_only():
