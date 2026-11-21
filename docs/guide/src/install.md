@@ -50,6 +50,16 @@ bash gpu/build_lib.sh target/release
 target/release/glyd doctor
 ```
 
+Or let cargo build and install the one program, the engine linked in (`glyd-engine` is `glyd` under another name: make it a link if a tool asks for it):
+
+```bash
+cargo install --git https://github.com/surya-koritala/Glyd glyd --features engine --locked
+ln -s glyd "$(dirname "$(command -v glyd)")/glyd-engine"    # optional
+glyd --version                                       # says `engine: linked`
+```
+
+Without `--features engine` the install is the file compression program alone.
+
 - `-p glyd --features engine` builds `glyd` with the engine linked in: `run`, `serve`, `pull`, `ls`, `fit`, `doctor` and the
   rest are its own commands. `cargo build --release -p glyd-engine` builds the engine's own program, `glyd-engine`, which has
   the older command line without `pull`, `ls`, `rm` and the service.

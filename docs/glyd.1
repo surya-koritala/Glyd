@@ -1,0 +1,204 @@
+.TH GLYD 1 "" "Glyd" "User Commands"
+.SH NAME
+glyd \- LLM weights and KV cache compressed without loss, the engine that runs them, and file compression
+.SH SYNOPSIS
+.B glyd
+.I COMMAND
+[ARGS]
+.br
+.B glyd
+[OPTIONS] [INPUT] [\-o OUTPUT]
+.SH DESCRIPTION
+With a command, glyd runs, serves and manages language models on Glyd's own engine. With a file and no command it compresses or decompresses the file (glyd \-\-help lists the options).
+.SH COMMANDS
+.TP
+.B glyd run MODEL[:LEVEL]
+Chat with a model in the terminal and at one URL.
+.br
+MODEL is a short name (gemma4, qwen3.8:27b), a Hub id (ORG/NAME), a directory or a GGUF file. LEVEL is penguin (lossless, the default), kestrel, swift, wren or hummingbird. \-\-prompt TEXT answers once and exits. Where the service is running the chat goes through it.
+.br
+Flags: \-\-context N, \-\-users N, \-\-devices LIST, \-\-port N, \-\-host ADDRESS
+.TP
+.B glyd serve MODEL[:LEVEL]
+The OpenAI\-compatible API and the chat page.
+.br
+Also the Anthropic and Ollama request shapes (docs/serve\-api.md). GLYD_API_KEY, in the environment, guards /v1.
+.br
+Flags: \-\-context N, \-\-users N, \-\-devices LIST, \-\-port N, \-\-host ADDRESS
+.TP
+.B glyd pull MODEL[:LEVEL]
+Download a model by name or Hub id.
+.br
+The level's pre\-packed repo where there is one, else the release's own weights, which the first run packs. Downloads resume and run in parallel; a gated model says where to accept its licence and to run glyd login.
+.TP
+.B glyd ls
+The models downloaded, with their level and size on disk.
+.br
+The packed copies made for this GPU are totalled below.
+.br
+Flags: \-\-json, \-\-all
+.TP
+.B glyd rm MODEL[:LEVEL]
+Take a model out of the cache, and its packed copies.
+.br
+A name with no level takes every level of the model. No other model's files are touched.
+.TP
+.B glyd ps
+What the background service holds, and when each model unloads.
+.br
+
+.br
+Flags: \-\-json, \-\-port N
+.TP
+.B glyd stop MODEL | \-\-all
+Unload a model from the service now.
+.br
+The service stays. glyd service stop ends the service itself.
+.br
+Flags: \-\-all, \-\-port N
+.TP
+.B glyd service [install | uninstall | status | stop]
+The background service: models load on request and unload when idle.
+.br
+With no word it runs in the foreground; install makes it a user unit started at login (systemd, launchd; Windows runs it by hand). docs/service.md.
+.br
+Flags: \-\-port N, \-\-host ADDRESS, \-\-keep\-alive TIME, \-\-max\-loaded N, \-\-context N, \-\-users N, \-\-json
+.TP
+.B glyd fit MODEL[:LEVEL]
+What a run would do on this computer, before anything is downloaded.
+.br
+The level, where the weights go, the context and the predicted tokens a second. \-\-machine plans for another computer.
+.br
+Flags: \-\-context N, \-\-users N, \-\-devices LIST, \-\-machine NAME|FILE, \-\-json
+.TP
+.B glyd doctor [\-\-bundle [FILE]] [\-\-no\-logs]
+What this computer has for running models, each check with the line that fixes it.
+.br
+\-\-bundle writes the same as one file to attach to an issue.
+.br
+Flags: \-\-machine NAME|FILE, \-\-json
+.TP
+.B glyd login
+Save a Hugging Face token (for a gated model).
+.br
+The token is kept in the Hub client's own file.
+.TP
+.B glyd supports MODEL
+Whether the engine runs a model, from its config alone.
+.br
+Exit 0 it does, 3 it does not.
+.br
+Flags: \-\-json
+.TP
+.B glyd preflight [MODEL[:LEVEL]]
+Whether the engine will certainly run a model on this computer, before a download.
+.br
+Exit 0 it will, 3 it will not (and why), 1 that could not be told.
+.br
+Flags: \-\-context N, \-\-users N, \-\-json
+.TP
+.B glyd prepare MODEL[:LEVEL]
+Download a model and pack it for this GPU.
+.br
+The KV cache's tables are left for the first run.
+.br
+Flags: \-\-context N
+.TP
+.B glyd costs MODEL[:LEVEL] [\-\-predict]
+A model's cost profile and predicted decode speed.
+.br
+docs/cost\-profile.md.
+.br
+Flags: \-\-context N
+.TP
+.B glyd rates [\-\-dir DIR]
+This computer's memory tiers, measured.
+.br
+The GPU's memory, the link to it, the main memory and the disk under DIR.
+.TP
+.B glyd bench MODEL[:LEVEL] [\-\-suite gate|bar|full]
+The benchmark harness: fixed prompts at fixed concurrencies, the speed as JSON.
+.br
+docs/bench.md. \-\-compare BASE CAND is the regression gate; \-\-bar is the speed bar of a GPU.
+.br
+Flags: \-\-context N, \-\-users N, \-\-machine NAME|FILE, \-\-json
+.TP
+.B glyd connect [TOOL]
+What to give a program so that it talks to the server on this computer.
+.br
+Lines to paste for the OpenAI SDKs, Claude Code, Ollama's clients, Open WebUI, Continue and curl; nothing is changed.
+.TP
+.B glyd verify MODEL | PATH
+Check a model's packed weights bit for bit.
+.br
+A model name is the engine's; a file or directory of packed weights is glyd\-gpu's.
+.TP
+.B glyd pack MODEL OUT
+A model's weights for Glyd's GPU layouts, packed on the CPU.
+.br
+glyd\-gpu's command.
+.TP
+.B glyd cluster
+One model across computers (not yet: ROADMAP.md, M5).
+.br
+Today that is the starlings program.
+.SH SHARED FLAGS
+The same flag means the same wherever a command takes it.
+.TP
+.B \-\-context N
+the context window in tokens
+.TP
+.B \-\-users N
+how many users the server holds at once
+.TP
+.B \-\-devices LIST
+the GPUs to use, as the driver numbers them (0,1)
+.TP
+.B \-\-machine NAME|FILE
+plan for another computer: a preset (rtx4080s, h100, ...) or a JSON file, not the one this runs on
+.TP
+.B \-\-json
+the answer as JSON on the standard output, for a program to read
+.TP
+.B \-\-port N
+the port (a port in use is an error, not a move, where it is the service's)
+.TP
+.B \-\-host ADDRESS
+the address to listen on (127.0.0.1 unless said; another address opens it to the network)
+.TP
+.B \-\-all
+everything, not only what is downloaded or loaded
+.TP
+.B \-\-keep\-alive TIME
+how long an idle model stays loaded: 90s, 5m, 2h, 0, never
+.TP
+.B \-\-max\-loaded N
+how many models the service holds at once
+.SH EXIT STATUS
+.TP
+.B 0
+done
+.TP
+.B 1
+an error
+.TP
+.B 3
+not supported (glyd supports MODEL: the engine does not run it)
+.SH ENVIRONMENT
+.TP
+.B GLYD_API_KEY
+The API key that guards /v1 of glyd serve and the service.
+.TP
+.B GLYD_CACHE
+Where packed models are kept.
+.TP
+.B HF_TOKEN
+A Hugging Face token.
+.TP
+.B GLYD_ENGINE
+0 keeps vLLM, 1 uses the engine on any GPU it runs on.
+.TP
+.B GLYD_SERVICE_PORT
+The service's port, for glyd ps, stop and run.
+.SH SEE ALSO
+https://github.com/surya-koritala/Glyd

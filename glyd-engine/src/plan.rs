@@ -574,6 +574,26 @@ pub fn dynamic_room_of(free: u64) -> u64 {
     room_of(free).saturating_sub(dynamic_work_of(free))
 }
 
+/// Condor's (Qwen3.8-Flash-Next's) memory terms on a GPU, measured on an RTX 4080 SUPER (src/qwen4x_serve.rs): what its first prompt and the first decode use
+/// beyond the load (0.886 GiB), a chunk's scratch a row (0.335 MB), the keys and values of a token (28 KB) and the margin kept free (0.3 GiB); the places of
+/// its expert cache take the rest.
+pub const CONDOR_FIRST_PROMPT_GIB: f64 = 0.886;
+pub const CONDOR_CHUNK_GIB_PER_ROW: f64 = 0.000335;
+pub const CONDOR_KV_GIB_PER_TOKEN: f64 = 28e-6;
+pub const CONDOR_MARGIN_GIB: f64 = 0.3;
+
+/// The GiB of always-on matrices Condor holds at `layout` (measured at i6 with 0.28 GiB left free after the load, i5 and i4 short of that; i6 0.15 more since
+/// the drafts' graphs ran out at 0.11-0.15 GiB free on the 4080), and 0.35 more where the attention layers and the LM head are held at a layout of their own.
+pub fn condor_always_gib(layout: crate::weights::Layout, hi_differs: bool) -> f64 {
+    use crate::weights::Layout;
+    let base = match layout {
+        Layout::Int4 => 2.6,
+        Layout::Int5 => 3.05,
+        _ => 3.55,
+    };
+    base + if hi_differs { 0.35 } else { 0.0 }
+}
+
 /// The context the lossy paths take where none is asked, if it fits, and the least a plan takes.
 pub const LOSSY_CTX: usize = 32768;
 pub const LOSSY_MIN_CTX: usize = 4096;
@@ -786,6 +806,8 @@ pub enum Kind {
     Gemma4,
     /// The dynamic route (src/dynamic): Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark and Nemotron-H lossless, over one GPU or several.
     Dynamic,
+    /// Condor (`qwenserve`, src/qwen4x_serve.rs): Qwen3.8-Flash-Next with its experts in the computer's memory and a cache of them on each GPU.
+    Condor,
 }
 
 /// How a plan spreads a model over several GPUs, and the experts the GPUs do not hold (the dynamic route's).
@@ -1030,8 +1052,10 @@ pub(crate) fn choose(options: &[Candidate], max_ctx: usize) -> Option<Candidate>
 // ---- the plan that loaded, remembered -----------------------------------------------------------------------------------------------------------------------------------------------------
 
 fn memo_file(root: &std::path::Path, model: &str, level: &str, gpu: &str) -> std::path::PathBuf {
-    let slug: String =
-        format!("{}-{level}-{gpu}", crate::levels::split_tag(model).0).chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' }).collect();
+    let slug: String = format!("{}-{level}-{gpu}", crate::cli::short_name(crate::levels::split_tag(model).0))
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' })
+        .collect();
     root.join("plans").join(format!("{slug}.json"))
 }
 
@@ -1048,6 +1072,18 @@ pub fn remember_in(root: &std::path::Path, model: &str, plan: &LoadPlan, weights
 /// The plan that loaded `model` at `level` on `gpu` before (`remember_in`'s), if one did.
 pub fn recall_in(root: &std::path::Path, model: &str, level: &str, gpu: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&std::fs::read_to_string(memo_file(root, model, level, gpu)).ok()?).ok()
+}
+
+/// The bytes of a GPU's free memory to plan as already taken, from what the last load of `model` at `level` on `gpu` took beyond its plan (`LoadPlan::report`'s
+/// `gpu_used_bytes` over `planned_gpu_used_bytes`): the planner's calibration on this machine, at most 1 GiB (a load that took far more met another program
+/// at the same time) and none where the load said nothing of the GPU's memory.
+pub fn calibration_in(root: &std::path::Path, model: &str, level: &str, gpu: &str) -> u64 {
+    let Some(before) = recall_in(root, model, level, gpu) else { return 0 };
+    let loaded = &before["loaded"];
+    match (loaded["gpu_used_bytes"].as_u64(), loaded["planned_gpu_used_bytes"].as_u64()) {
+        (Some(used), Some(planned)) if used > 0 => used.saturating_sub(planned).min(1 << 30),
+        _ => 0,
+    }
 }
 
 /// A sentence for `fit` on how the plan it made compares with the one that loaded here before.
@@ -1987,5 +2023,33 @@ mod tests {
         let m = Machine::preset("rtx4090").unwrap();
         let r = crate::cli::plan(&a, &cfg, &crate::cli::short_name(dir.to_str().unwrap()), &gpu_of(&m.devices[0], 0), None, 1).unwrap_err();
         assert_eq!((f.what, f.fix, f.code), (r.what, r.fix, r.code));
+    }
+
+    /// What the last load took beyond its plan is the next plan's already-used memory: nothing before a load, nothing where it took less than planned or said nothing
+    /// of the GPU, the difference where it took more, and at most 1 GiB.
+    #[test]
+    fn the_planner_is_calibrated_by_the_last_load() {
+        let dir = model_dir("calib", "gemma-4-12B", &fixture("gemma4_12b_config.json"));
+        let model = format!("{}:kestrel", dir.to_str().unwrap());
+        let lp = planned(&args(&["fit", &model, "--machine", "rtx4080s"])).unwrap().plan.chosen.unwrap().load.unwrap();
+        let root = std::env::temp_dir().join(format!("glyd-plan-calib-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let planned_used = lp.gpu_total() - lp.reserve;
+        let calib = |used: u64| {
+            remember_in(&root, &model, &lp, lp.weights, used);
+            calibration_in(&root, &model, lp.level, &lp.gpu)
+        };
+        assert_eq!(calibration_in(&root, &model, lp.level, &lp.gpu), 0, "no load yet");
+        assert_eq!(calib(planned_used - (200 << 20)), 0, "took less than planned");
+        assert_eq!(calib(0), 0, "said nothing of the GPU");
+        assert_eq!(calib(planned_used + (300 << 20)), 300 << 20, "took 300 MiB more");
+        assert_eq!(calib(planned_used + (5 << 30)), 1 << 30, "at most a GiB: another program's");
+        assert_eq!(calibration_in(&root, &model, "swift", &lp.gpu), 0, "another level");
+        let _ = std::fs::remove_dir_all(&root);
+        // (and it is the reserve's: the plan says the free memory as it was)
+        let mut p = lp.clone();
+        let before = (p.gpu_total(), p.free);
+        crate::cli::calibrated(&mut p, lp.free, 300 << 20);
+        assert_eq!((p.gpu_total(), p.free, p.reserve), (before.0 + (300 << 20), before.1, lp.reserve + (300 << 20)));
     }
 }
