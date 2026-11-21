@@ -19,5 +19,5 @@ runs measured come in through `--ext DIR` as `NAME.result` files holding one lin
 
 ## The model list
 
-Only models released in the last six months are used (the owner's rule: `createdAt` on the Hub). Of the ten pinned, the engine's planner runs 3 on a 16 GB card, 4 on 24 GB and none on 8 GB (release build); the others get its refusal
+Only models released in the last six months are used (the owner's rule: `createdAt` on the Hub). Of the ten pinned, the engine's planner runs 3 on a 16 GB card, 4 on 24 GB and 1 on 8 GB (Nemotron-3.5-Lightning at wren, experts in RAM; release build); the others get its refusal
 on every tier, which the gate checks as a result of its own: why a model does not run is part of the product. The list is changed with the engine: a model that starts to run on a tier changes its column and the pull request says so.
