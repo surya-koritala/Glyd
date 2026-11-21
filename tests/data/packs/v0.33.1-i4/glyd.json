@@ -2,7 +2,7 @@
  "format": "glyd-v7",
  "glyd": "0.33.1",
  "source": {
-  "repo": "/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T//packsrc/src",
+  "repo": "tiny-qwen3",
   "revision": null
  },
  "layout": "i4",

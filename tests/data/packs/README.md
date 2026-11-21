@@ -15,6 +15,8 @@ Small saved checkpoints (a tiny Qwen3: one 128-wide layer, random bf16 weights f
 | `v0.33.1-i6`, `-i5`, `-i4`, `-i3` | the same | glyd-v7, six, five, four and three-bit block codes (kestrel, swift, wren; i3 has no level) |
 | `v1-0.27.0-mma` | glyd 0.27's packer (`glyd_gpu::v1`) | glyd-v1, the tiered layout of glyd 0.20 to 0.27 (glyd-v2 packs are the same words) |
 
+The release's `glyd pack` wrote the checkpoint's path into each `glyd.json` (`source.repo`); it is `tiny-qwen3` here (nothing reads it).
+
 A change to a layout's bytes is a new format version with a new fixture; it must not edit these. To add a release's (the one that introduces a layout):
 build its `glyd` and `glyd-gpu`, run `GLYD_PACK_SRC=DIR cargo test -p glyd-gpu write_pack_sources -- --ignored` (it writes the tiny checkpoint to `DIR/src`),
 `glyd pack DIR/src tests/data/packs/vX.Y.Z-LAYOUT --layout LAYOUT` for each layout, and add the layout to `LAYOUTS` in `pack_compat.rs` if it is new.
