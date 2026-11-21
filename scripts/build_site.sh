@@ -6,5 +6,7 @@ set -eu
 [ $# -eq 1 ] || { echo "usage: scripts/build_site.sh OUT_DIR" >&2; exit 2; }
 cd "$(dirname "$0")/.."
 out=$(mkdir -p "$1" && cd "$1" && pwd)
+python3 -I scripts/check_gate_docs.py
 python3 -I scripts/gen_models.py
+python3 -I scripts/gen_reference.py
 mdbook build docs/guide -d "$out"

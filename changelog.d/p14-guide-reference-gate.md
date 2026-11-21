@@ -1,0 +1,1 @@
+- The user guide has an API reference and a page on the background service, both built from `docs/serve-api.md` and `docs/service.md`; a page on the M1 gate that names every step of `benchmarks/gates/m1-gate.sh` (a check fails the build if one is missing); and a copy of the guide for each release at `/guide/vX.Y.Z/`.
