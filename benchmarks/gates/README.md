@@ -1,6 +1,6 @@
 # Milestone gates
 
-`m1-gate.sh` runs the M1 gate of [ROADMAP.md](../../ROADMAP.md) on one clean machine; `m1-models.txt` is the list of pinned models and what each machine tier is expected to do with it.
+`m1-gate.sh` (and `m1-gate.ps1`, its PowerShell twin for Windows, not yet run on one) runs the M1 gate of [ROADMAP.md](../../ROADMAP.md) on one clean machine; `m1-models.txt` is the list of pinned models and what each machine tier is expected to do with it.
 
 ```bash
 benchmarks/gates/m1-gate.sh [--tier 8gb|16gb|24gb] [--models FILE] [--glyd PATH] [--install-cmd CMD | --skip-install] [--out DIR] [--ext DIR]

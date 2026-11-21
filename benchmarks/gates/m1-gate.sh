@@ -27,7 +27,7 @@ done
 if [ -z "$OUT" ]; then OUT="$(mktemp -d "${TMPDIR:-/tmp}/m1-gate.XXXXXX")" || exit 2   # (a directory made new, 0700: not a name another user could have made first)
 elif [ -e "$OUT" ] && [ ! -O "$OUT" ]; then echo "m1-gate.sh: $OUT exists and is not yours"; exit 2
 else mkdir -p "$OUT" && chmod 700 "$OUT" || exit 2; fi
-RESULTS="$OUT/results.tsv"; : > "$RESULTS"; FAILS=0
+RESULTS="$OUT/results.tsv"; : > "$RESULTS"; FAILS=0; BLOCKED=0
 # (the tools the gate runs, by their absolute paths, before the shims are put on PATH)
 SH="$(command -v sh)"; CURL="$(command -v curl || true)"; JQ="$(command -v jq || true)"
 
@@ -98,6 +98,7 @@ chat() { # BODY -> stdout
 }
 while IFS= read -r line; do
   m="$(field "$line" 1)"; want="$([ "$col" != 0 ] && field "$line" "$col" || echo "")"
+  blocked=0; case "$(field "$line" 6)" in *BLOCKED\(packs\)*) blocked=1 ;; esac   # (the pre-packed repo of the planned level is not on the Hub yet: the first token cannot pass)
   r="$(plan_of "$m")"; got="${r%%$'\t'*}"; why="${r#*$'\t'}"
   if [ -n "$want" ] && [ "$got" != "$want" ]; then step FAIL "plan:$m" "the planner says $got, m1-models.txt expects $want on $TIER: $why"; continue; fi
   step PASS "plan:$m" "$got: $why"
@@ -109,10 +110,13 @@ while IFS= read -r line; do
   # first token: the server started, the model packed or downloaded where it is not here, and the first streamed token, all inside the limit
   t0=$SECONDS; "$GLYD" serve "$m" --host 127.0.0.1 --port "$PORT" --users 1 > "$OUT/serve-$(echo "$m" | tr '/:' '__').log" 2>&1 & SRV=$!
   up=0; while [ $((SECONDS - t0)) -lt 900 ]; do kill -0 $SRV 2> /dev/null || break; "$CURL" -sf -m 2 "http://127.0.0.1:$PORT/v1/models" > /dev/null && { up=1; break; }; sleep 1; done
+  if [ "$up" = 0 ] && [ "$blocked" = 1 ]; then step SKIP "first-token:$m" "BLOCKED(packs): the server did not come up (the planned level's pre-packed repo is not published)"; BLOCKED=$((BLOCKED + 1)); kill $SRV 2> /dev/null; wait $SRV 2> /dev/null; continue; fi
   if [ "$up" = 0 ]; then step FAIL "first-token:$m" "the server did not come up ($(tail -1 "$OUT/serve-$(echo "$m" | tr '/:' '__').log" | cut -c1-120))"; kill $SRV 2> /dev/null; wait $SRV 2> /dev/null; continue; fi
   ft="$("$CURL" -sN -m 120 -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Say hello."}],"max_tokens":4,"stream":true}' "http://127.0.0.1:$PORT/v1/chat/completions" | grep -m1 -E '"content":"[^"]' )"
   total=$((SECONDS - t0))
-  if [ -n "$ft" ] && [ "$total" -le "$LIMIT" ]; then step PASS "first-token:$m" "$total s (limit $LIMIT)"; else step FAIL "first-token:$m" "$total s (limit $LIMIT), token: ${ft:-none}"; fi
+  if [ -n "$ft" ] && [ "$total" -le "$LIMIT" ]; then step PASS "first-token:$m" "$total s (limit $LIMIT)"
+  elif [ "$blocked" = 1 ]; then step SKIP "first-token:$m" "BLOCKED(packs): $total s (limit $LIMIT): the planned level's pre-packed repo is not published, the model was downloaded and packed here"; BLOCKED=$((BLOCKED + 1))
+  else step FAIL "first-token:$m" "$total s (limit $LIMIT), token: ${ft:-none}"; fi
   # the printed plan is what loads: the level, and the weights' size within 10%
   info="$("$CURL" -s -m 10 "http://127.0.0.1:$PORT/v1/glyd/info")"
   lvl="$(echo "$info" | jq -r '.level.effective // empty')"; wb="$(echo "$info" | jq -r '.memory.weights_bytes // empty')"
@@ -141,6 +145,6 @@ for name in $REQUIRED_EXT; do
 done
 
 PASSES="$(grep -c '^PASS' "$RESULTS")"
-echo "---"; echo "$PASSES passed, $FAILS failed; results in $RESULTS"
+echo "---"; echo "$PASSES passed, $FAILS failed, $BLOCKED rows blocked on packs (a blocked row keeps the gate red); results in $RESULTS"
 jq -Rn '[inputs|split("\t")|{status:.[0],step:.[1],detail:.[2]}]' < "$RESULTS" > "$OUT/m1-gate.json" 2> /dev/null || true
-[ "$FAILS" = 0 ]
+[ "$FAILS" = 0 ] && [ "$BLOCKED" = 0 ]
