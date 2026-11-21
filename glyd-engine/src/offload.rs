@@ -39,6 +39,7 @@ use crate::ffi::{err, Error, Result, Stream};
 use crate::moe_hb::HbPlace;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
@@ -720,21 +721,34 @@ pub fn cgroup_free(limit: u64, current: u64, stat: &str) -> u64 {
     limit.saturating_sub(current.saturating_sub(cache))
 }
 
-/// The host memory a process can still take: what /proc/meminfo says is available, or less where a control group (v2 or v1) limits the container below it (`cgroup_free`). None where the system does not say (not Linux).
+/// The host memory a process can still take: what /proc/meminfo says is available, or less where a control group limits the container below it (`cgroup_free`): in version 2 the
+/// nearest of this process's group and its parents with a limit (`cgroup_dir`), in version 1 the memory controller's. None where the system does not say (not Linux).
+/// (GLYD_MEMAVAIL_GB, in a development build: a test's stand-in for a smaller computer, in GiB.)
 pub fn host_memory() -> Option<u64> {
-    let read = |p: &str| std::fs::read_to_string(p).ok();
+    if let Some(g) = crate::tune!("GLYD_MEMAVAIL_GB").and_then(|v| v.parse::<f64>().ok()) {
+        return Some((g * (1u64 << 30) as f64) as u64);
+    }
+    let read = |p: &Path| std::fs::read_to_string(p).ok();
+    let number = |p: &Path| read(p).and_then(|t| t.trim().parse::<u64>().ok());
     let mut free = parse_meminfo(&crate::os::meminfo()?)?;
-    let number = |p: &str| read(p).and_then(|t| t.trim().parse::<u64>().ok());
-    let (v2, v1) = ("/sys/fs/cgroup", "/sys/fs/cgroup/memory");
-    let group = match (number(&format!("{v2}/memory.max")), number(&format!("{v1}/memory.limit_in_bytes"))) {
-        (Some(l), _) => Some((l, number(&format!("{v2}/memory.current")), read(&format!("{v2}/memory.stat")))),
-        (None, Some(l)) => Some((l, number(&format!("{v1}/memory.usage_in_bytes")), read(&format!("{v1}/memory.stat")))),
+    let own = read(Path::new("/proc/self/cgroup")).unwrap_or_default();
+    let (root, v1) = (Path::new("/sys/fs/cgroup"), Path::new("/sys/fs/cgroup/memory"));
+    let group = match (cgroup_dir(root, &own, |d| number(&d.join("memory.max")).is_some()), number(&v1.join("memory.limit_in_bytes"))) {
+        (Some(d), _) => number(&d.join("memory.max")).map(|l| (l, number(&d.join("memory.current")), read(&d.join("memory.stat")))),
+        (None, Some(l)) => Some((l, number(&v1.join("memory.usage_in_bytes")), read(&v1.join("memory.stat")))),
         _ => None,
     };
     if let Some((limit, Some(current), stat)) = group {
         free = free.min(cgroup_free(limit, current, stat.as_deref().unwrap_or("")));
     }
     Some(free)
+}
+
+/// The version 2 group whose limit holds this process: of `own` (/proc/self/cgroup's text, its "0::/path" line) under `root` and that group's parents up to `root`, the nearest
+/// `limited` (one whose memory.max is a number: "max" is none). In a container the process's group is usually "/", the root.
+pub fn cgroup_dir(root: &Path, own: &str, limited: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let path = own.lines().find_map(|l| l.strip_prefix("0::"))?.trim().trim_start_matches('/');
+    std::iter::successors(Some(root.join(path)), |d| d.parent().filter(|p| p.starts_with(root)).map(Path::to_path_buf)).find(|d| limited(d))
 }
 
 // ---- the store: the host tier, the places on the GPU, the copy stream ----------------------------------------------------------------------------------------------------------------------------
@@ -3831,6 +3845,18 @@ mod tests {
         if cfg!(target_os = "linux") {
             assert!(host_memory().is_some_and(|b| b > 0));
         }
+    }
+
+    #[test]
+    fn the_group_that_limits() {
+        let root = Path::new("/sys/fs/cgroup");
+        let own = "0::/system.slice/glyd.service\n";
+        let at = |limited: &'static [&str]| move |d: &Path| limited.iter().any(|l| d == Path::new(l));
+        assert_eq!(cgroup_dir(root, own, at(&["/sys/fs/cgroup/system.slice/glyd.service"])).unwrap(), root.join("system.slice/glyd.service"), "its own group");
+        assert_eq!(cgroup_dir(root, own, at(&["/sys/fs/cgroup/system.slice", "/sys/fs/cgroup"])).unwrap(), root.join("system.slice"), "the nearest parent");
+        assert_eq!(cgroup_dir(root, "0::/\n", at(&["/sys/fs/cgroup"])).unwrap(), root, "a container's root");
+        assert_eq!(cgroup_dir(root, own, at(&["/sys/fs"])), None, "nothing above the root");
+        assert_eq!(cgroup_dir(root, "12:memory:/docker/abc\n", |_| true), None, "version 1 alone: no version 2 line");
     }
 
     // ---- the cache against the record: the routing traces of 20 decode generations (benchmarks/moe-skew-2026-10-09/nemotron) ----------------------------------------------------------------------

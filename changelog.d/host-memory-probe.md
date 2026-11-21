@@ -1,0 +1,1 @@
+- One host-memory probe: `qwenserve` and the GLM server ask `offload::host_memory()`, which now finds the cgroup that limits the process (its own or the nearest parent with a `memory.max`) instead of only the root one, so the Condor planner sees the same limit inside a nested group.

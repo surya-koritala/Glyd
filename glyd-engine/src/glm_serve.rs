@@ -33,20 +33,19 @@ pub fn serve(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     let dump = a.flag("dump").map(std::path::PathBuf::from);
     // (the experts are read from the page cache and the engine packs the always-on matrices in memory: refuse to start where the computer has less than the headroom to spare)
     let need_gib: f64 = a.num("min-free-gb", 8.0f64)?;
-    let avail_gib = crate::os::meminfo()
-        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemAvailable:")?.trim().trim_end_matches("kB").trim().parse::<f64>().ok()))
-        .map(|kb| kb / (1024.0 * 1024.0));
+    // (the memory free, less where the container's cgroup limits it)
+    let avail_gib = crate::offload::host_memory().map(|b| b as f64 / (1u64 << 30) as f64);
     match avail_gib {
-        Some(g) if g < need_gib => return err(format!("MemAvailable is {g:.1} GiB, where {need_gib:.1} GiB are wanted free to start (--min-free-gb)")),
-        Some(g) => stderr_line(&format!("MemAvailable {g:.1} GiB")),
+        Some(g) if g < need_gib => return err(format!("the memory free is {g:.1} GiB, where {need_gib:.1} GiB are wanted free to start (--min-free-gb)")),
+        Some(g) => stderr_line(&format!("memory free {g:.1} GiB")),
         None => {}
     }
     let pack = CbPack::open(pack_dir)?;
     // (the pack's files are asked to be read ahead as far as the computer's memory holds them beside the process: a pack bigger than that is read as the experts are asked for, and the page cache keeps what it can)
-    let (pack_gib, limit_gib) = (pack.file_bytes() as f64 / (1u64 << 30) as f64, cgroup_limit_gib());
-    let room_gib = avail_gib.unwrap_or(f64::MAX).min(limit_gib.unwrap_or(f64::MAX)) - a.num("headroom-gb", 8.0f64)?;
+    let pack_gib = pack.file_bytes() as f64 / (1u64 << 30) as f64;
+    let room_gib = avail_gib.unwrap_or(f64::MAX) - a.num("headroom-gb", 8.0f64)?;
     let ahead = if a.has("no-read-ahead") { 0.0 } else { room_gib.max(0.0).min(pack_gib) };
-    stderr_line(&format!("the pack's files: {pack_gib:.1} GiB; the computer's memory for them (MemAvailable{} less the headroom): {:.1} GiB; read ahead at the start: {ahead:.1} GiB", limit_gib.map_or(String::new(), |l| format!(" and the control group's limit {l:.1} GiB")), room_gib.max(0.0)));
+    stderr_line(&format!("the pack's files: {pack_gib:.1} GiB; the computer's memory for them (the memory free less the headroom): {:.1} GiB; read ahead at the start: {ahead:.1} GiB", room_gib.max(0.0)));
     // (the layers of the model; the multi-token-prediction layer after them only where it is asked for: `--mtp`)
     let model_layers = crate::glm::ConfigGlm::load(snap)?.layers;
     let layers: Vec<usize> = (0..64).filter(|&l| pack.has(l) && (l < model_layers || a.has("mtp"))).collect();
@@ -234,12 +233,6 @@ pub(crate) fn print_trace(steps: &[(Vec<crate::trace::Layer>, Vec<(&'static str,
 }
 
 /// The memory limit of the process's control group in GiB (cgroup v2's memory.max; None: none or not known). A scope with a limit holds the page cache the process fills too.
-fn cgroup_limit_gib() -> Option<f64> {
-    let path = std::fs::read_to_string("/proc/self/cgroup").ok()?.lines().find_map(|l| l.strip_prefix("0::").map(String::from))?;
-    let v = std::fs::read_to_string(format!("/sys/fs/cgroup{}/memory.max", path.trim())).ok()?;
-    v.trim().parse::<f64>().ok().map(|b| b / (1u64 << 30) as f64)
-}
-
 /// Bytes this process has had read from storage so far (/proc/self/io read_bytes: the page faults of a mapped file and its read-ahead count; a read served from the page cache does not).
 fn read_bytes() -> u64 {
     std::fs::read_to_string("/proc/self/io").ok().and_then(|t| t.lines().find_map(|l| l.strip_prefix("read_bytes:")?.trim().parse().ok())).unwrap_or(0)
