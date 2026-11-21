@@ -43,8 +43,20 @@ Or verify the list once and check the files against it: `cosign verify-blob` the
 
 A file that was changed, or built by anything else, fails both: `.github/workflows/sign-check.yml` runs these commands on a test file, including a changed one that must fail.
 
+## install.sh checks it for you
+
+From release 0.34.0, `scripts/install.sh` downloads the signature beside each tarball it installs (the compression program's and the engine's) and checks it with cosign
+(yours if there is one on PATH, else cosign v3.1.4, downloaded and checked against its sha256) against Glyd's release workflows at a `v*` tag. A tarball that is unsigned, altered
+or signed by anything else is not installed. A release before 0.34.0 has no signature: the installer says so and goes on with the sha256 alone.
+
+- `GLYD_SKIP_VERIFY=1` installs a tarball without the signature check (the sha256 is still checked), for a mirror or a build of your own that has none.
+- `GLYD_VERIFY_IDENTITY` replaces the expression of who may have signed, to try a release built from a branch (a dry run of the release workflow).
+- `GLYD_ENGINE_TARBALL` (your own build of the engine) is not checked: it is yours.
+
+`scripts/check_install_verify.sh` (run in CI) checks these cases with a stand-in cosign; `install-check.yml` runs the installer on each published release.
+
 ## What is not covered yet
 
 - Platform code signing (Windows Authenticode, Apple notarization) needs certificates that only the owner can get: [#223](https://github.com/surya-koritala/Glyd/issues/223).
-- `install.sh` and the later backend downloaders do not check these signatures yet; they check the SHA-256 of the release (#207's second task).
+- The later backend downloaders (P7b) and `glyd update` (P21) will use the same check.
 - Reproducible builds and a SLSA level beyond GitHub's provenance: D6b ([#259](https://github.com/surya-koritala/Glyd/issues/259)).
