@@ -34,10 +34,12 @@ With `cosign` alone, no GitHub account needed:
 
 ```
 cosign verify-blob --bundle glyd-vX.Y.Z-linux-x86_64.tar.gz.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/surya-koritala/Glyd/\.github/workflows/release(-gpu)?\.yml@refs/tags/v' \
+  --certificate-identity https://github.com/surya-koritala/Glyd/.github/workflows/release.yml@refs/tags/vX.Y.Z \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   glyd-vX.Y.Z-linux-x86_64.tar.gz
 ```
+
+The identity is exact: the workflow (`release.yml`; `release-gpu.yml` for the engine bundles) at the tag of the release you are checking.
 
 Or verify the list once and check the files against it: `cosign verify-blob` the same way on `SHA256SUMS` (and `SHA256SUMS-engine`), then `sha256sum -c SHA256SUMS --ignore-missing`.
 
@@ -46,11 +48,11 @@ A file that was changed, or built by anything else, fails both: `.github/workflo
 ## install.sh checks it for you
 
 From release 0.34.0, `scripts/install.sh` downloads the signature beside each tarball it installs (the compression program's and the engine's) and checks it with cosign
-(yours if there is one on PATH, else cosign v3.1.4, downloaded and checked against its sha256) against Glyd's release workflows at a `v*` tag. A tarball that is unsigned, altered
+(yours if there is one on PATH, else cosign v3.1.4, downloaded and checked against its sha256) against the release workflow that built it, at that release's tag. A tarball that is unsigned, altered
 or signed by anything else is not installed. A release before 0.34.0 has no signature: the installer says so and goes on with the sha256 alone.
 
 - `GLYD_SKIP_VERIFY=1` installs a tarball without the signature check (the sha256 is still checked), for a mirror or a build of your own that has none.
-- `GLYD_VERIFY_IDENTITY` replaces the expression of who may have signed, to try a release built from a branch (a dry run of the release workflow).
+- `GLYD_VERIFY_IDENTITY` replaces the whole identity that may have signed (`https://github.com/surya-koritala/Glyd/.github/workflows/release.yml@refs/heads/BRANCH`), to try a release built from a branch (a dry run of the release workflow).
 - `GLYD_ENGINE_TARBALL` (your own build of the engine) is not checked: it is yours.
 
 `scripts/check_install_verify.sh` (run in CI) checks these cases with a stand-in cosign; `install-check.yml` runs the installer on each published release.

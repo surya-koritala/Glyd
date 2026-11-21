@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh's signature check, on a release folder made here (GLYD_RELEASE_URL=file://...), on a machine with no NVIDIA GPU (the compression program's install):
 # an older release without a signature installs with a warning, a signed release's tarball without one is refused (GLYD_SKIP_VERIFY=1 installs it), and with a
-# cosign that accepts or refuses the bundle the tarball is installed or refused, with Glyd's release workflows as the identity asked for.
+# cosign that accepts or refuses the bundle the tarball is installed or refused, with exactly the release workflow at this version's tag as the identity asked for.
 #   scripts/check_install_verify.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,5 +52,5 @@ if out=$(install 0.34.0 PATH="$work/bin-refuse:$PATH"); then fail "a tarball cos
 echo "$out" | grep -q "is not signed by Glyd's release workflows" || fail "the refusal does not say why: $out"
 out=$(install 0.34.0 PATH="$work/bin-accept:$PATH") || fail "a tarball cosign accepted was not installed: $out"
 echo "$out" | grep -q "Signature of glyd-v0.34.0-$plat.tar.gz checked" || fail "no line for the checked signature: $out"
-grep -q 'release(-gpu)?' "$work/cosign-args" && grep -q 'token.actions.githubusercontent.com' "$work/cosign-args" || fail "cosign was not asked for Glyd's release workflows: $(cat "$work/cosign-args")"
+grep -q -- '--certificate-identity https://github.com/surya-koritala/Glyd/.github/workflows/release.yml@refs/tags/v0.34.0 ' "$work/cosign-args" && grep -q 'token.actions.githubusercontent.com' "$work/cosign-args" || fail "cosign was not asked for release.yml at the tag v0.34.0: $(cat "$work/cosign-args")"
 echo "install.sh signature checks: ok"

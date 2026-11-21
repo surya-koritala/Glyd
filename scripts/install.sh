@@ -28,7 +28,7 @@
 #   GLYD_SKIP_VERIFY 1: install a release's tarball without checking its signature (the sha256 is still checked). From release 0.34.0 each tarball
 #                     is signed by the release workflow that built it (Sigstore, keyless: docs/verify-releases.md); this installer checks that with cosign
 #                     (yours if you have one, else cosign $COSIGN_VERSION, downloaded and checked against its sha256) and stops on a tarball that is not signed
-#                     by Glyd's release workflows at a v* tag. An earlier release has no signature: it says so and goes on with the sha256.
+#                     by the release workflow that built it, at that release's tag. An earlier release has no signature: it says so and goes on with the sha256.
 #   GLYD_NO_SERVICE   1: leave out the background service that the engine install sets up (a user unit of this account, 127.0.0.1:11434; docs/service.md)
 #   GLYD_CONSTRAINTS  none: resolve the packages fresh, where one of the versions listed below has been withdrawn from PyPI
 set -eu
@@ -47,8 +47,8 @@ COSIGN_VERSION=v3.1.4  # the cosign the release workflows sign with (.github/act
 COSIGN_SHA256_linux_x86_64=424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
 COSIGN_SHA256_linux_aarch64=ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2
 COSIGN_SHA256_darwin_arm64=9f9b8cd557cf2e5b3df3373a00baa005a86b02391e3e06dd0ce37b3a1533d3a4
-# who may have signed: Glyd's release workflows, at a v* tag (GLYD_VERIFY_IDENTITY replaces this expression, for the dry run of a release from a branch)
-COSIGN_IDENTITY='^https://github.com/surya-koritala/Glyd/\.github/workflows/release(-gpu)?\.yml@refs/tags/v'
+# who may have signed a tarball: the release workflow that builds it (release.yml for the compression program's, release-gpu.yml for the engine's), run for exactly this
+# version's tag (GLYD_VERIFY_IDENTITY replaces the whole identity, for the dry run of a release from a branch)
 
 say() { printf '==> %s\n' "$*"; }
 warn() { printf 'glyd install: %s\n' "$*" >&2; }
@@ -89,7 +89,7 @@ find_cosign() {
   chmod +x "$tmp/cosign" && printf '%s\n' "$tmp/cosign"
 }
 
-# $1: the folder the tarball was downloaded from, $2: the file, $3: its name. Its signature (the cosign bundle beside it in the release) must be Glyd's release workflow's.
+# $1: the folder the tarball was downloaded from, $2: the file, $3: its name, $4: the workflow that signs it. Its signature (the cosign bundle beside it in the release) must be that workflow's, at this version's tag.
 verify_signature() {
   if [ "${GLYD_SKIP_VERIFY:-}" = 1 ]; then warn "GLYD_SKIP_VERIFY=1: the signature of $3 is not checked (its sha256 was)."; return 0; fi
   if ! fetch "$1/$3.sigstore.json" "$tmp/$3.sigstore.json"; then
@@ -102,7 +102,7 @@ verify_signature() {
   fi
   cosign=$(find_cosign) || die "cosign is needed to check $3's signature, and could not be found or downloaded for $os on $arch. Install it (https://docs.sigstore.dev/cosign/system_config/installation/), or GLYD_SKIP_VERIFY=1 to install without the check."
   if ! "$cosign" verify-blob --bundle "$tmp/$3.sigstore.json" \
-      --certificate-identity-regexp "${GLYD_VERIFY_IDENTITY:-$COSIGN_IDENTITY}" \
+      --certificate-identity "${GLYD_VERIFY_IDENTITY:-$REPO/.github/workflows/$4@refs/tags/v$GLYD_VERSION}" \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com "$2" >"$tmp/cosign.log" 2>&1; then
     cat "$tmp/cosign.log" >&2
     die "$3 is not signed by Glyd's release workflows (cosign refused it, above): it is not installed. Run this again; if it happens again, tell the Glyd project."
@@ -148,7 +148,7 @@ install_cli() {
   want=$(cut -d ' ' -f 1 "$tmp/$name.sha256")
   got=$(sha256_of "$tmp/$name.tar.gz") || die "there is no sha256sum or shasum here to check the download with."
   [ -n "$want" ] && [ "$got" = "$want" ] || die "the download is not the file the release lists (its sha256 is $got, the release says ${want:-nothing}). Run this again; if it happens again, tell the Glyd project."
-  verify_signature "$url" "$tmp/$name.tar.gz" "$name.tar.gz"
+  verify_signature "$url" "$tmp/$name.tar.gz" "$name.tar.gz" release.yml
   mkdir "$tmp/x"
   tar -xzf "$tmp/$name.tar.gz" -C "$tmp/x" "$name/glyd" "$name/glyd-store" "$name/LICENSE" \
     || die "the release's tarball is not laid out as this installer expects ($name/glyd, ...): run this again, or take the program from $REPO/releases."
@@ -210,7 +210,7 @@ install_engine() {
     got=$(sha256_of "$tmp/$ename.tar.gz") || die "there is no sha256sum or shasum here to check the download with."
     want=$(cut -d ' ' -f 1 "$tmp/$ename.sha256")
     [ -n "$want" ] && [ "$got" = "$want" ] || die "the engine's download is not the file the release lists (its sha256 is $got, the release says ${want:-nothing}). Run this again; if it happens again, tell the Glyd team."
-    verify_signature "$eurl" "$tmp/$ename.tar.gz" "$ename.tar.gz"
+    verify_signature "$eurl" "$tmp/$ename.tar.gz" "$ename.tar.gz" release-gpu.yml
   fi
   mkdir -p "$tmp/e"
   # A release from 0.33 holds glyd itself with the engine linked (and glyd-engine as a link to it): the one program, which replaces the compression program
