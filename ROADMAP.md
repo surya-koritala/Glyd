@@ -93,7 +93,7 @@ Make today's engine the least-friction way to run a model on an NVIDIA PC: one `
 - [x] P4 Model names, manifest and pull/ls/rm ([#153](https://github.com/surya-koritala/Glyd/issues/153))
 - [x] P5a OpenAI API completeness: Responses, errors, streaming options ([#154](https://github.com/surya-koritala/Glyd/issues/154))
 - [x] P5b Anthropic Messages API: full streaming events and tool use ([#155](https://github.com/surya-koritala/Glyd/issues/155))
-- [ ] P5c Ollama-compatible API ([#156](https://github.com/surya-koritala/Glyd/issues/156))
+- [x] P5c Ollama-compatible API ([#156](https://github.com/surya-koritala/Glyd/issues/156))
 - [ ] P6 CUDA 12 and CUDA 13 builds chosen at run time ([#158](https://github.com/surya-koritala/Glyd/issues/158))
 - [ ] P13 Code-signing identities for Windows and macOS ([#223](https://github.com/surya-koritala/Glyd/issues/223))
 - [ ] P7a Windows x86_64 release of the engine ([#159](https://github.com/surya-koritala/Glyd/issues/159))
