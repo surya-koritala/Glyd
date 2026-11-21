@@ -135,7 +135,7 @@ impl Family {
         if crate::nemotron::is_nemotron_h(text) {
             return Ok(Family::Nemotron(ConfigNemotronH::parse(text, "config.json", generation)?));
         }
-        if crate::model_gemma4::is_gemma4(text) {
+        if crate::gemma4::is_gemma4(text) {
             return err("a Gemma 4 model: its cost profile is not described yet (Qwen3.5-family and Nemotron-H models are)");
         }
         let mut c = Config35::parse(text, "config.json", generation)

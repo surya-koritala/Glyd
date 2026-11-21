@@ -38,7 +38,7 @@ and `GLYD_ENGINE_*` tuning variables.
 | :--- | :--- |
 | `src/ffi.rs`, `dev.rs`, `kern.rs` | driver bindings (CUDA, HIP), device, kernel launch |
 | `src/server.rs`, `sched.rs`, `chat.rs` | HTTP APIs, scheduler (Qwen3 path), chat templates |
-| `src/model.rs`, `model_gemma4.rs`, `model_nh.rs`, `model_glm.rs`, `model_qwen4x.rs` | model pipelines (Qwen3.5's runs on `src/dynamic`; `kern35.rs` holds its kernel table and packed weights) |
+| `src/model.rs`, `model_nh.rs`, `model_glm.rs`, `model_qwen4x.rs` | model pipelines (Qwen3.5's and Gemma 4's run on `src/dynamic`; `kern35.rs` and `gemma4.rs` hold their kernel tables, configs and packed weights) |
 | `src/dynamic/` | shared executor for the large MoE families (Kimi, DeepSeek-V4, GLM, Muse, Nemotron), split and TP |
 | `src/offload.rs`, `disk.rs`, `cpu_*.rs` | expert cache across VRAM, RAM, NVMe; CPU expert kernels |
 | `src/costs.rs`, `machine.rs`, `fit.rs` | cost profile, machine probe, fit |

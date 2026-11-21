@@ -1,8 +1,8 @@
 //! Gemma 4 (dense: 12B, 31B) as a description: sliding and global attention layers, the sandwich norms, the per-layer scalar, gelu(tanh), the tied
-//! and soft-capped head (models/gemma4/modeling_gemma4.py; the arithmetic is the kernels', as model_gemma4.rs runs them).
+//! and soft-capped head (models/gemma4/modeling_gemma4.py; the arithmetic is the kernels', as src/gemma4.rs names them).
 
 use super::{ModelDesc, Op, Ring, Rope, Slot};
-use crate::model_gemma4::{ConfigG4, KindG4};
+use crate::gemma4::{ConfigG4, KindG4};
 
 pub fn describe(c: &ConfigG4) -> ModelDesc {
     let p = &c.prefix;
