@@ -58,9 +58,9 @@ pub struct Support {
     pub experts_in_ram_levels: &'static [&'static str],
 }
 
-/// The most context the lossy paths take where none is asked (src/cli.rs `LOSSY_CTX`).
-pub const LOSSY_CTX: usize = 32768;
-/// The context the Qwen3 path and the dynamic engine take where none is asked (src/fit.rs, src/cli.rs `load_dynamic`).
+/// The most context the lossy paths take where none is asked (one constant: the planner's, src/plan.rs).
+pub use crate::plan::LOSSY_CTX;
+/// The context the Qwen3 path and the dynamic engine take where none is asked (src/fit.rs `CTX_WANT`, src/cli.rs `size_dynamic`).
 pub const DEFAULT_CTX: usize = 8192;
 
 const LOSSY: &[&str] = &["kestrel", "swift", "wren"];
@@ -172,6 +172,28 @@ pub static TABLE: [Support; 9] = [
 /// The row of `family`.
 pub fn row(family: Family) -> &'static Support {
     TABLE.iter().find(|s| s.family == family).expect("every family has a row")
+}
+
+/// The row by the name the table gives it (`Support::name`: "Kimi-K3", "Gemma 4").
+pub fn row_named(name: &str) -> Option<&'static Support> {
+    TABLE.iter().find(|s| s.name == name)
+}
+
+/// The context `row`'s path takes where none is asked (the model's own limit where lower): the table's, else the lossy paths' most.
+pub fn default_context(row: &Support, model_max: usize) -> usize {
+    row.default_ctx.unwrap_or(LOSSY_CTX).min(model_max)
+}
+
+/// The refusal for a context asked for beyond what `row`'s path runs or the model has (`model_max`): the one `fit`, `run`, `serve` and `preflight` all give.
+pub fn context_check(name: &str, row: &Support, model_max: usize, asked: Option<usize>) -> Result<(), Refusal> {
+    let most = model_max.min(row.max_ctx.unwrap_or(usize::MAX));
+    match asked {
+        Some(c) if c > most => Err(Refusal::unsupported(
+            format!("{name} takes at most {most} tokens of context here, and {c} were asked for"),
+            format!("Ask for less: --context {most}"),
+        )),
+        _ => Ok(()),
+    }
 }
 
 impl Support {
