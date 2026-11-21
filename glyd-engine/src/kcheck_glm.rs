@@ -1,3 +1,4 @@
+//! FROZEN (R13, #234): see src/model_glm.rs. `random` (a random GLM-layout model) is also the dynamic route's logits tests', and stays with them.
 //! GLM-5.3-Flash's kernels and layers on the GPU, their outputs written as files for tools/glm_ref.py to compare with its PyTorch reference (a development build's):
 //!   `glyd-engine glmkernels IN OUT`   the kernels (kernels/glm.cu) on random inputs: tools/glm_ref.py `kernels gen`'s files, `kernels check` compares (tools/glm_emu.cpp runs the same sequence on the host); the Kimi delta
 //!                                     attention's, the hyper-connections' and the latent attention's (mla.txt)

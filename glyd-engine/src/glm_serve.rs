@@ -1,3 +1,4 @@
+//! FROZEN (R13, #234): see src/model_glm.rs; the dynamic route does not tier GLM's experts through the codes pack yet, nor draft with MTP.
 //! `glyd-engine glmserve CKPT PACK`: GLM-5.3-Flash with its routed experts from a glyd-hbr-codes/2 directory (src/moe_glm_cb.rs), loaded once, then one request a line on the standard input: `{"ids":[...], "max_new":N,
 //! "stop":[...]}`, one answer a line on the standard output: `{"ids":[...], "prefill_ms":x, "decode_ms":y, "token_ms":[...]}` (greedy decoding; the model's own end-of-sequence tokens stop it too; the stop token is in the
 //! answer). Flags: `--layout i5|i6|i4` (the always-on matrices, packed from the checkpoint as it loads; default i5), `--cache-gb G` (the GPU memory for the experts in places, in all; default 7), `--chunk N` (prompt tokens a

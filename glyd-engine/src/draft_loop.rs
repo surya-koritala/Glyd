@@ -1,3 +1,4 @@
+//! FROZEN (R13, #234): GLM's engine's drafting loop; see src/model_glm.rs.
 //! The decode loop of `glmserve` with drafts (a development session's): after the prompt, greedy decoding to `max_new` tokens or a stop token, a plain step at a time or, where a draft pays, a pass that verifies the draft's rows
 //! at once (`EngineGlm::verify` and `commit`: the model keeps the guesses it picks itself, so the tokens are the plain steps' whatever the guesses are). The drafts come from the model's multi-token-prediction head
 //! (`mtp_request`); drafting from the text before was taken out (it followed another project's code, and Glyd's code is its own). `glm_serve.rs` calls `decode` and `mtp_request` and nothing else of them.
