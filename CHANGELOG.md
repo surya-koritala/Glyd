@@ -46,6 +46,10 @@ every earlier format.
   tensors in place (src/gguf.rs; GGUF versions 2 and 3, every ggml type's size checked) and, for a Qwen3 model stored as BF16, makes the Hugging Face checkpoint it describes in the cache
   (config, tokenizer and chat template from the file's own metadata, the weights as they are) and packs that as it packs any checkpoint. F32 and F16 tensors are read where every value is
   a bf16 value exactly (llama.cpp keeps a BF16 model's norms in F32). A quantized GGUF (Q8_0, Q4_K_M, the IQ types ...) is refused, naming the types in it: its kernels are not in the engine yet.
+- A GGUF in several files (`NAME-00001-of-00005.gguf`, whose first file may hold the metadata alone) is read as one model, and its files are all downloaded from a Hub repo. `glyd fit`, `supports`,
+  `preflight` and `costs` take a GGUF too, a Hub repo of them by its files' headers (nothing of the weights is downloaded). A GGUF of another architecture is refused by name; of the recent families
+  (Qwen3.5 to 3.8, Gemma, Muse Spark, Kimi-K3, DeepSeek-V4, GLM) it says what llama.cpp's converter did to the tensors (norm weights stored plus one, exponentials folded, experts stacked), which
+  is why it is not the release's checkpoint, and the engine runs the checkpoint.
 - Repository: concise developer docs (`docs/architecture.md`, `ROADMAP.md`, `CONTRIBUTING.md`); codec research records moved
   under `research/codec/`, engine design notes under `glyd-engine/docs/design/`. CI split by path (`ci.yml`, `python.yml`,
   `kernels.yml`); GPU tests on a self-hosted GPU machine (`gpu.yml`) or an ephemeral cloud instance (`gpu-cloud.yml`).

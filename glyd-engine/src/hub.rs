@@ -592,6 +592,20 @@ impl Hub {
         Err(last)
     }
 
+    /// The first `n` bytes of a file of the repo (all of it where it is shorter): a GGUF file's header, which is the model's shape and its tensors' sizes.
+    pub fn prefix(&self, remote: &Remote, e: &Entry, n: u64) -> Res<Vec<u8>> {
+        let url = self.resolve(remote, e)?;
+        let n = n.min(e.size);
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let mut resp = self.get(&url, Some((0, n - 1)))?;
+        if !matches!(resp.status().as_u16(), 200 | 206) {
+            return Err(net(format!("{}: {} for a range", e.path, resp.status().as_u16())));
+        }
+        resp.body_mut().with_config().limit(n + 1).read_to_vec().map_err(net)
+    }
+
     /// A safetensors file's header by two ranges (its length, then its JSON): the tensors' (dtype, shape, bytes `a .. b` from the data's start) by name, and where the data starts.
     pub(crate) fn header(&self, remote: &Remote, e: &Entry) -> Res<(Vec<(String, String, Vec<u64>, u64, u64)>, u64)> {
         let url = self.resolve(remote, e)?;
