@@ -28,7 +28,7 @@ try {
         if (Test-Path -LiteralPath $Base) { Copy-Item -LiteralPath (Join-Path $Base $f) $to }
         else {
             curl.exe --proto '=https' --tlsv1.2 -fsSL --retry 3 -o $to "$Base/$f"
-            if ($LASTEXITCODE) { throw "could not download $Base/$f: check the network, and that release $GlydVersion has a Windows zip ($Repo/releases)." }
+            if ($LASTEXITCODE) { throw "could not download $Base/${f}: check the network, and that release $GlydVersion has a Windows zip ($Repo/releases)." }
         }
     }
     $want = ((Get-Content -LiteralPath (Join-Path $Tmp "$Name.zip.sha256") -TotalCount 1) -split '\s+')[0].ToLower()
