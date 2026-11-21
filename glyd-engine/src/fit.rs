@@ -7,7 +7,7 @@ use crate::ui::{gib, Refusal};
 use crate::weights::{Config, Layout};
 
 /// The context a chat should have where the GPU has room, and the least worth running.
-pub const CTX_WANT: usize = 8192;
+pub const CTX_WANT: usize = crate::support::DEFAULT_CTX;
 pub const CTX_MIN: usize = 4096;
 
 pub fn bits(layout: Layout) -> f64 {

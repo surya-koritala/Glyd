@@ -146,7 +146,7 @@ pub const CMDS: &[Cmd] = &[
     Cmd {
         name: "cluster",
         args: "",
-        summary: "one model across computers (not yet: ROADMAP.md, M5)",
+        summary: "one model across computers (not yet: ROADMAP.md, M4)",
         detail: "Today that is the starlings program.",
         flags: &[],
     },

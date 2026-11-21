@@ -67,7 +67,7 @@ flowchart TD
   Q2 -- no --> Q3{"MoE, RAM to spare?"}
   Q3 -- yes --> C["Expert tiers (hummingbird)<br/>hot experts in VRAM, rest in RAM/NVMe<br/>CPU computes misses"]
   Q3 -- no --> Q4{"More GPUs here?"}
-  Q4 -- yes --> G["Split across GPUs<br/>(tensor/expert parallel: M5)"]
+  Q4 -- yes --> G["Split across GPUs<br/>(tensor/expert parallel: M4)"]
   Q4 -- no --> Q5{"Other machines joined?"}
   Q5 -- yes --> S["Starlings: layer ranges per machine<br/>mutual TLS, one round trip a step"]
   Q5 -- no --> R["Refuse with the numbers"]
@@ -122,29 +122,34 @@ pub trait Backend {
 }
 ```
 
-Within CUDA and HIP, one device layer (memory, streams, events, graphs, modules) sits under the kernels (R1). Dispatch is
+Within CUDA and HIP, one device layer (memory, streams, events, graphs, modules) sits under the kernels (R1a for CUDA in M2, R1b for HIP in M5b). Dispatch is
 dynamic at the layer-kind boundary; nothing is generic over the backend engine-wide.
 
 | Backend | Kernels | Libraries | State |
 | :--- | :--- | :--- | :--- |
-| CUDA | `glyd-engine/kernels/*.cu`, `gpu/glyd_gpu.cu` (mma.sync, cp.async; wgmma on H100/H200) | cuBLAS(Lt) when present; NCCL planned (C2a) | sm_80-sm_120, driver ≥ 535 (570 for Blackwell; a build with CUDA 13's kernels alone: 580), Linux x86_64; the default only on measured GPUs (S10) |
-| ROCm/HIP | the same sources through `gpu/hip.h` (tensor ops emulated today); wave64 and MFMA paths for CDNA | hipBLASLt, RCCL planned | RDNA 3/4 development builds (`GLYD_HIP=1`); CDNA to do |
-| Metal | MLX via `mlx-c` for dense ops; Glyd's formats as custom Metal kernels | MLX | To do |
-| CPU | AVX2, AVX-512, NEON (`cpu_*.rs`) | none | Experts only; whole models to do |
+| CUDA | `glyd-engine/kernels/*.cu`, `gpu/glyd_gpu.cu` (mma.sync, cp.async; wgmma on H100/H200) | cuBLAS(Lt) when present; CUTLASS/FlashInfer (V8a, M2); NCCL planned (C2a, M4) | sm_80-sm_120, driver ≥ 535 (570 for Blackwell; a build with CUDA 13's kernels alone: 580), Linux x86_64; the default only on measured GPUs (S10) |
+| ROCm/HIP | the same sources through `gpu/hip.h` (tensor ops emulated today); wave64 and MFMA paths for CDNA | hipBLASLt, aiter, composable_kernel (V8b, M5b); RCCL planned | RDNA 3/4 development builds (`GLYD_HIP=1`); CDNA to do (M5b) |
+| Metal | MLX via `mlx-c` for dense ops; Glyd's formats as custom Metal kernels | MLX | To do (M5a) |
+| CPU | AVX2, AVX-512, NEON (`cpu_*.rs`) | none | Experts only; whole models to do (M5a) |
 
 The engine opens the driver at run time (`glyd-engine/src/ffi.rs`), but the vendor is a build-time choice today
 (`cfg(glyd_hip)`). The release carries the engine's kernels twice, built with CUDA 13 (compressed) and CUDA 12.9 (not compressed, so that a driver of
 CUDA 12.2 reads them), and the GPU library for both; the driver's version picks (`dev.rs`, `ffi.rs`), and the release build adds the compute_89 PTX so
 a GPU newer than the machine code still runs (P6). The target is a small core that downloads the signed kernel bundle for the machine's vendor (P7b).
 
-## Build or reuse
+## Build or reuse (split execution bottom)
 
 Used today: `tokenizers`, `minijinja` (chat templates), `flate2`, `sha2`, `ureq`; the Hub client, safetensors reader and
 JSON parser are Glyd's own. Planned (all Apache-2.0/MIT/BSD): `llguidance` (constrained decoding, R5a), `cudarc` for NCCL
-(C2a), `mlx-c` (V3a), NIXL (after 1.0), and kernel libraries where they beat Glyd's own (V8: FlashInfer, CUTLASS, Marlin,
-aiter and composable_kernel). Built here: the kernels for Glyd's formats (one CUDA/HIP source tree, MLX custom Metal
-kernels, Rust SIMD on CPU), the KV block store and scheduler, the planner, the GGUF reader (quant kernels ported from
-ggml), and the API front ends.
+(C2a), `mlx-c` (V3a), NIXL (after 1.0), and kernel libraries where they beat Glyd's own (`V8a` in M2: FlashInfer, CUTLASS,
+Marlin, cuBLASLt — including datacenter Blackwell `sm_100` standard dense/FP8/NVFP4 GEMMs; `V8b` in M5b: hipBLASLt, aiter
+and composable_kernel). Built here: the kernels for Glyd's compressed formats (one CUDA/HIP source tree, MLX custom Metal
+kernels, Rust SIMD on CPU), 12-bit lossless KV attention, async MoE expert streaming, the KV block store and scheduler, the
+SLO-aware planner, the GGUF reader (canonical quant kernels ported from ggml), and the API front ends.
+
+The invariant across 8 GB cards to datacenter nodes is a **split execution bottom**: unify the binary, `ModelDesc`, scheduler,
+memory/KV/expert-tier fabric and planner, while owning custom kernels only at the compression/offload boundary and delegating
+compute-bound standard dense/FP8/NVFP4 ops to proven vendor libraries.
 
 ## Formats
 
@@ -191,8 +196,8 @@ sequenceDiagram
   A-->>C: stream
 ```
 
-- In one machine: layer split today (`--split`, `--devices`) for Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at their lossless level, and not for Qwen3, Qwen3.5 or Gemma 4 (`support.rs`); tensor and expert parallel over P2P, NVLink or NCCL/RCCL
-  in M5.
+- In one machine: layer split today (`--split`, `--devices`) for Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at their lossless level, and not for Qwen3, Qwen3.5 or Gemma 4 (`support.rs`); tensor and expert parallel over P2P, NVLink or NCCL
+  in M4 (RCCL in M5b).
 - Across machines (`starlings/`): enrollment with fingerprints, mutual TLS over TCP, the engine's `rangeworker` per
   stage (`docs/range-worker.md`); RDMA transports for datacenters.
 - One planner decides between them from measured link rates.

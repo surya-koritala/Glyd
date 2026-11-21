@@ -16,6 +16,7 @@
 use crate::dev::{Buf, Dev, Kernel};
 use crate::ffi::{err, Lib, Pack, Result, Stream, Words};
 use crate::launch;
+use crate::moe_hbg::{self, HbgExperts, HbgKern};
 use crate::moe_rows::{Down, RowsKern};
 use crate::offload::CPU_TOKENS;
 use crate::weights::PackBuf;
@@ -573,6 +574,9 @@ pub struct MoeLayer {
     pub f8: Option<crate::f8::F8Experts>,
     /// The shared expert's two matrices in the FP8 format (its gate and up as one, its down), as the release has them; `shared` then holds their shapes alone (`PackBuf::shape_only`).
     pub shared8: Option<(crate::f8::F8Mat, crate::f8::F8Mat)>,
+    /// The experts in the hummingbird format (src/moe_hbg.rs: codebook rows of 2 and 3 bits in the basis of a rotation, any width, gated or not): the products are `HbgKern`'s and the weighted sum is in the rotated basis, rotated back once
+    /// (`w.up` and `w.down` their shapes alone).
+    pub hb: Option<HbgExperts>,
 }
 
 impl MoeLayer {
@@ -620,7 +624,7 @@ impl MoeLayer {
                 return err("the shared expert's gate is smaller than its input");
             }
         }
-        Ok(MoeLayer { cfg, w, shared, f8: None, shared8: None })
+        Ok(MoeLayer { cfg, w, shared, f8: None, shared8: None, hb: None })
     }
 
     /// The shared expert's matrices in the FP8 format (`shared8`): the shapes of `shared`'s, which holds them alone.
@@ -690,6 +694,24 @@ impl MoeLayer {
         Ok(l)
     }
 
+    /// The layer with its routed experts in the hummingbird format (`hb`): the router and its selection bias and per-expert scale where there are any, the shared expert, as `new`'s; the stacks are shapes alone. The experts must be the
+    /// config's (their number, the width they work in, the intermediate size, a gate where the activation has one). The layer's forwards (`experts_products` and `experts_sum`, `forward_muse`, `forward_release`) run `HbgKern`'s products in
+    /// place of the library's: the router, the activation and the sum of each family as they are, R once a token before the first product, R^T once a token after the weighted sum (once a pair for Muse Spark, whose sum is not linear).
+    pub fn new_hb(cfg: MoeCfg, router: Buf, bias: Option<Buf>, escale: Option<Buf>, hb: HbgExperts, shared: Option<Shared>) -> Result<MoeLayer> {
+        hb.shape.check(&cfg)?;
+        let (e, up_rows) = (cfg.experts, cfg.up_rows());
+        let w = MoeWeights {
+            router,
+            bias,
+            escale,
+            up: ExpertStack::shape_only(e, up_rows, cfg.hidden),
+            down: Down::Block(ExpertStack::shape_only(e, cfg.hidden, cfg.inter)),
+        };
+        let mut l = MoeLayer::new(cfg, w, shared)?;
+        l.hb = Some(hb);
+        Ok(l)
+    }
+
     /// Device bytes of the layer's weights.
     pub fn weights_bytes(&self) -> usize {
         self.w.router.bytes
@@ -699,12 +721,13 @@ impl MoeLayer {
             + self.w.down.bytes()
             + self.shared.as_ref().map_or(0, |s| s.up.bytes + s.down.bytes + s.gate.as_ref().map_or(0, |g| g.bytes))
             + self.f8.as_ref().map_or(0, |f| f.up.bytes + f.down.bytes)
+            + self.hb.as_ref().map_or(0, HbgExperts::bytes)
             + self.shared8.as_ref().map_or(0, |(u, d)| u.bytes + d.bytes)
     }
 
     /// Whether the activation of the experts' first product is a kernel's, into a buffer of its own (`MoeScratch::h`); else it is the product's (fused) or in place (relu squared).
     fn separate_h(&self) -> bool {
-        self.cfg.act.gated() && self.cfg.fused() == 0
+        self.cfg.act.gated() && (self.cfg.fused() == 0 || self.hb.is_some())
     }
 
     /// The scratch buffer that holds the experts' intermediate rows [pairs, inter] after `experts`, in the plan's order.
@@ -766,6 +789,16 @@ impl MoeLayer {
         }
         let (c, e, k, tt) = (&self.cfg, self.cfg.experts as i64, self.cfg.router.top_k as i64, t as i64);
         let pairs = t * c.router.top_k;
+        if let Some(hb) = &self.hb {
+            // (the experts all on the GPU: no cache's places, no waves; the parts of every pair are `experts_sum`'s, as a row layout's)
+            if way.is_some() || calls > 1 {
+                return err("hummingbird experts are all on the GPU: the expert cache's places and waves of pairs are not taken");
+            }
+            lib.moe_way(sc.ids.ptr, pairs as i64, e, sc.plan.ptr, s)?;
+            self.hb_up(hb, sc, s, x, t, sc.ids.ptr)?;
+            let rows = self.hb_act(sc, s, pairs)?;
+            return self.hb_down(hb, sc, s, rows, t, sc.ids.ptr);
+        }
         if let Some(f) = &self.f8 {
             // (in parts of up to 64 tokens: the plan, the first product of each pair's token, the activation, the second product of each pair's own row into `a`, free after the activation, the weighted sum)
             let (kk, ee) = (c.router.top_k, c.experts);
@@ -818,11 +851,73 @@ impl MoeLayer {
     /// As `experts_via`.
     pub unsafe fn experts_sum(&self, sc: &MoeScratch, s: Stream, t: usize, y: u64, ids: u64, extra: u64) -> Result<()> {
         self.check_tokens(sc, t)?;
+        if let Some(hb) = &self.hb {
+            return self.hb_sum(hb, sc, s, t, y, if ids == 0 { sc.ids.ptr } else { ids }, sc.wts.ptr, extra);
+        }
         match &self.w.down {
             Down::Block(_) if extra != 0 => sc.k.add_f32(s, y, extra, t * self.cfg.hidden),
             Down::Block(_) => Ok(()),
             Down::Rows(_) => sc.rk.sum(s, &self.cfg, if ids == 0 { sc.ids.ptr } else { ids }, sc.wts.ptr, sc.part.ptr, sc.part.bytes, y, t, extra),
         }
+    }
+
+    /// A hummingbird layer's first product for `t` tokens of x [t, hidden] (bf16): R x once a token (the scratch's `hb_xr`), then each group's pairs of the plan (`moe_way` over `ids`, made by the caller) into `a` [pairs, up rows] in the plan's
+    /// order: the rows the library's first product writes, for the family's activation.
+    ///
+    /// # Safety
+    /// As `route`; the plan of `ids` is in the scratch.
+    unsafe fn hb_up(&self, hb: &HbgExperts, sc: &MoeScratch, s: Stream, x: u64, t: usize, ids: u64) -> Result<()> {
+        let (c, hk) = (&self.cfg, sc.hbk.as_ref().ok_or_else(|| crate::ffi::Error("the scratch was made without hummingbird layers' room".into()))?);
+        let pairs = t * c.router.top_k;
+        if sc.hb_xr.bytes < moe_hbg::xr_bytes(t, c.hidden)
+            || sc.hb_part.bytes < moe_hbg::part_bytes(pairs, c.hidden)
+            || sc.hb_rows.bytes < moe_hbg::rows_bytes(pairs, c.hidden)
+        {
+            return err(format!("{t} tokens of hummingbird experts of width {}: the scratch has no room for their rotated inputs and parts", c.hidden));
+        }
+        hk.rot_in(s, hb, x, c.hidden, sc.hb_xr.ptr, t)?;
+        for g in 0..2 {
+            hk.up(s, g, hb, sc.hb_xr.ptr, sc.plan.ptr, ids, sc.a.ptr, pairs, c.router.top_k)?;
+        }
+        Ok(())
+    }
+
+    /// The activation between a hummingbird layer's two products, the family's own kernel (`MoeKern::act`) on the first product's rows `a` [pairs, up rows]: a gated activation into `h`, relu squared in place. Returns the buffer that holds the
+    /// intermediate rows [pairs, inter].
+    ///
+    /// # Safety
+    /// As `hb_up`.
+    unsafe fn hb_act(&self, sc: &MoeScratch, s: Stream, pairs: usize) -> Result<u64> {
+        let c = &self.cfg;
+        let out = self.rows(sc).ptr;
+        sc.k.act(s, sc.a.ptr, out, pairs, c.inter, &c.act)?;
+        Ok(out)
+    }
+
+    /// A hummingbird layer's second product for the plan's pairs: the parts [pairs, hidden] (fp32, the rotated basis, the plan's order) of `rows` [pairs, inter] (bf16, the activation's, in the plan's order), each group's pairs by its
+    /// own kernel.
+    ///
+    /// # Safety
+    /// As `hb_up`.
+    unsafe fn hb_down(&self, hb: &HbgExperts, sc: &MoeScratch, s: Stream, rows: u64, t: usize, ids: u64) -> Result<()> {
+        let (c, hk) = (&self.cfg, sc.hbk.as_ref().ok_or_else(|| crate::ffi::Error("the scratch was made without hummingbird layers' room".into()))?);
+        for g in 0..2 {
+            hk.down(s, g, hb, rows, sc.plan.ptr, ids, sc.hb_part.ptr, t * c.router.top_k)?;
+        }
+        Ok(())
+    }
+
+    /// A hummingbird layer's routed sum into y [t, hidden]: each token's pairs (the choices in `ids` that are experts) found through the plan's inverse, their parts weighed by `wts` (fp32 [t, k]) and added (and `extra`: fp32 [t, hidden],
+    /// the rotated basis; 0: none), R^T once, one rounding to bf16.
+    ///
+    /// # Safety
+    /// As `hb_up`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn hb_sum(&self, hb: &HbgExperts, sc: &MoeScratch, s: Stream, t: usize, y: u64, ids: u64, wts: u64, extra: u64) -> Result<()> {
+        let (k, hk) =
+            (self.cfg.router.top_k, sc.hbk.as_ref().ok_or_else(|| crate::ffi::Error("the scratch was made without hummingbird layers' room".into()))?);
+        hk.inverse(s, hb, sc.plan.ptr, sc.inv.ptr, t * k)?;
+        hk.sum_rot(s, hb, sc.hb_part.ptr, sc.inv.ptr, wts, ids, y, extra, t, k)
     }
 
     /// Expert `e`'s first product alone, for `t` tokens of x [t, hidden]: y [t, up rows] (bf16), by the expert's own pack at its offset in the stack (`ExpertStack::expert`) and the library's dense products: what a
@@ -880,6 +975,16 @@ impl MoeLayer {
         sc.k.select(s, sc.logits.ptr, self.w.bias.as_ref().map_or(0, |b| b.ptr), 0, sc.ids.ptr, sc.wts.ptr, t, e, k, &c.router)?;
         let (ei, tt, ki, pairs) = (e as i64, t as i64, k as i64, t * k);
         lib.moe_way(sc.ids.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
+        if let Some(hb) = &self.hb {
+            // (hummingbird: the first product over the rotated input, the second unweighted in the rotated basis, each pair's row rotated back and rounded to bf16 where the sum norms it)
+            self.hb_up(hb, sc, s, x, t, sc.ids.ptr)?;
+            launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
+            self.hb_down(hb, sc, s, sc.h.ptr, t, sc.ids.ptr)?;
+            let hk = sc.hbk.as_ref().ok_or_else(|| crate::ffi::Error("the scratch was made without hummingbird layers' room".into()))?;
+            hk.unrotate(s, hb, sc.hb_part.ptr, sc.plan.ptr, sc.hb_rows.ptr, pairs)?;
+            launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
+            return launch!(sc.k.mu_sum, [t as u32, 1, 1], [256, 1, 1], s; sc.hb_rows.ptr, inv, sc.ids.ptr, sc.wts.ptr, post_w, y, k as i32, c.hidden as i32, eps);
+        }
         moe_tp(lib, &self.w.up, ei, x, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
         launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
         // (the second product unweighted, the pairs' rows in the plan's order: into `a`, free after the activation)
@@ -939,11 +1044,21 @@ impl MoeLayer {
         let (ei, tt, ki, pairs) = (e as i64, t as i64, k as i64, t * k);
         lib.moe_way(sc.ids.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
         crate::tmark!(s, "moe: plan");
-        moe_tp(lib, &self.w.up, ei, hq, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+        match &self.hb {
+            Some(hb) => self.hb_up(hb, sc, s, hq, t, sc.ids.ptr)?,
+            None => moe_tp(lib, &self.w.up, ei, hq, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?,
+        }
         crate::tmark!(s, "moe: up");
         launch!(sc.k.act_w, [pairs as u32, (c.inter as u32 / 128).div_ceil(4), 1], [128, 1, 1], s; sc.a.ptr, sc.h.ptr, sc.plan.ptr, sc.wts.ptr, e as i32, c.inter as i32, lim, fp8 as i32)?;
         crate::tmark!(s, "moe: act");
-        moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, ones, sc.ids.ptr, y, t, sc, s)?;
+        match &self.hb {
+            // (the weights are in the activation: the sum of a token's parts is with weights of one, R^T once)
+            Some(hb) => {
+                self.hb_down(hb, sc, s, sc.h.ptr, t, sc.ids.ptr)?;
+                self.hb_sum(hb, sc, s, t, y, sc.ids.ptr, ones, 0)?;
+            }
+            None => moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, ones, sc.ids.ptr, y, t, sc, s)?,
+        }
         crate::tmark!(s, "moe: down");
         if let Some((_, b)) = beside {
             b.join.wait(s)?;
@@ -1196,6 +1311,11 @@ pub struct MoeScratch {
     pub part: Buf,
     /// fp32 [tokens, hidden] for up to `CPU_TOKENS` tokens: the sums that the host made of the pairs of experts it computed (the expert cache's), added to the routed sum
     pub cpu: Buf,
+    // the hummingbird experts' (src/moe_hbg.rs): the kernels, the tokens' rotated inputs [tokens, width] fp32, the second product's parts [pairs, width] fp32 and the pairs' rows rotated back [pairs, width] bf16 (Muse Spark's), all in the plan's order
+    hbk: Option<HbgKern>,
+    pub hb_xr: Buf,
+    pub hb_part: Buf,
+    pub hb_rows: Buf,
     // the shared expert: its first product, its activation, its second product, its gate's logits
     pub(crate) sg: Buf,
     sh: Buf,
@@ -1230,6 +1350,9 @@ pub struct Shape {
     pub sparse: bool,
     /// the GPUs the experts' and shared expert's rows are sliced across (src/dynamic/tp.rs; 1: none): the products' rows are theirs over this
     pub slice: usize,
+    /// the width of the rows of hummingbird experts (src/moe_hbg.rs: their products are kernels of their own, not the library's: the first product's rows are never fused with the activation, and the scratch holds the rotated inputs and
+    /// the parts); 0: the experts are in another format
+    pub hb: usize,
 }
 
 /// The scratch's buffers in bytes, and the library's calls whose workspace it must hold (asked for every count of tokens): the largest of what the layers ask, not their sum.
@@ -1247,6 +1370,10 @@ pub struct Sizes {
     pub part: usize,
     /// the sums that the host makes of the pairs of experts it computes, fp32 for up to `CPU_TOKENS` tokens (src/offload.rs)
     pub cpu: usize,
+    /// the hummingbird experts': the rotated inputs (fp32), the second product's parts (fp32) and the pairs' rows rotated back (bf16)
+    pub hb_xr: usize,
+    pub hb_part: usize,
+    pub hb_rows: usize,
     pub units: usize,
     /// (twelve, experts, rows, cols, k, act, weighted) of the grouped products; (twelve, rows, cols) of the dense ones
     pub grouped: Vec<[i64; 7]>,
@@ -1257,7 +1384,9 @@ impl Sizes {
     pub fn of(shapes: &[Shape], max_tokens: usize) -> Sizes {
         let mut z = Sizes { sg: 16, sh: 16, so: 16, h: 16, units: 1 << 18, ..Sizes::default() }; // (the counters of the dense products too: 1 << 18, as the engine's)
         for sh in shapes {
-            let (c, fused) = (&sh.cfg, sh.cfg.fused());
+            let c = &sh.cfg;
+            // (hummingbird's first product writes the rows the activation's kernel reads, whatever the activation)
+            let (hb, fused) = (sh.hb > 0, if sh.hb > 0 { 0 } else { sh.cfg.fused() });
             let pairs = max_tokens * c.router.top_k;
             z.logits = z.logits.max(max_tokens * c.experts * 4);
             z.pairs = z.pairs.max(pairs);
@@ -1269,19 +1398,29 @@ impl Sizes {
             if sh.sparse {
                 z.part = z.part.max(RowsKern::part_bytes(pairs, c.hidden));
             }
+            if hb {
+                z.hb_xr = z.hb_xr.max(crate::moe_hbg::xr_bytes(max_tokens, sh.hb));
+                z.hb_part = z.hb_part.max(crate::moe_hbg::part_bytes(pairs, sh.hb));
+                z.hb_rows = z.hb_rows.max(crate::moe_hbg::rows_bytes(pairs, sh.hb));
+            }
             z.cpu = z.cpu.max(max_tokens.min(CPU_TOKENS) * c.hidden * 4);
             // (the second product is the library's unless it is sparse)
             let sl = sh.slice.max(1);
-            for (rows, cols, act, weighted) in
-                [(c.up_rows() / sl, c.hidden, fused, 0), (c.hidden / sl, c.inter, 0, 1)].into_iter().take(if sh.sparse { 1 } else { 2 })
-            {
+            for (rows, cols, act, weighted) in [(c.up_rows() / sl, c.hidden, fused, 0), (c.hidden / sl, c.inter, 0, 1)].into_iter().take(if hb {
+                0
+            } else if sh.sparse {
+                1
+            } else {
+                2
+            }) {
                 let key = [sh.twelve as i64, c.experts as i64, rows as i64, cols as i64, c.router.top_k as i64, act, weighted];
                 if !z.grouped.contains(&key) {
                     z.grouped.push(key);
                 }
                 z.units = z.units.max((if act != 0 { rows / 128 } else { rows / 64 }) * c.experts.min(pairs));
             }
-            let mut dense = vec![[sh.twelve as i64, sh.expert_rows as i64, c.hidden as i64]];
+            // (the library's single-expert product is not asked of experts the library does not hold)
+            let mut dense = if hb { Vec::new() } else { vec![[sh.twelve as i64, sh.expert_rows as i64, c.hidden as i64]] };
             if let Some((inter, inp, out)) = sh.shared {
                 let rows = if c.act.gated() { 2 * inter } else { inter };
                 // (whole and sliced both: the shared expert's matrices are sliced where they are big enough, the experts' stacks where theirs are)
@@ -1319,6 +1458,7 @@ impl MoeScratch {
                 } else {
                     l.shared.as_ref().filter(|x| x.up.tp_rows > 0).map_or(1, |x| x.up.tp_rows / x.up.pack.rows as usize)
                 },
+                hb: l.hb.as_ref().map_or(0, |h| h.shape.width),
             })
             .collect();
         let (mut f8, mut beside) = (0, 0);
@@ -1404,6 +1544,10 @@ impl MoeScratch {
             rk: RowsKern::load(dev)?,
             part: Buf::new(z.part.max(16))?,
             cpu: Buf::new(z.cpu.max(16))?,
+            hbk: if shapes.iter().any(|sh| sh.hb > 0) { Some(HbgKern::load(dev)?) } else { None },
+            hb_xr: Buf::new(z.hb_xr.max(16))?,
+            hb_part: Buf::new(z.hb_part.max(16))?,
+            hb_rows: Buf::new(z.hb_rows.max(16))?,
             sg: Buf::new(z.sg)?,
             sh: Buf::new(z.sh)?,
             so: Buf::new(z.so)?,
@@ -1435,6 +1579,10 @@ impl MoeScratch {
             rk: RowsKern::load(dev)?,
             part: Buf::new(16)?,
             cpu: Buf::new(max_tokens.min(CPU_TOKENS) * hidden * 4)?,
+            hbk: None,
+            hb_xr: Buf::new(16)?,
+            hb_part: Buf::new(16)?,
+            hb_rows: Buf::new(16)?,
             sg: Buf::new(16)?,
             sh: Buf::new(16)?,
             so: Buf::new(16)?,
@@ -1457,6 +1605,9 @@ impl MoeScratch {
             &self.done,
             &self.part,
             &self.cpu,
+            &self.hb_xr,
+            &self.hb_part,
+            &self.hb_rows,
             &self.sg,
             &self.sh,
             &self.so,
@@ -1672,6 +1823,7 @@ mod tests {
             expert_rows: 4096,
             sparse: false,
             slice: 1,
+            hb: 0,
         };
         let nemo = Shape {
             cfg: MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 },
@@ -1680,6 +1832,7 @@ mod tests {
             expert_rows: 2688,
             sparse: false,
             slice: 1,
+            hb: 0,
         };
         let one = Sizes::of(&[glm], 2048);
         assert_eq!(Sizes::of(&[glm; 42], 2048), one, "42 layers of one shape");
@@ -1697,6 +1850,62 @@ mod tests {
         assert_eq!(both.grouped.len(), 4);
         // the counters: a unit a row block of the first product (128 rows with a fused activation), by the experts a pair can hit
         assert_eq!(both.units, 1 << 18); // (the dense products' floor: the grouped ones need 42 * 512 and 64 * 288)
+    }
+
+    /// A hummingbird layer's scratch: the first product's rows are never fused with the activation (a SwiGLU layer whose library product would fuse them has rows of 2 inter and a buffer for the activation), the rotated inputs, the parts and the
+    /// pairs' rows have their room, and the library's grouped and single-expert products are not asked for.
+    #[test]
+    fn the_scratch_of_hummingbird_experts() {
+        // Qwen3.5-like: 256 experts of 512 neurons over 2,048 values, SwiGLU with no clamp (fused in the library's product)
+        let cfg = MoeCfg { experts: 256, router_hidden: 2048, hidden: 2048, inter: 512, router: Router::softmax(8), act: Act::SwiGlu { limit: None } };
+        let plain = Shape { cfg, twelve: false, shared: None, expert_rows: 1024, sparse: false, slice: 1, hb: 0 };
+        let hb = Shape { hb: 2048, ..plain };
+        let (a, b) = (Sizes::of(&[plain], 2048), Sizes::of(&[hb], 2048));
+        let pairs = 2048 * 8;
+        assert_eq!((a.a, a.h, a.hb_xr, a.hb_part, a.hb_rows), (pairs * 512 * 2, 16, 0, 0, 0));
+        assert_eq!((b.a, b.h), (pairs * 1024 * 2, pairs * 512 * 2));
+        assert_eq!((b.hb_xr, b.hb_part, b.hb_rows), (2048 * 2048 * 4, pairs * 2048 * 4, pairs * 2048 * 2));
+        assert!(a.grouped.len() == 2 && a.dense.len() == 1 && b.grouped.is_empty() && b.dense.is_empty());
+        // relu squared stays in place; the rows of a layer of two widths (the router's and the experts' latent) are the experts' width
+        let nemo = Shape {
+            cfg: MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 },
+            twelve: false,
+            shared: Some((5376, 4096, 4096)),
+            expert_rows: 2688,
+            sparse: false,
+            slice: 1,
+            hb: 1024,
+        };
+        let n = Sizes::of(&[nemo], 64);
+        assert_eq!((n.a, n.h, n.hb_xr, n.hb_part), (64 * 22 * 2688 * 2, 16, 64 * 1024 * 4, 64 * 22 * 1024 * 4));
+        // (the shared expert's products are still asked for)
+        assert_eq!(n.dense.len(), 2);
+        // the largest of the layers' (the wider one's), as the rest of the scratch
+        let both = Sizes::of(&[hb, nemo], 64);
+        assert_eq!((both.hb_xr, both.hb_part), (64 * 2048 * 4, 64 * 22 * 1024 * 4));
+    }
+
+    /// `new_hb` holds the layer's config to the experts: another number of experts, width, intermediate size or a gate where the activation has none is refused (what the layer is built from is checked before any buffer is taken).
+    #[test]
+    fn new_hb_refuses_experts_that_are_not_the_layers() {
+        use crate::moe_hbg::{testing::*, HbgHost};
+        let mut rng = Rng(5);
+        let rows = random_layer(&mut rng, 256, 256, 64, true, &[2, 3, 2, 3], 1);
+        let host = HbgHost::of(&rows).unwrap();
+        let cfg = MoeCfg { experts: 4, router_hidden: 256, hidden: 256, inter: 64, router: Router::softmax(2), act: Act::SwiGlu { limit: None } };
+        let none = || Buf { ptr: 0, bytes: 0 };
+        for (c, why) in [
+            (MoeCfg { experts: 8, ..cfg }, "4 of width 256"),
+            (MoeCfg { hidden: 512, router_hidden: 512, ..cfg }, "width 256"),
+            (MoeCfg { inter: 128, ..cfg }, "64 neurons"),
+            (MoeCfg { act: Act::Relu2, ..cfg }, "not gated"),
+        ] {
+            let e = MoeLayer::new_hb(c, none(), None, None, crate::moe_hbg::HbgExperts::without_device(&host), None).err().expect("refused").to_string();
+            assert!(e.contains(why), "{e} does not say {why:?}");
+        }
+        // (the experts' shape is the config's: the check the layer makes passes)
+        crate::moe_hbg::HbgExperts::without_device(&host).shape.check(&cfg).unwrap();
+        cfg.check().unwrap();
     }
 
     #[test]

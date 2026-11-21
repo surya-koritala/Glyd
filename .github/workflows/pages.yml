@@ -18,6 +18,9 @@ on:
       - "glyd-engine/src/kvcal.rs"
       - "glyd-engine/Cargo.toml"
       - "scripts/gen_models.py"
+      - "scripts/gen_reference.py"
+      - "scripts/check_gate_docs.py"
+      - "benchmarks/gates/**"
       - "scripts/build_site.sh"
       - ".github/workflows/pages.yml"
   pull_request:
@@ -28,6 +31,9 @@ on:
       - "glyd-engine/src/machine.rs"
       - "glyd-engine/src/kvcal.rs"
       - "scripts/gen_models.py"
+      - "scripts/gen_reference.py"
+      - "scripts/check_gate_docs.py"
+      - "benchmarks/gates/**"
       - "scripts/build_site.sh"
       - ".github/workflows/pages.yml"
   release:
@@ -40,7 +46,8 @@ permissions:
 # A pull request's build has its own group, so a push to main does not replace it in the queue.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.ref) || 'pages' }}
-  cancel-in-progress: false
+  # (a pull request's older build is cancelled by its newer one; a deploy is never cancelled)
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   MDBOOK_VERSION: "0.4.52"
@@ -59,24 +66,8 @@ jobs:
         run: cargo install mdbook --version "$MDBOOK_VERSION" --locked
       - name: Assemble the site
         run: |
-          set -eu
-          out="$PWD/_site"
-          mkdir -p "$out"
-          # the pages that were always here: the codec's page and what it uses
-          find docs -maxdepth 1 -name '*.html' -exec cp {} "$out"/ \;
-          cp -r docs/img "$out"/img
-          touch "$out/.nojekyll"
-          # the guide at main
-          scripts/build_site.sh "$out/guide"
-          # the guide at each release that has one
-          for tag in $(git tag -l 'v*'); do
-            git cat-file -e "$tag:docs/guide/book.toml" 2>/dev/null || continue
-            work=$(mktemp -d)
-            git worktree add --detach "$work/src" "$tag"
-            (cd "$work/src" && sh scripts/build_site.sh "$out/guide/$tag")
-            git worktree remove --force "$work/src"
-          done
-          find "$out" -maxdepth 2 | sort | head -40
+          scripts/build_pages.sh "$PWD/_site"
+          find _site -maxdepth 3 | sort | head -60
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
         if: github.event_name != 'pull_request' && vars.PAGES_FROM_ACTIONS == 'true'
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

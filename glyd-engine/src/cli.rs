@@ -327,6 +327,7 @@ pub(crate) fn plan(a: &Args, cfg: &Config, name: &str, gpu: &Gpu, packed: Option
 
 fn plan_for(a: &Args, cfg: &Config, name: &str, t: &Target, packed: Option<Layout>, users: usize) -> Done<(Layout, String, LoadPlan)> {
     let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
+    crate::support::context_check(name, crate::support::row(crate::support::Family::Qwen3), cfg.max_pos, asked)?;
     let (layout, why) = match packed {
         Some(l) => (l, "as packed".to_string()),
         None => choose_layout(a.layout()?, t.cc, t.total, cfg.matrix_bytes(), 0),
@@ -771,18 +772,23 @@ fn about(
 fn tagged(a: &Args) -> Done<(Args, Option<Layout>)> {
     let (model, layout) = level(a.pos.get(1).map_or("", String::as_str), a.has("lossy")).map(|(m, l)| (m.to_string(), l))?;
     let layout = run_level(&model, layout)?;
-    // the family and the level against the table fit reads (src/support.rs); a glyd-v7 directory or a pre-packed repo is at its own
-    // level, and a config not to be had now is the paths' own to say
-    if v7_layout(&model)?.is_none() && levels::repo_level(&model).is_none() {
-        if let Ok(text) = config_text(&model) {
-            crate::support::check(&text, &model, &short_name(&model), layout.map_or("penguin", level_name))?;
-        }
-    }
+    table_check(&model, layout)?;
     let mut a = a.clone();
     if let Some(m) = a.pos.get_mut(1) {
         *m = model;
     }
     Ok((a, layout))
+}
+
+/// The family and the level against the table `fit` reads (src/support.rs), which `run`, `serve`, `preflight` and `fetch` all check first; a glyd-v7 directory or a
+/// pre-packed repo is at its own level, and a config not to be had now is the paths' own to say.
+fn table_check(model: &str, layout: Option<Layout>) -> Done<()> {
+    if v7_layout(model)?.is_none() && levels::repo_level(model).is_none() {
+        if let Ok(text) = config_text(model) {
+            crate::support::check(&text, model, &short_name(model), layout.map_or("penguin", level_name))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn serve(a: &Args) -> i32 {
@@ -1413,6 +1419,8 @@ fn lossy_plan_inner(
     };
     let room = (free.saturating_sub(fixed) / per) as usize;
     let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
+    let fam = if nemotron { crate::support::Family::NemotronH } else { crate::support::Family::Qwen35 };
+    crate::support::context_check(&name, crate::support::row(fam), max_pos, asked)?;
     let ctx = asked.unwrap_or_else(|| room.min(LOSSY_CTX)).min(max_pos.max(LOSSY_MIN_CTX));
     let fits = !(ctx < LOSSY_MIN_CTX.min(asked.unwrap_or(LOSSY_MIN_CTX)) || ctx > room);
     let cache = cache_flag(a)?;
@@ -1473,6 +1481,7 @@ fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: 
     let draft_to_come = packed.is_none() && !a.has("no-draft") && short_name(typed).to_ascii_lowercase().starts_with("gemma-4-"); // (ship's `draft_repo`: Google's "-assistant" model of each Gemma 4)
     let draft = if gemma_draft(a, packed).is_some() || draft_to_come { GEMMA_DRAFT_BYTES } else { 0 };
     let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
+    crate::support::context_check(name, crate::support::row(crate::support::Family::Gemma4), cfg.max_pos, asked)?;
     let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX));
     let reserve = reserve_of(free);
     let fixed = weights + rings + draft + LOSSY_WORK + reserve;
@@ -1971,7 +1980,10 @@ pub(crate) fn size_dynamic(
     let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit(dir, nl, &room, hbm, kimi).map_err(cannot)?;
     let mut total = per.iter().sum::<u64>() + base;
     let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
-    let ctx = a.num("context", 8192usize).map_err(|e| Refusal::new(e.0, "--context 8192"))?;
+    let model_max = crate::dynamic::split::config_num(text, "max_position_embeddings").unwrap_or(usize::MAX);
+    let row = crate::support::row_named(family).expect("a dynamic family has a row");
+    let ctx = a.num("context", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.0, "--context 8192"))?;
+    crate::support::context_check(&name, row, model_max, a.flag("context").map(|_| ctx))?;
     // (every layer across the GPUs, src/dynamic/tp.rs: by default on datacenter GPUs that reach each other directly, where no split is asked for; a
     // development build's GLYD_TP=1 or 0 says so itself, GLYD_TP_GPUS which GPUs)
     let tp_room: Vec<(i32, u64)> = match crate::tune!("GLYD_TP_GPUS") {
@@ -2391,6 +2403,9 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
         Some(m) => run_level(m, layout)?,
         None => layout,
     };
+    if let Some(m) = model {
+        table_check(m, layout)?;
+    }
     if let (Some(m), Some(layout)) = (model, layout) {
         return check_lossy(a, m, layout, ui);
     }
@@ -2499,6 +2514,7 @@ pub fn fetch(a: &Args) -> i32 {
     let r = (|| -> Done<()> {
         // MODEL:LEVEL fetches the level's pre-packed repo (google/gemma-4-12B-it:wren is glyd/gemma-4-12B-wren)
         let (rest, layout) = level(tagged, false)?;
+        table_check(rest, layout)?;
         let dynamic = dynamic_family(rest).filter(|f| *f != "Nemotron-H" || layout.map_or(true, |l| l == Layout::Tiered));
         if let (Some(family), Some(l)) = (dynamic, layout) {
             if l != Layout::Tiered {
@@ -3408,6 +3424,30 @@ mod tests {
     }
 
     /// The plan of a model on a GPU is a status 3 wherever it fails for the computer or the model (not for what the user typed): the memory, the context, the shape.
+    /// `run`, `serve`, `preflight` and `fetch` all check the family and the level against the table first (src/support.rs), in its words: a kind the engine does not run, a
+    /// level its family does not run at, and nothing for a model at a level it runs.
+    #[test]
+    fn the_table_is_read_before_anything_else() {
+        let dir = std::env::temp_dir().join(format!("glyd-table-check-{}", std::process::id()));
+        let model = |name: &str, config: &str| {
+            let d = dir.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("config.json"), config).unwrap();
+            d.to_string_lossy().into_owned()
+        };
+        let llama =
+            model("Llama-3.1-8B", r#"{"architectures": ["LlamaForCausalLM"], "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32}"#);
+        let r = table_check(&llama, None).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("is a LlamaForCausalLM model"), "{r}");
+        let qwen3 = model("Qwen3-8B", QWEN3);
+        assert!(table_check(&qwen3, None).is_ok() && table_check(&qwen3, Some(Layout::Tiered)).is_ok());
+        let r = table_check(&qwen3, Some(Layout::Int5)).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("runs at the penguin level in this engine, not swift"), "{r}");
+        // (a model whose config is not to be had is the paths' own to say)
+        assert!(table_check(&dir.join("nowhere").to_string_lossy(), Some(Layout::Int5)).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn what_a_model_needs_of_a_gpu_is_decided_before_anything_is_downloaded() {
         let cfg = Config::parse(QWEN3, "config.json", None).unwrap();
@@ -3422,8 +3462,8 @@ mod tests {
         assert!(big.code == CANNOT && big.fix.contains("--context"), "{big}");
         // a context past the tables' reach on a model whose own window is longer
         let long = Config { max_pos: 262_144, ..cfg.clone() };
-        let (_, _, fit) = plan(&args(&["run", "m", "--context", "100000"]), &long, "m", &gpu("NVIDIA A100-SXM4-80GB", (8, 0), 70), None, 1).unwrap();
-        let r = shape_checks("m", &long, &fit).unwrap_err();
+        // (the table's limit, which `fit` and `preflight` give in the same words)
+        let r = plan(&args(&["run", "m", "--context", "100000"]), &long, "m", &gpu("NVIDIA A100-SXM4-80GB", (8, 0), 70), None, 1).unwrap_err();
         assert!(r.code == CANNOT && r.what.contains("100000") && r.what.contains("40960"), "{r}");
         let (_, _, fit) = plan(&args(&["run", "m"]), &long, "m", &l4, None, 1).unwrap();
         assert_eq!(fit.context, 8192); // (the default context is the engine's, whatever the window)

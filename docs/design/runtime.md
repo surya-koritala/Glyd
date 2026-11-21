@@ -44,7 +44,7 @@ the recent families is the first priority.
    epilogue); there is no general operator graph. Glyd's formats need their own product kernels on every vendor anyway, so an
    operator graph would buy little and cost the fusions that make the fixed time.
 6. **The CPU f32 reference is a backend.** `Ref` implements every kind in plain f32 Rust and runs whole tiny models, so the same
-   description is checked kind by kind and end to end (R2, R7). The M4 CPU backend (V4) is a separate, fast backend.
+   description is checked kind by kind and end to end (R2, R7). The M5a CPU backend (V4) is a separate, fast backend.
 7. **Typed launches from one definition.** Each kernel takes one `#[repr(C)]` argument struct defined in Rust; the build writes the C
    header the `.cu` (and later Metal) sources include, so the types cannot drift (R15).
 8. **Memory is arenas, sized by the plan at load.** Weights, KV pages, state slots, the step workspace and pinned host staging are
@@ -307,7 +307,7 @@ pub trait Backend: Send + Sync {
         -> Result<Box<dyn LayerImpl<Self>>>;
     fn queue(&self, dev: DeviceId) -> Result<Self::Queue>;
     fn capture(&self, q: &Self::Queue, body: &mut dyn FnMut() -> Result<()>) -> Result<Option<Captured>>; // None: no capture here
-    fn collective(&self) -> Option<&dyn Collective>;          // all-reduce, all-gather, all-to-all (M5)
+    fn collective(&self) -> Option<&dyn Collective>;          // all-reduce, all-gather, all-to-all (M4)
 }
 
 pub trait LayerImpl<B: Backend>: Send {
@@ -352,7 +352,7 @@ family's pipeline (`glyd-engine/src/runtime/reference`).
 | capture | CUDA graph | HIP graph | `mx.compile` (fixed shapes) | none |
 | memory | device arenas, pinned host | device arenas, pinned host | unified: one pool, host-visible | host |
 | kernels | `kernels/*.cu`, `gpu/glyd_gpu.cu` (R17 folds it in) | the same sources, `gpu/hip.h` | MLX ops; Glyd's formats as custom Metal kernels (`mlx_fast_metal_kernel`, V3b) | Rust SIMD (`cpu_*.rs`) |
-| libraries | cuBLASLt where present; FlashInfer and others where faster (V8) | hipBLASLt, aiter, composable_kernel (V8) | MLX | none |
+| libraries | cuBLASLt where present; FlashInfer, CUTLASS and others where faster (V8a, M2) | hipBLASLt, aiter, composable_kernel (V8b, M5b) | MLX | none |
 
 Nothing in the contract assumes a separate device memory, a launch with a grid, or a graph: those are inside the CUDA and HIP
 backends. A unified-memory machine (Apple, DGX Spark, GH200, Strix Halo) reports `unified` and the planner counts its memory once; the
@@ -360,7 +360,7 @@ expert store's RAM tier and the GPU tier are then the same memory, and a "miss" 
 
 ### Under CUDA and HIP: `Device`
 
-R1 and R15 carry the detail; the design fixes these points.
+R1a (#134, CUDA in M2), R1b (#446, HIP in M5b) and R15 carry the detail; the design fixes these points.
 
 - **Bound to a device.** `Buf` holds its `DeviceId`; the 56 process-wide globals (R16) become the runtime context. Two models in one
   process each own their arenas and queues.
@@ -595,7 +595,7 @@ Recent families first; the legacy pipelines move last, at parity, so they can be
 | :--- | :--- | :--- | :--- | :--- |
 | 0 | spikes: one kind (RMSNorm + GQA attention) on CUDA, `Ref` and MLX through `mlx-c` | #230 | proves the seam before anything depends on it | - |
 | 1 | `sched::Backend` renamed `ModelStep`, scheduler types moved out of `model.rs`; `model::Engine` implements it unchanged | R4a #138 | no behaviour change; every later step uses the new names | - |
-| 2 | runtime context, typed errors, arenas, typed launches for the kernels the executor uses | R16 #237, R15 #236, R1 #134 (CUDA part) | mechanical, benched per PR, needed by the executor | 56 globals, untyped launches |
+| 2 | runtime context, typed errors, arenas, typed launches for the kernels the executor uses | R16 #237, R15 #236, R1a #134 | mechanical, benched per PR, needed by the executor | 56 globals, untyped launches |
 | 3 | layer-kind library and `Ref`; CUDA kinds wrap today's kernels (no new kernels) | R2 #135 | the vocabulary the descriptions need | the family-named `Op` variants, as kinds replace them |
 | 4 | the executor implements `ModelStep` (one sequence first); `work_gen` replaced | R4a #138 | every description reaches the scheduler | `work_gen` |
 | 5 | **gemma-4-12B and Qwen3.8 dense**: descriptions from `config.json`, batched rows, paged KV (sliding ring, GQA, GDN state slots), graphs per row bucket; Qwen3.8 dense gains its lossless level | R3a #136, R4b #141, #329; Qwen3.8 penguin (#331) | the recent dense models; the first batched paths besides legacy Qwen3 | - |

@@ -20,7 +20,7 @@ glyd service install     # run it at every login; glyd service runs it in this t
 
 The service loads only models already pulled, and `glyd run` chats through it where it runs. Its options (`--keep-alive`,
 `--max-loaded`, `--port`) and what it leaves open are in
-[docs/service.md](https://github.com/surya-koritala/Glyd/blob/main/docs/service.md).
+[the service page](service.md).
 
 ## Options
 
@@ -73,4 +73,4 @@ Errors are OpenAI's shape: `{"error": {"message", "type", "param", "code"}}`. A 
 ## The full reference
 
 Every field the server reads, refuses or ignores, the states from loading to failed, the exit codes and the status file are in
-[docs/serve-api.md](https://github.com/surya-koritala/Glyd/blob/main/docs/serve-api.md) (the contract, `glyd-serve/1`).
+the [API reference](api.md) (the contract, `glyd-serve/1`). The background service is in [its own page](service.md).

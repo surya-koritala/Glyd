@@ -823,7 +823,7 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     }
     let chosen = choose(&options, max_ctx);
     if chosen.is_none() {
-        notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M5)".into());
+        notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M4)".into());
     }
     Plan { backend, chosen, options, notes }
 }
@@ -1336,15 +1336,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         sh = sh.scaled_to(total);
     }
     let context: Option<usize> = a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Refusal::new("--context takes a number", "--context 8192"))?;
-    if let Some(c) = context {
-        let most = sh.max_ctx.min(fam.max_ctx.unwrap_or(usize::MAX));
-        if c > most {
-            return Err(Refusal::unsupported(
-                format!("{name} takes at most {most} tokens of context here, and {c} were asked for"),
-                format!("Ask for less: --context {most}"),
-            ));
-        }
-    }
+    crate::support::context_check(&name, fam, sh.max_ctx, context)?;
     let users: usize = a.num("users", 1usize)?;
     let ask = Ask { level, context, users, family: Some(fam), qat: levels::is_qat(model) };
     let mut p = plan(&sh, &machine, ask);
@@ -1357,7 +1349,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         p.options = options;
         p.notes.retain(|n| !n.starts_with("nothing fits"));
         if p.chosen.is_none() {
-            p.notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M5)".into());
+            p.notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M4)".into());
             // (what `run` says of the level it would take: the first one asked, else the lossless one)
             refusal = refusals.into_iter().next();
         }
@@ -1887,7 +1879,11 @@ mod tests {
         let v = json::parse(fixture).unwrap();
         let (mut header, mut at) = (String::from("{"), 0u64);
         for (name, t) in v.get("tensors").and_then(Value::as_object).unwrap() {
-            let (dtype, shape) = (t.as_array().unwrap()[0].as_str().unwrap(), t.as_array().unwrap()[1].as_u64s().unwrap());
+            let (dtype, mut shape) = (t.as_array().unwrap()[0].as_str().unwrap(), t.as_array().unwrap()[1].as_u64s().unwrap());
+            // (a sparse file where the system makes them, else the shapes' large dimensions cut by 16 so that the file is under a GiB: a Windows runner's disk is not 15 GiB)
+            if cfg!(windows) {
+                shape.iter_mut().filter(|d| **d >= 256).for_each(|d| *d /= 16);
+            }
             let width = match dtype {
                 "F32" => 4,
                 "F8_E4M3" | "I8" | "U8" => 1,
@@ -2016,6 +2012,109 @@ mod tests {
         let wrong = run(other.report("m", other.weights_on_gpu(), 0)).unwrap();
         assert!(!wrong.status.success() && String::from_utf8_lossy(&wrong.stdout).contains("context"));
         let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// What `run` decides for MODEL at `level` on `m`, in the order it decides it (src/cli.rs `tagged`, `gpu_pick`'s checks, then the loader's sizing): the refusal,
+    /// or the plan it loads (None: a family sized by the planner's estimate alone).
+    fn run_decides(model: &str, text: &str, level: &str, m: &Machine) -> Result<Option<LoadPlan>, crate::ui::Refusal> {
+        let name = crate::cli::short_name(model);
+        crate::support::check(text, model, &name, level)?;
+        if let Some(r) = crate::support::machine(m) {
+            return Err(r);
+        }
+        let main = (0..m.devices.len()).min_by_key(|&i| (std::cmp::Reverse(m.devices[i].free), i)).unwrap();
+        let target = Target::of(&m.devices[main], main as i32, Some(m.ram_free));
+        let devs: Vec<Target> = m.devices.iter().enumerate().filter(|(_, d)| d.cc.0 >= 8).map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
+        let linked = m.devices.iter().all(|d| d.cc.1 == 0 && (8..=10).contains(&d.cc.0));
+        let a = args(&["run", model]);
+        crate::cli::size(&a, model, text, crate::levels::LEVELS.iter().map(|l| l.name).find(|n| *n == level).unwrap(), &devs, &target, &|_| linked, 1)
+    }
+
+    /// P16: no preset by fixture model by level where `fit` and `run` disagree: for every one, `fit` refuses exactly where `run` does, in `run`'s words and with its
+    /// status, and where `run` loads a plan `fit` prints that plan. The models are the families' fixtures, one a Llama (a kind the engine does not run), and
+    /// Qwen3.8-Flash-Next (Condor's); every machine preset, AMD, Apple, Arm and the multi-GPU ones among them; every level this build has, those a family does not run at too.
+    #[test]
+    fn fit_and_run_agree_on_every_preset_and_model() {
+        let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let llama = r#"{"architectures": ["LlamaForCausalLM"], "model_type": "llama", "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8}"#;
+        let glm = fixture("glm5_next_config.json");
+        let configs = [
+            ("Qwen3-32B", with_rope(QWEN3_32B)),
+            ("Qwen3.5-9B", json::to_compact(&q35.as_object().unwrap()[0].1)),
+            ("gemma-4-12B", fixture("gemma4_12b_config.json")),
+            ("NVIDIA-Nemotron-H", fixture("nemotron_h_config.json")),
+            ("GLM-5.3-Flash", glm.clone()),
+            ("Qwen3.8-Flash-Next", fixture("qwen4x_config.json")),
+            ("Llama-3.1-8B", llama.to_string()),
+        ];
+        let (mut pairs, mut loads, mut refusals) = (0, 0, 0);
+        for (name, text) in &configs {
+            let dir = model_dir("agree", name, text);
+            if *name == "GLM-5.3-Flash" {
+                header_only_checkpoint(&dir, &fixture("glm5_next_tensors.json"));
+            }
+            let model = dir.to_str().unwrap();
+            for preset in Machine::PRESETS {
+                let m = Machine::preset(preset).unwrap();
+                for level in crate::levels::names_now() {
+                    let tag = format!("{model}:{level}");
+                    let (fit, run) = (planned(&args(&["fit", &tag, "--machine", preset])), run_decides(model, text, level, &m));
+                    pairs += 1;
+                    let same = |a: &crate::ui::Refusal, b: &crate::ui::Refusal| {
+                        assert_eq!((&a.what, &a.fix, a.code), (&b.what, &b.fix, b.code), "{name} {preset} {level}")
+                    };
+                    match (fit, run) {
+                        (Err(f), Err(r)) => {
+                            same(&f, &r);
+                            refusals += 1;
+                        }
+                        (Ok(f), Err(r)) => {
+                            same(f.refusal.as_ref().unwrap_or_else(|| panic!("{name} on {preset} at {level}: fit exits 0 where run refuses: {}", r.what)), &r);
+                            refusals += 1;
+                        }
+                        (Ok(f), Ok(want)) => {
+                            assert!(f.refusal.is_none(), "{name} on {preset} at {level}: fit refuses where run loads: {:?}", f.refusal);
+                            let got = f.plan.chosen.as_ref().and_then(|c| c.load.clone());
+                            assert_eq!(got, want, "{name} on {preset} at {level}");
+                            loads += usize::from(got.is_some());
+                        }
+                        (Err(f), Ok(_)) => panic!("{name} on {preset} at {level}: fit refuses where run loads: {}", f.what),
+                    }
+                }
+            }
+        }
+        assert!(
+            pairs == configs.len() * Machine::PRESETS.len() * crate::levels::names_now().len() && loads > 40 && refusals > 200,
+            "{pairs} {loads} {refusals}"
+        );
+    }
+
+    /// The context limits come from the table: past the family's own limit, or the model's, `fit`, `run`'s sizing and the table give one refusal; the default
+    /// context is the table's, whichever path sizes it.
+    #[test]
+    fn context_limits_and_defaults_are_the_tables() {
+        let row = crate::support::row(crate::support::Family::Qwen3);
+        let r = crate::support::context_check("Qwen3-8B", row, 40960, Some(100_000)).unwrap_err();
+        assert_eq!(
+            (r.what.as_str(), r.fix.as_str()),
+            ("Qwen3-8B takes at most 40960 tokens of context here, and 100000 were asked for", "Ask for less: --context 40960")
+        );
+        assert!(
+            crate::support::context_check("m", row, 262_144, Some(100_000)).unwrap_err().what.contains("at most 40960"),
+            "the tables' reach, not the window"
+        );
+        assert!(crate::support::context_check("m", row, 8192, None).is_ok() && crate::support::context_check("m", row, 8192, Some(8192)).is_ok());
+        assert_eq!(crate::support::default_context(row, 40960), crate::fit::CTX_WANT);
+        assert_eq!(crate::support::default_context(crate::support::row(crate::support::Family::Gemma4), 262_144), LOSSY_CTX);
+        assert_eq!(crate::support::default_context(crate::support::row(crate::support::Family::Gemma4), 8192), 8192, "never more than the model has");
+        // (fit, the Qwen3 path and the lossy path say the same thing of an impossible context)
+        let dir = model_dir("ctx", "Qwen3-8B", QWEN3_8B);
+        let f = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "rtx4090", "--context", "100000"])).err().unwrap();
+        let a = args(&["run", "Qwen3-8B", "--context", "100000"]);
+        let cfg = crate::weights::Config::parse(QWEN3_8B, "config.json", None).unwrap();
+        let m = Machine::preset("rtx4090").unwrap();
+        let r = crate::cli::plan(&a, &cfg, &crate::cli::short_name(dir.to_str().unwrap()), &gpu_of(&m.devices[0], 0), None, 1).unwrap_err();
+        assert_eq!((f.what, f.fix, f.code), (r.what, r.fix, r.code));
     }
 
     /// What the last load took beyond its plan is the next plan's already-used memory: nothing before a load, nothing where it took less than planned or said nothing

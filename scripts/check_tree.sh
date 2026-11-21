@@ -22,4 +22,6 @@ if (( bad )); then
   echo "Keep summaries in the tree and raw outputs out of it (benchmarks/README.md); or list a file in scripts/large-files.allow."
   exit 1
 fi
+# every step of the M1 gate script is named on the guide's gate page (docs/guide/src/gate.md)
+python3 -I scripts/check_gate_docs.py > /dev/null
 echo "tree ok"
