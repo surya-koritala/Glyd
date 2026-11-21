@@ -17,11 +17,11 @@ fn parse_body(req: &Req) -> std::result::Result<Value, String> {
 }
 
 /// `{"error": "..."}`, as Ollama says what went wrong.
-fn fail(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
+fn fail(s: &mut dyn Conn, cors: &str, code: u16, msg: &str) {
     respond_with(s, code, "application/json; charset=utf-8", cors, format!("{{\"error\":{}}}", jstr(&said(msg))).as_bytes());
 }
 
-fn ok(s: &mut TcpStream, cors: &str, body: &str) {
+fn ok(s: &mut dyn Conn, cors: &str, body: &str) {
     respond_with(s, 200, "application/json; charset=utf-8", cors, body.as_bytes());
 }
 
@@ -417,12 +417,12 @@ fn stats(done: &Done, prompt_tokens: usize, begun: std::time::Instant, first: Op
 }
 
 /// A line of a stream of JSON lines, as one chunk of the chunked body.
-fn line(s: &mut TcpStream, text: &str) -> bool {
+fn line(s: &mut dyn Conn, text: &str) -> bool {
     let l = format!("{text}\n");
     s.write_all(format!("{:x}\r\n{l}\r\n", l.len()).as_bytes()).and_then(|_| s.flush()).is_ok()
 }
 
-fn start_lines(s: &mut TcpStream, cors: &str) -> bool {
+fn start_lines(s: &mut dyn Conn, cors: &str) -> bool {
     s.write_all(
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
@@ -453,7 +453,7 @@ impl Shape {
 }
 
 /// `/api/chat` and `/api/generate`.
-pub(super) fn generate(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, chat: bool) {
+pub(super) fn generate(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req, chat: bool) {
     let cors = req.cors.as_str();
     let v = match parse_body(req) {
         Ok(v) => v,
@@ -564,7 +564,7 @@ pub(super) fn generate(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &R
 }
 
 /// `/api/pull`: the model served is there; another is not one this server can fetch (the server holds one model: `glyd pull NAME`, then `glyd serve NAME`).
-fn pull(sh: &Shared, s: &mut TcpStream, req: &Req) {
+fn pull(sh: &Shared, s: &mut dyn Conn, req: &Req) {
     let cors = req.cors.as_str();
     let v = match parse_body(req) {
         Ok(v) => v,
@@ -588,7 +588,7 @@ fn pull(sh: &Shared, s: &mut TcpStream, req: &Req) {
 }
 
 /// `/api/delete`: a model that is served is not removed under its server.
-fn delete(sh: &Shared, s: &mut TcpStream, req: &Req) {
+fn delete(sh: &Shared, s: &mut dyn Conn, req: &Req) {
     let cors = req.cors.as_str();
     let v = match parse_body(req) {
         Ok(v) => v,
@@ -608,7 +608,7 @@ fn delete(sh: &Shared, s: &mut TcpStream, req: &Req) {
 pub const VERSION: &str = "0.12.6";
 
 /// One request of Ollama's API on `s` (`POST /api/chat`, `/api/generate`, `/api/show`, `/api/pull`; `GET /api/tags`, `/api/ps`, `/api/version`; `DELETE /api/delete`).
-pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req) {
+pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req) {
     let cors = req.cors.as_str();
     let path = req.path.split('?').next().unwrap_or("");
     match (req.method.as_str(), path) {

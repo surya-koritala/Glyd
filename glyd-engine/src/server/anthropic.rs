@@ -168,12 +168,12 @@ pub(super) fn anthropic_body(code: u16, msg: &str) -> String {
     format!("{{\"type\":\"error\",\"error\":{{\"type\":\"{kind}\",\"message\":{}}}}}", jstr(&said(msg)))
 }
 
-fn fail(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
+fn fail(s: &mut dyn Conn, cors: &str, code: u16, msg: &str) {
     respond_with(s, code, "application/json", cors, anthropic_body(code, msg).as_bytes());
 }
 
 /// An event of a streamed Messages reply, as one chunk of the chunked body.
-fn event(s: &mut TcpStream, kind: &str, fields: &str) -> bool {
+fn event(s: &mut dyn Conn, kind: &str, fields: &str) -> bool {
     let ev = format!("event: {kind}\ndata: {{\"type\":\"{kind}\"{}{fields}}}\n\n", if fields.is_empty() { "" } else { "," });
     s.write_all(format!("{:x}\r\n{ev}\r\n", ev.len()).as_bytes()).and_then(|_| s.flush()).is_ok()
 }
@@ -201,7 +201,7 @@ struct Blocks {
 }
 
 impl Blocks {
-    fn close(&mut self, s: &mut TcpStream) -> bool {
+    fn close(&mut self, s: &mut dyn Conn) -> bool {
         let Some(open) = self.open.take() else { return true };
         // (a thinking block ends with its signature, which this server has no way to make: empty)
         let signed = open != Open::Thinking
@@ -210,7 +210,7 @@ impl Blocks {
         signed && event(s, "content_block_stop", &format!("\"index\":{}", self.next - 1))
     }
 
-    fn begin(&mut self, s: &mut TcpStream, kind: Open, block: &str) -> bool {
+    fn begin(&mut self, s: &mut dyn Conn, kind: Open, block: &str) -> bool {
         if self.open == Some(kind) {
             return true;
         }
@@ -219,7 +219,7 @@ impl Blocks {
         ok
     }
 
-    fn delta(&mut self, s: &mut TcpStream, d: &Delta) -> bool {
+    fn delta(&mut self, s: &mut dyn Conn, d: &Delta) -> bool {
         let mut ok = true;
         if !d.reasoning.is_empty() {
             ok &= self.begin(s, Open::Thinking, "{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}");
@@ -292,7 +292,7 @@ fn max_tokens_ok(v: &Value) -> std::result::Result<(), String> {
 }
 
 /// One Messages request on `s`: the request read as the OpenAI one it is the same as, one choice made as a chat completion's, the reply in Anthropic's form.
-pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, count: bool, id: u64) {
+pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req, count: bool, id: u64) {
     let cors = req.cors.as_str();
     let Some(v) = std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()).filter(|v| matches!(v, Value::Object(_))) else {
         return fail(s, cors, 400, "Request body must be a valid JSON object");
