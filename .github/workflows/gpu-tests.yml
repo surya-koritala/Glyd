@@ -65,6 +65,12 @@ jobs:
           "$E" kcheck35
       # (its layers are toy ones: tens of megabytes of weights and scratch a case. The GPU's memory is sampled while it runs, the peak printed, and a peak of more than 12,000 MiB of the card's 16,376 fails it:
       # the margin a 16 GB card needs for the driver and the next step)
+      - name: Every pack format decodes on this GPU (tests/data/packs: the library decodes each pack, and each tensor's sha256 is its release's; the row and codebook layouts on the CPU, as verify does)
+        run: |
+          cargo build --release --locked -p glyd-gpu --bin glyd-gpu
+          for d in tests/data/packs/*/; do
+            "$CARGO_TARGET_DIR/release/glyd-gpu" verify "$d" --device cuda:0
+          done
       - name: MoE kernel checks (blocking; the peak GPU memory is printed and held under 12,000 MiB)
         run: |
           base=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
