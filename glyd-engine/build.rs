@@ -86,6 +86,13 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(no_kernels)");
     println!("cargo::rustc-check-cfg=cfg(kernels12)");
     println!("cargo:rerun-if-env-changed=NVCC12");
+    println!("cargo:rerun-if-env-changed=GLYD_ENGINE_FATBIN_CACHE");
+    println!("cargo:rerun-if-env-changed=GLYD_ENGINE_NVCC_THREADS");
+    // GLYD_ENGINE_FATBIN_CACHE=DIR: a fatbin found there (engine.fatbin, engine12.fatbin) is taken in place of compiling it, and one compiled is left there.
+    // The workflows key DIR's cache by the kernels' sources, this file and the toolkits, so a build whose kernels did not change skips nvcc; nothing else sets it.
+    let cache = env::var_os("GLYD_ENGINE_FATBIN_CACHE").filter(|d| !d.is_empty()).map(PathBuf::from);
+    // GLYD_ENGINE_NVCC_THREADS=N: nvcc compiles N architectures at once (--threads N; each takes its own memory)
+    let threads = env::var("GLYD_ENGINE_NVCC_THREADS").ok().filter(|s| !s.trim().is_empty());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let out = out_dir.join("engine.fatbin");
     std::fs::write(out_dir.join("engine12.fatbin"), b"").unwrap(); // (dev.rs embeds both; the second is empty unless NVCC12 built it)
@@ -128,8 +135,17 @@ fn main() {
     }
     // one fatbin of kernels/engine.cu by `nvcc` for `archs`: CUDA 13's compressed for size (nvcc 12.4 on knows the flag; where it fails, as it is), CUDA 12's not compressed at all
     // (a driver below CUDA 12.4 cannot read a compressed fatbin); the compute_89 PTX in a release build, and in a development build the compute_80 PTX
-    let fatbin = |nvcc: &Path, out: &Path, archs: &str, compress: bool, uncompressed: bool| {
+    let fatbin = |nvcc: &Path, out: &Path, archs: &str, compress: bool, uncompressed: bool| -> bool {
+        let name = out.file_name().expect("a fatbin's name");
+        if let Some(hit) = cache.as_ref().map(|c| c.join(name)).filter(|f| f.metadata().is_ok_and(|m| m.len() > 0)) {
+            std::fs::copy(&hit, out).unwrap_or_else(|e| panic!("{}: {e}", hit.display()));
+            println!("cargo:warning=glyd-engine: {} from GLYD_ENGINE_FATBIN_CACHE ({})", name.to_string_lossy(), hit.display());
+            return true;
+        }
         let mut cmd = Command::new(nvcc);
+        if let Some(n) = &threads {
+            cmd.arg("--threads").arg(n.trim());
+        }
         cmd.args(["-fatbin", "-O3", "-std=c++17", "--expt-relaxed-constexpr", "-o"]).arg(out);
         if env::var_os("GLYD_ENGINE_LINEINFO").is_some() {
             cmd.arg("-lineinfo"); // (for a profiler: it makes the fatbin several times larger)
@@ -150,14 +166,18 @@ fn main() {
             cmd.arg("-gencode").arg("arch=compute_80,code=compute_80");
         }
         cmd.arg("kernels/engine.cu");
-        cmd.status().unwrap_or_else(|e| panic!("{}: {e}", nvcc.display()))
+        let ok = cmd.status().unwrap_or_else(|e| panic!("{}: {e}", nvcc.display())).success();
+        if let (true, Some(c)) = (ok, &cache) {
+            std::fs::create_dir_all(c).and_then(|_| std::fs::copy(out, c.join(name))).unwrap_or_else(|e| panic!("{}: {e}", c.display()));
+        }
+        ok
     };
     let major = |nvcc: &Path| {
         let v = Command::new(nvcc).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
         v.split("release ").nth(1).and_then(|s| s.split('.').next()).and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(13)
     };
     let primary12 = major(&nvcc) < 13;
-    if !fatbin(&nvcc, &out, &archs, !primary12, primary12).success() && !fatbin(&nvcc, &out, &archs, false, primary12).success() {
+    if !fatbin(&nvcc, &out, &archs, !primary12, primary12) && !fatbin(&nvcc, &out, &archs, false, primary12) {
         panic!("nvcc failed on kernels/engine.cu");
     }
     // the second fatbin, for drivers that report CUDA 12 (empty without NVCC12)
@@ -181,7 +201,7 @@ fn main() {
                 wanted12.iter().filter(|a| !archs12.contains(a)).copied().collect::<Vec<_>>().join(", ")
             );
         }
-        if !fatbin(&nvcc12, &out12, &archs12.join(" "), false, true).success() {
+        if !fatbin(&nvcc12, &out12, &archs12.join(" "), false, true) {
             panic!("nvcc ({}) failed on kernels/engine.cu", nvcc12.display());
         }
         kernels12 = true;

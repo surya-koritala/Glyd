@@ -179,10 +179,19 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+      - name: Tools (GCC 13, binutils, Python)
+        run: dnf install -y -q --disablerepo="cuda*" --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils python3.11
+      # (a run that is not a tag takes the library from the Actions cache where the GPU library's sources did not change; a tag builds it fresh. The check below runs either way.)
+      - id: memo
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: lib
+          key: gpulib-${{ matrix.name }}-cuda${{ matrix.cuda }}-${{ matrix.compress }}-${{ hashFiles('gpu/*.cu', 'gpu/*.h', 'gpu/build_lib.sh') }}-v1
       - name: Build
+        if: steps.memo.outputs.cache-hit != 'true'
         run: |
           set -e
-          dnf install -y -q --disablerepo="cuda*" --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils python3.11
           source /opt/rh/gcc-toolset-13/enable
           time bash gpu/build_lib.sh lib
       - name: Check (glibc 2.28, the system's libraries only; the architectures; stripped; the eight functions and the table exported)
@@ -202,6 +211,11 @@ jobs:
             echo "$f: machine code for $sass (no PTX), stripped, $(nm -D --defined-only "$f" | wc -l) exports (the eight functions and the table)"
           done
           cd lib && for f in libglyd_gpu_cuda*.so; do sha256sum "$f" > "$f.sha256"; done && cat ./*.sha256
+      - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.memo.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: lib
+          key: gpulib-${{ matrix.name }}-cuda${{ matrix.cuda }}-${{ matrix.compress }}-${{ hashFiles('gpu/*.cu', 'gpu/*.h', 'gpu/build_lib.sh') }}-v1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact }}-${{ matrix.name }}-cuda${{ matrix.cuda }}
@@ -239,6 +253,7 @@ jobs:
       options: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && !startsWith(github.ref, 'refs/tags/') && '--memory=12g --memory-swap=12g --cpus=8' || '' }}
     env:
       GLYD_ENGINE_RELEASE: "1"
+      GLYD_ENGINE_NVCC_THREADS: "2"
       GLYD_SOURCE_COMMIT: ${{ github.sha }}
       CARGO_PROFILE_RELEASE_STRIP: symbols
       RUST_VERSION: "1.98.1"
@@ -247,6 +262,12 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+      - id: memo
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: .fatbin
+          key: engine-fatbin-${{ matrix.name }}-cuda13.0.3-12.9-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h') }}-v1
       - name: Build
         run: |
           set -e
@@ -260,6 +281,8 @@ jobs:
           export NVCC12=/usr/local/cuda-12.9/bin/nvcc
           rustc --version; nvcc --version | tail -2; "$NVCC12" --version | tail -2
           export RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=cargo --remap-path-prefix=$HOME/.rustup=rustup"
+          # (the engine's compiled kernels from the Actions cache where they did not change; a tag compiles them)
+          case "$GITHUB_REF" in refs/tags/*) ;; *) export GLYD_ENGINE_FATBIN_CACHE="$PWD/.fatbin" ;; esac
           time cargo build --release --locked -p glyd-engine --no-default-features
           mkdir engine && cp target/release/glyd-engine engine/
           # glyd, the one program: the compression program with this engine linked (its `engine` feature takes the engine's library without its development
@@ -278,6 +301,11 @@ jobs:
             ! readelf -S "$f" | grep -qE '\.symtab|\.debug' || { echo "$f is not stripped"; exit 1; }
           done
           cd engine && sha256sum glyd-engine glyd > glyd-engine.sha256 && cat glyd-engine.sha256
+      - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.memo.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: .fatbin
+          key: engine-fatbin-${{ matrix.name }}-cuda13.0.3-12.9-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h') }}-v1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: glyd-engine-${{ matrix.name }}
@@ -349,15 +377,73 @@ jobs:
             out/*.tar.gz.sha256
           if-no-files-found: error
 
-  engine-windows:
-    # glyd.exe for Windows x86_64: the compression program with Glyd's engine linked (the `engine` feature), built with CUDA 13.0.3's nvcc and CUDA 12.9.1's (NVCC12: the kernels a driver of
-    # CUDA 12 loads), and the GPU library DLLs of both (libglyd_gpu_cuda13.dll, and libglyd_gpu_cuda12.dll not compressed). The CUDA toolkits are NVIDIA's network installers, checked against
-    # the sha256 written here (and NVIDIA's md5); nothing of the toolkit ships (the DLLs link the CUDA runtime in; the engine opens nvcuda.dll). Built here, not run: no runner has a GPU.
-    # The zip and its sha256 are attached to the release by attach-engine when the build succeeded; a failure here does not hold the Linux bundles back.
-    # (windows-2022: its Visual Studio 2022 is the host compiler CUDA 13.0 and 12.9 list; windows-latest has Visual Studio 2026, whose STL asks for CUDA 13.4 or newer)
+  # Windows x86_64: glyd.exe (the compression program with Glyd's engine linked, the `engine` feature), built with CUDA 13.0.3's nvcc and CUDA 12.9.1's (NVCC12: the kernels a
+  # driver of CUDA 12 loads), and the GPU library DLLs of both (libglyd_gpu_cuda13.dll, and libglyd_gpu_cuda12.dll not compressed), in three jobs: the two DLLs and glyd.exe are
+  # built side by side (one after the other they took 87 minutes), and engine-windows checks them, zips them and installs the zip. The CUDA toolkits are NVIDIA's network installers,
+  # checked against the sha256 written here, with the compiler and the runtime only (.github/scripts/cuda-windows.ps1); nothing of the toolkit ships (the DLLs link the CUDA runtime
+  # in; the engine opens nvcuda.dll). Built here, not run: no runner has a GPU. The zip and its sha256 are attached to the release by attach-engine when they succeeded; a failure
+  # here does not hold the Linux bundles back. A run that is not a tag takes a DLL, or the engine's compiled kernels, from the Actions cache where their sources did not change
+  # (keyed by them); a tag builds everything fresh, so a release's files are its own run's.
+  # (windows-2022: its Visual Studio 2022 is the host compiler CUDA 13.0 and 12.9 list; windows-latest has Visual Studio 2026, whose STL asks for CUDA 13.4 or newer)
+  gpu-lib-windows:
     needs: plan
     runs-on: windows-2022
-    timeout-minutes: 150
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {cuda: "13.0.3", mm: "13.0", major: "13", sha: "6b544a8cfea2ca18cc816dacda92064dcf821a201b35185e6c14ca17ccbc026f", compress: size}
+          - {cuda: "12.9.1", mm: "12.9", major: "12", sha: "de45c336ab4e9825018b546357dc9de5ded9f89c4f5200ef52b8eeac3b1b4072", compress: none}
+    env:
+      GLYD_GPU_RELEASE: "1"
+      GLYD_GPU_COMPRESS: ${{ matrix.compress }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - id: memo
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: lib
+          key: gpulib-windows-cuda${{ matrix.cuda }}-${{ matrix.compress }}-${{ hashFiles('gpu/*.cu', 'gpu/*.h', 'gpu/build_lib.ps1') }}-v1
+      - name: The CUDA toolkit (the compiler and the runtime)
+        if: steps.memo.outputs.cache-hit != 'true'
+        run: ./.github/scripts/cuda-windows.ps1 -Version ${{ matrix.cuda }} -Sha256 ${{ matrix.sha }}
+      - name: Build (MSVC's environment, nvcc, the DLL)
+        if: steps.memo.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && set" | ForEach-Object { if ($_ -match '^(.*?)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] } }
+          # (the runner's Visual Studio can be newer than the one a CUDA release lists: the build is checked by what it makes, not by nvcc's list)
+          $env:NVCC_APPEND_FLAGS = '-allow-unsupported-compiler'
+          $env:PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ matrix.mm }}\bin;$env:PATH"
+          New-Item -ItemType Directory -Force lib | Out-Null
+          & .\gpu\build_lib.ps1 -Out (Resolve-Path lib)
+          Get-ChildItem lib | Select-Object Name, Length
+      - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.memo.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: lib
+          key: gpulib-windows-cuda${{ matrix.cuda }}-${{ matrix.compress }}-${{ hashFiles('gpu/*.cu', 'gpu/*.h', 'gpu/build_lib.ps1') }}-v1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gpu-lib-windows-cuda${{ matrix.major }}
+          path: lib/libglyd_gpu_cuda${{ matrix.major }}.dll
+          if-no-files-found: error
+
+  engine-windows-exe:
+    needs: plan
+    runs-on: windows-2022
+    timeout-minutes: 90
     permissions:
       contents: read
     defaults:
@@ -365,33 +451,26 @@ jobs:
         shell: pwsh
     env:
       GLYD_ENGINE_RELEASE: "1"
-      GLYD_GPU_RELEASE: "1"
+      GLYD_ENGINE_NVCC_THREADS: "2"
       RUST_VERSION: "1.98.1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
-      - name: The CUDA toolkits (13.0.3 and 12.9.1), nvcc and the runtime's libraries
+      - id: memo
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: .fatbin
+          key: engine-fatbin-windows-cuda13.0.3-12.9.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h') }}-v1
+      - name: The CUDA toolkits (13.0.3 and 12.9.1; the compiler and the runtime)
+        run: |
+          ./.github/scripts/cuda-windows.ps1 -Version 13.0.3 -Sha256 6b544a8cfea2ca18cc816dacda92064dcf821a201b35185e6c14ca17ccbc026f
+          ./.github/scripts/cuda-windows.ps1 -Version 12.9.1 -Sha256 de45c336ab4e9825018b546357dc9de5ded9f89c4f5200ef52b8eeac3b1b4072
+      - name: Build glyd.exe (MSVC's environment, both nvcc, the engine linked in)
         run: |
           $ErrorActionPreference = 'Stop'
-          $installers = @(
-            @{ v = '13.0.3'; sha = '6b544a8cfea2ca18cc816dacda92064dcf821a201b35185e6c14ca17ccbc026f' },
-            @{ v = '12.9.1'; sha = 'de45c336ab4e9825018b546357dc9de5ded9f89c4f5200ef52b8eeac3b1b4072' }
-          )
-          foreach ($i in $installers) {
-            $exe = "cuda_$($i.v)_windows_network.exe"
-            Invoke-WebRequest "https://developer.download.nvidia.com/compute/cuda/$($i.v)/network_installers/$exe" -OutFile $exe
-            if ((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -ne $i.sha) { throw "$exe is not the installer this workflow was written for" }
-            $p = Start-Process -FilePath ".\$exe" -ArgumentList '-s' -Wait -PassThru
-            "$exe exit code $($p.ExitCode)"
-            if ($p.ExitCode -ne 0) { throw "$exe failed" }
-          }
-          Get-ChildItem 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA' | Select-Object Name
-      - name: Build (MSVC's environment, both nvcc, the engine and glyd.exe, the two DLLs)
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # the MSVC compiler nvcc takes as its host compiler: the environment of vcvars64
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
           cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && set" | ForEach-Object { if ($_ -match '^(.*?)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] } }
           # (the runner's Visual Studio can be newer than the one a CUDA release lists: the build is checked by what it makes, not by nvcc's list)
@@ -403,18 +482,48 @@ jobs:
           rustup default $env:RUST_VERSION
           $env:NVCC = $nvcc13; $env:NVCC12 = $nvcc12
           $env:GLYD_SOURCE_COMMIT = '${{ needs.plan.outputs.sha }}'
-          cargo build --release --locked -p glyd-engine --no-default-features
-          if ($LASTEXITCODE) { throw 'cargo build glyd-engine failed' }
+          # (the engine's kernels from the cache where they did not change; a tag compiles them)
+          if (-not '${{ github.ref }}'.StartsWith('refs/tags/')) { $env:GLYD_ENGINE_FATBIN_CACHE = Join-Path $PWD '.fatbin' }
           cargo build --release --locked -p glyd --features engine --bin glyd
           if ($LASTEXITCODE) { throw 'cargo build glyd failed' }
-          New-Item -ItemType Directory -Force lib13, lib12 | Out-Null
-          $env:PATH = "$cuda\v13.0\bin;$env:PATH"
-          $env:GLYD_GPU_COMPRESS = 'size'
-          & .\gpu\build_lib.ps1 -Out (Resolve-Path lib13)
-          $env:PATH = "$cuda\v12.9\bin;$($env:PATH -replace [regex]::Escape("$cuda\v13.0\bin;"), '')"
-          $env:GLYD_GPU_COMPRESS = 'none'
-          & .\gpu\build_lib.ps1 -Out (Resolve-Path lib12)
-          Get-ChildItem lib13, lib12, target\release\glyd.exe | Select-Object FullName, Length
+          Get-ChildItem target\release\glyd.exe | Select-Object FullName, Length
+      - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.memo.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: .fatbin
+          key: engine-fatbin-windows-cuda13.0.3-12.9.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h') }}-v1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: glyd-exe-windows
+          path: target/release/glyd.exe
+          if-no-files-found: error
+
+  engine-windows:
+    needs: [plan, gpu-lib-windows, engine-windows-exe]
+    runs-on: windows-2022
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: glyd-exe-windows
+          path: target/release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gpu-lib-windows-cuda13
+          path: lib13
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gpu-lib-windows-cuda12
+          path: lib12
       - name: Check (the program starts; the system's DLLs alone; the DLLs export the C API) and the zip
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -456,6 +565,8 @@ jobs:
           $doctor = & (Join-Path $env:GLYD_HOME 'glyd.exe') doctor 2>&1 | Out-String
           $doctor
           if ($doctor -notmatch 'NVIDIA|GPU') { throw 'glyd doctor says nothing of the GPU' }
+          # (doctor exits 1 here, rightly: this runner has no GPU. The step's result is the checks above, not doctor's exit code, which pwsh would return)
+          exit 0
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: engine-bundle-windows-x86_64
@@ -684,7 +795,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -l bundles
-          (cd bundles && for f in *.tar.gz *.zip; do [ -e "$f" ] && sha256sum -c "$f.sha256"; done)
+          (cd bundles && for f in *.tar.gz *.zip; do [ ! -e "$f" ] || sha256sum -c "$f.sha256"; done)  # (no zip where the Windows build failed: the pattern stays itself, which is not an error)
           for i in $(seq 1 60); do gh release view "$TAG" -R "$REPO" > /dev/null 2>&1 && break; echo "waiting for release $TAG ($i)"; sleep 30; done
           gh release upload "$TAG" -R "$REPO" --clobber bundles/*.tar.gz bundles/*.tar.gz.sha256 bundles/SHA256SUMS-engine bundles/*.sigstore.json bundles/*.spdx.json
           if ls bundles/*.zip > /dev/null 2>&1; then gh release upload "$TAG" -R "$REPO" --clobber bundles/*.zip bundles/*.zip.sha256; fi
