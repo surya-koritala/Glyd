@@ -249,6 +249,24 @@ impl GlmMoe {
     /// Layer `l` of the model `c` from the checkpoint `ck`, its matrices at `level` (Int6, Int5 or Int4), copied to the GPU. A layer whose shapes the products do not take is refused (`MoeLayer::new`).
     /// `f8`: at the lossless level, FP8 experts are held in the FP8 format as released (on that device, by that library), not as the bf16 they dequantise to.
     pub fn load(l: usize, c: &ConfigGlm, ck: &Checkpoint, level: Layout, f8: Option<(&Dev, &Lib)>) -> Result<GlmMoe> {
+        // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows; the router and the shared expert as released)
+        if let Some(x) = crate::hb_pack::HbDir::experts_for(crate::hb_pack::HbDir::open(&ck.dir)?.as_ref(), l, false)? {
+            let h = read_layer_with(l, c, ck, level, true)?;
+            let (router, bias) = (upload_bytes(&h.router)?, Some(upload_bytes(&h.bias)?));
+            if f8_shared(ck, c, l) {
+                let (dev, lib) = f8.ok_or_else(|| Error("a hummingbird directory's FP8 shared expert is read with a device (GLYD_GLM_F8 is 0)".into()))?;
+                let shared = Shared {
+                    inter: c.experts.shared_inter,
+                    up: PackBuf::shape_only(h.s_up.rows, h.s_up.cols)?,
+                    down: PackBuf::shape_only(h.s_down.rows, h.s_down.cols)?,
+                    gate: None,
+                };
+                let (su, sd) = read_shared_f8(ck, c, l, dev, lib)?;
+                return Ok(GlmMoe { layer: MoeLayer::new_hb(moe_cfg(c), router, bias, None, x, Some(shared))?.with_shared8(su, sd)? });
+            }
+            let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
+            return Ok(GlmMoe { layer: MoeLayer::new_hb(moe_cfg(c), router, bias, None, x, Some(shared))? });
+        }
         let f8 = f8.filter(|_| matches!(level, Layout::Tiered | Layout::Twelve) && f8_experts(ck, c, l));
         let h = read_layer_with(l, c, ck, level, f8.is_some())?;
         let (router, bias) = (upload_bytes(&h.router)?, Some(upload_bytes(&h.bias)?));

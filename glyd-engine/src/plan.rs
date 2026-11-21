@@ -1388,7 +1388,14 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
             println!("note: {n}");
         }
         if f.family.hummingbird_packed_only && p.chosen.as_ref().is_some_and(|c| c.level == "hummingbird") {
-            println!("note: the hummingbird level comes as a pre-packed download: glyd/{}-hummingbird", f.name);
+            if f.family.family == crate::support::Family::NemotronH {
+                println!("note: the hummingbird level comes as a pre-packed download: glyd/{}-hummingbird", f.name);
+            } else {
+                println!(
+                    "note: the hummingbird level is packed ahead: the pre-packed glyd/{}-hummingbird, or glyd-engine calibrate-experts MODEL usage.json, then glyd-engine pack MODEL DIR --layout hummingbird --usage usage.json",
+                    f.name
+                );
+            }
         }
     }
     match f.refusal {

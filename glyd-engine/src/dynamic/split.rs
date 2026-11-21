@@ -474,6 +474,14 @@ pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep
             }
         }
     }
+    // (a hummingbird directory's routed experts are in files of their own, by the description's block: decoder layer l's are block 2 l + 1)
+    if let Some(hb) = crate::hb_pack::HbDir::open(dir)? {
+        for (l, bytes) in hb.layer_bytes() {
+            if l < nl {
+                per[l] += bytes;
+            }
+        }
+    }
     Ok((per, base))
 }
 

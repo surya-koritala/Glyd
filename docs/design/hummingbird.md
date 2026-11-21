@@ -95,13 +95,17 @@ the quality bar's question (#235): Nemotron 3 Super shipped with it (+10.3% perp
 
 ## The directory
 
-glyd-v7, `glyd.json` level `hummingbird`, layout `hb`, with the recipe and the usage file's hash under `calibration`:
+`glyd.json` of format `glyd-hbg/1`, level `hummingbird`, with an `experts` record: the recipe, the rounding, the usage file's tokens and
+hash, and each MoE layer's block, file, width, rotation block, sizes, experts' bits, bytes and sha256. It is not a glyd-v7 directory:
+glyd-v7 readers take every matrix as packed at a level, and here everything but the experts is the release's.
 
 - the release's tensors but the routed experts, copied with their names and dtypes (BF16, F32, F8_E4M3 and its scales, MXFP4's U8
   blocks and scales), in shards with an index, and the release's config, tokenizer and template files;
-- per MoE layer, each expert's `gate_up` and `down_t` as c3r or c2r packs under the expert's module name, and `glyd_rot_signs` (I8 [W]).
+- per MoE layer, `experts-BBBB.safetensors` (BBBB the description's block): `glyd_rot_signs` (I8 [W]) and, for each expert e and matrix m
+  (`gate_up`, `down_t`), `eEEEE.m.codes`, `.scales` and `.codebook` in the c3r or c2r layout.
 
-A family loader that reads the release reads this directory the same way, and builds the layer's `hb` experts from the packs.
+A family loader that reads the release reads this directory the same way, and builds the layer's `hb` experts from the expert files
+(`HbDir::experts_for`, `MoeLayer::new_hb`).
 `hbpack.rs`'s Nemotron 3 Super directories (six-bit elsewhere, from an export) stay readable as they are; new Nemotron-H packs follow
 this layout once Nemotron-H is described (R3b).
 

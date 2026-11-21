@@ -5,7 +5,8 @@
 //! and rounded row by row (`hb_codec`), and written as codebook rows; every other tensor of the release is copied byte for byte, so the
 //! family's loader reads the rest as it reads the release.
 //!
-//! The directory: `glyd.json` (glyd-v7, level hummingbird, layout `hb`, an `experts` record: the format, the recipe, the usage file's
+//! The directory: `glyd.json` (format `glyd-hbg/1`, level hummingbird: not a glyd-v7 directory, whose readers take every matrix as packed at a
+//! level; here the rest is the release's, read as the release is; an `experts` record: the format, the recipe, the usage file's
 //! tokens and hash, each layer's block, file, width, rotation block, sizes, experts' bits, bytes and sha256); `experts-BBBB.safetensors`
 //! for the MoE layer at the description's block BBBB, holding `glyd_rot_signs` (I8 [W]) and for each expert e and matrix m (`gate_up`,
 //! `down_t`) `eEEEE.m.codes` (U8 [rows, W bits / 8]), `eEEEE.m.scales` (BF16 [rows, W / 32]) and `eEEEE.m.codebook` (BF16 [rows, 2^bits]);
@@ -433,9 +434,8 @@ pub fn run(model: &str, out: &Path, threads: usize, usage: &Path) -> Result<()> 
     let (copied, copied_bytes) = copy_rest(&ck, &tmp, &skip)?;
     let files = copy_files(&source.dir, &tmp)?;
     let manifest = Value::Object(vec![
-        ("format".into(), Value::from("glyd-v7")),
+        ("format".into(), Value::from(FORMAT)),
         ("level".into(), Value::from("hummingbird")),
-        ("layout".into(), Value::from("hb")),
         (
             "source".into(),
             Value::Object(vec![
@@ -466,7 +466,7 @@ pub fn run(model: &str, out: &Path, threads: usize, usage: &Path) -> Result<()> 
     }
     io(std::fs::rename(&tmp, out))?;
     eprintln!(
-        "glyd-v7 at the hummingbird level: {} MoE layers ({twos} experts at 2 bits, {threes} at 3), {copied} other tensors copied ({:.2} GB), {files} files ({:.1} s)",
+        "{FORMAT} at the hummingbird level: {} MoE layers ({twos} experts at 2 bits, {threes} at 3), {copied} other tensors copied ({:.2} GB), {files} files ({:.1} s)",
         layers.len(),
         copied_bytes as f64 / 1e9,
         t0.elapsed().as_secs_f64()
@@ -497,7 +497,13 @@ impl HbDir {
     pub fn open(dir: &Path) -> Result<Option<HbDir>> {
         let Ok(text) = std::fs::read_to_string(dir.join("glyd.json")) else { return Ok(None) };
         let m = json::parse(&text).map_err(|e| Error(format!("{}: glyd.json: {e}", dir.display())))?;
-        let Some(x) = m.get("experts").filter(|x| x.get("format").and_then(Value::as_str) == Some(FORMAT)) else { return Ok(None) };
+        if m.get("format").and_then(Value::as_str) != Some(FORMAT) {
+            return Ok(None);
+        }
+        let x = m
+            .get("experts")
+            .filter(|x| x.get("format").and_then(Value::as_str) == Some(FORMAT))
+            .ok_or_else(|| Error(format!("{}: glyd.json: no experts record", dir.display())))?;
         let what = |why: String| Error(format!("{}: glyd.json: {why}", dir.display()));
         let mut layers = Vec::new();
         for (i, r) in x.get("layers").and_then(Value::as_array).ok_or_else(|| what("no experts.layers".into()))?.iter().enumerate() {
@@ -562,21 +568,49 @@ impl HbDir {
         Ok(LayerRows { block, width: r.width, rot: r.rot, inter: r.inter, gated: r.gated, signs, experts })
     }
 
-    /// Bytes of the routed experts at their bits (codes, scales and codebooks).
-    pub fn experts_bytes(&self) -> u64 {
-        self.layers
+    /// The routed experts of decoder layer `l` (the description's block 2 l + 1) on the GPU, for `moe::MoeLayer::new_hb`; None where the
+    /// directory has no experts of that layer. A family's loader asks this of a hummingbird directory in place of the release's experts.
+    pub fn upload_layer(&self, l: usize) -> Result<Option<crate::moe_hbg::HbgExperts>> {
+        if self.layer(2 * l + 1).is_none() {
+            return Ok(None);
+        }
+        crate::moe_hbg::HbgExperts::upload(&self.read_layer(2 * l + 1)?).map(Some)
+    }
+
+    /// The directory's experts for decoder layer `l` where `hb` is a hummingbird directory, refused where it is one and the layer is
+    /// missing from it (a model's every MoE layer is there), and where the GPUs share each layer's rows (every layer across them).
+    pub fn experts_for(hb: Option<&HbDir>, l: usize, across: bool) -> Result<Option<crate::moe_hbg::HbgExperts>> {
+        let Some(d) = hb else { return Ok(None) };
+        if across {
+            return err("a hummingbird directory's experts are whole on a GPU: every layer across GPUs takes the penguin level so far (cut the layers over the GPUs: --split)");
+        }
+        match d.upload_layer(l)? {
+            Some(x) => Ok(Some(x)),
+            None => err(format!("{}: no experts for decoder layer {l} (block {})", d.dir.display(), 2 * l + 1)),
+        }
+    }
+
+    /// Bytes of a layer's routed experts at their bits (codes, scales and codebooks).
+    pub fn bytes_of(r: &LayerRec) -> u64 {
+        let up = if r.gated { 2 * r.inter } else { r.inter };
+        r.bits
             .iter()
-            .map(|r| {
-                let up = if r.gated { 2 * r.inter } else { r.inter };
-                r.bits
-                    .iter()
-                    .map(|&b| {
-                        let (c, s, k) = cb_strides(b, r.width);
-                        ((up + r.inter) * (c + s + k)) as u64
-                    })
-                    .sum::<u64>()
+            .map(|&b| {
+                let (c, s, k) = cb_strides(b, r.width);
+                ((up + r.inter) * (c + s + k)) as u64
             })
             .sum()
+    }
+
+    /// Bytes of the routed experts at their bits.
+    pub fn experts_bytes(&self) -> u64 {
+        self.layers.iter().map(HbDir::bytes_of).sum()
+    }
+
+    /// Each MoE layer's experts' bytes by its decoder layer (the description's block over 2: a decoder layer is the mixer's block, then the
+    /// feed-forward's).
+    pub fn layer_bytes(&self) -> Vec<(usize, u64)> {
+        self.layers.iter().map(|r| (r.block / 2, HbDir::bytes_of(r))).collect()
     }
 }
 
@@ -632,6 +666,34 @@ pub(crate) mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// A hummingbird directory as the engine's loaders see it: no glyd-v7 directory (the rest is read as the release's), its index holds the
+    /// copied tensors, the dynamic route sizes each decoder layer with its experts' bytes, and the experts a loader asks for are refused where
+    /// a layer is missing or the GPUs would share each layer's rows.
+    #[test]
+    fn the_loaders_read_a_hummingbird_directory_as_the_release_with_its_experts() {
+        let dir = std::env::temp_dir().join(format!("glyd-hbdir-{}", std::process::id()));
+        let src = dir.join("src");
+        let d = release(&src, "glm53flash_model");
+        let up = dir.join("usage.json");
+        std::fs::write(&up, usage_for(&d, 3).to_json()).unwrap();
+        let out = dir.join("out");
+        run(src.to_str().unwrap(), &out, 2, &up).unwrap();
+        assert!(crate::weights::v7_manifest(&out).unwrap().is_none(), "not a glyd-v7 directory");
+        let hb = HbDir::open(&out).unwrap().unwrap();
+        let nl = d.desc.blocks.len() / 2;
+        let (with, _) = crate::dynamic::split::layer_bytes_where(&out, nl, 100, 100, &|_| true).unwrap();
+        let (without, _) = crate::dynamic::split::layer_bytes_where(&src, nl, 100, 100, &|n| !n.contains(".experts.")).unwrap();
+        for r in &hb.layers {
+            assert_eq!(with[r.block / 2], without[r.block / 2] + HbDir::bytes_of(r), "decoder layer {}", r.block / 2);
+        }
+        let first = hb.layers[0].block / 2;
+        assert!(HbDir::experts_for(None, first, false).unwrap().is_none());
+        assert!(HbDir::experts_for(Some(&hb), first, true).err().expect("refused").0.contains("every layer across GPUs"));
+        assert!(HbDir::experts_for(Some(&hb), 0, false).err().expect("refused").0.contains("no experts for decoder layer 0"));
+        assert!(HbDir::open(&src).unwrap().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

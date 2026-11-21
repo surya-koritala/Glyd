@@ -208,6 +208,8 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     }
     let dev = Dev::new(o.device)?;
     let ck = io(Checkpoint::open(dir))?;
+    // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
+    let hb = crate::hb_pack::HbDir::open(dir)?;
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
     let layout = o.layout.unwrap_or(Layout::Tiered);
     let (d, hd, nh, ch) = (c.hidden, c.head_dim, c.heads, o.chunk.max(1));
@@ -394,79 +396,85 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         // bits a weight), else the FP4 layout as released (4.25), else five-bit runs (5.5; GLYD_V4_FP4=0 asks for them); packed on all the cores (an expert's pack is its rows of the stacked matrix's:
         // block layouts have fixed strides), then joined
         // (a group of GPUs: the FP4 layouts alone, each expert's rows sliced)
-        let kinds: &[u8] = if tpr.is_some() {
-            &[2, 1]
-        } else if crate::tune!("GLYD_V4_FP4").as_deref() != Some("0") {
-            &[2, 1, 0]
+        let hbx = crate::hb_pack::HbDir::experts_for(hb.as_ref(), l, tpr.is_some())?;
+        let (up, down) = if hbx.is_some() {
+            (ExpertStack::shape_only(e, 2 * i, d), ExpertStack::shape_only(e, d, i))
         } else {
-            &[0]
-        };
-        let one = |x: usize, kind: u8| -> Result<Option<(glyd_gpu::pack::Tiered, glyd_gpu::pack::Tiered)>> {
-            let raw = |wn: &str| -> Result<(Vec<u8>, Vec<u8>)> {
-                let q = format!("{f}.experts.{x}.{wn}");
-                Ok((read(&format!("{q}.weight"))?, read(&format!("{q}.scale"))?))
+            let kinds: &[u8] = if tpr.is_some() {
+                &[2, 1]
+            } else if crate::tune!("GLYD_V4_FP4").as_deref() != Some("0") {
+                &[2, 1, 0]
+            } else {
+                &[0]
             };
-            if kind > 0 {
-                let pack = if kind == 2 { glyd_gpu::pack::pack_fp4r_checked } else { glyd_gpu::pack::pack_fp4_checked };
-                let ((mut uq, mut ue), (gq, ge), (dq, de)) = (raw("w1")?, raw("w3")?, raw("w2")?);
-                // (an expert's first matrix: w1's rows, the gate, then w3's, the up)
-                uq.extend(gq);
-                ue.extend(ge);
-                // (a group of GPUs: this GPU's rows of each, codes half a byte a value and a scale a run of 32)
-                let rows_of = |q: Vec<u8>, sc: Vec<u8>, rows: usize, cols: usize| -> (Vec<u8>, Vec<u8>, usize) {
-                    match tpr {
-                        Some((rank, n)) => {
-                            let (r0, rn) = (rank * rows / n, rows / n);
-                            (q[r0 * cols / 2..(r0 + rn) * cols / 2].to_vec(), sc[r0 * cols / 32..(r0 + rn) * cols / 32].to_vec(), rn)
+            let one = |x: usize, kind: u8| -> Result<Option<(glyd_gpu::pack::Tiered, glyd_gpu::pack::Tiered)>> {
+                let raw = |wn: &str| -> Result<(Vec<u8>, Vec<u8>)> {
+                    let q = format!("{f}.experts.{x}.{wn}");
+                    Ok((read(&format!("{q}.weight"))?, read(&format!("{q}.scale"))?))
+                };
+                if kind > 0 {
+                    let pack = if kind == 2 { glyd_gpu::pack::pack_fp4r_checked } else { glyd_gpu::pack::pack_fp4_checked };
+                    let ((mut uq, mut ue), (gq, ge), (dq, de)) = (raw("w1")?, raw("w3")?, raw("w2")?);
+                    // (an expert's first matrix: w1's rows, the gate, then w3's, the up)
+                    uq.extend(gq);
+                    ue.extend(ge);
+                    // (a group of GPUs: this GPU's rows of each, codes half a byte a value and a scale a run of 32)
+                    let rows_of = |q: Vec<u8>, sc: Vec<u8>, rows: usize, cols: usize| -> (Vec<u8>, Vec<u8>, usize) {
+                        match tpr {
+                            Some((rank, n)) => {
+                                let (r0, rn) = (rank * rows / n, rows / n);
+                                (q[r0 * cols / 2..(r0 + rn) * cols / 2].to_vec(), sc[r0 * cols / 32..(r0 + rn) * cols / 32].to_vec(), rn)
+                            }
+                            None => (q, sc, rows),
                         }
-                        None => (q, sc, rows),
-                    }
+                    };
+                    let (uq, ue, ur) = rows_of(uq, ue, 2 * i, d);
+                    let (dq, de, dr) = rows_of(dq, de, d, i);
+                    return Ok(pack(&uq, &ue, ur, d).zip(pack(&dq, &de, dr, i)));
+                }
+                let runs = |wn: &str, rows: usize, cols: usize| -> Result<(Vec<i8>, Vec<u16>)> {
+                    let (q, s) = raw(wn)?;
+                    fp4_runs(&q, &s, rows, cols)
                 };
-                let (uq, ue, ur) = rows_of(uq, ue, 2 * i, d);
-                let (dq, de, dr) = rows_of(dq, de, d, i);
-                return Ok(pack(&uq, &ue, ur, d).zip(pack(&dq, &de, dr, i)));
-            }
-            let runs = |wn: &str, rows: usize, cols: usize| -> Result<(Vec<i8>, Vec<u16>)> {
-                let (q, s) = raw(wn)?;
-                fp4_runs(&q, &s, rows, cols)
+                let ((mut uc, mut us), (gc, gs)) = (runs("w1", i, d)?, runs("w3", i, d)?);
+                uc.extend(gc);
+                us.extend(gs);
+                let (dc, ds) = runs("w2", d, i)?;
+                let bad = || Error(format!("{f}.experts.{x}: not five-bit runs"));
+                Ok(Some((
+                    glyd_gpu::pack::pack_int5_runs_checked(&uc, &us, 2 * i, d).ok_or_else(bad)?,
+                    glyd_gpu::pack::pack_int5_runs_checked(&dc, &ds, d, i).ok_or_else(bad)?,
+                )))
             };
-            let ((mut uc, mut us), (gc, gs)) = (runs("w1", i, d)?, runs("w3", i, d)?);
-            uc.extend(gc);
-            us.extend(gs);
-            let (dc, ds) = runs("w2", d, i)?;
-            let bad = || Error(format!("{f}.experts.{x}: not five-bit runs"));
-            Ok(Some((
-                glyd_gpu::pack::pack_int5_runs_checked(&uc, &us, 2 * i, d).ok_or_else(bad)?,
-                glyd_gpu::pack::pack_int5_runs_checked(&dc, &ds, d, i).ok_or_else(bad)?,
-            )))
-        };
-        let (mut ups, mut downs) = (Vec::with_capacity(e), Vec::with_capacity(e));
-        for &kind in kinds {
-            (ups.clear(), downs.clear());
-            let mut all = true;
-            crate::weights::ordered(e, threads, 2 * threads, &|x| one(x, kind), |_, p| {
-                match p {
-                    Some((u, dn)) => (ups.push(u), downs.push(dn)),
-                    None => (all = false, ()),
-                };
-                Ok(())
-            })?;
-            if all {
-                break;
+            let (mut ups, mut downs) = (Vec::with_capacity(e), Vec::with_capacity(e));
+            for &kind in kinds {
+                (ups.clear(), downs.clear());
+                let mut all = true;
+                crate::weights::ordered(e, threads, 2 * threads, &|x| one(x, kind), |_, p| {
+                    match p {
+                        Some((u, dn)) => (ups.push(u), downs.push(dn)),
+                        None => (all = false, ()),
+                    };
+                    Ok(())
+                })?;
+                if all {
+                    break;
+                }
             }
-        }
-        if ups.len() != e {
-            return err(format!(
-                "{f}: experts the FP4 layouts do not hold exactly{}",
-                if tpr.is_some() { " (across GPUs, the five-bit runs are not taken)" } else { "" }
-            ));
-        }
-        let mut up = ExpertStack::upload(&Joined::of(&ups.iter().collect::<Vec<_>>())?)?;
-        let mut down = ExpertStack::upload(&Joined::of(&downs.iter().collect::<Vec<_>>())?)?;
-        drop((ups, downs));
-        if let Some((_, n)) = tpr {
-            (up.tp_rows, down.tp_rows) = (up.rows * n, down.rows * n);
-        }
+            if ups.len() != e {
+                return err(format!(
+                    "{f}: experts the FP4 layouts do not hold exactly{}",
+                    if tpr.is_some() { " (across GPUs, the five-bit runs are not taken)" } else { "" }
+                ));
+            }
+            let mut up = ExpertStack::upload(&Joined::of(&ups.iter().collect::<Vec<_>>())?)?;
+            let mut down = ExpertStack::upload(&Joined::of(&downs.iter().collect::<Vec<_>>())?)?;
+            drop((ups, downs));
+            if let Some((_, n)) = tpr {
+                (up.tp_rows, down.tp_rows) = (up.rows * n, down.rows * n);
+            }
+            (up, down)
+        };
         // the shared expert: as released in the FP8 format where the level holds FP8 so (its gate and up stacked, its down), else the bf16 it decodes to, packed
         let shared8 = if exact8 {
             let f8 = |names: &[&str], rows: usize, cols: usize| -> Result<crate::f8::F8Mat> {
@@ -534,7 +542,10 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             down: Down::Block(down),
         };
         let block = moe.len();
-        let layer = MoeLayer::new(cfg, w, Some(shared))?;
+        let layer = match hbx {
+            Some(x) => MoeLayer::new_hb(cfg, w.router, w.bias, None, x, Some(shared))?,
+            None => MoeLayer::new(cfg, w, Some(shared))?,
+        };
         moe.push(Box::new(V4Moe(match shared8 {
             Some((u, dn)) => layer.with_shared8(u, dn)?,
             None => layer,
