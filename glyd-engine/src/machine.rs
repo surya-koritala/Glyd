@@ -135,12 +135,13 @@ pub const GPUS: &[Entry] = &[
     ("RTX 4080 SUPER", (8, 9), &["Qwen3"]),
 ];
 
-/// The architectures of the computers the engine has run a model on (`std::env::consts::ARCH`): a GH200 is a Grace computer, and the engine has not run on one. Adding one takes a run on its GPU
-/// (a GH200, a DGX Spark, a Jetson Thor), which CI has none of.
-pub const ARCHS: &[&str] = &["x86_64"];
+/// The architectures the engine plans for (`std::env::consts::ARCH`): an aarch64 computer (GH200, GB200, DGX Spark, Jetson Thor, an Arm workstation) is planned as an x86_64 one is, and is
+/// refused, as one is, only by its GPU: the compute capability, the driver, and the measured list (`GPUS`), which names no Arm-hosted GPU until one is measured (#459). Another architecture
+/// is refused here.
+pub const ARCHS: &[&str] = &["x86_64", "aarch64"];
 
-/// The architectures CI builds the engine on and runs its host-side unit tests on, with no GPU (ci.yml: `ubuntu-24.04-arm` for aarch64): what a refusal by `ARCHS` says is proven there, and
-/// what is not. It proves the build and the tests; it is not a run on a GPU, so it adds nothing to `ARCHS`.
+/// The architectures CI builds the engine on and runs its host-side unit tests on, with no GPU (ci.yml: `ubuntu-24.04-arm` for aarch64, where the CPU expert kernels run as NEON): what a
+/// refusal by `ARCHS` of another architecture says is proven where.
 pub const ARCHS_BUILT: &[&str] = &["x86_64", "aarch64"];
 
 /// The most positions the KV cache's tables cover.
@@ -444,12 +445,12 @@ mod tests {
         // and the refusals say the list the table holds, whatever it holds
         let said = refusal_on(TABLE, ARCHS, &gpu("NVIDIA B200", (10, 0), 180, 13000), "x86_64", false, "Qwen3").unwrap().what;
         assert!(said.ends_with("it runs on the A100, L4, H100 or GH200"), "{said}");
-        // an architecture added to ARCHS is one line too
+        // an aarch64 computer is planned as an x86_64 one: a GPU on the list is handed models on either, a GPU off it is refused for the bar on either; another architecture is refused for itself
         let grace = gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000);
-        assert!(
-            refusal_on(TABLE, ARCHS, &grace, "aarch64", false, "Qwen3").is_some()
-                && refusal_on(TABLE, &["x86_64", "aarch64"], &grace, "aarch64", false, "Qwen3").is_none()
-        );
+        assert!(refusal_on(TABLE, ARCHS, &grace, "aarch64", false, "Qwen3").is_none() && refusal_on(TABLE, ARCHS, &grace, "x86_64", false, "Qwen3").is_none());
+        let off = gpu("NVIDIA B200", (10, 0), 180, 13000);
+        assert_eq!(refusal_on(TABLE, ARCHS, &off, "aarch64", false, "Qwen3").map(|r| r.what), refusal_on(TABLE, ARCHS, &off, "x86_64", false, "Qwen3").map(|r| r.what));
+        assert!(refusal_on(TABLE, ARCHS, &grace, "riscv64", false, "Qwen3").unwrap().what.contains("has not run on riscv64 computers"));
         // the shipped list: an L4 is handed models by the line `("L4", (8, 9), &["Qwen3"])`, which is all it takes
         let l4 = gpu("NVIDIA L4", (8, 9), 22, 13000);
         assert!(refusal_on(&[GPUS, &[("L4", (8, 9), &["Qwen3"])]].concat(), ARCHS, &l4, "x86_64", false, "Qwen3").is_none());
@@ -511,7 +512,7 @@ mod tests {
             for (g, arch, said) in [
                 (gpu("NVIDIA A100-SXM4-40GB MIG 1g.5gb", (8, 0), 5, 13000), "x86_64", "MIG slice"),
                 (gpu("Tesla T4", (7, 5), 15, 13000), "x86_64", "older"),
-                (gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "aarch64", "aarch64"),
+                (gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "riscv64", "riscv64"),
                 (gpu("NVIDIA GeForce RTX 4090", (8, 9), 24, 12080), "x86_64", "CUDA 12.8"),
             ] {
                 let r = refusal_on(table, ARCHS, &g, arch, true, "Qwen3").unwrap();
@@ -557,11 +558,9 @@ mod tests {
         assert!(said(gpu("NVIDIA A100-SXM4-40GB MIG 1g.5gb", (8, 0), 5, 13000), "x86_64").unwrap().1.contains("MIG slice"));
         let old = said(gpu("Tesla T4", (7, 5), 15, 13000), "x86_64").unwrap();
         assert!(old.0 == 3 && old.1.contains("7.5") && old.1.contains("older"), "{old:?}");
-        // a computer that is not x86-64 (a GH200 is a Grace and a Hopper: it has not run there)
-        let arm = said(gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "aarch64").unwrap();
-        assert!(arm.0 == 3 && arm.1.contains("aarch64") && arm.1.contains("GH200"), "{arm:?}");
-        // what CI proves of aarch64 is said (the build and the unit tests), and what it does not (a run on a GPU); a computer CI does not build on is only "not run"
-        assert!(arm.1.contains("builds and passes its unit tests") && arm.1.contains("has not run a model"), "{arm:?}");
+        // an aarch64 computer (a GH200 is a Grace and a Hopper) is planned as an x86_64 one: what its GPU decides, nothing for the architecture; another architecture is refused for itself
+        let gh200 = gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000);
+        assert_eq!(said(gh200.clone(), "aarch64"), said(gh200, "x86_64"));
         let other = said(gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "riscv64").unwrap();
         assert!(other.1.contains("has not run on riscv64 computers yet") && !other.1.contains("unit tests"), "{other:?}");
         // Blackwell, Ampere's A10, Turing are not among the capabilities it has run on
@@ -641,7 +640,7 @@ mod tests {
             FORCE_VLLM.with(|f| f.set(Some(installed)));
             let rs = [
                 refusal_on(&[], ARCHS, &l4, "x86_64", false, "Qwen3").unwrap(),
-                refusal_on(TABLE, ARCHS, &gpu("NVIDIA L4", (8, 9), 22, 13000), "aarch64", true, "Qwen3").unwrap(),
+                refusal_on(TABLE, ARCHS, &gpu("NVIDIA L4", (8, 9), 22, 13000), "riscv64", true, "Qwen3").unwrap(),
                 refusal_on(TABLE, ARCHS, &old, "x86_64", true, "Qwen3").unwrap(),
                 config_refusal("x", &wide).unwrap(),
                 context_refusal("m", 100_000).unwrap(),
