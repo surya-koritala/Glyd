@@ -207,17 +207,25 @@ pub fn config_from(get: &dyn Fn(&str) -> Option<String>) -> Option<Config> {
     Some(Config { url, headers, service: var("OTEL_SERVICE_NAME").unwrap_or_else(|| "glyd".to_string()) })
 }
 
-/// A URL as it may be said in a log: scheme, host, port and path, with no user name, password or query (a collector's key may be in any of them).
+/// A URL as it may be said in a log: scheme, host and port only (the authority up to its last `@`, so no user name or password; no path, query or fragment, any of which may hold a collector's key).
 pub fn shown(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
-    let rest = rest.split(['?', '#']).next().unwrap_or("");
-    let (host, path) = rest.split_once('/').map_or((rest, ""), |(h, p)| (h, p));
-    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
-    let path = if path.is_empty() { String::new() } else { format!("/{path}") };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     if scheme.is_empty() {
-        format!("{host}{path}")
+        host.to_string()
     } else {
-        format!("{scheme}://{host}{path}")
+        format!("{scheme}://{host}")
+    }
+}
+
+/// Why an export failed, in words that carry nothing of the request (the error's own text may name the URL).
+fn why(e: &ureq::Error) -> String {
+    match e {
+        ureq::Error::StatusCode(c) => format!("the collector answered {c}"),
+        ureq::Error::Timeout(_) => "timed out".to_string(),
+        ureq::Error::HostNotFound => "host not found".to_string(),
+        _ => "connection failed".to_string(),
     }
 }
 
@@ -484,10 +492,13 @@ mod tests {
     /// What is said of the collector's URL carries no secret: no user name or password, no query, no fragment.
     #[test]
     fn a_collectors_url_is_said_without_its_secrets() {
-        assert_eq!(shown("https://user:pass@collector.example:4318/v1/traces?api_key=abc#frag"), "https://collector.example:4318/v1/traces");
-        assert_eq!(shown("http://127.0.0.1:4318/v1/traces"), "http://127.0.0.1:4318/v1/traces");
+        assert_eq!(shown("https://user:pass@collector.example:4318/v1/traces?api_key=abc#frag"), "https://collector.example:4318");
+        assert_eq!(shown("http://127.0.0.1:4318/v1/traces"), "http://127.0.0.1:4318");
         assert_eq!(shown("http://token@host"), "http://host");
         assert_eq!(shown("http://host?k=v"), "http://host");
+        assert_eq!(shown("http://a@b@host:1/p"), "http://host:1");
+        assert_eq!(shown("http://host/p@secret"), "http://host");
+        assert_eq!(shown("http://host#u@secret"), "http://host");
     }
 
     #[test]
