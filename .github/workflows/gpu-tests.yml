@@ -62,9 +62,20 @@ jobs:
           "$E" bandwidth
           "$E" topkcheck
           "$E" kcheck35
-      - name: MoE kernel checks (non-blocking until sized for 16 GB cards)
-        continue-on-error: true
-        run: '"$E" moecheck'
+      # (its layers are toy ones: tens of megabytes of weights and scratch a case. The GPU's memory is sampled while it runs, the peak printed, and a peak of more than 12,000 MiB of the card's 16,376 fails it:
+      # the margin a 16 GB card needs for the driver and the next step)
+      - name: MoE kernel checks (blocking; the peak GPU memory is printed and held under 12,000 MiB)
+        run: |
+          base=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
+          ( while :; do nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1; sleep 0.2; done > /tmp/moecheck-mem.txt ) &
+          sampler=$!
+          status=0
+          "$E" moecheck || status=$?
+          kill "$sampler" 2>/dev/null || true
+          peak=$(sort -n /tmp/moecheck-mem.txt | tail -1)
+          echo "moecheck peak GPU memory: ${peak:-unknown} MiB (${base} MiB before it) of the card's 16376 MiB"
+          [ "$status" = 0 ]
+          [ -n "$peak" ] && [ "$peak" -lt 12000 ]
       - name: ${{ inputs.model }} end to end
         run: |
           out=$("$E" run "${{ inputs.model }}" --prompt "What is 17 + 25? Answer with the number only." --no-think)
