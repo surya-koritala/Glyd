@@ -8,9 +8,9 @@
 use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Graph, Kernel, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::kern::Kern;
+use crate::kern35::Mat;
 use crate::launch;
 use crate::model::{embed_plan, Sample, TopGpu};
-use crate::model35::Mat;
 use crate::moe::MoeScratch;
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::qwen35::Pack35;

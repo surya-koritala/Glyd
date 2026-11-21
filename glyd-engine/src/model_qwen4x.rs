@@ -7,10 +7,10 @@
 use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Kernel, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::kern::Kern;
+use crate::kern35::{Kern35, Mat};
 use crate::launch;
 use crate::mapped::Mapping;
 use crate::model::Sample;
-use crate::model35::{Kern35, Mat};
 use crate::model_glm::{f32_bytes, KernGlm};
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
 use crate::moe_rows::Down;
