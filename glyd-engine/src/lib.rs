@@ -45,6 +45,7 @@ pub mod cpu_cb;
 pub mod cpu_experts;
 pub mod cpu_fp4;
 pub mod cpu_hb;
+pub mod cpu_hbg;
 mod cpu_simd;
 pub mod deepseek_v4;
 pub mod dev;
@@ -65,7 +66,6 @@ pub mod glm;
 pub mod glm_cb;
 #[cfg(feature = "dev")]
 pub mod glm_serve;
-#[cfg(feature = "dev")]
 pub mod hb_codec;
 pub mod hbpack;
 pub mod hub;
@@ -107,6 +107,7 @@ pub mod moe;
 pub mod moe_glm;
 pub mod moe_glm_cb;
 pub mod moe_hb;
+pub mod moe_hbg;
 pub mod moe_nh;
 pub mod moe_qwen4x;
 #[cfg(feature = "dev")]
