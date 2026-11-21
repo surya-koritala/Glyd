@@ -169,13 +169,16 @@ fn main() {
             panic!("NVCC12={}: this nvcc is CUDA {}'s, not 12's", nvcc12.display(), major(&nvcc12));
         }
         let known12 = Command::new(&nvcc12).arg("--list-gpu-arch").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        // (Jetson Thor's sm_110 is CUDA 13's alone, and a driver that reports CUDA 12 runs no Thor: the CUDA 12 fatbin leaves it out)
+        const CUDA13_ONLY: &[&str] = &["110"];
+        let wanted12: Vec<&str> = archs.split_whitespace().filter(|a| !CUDA13_ONLY.contains(&a.trim_end_matches(|c| c == 'a' || c == 'f'))).collect();
         // (Blackwell's code needs CUDA 12.8: the build refuses an older one, as the CUDA 13 build refuses an nvcc without it)
         let archs12: Vec<&str> =
-            archs.split_whitespace().filter(|a| known12.lines().any(|l| l.trim() == format!("compute_{}", a.trim_end_matches('a')))).collect(); // (nvcc lists compute_90, and takes 90a)
-        if release && archs12.len() != archs.split_whitespace().count() {
+            wanted12.iter().copied().filter(|a| known12.lines().any(|l| l.trim() == format!("compute_{}", a.trim_end_matches('a')))).collect(); // (nvcc lists compute_90, and takes 90a)
+        if release && archs12.len() != wanted12.len() {
             panic!(
                 "GLYD_ENGINE_RELEASE=1: NVCC12 has no compute_{{{}}}: a release build needs CUDA 12.8 or newer",
-                archs.split_whitespace().filter(|a| !archs12.contains(a)).collect::<Vec<_>>().join(", ")
+                wanted12.iter().filter(|a| !archs12.contains(a)).copied().collect::<Vec<_>>().join(", ")
             );
         }
         if !fatbin(&nvcc12, &out12, &archs12.join(" "), false, true).success() {
