@@ -1,6 +1,6 @@
 //! Nemotron-H's kernel table and weights, what the executor's description (src/dynamic/nemotron.rs) runs the model on: the Mamba-2 and attention kernels (kernels/nemotron.cu) loaded once (`KernNh`), the weights of a glyd-v7 or
 //! a Hub-format directory (`WeightsNh`: a layer at a time, the embedding, the head; the layers' matrices packed as they load), the interface a block of mixture-of-experts layers plugs in by (`MoeBlock`, `MoeFactory`, with a
-//! stand-in that says so for a model loaded without one; src/moe_nh.rs is the block) and the host hooks the other families' blocks share (`NhHost`). The hand-written engine that used to be here (`EngineNh`) is retired:
+//! stand-in that says so for a model loaded without one; src/moe_nh.rs is the block) and the host hooks the other families' blocks share (`NhHost`). The hand-written engine that used to be here is retired:
 //! its parity record is R7's fixtures and `paritycheck`'s (bits-identical at every level), and its layer-by-layer tools (`nhlayers`, `nhtoy`, `nhoffload`) run on the executor. The layers' math: tools/nemotron_ref.py;
 //! the config and tensor names: src/nemotron.rs.
 
