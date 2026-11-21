@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "updated": "2026-11-20",
   "families": [
     {
       "name": "gemma4",
@@ -31,6 +32,11 @@
       "name": "muse",
       "aliases": ["muse-spark", "muse-spark-open"],
       "models": [{ "size": "816b-a42b", "repo": "meta-models/Muse-Spark-Open-816B-A42B", "default": true, "released": "2026-09-15" }]
+    },
+    {
+      "name": "deepseek",
+      "aliases": ["deepseek-v4", "deepseek-v4-flash"],
+      "models": [{ "size": "v4-flash", "repo": "deepseek-ai/DeepSeek-V4-Flash-0731", "default": true, "released": "2026-07-31" }]
     },
     {
       "name": "qwen3.6",

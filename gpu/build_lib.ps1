@@ -16,7 +16,7 @@ foreach ($a in 100, 120) {
 }
 $ptx = @('-gencode', 'arch=compute_80,code=compute_80')
 $release = @()
-if ($env:GLYD_GPU_RELEASE -eq '1') { $release = @('-DGLYD_RELEASE', '--compress-mode=size'); $ptx = @() }  # (the default plans' kernels alone, no tuning variables, no PTX, device code compressed for size: build_lib.sh says why)
+if ($env:GLYD_GPU_RELEASE -eq '1') { $compress = if ($env:GLYD_GPU_COMPRESS) { $env:GLYD_GPU_COMPRESS } else { 'size' }; $release = @('-DGLYD_RELEASE', "--compress-mode=$compress"); $ptx = @() }  # (the default plans' kernels alone, no tuning variables, no PTX, device code compressed for size: build_lib.sh says why)
 $tmp = Join-Path $env:TEMP "glyd_gpu_$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 $flags = @('-O3', '-std=c++20', '--expt-relaxed-constexpr',
@@ -26,7 +26,15 @@ $flags = @('-O3', '-std=c++20', '--expt-relaxed-constexpr',
 $threads = if ($env:GLYD_GPU_NVCC_THREADS) { $env:GLYD_GPU_NVCC_THREADS } else { '0' }
 & $nvcc @flags --threads $threads -c -o "$tmp\glyd_gpu.obj" "$PSScriptRoot\glyd_gpu.cu"
 if ($LASTEXITCODE) { throw 'nvcc: the compile failed' }
-& $nvcc @flags -shared -cudart static -o "$Out\libglyd_gpu_cuda$major.dll" "$tmp\glyd_gpu.obj"
+# The exports: every function glyd_gpu.cu defines as GLYD_GPU_API or GLYD_GPU_INTERNAL, which are the functions of glyd_gpu.h (checked here: a name of the header the source does not
+# define stops the build), by a module-definition file: __declspec(dllexport) in the source would redeclare the header's plain declarations, which nvcc refuses.
+$source = Get-Content -Raw -LiteralPath "$PSScriptRoot\glyd_gpu.cu"
+$names = [regex]::Matches($source, '(?m)^GLYD_GPU_(?:API|INTERNAL)\s.*?\b(glyd_gpu_\w+)\s*\(') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$declared = [regex]::Matches((Get-Content -Raw -LiteralPath "$PSScriptRoot\glyd_gpu.h"), '(?m)^[A-Za-z_][\w\s\*]*?\b(glyd_gpu_\w+)\s*\(') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$missing = $declared | Where-Object { $names -notcontains $_ }
+if ($missing -or $names.Count -lt 50) { throw "glyd_gpu.h declares functions that glyd_gpu.cu does not define as exports: $missing ($($names.Count) found)" }
+(@('EXPORTS') + $names) | Set-Content -Encoding ascii "$tmp\glyd_gpu.def"
+& $nvcc @flags -shared -cudart static -Xlinker "/DEF:$tmp\glyd_gpu.def" -o "$Out\libglyd_gpu_cuda$major.dll" "$tmp\glyd_gpu.obj"
 if ($LASTEXITCODE) { throw 'nvcc: the link failed' }
 Remove-Item -Recurse -Force $tmp
 "$Out\libglyd_gpu_cuda$major.dll"

@@ -571,6 +571,8 @@ offline.
 Dense layers in RAM (P2d's last rung before refusing) use the same tiers: a dense layer is a single expert every row routes to, so
 the store's copy-or-compute choice applies to it unchanged.
 
+Hummingbird's experts are two groups a layer, one a bit width, each with its own slot size and host cost: `hummingbird.md`.
+
 ## 7. Migration plan
 
 ### The gates every move passes

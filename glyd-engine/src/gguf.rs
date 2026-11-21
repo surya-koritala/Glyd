@@ -671,97 +671,9 @@ pub fn generation_json(g: &Gguf) -> String {
     json::to_python(&J::Object(vec![("eos_token_id".into(), J::Array(ids))]), 2)
 }
 
-/// Qwen2's pre-tokenizer pattern (llama.cpp's `qwen2`, which Qwen3 uses).
-const QWEN2_PRE: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
-
-/// tokenizer.json and tokenizer_config.json from the vocabulary, merges, token types and chat template of a byte-level BPE (`gpt2`) model with Qwen2's pre-tokenizer: the files transformers
-/// would have, so that `Tok::load` and `Chat::load` read them as they read any model's.
+/// tokenizer.json and tokenizer_config.json from the vocabulary of `g` (src/gguf_tok.rs).
 pub fn tokenizer_files(g: &Gguf) -> Done<(String, String)> {
-    let (model, pre) = (g.str("tokenizer.ggml.model").unwrap_or(""), g.str("tokenizer.ggml.pre").unwrap_or(""));
-    if model != "gpt2" || pre != "qwen2" {
-        return Err(Refusal::unsupported(
-            format!("the GGUF's tokenizer is {model:?} with the pre-tokenizer {pre:?}: the engine builds the byte-level BPE with Qwen2's pre-tokenizer (the Qwen family's) so far"),
-            "Run the model's Hugging Face checkpoint (safetensors) instead",
-        ));
-    }
-    let list = |k: &str| -> Done<&[Value]> { g.get(k).and_then(Value::as_array).ok_or_else(|| Refusal::new(format!("the GGUF has no {k}"), "")) };
-    let (tokens, merges) = (list("tokenizer.ggml.tokens")?, list("tokenizer.ggml.merges")?);
-    let types = g.get("tokenizer.ggml.token_type").and_then(Value::as_array);
-    let ty = |i: usize| types.and_then(|t| t.get(i)).and_then(Value::as_u64).unwrap_or(1);
-    let string = |v: &Value| J::String(v.as_str().unwrap_or("").to_string());
-    let (mut vocab, mut added) = (Vec::with_capacity(tokens.len()), Vec::new());
-    for (i, t) in tokens.iter().enumerate() {
-        let Some(s) = t.as_str() else { return Err(Refusal::new(format!("tokenizer.ggml.tokens[{i}] is not a string"), "")) };
-        match ty(i) {
-            // control and user-defined tokens: the added tokens (the control ones the special ones)
-            t @ (3 | 4) => added.push(J::Object(vec![
-                ("id".into(), J::Number(i.to_string())),
-                ("content".into(), J::String(s.to_string())),
-                ("single_word".into(), J::Bool(false)),
-                ("lstrip".into(), J::Bool(false)),
-                ("rstrip".into(), J::Bool(false)),
-                ("normalized".into(), J::Bool(false)),
-                ("special".into(), J::Bool(t == 3)),
-            ])),
-            // unused (the padding up to the embedding's size) and unknown ones are not in the vocabulary
-            2 | 5 => {}
-            _ => vocab.push((s.to_string(), J::Number(i.to_string()))),
-        }
-    }
-    let byte_level = |regex: bool| {
-        J::Object(vec![
-            ("type".into(), J::String("ByteLevel".into())),
-            ("add_prefix_space".into(), J::Bool(false)),
-            ("trim_offsets".into(), J::Bool(false)),
-            ("use_regex".into(), J::Bool(regex)),
-        ])
-    };
-    let split = J::Object(vec![
-        ("type".into(), J::String("Split".into())),
-        ("pattern".into(), J::Object(vec![("Regex".into(), J::String(QWEN2_PRE.into()))])),
-        ("behavior".into(), J::String("Isolated".into())),
-        ("invert".into(), J::Bool(false)),
-    ]);
-    let tokenizer = J::Object(vec![
-        ("version".into(), J::String("1.0".into())),
-        ("truncation".into(), J::Null),
-        ("padding".into(), J::Null),
-        ("added_tokens".into(), J::Array(added)),
-        ("normalizer".into(), J::Object(vec![("type".into(), J::String("NFC".into()))])),
-        (
-            "pre_tokenizer".into(),
-            J::Object(vec![("type".into(), J::String("Sequence".into())), ("pretokenizers".into(), J::Array(vec![split, byte_level(false)]))]),
-        ),
-        ("post_processor".into(), byte_level(false)),
-        ("decoder".into(), byte_level(false)),
-        (
-            "model".into(),
-            J::Object(vec![
-                ("type".into(), J::String("BPE".into())),
-                ("dropout".into(), J::Null),
-                ("unk_token".into(), J::Null),
-                ("continuing_subword_prefix".into(), J::String(String::new())),
-                ("end_of_word_suffix".into(), J::String(String::new())),
-                ("fuse_unk".into(), J::Bool(false)),
-                ("byte_fallback".into(), J::Bool(false)),
-                ("ignore_merges".into(), J::Bool(false)),
-                ("vocab".into(), J::Object(vocab)),
-                ("merges".into(), J::Array(merges.iter().map(string).collect())),
-            ]),
-        ),
-    ]);
-    let token = |k: &str| g.u64(k).and_then(|i| tokens.get(i as usize)).map(string);
-    let mut cfg: Vec<(String, J)> = Vec::new();
-    if let Some(t) = g.str("tokenizer.chat_template") {
-        cfg.push(("chat_template".into(), J::String(t.to_string())));
-    }
-    if g.get("tokenizer.ggml.add_bos_token").and_then(Value::as_bool) == Some(true) {
-        cfg.extend(token("tokenizer.ggml.bos_token_id").map(|t| ("bos_token".to_string(), t)));
-    }
-    cfg.extend(token("tokenizer.ggml.eos_token_id").map(|t| ("eos_token".to_string(), t)));
-    cfg.extend(token("tokenizer.ggml.padding_token_id").map(|t| ("pad_token".to_string(), t)));
-    cfg.push(("tokenizer_class".into(), J::String("Qwen2Tokenizer".into())));
-    Ok((json::to_compact(&tokenizer), json::to_python(&J::Object(cfg), 2)))
+    crate::gguf_tok::files(g)
 }
 
 // ---- the weights as a safetensors file ------------------------------------------------------------------------------------------------------------
@@ -902,7 +814,7 @@ pub fn materialize(path: &Path, root: &Path, log: &dyn Fn(&str)) -> Done<PathBuf
         return Err(quantized_refusal(&file, &q));
     }
     let config = config_json(g, &d)?;
-    let (tokenizer, tokenizer_config) = tokenizer_files(g)?;
+    let (tokenizer, tokenizer_config) = crate::gguf_tok::files(g)?;
     let mut h = Sha256::new();
     h.update(f.header_bytes());
     let key: String = h.finalize().iter().take(6).map(|b| format!("{b:02x}")).collect();
@@ -1950,6 +1862,181 @@ mod tests {
         }
         assert!(!dir.join("run").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The tokenizers of real GGUFs against the models' own (`GLYD_TEST_TOKENIZERS`: a directory of `NAME.head` and `NAME.size` as for `real_headers_parse_and_are_described`, with the model's
+    /// `NAME.tokenizer.json`): the same token ids and the same text back, for a battery of texts, with the special tokens.
+    #[test]
+    #[ignore = "needs GLYD_TEST_TOKENIZERS"]
+    fn tokenizers_against_the_models_own() {
+        let dir = PathBuf::from(std::env::var_os("GLYD_TEST_TOKENIZERS").expect("set GLYD_TEST_TOKENIZERS"));
+        let only = std::env::var("GLYD_TEST_ONLY").ok();
+        let mut heads: Vec<PathBuf> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "head")).collect();
+        heads.sort();
+        let texts = [
+            "Hello, world!",
+            "  leading and trailing  ",
+            " Hello",
+            "The quick brown fox jumps over the lazy dog. It's 3.14159 and 1,000,000!",
+            "fn main() {\n    println!(\"hi\");\n}\n\n\n",
+            "def f(x):\n\treturn x**2  # square\n",
+            "日本語のテキスト、中文,한국어 and emoji 🎉🚀 and Ünïcödé",
+            "e\u{301} vs é, tabs\t\tand\r\nCRLF",
+            "1234567890 ab12cd34 0.5e-3",
+            "<s>[INST] hi [/INST]</s> <|im_start|>user\nhi<|im_end|>\n<think>\n\n</think> <start_of_turn>user",
+            "a  b   c    d",
+            "x\n\n\ny \n z",
+            "",
+            "\u{a0}non-breaking\u{200b}zero",
+            "I'M YOU'RE we've THEY'LL",
+        ];
+        let mut bad: Vec<String> = Vec::new();
+        for p in &heads {
+            let name = p.file_stem().unwrap().to_string_lossy().into_owned();
+            if only.as_ref().is_some_and(|o| *o != name) {
+                continue;
+            }
+            // (TinyLlama's GGUF has every score 0: its merges' order is not in the file)
+            if name == "tinyllama" {
+                continue;
+            }
+            let len: u64 = std::fs::read_to_string(p.with_extension("size")).unwrap().trim().parse().unwrap();
+            let g = Gguf::parse_header(&std::fs::read(p).unwrap(), len).unwrap();
+            let out = temp(&format!("tok-{name}"));
+            let (tj, tc) = crate::gguf_tok::files(&g).unwrap_or_else(|e| panic!("{name}: {e}"));
+            std::fs::write(out.join("tokenizer.json"), tj).unwrap();
+            std::fs::write(out.join("tokenizer_config.json"), tc).unwrap();
+            let theirs = dir.join(format!("{name}.tokenizer.json"));
+            let ref_dir = temp(&format!("ref-{name}"));
+            std::fs::copy(&theirs, ref_dir.join("tokenizer.json")).unwrap();
+            let (mine, want) = (crate::tok::Tok::load(&out).unwrap(), crate::tok::Tok::load(&ref_dir).unwrap());
+            let mut wrong = 0;
+            let bos = g.u64("tokenizer.ggml.bos_token_id").map(|b| b as u32);
+            for text in texts {
+                // (what a GGUF does not say: the added tokens' lstrip and rstrip; whether a
+                // tokenizer that does not add the beginning-of-sequence token in its tokenizer.json has the file's say-so)
+                if name == "phi4" && text.contains("<|im_start|>") {
+                    continue;
+                }
+                for special in [true, false] {
+                    let (mut a, mut b) = (mine.encode_with(text, special).unwrap(), want.encode_with(text, special).unwrap());
+                    for v in [&mut a, &mut b] {
+                        if special && v.first().copied() == bos && bos.is_some() {
+                            v.remove(0);
+                        }
+                    }
+                    if a != b {
+                        wrong += 1;
+                        if std::env::var_os("GLYD_TEST_VERBOSE").is_some() {
+                            eprintln!("  {name}: {text:?} special={special}\n     mine {a:?}\n     want {b:?}");
+                        }
+                        if wrong <= 3 {
+                            bad.push(format!("{name}: {text:?} special={special}\n   mine {a:?}\n   want {b:?}"));
+                        }
+                    } else if mine.decode(&a).unwrap() != want.decode(&b).unwrap() {
+                        wrong += 1;
+                        bad.push(format!("{name}: {text:?} decodes {:?}, wanted {:?}", mine.decode(&a).unwrap(), want.decode(&b).unwrap()));
+                    }
+                }
+            }
+            eprintln!("{name}: {} texts x 2, {wrong} different", texts.len());
+            let _ = std::fs::remove_dir_all(&out);
+            let _ = std::fs::remove_dir_all(&ref_dir);
+        }
+        assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+    }
+
+    fn tokenizer_of(build: &Build) -> (crate::tok::Tok, PathBuf) {
+        let g = Gguf::parse(&build.bytes()).unwrap();
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = temp(&format!("toks-{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let (tj, tc) = crate::gguf_tok::files(&g).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(dir.join("tokenizer.json"), tj).unwrap();
+        std::fs::write(dir.join("tokenizer_config.json"), tc).unwrap();
+        (crate::tok::Tok::load(&dir).unwrap(), dir)
+    }
+
+    /// SentencePiece merges come out as transformers' converter makes them: by the merged piece's score, the pieces' lengths, the ties in the order of the pieces' ids.
+    #[test]
+    fn sentencepiece_merges_are_derived_from_the_scores() {
+        let pieces = ["<unk>", "<s>", "</s>", "▁", "a", "b", "▁a", "ab", "▁ab"];
+        let scores = [0.0, 0.0, 0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0];
+        let m = |l: &str, r: &str| (l.to_string(), r.to_string());
+        // ("▁ab" splits two ways, at one score: the longer left piece first)
+        assert_eq!(crate::gguf_tok::spm_merges(&pieces, &scores), vec![m("▁", "a"), m("a", "b"), m("▁a", "b"), m("▁", "ab")]);
+        // a higher score first, whatever the ids
+        let scores = [0.0, 0.0, 0.0, -1.0, -2.0, -3.0, -6.0, -5.0, -4.0];
+        assert_eq!(crate::gguf_tok::spm_merges(&pieces, &scores), vec![m("▁a", "b"), m("▁", "ab"), m("a", "b"), m("▁", "a")]);
+        // scores that were not kept (all 0): the order of the pieces' ids
+        assert_eq!(crate::gguf_tok::spm_merges(&pieces, &[0.0; 9]), vec![m("▁", "a"), m("a", "b"), m("▁", "ab"), m("▁a", "b")]);
+    }
+
+    /// A SentencePiece GGUF becomes a tokenizer that puts a ▁ before the text, falls back to bytes, adds the beginning-of-sequence token and reads the text back.
+    #[test]
+    fn a_sentencepiece_gguf_becomes_a_tokenizer() {
+        let mut pieces: Vec<String> = ["<unk>", "<s>", "</s>", "▁", "a", "b", "▁a", "ab", "▁ab"].map(String::from).to_vec();
+        pieces.extend((0..=255).map(|b| format!("<0x{b:02X}>")));
+        let v: Vec<&str> = pieces.iter().map(String::as_str).collect();
+        let mut scores = vec![0.0f32, 0.0, 0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0];
+        scores.extend(std::iter::repeat_n(0.0, 256));
+        let mut types = vec![2i32, 3, 3, 1, 1, 1, 1, 1, 1];
+        types.extend(std::iter::repeat_n(6, 256));
+        let mut b = Build::new();
+        b.s("general.architecture", "llama").s("tokenizer.ggml.model", "llama").strings("tokenizer.ggml.tokens", &v).ints("tokenizer.ggml.token_type", &types);
+        let mut sc = 6u32.to_le_bytes().to_vec();
+        sc.extend((scores.len() as u64).to_le_bytes());
+        for x in &scores {
+            sc.extend(x.to_le_bytes());
+        }
+        b.kv("tokenizer.ggml.scores", 9, sc)
+            .u32("tokenizer.ggml.bos_token_id", 1)
+            .u32("tokenizer.ggml.eos_token_id", 2)
+            .u32("tokenizer.ggml.unknown_token_id", 0);
+        let (tok, dir) = tokenizer_of(&b);
+        assert_eq!(tok.encode("ab ab").unwrap(), vec![1, 8, 8]);
+        assert_eq!(tok.encode_with("ab ab", false).unwrap(), vec![8, 8]);
+        // (a byte no piece has is its byte's piece: "é" is the bytes 0xC3 0xA9)
+        assert_eq!(tok.encode_with("a\u{e9}", false).unwrap(), vec![6, 9 + 0xC3, 9 + 0xA9]);
+        assert_eq!(tok.decode(&tok.encode_with("ab \u{e9}a", false).unwrap()).unwrap(), "ab \u{e9}a");
+        // (the text after a special token takes no ▁ of its own)
+        assert_eq!(tok.encode_with("</s>ab", true).unwrap(), vec![1, 2, 7]);
+        let cfg = std::fs::read_to_string(dir.join("tokenizer_config.json")).unwrap();
+        assert!(cfg.contains("\"bos_token\": \"<s>\"") && cfg.contains("\"unk_token\": \"<unk>\""), "{cfg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every pre-tokenizer the table names makes a tokenizer the engine loads (the expressions compile), and one it does not have is refused by name, as is a kind of tokenizer.
+    #[test]
+    fn the_pre_tokenizers_load_and_the_others_are_refused_by_name() {
+        for (names, _, _, _) in crate::gguf_pre::PRE {
+            for name in *names {
+                let mut b = Build::new();
+                b.s("general.architecture", "llama")
+                    .s("tokenizer.ggml.model", "gpt2")
+                    .s("tokenizer.ggml.pre", name)
+                    .strings("tokenizer.ggml.tokens", &["a", "b", "ab"])
+                    .strings("tokenizer.ggml.merges", &["a b"]);
+                let (tok, dir) = tokenizer_of(&b);
+                assert_eq!(tok.encode_with("ab", false).unwrap(), vec![2], "{name}");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+        let refused = |model: &str, pre: &str| {
+            let mut b = Build::new();
+            b.s("general.architecture", "llama")
+                .s("tokenizer.ggml.model", model)
+                .strings("tokenizer.ggml.tokens", &["a"])
+                .strings("tokenizer.ggml.merges", &[]);
+            if !pre.is_empty() {
+                b.s("tokenizer.ggml.pre", pre);
+            }
+            crate::gguf_tok::files(&Gguf::parse(&b.bytes()).unwrap()).unwrap_err()
+        };
+        let e = refused("gpt2", "kimi-k2");
+        assert!(e.code == crate::ui::CANNOT && e.to_string().contains("pre-tokenizer \"kimi-k2\""), "{e}");
+        assert!(refused("bert", "").to_string().contains("tokenizer is \"bert\""));
+        assert!(refused("llama", "").to_string().contains("no scores"));
     }
 
     #[test]

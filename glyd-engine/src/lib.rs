@@ -62,11 +62,16 @@ mod families;
 pub mod ffi;
 pub mod fit;
 pub mod gguf;
+pub mod gguf_pre;
+pub mod gguf_tok;
 pub mod glm;
 pub mod glm_cb;
 #[cfg(feature = "dev")]
 pub mod glm_serve;
 pub mod hb_codec;
+pub mod hb_pack;
+pub mod hb_usage;
+#[cfg(feature = "dev")]
 pub mod hbpack;
 pub mod hub;
 #[cfg(feature = "dev")]
