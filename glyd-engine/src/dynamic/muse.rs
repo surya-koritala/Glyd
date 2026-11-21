@@ -84,12 +84,20 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
 
 /// Stage `st` of the model (its layers; the embedding where it is the first, the final norm and the head where the last).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
+    load_stage_hb(dir, o, st, None)
+}
+
+/// `load_stage` with a hummingbird directory's experts in the expert cache (`hc`: the stage's places and memory, src/hbg_store.rs).
+pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let c = ConfigMuse::load(dir)?;
     if c.head_dim != 64 || c.hidden > 8192 || c.latent > 4096 || c.top_k > 32 {
         return err(format!("heads of {}, a width of {}, a latent of {}, {} experts a token: this engine runs heads of 64, widths up to 8192, latents up to 4096 and up to 32 experts a token", c.head_dim, c.hidden, c.latent, c.top_k));
     }
     let dev = Dev::new(o.device)?;
     let ck = io(Checkpoint::open(dir))?;
+    // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
+    let hb = crate::hb_pack::HbDir::open(dir)?;
+    let store = hc.map(crate::hbg_store::store_for);
     let layout = o.layout.unwrap_or(Layout::Tiered);
     let (d, nq, nk, hd, lat, inter, e) = (c.hidden, c.heads, c.kv_heads, c.head_dim, c.latent, c.inter, c.experts);
     let read = |n: &str| io(ck.read(n));
@@ -162,7 +170,6 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             st.tp_rows = rows;
             Ok(st)
         };
-        let (up, down) = (stack("gate_up_proj", 2 * inter, lat)?, stack("down_proj", lat, inter)?);
         let router = upload_bytes(&read(&format!("{m}.gate.weight"))?)?;
         let bias = upload_bytes(&read(&format!("{m}.gate.e_score_correction_bias"))?)?;
         // (the clamp of an infinite limit: the activation is the kernel's, so the products are not fused)
@@ -175,7 +182,21 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             act: Act::SwiGlu { limit: Some(f32::INFINITY) },
         };
         let block = l_.moe.len();
-        l_.moe.push(Box::new(MuseMoe(MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?)));
+        // (the host's pairs of the cache normed as the sum norms each expert's output: the post-expert norm's input scale as the GPU holds it, bf16)
+        let post: Vec<f32> = if hc.is_some() && hb.is_some() {
+            plus_one(&vals(&format!("{m}.experts.post_expert_norm.weight"))?).iter().map(|&v| crate::hb_codec::f32_of(crate::hb_codec::bf16(v))).collect()
+        } else {
+            Vec::new()
+        };
+        let finish = crate::cpu_hbg::Finish::Normed { signs: Vec::new(), rot: 0, w: post, eps: c.post_eps };
+        let layer = match crate::hbg_store::hb_layer(hb.as_ref(), l, sl.is_some(), hc.zip(store.as_ref()), cfg.act, finish, dev.ordinal, cfg.router.top_k)? {
+            Some(x) => x.into_layer(cfg, router, Some(bias), None, None)?,
+            None => {
+                let (up, down) = (stack("gate_up_proj", 2 * inter, lat)?, stack("down_proj", lat, inter)?);
+                MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?
+            }
+        };
+        l_.moe.push(Box::new(MuseMoe(layer)));
         let ring = rings.len();
         rings.push(Ring { d: hd, nk, window: if c.sliding[l] { c.window } else { 0 } });
         let mut ops = vec![

@@ -373,7 +373,11 @@ impl MoeBlock for KimiMoe {
     }
 
     fn graphable(&self) -> bool {
-        true
+        !self.layer.reads_host()
+    }
+
+    fn reads_host(&self) -> bool {
+        self.layer.reads_host()
     }
 
     fn bytes(&self) -> usize {
@@ -689,6 +693,12 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
 
 /// Stage `st` with `places` of each mixture-of-experts layer's experts on the GPU (None, or as many as it has: all; fewer: the expert cache, its host tier pinned).
 pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) -> Result<Dyn> {
+    load_with_caching(dir, o, st, places, None)
+}
+
+/// `load_with_places`, a hummingbird directory's experts in the expert cache where `caching` is given (the stage's places and memory, src/hbg_store.rs; `places` is the penguin level's cache's and goes with no hummingbird
+/// directory).
+pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let c = ConfigKimi::load(dir)?;
     let (kd, md) = (&c.kda, &c.mla);
     if kd.dim != crate::model_glm::GM_D || c.hidden % 64 != 0 || c.hidden > 8192 || md.kv_rank > 512 || (md.kv_rank + md.rope) % 64 != 0 {
@@ -696,6 +706,9 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
     }
     let dev = Dev::new(o.device)?;
     let ck = io(Checkpoint::open(dir))?;
+    // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's, all on the GPU)
+    let hb = crate::hb_pack::HbDir::open(dir)?;
+    let hb_store = caching.map(crate::hbg_store::store_for);
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
     let layout = o.layout.unwrap_or(Layout::Tiered);
     let (h, p) = (c.hidden, c.prefix);
@@ -893,114 +906,133 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
             // all on the GPU, or places for `p` of them and every expert in the computer's memory, packed there straight from the checkpoint (pack_into_host)
             let slots = places.filter(|&p| p < e.experts);
             let mut tp_places = None;
-            let (up, down) = match slots {
-                Some(p) if tp_rank.is_some() => {
-                    let (rank, n) = tpr.ok_or_else(|| Error("a group of GPUs without its place".into()))?;
-                    let cache = &tp_rank.as_ref().expect("a group's cache").cache_ref();
-                    // (the layers' host tiers packed by the GPUs' threads in turn, each the layers of its number, and shared)
-                    let host = if l % n == rank {
-                        let (packed, packs) = pack_into_host(&ck, &f, e.experts, e.inter, e.latent, threads, true)?;
-                        let [(ud, us, a, b), (dd, ds, c2, d2)] = packs;
-                        use super::tp_cache::HostBuf;
-                        let h = std::sync::Arc::new(super::tp_cache::HostLayer {
-                            mats: [[HostBuf(a), HostBuf(b)], [HostBuf(c2), HostBuf(d2)]],
-                            stride: [[ud, us], [dd, ds]],
-                            packed,
-                            inter: e.inter,
-                            latent: e.latent,
-                            act: c.situ,
-                        });
-                        cache.put_host(l, h.clone())?;
-                        h
-                    } else {
-                        cache.host(l)?
-                    };
-                    let tag = if host.packed { glyd_gpu::pack::FP4R_TAG } else { glyd_gpu::pack::FP4_TAG };
-                    let mut up = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, 2 * e.inter / n, e.latent)?;
-                    let mut down = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, e.latent / n, e.inter)?;
-                    let slice = [[up.data_stride, up.scale_stride], [down.data_stride, down.scale_stride]];
-                    if (0..2).any(|m| (0..2).any(|k| slice[m][k] * n as u64 != host.stride[m][k])) {
-                        return err(format!("{f}: experts of {:?} bytes in the computer's memory, where {n} GPUs' places hold {slice:?}", host.stride));
-                    }
-                    (up.tp_rows, down.tp_rows) = (2 * e.inter, e.latent);
-                    let mut pl = super::tp_cache::Places::new([up.buffers(), down.buffers()], slice, e.experts, p)?;
-                    // (the device path places a step's experts at once: a layer of fewer places than a token's choices is the host's, in waves)
-                    if device_path() && p >= e.top_k {
-                        pl.attach_device(&host, rank)?;
-                    }
-                    tp_places = Some(pl);
-                    (up, down)
-                }
-                None => {
-                    let fp4 = |x: usize, packed_scales: bool| -> Result<Option<(glyd_gpu::pack::Tiered, glyd_gpu::pack::Tiered)>> {
-                        let raw = |w: &str| -> Result<(Vec<u8>, Vec<u8>)> {
-                            let b = format!("{f}.experts.{x}.{w}");
-                            Ok((io(ck.read(&format!("{b}.weight_packed")))?, io(ck.read(&format!("{b}.weight_scale")))?))
+            let hbx = crate::hbg_store::hb_layer(
+                hb.as_ref(),
+                l,
+                tpr.is_some(),
+                caching.zip(hb_store.as_ref()),
+                cfg.act,
+                crate::cpu_hbg::Finish::Rotated,
+                dev.ordinal,
+                e.top_k,
+            )?;
+            if hbx.is_some() && slots.is_some() {
+                return err(format!(
+                    "{f}: a hummingbird directory's experts are in the hummingbird expert cache (src/hbg_store.rs), not the penguin level's places"
+                ));
+            }
+            let (up, down) = if hbx.is_some() {
+                (ExpertStack::shape_only(e.experts, 2 * e.inter, e.latent), ExpertStack::shape_only(e.experts, e.latent, e.inter))
+            } else {
+                match slots {
+                    Some(p) if tp_rank.is_some() => {
+                        let (rank, n) = tpr.ok_or_else(|| Error("a group of GPUs without its place".into()))?;
+                        let cache = &tp_rank.as_ref().expect("a group's cache").cache_ref();
+                        // (the layers' host tiers packed by the GPUs' threads in turn, each the layers of its number, and shared)
+                        let host = if l % n == rank {
+                            let (packed, packs) = pack_into_host(&ck, &f, e.experts, e.inter, e.latent, threads, true)?;
+                            let [(ud, us, a, b), (dd, ds, c2, d2)] = packs;
+                            use super::tp_cache::HostBuf;
+                            let h = std::sync::Arc::new(super::tp_cache::HostLayer {
+                                mats: [[HostBuf(a), HostBuf(b)], [HostBuf(c2), HostBuf(d2)]],
+                                stride: [[ud, us], [dd, ds]],
+                                packed,
+                                inter: e.inter,
+                                latent: e.latent,
+                                act: c.situ,
+                            });
+                            cache.put_host(l, h.clone())?;
+                            h
+                        } else {
+                            cache.host(l)?
                         };
-                        let pk = if packed_scales { glyd_gpu::pack::pack_fp4r_checked } else { glyd_gpu::pack::pack_fp4_checked };
-                        let ((mut uq, mut ue), (gq, ge), (dq, de)) = (raw("w1")?, raw("w3")?, raw("w2")?);
-                        uq.extend(gq);
-                        ue.extend(ge);
-                        // (a group of GPUs: this GPU's rows of each, codes half a byte a value and a scale a run of 32)
-                        let rows_of = |q: &[u8], sc: &[u8], rows: usize, cols: usize| -> (Vec<u8>, Vec<u8>, usize) {
-                            match tpr {
-                                Some((rank, n)) => {
-                                    let (r0, rn) = (rank * rows / n, rows / n);
-                                    (q[r0 * cols / 2..(r0 + rn) * cols / 2].to_vec(), sc[r0 * cols / 32..(r0 + rn) * cols / 32].to_vec(), rn)
-                                }
-                                None => (q.to_vec(), sc.to_vec(), rows),
-                            }
-                        };
-                        let (uq, ue, ur) = rows_of(&uq, &ue, 2 * e.inter, e.latent);
-                        let (dq, de, dr) = rows_of(&dq, &de, e.latent, e.inter);
-                        Ok(pk(&uq, &ue, ur, e.latent).zip(pk(&dq, &de, dr, e.inter)))
-                    };
-                    let (mut ups, mut downs) = (Vec::with_capacity(e.experts), Vec::with_capacity(e.experts));
-                    for packed_scales in [true, false] {
-                        (ups.clear(), downs.clear());
-                        let mut all = true;
-                        crate::weights::ordered(e.experts, threads, 2 * threads, &|x| fp4(x, packed_scales), |_, pr| {
-                            match pr {
-                                Some((u, d)) => (ups.push(u), downs.push(d)),
-                                None => (all = false, ()),
-                            };
-                            Ok(())
-                        })?;
-                        if all {
-                            break;
+                        let tag = if host.packed { glyd_gpu::pack::FP4R_TAG } else { glyd_gpu::pack::FP4_TAG };
+                        let mut up = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, 2 * e.inter / n, e.latent)?;
+                        let mut down = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, e.latent / n, e.inter)?;
+                        let slice = [[up.data_stride, up.scale_stride], [down.data_stride, down.scale_stride]];
+                        if (0..2).any(|m| (0..2).any(|k| slice[m][k] * n as u64 != host.stride[m][k])) {
+                            return err(format!("{f}: experts of {:?} bytes in the computer's memory, where {n} GPUs' places hold {slice:?}", host.stride));
                         }
+                        (up.tp_rows, down.tp_rows) = (2 * e.inter, e.latent);
+                        let mut pl = super::tp_cache::Places::new([up.buffers(), down.buffers()], slice, e.experts, p)?;
+                        // (the device path places a step's experts at once: a layer of fewer places than a token's choices is the host's, in waves)
+                        if device_path() && p >= e.top_k {
+                            pl.attach_device(&host, rank)?;
+                        }
+                        tp_places = Some(pl);
+                        (up, down)
                     }
-                    if ups.len() != e.experts {
-                        return err(format!("{f}: experts the FP4 layouts do not hold exactly"));
+                    None => {
+                        let fp4 = |x: usize, packed_scales: bool| -> Result<Option<(glyd_gpu::pack::Tiered, glyd_gpu::pack::Tiered)>> {
+                            let raw = |w: &str| -> Result<(Vec<u8>, Vec<u8>)> {
+                                let b = format!("{f}.experts.{x}.{w}");
+                                Ok((io(ck.read(&format!("{b}.weight_packed")))?, io(ck.read(&format!("{b}.weight_scale")))?))
+                            };
+                            let pk = if packed_scales { glyd_gpu::pack::pack_fp4r_checked } else { glyd_gpu::pack::pack_fp4_checked };
+                            let ((mut uq, mut ue), (gq, ge), (dq, de)) = (raw("w1")?, raw("w3")?, raw("w2")?);
+                            uq.extend(gq);
+                            ue.extend(ge);
+                            // (a group of GPUs: this GPU's rows of each, codes half a byte a value and a scale a run of 32)
+                            let rows_of = |q: &[u8], sc: &[u8], rows: usize, cols: usize| -> (Vec<u8>, Vec<u8>, usize) {
+                                match tpr {
+                                    Some((rank, n)) => {
+                                        let (r0, rn) = (rank * rows / n, rows / n);
+                                        (q[r0 * cols / 2..(r0 + rn) * cols / 2].to_vec(), sc[r0 * cols / 32..(r0 + rn) * cols / 32].to_vec(), rn)
+                                    }
+                                    None => (q.to_vec(), sc.to_vec(), rows),
+                                }
+                            };
+                            let (uq, ue, ur) = rows_of(&uq, &ue, 2 * e.inter, e.latent);
+                            let (dq, de, dr) = rows_of(&dq, &de, e.latent, e.inter);
+                            Ok(pk(&uq, &ue, ur, e.latent).zip(pk(&dq, &de, dr, e.inter)))
+                        };
+                        let (mut ups, mut downs) = (Vec::with_capacity(e.experts), Vec::with_capacity(e.experts));
+                        for packed_scales in [true, false] {
+                            (ups.clear(), downs.clear());
+                            let mut all = true;
+                            crate::weights::ordered(e.experts, threads, 2 * threads, &|x| fp4(x, packed_scales), |_, pr| {
+                                match pr {
+                                    Some((u, d)) => (ups.push(u), downs.push(d)),
+                                    None => (all = false, ()),
+                                };
+                                Ok(())
+                            })?;
+                            if all {
+                                break;
+                            }
+                        }
+                        if ups.len() != e.experts {
+                            return err(format!("{f}: experts the FP4 layouts do not hold exactly"));
+                        }
+                        let (ju, jd) = (Joined::of(&ups.iter().collect::<Vec<_>>())?, Joined::of(&downs.iter().collect::<Vec<_>>())?);
+                        drop((ups, downs));
+                        let (mut su, mut sd) = (ExpertStack::upload(&ju)?, ExpertStack::upload(&jd)?);
+                        if let Some((_, n)) = tpr {
+                            (su.tp_rows, sd.tp_rows) = (su.rows * n, sd.rows * n);
+                        }
+                        (su, sd)
                     }
-                    let (ju, jd) = (Joined::of(&ups.iter().collect::<Vec<_>>())?, Joined::of(&downs.iter().collect::<Vec<_>>())?);
-                    drop((ups, downs));
-                    let (mut su, mut sd) = (ExpertStack::upload(&ju)?, ExpertStack::upload(&jd)?);
-                    if let Some((_, n)) = tpr {
-                        (su.tp_rows, sd.tp_rows) = (su.rows * n, sd.rows * n);
+                    Some(p) => {
+                        let (packed, packs) = pack_into_host(&ck, &f, e.experts, e.inter, e.latent, threads, false)?;
+                        let tag = if packed { glyd_gpu::pack::FP4R_TAG } else { glyd_gpu::pack::FP4_TAG };
+                        let up = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, 2 * e.inter, e.latent)?;
+                        let down = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, e.latent, e.inter)?;
+                        let [(ud, us, a, b), (dd, ds, c2, d2)] = packs;
+                        if [ud, us, dd, ds] != [up.data_stride, up.scale_stride, down.data_stride, down.scale_stride] {
+                            return err(format!(
+                                "{f}: experts of {ud} + {us} and {dd} + {ds} bytes, where the places hold {} + {} and {} + {}",
+                                up.data_stride, up.scale_stride, down.data_stride, down.scale_stride
+                            ));
+                        }
+                        let host = vec![
+                            PinnedPack { data: a, scales: b, stride: [ud, us], dev: up.buffers() },
+                            PinnedPack { data: c2, scales: d2, stride: [dd, ds], dev: down.buffers() },
+                        ];
+                        // (the host computes the misses it is better at from the host tier's bytes as they are: src/cpu_fp4.rs)
+                        let half = crate::offload::HostHalf::Fp4 { inter: e.inter, latent: e.latent, packed, act: c.situ };
+                        store.add_layer_pinned(l, e.experts, p, host, Some(half))?;
+                        (up, down)
                     }
-                    (su, sd)
-                }
-                Some(p) => {
-                    let (packed, packs) = pack_into_host(&ck, &f, e.experts, e.inter, e.latent, threads, false)?;
-                    let tag = if packed { glyd_gpu::pack::FP4R_TAG } else { glyd_gpu::pack::FP4_TAG };
-                    let up = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, 2 * e.inter, e.latent)?;
-                    let down = ExpertStack::pooled(tag, [tag << 24, 0, 0], e.experts, p, e.latent, e.inter)?;
-                    let [(ud, us, a, b), (dd, ds, c2, d2)] = packs;
-                    if [ud, us, dd, ds] != [up.data_stride, up.scale_stride, down.data_stride, down.scale_stride] {
-                        return err(format!(
-                            "{f}: experts of {ud} + {us} and {dd} + {ds} bytes, where the places hold {} + {} and {} + {}",
-                            up.data_stride, up.scale_stride, down.data_stride, down.scale_stride
-                        ));
-                    }
-                    let host = vec![
-                        PinnedPack { data: a, scales: b, stride: [ud, us], dev: up.buffers() },
-                        PinnedPack { data: c2, scales: d2, stride: [dd, ds], dev: down.buffers() },
-                    ];
-                    // (the host computes the misses it is better at from the host tier's bytes as they are: src/cpu_fp4.rs)
-                    let half = crate::offload::HostHalf::Fp4 { inter: e.inter, latent: e.latent, packed, act: c.situ };
-                    store.add_layer_pinned(l, e.experts, p, host, Some(half))?;
-                    (up, down)
                 }
             };
             // (the latent's down projection and the shared experts' gate and up, one product of the layer's input: one fewer a layer, and one gather
@@ -1016,7 +1048,11 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
                 up,
                 down: Down::Block(down),
             };
-            let layer = MoeLayer::new(cfg, w, Some(Shared { inter: si, up: PackBuf::shape_only(2 * si, h)?, down: sd, gate: None }))?;
+            let sh = Shared { inter: si, up: PackBuf::shape_only(2 * si, h)?, down: sd, gate: None };
+            let layer = match hbx {
+                Some(x) => x.into_layer(cfg, w.router, w.bias, None, Some(sh))?,
+                None => MoeLayer::new(cfg, w, Some(sh))?,
+            };
             let b = KimiMoe {
                 layer,
                 dg,

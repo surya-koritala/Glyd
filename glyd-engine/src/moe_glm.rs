@@ -249,6 +249,49 @@ impl GlmMoe {
     /// Layer `l` of the model `c` from the checkpoint `ck`, its matrices at `level` (Int6, Int5 or Int4), copied to the GPU. A layer whose shapes the products do not take is refused (`MoeLayer::new`).
     /// `f8`: at the lossless level, FP8 experts are held in the FP8 format as released (on that device, by that library), not as the bf16 they dequantise to.
     pub fn load(l: usize, c: &ConfigGlm, ck: &Checkpoint, level: Layout, f8: Option<(&Dev, &Lib)>) -> Result<GlmMoe> {
+        GlmMoe::load_cached(l, c, ck, level, f8, None)
+    }
+
+    /// `load`, a hummingbird directory's experts in the expert cache where `caching` is given (the stage's places and memory, its store, the GPU's number: src/hbg_store.rs).
+    pub fn load_cached(
+        l: usize,
+        c: &ConfigGlm,
+        ck: &Checkpoint,
+        level: Layout,
+        f8: Option<(&Dev, &Lib)>,
+        caching: Option<(&crate::hbg_store::HbCaching, &std::rc::Rc<crate::offload::ExpertStore>, i32)>,
+    ) -> Result<GlmMoe> {
+        // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows; the router and the shared expert as released)
+        let cfg = moe_cfg(c);
+        let hb = crate::hb_pack::HbDir::open(&ck.dir)?;
+        let ordinal = caching.map_or(0, |x| x.2);
+        let hbx = crate::hbg_store::hb_layer(
+            hb.as_ref(),
+            l,
+            false,
+            caching.map(|x| (x.0, x.1)),
+            cfg.act,
+            crate::cpu_hbg::Finish::Rotated,
+            ordinal,
+            cfg.router.top_k,
+        )?;
+        if let Some(x) = hbx {
+            let h = read_layer_with(l, c, ck, level, true)?;
+            let (router, bias) = (upload_bytes(&h.router)?, Some(upload_bytes(&h.bias)?));
+            if f8_shared(ck, c, l) {
+                let (dev, lib) = f8.ok_or_else(|| Error("a hummingbird directory's FP8 shared expert is read with a device (GLYD_GLM_F8 is 0)".into()))?;
+                let shared = Shared {
+                    inter: c.experts.shared_inter,
+                    up: PackBuf::shape_only(h.s_up.rows, h.s_up.cols)?,
+                    down: PackBuf::shape_only(h.s_down.rows, h.s_down.cols)?,
+                    gate: None,
+                };
+                let (su, sd) = read_shared_f8(ck, c, l, dev, lib)?;
+                return Ok(GlmMoe { layer: x.into_layer(cfg, router, bias, None, Some(shared))?.with_shared8(su, sd)? });
+            }
+            let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
+            return Ok(GlmMoe { layer: x.into_layer(cfg, router, bias, None, Some(shared))? });
+        }
         let f8 = f8.filter(|_| matches!(level, Layout::Tiered | Layout::Twelve) && f8_experts(ck, c, l));
         let h = read_layer_with(l, c, ck, level, f8.is_some())?;
         let (router, bias) = (upload_bytes(&h.router)?, Some(upload_bytes(&h.bias)?));
@@ -287,8 +330,22 @@ pub fn factory(level: Layout) -> impl Fn(usize, &ConfigGlm, &Checkpoint, Layout)
 
 /// `factory` whose lossless level holds FP8 experts in the FP8 format (`GlmMoe::load`'s `f8`; GLYD_GLM_F8=0: as the bf16 they dequantise to).
 pub fn factory_f8<'a>(level: Layout, dev: &'a Dev, lib: &'a Lib) -> impl Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> + 'a {
+    factory_cached(level, dev, lib, None)
+}
+
+/// `factory_f8` with a hummingbird directory's experts in the expert cache where `caching` is given (one store for the stage's layers, src/hbg_store.rs).
+pub fn factory_cached<'a>(
+    level: Layout,
+    dev: &'a Dev,
+    lib: &'a Lib,
+    caching: Option<crate::hbg_store::HbCaching>,
+) -> impl Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> + 'a {
     let on = crate::tune!("GLYD_GLM_F8").as_deref() != Some("0");
-    move |l, c, ck, _| Ok(Box::new(GlmMoe::load(l, c, ck, level, on.then_some((dev, lib)))?))
+    let store = caching.as_ref().map(crate::hbg_store::store_for);
+    move |l, c, ck, _| {
+        let cached = caching.as_ref().zip(store.as_ref()).map(|(h, s)| (h, s, dev.ordinal));
+        Ok(Box::new(GlmMoe::load_cached(l, c, ck, level, on.then_some((dev, lib)), cached)?))
+    }
 }
 
 /// The scratch of the engine's mixture-of-experts layers, which the first layer that runs makes (all the model's layers have this one's shape; the engine's warm-up step runs one before the decode graph is captured) for

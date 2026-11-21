@@ -854,3 +854,9 @@ mod pick_tests {
         assert_eq!(pick_fatbin(13020, true, main, &[]), main);
     }
 }
+
+/// Waits for the work queued on stream `s` (a Dev's, or a wrapper's) to finish.
+pub fn sync_stream(s: Stream) -> Result<()> {
+    // SAFETY: a stream a Dev or a wrapper made, live while its owner is.
+    unsafe { cu("cuStreamSynchronize", (driver()?.cuStreamSynchronize)(s)) }
+}

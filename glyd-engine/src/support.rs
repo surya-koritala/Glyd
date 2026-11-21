@@ -54,6 +54,8 @@ pub const DEFAULT_CTX: usize = 8192;
 const LOSSY: &[&str] = &["kestrel", "swift", "wren"];
 const NONE: &[&str] = &[];
 const PENGUIN: &[&str] = &["penguin"];
+/// Lossless, or the routed experts at hummingbird's bits (a directory `glyd-engine pack --layout hummingbird --usage` makes: src/hb_pack.rs).
+const PENGUIN_HB: &[&str] = &["penguin", "hummingbird"];
 
 pub static TABLE: [Support; 9] = [
     Support {
@@ -99,42 +101,42 @@ pub static TABLE: [Support; 9] = [
     Support {
         family: Family::Kimi,
         name: "Kimi-K3",
-        levels: PENGUIN,
-        hummingbird_packed_only: false,
+        levels: PENGUIN_HB,
+        hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: PENGUIN,
-        experts_in_ram_levels: PENGUIN,
+        split_levels: PENGUIN_HB,
+        experts_in_ram_levels: PENGUIN_HB,
     },
     Support {
         family: Family::Glm,
         name: "GLM-5.3-Flash",
-        levels: PENGUIN,
-        hummingbird_packed_only: false,
+        levels: PENGUIN_HB,
+        hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: PENGUIN,
-        experts_in_ram_levels: NONE,
+        split_levels: PENGUIN_HB,
+        experts_in_ram_levels: &["hummingbird"],
     },
     Support {
         family: Family::DeepSeekV4,
         name: "DeepSeek-V4",
-        levels: PENGUIN,
-        hummingbird_packed_only: false,
+        levels: PENGUIN_HB,
+        hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: PENGUIN,
-        experts_in_ram_levels: NONE,
+        split_levels: PENGUIN_HB,
+        experts_in_ram_levels: &["hummingbird"],
     },
     Support {
         family: Family::Muse,
         name: "Muse Spark",
-        levels: PENGUIN,
-        hummingbird_packed_only: false,
+        levels: PENGUIN_HB,
+        hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: PENGUIN,
-        experts_in_ram_levels: NONE,
+        split_levels: PENGUIN_HB,
+        experts_in_ram_levels: &["hummingbird"],
     },
     Support {
         family: Family::FlashNext,

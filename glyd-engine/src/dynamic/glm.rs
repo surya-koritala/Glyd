@@ -38,6 +38,11 @@ pub fn load(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
 
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head and the final norm where the last; a layer of another stage is an empty one here).
 pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn> {
+    load_stage_hb(dir, o, level, st, None)
+}
+
+/// `load_stage` with a hummingbird directory's experts in the expert cache (`caching`: the stage's places and memory, src/hbg_store.rs).
+pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let dev = Dev::new(o.device)?;
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
     let lib8 = crate::ffi::Lib::find()?;
@@ -45,7 +50,7 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn>
     let only: Vec<usize> = (st.layers.0..st.layers.1).collect();
     let whole = st.first && st.last;
     let w = {
-        let moe = crate::moe_glm::factory_f8(level, &dev, &lib8);
+        let moe = crate::moe_glm::factory_cached(level, &dev, &lib8, caching.copied());
         WeightsGlm::load_ends(
             dir,
             threads,

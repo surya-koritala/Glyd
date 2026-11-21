@@ -454,6 +454,11 @@ pub fn layer_bytes(dir: &Path, nl: usize, f8_pct: u64) -> Result<(Vec<u64>, u64)
 
 /// As `layer_bytes`, of the tensors whose names `keep` keeps.
 pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> Result<(Vec<u64>, u64)> {
+    layer_bytes_with(dir, nl, f8_pct, bf16_pct, keep, true)
+}
+
+/// `layer_bytes_where`, a hummingbird directory's experts (their files of their own) counted in each layer's bytes only where `experts`.
+pub fn layer_bytes_with(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool, experts: bool) -> Result<(Vec<u64>, u64)> {
     let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
     let (mut per, mut base) = (vec![0u64; nl], 0u64);
     for f in &ck.files {
@@ -471,6 +476,14 @@ pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep
                 Some(l) if l < nl => per[l] += b,
                 Some(_) => {} // (a layer past the model's: a multi-token-prediction one)
                 None => base += b,
+            }
+        }
+    }
+    // (a hummingbird directory's routed experts are in files of their own, by the description's block: decoder layer l's are block 2 l + 1)
+    if let Some(hb) = crate::hb_pack::HbDir::open(dir)?.filter(|_| experts) {
+        for (l, bytes) in hb.layer_bytes() {
+            if l < nl {
+                per[l] += bytes;
             }
         }
     }
@@ -566,6 +579,51 @@ pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: 
             super::kimi::load_with_places(&owned, o, st, places.get(k).copied())
         }),
     )
+}
+
+/// A hummingbird directory (src/hb_pack.rs) of any family of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says (src/hbg_store.rs: places on its GPU, the
+/// computer's memory, the disk).
+pub fn open_hb_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
+    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    let (nl, eos) = match family(&text) {
+        Some("Muse Spark") => {
+            let c = crate::muse::ConfigMuse::load(dir)?;
+            (c.layers, c.eos.clone())
+        }
+        Some("Kimi-K3") => {
+            let c = crate::kimi::ConfigKimi::load(dir)?;
+            (c.layers, c.eos.clone())
+        }
+        Some("GLM-5.3-Flash") => {
+            let c = crate::glm::ConfigGlm::load(dir)?;
+            (c.layers, c.eos.clone())
+        }
+        Some("Nemotron-H") | None => {
+            return err(format!(
+                "{}: not a family whose hummingbird experts the expert cache takes (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark)",
+                dir.display()
+            ))
+        }
+        Some(_) => {
+            let c = crate::deepseek_v4::ConfigV4::load(dir)?;
+            (c.layers, c.eos.clone())
+        }
+    };
+    let fam = family(&text).unwrap_or("");
+    let level = o.layout.unwrap_or(crate::weights::Layout::Tiered);
+    let owned = dir.to_path_buf();
+    let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
+    let make: MakeStage = std::sync::Arc::new(move |st, o: &Opts| {
+        let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
+        let c = cachings.get(k).or(cachings.last());
+        match fam {
+            "Muse Spark" => super::muse::load_stage_hb(&owned, o, st, c),
+            "Kimi-K3" => super::kimi::load_with_caching(&owned, o, st, None, c),
+            "GLM-5.3-Flash" => super::glm::load_stage_hb(&owned, o, level, st, c),
+            _ => super::deepseek_v4::load_stage_hb(&owned, o, st, c),
+        }
+    });
+    Run::new(nl, eos, cuts, devices, o, make)
 }
 
 /// Kimi-K3 with every layer across `devices` (src/dynamic/tp.rs), `places` of a layer's experts in each GPU's slices of its places, the rest in the expert

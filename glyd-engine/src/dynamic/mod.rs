@@ -1220,7 +1220,7 @@ impl Dyn {
             c.barrier()?;
         }
         // (a block that reads the router's choices on the host, an expert cache's, is not captured)
-        if o.graph && e.big.moe.iter().all(|b| b.resident().is_some() || b.graphable()) {
+        if o.graph && e.big.moe.iter().all(|b| !b.reads_host() && (b.resident().is_some() || b.graphable())) {
             e.capture_graph()?;
         }
         Ok(e)

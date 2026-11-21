@@ -64,6 +64,14 @@ A pair goes to its group's kernels by two small tables, `group_of` [E] and `loca
   group at its real bytes, so a 3-bit expert costs 1.4 times a 2-bit one to copy.
 - `Costs` keep a host pair time per format; the copy-or-compute choice is per expert and per format, as the M2 design already says.
 
+Built (`src/hbg_store.rs`): a cached layer's two groups are pools of places on the GPU, and for each call of at most 64 tokens the store
+(`ExpertStore::run_groups_at`) reads the router's choices once, copies misses into free places or keeps them for the host, and a small
+kernel (`hbg_tables`) points each expert of the call at its place, or at no group where the host computes it. The products and the
+plan stay over the layer's own expert numbers, so the activation and sum kernels are the resident layer's. The host computes its pairs
+from the host tier as it holds them (`cpu_hbg::store_pairs`) and its sums join the GPU's before R^T (after Muse Spark's normed sum).
+Where the computer's memory holds less than all the experts, each group keeps its share in memory and reads the rest from the layer's
+expert file in direct reads (`HbgDisk`). A step with such a layer is not captured in a graph.
+
 The planner sizes a layer's experts as 0.4 x 3-bit + 0.6 x 2-bit bytes (the recipe's share) until it has read the directory, then by
 the directory's own counts.
 
@@ -95,13 +103,17 @@ the quality bar's question (#235): Nemotron 3 Super shipped with it (+10.3% perp
 
 ## The directory
 
-glyd-v7, `glyd.json` level `hummingbird`, layout `hb`, with the recipe and the usage file's hash under `calibration`:
+`glyd.json` of format `glyd-hbg/1`, level `hummingbird`, with an `experts` record: the recipe, the rounding, the usage file's tokens and
+hash, and each MoE layer's block, file, width, rotation block, sizes, experts' bits, bytes and sha256. It is not a glyd-v7 directory:
+glyd-v7 readers take every matrix as packed at a level, and here everything but the experts is the release's.
 
 - the release's tensors but the routed experts, copied with their names and dtypes (BF16, F32, F8_E4M3 and its scales, MXFP4's U8
   blocks and scales), in shards with an index, and the release's config, tokenizer and template files;
-- per MoE layer, each expert's `gate_up` and `down_t` as c3r or c2r packs under the expert's module name, and `glyd_rot_signs` (I8 [W]).
+- per MoE layer, `experts-BBBB.safetensors` (BBBB the description's block): `glyd_rot_signs` (I8 [W]) and, for each expert e and matrix m
+  (`gate_up`, `down_t`), `eEEEE.m.codes`, `.scales` and `.codebook` in the c3r or c2r layout.
 
-A family loader that reads the release reads this directory the same way, and builds the layer's `hb` experts from the packs.
+A family loader that reads the release reads this directory the same way, and builds the layer's `hb` experts from the expert files
+(`HbDir::experts_for`, `MoeLayer::new_hb`).
 `hbpack.rs`'s Nemotron 3 Super directories (six-bit elsewhere, from an export) stay readable as they are; new Nemotron-H packs follow
 this layout once Nemotron-H is described (R3b).
 
