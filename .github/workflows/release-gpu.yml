@@ -338,8 +338,9 @@ jobs:
     # CUDA 12 loads), and the GPU library DLLs of both (libglyd_gpu_cuda13.dll, and libglyd_gpu_cuda12.dll not compressed). The CUDA toolkits are NVIDIA's network installers, checked against
     # the sha256 written here (and NVIDIA's md5); nothing of the toolkit ships (the DLLs link the CUDA runtime in; the engine opens nvcuda.dll). Built here, not run: no runner has a GPU.
     # The zip and its sha256 are attached to the release by attach-engine when the build succeeded; a failure here does not hold the Linux bundles back.
+    # (windows-2022: its Visual Studio 2022 is the host compiler CUDA 13.0 and 12.9 list; windows-latest has Visual Studio 2026, whose STL asks for CUDA 13.4 or newer)
     needs: plan
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 150
     permissions:
       contents: read
