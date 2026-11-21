@@ -853,7 +853,11 @@ mod tests {
             PublicOnly(Fixed(ips)).resolve(
                 &uri,
                 &cfg,
-                ureq::unversioned::transport::NextTimeout { after: ureq::unversioned::transport::time::Duration::NotHappening, reason: ureq::Timeout::Global },
+                ureq::unversioned::transport::NextTimeout {
+                    after: ureq::unversioned::transport::time::Duration::NotHappening,
+                    reason: ureq::Timeout::Global,
+                    ..Default::default()
+                },
             )
         };
         for ips in [vec!["127.0.0.1"], vec!["169.254.169.254"], vec!["10.0.0.5"], vec!["93.184.216.34", "192.168.1.1"], vec!["192.168.1.1", "93.184.216.34"]] {
