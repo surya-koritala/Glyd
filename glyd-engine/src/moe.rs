@@ -436,6 +436,8 @@ pub struct MoeKern {
     // the FP8 experts' sum (each pair's own row): the pairs' rows, the weighted sum
     inv: Kernel,
     wsum: Kernel,
+    // the FP8 experts' places in the expert cache: their heads made their own (src/f8.rs F8Places)
+    f8_rebase: Kernel,
     // Muse Spark's (kernels/muse.cu): the router of fp32 weights, the activation, the pairs' rows, the normed weighted sum
     mu_router: Kernel,
     mu_act: Kernel,
@@ -472,6 +474,7 @@ impl MoeKern {
             hash: dev.kernel(kname!("v4_hash_select"))?,
             inv: dev.kernel(kname!("moe_inv"))?,
             wsum: dev.kernel(kname!("moe_wsum"))?,
+            f8_rebase: dev.kernel(kname!("moe_f8_rebase"))?,
             mu_router: dev.kernel(kname!("muse_router"))?,
             mu_act: dev.kernel(kname!("muse_act"))?,
             mu_inv: dev.kernel(kname!("muse_inv"))?,
@@ -539,6 +542,17 @@ impl MoeKern {
         let p = t * k;
         launch!(self.inv, [(p as u32).div_ceil(256), 1, 1], [256, 1, 1], s; plan, inv, p as i32, e as i32)?;
         launch!(self.wsum, [t as u32, (h as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; rows, inv, wts, y, k as i32, h as i32)
+    }
+
+    /// The heads of an FP8 stack's places (`F8Mat::place_heads`: `n` heads at `heads`, `per` a place, a place's var `vmax` words) made their own place's, after the store's copies.
+    ///
+    /// # Safety
+    /// `heads` a live device buffer of `n` heads of 8 words.
+    pub unsafe fn f8_rebase(&self, s: Stream, heads: u64, n: usize, per: usize, vmax: usize) -> Result<()> {
+        if n == 0 || per == 0 || vmax == 0 {
+            return Ok(());
+        }
+        launch!(self.f8_rebase, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; heads, n as i64, per as i64, vmax as i64)
     }
 
     /// y [n] bf16 += x [n] fp32 (the host's sums into a block layout's routed sum).
@@ -724,8 +738,15 @@ impl MoeLayer {
         if !cfg.act.gated() || cfg.fused() != 0 || up_rows < cfg.hidden || !cfg.hidden.is_multiple_of(8) {
             return err("FP8 experts: a gated activation of its own kernel, the first matrices' rows at least the width, a width divisible by 8");
         }
-        // (a stack of this GPU's slices of each expert's rows: the whole experts' shapes, src/dynamic/tp.rs)
-        let whole = |m: &crate::f8::F8Mat| if m.tp_rows > 0 { e * m.tp_rows } else { m.n };
+        // (a stack of this GPU's slices of each expert's rows: the whole experts' shapes, src/dynamic/tp.rs; the expert cache's places: an expert's rows)
+        let whole = |m: &crate::f8::F8Mat| match m.place {
+            Some(p) => e * p.rows,
+            None if m.tp_rows > 0 => e * m.tp_rows,
+            None => m.n,
+        };
+        if f8.up.places() != f8.down.places() {
+            return err(format!("FP8 experts in {} places of the first matrices and {} of the second", f8.up.places(), f8.down.places()));
+        }
         if f8.experts != e || (whole(&f8.up), f8.up.k, whole(&f8.down), f8.down.k) != (e * up_rows, cfg.hidden, e * cfg.hidden, cfg.inter) {
             return err(format!(
                 "FP8 experts of {} x {} and {} x {}, where the layer's {e} take {} x {} and {} x {}",
@@ -790,10 +811,11 @@ impl MoeLayer {
     /// The layer with its experts in the expert cache (R12, #232): its stacks are places (`ExpertStack::pooled`) the store copies the experts the router asks for into, every expert being in the computer's memory (or on
     /// the disk); each call reads the router's choices on the host, so a step with it is not captured in a graph. The families' forwards (`experts_via`, `forward_release`, `forward_muse`) run their products over the places.
     pub fn with_cache(mut self, cache: ExpertCache) -> Result<MoeLayer> {
-        if self.hb.is_some() || self.f8.is_some() || self.w.up.slots >= self.cfg.experts || self.w.up.slots == 0 {
+        // (FP8 experts: their matrices the places, `F8Places::places`)
+        let slots = self.f8.as_ref().map_or(self.w.up.slots, |f| f.up.places());
+        if self.hb.is_some() || slots >= self.cfg.experts || slots == 0 {
             return err(format!(
-                "an expert cache for a layer whose experts are not in places of its own ({} places for {} experts{})",
-                self.w.up.slots,
+                "an expert cache for a layer whose experts are not in places of its own ({slots} places for {} experts{})",
                 self.cfg.experts,
                 if self.f8.is_some() { ", FP8 as released" } else { "" }
             ));
@@ -823,6 +845,49 @@ impl MoeLayer {
             crate::offload::Stage::Products => crate::dev::memset_async(y, 0, t * self.cfg.hidden * 2, s),
             crate::offload::Stage::Sum => self.experts_sum(sc, s, t, y, hy.ids, hy.extra),
         })
+    }
+
+    /// `cached` for FP8 experts in places (`F8Places`, copied only): in calls of at most `f8::MOE_TOKENS` tokens whose pairs are no more than the places (each call's experts in one wave, every row of the sum the call's
+    /// own), the places' heads made their own (`MoeKern::f8_rebase`) after the store's copies, then the products and the weighted sum as `experts_products` runs them, over the places.
+    ///
+    /// # Safety
+    /// As `route`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn f8_cached(&self, lib: &Lib, sc: &MoeScratch, s: Stream, f: &crate::f8::F8Experts, x: u64, t: usize, y: u64) -> Result<()> {
+        let cache = self.cache.as_ref().ok_or_else(|| crate::ffi::Error("no expert cache".into()))?;
+        let (c, e, k) = (&self.cfg, self.cfg.experts, self.cfg.router.top_k);
+        let tn_max = (f.up.places() / k).clamp(1, crate::f8::MOE_TOKENS);
+        for t0 in (0..t).step_by(tn_max) {
+            let tn = (t - t0).min(tn_max);
+            let (ids, wts, xs, ys) =
+                (sc.ids.ptr + (t0 * k * 8) as u64, sc.wts.ptr + (t0 * k * 4) as u64, x + (t0 * c.hidden * 2) as u64, y + (t0 * c.hidden * 2) as u64);
+            let pairs = tn * k;
+            let call = crate::offload::Call { ids, wts, z: xs, way: sc.way.ptr, part: sc.cpu.ptr, tokens: tn, pairs };
+            let at = crate::offload::At { ordinal: cache.ordinal, stream: s };
+            cache.store.run_at(cache.layer, at, &call, &mut |stage, _, waves, hy| {
+                if stage == crate::offload::Stage::Sum {
+                    return if hy.ids != 0 || hy.extra != 0 {
+                        err("FP8 experts in the cache: a pair not on the GPU (they are copied, never computed on the host)")
+                    } else {
+                        Ok(())
+                    };
+                }
+                if waves > 1 || !hy.gpu {
+                    return err("FP8 experts in the cache: every pair of a call on the GPU in one wave");
+                }
+                for m in [&f.up, &f.down] {
+                    if let Some((heads, n, per, vmax)) = m.place_heads() {
+                        sc.k.f8_rebase(s, heads, n, per, vmax)?;
+                    }
+                }
+                lib.moe_way(sc.way.ptr, pairs as i64, e as i64, sc.plan.ptr, s)?;
+                f.up.moe(lib, e, xs, sc.plan.ptr, tn, k, true, sc.a.ptr, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
+                sc.k.act(s, sc.a.ptr, sc.h.ptr, pairs, c.inter, &c.act)?;
+                f.down.moe(lib, e, sc.h.ptr, sc.plan.ptr, tn, k, false, sc.a.ptr, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
+                sc.k.wsum(s, sc.a.ptr, sc.plan.ptr, sc.inv.ptr, wts, ys, tn, k, e, c.hidden)
+            })?;
+        }
+        Ok(())
     }
 
     /// Device bytes of the layer's weights.
@@ -891,6 +956,9 @@ impl MoeLayer {
         }
         if self.cache.is_some() && way.is_none() && calls <= 1 {
             self.check_tokens(sc, t)?;
+            if let Some(f) = &self.f8 {
+                return self.f8_cached(lib, sc, s, f, x, t, y);
+            }
             return self.cached(sc, s, x, t, y, &mut |waves| self.experts_products(lib, sc, s, x, t, y, Some(sc.way.ptr), waves));
         }
         self.experts_products(lib, sc, s, x, t, y, way, calls)?;

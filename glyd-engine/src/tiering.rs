@@ -1,7 +1,9 @@
 //! Expert tiering for every mixture of experts on the dynamic route (R12, #232; docs/design/runtime.md §6): a layer's experts in the expert cache (src/offload.rs `ExpertStore`), places for the busiest of them on the GPU and
 //! every one in the computer's memory, for the formats whose experts are each the same bytes (`moe::ExpertStack::pooled`: the block layouts, the FP4 layouts as DeepSeek-V4 and Kimi-K3 release them). `MoeLayer::with_cache`
-//! runs the layer over the places; a family's loader builds the stacks and the cache here (`cached_stacks`). Hummingbird's two bit widths a layer are src/hbg_store.rs's.
+//! runs the layer over the places; a family's loader builds the stacks and the cache here (`cached_stacks`; FP8 experts as released, GLM-5.3-Flash's, each packed on its own: `cached_f8`). Hummingbird's two bit widths a
+//! layer are src/hbg_store.rs's.
 
+use crate::f8::{F8Experts, F8Places};
 use crate::ffi::{err, Result};
 use crate::moe::{ExpertCache, ExpertStack, Joined};
 use crate::offload::{ExpertStore, HostHalf, PackIn};
@@ -49,6 +51,19 @@ pub fn cached_stacks(
         cpu,
     )?;
     Ok((u, d, ExpertCache { store: store.clone(), layer, ordinal }))
+}
+
+/// A layer's FP8 experts as released (`up` and `down`, `F8Places::pack`'s: each expert packed on its own) in the expert cache `store` as its layer `layer`: `slots` places of each matrix on the GPU (`F8Places::places`), every
+/// expert's bytes in pinned memory, copied only (no host computes FP8 experts). Returns the layer's experts (`MoeLayer::new_f8`, over the places) and the cache (`MoeLayer::with_cache`) for the GPU `ordinal`.
+pub fn cached_f8(up: &F8Places, down: &F8Places, slots: usize, store: &Rc<ExpertStore>, layer: usize, ordinal: i32) -> Result<(F8Experts, ExpertCache)> {
+    if up.experts != down.experts {
+        return err(format!("{} FP8 experts of the first matrix and {} of the second", up.experts, down.experts));
+    }
+    let slots = slots.clamp(1, up.experts);
+    let (u, d) = (up.places(slots)?, down.places(slots)?);
+    let ([a, b], [c, e]) = (up.packs(&u), down.packs(&d));
+    store.add_layer(layer, up.experts, slots, &[a, b, c, e], None)?;
+    Ok((F8Experts { up: u, down: d, experts: up.experts }, ExpertCache { store: store.clone(), layer, ordinal }))
 }
 
 /// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--layout i6|i5|i4]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird directory) on GPU 0 with every expert there, then with

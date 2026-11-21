@@ -1545,6 +1545,20 @@ mod tests {
         assert!(matches!(chosen(&hb).placement, Some(Placement::ExpertsInRam { disk, .. }) if disk > 0), "{hb:?}");
     }
 
+    /// R12: GLM-5.3-Flash's FP8 experts (304 GiB) in the computer's memory at penguin where it has room for them, the rest on a 24 GB GPU; with less memory, penguin is not planned (its hummingbird level is,
+    /// with experts on the disk too).
+    #[test]
+    fn glm_keeps_its_fp8_experts_in_ram_at_penguin() {
+        let sh = Shape::from_config(include_str!("../tests/fixtures/glm5_next_config.json")).unwrap();
+        let fam = crate::support::row(crate::support::Family::Glm);
+        let mut m = Machine::preset("rtx4090").unwrap();
+        m.ram_free = 512 << 30;
+        let p = plan(&sh, &m, Ask { level: Some("penguin"), family: Some(fam), ..Default::default() });
+        assert!(matches!(chosen(&p).placement, Some(Placement::ExpertsInRam { disk: 0, .. })), "{p:?}");
+        m.ram_free = 128 << 30;
+        assert!(plan(&sh, &m, Ask { level: Some("penguin"), family: Some(fam), ..Default::default() }).chosen.is_none());
+    }
+
     /// A config.json that says a number of layers no model has was an allocation of that many entries (a panic, or the process killed for its memory), and is an error.
     #[test]
     fn a_config_with_a_billion_layers_is_an_error() {

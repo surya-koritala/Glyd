@@ -1932,7 +1932,8 @@ fn hb_cache(
     Ok((cuts, devices, places, on_gpus, all, experts, ram))
 }
 
-/// A release's expert cache on the dynamic route where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4 experts) and its GPUs do not hold them all: each layer's weights besides its experts and
+/// A release's expert cache on the dynamic route where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4 experts; GLM-5.3-Flash's FP8 ones, each packed on its own in places of
+/// the largest's bytes: about 7 bits a value where the release's bytes, which size the places here, are 8) and its GPUs do not hold them all: each layer's weights besides its experts and
 /// its share of the cache for `ctx` tokens on the GPUs, places for the busiest experts with the room left, and every expert in the computer's memory (`host` bytes free, less `HOST_MARGIN`: the disk holds hummingbird
 /// directories' experts alone). The cuts, their GPUs, each stage's places a layer, the GPUs' bytes, all the experts' bytes and the experts a layer; or the refusal.
 #[allow(clippy::type_complexity)]
@@ -2101,14 +2102,16 @@ pub(crate) fn size_dynamic(
     // expert in the computer's memory)
     // (a hummingbird directory, src/hb_pack.rs: its own expert cache for any family, its layers cut over the GPUs, never every layer across them)
     let hb = crate::hb_pack::HbDir::open(dir).ok().flatten().is_some();
-    let across = across && !hb && !(family == "DeepSeek-V4" && cut.is_none() && !chosen);
+    // (a release whose experts the cache takes, src/tiering.rs: DeepSeek-V4's FP4 experts, GLM-5.3-Flash's FP8 ones; its cache where its GPUs do not hold it)
+    let release_cached = matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash") && !hb && cut.is_none() && !chosen;
+    let across = across && !hb && !release_cached;
     let mut ram = None;
     let cache = if hb && cut.is_none() && !chosen {
         let k = hb_cache(dir, text, nl, &room, &name, ctx, hbm, host)?;
         ram = Some(k.6);
         Some((k.0, k.1, k.2, k.3, k.4, k.5))
-    } else if family == "DeepSeek-V4" && !hb && cut.is_none() && !chosen {
-        // (R12: its FP4 experts in the cache, every one in the computer's memory)
+    } else if release_cached {
+        // (R12: its experts in the cache, every one in the computer's memory)
         let k = release_cache(dir, text, nl, &room, &name, ctx, hbm, host)?;
         ram = Some(k.4);
         Some(k)
@@ -2414,7 +2417,7 @@ fn load_dynamic(
     let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.0, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
     let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
     let opened = match &cache {
-        Some(k) if hb || family == "DeepSeek-V4" => crate::dynamic::split::open_cached(
+        Some(k) if hb || matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash") => crate::dynamic::split::open_cached(
             &dir,
             &o,
             &cuts,

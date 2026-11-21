@@ -218,6 +218,13 @@ extern "C" __global__ void moe_add_f32(bf16* y, const float* x, long long n) {
     if (i < n) y[i] = f2b(b2f(y[i]) + x[i]);
 }
 
+// The heads of an FP8 stack's places in the expert cache (src/f8.rs F8Places): n heads of 8 words, `per` a place, each place's var `vmax` words after the one before. A head the store copied into place s
+// holds its base from the start of its expert's own var (less than vmax); it becomes base % vmax + s vmax, which a head already set keeps: every place's heads are its own before the products, whichever were copied.
+extern "C" __global__ void moe_f8_rebase(unsigned* heads, long long n, long long per, long long vmax) {
+    const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) heads[i * 8] = (unsigned)((long long)heads[i * 8] % vmax + i / per * vmax);
+}
+
 // y [rows, H] += g * sh [rows, H], g = sigmoid(gate[row]) where gate (fp32 [rows], moe_logits' with E = 1) is given, else 1: the shared expert's output added to the routed experts' sum, one rounding.
 // H a multiple of 8; block (row, chunk of 256 threads' columns).
 extern "C" __global__ void moe_add(bf16* y, const bf16* sh, const float* gate, int H) {
