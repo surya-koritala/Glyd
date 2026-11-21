@@ -388,13 +388,12 @@ pub(crate) fn size(
     }
 }
 
-/// `size_dynamic` of a model whose files are on this computer (a directory, or the Hub's cache); Ok(None) where they are not yet: its bytes are the files'
-/// headers' (ROADMAP P2b), and the planner's estimate stands until then.
+/// `size_dynamic` of a model by its files' headers: a directory's or the Hub cache's, else the Hub's by ranges before anything is downloaded (src/sizes.rs;
+/// ROADMAP P2b); Ok(None) where the headers cannot be had (offline, the Hub does not answer), and the planner's estimate stands.
 fn size_local_dynamic(a: &Args, model: &str, text: &str, family: &'static str, devs: &[Target], reach: &dyn Fn(&[i32]) -> bool) -> Done<Option<LoadPlan>> {
-    let dir = if Path::new(model).join("config.json").exists() { Some(PathBuf::from(model)) } else { Source::find(model).ok().map(|s| s.dir) };
-    let Some(dir) = dir else { return Ok(None) };
+    let Some(table) = crate::sizes::Table::find(model) else { return Ok(None) };
     let host = devs.first().and_then(|t| t.host);
-    size_dynamic(a, &dir, text, family, devs, host, reach).map(Some)
+    size_dynamic(a, &short_name(model), &table, text, family, devs, host, reach).map(Some)
 }
 
 /// The model's shape against what the engine's KV cache takes, and its context against what the tables cover: refused before anything is downloaded.
@@ -1815,7 +1814,8 @@ fn dynamic_gpus() -> Done<(Vec<Gpu>, Gpu)> {
 /// Kimi-K3's expert cache over these GPUs (`split::places_plan`): the cuts, their GPUs, each stage's places a layer, the bytes on the GPUs, the experts' bytes in the computer's
 /// memory, the experts a layer has; refused with the numbers where the computer's memory does not hold every expert or a GPU has room for fewer than a token's experts.
 fn kimi_cache(
-    dir: &Path,
+    table: &crate::sizes::Table,
+    text: &str,
     nl: usize,
     room: &[(i32, u64)],
     name: &str,
@@ -1823,12 +1823,11 @@ fn kimi_cache(
     twelve: bool,
     host: Option<u64>,
 ) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize)> {
-    let c = crate::kimi::ConfigKimi::load(dir).map_err(cannot)?;
+    let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
     // (its bf16 matrices in the 12-bit layout where `twelve`: an HBM GPU's faster product, a few hundred places fewer)
     let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
     let (mut dense, base) =
-        crate::dynamic::split::layer_bytes_where(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts."))
-            .map_err(cannot)?;
+        crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts."));
     // (each layer's cache for the context too: a latent attention's latents, ctx of kv_rank + rope bf16; a delta attention's state, heads 128 x 128 fp32, and its convolution's tail)
     let qd = c.kda.heads * c.kda.dim;
     for (l, d) in dense.iter_mut().enumerate() {
@@ -1873,28 +1872,28 @@ fn kimi_cache(
 /// whole, and every matrix too small or of rows that do not divide), the caches for the context whole, and the same places a layer, each a slice of an
 /// expert's; the least room of the GPUs sets the places.
 fn kimi_cache_tp(
-    dir: &Path,
+    table: &crate::sizes::Table,
+    text: &str,
     room: &[(i32, u64)],
     name: &str,
     ctx: usize,
     twelve: bool,
     host: Option<u64>,
 ) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize)> {
-    let c = crate::kimi::ConfigKimi::load(dir).map_err(cannot)?;
+    let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
     let n = room.len().max(1) as u64;
     let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-    let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
     let mut held = 0u64;
-    for f in &ck.files {
-        for (t_name, t) in &f.tensors {
-            if t_name.contains(".block_sparse_moe.experts.") || ["mtp", "vision", "visual", "audio", "multi_modal"].iter().any(|w| t_name.contains(w)) {
-                continue;
-            }
-            let matrix = t.shape.len() == 2 && t.shape.iter().all(|&d| d >= 256);
-            let b = if t.dtype == "BF16" && matrix { t.bytes * bf16 / 100 } else { t.bytes };
-            let sliced = matrix && !t_name.contains("embed_tokens") && t.shape[0] % (64 * n) == 0 && t.bytes >= 16 << 20;
-            held += if sliced { b / n } else { b };
+    for t in &table.rows {
+        if t.name.contains(".block_sparse_moe.experts.")
+            || matches!(crate::sizes::classify(&t.name, c.layers), crate::sizes::Part::Vision | crate::sizes::Part::Mtp)
+        {
+            continue;
         }
+        let matrix = t.shape.len() == 2 && t.shape.iter().all(|&d| d >= 256);
+        let b = if t.dtype == "BF16" && matrix { t.bytes * bf16 / 100 } else { t.bytes };
+        let sliced = matrix && !t.name.contains("embed_tokens") && t.shape[0] % (64 * n) == 0 && t.bytes >= 16 << 20;
+        held += if sliced { b / n } else { b };
     }
     let qd = c.kda.heads * c.kda.dim;
     held += c
@@ -1956,19 +1955,19 @@ fn hbm_of(devs: &[Target]) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn size_dynamic(
     a: &Args,
-    dir: &Path,
+    name: &str,
+    table: &crate::sizes::Table,
     text: &str,
     family: &'static str,
     devs: &[Target],
     host: Option<u64>,
     reach: &dyn Fn(&[i32]) -> bool,
 ) -> Done<LoadPlan> {
-    let name = short_name(&dir.to_string_lossy());
     let nl = crate::dynamic::split::config_num(text, "num_hidden_layers").unwrap_or(0);
     let room: Vec<(i32, u64)> = devs.iter().map(|t| (t.ordinal, crate::plan::dynamic_room_of(t.free))).collect();
     let hbm = hbm_of(devs);
     let kimi = family == "Kimi-K3";
-    let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit(dir, nl, &room, hbm, kimi).map_err(cannot)?;
+    let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table(table, nl, &room, hbm, kimi);
     let mut total = per.iter().sum::<u64>() + base;
     let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
     let ctx = a.num("context", 8192usize).map_err(|e| Refusal::new(e.0, "--context 8192"))?;
@@ -1990,7 +1989,7 @@ pub(crate) fn size_dynamic(
     // Kimi-K3 where the GPUs do not hold its experts: the expert cache (each GPU's room after the other weights as places for its layers' experts, every
     // expert in the computer's memory)
     let cache = if kimi && cut.is_none() && !chosen {
-        Some(if across { kimi_cache_tp(dir, &tp_room, &name, ctx, hbm, host)? } else { kimi_cache(dir, nl, &room, &name, ctx, hbm, host)? })
+        Some(if across { kimi_cache_tp(table, text, &tp_room, name, ctx, hbm, host)? } else { kimi_cache(table, text, nl, &room, name, ctx, hbm, host)? })
     } else {
         None
     };
@@ -2062,6 +2061,21 @@ fn penguin_only(name: &str, family: &str, model: &str) -> Refusal {
 
 /// `preflight` of a model on the dynamic route: whether the GPUs here hold it (the cut `run` makes, where the model is downloaded; its download's
 /// size against all their room, where not) and the disk its download.
+/// What `preflight` says of the plan of a model of the dynamic route: the bytes on the GPUs (and the experts the computer's memory holds).
+fn dynamic_line(name: &str, family: &str, p: &LoadPlan) -> String {
+    let sp = p.spread.as_ref().expect("the dynamic route's plan spreads the model");
+    if sp.host_bytes > 0 {
+        return format!(
+            "{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory",
+            gib(p.weights_on_gpu()),
+            sp.devices.len(),
+            gib(sp.host_bytes)
+        );
+    }
+    let n = sp.devices.len();
+    format!("{name} ({family}): about {} on {} at the penguin level", gib(p.weights_on_gpu()), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") })
+}
+
 fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {
     let name = short_name(model);
     if layout != Layout::Tiered {
@@ -2077,17 +2091,9 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
             let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
             let targets: Vec<Target> = gpus.iter().map(target).collect();
             // (the plan `run` loads, or the refusal it gives, with Kimi-K3's expert cache where the GPUs do not hold its experts)
-            let p = size_dynamic(a, dir, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
-            let sp = p.spread.as_ref().expect("the dynamic route's plan spreads the model");
-            if sp.host_bytes > 0 {
-                return Ok(format!(
-                    "{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory",
-                    gib(p.weights_on_gpu()),
-                    sp.devices.len(),
-                    gib(sp.host_bytes)
-                ));
-            }
-            (p.weights_on_gpu(), Some(sp.devices.len()))
+            let table = crate::sizes::Table::from_dir(dir).map_err(cannot)?;
+            let p = size_dynamic(a, &name, &table, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+            return Ok(dynamic_line(&name, family, &p));
         }
         None => {
             let text = config_text(model)?;
@@ -2102,7 +2108,13 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
                     ));
                 }
             }
-            // (a bf16 release at penguin's 72% at most; an FP8 or FP4 one as it is; the cut is made once it is here)
+            // the exact plan from the files' headers by ranges, nothing downloaded (src/sizes.rs)
+            if let Some(table) = crate::sizes::Table::find(model) {
+                let targets: Vec<Target> = gpus.iter().map(target).collect();
+                let p = size_dynamic(a, &name, &table, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+                return Ok(dynamic_line(&name, family, &p));
+            }
+            // (headers not to be had: a bf16 release at penguin's 72% at most; an FP8 or FP4 one as it is; the cut is made once it is here)
             let bytes = if text.contains("\"quantization_config\"") { need } else { need * 72 / 100 };
             // ponytail: Kimi-K3 not yet here, its experts (about 93% of it) in the computer's memory and the rest on the GPUs; the exact plan is made once it is here
             if family == "Kimi-K3" && bytes > all {
@@ -2168,7 +2180,8 @@ fn load_dynamic(
     let (gpus, first) = dynamic_gpus()?;
     let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap_or(0);
     let targets: Vec<Target> = gpus.iter().map(target).collect();
-    let plan = size_dynamic(a, &dir, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+    let table = crate::sizes::Table::from_dir(&dir).map_err(cannot)?;
+    let plan = size_dynamic(a, &name, &table, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
     let sp = plan.spread.clone().expect("the dynamic route's plan spreads the model");
     let (total, coded, twelve, across, ctx) = (plan.weights_on_gpu(), sp.coded, sp.twelve, sp.across, plan.context);
     let (cuts, devices) = (sp.cuts.clone(), sp.devices.clone());
