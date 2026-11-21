@@ -8,7 +8,7 @@ benchmarks/gates/m1-gate.sh --plan-only --machine rtx4060-laptop|rtx4080s|rtx409
 ```
 
 One line a step (`PASS`, `FAIL`, `SKIP`), a summary, `results.tsv` and `m1-gate.json` in `--out`, exit status 0 only where nothing failed. The steps: the machine and its tier; the install; for each model the planner's answer against
-the file's expectation (`run` or `refuse` for the tier), then either the refusal (a few lines, a non-zero exit) or the first streamed token within 120 s of starting the server, the printed plan's level and weights against what
+the file's expectation (`run` or `refuse` for the tier), then either the refusal (a few lines, a non-zero exit) or the first streamed token (answer or reasoning) within 120 s of the model's download ending (the download is timed apart and reported beside it: it is the connection's), the printed plan's level and weights against what
 `/v1/glyd/info` says loaded (10%), and JSON-schema output checked with `jq`; that nothing called `python` or `pip` (both are shimmed for the run); on a machine without an NVIDIA driver, the one-line answer. The checks other
 runs measured come in through `--ext DIR` as `NAME.result` files holding one line, `PASS|FAIL|SKIP`, a tab, the name, a tab, the detail: `driver-r535`, `driver-r550`, `driver-r570`, `p2a-no-oom`,
 `r5a-schema-real-weights`, `r8-reference-gpu-results`, `p17-open-webui`, `p17-continue`, `p17-openai-sdk`. A required one that is missing fails the gate.
