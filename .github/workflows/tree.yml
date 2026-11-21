@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   merge_group:
+# a pull request's older run is cancelled by its newer one; any other run is a group of its own, so none is cancelled or held back (as ci.yml)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
