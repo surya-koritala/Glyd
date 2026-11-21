@@ -85,6 +85,7 @@ are on the [roadmap](ROADMAP.md). Large mixture-of-experts models on one consume
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [good first issues](https://github.com/surya-koritala/Glyd/labels/good%20first%20issue). Commits carry a DCO sign-off.
+Questions, ideas and show-and-tell: [Discussions](https://github.com/surya-koritala/Glyd/discussions).
 
 ## License
 
