@@ -5,7 +5,7 @@
 //! A program that serves one model names none: everything uses the process's own (`Context::process`), as it did when these were statics. What is one a process by its nature stays so: the
 //! driver, the kernels' code, the CPU's kernels and cores, the settings read from the environment, the signals.
 
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub struct Context {
@@ -17,6 +17,10 @@ pub struct Context {
     pub failed: Mutex<Option<(f64, String)>>,
     /// What `/v1/glyd/info` says that does not change while the server runs (`serve` sets it once the model is loaded).
     pub info: OnceLock<crate::server::Info>,
+    /// Whether a request with no cache scope of its own (`cache_salt`) is told, in its usage, how many of its prompt's tokens were found in the cache. Off unless the server's
+    /// operator says so (GLYD_ENGINE_CACHED_USAGE=1: every caller is one user): the cache is one for all such requests, and a count would let one caller learn how another's
+    /// prompt begins. Not decided by the listener's address: a server on a loopback address may answer callers from anywhere, behind `glyd service` or another proxy.
+    pub tell_cached: AtomicBool,
 }
 
 impl Context {
@@ -27,6 +31,7 @@ impl Context {
             figures: crate::ops::Figures::new(),
             failed: Mutex::new(None),
             info: OnceLock::new(),
+            tell_cached: AtomicBool::new(std::env::var_os("GLYD_ENGINE_CACHED_USAGE").is_some_and(|v| v == "1")),
         })
     }
 

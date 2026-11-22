@@ -137,7 +137,7 @@ pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, Str
             o.push(("parallel_tool_calls", Value::Bool(false)));
         }
     }
-    for k in ["max_tokens", "temperature", "top_p", "top_k", "stream"] {
+    for k in ["max_tokens", "temperature", "top_p", "top_k", "stream", "cache_salt"] {
         if let Some(x) = v.get(k) {
             o.push((k, x.clone()));
         }
@@ -528,25 +528,32 @@ mod tests {
     }
 
     /// P5e: a prompt the server has run before is found in its cache, and the usage says so as Anthropic's does: `cache_read_input_tokens` the tokens found, `input_tokens`
-    /// the rest, the two together the prompt. Whole and streamed (in a stream, in `message_delta`: `message_start` goes out before the engine has looked).
+    /// the rest, the two together the prompt. Whole and streamed (in a stream, in `message_delta`: `message_start` goes out before the engine has looked). For a request with
+    /// a cache scope (`cache_salt`): a request with none is told nothing.
     #[test]
     fn the_usage_counts_the_prompt_tokens_found_in_the_cache() {
         let addr = serve_script("the answer");
-        let q = |stream: bool| {
-            format!(r#"{{"model":"claude-x","max_tokens":20,"temperature":0,"stream":{stream},"messages":[{{"role":"user","content":"LONG"}}]}}"#).replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills")
+        let q = |stream: bool, salt: &str| {
+            format!(r#"{{"model":"claude-x","max_tokens":20,"temperature":0,"stream":{stream}{salt},"messages":[{{"role":"user","content":"LONG"}}]}}"#).replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills")
         };
         let usage = |d: &Value, k: &str| at(d, &["usage", k]).as_u64().unwrap();
-        let first = parse(&ask(addr, &q(false)).1);
+        let a = r#","cache_salt":"tenant-a""#;
+        let first = parse(&ask(addr, &q(false, a)).1);
         assert_eq!((usage(&first, "cache_read_input_tokens"), usage(&first, "cache_creation_input_tokens")), (0, 0));
         let prompt = usage(&first, "input_tokens");
-        // again: the same prompt
-        let second = parse(&ask(addr, &q(false)).1);
+        // again: the same prompt in the same scope
+        let second = parse(&ask(addr, &q(false, a)).1);
         let found = usage(&second, "cache_read_input_tokens");
         assert!(found >= 32 && found < prompt && found % crate::kv::PAGE as u64 == 0, "{found} of {prompt}");
         assert_eq!(usage(&second, "input_tokens") + found, prompt);
         assert_eq!(usage(&second, "output_tokens"), usage(&first, "output_tokens"));
+        // with no scope: nothing of the scope's is found, and what its own second request finds is not told
+        for _ in 0..2 {
+            let d = parse(&ask(addr, &q(false, "")).1);
+            assert_eq!((usage(&d, "cache_read_input_tokens"), usage(&d, "input_tokens")), (0, prompt));
+        }
         // streamed: message_start has the prompt, message_delta what was found
-        let (st, body) = ask(addr, &q(true));
+        let (st, body) = ask(addr, &q(true, a));
         assert_eq!(st, 200, "{body}");
         let evs: Vec<Value> = body.lines().filter_map(|l| l.strip_prefix("data: ")).map(parse).collect();
         let delta = evs.iter().find(|e| at(e, &["type"]).as_str() == Some("message_delta")).expect("message_delta");

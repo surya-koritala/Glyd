@@ -118,6 +118,14 @@ Every error is OpenAI's: `{"error": {"message", "type", "param", "code"}}` with 
 last chunk with no choices, as OpenAI's does. Where the server found some of a prompt's tokens in its cache (a conversation's earlier turns, a prompt it has run before), the usage has
 `prompt_tokens_details.cached_tokens`: they are among `prompt_tokens`, and were not run again. The Responses API has them as `input_tokens_details.cached_tokens`.
 
+The cache is one for every caller of a server: a request finds what any request before it left (a conversation's earlier turns, a prompt it has run before), and by what it
+finds, or by how soon its first token comes, a caller can tell whether a prompt that begins as its own was run before. Callers who are not to learn that of each other each send a
+`cache_salt` (vLLM's field: any string that is not empty; a gateway before the callers sets it): a request with one finds only what requests with the same one left, and what it
+leaves is found by them alone; requests with none are a scope of their own. The usage tells a request how many tokens it found only where the request has a `cache_salt`:
+the others' usage has no cached tokens, though the cache serves them. A server whose callers are all one user can be told so (`GLYD_ENGINE_CACHED_USAGE=1` in its
+environment, which `glyd service` passes to the models it starts) and then tells every request. The server's address does not decide this: one on this computer's own address
+may answer callers from anywhere, behind a proxy.
+
 ## Connecting tools
 
 The default address is `http://127.0.0.1:8000` (`--port N` for another; if 8000 is busy and no port was asked for, the server takes the next free one up to 8020 and says which at its start).

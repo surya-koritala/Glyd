@@ -193,6 +193,7 @@ pub(super) fn chat_of(v: &Value) -> std::result::Result<Value, String> {
         ("seed", "seed"),
         ("parallel_tool_calls", "parallel_tool_calls"),
         ("stream", "stream"),
+        ("cache_salt", "cache_salt"),
     ] {
         if let Some(x) = set(from) {
             o.push((to, x.clone()));
@@ -628,21 +629,27 @@ mod tests {
         body.lines().filter_map(|l| l.strip_prefix("data: ")).map(|d| json::parse(d).unwrap()).collect()
     }
 
-    /// P5e: the input tokens a response found in the cache are in its usage (`input_tokens_details.cached_tokens`, among `input_tokens`): none the first time a prompt is seen.
+    /// P5e: the input tokens a response found in the cache are in its usage (`input_tokens_details.cached_tokens`, among `input_tokens`): none the first time a prompt is
+    /// seen in its cache scope (`cache_salt`), and none told to a request with no scope.
     #[test]
     fn the_usage_counts_the_input_tokens_found_in_the_cache() {
         let addr = serve_script("the answer");
-        let q = r#"{"model":"m","max_output_tokens":20,"temperature":0,"input":"LONG"}"#.replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills");
+        let q = |salt: &str| {
+            format!(r#"{{"model":"m","max_output_tokens":20,"temperature":0{salt},"input":"LONG"}}"#).replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills")
+        };
         let cached = |body: &str| {
             let d = parse(body);
             (at(&d, &["usage", "input_tokens"]).as_u64().unwrap(), at(&d, &["usage", "input_tokens_details", "cached_tokens"]).as_u64().unwrap())
         };
-        let (st, first) = call(addr, "/v1/responses", &q);
+        let a = r#","cache_salt":"tenant-a""#;
+        let (st, first) = call(addr, "/v1/responses", &q(a));
         assert_eq!(st, 200, "{first}");
         let (input, none) = cached(&first);
         assert_eq!(none, 0);
-        let (again, found) = cached(&call(addr, "/v1/responses", &q).1);
+        let (again, found) = cached(&call(addr, "/v1/responses", &q(a)).1);
         assert!(again == input && found >= 32 && found < input && found % crate::kv::PAGE as u64 == 0, "{found} of {input}");
+        // no scope: nothing told, twice
+        assert_eq!((cached(&call(addr, "/v1/responses", &q("")).1).1, cached(&call(addr, "/v1/responses", &q("")).1).1), (0, 0));
     }
 
     const CALL: &str = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>";
