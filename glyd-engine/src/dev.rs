@@ -3,7 +3,7 @@
 
 use crate::ffi::{cu, driver, err, CuEvent, CuFunction, CuGraph, CuGraphExec, CuModule, Result, Stream};
 use std::ffi::{c_char, c_int, c_void};
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 #[cfg(not(no_kernels))]
 static FATBIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine.fatbin"));
@@ -229,6 +229,10 @@ impl Dev {
                 cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, dev))?;
             }
             cu("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))?;
+        }
+        // (the context's counts named by its GPU)
+        if let Some(c) = count(ctx as usize) {
+            c.gpu.store(ordinal, Relaxed);
         }
         let mut b = [0 as c_char; 256];
         let (mut major, mut minor, mut sms) = (0, 0, 0);
@@ -619,15 +623,87 @@ fn in_ctx<R>(ctx: usize, f: impl FnOnce() -> Result<R>) -> Result<R> {
     r
 }
 
-/// The bytes the engine's buffers hold on the GPU now, the most they have held since the program started and when (milliseconds since 1970): counted where `Buf` allocates and frees, so what
-/// the CUDA context, the kernels' code, a graph and a library's own allocations (cuBLAS's) take is not in them. One GPU a process.
+/// The bytes the engine's buffers hold on the GPUs now, the most they have held since the program started and when (milliseconds since 1970): counted where `Buf` allocates and frees, so
+/// what the CUDA context, the kernels' code, a graph and a library's own allocations (cuBLAS's) take is not in them. The process's, and each context's (`held_by_context`).
 static LIVE: AtomicU64 = AtomicU64::new(0);
 static PEAK: AtomicU64 = AtomicU64::new(0);
 static PEAK_AT: AtomicU64 = AtomicU64::new(0);
 
-/// (now, peak, the peak's time in ms since 1970) of the engine's buffers.
+/// The same counts by context: a slot per context a `Dev` opened or that has held a buffer, taken in order and kept for the process (its GPU's ordinal where a `Dev` opened it, else -1);
+/// a context past the slots is in the process's counts alone.
+struct Count {
+    ctx: AtomicUsize,
+    gpu: AtomicI32,
+    live: AtomicU64,
+    peak: AtomicU64,
+    peak_at: AtomicU64,
+}
+
+const COUNTED: usize = 32;
+static COUNTS: [Count; COUNTED] =
+    [const { Count { ctx: AtomicUsize::new(0), gpu: AtomicI32::new(-1), live: AtomicU64::new(0), peak: AtomicU64::new(0), peak_at: AtomicU64::new(0) } };
+        COUNTED];
+
+/// Context `ctx`'s slot (taken where it has none: the slots taken are the first ones, so a context's slot comes before any free one).
+fn count(ctx: usize) -> Option<&'static Count> {
+    if ctx == 0 {
+        return None;
+    }
+    COUNTS.iter().find(|c| match c.ctx.compare_exchange(0, ctx, Relaxed, Relaxed) {
+        Ok(_) => true,
+        Err(x) => x == ctx,
+    })
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// `bytes` more held in context `ctx` (fewer where `free`), the process's and the context's peaks moved on.
+fn held_add(ctx: usize, bytes: u64, free: bool) {
+    let add = |live: &AtomicU64, peak: &AtomicU64, at: &AtomicU64| {
+        if free {
+            live.fetch_sub(bytes, Relaxed);
+            return;
+        }
+        let now = live.fetch_add(bytes, Relaxed) + bytes;
+        if peak.fetch_max(now, Relaxed) < now {
+            at.store(now_ms(), Relaxed);
+        }
+    };
+    add(&LIVE, &PEAK, &PEAK_AT);
+    if let Some(c) = count(ctx) {
+        add(&c.live, &c.peak, &c.peak_at);
+    }
+}
+
+/// (now, peak, the peak's time in ms since 1970) of the engine's buffers, on every GPU together.
 pub fn held_now() -> (u64, u64, u64) {
     (LIVE.load(Relaxed), PEAK.load(Relaxed), PEAK_AT.load(Relaxed))
+}
+
+/// What one context's buffers hold: its GPU (-1 where no `Dev` opened it), the bytes now, the most since the program started and when.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeldOn {
+    pub gpu: i32,
+    pub live: u64,
+    pub peak: u64,
+    pub peak_at: u64,
+}
+
+/// Each context's counts, in the order they were first seen: a GPU's primary context, and any context of its own a check made on it.
+pub fn held_by_context() -> Vec<HeldOn> {
+    COUNTS
+        .iter()
+        .take_while(|c| c.ctx.load(Relaxed) != 0)
+        .map(|c| HeldOn { gpu: c.gpu.load(Relaxed), live: c.live.load(Relaxed), peak: c.peak.load(Relaxed), peak_at: c.peak_at.load(Relaxed) })
+        .collect()
+}
+
+/// One context's bytes now (none where it has no slot).
+#[cfg(feature = "dev")]
+fn held_in(ctx: usize) -> Option<u64> {
+    COUNTS.iter().take_while(|c| c.ctx.load(Relaxed) != 0).find(|c| c.ctx.load(Relaxed) == ctx).map(|c| c.live.load(Relaxed))
 }
 
 /// What a model holds on the GPU by what it is for, allocated once when it loads: its weights, the keys and values for its whole context, the states a sequence carries (Gated DeltaNet's), and
@@ -648,10 +724,7 @@ impl Buf {
         let mut p = 0u64;
         // SAFETY: a host out-pointer; at least one byte is taken.
         unsafe { cu("cuMemAlloc", (driver()?.cuMemAlloc_v2)(&mut p, bytes.max(1)))? };
-        let now = LIVE.fetch_add(bytes as u64, Relaxed) + bytes as u64;
-        if PEAK.fetch_max(now, Relaxed) < now {
-            PEAK_AT.store(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64), Relaxed);
-        }
+        held_add(ctx, bytes as u64, false);
         Ok(Buf { ptr: p, bytes, at: p, len: bytes, ctx })
     }
 
@@ -734,7 +807,7 @@ impl Drop for Buf {
             Ok(_) => in_ctx(self.ctx, free),
             Err(_) => free(),
         };
-        LIVE.fetch_sub(self.len as u64, Relaxed);
+        held_add(self.ctx, self.len as u64, true);
     }
 }
 
@@ -1159,11 +1232,21 @@ pub fn buf_check() -> Result<()> {
         buf.read(4096, &mut back)?;
         say(back.iter().all(|&x| x == 0), "the same buffer zeroed while the other is current".to_string());
         let held = other.mem_info()?.0;
+        let (mine, theirs) = (held_in(ctx(made)).unwrap_or(0), held_in(ctx(other)).unwrap_or(0));
         drop(buf);
         let after = other.mem_info()?.0;
         say(
             current_ctx()? == ctx(other) && after >= held + MB / 2 && after + MB / 2 >= before,
             format!("the same buffer freed while the other is current: {} MB came back, the thread's context the same", (after.saturating_sub(held)) >> 20),
+        );
+        let (mine_after, theirs_after) = (held_in(ctx(made)).unwrap_or(0), held_in(ctx(other)).unwrap_or(0));
+        say(
+            mine >= MB as u64 && mine.saturating_sub(mine_after) == MB as u64 && theirs == theirs_after,
+            format!(
+                "its bytes counted in {name}'s figures, not the other's: {} MB there while it was held, {} MB fewer after",
+                mine >> 20,
+                mine.saturating_sub(mine_after) >> 20
+            ),
         );
     }
     drop(Buf::none());

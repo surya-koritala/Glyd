@@ -2371,6 +2371,22 @@ fn info_json(i: &Info, rt: &crate::runtime::context::Context) -> String {
             ("peak_since", secs(i.started)),
             ("device_total_bytes", gpu.as_ref().map_or(Value::Null, |g| Value::from(g.total))),
             ("device_free_bytes", gpu.as_ref().map_or(Value::Null, |g| Value::from(g.free))),
+            (
+                "devices",
+                Value::Array(
+                    crate::dev::held_by_context()
+                        .into_iter()
+                        .map(|h| {
+                            obj(vec![
+                                ("gpu", if h.gpu < 0 { Value::Null } else { num(h.gpu as usize) }),
+                                ("engine_bytes", Value::from(h.live)),
+                                ("peak_bytes", Value::from(h.peak)),
+                                ("peak_at", secs(h.peak_at as f64 / 1000.0)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
             ("not_counted", names(["the CUDA context and the kernels' code", "cuBLAS's own workspace", "the computer's memory"].into_iter())),
         ]),
     ));
@@ -5725,6 +5741,7 @@ pub(crate) mod tests {
         );
         assert!(f64_of(at(m, &["peak_bytes"])) >= f64_of(at(m, &["engine_bytes"])) && f64_of(at(m, &["peak_since"])) == 1.5);
         assert_eq!((at(m, &["gpu"]), at(m, &["device_total_bytes"]), at(m, &["device_free_bytes"])), (&Value::Null, &Value::Null, &Value::Null));
+        assert!(matches!(at(m, &["devices"]), Value::Array(_)), "the engine's buffers by GPU: a list, empty where no GPU is open");
         // after a failure of the engine it says so (nothing is sure of the GPU after one), with when and what
         crate::runtime::context::Context::process().fail("cuLaunchKernel: an illegal memory access was encountered (700)");
         let d = info();
