@@ -839,6 +839,8 @@ pub struct Dyn {
     pub n: usize,
     chunk: usize,
     ctx: usize,
+    /// The part of the GPU's free memory `serve_rows` takes for the sequences (`Gen::share_memory`).
+    share: f64,
     /// Passes of up to this many rows take the decode step's split attention (1, or a drafted round's k + 1: the same kernel, so drafted = plain).
     split_rows: usize,
     pf_kib: [usize; 3],
@@ -1203,6 +1205,7 @@ impl Dyn {
             host,
             n: 0,
             chunk: ch,
+            share: 1.0,
             ctx,
             split_rows: rows_out,
             pf_kib: pf_kib(crate::tune!("GLYD_G4_PF").as_deref())?,
@@ -2717,6 +2720,10 @@ impl crate::conv::Gen for Dyn {
 
     fn as_step(&mut self, users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
         Ok(self.serve_rows(users)?.map(|k| (k, self as &mut dyn crate::sched::ModelStep)))
+    }
+
+    fn share_memory(&mut self, part: f64) {
+        self.share = part.clamp(0.0, 1.0);
     }
 
     /// The weights (a draft model's too), the rings of keys and values for the whole context, and the states; all made in `build` and kept as they are while it runs.

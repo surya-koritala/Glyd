@@ -29,8 +29,13 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
 - The GPU is the one with the most free memory of those CUDA_VISIBLE_DEVICES shows. The context is `--ctx N` (`--context`);
   without it, what fits, up to 32,768 at a level (served to several users, what fits each of them, at least 4,096). `--users N`
   (4 if not given) is how many requests run at once: 1 to 8 on the lossless Qwen3 engine; 1 to 64 for Gemma 4, Qwen3.8 dense,
-  and Muse Spark, Kimi-K3 and GLM-5.3-Flash on one GPU, as many as the GPU's memory holds (the server says how many); the other level engines run one
+  Nemotron-H, DeepSeek-V4, and Muse Spark, Kimi-K3 and GLM-5.3-Flash on one GPU, as many as the GPU's memory holds (the server says how many); the other level engines run one
   request at a time (the others wait in order).
+- `--with MODEL2` serves a second model from the same process, on the same GPU: MODEL on its port and MODEL2 on `--with-port N`, else the next
+  free port after MODEL's. Each is a server of its own (its scheduler, its `/v1/glyd/info`, `/metrics` and requests); both load, then the first takes
+  half of the GPU's free memory for its keys and values and the second the rest. Both are models of the level engines (a lossy level, as MODEL:wren).
+  The status file says ready when both serve; a model that fails to load, or whose server does not start, ends the start of both. A GPU error after
+  which the GPU cannot be used ends the process, both models with it, as it ends a server of one.
 - A model too big for one GPU (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark) uses all the GPUs shown. On datacenter
   GPUs (A100, H100, B200) that reach each other directly, Kimi-K3 and DeepSeek-V4 put every layer across all of them:
   each GPU holds a slice of every big matrix and the slices are gathered GPU to GPU, so every GPU works on every token.

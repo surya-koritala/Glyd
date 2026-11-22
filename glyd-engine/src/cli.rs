@@ -670,9 +670,14 @@ fn access_check(a: &Args) -> std::result::Result<(), Refusal> {
 }
 
 fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<std::net::SocketAddr> {
+    listen_after(a, name, window, tx, None)
+}
+
+/// `listen`, where no --port is given, from the port after `after` (the first model's of `serve --with`) instead of 8000.
+fn listen_after(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>, after: Option<u16>) -> Done<std::net::SocketAddr> {
     access_check(a)?;
     let host = a.flag("host").unwrap_or("127.0.0.1").to_string();
-    let port: u16 = a.num("port", 8000u16)?;
+    let port: u16 = a.num("port", after.map_or(8000u16, |p| p.saturating_add(1)))?;
     let explicit = a.has("port");
     // SIGTERM stops the server taking requests and lets those in flight end (up to --drain-timeout seconds), then ends the process
     crate::ops::drain_on_sigterm(crate::ops::Life::global(), std::time::Duration::from_secs(a.num("drain-timeout", crate::ops::DRAIN_SECONDS)?), |_| {});
@@ -917,6 +922,9 @@ pub(crate) fn degrade_gate(a: &Args, model: &str, layout: Option<Layout>, intera
 }
 
 pub fn serve(a: &Args) -> i32 {
+    if let Some(with) = a.flag("with") {
+        return serve_two(a, with.to_string());
+    }
     let ui = RefCell::new(Ui::new());
     let started = crate::monitor::clock();
     status_file(a);
@@ -928,16 +936,13 @@ pub fn serve(a: &Args) -> i32 {
     let given = a.pos.get(1).cloned().unwrap_or_default();
     let asked = requested(&given, a.has("lossy"));
     // (a server never stops for an answer: a step it asks about is taken only with --yes)
-    let (a, layout) = match tagged(a).and_then(|(a, l)| {
-        let model = a.pos.get(1).cloned().unwrap_or_default();
-        degrade_gate(&a, &model, l, false, &ui)
-    }) {
+    let (a, layout) = match served(a, &ui) {
         Ok(x) => x,
         Err(r) => return fail(&ui, &r),
     };
     let a = &a;
     if let Some(layout) = layout {
-        return serve_lossy(a, layout, given, &ui);
+        return serve_lossy(a, layout, given, &ui, None);
     }
     let mut ready = match start(a, &ui, true) {
         Ok(r) => r,
@@ -986,9 +991,81 @@ pub fn serve(a: &Args) -> i32 {
     0
 }
 
+/// What `serve` serves: the arguments with the level's tag read and its degrade steps taken, and the lossy level's layout (None: the lossless engine).
+fn served(a: &Args, ui: &RefCell<Ui>) -> Done<(Args, Option<Layout>)> {
+    tagged(a).and_then(|(a, l)| {
+        let model = a.pos.get(1).cloned().unwrap_or_default();
+        degrade_gate(&a, &model, l, false, ui)
+    })
+}
+
+/// The two models of `serve --with`, each on its own thread, in step: each tells the other when its model is loaded, the first when it has made its sequences' memory (the second makes
+/// its own of what is left after), and each when its server listens (its port). A model that fails says so and its thread ends, its end of the pair with it: the other's wait ends there too
+/// (`hear` is None), so neither waits for a model that is not coming.
+struct Pair {
+    first: bool,
+    tell: mpsc::Sender<u16>,
+    hear: mpsc::Receiver<u16>,
+}
+
+impl Pair {
+    fn tell(&self, v: u16) {
+        let _ = self.tell.send(v);
+    }
+
+    fn hear(&self) -> Option<u16> {
+        self.hear.recv().ok()
+    }
+}
+
+/// `serve MODEL --with MODEL2 [--with-port P]`: two models in one process, each its own server (MODEL on --port, MODEL2 on --with-port, else the first free port after MODEL's),
+/// scheduler and runtime context (its figures, requests, failure and /v1/glyd/info its own) on the one GPU. Both load; the first then takes half the GPU's free memory for its sequences,
+/// the second what is left. Both are models of the description executor (a lossy level, or a family it runs at every level). A sticky device error of either ends the process, as it
+/// ends a server of one model (the service starts the models again).
+fn serve_two(a: &Args, with: String) -> i32 {
+    let ui = RefCell::new(Ui::new());
+    status_file(a);
+    if let Err(r) = access_check(a) {
+        return fail(&ui, &r);
+    }
+    let mut b = a.clone();
+    if b.pos.len() < 2 {
+        return fail(&ui, &Refusal::new("serve --with: the first model is not named", "glyd serve MODEL --with MODEL2"));
+    }
+    b.pos[1] = with.clone();
+    b.flags.retain(|(k, _)| !matches!(k.as_str(), "with" | "with-port" | "port" | "status-file" | "ollama-port"));
+    if let Some(p) = a.flag("with-port") {
+        b.flags.push(("port".into(), Some(p.into())));
+    }
+    let ((to_two, from_one), (to_one, from_two)) = (mpsc::channel(), mpsc::channel());
+    let two = std::thread::Builder::new().name("glyd-serve-with".into()).spawn(move || {
+        crate::runtime::context::Context::serve_here(crate::runtime::context::Context::new());
+        let ui = RefCell::new(Ui::new());
+        let pair = Pair { first: false, tell: to_one, hear: from_one };
+        match served(&b, &ui) {
+            Ok((b, Some(layout))) => serve_lossy(&b, layout, with, &ui, Some(&pair)),
+            Ok(_) => fail(&ui, &Refusal::new(format!("{with}: --with serves a model of the description executor"), "Give it a lossy level, as MODEL:wren")),
+            Err(r) => fail(&ui, &r),
+        }
+    });
+    if let Err(e) = two {
+        return fail(&ui, &Refusal::new(format!("a thread for the second model: {e}"), ""));
+    }
+    let pair = Pair { first: true, tell: to_two, hear: from_two };
+    let given = a.pos.get(1).cloned().unwrap_or_default();
+    match served(a, &ui) {
+        Ok((a, Some(layout))) => serve_lossy(&a, layout, given, &ui, Some(&pair)),
+        Ok(_) => fail(
+            &ui,
+            &Refusal::new(format!("{given}: --with serves a model of the description executor beside another"), "Give it a lossy level, as MODEL:wren"),
+        ),
+        Err(r) => fail(&ui, &r),
+    }
+}
+
 /// `serve MODEL:kestrel` (or `:swift`): the lossy level loaded as run loads it, served by the scheduler to up to --users sequences at once where the engine is a step of several (src/dynamic/rows.rs: Gemma 4),
-/// else to one user at a time.
-fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>) -> i32 {
+/// else to one user at a time. `pair`: one of the two models of `serve --with`.
+fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>, pair: Option<&Pair>) -> i32 {
     let (mut e, tok, chat, defaults, vocab, line, mut info) = match load_lossy(a, layout, &name, ui) {
         Ok(x) => x,
         Err(r) => return fail(ui, &r),
@@ -998,11 +1075,28 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>) -> i32 
         Ok(u) => u,
         Err(r) => return fail(ui, &r),
     };
+    let gone = |what: &str| Refusal::new(format!("the other model of serve --with {what}"), "Its own lines say why");
+    // (both loaded before either makes its sequences' memory: the first then takes half of what is free, the second the rest)
+    if let Some(p) = pair {
+        p.tell(0);
+        if p.hear().is_none() {
+            return fail(ui, &gone("did not load"));
+        }
+        if p.first {
+            e.share_memory(0.5);
+        } else if p.hear().is_none() {
+            return fail(ui, &gone("could not make its sequences' memory"));
+        }
+    }
     // (the step's window: the context, or less where its paged memory holds less for one sequence alone)
     let (several, step_window) = match e.as_step(users) {
         Ok(s) => (s.as_ref().map(|(k, _)| *k), s.map(|(_, st)| st.window())),
         Err(err) => return fail(ui, &cannot(err)),
     };
+    e.share_memory(1.0);
+    if let Some(p) = pair.filter(|p| p.first) {
+        p.tell(0);
+    }
     let window = step_window.map_or(e.capacity(), |w| w.min(e.capacity()));
     if let Some(k) = several {
         ui.borrow_mut().line(&format!(
@@ -1017,19 +1111,40 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>) -> i32 
         }
     }
     let (tx, rx) = mpsc::channel();
-    let addr = match listen(a, &name, window, tx.clone()) {
+    // (the second model's server after the first's: its port the next free one where it names none)
+    let after = match pair {
+        Some(p) if !p.first => match p.hear() {
+            Some(port) => Some(port),
+            None => return fail(ui, &gone("did not start its server")),
+        },
+        _ => None,
+    };
+    let addr = match listen_after(a, &name, window, tx.clone(), after) {
         Ok(x) => x,
         Err(r) => return fail(ui, &r),
     };
     if let Some(i) = info {
-        let _ = crate::runtime::context::Context::process().info.set(i);
+        let _ = crate::runtime::context::Context::current().info.set(i);
     }
-    STATUS.ready();
+    if let Some(p) = pair {
+        p.tell(addr.port());
+    }
+    // (ready, for the status file, when every model this process serves is)
+    match pair {
+        Some(p) if p.first => {
+            if p.hear().is_none() {
+                return fail(ui, &gone("did not start its server"));
+            }
+            STATUS.ready();
+        }
+        Some(_) => {}
+        None => STATUS.ready(),
+    }
     access_notes(ui, a);
     ui.borrow_mut().line(&format!("{name} is served at http://{addr}: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it."));
     let refused = if several.is_some() { &[][..] } else { server::ONE_AT_A_TIME };
     let shared =
-        Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused, rt: crate::runtime::context::Context::process().clone() });
+        Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused, rt: crate::runtime::context::Context::current() });
     match e.as_step(users) {
         Ok(Some((k, step))) => server::work_with(&mut crate::sched::Sched::new(step, k), shared, &rx, &tx),
         _ => server::work_gen(&mut *e, shared, &rx, &tx),
@@ -3148,6 +3263,31 @@ fn h_endpoint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `serve --with`'s two models in step: what one tells the other arrives in order, and a model that fails (its thread ended, its end of the pair gone) ends the other's wait at
+    /// once (None) instead of leaving it waiting for a model that is not coming.
+    #[test]
+    fn a_pair_hears_its_partner_in_order_and_hears_none_once_it_is_gone() {
+        let ((to_two, from_one), (to_one, from_two)) = (mpsc::channel(), mpsc::channel());
+        let one = Pair { first: true, tell: to_two, hear: from_two };
+        let two = std::thread::spawn(move || {
+            let two = Pair { first: false, tell: to_one, hear: from_one };
+            two.tell(0);
+            let heard = (two.hear(), two.hear(), two.hear());
+            two.tell(8001);
+            heard
+            // (its end of the pair goes with the thread)
+        });
+        one.tell(0);
+        assert_eq!(one.hear(), Some(0), "loaded");
+        one.tell(0);
+        one.tell(8000);
+        assert_eq!(two.join().unwrap(), (Some(0), Some(0), Some(8000)), "loaded, its memory made, its port");
+        assert_eq!(one.hear(), Some(8001));
+        let t = Instant::now();
+        assert_eq!(one.hear(), None, "a partner that is gone ends the wait");
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+    }
 
     /// R12: a release's expert cache on the dynamic route (`release_cache`), a tiny DeepSeek-V4's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's on one
     /// GPU and every expert in memory; with less memory than its experts, refused (the disk tier is hummingbird's).

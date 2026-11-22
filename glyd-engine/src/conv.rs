@@ -342,6 +342,8 @@ pub trait Gen {
     fn as_step(&mut self, _users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
         Ok(None)
     }
+    /// The part (0 to 1) of the GPU's free memory `as_step` makes its keys and values and its sequences' states of (1: all of it; `serve --with` gives the first model half).
+    fn share_memory(&mut self, _part: f64) {}
 }
 
 impl Gen for Engine {

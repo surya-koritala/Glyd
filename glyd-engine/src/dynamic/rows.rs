@@ -198,7 +198,7 @@ impl Dyn {
         let tab_bytes = users * windows.len() * self.ctx.div_ceil(BLOCK) * 4;
         let (free, _) = self.dev.mem_info()?;
         const KEEP: usize = 512 << 20;
-        let budget = free.saturating_sub(KEEP + tab_bytes) / 2;
+        let budget = (free.saturating_sub(KEEP + tab_bytes) as f64 * self.share) as usize / 2;
         // as many blocks in every group (a block of a group is BLOCK tokens of every layer in it), the sliding groups capped and what they leave to the full ones
         let all: usize = per.iter().sum::<usize>().max(1) * BLOCK;
         let even = budget / all;
@@ -454,7 +454,7 @@ impl Dyn {
         let (free, _) = self.dev.mem_info()?;
         // (room kept for the products' workspaces and the driver)
         const KEEP: usize = 512 << 20;
-        let more = (free.saturating_sub(KEEP + states * marks as usize) / per).min(users - 1);
+        let more = ((free.saturating_sub(KEEP + states * marks as usize) as f64 * self.share) as usize / per).min(users - 1);
         if marks {
             self.mark_room(more + 1)?;
         }

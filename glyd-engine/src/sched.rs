@@ -565,7 +565,7 @@ impl<B: ModelStep> Sched<B> {
             pending: Vec::new(),
             emit,
             be,
-            rt: Context::process().clone(),
+            rt: Context::current(),
             kv_out: Vec::new(),
             pager,
             users,
