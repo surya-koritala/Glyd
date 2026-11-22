@@ -328,6 +328,11 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                 && event(s, "message_start", &format!("\"message\":{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{}}}", usage(n_in, 1)))
                 && event(s, "ping", "");
             let mut blocks = Blocks::default();
+            // (a reply to a request for thinking begins with its thinking block, as Anthropic's API has it, empty where the model wrote none: a client reads it
+            // first; a model that closes its thinking at once, or writes only what the reader holds back, left a reply with no block at all)
+            if thinking {
+                ok &= blocks.begin(s, Open::Thinking, "{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}");
+            }
             while ok {
                 match out_rx.recv_timeout(WAIT_TICK) {
                     // (waiting for its turn or its prompt: a ping, as Anthropic's API sends them, and a look at the client)
@@ -372,8 +377,9 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                 Err(RecvTimeoutError::Timeout) | Ok(Out::Delta(..)) => {}
                 Ok(Out::Done { done, thinking: reasoning, .. }) => {
                     let mut content: Vec<String> = Vec::new();
-                    if let Some(t) = reasoning.filter(|t| thinking && !t.is_empty()) {
-                        content.push(format!("{{\"type\":\"thinking\",\"thinking\":{},\"signature\":\"\"}}", jstr(&t)));
+                    // (the thinking block first wherever thinking was asked for, empty where the model wrote none, as the stream's)
+                    if thinking {
+                        content.push(format!("{{\"type\":\"thinking\",\"thinking\":{},\"signature\":\"\"}}", jstr(&reasoning.unwrap_or_default())));
                     }
                     content.extend(done.content.iter().filter(|t| !t.is_empty()).map(|t| format!("{{\"type\":\"text\",\"text\":{}}}", jstr(t))));
                     for c in &done.calls {

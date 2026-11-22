@@ -4741,6 +4741,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// A request for thinking gets a reply that begins with a thinking block, whole and streamed, empty where the model closes its thinking at once and writes
+    /// no answer (the GPU job's random model did: a reply with no content block at all, which a client reading the first block fails on).
+    #[test]
+    fn a_thinking_reply_begins_with_its_thinking_block() {
+        let addr = serve_script_with("</think>\n\n", include_str!("../tests/fixtures/chat_qwen38_tools.jinja"));
+        let q = |extra: &str| {
+            format!(r#"{{"max_tokens":50,"thinking":{{"type":"enabled","budget_tokens":20}},"messages":[{{"role":"user","content":"Hi"}}]{extra}}}"#)
+        };
+        let (st, body) = call(addr, "/v1/messages", &q(""));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["content", "0", "type"]).as_str(), at(&d, &["content", "0", "thinking"]).as_str()), (Some("thinking"), Some("")), "{body}");
+        let (_, body) = call(addr, "/v1/messages", &q(r#","stream":true"#));
+        let first = body
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| json::parse(d).ok())
+            .find(|e| e.get("type").and_then(Value::as_str) == Some("content_block_start"));
+        assert_eq!(first.as_ref().and_then(|e| at(e, &["content_block", "type"]).as_str()), Some("thinking"), "{body}");
+        // (without thinking asked for, no thinking block)
+        let (_, body) = call(addr, "/v1/messages", r#"{"max_tokens":50,"messages":[{"role":"user","content":"Hi"}]}"#);
+        assert!(!body.contains("\"type\":\"thinking\""), "{body}");
+    }
+
     /// The random model that `logitsmodel qwen35 DIR --servable` makes serves a client: its tokenizer reads the template's text and the characters of JSON, its template takes tools, its end token is named, and the
     /// grammars of a JSON schema and of a forced call (Qwen3.8's XML) compile on its tokens, so that a client gets valid structured output and a valid call from weights that write random characters.
     #[cfg(feature = "dev")]
