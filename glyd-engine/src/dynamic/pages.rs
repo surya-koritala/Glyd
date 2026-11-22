@@ -442,11 +442,13 @@ mod tests {
         // 192 tokens of it shared: the sliding group from the window before 192, entry 8, on
         assert_eq!(p.share(0, 1, 200, 32), 192);
         assert_eq!((p.table(1, 1)[7], p.table(1, 1)[8] != 0), (0, true));
-        // it grows by a token, then two chunks: a sequence from its first token would hold the entries from 6 on (the window and a chunk behind 193); this one none before 8
-        assert!(p.grow(1, 193) && p.grow(1, 225));
-        assert!(p.table(1, 1)[..8].iter().all(|&b| b == 0) && p.table(1, 1)[8..15].iter().all(|&b| b != 0));
-        // a cut to 180 (to 176, the start of a block both hold) reads the window from entry 7: refused, and nothing changes; a cut to 200 is its own
+        // it grows by a token: a sequence from its first token would hold the entries from 6 on (the window and a chunk behind 193); this one none before 8
+        assert!(p.grow(1, 193));
+        assert!(p.table(1, 1)[..8].iter().all(|&b| b == 0) && p.table(1, 1)[8..13].iter().all(|&b| b != 0));
+        // a cut to 180 (to 176, the start of a block both hold) reads the window from entry 7: refused, and nothing changes
         assert_eq!((p.cut_len(1, 180, 32), p.shrink(1, 180, 32)), (0, 0));
+        // grown by a chunk more it holds what any sequence of its length does; a cut to 200 is its own
+        assert!(p.grow(1, 225) && p.table(1, 1)[..8].iter().all(|&b| b == 0) && p.table(1, 1)[8..15].iter().all(|&b| b != 0));
         assert_eq!(p.shrink(1, 200, 32), 200);
         // released, the slot begins as any other
         p.release(1);
