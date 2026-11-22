@@ -1034,6 +1034,16 @@ mod tests {
         let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
         let w32 = super::super::kimi::dtypes(&ck, &c).unwrap();
         assert!(w32.iter().zip(&c.kinds).all(|(&w, &k)| (k == crate::glm::GlmKind::Kda) == (w == (true, true))), "{w32:?}");
+        // (the fused products' widths as the loader stacks them from the checkpoint's own tensors: a delta layer's six, an experts layer's three, padded)
+        let rows =
+            |names: &[String]| -> usize { super::super::kimi::fused(names.iter().map(|n| ck.get(&format!("{n}.weight")).unwrap().1.shape[0] as usize).sum()) };
+        let (kl, ml) = (c.kinds.iter().position(|&k| k == crate::glm::GlmKind::Kda).unwrap(), c.moe.iter().position(|&m| m).unwrap());
+        let a = format!("{}layers.{kl}.self_attn", c.prefix);
+        let f = format!("{}layers.{ml}.block_sparse_moe", c.prefix);
+        let kda = rows(&["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj"].map(|x| format!("{a}.{x}")));
+        let moe = rows(&["routed_expert_down_proj", "shared_experts.gate_proj", "shared_experts.up_proj"].map(|x| format!("{f}.{x}")));
+        let own = super::super::kimi::describe(&c, &super::super::Stage::whole(c.layers), &w32, false).unwrap();
+        assert_eq!(own.widths[Slot::Mix as usize], kda.max(moe).max(3 * c.kda.heads * c.kda.dim).max(c.hidden), "the fused products' widths");
         let half = c.layers / 2;
         for st in [
             super::super::Stage::whole(c.layers),

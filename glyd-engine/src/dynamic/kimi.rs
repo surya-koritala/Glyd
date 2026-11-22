@@ -756,7 +756,7 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         // (a fused product's rows, several tensors', padded with zero rows to a multiple of 512: 64 a GPU in groups of up to 8, one layout for every
         // group; its parts are read at their own columns, the padding never)
         if names.len() > 1 {
-            rows = rows.div_ceil(512) * 512;
+            rows = fused(rows);
         }
         let sliced = tp.as_ref().filter(|t| slice && rows % 64 == 0 && cols % 16 == 0 && t.slices(rows, cols));
         let (r0, rn) = sliced.map_or((0, rows), |t| t.rows(rows));
@@ -1209,6 +1209,11 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
     Dyn::from_parts(dev, d, l_, Vec::new(), layout, st, o)
 }
 
+/// A fused product's rows (several tensors' stacked): padded with zero rows to a multiple of 512, 64 a GPU in groups of up to 8.
+pub(crate) fn fused(rows: usize) -> usize {
+    rows.div_ceil(512) * 512
+}
+
 /// Each layer's (convolutions fp32, gated norm fp32) as the checkpoint holds them, a delta layer's three convolutions alike; (false, false) for a latent attention layer.
 /// The kernels read them as they are (Kimi-K3 releases them fp32: values no bf16 holds).
 pub(crate) fn dtypes(ck: &Checkpoint, c: &ConfigKimi) -> Result<Vec<(bool, bool)>> {
@@ -1290,7 +1295,8 @@ pub(crate) struct KimiDims {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kimi_desc(k: &KimiDims, ls: &[KimiLayer], starts: &[bool], st: &Stage, early: bool, vocab: usize, max_pos: usize, eos: Vec<i64>) -> ModelDesc {
     let (h, qd, nh, eps) = (k.h, k.qd, k.nh, k.eps);
-    let (fa, row) = (k.kd, 4 * qd + k.kd + nh);
+    // (the delta attention's fused product: q, k, v, the output gate, the forget gate's first product and beta, padded)
+    let (fa, row) = (k.kd, fused(4 * qd + k.kd + nh));
     let (mut mix_w, mut proj_w) = (3 * qd, k.kd);
     let (mut n_small, mut n_mats, mut n_mla, mut n_moe, mut states, mut layers) = (0, 0, 0, 0, Vec::new(), Vec::new());
     for (l, ly) in ls.iter().enumerate() {
@@ -1332,7 +1338,7 @@ pub(crate) fn kimi_desc(k: &KimiDims, ls: &[KimiLayer], starts: &[bool], st: &St
         }
         ops.push(Op::KimiMixNorm { add: true, nb, w_n: mn, w_p: mp, push: None, w: post_n, eps });
         if ly.moe {
-            mix_w = mix_w.max(k.moe_rows);
+            mix_w = mix_w.max(fused(k.moe_rows));
             ops.push(Op::Moe { block: n_moe });
             n_moe += 1;
         } else {
