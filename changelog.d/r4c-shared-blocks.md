@@ -2,3 +2,4 @@
 - A kept sequence that a request begins like but cannot go on in (a cut its sliding layers no longer hold, a recurrent model with no state kept there) is left as it is while a slot is free, for its own conversation's next turn.
 - `glyd-engine bench` has requests that begin alike (`--loads same4k+250ms:8`, `--suite shared`).
 - Anthropic's `cache_control` has an effect: what a request with a marker leaves in the cache is held before other requests' for the marker's time (5 minutes, an hour with `ttl: "1h"`) when the server needs a place, and never keeps a request waiting. Any request can ask the same with `cache_pin_seconds`.
+- A Qwen3.8-Flash-Next config whose n-gram embedding sizes make no embedding (an n-gram size of 0, sizes whose product does not fit) is refused in words; an n-gram size of 0 was a panic in a development build (found by the fuzzer).

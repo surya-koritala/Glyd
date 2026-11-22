@@ -147,8 +147,10 @@ impl ConfigQx {
                 }
                 let (ngram, heads) = (u_or("ngram_size", 3)?, u_or("heads_per_ngram", 8)?);
                 let dim = u_or("ple_embed_dim", u("hidden_size")?)?;
-                if ngram < 2 || heads == 0 || !dim.is_multiple_of(heads * (ngram - 1)) {
-                    return err(format!("{label}: an n-gram embedding of {dim} over {} heads", heads * (ngram - 1)));
+                // (the numbers are a file's: an n-gram size of 0, or sizes whose product does not fit, is refused in words like any other)
+                let over = heads.checked_mul(ngram.saturating_sub(1)).filter(|&n| ngram >= 2 && n > 0);
+                if over.is_none_or(|n| !dim.is_multiple_of(n)) {
+                    return err(format!("{label}: an n-gram embedding of {dim} over {heads} heads for each of n-grams of {ngram}"));
                 }
                 Some(PleDims { layer: layer - 1, dim, kernel: u_or("ple_conv_kernel_size", 4)?, ngram, heads })
             }
@@ -371,5 +373,29 @@ mod tests {
         assert_eq!(shapes(3), [(13312, 2560), (2560, 6144), (640, 2560), (1280, 2560), (2560, 640)]);
         assert_eq!(c.layer_name(48), "mtp.layers.0");
         assert_eq!(c.ple_pack().map(|p| (p.rows(), p.cols)), Some((12800, 2560)));
+    }
+
+    /// The n-gram embedding's sizes are refused in words where they make no embedding: a size of 0 or 1, no heads, sizes whose product does not fit a word (the fuzzer's
+    /// find: an n-gram size of 0 was a subtraction below zero in the refusal itself).
+    #[test]
+    fn n_gram_sizes_that_make_no_embedding_are_refused() {
+        let text = include_str!("../tests/fixtures/qwen4x_config.json");
+        // (the fixture's own: "ngram_size": 3 and "heads_per_ngram": 8)
+        let with = |key: &str, value: &str| {
+            let had = format!("\"{key}\": {}", if key == "ngram_size" { 3 } else { 8 });
+            assert!(text.contains(&had), "{had}");
+            ConfigQx::parse(&text.replace(&had, &format!("\"{key}\": {value}")), "qx", None)
+        };
+        for (key, value) in [
+            ("ngram_size", "0"),
+            ("ngram_size", "1"),
+            ("heads_per_ngram", "0"),
+            ("heads_per_ngram", "18446744073709551615"),
+            ("ngram_size", "18446744073709551615"),
+        ] {
+            let e = with(key, value).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(e.contains("n-gram embedding"), "{key} {value}: {e}");
+        }
+        assert!(with("ngram_size", "3").is_ok());
     }
 }
