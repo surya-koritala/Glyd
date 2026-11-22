@@ -6,6 +6,7 @@ pub mod deepseek_v4;
 pub mod gemma4;
 pub mod glm;
 pub mod kimi;
+pub mod lower;
 pub mod muse;
 pub mod nemotron;
 pub mod pages;
@@ -502,7 +503,7 @@ pub struct V4Dims {
 }
 
 /// cos and sin [positions, pairs] of pairs i < `pairs` of a head of `dim`: inv_freq_i = theta^(-2i / dim).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Rope {
     pub theta: f64,
     pub dim: usize,
@@ -510,14 +511,14 @@ pub struct Rope {
 }
 
 /// A layer's keys and values, `nk` heads of `d`: a ring of the window and a chunk where `window` > 0, else the whole context.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Ring {
     pub d: usize,
     pub nk: usize,
     pub window: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ModelDesc {
     pub family: &'static str,
     pub hidden: usize,
@@ -2828,7 +2829,7 @@ pub fn prodbench(a: &crate::args::Args) -> Result<()> {
     use crate::dev::Timer;
     let dir = Path::new(a.need(1, "MODEL")?);
     let c = crate::gemma4::ConfigG4::load(dir)?;
-    let d = gemma4::describe(&c);
+    let d = gemma4::lowered(dir, &c)?;
     let (layers, reps) = (a.num("layers", 12usize)?.min(d.layers.len()), a.num("reps", 20usize)?);
     let dev = Dev::new(0)?;
     let lib = Lib::find()?;

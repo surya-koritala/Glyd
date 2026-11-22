@@ -51,6 +51,9 @@ pub struct Described {
     /// Matrices stored quantized (FP8 blocks as released, FP4 experts), each with the tensor of its scales. The weight map names them;
     /// decoding a stored format is the tensor source's job.
     pub scales: std::collections::BTreeMap<String, String>,
+    /// Each tensor's shape as the config makes it, where the builder says it (Gemma 4's: its matrices, norms and scalars; empty for the builders that do not yet):
+    /// what a lowering to the executor sizes its matrices by, for a packed directory too, whose tensors are not stored at their shapes.
+    pub shapes: std::collections::BTreeMap<String, Vec<usize>>,
 }
 
 impl Described {
@@ -371,6 +374,7 @@ fn finish(k: &Keys, desc: ModelDesc, prefix: &str, blocks: Vec<Vec<(String, Sour
         extra: Vec::new(),
         mtp_layers,
         scales: Default::default(),
+        shapes: Default::default(),
     })
 }
 
@@ -602,7 +606,8 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
 
 fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
     let k = Keys::new(tc, mt);
-    let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
+    // (transformers' Gemma 4 ties the head to the embedding unless the config says otherwise, where Llama and Qwen default to a head of their own)
+    let (d, layers, vocab, eps, tied) = common(&k, tied_top.or(Some(true)))?;
     let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
     // the global layers' head dim and KV heads: the release's keys, or (transformers 5.18 writes these instead) `per_layer_config`
     let per = match k.raw("per_layer_config") {
@@ -628,7 +633,7 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     if k.str("use_bidirectional_attention")? == Some("all") {
         return err(format!("{mt}: bidirectional attention for text is not supported"));
     }
-    k.usize("intermediate_size")?;
+    let inter = k.usize("intermediate_size")?;
     let act = act(k.str("hidden_activation")?.or(k.str("hidden_act")?).unwrap_or("gelu_pytorch_tanh"))?;
     let softcap = k.opt_f64("final_logit_softcapping")?.map(|v| v as f32);
     let rps = match k.raw("rope_parameters") {
@@ -718,7 +723,37 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         vision: None,
         rope: None,
     };
-    finish(&k, desc, prefix, roles, 0)
+    let mut out = finish(&k, desc, prefix, roles, 0)?;
+    // (the shapes: each matrix [rows, columns] as the layer's heads and widths make it, each norm and scalar its width)
+    let mut shapes = std::collections::BTreeMap::new();
+    for (l, ty) in types.iter().enumerate() {
+        let (h, kvh) = if ty == "sliding_attention" { (hd, kv) } else { (ghd, gkv) };
+        let p = format!("{prefix}layers.{l}");
+        let a = format!("{p}.self_attn");
+        for (x, s) in [
+            ("q_proj", vec![heads * h, d]),
+            ("k_proj", vec![kvh * h, d]),
+            ("v_proj", vec![kvh * h, d]),
+            ("o_proj", vec![d, heads * h]),
+            ("q_norm", vec![h]),
+            ("k_norm", vec![h]),
+        ] {
+            shapes.insert(format!("{a}.{x}.weight"), s);
+        }
+        for (x, s) in [("gate_proj", vec![inter, d]), ("up_proj", vec![inter, d]), ("down_proj", vec![d, inter])] {
+            shapes.insert(format!("{p}.mlp.{x}.weight"), s);
+        }
+        for x in ["input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm", "post_feedforward_layernorm"] {
+            shapes.insert(format!("{p}.{x}.weight"), vec![d]);
+        }
+        shapes.insert(format!("{p}.layer_scalar"), vec![1]);
+    }
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    let named = out.names();
+    shapes.retain(|n, _| named.contains(n));
+    out.shapes = shapes;
+    Ok(out)
 }
 
 /// FP8 block quantization as released (`quantization_config`): which matrices hold FP8 and their block.
@@ -1303,6 +1338,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
         ],
         mtp_layers,
         scales,
+        shapes: Default::default(),
     })
 }
 
@@ -1723,6 +1759,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         extra: ["fn", "base", "scale"].iter().map(|x| (format!("out_hc_{x}"), t(format!("{}{x}", names[3])))).collect(),
         mtp_layers,
         scales,
+        shapes: Default::default(),
     })
 }
 
@@ -1947,5 +1984,6 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
         extra: Vec::new(),
         mtp_layers,
         scales: Default::default(),
+        shapes: Default::default(),
     })
 }

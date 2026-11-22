@@ -660,7 +660,7 @@ impl Weights {
 }
 
 /// A matrix to pack: the checkpoint's tensors stacked by rows (q, k, v; gate, up; or one).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct Item {
     pub members: Vec<String>,
     pub rows: usize,

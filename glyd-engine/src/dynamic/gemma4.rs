@@ -4,6 +4,17 @@
 use super::{ModelDesc, Op, Ring, Rope, Slot};
 use crate::gemma4::{ConfigG4, KindG4};
 
+/// Gemma 4's executor description from the config.json in `dir` (R3a): the layer kinds the description builder reads from it, lowered to the executor's operations
+/// (`lower::gemma4`) and sized by the shapes it gives; `c` the same config as the family's reader takes it, for its end tokens and its context. What every loader of
+/// the executor's Gemma 4 runs; `describe` below is the description it is held to.
+pub fn lowered(dir: &std::path::Path, c: &ConfigG4) -> crate::ffi::Result<ModelDesc> {
+    let p = dir.join("config.json");
+    let text = std::fs::read_to_string(&p).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
+    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
+    let kinds = crate::runtime::describe::describe(&cfg)?;
+    super::lower::gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos)
+}
+
 pub fn describe(c: &ConfigG4) -> ModelDesc {
     let p = &c.prefix;
     let mats = c.items();

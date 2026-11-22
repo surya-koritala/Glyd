@@ -629,7 +629,7 @@ fn load_dyn(dir: &Path, ctx: usize, chunk: usize, graph: bool, layout: Option<La
         Some((d, k)) => Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&ConfigG4::load_for(d, true)?, &c), k }),
         None => None,
     };
-    crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::describe(&c), spec, &crate::dynamic::Opts { ctx, chunk, graph, device: 0, layout })
+    crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, spec, &crate::dynamic::Opts { ctx, chunk, graph, device: 0, layout })
 }
 
 /// `g4check MODEL REF.json [--layout L] [--ctx N] [--chunk N] [--no-graph] [--split ...]`: the description executor against transformers' reference
@@ -650,7 +650,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let mut e: Box<dyn Pass> = if a.flag("split").is_some() {
         let c = ConfigG4::load(dir)?;
         let so = crate::dynamic::Opts { ctx, chunk, graph, device: 0, layout };
-        let sp = split_of(a, dir, crate::dynamic::gemma4::describe(&c), &so)?.expect("--split given");
+        let sp = split_of(a, dir, crate::dynamic::gemma4::lowered(dir, &c)?, &so)?.expect("--split given");
         eprintln!("loaded in {:.1} s: {}", t0.elapsed().as_secs_f64(), sp.describe());
         Box::new(sp)
     } else {

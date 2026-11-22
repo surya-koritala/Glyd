@@ -555,7 +555,7 @@ fn glm_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 fn gemma4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     let c = crate::gemma4::ConfigG4::load(dir)?;
     let o = DynOpts { ctx: 1024, chunk: 64, graph: false, device: 0, layout: level_layout(level)? };
-    boxed(Dyn::new(dir, crate::dynamic::gemma4::describe(&c), None, &o))
+    boxed(crate::dynamic::gemma4::lowered(dir, &c).and_then(|d| Dyn::new(dir, d, None, &o)))
 }
 
 /// A small Gemma 4 of the 12B's layer kinds (sliding layers, and a global one whose keys are its values), the heads the engine runs (256 and 512), a soft-capped tied head, at random (a fixed seed).
@@ -1490,7 +1490,7 @@ fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
     Ok(match case {
         "gemma4" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
-            Dyn::new(dir, crate::dynamic::gemma4::describe(&c), None, o)?
+            Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" => crate::dynamic::qwen35::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
