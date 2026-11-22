@@ -276,13 +276,13 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             }
             Ok(())
         }
-        "g4check" => glyd_engine::model_gemma4::check(a),
-        "i4xcheck" => glyd_engine::model_gemma4::i4x_check(a),
-        "g4spec" => glyd_engine::model_gemma4::spec_check(a),
-        "g4tok" => glyd_engine::model_gemma4::tok_check(a),
-        "g4score" => glyd_engine::model_gemma4::score(a),
-        "g4prefill" => glyd_engine::model_gemma4::prefill_prof(a),
-        "g4fatest" => glyd_engine::model_gemma4::fa_test(a),
+        "g4check" => glyd_engine::gemma4::check(a),
+        "i4xcheck" => glyd_engine::gemma4::i4x_check(a),
+        "g4spec" => glyd_engine::gemma4::spec_check(a),
+        "g4tok" => glyd_engine::gemma4::tok_check(a),
+        "g4score" => glyd_engine::gemma4::score(a),
+        "g4prefill" => glyd_engine::gemma4::prefill_prof(a),
+        "g4fatest" => glyd_engine::gemma4::fa_test(a),
         "qxbench" => glyd_engine::kcheck_qwen4x::bench(a),
         "qxprod" => glyd_engine::kcheck_qwen4x::bench_products(a),
         "qxtq" => glyd_engine::qx_trellis::cmd(a),
@@ -783,7 +783,7 @@ fn cmd_pack(a: &Args) -> Result<()> {
         return err("GLM-5.3-Flash is packed at a lossy level: --layout i6 or i5");
     }
     // (a Gemma 4 model has no Qwen3 config either: its layout is the one asked, penguin's where none is)
-    let gemma = glyd_engine::model_gemma4::ConfigG4::load(&src.dir).is_ok();
+    let gemma = glyd_engine::gemma4::ConfigG4::load(&src.dir).is_ok();
     let layout = match a.layout()?.filter(|l| gemma || matches!(l, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3)) {
         Some(l) => l,
         None if gemma => Layout::Tiered,

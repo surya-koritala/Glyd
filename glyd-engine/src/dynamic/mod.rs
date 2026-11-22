@@ -18,11 +18,11 @@ pub mod tp_cache;
 
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Ev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result};
+use crate::gemma4::{attn_smem, fa_smem, pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS, FA512B_SMEM, PART_WARPS, SPLITS};
 use crate::kern::{norm_threads, Kern};
 use crate::kern35::{Kern35, Mat, ATTN_PART, ATTN_SPLITS};
 use crate::launch;
 use crate::model::{embed_plan, Sample, TopGpu};
-use crate::model_gemma4::{attn_smem, fa_smem, pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS, FA512B_SMEM, PART_WARPS, SPLITS};
 use crate::model_nh::{KernNh, MoeBlock, SsdWs, NH_PART, NH_SPLITS};
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
@@ -2812,7 +2812,7 @@ pub fn prodcheck(a: &crate::args::Args) -> Result<()> {
 pub fn prodbench(a: &crate::args::Args) -> Result<()> {
     use crate::dev::Timer;
     let dir = Path::new(a.need(1, "MODEL")?);
-    let c = crate::model_gemma4::ConfigG4::load(dir)?;
+    let c = crate::gemma4::ConfigG4::load(dir)?;
     let d = gemma4::describe(&c);
     let (layers, reps) = (a.num("layers", 12usize)?.min(d.layers.len()), a.num("reps", 20usize)?);
     let dev = Dev::new(0)?;

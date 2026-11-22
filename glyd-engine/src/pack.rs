@@ -95,9 +95,9 @@ pub fn glm_plan(c: &ConfigGlm) -> String {
     plan_json(&c.packs(), &c.kept(), &|_| false, &|_| None)
 }
 
-/// The plan of a dense Gemma 4 model (src/model_gemma4.rs reads it back): per layer its projection (q, k and, where it has one, v, fused under q's name), o, gate and up (under gate's), down,
+/// The plan of a dense Gemma 4 model (src/gemma4.rs reads it back): per layer its projection (q, k and, where it has one, v, fused under q's name), o, gate and up (under gate's), down,
 /// then its norms, q and k norms and scalar copied; the embedding (the tied LM head) packed and the final norm copied. None of the vision or audio towers.
-pub fn gemma4_plan(c: &crate::model_gemma4::ConfigG4) -> String {
+pub fn gemma4_plan(c: &crate::gemma4::ConfigG4) -> String {
     let q = |n: &str| format!("\"{n}\"");
     let lin = |names: &[String]| {
         let n = names.iter().map(|x| q(x)).collect::<Vec<_>>().join(", ");
@@ -135,7 +135,7 @@ pub fn gemma4_plan(c: &crate::model_gemma4::ConfigG4) -> String {
 /// The save plan of the lossy level `level` for the model in `dir` where it is a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash one (`qwen35_plan`, `nemotron_plan`, `glm_plan`), else none. A config of GLM-5.3-Flash that the
 /// engine does not run is an error that says why, not a model of no known kind.
 fn level_plan(dir: &Path, level: Layout) -> Result<Option<String>> {
-    if let Ok(g) = crate::model_gemma4::ConfigG4::load(dir) {
+    if let Ok(g) = crate::gemma4::ConfigG4::load(dir) {
         return Ok(Some(gemma4_plan(&g)));
     }
     let glm = if std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| crate::glm::is_glm(&t)) { Some(ConfigGlm::load(dir)?) } else { None };
@@ -159,7 +159,7 @@ pub fn run(model: &str, out: &Path, threads: usize, layout: Layout) -> Result<()
 /// `run`, saying nothing where `quiet` (a caller with a bar of its own).
 pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
     let source = io(Source::find(model))?;
-    let gemma = crate::model_gemma4::ConfigG4::load(&source.dir).is_ok();
+    let gemma = crate::gemma4::ConfigG4::load(&source.dir).is_ok();
     let t0 = Instant::now();
     let mut have = out.join("glyd.json").exists();
     if have && crate::weights::earlier_format(out).is_some() {

@@ -531,29 +531,11 @@ fn glm_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 }
 
 /// Gemma 4 on the hand-written dense engine.
-struct Gemma4(crate::model_gemma4::EngineG4);
-
-impl Run for Gemma4 {
-    fn describe(&self) -> String {
-        self.0.describe()
-    }
-    fn reset(&mut self) -> Result<()> {
-        self.0.reset()
-    }
-    fn prefill(&mut self, t: &[u32]) -> Result<()> {
-        self.0.prefill(t).map(|_| ())
-    }
-    fn step(&mut self, t: u32) -> Result<()> {
-        self.0.step(t).map(|_| ())
-    }
-    fn logits(&mut self) -> Result<Vec<f32>> {
-        self.0.logits()
-    }
-}
-
+/// Gemma 4 on the description executor, as `serve` runs it (no draft model).
 fn gemma4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let o = crate::model_gemma4::OptsG4 { ctx: 1024, chunk: 64, layout: level_layout(level)?, ..Default::default() };
-    Ok(Box::new(Gemma4(crate::model_gemma4::EngineG4::new(dir, &o)?)))
+    let c = crate::gemma4::ConfigG4::load(dir)?;
+    let o = DynOpts { ctx: 1024, chunk: 64, graph: false, device: 0, layout: level_layout(level)? };
+    boxed(Dyn::new(dir, crate::dynamic::gemma4::describe(&c), None, &o))
 }
 
 /// A small Gemma 4 of the 12B's layer kinds (sliding layers, and a global one whose keys are its values), the heads the engine runs (256 and 512), a soft-capped tied head, at random (a fixed seed).
@@ -564,7 +546,7 @@ pub fn gemma4_random(out: &Path) -> Result<()> {
         "layer_types": ["sliding_attention", "sliding_attention", "sliding_attention", "full_attention"], "final_logit_softcapping": 30.0, "max_position_embeddings": 4096,
         "enable_moe_block": false, "hidden_size_per_layer_input": 0, "hidden_activation": "gelu_pytorch_tanh",
         "rope_parameters": {"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}, "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.25, "rope_type": "proportional"}}}}"#;
-    let c = crate::model_gemma4::ConfigG4::parse(text, None, false)?;
+    let c = crate::gemma4::ConfigG4::parse(text, None, false)?;
     let mut r = 0x2026_1120_0000_0004u64;
     let mut uni = move |a: f32, b: f32| {
         r ^= r << 13;
@@ -1073,21 +1055,14 @@ fn nemotron_legacy(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     Ok(Box::new(LegacyNh(crate::model_nh::EngineNh::new(dir, &o, Some(&make))?)))
 }
 
-/// Gemma 4 on the description executor, as `serve` runs it (no draft model).
-fn gemma4_dyn(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let c = crate::model_gemma4::ConfigG4::load(dir)?;
-    let o = DynOpts { ctx: 1024, chunk: 64, graph: false, device: 0, layout: level_layout(level)? };
-    boxed(Dyn::new(dir, crate::dynamic::gemma4::describe(&c), None, &o))
-}
-
 /// The cases whose families still have a hand-written engine: (case, the hand-written engine, the description path).
 type Pair = (&'static str, fn(&Path, &str) -> Result<Box<dyn Run>>, fn(&Path, &str) -> Result<Box<dyn Run>>);
 
 fn legacy_pairs() -> Vec<Pair> {
-    vec![("gemma4", gemma4_engine, gemma4_dyn), ("nemotron-h", nemotron_legacy, nemotron_engine)]
+    vec![("nemotron-h", nemotron_legacy, nemotron_engine)]
 }
 
-/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each family that still has a hand-written engine (Gemma 4, Nemotron-H; Qwen3.5's went in R3b) on
+/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each family that still has a hand-written engine (Nemotron-H; Qwen3.5's and Gemma 4's went in R3b) on
 /// it and on the description executor, the same random model, prompt and decode tokens as its R7 fixture, at each level the fixture bounds
 /// that the hand-written engine runs: rows with the same bits, the same best token, KL of the description path from the hand-written one.
 /// The record R3b deletes the engines on (docs/design/runtime.md §7: no old path survives its parity record). Exit 1 where a row's best
@@ -1176,8 +1151,7 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
         let c = find_case(id)?;
         let dir = model_dir(&c, &scratch.dir)?;
         let fx = Fixture::read(&fixture_files(&fixtures, id)?[0])?;
-        // (the description path where the family has one; Qwen3.5's lossy levels run on it, and Gemma 4's are served on it)
-        let engine: fn(&Path, &str) -> Result<Box<dyn Run>> = if id == "gemma4" { gemma4_dyn } else { c.engine };
+        let engine = c.engine;
         let mut base = match engine(&dir, "penguin") {
             Ok(r) => r,
             Err(e) => {
@@ -1533,7 +1507,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let mut e: Dyn = match case {
         "gemma4" => {
             gemma4_random(&dir)?;
-            let c = crate::model_gemma4::ConfigG4::load(&dir)?;
+            let c = crate::gemma4::ConfigG4::load(&dir)?;
             Dyn::new(&dir, crate::dynamic::gemma4::describe(&c), None, &o)?
         }
         "qwen35" => {

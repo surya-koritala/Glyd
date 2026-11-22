@@ -28,7 +28,7 @@ on:
       - 'glyd-engine/src/qwen35.rs'
       - 'glyd-engine/src/qwen4x.rs'
       - 'glyd-engine/src/deepseek_v4.rs'
-      - 'glyd-engine/src/model_gemma4.rs'
+      - 'glyd-engine/src/gemma4.rs'
       - 'src/safetensors.rs'
   schedule:
     - cron: '17 3 * * *'
