@@ -180,6 +180,9 @@ jobs:
             # (one sequence's logits by what its step holds beside it, against its row alone: what the other sequences hold changes nothing, and a step of 16 rows or fewer is the row's own
             # pass bit for bit; the larger steps are counted. logits.rs roundcheck)
             "$E" roundcheck "$c"
+            # (a finished sequence kept in its slot and gone on with, as a conversation's next turn does: against a sequence that ran the same tokens and never ended, bit for bit;
+            # through the scheduler, the prompt tokens found and the reply. logits.rs keepcheck)
+            "$E" keepcheck "$c"
           done
           # (more users than the dense engine's 8 rows: 16 at once, prompts one a pass)
           GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 16 --level penguin

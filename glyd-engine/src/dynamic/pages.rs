@@ -121,6 +121,32 @@ impl Pages {
         }
     }
 
+    /// Sequence `slot` cut back to its first `upto` tokens: the blocks past them back in their pools, so that it goes on from there as one that had grown no further. False, and
+    /// nothing changes, where a group no longer holds what a step at `upto` reads: a sliding group gives back the blocks behind its window and `slack` tokens (a chunk: what `keep`
+    /// holds beyond the window) as the sequence grows, so one that grew more than `slack` past `upto` cannot be cut there.
+    pub fn shrink(&mut self, slot: usize, upto: usize, slack: usize) -> bool {
+        let hi = upto.div_ceil(BLOCK);
+        for g in 0..self.pools.len() {
+            let lo = match self.pools[g].keep {
+                Some(k) => upto.saturating_sub(k.saturating_sub(slack)) / BLOCK,
+                None => 0,
+            };
+            if (lo.min(hi)..hi).any(|b| self.tabs[slot][g][b] == 0) {
+                return false;
+            }
+        }
+        for g in 0..self.pools.len() {
+            for b in hi..self.tabs[slot][g].len() {
+                let blk = std::mem::take(&mut self.tabs[slot][g][b]);
+                if blk != 0 {
+                    self.pools[g].free.push(blk);
+                    self.mark(slot, g, b);
+                }
+            }
+        }
+        true
+    }
+
     fn mark(&mut self, slot: usize, g: usize, b: usize) {
         let d = &mut self.dirty[slot][g];
         *d = Some(d.map_or((b, b + 1), |(lo, hi)| (lo.min(b), hi.max(b + 1))));
@@ -164,6 +190,33 @@ mod tests {
         assert_eq!(all.len(), 32);
         p.release(0);
         assert_eq!((p.held(0), p.held(1), p.free(0).0, p.free(1).0), (0, 0, 199, 199));
+    }
+
+    /// A sequence cut back holds what one that grew no further holds where a step can read, and gives the rest back; it cannot be cut to where a sliding group has given blocks back.
+    #[test]
+    fn a_sequence_is_cut_back_where_its_blocks_still_are() {
+        // (a window of 64 and a chunk of 32 kept behind the newest token)
+        let mut p = Pages::new(&[200, 200], &[None, Some(64 + 32)], 2, 1024);
+        assert!(p.grow(0, 500));
+        let free = (p.free(0).0, p.free(1).0);
+        // cut by less than a chunk: tokens 404.. are held, a step at 480 reads from 416
+        assert!(p.shrink(0, 480, 32));
+        assert_eq!(p.held(0), 30, "the full group holds 480 tokens' blocks");
+        assert!(p.table(0, 0)[30..].iter().all(|&b| b == 0) && p.table(0, 1)[30..].iter().all(|&b| b == 0));
+        assert_eq!((p.free(0).0, p.free(1).0), (free.0 + 2, free.1 + 2));
+        // it grows again as any sequence of 480 tokens does, and every block it holds is its own
+        assert!(p.grow(0, 500));
+        let mut all: Vec<u32> = p.table(0, 1).iter().copied().filter(|&b| b != 0).collect();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), p.held(1));
+        // cut by more than a chunk: a step at 300 reads from 236, whose blocks went back at 500 tokens; nothing changes
+        let before: Vec<u32> = p.table(0, 1).to_vec();
+        assert!(!p.shrink(0, 300, 32));
+        assert_eq!(p.table(0, 1), &before[..]);
+        // a sequence that never gave a block back is cut anywhere
+        assert!(p.grow(1, 90) && p.shrink(1, 20, 32));
+        assert_eq!((p.held(0) - 32, p.table(1, 1).iter().filter(|&&b| b != 0).count()), (2, 2));
     }
 
     /// Growth takes blocks in every group or in none; a sequence past the context never grows.

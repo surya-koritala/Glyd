@@ -866,6 +866,10 @@ pub struct Dyn {
     /// The sequences this engine holds (`add_seqs`): None at `seq`, the one in the fields above (kc, vc, states, n, pending, verify, graph); `select` swaps another in.
     seqs: Vec<Option<Seq>>,
     seq: usize,
+    /// A served model with recurrent states: each sequence's states as they were at a mark (`ModelStep::mark`: its prompt's end), [slot][state], and the tokens it held there (0: no
+    /// mark). A kept sequence that cannot be cut back anywhere goes on from its mark (src/dynamic/rows.rs `resume`). Empty where the model has no such state or keeps nothing.
+    snaps: Vec<Vec<Buf>>,
+    snap_n: Vec<usize>,
     /// A pass over the rows of several sequences (src/dynamic/rows.rs): each sequence's rows (first row, rows, its caches), the operation running on one of them now (its index), and the rows
     /// the head reads, moved to the pass's last rows first. Empty outside such a pass.
     parts: Vec<rows::Part>,
@@ -1215,6 +1219,8 @@ impl Dyn {
             vpart: None,
             seqs: vec![None],
             seq: 0,
+            snaps: Vec::new(),
+            snap_n: Vec::new(),
             parts: Vec::new(),
             at: std::cell::Cell::new(None),
             head_rows: Vec::new(),

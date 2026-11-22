@@ -1606,6 +1606,34 @@ fn row_diff(want: &[f32], got: &[f32]) -> (usize, f32, f64, bool) {
     (differ, max, kl.max(0.0), top(want) == top(got))
 }
 
+/// Room in a step's slot for its sequence's first `upto` tokens, as the scheduler asks for it before a pass.
+fn room(s: &mut dyn crate::sched::ModelStep, slot: i32, upto: usize) -> Result<()> {
+    if s.grow(slot, upto)? {
+        Ok(())
+    } else {
+        err(format!("no room for {upto} tokens in sequence {slot}"))
+    }
+}
+
+/// Tokens `t` into a step's slot from position `start` on, alone, `by` tokens a pass; the logits after them where `last`.
+fn fill_from(s: &mut dyn crate::sched::ModelStep, slot: i32, start: usize, t: &[u32], by: usize, last: bool) -> Result<Option<Vec<f32>>> {
+    room(s, slot, start + t.len() + 1)?;
+    let n = t.len().div_ceil(by);
+    for (i, part) in t.chunks(by).enumerate() {
+        s.prefill(&[slot], start + i * by, part, last && i + 1 == n)?;
+    }
+    if last {
+        s.logits(0).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// A prompt alone in a step's slot from its first token (`fill_from`).
+fn fill(s: &mut dyn crate::sched::ModelStep, slot: i32, t: &[u32], by: usize, last: bool) -> Result<Option<Vec<f32>>> {
+    fill_from(s, slot, 0, t, by, last)
+}
+
 /// `roundcheck CASE [--level L] [--tokens T] [--users N] [--dir MODEL --ctx N --chunk N [--random-tokens]] [--kl BOUND]` (gemma4, qwen35, muse, kimi, glm; R4a's round that is one step): what a sequence's logits are by
 /// what its step holds beside it. The case's random model (or the model in MODEL, a real one) as a scheduler's step, and one sequence whose tokens are given, not sampled, so that every way
 /// runs the same tokens: its row alone in a step (the reference: a reply alone), with other sequences' rows (decode steps of 2 to 64 rows), and with another sequence's prompt chunk in the
@@ -1657,26 +1685,6 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
     let toks = |n: usize, seed: u32| -> Vec<u32> { (0..n as u32).map(|i| 3 + (i * 7919 + seed * 104_729) % (vocab - 3)).collect() };
     let passage = |n: usize, from: usize| -> Option<Vec<u32>> { text.as_ref().map(|t| (0..n).map(|i| t[(from + i) % t.len()]).collect()) };
     let (pa, fa) = (passage(40, 0).unwrap_or_else(|| toks(40, 1)), passage(steps, 40).unwrap_or_else(|| toks(steps, 2)));
-    fn room(s: &mut dyn ModelStep, slot: i32, upto: usize) -> Result<()> {
-        if s.grow(slot, upto)? {
-            Ok(())
-        } else {
-            err(format!("no room for {upto} tokens in sequence {slot}"))
-        }
-    }
-    // a prompt alone, `by` tokens a pass; the logits after it where `last`
-    fn fill(s: &mut dyn ModelStep, slot: i32, t: &[u32], by: usize, last: bool) -> Result<Option<Vec<f32>>> {
-        room(s, slot, t.len() + 1)?;
-        let n = t.len().div_ceil(by);
-        for (i, part) in t.chunks(by).enumerate() {
-            s.prefill(&[slot], i * by, part, last && i + 1 == n)?;
-        }
-        if last {
-            s.logits(0).map(Some)
-        } else {
-            Ok(None)
-        }
-    }
     // the reference: the sequence alone, a row a step
     fill(s, 0, &pa, chunk, false)?;
     let mut reference = Vec::new();
@@ -1815,6 +1823,230 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
+/// `keepcheck CASE [--level L]` (gemma4, qwen35, muse, kimi, glm; R4c's first step): a finished sequence kept in its slot and gone on with, as a conversation's next turn does
+/// (`ModelStep::resume` and `mark`, src/dynamic/rows.rs), on the case's random model. Every comparison is of logits, bit for bit, against a second slot that ran the same tokens
+/// in the same passes and was never resumed:
+///   - the whole of a sequence (a prompt, then tokens a step at a time) gone on with a further chunk: every family;
+///   - the sequence asked to go on from inside the tokens it wrote a step at a time: from there where the model has no recurrent state and no latent cache; from its prompt's end,
+///     which was marked, where it has recurrent states (their copy put back); refused, the slot left empty, where it has a latent cache;
+///   - a long sequence (9 chunks and 24 steps) cut back by 10 tokens and to its third chunk's end, or gone on from a mark at its third chunk's end: kept, or refused where the
+///     sliding layers' blocks behind the place were given back, and where kept the bits too;
+///   - through the scheduler: a conversation's second turn (the first's prompt and reply and more) goes on from all the first left, and another's second turn that leaves the reply
+///     out goes on from the prompt's end where the model can; the prompt tokens found are counted, and each reply is, token for token, what the same passes give by hand.
+pub fn keep_check(a: &crate::args::Args) -> Result<()> {
+    use crate::conv::Gen;
+    use crate::sched::{Ev, Finish, ModelStep, Reply, Row, Sched, Submit};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    let case = a.need(1, "CASE")?;
+    let level = a.flag("level").unwrap_or("penguin");
+    let mut e: Dyn = random_dyn(case, level, "keepcheck")?;
+    let (vocab, cuts, marks) = (e.desc().vocab as u32, e.cuts(), e.can_mark());
+    let Some((k, s)) = e.as_step(2)? else { return err(format!("{case}: no scheduler's step")) };
+    if k < 2 || !s.keeps() {
+        return err(format!("{case}: {k} sequences, a step that keeps: {}", s.keeps()));
+    }
+    let chunk = s.chunk();
+    let toks = |n: usize, seed: u32| -> Vec<u32> { (0..n as u32).map(|i| 3 + (i * 7919 + seed * 104_729) % (vocab - 3)).collect() };
+    // tokens a step at a time, each a row alone
+    fn steps(s: &mut dyn ModelStep, slot: i32, start: usize, t: &[u32]) -> Result<()> {
+        for (i, &tok) in t.iter().enumerate() {
+            room(s, slot, start + i + 2)?;
+            s.decode(&[Row { token: tok, pos: start + i, pages: &[slot] }])?;
+        }
+        Ok(())
+    }
+    // (0 or 1: whether the logits differ from the other slot's)
+    let same = |what: &str, want: &[f32], got: &[f32]| -> usize {
+        let (differ, max, _, _) = row_diff(want, got);
+        println!(
+            "{} {what}: {differ} of {} logits differ from the sequence that never ended, the largest by {max:e}",
+            if differ == 0 { "PASS" } else { "FAIL" },
+            want.len()
+        );
+        (differ > 0) as usize
+    };
+    // a slot a refused cut left: a prompt begins in it as in any empty one
+    let empty = |s: &mut dyn ModelStep, what: &str, t: &[u32]| -> Result<usize> {
+        let got = fill(s, 0, t, chunk, true)?.expect("the logits");
+        let want = fill(s, 1, t, chunk, true)?.expect("the logits");
+        Ok(same(what, &want, &got))
+    };
+    let mut fails = 0;
+    println!("{case} at {level}: a chunk {chunk}; a kept sequence can be cut back anywhere: {cuts}; its states are kept at a mark: {marks}");
+    let (p, g, tail, alt) = (toks(40, 1), toks(24, 2), toks(20, 3), toks(30, 4));
+    let n = p.len() + g.len();
+    // the whole of it
+    fill(s, 0, &p, chunk, false)?;
+    steps(s, 0, p.len(), &g)?;
+    let kept = s.resume(0, n)?;
+    if kept != n {
+        println!("FAIL the whole of a sequence of {n} tokens: {kept} kept");
+        fails += 1;
+    } else {
+        let got = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
+        fill(s, 1, &p, chunk, false)?;
+        steps(s, 1, p.len(), &g)?;
+        let want = fill_from(s, 1, n, &tail, chunk, true)?.expect("the logits");
+        fails += same(&format!("the whole of a sequence of {n} tokens, then {} more", tail.len()), &want, &got);
+    }
+    s.release(&[0, 1])?;
+    // inside the steps: from there, from the prompt's end (marked), or not at all
+    let cut = p.len() + 10;
+    fill(s, 0, &p, chunk, false)?;
+    s.mark(0, p.len())?;
+    steps(s, 0, p.len(), &g)?;
+    let kept = s.resume(0, cut)?;
+    let should = if cuts {
+        cut
+    } else if marks {
+        p.len()
+    } else {
+        0
+    };
+    if kept != should {
+        println!("FAIL a sequence of {n} tokens asked to go on within {cut}: {kept} kept, where {should} should be");
+        fails += 1;
+    } else if kept > 0 {
+        let got = fill_from(s, 0, kept, &alt, chunk, true)?.expect("the logits");
+        fill(s, 1, &p, chunk, false)?;
+        steps(s, 1, p.len(), &g[..kept - p.len()])?;
+        let want = fill_from(s, 1, kept, &alt, chunk, true)?.expect("the logits");
+        let place = if kept == cut { "there".to_string() } else { format!("its prompt's end, {kept}, where its states were kept") };
+        fails += same(&format!("a sequence of {n} tokens asked to go on within {cut}: from {place}, then {} others", alt.len()), &want, &got);
+    } else {
+        fails += empty(s, &format!("a sequence of {n} tokens asked to go on within {cut}: refused (a latent cache is what it is after the last token), the slot empty; a prompt in it"), &alt)?;
+    }
+    s.release(&[0, 1])?;
+    // a long sequence: 9 chunks, then 24 steps
+    let long = toks(9 * chunk, 7);
+    let all = long.len() + g.len();
+    if (cuts || marks) && all + alt.len() < s.window() {
+        // (the place asked for, where it should go on from, the steps a sequence that stops there took, and whether it must be kept: a cut by fewer tokens than a chunk always is)
+        let cases: Vec<(usize, usize, usize, bool)> = if cuts {
+            vec![(long.len() + 14, long.len() + 14, 14, true), (3 * chunk, 3 * chunk, 0, false)]
+        } else {
+            vec![(3 * chunk + 5, 3 * chunk, 0, false)]
+        };
+        for (ask, to, by_hand, must) in cases {
+            fill(s, 0, &long[..3 * chunk], chunk, false)?;
+            s.mark(0, 3 * chunk)?;
+            fill_from(s, 0, 3 * chunk, &long[3 * chunk..], chunk, false)?;
+            steps(s, 0, long.len(), &g)?;
+            let kept = s.resume(0, ask)?;
+            if kept == to {
+                let got = fill_from(s, 0, to, &alt, chunk, true)?.expect("the logits");
+                fill(s, 1, &long[..to.min(long.len())], chunk, false)?;
+                steps(s, 1, long.len(), &g[..by_hand])?;
+                let want = fill_from(s, 1, to, &alt, chunk, true)?.expect("the logits");
+                fails += same(&format!("a sequence of {all} tokens asked to go on within {ask}: from {to}, then {} others", alt.len()), &want, &got);
+            } else if kept == 0 && !must {
+                fails += empty(s, &format!("a sequence of {all} tokens asked to go on within {ask}: refused (the sliding layers' blocks behind it were given back), the slot empty; a prompt in it"), &alt)?;
+            } else {
+                println!("FAIL a sequence of {all} tokens asked to go on within {ask}: {kept} kept");
+                fails += 1;
+            }
+            s.release(&[0, 1])?;
+        }
+    }
+    // through the scheduler: a conversation's second turn (the prompt, the reply and more), and another's that leaves the reply out
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: 16,
+        ignore_eos: true,
+        logprobs: None,
+        stop_ids: Vec::new(),
+    };
+    let q = toks(40, 11);
+    let (r1, p2, r2, hit, q2, rq, hit_q) = {
+        // (the step lent for the scheduler's time alone)
+        let lent: &mut dyn ModelStep = &mut *s;
+        let mut sched = Sched::new(lent, 2);
+        let ask = |sched: &mut Sched<&mut dyn ModelStep>, prompt: &[u32]| -> Result<Vec<u32>> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            sched.submit(Submit {
+                prompt: prompt.to_vec(),
+                reply: reply.clone(),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                images: Vec::new(),
+            });
+            while !sched.idle() {
+                sched.tick()?;
+            }
+            let mut out = Vec::new();
+            loop {
+                match rx.recv().map_err(|_| Error("the scheduler dropped a sequence".into()))? {
+                    Ev::Token(t) => out.push(t),
+                    Ev::Lp(_) => {}
+                    Ev::End(Ok(Finish::Length)) => return Ok(out),
+                    Ev::End(f) => return err(format!("a sequence ended {f:?}")),
+                }
+            }
+        };
+        let r1 = ask(&mut sched, &p)?;
+        let p2: Vec<u32> = [&p[..], &r1[..], &toks(12, 9)[..]].concat();
+        let r2 = ask(&mut sched, &p2)?;
+        let hit = sched.stats.hit as usize;
+        ask(&mut sched, &q)?;
+        let q2: Vec<u32> = [&q[..], &toks(20, 12)[..]].concat();
+        let rq = ask(&mut sched, &q2)?;
+        (r1, p2, r2, hit, q2, rq, sched.stats.hit as usize - hit)
+    };
+    s.release(&[0, 1])?;
+    // the same passes by hand, each token the step's own choice (the tokens given are the scheduler's, so one that differs does not move the ones after it): the chunks one after
+    // another from `start`, the last one's sample, then the reply's tokens a step at a time
+    let replay = |s: &mut dyn ModelStep, start: usize, chunks: &[&[u32]], reply: &[u32]| -> Result<Vec<u32>> {
+        let (mut at, mut first) = (start, None);
+        for (i, c) in chunks.iter().enumerate() {
+            room(s, 0, at + c.len() + 1)?;
+            first = s.prefill(&[0], at, c, i + 1 == chunks.len())?;
+            at += c.len();
+        }
+        let mut out = vec![first.ok_or_else(|| Error("no sample after a chunk".into()))?.token];
+        for (i, &t) in reply[..reply.len() - 1].iter().enumerate() {
+            room(s, 0, at + i + 2)?;
+            out.push(s.decode(&[Row { token: t, pos: at + i, pages: &[0] }])?[0].token);
+        }
+        Ok(out)
+    };
+    // (the first turn left the prompt and its reply but the last token in the slot)
+    let held = p.len() + r1.len() - 1;
+    let first = replay(s, 0, &[&p], &r1)? == r1;
+    let second = replay(s, held, &[&p2[held..]], &r2)?;
+    s.release(&[0])?;
+    let ok = hit == held && first && second == r2;
+    fails += !ok as usize;
+    println!(
+        "{} a conversation's second turn through the scheduler: it went on from {hit} of its {} prompt tokens (the slot held {held}); its reply {}",
+        if ok { "PASS" } else { "FAIL" },
+        p2.len(),
+        if second == r2 {
+            "is the same passes' by hand, token for token".to_string()
+        } else {
+            format!("{r2:?} against {second:?} by hand (the first turn's the same: {first})")
+        }
+    );
+    // the turn that leaves the reply out: from the prompt's end where the model can (two passes by hand: the prompt, the rest), else from its first token (one)
+    let should = if cuts || marks { q.len() } else { 0 };
+    let by_hand = if hit_q > 0 { replay(s, 0, &[&q, &q2[q.len()..]], &rq)? } else { replay(s, 0, &[&q2], &rq)? };
+    s.release(&[0])?;
+    let ok = hit_q == should && by_hand == rq;
+    fails += !ok as usize;
+    println!(
+        "{} a second turn that leaves the reply out: it went on from {hit_q} of its {} prompt tokens (it should from {should}); its reply {}",
+        if ok { "PASS" } else { "FAIL" },
+        q2.len(),
+        if by_hand == rq { "is the same passes' by hand, token for token".to_string() } else { format!("{rq:?} against {by_hand:?} by hand") }
+    );
+    if fails > 0 {
+        return err(format!("keepcheck {case}: {fails} failed"));
+    }
+    println!("keepcheck {case}: PASS");
+    Ok(())
+}
+
 /// `usercheck CASE [--level L] [--users N] [--tokens T]` (gemma4, qwen35, muse, kimi, glm): the case's random model on the description executor, each of N prompts replied to alone as `run` replies (the reference),
 /// then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts
 /// one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step
@@ -1842,7 +2074,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let reference: Vec<Vec<u32>> = prompts.iter().map(|p| e.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<_>>()?;
     let batchable = e.batchable();
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
-    let mut s = Sched::new(step, k);
+    // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others)
+    let mut s = Sched::new(step, k).keeping(false);
     let ask = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>]| -> Result<Vec<Vec<u32>>> {
         let rx: Vec<_> = ps
             .iter()
