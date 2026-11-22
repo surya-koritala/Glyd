@@ -100,6 +100,23 @@ pub trait ModelStep {
     fn grow(&mut self, _slot: i32, _upto: usize) -> Result<bool> {
         Ok(true)
     }
+    /// A slot step that can keep a finished sequence in its slot for a request that begins with its tokens (`resume`): a conversation's next turn, which sends the turns before it again.
+    /// False: a finished sequence's slot is emptied at once.
+    fn keeps(&self) -> bool {
+        false
+    }
+    /// The finished sequence in `slot` cut back to go on within its first `upto` tokens, as if it had run no further: the tokens it still holds. That is `upto` where it can be cut
+    /// anywhere; a model with a recurrent state (the state after the sequence's last token and no other) goes on from its end or from its mark (`mark`), the nearest before `upto`;
+    /// 0, the slot then being empty, where it cannot go on from any place (no mark within, or blocks a cut needs were given back).
+    fn resume(&mut self, slot: i32, _upto: usize) -> Result<usize> {
+        self.release(&[slot])?;
+        Ok(0)
+    }
+    /// The sequence in `slot` holds `n` tokens and is at a place a later request may go on from (its prompt's end: a reply asked for again, or a next turn whose template leaves out
+    /// part of this reply, begins with these tokens and no more). A step that cannot cut a sequence back anywhere keeps what `resume` needs to go on from here.
+    fn mark(&mut self, _slot: i32, _n: usize) -> Result<()> {
+        Ok(())
+    }
     fn eos(&self) -> Vec<i64>;
     /// `tokens` at positions `start` on into `pages`; with `last`, the sample after the final token.
     fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>>;
@@ -281,6 +298,15 @@ impl ModelStep for &mut dyn ModelStep {
     fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
         (**self).grow(slot, upto)
     }
+    fn keeps(&self) -> bool {
+        (**self).keeps()
+    }
+    fn resume(&mut self, slot: i32, upto: usize) -> Result<usize> {
+        (**self).resume(slot, upto)
+    }
+    fn mark(&mut self, slot: i32, n: usize) -> Result<()> {
+        (**self).mark(slot, n)
+    }
     fn eos(&self) -> Vec<i64> {
         (**self).eos()
     }
@@ -358,6 +384,21 @@ struct Seq {
     trace: crate::otel::Clock,
 }
 
+/// A finished sequence kept in its slot (a slot step that `keeps`): the tokens whose keys and values, and states, the slot holds.
+struct Kept {
+    slot: i32,
+    tokens: Vec<u32>,
+}
+
+/// The fewest tokens of a kept sequence a request must begin with to go on in its slot. It must also begin with half of what the slot holds: a kept conversation is not cut down for
+/// the few tokens every prompt of a template begins with, nor for a system prompt that another conversation shares, unless that is most of it.
+const KEEP_LEAST: usize = 32;
+
+/// The tokens `a` and `b` both begin with.
+fn common(a: &[u32], b: &[u32]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
 /// The most sequences a slot step runs at once (the rows of a pass's head).
 pub const MAX_USERS: usize = 64;
 
@@ -400,6 +441,11 @@ pub struct Sched<B: ModelStep> {
     skips: u32,
     /// A slot step's free slots, the lowest last (None: the cache is pages).
     free: Option<Vec<i32>>,
+    /// A slot step's finished sequences kept in their slots, the oldest first: neither free nor running. A request that begins with one's tokens goes on in its slot; a request that
+    /// finds no free slot, or no room, has the oldest emptied.
+    kept: VecDeque<Kept>,
+    /// Whether finished sequences are kept (a slot step that `keeps`, unless `keeping(false)`).
+    keep: bool,
 }
 
 impl<B: ModelStep> Sched<B> {
@@ -413,6 +459,7 @@ impl<B: ModelStep> Sched<B> {
             None => users.clamp(1, MAX_ROWS),
         };
         let eos = be.eos();
+        let keep = slots.is_some() && be.keeps();
         let (emit, batches) = std::sync::mpsc::channel::<Vec<(Sender<Ev>, Ev)>>();
         std::thread::spawn(move || {
             for batch in batches {
@@ -437,7 +484,16 @@ impl<B: ModelStep> Sched<B> {
             pass_tokens: 0,
             skips: 0,
             free: slots.map(|k| (0..k as i32).rev().collect()),
+            kept: VecDeque::new(),
+            keep,
         }
+    }
+
+    /// The scheduler with finished sequences kept in their slots or not (kept by default where the step keeps): off for a check of what runs when every prompt begins at its
+    /// first token.
+    pub fn keeping(mut self, on: bool) -> Sched<B> {
+        self.keep = on && self.free.is_some() && self.be.keeps();
+        self
     }
 
     /// The scheduler with `rt` as its runtime context: a model of a process that serves more than one, or a test's.
@@ -465,16 +521,59 @@ impl<B: ModelStep> Sched<B> {
         self.active.is_empty() && self.waiting.is_empty()
     }
 
-    /// Pages that can be had now (free or only cached); a slot step's free slots.
+    /// Pages that can be had now (free or only cached); a slot step's slots that are free or only kept.
     pub fn available(&self) -> usize {
         match &self.free {
-            Some(f) => f.len(),
+            Some(f) => f.len() + self.kept.len(),
             None => self.pager.available(),
         }
     }
 
+    /// The finished sequences kept in their slots (a slot step that keeps them).
+    pub fn kept(&self) -> usize {
+        self.kept.len()
+    }
+
+    /// A slot step that keeps: sequence `i`'s prompt is all in its slot, a place a later request may go on from.
+    fn mark_prompt(&mut self, i: usize) -> Result<()> {
+        if self.keep {
+            let s = &self.active[i];
+            self.be.mark(s.pages[0], s.done)?;
+        }
+        Ok(())
+    }
+
+    /// The oldest kept sequence's slot emptied and free again; false where none is kept.
+    fn drop_kept(&mut self) -> Result<bool> {
+        let Some(k) = self.kept.pop_front() else { return Ok(false) };
+        self.be.release(&[k.slot])?;
+        let free = self.free.as_mut().expect("a slot step");
+        free.push(k.slot);
+        free.sort_unstable_by(|a, b| b.cmp(a));
+        Ok(true)
+    }
+
+    /// A slot for a sequence of `tokens`, and the tokens of it the slot already holds: the kept sequence it begins with the most of (at least KEEP_LEAST tokens and half of what is
+    /// kept, and never the prompt's last token, which is run for its logits), cut back to those; else a free slot; else the oldest kept one's, emptied. None: every slot is running.
+    fn take_slot(&mut self, tokens: &[u32]) -> Result<Option<(i32, usize)>> {
+        let head = &tokens[..tokens.len().saturating_sub(1)];
+        let best = self.kept.iter().enumerate().map(|(i, k)| (common(&k.tokens, head), i)).max();
+        if let Some((n, i)) = best.filter(|&(n, i)| n >= KEEP_LEAST && 2 * n >= self.kept[i].tokens.len()) {
+            let k = self.kept.remove(i).expect("a kept sequence");
+            return Ok(Some((k.slot, self.be.resume(k.slot, n)?)));
+        }
+        if let Some(slot) = self.free.as_mut().and_then(Vec::pop) {
+            return Ok(Some((slot, 0)));
+        }
+        if self.drop_kept()? {
+            return Ok(self.free.as_mut().and_then(Vec::pop).map(|slot| (slot, 0)));
+        }
+        Ok(None)
+    }
+
     /// Every cached page that no sequence holds given up and cleared (the extra memory they hold goes back): of a scheduler that is idle, nothing is held.
     pub fn clear_cache(&mut self) -> Result<()> {
+        while self.drop_kept()? {}
         let clear = self.pager.drop_cache();
         if clear.is_empty() {
             return Ok(());
@@ -623,6 +722,7 @@ impl<B: ModelStep> Sched<B> {
             // (every slot emptied)
             let all: Vec<i32> = (0..k as i32).collect();
             let _ = self.be.release(&all);
+            self.kept.clear();
             self.free = Some(all.into_iter().rev().collect());
             self.flush();
             self.gauges();
@@ -728,9 +828,19 @@ impl<B: ModelStep> Sched<B> {
             self.pending.push((s.out.clone(), Ev::End(Err(Error::of(Kind::Request, format!("{} tokens, where the context holds {window}", s.tokens.len()))))));
             return Ok(true);
         }
-        let Some(slot) = self.free.as_mut().and_then(Vec::pop) else { return Ok(false) };
-        // (room for the whole prompt and a token after it now: an admitted prompt runs; where there is none it waits for the running ones, and with nothing running it never fits)
-        if !self.be.grow(slot, self.waiting[k].tokens.len() + 1)? {
+        let Some((slot, held)) = self.take_slot(&self.waiting[k].tokens.clone())? else { return Ok(false) };
+        // (room for the whole prompt and a token after it now: an admitted prompt runs; where there is none the kept sequences give theirs up, the oldest first, then it waits for
+        // the running ones, and with nothing running it never fits)
+        let need = self.waiting[k].tokens.len() + 1;
+        let mut room = self.be.grow(slot, need)?;
+        while !room && self.drop_kept()? {
+            room = self.be.grow(slot, need)?;
+        }
+        if !room {
+            // (what the slot held of a kept sequence goes with it)
+            if held > 0 {
+                self.be.release(&[slot])?;
+            }
             self.free.as_mut().expect("a slot step").push(slot);
             if self.active.is_empty() {
                 let s = self.waiting.remove(k).expect("a waiting sequence");
@@ -746,9 +856,10 @@ impl<B: ModelStep> Sched<B> {
         let mut s = self.waiting.remove(k).expect("a waiting sequence");
         s.trace.admit();
         s.pages = vec![slot];
-        (s.done, s.published, s.chain, s.prefilling) = (0, 0, 0, true);
+        (s.done, s.published, s.chain, s.prefilling) = (held, 0, 0, true);
         s.after.clear();
         self.stats.prompt += s.tokens.len() as u64;
+        self.stats.hit += held as u64;
         self.active.push(s);
         Ok(true)
     }
@@ -761,6 +872,10 @@ impl<B: ModelStep> Sched<B> {
                 let Some(i) = self.active.iter().position(|s| s.id == id) else { return Ok(false) };
                 if self.be.grow(self.active[i].pages[0], upto)? {
                     return Ok(true);
+                }
+                // (a kept sequence's room before a running one's)
+                if self.drop_kept()? {
+                    continue;
                 }
                 let victim = self.active.iter().enumerate().max_by_key(|(_, s)| s.id).map(|(v, _)| v).expect("an active sequence");
                 self.preempt(victim)?;
@@ -911,7 +1026,13 @@ impl<B: ModelStep> Sched<B> {
 
     fn finish(&mut self, i: usize, f: Finish) -> Result<()> {
         let mut s = self.active.remove(i);
-        self.give_back(&mut s)?;
+        if self.keep && s.done >= KEEP_LEAST && s.pages.len() == 1 {
+            // (kept in its slot: the conversation's next turn begins with these tokens)
+            let slot = s.pages.pop().expect("its slot");
+            self.kept.push_back(Kept { slot, tokens: s.tokens[..s.done].to_vec() });
+        } else {
+            self.give_back(&mut s)?;
+        }
         self.rt.figures.finished(finish_name(f), s.began, &s.trace, s.generated);
         self.pending.push((s.out.clone(), Ev::End(Ok(f))));
         Ok(())
@@ -1058,6 +1179,7 @@ impl<B: ModelStep> Sched<B> {
             self.publish(i);
             if let Some(sample) = sample {
                 self.active[i].prefilling = false;
+                self.mark_prompt(i)?;
                 let (tok, lp) = self.pick(i, sample, my_row)?;
                 if let Some(f) = self.accept(i, tok, lp) {
                     self.finish(i, f)?;
@@ -1201,6 +1323,7 @@ impl<B: ModelStep> Sched<B> {
             self.publish(i);
             if let Some(sample) = sample {
                 self.active[i].prefilling = false;
+                self.mark_prompt(i)?;
                 let (tok, lp) = self.pick(i, sample, my_row)?;
                 if let Some(f) = self.accept(i, tok, lp) {
                     ended.push((id, f));
@@ -2328,6 +2451,14 @@ pub(crate) mod tests {
         pub one_step: bool,
         pub beside: Option<usize>,
         pub stepped: Vec<(usize, usize)>,
+        /// A finished sequence is kept in its slot (`keeps`); one whose state is only what it is after its last token (`whole_only`: a recurrent model) goes on from its end or not at
+        /// all. Each `resume`: the slot, the tokens asked for, the tokens kept.
+        pub keeps: bool,
+        pub whole_only: bool,
+        pub resumed: Vec<(i32, usize, usize)>,
+        /// A recurrent model that keeps its state at a mark: each slot's mark (0: none).
+        pub marking: bool,
+        pub marks: Vec<usize>,
     }
 
     impl SlotFake {
@@ -2348,6 +2479,11 @@ pub(crate) mod tests {
                 one_step: false,
                 beside: None,
                 stepped: Vec::new(),
+                keeps: false,
+                whole_only: false,
+                resumed: Vec::new(),
+                marking: false,
+                marks: vec![0; slots],
             }
         }
         fn put(&mut self, slot: &[i32], start: usize, tokens: &[u32]) -> u32 {
@@ -2460,9 +2596,38 @@ pub(crate) mod tests {
             for &p in pages {
                 self.rooms[p as usize].clear();
                 self.held[p as usize] = 0;
+                self.marks[p as usize] = 0;
                 self.emptied += 1;
             }
             Ok(())
+        }
+        fn mark(&mut self, slot: i32, n: usize) -> Result<()> {
+            assert_eq!(self.rooms[slot as usize].len(), n, "a mark at {n} of a slot that holds {}", self.rooms[slot as usize].len());
+            if self.marking {
+                self.marks[slot as usize] = n;
+            }
+            Ok(())
+        }
+        fn keeps(&self) -> bool {
+            self.keeps
+        }
+        fn resume(&mut self, slot: i32, upto: usize) -> Result<usize> {
+            let room = &mut self.rooms[slot as usize];
+            assert!(upto > 0 && upto <= room.len(), "a slot of {} tokens resumed at {upto}", room.len());
+            let mark = self.marks[slot as usize];
+            let kept = match (self.whole_only && upto < room.len(), mark > 0 && mark <= upto) {
+                (false, _) => upto,
+                (true, true) => mark,
+                (true, false) => 0,
+            };
+            room.truncate(kept);
+            if kept == 0 {
+                self.held[slot as usize] = 0;
+                self.marks[slot as usize] = 0;
+                self.emptied += 1;
+            }
+            self.resumed.push((slot, upto, kept));
+            Ok(kept)
         }
         fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
             let Some(budget) = self.budget else { return Ok(true) };
@@ -2561,6 +2726,159 @@ pub(crate) mod tests {
             assert_eq!(collect(r), (reference(&prompt(k as u32 + 1, 8), 200), Finish::Length));
         }
         assert_eq!(collect(&late.unwrap()).0, reference(&prompt(99, 2000), 4));
+    }
+
+    /// A step that keeps: a slot fake of `slots` rooms whose finished sequences stay in them.
+    fn keeping(slots: usize) -> Sched<SlotFake> {
+        let mut f = SlotFake::new(slots, 512, 16);
+        f.keeps = true;
+        Sched::new(f, slots)
+    }
+
+    /// One request run to its end: its reply.
+    fn turn(s: &mut Sched<SlotFake>, prompt: &[u32], max_new: usize) -> Vec<u32> {
+        let (rx, _) = add(s, prompt.to_vec(), max_new);
+        run(s);
+        let (got, f) = collect(&rx);
+        assert_eq!(f, Finish::Length);
+        got
+    }
+
+    /// R4c's first step, a conversation: its next turn sends the turns before it again and goes on in the slot the last one finished in, from the tokens the slot holds; every reply is
+    /// the reply the whole prompt gives from its first token (the fake's next token is a function of every token before it, and it refuses tokens that are not put where its slot
+    /// ends). The prompt tokens found are counted; a regenerated reply (the same prompt again) goes on from the prompt's end.
+    #[test]
+    fn a_conversations_next_turn_goes_on_in_its_slot() {
+        let mut s = keeping(2);
+        let p1 = prompt(1, 40);
+        let r1 = turn(&mut s, &p1, 8);
+        assert_eq!(r1, reference(&p1, 8));
+        assert_eq!((s.kept(), s.be.emptied, s.available()), (1, 0, 2), "the finished sequence stays in its slot, which can still be had");
+        // the next turn: the prompt, the reply, and more
+        let p2: Vec<u32> = [&p1[..], &r1[..], &prompt(2, 10)[..]].concat();
+        let r2 = turn(&mut s, &p2, 8);
+        assert_eq!(r2, reference(&p2, 8));
+        // (the slot held the prompt and the reply but its last token, whose keys and values no step wrote)
+        assert_eq!(s.be.resumed, vec![(0, 47, 47)]);
+        assert_eq!((s.stats.prompt, s.stats.hit), (40 + 58, 47));
+        assert_eq!(s.be.begun, vec![p1[0]], "the second turn did not begin at its first token");
+        // a third turn, and the second's reply asked for again (from the end of its prompt: the slot is cut back)
+        let p3: Vec<u32> = [&p2[..], &r2[..], &prompt(3, 5)[..]].concat();
+        assert_eq!(turn(&mut s, &p3, 4), reference(&p3, 4));
+        assert_eq!(s.be.resumed[1], (0, 65, 65));
+        assert_eq!(turn(&mut s, &p3, 6), reference(&p3, 6));
+        assert_eq!(s.be.resumed[2], (0, 70, 70), "the prompt but its last token, which is run for its logits");
+        assert_eq!((s.be.emptied, s.be.begun.len(), s.kept()), (0, 1, 1));
+    }
+
+    /// A request that begins with too little of a kept sequence does not take its slot: fewer than KEEP_LEAST tokens, or less than half of what is kept. It runs in a free slot from
+    /// its first token, and the kept conversation's next turn still finds its own.
+    #[test]
+    fn a_kept_sequence_is_not_cut_down_for_a_short_shared_start() {
+        let mut s = keeping(3);
+        let p1 = prompt(1, 100);
+        let r1 = turn(&mut s, &p1, 8);
+        // the same first 40 tokens (less than half of the 107 kept), then another prompt's
+        let other: Vec<u32> = [&p1[..40], &prompt(9, 30)[..]].concat();
+        assert_eq!(turn(&mut s, &other, 8), reference(&other, 8));
+        assert!(s.be.resumed.is_empty() && s.be.begun.len() == 2 && s.kept() == 2);
+        // a short one that shares all of its 20 tokens but the last (fewer than KEEP_LEAST)
+        let short = p1[..20].to_vec();
+        assert_eq!(turn(&mut s, &short, 4), reference(&short, 4));
+        assert!(s.be.resumed.is_empty() && s.be.begun.len() == 3);
+        // the first conversation's next turn finds its slot as it left it
+        let p2: Vec<u32> = [&p1[..], &r1[..], &prompt(2, 6)[..]].concat();
+        assert_eq!(turn(&mut s, &p2, 8), reference(&p2, 8));
+        assert_eq!(s.be.resumed, vec![(0, 107, 107)]);
+        assert_eq!(s.stats.hit, 107);
+    }
+
+    /// Kept sequences never keep a request waiting: with no slot free the oldest is emptied for it. Of two kept, the one a request begins with more of is the one it goes on in.
+    #[test]
+    fn the_oldest_kept_sequence_gives_its_slot_to_a_request_that_needs_one() {
+        let mut s = keeping(2);
+        let (pa, pb) = (prompt(1, 50), prompt(2, 50));
+        let (ra, rb) = (turn(&mut s, &pa, 8), turn(&mut s, &pb, 8));
+        assert_eq!((s.kept(), s.be.emptied), (2, 0));
+        // a third conversation: a's slot (the oldest) is emptied for it
+        let pc = prompt(3, 50);
+        assert_eq!(turn(&mut s, &pc, 8), reference(&pc, 8));
+        assert_eq!((s.kept(), s.be.emptied, s.be.begun.len()), (2, 1, 3));
+        // b's next turn still goes on in its slot; a's runs from its first token (in c's slot, now the oldest)
+        let b2: Vec<u32> = [&pb[..], &rb[..], &prompt(5, 4)[..]].concat();
+        assert_eq!(turn(&mut s, &b2, 8), reference(&b2, 8));
+        assert_eq!(s.be.resumed, vec![(1, 57, 57)]);
+        let a2: Vec<u32> = [&pa[..], &ra[..], &prompt(6, 4)[..]].concat();
+        assert_eq!(turn(&mut s, &a2, 8), reference(&a2, 8));
+        assert_eq!((s.be.resumed.len(), s.be.emptied, s.be.begun.len()), (1, 2, 4));
+        // several at once, more than the slots: every reply right, none waits on a kept slot
+        let ps: Vec<Vec<u32>> = (10..15).map(|k| prompt(k, 30 + k as usize)).collect();
+        let rx: Vec<_> = ps.iter().map(|p| add(&mut s, p.clone(), 12).0).collect();
+        run(&mut s);
+        for (p, r) in ps.iter().zip(&rx) {
+            assert_eq!(collect(r), (reference(p, 12), Finish::Length));
+        }
+    }
+
+    /// A model whose state is only what it is after a sequence's last token (a recurrent one): the next turn goes on where the whole of the slot is its start; a prompt that leaves
+    /// the kept tokens before their end (a reply asked for again) has the slot emptied and runs from its first token. The replies are right either way.
+    #[test]
+    fn a_recurrent_models_kept_sequence_goes_on_from_its_end_or_not_at_all() {
+        let mut s = keeping(1);
+        s.be.whole_only = true;
+        let p1 = prompt(1, 40);
+        let r1 = turn(&mut s, &p1, 8);
+        let p2: Vec<u32> = [&p1[..], &r1[..], &prompt(2, 10)[..]].concat();
+        let r2 = turn(&mut s, &p2, 8);
+        assert_eq!(r2, reference(&p2, 8));
+        assert_eq!((s.be.resumed.clone(), s.be.emptied, s.stats.hit), (vec![(0, 47, 47)], 0, 47));
+        // the same prompt again: the slot holds 65 tokens, the prompt shares 57 of them
+        assert_eq!(turn(&mut s, &p2, 8), r2);
+        assert_eq!((s.be.resumed[1], s.be.emptied, s.stats.hit, s.be.begun.len()), ((0, 57, 0), 1, 47, 2));
+    }
+
+    /// A recurrent model that keeps its state at each prompt's end (a mark): a reply asked for again, and a next turn that leaves the reply's first tokens out (a template that
+    /// drops the thinking), go on from the mark, the prompt's end; the turn that sends the whole reply goes on from the slot's end.
+    #[test]
+    fn a_recurrent_models_kept_sequence_goes_on_from_its_prompts_end() {
+        let mut s = keeping(1);
+        (s.be.whole_only, s.be.marking) = (true, true);
+        let p1 = prompt(1, 40);
+        assert_eq!(turn(&mut s, &p1, 12), reference(&p1, 12));
+        assert_eq!(s.be.marks, vec![40], "the prompt's end is marked");
+        // a next turn that leaves the reply out: from the mark (the slot holds 51 tokens, the prompt shares the first 40)
+        let longer = [&p1[..], &prompt(7, 20)[..]].concat();
+        assert_eq!(turn(&mut s, &longer, 8), reference(&longer, 8));
+        assert_eq!((s.be.resumed[0], s.stats.hit, s.be.emptied, s.be.begun.len()), ((0, 40, 40), 40, 0, 1));
+        assert_eq!(s.be.marks, vec![60], "and its own prompt's end is the mark now");
+        // a turn that sends a prompt and its whole reply goes on from the slot's end, past the mark
+        let r = reference(&longer, 8);
+        let next: Vec<u32> = [&longer[..], &r[..], &prompt(8, 9)[..]].concat();
+        assert_eq!(turn(&mut s, &next, 8), reference(&next, 8));
+        assert_eq!((s.be.resumed[1], s.stats.hit), ((0, 67, 67), 107));
+        // a prompt that leaves the kept tokens before the mark: nothing to go on from
+        let early = [&next[..50], &prompt(9, 40)[..]].concat();
+        assert_eq!(turn(&mut s, &early, 4), reference(&early, 4));
+        assert_eq!((s.be.resumed[2], s.be.emptied, s.be.begun.len()), ((0, 50, 0), 1, 2));
+    }
+
+    /// Rooms that take memory as they fill: a kept sequence's room is given up before a request waits for room or a running sequence is sent back.
+    #[test]
+    fn kept_sequences_give_their_room_up_first() {
+        let mut f = SlotFake::new(3, 512, 16);
+        (f.keeps, f.budget) = (true, Some(160));
+        let mut s = Sched::new(f, 3);
+        let pa = prompt(1, 90);
+        assert_eq!(turn(&mut s, &pa, 8), reference(&pa, 8));
+        assert_eq!((s.kept(), s.be.held.iter().sum::<usize>()), (1, 112));
+        // a prompt that needs more than what is left beside the kept one: the kept one goes, nothing waits
+        let pb = prompt(2, 100);
+        assert_eq!(turn(&mut s, &pb, 8), reference(&pb, 8));
+        assert_eq!((s.kept(), s.be.emptied, s.stats.preempted), (1, 1, 0));
+        // a reply that grows past what is left while another is kept: the kept one's room, not a running sequence's
+        let pc = prompt(3, 30);
+        assert_eq!(turn(&mut s, &pc, 60), reference(&pc, 60));
+        assert_eq!((s.be.emptied, s.stats.preempted), (2, 0));
     }
 
     /// Cancellation: a waiting request asked to end ends stopped without running; a running one ends stopped at its next round, its slot emptied and given to the next.

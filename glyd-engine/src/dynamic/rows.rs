@@ -6,7 +6,12 @@
 //! those of its own pass; in a larger one (17 to 64 rows another kernel, past 64 `decoded_way`'s) they differ by the rounding of the engine's bf16 values, as the engine differs from an f32
 //! reference. Measured by `glyd-engine roundcheck` (src/logits.rs) on every family and on gemma-4-12B at wren with a text's tokens: a KL of 0.002 to 0.005 from the row alone on average, the
 //! largest logit another token's in 1 or 2 steps of 32 (where the two largest are tied or nearly); benchmarks/gpu/rtx4080-one-step-round-2026-11-22 has the figures. GLYD_ENGINE_BATCH_PREFILL=0 runs prompts one
-//! a pass and the round as two passes: every reply is then the reply alone, bit for bit, while 16 sequences or fewer decode (a dense model; a mixture of experts' rows are stepped one by one).
+//! a pass, the round as two passes and the rows that decode in passes of at most 16 (a mixture of experts' one by one): every reply is then the reply alone, bit for bit.
+//!
+//! A finished sequence stays in its slot (`ModelStep::keeps`), and a request that begins with its tokens goes on from them (`resume`): a conversation's next turn, which sends the turns
+//! before it again. The whole of what a slot holds can always be gone on with. Before its end: anywhere, where the description has no recurrent state and no latent cache (Gemma 4, Muse
+//! Spark: the keys and values past the place are written over); from the prompt's end, where the states were copied aside (`mark`), where it has recurrent states (the Qwen3.5 layout);
+//! not at all where it has a latent cache (Kimi-K3, GLM-5.3-Flash). `glyd-engine keepcheck` compares each against a sequence that never ended, bit for bit.
 //!
 //! What a step of several sequences supports is decided per description (`Dyn::batchable`): every operation must be one that acts row by row, or one of the cache operations below that knows where a
 //! sequence's rows begin. A description with another runs its sequences one pass each, concurrently but not batched.
@@ -241,6 +246,11 @@ impl Dyn {
         !d.layers.iter().flatten().any(|op| matches!(op, Op::MuseMoe { .. } | Op::Moe { .. } | Op::V4Moe { .. }))
     }
 
+    /// Whether a kept sequence can be cut back before its end (`ModelStep::resume`): no recurrent state and no latent cache, which are what they are after its last token.
+    pub(crate) fn cuts(&self) -> bool {
+        self.states.is_empty() && self.big.mla.is_empty()
+    }
+
     /// Sequence `slot`'s tokens in its cache.
     fn seq_n(&self, slot: usize) -> usize {
         if slot == self.seq {
@@ -283,6 +293,9 @@ impl Dyn {
 
     /// Sequence `slot` empty again: no tokens, its states zeroed (its cache is overwritten as it runs).
     fn empty(&mut self, slot: usize) -> Result<()> {
+        if let Some(m) = self.snap_n.get_mut(slot) {
+            *m = 0;
+        }
         if slot == self.seq {
             self.n = 0;
             self.pending = None;
@@ -383,20 +396,43 @@ impl Dyn {
         if users > 1 {
             self.set_head_rows(users)?;
         }
+        // (a model with recurrent states and no latent cache keeps each sequence's states at its prompt's end too: a second copy of them a sequence)
+        let marks = ModelStep::keeps(self) && self.can_mark();
+        let states: usize = self.states.iter().map(|b| b.bytes).sum();
         if self.pageable() {
-            // (keys and values in pools of blocks: a user takes the blocks its tokens fill, so the users asked for all have a sequence, and the memory decides how many tokens they hold together)
+            // (keys and values in pools of blocks: a user takes the blocks its tokens fill, so the users asked for all have a sequence, and the memory decides how many tokens they hold together;
+            // the marks' copies first, so the pools are sized by what is left)
+            if marks {
+                self.mark_room(users)?;
+            }
             self.page(users)?;
             self.add_seqs(users - 1)?;
             return Ok(Some(users));
         }
         let mla: usize = self.big.mla.iter().map(|b| b.seq_bytes(self.ctx)).sum();
-        let per = (self.kc.bytes + self.vc.bytes + self.states.iter().map(|b| b.bytes).sum::<usize>() + mla).max(1);
+        let per = (self.kc.bytes + self.vc.bytes + states * (1 + marks as usize) + mla).max(1);
         let (free, _) = self.dev.mem_info()?;
         // (room kept for the products' workspaces and the driver)
         const KEEP: usize = 512 << 20;
-        let more = (free.saturating_sub(KEEP) / per).min(users - 1);
+        let more = (free.saturating_sub(KEEP + states * marks as usize) / per).min(users - 1);
+        if marks {
+            self.mark_room(more + 1)?;
+        }
         self.add_seqs(more)?;
         Ok(Some(more + 1))
+    }
+
+    /// Room for `slots` sequences' states at their marks.
+    fn mark_room(&mut self, slots: usize) -> Result<()> {
+        self.snaps = (0..slots).map(|_| self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<Vec<_>>>()).collect::<Result<_>>()?;
+        self.snap_n = vec![0; slots];
+        Ok(())
+    }
+
+    /// Whether a served model's sequences have their states copied aside at a mark (`ModelStep::mark`), for a kept sequence to go on from: recurrent states, and no latent cache
+    /// (which no copy is made of).
+    pub(crate) fn can_mark(&self) -> bool {
+        !self.states.is_empty() && self.big.mla.is_empty()
     }
 
     fn batch_prefill() -> bool {
@@ -425,6 +461,9 @@ impl Dyn {
 
 /// The prompt tokens a step takes beside any number of rows, so that a prompt moves while many sequences decode.
 const STEP_LEAST: usize = 16;
+
+/// The most rows of a pass whose products give every row the bits of its own pass (the kernels change past it: `glyd-engine roundcheck` measures it on every family).
+pub(crate) const EXACT_ROWS: usize = 16;
 
 impl ModelStep for Dyn {
     /// The context, or where the pools hold less for one sequence alone, that: a reply that reaches it ends there (its length), and a sequence alone always fits, so one sent back for room
@@ -531,6 +570,23 @@ impl ModelStep for Dyn {
         }
         let jobs: Vec<(usize, [u32; 1])> = rows.iter().map(|r| (r.pages[0] as usize, [r.token])).collect();
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|(s, t)| (*s, &t[..], true)).collect();
+        if !Self::batch_prefill() && rows.len() > EXACT_ROWS {
+            // (GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone bit for bit: passes of at most EXACT_ROWS rows, the last first, each one's logits rows moved to
+            // their place in the head's rows before the next writes its own over the first)
+            let mut out = vec![None; rows.len()];
+            let w = self.big.d.vocab * 2;
+            for (g, part) in jobs.chunks(EXACT_ROWS).enumerate().collect::<Vec<_>>().into_iter().rev() {
+                let at = g * EXACT_ROWS;
+                for (j, s) in self.pass(part)?.into_iter().enumerate() {
+                    out[at + j] = s;
+                }
+                if at > 0 {
+                    // SAFETY: the head's logits hold head_room rows; the pass's are its first rows, and they do not reach their place (a pass is at most EXACT_ROWS rows, `at` at least that).
+                    unsafe { copy_d2d_async(self.big.logits.ptr + (at * w) as u64, self.big.logits.ptr, part.len() * w, self.dev.stream)? };
+                }
+            }
+            return Ok(out.into_iter().map(|s| s.expect("every row samples")).collect());
+        }
         Ok(self.pass(&jobs)?.into_iter().map(|s| s.expect("every row samples")).collect())
     }
     fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
@@ -550,6 +606,64 @@ impl ModelStep for Dyn {
             }
         }
         Ok(())
+    }
+    /// A finished sequence stays in its slot for the conversation's next turn. Not with GLYD_ENGINE_KEEP=0 (its slot is emptied at once, as before), nor with
+    /// GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone bit for bit: a turn that goes on in a kept slot runs the rest of its prompt in a pass of fewer rows
+    /// than the whole prompt's, which is another kernel's (the module's note).
+    fn keeps(&self) -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Self::batch_prefill()
+    }
+    /// The states of the sequence in `slot`, which now holds `n` tokens, copied aside (a model that keeps marks: `serve_rows`): a kept sequence can go on from here.
+    fn mark(&mut self, slot: i32, n: usize) -> Result<()> {
+        let s = slot as usize;
+        if self.snaps.is_empty() || n == 0 || n != self.seq_n(s) {
+            return Ok(());
+        }
+        let from = self.part_of(s, 0, 0, 0)?.states;
+        for (i, &src) in from.iter().enumerate() {
+            // SAFETY: the sequence's state and its copy's buffer, of the state's bytes.
+            unsafe { copy_d2d_async(self.snaps[s][i].ptr, src, self.states[i].bytes, self.dev.stream)? };
+        }
+        self.snap_n[s] = n;
+        Ok(())
+    }
+    /// The whole of what the slot holds goes on as it is. Before its end: at `upto` where the description has no recurrent state and no latent cache (those are what they are after
+    /// the sequence's last token); else at the sequence's mark, where its states were copied aside, if that is within `upto`. Either way the keys and values a step there reads must
+    /// still be held: paged, the blocks (`Pages::shrink`); a ring of its own, one that has not gone round. Otherwise the slot is emptied.
+    fn resume(&mut self, slot: i32, upto: usize) -> Result<usize> {
+        let s = slot as usize;
+        let n = self.seq_n(s);
+        if upto > 0 && upto == n {
+            return Ok(n);
+        }
+        let marked = self.snap_n.get(s).copied().filter(|&m| m > 0 && m <= upto);
+        let to = match (upto > 0 && upto < n, self.cuts(), marked) {
+            (true, true, _) => upto,
+            (true, false, Some(m)) => m,
+            _ => 0,
+        };
+        let chunk = self.chunk;
+        let held = to > 0
+            && match &mut self.paged {
+                Some(pg) => pg.pages.shrink(s, to, chunk),
+                None => self.ring_cap.iter().all(|&cap| cap == 0 || n <= cap),
+            };
+        if !held {
+            ModelStep::release(self, &[slot])?;
+            return Ok(0);
+        }
+        if !self.cuts() {
+            let states = self.part_of(s, 0, 0, 0)?.states;
+            for (i, &dst) in states.iter().enumerate() {
+                // SAFETY: the sequence's state and its copy's buffer, of the state's bytes.
+                unsafe { copy_d2d_async(dst, self.snaps[s][i].ptr, self.states[i].bytes, self.dev.stream)? };
+            }
+        }
+        self.set_seq_n(s, to);
+        self.dev.sync()?;
+        self.upload_tables(s)?;
+        Ok(to)
     }
     fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
         let Some(pg) = &mut self.paged else { return Ok(true) };
