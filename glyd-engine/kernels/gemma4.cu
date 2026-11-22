@@ -1,4 +1,4 @@
-// Gemma 4's own kernels (included by engine.cu; src/model_gemma4.rs runs them): the norms (the weight as it is, x * w, in fp32 with one rounding), the sandwich residual (the
+// Gemma 4's own kernels (included by engine.cu; the description executor runs them through src/gemma4.rs's table): the norms (the weight as it is, x * w, in fp32 with one rounding), the sandwich residual (the
 // sublayer's output normed before it is added), the per-layer scalar, the q/k/v preparation at head 256 (sliding layers, full rotary, theta 1e4) and 512 (global layers,
 // the proportional rotary on the first 64 of each half), the causal attention with an optional sliding window over a ring of positions, gelu(tanh) times up, and the final
 // soft-cap. bf16 in memory, fp32 inside; the rounding points are transformers' eager ones (models/gemma4/modeling_gemma4.py): a norm rounds once, the rotary rounds each
@@ -627,63 +627,6 @@ extern "C" __global__ void g4_attn_merge(const float* part, int S, bf16* out, in
 
 // ---- the feed-forward and the logits ------------------------------------------------------------------------------------------------------
 // m [n, inter] = bf16(bf16(gelu_tanh(gate)) * up), gate and up the halves of gu [n, 2 inter] (transformers: the activation's bf16 output times up, rounded).
-// GLYD_G4_PRECISE (a development build's): the residual in fp32 (xf [M, K] floats), nearer the float32 model than transformers' bf16 is. Nothing of the residual is
-// rounded (the embedding's scale, the normed sublayer output, the sum, the scalar); what goes into a product, the norm's output, is rounded once, as above.
-extern "C" __global__ void g4_embed_norm_x32(const bf16* x, float scale, const bf16* w, float* xf, bf16* out, int K, float eps) {
-    const bf16* xr = x + (size_t)blockIdx.x * K;
-    float* fr = xf + (size_t)blockIdx.x * K;
-    bf16* o = out + (size_t)blockIdx.x * K;
-    float v[RN_PER_THREAD];
-    float acc = 0.f;
-#pragma unroll
-    for (int j = 0; j < RN_PER_THREAD; j++) {
-        int i = threadIdx.x + j * blockDim.x;
-        v[j] = i < K ? b2f(xr[i]) * scale : 0.f;
-        acc += v[j] * v[j];
-    }
-    const float s = g4_scale(block_sum(acc), K, eps);
-#pragma unroll
-    for (int j = 0; j < RN_PER_THREAD; j++) {
-        int i = threadIdx.x + j * blockDim.x;
-        if (i < K) {
-            fr[i] = v[j];
-            o[i] = f2b(v[j] * s * b2f(w[i]));
-        }
-    }
-}
-
-extern "C" __global__ void __launch_bounds__(1024) g4_add_norm_x32(float* xf, const bf16* y, const bf16* wpost, const bf16* scalar, const bf16* wnext, bf16* out, int K, float eps) {
-    float* fr = xf + (size_t)blockIdx.x * K;
-    const bf16* yr = y + (size_t)blockIdx.x * K;
-    float v[RN_PER_THREAD];
-    float acc = 0.f;
-#pragma unroll
-    for (int j = 0; j < RN_PER_THREAD; j++) {
-        int i = threadIdx.x + j * blockDim.x;
-        v[j] = i < K ? b2f(yr[i]) : 0.f;
-        acc += v[j] * v[j];
-    }
-    const float s = g4_scale(block_sum(acc), K, eps);
-    const float sc = scalar ? b2f(scalar[0]) : 1.f;
-    acc = 0.f;
-#pragma unroll
-    for (int j = 0; j < RN_PER_THREAD; j++) {
-        int i = threadIdx.x + j * blockDim.x;
-        v[j] = i < K ? (fr[i] + v[j] * s * b2f(wpost[i])) * sc : 0.f;
-        acc += v[j] * v[j];
-    }
-    const float s2 = wnext ? g4_scale(block_sum(acc), K, eps) : 0.f;
-    bf16* o = out + (size_t)blockIdx.x * K;
-#pragma unroll
-    for (int j = 0; j < RN_PER_THREAD; j++) {
-        int i = threadIdx.x + j * blockDim.x;
-        if (i < K) {
-            fr[i] = v[j];
-            if (wnext) o[i] = f2b(v[j] * s2 * b2f(wnext[i]));
-        }
-    }
-}
-
 extern "C" __global__ void g4_gelu_mul(const bf16* gu, bf16* m, int inter, G4Pf pf) {
     if (blockIdx.z > 0) return g4_pf(pf, (blockIdx.z - 1) * gridDim.x * gridDim.y + blockIdx.y * gridDim.x + blockIdx.x, (gridDim.z - 1) * gridDim.x * gridDim.y);
     const int r = blockIdx.y;
