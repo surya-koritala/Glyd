@@ -783,6 +783,9 @@ impl ModelStep for Dyn {
         }
         Ok(())
     }
+    fn take_removed(&mut self) -> Vec<u128> {
+        self.paged.as_mut().map_or_else(Vec::new, |pg| pg.pages.take_gone())
+    }
     fn held_by_name(&self, keys: &[u128]) -> usize {
         match &self.paged {
             Some(pg) if self.cuts() => pg.pages.fit(keys, self.chunk) * BLOCK,

@@ -2204,6 +2204,21 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
             respond_with(&mut *s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
         }
         ("GET", "/stats") => respond_with(&mut *s, 200, "application/json", &cors, crate::sched::stats_json_of(&ctx.rt).as_bytes()),
+        // the cache's blocks stored and removed by name (src/kv_events.rs), after batch `after`, waiting up to `wait` seconds (at most 10) for one: off unless the
+        // server's operator turns them on, since they carry every caller's prompt tokens
+        ("GET", "/v1/glyd/kv/events") => match &ctx.rt.kv_events {
+            Some(log) => {
+                let q = req.path.split_once('?').map_or("", |x| x.1);
+                let num = |k: &str| q.split('&').find_map(|kv| kv.strip_prefix(k).and_then(|v| v.strip_prefix('=')).and_then(|v| v.parse::<u64>().ok()));
+                let body = log.json(num("after").unwrap_or(0), std::time::Duration::from_secs(num("wait").unwrap_or(0).min(10)));
+                respond_with(&mut *s, 200, "application/json", &cors, body.as_bytes())
+            }
+            None => {
+                let msg =
+                    "the cache's events are off: the server's operator turns them on with GLYD_ENGINE_KV_EVENTS=1 (they carry every caller's prompt tokens)";
+                respond_with(&mut *s, 404, "application/json", &cors, error_body(msg, 404).as_bytes())
+            }
+        },
         ("GET", "/v1/models") => {
             let body =
                 format!("{{\"object\":\"list\",\"data\":[{}],\"has_more\":false,\"first_id\":{1},\"last_id\":{1}}}", model_json(name, window), jstr(name));
@@ -2730,6 +2745,25 @@ pub(crate) mod tests {
         let mut out = String::new();
         c.read_to_string(&mut out).unwrap();
         out
+    }
+
+    /// #142: the cache's events (src/kv_events.rs): not found while the operator has not turned them on; on, the batches after `after` (the first: the cache cleared),
+    /// the newest's number, and only with the server's key where it has one.
+    #[test]
+    fn the_cache_events_are_the_operators_alone() {
+        let body = |t: &str| json::parse(t.split_once("\r\n\r\n").map_or(t, |x| x.1)).unwrap();
+        let status = |t: &str| t.split(' ').nth(1).and_then(|c| c.parse::<u16>().ok()).unwrap_or(0);
+        let off = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new());
+        let t = get(off, "/v1/glyd/kv/events", None);
+        assert!(status(&t) == 404 && t.contains("GLYD_ENGINE_KV_EVENTS=1"), "{t}");
+        let rt = crate::runtime::context::Context::with_kv_events();
+        let on = serve_fake_in(Fake::new(64, 32), None, 2, false, Some("k"), &[], rt.clone());
+        assert_eq!(status(&get(on, "/v1/glyd/kv/events", None)), 401);
+        let v = body(&get(on, "/v1/glyd/kv/events?after=0", Some("k")));
+        assert_eq!((f64_of(at(&v, &["next"])), at(&v, &["batches", "0", "events", "0", "type"]).as_str()), (1.0, Some("cleared")));
+        rt.kv_events.as_ref().unwrap().push(vec![crate::kv_events::Event::Removed { blocks: vec![5] }]);
+        let v = body(&get(on, "/v1/glyd/kv/events?after=1&wait=1", Some("k")));
+        assert_eq!((f64_of(at(&v, &["next"])), f64_of(at(&v, &["batches", "0", "seq"])), at(&v, &["gap"]).as_bool()), (2.0, 2.0, Some(false)));
     }
 
     #[test]

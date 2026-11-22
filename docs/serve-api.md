@@ -108,6 +108,7 @@ Every API front end (OpenAI's completions, Anthropic's Messages, OpenAI's Respon
 | `GET /v1/glyd/info` | yes | what the server is and holds |
 | `GET /v1/glyd/requests/ID` | yes | how a request stands |
 | `POST /v1/glyd/requests/ID/cancel` | yes | a request asked to end |
+| `GET /v1/glyd/kv/events` | yes | the cache's blocks stored and removed by name, with their tokens (see below; 404 unless the operator turns them on) |
 | `GET /stats` | no | the lossless engine's scheduler counts (zero at a level) |
 
 A method a path does not take is 405, a path there is not 404.
@@ -397,6 +398,30 @@ curl -s -X POST -H "Authorization: Bearer $GLYD_API_KEY" http://127.0.0.1:8238/v
   out. On a level's engine nothing is freed then: the KV and the state are made at load and the next request uses them.
 - The last 64 ended requests are kept; an id given again names the new request. Ids are matched as the path has them (no
   percent-decoding): give `request_id`s of letters, digits, `-` and `_`.
+
+## The cache's events
+
+A router that sends a request to the server already holding its start reads what the cache holds by name: each step's blocks
+stored (their names, the name of the block before them, their tokens) and removed. Off unless the server's operator sets
+`GLYD_ENGINE_KV_EVENTS=1`: an event carries a prompt's tokens, and whoever reads the events reads every caller's prompts (with
+no key on the server, whoever reaches its port). The blocks are the description executor's (the families it serves); 16 tokens
+a block.
+
+```
+curl -s -H "Authorization: Bearer $GLYD_API_KEY" 'http://127.0.0.1:8238/v1/glyd/kv/events?after=41&wait=5'
+{"next":43,"oldest":1,"gap":false,"batches":[{"seq":42,"ts":1795366128.125,"events":[
+  {"type":"removed","blocks":["9f2c..."],"medium":"gpu"},
+  {"type":"stored","blocks":["1a7e...","c03b..."],"parent":null,"tokens":[...32 ids...],"block_size":16,"medium":"gpu"}]}]}
+```
+
+- `after`: the newest batch already read (0: all kept); `wait`: seconds to wait for a batch where none is new yet (at most 10).
+  Pass `next` as the next call's `after`.
+- A block's name is 32 hexadecimal digits: the first 16 bytes of SHA-256 over the name of the block before it and its 16 token
+  ids, a request's chain beginning at its scope's root (`cache_salt`). `parent` null: the first stored block is its
+  sequence's first.
+- Batch 1 is `{"type":"cleared"}`: the cache holds nothing when the server starts. The last 1,024 batches are kept; `gap: true`
+  says some after `after` are not, and a reader takes what it knew as cleared.
+- The schema is part of `glyd-serve/1`: a change that breaks it is a new API version.
 
 ## Limits
 
