@@ -1303,8 +1303,14 @@ struct Whole {
 /// What a choice's thread tells the request's: what its text adds, and how it ended (with its thinking where the reply is not streamed), or why it could not.
 enum Out {
     Delta(usize, Delta),
-    Done { i: usize, last: Delta, done: Done, thinking: Option<String> },
-    Failed(String),
+    Done {
+        i: usize,
+        last: Delta,
+        done: Done,
+        thinking: Option<String>,
+    },
+    /// The request cannot go on: why, and whether it is the server's doing (the model's step failed, the engine stopped) and not the request's own (a prompt the cache does not hold).
+    Failed(String, bool),
 }
 
 /// The sequence of `h` asked to end, and waited for until the engine has let it go (its end comes last; a closed channel is an engine that has stopped): what it held is the engine's to use again
@@ -1327,7 +1333,7 @@ fn drive(i: usize, h: Handle, mut c: Choice, tok: &Tok, whole: bool, out: Sender
             let _ = f.send(());
         }
         let ended = matches!(ev, Ok(Ev::End(_)) | Err(_));
-        let step: std::result::Result<Option<Finish>, String> = match ev {
+        let step: std::result::Result<Option<Finish>, (String, bool)> = match ev {
             Ok(Ev::Lp(lp)) => {
                 c.lp(lp);
                 Ok(None)
@@ -1344,22 +1350,22 @@ fn drive(i: usize, h: Handle, mut c: Choice, tok: &Tok, whole: bool, out: Sender
                         Ok(None)
                     }
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err((e.to_string(), false)),
             },
             Ok(Ev::End(Ok(f))) => Ok(Some(f)),
-            Ok(Ev::End(Err(e))) => Err(e),
-            Err(_) => Err("the engine stopped".to_string()),
+            Ok(Ev::End(Err(e))) => Err((e.msg, e.kind != crate::ffi::Kind::Request)),
+            Err(_) => Err(("the engine stopped".to_string(), true)),
         };
         match step {
             Ok(None) => continue,
             Ok(Some(f)) => {
                 let _ = match c.end(tok, f) {
                     Ok((last, done)) => out.send(Out::Done { i, last, done, thinking: whole.then(|| c.reasoning.clone()) }),
-                    Err(e) => out.send(Out::Failed(e.to_string())),
+                    Err(e) => out.send(Out::Failed(e.to_string(), false)),
                 };
             }
-            Err(e) => {
-                let _ = out.send(Out::Failed(e));
+            Err((e, server)) => {
+                let _ = out.send(Out::Failed(e, server));
             }
         }
         if !ended {
@@ -1562,6 +1568,8 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
     let (first_tx, first_rx) = std::sync::mpsc::channel::<()>();
     let mut aborts: Vec<Arc<AtomicBool>> = Vec::new();
     let mut failure: Option<String> = None;
+    // (whether the failure is the server's doing: answered 500, where a request's own is 400)
+    let mut server_fault = false;
     let (name, tok) = (sh.name.as_str(), &sh.tok);
     // the whole of a reply, where it is not streamed: each choice's log-probabilities, and how it ended with its thinking and its text
     let mut acc: Vec<Whole> = (0..api.total).map(|_| Whole::default()).collect();
@@ -1645,7 +1653,10 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                 Err(RecvTimeoutError::Disconnected) => break,
             };
             match out {
-                Out::Failed(e) => failure = Some(e),
+                Out::Failed(e, server) => {
+                    failure = Some(e);
+                    server_fault = server;
+                }
                 Out::Delta(i, d) => {
                     if !api.stream {
                         acc[i].lps.extend(d.lps.iter().cloned());
@@ -1693,6 +1704,8 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
             let _ = sse(s, &format!("{{\"error\":{{\"message\":{},\"type\":\"server_error\"}}}}", jstr(&msg)));
             let _ = sse(s, "[DONE]");
             let _ = s.write_all(b"0\r\n\r\n");
+        } else if server_fault {
+            respond_with(s, 500, "application/json", &req.cors, error_body(&msg, 500).as_bytes())
         } else {
             bad(s, &msg)
         };
@@ -2341,7 +2354,7 @@ impl Gen for Remote {
                 }
                 Ok(Ev::Lp(_)) => {}
                 Ok(Ev::End(Ok(f))) => return Ok((tokens, f)),
-                Ok(Ev::End(Err(e))) => return err(e),
+                Ok(Ev::End(Err(e))) => return Err(e),
                 Err(_) => return err("the engine stopped"),
             }
         }
@@ -2427,7 +2440,12 @@ pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &S
                 if let Err(err) = &r {
                     engine_failed(&err.to_string());
                 }
-                let _ = sub.out.send(Ev::End(r.map(|x| x.1).map_err(|e| e.to_string())));
+                let lost = r.as_ref().err().filter(|e| e.sticky()).cloned();
+                let _ = sub.out.send(Ev::End(r.map(|x| x.1)));
+                if let Some(err) = lost {
+                    device_lost(&err);
+                    return;
+                }
             }
             _ => detach(job, &shared, tx),
         }
@@ -2475,7 +2493,7 @@ pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &R
             while let Some(job) = next.take() {
                 match job {
                     Job::Stop => {
-                        sched.fail("the server is stopping");
+                        sched.fail(&crate::ffi::Error("the server is stopping".to_string()));
                         return;
                     }
                     Job::Seq(sub) => sched.submit(sub),
@@ -2486,7 +2504,11 @@ pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &R
             if let Err(err) = sched.tick() {
                 eprintln!("glyd: {err}");
                 engine_failed(&err.to_string());
-                sched.fail(&err.to_string());
+                sched.fail(&err);
+                if err.sticky() {
+                    device_lost(&err);
+                    return;
+                }
             }
         }
     });
@@ -2599,6 +2621,24 @@ fn engine_failed(e: &str) {
     let mut f = FAILED.lock().unwrap_or_else(|e| e.into_inner());
     if f.is_none() {
         *f = Some((crate::monitor::clock(), e.to_string()));
+    }
+}
+
+/// The sticky device errors this process's servers ended for (a test's server does not end the process: it says so here).
+#[cfg(test)]
+static LOST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The engine's GPU context is lost (`ffi::Error::sticky`): every later step would fail as this one did, so the server does not go on. Its requests have had the error (`Sched::fail`, or the
+/// reply's end) and /v1/glyd/info says the server failed; after a moment for those replies to be sent the process ends with `ui::DEVICE_LOST`. The service sees the program gone and starts
+/// the model again when it is next asked for, and `glyd serve` alone ends with the error said.
+fn device_lost(err: &crate::ffi::Error) {
+    eprintln!("glyd: the GPU cannot be used after this error; the server is stopping ({})", err.msg);
+    #[cfg(test)]
+    LOST.lock().unwrap_or_else(|e| e.into_inner()).push(err.msg.clone());
+    #[cfg(not(test))]
+    {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::process::exit(crate::ui::DEVICE_LOST);
     }
 }
 
@@ -3346,6 +3386,46 @@ pub(crate) mod tests {
         let mut out = String::new();
         let _ = c.read_to_string(&mut out);
         (out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0), out)
+    }
+
+    /// A step that fails as a call of the driver does. With a status after which the GPU's context is lost (700: an illegal address) the request is told, the server says it failed, and it
+    /// ends itself (`device_lost`: a test's server says so in `LOST`, a real one ends the process with `ui::DEVICE_LOST` and the service starts the model again). With a status that leaves the
+    /// context whole (1: an invalid value) the request is told and the server goes on: the next request is answered.
+    #[test]
+    fn a_sticky_device_error_ends_the_server_and_another_error_does_not() {
+        let ask = |addr: std::net::SocketAddr| {
+            let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":6,"temperature":0}"#;
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(
+                format!(
+                    "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            raw_status(&mut c)
+        };
+        let lost = |status: i32| LOST.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|m| m.ends_with(&format!("failed ({status})"))).count();
+        // an invalid value: this request fails, the server lives
+        let mut f = Fake::new(512, 64);
+        f.fault = Some((2, 1));
+        let addr = serve_fake(f, None, 4);
+        let (status, text) = ask(addr);
+        assert!(status >= 500 && text.contains("failed (1)"), "{status}: {text}");
+        assert_eq!(lost(1), 0);
+        assert_eq!(ask(addr).0, 200, "the server answers the next request");
+        // an illegal address: the request fails, and the server ends itself
+        let mut f = Fake::new(512, 64);
+        f.fault = Some((2, 700));
+        let addr = serve_fake(f, None, 4);
+        let (status, text) = ask(addr);
+        assert!(status >= 500 && text.contains("failed (700)"), "{status}: {text}");
+        let t = std::time::Instant::now();
+        while lost(700) == 0 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(lost(700), 1, "the server ended itself for the lost context, once");
     }
 
     /// A client that sends its request slowly is let wait for the time that is given the whole of it, not for each read: a request that stops, or goes a byte at a time, is answered 408 and its

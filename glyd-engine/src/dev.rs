@@ -333,7 +333,7 @@ impl Kernel {
             if cfg!(feature = "dev") {
                 if let Err(e) = r {
                     let name = kprof_table().lock().ok().and_then(|t| t.get(&(self.0 as usize)).map(|v| v.0.clone())).unwrap_or_default();
-                    return Err(crate::ffi::Error(format!("{} ({name}: grid {grid:?}, block {block:?}, smem {smem})", e.0)));
+                    return Err(crate::ffi::Error(format!("{} ({name}: grid {grid:?}, block {block:?}, smem {smem})", e.msg)));
                 }
             }
             r

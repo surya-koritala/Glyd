@@ -210,7 +210,7 @@ impl Fixture {
     }
 
     pub fn read(path: &Path) -> Result<Fixture> {
-        let raw = io(std::fs::read(path)).map_err(|e| Error(format!("{}: {}", path.display(), e.0)))?;
+        let raw = io(std::fs::read(path)).map_err(|e| Error(format!("{}: {}", path.display(), e.msg)))?;
         let text = if raw.starts_with(&[0x1f, 0x8b]) {
             let mut s = String::new();
             io(flate2::read::GzDecoder::new(&raw[..]).read_to_string(&mut s))?;
@@ -219,7 +219,7 @@ impl Fixture {
             String::from_utf8(raw).map_err(|e| Error(e.to_string()))?
         };
         let v: Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", path.display())))?;
-        Fixture::from_json(&v).map_err(|e| Error(format!("{}: {}", path.display(), e.0)))
+        Fixture::from_json(&v).map_err(|e| Error(format!("{}: {}", path.display(), e.msg)))
     }
 
     /// Written compressed (and with a name that ends .gz), one line.
@@ -281,7 +281,7 @@ pub fn compare(fx: &Fixture, bound: &Bound, got: &[Vec<f32>]) -> Verdict {
         let row = match Row::from_logits(g) {
             Ok(r) => r,
             Err(e) => {
-                v.notes.push(format!("row {i}: {}", e.0));
+                v.notes.push(format!("row {i}: {}", e.msg));
                 return v;
             }
         };
@@ -885,7 +885,7 @@ pub fn gpu_label() -> Result<String> {
 /// A case's fixtures: CASE.json.gz (a reference's) and CASE.*.json.gz (an engine's own bits on a GPU generation).
 fn fixture_files(dir: &Path, id: &str) -> Result<Vec<PathBuf>> {
     let mut v: Vec<PathBuf> = io(std::fs::read_dir(dir))
-        .map_err(|e| Error(format!("{}: {}", dir.display(), e.0)))?
+        .map_err(|e| Error(format!("{}: {}", dir.display(), e.msg)))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
@@ -1064,7 +1064,7 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
             let mut old = match legacy(&dir, &level) {
                 Ok(r) => r,
                 Err(e) => {
-                    println!("SKIP {id:12} {level:8} the hand-written engine does not run it: {}", e.0);
+                    println!("SKIP {id:12} {level:8} the hand-written engine does not run it: {}", e.msg);
                     continue;
                 }
             };
@@ -1128,7 +1128,7 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
         let mut base = match engine(&dir, "penguin") {
             Ok(r) => r,
             Err(e) => {
-                println!("SKIP {id:12} penguin, the base: {}", e.0);
+                println!("SKIP {id:12} penguin, the base: {}", e.msg);
                 continue;
             }
         };
@@ -1141,7 +1141,7 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
             let mut run = match engine(&dir, level) {
                 Ok(r) => r,
                 Err(e) => {
-                    println!("SKIP {id:12} {level:8} {}", e.0);
+                    println!("SKIP {id:12} {level:8} {}", e.msg);
                     continue;
                 }
             };

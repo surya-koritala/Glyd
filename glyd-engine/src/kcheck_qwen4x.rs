@@ -18,12 +18,12 @@ fn io<T>(r: std::io::Result<T>) -> Result<T> {
 }
 
 fn words(dir: &Path, name: &str) -> Result<Vec<u16>> {
-    let b = io(std::fs::read(dir.join(name))).map_err(|e| Error(format!("{}: {}", dir.join(name).display(), e.0)))?;
+    let b = io(std::fs::read(dir.join(name))).map_err(|e| Error(format!("{}: {}", dir.join(name).display(), e.msg)))?;
     Ok(b.as_chunks::<2>().0.iter().map(|x| u16::from_le_bytes(*x)).collect())
 }
 
 fn f32s(dir: &Path, name: &str) -> Result<Vec<f32>> {
-    let b = io(std::fs::read(dir.join(name))).map_err(|e| Error(format!("{}: {}", dir.join(name).display(), e.0)))?;
+    let b = io(std::fs::read(dir.join(name))).map_err(|e| Error(format!("{}: {}", dir.join(name).display(), e.msg)))?;
     Ok(b.as_chunks::<4>().0.iter().map(|x| f32::from_le_bytes(*x)).collect())
 }
 

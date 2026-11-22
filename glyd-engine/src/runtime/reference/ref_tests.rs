@@ -417,7 +417,7 @@ const MARGIN: f32 = 0.02;
 fn whole_model(dir: &std::path::Path, theirs: &mut dyn FnMut() -> Box<dyn FnMut(u32) -> (Vec<f32>, f32)>, vocab: usize, first: u32, tol: f32, what: &str) {
     use crate::runtime::{describe::describe, reference::model::RefModel};
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
-    let d = describe(&cfg).unwrap_or_else(|e| panic!("{what}: {}", e.0));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{what}: {}", e.msg));
     let ck = Checkpoint::open(dir).unwrap();
     let src = checkpoint_source(&ck);
     for c in first..first + 64 {
@@ -427,7 +427,7 @@ fn whole_model(dir: &std::path::Path, theirs: &mut dyn FnMut() -> Box<dyn FnMut(
         if steps.iter().any(|s| s.1 < MARGIN) {
             continue;
         }
-        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{what}: {}", e.0));
+        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{what}: {}", e.msg));
         let ours = m.forward(&toks, 0).unwrap();
         for (i, (want, _)) in steps.iter().enumerate() {
             assert_close(&ours[i], want, tol, &format!("{what}: prompt {toks:?}, position {i}"));
@@ -496,7 +496,7 @@ fn deepseek_v4_release_described() {
     let dir = std::env::temp_dir().join(format!("glyd-runtime-dsv4-model-{}", std::process::id()));
     random(&dir, None).unwrap();
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
-    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.0));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
     let ck = Checkpoint::open(&dir).unwrap();
     let names: BTreeSet<String> = ck.names().map(String::from).collect();
     assert_eq!(d.names(), names, "the weight map");

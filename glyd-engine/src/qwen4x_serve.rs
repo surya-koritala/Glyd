@@ -527,8 +527,8 @@ pub fn serve(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
         let reply = one(&mut e, &caches, &line, &eos, &mut hist, tower.as_ref(), &mut held).unwrap_or_else(|x| {
             hist.clear();
             held.clear();
-            log(&format!("a request failed: {}", x.0));
-            format!("{{\"error\":{}}}", json_string(&x.0))
+            log(&format!("a request failed: {}", x.msg));
+            format!("{{\"error\":{}}}", json_string(&x.msg))
         });
         *e.emit.borrow_mut() = None;
         *e.sampler.borrow_mut() = None;
@@ -762,7 +762,7 @@ fn vision(snap: &Path, e: &EngineQx, a: &Args) -> Result<Option<crate::vision::T
         }
         Ok(None) => Ok(None),
         Err(x) => {
-            log(&format!("images are off: {}", x.0));
+            log(&format!("images are off: {}", x.msg));
             Ok(None)
         }
     }
@@ -968,7 +968,7 @@ impl Qx {
     fn round(&mut self) {
         if self.linger().is_some_and(|d| d.is_zero()) && self.waiting.is_empty() {
             if let Err(x) = self.release_idle() {
-                log(&format!("the idle sequences not freed: {}", x.0));
+                log(&format!("the idle sequences not freed: {}", x.msg));
             }
         }
         self.waiting.retain(|s| {
@@ -1029,8 +1029,8 @@ impl Qx {
                         Ok(true) => j,
                         Ok(false) => return Some(sub),
                         Err(x) => {
-                            log(&format!("a request failed: {}", x.0));
-                            let _ = sub.out.send(Ev::End(Err(x.0)));
+                            log(&format!("a request failed: {}", x.msg));
+                            let _ = sub.out.send(Ev::End(Err(x)));
                             return None;
                         }
                     }
@@ -1047,9 +1047,9 @@ impl Qx {
                     self.hist.clear();
                     self.held.clear();
                 }
-                crate::monitor::failed(sub.prompt.len(), &x.0);
-                log(&format!("a request failed: {} ({l} others running)", x.0));
-                let _ = sub.out.send(Ev::End(Err(x.0)));
+                crate::monitor::failed(sub.prompt.len(), &x.msg);
+                log(&format!("a request failed: {} ({l} others running)", x.msg));
+                let _ = sub.out.send(Ev::End(Err(x)));
                 self.extra_at = Instant::now();
             }
         }
@@ -1121,9 +1121,9 @@ impl Qx {
                     self.hist.clear();
                     self.held.clear();
                 }
-                crate::monitor::failed(prompt.len(), &x.0);
-                log(&format!("a request failed: {}", x.0));
-                Err(x.0)
+                crate::monitor::failed(prompt.len(), &x.msg);
+                log(&format!("a request failed: {}", x.msg));
+                Err(x)
             }
             Ok(()) => {
                 // (the tokens the engine's state now holds: the prompt and every token made but the last)

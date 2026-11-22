@@ -573,7 +573,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                         let _ = fine && ev.raw(kind, "response", &body) && ev.s.write_all(b"0\r\n\r\n").is_ok();
                         return;
                     }
-                    Ok(Out::Failed(e)) => {
+                    Ok(Out::Failed(e, _)) => {
                         eprintln!("glyd: a request failed: {e}");
                         let body = ctx.response("failed", None, &ev.done, None, Some(&e));
                         let _ = ev.raw("response.failed", "response", &body) && ev.s.write_all(b"0\r\n\r\n").is_ok();
@@ -609,7 +609,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                     let body = ctx.response(status, reason, &output, Some((prompt_tokens, done.tokens)), None);
                     return respond_with(s, 200, "application/json", cors, body.as_bytes());
                 }
-                Ok(Out::Failed(e)) => return fail(s, cors, 500, &e),
+                Ok(Out::Failed(e, server)) => return fail(s, cors, if server { 500 } else { 400 }, &e),
                 Err(RecvTimeoutError::Disconnected) => return fail(s, cors, 500, "the engine stopped"),
             }
         }

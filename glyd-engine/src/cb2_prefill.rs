@@ -336,7 +336,7 @@ fn copier(ordinal: i32, rx: Receiver<Job>, up: Sender<std::result::Result<(), St
             s
         }
         Err(e) => {
-            let _ = up.send(Err(e.0));
+            let _ = up.send(Err(e.msg));
             return;
         }
     };
@@ -368,7 +368,7 @@ fn copier(ordinal: i32, rx: Receiver<Job>, up: Sender<std::result::Result<(), St
             }
             side.sync()
         })();
-        job.done.finish(r.err().map(|e| e.0));
+        job.done.finish(r.err().map(|e| e.msg));
     }
 }
 
@@ -1459,7 +1459,7 @@ mod bench {
             let r = unsafe { cu("cuMemHostRegister", (drv.cuMemHostRegister_v2)(lo as *mut c_void, hi - lo, flags)) };
             let reg = t0.elapsed().as_secs_f64();
             match r {
-                Err(e) => println!("registering {} MB in place (flags {flags}): {}", (hi - lo) >> 20, e.0),
+                Err(e) => println!("registering {} MB in place (flags {flags}): {}", (hi - lo) >> 20, e.msg),
                 Ok(()) => {
                     println!(
                         "registering {} MB in place (flags {flags}): {:.1} ms ({:.2} ms a GB)",

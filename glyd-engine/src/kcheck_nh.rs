@@ -809,7 +809,7 @@ pub fn disk(dir: &Path, reads: usize, depth: usize) -> Result<()> {
                 Box::new(move || {
                     SCRATCH.with(|s| {
                         let (data, meta) = &mut *s.borrow_mut();
-                        d.read_sized(e, data, meta).map_err(|e| std::io::Error::other(e.0))
+                        d.read_sized(e, data, meta).map_err(|e| std::io::Error::other(e.msg))
                     })
                 }) as Job
             })
@@ -992,8 +992,8 @@ mod tests {
                 assert!(x[i * c.hidden * 2..(i + 1) * c.hidden * 2] == row[..], "token {i}");
             }
             assert_eq!(std::fs::read(mini.join("config.json")).unwrap(), std::fs::read(packed.join("config.json")).unwrap());
-            assert!(decode(&src, &dir.join("x"), &[0], 4).unwrap_err().0.contains("not a glyd-v7 directory"));
-            assert!(decode(&packed, &dir.join("y"), &[6], 4).unwrap_err().0.contains("layer 6, where the model has 6"));
+            assert!(decode(&src, &dir.join("x"), &[0], 4).unwrap_err().msg.contains("not a glyd-v7 directory"));
+            assert!(decode(&packed, &dir.join("y"), &[6], 4).unwrap_err().msg.contains("layer 6, where the model has 6"));
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1005,7 +1005,7 @@ mod tests {
         assert_eq!(level_of(Some(6)).unwrap(), Layout::Int6);
         assert_eq!(level_of(Some(5)).unwrap(), Layout::Int5);
         assert_eq!(level_of(Some(4)).unwrap(), Layout::Int4);
-        assert!(level_of(Some(3)).unwrap_err().0.contains("3 bits"));
+        assert!(level_of(Some(3)).unwrap_err().msg.contains("3 bits"));
     }
 
     fn row(v: &[f32]) -> Vec<u16> {
@@ -1050,7 +1050,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("glyd-engine-diskcheck-{}", std::process::id()));
         let (out, c) = crate::hbpack::tests::packed_toy(&dir, 1 << 30, 40);
         disk(&out, 48, 4).unwrap();
-        let e = disk(&dir.join("src"), 4, 2).unwrap_err().0;
+        let e = disk(&dir.join("src"), 4, 2).unwrap_err().msg;
         assert!(e.contains("not a glyd-v7 directory at the Hummingbird level"), "{e}");
         // the tiny directory's experts: 6 at three bits and 10 at two in each of three layers
         let (_, m) = v7_manifest(&out).unwrap().unwrap();
@@ -1064,7 +1064,7 @@ mod tests {
         assert_eq!(plan.ram, plan.host_bytes(), "more than the experts is all of them");
         assert!(host_budget(&args(&["--host-memory", "lots"]), &mut plan).is_err());
         let mut wren = CachePlan { in_place: false, ram: total, ..plan };
-        assert!(host_budget(&args(&["--host-memory", "0.0003"]), &mut wren).unwrap_err().0.contains("only the Hummingbird level"));
+        assert!(host_budget(&args(&["--host-memory", "0.0003"]), &mut wren).unwrap_err().msg.contains("only the Hummingbird level"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

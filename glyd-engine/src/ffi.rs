@@ -10,12 +10,103 @@ use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::fmt;
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone)]
-pub struct Error(pub String);
+/// What an error is, for the parts of the program that act on it and not on its words (ROADMAP R16): `run` and the planner (the GPU's memory, no driver), the server and the service (a GPU
+/// whose context is not to be used again). A call of the driver or of the GPU library that fails gives its status here and its call in the words (docs/design/runtime.md section 4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    /// None of the others: its words say what.
+    #[default]
+    Other,
+    /// The GPU has no memory for what was asked of it (the driver's and the library's status 2).
+    OutOfMemory,
+    /// This computer has no GPU driver to load.
+    NoDriver,
+    /// The request's own doing: a prompt longer than the context, or than the cache holds with nothing else running. The server answers it 400; every other kind is the server's (500).
+    Request,
+    /// A call of the driver or of the GPU library failed with `status`. `sticky`: the GPU's context is not to be used after it (every later call fails the same way), so the model that ran
+    /// on it stops, and the service starts it again.
+    Device { status: i32, sticky: bool },
+}
+
+impl Kind {
+    /// The kind of a status of the driver (CUDA_ERROR_*) or of the GPU library, whose statuses are the CUDA runtime's (the same numbers) and its own from `GLYD_GPU_BLAS_ERROR` on.
+    pub fn of_status(status: c_int) -> Kind {
+        match status {
+            2 => Kind::OutOfMemory,
+            // deinitialized, no device, an ECC error the GPU could not correct, an illegal address, a launch timed out, a hardware stack error, the context destroyed, an assert in a kernel,
+            // an illegal instruction, a misaligned address, an invalid address space, an invalid program counter, a launch failed, unknown: the context is lost
+            4 | 100 | 214 | 700 | 702 | 708 | 709 | 710 | 715 | 716 | 717 | 718 | 719 | 999 => Kind::Device { status, sticky: true },
+            _ => Kind::Device { status, sticky: false },
+        }
+    }
+}
+
+/// An error in words, and what kind it is (`Kind`). `Error(words)` makes one: where the words hold those of the last error of a kind made on this thread, which is how an error is wrapped
+/// (`Error(format!("layer 3: {e}"))`), it keeps that kind; else it is `Kind::Other`. `Error::of` makes one of a kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Error {
+    pub msg: String,
+    pub kind: Kind,
+}
+
+thread_local! {
+    /// The last error of a kind made on this thread: its words and its kind (see `Error`).
+    static LAST: std::cell::RefCell<Option<(String, Kind)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// An error of these words (see the type `Error`): `Kind::Other`, or the kind of the error whose words these hold.
+#[allow(non_snake_case)]
+pub fn Error(msg: String) -> Error {
+    let kind = LAST.with(|l| match &*l.borrow() {
+        Some((m, k)) if msg.contains(m.as_str()) => *k,
+        _ => Kind::Other,
+    });
+    if kind == Kind::Other {
+        Error { msg, kind }
+    } else {
+        Error::of(kind, msg)
+    }
+}
+
+impl Error {
+    /// An error of `kind` in these words.
+    pub fn of(kind: Kind, msg: impl Into<String>) -> Error {
+        let msg = msg.into();
+        if kind != Kind::Other {
+            LAST.with(|l| *l.borrow_mut() = Some((msg.clone(), kind)));
+        }
+        Error { msg, kind }
+    }
+
+    /// The same error with `what` before its words ("WHAT: words").
+    pub fn context(self, what: impl fmt::Display) -> Error {
+        Error::of(self.kind, format!("{what}: {}", self.msg))
+    }
+
+    /// Whether the GPU's context is not to be used after it (`Kind::Device`'s `sticky`).
+    pub fn sticky(&self) -> bool {
+        matches!(self.kind, Kind::Device { sticky: true, .. })
+    }
+
+    /// The status of the driver's or the library's call that failed: the kind's, or, for an error that came here as words (from another process, or through a channel as text), the "(N)" its
+    /// words end in, which is how `cu` and `Lib::ck` write it.
+    pub fn status(&self) -> Option<i32> {
+        match self.kind {
+            Kind::Device { status, .. } => Some(status),
+            Kind::OutOfMemory => Some(2),
+            _ => self.msg.rsplit_once('(').and_then(|(_, n)| n.strip_suffix(')')).and_then(|n| n.parse().ok()),
+        }
+    }
+
+    /// Whether the GPU had no memory for what was asked of it.
+    pub fn out_of_memory(&self) -> bool {
+        self.kind == Kind::OutOfMemory || self.status() == Some(2)
+    }
+}
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.msg)
     }
 }
 
@@ -345,25 +436,25 @@ mod hip {
 
 /// The driver, loaded and initialized once.
 pub fn driver() -> Result<&'static Driver> {
-    static D: OnceLock<std::result::Result<Driver, String>> = OnceLock::new();
+    static D: OnceLock<std::result::Result<Driver, (Kind, String)>> = OnceLock::new();
     D.get_or_init(|| {
         #[cfg(glyd_hip)]
-        let d = hip::driver()?;
+        let d = hip::driver().map_err(|e| (Kind::NoDriver, e))?;
         #[cfg(not(glyd_hip))]
         let d = {
-            let h = dl::open(CUDA_DRIVER).map_err(|e| format!("no CUDA driver ({e})"))?;
+            let h = dl::open(CUDA_DRIVER).map_err(|e| (Kind::NoDriver, format!("no CUDA driver ({e})")))?;
             // SAFETY: libcuda's functions of these names (CUDA 11 on: the _v2 ones).
-            unsafe { Driver::resolve(h) }.map_err(|e| format!("{CUDA_DRIVER}: {e}"))?
+            unsafe { Driver::resolve(h) }.map_err(|e| (Kind::NoDriver, format!("{CUDA_DRIVER}: {e}")))?
         };
         // SAFETY: no pointers.
         match unsafe { (d.cuInit)(0) } {
             0 => Ok(d),
-            s if cfg!(glyd_hip) => Err(format!("hipInit: HIP error {s} (100: no AMD GPU the runtime can use)")),
-            s => Err(format!("cuInit: CUDA error {s}")),
+            s if cfg!(glyd_hip) => Err((Kind::of_status(s), format!("hipInit: HIP error {s} (100: no AMD GPU the runtime can use)"))),
+            s => Err((Kind::of_status(s), format!("cuInit: CUDA error {s}"))),
         }
     })
     .as_ref()
-    .map_err(|e| Error(e.clone()))
+    .map_err(|(k, e)| Error::of(*k, e.clone()))
 }
 
 /// A driver status as a `Result`, with the driver's text.
@@ -379,7 +470,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
             _ => format!("CUDA error {status}"),
         }
     };
-    err(format!("{call}: {text} ({status})"))
+    Err(Error::of(Kind::of_status(status), format!("{call}: {text} ({status})")))
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
@@ -639,7 +730,7 @@ impl Lib {
             for t in tries {
                 match Lib::load(&t) {
                     Ok(l) => return Ok(l),
-                    Err(e) => why.push(e.0),
+                    Err(e) => why.push(e.msg),
                 }
             }
         }
@@ -673,7 +764,7 @@ impl Lib {
                 CStr::from_ptr(p).to_string_lossy().into_owned()
             }
         };
-        err(format!("{call}: {t} ({status})"))
+        Err(Error::of(Kind::of_status(status), format!("{call}: {t} ({status})")))
     }
 
     /// The route the library takes W [o, k] for `m` tokens on `gpu` (glyd_gpu.h's GLYD_GPU_ROUTE_*), in the 12-bit layout or the tiered one.
@@ -1494,5 +1585,52 @@ mod tests {
             .and_then(|v| v.parse::<c_int>().ok())
             .expect("glyd_gpu.h has no GLYD_GPU_API_VERSION");
         assert_eq!(version, API_VERSION, "GLYD_GPU_API_VERSION is not API_VERSION");
+    }
+
+    /// A status of the driver or the library is a kind: 2 the GPU's memory, the statuses after which a context is lost sticky, the others a call that failed and no more. `cu` gives the call,
+    /// the text and the status in the words and the kind beside them.
+    #[test]
+    fn a_status_is_a_kind() {
+        assert_eq!(Kind::of_status(2), Kind::OutOfMemory);
+        for s in [4, 100, 214, 700, 702, 708, 709, 710, 715, 716, 717, 718, 719, 999] {
+            assert_eq!(Kind::of_status(s), Kind::Device { status: s, sticky: true }, "{s}");
+        }
+        for s in [1, 3, 101, 200, 209, 218, 222, 400, 600, 10000] {
+            assert_eq!(Kind::of_status(s), Kind::Device { status: s, sticky: false }, "{s}");
+        }
+        assert!(cu("cuMemAlloc", 0).is_ok());
+        let e = cu("cuMemAlloc", 2).unwrap_err();
+        assert!(e.kind == Kind::OutOfMemory && e.out_of_memory() && !e.sticky() && e.status() == Some(2), "{e:?}");
+        assert!(e.msg.starts_with("cuMemAlloc: ") && e.msg.ends_with(" (2)"), "{e}");
+        let e = cu("cuLaunchKernel", 700).unwrap_err();
+        assert!(e.sticky() && e.status() == Some(700) && !e.out_of_memory(), "{e:?}");
+        let e = cu("cuModuleLoadData", 209).unwrap_err();
+        assert!(!e.sticky() && e.status() == Some(209), "{e:?}");
+    }
+
+    /// An error made of another's words keeps its kind, through as many wraps as there are and through `context`; one of other words is of no kind; and an error that comes as words alone
+    /// (another thread's, another process's) still tells its status by the "(N)" its words end in.
+    #[test]
+    fn an_error_made_of_anothers_words_keeps_its_kind() {
+        let e = cu("cuLaunchKernel", 719).unwrap_err();
+        let once = Error(format!("layer 3: {e}"));
+        let twice = Error(format!("the step of 4 rows failed ({once})"));
+        assert!(once.sticky() && twice.sticky() && twice.status() == Some(719), "{twice:?}");
+        assert!(twice.msg.contains("layer 3: cuLaunchKernel"));
+        let other = Error("the prompt is longer than the context".to_string());
+        assert!(other.kind == Kind::Other && !other.sticky() && other.status().is_none());
+        // (a later error of no kind does not take the earlier one's: its words are its own)
+        assert_eq!(err::<()>("no file of that name").unwrap_err().kind, Kind::Other);
+        let oom = cu("cuMemAlloc", 2).unwrap_err().context("the KV cache");
+        assert!(oom.kind == Kind::OutOfMemory && oom.msg.starts_with("the KV cache: cuMemAlloc"), "{oom:?}");
+        // (the wrap of the last one made, not of an older one that the words do not hold)
+        assert_eq!(Error(format!("loading: {oom}")).kind, Kind::OutOfMemory);
+        // words alone, on a thread that made no error of a kind
+        let words = twice.msg.clone();
+        let far = std::thread::spawn(move || Error(format!("the server said: {words}"))).join().unwrap();
+        assert!(far.kind == Kind::Other && !far.sticky(), "a kind does not cross threads as words");
+        let words = "cuMemAlloc: out of memory (2)".to_string();
+        let far = std::thread::spawn(move || Error(words)).join().unwrap();
+        assert!(far.kind == Kind::Other && far.status() == Some(2) && far.out_of_memory());
     }
 }

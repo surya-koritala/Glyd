@@ -3471,7 +3471,7 @@ impl EngineQx {
             match self.dev.capture(&f) {
                 Ok(g) => segs[key] = Some(g),
                 // (nothing of a capture runs: the stretch is queued now)
-                Err(e) if e.0.starts_with("cuGraphInstantiate") => return f(),
+                Err(e) if e.msg.starts_with("cuGraphInstantiate") => return f(),
                 Err(e) => return Err(e),
             }
         }

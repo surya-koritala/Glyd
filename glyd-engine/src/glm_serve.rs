@@ -120,8 +120,8 @@ pub fn serve(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
         }
         // (a request that fails is answered with its error and the session goes on)
         let reply = one_request(&mut e, &store, &common, &mut drafting, &line, &eos, dump.as_deref(), &mut first_request).unwrap_or_else(|x| {
-            stderr_line(&format!("a request failed: {}", x.0));
-            format!("{{\"error\":{}}}", json_string(&x.0))
+            stderr_line(&format!("a request failed: {}", x.msg));
+            format!("{{\"error\":{}}}", json_string(&x.msg))
         });
         writeln!(out, "{reply}").map_err(|x| Error(x.to_string()))?;
         out.flush().map_err(|x| Error(x.to_string()))?;

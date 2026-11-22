@@ -171,7 +171,7 @@ impl Facts {
         let gpus = match Dev::probe_all() {
             Ok(all) if machine::pick(&all).is_some() => Ok(all),
             Ok(_) => Err("the driver shows none".to_string()),
-            Err(e) => Err(e.0),
+            Err(e) => Err(e.msg),
         };
         let wddm = gpus.as_ref().is_ok_and(|all| all.iter().any(|g| Dev::wddm(g.ordinal)));
         let (hub_dir, cache) = (hub::hub_cache(), store::cache_root());
@@ -189,7 +189,7 @@ impl Facts {
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             gpus,
-            library: crate::ffi::Lib::find().map(|l| l.path.clone()).map_err(|e| e.0),
+            library: crate::ffi::Lib::find().map(|l| l.path.clone()).map_err(|e| e.msg),
             cublas: crate::ffi::Blas::find().map(|b| b.path.clone()),
             // (the total from /proc/meminfo; what is available from offload::host_memory, the planner's own probe, which a cgroup's limit lowers)
             ram: crate::os::meminfo().and_then(|t| parse_ram(&t)).map(|(total, avail)| (total, crate::offload::host_memory().unwrap_or(avail))),

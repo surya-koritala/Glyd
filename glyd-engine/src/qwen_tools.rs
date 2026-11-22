@@ -209,7 +209,7 @@ impl Mcp {
                 let max = args.get("max_tokens").and_then(Value::as_u64).unwrap_or(1024);
                 let body = format!("{{\"messages\":[{{\"role\":\"user\",\"content\":{}}}],\"max_tokens\":{max}}}", jstr(prompt));
                 let mut text = String::new();
-                post(&format!("{url}/v1/chat/completions"), &body).map_err(|e| e.0)?.read_to_string(&mut text).map_err(|e| e.to_string())?;
+                post(&format!("{url}/v1/chat/completions"), &body).map_err(|e| e.msg)?.read_to_string(&mut text).map_err(|e| e.to_string())?;
                 let v = json::parse(&text)?;
                 v.get("choices")
                     .and_then(Value::as_array)

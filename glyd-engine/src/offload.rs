@@ -1114,7 +1114,7 @@ impl Tier {
                 Box::new(move || {
                     // SAFETY: the slot's bytes, which nothing else reads or writes until the reads are done (`Staging` and `Pending` wait for them before the memory can go).
                     let (data, meta) = unsafe { (std::slice::from_raw_parts_mut(d.get(), lens[0]), std::slice::from_raw_parts_mut(m.get(), lens[1])) };
-                    read(e as usize, data, meta).map_err(|x| std::io::Error::other(x.0))
+                    read(e as usize, data, meta).map_err(|x| std::io::Error::other(x.msg))
                 }) as Job
             })
             .collect();
@@ -1296,7 +1296,7 @@ fn copy_worker(ordinal: i32, rx: Receiver<CopyJob>, left: Arc<(Mutex<usize>, Con
     })();
     while let Ok(job) = rx.recv() {
         let r = match &bound {
-            Err(e) => Err(e.0.clone()),
+            Err(e) => Err(e.msg.clone()),
             Ok(()) => (|| -> Result<()> {
                 job.wait.wait(job.stream)?;
                 job.start.record(job.stream)?;
@@ -1308,7 +1308,7 @@ fn copy_worker(ordinal: i32, rx: Receiver<CopyJob>, left: Arc<(Mutex<usize>, Con
                 job.ready.record(job.stream)?;
                 Ok(())
             })()
-            .map_err(|e| e.0),
+            .map_err(|e| e.msg),
         };
         job.state.finish(r);
         let (m, cv) = &*left;
@@ -1418,7 +1418,7 @@ fn pinned_copy(bytes: &[u8]) -> Result<Pinned> {
         Error(format!(
             "{} MiB of the computer's memory cannot be pinned for the experts: {}",
             bytes.len() >> 20,
-            e.0.replace("out of memory", "no memory left")
+            e.msg.replace("out of memory", "no memory left")
         ))
     })?;
     // SAFETY: the allocation holds bytes.len() bytes and does not overlap the slice.
@@ -2184,7 +2184,7 @@ impl ExpertStore {
                 Error(format!(
                     "{} MiB of the computer's memory cannot be pinned for the experts: {}",
                     (disk.ram as u64 * stride[k]) >> 20,
-                    e.0.replace("out of memory", "no memory left")
+                    e.msg.replace("out of memory", "no memory left")
                 ))
             })
         };
@@ -3489,9 +3489,9 @@ mod tests {
     #[test]
     fn requests_that_cannot_be_served_are_refused() {
         let mut c = LayerCache::new(8, 3);
-        assert!(c.request(&[0, 1, 2, 3]).unwrap_err().0.contains("4 experts asked of a cache of 3"));
-        assert!(c.request(&[1, 1]).unwrap_err().0.contains("twice"));
-        assert!(c.request(&[8]).unwrap_err().0.contains("expert 8 of 8"));
+        assert!(c.request(&[0, 1, 2, 3]).unwrap_err().msg.contains("4 experts asked of a cache of 3"));
+        assert!(c.request(&[1, 1]).unwrap_err().msg.contains("twice"));
+        assert!(c.request(&[8]).unwrap_err().msg.contains("expert 8 of 8"));
         assert_eq!(c.resident(), 0, "a refused request left nothing half done in the places it did not take");
     }
 
@@ -3582,9 +3582,9 @@ mod tests {
             (4, vec![pack(79)], "a matrix of 79 + 8 bytes for 8 experts of 10 + 1"),
         ] {
             let e = store.add_layer(0, 8, slots, &packs, None).unwrap_err();
-            assert!(e.0.contains(why), "{e}");
+            assert!(e.msg.contains(why), "{e}");
         }
-        assert!(store.hint(0, &[1]).unwrap_err().0.contains("no layers"));
+        assert!(store.hint(0, &[1]).unwrap_err().msg.contains("no layers"));
         assert!(store.report().unwrap().starts_with("expert cache: 0 of 0 experts a layer"));
     }
 
@@ -4653,14 +4653,14 @@ mod tests {
         assert!(found > 2000 && read_in > 2000, "the hot set was found {found} times and the churn read {read_in} experts");
         // a read that fails: the call errs and the tier is empty; asked again, it reads everything
         fail.store(13, Ordering::SeqCst);
-        let e = t.stage(&[3, 13, 20], mem, 0, &mut || Ok(0)).unwrap_err().0;
+        let e = t.stage(&[3, 13, 20], mem, 0, &mut || Ok(0)).unwrap_err().msg;
         assert!(e.contains("expert 13: the disk said no"), "{e}");
         assert_eq!(t.ram.resident(), 0);
         fail.store(usize::MAX, Ordering::SeqCst);
         let got = t.stage(&[3, 13, 20], mem, 0, &mut || Ok(0)).unwrap();
         assert_eq!((got.hits, got.reads), (0, 3));
         // more experts than slots are refused, as the GPU's places refuse them
-        assert!(t.stage(&(0..8).collect::<Vec<u16>>(), mem, 0, &mut || Ok(0)).unwrap_err().0.contains("8 experts asked of a cache of 7"));
+        assert!(t.stage(&(0..8).collect::<Vec<u16>>(), mem, 0, &mut || Ok(0)).unwrap_err().msg.contains("8 experts asked of a cache of 7"));
     }
 
     /// The copy stream on the host: a batch queued reads its slots when the test runs it (not when it is queued, as the stream's copies do), and the bytes it reads are checked against the experts it was queued for.
@@ -4801,7 +4801,7 @@ mod tests {
         // a budget of a fraction of an expert: one slot each; and nothing left once the budget is spent
         store.set_host_memory(Some(HostMemory { bytes: b3 + b2, total }));
         assert_eq!((store.host_slots(205, b3).unwrap(), store.host_slots(307, b2).unwrap()), (1, 1));
-        assert!(store.host_slots(205, b3).unwrap_err().0.contains("spent"));
+        assert!(store.host_slots(205, b3).unwrap_err().msg.contains("spent"));
     }
 
     /// A tier of 3 slots over a group of the tiny model's directory (read by `HbDisk`, in shards of 24 KB, where an expert's tensors are in two files now and then), asked for calls of 1 to 3 experts over a long random run,

@@ -548,12 +548,12 @@ pub(super) fn generate(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Re
                     }
                     return;
                 }
-                Ok(Out::Failed(e)) => {
+                Ok(Out::Failed(e, server)) => {
                     eprintln!("glyd: a request failed: {e}");
                     if started {
                         let _ = line(s, &format!("{{\"error\":{}}}", jstr(&e))) && s.write_all(b"0\r\n\r\n").is_ok();
                     } else {
-                        fail(s, cors, 500, &e);
+                        fail(s, cors, if server { 500 } else { 400 }, &e);
                     }
                     return;
                 }

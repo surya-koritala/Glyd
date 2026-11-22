@@ -1583,7 +1583,7 @@ pub struct Planned {
 
 pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     use crate::ui::Refusal;
-    let given = a.need(1, "MODEL").map_err(|e| Refusal::new(e.0, "glyd-engine fit MODEL[:LEVEL]"))?;
+    let given = a.need(1, "MODEL").map_err(|e| Refusal::new(e.msg, "glyd-engine fit MODEL[:LEVEL]"))?;
     let (model, layout) = levels::parse(given, a.has("lossy")).map_err(|e| Refusal::new(e.what, e.fix))?;
     let tagged = levels::split_tag(given).1.is_some() || a.has("lossy");
     let level = tagged.then(|| layout.map_or("penguin", levels::name_of));

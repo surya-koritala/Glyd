@@ -504,7 +504,7 @@ mod tests {
         let cfg = MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 };
         rows_fit(512, 2688, 1024, &cfg).unwrap();
         let says = |r: Result<()>, what: &str| {
-            let e = r.unwrap_err().0;
+            let e = r.unwrap_err().msg;
             assert!(e.contains(what), "{e:?} does not say {what:?}");
         };
         says(rows_fit(512, 2688, 1024, &MoeCfg { act: Act::GeGlu, ..cfg }), "it is for relu squared");

@@ -704,7 +704,7 @@ pub(crate) mod tests {
     }
 
     fn refused(text: &str, says: &str) {
-        let e = ConfigGlm::parse(text, "x", None).err().unwrap_or_else(|| panic!("not refused: {says:?}")).0;
+        let e = ConfigGlm::parse(text, "x", None).err().unwrap_or_else(|| panic!("not refused: {says:?}")).msg;
         assert!(e.contains(says), "{e:?} does not say {says:?}");
     }
 
@@ -1188,7 +1188,7 @@ pub(crate) mod tests {
         let says = |edit: &dyn Fn(&mut Index), what: &str| {
             let mut h = have.clone();
             edit(&mut h);
-            let e = c.check(&h, &HashSet::new()).unwrap_err().0;
+            let e = c.check(&h, &HashSet::new()).unwrap_err().msg;
             assert!(e.contains(what), "{e:?} does not say {what:?}");
         };
         let at = |h: &Index, n: &str| h.iter().position(|t| t.0 == n).unwrap_or_else(|| panic!("{n}"));
@@ -1262,12 +1262,12 @@ pub(crate) mod tests {
         let mut h = have.clone();
         let i = at(&h, &up);
         h[i].1 = "BF16".into();
-        assert!(c.check(&h, &HashSet::new()).unwrap_err().0.contains(&format!("{up}_scale_inv: not a tensor of this model")));
+        assert!(c.check(&h, &HashSet::new()).unwrap_err().msg.contains(&format!("{up}_scale_inv: not a tensor of this model")));
         h.retain(|t| t.0 != format!("{up}_scale_inv"));
         assert_eq!(c.check(&h, &HashSet::new()).unwrap(), 2_107);
         // a config without the FP8 blocks cannot take FP8 tensors
         let bf16 = ConfigGlm { fp8_block: None, ..c.clone() };
-        assert!(bf16.check(&have, &HashSet::new()).unwrap_err().0.contains("config.json gives no weight_block_size for its block scales"));
+        assert!(bf16.check(&have, &HashSet::new()).unwrap_err().msg.contains("config.json gives no weight_block_size for its block scales"));
         // an FP8 model's tensors against another's: a tensor of no layer, a layer past the MTP head, more layers than the checkpoint has
         says(&|h| h.push(("model.embed_tokens.weight".into(), "BF16".into(), vec![154880, 4096])), "model.embed_tokens.weight: not a tensor of this model");
         says(
@@ -1275,7 +1275,7 @@ pub(crate) mod tests {
             &format!("{}: not a tensor of this model", l(46, "input_layernorm.weight")),
         );
         let more = ConfigGlm { layers: 46, kinds: [c.kinds.clone(), vec![GlmKind::Kda]].concat(), moe: [c.moe.clone(), vec![true]].concat(), ..c.clone() };
-        assert!(more.check(&have, &HashSet::new()).unwrap_err().0.contains(&format!("no {}", l(45, "self_attn.q_proj.weight"))));
+        assert!(more.check(&have, &HashSet::new()).unwrap_err().msg.contains(&format!("no {}", l(45, "self_attn.q_proj.weight"))));
         // a packed matrix is held as its buffers, a fused one under its first part's name; its scales are not saved
         let key = l(3, "mlp.experts.7.gate_proj");
         let mut h = have.clone();

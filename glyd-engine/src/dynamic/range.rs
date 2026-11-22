@@ -339,7 +339,7 @@ fn reply_frame(id: &str, r: Answer) -> Frame {
             all.extend(pairs);
             Frame { head: obj(all), body }
         }
-        Err(e) => Frame { head: obj(vec![("id", text(id)), ("ok", Value::Bool(false)), ("error", text(&e.0))]), body: Vec::new() },
+        Err(e) => Frame { head: obj(vec![("id", text(id)), ("ok", Value::Bool(false)), ("error", text(&e.msg))]), body: Vec::new() },
     }
 }
 
@@ -2155,10 +2155,10 @@ mod tests {
         let mut big = Vec::new();
         big.extend((MAX_HEAD as u32 + 1).to_le_bytes());
         big.extend(0u32.to_le_bytes());
-        assert!(read_frame(&mut std::io::Cursor::new(big), MAX_BODY).unwrap_err().0.contains("frame head"));
+        assert!(read_frame(&mut std::io::Cursor::new(big), MAX_BODY).unwrap_err().msg.contains("frame head"));
         let mut f = Vec::new();
         write_frame(&mut f, &frame("r1", "run_chunk", &[0u8; 100])).unwrap();
-        assert!(read_frame(&mut std::io::Cursor::new(f.clone()), 99).unwrap_err().0.contains("frame body of 100 bytes, where 99"));
+        assert!(read_frame(&mut std::io::Cursor::new(f.clone()), 99).unwrap_err().msg.contains("frame body of 100 bytes, where 99"));
         assert!(read_frame(&mut std::io::Cursor::new(f), 100).unwrap().is_some());
         let mut e = Vec::new();
         e.extend(0u32.to_le_bytes());
@@ -2168,7 +2168,7 @@ mod tests {
         j.extend(3u32.to_le_bytes());
         j.extend(0u32.to_le_bytes());
         j.extend(b"{x}");
-        assert!(read_frame(&mut std::io::Cursor::new(j), MAX_BODY).unwrap_err().0.contains("not JSON"));
+        assert!(read_frame(&mut std::io::Cursor::new(j), MAX_BODY).unwrap_err().msg.contains("not JSON"));
     }
 
     /// A handle names its kind, the incarnation and a number; this incarnation's pass, another incarnation's are refused as such, anything else is not a handle.
@@ -2179,11 +2179,11 @@ mod tests {
         let s = handle('s', inc, 7);
         assert_eq!((i.as_str(), s.as_str()), ("i-123456789abcdef0-1", "s-123456789abcdef0-7"));
         assert!(check_handle(&i, 'i', inc).is_ok() && check_handle(&s, 's', inc).is_ok());
-        assert!(check_handle(&i, 's', inc).unwrap_err().0.contains("not a session handle"));
-        assert!(check_handle(&handle('s', inc + 1, 7), 's', inc).unwrap_err().0.contains("another worker incarnation"));
-        assert!(check_handle("s-0000000000000000-1", 's', inc).unwrap_err().0.contains("another worker incarnation"));
+        assert!(check_handle(&i, 's', inc).unwrap_err().msg.contains("not a session handle"));
+        assert!(check_handle(&handle('s', inc + 1, 7), 's', inc).unwrap_err().msg.contains("another worker incarnation"));
+        assert!(check_handle("s-0000000000000000-1", 's', inc).unwrap_err().msg.contains("another worker incarnation"));
         for bad in ["", "s", "s-123456789abcdef0-", "s-123456789abcdef0-x", "pointer:0x7f", "s-12345-1"] {
-            assert!(check_handle(bad, 's', inc).unwrap_err().0.contains("not a session handle"), "{bad}");
+            assert!(check_handle(bad, 's', inc).unwrap_err().msg.contains("not a session handle"), "{bad}");
         }
         assert!(incarnation() != incarnation() || true);
         assert!(ok_id("r1") && ok_id("chunk_12.a-b") && !ok_id("") && !ok_id("a b") && !ok_id(&"x".repeat(129)) && ok_id(&"x".repeat(128)));
@@ -2275,7 +2275,7 @@ mod tests {
             (r#"{"seed": 1, "step": 0, "temperature": 3}"#, "temperature"),
             (r#"{"seed": 1, "step": 0, "repetition_penalty": 1.1}"#, "repetition_penalty"),
         ] {
-            assert!(sampler_of(&json::parse(bad).unwrap(), &defaults, 4096).err().unwrap().0.contains(says), "{bad}");
+            assert!(sampler_of(&json::parse(bad).unwrap(), &defaults, 4096).err().unwrap().msg.contains(says), "{bad}");
         }
     }
 
@@ -2315,6 +2315,6 @@ mod tests {
             assert!(layers_arg(&a(&["rangeworker", "--layers", bad]), 32).is_err(), "{bad}");
         }
         assert!(matches!(resolve("Qwen/Qwen3.5-9B:swift"), Ok((_, Some(Layout::Int5))) | Err(_)));
-        assert!(resolve("x:sparrow").unwrap_err().0.contains("not a level"));
+        assert!(resolve("x:sparrow").unwrap_err().msg.contains("not a level"));
     }
 }

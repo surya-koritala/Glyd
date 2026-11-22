@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn what_it_does_not_run_is_refused() {
         let refused = |edit: (&str, &str), what: &str| {
-            let e = ConfigKimi::parse(&K3.replace(edit.0, edit.1), "config.json", None).unwrap_err().0;
+            let e = ConfigKimi::parse(&K3.replace(edit.0, edit.1), "config.json", None).unwrap_err().msg;
             assert!(e.contains(what), "{e}");
         };
         refused((r#""hidden_act": "situ""#, r#""hidden_act": "silu""#), "an activation other than situ");
