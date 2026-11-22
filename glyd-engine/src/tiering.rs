@@ -220,13 +220,19 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     };
     let (resident, cached) = (run(false)?, run(true)?);
     let (mut differ, mut worst) = (0usize, 0f32);
-    for (r, c) in resident.iter().zip(&cached) {
+    for (i, (r, c)) in resident.iter().zip(&cached).enumerate() {
+        let (mut d, mut w) = (0usize, 0f32);
         for (x, y) in r.iter().zip(c) {
             if x.to_bits() != y.to_bits() {
-                differ += 1;
-                worst = worst.max((x - y).abs());
+                d += 1;
+                w = w.max((x - y).abs());
             }
         }
+        if d > 0 {
+            // (which pass it was: the prompt's last row, or a decode step's one row; a step of one token has few pairs, where the library splits a product's K over blocks)
+            println!("  position {i} ({}): {d} of {} logits differ, the largest by {w:e}", if i == 0 { "the prompt's" } else { "a decode step's" }, r.len());
+        }
+        (differ, worst) = (differ + d, worst.max(w));
     }
     let total: usize = resident.iter().map(Vec::len).sum();
     println!(

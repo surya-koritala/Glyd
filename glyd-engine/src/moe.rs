@@ -1013,6 +1013,33 @@ impl MoeLayer {
         self.experts_sum(sc, s, t, y, 0, 0)
     }
 
+    /// A call computed in `waves` (calls that share a layer's pairs) keeps the sums of the earlier ones in the scratch's workspace, the weighted second product's rows, where a first product (activation `act`) whose K
+    /// is split over blocks would write its parts: the first products of such a layer take a workspace of their own (`MoeScratch::up_ws`), and a scratch that has none refuses the call that would need it. (The sparse
+    /// second product of a row layout keeps its parts in its own buffer.)
+    fn waves_keep(&self, lib: &Lib, sc: &MoeScratch, t: usize, waves: usize, act: i64) -> Result<()> {
+        let c = &self.cfg;
+        if waves > 1
+            && sc.ws1.is_none()
+            && matches!(self.w.down, Down::Block(_))
+            && lib.moe_workspace(
+                self.w.up.pack.is_twelve(),
+                c.experts as i64,
+                self.w.up.rows as i64,
+                c.hidden as i64,
+                t as i64,
+                c.router.top_k as i64,
+                act,
+                false,
+            )? > 0
+        {
+            return err(format!(
+                "{t} tokens of {} choices: the first product needs a workspace, which the sums of a layer's earlier calls are kept in",
+                c.router.top_k
+            ));
+        }
+        Ok(())
+    }
+
     /// `experts_via` up to the second product: the plan, the first product, the activation, and the second (a block layout's, which writes y, its weighted sum; a row layout's parts, which `experts_sum` adds up). A
     /// pair whose place in `way` is -1 is in no part of this call: the experts the host computes are, for the cache, pairs with no place.
     ///
@@ -1049,18 +1076,9 @@ impl MoeLayer {
             }
             return Ok(());
         }
-        // (calls that share a layer's pairs keep the sums of the earlier ones in the workspace, where a first product with K split over blocks would write its parts; the sparse second product keeps them in its own)
-        if calls > 1
-            && matches!(self.w.down, Down::Block(_))
-            && lib.moe_workspace(self.w.up.pack.is_twelve(), e, self.w.up.rows as i64, c.hidden as i64, tt, k, c.fused(), false)? > 0
-        {
-            return err(format!(
-                "{t} tokens of {} choices: the first product needs a workspace, which the sums of a layer's earlier calls are kept in",
-                c.router.top_k
-            ));
-        }
+        self.waves_keep(lib, sc, t, calls, c.fused())?;
         lib.moe_way(way.unwrap_or(sc.ids.ptr), pairs as i64, e, sc.plan.ptr, s)?;
-        moe_tp(lib, &self.w.up, e, x, tt, k, true, sc.plan.ptr, c.fused(), 0, 0, sc.a.ptr, pairs, sc, s)?;
+        moe_tp(lib, &self.w.up, e, x, tt, k, true, sc.plan.ptr, c.fused(), 0, 0, sc.a.ptr, pairs, sc, sc.up_ws(), s)?;
         let rows = if c.fused() != 0 {
             sc.a.ptr
         } else if self.separate_h() {
@@ -1073,9 +1091,24 @@ impl MoeLayer {
         match &self.w.down {
             // (the sum's pairs by their places where the store gives them in one call: a pair the host computes or leaves out, -1, is left out of it; over
             // several calls, the waves, by the router's choices: each call sums the rows of the earlier ones too)
-            Down::Block(d) => {
-                moe_tp(lib, d, e, rows, tt, k, false, sc.plan.ptr, 0, sc.wts.ptr, if calls > 1 { sc.ids.ptr } else { way.unwrap_or(sc.ids.ptr) }, y, t, sc, s)
-            }
+            Down::Block(d) => moe_tp(
+                lib,
+                d,
+                e,
+                rows,
+                tt,
+                k,
+                false,
+                sc.plan.ptr,
+                0,
+                sc.wts.ptr,
+                if calls > 1 { sc.ids.ptr } else { way.unwrap_or(sc.ids.ptr) },
+                y,
+                t,
+                sc,
+                &sc.ws,
+                s,
+            ),
             Down::Rows(_) if self.w.up.tp_rows > 0 => err("experts sliced across GPUs with a second matrix in a row layout"),
             Down::Rows(r) => sc.rk.down(s, c, r, rows, sc.plan.ptr, way.unwrap_or(sc.ids.ptr), sc.part.ptr, sc.part.bytes, t),
         }
@@ -1316,9 +1349,9 @@ impl MoeLayer {
                     }
                     let (ei, ti, ki) = (e as i64, tn as i64, k as i64);
                     lib.moe_way(sc.way.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
-                    moe_tp(lib, &self.w.up, ei, xs, ti, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+                    moe_tp(lib, &self.w.up, ei, xs, ti, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
                     launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
-                    moe_tp(lib, down, ei, sc.h.ptr, ti, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+                    moe_tp(lib, down, ei, sc.h.ptr, ti, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
                     launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
                     launch!(sc.k.mu_sum, [tn as u32, 1, 1], [256, 1, 1], s; sc.a.ptr, inv, ids, wts, post_w, ys, k as i32, c.hidden as i32, eps)
                 })?;
@@ -1337,10 +1370,10 @@ impl MoeLayer {
             launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
             return launch!(sc.k.mu_sum, [t as u32, 1, 1], [256, 1, 1], s; sc.hb_rows.ptr, inv, sc.ids.ptr, sc.wts.ptr, post_w, y, k as i32, c.hidden as i32, eps);
         }
-        moe_tp(lib, &self.w.up, ei, x, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+        moe_tp(lib, &self.w.up, ei, x, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
         launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
         // (the second product unweighted, the pairs' rows in the plan's order: into `a`, free after the activation)
-        moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+        moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
         launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
         launch!(sc.k.mu_sum, [t as u32, 1, 1], [256, 1, 1], s; sc.a.ptr, inv, sc.ids.ptr, sc.wts.ptr, post_w, y, k as i32, c.hidden as i32, eps)
     }
@@ -1399,10 +1432,11 @@ impl MoeLayer {
             // (the expert cache: the products over the places of each wave, the weights in the activation, the sum's pairs the call's)
             self.cached(sc, s, hq, t, y, &mut |waves| {
                 let (ei, tt, ki, pairs) = (e as i64, t as i64, k as i64, t * k);
+                self.waves_keep(lib, sc, t, waves, 0)?;
                 lib.moe_way(sc.way.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
-                moe_tp(lib, &self.w.up, ei, hq, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?;
+                moe_tp(lib, &self.w.up, ei, hq, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, sc.up_ws(), s)?;
                 launch!(sc.k.act_w, [pairs as u32, (c.inter as u32 / 128).div_ceil(4), 1], [128, 1, 1], s; sc.a.ptr, sc.h.ptr, sc.plan.ptr, sc.wts.ptr, e as i32, c.inter as i32, lim, fp8 as i32)?;
-                moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, ones, if waves > 1 { sc.ids.ptr } else { sc.way.ptr }, y, t, sc, s)
+                moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, ones, if waves > 1 { sc.ids.ptr } else { sc.way.ptr }, y, t, sc, &sc.ws, s)
             })?;
         } else {
             let (ei, tt, ki, pairs) = (e as i64, t as i64, k as i64, t * k);
@@ -1410,7 +1444,7 @@ impl MoeLayer {
             crate::tmark!(s, "moe: plan");
             match &self.hb {
                 Some(hb) => self.hb_up(hb, sc, s, hq, t, sc.ids.ptr)?,
-                None => moe_tp(lib, &self.w.up, ei, hq, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, s)?,
+                None => moe_tp(lib, &self.w.up, ei, hq, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?,
             }
             crate::tmark!(s, "moe: up");
             launch!(sc.k.act_w, [pairs as u32, (c.inter as u32 / 128).div_ceil(4), 1], [128, 1, 1], s; sc.a.ptr, sc.h.ptr, sc.plan.ptr, sc.wts.ptr, e as i32, c.inter as i32, lim, fp8 as i32)?;
@@ -1421,7 +1455,7 @@ impl MoeLayer {
                     self.hb_down(hb, sc, s, sc.h.ptr, t, sc.ids.ptr)?;
                     self.hb_sum(hb, sc, s, t, y, sc.ids.ptr, ones, 0)?;
                 }
-                None => moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, ones, sc.ids.ptr, y, t, sc, s)?,
+                None => moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, ones, sc.ids.ptr, y, t, sc, &sc.ws, s)?,
             }
         }
         crate::tmark!(s, "moe: down");
@@ -1529,7 +1563,8 @@ pub(crate) unsafe fn linear_tp(lib: &Lib, p: &PackBuf, x: u64, t: usize, y: u64,
 }
 
 /// The library's grouped product (`Lib::moe`) by a stack that may hold this GPU's slice of each expert's rows: into this GPU's room, then every GPU's
-/// slices gathered into y, `rows` rows of an expert's whole rows (the pairs' of a first product, or a weighted second's tokens').
+/// slices gathered into y, `rows` rows of an expert's whole rows (the pairs' of a first product, or a weighted second's tokens'). `ws`: the workspace it takes
+/// (the scratch's, or the first products' own: `MoeScratch::up_ws`).
 ///
 /// # Safety
 /// As `MoeLayer::route`.
@@ -1549,17 +1584,18 @@ unsafe fn moe_tp(
     y: u64,
     rows: usize,
     sc: &MoeScratch,
+    ws: &Buf,
     s: Stream,
 ) -> Result<()> {
     if st.placed > 0 {
-        return lib.moe_placed(&st.pack, st.placed, e, x, t, k, first, plan, act, wts, ids, y, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s);
+        return lib.moe_placed(&st.pack, st.placed, e, x, t, k, first, plan, act, wts, ids, y, ws.ptr, ws.bytes, sc.done.ptr, s);
     }
     if st.tp_rows == 0 {
-        return lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, y, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s);
+        return lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, y, ws.ptr, ws.bytes, sc.done.ptr, s);
     }
     let c = crate::dynamic::tp::comm().ok_or_else(|| crate::ffi::Error("experts sliced across GPUs, on a thread of no group of them".into()))?;
     let tmp = c.temp(s, rows * st.rows * 2)?;
-    lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, tmp, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
+    lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, tmp, ws.ptr, ws.bytes, sc.done.ptr, s)?;
     c.gather(s, tmp, rows, st.rows, y, st.tp_rows)
 }
 
@@ -1674,6 +1710,9 @@ pub struct MoeScratch {
     pub inv: Buf,
     ws: Buf,
     done: Buf,
+    /// The first products' workspace where a layer's experts are in the expert cache (`MoeLayer::cache`, a second matrix in a block layout): a call computed in waves keeps the sums of its earlier waves in `ws` (the
+    /// weighted second product's rows, fp32), where a first product whose K is split over blocks (a call of few pairs: a decode step's) would write its parts.
+    ws1: Option<Buf>,
     // the sparse second product (`moe_rows`): its kernels and the partial sums of its blocks
     rk: RowsKern,
     pub part: Buf,
@@ -1808,6 +1847,11 @@ impl Sizes {
 }
 
 impl MoeScratch {
+    /// The workspace a first product takes: its own where the scratch has one (`ws1`: a layer in the expert cache), else the scratch's.
+    fn up_ws(&self) -> &Buf {
+        self.ws1.as_ref().unwrap_or(&self.ws)
+    }
+
     /// The scratch for `layers` and calls of up to `max_tokens` tokens: the library's workspace asked for every count of tokens up to it (it is not monotonic in it), for each distinct shape of the layers' products.
     pub fn new(dev: &Dev, lib: &Lib, layers: &[&MoeLayer], max_tokens: usize) -> Result<MoeScratch> {
         if layers.is_empty() || max_tokens == 0 {
@@ -1860,6 +1904,25 @@ impl MoeScratch {
             }
         }
         let mut sc = MoeScratch::sized(dev, lib, &shapes, max_tokens, f8)?;
+        if layers.iter().any(|l| l.cache.is_some() && matches!(l.w.down, Down::Block(_))) {
+            let mut need = 0;
+            for t in 1..=max_tokens as i64 {
+                for g in Sizes::of(&shapes, max_tokens).grouped.iter().filter(|g| g[6] == 0) {
+                    // (with and without the activation: the release's layers ask for the plain product of a stack whose config fuses it)
+                    need = need.max(lib.moe_workspace(g[0] != 0, g[1], g[2], g[3], t, g[4], g[5], false)?).max(lib.moe_workspace(
+                        g[0] != 0,
+                        g[1],
+                        g[2],
+                        g[3],
+                        t,
+                        g[4],
+                        0,
+                        false,
+                    )?);
+                }
+            }
+            sc.ws1 = Some(Buf::zeroed(need.max(16))?);
+        }
         // (a development build's GLYD_MOE_BESIDE=0: the shared expert after the routed ones, on the engine's stream)
         if layers.iter().any(|l| l.shared.is_some() && matches!((l.cfg.act, &l.w.down), (Act::SwiGlu { limit: Some(_) }, Down::Block(_))))
             && crate::tune!("GLYD_MOE_BESIDE").as_deref() != Some("0")
@@ -1921,6 +1984,7 @@ impl MoeScratch {
             so: Buf::new(z.so)?,
             gate: Buf::new(max_tokens * 4)?,
             beside: None,
+            ws1: None,
         })
     }
 
@@ -1956,6 +2020,7 @@ impl MoeScratch {
             so: Buf::new(16)?,
             gate: Buf::new(max_tokens * 4)?,
             beside: None,
+            ws1: None,
         })
     }
 
