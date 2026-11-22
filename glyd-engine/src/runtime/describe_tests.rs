@@ -357,3 +357,25 @@ fn kimi_k3s_packed_experts_are_named_and_other_packings_refused() {
     refused(&|q| q["format"] = "nvfp4-pack-quantized".into(), "nvfp4");
     refused(&|q| q["ignore"] = serde_json::json!(["re:.*self_attn.*", "re:.*lm_head.*"]), "shared_experts");
 }
+
+/// Every config of tests/fixtures describes from its own file, the toy and tiny ones as the released: all but Condor's (Qwen3.8-Flash-Next, `qwen4_exp_text`), whose
+/// indexer, n-gram embedding and gated residuals are kinds of R3d (#140), and which is refused in words meanwhile.
+#[test]
+fn every_fixture_config_describes() {
+    for (f, blocks) in [
+        ("gemma4_12b_config.json", 96),
+        ("glm5_next_config.json", 90),
+        ("glm5_next_tiny_config.json", 10),
+        ("glm5_next_toy_config.json", 16),
+        ("nemotron_h_config.json", 88),
+        ("nemotron_h_moetoy_config.json", 6),
+    ] {
+        let d = describe(&fixture(f)).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
+        assert_eq!(d.desc.blocks.len(), blocks, "{f}");
+    }
+    for (repo, c) in fixture("qwen35_configs.json").as_object().unwrap() {
+        describe(c).unwrap_or_else(|e| panic!("{repo}: {}", e.msg));
+    }
+    let e = describe(&fixture("qwen4x_config.json")).unwrap_err().msg;
+    assert!(e.contains("qwen4_exp_text"), "{e}");
+}
