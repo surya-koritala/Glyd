@@ -1874,7 +1874,7 @@ fn load_lossy(
             None => None,
         };
         let o = crate::dynamic::Opts { ctx: plan.context, chunk: GEMMA_CHUNK, graph: true, device: gpu.ordinal, layout: Some(layout) };
-        let e = crate::dynamic::Dyn::new(&dir, crate::dynamic::gemma4::describe(&c), spec, &o).map_err(oom)?;
+        let e = crate::dynamic::Dyn::new(&dir, crate::dynamic::gemma4::lowered(&dir, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::NemotronH {

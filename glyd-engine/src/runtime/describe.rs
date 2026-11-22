@@ -51,6 +51,9 @@ pub struct Described {
     /// Matrices stored quantized (FP8 blocks as released, FP4 experts), each with the tensor of its scales. The weight map names them;
     /// decoding a stored format is the tensor source's job.
     pub scales: std::collections::BTreeMap<String, String>,
+    /// Each tensor's shape as the config makes it, where the builder says it (Gemma 4's: its matrices, norms and scalars; empty for the builders that do not yet):
+    /// what a lowering to the executor sizes its matrices by, for a packed directory too, whose tensors are not stored at their shapes.
+    pub shapes: std::collections::BTreeMap<String, Vec<usize>>,
 }
 
 impl Described {
@@ -371,6 +374,7 @@ fn finish(k: &Keys, desc: ModelDesc, prefix: &str, blocks: Vec<Vec<(String, Sour
         extra: Vec::new(),
         mtp_layers,
         scales: Default::default(),
+        shapes: Default::default(),
     })
 }
 
@@ -478,6 +482,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         norm_eps: eps,
         state_f32: true,
     };
+    let mut dense_inter = None;
     let moe = if k.raw("num_experts").is_some() {
         let ne = k.usize("num_experts")?;
         k.usize("moe_intermediate_size")?;
@@ -500,7 +505,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             latent: None,
         })
     } else {
-        k.usize("intermediate_size")?;
+        dense_inter = Some(k.usize("intermediate_size")?);
         None
     };
     k.expect("mlp_only_layers", &Value::Array(Vec::new()))?;
@@ -597,12 +602,57 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         vision: None,
         rope: Some(rp),
     };
-    finish(&k, desc, prefix, roles, mtp_layers)
+    let mut out = finish(&k, desc, prefix, roles, mtp_layers)?;
+    // (the shapes of a dense model's tensors, as its heads and widths make them; a mixture of experts' are not said yet)
+    if let Some(inter) = dense_inter {
+        let (kh, vh, kd, vd, conv) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim, lin.conv);
+        let mut shapes = std::collections::BTreeMap::new();
+        let mut put = |n: String, s: Vec<usize>| {
+            shapes.insert(n, s);
+        };
+        for (l, ty) in types.iter().enumerate() {
+            let p = format!("{prefix}layers.{l}");
+            if ty == "linear_attention" {
+                let a = format!("{p}.linear_attn");
+                let qkv = 2 * kh * kd + vh * vd;
+                put(format!("{a}.in_proj_qkv.weight"), vec![qkv, d]);
+                put(format!("{a}.in_proj_z.weight"), vec![vh * vd, d]);
+                put(format!("{a}.in_proj_b.weight"), vec![vh, d]);
+                put(format!("{a}.in_proj_a.weight"), vec![vh, d]);
+                put(format!("{a}.conv1d.weight"), vec![qkv, 1, conv]);
+                put(format!("{a}.A_log"), vec![vh]);
+                put(format!("{a}.dt_bias"), vec![vh]);
+                put(format!("{a}.norm.weight"), vec![vd]);
+                put(format!("{a}.out_proj.weight"), vec![d, vh * vd]);
+            } else {
+                let a = format!("{p}.self_attn");
+                put(format!("{a}.q_proj.weight"), vec![heads * hd * if gate { 2 } else { 1 }, d]);
+                put(format!("{a}.k_proj.weight"), vec![kv * hd, d]);
+                put(format!("{a}.v_proj.weight"), vec![kv * hd, d]);
+                put(format!("{a}.o_proj.weight"), vec![d, heads * hd]);
+                put(format!("{a}.q_norm.weight"), vec![hd]);
+                put(format!("{a}.k_norm.weight"), vec![hd]);
+            }
+            put(format!("{p}.input_layernorm.weight"), vec![d]);
+            put(format!("{p}.post_attention_layernorm.weight"), vec![d]);
+            put(format!("{p}.mlp.gate_proj.weight"), vec![inter, d]);
+            put(format!("{p}.mlp.up_proj.weight"), vec![inter, d]);
+            put(format!("{p}.mlp.down_proj.weight"), vec![d, inter]);
+        }
+        put(out.embed.clone(), vec![vocab, d]);
+        put(out.final_norm.clone(), vec![d]);
+        if let Some(h) = out.head.clone() {
+            put(h, vec![vocab, d]);
+        }
+        out.shapes = shapes;
+    }
+    Ok(out)
 }
 
 fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
     let k = Keys::new(tc, mt);
-    let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
+    // (transformers' Gemma 4 ties the head to the embedding unless the config says otherwise, where Llama and Qwen default to a head of their own)
+    let (d, layers, vocab, eps, tied) = common(&k, tied_top.or(Some(true)))?;
     let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
     // the global layers' head dim and KV heads: the release's keys, or (transformers 5.18 writes these instead) `per_layer_config`
     let per = match k.raw("per_layer_config") {
@@ -628,7 +678,7 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     if k.str("use_bidirectional_attention")? == Some("all") {
         return err(format!("{mt}: bidirectional attention for text is not supported"));
     }
-    k.usize("intermediate_size")?;
+    let inter = k.usize("intermediate_size")?;
     let act = act(k.str("hidden_activation")?.or(k.str("hidden_act")?).unwrap_or("gelu_pytorch_tanh"))?;
     let softcap = k.opt_f64("final_logit_softcapping")?.map(|v| v as f32);
     let rps = match k.raw("rope_parameters") {
@@ -718,7 +768,37 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         vision: None,
         rope: None,
     };
-    finish(&k, desc, prefix, roles, 0)
+    let mut out = finish(&k, desc, prefix, roles, 0)?;
+    // (the shapes: each matrix [rows, columns] as the layer's heads and widths make it, each norm and scalar its width)
+    let mut shapes = std::collections::BTreeMap::new();
+    for (l, ty) in types.iter().enumerate() {
+        let (h, kvh) = if ty == "sliding_attention" { (hd, kv) } else { (ghd, gkv) };
+        let p = format!("{prefix}layers.{l}");
+        let a = format!("{p}.self_attn");
+        for (x, s) in [
+            ("q_proj", vec![heads * h, d]),
+            ("k_proj", vec![kvh * h, d]),
+            ("v_proj", vec![kvh * h, d]),
+            ("o_proj", vec![d, heads * h]),
+            ("q_norm", vec![h]),
+            ("k_norm", vec![h]),
+        ] {
+            shapes.insert(format!("{a}.{x}.weight"), s);
+        }
+        for (x, s) in [("gate_proj", vec![inter, d]), ("up_proj", vec![inter, d]), ("down_proj", vec![d, inter])] {
+            shapes.insert(format!("{p}.mlp.{x}.weight"), s);
+        }
+        for x in ["input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm", "post_feedforward_layernorm"] {
+            shapes.insert(format!("{p}.{x}.weight"), vec![d]);
+        }
+        shapes.insert(format!("{p}.layer_scalar"), vec![1]);
+    }
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    let named = out.names();
+    shapes.retain(|n, _| named.contains(n));
+    out.shapes = shapes;
+    Ok(out)
 }
 
 /// FP8 block quantization as released (`quantization_config`): which matrices hold FP8 and their block.
@@ -879,7 +959,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     // the feed-forward
     let first_dense = k.opt_usize("first_k_dense_replace")?;
     let mlp_types: Option<Vec<bool>> = k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str() == Some("sparse")).collect());
-    k.usize("intermediate_size")?;
+    let dense_inter = k.usize("intermediate_size")?;
     k.usize("moe_intermediate_size")?;
     let clamp = if flash { k.opt_f64("swiglu_limit")?.map(|v| v as f32) } else { None };
     let mlp = Mlp { act, gated: true, bias: false, clamp };
@@ -923,6 +1003,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         Source::Tensor(w)
     };
     let mut fp8set = BTreeSet::new();
+    let mut dense_shapes = Vec::new();
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
     for (l, &is_lin) in types.iter().enumerate() {
         let p = format!("{prefix}layers.{l}");
@@ -1044,6 +1125,10 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
             for x in ["gate", "up", "down"] {
                 r.push((x.to_string(), fp8w(format!("{f}.{x}_proj.weight"), &mut fp8set)));
             }
+            // (a dense MLP's shapes, which the lowering to the executor reads its width from)
+            for (x, s) in [("gate", vec![dense_inter, d]), ("up", vec![dense_inter, d]), ("down", vec![d, dense_inter])] {
+                dense_shapes.push((format!("{f}.{x}_proj.weight"), s));
+            }
             Body::Ffn(Ffn::Mlp(mlp))
         };
         let res = residual("ffn", &mut r);
@@ -1063,6 +1148,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     };
     let mut out = finish(&k, desc, prefix, roles, mtp_layers)?;
     out.scales = fp8set.into_iter().map(|w| (w.clone(), format!("{w}_scale_inv"))).collect();
+    out.shapes = dense_shapes.into_iter().collect();
     let _ = fp8.map(|f| f.block);
     Ok(out)
 }
@@ -1158,8 +1244,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
         indexer: None,
     };
     let dense = k.usize("first_k_dense_replace")?;
-    k.usize("intermediate_size")?;
-    k.usize("moe_intermediate_size")?;
+    let inter = k.usize("intermediate_size")?;
+    let moe_inter = k.usize("moe_intermediate_size")?;
     let ne = k.usize("num_experts")?;
     // (the routed experts as released: MXFP4, 4-bit floats in groups of 32 with a byte's scale each, as compressed-tensors packs them; every other matrix bf16)
     let mxfp4 = match k.raw("quantization_config") {
@@ -1170,7 +1256,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
         }
     };
     let mut scales = std::collections::BTreeMap::new();
-    let shared = k.usize("num_shared_experts")? > 0;
+    let n_shared = k.usize("num_shared_experts")?;
+    let shared = n_shared > 0;
     let lat = k.usize("routed_expert_hidden_size")?;
     let moe = Moe {
         router: Router {
@@ -1192,7 +1279,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
     let group = k.usize("attn_res_block_size")?;
     let prefix = "language_model.model.";
     let n = twice(eps);
-    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), Vec::new());
     for l in 0..layers {
         let p = format!("{prefix}layers.{l}");
         let a = format!("{p}.self_attn");
@@ -1215,6 +1302,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
                 r.push((role.to_string(), t(format!("{a}.{x}.weight"))));
             }
             r.push(("conv".into(), Source::Rows(["q", "k", "v"].iter().map(|x| format!("{a}.{x}_conv1d.weight")).collect())));
+            // (the forget gate's low rank: the delta heads' size, which the lowering to the executor sizes its slot by)
+            shapes.push((format!("{a}.f_a_proj.weight"), vec![kd, d]));
             for (role, x) in [("a_log", "A_log"), ("dt_bias", "dt_bias"), ("norm", "o_norm.weight")] {
                 r.push((role.to_string(), t(format!("{a}.{x}"))));
             }
@@ -1245,6 +1334,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
             for x in ["gate", "up", "down"] {
                 r.push((x.to_string(), t(format!("{p}.mlp.{x}_proj.weight"))));
             }
+            shapes.push((format!("{p}.mlp.gate_proj.weight"), vec![inter, d]));
             Body::Ffn(Ffn::Mlp(mlp))
         } else {
             let f = format!("{p}.block_sparse_moe");
@@ -1272,6 +1362,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
                 for x in ["gate", "up", "down"] {
                     r.push((format!("shared_{x}"), t(format!("{f}.shared_experts.{x}_proj.weight"))));
                 }
+                shapes.push((format!("{f}.shared_experts.gate_proj.weight"), vec![n_shared * moe_inter, d]));
             }
             Body::Ffn(Ffn::Moe(moe.clone()))
         };
@@ -1303,6 +1394,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
         ],
         mtp_layers,
         scales,
+        shapes: shapes.into_iter().collect(),
     })
 }
 
@@ -1723,6 +1815,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         extra: ["fn", "base", "scale"].iter().map(|x| (format!("out_hc_{x}"), t(format!("{}{x}", names[3])))).collect(),
         mtp_layers,
         scales,
+        shapes: Default::default(),
     })
 }
 
@@ -1947,5 +2040,6 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
         extra: Vec::new(),
         mtp_layers,
         scales: Default::default(),
+        shapes: Default::default(),
     })
 }

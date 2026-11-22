@@ -298,5 +298,110 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         logit_mult: c.out_mult,
     };
     l_.ram = ram.finish(&mut l_.mats)?;
+    // (the loader's own operations, as it indexed what it loaded, held to the layer kinds' description of the config: one model, or it is not loaded)
+    let desc = super::lower::agree(lowered(dir, &c, &st)?, &desc, &dir.join("config.json").display().to_string())?;
     Dyn::from_parts(dev, desc, l_, ropes, layout, st, o)
+}
+
+/// Muse Spark's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::muse`), held to `describe`.
+pub fn lowered(dir: &Path, c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
+    let p = dir.join("config.json");
+    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let lowered = super::lower::muse(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st)?;
+    super::lower::agree(lowered, &describe(c, st)?, &p.display().to_string())
+}
+
+/// The executor's description of Muse Spark for stage `st`, as the loader indexes what it loads: the small tensors a weightless norm's ones first, then each layer's
+/// nine (its input norm, the attention's residual gate's two, the feed-forward norm, the experts' pre and post norms, the post-feed-forward norm, its residual
+/// gate's two), the final norm after the last layer's; each layer's four matrices (q, k, v and the gate; o; the latent in and out), then the embedding and the head;
+/// a block of experts a layer.
+pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
+    if c.head_dim != 64 || c.hidden > 8192 || c.latent > 4096 || c.top_k > 32 {
+        return err(format!("heads of {}, a width of {}, a latent of {}, {} experts a token: this engine runs heads of 64, widths up to 8192, latents up to 4096 and up to 32 experts a token", c.head_dim, c.hidden, c.latent, c.top_k));
+    }
+    let (d, nq, nk, hd, lat) = (c.hidden, c.heads, c.kv_heads, c.head_dim, c.latent);
+    let row = (2 * nq + 2 * nk) * hd;
+    let ones = 0;
+    let (mut n_small, mut n_mats, mut n_moe, mut rings, mut layers) = (1, 0, 0, Vec::new(), Vec::new());
+    for l in 0..c.layers {
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            layers.push(Vec::new());
+            continue;
+        }
+        let s0 = n_small;
+        let (w_in, aa, ba, w_ff, w_pre, w_post_e, w_post_ff, af, bfg) = (s0, s0 + 1, s0 + 2, s0 + 3, s0 + 4, s0 + 5, s0 + 6, s0 + 7, s0 + 8);
+        n_small += 9;
+        let m0 = n_mats;
+        n_mats += 4;
+        let block = n_moe;
+        n_moe += 1;
+        let ring = rings.len();
+        let window = if c.sliding[l] { c.window } else { 0 };
+        rings.push(Ring { d: hd, nk, window });
+        let mut ops = vec![
+            Op::MuseRms { x: Slot::X, w: w_in, y: Slot::H, eps: c.eps },
+            Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
+            Op::MuseQk { stride: row, nq, nk, rope: c.sliding[l], ring, scale: c.qk_scale },
+            Op::MuseAttn { ring, nq, nk, window },
+            Op::MuseOGate { stride: row, goff: (nq + 2 * nk) * hd, nq },
+            Op::Linear { w: m0 + 1, x: Slot::Core, y: Slot::O, name: "attention: o product" },
+            Op::MuseRms { x: Slot::O, w: ones, y: Slot::O, eps: c.post_eps },
+            Op::MuseGate { alpha: aa, beta: ba },
+            Op::MuseRms { x: Slot::X, w: w_ff, y: Slot::H, eps: c.eps },
+            Op::Linear { w: m0 + 2, x: Slot::H, y: Slot::Proj, name: "experts: latent in" },
+            Op::MuseRms { x: Slot::Proj, w: w_pre, y: Slot::Xc, eps: c.eps },
+            Op::MuseMoe { block, post_w: w_post_e, eps: c.post_eps },
+            Op::Linear { w: m0 + 3, x: Slot::M, y: Slot::O, name: "experts: latent out" },
+            Op::MuseRmsIn { x: Slot::O, w: w_post_ff, y: Slot::O, eps: c.post_eps },
+            Op::MuseGate { alpha: af, beta: bfg },
+        ];
+        if st.last && l + 1 == c.layers {
+            ops.push(Op::MuseRms { x: Slot::X, w: n_small, y: Slot::H, eps: c.eps });
+            n_small += 1;
+        }
+        layers.push(ops);
+    }
+    let (embed, lm) = (n_mats, n_mats + 1);
+    let mut widths = [0usize; super::SLOTS];
+    for (s, w) in [
+        (Slot::X, d),
+        (Slot::H, d),
+        (Slot::Mix, row),
+        (Slot::Qo, nq * hd),
+        (Slot::Att, nq * hd),
+        (Slot::Core, nq * hd),
+        (Slot::O, d),
+        (Slot::Proj, lat),
+        (Slot::Xc, lat),
+        (Slot::M, lat),
+    ] {
+        widths[s as usize] = w;
+    }
+    Ok(ModelDesc {
+        family: "Muse Spark",
+        hidden: d,
+        vocab: c.vocab,
+        eps: c.eps,
+        max_pos: c.max_pos,
+        widths,
+        mats: Vec::new(),
+        small: Vec::new(),
+        ropes: Vec::new(),
+        rings,
+        first: Op::MuseRms { x: Slot::X, w: ones, y: Slot::X, eps: c.eps },
+        layers,
+        states: Vec::new(),
+        final_norm: None,
+        decoded: false,
+        skinny: false,
+        embed,
+        lm,
+        softcap: c.softcap,
+        eos: c.eos.clone(),
+        post: None,
+        v4: None,
+        hc: (0.0, 0),
+        logit_mult: c.out_mult,
+    })
 }

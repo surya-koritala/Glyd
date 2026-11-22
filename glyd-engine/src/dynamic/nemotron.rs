@@ -31,32 +31,102 @@ pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Resul
     let whole = st.first && st.last;
     let w = WeightsNh::load_ends(dir, threads, o.layout, dev.cc_pair(), dev.total_mem as u64, (!whole).then_some(&only[..]), (st.first, st.last), Some(make))?;
     let WeightsNh { cfg: c, layout, layers: lys, embed, head, norm_f, .. } = w;
+    let d = lowered(dir, &c, &st)?;
+    // (the loader's matrices, small tensors and blocks of experts in the order `describe` indexes them: a layer's, then the final norm, the embedding and the head)
+    let (mut mats, mut small, mut moe) = (Vec::new(), Vec::new(), Vec::new());
+    for (l, ly) in lys.into_iter().enumerate() {
+        let Some(ly) = ly else { continue };
+        let (m, n) = per_layer(ly.kind);
+        if ly.mats.len() != m || ly.small.len() + 1 != n || ly.moe.is_some() != (ly.kind == NhKind::Moe) {
+            return err(format!(
+                "layer {l}: {} matrices, {} small tensors and a block of experts {} loaded, where its kind has {m} and {n}",
+                ly.mats.len(),
+                ly.small.len() + 1,
+                ly.moe.is_some()
+            ));
+        }
+        mats.extend(ly.mats);
+        small.push(ly.norm);
+        small.extend(ly.small);
+        if let Some(b) = ly.moe {
+            moe.push(b);
+        }
+    }
+    // (a stage without the head or the embedding keeps their places, empty, so that their indices hold)
+    small.push(match norm_f {
+        Some(b) => b,
+        None if !st.last => crate::dev::Buf::new(4)?,
+        None => return err("the final norm is not loaded"),
+    });
+    mats.push(match embed {
+        Some(p) => crate::kern35::Mat::Packed(p),
+        None if !st.first && !(st.last && c.tie) => crate::kern35::Mat::Dense(crate::dev::Buf::new(2)?, 0, 0),
+        None => return err("the embedding is not loaded"),
+    });
+    if let Some(h) = head {
+        mats.push(crate::kern35::Mat::Packed(h));
+    }
+    if (mats.len(), small.len()) != (d.lm + 1, d.final_norm.map_or(0, |f| f.0 + 1)) {
+        return err(format!(
+            "{} matrices and {} small tensors loaded, where the description indexes {} and {}",
+            mats.len(),
+            small.len(),
+            d.lm + 1,
+            d.final_norm.map_or(0, |f| f.0 + 1)
+        ));
+    }
+    let ch = o.chunk.max(1);
+    let mut dy = Dyn::from_loaded(dev, d, mats, small, moe, Vec::new(), layout, st, o)?;
+    dy.ssd = Some(SsdWs::new(&c, ch)?);
+    Ok(dy)
+}
+
+/// A layer's matrices and small tensors as the loader holds them: a Mamba-2 layer's in and out products, its norm, conv1d's weight and bias, A_log, D, dt_bias
+/// and the gated norm's weight; an attention layer's qkv and o products and its norm; a mixture-of-experts layer's norm (its experts are its block's).
+pub(crate) fn per_layer(k: NhKind) -> (usize, usize) {
+    match k {
+        NhKind::Mamba => (2, 7),
+        NhKind::Attention => (2, 1),
+        NhKind::Moe => (0, 1),
+    }
+}
+
+/// Nemotron-H's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::nemotron`); `c` the same config as the
+/// family's reader takes it, for its end tokens and its context. What the loader runs; `describe` below is the description it is held to.
+pub fn lowered(dir: &Path, c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
+    let p = dir.join("config.json");
+    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let lowered = super::lower::nemotron(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st)?;
+    super::lower::agree(lowered, &describe(c, st)?, &p.display().to_string())
+}
+
+/// The executor's description of Nemotron-H for stage `st` (kern_nh.rs's loader fills its matrices, small tensors and blocks of experts; they are indexed here in
+/// its order).
+pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
     if c.m_head_dim != NH_P || c.m_state != NH_N || c.conv_kernel != 4 || c.head_dim != 128 {
         return err(format!("Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {}: this engine runs heads of {NH_P}, a state of {NH_N}, a convolution of 4 and attention heads of 128", c.m_head_dim, c.m_state, c.conv_kernel, c.head_dim));
     }
     let (hid, di, cd, row) = (c.hidden, c.inner(), c.conv_dim(), c.in_rows());
     let qkv_w = (c.heads + 2 * c.kv_heads) * c.head_dim;
-    let (mut mats, mut small, mut moe, mut rings, mut states, mut layers) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut n_mats, mut n_small, mut n_moe, mut rings, mut states, mut layers) = (0, 0, 0, Vec::new(), Vec::new(), Vec::new());
     let mut first = None;
-    for (l, ly) in lys.into_iter().enumerate() {
-        let Some(ly) = ly else {
-            // (another stage's layer: nothing here, never run)
+    for (l, &kind) in c.kinds.iter().enumerate() {
+        if !(st.layers.0..st.layers.1).contains(&l) {
             layers.push(Vec::new());
             continue;
-        };
-        let (b, s0) = (mats.len(), small.len());
-        mats.extend(ly.mats);
-        small.push(ly.norm);
-        small.extend(ly.small);
+        }
+        let (b, s0) = (n_mats, n_small);
+        let (m, n) = per_layer(kind);
+        (n_mats, n_small) = (n_mats + m, n_small + n);
         let mut ops = Vec::new();
         if l == 0 {
             first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, plus1: false });
         } else {
             ops.push(Op::NormAdd { y: Slot::O, w: s0, plus1: false });
         }
-        match ly.kind {
+        match kind {
             NhKind::Mamba => {
-                // (small: the norm, then conv1d's weight and bias, A_log, D, dt_bias, the gated norm's weight)
                 let (conv, ssm) = (states.len(), states.len() + 1);
                 states.push(3 * cd * 2);
                 states.push(c.m_heads * NH_P * NH_N * 4);
@@ -80,33 +150,14 @@ pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Resul
                 ]);
             }
             NhKind::Moe => {
-                let block = ly.moe.ok_or_else(|| Error(format!("layer {l} has no block of experts")))?;
-                ops.push(Op::Moe { block: moe.len() });
-                moe.push(block);
+                ops.push(Op::Moe { block: n_moe });
+                n_moe += 1;
             }
         }
         layers.push(ops);
     }
-    let final_norm = small.len();
-    // (a stage without the head or the embedding keeps their places, empty, so that their indices hold)
-    small.push(match norm_f {
-        Some(b) => b,
-        None if !st.last => crate::dev::Buf::new(4)?,
-        None => return err("the final norm is not loaded"),
-    });
-    let e = mats.len();
-    mats.push(match embed {
-        Some(p) => crate::kern35::Mat::Packed(p),
-        None if !st.first && !(st.last && c.tie) => crate::kern35::Mat::Dense(crate::dev::Buf::new(2)?, 0, 0),
-        None => return err("the embedding is not loaded"),
-    });
-    let lm = match head {
-        Some(h) => {
-            mats.push(crate::kern35::Mat::Packed(h));
-            e + 1
-        }
-        None => e,
-    };
+    let e = n_mats;
+    let lm = if c.tie { e } else { e + 1 };
     let mut widths = [0usize; super::SLOTS];
     for (s, w) in [
         (Slot::X, hid),
@@ -120,7 +171,7 @@ pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Resul
     ] {
         widths[s as usize] = w;
     }
-    let d = ModelDesc {
+    Ok(ModelDesc {
         family: "Nemotron-H",
         hidden: hid,
         vocab: c.vocab,
@@ -136,7 +187,7 @@ pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Resul
         first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, plus1: false }),
         layers,
         states,
-        final_norm: Some((final_norm, Slot::O, false)),
+        final_norm: Some((n_small, Slot::O, false)),
         decoded: true,
         skinny: false,
         embed: e,
@@ -147,9 +198,5 @@ pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Resul
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
-    };
-    let ch = o.chunk.max(1);
-    let mut dy = Dyn::from_loaded(dev, d, mats, small, moe, Vec::new(), layout, st, o)?;
-    dy.ssd = Some(SsdWs::new(&c, ch)?);
-    Ok(dy)
+    })
 }

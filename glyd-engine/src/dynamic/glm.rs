@@ -95,6 +95,10 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         let mut ops = vec![pre(&mut l_.small, ha, na)];
         let m0 = l_.mats.len();
         let nm = ly.mats.len();
+        let (want_m, want_s) = (per_layer(ly.kind, ly.moe.is_some()), if ly.kind == GlmKind::Kda { 4 } else { 0 });
+        if (nm, ly.small.len()) != (want_m, want_s) {
+            return err(format!("layer {l}: {nm} matrices and {} small tensors loaded, where its kind has {want_m} and {want_s}", ly.small.len()));
+        }
         l_.mats.extend(ly.mats);
         match ly.kind {
             GlmKind::Kda => {
@@ -210,5 +214,165 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         hc: (c.hc.eps, c.hc.iters as i32),
         logit_mult: 0.0,
     };
+    // (the loader's own operations, as it indexed what it loaded, held to the layer kinds' description of the config: one model, or it is not loaded)
+    let d = super::lower::agree(lowered(dir, &c, &st)?, &d, &dir.join("config.json").display().to_string())?;
     Dyn::from_parts(dev, d, l_, Vec::new(), layout, st, o)
+}
+
+/// A layer's matrices as the loader holds them: a Kimi delta layer's seven (qkv, o, f_a, f_b, g_a, g_b, b), then a dense MLP's gate and up and its down; a
+/// latent attention layer's and a mixture of experts' are their blocks'.
+pub(crate) fn per_layer(kind: GlmKind, moe: bool) -> usize {
+    (if kind == GlmKind::Kda { 7 } else { 0 }) + if moe { 0 } else { 2 }
+}
+
+/// GLM-5.3-Flash's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::glm`), held to `describe`.
+pub fn lowered(dir: &Path, c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
+    let p = dir.join("config.json");
+    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let lowered = super::lower::glm(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st)?;
+    super::lower::agree(lowered, &describe(c, st)?, &p.display().to_string())
+}
+
+/// The executor's description of GLM-5.3-Flash for stage `st`, as the loader indexes what it loads. Each layer's small tensors: its two norms, the attention's
+/// stream mix (its projection, base and scale), a Kimi delta layer's convolutions, A_log, dt_bias and gated norm, then the feed-forward's stream mix; its
+/// matrices `per_layer`'s. The final norm after the last layer's.
+pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
+    if c.kda.dim != GM_D || c.hc.mult != 4 {
+        return err(format!("Kimi delta heads of {} and {} streams: this engine runs heads of {GM_D} and 4 streams", c.kda.dim, c.hc.mult));
+    }
+    let (hid, qd, heads) = (c.hidden, c.qkv(), c.kda.heads);
+    let (mut n_small, mut n_mats, mut n_mla, mut n_moe, mut states, mut layers) = (0, 0, 0, 0, Vec::new(), Vec::new());
+    for l in 0..c.layers {
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            layers.push(Vec::new());
+            continue;
+        }
+        let s = n_small;
+        n_small += 5;
+        let mut ops = vec![Op::GlmPre { f: s + 2, base: s + 3, scale: s + 4, norm: s }];
+        let m0 = n_mats;
+        let nm = per_layer(c.kinds[l], c.moe[l]);
+        n_mats += nm;
+        match c.kinds[l] {
+            GlmKind::Kda => {
+                let s0 = n_small;
+                n_small += 4;
+                let (conv, ssm) = (states.len(), states.len() + 1);
+                states.push(3 * 3 * qd * 2);
+                states.push(heads * GM_D * GM_D * 4);
+                ops.extend(kda_ops(m0, s0, conv, ssm, qd, heads, c.kda.bound));
+            }
+            GlmKind::Mla => {
+                ops.push(Op::Mla { block: n_mla });
+                n_mla += 1;
+            }
+        }
+        let h = n_small;
+        n_small += 3;
+        ops.extend([Op::GlmPost, Op::GlmPre { f: h, base: h + 1, scale: h + 2, norm: s + 1 }]);
+        if c.moe[l] {
+            ops.push(Op::Moe { block: n_moe });
+            n_moe += 1;
+        } else {
+            ops.extend(dense_ops(m0 + nm - 2, c.inter, c.experts.limit));
+        }
+        ops.push(Op::GlmPost);
+        layers.push(ops);
+    }
+    if st.last {
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::GlmHead { norm: n_small });
+    }
+    let e = n_mats;
+    let lm = if st.last && !c.tie { e + 1 } else { e };
+    Ok(glm_desc(hid, qd, heads, c.inter, c.vocab, c.eps, c.max_pos, c.eos.clone(), (c.hc.eps, c.hc.iters as i32), layers, states, e, lm))
+}
+
+/// A Kimi delta layer's operations: its matrices from `m0`, its small tensors from `s0`, its convolution's and recurrence's states.
+pub(crate) fn kda_ops(m0: usize, s0: usize, conv: usize, ssm: usize, qd: usize, heads: usize, bound: f32) -> Vec<Op> {
+    vec![
+        Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "linear attention: qkv product" },
+        Op::KdaConv { w: s0, state: conv, c: 3 * qd, row: 3 * qd, w32: false },
+        Op::Linear { w: m0 + 2, x: Slot::H, y: Slot::Proj, name: "linear attention: gates" },
+        Op::Linear { w: m0 + 3, x: Slot::Proj, y: Slot::Qo, name: "linear attention: gates" },
+        Op::Linear { w: m0 + 6, x: Slot::H, y: Slot::Ba, name: "linear attention: gates" },
+        Op::Linear { w: m0 + 4, x: Slot::H, y: Slot::Proj, name: "linear attention: gates" },
+        Op::Linear { w: m0 + 5, x: Slot::Proj, y: Slot::Iq, name: "linear attention: gates" },
+        Op::KdaDelta { a_log: s0 + 1, dt_bias: s0 + 2, state: ssm, heads, bound, ba: View::slot(Slot::Ba) },
+        Op::KdaOut { w: s0 + 3, heads, w32: false, iq: View::slot(Slot::Iq) },
+        Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "linear attention: o product" },
+    ]
+}
+
+/// A dense MLP's operations: its gate and up product at `gu`, its down product after it.
+pub(crate) fn dense_ops(gu: usize, inter: usize, limit: f32) -> Vec<Op> {
+    vec![
+        Op::Linear { w: gu, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
+        Op::SwiGluClamp { inter, limit },
+        Op::Linear { w: gu + 1, x: Slot::M, y: Slot::O, name: "MLP: down product" },
+    ]
+}
+
+/// The rest of GLM-5.3-Flash's description: its slots' widths and fixed fields.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn glm_desc(
+    hid: usize,
+    qd: usize,
+    heads: usize,
+    inter: usize,
+    vocab: usize,
+    eps: f32,
+    max_pos: usize,
+    eos: Vec<i64>,
+    hc: (f32, i32),
+    layers: Vec<Vec<Op>>,
+    states: Vec<usize>,
+    embed: usize,
+    lm: usize,
+) -> ModelDesc {
+    let mut widths = [0usize; super::SLOTS];
+    for (s, wd) in [
+        (Slot::X, hid),
+        (Slot::S, 4 * hid),
+        (Slot::H, hid),
+        (Slot::O, hid),
+        (Slot::Mix, 3 * qd),
+        (Slot::Xc, 3 * qd),
+        (Slot::Proj, GM_D),
+        (Slot::Qo, qd),
+        (Slot::Iq, qd),
+        (Slot::Ba, heads.max(8)),
+        (Slot::Core, qd),
+        (Slot::Att, qd),
+        (Slot::Gu, 2 * inter),
+        (Slot::M, inter),
+    ] {
+        widths[s as usize] = wd;
+    }
+    ModelDesc {
+        family: "GLM-5.3-Flash",
+        hidden: hid,
+        vocab,
+        eps,
+        max_pos,
+        widths,
+        mats: Vec::new(),
+        small: Vec::new(),
+        ropes: Vec::new(),
+        rings: Vec::new(),
+        first: Op::GlmStreams,
+        layers,
+        states,
+        final_norm: None,
+        decoded: false,
+        skinny: false,
+        embed,
+        lm,
+        softcap: 0.0,
+        eos,
+        post: None,
+        v4: None,
+        hc,
+        logit_mult: 0.0,
+    }
 }
