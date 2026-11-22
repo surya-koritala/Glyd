@@ -1,6 +1,6 @@
 [package]
 name = "glyd-store"
-version = "0.34.0"
+version = "0.34.1"
 edition = "2021"
 rust-version = "1.89"
 description = "A store that compresses across the objects it holds: each object kept as a delta against the stored object it most resembles, small objects in packs, on a directory or S3 (built on the glyd codec; Glyd's inference engine is glyd-engine)"
@@ -19,7 +19,7 @@ name = "glyd-store"
 path = "src/bin/glyd-store.rs"
 
 [dependencies]
-glyd = { version = "0.34.0", path = ".." }
+glyd = { version = "0.34.1", path = ".." }
 hmac = "0.13"
 sha2 = "0.11"
 ureq = "3"

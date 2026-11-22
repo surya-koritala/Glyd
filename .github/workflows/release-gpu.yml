@@ -386,6 +386,7 @@ jobs:
   # (keyed by them); a tag builds everything fresh, so a release's files are its own run's.
   # (windows-2022: its Visual Studio 2022 is the host compiler CUDA 13.0 and 12.9 list; windows-latest has Visual Studio 2026, whose STL asks for CUDA 13.4 or newer)
   gpu-lib-windows:
+    name: gpu-lib-windows (CUDA ${{ matrix.cuda }})
     needs: plan
     runs-on: windows-2022
     timeout-minutes: 90
