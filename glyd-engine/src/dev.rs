@@ -196,6 +196,27 @@ impl Dev {
         unsafe { cu("cuCtxSetCurrent", (driver()?.cuCtxSetCurrent)(self.ctx)) }
     }
 
+    /// This Dev's GPU may read and write GPU `peer`'s memory directly from now on (peer access); already on is no error. The error names the two where the GPUs cannot
+    /// reach each other (`can_reach`). This Dev's context is current on the thread after it.
+    pub fn reach_peer(&self, peer: i32) -> Result<()> {
+        if !can_reach(self.ordinal, peer) {
+            return err(format!("GPU {} cannot reach GPU {peer} directly (no peer access)", self.ordinal));
+        }
+        self.make_current()?;
+        let d = driver()?;
+        let (mut pd, mut ctx) = (0, std::ptr::null_mut());
+        // SAFETY: host out-pointers; the peer's primary context is retained for the process, as `Dev::new` does; 704: access already on.
+        unsafe {
+            cu("cuDeviceGet", (d.cuDeviceGet)(&mut pd, peer))?;
+            cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, pd))?;
+            let r = (d.cuCtxEnablePeerAccess)(ctx, 0);
+            if r != 0 && r != 704 {
+                cu("cuCtxEnablePeerAccess", r)?;
+            }
+        }
+        self.make_current()
+    }
+
     fn open(ordinal: i32, own: bool) -> Result<Dev> {
         let d = driver()?;
         let (mut dev, mut ctx) = (0, std::ptr::null_mut());
@@ -705,14 +726,63 @@ impl Drop for Timer {
     }
 }
 
-/// A timing event.
+/// Whether GPU `a` can read and write GPU `b`'s memory directly (peer access; `Dev::reach_peer` turns it on). False where the driver cannot say.
+pub fn can_reach(a: i32, b: i32) -> bool {
+    let Ok(d) = driver() else { return false };
+    let mut can = 0;
+    // SAFETY: a host out-pointer.
+    unsafe { (d.cuDeviceCanAccessPeer)(&mut can, a, b) == 0 && can != 0 }
+}
+
+/// The calling thread works on GPU `ordinal` from now on, in its primary context (the one `Dev::new` retains for the process): a thread of the engine's that copies
+/// for it (the expert stores' copy threads).
+pub fn bind_thread(ordinal: i32) -> Result<()> {
+    let d = driver()?;
+    let (mut dev, mut ctx) = (0, std::ptr::null_mut());
+    // SAFETY: host out-pointers; the device's primary context, which the engine retains for the process.
+    unsafe {
+        cu("cuDeviceGet", (d.cuDeviceGet)(&mut dev, ordinal))?;
+        cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, dev))?;
+        cu("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))
+    }
+}
+
+/// Host memory `[ptr, ptr + bytes)` (page-aligned) registered with the driver, so that copies from it go at the link's speed without a pinned copy (`flags`: the driver's
+/// CU_MEMHOSTREGISTER flags; 8 for a file's pages, read only).
+///
+/// # Safety
+/// The range is the caller's, stays mapped until `unregister_host`, and is registered once.
+pub unsafe fn register_host(ptr: *mut c_void, bytes: usize, flags: u32) -> Result<()> {
+    // SAFETY: as the caller promises.
+    unsafe { cu("cuMemHostRegister", (driver()?.cuMemHostRegister_v2)(ptr, bytes, flags)) }
+}
+
+/// The registration of `register_host` at `ptr` undone.
+///
+/// # Safety
+/// `ptr` was registered, and no copy from it is still queued.
+pub unsafe fn unregister_host(ptr: *mut c_void) -> Result<()> {
+    // SAFETY: as the caller promises.
+    unsafe { cu("cuMemHostUnregister", (driver()?.cuMemHostUnregister)(ptr)) }
+}
+
+/// An event: a timing one (`new`), or one that only orders work (`untimed`, which the driver records more cheaply).
 pub struct Ev(CuEvent);
 
 impl Ev {
     pub fn new() -> Result<Ev> {
+        Ev::with_flags(0)
+    }
+
+    /// An event with no timing (CU_EVENT_DISABLE_TIMING): for ordering work between streams and threads.
+    pub fn untimed() -> Result<Ev> {
+        Ev::with_flags(2)
+    }
+
+    fn with_flags(flags: u32) -> Result<Ev> {
         let mut e = std::ptr::null_mut();
-        // SAFETY: a host out-pointer; 0: default flags.
-        unsafe { cu("cuEventCreate", (driver()?.cuEventCreate)(&mut e, 0))? };
+        // SAFETY: a host out-pointer.
+        unsafe { cu("cuEventCreate", (driver()?.cuEventCreate)(&mut e, flags))? };
         Ok(Ev(e))
     }
 
@@ -774,6 +844,12 @@ impl EvRef {
     pub fn wait(&self, s: Stream) -> Result<()> {
         // SAFETY: as above.
         unsafe { cu("cuStreamWaitEvent", (driver()?.cuStreamWaitEvent)(s, self.0 as CuEvent, 0)) }
+    }
+
+    /// The calling thread waits until the work the event was last recorded after has run (a no-op for an event not recorded yet).
+    pub fn wait_host(&self) -> Result<()> {
+        // SAFETY: as above.
+        unsafe { cu("cuEventSynchronize", (driver()?.cuEventSynchronize)(self.0 as CuEvent)) }
     }
 }
 

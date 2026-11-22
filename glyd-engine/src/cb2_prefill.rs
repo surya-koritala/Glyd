@@ -14,8 +14,8 @@
 //! asked for, or a layer of a pack, mapped) and tokens, the time of a call and its sums for a few tokens against src/cpu_cb.rs's.
 
 use crate::cpu_cb::Fmt;
-use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Ev, Kernel, Pinned, Side};
-use crate::ffi::{cu, driver, err, CuEvent, Error, Result, Stream};
+use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Ev, EvRef, Kernel, Pinned, Side};
+use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -171,44 +171,6 @@ struct Place {
     dbits: u8,
 }
 
-/// An event the copier threads can wait on too: its address, made and destroyed with the driver's calls.
-struct SlotEv(usize);
-
-impl SlotEv {
-    fn new() -> Result<SlotEv> {
-        let mut e: CuEvent = std::ptr::null_mut();
-        // SAFETY: a host out-pointer; 2: no timing.
-        unsafe { cu("cuEventCreate", (driver()?.cuEventCreate)(&mut e, 2))? };
-        Ok(SlotEv(e as usize))
-    }
-
-    fn record(&self, s: Stream) -> Result<()> {
-        // SAFETY: an event of this wrapper.
-        unsafe { cu("cuEventRecord", (driver()?.cuEventRecord)(self.0 as CuEvent, s)) }
-    }
-
-    /// Work queued on `s` from now on waits for the work this event was last recorded after (nothing for an event not recorded yet).
-    fn wait(&self, s: Stream) -> Result<()> {
-        // SAFETY: an event of this wrapper and a stream of the caller's.
-        unsafe { cu("cuStreamWaitEvent", (driver()?.cuStreamWaitEvent)(s, self.0 as CuEvent, 0)) }
-    }
-}
-
-impl Drop for SlotEv {
-    fn drop(&mut self) {
-        if let Ok(d) = driver() {
-            // SAFETY: made in `new`, destroyed once.
-            unsafe { (d.cuEventDestroy_v2)(self.0 as CuEvent) };
-        }
-    }
-}
-
-/// The calling thread waits until the work an event (by address) was last recorded after has run; a no-op for an event not recorded yet.
-fn host_wait(ev: usize) -> Result<()> {
-    // SAFETY: an event of a `SlotEv` that outlives the call.
-    unsafe { cu("cuEventSynchronize", (driver()?.cuEventSynchronize)(ev as CuEvent)) }
-}
-
 struct Ring {
     // micro-batches the buffers hold
     n: usize,
@@ -221,8 +183,9 @@ struct Ring {
     slot_books: usize,
     raw_slot_codes: usize,
     raw_slot_books: usize,
-    ready: Vec<SlotEv>,
-    free: Vec<SlotEv>,
+    // (untimed events, which the copier threads wait on by handle too)
+    ready: Vec<Ev>,
+    free: Vec<Ev>,
     next: usize,
 }
 
@@ -301,8 +264,8 @@ impl Done {
 
 struct Job {
     copies: Vec<(u64, usize, usize)>, // (device address, host address, bytes)
-    // events (addresses) the thread waits for before the first copy: the kernels that last read the slot
-    after: Vec<usize>,
+    // events the thread waits for before the first copy: the kernels that last read the slot
+    after: Vec<EvRef>,
     done: Arc<Done>,
     // the host's bytes are not pinned: copied through the thread's own pinned buffers
     stage: bool,
@@ -319,17 +282,7 @@ struct Copiers {
 }
 
 fn copier(ordinal: i32, rx: Receiver<Job>, up: Sender<std::result::Result<(), String>>) {
-    let bound = (|| -> Result<Side> {
-        let d = driver()?;
-        let (mut dev, mut ctx) = (0, std::ptr::null_mut());
-        // SAFETY: host out-pointers; the device's primary context, which the engine retains for the process.
-        unsafe {
-            cu("cuDeviceGet", (d.cuDeviceGet)(&mut dev, ordinal))?;
-            cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, dev))?;
-            cu("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))?;
-        }
-        Side::new()
-    })();
+    let bound = crate::dev::bind_thread(ordinal).and_then(|_| Side::new());
     let (side, stages) = match bound.and_then(|s| Ok((s, (0..STAGES).map(|_| Ok((Pinned::new(STAGE_BYTES)?, Ev::new()?))).collect::<Result<Vec<_>>>()?))) {
         Ok(s) => {
             let _ = up.send(Ok(()));
@@ -343,8 +296,8 @@ fn copier(ordinal: i32, rx: Receiver<Job>, up: Sender<std::result::Result<(), St
     let mut next = 0usize;
     while let Ok(job) = rx.recv() {
         let r = (|| -> Result<()> {
-            for &ev in &job.after {
-                host_wait(ev)?;
+            for ev in &job.after {
+                ev.wait_host()?;
             }
             for &(dst, src, len) in &job.copies {
                 if !job.stage {
@@ -625,8 +578,8 @@ pub unsafe fn cb2_prefill_experts(
             slot_books,
             raw_slot_codes: raw_codes,
             raw_slot_books: raw_books,
-            ready: (0..ring_n).map(|_| SlotEv::new()).collect::<Result<_>>()?,
-            free: (0..ring_n).map(|_| SlotEv::new()).collect::<Result<_>>()?,
+            ready: (0..ring_n).map(|_| Ev::untimed()).collect::<Result<_>>()?,
+            free: (0..ring_n).map(|_| Ev::untimed()).collect::<Result<_>>()?,
             next: 0,
         });
     }
@@ -1071,7 +1024,7 @@ unsafe fn issue(kern: &Cb2Kern, ring: &Ring, experts: &[ExpertDesc], cs: Stream,
         let done = Done::new(w);
         for t in 0..w {
             let mine: Vec<(u64, usize, usize)> = copies.iter().copied().skip(t).step_by(w).collect();
-            cp.tx[t].send(Job { copies: mine, after: vec![ring.free[slot].0], done: done.clone(), stage: !kern.pinned.get() }).expect("a copier thread");
+            cp.tx[t].send(Job { copies: mine, after: vec![ring.free[slot].as_ref()], done: done.clone(), stage: !kern.pinned.get() }).expect("a copier thread");
         }
         Some(done)
     } else {
@@ -1449,14 +1402,13 @@ mod bench {
         side.sync()?;
         println!("pinned: {:.1} GB/s", gbs(blocks * block, t0.elapsed().as_secs_f64()));
         // registered in place: the pages of the layer's codes range
-        let drv = driver()?;
         let page = 4096usize;
         let lo = (host.codes as usize + page - 1) / page * page;
         let hi = (host.codes as usize + host.experts * CODES) / page * page;
         for flags in [if file_backed { 8u32 } else { 0 }] {
             let t0 = Instant::now();
             // SAFETY: a page-aligned range inside the host's memory, registered once and unregistered below.
-            let r = unsafe { cu("cuMemHostRegister", (drv.cuMemHostRegister_v2)(lo as *mut c_void, hi - lo, flags)) };
+            let r = unsafe { crate::dev::register_host(lo as *mut c_void, hi - lo, flags) };
             let reg = t0.elapsed().as_secs_f64();
             match r {
                 Err(e) => println!("registering {} MB in place (flags {flags}): {}", (hi - lo) >> 20, e.msg),
@@ -1479,8 +1431,8 @@ mod bench {
                     side.sync()?;
                     println!("copies from the registered range: {:.1} GB/s", gbs(moved, t0.elapsed().as_secs_f64()));
                     let t0 = Instant::now();
-                    // SAFETY: registered above.
-                    unsafe { cu("cuMemHostUnregister", (drv.cuMemHostUnregister)(lo as *mut c_void))? };
+                    // SAFETY: registered above; the copies from it are done (synchronized).
+                    unsafe { crate::dev::unregister_host(lo as *mut c_void)? };
                     println!("unregistering: {:.1} ms", t0.elapsed().as_secs_f64() * 1e3);
                 }
             }

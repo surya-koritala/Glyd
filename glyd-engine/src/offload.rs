@@ -1283,17 +1283,7 @@ impl Cuda {
 }
 
 fn copy_worker(ordinal: i32, rx: Receiver<CopyJob>, left: Arc<(Mutex<usize>, Condvar)>) {
-    let bound = (|| -> Result<()> {
-        let d = crate::ffi::driver()?;
-        let (mut dev, mut ctx) = (0, std::ptr::null_mut());
-        // SAFETY: host out-pointers; the device's primary context, which the engine retains for the process.
-        unsafe {
-            crate::ffi::cu("cuDeviceGet", (d.cuDeviceGet)(&mut dev, ordinal))?;
-            crate::ffi::cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, dev))?;
-            crate::ffi::cu("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))?;
-        }
-        Ok(())
-    })();
+    let bound = crate::dev::bind_thread(ordinal);
     while let Ok(job) = rx.recv() {
         let r = match &bound {
             Err(e) => Err(e.msg.clone()),
