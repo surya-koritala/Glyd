@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # glyd-engine runs Qwen3.5 (2026) on one GPU, unattended (glyd-engine/docs/design/plans/2026-10-06-engine-qwen35.md, tasks 10 to 12, its GPU runs batched in one):
 #   1. Qwen3.5's kernels against the CPU reference (glyd-engine kcheck35);
-#   2. Qwen/Qwen3.5-0.8B: the hidden states of a prompt's last token, layer by layer, against transformers' (dump35, tools/ref_dump35.py);
-#   3. Qwen/Qwen3.5-0.8B and Qwen/Qwen3.5-9B: greedy tokens of 16 short prompts and 3 long ones (the tree's README.md's first 1,030, 2,100 and 3,500 tokens; 64 tokens each) against
-#      vLLM 0.30.0 bf16 (tools/ref_vllm.py: vLLM as one batch and one prompt at a time, the floor), the prompt's linear attention in chunks and token by token, and the 0.8B's
+#   2. Qwen/Qwen3.5-0.8B and Qwen/Qwen3.5-9B: greedy tokens of 16 short prompts and 3 long ones (the tree's README.md's first 1,030, 2,100 and 3,500 tokens; 64 tokens each) against
+#      vLLM 0.30.0 bf16 (tools/ref_vllm.py: vLLM as one batch and one prompt at a time, the floor), and the 0.8B's
 #      prompts in chunks of 100 tokens (the long ones in several calls, the state carried between them);
-#   4. Qwen/Qwen3.5-9B, one user: a prompt of 1,024 random tokens and 256 more, the engine against vLLM 0.30.0 bf16 and vLLM with Glyd (tools/ref_speed.py), and GPU memory.
+#   3. Qwen/Qwen3.5-9B, one user: a prompt of 1,024 random tokens and 256 more, the engine against vLLM 0.30.0 bf16 and vLLM with Glyd (tools/ref_speed.py), and GPU memory.
 # The library and the engine are built here from the tarball for this GPU alone; vLLM 0.30.0 from PyPI, with Glyd's plugin from the tarball (glyd-gpu 0.28.0's entry point, the
 # tarball's package by PYTHONPATH, its library by GLYD_GPU_LIB). nvidia-smi's memory and clocks each second (smi.csv).
+#
+# Since R3b (#137) the model runs on the description executor; the hand-written engine's layer dump and its token-by-token prompt mode went with it.
 #
 # MINUTES: 100 at most (setup and downloads about 15; the checks about 20; the speed runs about 20)
 #
@@ -112,25 +113,16 @@ for m in 0.8b 9b; do
     [ -f "$R/ref-$m.json" ] || { log "no vLLM reference for $m"; continue; }
     step "check-$m" 900 "$B" check "$D" "$R/ref-$m.json" "$R/tokens-$m.json" --new 64 --ctx 4096
     step "compare-$m" 60 "$PY" "$E/tools/compare.py" "$R/tokens-$m.json" "$R/ref-$m.json"
-    step "check-$m-recurrent" 900 env GLYD_ENGINE_GDN=recurrent "$B" check "$D" "$R/ref-$m.json" "$R/tokens-$m-recurrent.json" --new 64 --ctx 4096
-    step "compare-$m-recurrent" 60 "$PY" "$E/tools/compare.py" "$R/tokens-$m-recurrent.json" "$R/ref-$m.json"
 done
 if [ -f "$R/ref-0.8b.json" ]; then
     step check-0.8b-chunk100 900 "$B" check "$D08" "$R/ref-0.8b.json" "$R/tokens-0.8b-chunk100.json" --new 64 --ctx 4096 --chunk 100
     step compare-0.8b-chunk100 60 "$PY" "$E/tools/compare.py" "$R/tokens-0.8b-chunk100.json" "$R/ref-0.8b.json"
-    # a prompt of the 16 prompts' tokens one after another (several chunks of the linear attention, many positions of the attention)
-    "$PY" -c "import json,sys; r=json.load(open(sys.argv[1])); json.dump({'ids': [t for p in r['prompts'] for t in p]}, open(sys.argv[2], 'w'))" "$R/ref-0.8b.json" "$R/dump-ids.json"
-    step dump-0.8b 300 "$B" dump35 "$D08" "$R/dump-ids.json" "$R/dump-0.8b.json" --ctx 4096
-    step dump-0.8b-ref 600 "$PY" "$E/tools/ref_dump35.py" "$D08" "$R/dump-ids.json" "$R/dump-0.8b.json" "$R/dump-0.8b-cmp.json"
-    step dump-0.8b-recurrent 300 env GLYD_ENGINE_GDN=recurrent "$B" dump35 "$D08" "$R/dump-ids.json" "$R/dump-0.8b-recurrent.json" --ctx 4096
-    step dump-0.8b-recurrent-ref 600 "$PY" "$E/tools/ref_dump35.py" "$D08" "$R/dump-ids.json" "$R/dump-0.8b-recurrent.json"
 fi
 
 step generate-9b 300 "$B" generate "$D9" "The capital of France is" --new 32 --ctx 4096
 
 # 4. one user on the 9B: the engine (prompt's linear attention in chunks, and token by token), vLLM bf16, vLLM with Glyd
 step bench-9b 900 "$B" bench "$D9" --prompt 1024 --new 256 --reps 3 --ctx 4096 --profile
-step bench-9b-recurrent 900 env GLYD_ENGINE_GDN=recurrent "$B" bench "$D9" --prompt 1024 --new 256 --reps 3 --ctx 4096
 step speed-9b-vllm 1200 env VLLM_ENABLE_V1_MULTIPROCESSING=0 REF_KW="$KW9" "$PY" "$E/tools/ref_speed.py" "$D9" "$R/speed-9b-vllm.json" bf16 1024 256 3 || {
     step speed-9b-vllm-eager 1200 env VLLM_ENABLE_V1_MULTIPROCESSING=0 REF_KW='{"language_model_only": true, "max_num_seqs": 16, "gpu_memory_utilization": 0.94, "enforce_eager": true}' "$PY" "$E/tools/ref_speed.py" "$D9" "$R/speed-9b-vllm.json" bf16 1024 256 3
 }
@@ -140,11 +132,10 @@ log "summary"
 {
     echo "glyd-engine, Qwen3.5 (2026), on $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1); tree $(cat "$SRC/COMMIT" 2> /dev/null); $(head -1 "$R/env.txt")"
     echo "--- kernels against the CPU (kcheck35)"; grep -E "^(ok|FAIL|all|FAILED)" "$R/kcheck35.out"
-    for f in compare-0.8b compare-0.8b-recurrent compare-0.8b-chunk100 compare-9b compare-9b-recurrent; do echo "--- $f"; cat "$R/$f.out" 2> /dev/null; done
-    echo "--- hidden states against transformers (0.8B)"; cat "$R/dump-0.8b-ref.out" "$R/dump-0.8b-recurrent-ref.out" 2> /dev/null | grep -v Warning
+    for f in compare-0.8b compare-0.8b-chunk100 compare-9b; do echo "--- $f"; cat "$R/$f.out" 2> /dev/null; done
     echo "--- a completion (9B)"; tail -2 "$R/generate-9b.out" 2> /dev/null
     echo "--- one user, Qwen3.5-9B, 1,024 prompt tokens, 256 new"
-    for f in bench-9b bench-9b-recurrent; do echo "$f: $(grep '^{' "$R/$f.out" | tail -1)"; grep "loaded in" "$R/$f.out" | head -1; done
+    for f in bench-9b; do echo "$f: $(grep '^{' "$R/$f.out" | tail -1)"; grep "loaded in" "$R/$f.out" | head -1; done
     echo "--- the engine's decode step by kind of work (9B)"; sed -n '/decode step.s GPU time/,/total/p' "$R/bench-9b.out"
     for f in speed-9b-vllm speed-9b-glyd; do echo "$f: $(cat "$R/$f.json" 2> /dev/null)"; grep -h "Model loading took\|GPU KV cache size" "$R/$f.out" "$R/$f-eager.out" 2> /dev/null | head -2; done
     echo "--- GPU memory used at most during each step (nvidia-smi, MiB)"

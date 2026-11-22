@@ -96,13 +96,13 @@ pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Resul
     });
     let e = mats.len();
     mats.push(match embed {
-        Some(p) => crate::model35::Mat::Packed(p),
-        None if !st.first && !(st.last && c.tie) => crate::model35::Mat::Dense(crate::dev::Buf::new(2)?, 0, 0),
+        Some(p) => crate::kern35::Mat::Packed(p),
+        None if !st.first && !(st.last && c.tie) => crate::kern35::Mat::Dense(crate::dev::Buf::new(2)?, 0, 0),
         None => return err("the embedding is not loaded"),
     });
     let lm = match head {
         Some(h) => {
-            mats.push(crate::model35::Mat::Packed(h));
+            mats.push(crate::kern35::Mat::Packed(h));
             e + 1
         }
         None => e,

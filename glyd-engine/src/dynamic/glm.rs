@@ -6,7 +6,7 @@ use super::{Dyn, Loaded, ModelDesc, Op, Opts, Slot, Stage, View};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
-use crate::model35::Mat;
+use crate::kern35::Mat;
 use crate::model_glm::{WeightsGlm, GM_D};
 use crate::model_nh::{MoeBlock, NhHost};
 use crate::moe::MoeLayer;
