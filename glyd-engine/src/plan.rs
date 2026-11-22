@@ -2099,8 +2099,12 @@ mod tests {
         let (mut pairs, mut loads, mut refusals) = (0, 0, 0);
         for (name, text) in &configs {
             let dir = model_dir("agree", name, text);
+            // (the dynamic route sizes a model from its files' headers (src/sizes.rs, P2b): a directory with a config alone has none, so these two get a header-only checkpoint)
             if *name == "GLM-5.3-Flash" {
                 header_only_checkpoint(&dir, &fixture("glm5_next_tensors.json"));
+            }
+            if *name == "NVIDIA-Nemotron-H" {
+                header_only_checkpoint(&dir, &fixture("nemotron_h_tensors.json"));
             }
             let model = dir.to_str().unwrap();
             for preset in Machine::PRESETS {
