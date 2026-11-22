@@ -482,14 +482,26 @@ the pool; attention kinds read pages through the pool's decode, as today's `kv_d
 
 ### Content-addressed blocks and the radix index (R4c)
 
-- A full block's id is `h = H128(parent_h, tokens[16], extra)`, where `extra` holds the `cache_salt`, LoRA id and image hashes. Today's
-  64-bit `chain_key` with a token compare is fine inside one process; the hash becomes public with KV events (D2) and transfer (D1),
-  where a 64-bit collision between tenants is not acceptable, so it is 128 bits (xxh3-128 or BLAKE3 truncated; a choice for R4c).
+- A full block's id is `h = H128(parent_h, tokens[16], extra)`, where `extra` holds the `cache_salt`, LoRA id and image hashes. The
+  hash becomes public with KV events (D2) and transfer (D1), where a 64-bit collision between tenants is not acceptable, so it is 128
+  bits. **As built (`kv::block_hash`, `kv::block_root`):** the first 16 bytes, read little-endian, of SHA-256 over the parent's name
+  (16 bytes little-endian) and the block's 16 token ids (4 bytes little-endian each); a scope's chains begin at the hash of the label
+  `glyd-kv-1` and the scope's key (the `cache_salt` as the server keys it; LoRA ids and image hashes go in here, or with the block
+  they are in, when the scheduler serves them). SHA-256 is in the tree already and costs about a microsecond a block; a faster
+  function buys nothing at one hash per 16 tokens. Both caches use it: the dense engine's `Pager` (which still compares a page's
+  tokens on a hit) and the description executor's pools (`dynamic/pages.rs`).
 - The index maps hash to block and keeps parent and child links, which makes it a radix tree over blocks: a lookup walks a prompt's
   hashes and stops at the first miss (one hash per 16 tokens). Eviction is LRU over leaves with no running reference. SGLang's tree is
   per token; per block costs at most 15 tokens of a match and matches the paging unit.
 - Hashes are of tokens, so a block has one name whether it is stored 12-bit, bf16 or in transit. Lost or heavy blocks are not
   published (as today).
+- **As built on the description executor:** a pool finds its full blocks by name; a named block no sequence holds stays, with its
+  bytes, until the pool needs a block (the oldest first; a sequence gives its blocks up last block first, so a chain loses its end
+  before its start). `Pages::adopt` gives an empty sequence the longest start a step can go on from: every block before in a full
+  group, the window behind in a sliding one. So a start is found whoever holds it, or no one: a system prompt after the conversation
+  that ran it has grown far past it (its sliding layers gave those blocks back) or has ended. A block is never written once named:
+  a cut back into one takes its name away. A finished sequence still stays in its slot where one is free (it goes on to the token,
+  where names go on to the block), and gives the slot up first.
 - Recurrent layers cannot resume from a block of KV: their state must be snapshotted. A snapshot is a slot copy at a block boundary, and
   its size decides the policy: Qwen3.5-9B's GDN state is 50 MB a sequence (24 layers x 32 x 128 x 128 fp32), Kimi-K3's KDA state is 434 MB (69 layers x 96 x 128 x 128
   fp32), the KV of ~16,000 MLA tokens. Snapshots are therefore taken only at the end of a request's prompt and of its reply (where the

@@ -2144,7 +2144,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     }
     // blocks found by name (a step that finds them so): tokens a sequence ran are had again whoever holds their blocks, or no one
     if s.shares_starts() {
-        let root = crate::kv::block_root(0);
+        // (a scope of this check's own: what is named here stays in the pools, and the conversations below, in the scope of requests with no salt, are not to find it)
+        let root = crate::kv::block_root(0x6b65_6570_6368_6563);
         let both: Vec<u32> = [&p[..], &g[..]].concat();
         let keys = crate::kv::block_names(root, &both);
         // a prompt and steps, its blocks named, and the slot emptied: three blocks of it found
