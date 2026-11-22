@@ -12,7 +12,8 @@ pub fn lowered(dir: &std::path::Path, c: &ConfigG4) -> crate::ffi::Result<ModelD
     let text = std::fs::read_to_string(&p).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
     let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
     let kinds = crate::runtime::describe::describe(&cfg)?;
-    super::lower::gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos)
+    let lowered = super::lower::gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos)?;
+    super::lower::agree(lowered, &describe(c), &p.display().to_string())
 }
 
 pub fn describe(c: &ConfigG4) -> ModelDesc {

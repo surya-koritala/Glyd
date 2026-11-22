@@ -11,6 +11,22 @@ use crate::weights::Item;
 /// A tensor's dims by its name in the checkpoint (None: not there).
 pub type Shape<'a> = &'a dyn Fn(&str) -> Option<Vec<usize>>;
 
+/// `lowered`, where it is the family's own description of the same config (`own`, which the family's loader sizes its buffers by): two readings of one config.json
+/// that differ would give operations of other widths than the buffers they run on, so a model whose two readings differ is not loaded, the first difference named.
+pub fn agree(lowered: ModelDesc, own: &ModelDesc, what: &str) -> Result<ModelDesc> {
+    let (a, b) = (format!("{own:?}"), format!("{lowered:?}"));
+    if a == b {
+        return Ok(lowered);
+    }
+    let at = a.bytes().zip(b.bytes()).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
+    let near = |s: &str| s.get(at.saturating_sub(60)..(at + 60).min(s.len())).unwrap_or("").to_string();
+    err(format!(
+        "{what}: its config's layer kinds and the family's reader of it describe different models (at {:?}, where the reader has {:?}); not loaded",
+        near(&b),
+        near(&a)
+    ))
+}
+
 /// The names of a block's role (one tensor, or rows stacked).
 fn role<'a>(roles: &'a [(String, Source)], r: &str) -> Option<&'a Source> {
     roles.iter().find(|(n, _)| n == r).map(|(_, s)| s)
@@ -310,6 +326,132 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
     })
 }
 
+/// Nemotron-H (Nemotron 3 Super, Nemotron 3.5 Lightning): a block a layer, Mamba-2, attention without a positional encoding, or a mixture of experts (its block of
+/// experts is moe_nh.rs's); every layer x + mixer(norm(x)), the final norm on the last row. The matrices, small tensors and blocks are kern_nh.rs's loader's
+/// (`dynamic::nemotron::describe` indexes them in its order); stage `st` of a model split across GPUs.
+pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    use super::nemotron::per_layer;
+    use crate::kern_nh::{NH_N, NH_P};
+    use crate::nemotron::NhKind;
+    let m = &d.desc;
+    let (mut mamba, mut att) = (None, None);
+    let mut kinds = Vec::with_capacity(m.blocks.len());
+    for (l, b) in m.blocks.iter().enumerate() {
+        kinds.push(match &b.body {
+            Body::Mixer(Mixer::Mamba2(x)) => {
+                mamba.get_or_insert(x);
+                NhKind::Mamba
+            }
+            Body::Mixer(Mixer::Attention(a)) => {
+                att.get_or_insert(a);
+                NhKind::Attention
+            }
+            Body::Ffn(Ffn::Moe(_)) => NhKind::Moe,
+            other => return err(format!("Nemotron-H: layer {l} is {other:?}")),
+        });
+    }
+    let mb = mamba.ok_or_else(|| Error("Nemotron-H: no Mamba-2 layer".into()))?;
+    let (nq, nk, hd) = att.map_or((0, 0, 128), |a| (a.heads, a.kv_heads, a.head_dim));
+    if mb.head_dim != NH_P || mb.state != NH_N || mb.conv != 4 || hd != 128 {
+        return err(format!(
+            "Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {hd}: this engine runs heads of {NH_P}, a state of {NH_N}, a convolution of 4 and attention heads of 128",
+            mb.head_dim, mb.state, mb.conv
+        ));
+    }
+    let hid = m.hidden;
+    let di = mb.heads * mb.head_dim;
+    let cd = di + 2 * mb.groups * mb.state;
+    let row = di + cd + mb.heads;
+    let qkv_w = (nq + 2 * nk) * hd;
+    let (mut n_mats, mut n_small, mut n_moe, mut rings, mut states, mut layers) = (0, 0, 0, Vec::new(), Vec::new(), Vec::new());
+    let mut first = None;
+    for (l, &kind) in kinds.iter().enumerate() {
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            layers.push(Vec::new());
+            continue;
+        }
+        let (b, s0) = (n_mats, n_small);
+        let (mm, nn) = per_layer(kind);
+        (n_mats, n_small) = (n_mats + mm, n_small + nn);
+        let mut ops = Vec::new();
+        if l == 0 {
+            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, plus1: false });
+        } else {
+            ops.push(Op::NormAdd { y: Slot::O, w: s0, plus1: false });
+        }
+        match kind {
+            NhKind::Mamba => {
+                let (conv, ssm) = (states.len(), states.len() + 1);
+                states.push(3 * cd * 2);
+                states.push(mb.heads * NH_P * NH_N * 4);
+                ops.extend([
+                    Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "Mamba-2: in product" },
+                    Op::MambaConv { w: s0 + 1, bias: s0 + 2, state: conv, cd, row, x_off: di },
+                    Op::MambaScan { dt_bias: s0 + 5, a_log: s0 + 3, d: s0 + 4, state: ssm, cd, row, dt_off: di + cd, nh: mb.heads, ng: mb.groups },
+                    Op::MambaNorm { w: s0 + 6, row, di, ng: mb.groups },
+                    Op::Linear { w: b + 1, x: Slot::Core, y: Slot::O, name: "Mamba-2: out product" },
+                ]);
+            }
+            NhKind::Attention => {
+                let ring = rings.len();
+                rings.push(Ring { d: 256, nk, window: 0 });
+                ops.extend([
+                    Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
+                    Op::KvWrite { ring, stride: qkv_w, nq, nk },
+                    Op::AttnNh { ring, stride: qkv_w, nq, nk },
+                    Op::Linear { w: b + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
+                ]);
+            }
+            NhKind::Moe => {
+                ops.push(Op::Moe { block: n_moe });
+                n_moe += 1;
+            }
+        }
+        layers.push(ops);
+    }
+    let e = n_mats;
+    let lm = if d.head.is_none() { e } else { e + 1 };
+    let mut widths = [0usize; SLOTS];
+    for (s, w) in [
+        (Slot::X, hid),
+        (Slot::H, hid),
+        (Slot::O, hid),
+        (Slot::Mix, row.max(qkv_w)),
+        (Slot::Xc, cd),
+        (Slot::Core, di),
+        (Slot::Att, nq * hd),
+        (Slot::Hlast, hid),
+    ] {
+        widths[s as usize] = w;
+    }
+    Ok(ModelDesc {
+        family: "Nemotron-H",
+        hidden: hid,
+        vocab: m.vocab,
+        eps: m.blocks.first().map_or(1e-5, |b| b.norm_in.eps),
+        max_pos,
+        widths,
+        mats: Vec::new(),
+        small: Vec::new(),
+        ropes: Vec::new(),
+        rings,
+        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, plus1: false }),
+        layers,
+        states,
+        final_norm: Some((n_small, Slot::O, false)),
+        decoded: true,
+        skinny: false,
+        embed: e,
+        lm,
+        softcap: 0.0,
+        eos,
+        post: None,
+        v4: None,
+        hc: (0.0, 0),
+        logit_mult: 0.0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +517,58 @@ mod tests {
             (super::super::qwen35::describe(&c, &st).unwrap(), super::super::qwen35::lowered(&dir, &c, &st).unwrap_or_else(|e| panic!("{}", e.msg)));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+    }
+
+    /// Nemotron-H lowered from Nemotron 3 Super's released config and from the mixture-of-experts toy's, whole and as a split's stages, is the executor's own
+    /// description of it.
+    #[test]
+    fn nemotron_lowered_is_the_executors_own_description() {
+        for f in ["nemotron_h_config.json", "nemotron_h_moetoy_config.json"] {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f);
+            let text = std::fs::read_to_string(p).unwrap();
+            let c = crate::nemotron::ConfigNemotronH::parse(&text, f, None).unwrap();
+            let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
+            let half = c.layers / 2;
+            for st in [
+                super::super::Stage::whole(c.layers),
+                super::super::Stage { layers: (0, half), first: true, last: false },
+                super::super::Stage { layers: (half, c.layers), first: false, last: true },
+            ] {
+                let (own, lowered) = match super::super::nemotron::describe(&c, &st) {
+                    // (a shape the executor does not run is refused alike)
+                    Err(e) => {
+                        assert!(
+                            nemotron(&kinds, c.eos.clone(), c.max_pos, &st).is_err(),
+                            "{f}: refused by the executor's own ({}), not by the lowering",
+                            e.msg
+                        );
+                        continue;
+                    }
+                    Ok(own) => (own, nemotron(&kinds, c.eos.clone(), c.max_pos, &st).unwrap_or_else(|e| panic!("{f}: {}", e.msg))),
+                };
+                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
+                if a != b {
+                    let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
+                    panic!("{f}: the lowered description differs at line {first:?}");
+                }
+            }
+        }
+    }
+
+    /// A config.json whose layer kinds and family reader would describe different models is not loaded: here the builder made to see another MLP width than the
+    /// reader (as a config the two read differently would), and the difference is named.
+    #[test]
+    fn two_readings_that_differ_are_not_loaded() {
+        let (text, _) = header("gemma-4-12B-it.json");
+        let c = crate::gemma4::ConfigG4::parse(&text, None, false).unwrap();
+        let own = super::super::gemma4::describe(&c);
+        let mut kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
+        for s in kinds.shapes.values_mut().filter(|s| s.len() == 2 && s[0] == 15360) {
+            s[0] = 15360 * 2;
+        }
+        let lowered = gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos).unwrap();
+        let e = agree(lowered, &own, "the test's config.json").unwrap_err().msg;
+        assert!(e.contains("describe different models") && e.contains("not loaded"), "{e}");
     }
 
     /// The random Gemma 4 the logits checks run (src/logits.rs, a window of 32, a global layer that shares its keys and values) lowers to the executor's own

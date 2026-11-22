@@ -80,7 +80,8 @@ pub fn lowered(dir: &Path, c: &crate::qwen35::Config35, st: &Stage) -> Result<Mo
     let p = dir.join("config.json");
     let text = std::fs::read_to_string(&p).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
     let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
-    super::lower::qwen35(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st)
+    let lowered = super::lower::qwen35(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st)?;
+    super::lower::agree(lowered, &describe(c, st)?, &p.display().to_string())
 }
 
 /// The executor's description of Qwen3.5's layout for stage `st` (src/kern35.rs's loader fills its matrices and small tensors; they are indexed here in its order).
