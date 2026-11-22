@@ -1070,17 +1070,47 @@ impl Drop for Ev {
     }
 }
 
+/// Streams that sides gave back, by context (R15, #236). A `Stream` is a plain handle that can be copied, so a side's stream is never destroyed: one that a side's
+/// copy outlived would be a handle the driver may give to anything. A side's stream goes back here when the side is dropped, idle, and the next side of that context
+/// takes it; the streams made are as many as the most sides alive at once.
+struct Spare(Vec<(usize, usize)>);
+
+impl Spare {
+    /// A stream context `ctx`'s sides gave back, the latest first.
+    fn take(&mut self, ctx: usize) -> Option<usize> {
+        let i = self.0.iter().rposition(|&(c, _)| c == ctx)?;
+        Some(self.0.remove(i).1)
+    }
+
+    fn give(&mut self, ctx: usize, stream: usize) {
+        self.0.push((ctx, stream));
+    }
+}
+
+static SPARE: std::sync::Mutex<Spare> = std::sync::Mutex::new(Spare(Vec::new()));
+
+/// Streams sides made (never destroyed: `Spare`), for `bufcheck`.
+static SIDES_MADE: AtomicU64 = AtomicU64::new(0);
+
 /// A second stream on the engine's device (non-blocking, as the engine's own), for work that runs beside the engine's: the expert cache's copies. Ordered against the engine's stream by events only.
 pub struct Side {
     pub stream: Stream,
+    /// The context it is in, whose sides take it when this one is dropped.
+    ctx: usize,
 }
 
 impl Side {
+    /// A side in the thread's current context: one a dropped side of it gave back, else a new stream.
     pub fn new() -> Result<Side> {
+        let ctx = current_ctx()?;
+        if let Some(s) = SPARE.lock().unwrap_or_else(|e| e.into_inner()).take(ctx) {
+            return Ok(Side { stream: Stream(s as *mut c_void), ctx });
+        }
         let mut s = Stream::DEFAULT;
         // SAFETY: a host out-pointer; 1: CU_STREAM_NON_BLOCKING.
         unsafe { cu("cuStreamCreate", (driver()?.cuStreamCreate)(&mut s, 1))? };
-        Ok(Side { stream: s })
+        SIDES_MADE.fetch_add(1, Relaxed);
+        Ok(Side { stream: s, ctx })
     }
 
     pub fn sync(&self) -> Result<()> {
@@ -1091,9 +1121,9 @@ impl Side {
 
 impl Drop for Side {
     fn drop(&mut self) {
-        if let Ok(d) = driver() {
-            // SAFETY: made in new, destroyed once.
-            unsafe { (d.cuStreamDestroy_v2)(self.stream) };
+        // (its work finished, in its own context, before another side takes it; a stream whose work failed is kept back: the next side would find the error)
+        if in_ctx(self.ctx, || self.sync()).is_ok() {
+            SPARE.lock().unwrap_or_else(|e| e.into_inner()).give(self.ctx, self.stream.0 as usize);
         }
     }
 }
@@ -1139,6 +1169,22 @@ pub fn buf_check() -> Result<()> {
     drop(Buf::none());
     say(true, "a buffer of no bytes dropped".to_string());
     a.make_current()?;
+    // a side's stream, copied, outlives the side as a stream: an event records on it, and the next side of the context takes it; a hundred sides one after
+    // another make no stream past the first
+    let made = SIDES_MADE.load(Relaxed);
+    let side = Side::new()?;
+    let kept = side.stream;
+    drop(side);
+    let ev = Ev::new()?;
+    let recorded = ev.record(kept).and_then(|_| ev.wait_host()).is_ok();
+    let again = Side::new()?;
+    say(recorded && again.stream == kept, "a side's stream, its copy kept past the side, is still a stream, and the next side takes it".to_string());
+    drop(again);
+    for _ in 0..100 {
+        drop(Side::new()?);
+    }
+    let extra = SIDES_MADE.load(Relaxed) - made;
+    say(extra <= 1, format!("a hundred sides one after another: {extra} streams made"));
     if fails > 0 {
         return err(format!("bufcheck: {fails} failed"));
     }
@@ -1186,4 +1232,21 @@ mod pick_tests {
 pub fn sync_stream(s: Stream) -> Result<()> {
     // SAFETY: a stream a Dev or a wrapper made, live while its owner is.
     unsafe { cu("cuStreamSynchronize", (driver()?.cuStreamSynchronize)(s)) }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A context's sides take back its own streams alone, the latest first.
+    #[test]
+    fn a_context_takes_its_own_spare_streams() {
+        let mut sp = super::Spare(Vec::new());
+        sp.give(1, 10);
+        sp.give(2, 20);
+        sp.give(1, 11);
+        assert_eq!(sp.take(3), None);
+        assert_eq!(sp.take(1), Some(11));
+        assert_eq!(sp.take(2), Some(20));
+        assert_eq!(sp.take(1), Some(10));
+        assert_eq!(sp.take(1), None);
+    }
 }

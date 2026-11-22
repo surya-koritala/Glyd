@@ -869,6 +869,18 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
                 for x in ["q", "k", "v"] {
                     conv.extend(io(ck.read(&format!("{a}.{x}_conv1d.weight")))?);
                 }
+                // (the kernels read A_log for each head, dt_bias for each channel, each convolution's taps for each channel and the gated norm for each head
+                // channel: a tensor shorter than that would be read past its end on the GPU. A longer one is read in its first values, as the release's A_log
+                // of 128 for 96 heads is)
+                let elems = |n: &str| ck.get(n).map(|(_, t)| t.shape.iter().product::<u64>() as usize).ok_or_else(|| Error(format!("no tensor {n}")));
+                let wanted = [(format!("{a}.A_log"), nh), (format!("{a}.dt_bias"), qd), (format!("{a}.o_norm.weight"), kd.dim)]
+                    .into_iter()
+                    .chain(["q", "k", "v"].map(|x| (format!("{a}.{x}_conv1d.weight"), qd * kd.conv_kernel)));
+                for (n, want) in wanted {
+                    if elems(&n)? < want {
+                        return err(format!("{n}: {} values, where the kernels read {want}", elems(&n)?));
+                    }
+                }
                 let s0 = l_.small.len();
                 l_.small.extend([
                     upload_bytes(&conv)?,
@@ -1214,10 +1226,19 @@ pub(crate) fn fused(rows: usize) -> usize {
     rows.div_ceil(512) * 512
 }
 
-/// Each layer's (convolutions fp32, gated norm fp32) as the checkpoint holds them, a delta layer's three convolutions alike; (false, false) for a latent attention layer.
+/// Each layer's (convolutions fp32, gated norm fp32) as the checkpoint holds them (F32 or BF16; any other type refused), a delta layer's three convolutions alike;
+/// (false, false) for a latent attention layer.
 /// The kernels read them as they are (Kimi-K3 releases them fp32: values no bf16 holds).
 pub(crate) fn dtypes(ck: &Checkpoint, c: &ConfigKimi) -> Result<Vec<(bool, bool)>> {
-    let dtype = |n: &str| ck.get(n).map(|(_, t)| t.dtype == "F32").ok_or_else(|| Error(format!("no tensor {n}")));
+    // (F32 or BF16 alone: the kernels read 4 or 2 bytes a value by these flags, and the loader's checks count values, so a narrower type would be read past its end)
+    let dtype = |n: &str| -> Result<bool> {
+        let (_, t) = ck.get(n).ok_or_else(|| Error(format!("no tensor {n}")))?;
+        match t.dtype.as_str() {
+            "F32" => Ok(true),
+            "BF16" => Ok(false),
+            d => err(format!("{n}: {d}, where F32 or BF16 is read")),
+        }
+    };
     (0..c.layers)
         .map(|l| {
             if c.kinds[l] != GlmKind::Kda {

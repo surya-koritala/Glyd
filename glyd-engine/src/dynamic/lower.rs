@@ -1034,6 +1034,35 @@ mod tests {
         let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
         let w32 = super::super::kimi::dtypes(&ck, &c).unwrap();
         assert!(w32.iter().zip(&c.kinds).all(|(&w, &k)| (k == crate::glm::GlmKind::Kda) == (w == (true, true))), "{w32:?}");
+        // (a type other than F32 or BF16 for a delta layer's convolutions or gated norm is refused: the kernels read them by width)
+        let kl = c.kinds.iter().position(|&k| k == crate::glm::GlmKind::Kda).unwrap();
+        let hdr = dir.join("model.safetensors");
+        assert!(hdr.exists(), "the random model's checkpoint is one model.safetensors");
+        {
+            let bytes = std::fs::read(&hdr).unwrap();
+            let n = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
+            let head = std::str::from_utf8(&bytes[8..8 + n]).unwrap();
+            let name = format!("{}layers.{kl}.self_attn.o_norm.weight", c.prefix);
+            let at = head.find(&format!("\"{name}\"")).unwrap();
+            let tail = &head[at..];
+            let f32_at = at + tail.find("\"F32\"").unwrap();
+            // ("F32" becomes "I32": the same length and width, so the file still parses and only the loader's own check can refuse it)
+            let mut edited = bytes.clone();
+            edited[8 + f32_at + 1..8 + f32_at + 4].copy_from_slice(b"I32");
+            let bad = std::env::temp_dir().join(format!("glyd-lower-kimi-i8-{}", std::process::id()));
+            std::fs::create_dir_all(&bad).unwrap();
+            for f in std::fs::read_dir(&dir).unwrap() {
+                let f = f.unwrap().path();
+                if f.file_name().is_some_and(|x| x != "model.safetensors") && f.is_file() {
+                    std::fs::copy(&f, bad.join(f.file_name().unwrap())).unwrap();
+                }
+            }
+            std::fs::write(bad.join("model.safetensors"), &edited).unwrap();
+            let r =
+                glyd_gpu::safetensors::Checkpoint::open(&bad).map_err(|e| e.to_string()).and_then(|ck| super::super::kimi::dtypes(&ck, &c).map_err(|e| e.msg));
+            let _ = std::fs::remove_dir_all(&bad);
+            assert!(r.as_ref().is_err_and(|e| e.contains("where F32 or BF16 is read")), "a gated norm of I32 read as {r:?}");
+        }
         // (the fused products' widths as the loader stacks them from the checkpoint's own tensors: a delta layer's six, an experts layer's three, padded)
         let rows =
             |names: &[String]| -> usize { super::super::kimi::fused(names.iter().map(|n| ck.get(&format!("{n}.weight")).unwrap().1.shape[0] as usize).sum()) };
