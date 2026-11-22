@@ -126,8 +126,9 @@ pub fn suite(name: &str) -> Result<Vec<(String, usize)>> {
         "arrive" => mk(&["short+100ms", "1k+250ms", "4k+500ms"], &[8]),
         // conversations: 4 turns each, alone and 8 at once (a prompt cache's work: the later turns resend what the server has seen)
         "chat" => mk(&["1k*4", "4k*4"], &[1, 8]),
-        // requests that begin alike (one long start, each its own question), 8 of them 250 ms apart: what a server shares of a start it has run
-        "shared" => mk(&["same1k+250ms", "same4k+250ms"], &[8]),
+        // requests that begin alike (one long start, each its own question), 8 of them 250 ms apart, and 8 conversations of 4 turns that begin so: what a server shares of
+        // a start it has run, and whether it holds eight conversations that have 4k tokens in common where it does not hold eight of 4k apart
+        "shared" => mk(&["same1k+250ms", "same4k+250ms", "same4k*4"], &[8]),
         s => return err(format!("--suite {s}: gate, bar, full, arrive, chat or shared")),
     })
 }

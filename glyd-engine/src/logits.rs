@@ -2184,7 +2184,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
                     alt.len()
                 );
                 fails += same(&what, &want, &finder);
-                s.release(&[2])?;
+                s.release(&[1, 2])?;
                 let source = fill_from(s, 0, long.len(), &tail, chunk, true)?.expect("the logits");
                 fill(s, 2, &long, chunk, false)?;
                 let alone = fill_from(s, 2, long.len(), &tail, chunk, true)?.expect("the logits");
