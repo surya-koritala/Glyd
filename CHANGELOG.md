@@ -6,6 +6,11 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.34.1 — 2026-11-22
+
+- Release builds: the GPU library and the engine's compiled kernels are taken from the Actions cache where their sources did not change (keyed by them; a tag builds everything fresh), the engine's nvcc compiles two architectures at once (`GLYD_ENGINE_NVCC_THREADS`), and the Windows build is three jobs side by side (the two DLLs and `glyd.exe`, then the check and the zip) with only the compiler and runtime of each CUDA toolkit installed. The Windows check no longer fails on `glyd doctor`'s exit code on a runner with no GPU, and a release whose Windows build failed still gets its Linux engine bundles attached (v0.34.0's were attached by hand). The install check waits for the release's files.
+- Windows x86_64 (preview): the release has `glyd-engine-vX.Y.Z-windows-x86_64.zip` (`glyd.exe` with the engine linked, the CUDA 13 and CUDA 12 GPU library DLLs) and its sha256, which `irm https://getglyd.com/install.ps1 | iex` installs. v0.34.0 has none: its build passed but its check failed on `glyd doctor`'s exit code on a runner with no GPU.
+
 ## v0.34.0 — 2026-11-21
 
 - The engine runs Gemma 4 on Blackwell consumer GPUs (RTX 50 series): `g4_add_norm` needed more registers than a 1,024-thread block has on sm_120 ("too many resources requested for launch"); kernels.yml now fails on any kernel past 64 registers without launch bounds.
