@@ -5,7 +5,7 @@ token. Until this change the description executor could go on from such a sequen
 blocks found by name (the record `../rtx4080-blocks-by-name-2026-11-22`) were off for these models. Now the states are copied, every chunk of a prompt, into a pool of
 fixed size made at load (512 MB by default, at most 16 copies; src/dynamic/snaps.rs), under the name of the block ending there; the scheduler ends a prompt's pieces on
 those boundaries, so a copy is the states after that token exactly, and a request takes the newest boundary of its start whose states are kept and whose attention
-blocks are held by name (#142).
+blocks are held by name (#142). That is the Qwen3.5 / 3.8 layout today; Nemotron-H's attention is not paged yet.
 
 **Result: on Qwen3.5-9B, eight conversations that begin with the same 4k tokens have their later turns' first token in 0.134 s, where they took 1.141 s, and make
 233.2 tokens/s in all, where they made 107.7; one conversation's later turns 0.098 to 0.125 s, where they took 0.93 s. Loads with nothing in common are as before.**
@@ -42,8 +42,8 @@ prompts 599.6 / 600.8 tokens/s in all; 1k and 4k prompts alone 0.224 / 0.224 s a
 
 ## What it does not say
 
-- One model and one card, two rounds a load. Nemotron-H takes the pool too (it has states and no latent cache); it was checked with its random model's runs, not
-  measured on a release.
+- One model and one card, two rounds a load. Nemotron-H does not take the pool yet: its attention is not on the paged pools (src/dynamic/rows.rs `pageable`), so its
+  states are kept at a prompt's end alone, as before this change.
 - What the copies cost: a copy is the sequence's states, 49.1 MB on Qwen3.5-9B (its 24 linear layers' convolution and recurrent states, from its config by the
   executor's sizes), so the default pool holds 10; one is made on the GPU's stream at each boundary a prompt reaches. The loads with nothing in common show no change the
   runs can tell; the copies' time was not measured apart.
