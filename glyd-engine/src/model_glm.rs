@@ -2068,8 +2068,8 @@ mod tests {
         let ck = Checkpoint::open(&dir).unwrap();
         assert_eq!(f32_bytes(&ck, "a").unwrap(), widened);
         assert_eq!(f32_bytes(&ck, "b").unwrap(), widened);
-        assert!(f32_bytes(&ck, "c").unwrap_err().0.contains("F32 or BF16"));
-        assert!(f32_bytes(&ck, "d").unwrap_err().0.contains("no tensor d"));
+        assert!(f32_bytes(&ck, "c").unwrap_err().msg.contains("F32 or BF16"));
+        assert!(f32_bytes(&ck, "d").unwrap_err().msg.contains("no tensor d"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

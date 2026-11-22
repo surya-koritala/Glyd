@@ -355,7 +355,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                             && s.write_all(b"0\r\n\r\n").is_ok();
                         return;
                     }
-                    Ok(Out::Failed(e)) => {
+                    Ok(Out::Failed(e, _)) => {
                         eprintln!("glyd: a request failed: {e}");
                         let _ =
                             event(s, "error", &format!("\"error\":{{\"type\":\"api_error\",\"message\":{}}}", jstr(&e))) && s.write_all(b"0\r\n\r\n").is_ok();
@@ -400,7 +400,8 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                     );
                     return respond_with(s, 200, "application/json", cors, body.as_bytes());
                 }
-                Ok(Out::Failed(e)) => return fail(s, cors, 500, &e),
+                // (the server's doing: 500; the request's own, a prompt the cache does not hold: 400)
+                Ok(Out::Failed(e, server)) => return fail(s, cors, if server { 500 } else { 400 }, &e),
                 Err(RecvTimeoutError::Disconnected) => return fail(s, cors, 500, "the engine stopped"),
             }
         }

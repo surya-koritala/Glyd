@@ -203,13 +203,13 @@ fn cannot(e: impl std::fmt::Display) -> Refusal {
 /// The GPU a run uses: the one with the most free memory of those the driver shows (CUDA_VISIBLE_DEVICES applied), as the earlier release chose; the contexts the look at the others made are let go.
 fn gpu_pick() -> Done<Gpu> {
     let gpus = Dev::probe_all().map_err(|e| {
-        if e.0.contains("no CUDA driver") || e.0.contains("libcuda") {
+        if e.kind == crate::ffi::Kind::NoDriver {
             Refusal::unsupported(
                 "no NVIDIA driver was found on this computer",
                 "glyd run needs an NVIDIA GPU of the Ampere generation or newer and its driver (https://www.nvidia.com/drivers). On a computer without one, glyd compresses files: glyd --help",
             )
         } else {
-            Refusal::unsupported(format!("the GPU cannot be used: {}", e.0), "Check that nvidia-smi shows it")
+            Refusal::unsupported(format!("the GPU cannot be used: {}", e.msg), "Check that nvidia-smi shows it")
         }
     })?;
     let g = machine::pick(&gpus).cloned().ok_or_else(|| Refusal::unsupported("the driver shows no GPU", "Check that nvidia-smi shows it"))?;
@@ -253,12 +253,11 @@ pub fn no_code_fix(gpu: &Gpu) -> String {
     )
 }
 
-/// An error from loading the engine in words (memory, a driver too old for the kernels), as the driver words it ("cuMemAlloc: out of memory (2)": the call, its text and its status). Whatever it
-/// is, the engine is not the only way to run the model: status 3.
+/// An error from loading the engine in words (memory, a driver too old for the kernels), by its kind and the status of the call that failed (`ffi::Error`: "cuMemAlloc: out of memory (2)" is
+/// the call, the driver's text and its status). Whatever it is, the engine is not the only way to run the model: status 3.
 fn engine_refusal(e: crate::ffi::Error, name: &str, fit: &LoadPlan, gpu: &Gpu) -> Refusal {
-    let t = e.0.to_lowercase();
-    let status: Option<i32> = t.rsplit_once('(').and_then(|(_, n)| n.strip_suffix(')')).and_then(|n| n.parse().ok());
-    if t.contains("out of memory") || t.contains("no room for a kv cache") || status == Some(2) {
+    let status = e.status();
+    if e.out_of_memory() {
         return Refusal::unsupported(
             format!("the GPU ran out of memory loading {name} (about {} are needed; {} were free at the start)", gib(fit.gpu_total()), gib(gpu.free)),
             format!(
@@ -268,24 +267,21 @@ fn engine_refusal(e: crate::ffi::Error, name: &str, fit: &LoadPlan, gpu: &Gpu) -
         );
     }
     // (209: no machine code for this GPU, where the driver is new enough for the build's kernels; the images the driver cannot read: 200 and 218; a toolchain newer than the driver: 222)
-    let no_image = t.contains("no kernel image") || status == Some(209);
-    if no_image && gpu.driver >= machine::driver_min(gpu.cc) {
+    if status == Some(209) && gpu.driver >= machine::driver_min(gpu.cc) {
         return Refusal::unsupported(no_code_for(gpu), no_code_fix(gpu));
     }
-    if ["no kernel image", "kernel image is invalid", "unsupported toolchain", "unsupported_ptx", "invalid_image"].iter().any(|w| t.contains(w))
-        || matches!(status, Some(200 | 209 | 218 | 222))
-    {
+    if matches!(status, Some(200 | 209 | 218 | 222)) {
         let need = machine::driver_need(gpu.cc);
         let series = machine::driver_series(machine::driver_min(gpu.cc));
         return Refusal::unsupported(
-            format!("the GPU's driver cannot run the engine's kernels ({})", e.0),
+            format!("the GPU's driver cannot run the engine's kernels ({})", e.msg),
             machine::instead(
                 &format!("Update the NVIDIA driver (the engine's kernels need {need}), or use the vLLM-based glyd"),
                 &format!("Update the NVIDIA driver to {series} or newer: on Ubuntu `sudo apt install nvidia-driver-{series}` and reboot, elsewhere the installer at https://www.nvidia.com/drivers"),
             ),
         );
     }
-    cannot(e.0)
+    cannot(e.msg)
 }
 
 // ---- a model made ready -------------------------------------------------------------------------------------------------------------------------------
@@ -556,7 +552,7 @@ struct Ready {
 /// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; the dense Qwen3 engine takes at most MAX_ROWS of them, a level's engine as many as its memory holds).
 fn users_of(a: &Args) -> Done<usize> {
     use crate::sched::MAX_USERS;
-    let n: usize = a.num("users", 4usize).map_err(|e| Refusal::new(e.0, format!("Give a number from 1 to {MAX_USERS}: --users 4")))?;
+    let n: usize = a.num("users", 4usize).map_err(|e| Refusal::new(e.msg, format!("Give a number from 1 to {MAX_USERS}: --users 4")))?;
     if !(1..=MAX_USERS).contains(&n) {
         return Err(Refusal::new(format!("--users {n}: 1 to {MAX_USERS} sequences at once"), format!("Give a number from 1 to {MAX_USERS}: --users 4")));
     }
@@ -688,11 +684,11 @@ fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<st
                 also_on_ollamas_port(a, &host, name, window, local_only, &tx);
                 return Ok(addr);
             }
-            Err(e) if e.0.to_lowercase().contains("in use") && !explicit => continue,
-            Err(e) if e.0.to_lowercase().contains("in use") => {
+            Err(e) if e.msg.to_lowercase().contains("in use") && !explicit => continue,
+            Err(e) if e.msg.to_lowercase().contains("in use") => {
                 return Err(Refusal::new(format!("port {p} is in use by another program"), format!("Choose another: --port {}", p + 1)))
             }
-            Err(e) => return Err(Refusal::new(e.0, "")),
+            Err(e) => return Err(Refusal::new(e.msg, "")),
         }
     }
     Err(Refusal::new(format!("ports {port} to {} are all in use", port + 20), "Choose another: --port N"))
@@ -708,7 +704,7 @@ fn also_on_ollamas_port(a: &Args, host: &str, name: &str, window: usize, local_o
     };
     match server::listen(&format!("{host}:{port}"), name, window, api_key(a), local_only, tx.clone()) {
         Ok(addr) => eprintln!("glyd: Ollama's API is also at http://{addr}"),
-        Err(e) => eprintln!("glyd: --ollama-port {port}: {}: Ollama's API stays at the server's own port", e.0),
+        Err(e) => eprintln!("glyd: --ollama-port {port}: {}: Ollama's API stays at the server's own port", e.msg),
     }
 }
 
@@ -1169,7 +1165,7 @@ fn once(talk: &mut Talk, defaults: &Params, prompt: &str, thinking: Option<bool>
             0
         }
         Err(e) => {
-            ui.borrow_mut().refuse(&Refusal::new(e.0, ""));
+            ui.borrow_mut().refuse(&Refusal::new(e.msg, ""));
             1
         }
     }
@@ -1388,7 +1384,7 @@ fn offloaded(
     gpu: &str,
 ) -> Result<(usize, CachePlan), String> {
     let (layers, experts, k) = (cfg.layers_of(NhKind::Moe), cfg.moe.experts, cfg.moe.top_k);
-    let each = crate::moe_nh::expert_bytes(cfg, layout).map_err(|e| e.0)?;
+    let each = crate::moe_nh::expert_bytes(cfg, layout).map_err(|e| e.msg)?;
     let experts_bytes = (layers * experts) as u64 * each;
     let ctx = ctx.unwrap_or(LOSSY_CTX).min(cfg.max_pos.max(LOSSY_MIN_CTX));
     // (the plan's weights are at fit::bits a weight, a little over the experts' exact bytes: the rest of the model is taken as what is left)
@@ -1409,7 +1405,7 @@ fn offloaded(
     let disk = layout == Layout::Hummingbird;
     let ram = held_in_memory(experts_bytes, asked_host, host);
     let least_ram = if disk { (layers * 2 * k) as u64 * each } else { experts_bytes };
-    let Some(plan) = crate::moe_nh::cache_plan(cfg, layout, budget, least).map_err(|e| e.0)?.filter(|p| p.gpu_bytes() + rest <= free) else {
+    let Some(plan) = crate::moe_nh::cache_plan(cfg, layout, budget, least).map_err(|e| e.msg)?.filter(|p| p.gpu_bytes() + rest <= free) else {
         return Err(format!(
             "with its experts in the computer's memory it needs at least {} of GPU memory (and {} of the computer's)",
             gib(need),
@@ -1482,7 +1478,7 @@ fn lossy_plan_inner(
         if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
             return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
         }
-        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), unrun_fix()))?;
+        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
         // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024, Nemotron 3 Super's: src/moe_hb.rs; the
         // experts of a model with no latent, Nemotron 3.5 Lightning's, read its width)
         let l = cfg.moe.latent;
@@ -1502,7 +1498,7 @@ fn lossy_plan_inner(
         }
         let cfg = Config35::parse(text, "config.json", gen).map_err(|e| {
             Refusal::unsupported(
-                format!("{name}: the {tag} level runs {} models so far ({})", "Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 Super", e.0),
+                format!("{name}: the {tag} level runs {} models so far ({})", "Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 Super", e.msg),
                 format!("Run it lossless: glyd run {model}"),
             )
         })?;
@@ -1573,7 +1569,7 @@ fn lossy_plan_inner(
     }
     let mut also = String::new();
     if nemotron && (!fits || cache.is_some()) {
-        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), unrun_fix()))?;
+        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
         match offloaded(&cfg, layout, weights, state, per, free, host, asked, cache, host_asked, gpu) {
             Ok((ctx, plan)) => return Ok(mk(ctx, Some(plan))),
             Err(why) if cache.is_some() => {
@@ -1613,7 +1609,7 @@ fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: 
             format!("Run it lossless (penguin) or at the kestrel or swift level: glyd run {name}:kestrel"),
         ));
     }
-    let cfg = crate::gemma4::ConfigG4::parse(text, gen, false).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.0), ""))?;
+    let cfg = crate::gemma4::ConfigG4::parse(text, gen, false).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), ""))?;
     let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
     let (weights, bf16) = cfg.weight_bytes(layout, ck.as_ref());
     // (a model not on this computer yet comes as its pre-packed repo, which holds its draft model: planned with it, the larger of the two plans)
@@ -1812,13 +1808,13 @@ fn load_lossy(
     ui.borrow_mut().line(&format!("Plan: {}.", plan.text()));
     ui.borrow_mut().status(&format!("{} {name} and loading it onto the GPU...", if packed.is_some() { "Reading" } else { "Packing" }));
     let oom = |e: crate::ffi::Error| {
-        if e.0.to_lowercase().contains("out of memory") {
+        if e.out_of_memory() {
             Refusal::unsupported(
                 format!("the GPU ran out of memory loading {name} ({} were free at the start)", gib(gpu.free)),
                 "Close programs that use the GPU (nvidia-smi lists them), or ask for less context: --context 4096",
             )
         } else {
-            cannot(e.0)
+            cannot(e.msg)
         }
     };
     let (e, bytes, vocab): (Box<dyn Gen>, usize, usize) = if plan.kind == Kind::Gemma4 {
@@ -1848,7 +1844,7 @@ fn load_lossy(
             store.set_host_memory(Some(crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() }));
         }
         // an expert that is not on the GPU is computed by the CPU (--cpu-threads) where the computer's memory holds a second copy of the experts' first matrices besides the experts; else it is copied
-        let mut offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.0, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
+        let mut offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
         if let Some(c) = plan.experts {
             if offload.mode != crate::offload::Mode::Copy && !c.host_half_fits(crate::offload::host_memory(), HOST_MARGIN) {
                 offload.mode = crate::offload::Mode::Copy;
@@ -1925,7 +1921,7 @@ fn load_lossy(
 /// The GPUs the dynamic route uses (Ampere or newer, as the driver lists them) and the first, which the machine's checks are of.
 fn dynamic_gpus() -> Done<(Vec<Gpu>, Gpu)> {
     let gpus: Vec<Gpu> = Dev::probe_all()
-        .map_err(|e| Refusal::unsupported(format!("the GPU cannot be used: {}", e.0), "Check that nvidia-smi shows it"))?
+        .map_err(|e| Refusal::unsupported(format!("the GPU cannot be used: {}", e.msg), "Check that nvidia-smi shows it"))?
         .into_iter()
         .filter(|g| g.cc.0 >= 8)
         .collect();
@@ -2236,7 +2232,7 @@ pub(crate) fn size_dynamic(
     let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
     let model_max = crate::dynamic::split::config_num(text, "max_position_embeddings").unwrap_or(usize::MAX);
     let row = crate::support::row_named(family).expect("a dynamic family has a row");
-    let ctx = a.num("context", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.0, "--context 8192"))?;
+    let ctx = a.num("context", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.msg, "--context 8192"))?;
     crate::support::context_check(&name, row, model_max, a.flag("context").map(|_| ctx))?;
     // (every layer across the GPUs, src/dynamic/tp.rs: by default on datacenter GPUs that reach each other directly, where no split is asked for; a
     // development build's GLYD_TP=1 or 0 says so itself, GLYD_TP_GPUS which GPUs)
@@ -2293,7 +2289,7 @@ pub(crate) fn size_dynamic(
         // ponytail: the share is an estimate; a GPU that runs out of memory says so at the load
         (Vec::new(), tp_devs.clone())
     } else if chosen {
-        crate::dynamic::split::split_args(a).map_err(|e| Refusal::new(e.0, "--split 31 --devices 0,1: the layers before 31 on GPU 0, the rest on GPU 1"))?
+        crate::dynamic::split::split_args(a).map_err(|e| Refusal::new(e.msg, "--split 31 --devices 0,1: the layers before 31 on GPU 0, the rest on GPU 1"))?
     } else {
         cut.ok_or_else(|| {
             Refusal::unsupported(
@@ -2608,7 +2604,7 @@ fn load_dynamic(
     let o = crate::dynamic::Opts { ctx, chunk: 256, graph: true, device: devices[0], layout: Some(if twelve { Layout::Twelve } else { rest }) };
     ui.borrow_mut().status(&format!("Reading {name} and loading it onto the GPU{}...", if devices.len() == 1 { "" } else { "s" }));
     // (a hummingbird directory's experts in its own cache: each stage its places, the computer's memory for its share of the experts, the copy-or-compute policy of the flags)
-    let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.0, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
+    let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
     let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
     let opened = match &cache {
         Some(k) if hb || matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") => crate::dynamic::split::open_cached(
@@ -2624,13 +2620,13 @@ fn load_dynamic(
         None => crate::dynamic::split::open(&dir, &o, &cuts, &devices),
     };
     let e = opened.map_err(|e| {
-        if e.0.to_lowercase().contains("out of memory") {
+        if e.out_of_memory() {
             Refusal::unsupported(
                 format!("a GPU ran out of memory loading {name} ({})", stages.join(", ")),
                 "Ask for less context (--context 4096), or cut the layers yourself: --split CUTS --devices GPUS",
             )
         } else {
-            cannot(e.0)
+            cannot(e.msg)
         }
     })?;
     // (the weights the route holds are not counted apart: 0)
@@ -2780,7 +2776,7 @@ pub fn preflight(a: &Args) -> i32 {
                 println!("{}", json::to_python(&v, 2));
                 0
             }
-            Err(e) => fail(&ui, &cannot(e.0)),
+            Err(e) => fail(&ui, &cannot(e.msg)),
         };
     }
     match check(a, &ui) {
@@ -2840,7 +2836,7 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
         return Err(Refusal::unsupported(format!("{model} is {why}"), "Pack the model again: glyd pack MODEL DIR"));
     }
     // the model on this GPU: its memory at the context asked for, its shape, the tables' reach
-    let users = a.num("users", 1usize).map_err(|e| Refusal::new(e.0, "Give a number from 1 to 8: --users 4"))?.clamp(1, crate::model::MAX_ROWS);
+    let users = a.num("users", 1usize).map_err(|e| Refusal::new(e.msg, "Give a number from 1 to 8: --users 4"))?.clamp(1, crate::model::MAX_ROWS);
     let (layout, _, fit) = plan(a, &cfg, &name, &gpu, packed.then(|| packed_layout(dir).unwrap_or(Layout::Tiered)), users)?;
     shape_checks(&name, &cfg, &fit)?;
     crate::ffi::Lib::find().map_err(cannot)?;
@@ -2877,7 +2873,7 @@ fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<
     }
     let plan = lossy_plan(a, model, layout, &text, None, gpu.free, &gpu.name, v7_layout(model)?.map(|_| Path::new(model)))?;
     crate::ffi::Lib::find().map_err(cannot)?;
-    Dev::new(gpu.ordinal).map_err(|e| cannot(e.0))?;
+    Dev::new(gpu.ordinal).map_err(|e| cannot(e.msg))?;
     let (level, repo) = (level_name(layout), packed_repo(model, level_name(layout)));
     if !Path::new(model).join("config.json").exists() && Source::find(model).is_err() && Source::find(&repo).is_err() {
         // (a model with a pre-packed repo downloads that one, which is smaller)
@@ -4057,10 +4053,14 @@ mod tests {
         let g = gpu("NVIDIA L4", (8, 9), 22);
         let f = fit::plan(&cfg, "Qwen3-8B", &g.name, g.free, Layout::Tiered, None, 1, true).unwrap();
         let said = |e: &str| engine_refusal(crate::ffi::Error(e.to_string()), "Qwen3-8B", &f, &g);
+        // (an error of the kind, whatever its words; then errors that come as words alone, as from another process: the status their words end in)
+        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::OutOfMemory, "no room for a KV cache"), "Qwen3-8B", &f, &g);
+        assert!(r.code == CANNOT && r.what.contains("ran out of memory"), "{r}");
+        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::of_status(2), "cuMemAlloc: no words for it"), "Qwen3-8B", &f, &g);
+        assert!(r.what.contains("ran out of memory"), "{r}");
         for (e, text) in [
             ("cuMemAlloc: out of memory (2)", "ran out of memory"),
             ("cuMemAlloc: CUDA error 2 (2)", "ran out of memory"),
-            ("no room for a KV cache", "ran out of memory"),
             ("cuModuleLoadData: device kernel image is invalid (200)", "driver cannot run the engine's kernels"),
             // (no machine code for this GPU, on a driver the build runs on: the GPU is what the build lacks, not the driver)
             ("cuModuleLoadData: no kernel image is available for execution on the device (209)", "this build has no code for NVIDIA L4"),

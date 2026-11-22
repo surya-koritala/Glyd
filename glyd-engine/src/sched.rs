@@ -9,7 +9,7 @@
 //! with the prefix cache and preemption above), or a room of the whole context for each of a few sequences (`ModelStep::slots`: the description executor, `src/dynamic`), where a sequence holds one slot from
 //! its admission to its end, nothing is shared and nothing is preempted for room.
 
-use crate::ffi::Result;
+use crate::ffi::{Error, Kind, Result};
 use crate::kv::{chain_key, Lost, Pager, ALONE_MESSAGE, PAGE};
 use crate::model::{Engine, FUSED_ROWS, MAX_ROWS};
 use crate::sampler::{logprobs_of, Lp, Sampler};
@@ -23,7 +23,7 @@ use std::sync::Arc;
 pub enum Ev {
     Token(u32),
     Lp(Lp),
-    End(std::result::Result<Finish, String>),
+    End(std::result::Result<Finish, crate::ffi::Error>),
 }
 
 /// A sequence to run: its prompt, what the reply is asked to be, where its tokens go, and a flag that ends it (the request has all it wants, or has gone).
@@ -587,10 +587,10 @@ impl<B: ModelStep> Sched<B> {
     }
 
     /// Every sequence ended with `msg`, the pages all free again.
-    pub fn fail(&mut self, msg: &str) {
+    pub fn fail(&mut self, err: &crate::ffi::Error) {
         for s in self.active.drain(..).chain(self.waiting.drain(..)) {
             crate::ops::finished("error", s.began, &s.trace, s.generated);
-            self.pending.push((s.out.clone(), Ev::End(Err(msg.to_string()))));
+            self.pending.push((s.out.clone(), Ev::End(Err(err.clone()))));
         }
         let _ = self.be.lost();
         if let Some(k) = self.be.slots() {
@@ -666,7 +666,10 @@ impl<B: ModelStep> Sched<B> {
                     // nothing will free a page: this one never fits
                     let s = self.waiting.remove(k).expect("a waiting sequence");
                     crate::ops::finished("error", s.began, &s.trace, s.generated);
-                    self.pending.push((s.out.clone(), Ev::End(Err(format!("{} tokens, where the cache holds {} blocks", s.tokens.len(), self.pager.pages())))));
+                    self.pending.push((
+                        s.out.clone(),
+                        Ev::End(Err(Error::of(Kind::Request, format!("{} tokens, where the cache holds {} blocks", s.tokens.len(), self.pager.pages())))),
+                    ));
                     continue;
                 }
                 break;
@@ -696,7 +699,7 @@ impl<B: ModelStep> Sched<B> {
         let window = self.be.window();
         if self.waiting[k].tokens.len() >= window {
             let s = self.waiting.remove(k).expect("a waiting sequence");
-            self.pending.push((s.out.clone(), Ev::End(Err(format!("{} tokens, where the context holds {window}", s.tokens.len())))));
+            self.pending.push((s.out.clone(), Ev::End(Err(Error::of(Kind::Request, format!("{} tokens, where the context holds {window}", s.tokens.len()))))));
             return Ok(true);
         }
         let Some(slot) = self.free.as_mut().and_then(Vec::pop) else { return Ok(false) };
@@ -706,7 +709,10 @@ impl<B: ModelStep> Sched<B> {
             if self.active.is_empty() {
                 let s = self.waiting.remove(k).expect("a waiting sequence");
                 crate::ops::finished("error", s.began, &s.trace, s.generated);
-                self.pending.push((s.out.clone(), Ev::End(Err(format!("{} tokens, where the cache holds fewer with nothing else running", s.tokens.len())))));
+                self.pending.push((
+                    s.out.clone(),
+                    Ev::End(Err(Error::of(Kind::Request, format!("{} tokens, where the cache holds fewer with nothing else running", s.tokens.len())))),
+                ));
                 return Ok(true);
             }
             return Ok(false);
@@ -825,7 +831,7 @@ impl<B: ModelStep> Sched<B> {
                 let mut s = self.active.remove(i);
                 self.give_back(&mut s)?;
                 crate::ops::finished("error", s.began, &s.trace, s.generated);
-                self.pending.push((s.out.clone(), Ev::End(Err(ALONE_MESSAGE.to_string()))));
+                self.pending.push((s.out.clone(), Ev::End(Err(Error::of(Kind::Request, ALONE_MESSAGE)))));
                 continue;
             }
             let solo = !alone && self.active[i].tries >= 2;
@@ -1280,6 +1286,8 @@ pub(crate) mod tests {
         pub one_step: bool,
         pub beside: Option<usize>,
         pub stepped: Vec<(usize, usize)>,
+        /// The decode step that fails as a call of the driver does, and with what status (700: an illegal address, after which the context is lost; 1: an invalid value, after which it is not).
+        pub fault: Option<(usize, i32)>,
     }
 
     /// A row of logits (2,048 tokens) in which `token` is the largest and the one after it the second.
@@ -1328,6 +1336,7 @@ pub(crate) mod tests {
                 one_step: false,
                 beside: None,
                 stepped: Vec::new(),
+                fault: None,
             }
         }
         /// The token after `toks` (`n` of them): the hash, or the script's word for this place.
@@ -1452,6 +1461,12 @@ pub(crate) mod tests {
         fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
             std::thread::sleep(self.decode_delay);
             self.steps += 1;
+            if let Some((_, status)) = self.fault.filter(|f| f.0 == self.steps) {
+                return Err(crate::ffi::Error::of(
+                    crate::ffi::Kind::of_status(status),
+                    format!("cuLaunchKernel: the made-up model's step {} failed ({status})", self.steps),
+                ));
+            }
             if self.overflow_at == Some(self.steps) {
                 self.pending.overflow = true;
             }
@@ -1828,7 +1843,8 @@ pub(crate) mod tests {
         let (big, _) = add(&mut s, prompt(1, 100), 5);
         let (ok, _) = add(&mut s, prompt(2, 10), 5);
         run(&mut s);
-        assert!(matches!(big.recv().unwrap(), Ev::End(Err(_))));
+        // (the request's own doing: a server answers it 400, not 500)
+        assert!(matches!(big.recv().unwrap(), Ev::End(Err(e)) if e.kind == Kind::Request));
         assert_eq!(collect(&ok).0, reference(&prompt(2, 10), 5));
     }
     /// The figures of /stats are one JSON object: a development build's name what the cache lost, a release build's are the counts a user reads and no more.
@@ -1852,7 +1868,7 @@ pub(crate) mod tests {
             match rx.recv().expect("the sequence ends") {
                 Ev::Token(t) => out.push(t),
                 Ev::Lp(_) => {}
-                Ev::End(f) => return (out, f),
+                Ev::End(f) => return (out, f.map_err(|e| e.msg)),
             }
         }
     }

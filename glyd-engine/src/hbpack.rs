@@ -237,7 +237,7 @@ pub(crate) mod tests {
         let p = crate::weights::read_pack(&ck, Some(&(layout, manifest.clone())), &fc1, crate::nemotron::pack_layout(layout, &fc1.key)).unwrap();
         assert!(matches!(p.words, crate::ffi::Words::Tiered { tiers, .. } if tiers[0] >> 24 == glyd_gpu::pack::INT6_TAG));
         // an old reader of the directory: the engine's generic reader refuses an expert's pack by its layout
-        let e = crate::weights::read_pack(&ck, Some(&(L::Int6, manifest.clone())), &c.expert_packs(1)[0], L::Int6).err().expect("refused").0;
+        let e = crate::weights::read_pack(&ck, Some(&(L::Int6, manifest.clone())), &c.expert_packs(1)[0], L::Int6).err().expect("refused").msg;
         assert!(e.contains("c3r") || e.contains("c2r"), "{e}");
         // the plan of `run` for this directory is sized by its own bytes at the level: a GPU with a megabyte more than the engine's 2 GiB of work has no room for the tiny model (the level is named in the refusal), one with 64 holds it whole
         let gib = 1u64 << 30;
@@ -250,7 +250,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::metadata(out.join("glyd.json")).unwrap().modified().unwrap(), before);
         // refused: an export of another shape, of fewer layers, of other blocks, an incomplete one
         let says = |what: &str, r: Result<()>| {
-            let e = r.unwrap_err().0;
+            let e = r.unwrap_err().msg;
             assert!(e.contains(what), "{what:?} not in {e:?}");
         };
         let other = ConfigNemotronH { moe: crate::nemotron::MoeDims { experts: 8, ..c.moe.clone() }, ..c.clone() };

@@ -111,7 +111,7 @@ pub trait Engine: Send + Sync {
 
 impl Engine for Remote {
     fn submit(&self, request: Request) -> Result<Stream, Rejected> {
-        let h = self.start_with(&request.prompt, request.images, &request.reply).map_err(|e| Rejected(e.0))?;
+        let h = self.start_with(&request.prompt, request.images, &request.reply).map_err(|e| Rejected(e.msg))?;
         Ok(Stream::new(h.events, Cancel(h.abort)))
     }
 

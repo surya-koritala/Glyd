@@ -138,7 +138,7 @@ fn one(agent: &ureq::Agent, url: &str, model: &str, kind: &str, seed: u64, max_t
     let content = match prompt(kind, seed) {
         Ok(c) => c,
         Err(e) => {
-            out.error = Some(e.0);
+            out.error = Some(e.msg);
             return out;
         }
     };

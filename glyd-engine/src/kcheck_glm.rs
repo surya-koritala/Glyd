@@ -1045,8 +1045,8 @@ mod tests {
             }
             assert!(got.get(&format!("{p}.gate.weight")).is_none() && got.get("model.language_model.layers.1.self_attn.q_proj.weight").is_none());
         }
-        assert!(decode(&dir.join("fp8"), &dir.join("x"), &[0], Layout::Int6).unwrap_err().0.contains("not a mixture-of-experts layer"));
-        assert!(decode(&dir.join("fp8"), &dir.join("y"), &[9], Layout::Int6).unwrap_err().0.contains("layer 9"));
+        assert!(decode(&dir.join("fp8"), &dir.join("x"), &[0], Layout::Int6).unwrap_err().msg.contains("not a mixture-of-experts layer"));
+        assert!(decode(&dir.join("fp8"), &dir.join("y"), &[9], Layout::Int6).unwrap_err().msg.contains("layer 9"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1090,7 +1090,7 @@ mod tests {
         assert_eq!(level_of(Some(6)).unwrap(), Layout::Int6);
         assert_eq!(level_of(Some(5)).unwrap(), Layout::Int5);
         assert_eq!(level_of(Some(4)).unwrap(), Layout::Int4);
-        assert!(level_of(Some(3)).unwrap_err().0.contains("3 bits"));
+        assert!(level_of(Some(3)).unwrap_err().msg.contains("3 bits"));
     }
 }
 

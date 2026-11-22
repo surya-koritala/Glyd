@@ -468,7 +468,7 @@ mod tests {
     fn says(r: Result<Host>) -> String {
         match r {
             Ok(_) => "loaded".to_string(),
-            Err(e) => e.0,
+            Err(e) => e.msg,
         }
     }
 
@@ -618,7 +618,7 @@ mod tests {
         let widened: Vec<u8> = w.iter().flat_map(|&x| ((x as u32) << 16).to_le_bytes()).collect();
         assert_eq!(bias_f32("F32", &widened).unwrap(), widened);
         assert_eq!(bias_f32("BF16", &bf16_bytes(&w)).unwrap(), widened);
-        assert!(bias_f32("F16", &[0; 4]).unwrap_err().0.contains("F32 or BF16"));
+        assert!(bias_f32("F16", &[0; 4]).unwrap_err().msg.contains("F32 or BF16"));
     }
 
     /// A down host's layout tag, its experts, rows and columns, and its bytes.

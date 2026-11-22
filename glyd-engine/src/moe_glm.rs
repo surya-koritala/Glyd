@@ -460,7 +460,7 @@ mod tests {
     fn says(r: Result<Host>) -> String {
         match r {
             Ok(_) => "loaded".to_string(),
-            Err(e) => e.0,
+            Err(e) => e.msg,
         }
     }
 

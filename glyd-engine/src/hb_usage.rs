@@ -194,7 +194,7 @@ pub fn run_with(model: &str, out: &std::path::Path, tokens: u64, devices: &[i32]
                 continue;
             }
             e.reset()?;
-            e.prefill(&ids[..take]).map_err(|x| Error(format!("{name}: {}", x.0)))?;
+            e.prefill(&ids[..take]).map_err(|x| Error(format!("{name}: {}", x.msg)))?;
             ran += take as u64;
         }
         Ok(())
@@ -253,11 +253,11 @@ mod tests {
             let mut less = c.clone();
             less.layers.remove(&(moe[0].block / 2));
             less.missed.insert(moe[0].block / 2);
-            let e = usage_of(&d, &less, "tiny", 36).unwrap_err().0;
+            let e = usage_of(&d, &less, "tiny", 36).unwrap_err().msg;
             assert!(e.contains("were not counted") && e.contains("on the GPUs"), "{e}");
             let mut more = c.clone();
             more.layers.insert(9999, vec![0; 4]);
-            assert!(usage_of(&d, &more, "tiny", 36).unwrap_err().0.contains("not a MoE layer"));
+            assert!(usage_of(&d, &more, "tiny", 36).unwrap_err().msg.contains("not a MoE layer"));
             std::fs::remove_dir_all(&dir).unwrap();
         }
     }

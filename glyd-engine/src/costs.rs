@@ -139,7 +139,7 @@ impl Family {
             return err("a Gemma 4 model: its cost profile is not described yet (Qwen3.5-family and Nemotron-H models are)");
         }
         let mut c = Config35::parse(text, "config.json", generation)
-            .map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.0)))?;
+            .map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.msg)))?;
         if saved_causal {
             // (a glyd-v7 save holds the text model under the causal LM's names, whatever its config.json says of the checkpoint it came from, and no vision tower)
             (c.prefix, c.vision) = ("model.", false);
@@ -1323,7 +1323,7 @@ pub fn served(dir: &Path, id: &str, requested: Option<&str>, ctx: usize, chunk: 
     };
     match Profile::from_found(&f) {
         Ok(p) => p.json(&Workload { ctx, prompt: 0, output: 0, chunk }, held.map(|h| Allocated::now(h, ctx)).as_ref(), None),
-        Err(e) => obj(vec![("object", Value::from("glyd.costs")), ("status", Value::from("unavailable")), ("error", Value::from(e.0.as_str()))]),
+        Err(e) => obj(vec![("object", Value::from("glyd.costs")), ("status", Value::from("unavailable")), ("error", Value::from(e.msg.as_str()))]),
     }
 }
 

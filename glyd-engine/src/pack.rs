@@ -668,14 +668,14 @@ mod tests {
             assert_eq!((v.packed, v.hashed), (n_parts, c.kept().len()));
         }
         // a lossless layout is not an FP8 model's: refused in words
-        let e = run_with(dir.join("fp8").to_str().unwrap(), &dir.join("lossless"), 2, Layout::Tiered, true).unwrap_err().0;
+        let e = run_with(dir.join("fp8").to_str().unwrap(), &dir.join("lossless"), 2, Layout::Tiered, true).unwrap_err().msg;
         assert!(e.contains("not a family this packer knows"), "{e:?}");
         // a config of GLM-5.3-Flash that the engine does not run says why, and is not taken for another model
         let bad = dir.join("refused");
         std::fs::create_dir_all(&bad).unwrap();
         std::fs::write(bad.join("config.json"), text.replace("\"silu\"", "\"gelu\"")).unwrap();
         std::fs::copy(dir.join("fp8").join("model.safetensors"), bad.join("model.safetensors")).unwrap();
-        let e = run_with(bad.to_str().unwrap(), &dir.join("out-refused"), 2, Layout::Int6, true).unwrap_err().0;
+        let e = run_with(bad.to_str().unwrap(), &dir.join("out-refused"), 2, Layout::Int6, true).unwrap_err().msg;
         assert!(e.contains("an activation other than silu"), "{e:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -492,7 +492,7 @@ pub(crate) mod tests {
     }
 
     fn refused(text: &str, says: &str) {
-        let e = ConfigNemotronH::parse(text, "x", None).unwrap_err().0;
+        let e = ConfigNemotronH::parse(text, "x", None).unwrap_err().msg;
         assert!(e.contains(says), "{e:?} does not say {says:?}");
     }
 
@@ -775,7 +775,7 @@ pub(crate) mod tests {
         let says = |edit: &dyn Fn(&mut Index), what: &str| {
             let mut h = have.clone();
             edit(&mut h);
-            let e = c.check(&h, &HashSet::new()).unwrap_err().0;
+            let e = c.check(&h, &HashSet::new()).unwrap_err().msg;
             assert!(e.contains(what), "{e:?} does not say {what:?}");
         };
         let at = |h: &Index, n: &str| h.iter().position(|t| t.0 == n).unwrap();
@@ -811,7 +811,7 @@ pub(crate) mod tests {
         says(&|h| h.push(("model.embed_tokens.weight".into(), "BF16".into(), vec![131072, 4096])), "model.embed_tokens.weight: not a tensor of this model");
         // a config with more layers than the checkpoint
         let more = ConfigNemotronH { layers: 89, kinds: [c.kinds.clone(), vec![NhKind::Mamba]].concat(), ..c.clone() };
-        assert!(more.check(&have, &HashSet::new()).unwrap_err().0.contains("no backbone.layers.88.mixer.in_proj.weight"));
+        assert!(more.check(&have, &HashSet::new()).unwrap_err().msg.contains("no backbone.layers.88.mixer.in_proj.weight"));
         // a packed matrix is held as its three buffers
         let key = "backbone.layers.0.mixer.in_proj";
         let mut h = have.clone();
@@ -856,15 +856,15 @@ pub(crate) mod tests {
         assert_eq!(have.len(), 9 + 5);
         let none = HashSet::new();
         c.check_layers(&have, &[0, 7], &none).unwrap();
-        assert!(c.check_layers(&have, &[0, 1], &none).unwrap_err().0.contains("no backbone.layers.1.norm.weight"));
-        assert!(c.check_layers(&have, &[88], &none).unwrap_err().0.contains("layer 88"));
+        assert!(c.check_layers(&have, &[0, 1], &none).unwrap_err().msg.contains("no backbone.layers.1.norm.weight"));
+        assert!(c.check_layers(&have, &[88], &none).unwrap_err().msg.contains("layer 88"));
         // a layer's matrix held as its saved buffers (a glyd-v7 directory's) is not wanted as a bf16 tensor
         let held: HashSet<String> =
             ["backbone.layers.7.mixer.q_proj", "backbone.layers.7.mixer.k_proj", "backbone.layers.7.mixer.v_proj"].map(String::from).into();
         have.retain(|t| t.0 != "backbone.layers.7.mixer.v_proj.weight");
-        assert!(c.check_layers(&have, &[0, 7], &none).unwrap_err().0.contains("no backbone.layers.7.mixer.v_proj.weight"));
+        assert!(c.check_layers(&have, &[0, 7], &none).unwrap_err().msg.contains("no backbone.layers.7.mixer.v_proj.weight"));
         have.retain(|t| !held.contains(Pack35::saved(&t.0)));
-        assert!(c.check_layers(&have, &[0, 7], &none).unwrap_err().0.contains("no backbone.layers.7.mixer.q_proj.weight"));
+        assert!(c.check_layers(&have, &[0, 7], &none).unwrap_err().msg.contains("no backbone.layers.7.mixer.q_proj.weight"));
         c.check_layers(&have, &[0, 7], &held).unwrap();
     }
 }

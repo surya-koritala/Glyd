@@ -485,7 +485,7 @@ impl Engine {
             None => max_pos,
         };
         if tokens < 16 && tables.is_some() {
-            return err("no room for a KV cache");
+            return Err(crate::ffi::Error::of(crate::ffi::Kind::OutOfMemory, "no room for a KV cache"));
         }
         let max_pages = tokens.div_ceil(16) as i64;
         // attention workspace for decode (one row) and, where a chunk's rows go through the decode kernel, for a chunk's rows, at the most splits any of them gets

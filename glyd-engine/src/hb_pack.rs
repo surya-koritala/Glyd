@@ -265,7 +265,7 @@ fn code_layer(ck: &Checkpoint, l: &MoeLayer, scales: &BTreeMap<String, String>, 
                 match r {
                     Ok(x) => done.lock().expect("a coder panicked")[e] = Some(x),
                     Err(x) => {
-                        *failed.lock().expect("a coder panicked") = Some(Error(format!("block {} expert {e}: {}", l.block, x.0)));
+                        *failed.lock().expect("a coder panicked") = Some(Error(format!("block {} expert {e}: {}", l.block, x.msg)));
                         return;
                     }
                 }
@@ -462,7 +462,7 @@ pub fn run(model: &str, out: &Path, threads: usize, usage: &Path) -> Result<()> 
     ]);
     io(std::fs::write(tmp.join("glyd.json"), json::to_compact(&manifest)))?;
     if out.exists() {
-        io(std::fs::remove_dir(out)).map_err(|e| Error(format!("{}: {} (it should be empty or absent)", out.display(), e.0)))?;
+        io(std::fs::remove_dir(out)).map_err(|e| Error(format!("{}: {} (it should be empty or absent)", out.display(), e.msg)))?;
     }
     io(std::fs::rename(&tmp, out))?;
     eprintln!(
@@ -702,8 +702,8 @@ pub(crate) mod tests {
         }
         let first = hb.layers[0].block / 2;
         assert!(HbDir::experts_for(None, first, false).unwrap().is_none());
-        assert!(HbDir::experts_for(Some(&hb), first, true).err().expect("refused").0.contains("every layer across GPUs"));
-        assert!(HbDir::experts_for(Some(&hb), 0, false).err().expect("refused").0.contains("no experts for decoder layer 0"));
+        assert!(HbDir::experts_for(Some(&hb), first, true).err().expect("refused").msg.contains("every layer across GPUs"));
+        assert!(HbDir::experts_for(Some(&hb), 0, false).err().expect("refused").msg.contains("no experts for decoder layer 0"));
         assert!(HbDir::open(&src).unwrap().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -779,12 +779,12 @@ pub(crate) mod tests {
             let mut bad = u.clone();
             bad.layers[0].counts.pop();
             std::fs::write(&up, bad.to_json()).unwrap();
-            let e = run(src.to_str().unwrap(), &dir.join("out2"), 2, &up).unwrap_err().0;
+            let e = run(src.to_str().unwrap(), &dir.join("out2"), 2, &up).unwrap_err().msg;
             assert!(e.contains("counts, where the layer has"), "{e}");
             let mut none = u.clone();
             none.layers.remove(0);
             std::fs::write(&up, none.to_json()).unwrap();
-            let e = run(src.to_str().unwrap(), &dir.join("out2"), 2, &up).unwrap_err().0;
+            let e = run(src.to_str().unwrap(), &dir.join("out2"), 2, &up).unwrap_err().msg;
             assert!(e.contains("calibrate-experts"), "{e}");
             std::fs::remove_dir_all(&dir).unwrap();
         }

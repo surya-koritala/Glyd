@@ -160,7 +160,7 @@ pub fn drive(sched: &mut Sched<&mut Engine>, reqs: &[Req], concurrency: usize) -
                 Ok(Ev::Token(t)) => l.tokens.push(t),
                 Ok(Ev::Lp(_)) => {}
                 Ok(Ev::End(e)) => {
-                    done[l.i] = Some(Done { tokens: std::mem::take(&mut l.tokens), end: e, resumed: l.resumed.load(Relaxed) });
+                    done[l.i] = Some(Done { tokens: std::mem::take(&mut l.tokens), end: e.map_err(|x| x.msg), resumed: l.resumed.load(Relaxed) });
                     return false;
                 }
                 Err(TryRecvError::Empty) => return true,

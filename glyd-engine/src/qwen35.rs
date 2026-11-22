@@ -455,7 +455,7 @@ mod tests {
     }
 
     fn refused(text: &str, says: &str) {
-        let e = Config35::parse(text, "x", None).unwrap_err().0;
+        let e = Config35::parse(text, "x", None).unwrap_err().msg;
         assert!(e.contains(says), "{e:?} does not say {says:?}");
     }
 
@@ -631,7 +631,7 @@ mod tests {
         let says = |edit: &dyn Fn(&mut Index), what: &str| {
             let mut h = have.clone();
             edit(&mut h);
-            let e = c.check(&h, &HashSet::new()).unwrap_err().0;
+            let e = c.check(&h, &HashSet::new()).unwrap_err().msg;
             assert!(e.contains(what), "{e:?} does not say {what:?}");
         };
         let at = |h: &Index, n: &str| h.iter().position(|t| t.0 == n).unwrap();
@@ -661,7 +661,7 @@ mod tests {
         says(&|h| h.push(("lm_head.weight".into(), "BF16".into(), vec![248320, 1024])), "lm_head.weight: not a tensor of this model");
         // a config with more layers than the checkpoint
         let more = Config35 { layers: 25, kinds: [c.kinds.clone(), vec![Kind::Linear]].concat(), ..c.clone() };
-        assert!(more.check(&have, &HashSet::new()).unwrap_err().0.contains("no model.language_model.layers.24.linear_attn.in_proj_qkv.weight"));
+        assert!(more.check(&have, &HashSet::new()).unwrap_err().msg.contains("no model.language_model.layers.24.linear_attn.in_proj_qkv.weight"));
     }
     /// A tensor held as its three saved buffers needs no bf16 tensor, and the buffers are no stray tensors.
     #[test]

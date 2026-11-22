@@ -484,7 +484,7 @@ impl Tp {
             }
         }
         if !errs.is_empty() {
-            let pick = errs.iter().position(|e| !e.0.contains("another GPU's thread")).unwrap_or(0);
+            let pick = errs.iter().position(|e| !e.msg.contains("another GPU's thread")).unwrap_or(0);
             return Err(errs.swap_remove(pick));
         }
         Ok(Tp { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, eos })
@@ -500,10 +500,10 @@ impl Tp {
         for wk in &self.w {
             let o = wk.rx.recv().map_err(|_| gone())?;
             let failed = match &o {
-                Out::Done(Err(e)) => Some(e.0.clone()),
-                Out::Sample(Err(e)) => Some(e.0.clone()),
-                Out::Logits(Err(e)) => Some(e.0.clone()),
-                Out::Logprob(Err(e)) => Some(e.0.clone()),
+                Out::Done(Err(e)) => Some(e.msg.clone()),
+                Out::Sample(Err(e)) => Some(e.msg.clone()),
+                Out::Logits(Err(e)) => Some(e.msg.clone()),
+                Out::Logprob(Err(e)) => Some(e.msg.clone()),
                 _ => None,
             };
             bad = bad.or(failed);

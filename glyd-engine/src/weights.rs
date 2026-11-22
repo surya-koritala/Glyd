@@ -1517,7 +1517,7 @@ mod tests {
         let both = read_lossless_parts(&ck, &m, &[("m.a", ra), ("m.b", rb)], cols).unwrap();
         assert_eq!((both.rows, both.cols), (ra + rb, cols));
         assert_eq!(decode(&both), [wa.clone(), wb.clone()].concat());
-        assert!(matches!(read_lossless_parts(&ck, &m, &[("m.a", ra), ("m.c", rb)], cols), Err(e) if e.0.contains("no pack m.c")));
+        assert!(matches!(read_lossless_parts(&ck, &m, &[("m.a", ra), ("m.c", rb)], cols), Err(e) if e.msg.contains("no pack m.c")));
         // a lossy save is not a lossless one
         std::fs::write(dir.join("glyd.json"), r#"{"format":"glyd-v4","layout":"i5","packs":{}}"#).unwrap();
         assert!(lossless_manifest(&dir).unwrap().is_none());
@@ -1742,14 +1742,14 @@ mod tests {
                 check_v7(key, level, rows[k], 64, &e.get("shape").and_then(Value::as_u64s).unwrap(), &e.get(WORDS_KEY).and_then(Value::as_u64s).unwrap(), lens);
             match own == level {
                 true => assert!(said.is_ok(), "{key}"),
-                false => assert!(said.unwrap_err().0.contains("where the i4 layout's is 6"), "{key}"),
+                false => assert!(said.unwrap_err().msg.contains("where the i4 layout's is 6"), "{key}"),
             }
         }
         // the parts of one matrix, joined: two in the level's layout are the packer's pack of the two stacked; one in each layout are refused
         let joined = read_v7(&ck, &m, level, &[("m.b", 64), ("m.c", 64)], 64).unwrap();
         let want = pack_int4(&[w[1].clone(), w[2].clone()].concat(), 128, 64).unwrap();
         assert!(joined.data == want.data && joined.b1 == want.blocks && joined.rows == 128);
-        let e = read_v7(&ck, &m, level, &[("m.c", 64), ("m.d", 64)], 64).err().unwrap().0;
+        let e = read_v7(&ck, &m, level, &[("m.c", 64), ("m.d", 64)], 64).err().unwrap().msg;
         assert!(e.contains("m.d: packed in the i6 layout, where the part of its matrix before it is in i4"), "{e}");
         // an entry that names no block layout, and one that names none (the directory's layout is then its pack's)
         let edited = |layout: Option<&str>| -> Value {
@@ -1763,11 +1763,11 @@ mod tests {
             }
             v
         };
-        let e = read_v7(&ck, &edited(Some("mma")), level, &[("m.b", 64)], 64).err().unwrap().0;
+        let e = read_v7(&ck, &edited(Some("mma")), level, &[("m.b", 64)], 64).err().unwrap().msg;
         assert!(e.contains("m.b: layout \"mma\", where a glyd-v7 pack has"), "{e}");
         assert!(read_v7(&ck, &edited(None), level, &[("m.b", 64)], 64).unwrap().data == pack_int4(&w[1], 64, 64).unwrap().data);
         assert!(
-            read_v7(&ck, &edited(None), Layout::Int6, &[("m.b", 64)], 64).err().unwrap().0.contains("where the i6 layout's is 4"),
+            read_v7(&ck, &edited(None), Layout::Int6, &[("m.b", 64)], 64).err().unwrap().msg.contains("where the i6 layout's is 4"),
             "no entry layout: the directory's, checked as before"
         );
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1782,7 +1782,7 @@ mod tests {
         let (four, three) = (glyd_gpu::pack::pack_int4(&w, 128, 64).unwrap(), glyd_gpu::pack::pack_int3(&w, 128, 64).unwrap());
         let lens = |p: &glyd_gpu::pack::Tiered| [p.data.len() as u64, p.blocks.len() as u64, 4 * p.block_base.len() as u64];
         let tiers = |p: &glyd_gpu::pack::Tiered| p.tiers.map(u64::from);
-        let ok = |l, rows, shape: &[u64], t: &[u64], n: [u64; 3]| check_v7("k", l, rows, 64, shape, t, n).map_err(|e| e.0);
+        let ok = |l, rows, shape: &[u64], t: &[u64], n: [u64; 3]| check_v7("k", l, rows, 64, shape, t, n).map_err(|e| e.msg);
         assert!(ok(Layout::Int6, 128, &[128, 64], &tiers(&six), lens(&six)).is_ok());
         assert!(ok(Layout::Int5, 128, &[128, 64], &tiers(&five), lens(&five)).is_ok());
         assert!(ok(Layout::Int4, 128, &[128, 64], &tiers(&four), lens(&four)).is_ok());

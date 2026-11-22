@@ -8,6 +8,10 @@ use std::time::Instant;
 /// does not fit, a KV cache that refuses the model): the program that started it runs the model another way. Every other refusal is 1.
 pub const CANNOT: i32 = 3;
 
+/// The exit status of a server whose GPU's context was lost while it ran (a sticky device error, `ffi::Error::sticky`: an illegal address in a kernel, a launch that failed, the GPU gone):
+/// nothing more runs on that context, so the server ends. The service sees the program gone and starts the model again at the next request for it (src/service.rs `Pool::acquire`).
+pub const DEVICE_LOST: i32 = 4;
+
 /// Why a command stops, in words, and what to do about it.
 #[derive(Debug)]
 pub struct Refusal {
@@ -30,7 +34,7 @@ impl Refusal {
 
 impl From<crate::ffi::Error> for Refusal {
     fn from(e: crate::ffi::Error) -> Refusal {
-        Refusal::new(e.0, "")
+        Refusal::new(e.msg, "")
     }
 }
 

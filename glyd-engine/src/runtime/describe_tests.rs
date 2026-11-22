@@ -10,7 +10,7 @@ use std::path::PathBuf;
 /// The tiny model's description reads exactly the fixture's tensors, and its logits are transformers'.
 fn model(case: &str, tol: f32) {
     let f = Fixture::load(case);
-    let d = describe(&f.j["config"]).unwrap_or_else(|e| panic!("{case}: {}", e.0));
+    let d = describe(&f.j["config"]).unwrap_or_else(|e| panic!("{case}: {}", e.msg));
     let want: BTreeSet<String> = f.j["tensors"].as_object().unwrap().keys().cloned().collect();
     assert_eq!(d.names(), want, "{case}: the weight map");
     let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
@@ -53,7 +53,7 @@ fn fixture(name: &str) -> serde_json::Value {
 fn released_qwen_configs() {
     let cfgs = fixture("qwen35_configs.json");
     for (repo, c) in cfgs.as_object().unwrap() {
-        let d = describe(c).unwrap_or_else(|e| panic!("{repo}: {}", e.0));
+        let d = describe(c).unwrap_or_else(|e| panic!("{repo}: {}", e.msg));
         let tc = c.get("text_config").unwrap_or(c);
         assert_eq!(d.desc.blocks.len(), 2 * tc["num_hidden_layers"].as_u64().unwrap() as usize, "{repo}");
         assert_eq!(d.mtp_layers, tc["mtp_num_hidden_layers"].as_u64().unwrap_or(0) as usize, "{repo}");
@@ -89,14 +89,14 @@ fn released_gemma4_config() {
 fn unknown_keys_are_named() {
     let mut c = fixture("qwen35_configs.json")["Qwen/Qwen3.8-27B"].clone();
     c["text_config"]["attn_logit_softcap"] = 50.0.into();
-    let e = describe(&c).unwrap_err().0;
+    let e = describe(&c).unwrap_err().msg;
     assert!(e.contains("attn_logit_softcap"), "{e}");
     let mut g = fixture("gemma4_12b_config.json");
     g["text_config"]["enable_moe_block"] = true.into();
-    assert!(describe(&g).unwrap_err().0.contains("enable_moe_block"));
+    assert!(describe(&g).unwrap_err().msg.contains("enable_moe_block"));
     let mut g = fixture("gemma4_12b_config.json");
     g["text_config"]["model_type"] = "something_new".into();
-    assert!(describe(&g).unwrap_err().0.contains("something_new"));
+    assert!(describe(&g).unwrap_err().msg.contains("something_new"));
 }
 
 #[test]

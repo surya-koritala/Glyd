@@ -630,7 +630,7 @@ impl Rank {
             let wts = std::slice::from_raw_parts(self.wts.ptr as *const f32, pairs);
             let z = std::slice::from_raw_parts(self.z.ptr as *const u16, tokens * latent);
             let r = ld.borrow_mut().compute(&host, z, ids, wts, &plan.mine, k, tokens);
-            *sums.got.lock().map_err(|_| poisoned())? = Some(r.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.0.clone()));
+            *sums.got.lock().map_err(|_| poisoned())? = Some(r.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.msg.clone()));
             sums.cv.notify_all();
             span(3, t);
             r?;
