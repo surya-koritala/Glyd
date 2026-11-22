@@ -385,3 +385,14 @@ fn every_fixture_config_describes() {
     let e = describe(&fixture("qwen4x_config.json")).unwrap_err().msg;
     assert!(e.contains("qwen4_exp_text"), "{e}");
 }
+
+/// Nemotron 3's released configs (Nano, 3.5 Lightning) say `moe_shared_expert_overlap: true`, a schedule of the shared experts beside the exchange between GPUs,
+/// not arithmetic: the description is the same whichever it says.
+#[test]
+fn nemotron_h_shared_expert_overlap_is_read_either_way() {
+    let mut cfg = fixture("nemotron_h_config.json");
+    let off = format!("{:#?}", describe(&cfg).unwrap().desc);
+    cfg["moe_shared_expert_overlap"] = serde_json::Value::Bool(true);
+    let on = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(format!("{:#?}", on.desc), off);
+}

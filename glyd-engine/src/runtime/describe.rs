@@ -818,7 +818,8 @@ impl Fp8 {
         let block = match q.get("weight_block_size") {
             Some(Value::Array(a)) if a.len() == 2 && a[0] == a[1] => a[0].as_u64().unwrap_or(128) as usize,
             Some(v) => return err(format!("{what}: weight_block_size {v}")),
-            None => 128,
+            // (no block size: one scale a tensor or a channel, not the block scales the loaders read; refused, as the GLM loader refuses it)
+            None => return err(format!("{what}: FP8 with no weight_block_size (scales a tensor or a channel) is not supported: block scales are")),
         };
         let skip = q
             .get("modules_to_not_convert")
@@ -1862,12 +1863,14 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
         ("mamba_proj_bias", Value::Bool(false)),
         ("use_conv_bias", Value::Bool(true)),
         ("residual_in_fp32", Value::Bool(false)),
-        ("moe_shared_expert_overlap", Value::Bool(false)),
         ("mamba_hidden_act", Value::from("silu")),
         ("mamba_ssm_cache_dtype", Value::from("float32")),
     ] {
         k.expect(key, &want)?;
     }
+    // (when the shared experts' work overlaps the routed experts' exchange between GPUs: a schedule, not arithmetic; the releases say true, the transformers
+    // default; either is read)
+    k.bool("moe_shared_expert_overlap", true)?;
     if k.raw("sliding_window").is_some() {
         return err("nemotron_h: a sliding window is not supported");
     }
