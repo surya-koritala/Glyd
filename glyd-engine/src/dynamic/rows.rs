@@ -21,7 +21,7 @@
 
 use super::pages::{Pages, BLOCK};
 use super::{Dyn, Op};
-use crate::dev::{copy_d2d_async, memset_async, Buf};
+use crate::dev::{copy_d2d_async, Buf};
 use crate::ffi::{err, Result};
 use crate::model::FUSED_ROWS;
 use crate::sched::{ModelStep, PrefillJob, Row, Sample};
@@ -309,13 +309,13 @@ impl Dyn {
             self.n = 0;
             self.pending = None;
             for b in &self.states {
-                memset_async(b.ptr, 0, b.bytes, self.dev.stream)?;
+                b.fill_async(0, self.dev.stream)?;
             }
         } else if let Some(s) = self.seqs.get_mut(slot).and_then(Option::as_mut) {
             s.n = 0;
             s.pending = None;
             for b in &s.states {
-                memset_async(b.ptr, 0, b.bytes, self.dev.stream)?;
+                b.fill_async(0, self.dev.stream)?;
             }
         }
         Ok(())

@@ -4,7 +4,7 @@
 //! into the LM head. The embedding and the n-gram table are read on the host from the checkpoint's files mapped (their rows copied up with the step), never loaded to the GPU. The layers' math: transformers 5.19.0's
 //! modeling_qwen4_exp.py (tools/qwen4x_ref.py checks this file against it); the config and tensor names: src/qwen4x.rs; the new kernels: kernels/qwen4x.cu.
 
-use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Kernel, Pinned};
+use crate::dev::{copy_d2h_async, copy_h2d_async, Buf, Dev, Kernel, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::kern::Kern;
 use crate::kern35::{Kern35, Mat};
@@ -2438,7 +2438,7 @@ impl EngineQx {
     pub fn zero_states(&self) -> Result<()> {
         self.on_front(|f| f.zero_states())?;
         for b in [&self.ssm, &self.convst, &self.plest] {
-            memset_async(b.ptr, 0, b.bytes, self.dev.stream)?;
+            b.fill_async(0, self.dev.stream)?;
         }
         self.dev.sync()
     }

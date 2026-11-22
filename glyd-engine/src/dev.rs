@@ -450,10 +450,30 @@ pub fn smem64() -> bool {
     *S.get_or_init(|| cfg!(glyd_hip) || crate::tune!("GLYD_SMEM64").is_some_and(|v| v == "1"))
 }
 
+/// A type whose values are any of its bytes, with no padding: what may be copied to and from device memory as bytes (`Buf::read`, `Buf::write`, `read_dev`,
+/// `Pinned::as_slice_mut`). A `bool`, a `char`, an enum or a struct with padding is not.
+///
+/// # Safety
+/// Every bit pattern of `size_of::<Self>()` bytes is a value of the type, and the type has no padding bytes.
+pub unsafe trait Plain: Copy + 'static {}
+
+macro_rules! plain {
+    ($($t:ty),*) => { $(
+        // SAFETY: a primitive number: any bits are a value, and it has no padding.
+        unsafe impl Plain for $t {}
+    )* };
+}
+plain!(u8, i8, u16, i16, u32, i32, u64, i64, u128, i128, usize, isize, f32, f64);
+// SAFETY: an array of plain values has no padding between them, and its bits are its elements'.
+unsafe impl<T: Plain, const N: usize> Plain for [T; N] {}
+
 /// `out` read from device memory at `src` (synchronously: the caller has waited for the work that writes it).
-pub fn read_dev<T: Copy>(src: u64, out: &mut [T]) -> Result<()> {
+///
+/// # Safety
+/// `src .. src + size_of_val(out)` is device memory the caller may read.
+pub unsafe fn read_dev<T: Plain>(src: u64, out: &mut [T]) -> Result<()> {
     let n = std::mem::size_of_val(out);
-    // SAFETY: n bytes of host memory from n of device memory the caller names; T is plain data.
+    // SAFETY: n bytes of host memory from n of device memory the caller names (its contract); T takes any bytes.
     unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, src, n)) }
 }
 
@@ -504,7 +524,7 @@ impl Buf {
     }
 
     /// `data` copied to the buffer at byte `offset`, complete when this returns.
-    pub fn write<T: Copy>(&self, offset: usize, data: &[T]) -> Result<()> {
+    pub fn write<T: Plain>(&self, offset: usize, data: &[T]) -> Result<()> {
         let n = std::mem::size_of_val(data);
         if offset + n > self.bytes {
             return err(format!("a write of {n} bytes at {offset}, past the buffer's {}", self.bytes));
@@ -515,13 +535,19 @@ impl Buf {
     }
 
     /// The buffer's bytes at `offset` into `out` (synchronously; the work queued on the stream is waited for by the caller).
-    pub fn read<T: Copy>(&self, offset: usize, out: &mut [T]) -> Result<()> {
+    pub fn read<T: Plain>(&self, offset: usize, out: &mut [T]) -> Result<()> {
         let n = std::mem::size_of_val(out);
         if offset + n > self.bytes {
             return err(format!("a read of {n} bytes at {offset}, past the buffer's {}", self.bytes));
         }
         // SAFETY: n of this buffer's bytes to n of host memory; T is plain data.
         unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, self.ptr + offset as u64, n)) }
+    }
+
+    /// Every byte of the buffer set to `v`, queued on `s` (ordered with the work on it).
+    pub fn fill_async(&self, v: u8, s: Stream) -> Result<()> {
+        // SAFETY: the buffer's own bytes.
+        unsafe { memset_async(self.ptr, v, self.bytes, s) }
     }
 
     /// The buffer's bytes set to zero, complete when this returns.
@@ -579,8 +605,9 @@ impl Pinned {
         Ok(Pinned { ptr: p, bytes })
     }
 
-    pub fn as_slice_mut<T>(&mut self) -> &mut [T] {
-        // SAFETY: the allocation holds bytes / size_of::<T>() elements; callers use plain data.
+    pub fn as_slice_mut<T: Plain>(&mut self) -> &mut [T] {
+        assert!((self.ptr as usize).is_multiple_of(std::mem::align_of::<T>()), "pinned memory not aligned for the type");
+        // SAFETY: the allocation holds bytes / size_of::<T>() elements, aligned (checked; the driver's are page-aligned), and T takes any bytes.
         unsafe { std::slice::from_raw_parts_mut(self.ptr as *mut T, self.bytes / std::mem::size_of::<T>()) }
     }
 }
@@ -616,8 +643,12 @@ pub unsafe fn copy_d2d_async(dst: u64, src: u64, bytes: usize, s: Stream) -> Res
     cu("cuMemcpyDtoDAsync", (driver()?.cuMemcpyDtoDAsync_v2)(dst, src, bytes, s))
 }
 
-pub fn memset_async(dst: u64, v: u8, bytes: usize, s: Stream) -> Result<()> {
-    // SAFETY: the caller's device range.
+/// `bytes` bytes of device memory at `dst` set to `v`, queued on `s` (a whole buffer: `Buf::fill_async`).
+///
+/// # Safety
+/// `dst .. dst + bytes` is device memory the caller may write, and nothing queued reads it before this runs unless it is to see the bytes set.
+pub unsafe fn memset_async(dst: u64, v: u8, bytes: usize, s: Stream) -> Result<()> {
+    // SAFETY: the caller's device range (its contract).
     unsafe { cu("cuMemsetD8Async", (driver()?.cuMemsetD8Async)(dst, v, bytes, s)) }
 }
 
@@ -659,8 +690,12 @@ pub struct Graph {
 }
 
 impl Graph {
-    pub fn launch(&self, s: Stream) -> Result<()> {
-        // SAFETY: an instantiated graph.
+    /// The captured work queued again on `s`, with the addresses and arguments it was captured with.
+    ///
+    /// # Safety
+    /// Every buffer, table and kernel the capture used is still alive and still holds what the captured work expects there (the graph holds none of them).
+    pub unsafe fn launch(&self, s: Stream) -> Result<()> {
+        // SAFETY: an instantiated graph; what it reads and writes is alive (the caller's contract).
         unsafe { cu("cuGraphLaunch", (driver()?.cuGraphLaunch)(self.exec, s)) }
     }
 }
@@ -831,7 +866,7 @@ impl Ev {
     }
 }
 
-/// A handle to an event that another thread may record or make a stream wait for: the event (`Ev::as_ref`) must outlive every use.
+/// A handle to an event that another thread may record or make a stream wait for. Made only by `Ev::as_ref`, whose caller promises that the event outlives every use.
 #[derive(Clone, Copy)]
 pub struct EvRef(usize);
 
@@ -854,8 +889,11 @@ impl EvRef {
 }
 
 impl Ev {
-    /// A handle for another thread to record the event with (see `EvRef`).
-    pub fn as_ref(&self) -> EvRef {
+    /// A handle for another thread to record the event with, or to wait on (see `EvRef`).
+    ///
+    /// # Safety
+    /// The event outlives every use of the handle and of its copies.
+    pub unsafe fn as_ref(&self) -> EvRef {
         EvRef(self.0 as usize)
     }
 }

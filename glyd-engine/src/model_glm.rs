@@ -7,7 +7,7 @@
 //! The weights are a glyd-v7 directory's (`glyd-engine pack MODEL OUT --layout i6|i5`) or a Hub-format directory's (FP8 with 128 x 128 block scales or bf16: a matrix is packed as it loads, from the bf16 it dequantises to).
 //! The layers' math: tools/glm_ref.py; the config and tensor names: src/glm.rs.
 
-use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Graph, Kernel, Pinned};
+use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Graph, Kernel, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern::Kern;
@@ -1225,8 +1225,8 @@ impl EngineGlm {
     pub fn reset(&mut self) -> Result<()> {
         self.n = 0;
         self.pending.set(None);
-        memset_async(self.ssm.ptr, 0, self.ssm.bytes, self.dev.stream)?;
-        memset_async(self.convst.ptr, 0, self.convst.bytes, self.dev.stream)?;
+        self.ssm.fill_async(0, self.dev.stream)?;
+        self.convst.fill_async(0, self.dev.stream)?;
         self.dev.sync()
     }
 

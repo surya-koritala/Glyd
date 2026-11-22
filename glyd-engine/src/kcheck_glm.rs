@@ -431,7 +431,8 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
             for (half, p) in params.iter_mut().enumerate() {
                 let t2 = Instant::now();
                 if n == 1 && graph {
-                    graphs.as_ref().expect("graphs")[half].launch(s)?;
+                    // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+                    unsafe { graphs.as_ref().expect("graphs")[half].launch(s) }?;
                 } else {
                     run_half(half, &e, e.pos.ptr)?;
                 }
@@ -643,7 +644,8 @@ pub fn prof(dir: &Path, layers: &[usize], ctx: usize, reps: usize) -> Result<()>
         let mut whole = 0f64;
         for _ in 0..reps {
             e.x.write(0, step)?;
-            g.launch(e.dev.stream)?;
+            // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+            unsafe { g.launch(e.dev.stream) }?;
             e.dev.sync()?;
             for i in 1..marks.len() {
                 let ms = marks[i].1.since(&marks[i - 1].1)? as f64;

@@ -1699,8 +1699,11 @@ fn fetch(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut S
                 }
             }
             let state = JobState::new();
-            let job =
-                CopyJob { copies, stream: s, wait: ly.done.as_ref(), start: a.as_ref(), stop: b.as_ref(), ready: ly.ready.as_ref(), state: state.clone() };
+            // SAFETY: the layer's events (done, ready) live as long as the cache, and the timing events a and b stay in `cuda.timing` until the
+            // job is seen done: each outlives the copy thread's use of its handle.
+            let job = unsafe {
+                CopyJob { copies, stream: s, wait: ly.done.as_ref(), start: a.as_ref(), stop: b.as_ref(), ready: ly.ready.as_ref(), state: state.clone() }
+            };
             cuda.worker.as_ref().expect("the copy thread").submit(job)?;
             ly.pending = true;
             ly.job = Some(state.clone());

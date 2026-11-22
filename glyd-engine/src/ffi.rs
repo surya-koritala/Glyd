@@ -118,10 +118,11 @@ pub fn err<T>(s: impl Into<String>) -> Result<T> {
     Err(Error(s.into()))
 }
 
-/// A CUDA stream (the runtime's cudaStream_t and the driver's CUstream are the same handle).
+/// A CUDA stream (the runtime's cudaStream_t and the driver's CUstream are the same handle). Made by the device module alone (`dev::Dev`, `dev::Side`; the field is not
+/// public, so a stream is not made from any pointer); `DEFAULT` is the context's legacy stream.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Stream(pub *mut c_void);
+pub struct Stream(pub(crate) *mut c_void);
 
 unsafe impl Send for Stream {}
 

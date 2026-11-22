@@ -16,7 +16,7 @@ pub mod split;
 pub mod tp;
 pub mod tp_cache;
 
-use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Ev, Graph, Pinned};
+use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result};
 use crate::gemma4::{attn_smem, fa_smem, pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS, FA512B_SMEM, PART_WARPS, SPLITS};
 use crate::kern::{norm_threads, Kern};
@@ -1279,7 +1279,7 @@ impl Dyn {
         self.pending = None;
         self.top.ask = None;
         for b in &self.states {
-            memset_async(b.ptr, 0, b.bytes, self.dev.stream)?;
+            b.fill_async(0, self.dev.stream)?;
         }
         self.dev.sync()
     }

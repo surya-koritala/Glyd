@@ -1568,7 +1568,7 @@ mod bench {
             let t0 = Instant::now();
             if let Some(b) = &scrap {
                 for _ in 0..(busy / 0.75).ceil() as usize {
-                    memset_async(b.ptr, 1, b.bytes, dev.stream)?;
+                    b.fill_async(1, dev.stream)?;
                 }
             }
             // SAFETY: live buffers of the sizes the call reads and writes, host bytes that outlive it.

@@ -83,7 +83,7 @@ fn read_bf16(e: &EngineQx, b: &crate::dev::Buf, n: usize) -> Result<Vec<f32>> {
     Ok(widen(&v))
 }
 
-fn put<T: Copy>(e: &EngineQx, b: &crate::dev::Buf, v: &[T]) -> Result<()> {
+fn put<T: crate::dev::Plain>(e: &EngineQx, b: &crate::dev::Buf, v: &[T]) -> Result<()> {
     e.dev.sync()?;
     b.write(0, v)
 }
@@ -636,11 +636,13 @@ pub fn bench(a: &Args) -> Result<()> {
                 }
                 Ok(())
             })?;
-            gr.launch(s)?;
+            // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+            unsafe { gr.launch(s) }?;
             e0.record(s)?;
             let k = reps.div_ceil(20);
             for _ in 0..k {
-                gr.launch(s)?;
+                // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+                unsafe { gr.launch(s) }?;
             }
             e1.record(s)?;
             dev.sync()?;
@@ -766,11 +768,13 @@ pub fn bench(a: &Args) -> Result<()> {
         };
         call(0)?;
         let gr = dev.capture(|| (0..40).try_for_each(call))?;
-        gr.launch(s)?;
+        // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+        unsafe { gr.launch(s) }?;
         e0.record(s)?;
         let k = reps.div_ceil(40);
         for _ in 0..k {
-            gr.launch(s)?;
+            // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+            unsafe { gr.launch(s) }?;
         }
         e1.record(s)?;
         dev.sync()?;
