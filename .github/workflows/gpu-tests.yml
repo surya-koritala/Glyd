@@ -61,6 +61,7 @@ jobs:
           "$E" --version
           "$E" bandwidth
           "$E" topkcheck
+          "$E" kvshapes
           "$E" kcheck35
       # (its layers are toy ones: tens of megabytes of weights and scratch a case. The GPU's memory is sampled while it runs, the peak printed, and a peak of more than 12,000 MiB of the card's 16,376 fails it:
       # the margin a 16 GB card needs for the driver and the next step)
