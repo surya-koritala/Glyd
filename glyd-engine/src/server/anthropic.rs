@@ -3,7 +3,8 @@
 //! its refusals, its grammar, its tools, its window), and the reply is written as a message, or as the events of a stream: `message_start`, `ping`, the content blocks (`text`, `tool_use`, `thinking`) with their
 //! `content_block_start`, `content_block_delta` and `content_block_stop`, `message_delta` and `message_stop`. Errors are Anthropic's: `{"type": "error", "error": {"type", "message"}}`.
 //!
-//! Prompt caching (`cache_control`) is read and has no effect (P5e); the usage says no token was cached. A thinking block carries no signature (this server cannot make one): it is empty.
+//! Prompt caching (`cache_control`) is read and has no effect (P5e): what a request finds of its prompt in the cache it finds whatever it marks, and the usage says how many tokens
+//! that was (`cache_read_input_tokens`, with `input_tokens` the rest; in a stream, in `message_delta`, since `message_start` is sent before the engine has looked). A thinking block carries no signature (this server cannot make one): it is empty.
 
 use super::*;
 use tools::obj;
@@ -278,8 +279,11 @@ fn stop_reason(done: &Done, called: bool) -> &'static str {
     }
 }
 
-fn usage(input: usize, output: usize) -> String {
-    format!("{{\"input_tokens\":{input},\"output_tokens\":{output},\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}")
+/// A usage object as Anthropic's API has it: `cached` of the prompt's `input` tokens were found in the cache and not run again (`cache_read_input_tokens`), and
+/// `input_tokens` is the rest. Nothing is ever written to a cache at a price (`cache_creation_input_tokens` 0).
+fn usage(input: usize, output: usize, cached: usize) -> String {
+    let cached = cached.min(input);
+    format!("{{\"input_tokens\":{},\"output_tokens\":{output},\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":{cached}}}", input - cached)
 }
 
 /// `max_tokens` as Anthropic's API wants it: there, and a whole number of at least 1.
@@ -315,7 +319,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
         Ok(st) => st,
         Err((code, m)) => return fail(s, cors, code, &m),
     };
-    let abort = h.abort.clone();
+    let (abort, found) = (h.abort.clone(), h.cached.clone());
     let mid = format!("msg_{:016x}{id:08x}", fresh_seed());
     let (name, n_in) = (jstr(&sh.name), prompt_tokens);
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
@@ -325,7 +329,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
         if api.stream {
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
             let mut ok = s.write_all(head.as_bytes()).is_ok()
-                && event(s, "message_start", &format!("\"message\":{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{}}}", usage(n_in, 1)))
+                && event(s, "message_start", &format!("\"message\":{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{}}}", usage(n_in, 1, 0)))
                 && event(s, "ping", "");
             let mut blocks = Blocks::default();
             // (a reply to a request for thinking begins with its thinking block, as Anthropic's API has it, empty where the model wrote none: a client reads it
@@ -345,10 +349,11 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                                 s,
                                 "message_delta",
                                 &format!(
-                                    "\"delta\":{{\"stop_reason\":\"{}\",\"stop_sequence\":{}}},\"usage\":{{\"input_tokens\":{n_in},\"output_tokens\":{}}}",
+                                    // (the usage is the whole message's, as the API's is: what message_start could not know, the prompt tokens found in the cache, is here)
+                                    "\"delta\":{{\"stop_reason\":\"{}\",\"stop_sequence\":{}}},\"usage\":{}",
                                     stop_reason(&done, blocks.called),
                                     done.stop.as_deref().map_or("null".to_string(), jstr),
-                                    done.tokens
+                                    usage(n_in, done.tokens, found.load(Ordering::Relaxed) as usize)
                                 ),
                             )
                             && event(s, "message_stop", "")
@@ -396,7 +401,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                         content.join(","),
                         stop_reason(&done, !done.calls.is_empty()),
                         done.stop.as_deref().map_or("null".to_string(), jstr),
-                        usage(n_in, done.tokens)
+                        usage(n_in, done.tokens, found.load(Ordering::Relaxed) as usize)
                     );
                     return respond_with(s, 200, "application/json", cors, body.as_bytes());
                 }
@@ -520,6 +525,33 @@ mod tests {
                 && anthropic_body(404, "no").contains("not_found_error")
                 && anthropic_body(503, "no").contains("overloaded_error")
         );
+    }
+
+    /// P5e: a prompt the server has run before is found in its cache, and the usage says so as Anthropic's does: `cache_read_input_tokens` the tokens found, `input_tokens`
+    /// the rest, the two together the prompt. Whole and streamed (in a stream, in `message_delta`: `message_start` goes out before the engine has looked).
+    #[test]
+    fn the_usage_counts_the_prompt_tokens_found_in_the_cache() {
+        let addr = serve_script("the answer");
+        let q = |stream: bool| {
+            format!(r#"{{"model":"claude-x","max_tokens":20,"temperature":0,"stream":{stream},"messages":[{{"role":"user","content":"LONG"}}]}}"#).replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills")
+        };
+        let usage = |d: &Value, k: &str| at(d, &["usage", k]).as_u64().unwrap();
+        let first = parse(&ask(addr, &q(false)).1);
+        assert_eq!((usage(&first, "cache_read_input_tokens"), usage(&first, "cache_creation_input_tokens")), (0, 0));
+        let prompt = usage(&first, "input_tokens");
+        // again: the same prompt
+        let second = parse(&ask(addr, &q(false)).1);
+        let found = usage(&second, "cache_read_input_tokens");
+        assert!(found >= 32 && found < prompt && found % crate::kv::PAGE as u64 == 0, "{found} of {prompt}");
+        assert_eq!(usage(&second, "input_tokens") + found, prompt);
+        assert_eq!(usage(&second, "output_tokens"), usage(&first, "output_tokens"));
+        // streamed: message_start has the prompt, message_delta what was found
+        let (st, body) = ask(addr, &q(true));
+        assert_eq!(st, 200, "{body}");
+        let evs: Vec<Value> = body.lines().filter_map(|l| l.strip_prefix("data: ")).map(parse).collect();
+        let delta = evs.iter().find(|e| at(e, &["type"]).as_str() == Some("message_delta")).expect("message_delta");
+        assert_eq!((usage(delta, "cache_read_input_tokens"), usage(delta, "input_tokens")), (found, prompt - found), "{body}");
+        assert_eq!(at(&evs[0], &["message", "usage", "input_tokens"]).as_u64(), Some(prompt));
     }
 
     /// A message as the SDK parses it: the thinking block only where the request asked for it, the answer's text, the usage, a stop reason by how it ended, and `stop_sequence` the string that did it.

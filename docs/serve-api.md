@@ -115,7 +115,8 @@ A method a path does not take is 405, a path there is not 404.
 Every error is OpenAI's: `{"error": {"message", "type", "param", "code"}}` with the status a client keys on. `type` is `invalid_request_error` (400, 404, 405, 413),
 `authentication_error` (401), `permission_error` (403), `rate_limit_error` (429) or `server_error` (5xx); `code` is null except `invalid_api_key` (401) and
 `context_length_exceeded` (a prompt, or a prompt and its length, past the context). `stream_options.include_usage` puts `"usage": null` in every chunk of a stream and the usage in a
-last chunk with no choices, as OpenAI's does.
+last chunk with no choices, as OpenAI's does. Where the server found some of a prompt's tokens in its cache (a conversation's earlier turns, a prompt it has run before), the usage has
+`prompt_tokens_details.cached_tokens`: they are among `prompt_tokens`, and were not run again. The Responses API has them as `input_tokens_details.cached_tokens`.
 
 ## Connecting tools
 
@@ -155,8 +156,8 @@ keeps no conversations: `previous_response_id`, `conversation`, `background`, `i
 Anthropic's Messages API for the Anthropic SDKs and Claude Code (`ANTHROPIC_BASE_URL=http://127.0.0.1:8238 ANTHROPIC_API_KEY=any`; with a server key, `x-api-key: KEY` or a bearer token). The request is read as the chat
 request it is the same as and run as any chat request is. Read: `system` (a string or blocks), `messages` (`text`, `image`, `tool_use`, `tool_result` blocks; `thinking` blocks of an earlier turn are skipped),
 `tools` (custom tools; the ones Anthropic runs, `web_search` and the like, are left out), `tool_choice` (`auto`, `any`, `tool`, `none`, `disable_parallel_tool_use`), `thinking` (`enabled` shows the model's thinking in
-a `thinking` block with an empty signature, which this server cannot make; else it is off), `stop_sequences`, `max_tokens` (required), `temperature`, `top_p`, `top_k`, `stream`; `cache_control` is read and has no effect, and the
-usage says no token was cached. A stream is `message_start`, `ping`, each block's `content_block_start`, `content_block_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and
+a `thinking` block with an empty signature, which this server cannot make; else it is off), `stop_sequences`, `max_tokens` (required), `temperature`, `top_p`, `top_k`, `stream`; `cache_control` is read and has no effect: a request finds what the
+server holds of its prompt whatever it marks, and the usage says how many tokens that was (`cache_read_input_tokens`, with `input_tokens` the rest; in a stream, in `message_delta`). A stream is `message_start`, `ping`, each block's `content_block_start`, `content_block_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and
 `content_block_stop`, `message_delta` (the `stop_reason`: `end_turn`, `max_tokens`, `stop_sequence` with the string, `tool_use`; the usage) and `message_stop`, with a `ping` while a request waits for its turn. Errors are
 `{"type": "error", "error": {"type", "message"}}` (`invalid_request_error`, `authentication_error`, `not_found_error`, `api_error`). `/v1/models` carries `type`, `display_name` and `created_at` beside OpenAI's fields.
 

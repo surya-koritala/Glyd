@@ -77,7 +77,14 @@ pub fn text_logprobs(tok: &Tok, lps: &[Lp], as_ids: bool, offset: &mut usize) ->
 
 /// A usage object: the prompt counted once, the tokens of every choice added.
 pub fn usage(prompt: usize, completion: usize) -> String {
-    format!("{{\"prompt_tokens\":{prompt},\"completion_tokens\":{completion},\"total_tokens\":{}}}", prompt + completion)
+    usage_with(prompt, completion, 0)
+}
+
+/// `usage`, with the prompt tokens that were found in the cache and not run again where there were any (`prompt_tokens_details.cached_tokens`, as OpenAI's API has it: they are
+/// among `prompt_tokens`).
+pub fn usage_with(prompt: usize, completion: usize, cached: usize) -> String {
+    let details = if cached > 0 { format!(",\"prompt_tokens_details\":{{\"cached_tokens\":{cached}}}") } else { String::new() };
+    format!("{{\"prompt_tokens\":{prompt},\"completion_tokens\":{completion},\"total_tokens\":{}{details}}}", prompt + completion)
 }
 
 #[cfg(test)]
@@ -101,6 +108,8 @@ mod tests {
         );
         assert_eq!(at, 3);
         assert_eq!(usage(10, 5), "{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}");
+        assert_eq!(usage_with(10, 5, 0), usage(10, 5));
+        assert_eq!(usage_with(10, 5, 8), "{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15,\"prompt_tokens_details\":{\"cached_tokens\":8}}");
         assert!(glyd_gpu::json::parse(&got).is_ok() && glyd_gpu::json::parse(want).is_ok());
     }
 }

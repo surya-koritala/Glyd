@@ -281,7 +281,7 @@ impl Ctx {
     }
 
     /// The response object: its `status` (`in_progress`, `completed`, `incomplete`), its output items (JSON each), and its usage once it is known.
-    fn response(&self, status: &str, reason: Option<&str>, output: &[String], usage: Option<(usize, usize)>, error: Option<&str>) -> String {
+    fn response(&self, status: &str, reason: Option<&str>, output: &[String], usage: Option<(usize, usize, usize)>, error: Option<&str>) -> String {
         let mut f = vec![
             format!("\"id\":{}", jstr(&self.id)),
             "\"object\":\"response\"".to_string(),
@@ -302,8 +302,9 @@ impl Ctx {
         }
         f.push(format!(
             "\"usage\":{}",
-            usage.map_or("null".to_string(), |(i, o)| format!(
-                "{{\"input_tokens\":{i},\"input_tokens_details\":{{\"cached_tokens\":0}},\"output_tokens\":{o},\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":{}}}",
+            // (input, output, and the input tokens found in the cache, which are among the input's)
+            usage.map_or("null".to_string(), |(i, o, cached)| format!(
+                "{{\"input_tokens\":{i},\"input_tokens_details\":{{\"cached_tokens\":{cached}}},\"output_tokens\":{o},\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":{}}}",
                 i + o
             ))
         ));
@@ -543,6 +544,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
         Ok(st) => st,
         Err((code, m)) => return fail(s, cors, code, &m),
     };
+    let found = h.cached.clone();
     let abort = h.abort.clone();
     let ctx = Ctx::new(&v, &sh.name, id);
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
@@ -569,7 +571,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                         let (status, reason) =
                             status_of(if ev.done.iter().any(|i| i.contains("\"type\":\"function_call\"")) { "tool_calls" } else { done.finish_reason });
                         let kind = if status == "completed" { "response.completed" } else { "response.incomplete" };
-                        let body = ctx.response(status, reason, &ev.done, Some((prompt_tokens, done.tokens)), None);
+                        let body = ctx.response(status, reason, &ev.done, Some((prompt_tokens, done.tokens, found.load(Ordering::Relaxed) as usize)), None);
                         let _ = fine && ev.raw(kind, "response", &body) && ev.s.write_all(b"0\r\n\r\n").is_ok();
                         return;
                     }
@@ -606,7 +608,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                         output.push(call_item(&item_id("fc"), &tools::new_id(), &c.name, &c.arguments, "completed"));
                     }
                     let (status, reason) = status_of(if done.calls.is_empty() { done.finish_reason } else { "tool_calls" });
-                    let body = ctx.response(status, reason, &output, Some((prompt_tokens, done.tokens)), None);
+                    let body = ctx.response(status, reason, &output, Some((prompt_tokens, done.tokens, found.load(Ordering::Relaxed) as usize)), None);
                     return respond_with(s, 200, "application/json", cors, body.as_bytes());
                 }
                 Ok(Out::Failed(e, server)) => return fail(s, cors, if server { 500 } else { 400 }, &e),
@@ -624,6 +626,23 @@ mod tests {
     /// The JSON of each event of a stream (its `data:` line).
     fn events(body: &str) -> Vec<Value> {
         body.lines().filter_map(|l| l.strip_prefix("data: ")).map(|d| json::parse(d).unwrap()).collect()
+    }
+
+    /// P5e: the input tokens a response found in the cache are in its usage (`input_tokens_details.cached_tokens`, among `input_tokens`): none the first time a prompt is seen.
+    #[test]
+    fn the_usage_counts_the_input_tokens_found_in_the_cache() {
+        let addr = serve_script("the answer");
+        let q = r#"{"model":"m","max_output_tokens":20,"temperature":0,"input":"LONG"}"#.replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills");
+        let cached = |body: &str| {
+            let d = parse(body);
+            (at(&d, &["usage", "input_tokens"]).as_u64().unwrap(), at(&d, &["usage", "input_tokens_details", "cached_tokens"]).as_u64().unwrap())
+        };
+        let (st, first) = call(addr, "/v1/responses", &q);
+        assert_eq!(st, 200, "{first}");
+        let (input, none) = cached(&first);
+        assert_eq!(none, 0);
+        let (again, found) = cached(&call(addr, "/v1/responses", &q).1);
+        assert!(again == input && found >= 32 && found < input && found % crate::kv::PAGE as u64 == 0, "{found} of {input}");
     }
 
     const CALL: &str = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>";

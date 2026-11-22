@@ -1559,6 +1559,7 @@ pub fn two_models_check(a: &crate::args::Args) -> Result<()> {
             out: tx,
             abort: Arc::new(AtomicBool::new(false)),
             resumed: Default::default(),
+            cached: Default::default(),
             images: Vec::new(),
         });
         rx
@@ -2012,6 +2013,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
                 out: tx,
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
+                cached: Default::default(),
                 images: Vec::new(),
             });
             while !sched.idle() {
@@ -2129,6 +2131,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
                     out: tx,
                     abort: Arc::new(AtomicBool::new(false)),
                     resumed: Default::default(),
+                    cached: Default::default(),
                     images: Vec::new(),
                 });
                 rx

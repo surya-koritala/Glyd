@@ -19,7 +19,7 @@ use glyd_gpu::json::{self, Value};
 use std::io::{BufRead, Read, Write};
 #[cfg(test)]
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1293,6 +1293,11 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
     Ok((text, in_thinking, prefix, urls))
 }
 
+/// The prompt tokens a request's sequences found in the cache (`Handle::cached` of each prompt's first choice), read when they have ended.
+fn cached_tokens(found: &[Arc<AtomicU32>]) -> usize {
+    found.iter().map(|c| c.load(Ordering::Relaxed) as usize).sum()
+}
+
 /// A choice as a reply that is not streamed has it.
 #[derive(Default)]
 struct Whole {
@@ -1567,6 +1572,8 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
     let (first_tx, first_rx) = std::sync::mpsc::channel::<()>();
     let mut aborts: Vec<Arc<AtomicBool>> = Vec::new();
+    // (each prompt's first choice: what it found in the cache is what the request's prompt tokens did not cost; the other choices of a prompt find the first one's)
+    let mut found: Vec<Arc<AtomicU32>> = Vec::new();
     let mut failure: Option<String> = None;
     // (whether the failure is the server's doing: answered 500, where a request's own is 400)
     let mut server_fault = false;
@@ -1618,6 +1625,9 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                     }
                 };
                 aborts.push(h.abort.clone());
+                if i == 0 {
+                    found.push(h.cached.clone());
+                }
                 track_seq(&ident, &h.abort);
                 let (c, o, whole) = (Choice::new(cfg.clone()), out_tx.clone(), !api.stream);
                 let announce = (i == 0 && api.n > 1).then(|| first_tx.clone());
@@ -1718,7 +1728,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
             start_stream(s, &head, chat, &api, &req.cors);
         }
         if api.include_usage {
-            let _ = sse(s, &format!("{head},\"choices\":[],\"usage\":{}}}", wire::usage(prompt_tokens, completion_tokens)));
+            let _ = sse(s, &format!("{head},\"choices\":[],\"usage\":{}}}", wire::usage_with(prompt_tokens, completion_tokens, cached_tokens(&found))));
         }
         let _ = sse(s, "[DONE]");
         let _ = s.write_all(b"0\r\n\r\n");
@@ -1756,7 +1766,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
         "{{\"id\":\"{ident}\",\"object\":\"{kind}\",\"created\":{created},\"model\":{},\"choices\":[{}],\"usage\":{}}}",
         jstr(name),
         choices.join(","),
-        wire::usage(prompt_tokens, completion_tokens)
+        wire::usage_with(prompt_tokens, completion_tokens, cached_tokens(&found))
     );
     respond_with(s, 200, "application/json", &req.cors, body.as_bytes());
 }
@@ -2328,6 +2338,8 @@ pub struct Remote {
 pub struct Handle {
     pub events: Receiver<Ev>,
     pub abort: Arc<AtomicBool>,
+    /// The prompt tokens the scheduler found in its cache as it let the sequence in (`sched::Submit::cached`): read for the request's usage once the sequence has ended.
+    pub cached: Arc<AtomicU32>,
 }
 
 impl Remote {
@@ -2345,11 +2357,19 @@ impl Remote {
             return err(format!("{} tokens, where the context holds {}", prompt.len(), self.window));
         }
         let (out, events) = std::sync::mpsc::channel();
-        let abort = Arc::new(AtomicBool::new(false));
+        let (abort, cached) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
         self.tx
-            .send(Job::Seq(Submit { prompt: prompt.to_vec(), reply: o.clone(), out, abort: abort.clone(), resumed: Default::default(), images }))
+            .send(Job::Seq(Submit {
+                prompt: prompt.to_vec(),
+                reply: o.clone(),
+                out,
+                abort: abort.clone(),
+                resumed: Default::default(),
+                cached: cached.clone(),
+                images,
+            }))
             .map_err(|_| Error("the engine is not running".into()))?;
-        Ok(Handle { events, abort })
+        Ok(Handle { events, abort, cached })
     }
 }
 
@@ -2802,6 +2822,33 @@ pub(crate) mod tests {
         assert_eq!(request_of(&v, 4096, &Params::default()).params.logit_bias, vec![(15, 5.0), (7, -100.0)]);
         assert_eq!(invalid(&v, true, 100), None);
         assert!(invalid(&json::parse(r#"{"logit_bias":{"500":5}}"#).unwrap(), true, 100).unwrap().contains("out-of-vocab"));
+    }
+
+    /// P5e: the prompt tokens a completion found in the cache are in its usage as OpenAI's API has them (`prompt_tokens_details.cached_tokens`, among `prompt_tokens`); the
+    /// first time a prompt is seen there are none and the usage is as it was. Whole and streamed.
+    #[test]
+    fn the_usage_counts_the_prompt_tokens_found_in_the_cache() {
+        let addr = serve_script("the answer");
+        let q = |stream: bool| {
+            format!(r#"{{"model":"m","max_tokens":20,"temperature":0,"stream":{stream},"stream_options":{}{},"messages":[{{"role":"user","content":"LONG"}}]}}"#, if stream { r#"{"include_usage":true}"# } else { "null" }, "")
+                .replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills")
+        };
+        let (st, first) = call(addr, "/v1/chat/completions", &q(false));
+        assert_eq!(st, 200, "{first}");
+        let d = json::parse(&first).unwrap();
+        let prompt = at(&d, &["usage", "prompt_tokens"]).as_u64().unwrap();
+        assert!(!first.contains("prompt_tokens_details"), "{first}");
+        let d = json::parse(&call(addr, "/v1/chat/completions", &q(false)).1).unwrap();
+        let found = at(&d, &["usage", "prompt_tokens_details", "cached_tokens"]).as_u64().unwrap();
+        assert!(
+            at(&d, &["usage", "prompt_tokens"]).as_u64() == Some(prompt) && found >= 32 && found < prompt && found % crate::kv::PAGE as u64 == 0,
+            "{found} of {prompt}"
+        );
+        // streamed, with the usage asked for: the last chunk's
+        let (st, body) = call(addr, "/v1/chat/completions", &q(true));
+        assert_eq!(st, 200, "{body}");
+        let last = body.lines().filter_map(|l| l.strip_prefix("data: ")).rfind(|d| d.contains("\"usage\":{")).expect("a chunk with the usage");
+        assert_eq!(at(&json::parse(last).unwrap(), &["usage", "prompt_tokens_details", "cached_tokens"]).as_u64(), Some(found), "{body}");
     }
 
     #[test]
@@ -5699,6 +5746,7 @@ pub(crate) mod tests {
                 out,
                 abort: Arc::new(AtomicBool::new(abort)),
                 resumed: Default::default(),
+                cached: Default::default(),
                 images: Vec::new(),
             }))
             .unwrap();
