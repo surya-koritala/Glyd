@@ -287,7 +287,9 @@ pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
     }
     let e = n_mats;
     let lm = if st.last && !c.tie { e + 1 } else { e };
-    Ok(glm_desc(hid, qd, heads, c.inter, c.vocab, c.eps, c.max_pos, c.eos.clone(), (c.hc.eps, c.hc.iters as i32), layers, states, e, lm))
+    // (the dense MLP's width where a layer has one, else none: as the description lowered from the layer kinds sizes its slots)
+    let inter = if (0..c.layers).any(|l| !c.moe[l]) { c.inter } else { 0 };
+    Ok(glm_desc(hid, qd, heads, inter, c.vocab, c.eps, c.max_pos, c.eos.clone(), (c.hc.eps, c.hc.iters as i32), layers, states, e, lm))
 }
 
 /// A Kimi delta layer's operations: its matrices from `m0`, its small tensors from `s0`, its convolution's and recurrence's states.
