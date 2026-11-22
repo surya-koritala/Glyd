@@ -13,6 +13,9 @@
 //! Spark: the keys and values past the place are written over); from the prompt's end, where the states were copied aside (`mark`), where it has recurrent states (the Qwen3.5 layout);
 //! not at all where it has a latent cache (Kimi-K3, GLM-5.3-Flash). `glyd-engine keepcheck` compares each against a sequence that never ended, bit for bit.
 //!
+//! A request that begins as another sequence does, kept or running, shares that start (`share`): it names the other's full blocks (each then held by both, and written by
+//! neither: `Pages::share`) and runs only the rest. A model with recurrent states shares at the other's mark, with the states copied; one with a latent cache shares nothing.
+//!
 //! What a step of several sequences supports is decided per description (`Dyn::batchable`): every operation must be one that acts row by row, or one of the cache operations below that knows where a
 //! sequence's rows begin. A description with another runs its sequences one pass each, concurrently but not batched.
 
@@ -244,6 +247,12 @@ impl Dyn {
     pub(crate) fn rows_exact(&self) -> bool {
         let d = &self.big.d;
         !d.layers.iter().flatten().any(|op| matches!(op, Op::MuseMoe { .. } | Op::Moe { .. } | Op::V4Moe { .. }))
+    }
+
+    /// The least window of the layers whose attention slides (none: every layer reads the whole sequence).
+    #[cfg(feature = "dev")]
+    pub(crate) fn least_window(&self) -> Option<usize> {
+        self.big.d.rings.iter().map(|r| r.window).filter(|&w| w > 0 && w != usize::MAX).min()
     }
 
     /// Whether a kept sequence can be cut back before its end (`ModelStep::resume`): no recurrent state and no latent cache, which are what they are after its last token.
@@ -614,6 +623,74 @@ impl ModelStep for Dyn {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Self::batch_prefill()
     }
+    /// Any start's full blocks, where the keys and values are paged and nothing of a sequence is a state.
+    fn shares_starts(&self) -> bool {
+        self.paged.is_some() && self.cuts()
+    }
+    /// A start shared with an empty sequence (`Pages::share`; paged keys and values only). With no recurrent state and no latent cache: the full blocks of the first `upto`
+    /// tokens. With recurrent states kept at a mark: `from`'s mark, where it is within `upto`: the full blocks before it shared, the block the mark is in copied to one of
+    /// `to`'s own (its tokens before the mark are `from`'s; what `to` writes from the mark on is its own), and the states as they were at the mark copied to `to`'s, and to
+    /// its mark. A latent cache: nothing.
+    fn share(&mut self, from: i32, to: i32, upto: usize) -> Result<usize> {
+        let (f, t) = (from as usize, to as usize);
+        if self.paged.is_none() || f == t || self.seq_n(t) != 0 || upto > self.seq_n(f) {
+            return Ok(0);
+        }
+        let chunk = self.chunk;
+        let to_n = if self.cuts() {
+            self.paged.as_mut().expect("paged").pages.share(f, t, upto, chunk)
+        } else {
+            let m = match self.snap_n.get(f).copied() {
+                Some(m) if m > 0 && m <= upto && self.can_mark() && !self.snaps.is_empty() => m,
+                _ => return Ok(0),
+            };
+            let pg = self.paged.as_mut().expect("paged");
+            if !pg.pages.holds(f, m, chunk) {
+                return Ok(0);
+            }
+            pg.pages.share(f, t, m, chunk);
+            if !m.is_multiple_of(BLOCK) {
+                // the block the mark is in: one of `to`'s own, with `from`'s bytes in every ring
+                if !pg.pages.grow(t, m) {
+                    pg.pages.release(t);
+                    return Ok(0);
+                }
+                let part = m / BLOCK;
+                let blocks: Vec<(usize, u32, u32)> =
+                    (0..pg.group.len()).map(|r| (r, pg.pages.table(f, pg.group[r])[part], pg.pages.table(t, pg.group[r])[part])).collect();
+                for (r, src, dst) in blocks {
+                    let ring = &self.big.d.rings[r];
+                    let bytes = BLOCK * ring.nk * ring.d * 2;
+                    if self.ring_cap[r] == 0 || src == 0 || dst == 0 {
+                        continue;
+                    }
+                    for base in [self.kc.ptr, self.vc.ptr] {
+                        let at = base + self.ring_off[r];
+                        // SAFETY: two blocks of the ring's pool, a block's bytes each.
+                        unsafe { copy_d2d_async(at + (dst as usize * bytes) as u64, at + (src as usize * bytes) as u64, bytes, self.dev.stream)? };
+                    }
+                }
+            }
+            // the states as they were at the mark: `to`'s now, and at its own mark
+            let states = self.part_of(t, 0, 0, 0)?.states;
+            for (i, &dst) in states.iter().enumerate() {
+                let (src, bytes) = (self.snaps[f][i].ptr, self.states[i].bytes);
+                // SAFETY: a state's copy, the other sequence's state and its copy's buffer, of the state's bytes.
+                unsafe {
+                    copy_d2d_async(dst, src, bytes, self.dev.stream)?;
+                    copy_d2d_async(self.snaps[t][i].ptr, src, bytes, self.dev.stream)?;
+                }
+            }
+            self.snap_n[t] = m;
+            m
+        };
+        if to_n > 0 {
+            self.set_seq_n(t, to_n);
+            self.dev.sync()?;
+            self.upload_tables(t)?;
+        }
+        Ok(to_n)
+    }
     /// The states of the sequence in `slot`, which now holds `n` tokens, copied aside (a model that keeps marks: `serve_rows`): a kept sequence can go on from here.
     fn mark(&mut self, slot: i32, n: usize) -> Result<()> {
         let s = slot as usize;
@@ -630,7 +707,8 @@ impl ModelStep for Dyn {
     }
     /// The whole of what the slot holds goes on as it is. Before its end: at `upto` where the description has no recurrent state and no latent cache (those are what they are after
     /// the sequence's last token); else at the sequence's mark, where its states were copied aside, if that is within `upto`. Either way the keys and values a step there reads must
-    /// still be held: paged, the blocks (`Pages::shrink`); a ring of its own, one that has not gone round. Otherwise the slot is emptied.
+    /// still be held: paged, the blocks (`Pages::cut_len`; a cut into a block another sequence holds too is to that block's start, which a state at a mark cannot follow);
+    /// a ring of its own, one that has not gone round. Where it cannot go on from any place nothing changes and the answer is 0.
     fn resume(&mut self, slot: i32, upto: usize) -> Result<usize> {
         let s = slot as usize;
         let n = self.seq_n(s);
@@ -644,14 +722,17 @@ impl ModelStep for Dyn {
             _ => 0,
         };
         let chunk = self.chunk;
-        let held = to > 0
-            && match &mut self.paged {
-                Some(pg) => pg.pages.shrink(s, to, chunk),
-                None => self.ring_cap.iter().all(|&cap| cap == 0 || n <= cap),
-            };
-        if !held {
-            ModelStep::release(self, &[slot])?;
+        let kept = match (&self.paged, to) {
+            (_, 0) => 0,
+            (Some(pg), _) => pg.pages.cut_len(s, to, chunk),
+            (None, _) if self.ring_cap.iter().all(|&cap| cap == 0 || n <= cap) => to,
+            (None, _) => 0,
+        };
+        if kept == 0 || (kept != to && !self.cuts()) {
             return Ok(0);
+        }
+        if let Some(pg) = &mut self.paged {
+            pg.pages.shrink(s, kept, chunk);
         }
         if !self.cuts() {
             let states = self.part_of(s, 0, 0, 0)?.states;
@@ -660,10 +741,10 @@ impl ModelStep for Dyn {
                 unsafe { copy_d2d_async(dst, self.snaps[s][i].ptr, self.states[i].bytes, self.dev.stream)? };
             }
         }
-        self.set_seq_n(s, to);
+        self.set_seq_n(s, kept);
         self.dev.sync()?;
         self.upload_tables(s)?;
-        Ok(to)
+        Ok(kept)
     }
     fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
         let Some(pg) = &mut self.paged else { return Ok(true) };

@@ -1,6 +1,6 @@
 //! `glyd bench`: one benchmark harness (R8). It puts fixed prompts at fixed concurrencies on an OpenAI-compatible server over HTTP and writes the speed as JSON, `glyd-bench/1` (docs/bench.md).
 //!
-//!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full|arrive|chat | --loads short:1,4k:8,4k+250ms:8,1k*4:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
+//!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full|arrive|chat|shared | --loads short:1,4k:8,4k+250ms:8,1k*4:8,same4k+250ms:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
 //!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P] [--no-draft] [--eval gsm8k[:N]] [--quality [--quality-ref RESULT.json]]
 //!       starts `serve MODEL` of this program (or measures the server at --against, whatever program it is: vLLM, llama.cpp, SGLang) and measures each load: per load, one warm-up round and `runs` rounds
 //!       of N simultaneous requests, every prompt different from its first token on (no prefix to share). Time to first token, inter-token latency, decode tokens/s a user and in all, prefill tokens/s,
@@ -52,9 +52,9 @@ impl Rng {
     }
 }
 
-/// The tokens a prompt kind is about (None: a short question).
+/// The tokens a prompt kind is about (None: a short question). `same4k` is the 4k prompt whose notes are the same in every request (`prompt`).
 fn kind_tokens(kind: &str) -> Result<Option<usize>> {
-    Ok(match kind {
+    Ok(match kind.strip_prefix("same").filter(|k| *k != "short").unwrap_or(kind) {
         "short" => None,
         "1k" => Some(1024),
         "2k" => Some(2048),
@@ -62,7 +62,7 @@ fn kind_tokens(kind: &str) -> Result<Option<usize>> {
         "8k" => Some(8192),
         "16k" => Some(16384),
         "32k" => Some(32768),
-        k => return err(format!("prompt {k}: short, 1k, 2k, 4k, 8k, 16k or 32k")),
+        _ => return err(format!("prompt {kind}: short, 1k, 2k, 4k, 8k, 16k or 32k, or same1k to same32k")),
     })
 }
 
@@ -92,14 +92,22 @@ fn kind_parts(kind: &str) -> Result<Kind<'_>> {
 }
 
 /// A prompt of the kind, different from every other seed's from the first token on. The long ones are random words (about 1.09 tokens a word) and a question that ignores them.
+/// A `same` kind (`same4k`): the notes are the same in every request and the question, which is last, is the seed's own: requests that begin alike and end apart, as those
+/// of an application with one long system prompt do (what a server shares of a start it has run shows in their first token).
 pub fn prompt(kind: &str, seed: u64) -> Result<String> {
+    let same = kind.starts_with("same");
     Ok(match kind_tokens(kind)? {
         None => format!("[{seed}] Explain {}, in detail, in about 300 words.", TOPICS[seed as usize % TOPICS.len()]),
         Some(n) => {
             let words: Vec<&str> = WORDS.split_whitespace().collect();
-            let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x2545_F491_4F6C_DD1D) | 1);
+            let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ (if same { n as u64 } else { seed }).wrapping_mul(0x2545_F491_4F6C_DD1D) | 1);
             let body: Vec<&str> = (0..((n.saturating_sub(50)) as f64 / 1.09) as usize).map(|_| words[(r.next() % words.len() as u64) as usize]).collect();
-            format!("[{seed}] Here are some notes:\n{}\n\nIgnoring the notes, write a long, detailed essay about the history of bridges.", body.join(" "))
+            if same {
+                let topic = TOPICS[seed as usize % TOPICS.len()];
+                format!("Here are some notes:\n{}\n\n[{seed}] Ignoring the notes, explain {topic}, in detail, in about 300 words.", body.join(" "))
+            } else {
+                format!("[{seed}] Here are some notes:\n{}\n\nIgnoring the notes, write a long, detailed essay about the history of bridges.", body.join(" "))
+            }
         }
     })
 }
@@ -118,7 +126,9 @@ pub fn suite(name: &str) -> Result<Vec<(String, usize)>> {
         "arrive" => mk(&["short+100ms", "1k+250ms", "4k+500ms"], &[8]),
         // conversations: 4 turns each, alone and 8 at once (a prompt cache's work: the later turns resend what the server has seen)
         "chat" => mk(&["1k*4", "4k*4"], &[1, 8]),
-        s => return err(format!("--suite {s}: gate, bar, full, arrive or chat")),
+        // requests that begin alike (one long start, each its own question), 8 of them 250 ms apart: what a server shares of a start it has run
+        "shared" => mk(&["same1k+250ms", "same4k+250ms"], &[8]),
+        s => return err(format!("--suite {s}: gate, bar, full, arrive, chat or shared")),
     })
 }
 
@@ -642,14 +652,16 @@ pub fn measure(a: &Args) -> Result<()> {
         if !later.is_empty() {
             // (a conversation's later turns, and the share of the prompt tokens the server found in its cache: 0 where every turn is run from its first token)
             cell["ttft_later_s"] = stats(&later);
+        }
+        if !later.is_empty() || kind.starts_with("same") {
             cell["prefix_hit_rate"] = json!(hit_rate.map(|h| (h * 10000.0).round() / 10000.0));
             if !quiet {
-                eprintln!(
-                    "{:<12} later turns: first token {} s{}",
-                    "",
-                    median(&later).map_or("-".to_string(), |v| format!("{v:.3}")),
-                    hit_rate.map_or(String::new(), |h| format!("; {:.0}% of the prompt tokens found in the cache", h * 100.0))
-                );
+                let found = hit_rate.map_or(String::new(), |h| format!("{:.0}% of the prompt tokens found in the cache", h * 100.0));
+                match median(&later) {
+                    Some(v) => eprintln!("{:<12} later turns: first token {v:.3} s{}{found}", "", if found.is_empty() { "" } else { "; " }),
+                    None if !found.is_empty() => eprintln!("{:<12} {found}", ""),
+                    None => {}
+                }
             }
         }
         if let (Some(c), Some(p)) = (cell_ceiling, pct(&decode)) {
@@ -1392,6 +1404,14 @@ mod tests {
         assert_eq!(parse_loads("1k*4:8").unwrap(), vec![("1k*4".to_string(), 8)]);
         assert!(parse_loads("1k*1:8").is_err() && parse_loads("1k*x:8").is_err() && parse_loads("5k*4:8").is_err());
         assert!(suite("chat").unwrap().iter().all(|(k, _)| kind_parts(k).unwrap().turns == 4));
+        // requests that begin alike: the notes the same for every seed, the question the seed's own, and last
+        let (a, b) = (prompt("same1k", 1).unwrap(), prompt("same1k", 2).unwrap());
+        let alike = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+        assert!(alike > 4000 && alike < a.len() && a != b && !a.starts_with('['), "{alike} of {}", a.len());
+        assert!(prompt("same4k", 1).unwrap().len() > 3 * a.len() && prompt("1k", 1).unwrap().starts_with("[1] "));
+        assert_eq!(parse_loads("same4k+250ms:8").unwrap(), vec![("same4k+250ms".to_string(), 8)]);
+        assert!(parse_loads("sameshort:1").is_err() && parse_loads("same5k:1").is_err());
+        assert!(suite("shared").unwrap().iter().all(|(k, n)| *n == 8 && k.starts_with("same")));
         assert!(parse_loads("4k+250:8").is_err() && parse_loads("4k+0ms:8").is_err() && parse_loads("5k+250ms:8").is_err());
         assert!(suite("arrive").unwrap().iter().all(|(k, n)| *n == 8 && !kind_parts(k).unwrap().gap.is_zero()));
     }

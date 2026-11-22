@@ -127,6 +127,11 @@ environment, which `glyd service` passes to the models it starts) and then tells
 may answer callers from anywhere, behind a proxy. The same holds for the server's own count of the tokens found: `prefix_hit_tokens` and `prefix_hit_rate_percent` of `/stats` are
 null, and `/metrics` has no `glyd_prefix_cache_hit_tokens_total`, unless the server was told its callers are one user.
 
+What a finished request leaves is kept until the server needs its place, the oldest going first. `cache_pin_seconds` (a number up to 3600) asks that what this request leaves
+goes after the others' for that long; it is a preference among what is kept and never makes another request wait. The Anthropic endpoint sets it from `cache_control` (300, or
+3600 with `ttl: "1h"`). A request that begins as another one does shares that start with it where the model allows (Gemma 4 and Muse Spark: any start of at least 32 tokens, from a
+sequence that has grown no more than a chunk past it), and one that comes while another still runs the start waits for it rather than running the same tokens beside it.
+
 ## Connecting tools
 
 The default address is `http://127.0.0.1:8000` (`--port N` for another; if 8000 is busy and no port was asked for, the server takes the next free one up to 8020 and says which at its start).
@@ -165,8 +170,9 @@ keeps no conversations: `previous_response_id`, `conversation`, `background`, `i
 Anthropic's Messages API for the Anthropic SDKs and Claude Code (`ANTHROPIC_BASE_URL=http://127.0.0.1:8238 ANTHROPIC_API_KEY=any`; with a server key, `x-api-key: KEY` or a bearer token). The request is read as the chat
 request it is the same as and run as any chat request is. Read: `system` (a string or blocks), `messages` (`text`, `image`, `tool_use`, `tool_result` blocks; `thinking` blocks of an earlier turn are skipped),
 `tools` (custom tools; the ones Anthropic runs, `web_search` and the like, are left out), `tool_choice` (`auto`, `any`, `tool`, `none`, `disable_parallel_tool_use`), `thinking` (`enabled` shows the model's thinking in
-a `thinking` block with an empty signature, which this server cannot make; else it is off), `stop_sequences`, `max_tokens` (required), `temperature`, `top_p`, `top_k`, `stream`; `cache_control` is read and has no effect: a request finds what the
-server holds of its prompt whatever it marks, and the usage says how many tokens that was (`cache_read_input_tokens`, with `input_tokens` the rest; in a stream, in `message_delta`). A stream is `message_start`, `ping`, each block's `content_block_start`, `content_block_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and
+a `thinking` block with an empty signature, which this server cannot make; else it is off), `stop_sequences`, `max_tokens` (required), `temperature`, `top_p`, `top_k`, `stream`; `cache_control` does not choose what is cached: a request finds what the
+server holds of its prompt whatever it marks. A request with a marker has what it leaves held before other requests' for the marker's time (5 minutes, an hour with
+`ttl: "1h"`) when the server needs a place; never so long that another request waits. The usage says how many tokens a request found (`cache_read_input_tokens`, with `input_tokens` the rest; in a stream, in `message_delta`). A stream is `message_start`, `ping`, each block's `content_block_start`, `content_block_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and
 `content_block_stop`, `message_delta` (the `stop_reason`: `end_turn`, `max_tokens`, `stop_sequence` with the string, `tool_use`; the usage) and `message_stop`, with a `ping` while a request waits for its turn. Errors are
 `{"type": "error", "error": {"type", "message"}}` (`invalid_request_error`, `authentication_error`, `not_found_error`, `api_error`). `/v1/models` carries `type`, `display_name` and `created_at` beside OpenAI's fields.
 

@@ -1305,6 +1305,12 @@ fn salt_of(v: &Value) -> u64 {
     }
 }
 
+/// The seconds a request asks what it leaves in the cache to be held (`sched::Submit::pin`): `cache_pin_seconds`, which the Anthropic endpoint sets from a request's
+/// `cache_control` (and any request may carry); an hour at most.
+fn pin_of(v: &Value) -> u32 {
+    num(v, "cache_pin_seconds").map_or(0, |x| x.clamp(0.0, 3600.0) as u32)
+}
+
 /// A sequence's handle as its request may read it: what the sequence found in the cache is told (`Handle::cached`, for the usage) to a request with a cache scope of its
 /// own, which can have found only what its scope left. A request with none is told nothing (0, as before these counts were kept) unless the operator has said that every
 /// caller is one user (`Context::tell_cached`): the cache serves it all the same, from what any such request left, and a count would let one caller learn how another's
@@ -1516,7 +1522,7 @@ fn start_as(sh: &Shared, tx: &Sender<Job>, o: &Value, chat: bool, hide_reasoning
         stop_ids: r.stop_ids.clone(),
     };
     let salt = salt_of(o);
-    let h = (Remote { tx: tx.clone(), window: sh.window }).start_in(&pr.ids, pr.images.clone(), &reply, salt).map_err(|e| (500, e.to_string()))?;
+    let h = (Remote { tx: tx.clone(), window: sh.window }).start_in(&pr.ids, pr.images.clone(), &reply, (salt, pin_of(o))).map_err(|e| (500, e.to_string()))?;
     Ok(Started { h: told(sh, salt, h), cfg, prompt_tokens: pr.ids.len(), api })
 }
 
@@ -1642,7 +1648,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                 let idx = pi * api.n + i;
                 let mut reply = Reply { params: r.params.clone(), max_new, ignore_eos: r.ignore_eos, logprobs: api.logprobs, stop_ids: r.stop_ids.clone() };
                 reply.params.seed = r.params.seed.wrapping_add(i as u64);
-                let h = match remote.start_in(&pr.ids, pr.images.clone(), &reply, salt) {
+                let h = match remote.start_in(&pr.ids, pr.images.clone(), &reply, (salt, pin_of(&v))) {
                     Ok(h) => told(sh, salt, h),
                     Err(e) => {
                         failure = Some(e.to_string());
@@ -1847,6 +1853,7 @@ const DONE: &[&str] = &[
     "best_of",
     "suffix",
     "cache_salt",
+    "cache_pin_seconds",
 ];
 
 /// The fields that change nothing on a server of one model on this computer.
@@ -2376,11 +2383,11 @@ impl Remote {
 
     /// `start` with the prompt's images (their places in it their tokens).
     pub fn start_with(&self, prompt: &[u32], images: Vec<Arc<crate::vision::Image>>, o: &Reply) -> Result<Handle> {
-        self.start_in(prompt, images, o, 0)
+        self.start_in(prompt, images, o, (0, 0))
     }
 
-    /// `start_with` in the cache scope `salt` (`sched::Submit::salt`; 0: none).
-    pub fn start_in(&self, prompt: &[u32], images: Vec<Arc<crate::vision::Image>>, o: &Reply, salt: u64) -> Result<Handle> {
+    /// `start_with` in the cache scope `salt` (`sched::Submit::salt`; 0: none), what it leaves held for `pin` seconds (`sched::Submit::pin`; 0: none).
+    pub fn start_in(&self, prompt: &[u32], images: Vec<Arc<crate::vision::Image>>, o: &Reply, (salt, pin): (u64, u32)) -> Result<Handle> {
         if prompt.is_empty() {
             return err("an empty prompt");
         }
@@ -2398,6 +2405,7 @@ impl Remote {
                 resumed: Default::default(),
                 cached: cached.clone(),
                 salt,
+                pin,
                 images,
             }))
             .map_err(|_| Error("the engine is not running".into()))?;
@@ -3610,7 +3618,6 @@ pub(crate) mod tests {
                 .set(Info { about: Vec::new(), gpu: None, held: None, concurrency: 4, window: 512 * crate::kv::PAGE, refused: &[], started: 0.0 })
                 .is_ok());
         }
-        let before = Context::process().sched[0].load(Ordering::Relaxed);
         assert_eq!((ask(a), ask(a), ask(a)), (200, 200, 200));
         assert_eq!(ask(b), 500);
         let num = |text: &str, key: &str| -> f64 {
@@ -3635,7 +3642,9 @@ pub(crate) mod tests {
         };
         assert_eq!((state(a), state(b)), ("ready".to_string(), "failed".to_string()));
         assert!(rt_a.failed.lock().unwrap().is_none() && rt_b.failed.lock().unwrap().is_some());
-        assert_eq!(Context::process().sched[0].load(Ordering::Relaxed), before, "the process's own context counts none of their prompts");
+        // the figures are in the contexts the two were given, read here and not through a server. (That the process's own context counts none of them cannot be read
+        // from it: the tests beside this one run their schedulers in it at the same time, and it failed on a runner where one did.)
+        assert_eq!((rt_a.sched[0].load(Ordering::Relaxed) as f64, rt_b.sched[0].load(Ordering::Relaxed) as f64), (pa, pb));
     }
 
     /// A client that sends its request slowly is let wait for the time that is given the whole of it, not for each read: a request that stops, or goes a byte at a time, is answered 408 and its
@@ -5826,6 +5835,7 @@ pub(crate) mod tests {
                 resumed: Default::default(),
                 cached: Default::default(),
                 salt: 0,
+                pin: 0,
                 images: Vec::new(),
             }))
             .unwrap();

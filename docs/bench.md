@@ -21,6 +21,7 @@ Each request is a streamed chat completion at temperature 0 with `--max-tokens` 
 | `full` | short at 1, 8, 64 and 256 at once; 1k, 4k and 32k at 1: everything R8 lists (64 and 256 at once need the server to take them: R11) |
 | `arrive` | 8 requests one after another: short prompts 100 ms apart, 1k 250 ms apart, 4k 500 ms apart. The later prompts come in while the earlier replies are being written |
 | `chat` | conversations of 4 turns that begin with a 1k and a 4k prompt, 1 and 8 of them at once: each later turn resends the conversation and adds a question |
+| `shared` | 8 requests 250 ms apart whose 1k or 4k of notes are the same and whose questions differ (`same1k`, `same4k`): what a server shares of a start it has run |
 
 `--loads short:1,4k:8` names loads by hand. `4k+250ms:8` is 8 requests of 4k prompts, each begun 250 ms after the one before, not all at once: what a server does when a prompt comes in
 while it is writing other replies shows in that load's first-token time and in the 99th percentile of the gaps between tokens (a reply that stops while a prompt runs has a long gap). Such a load has
