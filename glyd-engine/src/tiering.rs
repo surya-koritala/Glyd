@@ -181,10 +181,16 @@ pub fn cached_tiered(
     Ok((u, d, ExpertCache { store: store.clone(), layer, ordinal }))
 }
 
-/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--layout i6|i5|i4] [--dense N]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird directory) on GPU 0 with every expert there, then with
-/// its experts in the expert cache (`--places` a layer, every expert in the computer's memory; `--mode` the misses', copy by default): the same prompt and decode steps, and every position's logits compared. In copy mode the
-/// layers' products run over the places with the kernels of the resident layer, so the logits are the same bits (the GPU job's parity record of R12 and of hummingbird's cache); with the host computing some pairs, the largest
-/// difference is printed.
+/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--layout i6|i5|i4] [--dense N] [--report]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird
+/// directory) on GPU 0 with every expert there, then with its experts in the expert cache (`--places` a layer, every expert in the computer's memory; `--mode` the misses', copy by default): the same prompt and decode
+/// steps, and every position's logits compared; the positions that differ are named.
+///
+/// In copy mode the layers' products run over the places with the kernels of the resident layer, and the logits are the same bits where the cache's calls are the resident pass's: a call computed in waves (DeepSeek-V4's
+/// release experts, GLM-5.3-Flash's at a block level, Kimi-K3's), or a prompt of a few tokens (`--tokens 6`) for the caches that run a call of as many tokens as their places hold (GLM-5.3-Flash's FP8 experts, Muse
+/// Spark's). A longer prompt through those two differs in its last bits: the library splits a product's K over blocks by the size of the call, and the sums are added in another order (on an RTX 4080, 2026-11-22, the
+/// random models' largest differences: 0.031 and 0.051 of a logit). A hummingbird directory's cache is the resident layer's bits where every pair of a call has a place (`--places 15 --tokens 6` on the random
+/// DeepSeek-V4: none differs); the pairs whose experts find none are the host's in copy mode too (`ExpertStore::run_groups_at`), and differ as `--mode cpu`'s do (up to 2.7 of a logit there, with 2 places).
+/// `--report` prints such differences and does not refuse them; without it a difference in copy mode fails the check. With the host computing some pairs the largest difference is printed.
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     use crate::ffi::Error;
@@ -192,6 +198,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let places = a.num("places", 2usize)?;
     // (`--dense N`: the last N layers' dense matrices in the computer's memory too, src/dense_ram.rs)
     let dense = a.num("dense", 0usize)?;
+    let report = a.has("report");
     let mode = match a.flag("mode") {
         Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
         None => crate::offload::Mode::Copy,
@@ -241,7 +248,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         total,
         resident.len()
     );
-    if mode == crate::offload::Mode::Copy && differ > 0 {
+    if mode == crate::offload::Mode::Copy && differ > 0 && !report {
         return err(format!("{differ} logits differ in copy mode, where the products over the places are the resident layer's"));
     }
     Ok(())

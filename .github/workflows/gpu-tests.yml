@@ -189,26 +189,31 @@ jobs:
           "$E" nhtoy "$d/model" "$d/io"
           "$E" nhoffload "$d/model" "$d/io"
           rm -rf "$d"
-      - name: The expert cache against every expert on the GPU (R12 and hummingbird; a random DeepSeek-V4 and its hummingbird directory; tiering.rs tiercheck)
+      - name: The expert cache against every expert on the GPU (R12 and hummingbird; random DeepSeek-V4, GLM-5.3-Flash, Muse Spark and Kimi-K3 models; tiering.rs tiercheck)
         run: |
-          # (copy mode: the products over the cache's places are the resident layer's, so every logit is the same bits; the host's pairs are printed, not held to bits)
+          # (copy mode: the products over the cache's places are the resident layer's. The same bits where the cache's calls are the resident pass's; where they are not, the differences are printed with --report: tiering.rs says which and why)
+          # (DeepSeek-V4's FP4 experts: 4 choices a token over 2 places, so every call is waves, a decode step's too)
           "$E" dsv4random /tmp/v4-tier
           "$E" tiercheck /tmp/v4-tier --places 2
+          # (its hummingbird directory: the same bits where every pair of a call has a place; with 2 places the pairs that find none are the host's in copy mode too, and are printed, with the host's own mode beside them)
           "$E" calibrate-experts /tmp/v4-tier /tmp/v4-tier-usage.json --tokens 512 --context 256 --synthetic
           "$E" pack /tmp/v4-tier /tmp/v4-tier-hb --layout hummingbird --usage /tmp/v4-tier-usage.json
-          "$E" tiercheck /tmp/v4-tier-hb --places 2
+          "$E" tiercheck /tmp/v4-tier-hb --places 15 --tokens 6
+          "$E" tiercheck /tmp/v4-tier-hb --places 2 --report
           "$E" tiercheck /tmp/v4-tier-hb --places 2 --mode cpu
           # (GLM-5.3-Flash at a block level: its experts in places of the level's layout)
           "$E" glmrandom /tmp/glm-tier
           "$E" tiercheck /tmp/glm-tier --places 2 --layout i6
-          # (GLM-5.3-Flash's FP8 experts as released: each packed on its own in places, the heads made the place's; a call's pairs no more than the places)
+          # (GLM-5.3-Flash's FP8 experts as released: each packed on its own in places, the heads made the place's; a call's pairs no more than the places. The same bits for a prompt of two tokens; a longer one's last bits are the library's split of K by the call's size)
           "$E" glmrandom /tmp/glm-f8 --fp8
-          "$E" tiercheck /tmp/glm-f8 --places 6
-          # (Muse Spark's lossless experts: the stack's tiered pack cut per expert, each place its own block entries; glyd_gpu_mma_moe_placed)
+          "$E" tiercheck /tmp/glm-f8 --places 6 --tokens 6
+          "$E" tiercheck /tmp/glm-f8 --places 6 --report
+          # (Muse Spark's lossless experts: the stack's tiered pack cut per expert, each place its own block entries; glyd_gpu_mma_moe_placed. As the FP8 experts': a call of as many tokens as the places hold)
           "$E" muserandom /tmp/muse-tier
-          "$E" tiercheck /tmp/muse-tier --places 6
+          "$E" tiercheck /tmp/muse-tier --places 6 --tokens 6
+          "$E" tiercheck /tmp/muse-tier --places 6 --report
           # (dense layers in the computer's memory, dense_ram.rs: the last two layers' matrices copied into one slot before each runs; the same bits)
-          "$E" tiercheck /tmp/muse-tier --places 6 --dense 2
+          "$E" tiercheck /tmp/muse-tier --places 6 --dense 2 --tokens 6
           "$E" logitsmodel kimi /tmp/kimi-tier
           "$E" tiercheck /tmp/kimi-tier --places 4 --dense 2
       - name: The workspace back to the runner's user
