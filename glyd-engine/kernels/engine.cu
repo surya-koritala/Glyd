@@ -602,7 +602,7 @@ __device__ __forceinline__ int swz(int r, int c) { return r * HD + ((c ^ (r & 7)
 
 template <int WARPS, int BN>
 __device__ __forceinline__ void prefill_attn_t(const bf16* __restrict__ q, int q_stride, const bf16* __restrict__ kv, bf16* __restrict__ out, int out_stride, int n, int start,
-                                               int heads, int kv_heads, float scale_log2) {
+                                               int heads, int kv_heads, float scale_log2, const int* __restrict__ table) {
     constexpr int BM = WARPS * 16;
     constexpr int NT = WARPS * 32;
     constexpr int NJ = BN / 8;  // 8-key tiles of the score tile
@@ -632,7 +632,9 @@ __device__ __forceinline__ void prefill_attn_t(const bf16* __restrict__ q, int q
             int r = i >> 4, c = i & 15;
             int kt = kb * BN + r;
             bool ok = kt < kv_len;
-            const bf16* src = kv + ((size_t)(ok ? kt : 0) * kv_heads + hk) * 256 + c * 8;
+            // (a position's row: through the block table where the keys are paged, `table[p / 16] * 16 + p % 16`; else the position)
+            const int row = !ok ? 0 : table ? (table[kt >> 4] << 4) + (kt & 15) : kt;
+            const bf16* src = kv + ((size_t)row * kv_heads + hk) * 256 + c * 8;
             cp16(s_addr(dk + swz(r, c)), src, ok);
             cp16(s_addr(dv + swz(r, c)), src + HD, ok);
         }
@@ -753,10 +755,10 @@ __device__ __forceinline__ void prefill_attn_t(const bf16* __restrict__ q, int q
 }
 
 // dynamic shared memory: (16 WARPS + 4 BN) * 256 bytes
-extern "C" __global__ void __launch_bounds__(128, 1) prefill_attn_w4_b64(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2) { prefill_attn_t<4, 64>(q, qs, kv, out, os, n, start, heads, kvh, sl2); }
-extern "C" __global__ void __launch_bounds__(256, 1) prefill_attn_w8_b64(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2) { prefill_attn_t<8, 64>(q, qs, kv, out, os, n, start, heads, kvh, sl2); }
-extern "C" __global__ void __launch_bounds__(128, 2) prefill_attn_w4_b32(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2) { prefill_attn_t<4, 32>(q, qs, kv, out, os, n, start, heads, kvh, sl2); }
-extern "C" __global__ void __launch_bounds__(256, 1) prefill_attn_w8_b32(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2) { prefill_attn_t<8, 32>(q, qs, kv, out, os, n, start, heads, kvh, sl2); }
+extern "C" __global__ void __launch_bounds__(128, 1) prefill_attn_w4_b64(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2, const int* table) { prefill_attn_t<4, 64>(q, qs, kv, out, os, n, start, heads, kvh, sl2, table); }
+extern "C" __global__ void __launch_bounds__(256, 1) prefill_attn_w8_b64(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2, const int* table) { prefill_attn_t<8, 64>(q, qs, kv, out, os, n, start, heads, kvh, sl2, table); }
+extern "C" __global__ void __launch_bounds__(128, 2) prefill_attn_w4_b32(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2, const int* table) { prefill_attn_t<4, 32>(q, qs, kv, out, os, n, start, heads, kvh, sl2, table); }
+extern "C" __global__ void __launch_bounds__(256, 1) prefill_attn_w8_b32(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2, const int* table) { prefill_attn_t<8, 32>(q, qs, kv, out, os, n, start, heads, kvh, sl2, table); }
 
 // ---- KV calibration (src/calib.rs; the plugin's kvcal rule) ---------------------------------------------------------------------------
 // The keys or values of tokens are bf16 bits x [T, C] (C = kv heads * 128 channels, rows `stride` elements apart). A value's exponent >> 1 is bits 8 to 14: 128 bins; a channel's window is 8

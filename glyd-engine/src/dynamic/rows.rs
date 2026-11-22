@@ -133,7 +133,17 @@ impl Dyn {
             && self.stage.last
             && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| {
                 op.ring().is_none()
-                    || matches!(op, Op::QkvPrep { .. } | Op::Attention { .. } | Op::Prep35 { .. } | Op::Attn35 { .. } | Op::MuseQk { .. } | Op::MuseAttn { .. })
+                    || matches!(
+                        op,
+                        Op::QkvPrep { .. }
+                            | Op::Attention { .. }
+                            | Op::Prep35 { .. }
+                            | Op::Attn35 { .. }
+                            | Op::MuseQk { .. }
+                            | Op::MuseAttn { .. }
+                            | Op::KvWrite { .. }
+                            | Op::AttnNh { .. }
+                    )
             })
             && d.layers.iter().flatten().any(|op| op.ring().is_some())
             && crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")

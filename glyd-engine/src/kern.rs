@@ -385,10 +385,36 @@ impl Kern {
         if heads % kv_heads != 0 {
             return crate::ffi::err(format!("{heads} query heads over {kv_heads} key-value heads"));
         }
+        // SAFETY: as this function's own contract; no table (a cache of its own).
+        unsafe { self.prefill_attn_paged(s, q, q_stride, kv, out, out_stride, n, start, heads, kv_heads, 0) }
+    }
+
+    /// `prefill_attn` over a paged cache: token p's row of `kv` is `table[p / 16] * 16 + p % 16` (`table` on the device, a block a 16 tokens; 0: the row is p).
+    ///
+    /// # Safety
+    /// As `prefill_attn`; `table` holds a block for each 16 of the start + n tokens, each within `kv`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn prefill_attn_paged(
+        &self,
+        s: Stream,
+        q: u64,
+        q_stride: i32,
+        kv: u64,
+        out: u64,
+        out_stride: i32,
+        n: i32,
+        start: i32,
+        heads: i32,
+        kv_heads: i32,
+        table: u64,
+    ) -> Result<()> {
+        if heads % kv_heads != 0 {
+            return crate::ffi::err(format!("{heads} query heads over {kv_heads} key-value heads"));
+        }
         let rows = 16 * self.attn_warps as i32;
         let scale_log2 = (1.0f64 / (128.0f64).sqrt() * std::f64::consts::LOG2_E) as f32;
         let smem = (16 * self.attn_warps + 4 * self.attn_bn) * 256;
-        launch!(self.attn, [((n + rows - 1) / rows) as u32, heads as u32, 1], [32 * self.attn_warps, 1, 1], smem smem, s; q, q_stride, kv, out, out_stride, n, start, heads, kv_heads, scale_log2)
+        launch!(self.attn, [((n + rows - 1) / rows) as u32, heads as u32, 1], [32 * self.attn_warps, 1, 1], smem smem, s; q, q_stride, kv, out, out_stride, n, start, heads, kv_heads, scale_log2, table)
     }
 
     /// The first largest of v logits: its index into `token` (int32) and its value into `value` (f32).

@@ -1711,16 +1711,30 @@ impl Dyn {
                 self.mark("Mamba-2: gated norm")
             }
             Op::KvWrite { ring, stride, nq, nk } => {
-                self.knh.kv_write(s, p.slot(Slot::Mix), stride as i32, pos.0, self.kc.ptr + self.ring_off[ring], nu, nq as i32, nk as i32)?;
+                // (the sequence's cache, rows of 256 a position and head: its keys, then its values; through its block table where it is paged)
+                let (kv, table) = (self.cache(ring).0, self.table(ring));
+                self.knh.kv_write(s, p.slot(Slot::Mix), stride as i32, pos.0, kv, nu, nq as i32, nk as i32, table)?;
                 self.mark("attention: cache write")
             }
             Op::AttnNh { ring, stride, nq, nk } => {
-                let kv = self.kc.ptr + self.ring_off[ring];
+                let (kv, table) = (self.cache(ring).0, self.table(ring));
                 let (nq, nk, os) = (nq as i32, nk as i32, (nq * 128) as i32);
                 if n == 1 {
-                    self.knh.attn_decode(s, p.slot(Slot::Mix), stride as i32, kv, pos.1, 1, nq, nk, self.part_nh.ptr, p.slot(Slot::Att), os)?;
+                    self.knh.attn_decode(s, p.slot(Slot::Mix), stride as i32, kv, pos.1, 1, nq, nk, self.part_nh.ptr, p.slot(Slot::Att), os, table)?;
                 } else {
-                    self.kern.prefill_attn(s, p.slot(Slot::Mix), stride as i32, kv, p.slot(Slot::Att), os, n as i32, self.start.get() as i32, nq, nk)?;
+                    self.kern.prefill_attn_paged(
+                        s,
+                        p.slot(Slot::Mix),
+                        stride as i32,
+                        kv,
+                        p.slot(Slot::Att),
+                        os,
+                        n as i32,
+                        self.start.get() as i32,
+                        nq,
+                        nk,
+                        table,
+                    )?;
                 }
                 self.mark("attention: attention")
             }

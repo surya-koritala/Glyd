@@ -144,7 +144,7 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     );
     // SAFETY: as above.
     unsafe {
-        k.kv_write(s, qkv.ptr, qs as i32, pos.ptr, kv.ptr, na as u32, nq as i32, nk as i32)?;
+        k.kv_write(s, qkv.ptr, qs as i32, pos.ptr, kv.ptr, na as u32, nq as i32, nk as i32, 0)?;
         for t in 0..na {
             k.attn_decode(
                 s,
@@ -158,6 +158,7 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
                 part.ptr,
                 out.ptr + (t * nq * 128 * 2) as u64,
                 (nq * 128) as i32,
+                0,
             )?;
         }
         kern.prefill_attn(s, qkv.ptr, qs as i32, kv.ptr, pre.ptr, (nq * 128) as i32, na as i32, 0, nq as i32, nk as i32)?;

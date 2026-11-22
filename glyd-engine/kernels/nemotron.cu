@@ -289,10 +289,13 @@ extern "C" __global__ void nh_gated_norm(bf16* y, const bf16* z, int zs, const b
 // ---- the attention layer (head 128, no positional encoding) ---------------------------------------------------------------------------------------------------------------------------
 // The keys and values of the n rows of qkv [n, stride] (nq query heads of 128, then nk key heads, then nk value heads) into the cache kv [positions, nk, 256] (a position's head: its 128 keys, then its 128
 // values: the layout of the engine's prompt attention) at each row's position. Block (row, key-value head), 128 threads.
-extern "C" __global__ void nh_kv_write(const bf16* qkv, int stride, const int* pos, bf16* kv, int nq, int nk) {
+extern "C" __global__ void nh_kv_write(const bf16* qkv, int stride, const int* pos, bf16* kv, int nq, int nk, const int* table) {
     const int t = blockIdx.x, j = blockIdx.y, i = threadIdx.x;
     const bf16* row = qkv + (size_t)t * stride;
-    bf16* dst = kv + ((size_t)pos[t] * nk + j) * 256;
+    // (the position's row: through the block table where the cache is paged, `table[p / 16] * 16 + p % 16`; else the position)
+    const int p = pos[t];
+    const size_t r = table ? (size_t)(table[p >> 4] << 4) + (p & 15) : (size_t)p;
+    bf16* dst = kv + (r * nk + j) * 256;
     dst[i] = row[nq * 128 + j * 128 + i];
     dst[128 + i] = row[(nq + nk) * 128 + j * 128 + i];
 }
@@ -304,7 +307,8 @@ extern "C" __global__ void nh_kv_write(const bf16* qkv, int stride, const int* p
 // A decode step's attention: row t of q [n, qs] (query head h at h * 128) over the cache's keys 0 .. pos[t] (pos on the device: a graph replays it), nq / nk (at most 16) query heads to a key-value head, one
 // warp each. The keys go in S parts at once (block (row, key-value head, part), 32 * nq / nk threads): a part's maximum (log2 units), sum and unnormalized outputs to
 // part [((t nq + h) S + part) NH_PART]; nh_attn_merge combines them. ponytail: 2 key-value heads x S parts is 32 blocks, few for a long context; more parts when a profile shows it. fp32 scores and sums, the probabilities rounded to bf16 for the values (as FlashAttention). sl2 = 128^-0.5 * log2(e).
-extern "C" __global__ void __launch_bounds__(512) nh_attn_parts(const bf16* q, int qs, const bf16* kv, const int* pos, int n, int nq, int nk, float sl2, float* part, int S) {
+extern "C" __global__ void __launch_bounds__(512) nh_attn_parts(const bf16* q, int qs, const bf16* kv, const int* pos, int n, int nq, int nk, float sl2, float* part, int S,
+                                                                const int* table) {
     __shared__ __align__(16) uint32_t Ks[NH_KB * NH_KS];
     __shared__ __align__(16) uint32_t Vs[NH_KB * 64];
     __shared__ __align__(16) uint32_t Qs[16 * 64];
@@ -327,7 +331,11 @@ extern "C" __global__ void __launch_bounds__(512) nh_attn_parts(const bf16* q, i
             const bool isv = c >= NH_KB * 16;
             const int cc = isv ? c - NH_KB * 16 : c, j = cc >> 4, part_ = cc & 15;
             uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < kmax) v = reinterpret_cast<const uint4*>(kv + ((size_t)(k0 + j) * nk + kvh) * 256 + (isv ? 128 : 0))[part_];
+            if (k0 + j < kmax) {
+                const int kk = k0 + j;
+                const size_t r = table ? (size_t)(table[kk >> 4] << 4) + (kk & 15) : (size_t)kk;
+                v = reinterpret_cast<const uint4*>(kv + (r * nk + kvh) * 256 + (isv ? 128 : 0))[part_];
+            }
             if (isv) {
                 *reinterpret_cast<uint4*>(Vs + j * 64 + part_ * 4) = v;
             } else {
