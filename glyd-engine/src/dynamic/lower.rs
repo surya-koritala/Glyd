@@ -452,6 +452,122 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
     })
 }
 
+/// Muse Spark: pairs of blocks, the gated attention (q, k, v and the gate in one product, heads of 64, the rotary on the window's layers alone) with its input-scaled
+/// norms and residual gate, then the experts in the latent with theirs; the embedding normed without a weight, the soft-capped head times the output multiplier.
+/// The matrices, small tensors and blocks are dynamic/muse.rs's loader's (`dynamic::muse::describe` indexes them in its order).
+pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    let m = &d.desc;
+    if m.blocks.len() % 2 != 0 {
+        return err(format!("Muse Spark: {} blocks, where each layer is an attention block and an experts block", m.blocks.len()));
+    }
+    let layers = m.blocks.len() / 2;
+    let mut atts = Vec::with_capacity(layers);
+    let mut lat = None;
+    for l in 0..layers {
+        match (&m.blocks[2 * l].body, &m.blocks[2 * l + 1].body) {
+            (Body::Mixer(Mixer::Attention(a)), Body::Ffn(Ffn::Moe(e))) => {
+                atts.push(a);
+                lat = lat.or(e.latent.as_ref().map(|x| x.dim));
+            }
+            (a, f) => return err(format!("Muse Spark: layer {l} is {a:?} and {f:?}")),
+        }
+    }
+    let a0 = atts.first().ok_or_else(|| Error("Muse Spark: no layers".into()))?;
+    let (nq, nk, hd, lat) = (a0.heads, a0.kv_heads, a0.head_dim, lat.ok_or_else(|| Error("Muse Spark: experts without a latent".into()))?);
+    let (eps, post_eps) = (m.blocks[0].norm_in.eps, m.blocks[0].norm_out.map_or(1e-6, |n| n.eps));
+    // (the attention's scale is the config's factor over sqrt(head); the kernel takes the factor)
+    let qk_scale = a0.scale * (hd as f32).sqrt();
+    if hd != 64 || m.hidden > 8192 || lat > 4096 {
+        return err(format!(
+            "heads of {hd}, a width of {}, a latent of {lat}: this engine runs heads of 64, widths up to 8192 and latents up to 4096",
+            m.hidden
+        ));
+    }
+    let row = (2 * nq + 2 * nk) * hd;
+    let ones = 0;
+    let (mut n_small, mut n_mats, mut n_moe, mut rings, mut ops_all) = (1, 0, 0, Vec::new(), Vec::new());
+    for (l, a) in atts.iter().enumerate() {
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            ops_all.push(Vec::new());
+            continue;
+        }
+        let s0 = n_small;
+        n_small += 9;
+        let m0 = n_mats;
+        n_mats += 4;
+        let block = n_moe;
+        n_moe += 1;
+        let ring = rings.len();
+        let sliding = a.window.is_some();
+        let window = a.window.unwrap_or(0);
+        rings.push(Ring { d: hd, nk, window });
+        let mut ops = vec![
+            Op::MuseRms { x: Slot::X, w: s0, y: Slot::H, eps },
+            Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
+            Op::MuseQk { stride: row, nq, nk, rope: sliding, ring, scale: qk_scale },
+            Op::MuseAttn { ring, nq, nk, window },
+            Op::MuseOGate { stride: row, goff: (nq + 2 * nk) * hd, nq },
+            Op::Linear { w: m0 + 1, x: Slot::Core, y: Slot::O, name: "attention: o product" },
+            Op::MuseRms { x: Slot::O, w: ones, y: Slot::O, eps: post_eps },
+            Op::MuseGate { alpha: s0 + 1, beta: s0 + 2 },
+            Op::MuseRms { x: Slot::X, w: s0 + 3, y: Slot::H, eps },
+            Op::Linear { w: m0 + 2, x: Slot::H, y: Slot::Proj, name: "experts: latent in" },
+            Op::MuseRms { x: Slot::Proj, w: s0 + 4, y: Slot::Xc, eps },
+            Op::MuseMoe { block, post_w: s0 + 5, eps: post_eps },
+            Op::Linear { w: m0 + 3, x: Slot::M, y: Slot::O, name: "experts: latent out" },
+            Op::MuseRmsIn { x: Slot::O, w: s0 + 6, y: Slot::O, eps: post_eps },
+            Op::MuseGate { alpha: s0 + 7, beta: s0 + 8 },
+        ];
+        if st.last && l + 1 == layers {
+            ops.push(Op::MuseRms { x: Slot::X, w: n_small, y: Slot::H, eps });
+            n_small += 1;
+        }
+        ops_all.push(ops);
+    }
+    let d_ = m.hidden;
+    let mut widths = [0usize; SLOTS];
+    for (s, w) in [
+        (Slot::X, d_),
+        (Slot::H, d_),
+        (Slot::Mix, row),
+        (Slot::Qo, nq * hd),
+        (Slot::Att, nq * hd),
+        (Slot::Core, nq * hd),
+        (Slot::O, d_),
+        (Slot::Proj, lat),
+        (Slot::Xc, lat),
+        (Slot::M, lat),
+    ] {
+        widths[s as usize] = w;
+    }
+    Ok(ModelDesc {
+        family: "Muse Spark",
+        hidden: d_,
+        vocab: m.vocab,
+        eps,
+        max_pos,
+        widths,
+        mats: Vec::new(),
+        small: Vec::new(),
+        ropes: Vec::new(),
+        rings,
+        first: Op::MuseRms { x: Slot::X, w: ones, y: Slot::X, eps },
+        layers: ops_all,
+        states: Vec::new(),
+        final_norm: None,
+        decoded: false,
+        skinny: false,
+        embed: n_mats,
+        lm: n_mats + 1,
+        softcap: m.head.softcap.unwrap_or(0.0),
+        eos,
+        post: None,
+        v4: None,
+        hc: (0.0, 0),
+        logit_mult: m.head.scale,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,6 +685,26 @@ mod tests {
         let lowered = gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos).unwrap();
         let e = agree(lowered, &own, "the test's config.json").unwrap_err().msg;
         assert!(e.contains("describe different models") && e.contains("not loaded"), "{e}");
+    }
+
+    /// Muse Spark lowered from the random model's config the logits checks run, whole and as a split's stages, is the executor's own description of it.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_random_muse_lowers_as_its_own_description() {
+        let dir = std::env::temp_dir().join(format!("glyd-lower-muse-{}", std::process::id()));
+        crate::muse_ref::random(&dir).unwrap();
+        let c = crate::muse::ConfigMuse::load(&dir).unwrap();
+        let half = c.layers / 2;
+        for st in [
+            super::super::Stage::whole(c.layers),
+            super::super::Stage { layers: (0, half), first: true, last: false },
+            super::super::Stage { layers: (half, c.layers), first: false, last: true },
+        ] {
+            let (own, lowered) =
+                (super::super::muse::describe(&c, &st).unwrap(), super::super::muse::lowered(&dir, &c, &st).unwrap_or_else(|e| panic!("{}", e.msg)));
+            assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The random Gemma 4 the logits checks run (src/logits.rs, a window of 32, a global layer that shares its keys and values) lowers to the executor's own
