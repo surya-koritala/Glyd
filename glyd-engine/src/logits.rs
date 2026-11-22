@@ -2173,7 +2173,15 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         s.name(0, 0, &keys)?;
         s.release(&[0])?;
         let got = s.adopt(1, &keys[..3])?;
-        if got != 48 {
+        if s.snap_every() > 0 {
+            // (a recurrent model's start is found at a boundary whose states were kept, and this one ended at none: the sequence named its blocks at its end alone)
+            let ok = got == 0;
+            fails += !ok as usize;
+            println!(
+                "{} a start of 48 tokens whose states were kept at no boundary, looked for by name after the sequence that ran it has ended: {got} found (it should 0)",
+                if ok { "PASS" } else { "FAIL" }
+            );
+        } else if got != 48 {
             println!("FAIL a start of 48 tokens looked for by name after the sequence that ran it has ended: {got} found");
             fails += 1;
         } else {
