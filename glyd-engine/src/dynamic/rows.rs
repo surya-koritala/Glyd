@@ -474,6 +474,141 @@ const STEP_LEAST: usize = 16;
 /// The most rows of a pass whose products give every row the bits of its own pass (the kernels change past it: `glyd-engine roundcheck` measures it on every family).
 pub(crate) const EXACT_ROWS: usize = 16;
 
+/// `GLYD_ENGINE_STEP_PROF=1` (a development build's): where a decode step's time goes, every 256 steps on stderr. The call's wall time; the GPU's, from an event at the
+/// call's start to one after its work (the time the GPU is busy with the step or waits for the host to queue the rest of it); and the host's between one step's return
+/// and the next one's call (the scheduler, the sampler, the server). With a step that waits for its tokens, the GPU is idle for the host's share.
+struct StepProf {
+    start: crate::dev::Ev,
+    at: std::time::Instant,
+}
+
+#[derive(Default)]
+struct StepSums {
+    n: usize,
+    rows: usize,
+    prompt: usize,
+    call: f64,
+    gpu: f64,
+    host: f64,
+    last: Option<std::time::Instant>,
+}
+
+thread_local!(static STEP_SUMS: std::cell::RefCell<StepSums> = std::cell::RefCell::new(StepSums::default()));
+
+impl StepProf {
+    fn on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| crate::tune!("GLYD_ENGINE_STEP_PROF").is_some_and(|v| v == "1"))
+    }
+
+    fn begin(s: crate::ffi::Stream) -> Option<StepProf> {
+        if !Self::on() {
+            return None;
+        }
+        let start = crate::dev::Ev::new().ok()?;
+        start.record(s).ok()?;
+        Some(StepProf { start, at: std::time::Instant::now() })
+    }
+
+    fn end(p: Option<StepProf>, s: crate::ffi::Stream, rows: usize, prompt: usize) {
+        let Some(p) = p else { return };
+        let Ok(stop) = crate::dev::Ev::new() else { return };
+        if stop.record(s).is_err() {
+            return;
+        }
+        let gpu = stop.since(&p.start).unwrap_or(f32::NAN) as f64;
+        let now = std::time::Instant::now();
+        let call = now.duration_since(p.at).as_secs_f64() * 1e3;
+        STEP_SUMS.with(|c| {
+            let mut c = c.borrow_mut();
+            if let Some(last) = c.last {
+                c.host += p.at.duration_since(last).as_secs_f64() * 1e3;
+            }
+            c.last = Some(now);
+            (c.n, c.rows, c.prompt, c.call, c.gpu) = (c.n + 1, c.rows + rows, c.prompt + prompt, c.call + call, c.gpu + gpu);
+            if c.n == 256 {
+                let n = c.n as f64;
+                eprintln!(
+                    "step profile, 256 steps of {:.1} rows and {:.0} prompt tokens on average: the call {:.3} ms (the GPU from its first work to its last {:.3} ms), the host between steps {:.3} ms",
+                    c.rows as f64 / n,
+                    c.prompt as f64 / n,
+                    c.call / n,
+                    c.gpu / n,
+                    c.host / (n - 1.0)
+                );
+                *c = StepSums { last: c.last, ..Default::default() };
+            }
+        });
+    }
+}
+
+impl Dyn {
+    /// `ModelStep::round` with prompt chunks beside the rows.
+    fn round_rows(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<(Vec<Sample>, Vec<Option<Sample>>)> {
+        if rows.is_empty() {
+            return Ok((Vec::new(), ModelStep::prefill_many(self, jobs)?));
+        }
+        for (slot, at) in rows.iter().map(|r| (r.pages[0] as usize, r.pos)).chain(jobs.iter().map(|j| (j.pages[0] as usize, j.start))) {
+            if self.seq_n(slot) != at {
+                return err(format!("tokens at {at} of sequence {slot}, which holds {}", self.seq_n(slot)));
+            }
+        }
+        let ones: Vec<(usize, [u32; 1])> = rows.iter().map(|r| (r.pages[0] as usize, [r.token])).collect();
+        let parts: Vec<(usize, &[u32], bool)> =
+            ones.iter().map(|(s, t)| (*s, &t[..], true)).chain(jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last))).collect();
+        let mut out = self.pass(&parts)?.into_iter();
+        let decoded: Vec<Sample> = out.by_ref().take(rows.len()).map(|s| s.expect("every row samples")).collect();
+        Ok((decoded, out.collect()))
+    }
+    /// `ModelStep::decode`.
+    fn decode_rows(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
+        for r in rows {
+            let slot = r.pages[0] as usize;
+            if self.seq_n(slot) != r.pos {
+                return err(format!("a token at {} of sequence {slot}, which holds {}", r.pos, self.seq_n(slot)));
+            }
+        }
+        if rows.len() > self.head_room() {
+            return err(format!("a step of {} rows, where the head holds {}", rows.len(), self.head_room()));
+        }
+        if rows.len() == 1 || !self.batchable() || (!Self::batch_prefill() && !self.rows_exact()) {
+            // (one sequence's step as a reply alone takes it, its graph where it has one; several one after another, the last first, each one's logits row moved to its place in the head's rows
+            // before the next step writes its own over the first)
+            let mut out = vec![None; rows.len()];
+            let w = self.big.d.vocab * 2;
+            for (j, r) in rows.iter().enumerate().rev() {
+                self.select(r.pages[0] as usize)?;
+                out[j] = Some(self.step(r.token)?);
+                if j > 0 {
+                    // SAFETY: the head's logits hold head_room rows; the step's are row 0.
+                    unsafe { copy_d2d_async(self.big.logits.ptr + (j * w) as u64, self.big.logits.ptr, w, self.dev.stream)? };
+                }
+            }
+            return Ok(out.into_iter().map(|s| s.expect("every row stepped")).collect());
+        }
+        let jobs: Vec<(usize, [u32; 1])> = rows.iter().map(|r| (r.pages[0] as usize, [r.token])).collect();
+        let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|(s, t)| (*s, &t[..], true)).collect();
+        if !Self::batch_prefill() && rows.len() > EXACT_ROWS {
+            // (GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone bit for bit: passes of at most EXACT_ROWS rows, the last first, each one's logits rows moved to
+            // their place in the head's rows before the next writes its own over the first)
+            let mut out = vec![None; rows.len()];
+            let w = self.big.d.vocab * 2;
+            for (g, part) in jobs.chunks(EXACT_ROWS).enumerate().collect::<Vec<_>>().into_iter().rev() {
+                let at = g * EXACT_ROWS;
+                for (j, s) in self.pass(part)?.into_iter().enumerate() {
+                    out[at + j] = s;
+                }
+                if at > 0 {
+                    // SAFETY: the head's logits hold head_room rows; the pass's are its first rows, and they do not reach their place (a pass is at most EXACT_ROWS rows, `at` at least that).
+                    unsafe { copy_d2d_async(self.big.logits.ptr + (at * w) as u64, self.big.logits.ptr, part.len() * w, self.dev.stream)? };
+                }
+            }
+            return Ok(out.into_iter().map(|s| s.expect("every row samples")).collect());
+        }
+        Ok(self.pass(&jobs)?.into_iter().map(|s| s.expect("every row samples")).collect())
+    }
+}
+
 impl ModelStep for Dyn {
     /// The context, or where the pools hold less for one sequence alone, that: a reply that reaches it ends there (its length), and a sequence alone always fits, so one sent back for room
     /// always runs again (an admitted request never fails for the memory).
@@ -537,66 +672,16 @@ impl ModelStep for Dyn {
         if jobs.is_empty() {
             return Ok((ModelStep::decode(self, rows)?, Vec::new()));
         }
-        if rows.is_empty() {
-            return Ok((Vec::new(), ModelStep::prefill_many(self, jobs)?));
-        }
-        for (slot, at) in rows.iter().map(|r| (r.pages[0] as usize, r.pos)).chain(jobs.iter().map(|j| (j.pages[0] as usize, j.start))) {
-            if self.seq_n(slot) != at {
-                return err(format!("tokens at {at} of sequence {slot}, which holds {}", self.seq_n(slot)));
-            }
-        }
-        let ones: Vec<(usize, [u32; 1])> = rows.iter().map(|r| (r.pages[0] as usize, [r.token])).collect();
-        let parts: Vec<(usize, &[u32], bool)> =
-            ones.iter().map(|(s, t)| (*s, &t[..], true)).chain(jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last))).collect();
-        let mut out = self.pass(&parts)?.into_iter();
-        let decoded: Vec<Sample> = out.by_ref().take(rows.len()).map(|s| s.expect("every row samples")).collect();
-        Ok((decoded, out.collect()))
+        let p = StepProf::begin(self.dev.stream);
+        let r = self.round_rows(rows, jobs);
+        StepProf::end(p, self.dev.stream, rows.len(), jobs.iter().map(|j| j.tokens.len()).sum());
+        r
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
-        for r in rows {
-            let slot = r.pages[0] as usize;
-            if self.seq_n(slot) != r.pos {
-                return err(format!("a token at {} of sequence {slot}, which holds {}", r.pos, self.seq_n(slot)));
-            }
-        }
-        if rows.len() > self.head_room() {
-            return err(format!("a step of {} rows, where the head holds {}", rows.len(), self.head_room()));
-        }
-        if rows.len() == 1 || !self.batchable() || (!Self::batch_prefill() && !self.rows_exact()) {
-            // (one sequence's step as a reply alone takes it, its graph where it has one; several one after another, the last first, each one's logits row moved to its place in the head's rows
-            // before the next step writes its own over the first)
-            let mut out = vec![None; rows.len()];
-            let w = self.big.d.vocab * 2;
-            for (j, r) in rows.iter().enumerate().rev() {
-                self.select(r.pages[0] as usize)?;
-                out[j] = Some(self.step(r.token)?);
-                if j > 0 {
-                    // SAFETY: the head's logits hold head_room rows; the step's are row 0.
-                    unsafe { copy_d2d_async(self.big.logits.ptr + (j * w) as u64, self.big.logits.ptr, w, self.dev.stream)? };
-                }
-            }
-            return Ok(out.into_iter().map(|s| s.expect("every row stepped")).collect());
-        }
-        let jobs: Vec<(usize, [u32; 1])> = rows.iter().map(|r| (r.pages[0] as usize, [r.token])).collect();
-        let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|(s, t)| (*s, &t[..], true)).collect();
-        if !Self::batch_prefill() && rows.len() > EXACT_ROWS {
-            // (GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone bit for bit: passes of at most EXACT_ROWS rows, the last first, each one's logits rows moved to
-            // their place in the head's rows before the next writes its own over the first)
-            let mut out = vec![None; rows.len()];
-            let w = self.big.d.vocab * 2;
-            for (g, part) in jobs.chunks(EXACT_ROWS).enumerate().collect::<Vec<_>>().into_iter().rev() {
-                let at = g * EXACT_ROWS;
-                for (j, s) in self.pass(part)?.into_iter().enumerate() {
-                    out[at + j] = s;
-                }
-                if at > 0 {
-                    // SAFETY: the head's logits hold head_room rows; the pass's are its first rows, and they do not reach their place (a pass is at most EXACT_ROWS rows, `at` at least that).
-                    unsafe { copy_d2d_async(self.big.logits.ptr + (at * w) as u64, self.big.logits.ptr, part.len() * w, self.dev.stream)? };
-                }
-            }
-            return Ok(out.into_iter().map(|s| s.expect("every row samples")).collect());
-        }
-        Ok(self.pass(&jobs)?.into_iter().map(|s| s.expect("every row samples")).collect())
+        let p = StepProf::begin(self.dev.stream);
+        let r = self.decode_rows(rows);
+        StepProf::end(p, self.dev.stream, rows.len(), 0);
+        r
     }
     fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
         self.dev.sync()?;
