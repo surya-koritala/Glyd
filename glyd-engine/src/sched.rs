@@ -10,7 +10,7 @@
 //! its admission to its end, nothing is shared and nothing is preempted for room.
 
 use crate::ffi::{Error, Kind, Result};
-use crate::kv::{chain_key, Lost, Pager, ALONE_MESSAGE, PAGE};
+use crate::kv::{block_hash, block_names, block_root, Lost, Pager, ALONE_MESSAGE, PAGE};
 use crate::model::{Engine, FUSED_ROWS, MAX_ROWS};
 use crate::runtime::context::Context;
 use crate::sampler::{logprobs_of, Lp, Sampler};
@@ -126,10 +126,25 @@ pub trait ModelStep {
     fn share(&mut self, _from: i32, _to: i32, _upto: usize) -> Result<usize> {
         Ok(0)
     }
-    /// Whether `share` shares a start of any length (whole blocks of it), so that a request is worth holding back while a running sequence still runs the start the two have
-    /// in common. False: nothing is shared, or only at a place that is not known before (a recurrent model's mark).
+    /// Whether the step finds a sequence's full blocks by their names (`name`, `adopt`), so that a start of any length that it holds is had without running it, whoever ran
+    /// it, and a request is worth holding back while a running sequence still runs the start the two have in common. False: nothing is found by name; a start is shared
+    /// from a sequence in a slot (`share`), if at all.
     fn shares_starts(&self) -> bool {
         false
+    }
+    /// The sequence in `slot` holds the full blocks `first`, `first + 1`, ... (PAGE tokens each), whose names are `keys` (`kv::block_hash`: of a block's tokens and all
+    /// before them, in the request's scope). A step that finds blocks by name finds these by them from now on, while it holds them: a sequence need not.
+    fn name(&mut self, _slot: i32, _first: usize, _keys: &[u128]) -> Result<()> {
+        Ok(())
+    }
+    /// The empty slot `slot` given the longest start of a sequence whose full blocks are named `keys`, in order, that the step holds by name and can go on from: the
+    /// tokens the slot then holds (whole blocks; 0: none).
+    fn adopt(&mut self, _slot: i32, _keys: &[u128]) -> Result<usize> {
+        Ok(0)
+    }
+    /// The tokens `adopt` would find for `keys` now.
+    fn held_by_name(&self, _keys: &[u128]) -> usize {
+        0
     }
     /// The sequence in `slot` holds `n` tokens and is at a place a later request may go on from (its prompt's end: a reply asked for again, or a next turn whose template leaves out
     /// part of this reply, begins with these tokens and no more). A step that cannot cut a sequence back anywhere keeps what `resume` needs to go on from here.
@@ -337,6 +352,15 @@ impl ModelStep for &mut dyn ModelStep {
     fn shares_starts(&self) -> bool {
         (**self).shares_starts()
     }
+    fn name(&mut self, slot: i32, first: usize, keys: &[u128]) -> Result<()> {
+        (**self).name(slot, first, keys)
+    }
+    fn adopt(&mut self, slot: i32, keys: &[u128]) -> Result<usize> {
+        (**self).adopt(slot, keys)
+    }
+    fn held_by_name(&self, keys: &[u128]) -> usize {
+        (**self).held_by_name(keys)
+    }
     fn eos(&self) -> Vec<i64> {
         (**self).eos()
     }
@@ -401,9 +425,9 @@ struct Seq {
     pages: Vec<i32>,
     /// Tokens whose keys and values are in the pages.
     done: usize,
-    /// Full pages given to the cache, and the key of the last.
+    /// Full pages given to the cache (a slot step that finds blocks by name: full blocks told to it), and the name of the last (`kv::block_hash`; the scope's root with none).
     published: usize,
-    chain: u64,
+    chain: u128,
     prefilling: bool,
     /// Times a step of this sequence was taken back for a lost block, and the sequences that must have ended before it runs again (they were running when it lost one).
     tries: u32,
@@ -612,12 +636,19 @@ impl<B: ModelStep> Sched<B> {
     ///
     /// The kept sequence of its scope it begins with the most of is gone on in, cut back to those tokens, where they are at least KEEP_LEAST and half of what is kept (and
     /// never the prompt's last token, which is run for its logits): a conversation's next turn. Otherwise it has a slot of its own (a free one, else the oldest kept one's,
-    /// emptied), and where it begins with at least KEEP_LEAST tokens of a sequence of its scope, kept or running, those are shared into the slot (`ModelStep::share`): a
-    /// prompt whose start another conversation has run, a second request while the first still runs. None: every slot is running.
+    /// emptied), and what the step holds of its start is had without running it. A step that finds blocks by name (`ModelStep::adopt`) is asked for the full blocks the
+    /// prompt begins with, in its scope: a system prompt another conversation ran, whether that one still runs, is kept, has grown far past it or has ended. Another step
+    /// shares from a sequence in a slot (`ModelStep::share`), where the prompt begins with at least KEEP_LEAST tokens of one of its scope, kept or running. None: every slot
+    /// is running.
     fn take_slot(&mut self, tokens: &[u32], salt: u64) -> Result<Option<(i32, usize)>> {
         let head = &tokens[..tokens.len().saturating_sub(1)];
         let best = self.kept.iter().enumerate().filter(|(_, k)| k.salt == salt).map(|(i, k)| (common(&k.tokens, head), i)).max();
-        if let Some((n, i)) = best.filter(|&(n, i)| n >= KEEP_LEAST && 2 * n >= self.kept[i].tokens.len()) {
+        // where the step finds blocks by name: the names of the prompt's full blocks, and the tokens held by them. A kept sequence is gone on in only where that is no
+        // fewer tokens (its last block, not full, is its own alone): a conversation's next turn; not a prompt whose start is held longer by name than any kept one has it.
+        let names = self.names();
+        let keys = if names { block_names(block_root(salt), head) } else { Vec::new() };
+        let by_name = self.be.held_by_name(&keys);
+        if let Some((n, i)) = best.filter(|&(n, i)| n >= KEEP_LEAST && 2 * n >= self.kept[i].tokens.len() && n >= by_name) {
             let slot = self.kept[i].slot;
             let held = self.be.resume(slot, n)?;
             if held > 0 {
@@ -632,7 +663,7 @@ impl<B: ModelStep> Sched<B> {
                 self.free.as_mut().expect("a slot step").push(slot);
             }
         }
-        // the sequence whose start it shares the most of: (tokens, its slot)
+        // where the step finds blocks by name the start is looked for so (below), whoever holds it. Else: the sequence whose start it shares the most of, (tokens, its slot)
         let running =
             self.active.iter().filter(|a| a.salt == salt && a.pages.len() == 1).map(|a| (common(&a.tokens[..a.done.min(a.tokens.len())], head), a.pages[0]));
         let source = self
@@ -642,7 +673,7 @@ impl<B: ModelStep> Sched<B> {
             .map(|k| (common(&k.tokens, head), k.slot))
             .chain(running)
             .max()
-            .filter(|&(n, _)| n >= KEEP_LEAST && self.keep);
+            .filter(|&(n, _)| n >= KEEP_LEAST && self.keep && !names);
         let slot = match self.free.as_mut().and_then(Vec::pop) {
             Some(slot) => slot,
             None if self.drop_kept_but(source.map(|x| x.1))? => self.free.as_mut().and_then(Vec::pop).expect("the slot just emptied"),
@@ -660,6 +691,7 @@ impl<B: ModelStep> Sched<B> {
         };
         let held = match source {
             Some((n, from)) => self.be.share(from, slot, n)?,
+            None if names => self.be.adopt(slot, &keys)?,
             None => 0,
         };
         Ok(Some((slot, held)))
@@ -914,11 +946,9 @@ impl<B: ModelStep> Sched<B> {
             let mut s = self.waiting.remove(k).expect("a waiting sequence");
             s.trace.admit();
             // the pages of an earlier sequence with the same first tokens (at least the last token is run, for the logits)
-            let hit = self.pager.lookup_in(s.salt, &s.tokens, s.tokens.len().saturating_sub(1) / PAGE);
-            s.chain = s.salt;
-            for (i, _) in hit.iter().enumerate() {
-                s.chain = chain_key(s.chain, &s.tokens[i * PAGE..(i + 1) * PAGE]);
-            }
+            let root = block_root(s.salt);
+            let hit = self.pager.lookup_in(root, &s.tokens, s.tokens.len().saturating_sub(1) / PAGE);
+            s.chain = block_names(root, &s.tokens[..hit.len() * PAGE]).last().copied().unwrap_or(root);
             s.published = hit.len();
             s.done = hit.len() * PAGE;
             s.found(s.done);
@@ -968,7 +998,11 @@ impl<B: ModelStep> Sched<B> {
         let mut s = self.waiting.remove(k).expect("a waiting sequence");
         s.trace.admit();
         s.pages = vec![slot];
-        (s.done, s.published, s.chain, s.prefilling) = (held, 0, s.salt, true);
+        // (what it holds in full blocks has its names already: they are the names of these tokens)
+        let root = block_root(s.salt);
+        s.published = if self.names() { held / PAGE } else { 0 };
+        s.chain = block_names(root, &s.tokens[..s.published * PAGE]).last().copied().unwrap_or(root);
+        (s.done, s.prefilling) = (held, true);
         s.found(held);
         s.after.clear();
         self.stats.prompt += s.tokens.len() as u64;
@@ -1104,7 +1138,7 @@ impl<B: ModelStep> Sched<B> {
         self.give_back(&mut s)?;
         s.done = 0;
         s.published = 0;
-        s.chain = s.salt;
+        s.chain = block_root(s.salt);
         s.prefilling = true;
         s.resumed.fetch_add(1, Relaxed);
         self.stats.preempted += 1;
@@ -1114,6 +1148,10 @@ impl<B: ModelStep> Sched<B> {
 
     /// The sequence's full pages given to the cache and all its pages released; those nothing names are cleared on the GPU. A slot step's slot is emptied and free again.
     fn give_back(&mut self, s: &mut Seq) -> Result<()> {
+        if self.names() {
+            // (its full blocks stay findable by name when the slot is emptied)
+            Self::name_blocks(&mut self.be, s)?;
+        }
         if let Some(free) = &mut self.free {
             let slots = std::mem::take(&mut s.pages);
             free.extend(slots.iter().copied());
@@ -1141,6 +1179,9 @@ impl<B: ModelStep> Sched<B> {
         let mut s = self.active.remove(i);
         if self.keep && s.done >= KEEP_LEAST && s.pages.len() == 1 {
             // (kept in its slot: the conversation's next turn begins with these tokens)
+            if self.names() {
+                Self::name_blocks(&mut self.be, &mut s)?;
+            }
             let slot = s.pages.pop().expect("its slot");
             let pinned = (s.pin > 0).then(|| std::time::Instant::now() + std::time::Duration::from_secs(s.pin as u64));
             self.kept.push_back(Kept { slot, tokens: s.tokens[..s.done].to_vec(), salt: s.salt, pinned });
@@ -1152,10 +1193,30 @@ impl<B: ModelStep> Sched<B> {
         Ok(())
     }
 
+    /// Whether the full blocks of the sequences are told to the step by name and a prompt's start is looked for by name: a slot step that finds blocks so, keeping on.
+    fn names(&self) -> bool {
+        self.keep && self.free.is_some() && self.be.shares_starts()
+    }
+
+    /// The full blocks of a slot step's sequence that the step has not been told the names of yet, told (`ModelStep::name`).
+    fn name_blocks(be: &mut B, s: &mut Seq) -> Result<()> {
+        let first = s.published;
+        let mut keys = Vec::new();
+        while (s.published + 1) * PAGE <= s.done {
+            s.chain = block_hash(s.chain, &s.tokens[s.published * PAGE..(s.published + 1) * PAGE]);
+            keys.push(s.chain);
+            s.published += 1;
+        }
+        match (keys.is_empty(), &s.pages[..]) {
+            (false, &[slot]) => be.name(slot, first, &keys),
+            _ => Ok(()),
+        }
+    }
+
     /// Full pages of the prompt as far as it has run, offered to the cache at once (a request with the same first tokens that comes now finds them).
-    fn publish(&mut self, i: usize) {
+    fn publish(&mut self, i: usize) -> Result<()> {
         if self.free.is_some() {
-            return;
+            return if self.names() { Self::name_blocks(&mut self.be, &mut self.active[i]) } else { Ok(()) };
         }
         let s = &mut self.active[i];
         while (s.published + 1) * PAGE <= s.done {
@@ -1163,6 +1224,7 @@ impl<B: ModelStep> Sched<B> {
             s.chain = self.pager.publish(s.pages[k], s.chain, &s.tokens[k * PAGE..(k + 1) * PAGE]);
             s.published += 1;
         }
+        Ok(())
     }
 
     /// The token the sample after row `row` of the step stands for: the largest logit, or a draw from the logits as the request's sampling says; with it, its log-probabilities where the request asks for them
@@ -1290,7 +1352,7 @@ impl<B: ModelStep> Sched<B> {
             }
             let Some(i) = at(&self.active, id) else { continue };
             self.active[i].done += n;
-            self.publish(i);
+            self.publish(i)?;
             if let Some(sample) = sample {
                 self.active[i].prefilling = false;
                 self.mark_prompt(i)?;
@@ -1418,7 +1480,7 @@ impl<B: ModelStep> Sched<B> {
             }
             let Some(i) = at(&self.active, id) else { continue };
             self.active[i].done += 1;
-            self.publish(i);
+            self.publish(i)?;
             let (tok, lp) = self.pick(i, sample, row)?;
             if let Some(f) = self.accept(i, tok, lp) {
                 ended.push((id, f));
@@ -1434,7 +1496,7 @@ impl<B: ModelStep> Sched<B> {
             }
             let Some(i) = at(&self.active, id) else { continue };
             self.active[i].done += n;
-            self.publish(i);
+            self.publish(i)?;
             if let Some(sample) = sample {
                 self.active[i].prefilling = false;
                 self.mark_prompt(i)?;
@@ -1488,7 +1550,7 @@ impl<B: ModelStep> Sched<B> {
                 continue;
             }
             self.active[i].done += 1;
-            self.publish(i);
+            self.publish(i)?;
             let (tok, lp) = self.pick(i, sample, row)?;
             if let Some(f) = self.accept(i, tok, lp) {
                 ended.push((i, f));
@@ -2600,6 +2662,10 @@ pub(crate) mod tests {
         pub marks: Vec<usize>,
         /// Each `share`: from, to, the tokens asked for, the tokens shared (whole pages; a recurrent model's mark).
         pub shared: Vec<(i32, i32, usize, usize)>,
+        /// Blocks found by name: each named block's tokens (they stay when a slot is emptied, as a pool's do until it needs them), and each `adopt`: the slot and the
+        /// tokens found.
+        pub named: std::collections::HashMap<u128, Vec<u32>>,
+        pub adopted: Vec<(i32, usize)>,
     }
 
     impl SlotFake {
@@ -2626,6 +2692,8 @@ pub(crate) mod tests {
                 marking: false,
                 marks: vec![0; slots],
                 shared: Vec::new(),
+                named: Default::default(),
+                adopted: Vec::new(),
             }
         }
         fn put(&mut self, slot: &[i32], start: usize, tokens: &[u32]) -> u32 {
@@ -2745,6 +2813,24 @@ pub(crate) mod tests {
         }
         fn shares_starts(&self) -> bool {
             self.keeps && !self.whole_only
+        }
+        fn name(&mut self, slot: i32, first: usize, keys: &[u128]) -> Result<()> {
+            let room = &self.rooms[slot as usize];
+            assert!((first + keys.len()) * PAGE <= room.len(), "blocks {first} to {} named of a slot that holds {} tokens", first + keys.len(), room.len());
+            for (i, &k) in keys.iter().enumerate() {
+                self.named.entry(k).or_insert_with(|| room[(first + i) * PAGE..(first + i + 1) * PAGE].to_vec());
+            }
+            Ok(())
+        }
+        fn held_by_name(&self, keys: &[u128]) -> usize {
+            keys.iter().take_while(|k| self.named.contains_key(k)).count() * PAGE
+        }
+        fn adopt(&mut self, slot: i32, keys: &[u128]) -> Result<usize> {
+            assert!(self.rooms[slot as usize].is_empty(), "a start looked for into slot {slot}, which holds {}", self.rooms[slot as usize].len());
+            let found: Vec<u32> = keys.iter().map_while(|k| self.named.get(k)).flatten().copied().collect();
+            self.adopted.push((slot, found.len()));
+            self.rooms[slot as usize] = found;
+            Ok(self.rooms[slot as usize].len())
         }
         fn share(&mut self, from: i32, to: i32, upto: usize) -> Result<usize> {
             assert!(from != to && self.rooms[to as usize].is_empty(), "a start shared into slot {to}, which holds {}", self.rooms[to as usize].len());
@@ -2972,8 +3058,8 @@ pub(crate) mod tests {
         assert_eq!((c1.load(Relaxed), c2.load(Relaxed)), (0, 2 * PAGE as u32));
     }
 
-    /// R4c: a prompt that begins as another conversation's does shares that start and runs the rest, in a slot of its own; the other conversation stays whole for its own
-    /// next turn. Every reply is the one the whole prompt gives from its first token.
+    /// R4c: a prompt that begins as another conversation's does finds that start's full blocks by name and runs the rest, in a slot of its own; the other conversation
+    /// stays whole for its own next turn. Every reply is the one the whole prompt gives from its first token.
     #[test]
     fn a_prompt_shares_the_start_of_another_conversation() {
         let mut s = keeping(3);
@@ -2981,19 +3067,19 @@ pub(crate) mod tests {
         let pa: Vec<u32> = [&system[..], &prompt(2, 100)[..]].concat();
         let ra = turn(&mut s, &pa, 8);
         assert_eq!((ra.clone(), s.kept()), (reference(&pa, 8), 1));
-        // another conversation with the same system prompt: 60 tokens of the 167 kept, so the kept one is not cut down for it; its 3 full pages are shared
+        // another conversation with the same system prompt: 60 tokens of the 167 kept, so the kept one is not cut down for it; its 3 full blocks are found by name
         let pb: Vec<u32> = [&system[..], &prompt(3, 30)[..]].concat();
         assert_eq!(turn(&mut s, &pb, 8), reference(&pb, 8));
-        assert_eq!((s.be.shared.clone(), s.be.resumed.len(), s.stats.hit, s.kept()), (vec![(0, 1, 60, 48)], 0, 48, 2));
+        assert_eq!((s.be.adopted.clone(), s.be.resumed.len(), s.stats.hit, s.kept()), (vec![(0, 0), (1, 48)], 0, 48, 2));
         assert_eq!(s.be.begun, vec![pa[0]], "the second did not begin at its first token");
         // the first conversation's next turn goes on from all it left
         let a2: Vec<u32> = [&pa[..], &ra[..], &prompt(4, 9)[..]].concat();
         assert_eq!(turn(&mut s, &a2, 8), reference(&a2, 8));
         assert_eq!((s.be.resumed.clone(), s.stats.hit), (vec![(0, 167, 167)], 48 + 167));
-        // a third conversation: the start of whichever it shares more of (90 tokens of the first, which holds 191 now; 60 of the second)
+        // a third conversation: the longest start that is held (90 tokens of the first, which holds 191 now; 60 of the second)
         let pc: Vec<u32> = [&a2[..90], &prompt(5, 40)[..]].concat();
         assert_eq!(turn(&mut s, &pc, 8), reference(&pc, 8));
-        assert_eq!(s.be.shared[1], (0, 2, 90, 80));
+        assert_eq!(s.be.adopted[2], (2, 80));
         // another scope shares nothing
         let (tx, rx) = channel();
         s.submit(Submit {
@@ -3008,13 +3094,13 @@ pub(crate) mod tests {
             images: Vec::new(),
         });
         run(&mut s);
-        assert_eq!((collect(&rx).0, s.be.shared.len()), (reference(&pb, 8), 2));
+        assert_eq!((collect(&rx).0, s.be.adopted.last().map(|x| x.1), s.be.shared.len()), (reference(&pb, 8), Some(0), 0));
     }
 
-    /// A request that comes while another with the same start still runs shares what that one has run; and with no slot but the kept source's own, the request goes on
-    /// in it, cut back to what the two share.
+    /// A request that comes while another with the same start still runs finds what that one has run; and where the only slot holds a kept conversation whose start it
+    /// shares, the slot is emptied for it and the start is found still: blocks are found by their names, not by who holds them.
     #[test]
-    fn a_start_is_shared_from_a_running_sequence_and_a_lone_kept_one_is_taken() {
+    fn a_start_is_found_while_its_sequence_runs_and_after_its_slot_was_taken() {
         let mut s = keeping(2);
         let system = prompt(1, 100);
         let pa: Vec<u32> = [&system[..], &prompt(2, 20)[..]].concat();
@@ -3027,13 +3113,17 @@ pub(crate) mod tests {
         let (rx_b, _) = add(&mut s, pb.clone(), 8);
         run(&mut s);
         assert_eq!((collect(&rx_a).0, collect(&rx_b).0), (reference(&pa, 60), reference(&pb, 8)));
-        assert_eq!(s.be.shared, vec![(0, 1, 100, 96)]);
-        // one slot: the kept conversation is the only place; a prompt that shares its start (too little of it to be its next turn) goes on in it from there
+        assert_eq!(s.be.adopted, vec![(0, 0), (1, 96)]);
+        // one slot, and a kept conversation in it: a prompt that shares its start (too little of it to be its next turn) has the slot, emptied, and the start by name
         let mut s = keeping(1);
         let long: Vec<u32> = [&system[..], &prompt(4, 150)[..]].concat();
-        turn(&mut s, &long, 8);
+        let rl = turn(&mut s, &long, 8);
         assert_eq!(turn(&mut s, &pb, 8), reference(&pb, 8));
-        assert_eq!((s.be.resumed.clone(), s.be.shared.len(), s.be.emptied, s.be.begun.len()), (vec![(0, 100, 100)], 0, 0, 1));
+        assert_eq!((s.be.resumed.len(), s.be.adopted.last(), s.be.emptied, s.be.begun.len()), (0, Some(&(0, 96)), 1, 1));
+        // and the conversation whose slot was taken finds its own full blocks, all 16 of them, at its next turn
+        let next: Vec<u32> = [&long[..], &rl[..], &prompt(5, 6)[..]].concat();
+        assert_eq!(turn(&mut s, &next, 8), reference(&next, 8));
+        assert_eq!((s.be.adopted.last(), s.be.begun.len()), (Some(&(0, 256)), 1));
     }
 
     /// Requests that begin alike and come together: the first runs the start, the others wait while at least a chunk of it is left to run and share what is run by
@@ -3053,7 +3143,7 @@ pub(crate) mod tests {
             assert_eq!(collect(r), (reference(p, 8), Finish::Length));
         }
         // the start was run once but for its end: the two were let in when less than a chunk (32 tokens) of it was left to run, and shared the 176 tokens run by then
-        assert_eq!(s.be.shared.iter().map(|x| (x.2, x.3)).collect::<Vec<_>>(), vec![(176, 176), (176, 176)]);
+        assert_eq!(s.be.adopted.iter().map(|x| x.1).collect::<Vec<_>>(), vec![0, 0, 176, 176]);
         assert_eq!((s.be.begun.len(), s.stats.hit), (2, 2 * 176));
         // a recurrent model: all three begin at their first token, at once
         let mut s = keeping(4);
@@ -3165,25 +3255,25 @@ pub(crate) mod tests {
     }
 
     /// A request that begins with too little of a kept sequence does not take its slot: fewer than KEEP_LEAST tokens, or less than half of what is kept. It runs in a slot of
-    /// its own (sharing the start's full pages where there are KEEP_LEAST tokens of it), and the kept conversation's next turn still finds its own.
+    /// its own (with the start's full blocks, found by name), and the kept conversation's next turn still finds its own.
     #[test]
     fn a_kept_sequence_is_not_cut_down_for_a_short_shared_start() {
         let mut s = keeping(3);
         let p1 = prompt(1, 100);
         let r1 = turn(&mut s, &p1, 8);
-        // the same first 40 tokens (less than half of the 107 kept), then another prompt's: a slot of its own, the start's 2 full pages shared
+        // the same first 40 tokens (less than half of the 107 kept), then another prompt's: a slot of its own, the start's 2 full blocks found by name
         let other: Vec<u32> = [&p1[..40], &prompt(9, 30)[..]].concat();
         assert_eq!(turn(&mut s, &other, 8), reference(&other, 8));
-        assert!(s.be.resumed.is_empty() && s.be.shared == vec![(0, 1, 40, 32)] && s.kept() == 2);
-        // a short one that shares all of its 20 tokens but the last (fewer than KEEP_LEAST): from its first token
+        assert!(s.be.resumed.is_empty() && s.be.adopted.last() == Some(&(1, 32)) && s.kept() == 2);
+        // a short one that shares all of its 20 tokens but the last (fewer than KEEP_LEAST): a slot of its own too, its one full block found
         let short = p1[..20].to_vec();
         assert_eq!(turn(&mut s, &short, 4), reference(&short, 4));
-        assert!(s.be.resumed.is_empty() && s.be.shared.len() == 1 && s.be.begun.len() == 2);
+        assert!(s.be.resumed.is_empty() && s.be.adopted.last() == Some(&(2, 16)) && s.be.begun.len() == 1);
         // the first conversation's next turn finds its slot as it left it
         let p2: Vec<u32> = [&p1[..], &r1[..], &prompt(2, 6)[..]].concat();
         assert_eq!(turn(&mut s, &p2, 8), reference(&p2, 8));
         assert_eq!(s.be.resumed, vec![(0, 107, 107)]);
-        assert_eq!(s.stats.hit, 32 + 107);
+        assert_eq!(s.stats.hit, 32 + 16 + 107);
     }
 
     /// Kept sequences never keep a request waiting: with no slot free the oldest is emptied for it. Of two kept, the one a request begins with more of is the one it goes on in.
@@ -3197,13 +3287,13 @@ pub(crate) mod tests {
         let pc = prompt(3, 50);
         assert_eq!(turn(&mut s, &pc, 8), reference(&pc, 8));
         assert_eq!((s.kept(), s.be.emptied, s.be.begun.len()), (2, 1, 3));
-        // b's next turn still goes on in its slot; a's runs from its first token (in c's slot, now the oldest)
+        // b's next turn still goes on in its slot; a's has c's slot (now the oldest), and finds its 3 full blocks by name though its own slot was emptied
         let b2: Vec<u32> = [&pb[..], &rb[..], &prompt(5, 4)[..]].concat();
         assert_eq!(turn(&mut s, &b2, 8), reference(&b2, 8));
         assert_eq!(s.be.resumed, vec![(1, 57, 57)]);
         let a2: Vec<u32> = [&pa[..], &ra[..], &prompt(6, 4)[..]].concat();
         assert_eq!(turn(&mut s, &a2, 8), reference(&a2, 8));
-        assert_eq!((s.be.resumed.len(), s.be.emptied, s.be.begun.len()), (1, 2, 4));
+        assert_eq!((s.be.resumed.len(), s.be.emptied, s.be.begun.len(), s.be.adopted.last().map(|x| x.1)), (1, 2, 3, Some(48)));
         // several at once, more than the slots: every reply right, none waits on a kept slot
         let ps: Vec<Vec<u32>> = (10..15).map(|k| prompt(k, 30 + k as usize)).collect();
         let rx: Vec<_> = ps.iter().map(|p| add(&mut s, p.clone(), 12).0).collect();

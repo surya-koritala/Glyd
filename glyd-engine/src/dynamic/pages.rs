@@ -7,9 +7,17 @@
 //! counts its holders and goes back to its pool when the last gives it up. A shared block is never written: a sequence writes from its own length on, a shared block is full
 //! and below the lengths of all who hold it, and a sequence cut back (`shrink`) into a block that others hold is cut to that block's start instead.
 //!
+//! A full block has a name (R4c: `kv::block_hash`, of its tokens and all before them, which the scheduler tells with `name`), and a pool finds its blocks by name. A named
+//! block that no sequence holds is not free yet: it stays, with its bytes, until its pool needs a block, the oldest such going first (a sequence gives its blocks up last
+//! block first, so a chain loses its end before its start). So a prompt finds the blocks of its start whether or not a sequence still holds them (`adopt`): a conversation's
+//! system prompt after that conversation has grown past it (a sliding group gave those blocks up long ago) or has ended. A named block is never written: a cut back into
+//! one that the sequence alone holds takes its name away first.
+//!
 //! Block 0 of every pool is never given out: every entry a sequence does not hold names it, so a write the engine makes there (a graph's capture runs a step at position 0 of a sequence
 //! that holds nothing) lands where no one reads. The kernels read a position through the table (`g4_place` in kernels/gemma4.cu); this file is the host's side: which blocks a sequence
 //! holds, and which entries changed since the tables were last copied to the GPU.
+
+use std::collections::{BTreeMap, HashMap};
 
 /// Tokens a block.
 pub const BLOCK: usize = 16;
@@ -23,22 +31,76 @@ struct Pool {
     blocks: u32,
     /// The sequences that hold each block (their table entries that name it).
     refs: Vec<u32>,
+    /// Each block's name (0: none), and the named blocks by name.
+    name: Vec<u128>,
+    index: HashMap<u128, u32>,
+    /// The named blocks no sequence holds, by the time each was given up (`age`, from `tick`): the oldest is the first taken for another use.
+    idle: BTreeMap<u64, u32>,
+    age: Vec<u64>,
+    tick: u64,
 }
 
 impl Pool {
-    /// A block for one holder.
+    fn new(blocks: u32, keep: Option<usize>) -> Pool {
+        let n = blocks.max(1);
+        Pool {
+            keep,
+            free: (1..n).rev().collect(),
+            blocks: n,
+            refs: vec![0; n as usize],
+            name: vec![0; n as usize],
+            index: HashMap::new(),
+            idle: BTreeMap::new(),
+            age: vec![0; n as usize],
+            tick: 0,
+        }
+    }
+    /// Blocks that can be had now: the free, and the named ones no sequence holds.
+    fn available(&self) -> usize {
+        self.free.len() + self.idle.len()
+    }
+    /// A block for one holder, with no name: a free one, else the oldest named one that no sequence holds.
     fn take(&mut self) -> Option<u32> {
-        let b = self.free.pop()?;
+        let b = match self.free.pop() {
+            Some(b) => b,
+            None => {
+                let (&age, &b) = self.idle.iter().next()?;
+                self.idle.remove(&age);
+                self.unname(b);
+                b
+            }
+        };
         self.refs[b as usize] = 1;
         Some(b)
     }
-    /// One holder gives block `b` up: free again when it was the last.
+    /// One holder gives block `b` up. When it was the last: free again, or, named, kept until the pool needs it.
     fn give(&mut self, b: u32) {
         let r = &mut self.refs[b as usize];
         debug_assert!(*r > 0, "block {b} given up twice");
         *r = r.saturating_sub(1);
-        if *r == 0 {
+        if *r > 0 {
+            return;
+        }
+        if self.name[b as usize] == 0 {
             self.free.push(b);
+        } else {
+            self.tick += 1;
+            self.age[b as usize] = self.tick;
+            self.idle.insert(self.tick, b);
+        }
+    }
+    /// One holder more of block `b`, which is held or waits by its name.
+    fn hold(&mut self, b: u32) {
+        if self.refs[b as usize] == 0 {
+            self.idle.remove(&self.age[b as usize]);
+        }
+        self.refs[b as usize] += 1;
+    }
+    /// Block `b` has no name any more (it is about to be written, or used for something else).
+    fn unname(&mut self, b: u32) {
+        let n = std::mem::take(&mut self.name[b as usize]);
+        if n != 0 {
+            self.index.remove(&n);
         }
     }
 }
@@ -59,11 +121,7 @@ pub struct Pages {
 impl Pages {
     /// Pools of `blocks[g]` blocks (block 0 among them) for the groups, each keeping `keep[g]` tokens behind (None: all), for `slots` sequences of at most `ctx` tokens.
     pub fn new(blocks: &[u32], keep: &[Option<usize>], slots: usize, ctx: usize) -> Pages {
-        let pools = blocks
-            .iter()
-            .zip(keep)
-            .map(|(&b, &k)| Pool { keep: k, free: (1..b.max(1)).rev().collect(), blocks: b.max(1), refs: vec![0; b.max(1) as usize] })
-            .collect::<Vec<_>>();
+        let pools = blocks.iter().zip(keep).map(|(&b, &k)| Pool::new(b, k)).collect::<Vec<_>>();
         let n = ctx.div_ceil(BLOCK);
         let tabs = (0..slots).map(|_| (0..pools.len()).map(|_| vec![0u32; n]).collect()).collect();
         let dirty = (0..slots).map(|_| vec![None; pools.len()]).collect();
@@ -75,9 +133,9 @@ impl Pages {
         self.pools.len()
     }
 
-    /// Blocks free in group `g`, and all of its blocks but block 0.
+    /// Blocks that can be had in group `g` (free, or named and held by no sequence), and all of its blocks but block 0.
     pub fn free(&self, g: usize) -> (usize, usize) {
-        (self.pools[g].free.len(), self.pools[g].blocks as usize - 1)
+        (self.pools[g].available(), self.pools[g].blocks as usize - 1)
     }
 
     /// The most tokens one sequence can hold with nothing else holding blocks: a full group's blocks (but block 0) a BLOCK each; a sliding group no limit where it holds a window and a chunk
@@ -124,7 +182,7 @@ impl Pages {
             let need = (from..hi).filter(|&b| self.tabs[slot][g][b] == 0).count();
             // (blocks this call gives back come first: those it alone holds)
             let back = (0..lo).filter(|&b| self.tabs[slot][g][b] != 0 && self.pools[g].refs[self.tabs[slot][g][b] as usize] == 1).count();
-            if need > self.pools[g].free.len() + back {
+            if need > self.pools[g].available() + back {
                 return false;
             }
         }
@@ -147,11 +205,12 @@ impl Pages {
         true
     }
 
-    /// Every block of sequence `slot` back in its pool.
+    /// Every block of sequence `slot` back in its pool, the last first (of the named ones, which stay until the pool needs them, the sequence's end is then the first to go
+    /// and its start the last).
     pub fn release(&mut self, slot: usize) {
         for g in 0..self.pools.len() {
             self.floor[slot][g] = 0;
-            for b in 0..self.tabs[slot][g].len() {
+            for b in (0..self.tabs[slot][g].len()).rev() {
                 let blk = std::mem::take(&mut self.tabs[slot][g][b]);
                 if blk != 0 {
                     self.pools[g].give(blk);
@@ -193,6 +252,15 @@ impl Pages {
             return 0;
         }
         let hi = upto.div_ceil(BLOCK);
+        if !upto.is_multiple_of(BLOCK) {
+            // (the block the cut is in is written from there on: it is no longer the tokens its name says)
+            for g in 0..self.pools.len() {
+                let blk = self.tabs[slot][g][upto / BLOCK];
+                if blk != 0 {
+                    self.pools[g].unname(blk);
+                }
+            }
+        }
         for g in 0..self.pools.len() {
             for b in hi..self.tabs[slot][g].len() {
                 let blk = std::mem::take(&mut self.tabs[slot][g][b]);
@@ -235,6 +303,64 @@ impl Pages {
             }
         }
         nb * BLOCK
+    }
+
+    /// Sequence `slot`'s block `b` is full, and `key` is its name (`kv::block_hash`): in every group that holds it, the block is found by that name from now on, unless
+    /// another block of the group has the name already (two sequences that ran the same tokens side by side: the first stays the one that is found).
+    pub fn name(&mut self, slot: usize, b: usize, key: u128) {
+        if key == 0 || b >= self.tabs[slot][0].len() {
+            return;
+        }
+        for g in 0..self.pools.len() {
+            let blk = self.tabs[slot][g][b] as usize;
+            let p = &mut self.pools[g];
+            debug_assert!(blk == 0 || p.name[blk] == 0 || p.name[blk] == key, "block {blk} named twice");
+            if blk != 0 && p.name[blk] == 0 && !p.index.contains_key(&key) {
+                p.name[blk] = key;
+                p.index.insert(key, blk as u32);
+            }
+        }
+    }
+
+    /// The longest start of a sequence whose full blocks are named `keys` (in order) that the pools hold by name and a step can go on from, taken by sequence `to`, which
+    /// must hold nothing: the tokens `to` then holds (a whole number of blocks), each block with one holder more. A step at n blocks reads every block before in a full group
+    /// and the window behind in a sliding one (`slack` as `shrink`'s), so that is what must be there: the most n such that it is. 0, and nothing changes: none.
+    pub fn adopt(&mut self, to: usize, keys: &[u128], slack: usize) -> usize {
+        if self.tabs[to].iter().any(|t| t.iter().any(|&b| b != 0)) {
+            return 0;
+        }
+        let n = self.fit(keys, slack);
+        for g in 0..self.pools.len() {
+            let lo = self.reach(g, n * BLOCK, slack).min(n);
+            self.floor[to][g] = lo;
+            for b in lo..n {
+                let blk = self.pools[g].index[&keys[b]];
+                self.pools[g].hold(blk);
+                self.tabs[to][g][b] = blk;
+                self.mark(to, g, b);
+            }
+        }
+        n * BLOCK
+    }
+
+    /// The blocks `adopt` would give a sequence whose full blocks are named `keys`: the most n such that every block a step at n blocks reads is held by name.
+    pub fn fit(&self, keys: &[u128], slack: usize) -> usize {
+        let mut n = keys.len().min(self.tabs[0][0].len());
+        for p in self.pools.iter().filter(|p| p.keep.is_none()) {
+            n = keys[..n].iter().position(|k| !p.index.contains_key(k)).unwrap_or(n);
+        }
+        // (a sliding group that lacks block b of the window behind n lacks it for every length from b + 1 to n: those windows hold b too)
+        'fit: while n > 0 {
+            for g in (0..self.pools.len()).filter(|&g| self.pools[g].keep.is_some()) {
+                let lo = self.reach(g, n * BLOCK, slack).min(n);
+                if let Some(b) = (lo..n).rev().find(|&b| !self.pools[g].index.contains_key(&keys[b])) {
+                    n = b;
+                    continue 'fit;
+                }
+            }
+            break;
+        }
+        n
     }
 
     fn mark(&mut self, slot: usize, g: usize, b: usize) {
@@ -307,6 +433,195 @@ mod tests {
         // a sequence that never gave a block back is cut anywhere
         assert!(p.grow(1, 90) && p.shrink(1, 20, 32) == 20);
         assert_eq!((p.held(0) - 32, p.table(1, 1).iter().filter(|&&b| b != 0).count()), (2, 2));
+    }
+
+    /// The names of the full blocks of `n` tokens of a stream: stream `a` to `fork`, stream `b` after.
+    fn names(a: u32, b: u32, fork: usize, n: usize) -> Vec<u128> {
+        let toks: Vec<u32> = (0..n).map(|i| (if i < fork { a } else { b }) * 100_003 + i as u32).collect();
+        crate::kv::block_names(crate::kv::block_root(0), &toks)
+    }
+
+    /// A sequence's full blocks are found by name after it has grown far past them, and after it has ended: every block of a full group, a sliding group's window behind
+    /// the place. A prompt that parts from it midway finds what the two share. What a pool needs for something else it takes from the named blocks no one holds, the
+    /// oldest first, and those are then not found.
+    #[test]
+    fn a_start_is_found_by_name_whoever_holds_it() {
+        // (a window of 64 tokens and a chunk of 32)
+        let mut p = Pages::new(&[60, 60], &[None, Some(64 + 32)], 3, 1024);
+        let keys = names(1, 1, 0, 500);
+        // (it grows by less than a chunk a time and its full blocks are named after each, as the scheduler does: what a sliding group gives back has its name by then)
+        for to in (20..=500).step_by(20) {
+            assert!(p.grow(0, to));
+            for b in 0..to / BLOCK {
+                p.name(0, b, keys[b]);
+            }
+        }
+        // the sliding group gave the blocks before entry 25 back as it grew: named, they wait (nothing is free that was not before)
+        assert_eq!((p.held(1), p.pools[1].idle.len(), p.pools[1].free.len()), (7, 25, 59 - 32));
+        // the same tokens: all 31 full blocks, the sliding group's from the window before 496 on
+        assert_eq!(p.adopt(1, &keys, 32), 496);
+        assert_eq!(p.table(1, 0)[..31], p.table(0, 0)[..31]);
+        assert!(p.table(1, 1)[..27].iter().all(|&b| b == 0) && p.table(1, 1)[27..31] == p.table(0, 1)[27..31]);
+        p.release(1);
+        // a prompt that parts from it at token 210: 13 blocks, and of the sliding group the window before 208 (blocks that no sequence held)
+        let other = names(1, 2, 210, 400);
+        assert_eq!(other[..13], keys[..13]);
+        assert_eq!(p.adopt(1, &other, 32), 208);
+        assert!(p.table(1, 1)[..9].iter().all(|&b| b == 0) && p.table(1, 1)[9..13].iter().all(|&b| b != 0));
+        assert_eq!(p.pools[1].idle.len(), 25 - 4);
+        // it goes on with its own tokens: entry 13 is a block of its own, and no block is given it before the window it found
+        assert!(p.grow(1, 240));
+        assert!(p.table(1, 0)[13] != p.table(0, 0)[13] && p.table(1, 1)[..9].iter().all(|&b| b == 0));
+        p.release(1);
+        // the first sequence ends: everything it held waits by name, and is found
+        p.release(0);
+        assert_eq!((p.held(0), p.held(1)), (0, 0));
+        assert_eq!(p.adopt(2, &keys, 32), 496);
+        p.release(2);
+        // another sequence needs the pool: the full group's 59 blocks, 28 of them free and 31 waiting, of which it takes the oldest, the chain's end
+        assert!(p.grow(1, 40 * BLOCK));
+        assert_eq!((p.pools[0].free.len(), p.pools[0].idle.len()), (0, 19));
+        assert_eq!(p.adopt(2, &keys, 32), 19 * BLOCK, "the start of the chain is what is left");
+    }
+
+    /// A named block is never written. A sequence cut back into a full block it alone holds takes the block's name away (it writes there next); cut into one that another
+    /// holds it is cut to the block's start, and the block keeps its name.
+    #[test]
+    fn a_cut_into_a_named_block_takes_its_name_away() {
+        let mut p = Pages::new(&[60, 60], &[None, Some(64 + 32)], 3, 1024);
+        let keys = names(1, 1, 0, 96);
+        assert!(p.grow(0, 96));
+        (0..6).for_each(|b| p.name(0, b, keys[b]));
+        assert_eq!(p.shrink(0, 70, 32), 70);
+        // block 4 (tokens 64 to 79) has no name now: the same tokens are found to 64 (block 5, given back, waits by its name for a sequence that has all six)
+        assert!((0..2).all(|g| p.pools[g].name[p.table(0, g)[4] as usize] == 0 && p.pools[g].index.len() == 5));
+        assert_eq!(p.adopt(1, &keys, 32), 64);
+        // the two hold block 3: a cut of the first into it is to its start, and it is still found
+        assert_eq!(p.shrink(0, 60, 32), 48);
+        p.release(1);
+        assert_eq!(p.adopt(1, &keys, 32), 64);
+        // the first goes on with other tokens from 48: block 3 is a new one of its own
+        assert!(p.grow(0, 80) && p.table(0, 0)[3] != p.table(1, 0)[3]);
+    }
+
+    /// Sequences of a few token streams growing, being found by name, cut back and ending at random, with a record of what each block holds: a named block holds the tokens
+    /// its name says and is never written; a block is free, or waits by its name, or is held, and never two of these; what is found by name is what was asked for.
+    #[test]
+    fn named_blocks_hold_what_their_names_say() {
+        let (slots, ctx, slack) = (6, 640, 32);
+        let mut p = Pages::new(&[70, 40], &[None, Some(48 + slack)], slots, ctx);
+        // each sequence: (stream to its fork, stream after, the fork), its length, and its blocks' names
+        let mut id = vec![(0u32, 0u32, 0usize); slots];
+        let mut len = vec![0usize; slots];
+        let mut keys: Vec<Vec<u128>> = vec![Vec::new(); slots];
+        // what each block holds: the name of the full block of tokens written there (None: not a full block's)
+        let mut holds: Vec<Vec<Option<u128>>> = (0..2).map(|g| vec![None; p.pools[g].blocks as usize]).collect();
+        let (mut seed, mut next) = (0x9e37_79b9_7f4a_7c15u64, 10u32);
+        let mut rnd = |m: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % m as u64) as usize
+        };
+        let (mut found, mut cuts, mut taken) = (0, 0, 0);
+        for _ in 0..30000 {
+            let s = rnd(slots);
+            match rnd(10) {
+                0 => {
+                    p.release(s);
+                    len[s] = 0;
+                }
+                1..=3 if len[s] == 0 => {
+                    // a new sequence: one of two streams to a fork, its own after
+                    next += 1;
+                    id[s] = (rnd(2) as u32, next, rnd(500));
+                    keys[s] = names(id[s].0, id[s].1, id[s].2, ctx);
+                    let got = p.adopt(s, &keys[s][..rnd(ctx / BLOCK)], slack);
+                    assert!(got % BLOCK == 0);
+                    for g in 0..2 {
+                        for (b, &blk) in p.table(s, g).iter().enumerate() {
+                            assert!(
+                                blk == 0 || (b * BLOCK < got && holds[g][blk as usize] == Some(keys[s][b])),
+                                "entry {b} of group {g} is not the block asked for"
+                            );
+                        }
+                    }
+                    found += (got > 0) as usize;
+                    len[s] = got;
+                }
+                4 if len[s] > 0 => {
+                    let got = p.shrink(s, 1 + rnd(len[s]), slack);
+                    if got > 0 {
+                        // (from there on it is another sequence)
+                        next += 1;
+                        id[s] = (id[s].0, next, id[s].2.min(got));
+                        if id[s].2 < got {
+                            // its tokens before the cut are of two streams: the names stay those of what it holds
+                            let old = keys[s].clone();
+                            keys[s] = old[..got / BLOCK].iter().copied().chain(std::iter::repeat_n(0, ctx / BLOCK - got / BLOCK)).collect();
+                        } else {
+                            keys[s] = names(id[s].0, id[s].1, id[s].2, ctx);
+                        }
+                        len[s] = got;
+                        cuts += 1;
+                    }
+                }
+                _ if len[s] > 0 || rnd(3) == 0 => {
+                    if len[s] == 0 {
+                        next += 1;
+                        id[s] = (rnd(2) as u32, next, rnd(500));
+                        keys[s] = names(id[s].0, id[s].1, id[s].2, ctx);
+                    }
+                    let to = (len[s] + 1 + rnd(40)).min(ctx);
+                    let idle: usize = p.pools.iter().map(|q| q.idle.len()).sum();
+                    if p.grow(s, to) {
+                        taken += (p.pools.iter().map(|q| q.idle.len()).sum::<usize>() < idle) as usize;
+                        // the tokens from its length to `to` are written: no block with a name among them
+                        for g in 0..2 {
+                            for b in len[s] / BLOCK..to.div_ceil(BLOCK) {
+                                let blk = p.table(s, g)[b] as usize;
+                                assert!(
+                                    blk != 0 && p.pools[g].name[blk] == 0 && p.pools[g].refs[blk] == 1,
+                                    "a block written that has a name or another holder"
+                                );
+                                holds[g][blk] = (to >= (b + 1) * BLOCK && keys[s][b] != 0).then_some(keys[s][b]);
+                            }
+                        }
+                        for b in len[s] / BLOCK..to / BLOCK {
+                            p.name(s, b, keys[s][b]);
+                        }
+                        len[s] = to;
+                    }
+                }
+                _ => {}
+            }
+            for g in 0..2 {
+                let q = &p.pools[g];
+                let mut count = vec![0u32; q.blocks as usize];
+                for x in 0..slots {
+                    for (b, &blk) in p.table(x, g).iter().enumerate() {
+                        count[blk as usize] += (blk != 0) as u32;
+                        assert!(blk == 0 || b * BLOCK < len[x], "sequence {x} of {} tokens holds entry {b}", len[x]);
+                    }
+                }
+                assert_eq!(count, q.refs, "a block's count is not its holders");
+                for blk in 1..q.blocks as usize {
+                    let (free, idle) = (q.free.contains(&(blk as u32)), q.idle.values().any(|&b| b as usize == blk));
+                    assert_eq!((free, idle), (q.refs[blk] == 0 && q.name[blk] == 0, q.refs[blk] == 0 && q.name[blk] != 0), "block {blk} of group {g}");
+                    if q.name[blk] != 0 {
+                        assert_eq!(
+                            (q.index.get(&q.name[blk]), holds[g][blk]),
+                            (Some(&(blk as u32)), Some(q.name[blk])),
+                            "block {blk} of group {g} and its name"
+                        );
+                    }
+                }
+                assert_eq!(q.index.len(), q.name.iter().filter(|&&n| n != 0).count());
+                assert_eq!(q.free.len() + q.idle.len() + q.refs.iter().filter(|&&r| r > 0).count(), q.blocks as usize - 1, "a block lost");
+            }
+        }
+        // (the run did what it is for)
+        assert!(found > 300 && cuts > 300 && taken > 300, "{found} found, {cuts} cuts, {taken} growths that took a named block");
     }
 
     /// Growth takes blocks in every group or in none; a sequence past the context never grows.

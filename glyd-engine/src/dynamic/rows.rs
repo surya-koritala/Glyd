@@ -623,9 +623,40 @@ impl ModelStep for Dyn {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Self::batch_prefill()
     }
-    /// Any start's full blocks, where the keys and values are paged and nothing of a sequence is a state.
+    /// Full blocks are found by name where the keys and values are paged and nothing of a sequence is a state (`Pages::name`, `Pages::adopt`).
     fn shares_starts(&self) -> bool {
         self.paged.is_some() && self.cuts()
+    }
+    fn name(&mut self, slot: i32, first: usize, keys: &[u128]) -> Result<()> {
+        if self.shares_starts() {
+            let pg = self.paged.as_mut().expect("paged");
+            for (i, &k) in keys.iter().enumerate() {
+                pg.pages.name(slot as usize, first + i, k);
+            }
+        }
+        Ok(())
+    }
+    fn held_by_name(&self, keys: &[u128]) -> usize {
+        match &self.paged {
+            Some(pg) if self.cuts() => pg.pages.fit(keys, self.chunk) * BLOCK,
+            _ => 0,
+        }
+    }
+    /// The blocks are the pools' as they are (their bytes are on the GPU whether a sequence holds them or they wait by name): the slot's tables name them, and the
+    /// sequence is as long as they are.
+    fn adopt(&mut self, slot: i32, keys: &[u128]) -> Result<usize> {
+        let t = slot as usize;
+        if !self.shares_starts() || self.seq_n(t) != 0 {
+            return Ok(0);
+        }
+        let chunk = self.chunk;
+        let n = self.paged.as_mut().expect("paged").pages.adopt(t, keys, chunk);
+        if n > 0 {
+            self.set_seq_n(t, n);
+            self.dev.sync()?;
+            self.upload_tables(t)?;
+        }
+        Ok(n)
     }
     /// A start shared with an empty sequence (`Pages::share`; paged keys and values only). With no recurrent state and no latent cache: the full blocks of the first `upto`
     /// tokens. With recurrent states kept at a mark: `from`'s mark, where it is within `upto`: the full blocks before it shared, the block the mark is in copied to one of
