@@ -394,8 +394,9 @@ int glyd_gpu_attn_decode(const uint16_t* q, int64_t D, const uint8_t* kd, const 
  * The lossless 12-bit KV cache (glyd_gpu's vLLM plugin, kv: lossless): a pool of pages, a page the K and V of 16
  * consecutive tokens of H kv heads (1 to 32) of D = 128 channels, every bf16 value held in 12 bits and read back bit
  * for bit. D = 256 (H 1 to 16) is held as 2 H heads of 128, a head's channels 0-127 the page's head 2 h and 128-255 its
- * head 2 h + 1 (kbase, vbase [H][256] are those heads' [2 H][128]): every function below takes the model's H and D, and
- * the page's heads are 2 H where it says H (kv_second_bytes takes the page's heads). A value is its bf16 low byte as it is and a 4-bit code for the high byte: the sign and an offset 0-7 from
+ * head 2 h + 1 (kbase, vbase [H][256] are those heads' [2 H][128]); D = 512 (H 1 to 8) as 4 H heads of 128, the same way (decode: a page
+ * is four warps', their scores summed in the order of the halves): every function below takes the model's H and D, and
+ * the page's heads are 2 H (D = 256) or 4 H (D = 512) where it says H (kv_second_bytes takes the page's heads). A value is its bf16 low byte as it is and a 4-bit code for the high byte: the sign and an offset 0-7 from
  * a base, the window of 8 values of exponent >> 1 that holds the most of the (layer, head, channel)'s values in other
  * text (kbase, vbase: uint8 [H][D] a layer, each 0 to 120); a value outside its window is an exception: an entry in its
  * head's header (three inline), else in its page's list of entries, whose first A are in the page (its arena) and the rest
@@ -413,11 +414,16 @@ int glyd_gpu_attn_decode(const uint16_t* q, int64_t D, const uint8_t* kd, const 
  * chunks it holds back to the escape pool). An escape pool is nchunks chunks of 64 entries, in one buffer of
  * glyd_gpu_kv_extra_bytes bytes (16-byte aligned, zero before its first use) that every layer's calls of a process
  * share (a layer's number tells its pages apart): a page takes up to 16 chunks, 1,024 entries past its arena.
+ * One stream: where D has GLYD_GPU_KV_ONE_STREAM (1 << 16) set the tensor is held in the K tile's layout alone (a latent, or keys that are the values): glyd_gpu_kv_leaf_bytes, _write, _release and _unpack
+ * take it (write reads `key` and no value; unpack writes out_k only, the same [n][16][H][D] bf16; both ignore the value arguments, which may be null), a page has H head-pages of one 3,072-byte tile in place
+ * of two (D = 128, H = 5, A = 15: 16,384 bytes, against 32,768 for two streams), and _gather, _work_put, _decode and _decode_workspace refuse it. The tables are kbase's alone.
  * A page that has no place for an entry is stored raw, in a slab of the raw pool (nslabs slabs, in one buffer of
  * glyd_gpu_kv_second_bytes bytes, 16-byte aligned, zero before its first use, shared by every layer's calls of a process); the
  * readers take either kind. A page that finds no slab is void: its block is named in the status's ring, and what reads it is not to
  * be used; a block with a raw page is named in the raw ring.
  * ---------------------------------------------------------------------- */
+
+#define GLYD_GPU_KV_ONE_STREAM (1 << 16)
 
 /* A page's bytes for H heads, D and an arena of A entries (0 to 1023); cudaErrorInvalidValue where they are out of range. */
 int glyd_gpu_kv_leaf_bytes(int64_t H, int64_t D, int64_t A, int64_t* bytes);

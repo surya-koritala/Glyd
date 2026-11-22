@@ -5345,7 +5345,9 @@ enum { ST_OVERFLOW = 0, ST_PAGE_HW = 1, ST_ARENA_PAGES = 2, ST_ENTRIES = 3, ST_P
        ST_RING_HEAD = 12, ST_RAW_RING_HEAD = 13, ST_RING = 16 };
 
 __host__ __device__ constexpr int hdr_bytes(int H, int A) { return (16 * H + 4 * (1 + ND + A) + 127) & ~127; }
-__host__ __device__ constexpr int64_t page_bytes(int H, int A) { return hdr_bytes(H, A) + (int64_t)H * HEADPAGE; }
+// A head-page's bytes: its K tile and its V tile, or (one stream: a tensor held in the K tile's layout alone) its one tile.
+__host__ __device__ constexpr int64_t head_page(bool one) { return one ? TILE : HEADPAGE; }
+__host__ __device__ constexpr int64_t page_bytes(int H, int A, bool one = false) { return hdr_bytes(H, A) + (int64_t)H * head_page(one); }
 
 template <int OFF>
 __device__ __forceinline__ uint4 ldg_stream(const uint8_t* p) {  // a streaming read: through the read-only path, no L1 line kept
@@ -5681,6 +5683,7 @@ struct WriteParams {
     uint32_t layer_tag;  // (layer + 1) << 24: the owner tag of this layer's pages in the pools
     int N, H, A;
     int lean;  // 0: every run through write_run (the path of a run of any length); else a run of one token through the decode step's path
+    int one;   // 1: one stream (the keys alone: no value is read, a page holds no V tile)
 };
 
 __shared__ uint32_t g_need;  // an entry of the CTA's page found no place: the page is made raw (make_raw)
@@ -6024,7 +6027,8 @@ __device__ __noinline__ void make_raw(const WriteParams& P, uint8_t* pg, uint32_
     uint8_t* plane = P.raw.data + (size_t)slab * (size_t)P.raw.plane;
     for (int pr = warp; pr < 2 * P.H; pr += (int)(blockDim.x >> 5)) {  // pr = 2 head + kind
         const int h = pr >> 1;
-        uint8_t* tile = pg + hb + (int64_t)h * HEADPAGE + (pr & 1) * TILE;
+        if (P.one && (pr & 1)) continue;  // (one stream: no V tile)
+        uint8_t* tile = pg + hb + (int64_t)h * head_page(P.one) + (pr & 1) * TILE;
         uint4 hd = *reinterpret_cast<const uint4*>(pg + 16 * h);
         hd.x = cnt0[h];  // the entries before the run
         if (pr & 1) raw_tile<1, true>(P, tile, plane + (size_t)pr * 1024, hd, pg32, h, lane, o0, len, i0, (int)used0);
@@ -6061,7 +6065,8 @@ __device__ __noinline__ void raw_run(const WriteParams& P, uint8_t* pg, uint32_t
     uint8_t* plane = P.raw.data + (size_t)(d - 1) * (size_t)P.raw.plane;
     for (int pr = warp; pr < 2 * P.H; pr += (int)(blockDim.x >> 5)) {
         const int h = pr >> 1;
-        uint8_t* tile = pg + hb + (int64_t)h * HEADPAGE + (pr & 1) * TILE;
+        if (P.one && (pr & 1)) continue;  // (one stream: no V tile)
+        uint8_t* tile = pg + hb + (int64_t)h * head_page(P.one) + (pr & 1) * TILE;
         const uint4 hd = make_uint4(HEAD_RAW, 0u, 0u, 0u);
         if (pr & 1) raw_tile<1, false>(P, tile, plane + (size_t)pr * 1024, hd, pg32, h, lane, o0, len, i0, 0);
         else raw_tile<0, false>(P, tile, plane + (size_t)pr * 1024, hd, pg32, h, lane, o0, len, i0, 0);
@@ -6195,7 +6200,7 @@ __device__ __noinline__ void write_run(const WriteParams& P) {
         const int h = h0 + warp;
         const bool have = h < P.H;
         uint32_t* hdr = reinterpret_cast<uint32_t*>(pg + 16 * (have ? h : 0));
-        uint8_t* tile = pg + hb + (int64_t)(have ? h : 0) * HEADPAGE;
+        uint8_t* tile = pg + hb + (int64_t)(have ? h : 0) * head_page(P.one);
         uint32_t cnt = 0;
         KPre kp;
         VPre vp;
@@ -6204,7 +6209,7 @@ __device__ __noinline__ void write_run(const WriteParams& P) {
             const uint4 hv = o0 == 0 ? make_uint4(0, 0, 0, 0) : *reinterpret_cast<const uint4*>(hdr);
             const uint32_t used = o0 == 0 ? 0u : min(pg0 & PG_COUNT, (uint32_t)(P.A + ND * CH));
             k_load(kp, P.key + (int64_t)i * P.key_stride + h * D, P.key_stride, P.kbase + h * D, tile, o0, len, lane);
-            v_load(vp, P.value + (int64_t)i * P.value_stride + h * D, P.value_stride, P.vbase + h * D, tile + TILE, o0, len, lane);
+            if (!P.one) v_load(vp, P.value + (int64_t)i * P.value_stride + h * D, P.value_stride, P.vbase + h * D, tile + TILE, o0, len, lane);
             cnt = hv.x;
             if (lane == 0) s_cnt0[h] = cnt;
             if (h0 == 0 && threadIdx.x == 0) s_used0 = used;
@@ -6214,7 +6219,7 @@ __device__ __noinline__ void write_run(const WriteParams& P) {
         if (have) {
             Appender ap{cnt, hdr, pg32, tag, &P};
             k_write(kp, tile, o0, len, lane, h, ap);
-            v_write(vp, tile + TILE, o0, len, lane, h, ap);
+            if (!P.one) v_write(vp, tile + TILE, o0, len, lane, h, ap);
             __syncwarp();
             if (lane == 0) hdr[0] = ap.cnt;
         }
@@ -6343,7 +6348,7 @@ __global__ void __launch_bounds__(256) write_kernel(const __grid_constant__ Writ
     VCalc vc;
     if (warp < P.H) {  // (the first round's head: its inputs do not wait for the slot)
         k_one_in(ko, P.key + (int64_t)i * P.key_stride + warp * D, P.kbase + warp * D, lane);
-        v_one_in(vo, P.value + (int64_t)i * P.value_stride + warp * D, P.vbase + warp * D, lane);
+        if (!P.one) v_one_in(vo, P.value + (int64_t)i * P.value_stride + warp * D, P.vbase + warp * D, lane);
     }
     if (mine < 0) return;
     if (i > 0 && prv >= 0 && prv + 1 == mine && (mine & 15) != 0) return;  // (not the first token of its run)
@@ -6363,20 +6368,20 @@ __global__ void __launch_bounds__(256) write_kernel(const __grid_constant__ Writ
         const int h = h0 + warp;
         const bool have = h < P.H;
         uint32_t* hdr = reinterpret_cast<uint32_t*>(pg + 16 * (have ? h : 0));
-        uint8_t* tile = pg + hb + (int64_t)(have ? h : 0) * HEADPAGE;
+        uint8_t* tile = pg + hb + (int64_t)(have ? h : 0) * head_page(P.one);
         uint32_t cnt = 0;
         uint4 hv = make_uint4(0, 0, 0, 0);
         const uint32_t used = o0 == 0 ? 0u : min(pg0 & PG_COUNT, (uint32_t)(P.A + ND * CH));
         if (have) {
             if (h0 > 0) {
                 k_one_in(ko, P.key + (int64_t)i * P.key_stride + h * D, P.kbase + h * D, lane);
-                v_one_in(vo, P.value + (int64_t)i * P.value_stride + h * D, P.vbase + h * D, lane);
+                if (!P.one) v_one_in(vo, P.value + (int64_t)i * P.value_stride + h * D, P.vbase + h * D, lane);
             }
             if (o0 != 0) hv = *reinterpret_cast<const uint4*>(hdr);
             k_one_tile(ko, tile, o0, lane);
-            v_one_tile(vo, tile + TILE, o0, lane);
+            if (!P.one) v_one_tile(vo, tile + TILE, o0, lane);
             k_one_calc(kc, ko, o0, lane, h);  // (while the page's words are on their way)
-            v_one_calc(vc, vo, o0, lane, h);
+            if (!P.one) v_one_calc(vc, vo, o0, lane, h);
         }
         if (h0 == 0) {  // (the page: a first token clears it, any other finds it void or raw, or goes on)
             if (o0 == 0) {
@@ -6397,7 +6402,7 @@ __global__ void __launch_bounds__(256) write_kernel(const __grid_constant__ Writ
         if (have) {
             Appender ap{cnt, hdr, pg32, tag, &P};
             k_one_store(kc, ko, tile, o0, lane, ap);
-            v_one_store(vc, vo, tile + TILE, o0, lane, ap);
+            if (!P.one) v_one_store(vc, vo, tile + TILE, o0, lane, ap);
             __syncwarp();
             if (lane == 0 && ap.cnt != cnt) hdr[0] = ap.cnt;
         }
@@ -6409,7 +6414,7 @@ __global__ void __launch_bounds__(256) write_kernel(const __grid_constant__ Writ
 
 // ---- reading pages back to bf16: out [page][token][head][channel] for the pages listed (one warp a head-page) -----------------
 __global__ void __launch_bounds__(128) unpack_kernel(const uint8_t* __restrict__ pool, int64_t page_stride, const int32_t* __restrict__ pages, int n, const uint8_t* __restrict__ kbase,
-                                                     const uint8_t* __restrict__ vbase, int H, int A, const uint32_t* __restrict__ ent, int nc, const RawPool R, uint16_t* __restrict__ out_k, uint16_t* __restrict__ out_v) {
+                                                     const uint8_t* __restrict__ vbase, int H, int A, const uint32_t* __restrict__ ent, int nc, const RawPool R, uint16_t* __restrict__ out_k, uint16_t* __restrict__ out_v, int one) {
     const int wl = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
     if (wl >= n * H) return;
     const int lane = threadIdx.x & 31, g = lane >> 2, q = lane & 3;
@@ -6417,9 +6422,10 @@ __global__ void __launch_bounds__(128) unpack_kernel(const uint8_t* __restrict__
     const uint8_t* pg = pool + (int64_t)pages[j] * page_stride;
     const uint4 hd = *reinterpret_cast<const uint4*>(pg + 16 * h);
     const uint32_t* pg32 = reinterpret_cast<const uint32_t*>(pg + 16 * H);
-    const uint8_t* tile = pg + hdr_bytes(H, A) + (int64_t)h * HEADPAGE;
+    const uint8_t* tile = pg + hdr_bytes(H, A) + (int64_t)h * head_page(one != 0);
 #pragma unroll
     for (int kind = 0; kind < 2; kind++) {
+        if (kind == 1 && one) break;  // (one stream: the keys' layout alone)
         uint4 f[8];
         Raw r;
         raw_load(r, tile + kind * TILE, lane);
@@ -6618,7 +6624,7 @@ __device__ __forceinline__ void load_buf(Buf& c, const AttnParams& P, int b, int
 }
 
 // PIPE: the next page's loads are issued before the page in hand is computed (two pages of raw data a warp in registers). FUSE: the last CTA of a (sequence, kv head) to write its partial merges
-// them all (the arithmetic of combine_kernel, which a launch of its own does otherwise). HALVES 2: a head of 256 channels, a page two warps' (AttnParams).
+// them all (the arithmetic of combine_kernel, which a launch of its own does otherwise). HALVES 2 and 4: a head of 256 or 512 channels, a page two or four warps' (AttnParams).
 template <bool PIPE, bool FUSE, int HALVES>
 __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
     constexpr int DO = D * HALVES;   // a query head's channels
@@ -6672,19 +6678,27 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
         float s[4] = {0.f, 0.f, 0.f, 0.f};  // tokens g (s[0], s[1]) and g + 8 (s[2], s[3]) of heads 2q, 2q + 1
 #pragma unroll
         for (int i = 0; i < 8; i++) mma(s, f[i].x, f[i].y, f[i].z, f[i].w, qb0[i], qb1[i]);
-        if constexpr (HALVES == 2) {  // the two halves' scores summed: the pair's warps each add the other's to its own (a + b is b + a, bit for bit: both hold the same sums)
+        if constexpr (HALVES >= 2) {  // the halves' scores summed: each of a page's warps adds the others' to its own, in the order of the halves, so that all of them hold the same sums bit for bit
             __shared__ float4 s_x[2][NW][32];
             s_x[par][warp][lane] = make_float4(s[0], s[1], s[2], s[3]);
 #if defined(__HIP_PLATFORM_AMD__)
-            __trap();  // (no named barriers on RDNA: heads of 256 channels are CUDA's alone)
+            __trap();  // (no named barriers on RDNA: heads of 256 channels and more are CUDA's alone)
 #else
-            asm volatile("bar.sync %0, 64;" ::"r"(1 + pw) : "memory");  // (the pair's two warps alone; a buffer is written again two pages on, after the pair has passed the next barrier)
+            asm volatile("bar.sync %0, %1;" ::"r"(1 + pw), "r"(HALVES * 32) : "memory");  // (the page's warps alone; a buffer is written again two pages on, after the warps have passed the next barrier)
 #endif
-            const float4 x = s_x[par][warp ^ 1][lane];
-            s[0] += x.x;
-            s[1] += x.y;
-            s[2] += x.z;
-            s[3] += x.w;
+            if constexpr (HALVES == 2) {
+                const float4 x = s_x[par][warp ^ 1][lane];  // (a + b is b + a, bit for bit)
+                s[0] += x.x;
+                s[1] += x.y;
+                s[2] += x.z;
+                s[3] += x.w;
+            } else {  // 4 halves: (h0 + h1) + (h2 + h3), the same expression in every warp
+                const float4 x0 = s_x[par][pw * HALVES][lane], x1 = s_x[par][pw * HALVES + 1][lane], x2 = s_x[par][pw * HALVES + 2][lane], x3 = s_x[par][pw * HALVES + 3][lane];
+                s[0] = (x0.x + x1.x) + (x2.x + x3.x);
+                s[1] = (x0.y + x1.y) + (x2.y + x3.y);
+                s[2] = (x0.z + x1.z) + (x2.z + x3.z);
+                s[3] = (x0.w + x1.w) + (x2.w + x3.w);
+            }
             par ^= 1;
         }
         float x0 = s[0] * P.sl2, x1 = s[1] * P.sl2, x2 = s[2] * P.sl2, x3 = s[3] * P.sl2;
@@ -11181,15 +11195,23 @@ static int64_t kv_splits(int64_t B, int64_t H, int64_t max_pages, int dev) {
     return std::min(want, cap);
 }
 
-// A head of 256 channels is held as two of the page's heads of 128 (channels 0-127, then 128-255): kv_heads(H, D) of them a page, at most 32.
-static bool kv_shape_ok(int64_t H, int64_t D, int64_t A) { return H >= 1 && ((D == kvc::D && H <= 32) || (D == 2 * kvc::D && H <= 16)) && A >= 0 && A <= 1023; }
-static int kv_heads(int64_t H, int64_t D) { return (int)(D == 2 * kvc::D ? 2 * H : H); }
+// A head of 256 or 512 channels is held as two or four of the page's heads of 128 (channels 0-127, then 128-255 ...): kv_heads(H, D) of them a page, at most 32.
+// One stream: D with GLYD_GPU_KV_ONE_STREAM set (glyd_gpu.h) is the head dim of a tensor held in the K tile's layout alone (no V tile: a page is smaller by half its tiles), written from `key`, read into `out_k`.
+// Only write, release, unpack and leaf_bytes take it; the others refuse it.
+static const int64_t KV_ONE = 1 << 16;
+static bool kv_one(int64_t D) { return (D & KV_ONE) != 0; }
+static int64_t kv_dim(int64_t D) { return D & (KV_ONE - 1); }
+static bool kv_shape_ok(int64_t H, int64_t D, int64_t A) {
+    D = kv_dim(D);
+    return H >= 1 && (D == kvc::D || D == 2 * kvc::D || D == 4 * kvc::D) && H * (D / kvc::D) <= 32 && A >= 0 && A <= 1023;
+}
+static int kv_heads(int64_t H, int64_t D) { return (int)(H * (kv_dim(D) / kvc::D)); }
 static bool kv_escape_ok(const void* escape, int64_t nchunks) { return nchunks >= 0 && nchunks <= (1 << 30) && (nchunks == 0 || (escape && (uintptr_t)escape % 16 == 0)); }
 static bool kv_raw_ok(const void* raw, int64_t nslabs) { return nslabs >= 0 && nslabs <= (1 << 30) && (nslabs == 0 || (raw && (uintptr_t)raw % 16 == 0)); }
 
 GLYD_GPU_INTERNAL int glyd_gpu_kv_leaf_bytes(int64_t H, int64_t D, int64_t A, int64_t* bytes) {
     if (!bytes || !kv_shape_ok(H, D, A)) return cudaErrorInvalidValue;
-    *bytes = kvc::page_bytes(kv_heads(H, D), (int)A);
+    *bytes = kvc::page_bytes(kv_heads(H, D), (int)A, kv_one(D));
     return 0;
 }
 
@@ -11212,9 +11234,11 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_write(const uint16_t* key, int64_t key_stride,
     if (glyd_gpu_kv_leaf_bytes(H, D, A, &need) || N < 0 || N > INT32_MAX || !status || page_stride < need || page_stride % 16 || (uintptr_t)pool % 16) return cudaErrorInvalidValue;
     if (!kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs) || layer < 0 || layer > 254 || nlost < 0 || (nlost && (!lost || (uintptr_t)lost % 4)) || ring < 1 || ring > (1 << 24)) return cudaErrorInvalidValue;
     if (!N) return 0;
-    if (!key || !value || !slots || !kbase || !vbase || key_stride < H * D || value_stride < H * D || key_stride % 2 || value_stride % 2 || ((uintptr_t)key | (uintptr_t)value) % 4) return cudaErrorInvalidValue;
+    const int64_t Dm = kv_dim(D);
+    if (!key || !slots || !kbase || key_stride < H * Dm || key_stride % 2 || (uintptr_t)key % 4) return cudaErrorInvalidValue;
+    if (!kv_one(D) && (!value || !vbase || value_stride < H * Dm || value_stride % 2 || (uintptr_t)value % 4)) return cudaErrorInvalidValue;
     const int HP = kv_heads(H, D);  // (the page's heads of 128 channels: a head's 256 are two of them, its channels' halves in turn, as a row's keys are)
-    kvc::WriteParams P{key, value, key_stride, value_stride, slots, pool, page_stride, kbase, vbase, status, kvc::esc_of(escape, nchunks), kvc::raw_of(raw, nslabs, HP), nlost ? lost : nullptr, nlost, (uint32_t)ring, (uint32_t)(layer + 1) << 24, (int)N, HP, (int)A, kv_lean() ? 1 : 0};
+    kvc::WriteParams P{key, value, key_stride, value_stride, slots, pool, page_stride, kbase, vbase, status, kvc::esc_of(escape, nchunks), kvc::raw_of(raw, nslabs, HP), nlost ? lost : nullptr, nlost, (uint32_t)ring, (uint32_t)(layer + 1) << 24, (int)N, HP, (int)A, kv_lean() ? 1 : 0, kv_one(D) ? 1 : 0};
     kvc::write_kernel<<<(unsigned)N, 256, 0, cs>>>(P);
     return cudaGetLastError();
 }
@@ -11237,9 +11261,9 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_unpack(const uint8_t* pool, int64_t page_strid
     const int HP = kv_heads(H, D);  // (out [n][16][H][D] is [n][16][HP][128]: a head's two halves in turn)
     if (glyd_gpu_kv_leaf_bytes(H, D, A, &need) || n < 0 || n * HP > INT32_MAX || page_stride < need || page_stride % 16 || (uintptr_t)pool % 16 || !kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs)) return cudaErrorInvalidValue;
     if (!n) return 0;
-    if (!pages || !kbase || !vbase || !out_k || !out_v) return cudaErrorInvalidValue;
+    if (!pages || !kbase || !out_k || (!kv_one(D) && (!vbase || !out_v))) return cudaErrorInvalidValue;
     const kvc::EscapePool E = kvc::esc_of((uint8_t*)escape, nchunks);
-    kvc::unpack_kernel<<<(unsigned)((n * HP + 3) / 4), 128, 0, cs>>>(pool, page_stride, pages, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out_k, out_v);
+    kvc::unpack_kernel<<<(unsigned)((n * HP + 3) / 4), 128, 0, cs>>>(pool, page_stride, pages, (int)n, kbase, kv_one(D) ? kbase : vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out_k, kv_one(D) ? out_k : out_v, kv_one(D) ? 1 : 0);
     return cudaGetLastError();
 }
 
@@ -11247,23 +11271,25 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_gather(const uint8_t* pool, int64_t page_strid
                                     int64_t A, const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, uint16_t* out, cudaStream_t cs) {
     int64_t need;
     const int HP = kv_heads(H, D);
-    if (glyd_gpu_kv_leaf_bytes(H, D, A, &need) || n < 0 || n * HP > INT32_MAX || page_stride < need || page_stride % 16 || (uintptr_t)pool % 16 || !kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs)) return cudaErrorInvalidValue;
+    if (kv_one(D) || glyd_gpu_kv_leaf_bytes(H, D, A, &need) || n < 0 || n * HP > INT32_MAX || page_stride < need || page_stride % 16 || (uintptr_t)pool % 16 || !kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs)) return cudaErrorInvalidValue;
     if (!n) return 0;
     if (!pages || !dst || !kbase || !vbase || !out || (uintptr_t)out % 4) return cudaErrorInvalidValue;
     const kvc::EscapePool E = kvc::esc_of((uint8_t*)escape, nchunks);
     const unsigned grid = (unsigned)((n * HP + 3) / 4);
-    if (HP == H) kvc::gather_kernel<1><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
-    else kvc::gather_kernel<2><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
+    if (D == kvc::D) kvc::gather_kernel<1><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
+    else if (D == 2 * kvc::D) kvc::gather_kernel<2><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
+    else kvc::gather_kernel<4><<<grid, 128, 0, cs>>>(pool, page_stride, pages, dst, (int)n, kbase, vbase, HP, (int)A, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), out);
     return cudaGetLastError();
 }
 
 GLYD_GPU_INTERNAL int glyd_gpu_kv_work_put(const uint16_t* key, int64_t key_stride, const uint16_t* value, int64_t value_stride, const int64_t* slots, int64_t n, int64_t H, int64_t D, uint16_t* out, int64_t blocks,
                                        cudaStream_t cs) {
-    if (n < 0 || n > INT32_MAX || !kv_shape_ok(H, D, 0) || blocks < 0) return cudaErrorInvalidValue;
+    if (kv_one(D) || n < 0 || n > INT32_MAX || !kv_shape_ok(H, D, 0) || blocks < 0) return cudaErrorInvalidValue;
     if (!n) return 0;
     if (!key || !value || !slots || !out || key_stride < H * D || value_stride < H * D || key_stride % 2 || value_stride % 2 || (uintptr_t)key % 4 || (uintptr_t)value % 4 || (uintptr_t)out % 4) return cudaErrorInvalidValue;
     if (D == kvc::D) kvc::stage_put_kernel<kvc::D><<<(unsigned)n, 128, 0, cs>>>(key, key_stride, value, value_stride, slots, blocks * kvc::PT, (int)H, out);
-    else kvc::stage_put_kernel<2 * kvc::D><<<(unsigned)n, 128, 0, cs>>>(key, key_stride, value, value_stride, slots, blocks * kvc::PT, (int)H, out);
+    else if (D == 2 * kvc::D) kvc::stage_put_kernel<2 * kvc::D><<<(unsigned)n, 128, 0, cs>>>(key, key_stride, value, value_stride, slots, blocks * kvc::PT, (int)H, out);
+    else kvc::stage_put_kernel<4 * kvc::D><<<(unsigned)n, 128, 0, cs>>>(key, key_stride, value, value_stride, slots, blocks * kvc::PT, (int)H, out);
     return cudaGetLastError();
 }
 
@@ -11274,7 +11300,7 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode_shares(int64_t B, int64_t H, int64_t ma
 }
 
 GLYD_GPU_INTERNAL int glyd_gpu_kv_decode_workspace(int64_t B, int64_t H, int64_t G, int64_t D, int64_t splits, size_t* bytes) {
-    if (!bytes || B < 1 || !kv_shape_ok(H, D, 0) || G < 1 || G > 8 || splits < 1 || splits > 65535 || B * H > (int64_t)(KV_CNT_BYTES / sizeof(uint32_t))) return cudaErrorInvalidValue;
+    if (!bytes || B < 1 || kv_one(D) || !kv_shape_ok(H, D, 0) || G < 1 || G > 8 || splits < 1 || splits > 65535 || B * H > (int64_t)(KV_CNT_BYTES / sizeof(uint32_t))) return cudaErrorInvalidValue;
     *bytes = KV_CNT_BYTES + (size_t)(B * H * splits * G * (2 + D)) * sizeof(float);
     return 0;
 }
@@ -11284,7 +11310,7 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode(const uint16_t* q, int64_t q_stride, co
                                     double scale, uint16_t* out, int64_t out_stride, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
     int64_t page;
     size_t need;
-    if (glyd_gpu_kv_leaf_bytes(H, D, A, &page) || B < 0 || B > 65535 || page_stride < page || page_stride % 16 || (uintptr_t)pool % 16 || !kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs)) return cudaErrorInvalidValue;
+    if (kv_one(D) || glyd_gpu_kv_leaf_bytes(H, D, A, &page) || B < 0 || B > 65535 || page_stride < page || page_stride % 16 || (uintptr_t)pool % 16 || !kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs)) return cudaErrorInvalidValue;
     if (!B) return 0;
     if (glyd_gpu_kv_decode_workspace(B, H, G, D, splits, &need) || !fits(workspace, workspace_bytes, need)) return cudaErrorInvalidValue;
     if (!q || !kbase || !vbase || !block_table || !seq_lens || !out || q_stride < H * G * D || out_stride < H * G * D || q_stride % 2 || ((uintptr_t)q) % 4) return cudaErrorInvalidValue;
@@ -11307,8 +11333,9 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode(const uint16_t* q, int64_t q_stride, co
             kvc::combine_kernel<HV * kvc::D><<<(unsigned)(B * H), 256, 0, cs>>>(P.ws_ml, P.ws_o, bf(out), out_stride, (int)H, (int)G, (int)splits, P.ppc_min, P.pfloor, seq_lens);
         }
     };
-    if (HP == H) launch(std::integral_constant<int, 1>{});
-    else launch(std::integral_constant<int, 2>{});
+    if (D == kvc::D) launch(std::integral_constant<int, 1>{});
+    else if (D == 2 * kvc::D) launch(std::integral_constant<int, 2>{});
+    else launch(std::integral_constant<int, 4>{});
     return cudaGetLastError();
 }
 
