@@ -1248,6 +1248,29 @@ mod tests {
         assert!(r.errors == 0 && r.ttft.is_some());
     }
 
+    /// R11: 256 requests in flight at once through the server's front end (which has no cap on connections) to a scheduler of 8 sequences over the made-up model: every one of them is
+    /// answered whole, the rest waiting their turn in the scheduler's queue, and none is refused. Each begins 2 ms after the one before and the model takes 4 ms a step, so the last has
+    /// begun long before the first hundred are done. (All of them in the same instant is the `full` suite's `short:256`, which a Linux server takes; a Mac's accept queue is 128 connections,
+    /// kern.ipc.somaxconn, and it resets the ones past it, so a test that must pass there cannot open them all at once.)
+    #[test]
+    fn two_hundred_and_fifty_six_requests_in_flight_are_all_answered() {
+        assert!(suite("full").unwrap().contains(&("short".to_string(), 256)));
+        crate::server::tests::raise_fd_limit(4096);
+        let mut f = crate::sched::tests::Fake::new(1024, 64);
+        (f.batch, f.decode_delay) = (8, Duration::from_millis(4));
+        let addr = crate::server::tests::serve_fake(f, None, 8);
+        let url = format!("http://{addr}");
+        let mut seed = 1000;
+        let reqs = requests(&agent(), &url, "fake", "short+2ms", 256, &mut seed, 6);
+        let failed: Vec<_> = reqs.iter().filter_map(|r| r.error.clone()).collect();
+        assert!(failed.is_empty(), "{} of 256 failed: {:?}", failed.len(), &failed[..failed.len().min(3)]);
+        assert!(reqs.iter().all(|r| r.tokens > 0 && r.ttft.is_some()));
+        // (they were in flight together: the last began before most had their last token)
+        let last_begun = reqs.iter().filter_map(|r| r.first).max().unwrap();
+        let done_before = reqs.iter().filter(|r| r.last.is_some_and(|l| l < last_begun)).count();
+        assert!(done_before < 256, "{done_before} were done before the last had its first token");
+    }
+
     #[test]
     fn suites_and_loads_are_read() {
         assert_eq!(suite("gate").unwrap().len(), 4);
