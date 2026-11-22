@@ -71,4 +71,36 @@ launched with 1,024 threads, so the block needed 81,920 of the SM's 65,536. Fixe
 without launch bounds, on all six architectures (`scripts/check_kernel_regs.py`). Release candidate 5 (release-gpu.yml run
 44951868958, main at #510's merge) passes on an RTX 5060 Ti with R595: `p6/blackwell-r595-rc5/`.
 
-Windows 11 ships in v0.34.0 as a preview; its gate (`m1-gate.ps1`) runs on a cloud Windows GPU when one is available.
+## Windows (`windows/`)
+
+`m1-gate.ps1` on AWS: a g5.2xlarge (NVIDIA A10G 24 GB, AWS's driver 596.86), Windows Server 2022 with nothing else installed, the zip of
+release-gpu.yml run 44963980228 (the v0.34.1 code: v0.34.0's engine, built by #513's Windows jobs), installed by `scripts/install.ps1`
+from a folder, under Windows PowerShell 5.1. Two runs on one machine:
+
+| | Run 1 (`run1/`) | Run 2 (`run2/`: the script fixed) |
+| :--- | :--- | :--- |
+| Install | 7 s | failed (the first run's install was there; not looked into: the machine stopped answering) |
+| Gemma 4 12B-it | penguin (16.9 GB pre-packed download in 108 s), ready 10 s after it, 15.26 GiB loaded of 15 planned, valid JSON | a first token, 137 s with the model already on disk |
+| Nemotron 3.5 Lightning | wren, ready 16 s after the download, 17.07 GiB of 17.2 planned, valid JSON | a first token, 166 s with the model on disk |
+| Qwen3.8-27B | fit plans swift; `glyd serve` refused it as penguin | the same |
+| Refusals | refused, but counted 8 to 14 lines | 2 lines each; GLM-5.3-Flash was downloaded to 198 GB of 328 GB, then DeepSeek and Kimi hit a full disk |
+| No Python | PASS | PASS |
+| Result | 18 PASS, 9 FAIL | 23 PASS, 4 FAIL |
+
+What run 1's FAILs were:
+- The gate script under Windows PowerShell 5.1: `curl.exe -d $body` lost the JSON's double quotes (no first token was asked for properly);
+  a native program's stderr lines became error records of several lines each, and `Out-String` wrapped them; and `$blocked` was the
+  `$script:Blocked` counter (PowerShell's names ignore case). Fixed in `m1-gate.ps1` (run 2).
+- The engine: untagged `glyd serve Qwen/Qwen3.8-27B` loaded penguin, which Qwen3.5 to 3.8 does not run at, where `glyd fit` planned
+  swift (`load_level` asked the planner only for Gemma 4 and the dynamic families). Fixed in the engine: the planner's lossy level.
+
+What run 2 found besides:
+- The engine on Windows could not read a disk's free space (`hub::disk_free` was Linux's alone), so a download larger than the disk was not
+  refused before it started; on Linux the same rows are refused in two lines ("the disk ... has 124.0 GB left, and 328.4 GB are to be
+  downloaded"). Fixed: `GetDiskFreeSpaceExW`. And an untagged run of a model `fit` fits nowhere is now refused with fit's reason before any
+  download, whatever the disk.
+- The first token took 137 and 166 s with the models already downloaded, where run 1 took 10 and 16 s after downloading them; its logs were
+  lost with the full disk, so the cause (likely a check of the cached files) is still to find.
+
+The Windows preview is checked again on v0.34.1's own zip.
+

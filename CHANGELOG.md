@@ -8,6 +8,9 @@ every earlier format.
 
 ## v0.34.1 — 2026-11-22
 
+- `glyd run`, `serve` and `preflight` without a level load the level `glyd fit` plans for Qwen3.5 to 3.8 too (Qwen3.8-27B on a 24 GB card is swift; it was refused as penguin, a level that family does not run at), and refuse a model `fit` fits nowhere with fit's reason before anything is downloaded.
+- Windows: the free space of a disk is read (`GetDiskFreeSpaceExW`), so a download larger than the disk is refused before it starts, as on Linux; before, the M1 gate's 250 GB machine downloaded GLM-5.3-Flash until its disk was full.
+- The M1 gate on Windows (AWS A10G, Windows Server 2022): install in 7 s, Gemma 4 12B at penguin and Nemotron 3.5 Lightning at wren load the plan `fit` printed, valid JSON, no Python (benchmarks/gates/m1-2026-11-21/windows). `m1-gate.ps1` works under Windows PowerShell 5.1 (argument quoting, native stderr, a case-insensitive name).
 - Release builds: the GPU library and the engine's compiled kernels are taken from the Actions cache where their sources did not change (keyed by them; a tag builds everything fresh), the engine's nvcc compiles two architectures at once (`GLYD_ENGINE_NVCC_THREADS`), and the Windows build is three jobs side by side (the two DLLs and `glyd.exe`, then the check and the zip) with only the compiler and runtime of each CUDA toolkit installed. The Windows check no longer fails on `glyd doctor`'s exit code on a runner with no GPU, and a release whose Windows build failed still gets its Linux engine bundles attached (v0.34.0's were attached by hand). The install check waits for the release's files.
 - Windows x86_64 (preview): the release has `glyd-engine-vX.Y.Z-windows-x86_64.zip` (`glyd.exe` with the engine linked, the CUDA 13 and CUDA 12 GPU library DLLs) and its sha256, which `irm https://getglyd.com/install.ps1 | iex` installs. v0.34.0 has none: its build passed but its check failed on `glyd doctor`'s exit code on a runner with no GPU.
 

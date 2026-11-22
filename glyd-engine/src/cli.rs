@@ -134,23 +134,51 @@ fn run_level(model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
 
 /// The level `fit` plans for MODEL on this machine (plan.rs `planned`, with this command's own flags: --users, --ctx), as a layout: penguin's is the lossless one. None where the planner
 /// chooses nothing (the run's own refusal says why) or cannot read the model now.
+#[cfg(test)]
 fn planner_level(a: &Args, model: &str) -> Option<Layout> {
+    let chosen = planner(a, model)?.plan.chosen?;
+    Some(levels::by_name(chosen.level)?.layout.unwrap_or(Layout::Tiered))
+}
+
+/// `fit`'s plan of MODEL with this command's flags, or None where it cannot be made now (no config to read: the run's own paths say why).
+fn planner(a: &Args, model: &str) -> Option<crate::plan::Planned> {
     let mut q = a.clone();
     if let Some(m) = q.pos.get_mut(1) {
         *m = model.to_string();
     }
-    let chosen = crate::plan::planned(&q).ok()?.plan.chosen?;
-    Some(levels::by_name(chosen.level)?.layout.unwrap_or(Layout::Tiered))
+    crate::plan::planned(&q).ok()
 }
 
 /// The level run, serve and preflight load MODEL at (`run_level`), where nothing is asked the one `fit` printed: a Gemma 4 model or a family of the dynamic route takes
 /// penguin by default (`run_level`), which a 16 GB card cannot hold for Gemma 4 12B; the planner's level is what the printed plan said would load (P16, #221). A tag, --lossy,
 /// a glyd-v7 directory and a pre-packed repo are their own level.
+/// A family whose default is no level at all here (`run_level` None: Qwen3.5 to 3.8, which run at their lossy levels alone, and the Qwen3 dense models) takes the planner's level
+/// where it is a lossy one: Qwen3.8-27B on a 24 GB card is swift (the M1 gate on Windows, an A10G), where it was refused as penguin; a Qwen3 model the planner keeps lossless stays
+/// on its own path (None).
 fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
     let layout = run_level(model, asked)?;
-    if asked.is_none() && !a.has("lossy") && layout == Some(Layout::Tiered) && v7_layout(model)?.is_none() && levels::repo_level(model).is_none() {
-        if let Some(planned) = planner_level(a, model) {
-            return Ok(Some(planned));
+    if asked.is_none()
+        && !a.has("lossy")
+        && (layout.is_none() || layout == Some(Layout::Tiered))
+        && v7_layout(model)?.is_none()
+        && levels::repo_level(model).is_none()
+    {
+        if let Some(p) = planner(a, model) {
+            match p.plan.chosen.as_ref().and_then(|c| levels::by_name(c.level)) {
+                Some(l) => {
+                    let planned = l.layout.unwrap_or(Layout::Tiered);
+                    if layout.is_some() || planned != Layout::Tiered {
+                        return Ok(Some(planned));
+                    }
+                }
+                // nothing fits this machine at any level the family runs: fit's refusal, before anything is downloaded (on a disk large enough, GLM-5.3-Flash's 328 GB
+                // was downloaded and refused after; on Windows, whose free space was not read, until the disk was full)
+                None => {
+                    if let Some(r) = p.refusal {
+                        return Err(r);
+                    }
+                }
+            }
         }
     }
     Ok(layout)
@@ -3206,6 +3234,27 @@ mod tests {
         assert_eq!(load_level(&on("rtx4090"), m, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(load_level(&on("rtx4080s"), m, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        // Qwen3.8-27B runs at its lossy levels alone: untagged, it loads the planner's (swift on a 24 GB card), and the table takes it, where it was refused as penguin
+        let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
+        let q38 = match &q35 {
+            Value::Object(m) => m.iter().find(|(k, _)| k.as_str() == "Qwen/Qwen3.8-27B").map(|(_, v)| v.clone()).unwrap(),
+            _ => panic!("qwen35_configs.json is an object of configs"),
+        };
+        let q = dir_with("load-level-q38", &json::to_compact(&q38));
+        let qp = q.to_str().unwrap();
+        let onq = |machine: &str| Args::from(["serve", qp, "--machine", machine].iter().map(|s| s.to_string()));
+        let l = load_level(&onq("rtx4090"), qp, None).unwrap();
+        assert!(matches!(l, Some(Layout::Int6 | Layout::Int5 | Layout::Int4)), "{l:?}");
+        assert!(table_check(qp, l).is_ok() && table_check(qp, None).is_err());
+        assert_eq!(l, planner_level(&onq("rtx4090"), qp));
+        // on an 8 GB card nothing fits: fit's refusal (or the machine's, which comes first: this preset's driver is CUDA 12.7, below a build of CUDA 13's kernels
+        // alone), before anything is downloaded
+        let e = load_level(&onq("rtx4060-laptop"), qp, None).unwrap_err();
+        assert!(e.what.contains("does not fit") || e.what.contains("the driver supports"), "{e:?}");
+        // a Qwen3 dense model the planner keeps lossless stays on its own path
+        let q3 = dir_with("load-level-q3", QWEN3);
+        let q3p = q3.to_str().unwrap();
+        assert_eq!(load_level(&Args::from(["serve", q3p, "--machine", "rtx4090"].iter().map(|s| s.to_string())), q3p, None).unwrap(), None);
     }
 
     #[test]
