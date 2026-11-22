@@ -482,6 +482,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         norm_eps: eps,
         state_f32: true,
     };
+    let mut dense_inter = None;
     let moe = if k.raw("num_experts").is_some() {
         let ne = k.usize("num_experts")?;
         k.usize("moe_intermediate_size")?;
@@ -504,7 +505,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             latent: None,
         })
     } else {
-        k.usize("intermediate_size")?;
+        dense_inter = Some(k.usize("intermediate_size")?);
         None
     };
     k.expect("mlp_only_layers", &Value::Array(Vec::new()))?;
@@ -601,7 +602,51 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         vision: None,
         rope: Some(rp),
     };
-    finish(&k, desc, prefix, roles, mtp_layers)
+    let mut out = finish(&k, desc, prefix, roles, mtp_layers)?;
+    // (the shapes of a dense model's tensors, as its heads and widths make them; a mixture of experts' are not said yet)
+    if let Some(inter) = dense_inter {
+        let (kh, vh, kd, vd, conv) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim, lin.conv);
+        let mut shapes = std::collections::BTreeMap::new();
+        let mut put = |n: String, s: Vec<usize>| {
+            shapes.insert(n, s);
+        };
+        for (l, ty) in types.iter().enumerate() {
+            let p = format!("{prefix}layers.{l}");
+            if ty == "linear_attention" {
+                let a = format!("{p}.linear_attn");
+                let qkv = 2 * kh * kd + vh * vd;
+                put(format!("{a}.in_proj_qkv.weight"), vec![qkv, d]);
+                put(format!("{a}.in_proj_z.weight"), vec![vh * vd, d]);
+                put(format!("{a}.in_proj_b.weight"), vec![vh, d]);
+                put(format!("{a}.in_proj_a.weight"), vec![vh, d]);
+                put(format!("{a}.conv1d.weight"), vec![qkv, 1, conv]);
+                put(format!("{a}.A_log"), vec![vh]);
+                put(format!("{a}.dt_bias"), vec![vh]);
+                put(format!("{a}.norm.weight"), vec![vd]);
+                put(format!("{a}.out_proj.weight"), vec![d, vh * vd]);
+            } else {
+                let a = format!("{p}.self_attn");
+                put(format!("{a}.q_proj.weight"), vec![heads * hd * if gate { 2 } else { 1 }, d]);
+                put(format!("{a}.k_proj.weight"), vec![kv * hd, d]);
+                put(format!("{a}.v_proj.weight"), vec![kv * hd, d]);
+                put(format!("{a}.o_proj.weight"), vec![d, heads * hd]);
+                put(format!("{a}.q_norm.weight"), vec![hd]);
+                put(format!("{a}.k_norm.weight"), vec![hd]);
+            }
+            put(format!("{p}.input_layernorm.weight"), vec![d]);
+            put(format!("{p}.post_attention_layernorm.weight"), vec![d]);
+            put(format!("{p}.mlp.gate_proj.weight"), vec![inter, d]);
+            put(format!("{p}.mlp.up_proj.weight"), vec![inter, d]);
+            put(format!("{p}.mlp.down_proj.weight"), vec![d, inter]);
+        }
+        put(out.embed.clone(), vec![vocab, d]);
+        put(out.final_norm.clone(), vec![d]);
+        if let Some(h) = out.head.clone() {
+            put(h, vec![vocab, d]);
+        }
+        out.shapes = shapes;
+    }
+    Ok(out)
 }
 
 fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {

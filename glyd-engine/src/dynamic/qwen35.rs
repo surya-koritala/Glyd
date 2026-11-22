@@ -31,6 +31,60 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         (!whole).then_some((st.layers, st.first, st.last)),
     )?;
     let Weights35 { cfg: c, layout, layers: lys, embed, head, norm, cos, sin, .. } = w;
+    let d = lowered(dir, &c, &st)?;
+    // (the loader's matrices and small tensors, in the order `describe` indexes them: a layer's, then the final norm, the embedding and the head)
+    let (mut mats, mut small) = (Vec::new(), Vec::new());
+    for (l, ly) in lys.into_iter().enumerate() {
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            continue;
+        }
+        let (m, n) = per_layer(ly.kind);
+        if ly.mats.len() != m || ly.small.len() + 2 != n {
+            return err(format!("layer {l}: {} matrices and {} small tensors loaded, where its kind has {m} and {n}", ly.mats.len(), ly.small.len() + 2));
+        }
+        mats.extend(ly.mats);
+        small.push(ly.in_norm);
+        small.push(ly.post_norm);
+        small.extend(ly.small);
+    }
+    small.push(norm);
+    mats.push(Mat::Packed(embed));
+    if let Some(h) = head {
+        mats.push(Mat::Packed(h));
+    }
+    if (mats.len(), small.len()) != (d.lm + 1, d.final_norm.map_or(0, |f| f.0 + 1)) {
+        return err(format!(
+            "{} matrices and {} small tensors loaded, where the description indexes {} and {}",
+            mats.len(),
+            small.len(),
+            d.lm + 1,
+            d.final_norm.map_or(0, |f| f.0 + 1)
+        ));
+    }
+    Dyn::from_loaded(dev, d, mats, small, Vec::new(), vec![(cos, sin)], layout, st, o)
+}
+
+/// A layer's matrices and small tensors as the loader holds them: a linear-attention layer's qkvz, ba and out products and its MLP's two; its input and
+/// post-attention norms, the convolution, A_log, dt_bias and the gated norm's weight. A full-attention layer's qkv and o products and its MLP's two; its norms and q
+/// and k norms.
+pub(crate) fn per_layer(k: Kind) -> (usize, usize) {
+    match k {
+        Kind::Linear => (5, 6),
+        Kind::Full => (4, 4),
+    }
+}
+
+/// Qwen3.5's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::qwen35`); `c` the same config as the
+/// family's reader takes it, for its end tokens and its context. What the loader runs; `describe` below is the description it is held to.
+pub fn lowered(dir: &Path, c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
+    let p = dir.join("config.json");
+    let text = std::fs::read_to_string(&p).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
+    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
+    super::lower::qwen35(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st)
+}
+
+/// The executor's description of Qwen3.5's layout for stage `st` (src/kern35.rs's loader fills its matrices and small tensors; they are indexed here in its order).
+pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
     if c.head_dim != 256 || c.lin_k_dim != 128 || c.lin_v_dim != 128 || c.conv_kernel != 4 {
         return err(format!(
             "head {}, linear heads {}/{}, convolution {}: this engine runs head 256, linear heads of 128 and a convolution of 4",
@@ -41,27 +95,24 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     let (cd, vd) = (c.conv_dim(), c.value_dim());
     let full_w = 2 * nq * 256 + 2 * nk * 256;
     let row = cd + vd;
-    let (mut mats, mut small, mut rings, mut states, mut layers) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut n_mats, mut n_small, mut rings, mut states, mut layers) = (0, 0, Vec::new(), Vec::new(), Vec::new());
     let mut first = None;
-    for (l, ly) in lys.into_iter().enumerate() {
+    for (l, &kind) in c.kinds.iter().enumerate() {
         if !(st.layers.0..st.layers.1).contains(&l) {
             // (another stage's layer: nothing here, never run)
             layers.push(Vec::new());
             continue;
         }
-        let b = mats.len();
-        mats.extend(ly.mats);
-        let s0 = small.len();
-        small.push(ly.in_norm);
-        small.push(ly.post_norm);
-        small.extend(ly.small);
+        let (b, s0) = (n_mats, n_small);
+        let (m, n) = per_layer(kind);
+        (n_mats, n_small) = (n_mats + m, n_small + n);
         let mut ops = Vec::new();
         if l == 0 {
             first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, plus1: true });
         } else {
             ops.push(Op::NormAdd { y: Slot::D, w: s0, plus1: true });
         }
-        let mlp = match ly.kind {
+        let mlp = match kind {
             Kind::Linear => {
                 let (conv, ssm) = (states.len(), states.len() + 1);
                 states.push(3 * cd * 2);
@@ -95,17 +146,9 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         ]);
         layers.push(ops);
     }
-    let final_norm = small.len();
-    small.push(norm);
-    let e = mats.len();
-    mats.push(Mat::Packed(embed));
-    let lm = match head {
-        Some(h) => {
-            mats.push(Mat::Packed(h));
-            e + 1
-        }
-        None => e,
-    };
+    let final_norm = n_small;
+    let e = n_mats;
+    let lm = if c.tie { e } else { e + 1 };
     let mut widths = [0usize; super::SLOTS];
     let q_w = nq * 256;
     for (s, w) in [
@@ -125,7 +168,7 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     ] {
         widths[s as usize] = w;
     }
-    let d = ModelDesc {
+    Ok(ModelDesc {
         family: "Qwen3.5",
         hidden: c.hidden,
         vocab: c.vocab,
@@ -153,6 +196,5 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
-    };
-    Dyn::from_loaded(dev, d, mats, small, Vec::new(), vec![(cos, sin)], layout, st, o)
+    })
 }

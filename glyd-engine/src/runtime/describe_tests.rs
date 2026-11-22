@@ -64,6 +64,12 @@ fn released_qwen_configs() {
         let want: BTreeSet<String> =
             tensors[repo].as_object().unwrap().keys().filter(|n| !n.starts_with("model.visual.") && !n.starts_with("mtp.")).cloned().collect();
         assert_eq!(d.names(), want, "{repo}");
+        // (and each tensor's shape as the config makes it is the checkpoint's)
+        assert_eq!(d.shapes.keys().cloned().collect::<BTreeSet<_>>(), want, "{repo}: a shape for every tensor");
+        for (n, sh) in &d.shapes {
+            let got: Vec<usize> = tensors[repo][n][1].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(&got, sh, "{repo}: {n}");
+        }
     }
 }
 

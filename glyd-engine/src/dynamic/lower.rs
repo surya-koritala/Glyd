@@ -162,6 +162,154 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
     })
 }
 
+/// Qwen3.5's layout (dense: Qwen3.5, 3.6 and 3.8 of 256-wide heads): pairs of blocks, a Gated DeltaNet or a gated full attention, then the SiLU MLP, the (1 + w)
+/// norms, the final norm on the last row. The matrices and small tensors are src/kern35.rs's loader's (`dynamic::qwen35::describe` indexes them in its order);
+/// stage `st` of a model split across GPUs.
+pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    use super::qwen35::per_layer;
+    use crate::qwen35::Kind;
+    let m = &d.desc;
+    if m.blocks.len() % 2 != 0 {
+        return err(format!("Qwen3.5: {} blocks, where each layer is a mixer block and an MLP block", m.blocks.len()));
+    }
+    let layers = m.blocks.len() / 2;
+    let (mut lin, mut att) = (None, None);
+    let mut kinds = Vec::with_capacity(layers);
+    for l in 0..layers {
+        if !matches!(m.blocks[2 * l + 1].body, Body::Ffn(Ffn::Mlp(_))) {
+            return err(format!("Qwen3.5: layer {l}'s second block is {:?}, not an MLP (a mixture of experts is not lowered yet)", m.blocks[2 * l + 1].body));
+        }
+        match &m.blocks[2 * l].body {
+            Body::Mixer(Mixer::Linear(x)) => {
+                lin.get_or_insert(x);
+                kinds.push(Kind::Linear);
+            }
+            Body::Mixer(Mixer::Attention(a)) => {
+                att.get_or_insert(a);
+                kinds.push(Kind::Full);
+            }
+            b => return err(format!("Qwen3.5: layer {l}'s first block is {b:?}")),
+        }
+    }
+    let (lin, att) =
+        (lin.ok_or_else(|| Error("Qwen3.5: no linear-attention layer".into()))?, att.ok_or_else(|| Error("Qwen3.5: no full-attention layer".into()))?);
+    if att.head_dim != 256 || lin.k_dim != 128 || lin.v_dim != 128 || lin.conv != 4 {
+        return err(format!(
+            "head {}, linear heads {}/{}, convolution {}: this engine runs head 256, linear heads of 128 and a convolution of 4",
+            att.head_dim, lin.k_dim, lin.v_dim, lin.conv
+        ));
+    }
+    let rope = att.rope.as_ref().ok_or_else(|| Error("Qwen3.5: attention with no rotary".into()))?;
+    let rotary = 2 * rope.freqs;
+    let gate = role(&d.blocks[1], "gate").ok_or_else(|| Error("Qwen3.5: no MLP gate".into()))?;
+    let gate = match gate {
+        Source::Tensor(n) => n,
+        g => return err(format!("Qwen3.5: an MLP gate of {g:?}")),
+    };
+    let inter = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("Qwen3.5: no shape for {gate}")))?;
+    let (nq, nk, nv) = (att.heads, att.kv_heads, lin.v_heads);
+    let (vd, cd) = (nv * lin.v_dim, 2 * lin.k_heads * lin.k_dim + nv * lin.v_dim);
+    let full_w = 2 * nq * 256 + 2 * nk * 256;
+    let row = cd + vd;
+    let (mut n_mats, mut n_small, mut rings, mut states, mut ops_all) = (0, 0, Vec::new(), Vec::new(), Vec::new());
+    let mut first = None;
+    for (l, &kind) in kinds.iter().enumerate() {
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            ops_all.push(Vec::new());
+            continue;
+        }
+        let (b, s0) = (n_mats, n_small);
+        let (mm, nn) = per_layer(kind);
+        (n_mats, n_small) = (n_mats + mm, n_small + nn);
+        let mut ops = Vec::new();
+        if l == 0 {
+            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, plus1: true });
+        } else {
+            ops.push(Op::NormAdd { y: Slot::D, w: s0, plus1: true });
+        }
+        let mlp = match kind {
+            Kind::Linear => {
+                let (conv, ssm) = (states.len(), states.len() + 1);
+                states.push(3 * cd * 2);
+                states.push(nv * 128 * 128 * 4);
+                ops.extend([
+                    Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "linear attention: qkvz product" },
+                    Op::Linear { w: b + 1, x: Slot::H, y: Slot::Ba, name: "linear attention: ba product" },
+                    Op::GdnConv { w: s0 + 2, state: conv, cd, row },
+                    Op::GdnDelta { a_log: s0 + 3, dt_bias: s0 + 4, state: ssm, cd, nk: lin.k_heads, nv },
+                    Op::GatedNorm { w: s0 + 5, row, nv, z_off: cd },
+                    Op::Linear { w: b + 2, x: Slot::Core, y: Slot::O, name: "linear attention: out product" },
+                ]);
+                b + 3
+            }
+            Kind::Full => {
+                let ring = rings.len();
+                rings.push(Ring { d: 256, nk, window: 0 });
+                ops.extend([
+                    Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
+                    Op::Prep35 { stride: full_w, q_norm: s0 + 2, k_norm: s0 + 3, half: rotary / 2, ring, nq, nk },
+                    Op::Attn35 { stride: full_w, ring, nq, nk },
+                    Op::Linear { w: b + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
+                ]);
+                b + 2
+            }
+        };
+        ops.extend([
+            Op::NormAdd { y: Slot::O, w: s0 + 1, plus1: true },
+            Op::GateUpSilu { w: mlp, inter },
+            Op::Linear { w: mlp + 1, x: Slot::M, y: Slot::D, name: "MLP: down product" },
+        ]);
+        ops_all.push(ops);
+    }
+    let e = n_mats;
+    let lm = if d.head.is_none() { e } else { e + 1 };
+    let q_w = nq * 256;
+    let mut widths = [0usize; SLOTS];
+    for (s, w) in [
+        (Slot::X, m.hidden),
+        (Slot::H, m.hidden),
+        (Slot::Mix, row.max(full_w)),
+        (Slot::Ba, 2 * nv),
+        (Slot::Xc, cd),
+        (Slot::Core, vd),
+        (Slot::Qo, q_w),
+        (Slot::Att, q_w),
+        (Slot::O, m.hidden),
+        (Slot::Gu, 2 * inter),
+        (Slot::M, inter),
+        (Slot::D, m.hidden),
+        (Slot::Hlast, m.hidden),
+    ] {
+        widths[s as usize] = w;
+    }
+    Ok(ModelDesc {
+        family: "Qwen3.5",
+        hidden: m.hidden,
+        vocab: m.vocab,
+        eps: m.blocks.first().map_or(1e-6, |b| b.norm_in.eps),
+        max_pos,
+        widths,
+        mats: Vec::new(),
+        small: Vec::new(),
+        ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2 }],
+        rings,
+        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, plus1: true }),
+        layers: ops_all,
+        states,
+        final_norm: Some((n_small, Slot::D, true)),
+        decoded: true,
+        skinny: false,
+        embed: e,
+        lm,
+        softcap: 0.0,
+        eos,
+        post: None,
+        v4: None,
+        hc: (0.0, 0),
+        logit_mult: 0.0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +329,52 @@ mod tests {
             }
         }
         (h["config"].as_str().unwrap().to_string(), shapes)
+    }
+
+    /// Qwen3.5's layout lowered from each dense release's config (Qwen3.5 2B to 27B, Qwen3.6-27B, Qwen3.8-27B: those of 256-wide heads the executor runs), whole and
+    /// as a split's stages, is the executor's own description of it.
+    #[test]
+    fn qwen35_lowered_is_the_executors_own_description() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen35_configs.json");
+        let all: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let mut seen = 0;
+        for (repo, cfg) in all.as_object().unwrap() {
+            // (the mixtures of experts are refused by the family's reader, and not lowered yet)
+            let Ok(c) = crate::qwen35::Config35::parse(&cfg.to_string(), repo, None) else { continue };
+            if c.head_dim != 256 {
+                continue;
+            }
+            let kinds = crate::runtime::describe::describe(cfg).unwrap();
+            for st in [
+                super::super::Stage::whole(c.layers),
+                super::super::Stage { layers: (0, c.layers / 2), first: true, last: false },
+                super::super::Stage { layers: (c.layers / 2, c.layers), first: false, last: true },
+            ] {
+                let own = super::super::qwen35::describe(&c, &st).unwrap();
+                let lowered = qwen35(&kinds, c.eos.clone(), c.max_pos, &st).unwrap_or_else(|e| panic!("{repo}: {}", e.msg));
+                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
+                if a != b {
+                    let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
+                    panic!("{repo}: the lowered description differs at line {first:?}");
+                }
+            }
+            seen += 1;
+        }
+        assert!(seen >= 4, "{seen} releases lowered");
+    }
+
+    /// The random Qwen3.5 the logits checks run lowers to the executor's own description of it too.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_random_qwen35_lowers_as_its_own_description() {
+        let dir = std::env::temp_dir().join(format!("glyd-lower-q35-{}", std::process::id()));
+        crate::logits::qwen35_random(&dir).unwrap();
+        let c = crate::qwen35::Config35::load(&dir).unwrap();
+        let st = super::super::Stage::whole(c.layers);
+        let (own, lowered) =
+            (super::super::qwen35::describe(&c, &st).unwrap(), super::super::qwen35::lowered(&dir, &c, &st).unwrap_or_else(|e| panic!("{}", e.msg)));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
     }
 
     /// The random Gemma 4 the logits checks run (src/logits.rs, a window of 32, a global layer that shares its keys and values) lowers to the executor's own
