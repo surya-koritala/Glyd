@@ -1,3 +1,4 @@
+//! FROZEN (R13, #234): see src/model_glm.rs.
 //! GLM-5.3-Flash's routed experts as rows of codebook codes in a rotated basis (Linear GLY-133, GLY-134; the formats measured in research/glm53-flash-data.md section 4).
 //!
 //! An expert is three matrices: gate and up, `inter` rows of `hidden` values each, and down, `hidden` rows of `inter` values. Every matrix is held in the basis of a rotation R = H diag(s) / sqrt(n) of its rows' axis
