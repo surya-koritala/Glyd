@@ -295,3 +295,65 @@ fn nemotron_config_variants() {
     refused(&|c| c["norm_eps"] = 1e-6.into(), "differ");
     refused(&|c| c["mlp_hidden_act"] = "tanh".into(), "tanh");
 }
+
+/// R3a's acceptance on the four checkpoints whose tensors the header fixtures list (tests/fixtures/headers: the Hub's safetensors headers): each released config.json
+/// describes, from that file alone, a weight map whose every tensor is in its checkpoint, and that reads every tensor of the checkpoint but the parts the language
+/// model does not run (vision and audio towers, their projectors, the next-token-prediction layers it does not use yet).
+#[test]
+fn released_configs_describe_their_checkpoints_tensors() {
+    for (f, unread, mtp) in [
+        ("gemma-4-12B-it", &["model.embed_audio.", "model.embed_vision.", "model.vision_embedder.", "model.vision_tower.", "model.audio_tower."][..], 0),
+        ("Kimi-K3", &["vision_tower.", "mm_projector."][..], 0),
+        ("DeepSeek-V4-Flash-0731", &["mtp."][..], 1),
+        ("Qwen3.8-27B", &["model.visual.", "mtp."][..], 1),
+    ] {
+        let h = fixture(&format!("headers/{f}.json"));
+        let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+        let d = describe(&cfg).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
+        let (all, got) = (header_names(&h), d.names());
+        let extra: Vec<_> = got.difference(&all).take(6).collect();
+        assert!(extra.is_empty(), "{f}: described but not in the checkpoint: {extra:?}");
+        let missing: Vec<_> = all.difference(&got).filter(|n| !unread.iter().any(|p| n.starts_with(p))).take(6).collect();
+        assert!(missing.is_empty(), "{f}: in the checkpoint but not described: {missing:?}");
+        assert_eq!(d.mtp_layers, mtp, "{f}");
+    }
+}
+
+/// Every tensor name of a header fixture: its groups' masks with each of their layers ({L}) and experts ({E}).
+fn header_names(h: &serde_json::Value) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for g in h["groups"].as_array().unwrap() {
+        let mask = g["mask"].as_str().unwrap();
+        let layers: Vec<String> = g["layers"].as_array().unwrap().iter().map(|l| l.as_u64().unwrap().to_string()).collect();
+        let experts: Vec<String> = (0..g["experts"].as_u64().unwrap()).map(|e| e.to_string()).collect();
+        let ls = if mask.contains("{L}") { layers } else { vec![String::new()] };
+        let es = if mask.contains("{E}") { experts } else { vec![String::new()] };
+        for l in &ls {
+            for e in &es {
+                out.insert(mask.replace("{L}", l).replace("{E}", e));
+            }
+        }
+    }
+    out
+}
+
+/// Kimi-K3's experts as released (MXFP4 in groups of 32): each expert matrix is its packed codes and its scales; a quantization the description does not read is
+/// refused with what differs, never read as bf16.
+#[test]
+fn kimi_k3s_packed_experts_are_named_and_other_packings_refused() {
+    let h = fixture("headers/Kimi-K3.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap();
+    let w = "language_model.model.layers.1.block_sparse_moe.experts.7.w2.weight_packed";
+    assert_eq!(d.scales.get(w).map(String::as_str), Some("language_model.model.layers.1.block_sparse_moe.experts.7.w2.weight_scale"));
+    assert_eq!(d.scales.len(), 92 * 896 * 3, "the routed experts' matrices alone are packed");
+    let refused = |edit: &dyn Fn(&mut serde_json::Value), want: &str| {
+        let mut c = cfg.clone();
+        edit(&mut c["text_config"]["quantization_config"]);
+        let e = describe(&c).unwrap_err().msg;
+        assert!(e.contains("quantization_config") && e.contains(want), "{e}");
+    };
+    refused(&|q| q["config_groups"]["group_0"]["weights"]["group_size"] = 16.into(), "groups of 32");
+    refused(&|q| q["format"] = "nvfp4-pack-quantized".into(), "nvfp4");
+    refused(&|q| q["ignore"] = serde_json::json!(["re:.*self_attn.*", "re:.*lm_head.*"]), "shared_experts");
+}
