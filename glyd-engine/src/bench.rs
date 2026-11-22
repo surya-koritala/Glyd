@@ -946,6 +946,21 @@ fn f(v: &Value, k: &str) -> Option<f64> {
 /// One metric's change and the band it is held to. Returns (base median, candidate median, change that is worse as a fraction, band as a fraction, the band's source).
 pub fn judge(base: &Value, cand: &Value, hist: &[f64], z: f64, floor: f64, higher: bool) -> Option<(f64, f64, f64, f64, &'static str)> {
     let (mb, mc) = (f(base, "median")?, f(cand, "median")?);
+    // (the base is main's usual result: the median of its stored results where there are three or more, else its last. One odd run of main is not
+    // what every change after it is held to: PR #539's first token at 8 users was held to a run of 0.067 s, where main's others and every run since
+    // were 0.096 to 0.105)
+    let mb = if hist.len() >= 3 {
+        let mut h = hist.to_vec();
+        h.sort_by(f64::total_cmp);
+        let k = h.len() / 2;
+        if h.len() % 2 == 1 {
+            h[k]
+        } else {
+            (h[k - 1] + h[k]) / 2.0
+        }
+    } else {
+        mb
+    };
     let n = |v: &Value| v["runs"].as_array().map_or(1, |r| r.len().max(1)) as f64;
     let rel_sd = |v: &Value| match (f(v, "sd"), f(v, "mean")) {
         (Some(s), Some(m)) if m != 0.0 => s / m,
@@ -1432,6 +1447,20 @@ mod tests {
         // a time is worse where it is longer
         let (_, _, worse, _, _) = judge(&runs(0.1, 0.004, 5), &runs(0.11, 0.004, 5), &[], 3.0, 0.003, false).unwrap();
         assert!(worse > 0.09);
+    }
+
+    #[test]
+    fn the_base_is_mains_usual_result_not_its_last_alone() {
+        // main's last run a third faster than its others: a candidate at the others' is no regression
+        let hist = [0.103, 0.104, 0.096, 0.067, 0.103];
+        let (mb, _, worse, band, _) = judge(&runs(0.067, 0.004, 5), &runs(0.103, 0.004, 5), &hist, 3.0, 0.003, false).unwrap();
+        assert!((mb - 0.103).abs() < 1e-12 && worse <= band, "{mb} {worse} {band}");
+        // a slowdown past main's usual still is one
+        let (_, _, worse, band, _) = judge(&runs(0.067, 0.004, 5), &runs(0.2, 0.004, 5), &hist, 3.0, 0.003, false).unwrap();
+        assert!(worse > band, "{worse} {band}");
+        // fewer than three stored results: main's last
+        let (mb, ..) = judge(&runs(0.067, 0.004, 5), &runs(0.103, 0.004, 5), &[0.103, 0.104], 3.0, 0.003, false).unwrap();
+        assert!((mb - 0.067).abs() < 0.001, "{mb}");
     }
 
     #[test]
