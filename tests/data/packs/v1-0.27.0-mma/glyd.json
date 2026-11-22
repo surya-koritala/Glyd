@@ -1,0 +1,1 @@
+{"format": "glyd-v1", "glyd": "0.27.0", "source": {"repo": null, "revision": null}, "layout": "mma", "packs": {"m.o_proj": {"layout": "mma", "shape": [128, 192], "tiers": [4286412152, 4286020730, 4286477945], "tensors": [{"name": "m.o_proj.weight", "shape": [128, 192], "sha256": "a1d7c473297fbb5909b54eac1bb174130b65671119a2564ab835003080807969"}]}}, "tensors": {}}

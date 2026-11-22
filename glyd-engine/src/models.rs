@@ -3,7 +3,7 @@
 //! A model is a Hub id (`google/gemma-4-12B-it`), a directory, a GGUF file, or a short name from the manifest (models.json: versioned, in the repository and in the
 //! program; `$GLYD_MODELS` or `<cache>/models.json` names another). The grammar of a short name is `NAME[:SIZE][:LEVEL]` (`gemma4`, `qwen3.8:27b`,
 //! `gemma4:12b:wren`); a tag of letters only is a level (levels.rs), so `:27b` and `:35b-a3b` are sizes. NAME and SIZE are matched without case, and NAME without
-//! its `-` and `_`. Where SIZE is left out the family's default is taken; choosing the size that fits this computer is `glyd fit`'s (P4b).
+//! its `-` and `_`. Where SIZE is left out, `run`, `serve`, `fit` and `pull` choose it by the plan for this computer (src/choose.rs); the manifest's default is the size where a command does not plan (`names`, `ls`, `rm`).
 //!
 //! The copies of a model are in the Hub's cache (hub.rs; `$HF_HUB_CACHE`) as huggingface_hub keeps them, so what vLLM or the Python tool downloaded is here too,
 //! and in the engine's cache of packed copies (store.rs, `$GLYD_CACHE`): `glyd rm` takes a model out of both.
@@ -225,6 +225,9 @@ pub struct Resolved {
     pub repo: String,
     /// The level the user tagged, lowercase.
     pub level: Option<String>,
+    /// The family as the manifest names it (`qwen3.5`), and whether the size was given (`qwen3.5:9b`) or left to the family's default.
+    pub family: String,
+    pub size_given: bool,
 }
 
 impl Resolved {
@@ -283,7 +286,13 @@ fn resolve_with(arg: &str, m: &Manifest, exists: &dyn Fn(&str) -> bool) -> Resul
             return Err(format!("{arg}: :{t} is not a level. The levels: {}.", levels::names_now().join(", ")));
         }
     }
-    Ok(Some(Resolved { name: format!("{}:{}", fam.name, entry.size), repo: entry.repo.clone(), level: tag }))
+    Ok(Some(Resolved {
+        name: format!("{}:{}", fam.name, entry.size),
+        repo: entry.repo.clone(),
+        level: tag,
+        family: fam.name.clone(),
+        size_given: size.is_some(),
+    }))
 }
 
 /// The model word of a command's arguments made a Hub id where it is a short name (one line says which). Err: the refusal, for the caller to print; exit 1.
@@ -296,6 +305,18 @@ pub fn resolve_args(a: &mut Args) -> Result<(), String> {
     // (`verify PATH` and `rm`'s Hub ids are taken as they are: only a name the manifest has changes)
     match resolve_refreshing(&arg) {
         Ok(Some(r)) => {
+            // a family named with no size, for a command that plans: the size this computer takes (the largest that reaches the floors: src/choose.rs), said in a line
+            if !r.size_given && matches!(a.pos[0].as_str(), "run" | "serve" | "fit" | "pull") {
+                let m = Manifest::load();
+                if let Some(fam) = m.family(&r.family).filter(|f| f.models.len() > 1) {
+                    let (c, line) = crate::choose::choose(fam, r.level.as_deref(), a)?;
+                    eprintln!("glyd: {line}");
+                    let level = r.level.clone();
+                    a.pos[1] =
+                        Resolved { name: format!("{}:{}", fam.name, c.picked.size), repo: c.picked.repo, level, family: r.family, size_given: true }.model();
+                    return Ok(());
+                }
+            }
             eprintln!("glyd: {arg} is {}{}", r.repo, r.level.as_deref().map(|l| format!(" at level {l}")).unwrap_or_default());
             a.pos[1] = r.model();
             Ok(())
