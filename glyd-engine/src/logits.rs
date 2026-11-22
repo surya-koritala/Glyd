@@ -2089,6 +2089,44 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
                 );
             }
             s.release(&[0, 1, 2])?;
+            // a sequence that shared a start holds its sliding layers' blocks from the window before that start on, and none earlier: asked to go on from before the
+            // start's end (the place is the start of a block both hold) it is refused where a step there reads earlier blocks, and is as it was; else it goes on from there
+            let at = 3 * chunk;
+            fill(s, 0, &long[..at + 16], chunk, false)?;
+            let got = s.share(0, 1, at + 8)?;
+            fill_from(s, 1, got, &alt, chunk, false)?;
+            let (ask, to, whole) = (at - 4, at - 16, got + alt.len());
+            let reads = |u: usize| window.map_or(0, |w| u.saturating_sub(w) / 16);
+            let should = if reads(to) < reads(at) { 0 } else { to };
+            let kept = s.resume(1, ask)?;
+            if got != at || kept != should {
+                println!(
+                    "FAIL a sequence that shared a start of {at} tokens ({got} shared), asked to go on within {ask}: {kept} kept, where {should} should be"
+                );
+                fails += 1;
+            } else if kept == 0 {
+                let held = s.resume(1, whole)?;
+                let sharer = fill_from(s, 1, whole, &tail, chunk, true)?.expect("the logits");
+                fill(s, 2, &long[..at], chunk, false)?;
+                fill_from(s, 2, at, &alt, chunk, false)?;
+                let want = fill_from(s, 2, whole, &tail, chunk, true)?.expect("the logits");
+                let what = format!(
+                    "a sequence that shared a start of {at} tokens, asked to go on within {ask}: refused (it holds its sliding layers' blocks from the window before that start, none earlier) and as it was ({held} held); from its end, {} more",
+                    tail.len()
+                );
+                fails += same(&what, &want, &sharer) | (held != whole) as usize;
+            } else {
+                let sharer = fill_from(s, 1, to, &tail, chunk, true)?.expect("the logits");
+                fill(s, 2, &long[..at], chunk, false)?;
+                let cut = s.resume(2, to)?;
+                let want = fill_from(s, 2, to, &tail, chunk, true)?.expect("the logits");
+                let what = format!(
+                    "a sequence that shared a start of {at} tokens, asked to go on within {ask}: from {to}, the start of the block both hold, then {} others",
+                    tail.len()
+                );
+                fails += same(&what, &want, &sharer) | (cut != to) as usize;
+            }
+            s.release(&[0, 1, 2])?;
         }
     }
     // through the scheduler: a conversation's second turn (the prompt, the reply and more), and another's that leaves the reply out

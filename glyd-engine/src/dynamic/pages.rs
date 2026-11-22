@@ -50,6 +50,10 @@ pub struct Pages {
     tabs: Vec<Vec<Vec<u32>>>,
     /// [slot][group]: the entries changed since `take_dirty`, as a range.
     dirty: Vec<Vec<Option<(usize, usize)>>>,
+    /// [slot][group]: the first entry the sequence ever held. 0 for one that began at its first token; a sequence that shared a start holds a sliding group's blocks from
+    /// the window before that start on, and the entries before were never its own: `grow` gives it no block there (an empty block is not the tokens' keys and values, and a
+    /// later cut back to before the start's end would read it as if it were).
+    floor: Vec<Vec<usize>>,
 }
 
 impl Pages {
@@ -63,7 +67,8 @@ impl Pages {
         let n = ctx.div_ceil(BLOCK);
         let tabs = (0..slots).map(|_| (0..pools.len()).map(|_| vec![0u32; n]).collect()).collect();
         let dirty = (0..slots).map(|_| vec![None; pools.len()]).collect();
-        Pages { pools, tabs, dirty }
+        let floor = vec![vec![0; pools.len()]; slots];
+        Pages { pools, tabs, dirty, floor }
     }
 
     pub fn groups(&self) -> usize {
@@ -101,6 +106,12 @@ impl Pages {
         (lo.min(hi), hi)
     }
 
+    /// `span`, and within it the first entry the sequence is given a block for: none before the first it ever held (`floor`).
+    fn span_of(&self, slot: usize, g: usize, upto: usize) -> (usize, usize, usize) {
+        let (lo, hi) = self.span(g, upto);
+        (lo, lo.max(self.floor[slot][g]).min(hi), hi)
+    }
+
     /// Sequence `slot` given the blocks for its first `upto` tokens in every group, and its sliding groups' blocks a step can no longer read given back; false where some group has too
     /// few free (then nothing changes).
     pub fn grow(&mut self, slot: usize, upto: usize) -> bool {
@@ -109,8 +120,8 @@ impl Pages {
             return false;
         }
         for g in 0..self.pools.len() {
-            let (lo, hi) = self.span(g, upto);
-            let need = (lo..hi).filter(|&b| self.tabs[slot][g][b] == 0).count();
+            let (lo, from, hi) = self.span_of(slot, g, upto);
+            let need = (from..hi).filter(|&b| self.tabs[slot][g][b] == 0).count();
             // (blocks this call gives back come first: those it alone holds)
             let back = (0..lo).filter(|&b| self.tabs[slot][g][b] != 0 && self.pools[g].refs[self.tabs[slot][g][b] as usize] == 1).count();
             if need > self.pools[g].free.len() + back {
@@ -118,7 +129,7 @@ impl Pages {
             }
         }
         for g in 0..self.pools.len() {
-            let (lo, hi) = self.span(g, upto);
+            let (lo, from, hi) = self.span_of(slot, g, upto);
             for b in 0..lo {
                 let blk = std::mem::take(&mut self.tabs[slot][g][b]);
                 if blk != 0 {
@@ -126,7 +137,7 @@ impl Pages {
                     self.mark(slot, g, b);
                 }
             }
-            for b in lo..hi {
+            for b in from..hi {
                 if self.tabs[slot][g][b] == 0 {
                     self.tabs[slot][g][b] = self.pools[g].take().expect("counted above");
                     self.mark(slot, g, b);
@@ -139,6 +150,7 @@ impl Pages {
     /// Every block of sequence `slot` back in its pool.
     pub fn release(&mut self, slot: usize) {
         for g in 0..self.pools.len() {
+            self.floor[slot][g] = 0;
             for b in 0..self.tabs[slot][g].len() {
                 let blk = std::mem::take(&mut self.tabs[slot][g][b]);
                 if blk != 0 {
@@ -214,7 +226,8 @@ impl Pages {
             }
         }
         for g in 0..self.pools.len() {
-            for b in self.reach(g, nb * BLOCK, slack).min(nb)..nb {
+            self.floor[to][g] = self.reach(g, nb * BLOCK, slack).min(nb);
+            for b in self.floor[to][g]..nb {
                 let blk = self.tabs[from][g][b];
                 self.pools[g].refs[blk as usize] += 1;
                 self.tabs[to][g][b] = blk;
@@ -417,6 +430,27 @@ mod tests {
         }
         // (the run did what it is for)
         assert!(shares > 100 && cuts > 200, "{shares} shares, {cuts} cuts");
+    }
+
+    /// A sequence that shared a start holds a sliding group's blocks from the window before that start on. As it grows it is given no block for the entries before (they
+    /// were never its own, and an empty block there would pass for the tokens' keys and values): a cut back that reads them is refused.
+    #[test]
+    fn a_sharer_is_given_no_block_before_the_window_it_shared() {
+        // (a window of 64 tokens and a chunk of 32)
+        let mut p = Pages::new(&[200, 200], &[None, Some(64 + 32)], 2, 1024);
+        assert!(p.grow(0, 208));
+        // 192 tokens of it shared: the sliding group from the window before 192, entry 8, on
+        assert_eq!(p.share(0, 1, 200, 32), 192);
+        assert_eq!((p.table(1, 1)[7], p.table(1, 1)[8] != 0), (0, true));
+        // it grows by a token, then two chunks: a sequence from its first token would hold the entries from 6 on (the window and a chunk behind 193); this one none before 8
+        assert!(p.grow(1, 193) && p.grow(1, 225));
+        assert!(p.table(1, 1)[..8].iter().all(|&b| b == 0) && p.table(1, 1)[8..15].iter().all(|&b| b != 0));
+        // a cut to 180 (to 176, the start of a block both hold) reads the window from entry 7: refused, and nothing changes; a cut to 200 is its own
+        assert_eq!((p.cut_len(1, 180, 32), p.shrink(1, 180, 32)), (0, 0));
+        assert_eq!(p.shrink(1, 200, 32), 200);
+        // released, the slot begins as any other
+        p.release(1);
+        assert!(p.grow(1, 100) && p.table(1, 1)[0] != 0);
     }
 
     /// A sequence that begins as another does names that one's full blocks and holds them with it: they stay while either holds them, the other's end or cut gives back only
