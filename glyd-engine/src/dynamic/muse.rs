@@ -84,12 +84,20 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
 
 /// Stage `st` of the model (its layers; the embedding where it is the first, the final norm and the head where the last).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
+    load_stage_hb(dir, o, st, None)
+}
+
+/// `load_stage` with its experts in the expert cache (`hc`: the stage's places and memory): a hummingbird directory's (src/hbg_store.rs), or the release's lossless experts (src/tiering.rs `cached_tiered`).
+pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let c = ConfigMuse::load(dir)?;
     if c.head_dim != 64 || c.hidden > 8192 || c.latent > 4096 || c.top_k > 32 {
         return err(format!("heads of {}, a width of {}, a latent of {}, {} experts a token: this engine runs heads of 64, widths up to 8192, latents up to 4096 and up to 32 experts a token", c.head_dim, c.hidden, c.latent, c.top_k));
     }
     let dev = Dev::new(o.device)?;
     let ck = io(Checkpoint::open(dir))?;
+    // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
+    let hb = crate::hb_pack::HbDir::open(dir)?;
+    let store = hc.map(crate::hbg_store::store_for);
     let layout = o.layout.unwrap_or(Layout::Tiered);
     let (d, nq, nk, hd, lat, inter, e) = (c.hidden, c.heads, c.kv_heads, c.head_dim, c.latent, c.inter, c.experts);
     let read = |n: &str| io(ck.read(n));
@@ -107,6 +115,11 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     let pack = |w: &[u16], rows: usize, cols: usize, name: &str| pack_as(w, rows, cols, name, true);
     let small_bits = |v: &[u16]| upload_bytes(as_bytes(v));
     let mut l_ = Loaded::default();
+    // (the stage's last layers' matrices in the computer's memory where the cache says so, src/dense_ram.rs: each copied into one slot before it runs)
+    let mut ram = crate::dense_ram::RamBuilder::new(crate::dense_ram::Placer::last(st.layers.0, st.layers.1, hc.map_or(0, |x| x.dense)));
+    if sl.is_some() && hc.is_some_and(|x| x.dense > 0) {
+        return err("Muse Spark's dense layers in the computer's memory: a stage on one GPU, not sliced across GPUs");
+    }
     let (mut rings, mut layers) = (Vec::new(), Vec::new());
     let put = |v: &mut Vec<Buf>, b: Buf| {
         v.push(b);
@@ -141,11 +154,19 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             qkvg.extend(words(&read(&format!("{a}.{n}.weight"))?));
         }
         let m0 = l_.mats.len();
-        l_.mats.push(pack(&qkvg, row, d, &format!("{a}.qkvg"))?);
+        let mut mat = |mats: &mut Vec<Mat>, w: &[u16], rows: usize, cols: usize, name: &str| -> Result<()> {
+            if ram.in_ram(l) {
+                ram.push(l, mats, pack_words(w, rows, cols, layout, name)?).map(|_| ())
+            } else {
+                mats.push(pack(w, rows, cols, name)?);
+                Ok(())
+            }
+        };
+        mat(&mut l_.mats, &qkvg, row, d, &format!("{a}.qkvg"))?;
         drop(qkvg);
-        l_.mats.push(pack(&words(&read(&format!("{a}.o_proj.weight"))?), d, nq * hd, &format!("{a}.o_proj"))?);
-        l_.mats.push(pack(&words(&read(&format!("{m}.pre_expert_proj.weight"))?), lat, d, &format!("{m}.pre_expert_proj"))?);
-        l_.mats.push(pack(&words(&read(&format!("{m}.post_expert_proj.weight"))?), d, lat, &format!("{m}.post_expert_proj"))?);
+        mat(&mut l_.mats, &words(&read(&format!("{a}.o_proj.weight"))?), d, nq * hd, &format!("{a}.o_proj"))?;
+        mat(&mut l_.mats, &words(&read(&format!("{m}.pre_expert_proj.weight"))?), lat, d, &format!("{m}.pre_expert_proj"))?;
+        mat(&mut l_.mats, &words(&read(&format!("{m}.post_expert_proj.weight"))?), d, lat, &format!("{m}.post_expert_proj"))?;
         // the experts: each stacked matrix packed as one (gate and up [E 2I, latent], down [E latent, I]); the router fp32 as it is
         let stack = |n: &str, rows: usize, cols: usize| -> Result<ExpertStack> {
             let w = words(&read(&format!("{m}.experts.{n}"))?);
@@ -162,7 +183,6 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             st.tp_rows = rows;
             Ok(st)
         };
-        let (up, down) = (stack("gate_up_proj", 2 * inter, lat)?, stack("down_proj", lat, inter)?);
         let router = upload_bytes(&read(&format!("{m}.gate.weight"))?)?;
         let bias = upload_bytes(&read(&format!("{m}.gate.e_score_correction_bias"))?)?;
         // (the clamp of an infinite limit: the activation is the kernel's, so the products are not fused)
@@ -175,7 +195,37 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
             act: Act::SwiGlu { limit: Some(f32::INFINITY) },
         };
         let block = l_.moe.len();
-        l_.moe.push(Box::new(MuseMoe(MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?)));
+        // (the host's pairs of the cache normed as the sum norms each expert's output: the post-expert norm's input scale as the GPU holds it, bf16)
+        let post: Vec<f32> = if hc.is_some() && hb.is_some() {
+            plus_one(&vals(&format!("{m}.experts.post_expert_norm.weight"))?).iter().map(|&v| crate::hb_codec::f32_of(crate::hb_codec::bf16(v))).collect()
+        } else {
+            Vec::new()
+        };
+        let finish = crate::cpu_hbg::Finish::Normed { signs: Vec::new(), rot: 0, w: post, eps: c.post_eps };
+        let layer = match crate::hbg_store::hb_layer(hb.as_ref(), l, sl.is_some(), hc.zip(store.as_ref()), cfg.act, finish, dev.ordinal, cfg.router.top_k)? {
+            Some(x) => x.into_layer(cfg, router, Some(bias), None, None)?,
+            // (R12: the release's experts in the expert cache, every one in the computer's memory: each stack's one lossless pack in the tiered layout, whatever the level of the rest, cut per expert)
+            None if hb.is_none() && hc.is_some() => {
+                let (Some(cg), Some(store)) = (hc, store.as_ref()) else { unreachable!("a stage's cache has its store") };
+                if sl.is_some() || cg.ram.is_some() {
+                    return err("Muse Spark's experts in the expert cache: a layer on one GPU, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
+                }
+                let places = |n: &str, rows: usize, cols: usize| -> Result<crate::tiering::TieredPlaces> {
+                    let w = words(&read(&format!("{m}.experts.{n}"))?);
+                    let p = glyd_gpu::pack::pack_tiered_checked(&w, e * rows, cols)
+                        .ok_or_else(|| Error(format!("{m}.experts.{n}: decoded to other bits than its weights")))?;
+                    crate::tiering::TieredPlaces::of(&p, e)
+                };
+                let (pu, pd) = (places("gate_up_proj", 2 * inter, lat)?, places("down_proj", lat, inter)?);
+                let (up, down, cache) = crate::tiering::cached_tiered(&pu, &pd, cg.places, store, l, dev.ordinal)?;
+                MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?.with_cache(cache)?
+            }
+            None => {
+                let (up, down) = (stack("gate_up_proj", 2 * inter, lat)?, stack("down_proj", lat, inter)?);
+                MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?
+            }
+        };
+        l_.moe.push(Box::new(MuseMoe(layer)));
         let ring = rings.len();
         rings.push(Ring { d: hd, nk, window: if c.sliding[l] { c.window } else { 0 } });
         let mut ops = vec![
@@ -260,5 +310,6 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
         hc: (0.0, 0),
         logit_mult: c.out_mult,
     };
+    l_.ram = ram.finish(&mut l_.mats)?;
     Dyn::from_parts(dev, desc, l_, ropes, layout, st, o)
 }

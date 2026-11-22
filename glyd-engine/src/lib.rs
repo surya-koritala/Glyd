@@ -50,6 +50,7 @@ pub mod cpu_hb;
 pub mod cpu_hbg;
 mod cpu_simd;
 pub mod deepseek_v4;
+pub mod dense_ram;
 pub mod dev;
 pub mod disk;
 pub mod doctor;
@@ -75,6 +76,7 @@ pub mod glm_serve;
 pub mod hb_codec;
 pub mod hb_pack;
 pub mod hb_usage;
+pub mod hbg_store;
 #[cfg(feature = "dev")]
 pub mod hbpack;
 pub mod hub;
@@ -160,6 +162,7 @@ pub mod store;
 #[cfg(feature = "dev")]
 pub mod stress;
 pub mod support;
+pub mod tiering;
 pub mod tok;
 pub mod tools;
 pub mod trace;

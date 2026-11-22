@@ -197,6 +197,78 @@ pub fn unrot(part: &[f32], signs: &[i8], b: usize) -> Vec<u16> {
     v.iter().map(|&x| bf16(x)).collect()
 }
 
+/// What the expert cache's host gives back for a pair it computes (src/offload.rs `HostHalf::Hbg`): its part times its weight in the rotated basis, which the GPU adds to its own pairs' weighted sum before R^T (the families
+/// whose sum is linear in the experts' outputs); or (`Normed`) the pair's output rotated back, rounded to bf16, normed as Muse Spark's sum norms each expert's output (each value times the input scale `w` and rounded to bf16, over
+/// the root of their mean square plus `eps`) and times its weight, which the GPU adds after its own sum.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Finish {
+    Rotated,
+    Normed { signs: Vec<i8>, rot: usize, w: Vec<f32>, eps: f32 },
+}
+
+/// The pairs the expert cache's host computes: pair p is `experts[p]` on the row `tokens[p]` of `xr` ([tokens, W] fp32, the rotated inputs) with the weight `wts[p]`, its two products (`pair`, the activation `act`) finished as `finish`
+/// says into row p of `out` [pairs, W] (fp32). On `threads` threads, a pair a thread at a time: the values do not depend on them.
+#[allow(clippy::too_many_arguments)]
+pub fn store_pairs(experts: &[HbgExpert], xr: &[f32], tokens: &[usize], wts: &[f32], act: Act, finish: &Finish, out: &mut [f32], threads: usize) -> Result<()> {
+    let n = experts.len();
+    let w = experts.first().map_or(0, |e| e.up.cols);
+    if tokens.len() != n
+        || wts.len() != n
+        || out.len() != n * w
+        || tokens.iter().any(|&t| (t + 1) * w > xr.len())
+        || experts.iter().any(|e| e.up.cols != w || e.down.cols != w)
+    {
+        return err(format!(
+            "{n} pairs of experts of width {w}, {} tokens, {} weights and {} outputs for rotated inputs of {} values",
+            tokens.len(),
+            wts.len(),
+            out.len(),
+            xr.len()
+        ));
+    }
+    if let Finish::Normed { signs, w: scale, .. } = finish {
+        if signs.len() != w || scale.len() != w {
+            return err(format!("a norm of {} weights and {} signs for experts of width {w}", scale.len(), signs.len()));
+        }
+    }
+    let a = act_of(act);
+    let one = |p: usize, row: &mut [f32]| -> Result<()> {
+        pair(&experts[p], &xr[tokens[p] * w..(tokens[p] + 1) * w], &a, row)?;
+        match finish {
+            Finish::Rotated => row.iter_mut().for_each(|v| *v *= wts[p]),
+            Finish::Normed { signs, rot, w: scale, eps } => {
+                let y = unrot(row, signs, *rot);
+                let v: Vec<f32> = y.iter().zip(scale).map(|(&b, &s)| f32_of(bf16(f32_of(b) * s))).collect();
+                let r = 1.0 / (v.iter().map(|x| x * x).sum::<f32>() / w as f32 + eps).sqrt();
+                row.iter_mut().zip(&v).for_each(|(o, &x)| *o = wts[p] * (x * r));
+            }
+        }
+        Ok(())
+    };
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let rows: Vec<std::sync::Mutex<&mut [f32]>> = out.chunks_mut(w.max(1)).map(std::sync::Mutex::new).collect();
+    let failed = std::sync::Mutex::new(None);
+    std::thread::scope(|sc| {
+        for _ in 0..threads.clamp(1, n.max(1)) {
+            sc.spawn(|| loop {
+                let p = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if p >= n {
+                    return;
+                }
+                let mut row = rows[p].lock().expect("a pair's row");
+                if let Err(e) = one(p, &mut row) {
+                    *failed.lock().expect("the error") = Some(e);
+                    return;
+                }
+            });
+        }
+    });
+    match failed.into_inner().expect("the error") {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 /// A layer's experts' sum for `x` [t, W] (bf16 values as f32) as a family whose sum is linear in them gives it: each token rotated once, each of its `k` choices (`ids` [t k], an expert below E counting; `wts` [t k]) through `pair` with `act`,
 /// the weighted sum of the parts, `extra` ([t, W] fp32 in the rotated basis; none) added, R^T once, one rounding to bf16: y [t, W] (bits).
 pub fn layer(host: &HbgHost, x: &[f32], ids: &[i64], wts: &[f32], k: usize, act: &dyn Fn(&[u16], &mut [u16]), extra: Option<&[f32]>) -> Result<Vec<u16>> {
@@ -356,6 +428,51 @@ mod tests {
     }
 
     /// The rows are read from the bytes as the layout says: the codes of a run from the bitstream at both widths, each weight scale times entry; a matrix that is not a layout's is refused, and so is a first product of other sizes.
+    /// The expert cache's host pairs (`store_pairs`): a token's rows (each pair's part times its weight, in the rotated basis) summed and given as the `extra` of a sum with no pairs of its own are the layer's sum (within a bf16 ulp:
+    /// the additions' order differs); the Muse norm of a pair is its unrotated output's, input-scaled, over the root of the mean square; the threads change no value; a shape that is not the experts' is refused.
+    #[test]
+    fn the_stores_host_pairs_are_the_layers() {
+        let mut rng = Rng(5);
+        let (w, k, t) = (256usize, 2usize, 3usize);
+        let (rows, _) = coded_layer(&mut rng, w, 64, true, &[2, 3, 2, 3], 1);
+        let host = HbgHost::of(&rows).unwrap();
+        let x: Vec<f32> = (0..t * w).map(|_| rng.bf(1.0)).collect();
+        let ids: Vec<i64> = vec![0, 3, 1, 2, 3, 0];
+        let wts: Vec<f32> = (0..t * k).map(|i| 0.25 + i as f32 * 0.1).collect();
+        let act = Act::SwiGlu { limit: None };
+        let want = layer(&host, &x, &ids, &wts, k, &act_of(act), None).unwrap();
+        let xr: Vec<f32> = x.chunks(w).flat_map(|r| rot_in(r, &host.signs, host.shape.rot)).collect();
+        let experts: Vec<HbgExpert> = ids.iter().map(|&e| host.expert(e as usize).unwrap()).collect();
+        let toks: Vec<usize> = (0..t * k).map(|j| j / k).collect();
+        let mut out = vec![0f32; t * k * w];
+        store_pairs(&experts, &xr, &toks, &wts, act, &Finish::Rotated, &mut out, 3).unwrap();
+        let mut extra = vec![0f32; t * w];
+        for (j, row) in out.chunks(w).enumerate() {
+            extra[toks[j] * w..][..w].iter_mut().zip(row).for_each(|(a, b)| *a += b);
+        }
+        let got = layer(&host, &x, &[-1; 6], &wts, k, &act_of(act), Some(&extra)).unwrap();
+        for (a, b) in got.iter().zip(&want) {
+            let (a, b) = (f32_of(*a), f32_of(*b));
+            assert!((a - b).abs() <= ulp(b), "{a} {b}");
+        }
+        let mut one = vec![0f32; out.len()];
+        store_pairs(&experts, &xr, &toks, &wts, act, &Finish::Rotated, &mut one, 1).unwrap();
+        assert_eq!(one, out);
+        // Muse's norm of a pair
+        let scale: Vec<f32> = (0..w).map(|i| 1.0 + (i % 7) as f32 * 0.05).collect();
+        let fin = Finish::Normed { signs: host.signs.clone(), rot: host.shape.rot, w: scale.clone(), eps: 1e-6 };
+        let mut normed = vec![0f32; t * k * w];
+        store_pairs(&experts, &xr, &toks, &wts, act, &fin, &mut normed, 2).unwrap();
+        let mut part = vec![0f32; w];
+        pair(&experts[1], &xr[..w], &act_of(act), &mut part).unwrap();
+        let v: Vec<f32> = unrot(&part, &host.signs, host.shape.rot).iter().zip(&scale).map(|(&b, &s)| f32_of(bf16(f32_of(b) * s))).collect();
+        let r = 1.0 / (v.iter().map(|x| x * x).sum::<f32>() / w as f32 + 1e-6).sqrt();
+        assert!(normed[w..2 * w].iter().zip(&v).all(|(o, x)| (o - wts[1] * x * r).abs() <= 1e-6 * (1.0 + o.abs())));
+        // refused: a row past the inputs, outputs of the wrong size
+        assert!(store_pairs(&experts[..1], &xr[..w], &[1], &wts[..1], act, &Finish::Rotated, &mut vec![0f32; w], 1).is_err());
+        assert!(store_pairs(&experts[..1], &xr, &[0], &wts[..1], act, &Finish::Rotated, &mut vec![0f32; w - 1], 1).is_err());
+    }
+
     #[test]
     fn rows_are_read_as_the_layout_says() {
         let mut rng = Rng(11);

@@ -317,6 +317,20 @@ impl HbgStack {
         Ok(HbgStack { place: g.place, experts: g.experts, bytes: data.bytes + meta.bytes, data, meta })
     }
 
+    /// Places for `slots` of a group's `experts` experts (zeroed), which the expert cache copies experts into (src/offload.rs `ExpertStore::add_layer`): an expert's place there is its `local_of` entry for a call (`HbgKern::tables`).
+    pub fn pooled(place: HbgPlace, experts: usize, slots: usize) -> Result<HbgStack> {
+        if slots == 0 || slots > experts {
+            return err(format!("room for {slots} experts standing for {experts}"));
+        }
+        let (data, meta) = (Buf::zeroed(slots * place.data)?, Buf::zeroed(slots * place.meta)?);
+        Ok(HbgStack { place, experts, bytes: data.bytes + meta.bytes, data, meta })
+    }
+
+    /// The addresses of the places' codes and of their scales and codebooks, and an expert's bytes in each: what the expert cache copies an expert into.
+    pub fn places(&self) -> ([u64; 2], [u64; 2]) {
+        ([self.data.ptr, self.meta.ptr], [self.place.data as u64, self.place.meta as u64])
+    }
+
     pub fn up_arrays(&self) -> HbgArrays {
         let p = &self.place;
         HbgArrays {
@@ -374,6 +388,34 @@ impl HbgExperts {
         })
     }
 
+    /// A layer's experts in the expert cache's places: `slots[g]` places for group g (of `h`'s experts of that width; the host tier holds them all), the tables written for each call by the cache (`HbgKern::tables`), the signs.
+    pub fn pooled(h: &HbgHost, slots: [usize; 2]) -> Result<HbgExperts> {
+        let places = [0, 1].map(|g| h.groups[g].as_ref().map_or(HbgPlace::new(g as u32 + 2, h.shape.width, h.shape.up_rows(), h.shape.inter), |x| Ok(x.place)));
+        let counts = [0, 1].map(|g| h.groups[g].as_ref().map_or(0, |x| x.experts));
+        let [p0, p1] = places;
+        HbgExperts::pooled_shape(h.shape, [p0?, p1?], counts, slots, &h.signs)
+    }
+
+    /// `pooled` from the layer's shape alone (its experts not read: the expert cache reads them from the layer's file as the router asks for them): the places of each width, the experts of each, the places for each, the signs.
+    pub fn pooled_shape(shape: HbgShape, places: [HbgPlace; 2], counts: [usize; 2], slots: [usize; 2], signs: &[i8]) -> Result<HbgExperts> {
+        if counts[0] + counts[1] != shape.experts || signs.len() != shape.width {
+            return err(format!("{} and {} experts of a layer of {}, {} signs for rows of {}", counts[0], counts[1], shape.experts, signs.len(), shape.width));
+        }
+        let mut groups = [None, None];
+        for g in 0..2 {
+            if counts[g] > 0 {
+                groups[g] = Some(HbgStack::pooled(places[g], counts[g], slots[g])?);
+            }
+        }
+        Ok(HbgExperts {
+            shape,
+            groups,
+            group_of: Buf::zeroed(shape.experts)?,
+            local_of: Buf::zeroed(shape.experts * 2)?,
+            signs: upload_bytes(&signs.iter().map(|&s| s as u8).collect::<Vec<u8>>())?,
+        })
+    }
+
     /// Device bytes of the experts: the stacks, the tables and the signs.
     pub fn bytes(&self) -> usize {
         self.groups.iter().flatten().map(|g| g.bytes).sum::<usize>() + self.group_of.bytes + self.local_of.bytes + self.signs.bytes
@@ -421,6 +463,7 @@ fn rot_grid(width: usize, rot: usize) -> (u32, u32) {
 
 /// The Hummingbird layer's kernels (kernels/moe_hbg.cu) with typed launches. Device addresses are `u64`.
 pub struct HbgKern {
+    tables: Kernel,
     rot: Kernel,
     up: [Kernel; 2],
     down: [Kernel; 2],
@@ -432,6 +475,7 @@ pub struct HbgKern {
 impl HbgKern {
     pub fn load(dev: &Dev) -> Result<HbgKern> {
         Ok(HbgKern {
+            tables: dev.kernel(kname!("hbg_tables"))?,
             rot: dev.kernel(kname!("hbg_rot_in"))?,
             up: [dev.kernel(kname!("hbg_up2"))?, dev.kernel(kname!("hbg_up3"))?],
             down: [dev.kernel(kname!("hbg_down2"))?, dev.kernel(kname!("hbg_down3"))?],
@@ -439,6 +483,18 @@ impl HbgKern {
             sum: dev.kernel(kname!("hbg_sum_rot"))?,
             unrot: dev.kernel(kname!("hbg_unrot"))?,
         })
+    }
+
+    /// The expert cache's tables of a call: each of the `pairs` choices' (`ids`) expert's group and place, from the places the store gave each group's pairs (`way0`, `way1`, int64 [pairs], -1: not that group's on the GPU); an
+    /// expert neither gave a place gets no group (255), and the products skip its pairs (the host computes them).
+    ///
+    /// # Safety
+    /// Live device buffers of `pairs` int64 each; `hb`'s experts in a cache's places (`HbgExperts::pooled`).
+    pub unsafe fn tables(&self, s: Stream, hb: &HbgExperts, ids: u64, way0: u64, way1: u64, pairs: usize) -> Result<()> {
+        if pairs == 0 {
+            return Ok(());
+        }
+        launch!(self.tables, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; ids, way0, way1, hb.group_of.ptr, hb.local_of.ptr, pairs as i32, hb.shape.experts as i32)
     }
 
     /// xr [tokens, W] (fp32) = R x for x [tokens, W] bf16 (rows `xs` elements apart): the layer's signs applied, then the Hadamard transform of each run of b values over sqrt b.
@@ -817,6 +873,7 @@ mod tests {
             ("hbg_inv", "ppii".to_string()),
             ("hbg_sum_rot", "ppppppp".to_string() + "iiiif"),
             ("hbg_unrot", "pppp".to_string() + "iiif"),
+            ("hbg_tables", "ppppp".to_string() + "ii"),
         ] {
             assert_eq!(params(name), want, "{name}");
         }

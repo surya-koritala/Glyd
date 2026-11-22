@@ -579,7 +579,7 @@ pub(crate) mod tests {
             let counted: u64 = table.rows.iter().filter(|r| !matches!(classify(&r.name, nl), Part::Vision | Part::Mtp)).map(|r| r.bytes).sum();
             assert_eq!(per.iter().sum::<u64>() + base, counted, "{name}: every layer's bytes and the rest's");
             let args = crate::args::Args::from(["run".to_string(), name.to_string()]);
-            match crate::cli::size_dynamic(&args, name, &table, config, family, &devs, Some(m.ram_free), &|_| true) {
+            match crate::cli::size_dynamic(&args, name, &table, None, config, family, &devs, Some(m.ram_free), &|_| true) {
                 Ok(p) => {
                     assert!(p.gpu_total() <= p.free && p.spread.is_some(), "{name}");
                     planned += 1;

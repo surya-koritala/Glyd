@@ -252,6 +252,10 @@ pub trait MoeBlock {
     fn resident(&self) -> Option<(&crate::moe::MoeLayer, Option<(&Mat, &Mat)>)> {
         None
     }
+    /// Whether a call reads the router's choices on the host (a layer of hummingbird experts in the expert cache, `MoeLayer::reads_host`): no graph captures a step with it.
+    fn reads_host(&self) -> bool {
+        self.resident().is_some_and(|(l, _)| l.reads_host())
+    }
 }
 
 /// What a block of experts asks of the engine it runs in (this one, or the dynamic engine): the GPU, the library, two buffers a mixture-of-experts layer leaves free (`mix` and `xc`, a chunk's rows at the
