@@ -965,7 +965,7 @@ pub fn save_token(token: &str) -> std::io::Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The token as the Hub's own tools take it, and the flag `--hf-token` first of all: the flag, HF_TOKEN, HUGGING_FACE_HUB_TOKEN, the saved login; a blank one is none.
@@ -986,10 +986,10 @@ mod tests {
     use std::sync::Arc;
 
     /// The Hub in miniature, on 127.0.0.1: the listing, `resolve` that redirects to a second host name of the same server ("storage", localhost) which serves ranges. Every request is noted.
-    type Log = Arc<Mutex<Vec<(String, Option<String>, bool)>>>;
-    struct Mock {
+    pub(crate) type Log = Arc<Mutex<Vec<(String, Option<String>, bool)>>>;
+    pub(crate) struct Mock {
         port: u16,
-        log: Log,
+        pub(crate) log: Log,
         files: Arc<Vec<(String, Vec<u8>)>>,
         corrupt: Arc<Mutex<bool>>,
     }
@@ -1068,13 +1068,18 @@ mod tests {
     }
 
     fn mock() -> (Mock, Hub, PathBuf) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
         let files = vec![
             ("config.json".to_string(), b"{\"a\": 1}".to_vec()),
             ("model.safetensors".to_string(), bytes_of(1, 10_000)),
             ("sub/tokenizer.json".to_string(), bytes_of(2, 900)),
         ];
+        mock_with(files)
+    }
+
+    /// The Hub in miniature with these files as the repo org/model's.
+    pub(crate) fn mock_with(files: Vec<(String, Vec<u8>)>) -> (Mock, Hub, PathBuf) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
         let m = Mock { port, log: Arc::new(Mutex::new(Vec::new())), files: Arc::new(files), corrupt: Arc::new(Mutex::new(false)) };
         let (log, files, corrupt) = (m.log.clone(), m.files.clone(), m.corrupt.clone());
         std::thread::spawn(move || {

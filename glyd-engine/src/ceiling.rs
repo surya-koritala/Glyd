@@ -5,7 +5,8 @@
 //! term, the same with the rates our code was measured at (the source named), and the measured step where one is given.
 
 use crate::args::Args;
-use crate::dynamic::split::{layer_of, CODED_PCT, PLAIN_PCT};
+use crate::dynamic::split::{CODED_PCT, PLAIN_PCT};
+use crate::sizes::layer_of;
 
 /// A bf16 matrix's bytes as packed, a share of the release's, measured: Kimi-K3's layer 0, its embedding and head (6.56 GiB of bf16) packed to 4.522 GiB
 /// tiered and 4.935 GiB in the 12-bit layout (tpbench --one, 2026-10-22). The planner's TIERED_PCT and TWELVE_PCT (72, 78) are bounds for memory, not this.
