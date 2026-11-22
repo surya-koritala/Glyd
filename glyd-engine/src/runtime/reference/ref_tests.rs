@@ -519,3 +519,48 @@ fn deepseek_v4_release_described() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Nemotron 3's description on the reference (Mamba-2, attention with no position embedding, the mixture of experts with a shared expert on the full vector, a layer a block)
+/// against the logits the engine recorded for the same random model on an RTX 4080 SUPER at the lossless level (tests/logits/nemotron-h.sm89.json.gz; no other implementation
+/// made them). The weight map names the checkpoint's tensors but the draft head's, and every row (the prompt's, each decode step's, the long prompt's) is the engine's within
+/// what its bf16 values explain: the same best token wherever it has a clear lead.
+///
+/// Not in the default run: 186 tokens of a model 2,688 wide take minutes on an unoptimized build (`cargo test --release -- --ignored nemotron_model`, 30 s). What runs
+/// everywhere is the fixture this reference recorded (tests/logits/nemotron-h.json.gz), which the GPU job holds the engine to.
+#[test]
+#[ignore = "minutes on an unoptimized build: cargo test --release -- --ignored nemotron_model"]
+fn nemotron_model_described_against_the_engines_logits() {
+    use crate::logits::{compare, Bound, Fixture};
+    use crate::runtime::{describe::describe, reference::model::RefModel};
+    use std::collections::BTreeSet;
+    let dir = std::env::temp_dir().join(format!("glyd-runtime-nemotron-model-{}", std::process::id()));
+    crate::kcheck_nh::random(&dir, 0, 16).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let ck = Checkpoint::open(&dir).unwrap();
+    let names: BTreeSet<String> = ck.names().filter(|n| !n.starts_with("mtp.")).map(String::from).collect();
+    assert_eq!(d.names(), names, "the weight map");
+    let fx = Fixture::read(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/logits/nemotron-h.sm89.json.gz")).unwrap();
+    let src = checkpoint_source(&ck);
+    let t0 = std::time::Instant::now();
+    let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+    let mut got = vec![m.forward(&fx.prompt, 0).unwrap().pop().unwrap()];
+    for (i, &t) in fx.decode.iter().enumerate() {
+        got.push(m.forward(&[t], (fx.prompt.len() + i) as u32).unwrap().pop().unwrap());
+    }
+    let mut m = RefModel::load(&d, &src).unwrap();
+    got.push(m.forward(&fx.long, 0).unwrap().pop().unwrap());
+    let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 5e-4, top1: 1.0 }, &got);
+    eprintln!(
+        "nemotron on the reference: {} rows in {:.1} s, KL mean {:.3e} max {:.3e}, best token {}/{}, largest logit difference {:.4}",
+        v.rows,
+        t0.elapsed().as_secs_f64(),
+        v.mean_kl,
+        v.max_kl,
+        v.top1.0,
+        v.top1.1,
+        v.max_dlogit
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(v.ok, "{:?}", v.notes);
+}

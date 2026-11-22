@@ -519,6 +519,26 @@ fn dsv4_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     Ok(Box::new(CpuRef { load: Box::new(move || crate::dsv4_ref::RefV4::load(&d, true).map(|mut m| move |t| m.step(t))), m: None, last: Vec::new() }))
 }
 
+/// A model directory's description (`runtime::describe`) on the CPU reference of the layer kinds, a token at a time: the reference of a family that has no hand-written one
+/// (Nemotron-H). Its weights are read as they are stored (bf16 or f32).
+fn described_cpu(dir: &Path) -> Result<Box<dyn Run>> {
+    use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
+    let d = dir.to_path_buf();
+    let load = move || {
+        let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(d.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
+        let desc = crate::runtime::describe::describe(&cfg)?;
+        let ck = io(glyd_gpu::safetensors::Checkpoint::open(&d))?;
+        let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
+        let mut pos = 0u32;
+        Ok(move |t: u32| {
+            let l = m.forward(&[t], pos).unwrap_or_else(|e| panic!("the reference at position {pos}: {}", e.msg)).pop().expect("a token's logits");
+            pos += 1;
+            l
+        })
+    };
+    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new() }))
+}
+
 fn nemotron_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     let layout = level_layout(level)?;
     boxed(crate::dynamic::nemotron::load(dir, &dyn_opts(layout), layout.unwrap_or(Layout::Tiered)))
@@ -835,7 +855,7 @@ pub fn cases() -> Vec<Case> {
             family: "Nemotron-H (Mamba-2, attention, mixture of experts)",
             weights: Weights::Random(|d| crate::kcheck_nh::random(d, 0, 16)),
             engine: nemotron_engine,
-            cpu: None,
+            cpu: Some(described_cpu),
             vocab: 4096,
         },
         Case {
@@ -1310,6 +1330,8 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
     provenance.insert(
         "source".into(),
         match from {
+            // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
+            "cpu" if c.id == "nemotron-h" => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
@@ -1835,8 +1857,8 @@ fn sizes_done(case: &str, fails: usize) -> Result<()> {
     Ok(())
 }
 
-/// `keepcheck CASE [--level L]` (gemma4, qwen35, muse, kimi, glm; R4c's first step): a finished sequence kept in its slot and gone on with, as a conversation's next turn does
-/// (`ModelStep::resume` and `mark`, src/dynamic/rows.rs), on the case's random model. Every comparison is of logits, bit for bit, against a second slot that ran the same tokens
+/// `keepcheck CASE [--level L] [--dir MODEL --ctx N --chunk N]` (gemma4, qwen35, muse, kimi, glm; R4c's first step): a finished sequence kept in its slot and gone on with, as a
+/// conversation's next turn does (`ModelStep::resume` and `mark`, src/dynamic/rows.rs), on the case's random model, or the model in MODEL (a real one). Every comparison is of logits, bit for bit, against a second slot that ran the same tokens
 /// in the same passes and was never resumed:
 ///   - the whole of a sequence (a prompt, then tokens a step at a time) gone on with a further chunk: every family;
 ///   - the sequence asked to go on from inside the tokens it wrote a step at a time: from there where the model has no recurrent state and no latent cache; from its prompt's end,
@@ -1852,7 +1874,13 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     use std::sync::Arc;
     let case = a.need(1, "CASE")?;
     let level = a.flag("level").unwrap_or("penguin");
-    let mut e: Dyn = random_dyn(case, level, "keepcheck")?;
+    let mut e: Dyn = match a.flag("dir") {
+        Some(dir) => {
+            let o = DynOpts { ctx: a.num("ctx", 4096usize)?, chunk: a.num("chunk", 256usize)?, graph: true, device: 0, layout: level_layout(level)? };
+            load_dyn(case, Path::new(dir), &o, level)?
+        }
+        None => random_dyn(case, level, "keepcheck")?,
+    };
     let (vocab, cuts, marks) = (e.desc().vocab as u32, e.cuts(), e.can_mark());
     let Some((k, s)) = e.as_step(2)? else { return err(format!("{case}: no scheduler's step")) };
     if k < 2 || !s.keeps() {

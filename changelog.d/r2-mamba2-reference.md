@@ -1,0 +1,1 @@
+- Mamba-2 has a CPU reference among the layer kinds, so Nemotron 3's model description is checked by its logits and not only by its tensors' names: on a random model the reference is within a KL of 1.1e-5 of the logits the engine recorded on an RTX 4080 SUPER, and the GPU job now holds the engine to a fixture the reference recorded (`tests/logits/nemotron-h.json.gz`).

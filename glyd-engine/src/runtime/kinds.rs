@@ -312,7 +312,7 @@ pub struct Linear {
     pub state_f32: bool,
 }
 
-/// Mamba-2 (Nemotron-H, Granite 4). Not in `Ref` yet.
+/// Mamba-2 (Nemotron-H, Granite 4).
 ///
 /// The inner width is `heads head_dim`; the convolution runs over the scan's inputs and the `groups` groups of B and C, `inner + 2
 /// groups state` channels. Roles: `in` [inner + (inner + 2 groups state) + heads, hidden] (the rows of z, then the convolution's

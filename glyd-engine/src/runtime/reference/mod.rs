@@ -16,6 +16,7 @@ pub mod attention;
 pub mod comp;
 pub mod ffn;
 pub mod linear;
+pub mod mamba;
 pub mod mla;
 pub mod model;
 pub mod mtp;
@@ -208,6 +209,7 @@ fn roles(b: &Block) -> Vec<String> {
         Body::Mixer(Mixer::Mla(_)) => &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g"],
         Body::Mixer(Mixer::Linear(_)) => &["qkv", "q", "k", "v", "beta", "decay", "gate", "o"],
         Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
+        Body::Mixer(Mixer::Mamba2(_)) => &["in", "o"],
         Body::Ffn(_) => &[
             "gate",
             "up",
@@ -222,7 +224,6 @@ fn roles(b: &Block) -> Vec<String> {
             "latent_down",
             "latent_up",
         ],
-        _ => &[],
     };
     let vecs = [
         "q_norm",
@@ -232,7 +233,9 @@ fn roles(b: &Block) -> Vec<String> {
         "kv_a_norm",
         "sinks",
         "conv",
+        "conv_bias",
         "a_log",
+        "d",
         "dt_bias",
         "norm",
         "norm_in",
@@ -321,6 +324,7 @@ pub enum SeqState {
     Mla(mla::LatentCache),
     Linear(linear::LinearState),
     Comp(comp::CompState),
+    Mamba(mamba::MambaState),
 }
 
 /// One block on the reference backend: its weights, and each sequence's cache or state by slot.
@@ -362,6 +366,11 @@ impl RefLayer {
                 let SeqState::Comp(s) = st else { return err("a sequence's state is not a compressed attention's") };
                 comp::step(c, p, s, h, pos)
             }
+            Body::Mixer(Mixer::Mamba2(m)) => {
+                let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Mamba(mamba::MambaState::new(m)));
+                let SeqState::Mamba(s) = st else { return err("a sequence's state is not a Mamba-2 state") };
+                mamba::step(m, p, s, h)
+            }
             Body::Ffn(Ffn::Mlp(m)) => ffn::mlp(m, p, "", h),
             Body::Ffn(Ffn::Moe(m)) => {
                 let (y, ids) = ffn::moe_routed(m, p, h, token)?;
@@ -370,7 +379,6 @@ impl RefLayer {
                 }
                 Ok(y)
             }
-            _ => err("the reference has no such kind yet"),
         }
     }
 
@@ -478,6 +486,7 @@ impl Backend for Ref {
             | KindRef::Mla
             | KindRef::GatedDeltaNet
             | KindRef::KimiDelta
+            | KindRef::Mamba2
             | KindRef::Mlp
             | KindRef::Moe => Support::Slower("the f32 reference".into()),
             k => Support::No(format!("no reference for {k:?} yet")),
@@ -584,10 +593,10 @@ mod tests {
         }
         assert_close(&ga, &ya, 0.0, "sequence a");
         assert_close(&gb, &yb, 0.0, "sequence b");
-        let mamba = Block {
-            body: Body::Mixer(Mixer::Mamba2(crate::runtime::kinds::Mamba2 { heads: 1, head_dim: 1, state: 1, groups: 1, conv: 4, chunk: 1, norm_eps: 1e-5 })),
-            ..block.clone()
-        };
-        assert!(r.build(&LayerDesc { index: 3, block: &mamba, hidden: 64 }, &p, &Placement::default(), &mut Arenas::default()).is_err());
+        // (the seam's `supports` has no compressed attention yet: `RefModel` runs it, a backend's `build` does not)
+        let f = Fixture::load("dsv4_model");
+        let d = crate::runtime::describe::describe(&f.j["config"]).unwrap();
+        let comp = d.desc.blocks.iter().find(|b| matches!(b.body, Body::Mixer(Mixer::Compressed(_)))).expect("a compressed attention block");
+        assert!(r.build(&LayerDesc { index: 3, block: comp, hidden: 64 }, &p, &Placement::default(), &mut Arenas::default()).is_err());
     }
 }

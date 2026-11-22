@@ -52,6 +52,19 @@ pub fn load(src: Tensors, role: &str, s: &Source) -> Result<(Vec<usize>, Vec<f32
     Ok((shape, data))
 }
 
+/// A checkpoint's tensor as f32 (bf16 or f32 as stored; another type: none), for a model whose weights are stored plainly.
+pub fn checkpoint_tensor(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+    let (_, t) = ck.get(name)?;
+    let shape: Vec<usize> = t.shape.iter().map(|&d| d as usize).collect();
+    let b = ck.read(name).ok()?;
+    let v = match t.dtype.as_str() {
+        "BF16" => b.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
+        "F32" => b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+        _ => return None,
+    };
+    Some((shape, v))
+}
+
 pub struct RefModel {
     pub desc: ModelDesc,
     pub embed: Vec<f32>,
