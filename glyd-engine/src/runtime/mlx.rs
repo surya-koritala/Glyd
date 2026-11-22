@@ -4,7 +4,6 @@
 use super::backend::{
     Arenas, Backend, Captured, Collective, DeviceId, DeviceInfo, Format, KindRef, LayerDesc, LayerImpl, Placement, StepCx, StepShape, Support, WeightSource,
 };
-use super::kinds::{Act, Body, Ffn, NormKind, NormWeight, Residual};
 use crate::ffi::{err, Result};
 use std::ffi::c_void;
 
@@ -172,18 +171,8 @@ impl Backend for Mlx {
         if let Support::No(why) = self.supports(&KindRef::of(b), &fmt) {
             return err(format!("layer {}: {why}", layer.index));
         }
-        let Body::Ffn(Ffn::Mlp(m)) = &b.body else { return err(format!("layer {}: not a dense MLP", layer.index)) };
-        let plain = b.norm_in.kind == NormKind::Rms && b.norm_in.weight == NormWeight::Plain && b.norm_out.is_none() && b.residual == Residual::Add;
-        if !(m.gated && m.act == Act::Silu && !m.bias && m.clamp.is_none() && plain) {
-            return err(format!("layer {}: the MLX spike runs a SwiGLU MLP after a plain RMS norm, added to the stream", layer.index));
-        }
-        let d = layer.hidden;
-        let get = |role: &str| w.f32(role).ok_or_else(|| crate::ffi::Error(format!("layer {}: no {role}", layer.index)));
-        let (norm, gate, up, down) = (get("norm_in")?, get("gate")?, get("up")?, get("down")?);
-        let i = gate.shape.first().copied().unwrap_or(0);
-        if norm.shape != [d] || gate.shape != [i, d] || up.shape != [i, d] || down.shape != [d, i] {
-            return err(format!("layer {}: shapes {:?} {:?} {:?} {:?} for a hidden width of {d}", layer.index, norm.shape, gate.shape, up.shape, down.shape));
-        }
+        let p = super::seam::mlp_parts(layer, w, "the MLX spike")?;
+        let (d, norm, gate, up, down) = (p.hidden, p.norm, p.gate, p.up, p.down);
         // SAFETY: a stream for the transposes, freed when this returns (the arrays it made are computed when first read).
         let q = Queue(unsafe { mlx_default_gpu_stream_new() });
         let t = |m: &super::backend::HostTensor| -> Result<Array> {
@@ -191,7 +180,7 @@ impl Backend for Mlx {
             // SAFETY: a live array on a live stream.
             op("transpose", |r| unsafe { mlx_transpose(r, a.0, q.0) })
         };
-        Ok(Box::new(MlpBlock { hidden: d, eps: b.norm_in.eps, norm: Array::from(&norm.data, &[d])?, gate_t: t(&gate)?, up_t: t(&up)?, down_t: t(&down)? }))
+        Ok(Box::new(MlpBlock { hidden: d, eps: p.eps, norm: Array::from(&norm.data, &[d])?, gate_t: t(&gate)?, up_t: t(&up)?, down_t: t(&down)? }))
     }
 
     fn queue(&self, _: DeviceId) -> Result<Queue> {
@@ -212,62 +201,16 @@ impl Backend for Mlx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::backend::HostTensor;
-    use crate::runtime::kinds::{Block, Mlp, Norm};
-    use crate::runtime::reference::testing::{assert_close, fill};
-    use crate::runtime::reference::Ref;
 
-    /// A dense MLP block's weights, by role, from the reference tests' generator.
-    struct Weights {
-        hidden: usize,
-        inter: usize,
-    }
-
-    impl WeightSource for Weights {
-        fn format(&self, _: &str) -> Option<Format> {
-            Some(Format::F32)
-        }
-        fn f32(&self, role: &str) -> Option<HostTensor> {
-            let (d, i) = (self.hidden, self.inter);
-            let shape = match role {
-                "norm_in" => vec![d],
-                "gate" | "up" => vec![i, d],
-                "down" => vec![d, i],
-                _ => return None,
-            };
-            let (lo, hi) = if role == "norm_in" { (0.5, 1.5) } else { (-0.06, 0.06) };
-            Some(HostTensor { data: fill(&format!("mlp.{role}"), shape.iter().product(), lo, hi), shape })
-        }
-    }
-
-    /// R9's MLX spike: the dense MLP block through MLX gives the reference's stream, five tokens of a 256-wide model; the other kinds are refused.
+    /// R9's MLX spike: the dense MLP block through MLX gives the reference's stream (five tokens of a 256-wide model, and three of 1,024); the
+    /// other kinds are refused.
     #[test]
     fn the_dense_mlp_through_mlx_is_the_references() {
-        let (hidden, inter, tokens) = (256, 704, 5);
-        let block = Block {
-            norm_in: Norm::rms(1e-6),
-            body: Body::Ffn(Ffn::Mlp(Mlp { act: Act::Silu, gated: true, bias: false, clamp: None })),
-            norm_out: None,
-            residual: Residual::Add,
-        };
-        let (w, layer) = (Weights { hidden, inter }, LayerDesc { index: 0, block: &block, hidden });
-        let x0 = fill("input", tokens * hidden, -1.0, 1.0);
-        let (pos, seqs, toks): (Vec<u32>, Vec<u32>, Vec<u32>) = ((0..tokens as u32).collect(), vec![0; tokens], vec![1; tokens]);
-        let r = Ref::default();
-        let mut want = x0.clone();
-        r.build(&layer, &w, &Placement::default(), &mut Arenas::default())
-            .unwrap()
-            .run(&mut StepCx { queue: &mut (), positions: &pos, seqs: &seqs, tokens: &toks }, &mut want)
-            .unwrap();
         let m = Mlx::default();
-        let mut q = m.queue(0).unwrap();
-        let mut got = x0.clone();
-        m.build(&layer, &w, &Placement::default(), &mut Arenas::default())
-            .unwrap()
-            .run(&mut StepCx { queue: &mut q, positions: &pos, seqs: &seqs, tokens: &toks }, &mut got)
-            .unwrap();
-        assert_ne!(got, x0, "the block changed the stream");
-        assert_close(&got, &want, 1e-4, "the MLP block through MLX against the reference");
+        for (hidden, inter, tokens) in [(256, 704, 5), (1024, 2816, 3)] {
+            let r = crate::runtime::seam::check_mlp(&m, hidden, inter, tokens).unwrap();
+            assert!(r <= 1e-4, "{tokens} tokens of {hidden}: off by {r:.2e} of the reference's scale");
+        }
         assert!(matches!(m.supports(&KindRef::Attention, &Format::F32), Support::No(_)));
         assert!(matches!(m.supports(&KindRef::Mlp, &Format::Fp8Block), Support::No(_)));
     }
