@@ -726,6 +726,76 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
     Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows }, &ls, &starts, st, early, m.vocab, max_pos, eos))
 }
 
+/// DeepSeek-V4: the compressed attention (the window, and on a compressing layer its compressor's entries; on a ratio-4 layer the overlapping windows and the indexer's
+/// choice of them), the queries' and the output's low ranks in groups, then the experts (their block's; hash-routed in the first layers), around each block the four
+/// streams' mix; the weighted hyper-head. `vo` what the level and the switches make of its products and caches. The matrices, small tensors and blocks are
+/// dynamic/deepseek_v4.rs's loader's (`dynamic::deepseek_v4::describe` indexes them in its order).
+pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, vo: &super::deepseek_v4::V4Opts) -> Result<ModelDesc> {
+    use super::deepseek_v4::{v4_desc, V4Shape};
+    use crate::runtime::kinds::Residual;
+    let m = &d.desc;
+    if m.blocks.len() % 2 != 0 {
+        return err(format!("DeepSeek-V4: {} blocks, where each layer is an attention block and an experts block", m.blocks.len()));
+    }
+    let layers = m.blocks.len() / 2;
+    let (mut ratios, mut hash) = (Vec::with_capacity(layers), Vec::with_capacity(layers));
+    let (mut first, mut idx, mut top_k, mut hc) = (None, (0, 0, 0), 0, (0.0, 0, 0));
+    for l in 0..layers {
+        let (ab, eb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
+        let c = match &ab.body {
+            Body::Mixer(Mixer::Compressed(c)) => c,
+            b => return err(format!("DeepSeek-V4: layer {l}'s mixer is {b:?}")),
+        };
+        if c.indexer.is_some() != (c.ratio == 4) {
+            return err(format!(
+                "DeepSeek-V4: layer {l} compresses by {} with{} an indexer: this engine runs the indexer on the layers of ratio 4 alone",
+                c.ratio,
+                if c.indexer.is_some() { "" } else { "out" }
+            ));
+        }
+        if let Some(x) = &c.indexer {
+            idx = (x.heads, x.head_dim, x.top_k);
+        }
+        let e = match &eb.body {
+            Body::Ffn(Ffn::Moe(e)) => e,
+            b => return err(format!("DeepSeek-V4: layer {l}'s feed-forward is {b:?}")),
+        };
+        for b in [ab, eb] {
+            match &b.residual {
+                Residual::Streams(s) => hc = (s.eps, s.sinkhorn_iters, s.streams),
+                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not the streams")),
+            }
+        }
+        ratios.push(c.ratio);
+        hash.push(e.router.hash);
+        top_k = e.router.top_k;
+        first = first.or(Some(c));
+    }
+    let c = first.ok_or_else(|| Error("DeepSeek-V4: no layers".into()))?;
+    let s = V4Shape {
+        d: m.hidden,
+        vocab: m.vocab,
+        eps: m.blocks[0].norm_in.eps,
+        max_pos,
+        eos,
+        nh: c.heads,
+        hd: c.head_dim,
+        rope_dim: c.rope.dim,
+        q_lora: c.q_lora,
+        ol: c.o_lora,
+        og: c.o_groups,
+        wo_cols: c.heads * c.head_dim / c.o_groups.max(1),
+        idx,
+        window: c.window,
+        ratios,
+        hash,
+        top_k,
+        streams: hc.2,
+        hc: (hc.0, hc.1),
+    };
+    v4_desc(&s, st, vo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -975,6 +1045,61 @@ mod tests {
                 super::super::kimi::lowered(&dir, &c, &st, &w32, false).unwrap_or_else(|e| panic!("{}", e.msg)),
             );
             assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// DeepSeek-V4 lowered from its released config (the header fixture's), whole and as a split's stages, at the lossless level and another, the output groups
+    /// stacked and not, every FP8 matrix held FP8 and the default's, is the executor's own description of it.
+    #[test]
+    fn deepseek_v4_lowered_is_the_executors_own_description() {
+        use super::super::deepseek_v4::V4Opts;
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4-Flash-0731.json");
+        let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let text = h["config"].as_str().unwrap();
+        let c = crate::deepseek_v4::ConfigV4::parse(text, "DeepSeek-V4-Flash", None).unwrap_or_else(|e| panic!("{}", e.msg));
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        let half = c.layers / 2;
+        let base = V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 };
+        for vo in [base, V4Opts { exact8: false, ..base }, V4Opts { ostack: false, ..base }, V4Opts { f8_min: 0, sim: false, ..base }] {
+            for st in [
+                super::super::Stage::whole(c.layers),
+                super::super::Stage { layers: (0, half), first: true, last: false },
+                super::super::Stage { layers: (half, c.layers), first: false, last: true },
+            ] {
+                let own = super::super::deepseek_v4::describe(&c, &st, &vo).unwrap();
+                let lowered = deepseek_v4(&kinds, c.eos.clone(), c.max_pos, &st, &vo).unwrap_or_else(|e| panic!("{}", e.msg));
+                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
+                if a != b {
+                    let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
+                    panic!("{vo:?}: the lowered description differs at line {first:?}");
+                }
+            }
+        }
+    }
+
+    /// The random DeepSeek-V4 the logits and GPU checks run, lowered whole and as a split's stages, is the executor's own description of it.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_random_deepseek_v4_lowers_as_its_own_description() {
+        use super::super::deepseek_v4::V4Opts;
+        let dir = std::env::temp_dir().join(format!("glyd-lower-v4-{}", std::process::id()));
+        crate::dsv4_ref::random(&dir, None).unwrap();
+        let c = crate::deepseek_v4::ConfigV4::load(&dir).unwrap();
+        let half = c.layers / 2;
+        let base = V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 512 };
+        for vo in [base, V4Opts { f8_min: 0, ..base }] {
+            for st in [
+                super::super::Stage::whole(c.layers),
+                super::super::Stage { layers: (0, half), first: true, last: false },
+                super::super::Stage { layers: (half, c.layers), first: false, last: true },
+            ] {
+                let (own, lowered) = (
+                    super::super::deepseek_v4::describe(&c, &st, &vo).unwrap(),
+                    super::super::deepseek_v4::lowered(&dir, &c, &st, &vo).unwrap_or_else(|e| panic!("{}", e.msg)),
+                );
+                assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+            }
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

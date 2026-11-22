@@ -240,7 +240,8 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
     let small = |name: &str| -> Result<Buf> { upload_bytes(&read(name)?) };
     // the lossless level holds the large FP8 matrices in the library's FP8 format, as released (6.7 bits a weight, read as they are), the rest as the bf16 they decode to, packed lossless; another
     // level packs the bf16 of every one
-    let exact8 = matches!(layout, Layout::Tiered) && crate::tune!("GLYD_V4_F8").as_deref() != Some("0");
+    let vo = V4Opts::of(layout, o.ctx);
+    let exact8 = vo.exact8;
     let lib = crate::ffi::Lib::find()?;
     let mut f8: Vec<crate::f8::F8Mat> = Vec::new();
     // rows [r0, r1) of FP8 matrix `name` (128-row blocks): the FP8 list's index, or the matrices'
@@ -254,8 +255,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         let what = if rows.is_some() { format!("{name} rows {r0}..{r1}") } else { name.to_string() };
         // (the FP8 format where it is the faster: a large matrix, whose fewer bytes outrun its heavier decode; 2026-10-18 on the 4080 SUPER, a token's product read from memory: 33M weights
         // 55-59 us against the bf16 pack's 70, 8M and fewer as fast or slower; GLYD_V4_F8_MIN: the weights from which, 0 every one)
-        let big = (r1 - r0) * cols >= crate::tune!("GLYD_V4_F8_MIN").and_then(|v| v.parse().ok()).unwrap_or(16 << 20);
-        if exact8 && big && r0 % 128 == 0 {
+        if vo.f8(r1 - r0, cols, r0) {
             // (a group of GPUs: this GPU's rows of each group's, whole blocks of 128 for the scales)
             let per = (r1 - r0) / groups.max(1);
             let parts: Vec<(usize, usize)> = match tpr.filter(|&(_, n)| per % (128 * n) == 0 && tp.as_ref().is_some_and(|t| t.slices(r1 - r0, cols))) {
@@ -305,7 +305,9 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         let wq_b = fp8_mat(&mut mats, &format!("{a}.wq_b"), None, 1)?;
         let wkv = fp8_mat(&mut mats, &format!("{a}.wkv"), None, 1)?;
         // the groups' matrices: as one FP8 stack where the level holds FP8 as released (every group's product in one launch), else each its own, one after another in their list
-        let stack = if exact8 && ol % 64 == 0 && crate::tune!("GLYD_V4_OSTACK").as_deref() != Some("0") {
+        // (the stack where its whole matrix is held FP8: asked for otherwise, it would be packed, found not FP8 and left unused on the GPU)
+        let wo_cols = ck.get(&format!("{a}.wo_a.weight")).map(|(_, t)| t.shape[1] as usize).ok_or_else(|| Error(format!("no tensor {a}.wo_a.weight")))?;
+        let stack = if vo.stack(c.o_groups * ol, wo_cols, ol) {
             Some(fp8_mat(&mut mats, &format!("{a}.wo_a"), None, c.o_groups)?).filter(|x| matches!(x, Lin::F8(_)))
         } else {
             None
@@ -654,10 +656,309 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             window: c.window,
             experts_k: c.top_k,
             all_ratio,
-            sim: crate::tune!("GLYD_V4_SIM").as_deref() != Some("0"),
+            sim: vo.sim,
             o_groups: c.o_groups,
         }),
     };
     drop(fp8_mat);
+    // (the loader's own operations, as it indexed what it loaded, held to the layer kinds' description of the config: one model, or it is not loaded)
+    let desc = super::lower::agree(lowered(dir, &c, &st, &vo)?, &desc, &dir.join("config.json").display().to_string())?;
     Dyn::from_loaded_f8(dev, desc, mats, f8, sm, moe, ropes, layout, st, o)
+}
+
+/// What the level and the switches make of DeepSeek-V4's products and caches: the large FP8 matrices held FP8 as released where the level is the lossless one
+/// (`exact8`; GLYD_V4_F8=0 asks for the bf16 they decode to), from `f8_min` weights (GLYD_V4_F8_MIN); the output groups' products one stack where they are FP8
+/// (`ostack`; GLYD_V4_OSTACK=0 asks for one product a group); the release's quantizations of the products' inputs and caches simulated (`sim`; GLYD_V4_SIM=0);
+/// the context the compressors' caches hold, in 16s.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct V4Opts {
+    pub exact8: bool,
+    pub f8_min: usize,
+    pub ostack: bool,
+    pub sim: bool,
+    pub ctx: usize,
+}
+
+impl V4Opts {
+    /// The options a load at `layout` with a context of `ctx` tokens runs with.
+    pub fn of(layout: Layout, ctx: usize) -> V4Opts {
+        V4Opts {
+            exact8: matches!(layout, Layout::Tiered) && crate::tune!("GLYD_V4_F8").as_deref() != Some("0"),
+            // (the FP8 format where it is the faster: a large matrix, whose fewer bytes outrun its heavier decode; 2026-10-18 on the 4080 SUPER, a token's product read
+            // from memory: 33M weights 55-59 us against the bf16 pack's 70, 8M and fewer as fast or slower)
+            f8_min: crate::tune!("GLYD_V4_F8_MIN").and_then(|v| v.parse().ok()).unwrap_or(16 << 20),
+            ostack: crate::tune!("GLYD_V4_OSTACK").as_deref() != Some("0"),
+            sim: crate::tune!("GLYD_V4_SIM").as_deref() != Some("0"),
+            ctx: ctx.div_ceil(16) * 16,
+        }
+    }
+
+    /// Rows `[r0, r0 + rows)` of an FP8 matrix of `cols` columns held FP8 (whole blocks of 128 rows).
+    pub(crate) fn f8(&self, rows: usize, cols: usize, r0: usize) -> bool {
+        self.exact8 && rows * cols >= self.f8_min && r0 % 128 == 0
+    }
+
+    /// The output groups' matrix (`rows` x `cols`, groups of `ol` rows) as one FP8 stack.
+    pub(crate) fn stack(&self, rows: usize, cols: usize, ol: usize) -> bool {
+        self.ostack && ol % 64 == 0 && self.f8(rows, cols, 0)
+    }
+}
+
+/// DeepSeek-V4's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::deepseek_v4`), held to `describe`.
+pub fn lowered(dir: &Path, c: &ConfigV4, st: &Stage, vo: &V4Opts) -> Result<ModelDesc> {
+    let p = dir.join("config.json");
+    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let lowered = super::lower::deepseek_v4(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st, vo)?;
+    super::lower::agree(lowered, &describe(c, st, vo)?, &p.display().to_string())
+}
+
+/// The executor's description of DeepSeek-V4 for stage `st` with the options `vo`, as the loader indexes what it loads (`v4_desc`).
+pub fn describe(c: &ConfigV4, st: &Stage, vo: &V4Opts) -> Result<ModelDesc> {
+    if c.inter % 128 != 0 {
+        return err(format!("experts of width {}: this engine runs widths of 128s", c.inter));
+    }
+    let s = V4Shape {
+        d: c.hidden,
+        vocab: c.vocab,
+        eps: c.eps,
+        max_pos: c.max_pos,
+        eos: c.eos.clone(),
+        nh: c.heads,
+        hd: c.head_dim,
+        rope_dim: c.rope_dim,
+        q_lora: c.q_lora,
+        ol: c.o_lora,
+        og: c.o_groups,
+        wo_cols: c.heads * c.head_dim / c.o_groups.max(1),
+        idx: (c.idx_heads, c.idx_dim, c.idx_topk),
+        window: c.window,
+        ratios: c.ratios.clone(),
+        hash: (0..c.layers).map(|l| l < c.hash_layers).collect(),
+        top_k: c.top_k,
+        streams: c.hc_mult,
+        hc: (c.hc_eps, c.hc_iters),
+    };
+    v4_desc(&s, st, vo)
+}
+
+/// DeepSeek-V4's widths and layers as the executor takes them: the width, vocabulary, norms' epsilon, context and end tokens; the heads, their size and rotary
+/// part; the queries' low rank, the output's groups (rank, count, columns); the indexer's heads, their size and its choices; the window, each layer's compression
+/// ratio and whether its experts are hash-routed; the experts a token, the streams, their mix's epsilon and iterations.
+pub(crate) struct V4Shape {
+    pub d: usize,
+    pub vocab: usize,
+    pub eps: f32,
+    pub max_pos: usize,
+    pub eos: Vec<i64>,
+    pub nh: usize,
+    pub hd: usize,
+    pub rope_dim: usize,
+    pub q_lora: usize,
+    pub ol: usize,
+    pub og: usize,
+    pub wo_cols: usize,
+    pub idx: (usize, usize, usize),
+    pub window: usize,
+    pub ratios: Vec<usize>,
+    pub hash: Vec<bool>,
+    pub top_k: usize,
+    pub streams: usize,
+    pub hc: (f32, usize),
+}
+
+/// The executor's DeepSeek-V4 for stage `st`. Each layer's small tensors: the attention's stream mix (projection, base, scale), its norm, the queries' and keys' norms,
+/// the sink; a ratio-4 layer's indexer compressor's (its two products stacked, its offsets, its norm), a compressing layer's compressor's; the experts' stream mix and
+/// norm, and a hash-routed layer's token-to-expert table; the last stage's head mix and final norm after the last layer's. Its matrices, the FP8 ones in their own list
+/// where `vo` holds them FP8: the queries' down and up products, the keys' and values', the output groups' (one stack, or one a group), the output's; a ratio-4 layer's
+/// indexer queries' and weights' products; then the embedding and the head. A layer's experts are their block's.
+pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc> {
+    let (d, nh, hd, ol, og) = (s.d, s.nh, s.hd, s.ol, s.og);
+    let (ih, idim, itop) = s.idx;
+    if hd != 512 || s.rope_dim != 64 || idim != 128 || s.streams != 4 || d % 512 != 0 || s.q_lora % 128 != 0 || ol % 128 != 0 {
+        return err(format!(
+            "heads of {hd} ({} rotary), indexer heads of {idim}, {} streams, widths {d} / {} / {ol}: this engine runs heads of 512 (64 rotary), indexer heads of 128, 4 streams and widths of 128s",
+            s.rope_dim, s.streams, s.q_lora
+        ));
+    }
+    if ih > 64 {
+        return err(format!("{ih} indexer heads: this engine runs up to 64"));
+    }
+    let hpg = nh / og;
+    let layers_n = s.ratios.len();
+    #[derive(Default)]
+    struct Count {
+        mats: usize,
+        f8: usize,
+        small: usize,
+    }
+    let lin = |n: &mut Count, rows: usize, cols: usize, r0: usize| -> Lin {
+        if vo.f8(rows, cols, r0) {
+            n.f8 += 1;
+            Lin::F8(n.f8 - 1)
+        } else {
+            n.mats += 1;
+            Lin::Mat(n.mats - 1)
+        }
+    };
+    let small = |n: &mut Count, k: usize| -> usize {
+        n.small += k;
+        n.small - k
+    };
+    let (mut n, mut n_moe, mut rings, mut states, mut layers) = (Count::default(), 0, Vec::new(), Vec::new(), Vec::new());
+    for l in 0..layers_n {
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            layers.push(Vec::new());
+            continue;
+        }
+        let ratio = s.ratios[l];
+        let rope = (ratio != 0) as usize;
+        let a = small(&mut n, 7);
+        let (fa, ba, sa, attn_norm, q_norm, kv_norm, sink) = (a, a + 1, a + 2, a + 3, a + 4, a + 5, a + 6);
+        let wq_a = lin(&mut n, s.q_lora, d, 0);
+        let wq_b = lin(&mut n, nh * hd, s.q_lora, 0);
+        let wkv = lin(&mut n, hd, d, 0);
+        let stack = vo.stack(og * ol, s.wo_cols, ol);
+        let (wo_a0, wo_a_f8) = if stack {
+            n.f8 += 1;
+            (n.f8 - 1, true)
+        } else {
+            let first = lin(&mut n, ol, s.wo_cols, 0);
+            for g in 1..og {
+                lin(&mut n, ol, s.wo_cols, g * ol);
+            }
+            match first {
+                Lin::F8(i) => (i, true),
+                Lin::Mat(i) => (i, false),
+            }
+        };
+        let wo_b = lin(&mut n, d, og * ol, 0);
+        let ring = rings.len();
+        rings.push(Ring { d: hd, nk: 1, window: s.window });
+        let mut ops = vec![
+            Op::V4Pre { f: fa, base: ba, scale: sa, norm: attn_norm },
+            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
+            wq_a.op(Slot::Hq, Slot::Proj, "attention: q down"),
+            Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, plus1: false },
+            Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
+            wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
+            Op::V4Q { rope, heads: nh },
+            wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
+            Op::V4Kv { norm: kv_norm, rope, ring },
+        ];
+        let comp = |n: &mut Count, states: &mut Vec<usize>, dd: usize, indexer: bool| -> Op {
+            let coff = 1 + (ratio == 4) as usize;
+            let w = small(n, 3);
+            let cache = states.len();
+            states.push((vo.ctx / ratio + 2) * dd * 2);
+            states.push(coff * ratio * coff * dd * 4);
+            states.push(coff * ratio * coff * dd * 4);
+            Op::V4Comp { w, ape: w + 1, norm: w + 2, d: dd, ratio, rope, cache, state: cache + 1, indexer }
+        };
+        if ratio == 4 {
+            let iq = lin(&mut n, ih * idim, s.q_lora, 0);
+            let iw = n.mats;
+            n.mats += 1;
+            let icache = states.len();
+            let ic = comp(&mut n, &mut states, idim, true);
+            let wscale = (idim as f32).powf(-0.5) * (ih as f32).powf(-0.5);
+            ops.extend([
+                iq.op(Slot::Proj, Slot::Iq, "indexer: q"),
+                Op::V4IdxQ { rope, heads: ih },
+                ic,
+                Op::Linear { w: iw, x: Slot::H, y: Slot::Iw, name: "indexer: weights" },
+                Op::V4IdxPick { cache: icache, ratio, heads: ih, topk: itop, wscale },
+            ]);
+        }
+        let mut cache = None;
+        if ratio > 0 {
+            cache = Some(states.len());
+            ops.push(comp(&mut n, &mut states, hd, false));
+        }
+        ops.extend([
+            Op::V4Attn { ring, cache, ratio, sink, rope, heads: nh, hpg },
+            if stack {
+                Op::V4OLoraStack { w: wo_a0, groups: og, ol, y: Slot::M, fp8: true }
+            } else {
+                Op::V4OLora { w: wo_a0, in_f8: wo_a_f8, groups: og, hpg, ol, y: Slot::M, fp8: true }
+            },
+            wo_b.op(Slot::M, Slot::O, "attention: o"),
+            Op::V4Post,
+        ]);
+        let f = small(&mut n, 4);
+        let block = n_moe;
+        n_moe += 1;
+        let hash = s.hash[l].then(|| small(&mut n, 1));
+        ops.extend([
+            Op::V4Pre { f, base: f + 1, scale: f + 2, norm: f + 3 },
+            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
+            Op::V4Moe { block, hash },
+            Op::V4Post,
+        ]);
+        layers.push(ops);
+    }
+    let (embed, lm) = (n.mats, n.mats + 1);
+    if st.last {
+        let h = small(&mut n, 4);
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::V4Head { f: h, base: h + 1, scale: h + 2, norm: h + 3 });
+    }
+    let mut widths = [0usize; super::SLOTS];
+    let wmax = if s.ratios.contains(&4) { 2 * hd } else { hd };
+    for (sl, w) in [
+        (Slot::X, d),
+        (Slot::S, 4 * d),
+        (Slot::H, d),
+        (Slot::Hq, d),
+        (Slot::Proj, s.q_lora),
+        (Slot::Qr, s.q_lora),
+        (Slot::Qo, nh * hd),
+        (Slot::Kv, hd),
+        (Slot::Cp, 4 * wmax),
+        (Slot::Iq, ih * idim),
+        (Slot::Iw, ih),
+        (Slot::Att, nh * hd),
+        (Slot::Mid, og * ol),
+        (Slot::M, og * ol),
+        (Slot::O, d),
+    ] {
+        widths[sl as usize] = w;
+    }
+    let all_ratio = s.ratios.iter().copied().filter(|&r| r != 0 && r != 4).min().unwrap_or(0);
+    Ok(ModelDesc {
+        family: "DeepSeek-V4",
+        hidden: d,
+        vocab: s.vocab,
+        eps: s.eps,
+        max_pos: s.max_pos,
+        widths,
+        mats: Vec::new(),
+        small: Vec::new(),
+        ropes: Vec::new(),
+        rings,
+        first: Op::V4Streams,
+        layers,
+        states,
+        final_norm: None,
+        decoded: false,
+        skinny: false,
+        embed,
+        lm,
+        softcap: 0.0,
+        eos: s.eos.clone(),
+        post: None,
+        hc: (0.0, 0),
+        logit_mult: 0.0,
+        v4: Some(V4Dims {
+            hc_eps: s.hc.0,
+            iters: s.hc.1 as i32,
+            heads: nh,
+            idx_heads: ih,
+            topk: itop,
+            window: s.window,
+            experts_k: s.top_k,
+            all_ratio,
+            sim: vo.sim,
+            o_groups: og,
+        }),
+    })
 }
