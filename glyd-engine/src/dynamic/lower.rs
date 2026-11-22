@@ -664,6 +664,68 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     Ok(glm_desc(m.hidden, qd, heads, inter, m.vocab, eps, max_pos, eos, hc, ops_all, states, e, lm))
 }
 
+/// Kimi-K3: Kimi delta attention (its forget gate bounded) or gated NoPE latent attention (its block's), a dense MLP in the first layers and latent experts with
+/// shared ones in the rest (their block's), every block's input a depth mix over the groups of layers before it; SiTU. `w32` the delta layers' dtypes as the
+/// checkpoint holds them, `early` whether the cached experts are guessed ahead. The matrices, small tensors and blocks are dynamic/kimi.rs's loader's
+/// (`dynamic::kimi::describe` indexes them in its order).
+pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
+    use super::kimi::{kimi_desc, KimiDims, KimiLayer};
+    use crate::runtime::kinds::{Act, Decay, Residual};
+    let m = &d.desc;
+    if m.blocks.len() % 2 != 0 {
+        return err(format!("Kimi-K3: {} blocks, where each layer is a mixer block and a feed-forward block", m.blocks.len()));
+    }
+    let layers = m.blocks.len() / 2;
+    let shape0 = |n: &str| d.shapes.get(n).map(|s| s[0]).ok_or_else(|| Error(format!("Kimi-K3: no shape for {n}")));
+    let tensor = |b: usize, r: &str| match role(&d.blocks[b], r) {
+        Some(Source::Tensor(n)) => Ok(n.clone()),
+        x => err(format!("Kimi-K3: block {b}'s {r} is {x:?}")),
+    };
+    let (mut qd, mut nh, mut kd, mut bound) = (0, 0, 0, 0.0);
+    let (mut inter, mut situ, mut moe_rows) = (0, (0.0, 0.0), 0);
+    let (mut ls, mut starts) = (Vec::with_capacity(layers), Vec::with_capacity(layers));
+    for l in 0..layers {
+        let (mx, ff) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
+        match (&mx.residual, &ff.residual) {
+            (Residual::DepthMix(a), Residual::DepthMix(b)) if !b.starts => starts.push(a.starts),
+            r => return err(format!("Kimi-K3: layer {l}'s residuals are {r:?}, not the depth mix")),
+        }
+        let kda = match &mx.body {
+            Body::Mixer(Mixer::Linear(x)) => {
+                let &Decay::Bounded(b) = &x.decay else {
+                    return err(format!("Kimi delta attention with a forget gate of {:?}: this engine runs the bounded gate", x.decay));
+                };
+                (qd, nh, kd, bound) = (x.k_heads * x.k_dim, x.k_heads, x.k_dim, b);
+                let fa = shape0(&tensor(2 * l, "decay_a")?)?;
+                if fa != kd {
+                    return err(format!("Kimi-K3: a forget gate of rank {fa}, where the delta heads are {kd}: this engine runs the rank of a head"));
+                }
+                true
+            }
+            Body::Mixer(Mixer::Mla(_)) => false,
+            b => return err(format!("Kimi-K3: layer {l}'s mixer is {b:?}")),
+        };
+        let moe = match &ff.body {
+            Body::Ffn(Ffn::Mlp(mlp)) => {
+                inter = shape0(&tensor(2 * l + 1, "gate")?)?;
+                let &Act::Situ { beta, linear } = &mlp.act else { return err(format!("Kimi-K3: layer {l}'s MLP is {:?}, not SiTU", mlp.act)) };
+                situ = (beta, linear);
+                false
+            }
+            Body::Ffn(Ffn::Moe(e)) => {
+                let lat = e.latent.as_ref().map(|x| x.dim).ok_or_else(|| Error("Kimi-K3: experts without a latent".into()))?;
+                let shared = if e.shared.is_some() { shape0(&tensor(2 * l + 1, "shared_gate")?)? } else { 0 };
+                moe_rows = lat + 2 * shared;
+                true
+            }
+            b => return err(format!("Kimi-K3: layer {l}'s feed-forward is {b:?}")),
+        };
+        ls.push(KimiLayer { kda, moe, w32: w32.get(l).copied().unwrap_or_default() });
+    }
+    let eps = m.blocks.first().map_or(1e-6, |b| b.norm_in.eps);
+    Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows }, &ls, &starts, st, early, m.vocab, max_pos, eos))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,6 +923,60 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// Kimi-K3 lowered from its released config (the header fixture's), whole and as a split's stages, with the experts guessed ahead and not, is the executor's own
+    /// description of it.
+    #[test]
+    fn kimi_lowered_is_the_executors_own_description() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/Kimi-K3.json");
+        let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let text = h["config"].as_str().unwrap();
+        let c = crate::kimi::ConfigKimi::parse(text, "Kimi-K3", None).unwrap_or_else(|e| panic!("{}", e.msg));
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        // (the release's delta layers: convolutions and the gated norm fp32)
+        let w32: Vec<(bool, bool)> = c.kinds.iter().map(|&k| if k == crate::glm::GlmKind::Kda { (true, true) } else { (false, false) }).collect();
+        let half = c.layers / 2;
+        for early in [false, true] {
+            for st in [
+                super::super::Stage::whole(c.layers),
+                super::super::Stage { layers: (0, half), first: true, last: false },
+                super::super::Stage { layers: (half, c.layers), first: false, last: true },
+            ] {
+                let own = super::super::kimi::describe(&c, &st, &w32, early).unwrap();
+                let lowered = kimi(&kinds, c.eos.clone(), c.max_pos, &st, &w32, early).unwrap_or_else(|e| panic!("{}", e.msg));
+                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
+                if a != b {
+                    let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
+                    panic!("the lowered description differs at line {first:?}");
+                }
+            }
+        }
+    }
+
+    /// The random Kimi-K3 the logits and GPU checks run, lowered whole and as a split's stages, is the executor's own description of it; its dtypes as written.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_random_kimi_lowers_as_its_own_description() {
+        let dir = std::env::temp_dir().join(format!("glyd-lower-kimi-{}", std::process::id()));
+        crate::kimi_ref::random(&dir, 1, true, 8).unwrap();
+        let c = crate::kimi::ConfigKimi::load(&dir).unwrap();
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let w32 = super::super::kimi::dtypes(&ck, &c).unwrap();
+        assert!(w32.iter().zip(&c.kinds).all(|(&w, &k)| (k == crate::glm::GlmKind::Kda) == (w == (true, true))), "{w32:?}");
+        let half = c.layers / 2;
+        for st in [
+            super::super::Stage::whole(c.layers),
+            super::super::Stage { layers: (0, half), first: true, last: false },
+            super::super::Stage { layers: (half, c.layers), first: false, last: true },
+        ] {
+            let (own, lowered) = (
+                super::super::kimi::describe(&c, &st, &w32, false).unwrap(),
+                super::super::kimi::lowered(&dir, &c, &st, &w32, false).unwrap_or_else(|e| panic!("{}", e.msg)),
+            );
+            assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The random Gemma 4 the logits checks run (src/logits.rs, a window of 32, a global layer that shares its keys and values) lowers to the executor's own

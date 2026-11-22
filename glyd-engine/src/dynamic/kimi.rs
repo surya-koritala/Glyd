@@ -812,6 +812,8 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         v.len() - 1
     };
     let (qd, nh) = (kd.heads * kd.dim, kd.heads);
+    let w32 = dtypes(&ck, &c)?;
+    let early = guessing && places.is_some_and(|p| p < c.experts.experts);
     // (Mix holds the delta attention's fused product, Proj a prompt's forget-gate values copied out of it)
     let (mut mix_w, mut proj_w) = (3 * qd, kd.dim);
     let e = &c.experts;
@@ -835,7 +837,7 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         // (the layer before's output added here where that layer is this stage's: its add is this mix's; a block's first layer makes X a block)
         let mut ops =
             vec![Op::KimiMixNorm { add: l > st.layers.0, nb: before, w_n: an, w_p: ap, push: (l % c.res_block == 0).then_some(before), w: in_n, eps: c.eps }];
-        if c.moe[l] && guessing && places.is_some_and(|p| p < e.experts) {
+        if c.moe[l] && early {
             ops.push(Op::KimiEarly { block: l_.moe.len(), nb: before + usize::from(l % c.res_block == 0), w_n: mn, w_p: mp, w: post_n, eps: c.eps });
         }
         match c.kinds[l] {
@@ -845,6 +847,9 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
                 // where it leaves them, a prompt's copied out first: KimiParts)
                 let fa =
                     ck.get(&format!("{a}.f_a_proj.weight")).map(|(_, t)| t.shape[0] as usize).ok_or_else(|| Error(format!("no tensor {a}.f_a_proj.weight")))?;
+                if fa != kd.dim {
+                    return err(format!("{a}.f_a_proj.weight: a forget gate of rank {fa}, where the config's delta heads are {}", kd.dim));
+                }
                 let names = ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj"].map(|x| format!("{a}.{x}"));
                 if ram.in_ram(l) {
                     for n in [names.to_vec(), vec![format!("{a}.o_proj")], vec![format!("{a}.f_b_proj")]] {
@@ -860,16 +865,10 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
                 // (small: the three convolutions' weights as one, A_log, dt_bias (fp32), the gated norm's weight; the convolutions' and the norm's bf16 or fp32 as
                 // released (Kimi-K3's are fp32: their values, not bf16 ones), read by the kernels as they are)
                 let mut conv = Vec::new();
-                let dtype = |n: &str| ck.get(n).map(|(_, t)| t.dtype.clone()).ok_or_else(|| Error(format!("no tensor {n}")));
-                let cw32 = dtype(&format!("{a}.q_conv1d.weight"))? == "F32";
+                let (cw32, nw32) = w32[l];
                 for x in ["q", "k", "v"] {
-                    let n = format!("{a}.{x}_conv1d.weight");
-                    if (dtype(&n)? == "F32") != cw32 {
-                        return err(format!("{n}: {} where the queries' convolution is {}", dtype(&n)?, if cw32 { "F32" } else { "bf16" }));
-                    }
-                    conv.extend(io(ck.read(&n))?);
+                    conv.extend(io(ck.read(&format!("{a}.{x}_conv1d.weight")))?);
                 }
-                let nw32 = dtype(&format!("{a}.o_norm.weight"))? == "F32";
                 let s0 = l_.small.len();
                 l_.small.extend([
                     upload_bytes(&conv)?,
@@ -1205,5 +1204,201 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         logit_mult: 0.0,
     };
     l_.ram = ram.finish(&mut l_.mats)?;
+    // (the loader's own operations, as it indexed what it loaded, held to the layer kinds' description of the config: one model, or it is not loaded)
+    let d = super::lower::agree(lowered(dir, &c, &st, &w32, early)?, &d, &dir.join("config.json").display().to_string())?;
     Dyn::from_parts(dev, d, l_, Vec::new(), layout, st, o)
+}
+
+/// Each layer's (convolutions fp32, gated norm fp32) as the checkpoint holds them, a delta layer's three convolutions alike; (false, false) for a latent attention layer.
+/// The kernels read them as they are (Kimi-K3 releases them fp32: values no bf16 holds).
+pub(crate) fn dtypes(ck: &Checkpoint, c: &ConfigKimi) -> Result<Vec<(bool, bool)>> {
+    let dtype = |n: &str| ck.get(n).map(|(_, t)| t.dtype == "F32").ok_or_else(|| Error(format!("no tensor {n}")));
+    (0..c.layers)
+        .map(|l| {
+            if c.kinds[l] != GlmKind::Kda {
+                return Ok((false, false));
+            }
+            let a = format!("{}layers.{l}.self_attn", c.prefix);
+            let cw32 = dtype(&format!("{a}.q_conv1d.weight"))?;
+            for x in ["k", "v"] {
+                let n = format!("{a}.{x}_conv1d.weight");
+                if dtype(&n)? != cw32 {
+                    return err(format!("{n}: not the queries' convolution's dtype ({})", if cw32 { "F32" } else { "bf16" }));
+                }
+            }
+            Ok((cw32, dtype(&format!("{a}.o_norm.weight"))?))
+        })
+        .collect()
+}
+
+/// Kimi-K3's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::kimi`), held to `describe`. `w32` the delta
+/// layers' dtypes (`dtypes`), `early` whether the cached experts are guessed and copied ahead (the `KimiEarly` step).
+pub fn lowered(dir: &Path, c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
+    let p = dir.join("config.json");
+    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let lowered = super::lower::kimi(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st, w32, early)?;
+    super::lower::agree(lowered, &describe(c, st, w32, early)?, &p.display().to_string())
+}
+
+/// The executor's description of Kimi-K3 for stage `st`, as the loader indexes what it loads. Each layer's small tensors: its input and post-attention norms, the
+/// two depth mixes' norms and projections, then a delta layer's convolutions, A_log, dt_bias and gated norm; the last stage's output mix's norm and projection and
+/// the final norm after the last layer's. Its matrices: a delta layer's three (q, k, v, the output gate, the forget gate's first product and beta as one; o; the
+/// forget gate's second product), a dense MLP's gate and up and its down; then the embedding and the head. A latent attention layer's and a mixture of experts' are
+/// their blocks'.
+pub fn describe(c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
+    let (kd, e) = (&c.kda, &c.experts);
+    let (h, qd, nh) = (c.hidden, kd.heads * kd.dim, kd.heads);
+    let starts: Vec<bool> = (0..c.layers).map(|l| l % c.res_block == 0).collect();
+    let moe_rows = e.latent + 2 * e.shared * e.inter;
+    let kinds: Vec<KimiLayer> =
+        (0..c.layers).map(|l| KimiLayer { kda: c.kinds[l] == GlmKind::Kda, moe: c.moe[l], w32: w32.get(l).copied().unwrap_or_default() }).collect();
+    Ok(kimi_desc(
+        &KimiDims { h, qd, nh, kd: kd.dim, bound: kd.bound, inter: c.inter, situ: c.situ, eps: c.eps, moe_rows },
+        &kinds,
+        &starts,
+        st,
+        early,
+        c.vocab,
+        c.max_pos,
+        c.eos.clone(),
+    ))
+}
+
+/// What a Kimi-K3 layer is to the executor: delta attention or latent attention, a mixture of experts or a dense MLP, its delta layer's dtypes.
+pub(crate) struct KimiLayer {
+    pub kda: bool,
+    pub moe: bool,
+    pub w32: (bool, bool),
+}
+
+/// Kimi-K3's widths and constants as the executor's operations take them: the width, the delta heads' channels, heads and size, the forget gate's bound, the dense
+/// MLP's width, SiTU's two betas, the norms' epsilon, and the rows of a mixture of experts' first product (the latent's down projection and the shared experts' gate and up).
+pub(crate) struct KimiDims {
+    pub h: usize,
+    pub qd: usize,
+    pub nh: usize,
+    pub kd: usize,
+    pub bound: f32,
+    pub inter: usize,
+    pub situ: (f32, f32),
+    pub eps: f32,
+    pub moe_rows: usize,
+}
+
+/// Kimi-K3's executor description: its layers `ls`, the depth mix's groups starting where `starts` says, for stage `st`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn kimi_desc(k: &KimiDims, ls: &[KimiLayer], starts: &[bool], st: &Stage, early: bool, vocab: usize, max_pos: usize, eos: Vec<i64>) -> ModelDesc {
+    let (h, qd, nh, eps) = (k.h, k.qd, k.nh, k.eps);
+    let (fa, row) = (k.kd, 4 * qd + k.kd + nh);
+    let (mut mix_w, mut proj_w) = (3 * qd, k.kd);
+    let (mut n_small, mut n_mats, mut n_mla, mut n_moe, mut states, mut layers) = (0, 0, 0, 0, Vec::new(), Vec::new());
+    for (l, ly) in ls.iter().enumerate() {
+        // (the depth mix's groups before this layer: a group starts at its first layer)
+        let before = starts[..l].iter().filter(|&&s| s).count();
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            layers.push(Vec::new());
+            continue;
+        }
+        let s = n_small;
+        let (in_n, post_n, an, ap, mn, mp) = (s, s + 1, s + 2, s + 3, s + 4, s + 5);
+        n_small += 6;
+        let nb = before + usize::from(starts[l]);
+        let mut ops = vec![Op::KimiMixNorm { add: l > st.layers.0, nb: before, w_n: an, w_p: ap, push: starts[l].then_some(before), w: in_n, eps }];
+        if ly.moe && early {
+            ops.push(Op::KimiEarly { block: n_moe, nb, w_n: mn, w_p: mp, w: post_n, eps });
+        }
+        if ly.kda {
+            let m0 = n_mats;
+            n_mats += 3;
+            (mix_w, proj_w) = (mix_w.max(row), proj_w.max(fa));
+            let s0 = n_small;
+            n_small += 4;
+            let (cv, ssm) = (states.len(), states.len() + 1);
+            states.push(3 * 3 * qd * 2);
+            states.push(nh * k.kd * k.kd * 4);
+            ops.extend([
+                Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "delta attention: q, k, v and gates product" },
+                Op::KdaConv { w: s0, state: cv, c: 3 * qd, row, w32: ly.w32.0 },
+                Op::KimiParts { row, parts: [(3 * qd, qd, Slot::Iq), (4 * qd, fa, Slot::Proj), (4 * qd + fa, nh, Slot::Ba)] },
+                Op::LinearAt { w: m0 + 2, x: View::at(Slot::Proj, 4 * qd), y: Slot::Qo, name: "delta attention: forget gate product" },
+                Op::KdaDelta { a_log: s0 + 1, dt_bias: s0 + 2, state: ssm, heads: nh, bound: k.bound, ba: View::at(Slot::Ba, 4 * qd + fa) },
+                Op::KdaOut { w: s0 + 3, heads: nh, w32: ly.w32.1, iq: View::at(Slot::Iq, 3 * qd) },
+                Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "delta attention: o product" },
+            ]);
+        } else {
+            ops.push(Op::Mla { block: n_mla });
+            n_mla += 1;
+        }
+        ops.push(Op::KimiMixNorm { add: true, nb, w_n: mn, w_p: mp, push: None, w: post_n, eps });
+        if ly.moe {
+            mix_w = mix_w.max(k.moe_rows);
+            ops.push(Op::Moe { block: n_moe });
+            n_moe += 1;
+        } else {
+            let (gu, down) = (n_mats, n_mats + 1);
+            n_mats += 2;
+            ops.extend([
+                Op::Linear { w: gu, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
+                Op::Situ { inter: k.inter, beta: k.situ.0, linear: k.situ.1 },
+                Op::Linear { w: down, x: Slot::M, y: Slot::O, name: "MLP: down product" },
+            ]);
+        }
+        if l + 1 == st.layers.1 && !st.last {
+            ops.push(Op::KimiAdd { x: Slot::O });
+        }
+        layers.push(ops);
+    }
+    if st.last {
+        let all = starts.iter().filter(|&&s| s).count();
+        if let Some(last) = layers.last_mut() {
+            last.push(Op::KimiMixNorm { add: st.layers.1 > st.layers.0, nb: all, w_n: n_small, w_p: n_small + 1, push: None, w: n_small + 2, eps });
+        }
+    }
+    let blocks = starts.iter().filter(|&&s| s).count();
+    let mut widths = [0usize; super::SLOTS];
+    for (s, wd) in [
+        (Slot::X, h),
+        (Slot::H, h),
+        (Slot::O, h),
+        (Slot::Blk, blocks * h),
+        (Slot::Mix, mix_w.max(h)),
+        (Slot::Xc, (3 * qd).max(h)),
+        (Slot::Proj, proj_w),
+        (Slot::Qo, qd),
+        (Slot::Iq, qd),
+        (Slot::Ba, nh.max(8)),
+        (Slot::Core, qd),
+        (Slot::Att, qd),
+        (Slot::Gu, 2 * k.inter),
+        (Slot::M, k.inter),
+    ] {
+        widths[s as usize] = wd;
+    }
+    ModelDesc {
+        family: "Kimi-K3",
+        hidden: h,
+        vocab,
+        eps,
+        max_pos,
+        widths,
+        mats: Vec::new(),
+        small: Vec::new(),
+        ropes: Vec::new(),
+        rings: Vec::new(),
+        first: Op::Nop,
+        layers,
+        states,
+        final_norm: None,
+        decoded: false,
+        skinny: false,
+        embed: n_mats,
+        lm: n_mats + 1,
+        softcap: 0.0,
+        eos,
+        post: None,
+        v4: None,
+        hc: (0.0, 0),
+        logit_mult: 0.0,
+    }
 }

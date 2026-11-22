@@ -1244,8 +1244,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
         indexer: None,
     };
     let dense = k.usize("first_k_dense_replace")?;
-    k.usize("intermediate_size")?;
-    k.usize("moe_intermediate_size")?;
+    let inter = k.usize("intermediate_size")?;
+    let moe_inter = k.usize("moe_intermediate_size")?;
     let ne = k.usize("num_experts")?;
     // (the routed experts as released: MXFP4, 4-bit floats in groups of 32 with a byte's scale each, as compressed-tensors packs them; every other matrix bf16)
     let mxfp4 = match k.raw("quantization_config") {
@@ -1256,7 +1256,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
         }
     };
     let mut scales = std::collections::BTreeMap::new();
-    let shared = k.usize("num_shared_experts")? > 0;
+    let n_shared = k.usize("num_shared_experts")?;
+    let shared = n_shared > 0;
     let lat = k.usize("routed_expert_hidden_size")?;
     let moe = Moe {
         router: Router {
@@ -1278,7 +1279,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
     let group = k.usize("attn_res_block_size")?;
     let prefix = "language_model.model.";
     let n = twice(eps);
-    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), Vec::new());
     for l in 0..layers {
         let p = format!("{prefix}layers.{l}");
         let a = format!("{p}.self_attn");
@@ -1301,6 +1302,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
                 r.push((role.to_string(), t(format!("{a}.{x}.weight"))));
             }
             r.push(("conv".into(), Source::Rows(["q", "k", "v"].iter().map(|x| format!("{a}.{x}_conv1d.weight")).collect())));
+            // (the forget gate's low rank: the delta heads' size, which the lowering to the executor sizes its slot by)
+            shapes.push((format!("{a}.f_a_proj.weight"), vec![kd, d]));
             for (role, x) in [("a_log", "A_log"), ("dt_bias", "dt_bias"), ("norm", "o_norm.weight")] {
                 r.push((role.to_string(), t(format!("{a}.{x}"))));
             }
@@ -1331,6 +1334,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
             for x in ["gate", "up", "down"] {
                 r.push((x.to_string(), t(format!("{p}.mlp.{x}_proj.weight"))));
             }
+            shapes.push((format!("{p}.mlp.gate_proj.weight"), vec![inter, d]));
             Body::Ffn(Ffn::Mlp(mlp))
         } else {
             let f = format!("{p}.block_sparse_moe");
@@ -1358,6 +1362,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
                 for x in ["gate", "up", "down"] {
                     r.push((format!("shared_{x}"), t(format!("{f}.shared_experts.{x}_proj.weight"))));
                 }
+                shapes.push((format!("{f}.shared_experts.gate_proj.weight"), vec![n_shared * moe_inter, d]));
             }
             Body::Ffn(Ffn::Moe(moe.clone()))
         };
@@ -1389,7 +1394,7 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
         ],
         mtp_layers,
         scales,
-        shapes: Default::default(),
+        shapes: shapes.into_iter().collect(),
     })
 }
 
