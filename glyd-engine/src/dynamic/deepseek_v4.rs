@@ -5,7 +5,7 @@
 
 use super::{Dyn, ModelDesc, Op, Opts, Ring, Slot, Stage, V4Dims};
 use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::kern35::Mat;
 use crate::kern_nh::{MoeBlock, NhHost};
@@ -16,57 +16,51 @@ use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// kernels/dsv4.cu's kernels (and glm.cu's streams).
 pub(crate) struct KernV4 {
-    pub streams: Kernel,
-    pub hc_proj: Kernel,
-    pub hc_fin: Kernel,
-    pub hc_post: Kernel,
-    pub hc_head: Kernel,
-    pub fp8: Kernel,
-    pub q_prep: Kernel,
-    pub kv_prep: Kernel,
-    pub lin32: Kernel,
-    pub lin32_1: Kernel,
-    pub comp_pool: Kernel,
-    pub comp_out: Kernel,
-    pub idx_q: Kernel,
-    pub idx_score: Kernel,
-    pub topk: Kernel,
-    pub attn_scores: Kernel,
-    pub attn_soft: Kernel,
-    pub attn_out: Kernel,
-    pub ogather: Kernel,
+    pub(crate) streams: crate::kt::glm_streams,
+    pub(crate) hc_proj: crate::kt::v4_hc_proj,
+    pub(crate) hc_fin: crate::kt::v4_hc_fin,
+    pub(crate) hc_post: crate::kt::v4_hc_post,
+    pub(crate) hc_head: crate::kt::v4_hc_head,
+    pub(crate) fp8: crate::kt::v4_fp8,
+    pub(crate) q_prep: crate::kt::v4_q_prep,
+    pub(crate) kv_prep: crate::kt::v4_kv_prep,
+    pub(crate) lin32: crate::kt::v4_lin32,
+    pub(crate) lin32_1: crate::kt::v4_lin32_1,
+    pub(crate) comp_pool: crate::kt::v4_comp_pool,
+    pub(crate) comp_out: crate::kt::v4_comp_out,
+    pub(crate) idx_q: crate::kt::v4_idx_q,
+    pub(crate) idx_score: crate::kt::v4_idx_score,
+    pub(crate) topk: crate::kt::v4_topk,
+    pub(crate) attn_scores: crate::kt::v4_attn_scores,
+    pub(crate) attn_soft: crate::kt::v4_attn_soft,
+    pub(crate) attn_out: crate::kt::v4_attn_out,
+    pub(crate) ogather: crate::kt::v4_ogather,
 }
 
 impl KernV4 {
     fn load(dev: &Dev) -> Result<KernV4> {
         Ok(KernV4 {
-            streams: dev.kernel(kname!("glm_streams"))?,
-            hc_proj: dev.kernel(kname!("v4_hc_proj"))?,
-            hc_fin: dev.kernel(kname!("v4_hc_fin"))?,
-            hc_post: dev.kernel(kname!("v4_hc_post"))?,
-            hc_head: dev.kernel(kname!("v4_hc_head"))?,
-            fp8: dev.kernel(kname!("v4_fp8"))?,
-            q_prep: dev.kernel(kname!("v4_q_prep"))?,
-            kv_prep: dev.kernel(kname!("v4_kv_prep"))?,
-            lin32: dev.kernel(kname!("v4_lin32"))?,
-            lin32_1: dev.kernel(kname!("v4_lin32_1"))?,
-            comp_pool: dev.kernel(kname!("v4_comp_pool"))?,
-            comp_out: dev.kernel(kname!("v4_comp_out"))?,
-            idx_q: dev.kernel(kname!("v4_idx_q"))?,
-            idx_score: dev.kernel(kname!("v4_idx_score"))?,
-            topk: dev.kernel(kname!("v4_topk"))?,
-            attn_scores: dev.kernel(kname!("v4_attn_scores"))?,
-            attn_soft: dev.kernel(kname!("v4_attn_soft"))?,
-            attn_out: dev.kernel(kname!("v4_attn_out"))?,
-            ogather: dev.kernel(kname!("v4_ogather"))?,
+            streams: dev.typed()?,
+            hc_proj: dev.typed()?,
+            hc_fin: dev.typed()?,
+            hc_post: dev.typed()?,
+            hc_head: dev.typed()?,
+            fp8: dev.typed()?,
+            q_prep: dev.typed()?,
+            kv_prep: dev.typed()?,
+            lin32: dev.typed()?,
+            lin32_1: dev.typed()?,
+            comp_pool: dev.typed()?,
+            comp_out: dev.typed()?,
+            idx_q: dev.typed()?,
+            idx_score: dev.typed()?,
+            topk: dev.typed()?,
+            attn_scores: dev.typed()?,
+            attn_soft: dev.typed()?,
+            attn_out: dev.typed()?,
+            ogather: dev.typed()?,
         })
     }
 }

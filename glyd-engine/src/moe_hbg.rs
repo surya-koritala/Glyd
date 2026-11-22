@@ -14,7 +14,7 @@
 //! The host's twin is `HbgHost` (the same bytes, in vectors), whose experts the CPU computes (src/cpu_hbg.rs) with the same roundings, for the check of the kernels and for the pairs of the experts the GPU has no place for.
 
 use crate::cpu_hb::CbView;
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::hb_codec::{LayerRows, MAX_BLOCK, MIN_BLOCK, RUN};
 use crate::launch;
@@ -23,12 +23,6 @@ use crate::weights::upload_bytes;
 use glyd_gpu::codebook::{cb_strides, CbRows};
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// Neurons a block of `hbg_up2` and `hbg_up3` takes, outputs a block of `hbg_down2` and `hbg_down3` takes (kernels/moe_hbg.cu defines the same: a test holds them equal).
 pub const UP_ROWS: usize = 64;
 pub const DOWN_OUT: usize = 128;
@@ -433,7 +427,7 @@ impl HbgExperts {
     /// A value of the layer's shape with no bytes on the device (host tests of the layer's checks).
     #[cfg(test)]
     pub(crate) fn without_device(h: &HbgHost) -> HbgExperts {
-        let none = || Buf { ptr: 0, bytes: 0 };
+        let none = Buf::none;
         HbgExperts {
             shape: h.shape,
             groups: h.groups.each_ref().map(|g| g.as_ref().map(|g| HbgStack { place: g.place, experts: g.experts, bytes: 0, data: none(), meta: none() })),
@@ -463,25 +457,25 @@ fn rot_grid(width: usize, rot: usize) -> (u32, u32) {
 
 /// The Hummingbird layer's kernels (kernels/moe_hbg.cu) with typed launches. Device addresses are `u64`.
 pub struct HbgKern {
-    tables: Kernel,
-    rot: Kernel,
-    up: [Kernel; 2],
-    down: [Kernel; 2],
-    inv: Kernel,
-    sum: Kernel,
-    unrot: Kernel,
+    tables: crate::kt::hbg_tables,
+    rot: crate::kt::hbg_rot_in,
+    up: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::hbg_up2>>; 2],
+    down: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::hbg_down2>>; 2],
+    inv: crate::kt::hbg_inv,
+    sum: crate::kt::hbg_sum_rot,
+    unrot: crate::kt::hbg_unrot,
 }
 
 impl HbgKern {
     pub fn load(dev: &Dev) -> Result<HbgKern> {
         Ok(HbgKern {
-            tables: dev.kernel(kname!("hbg_tables"))?,
-            rot: dev.kernel(kname!("hbg_rot_in"))?,
-            up: [dev.kernel(kname!("hbg_up2"))?, dev.kernel(kname!("hbg_up3"))?],
-            down: [dev.kernel(kname!("hbg_down2"))?, dev.kernel(kname!("hbg_down3"))?],
-            inv: dev.kernel(kname!("hbg_inv"))?,
-            sum: dev.kernel(kname!("hbg_sum_rot"))?,
-            unrot: dev.kernel(kname!("hbg_unrot"))?,
+            tables: dev.typed()?,
+            rot: dev.typed()?,
+            up: [dev.by_args::<crate::kt::hbg_up2>()?, dev.by_args::<crate::kt::hbg_up3>()?],
+            down: [dev.by_args::<crate::kt::hbg_down2>()?, dev.by_args::<crate::kt::hbg_down3>()?],
+            inv: dev.typed()?,
+            sum: dev.typed()?,
+            unrot: dev.typed()?,
         })
     }
 

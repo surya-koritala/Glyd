@@ -4,7 +4,7 @@
 //! its parity record is R7's fixtures and `paritycheck`'s (bits-identical at every level), and its layer-by-layer tools (`nhlayers`, `nhtoy`, `nhoffload`) run on the executor. The layers' math: tools/nemotron_ref.py;
 //! the config and tensor names: src/nemotron.rs.
 
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::kern35::Mat;
 use crate::launch;
@@ -17,12 +17,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// A Mamba-2 head's channels, the state a channel has, the tokens of a chunk of the chunked scan (kernels/nemotron.cu).
 pub const NH_P: usize = 64;
 pub const NH_N: usize = 128;
@@ -64,35 +58,35 @@ impl SsdWs {
 
 /// Nemotron's kernels with typed launches.
 pub struct KernNh {
-    conv: Kernel,
-    ssm: Kernel,
-    cum: Kernel,
-    gmat: Kernel,
-    states: Kernel,
-    pass: Kernel,
-    scan_y: Kernel,
-    gnorm: Kernel,
-    kv_write: Kernel,
-    attn: Kernel,
-    attn_merge: Kernel,
-    small: Kernel,
+    conv: crate::kt::nh_conv,
+    ssm: crate::kt::nh_ssm,
+    cum: crate::kt::nh_ssd_cum,
+    gmat: crate::kt::nh_ssd_g,
+    states: crate::kt::nh_ssd_states,
+    pass: crate::kt::nh_ssd_pass,
+    scan_y: crate::kt::nh_ssd_y,
+    gnorm: crate::kt::nh_gated_norm,
+    kv_write: crate::kt::nh_kv_write,
+    attn: crate::kt::nh_attn_parts,
+    attn_merge: crate::kt::nh_attn_merge,
+    small: crate::kt::small_linear,
 }
 
 impl KernNh {
     pub fn load(dev: &Dev) -> Result<KernNh> {
         Ok(KernNh {
-            conv: dev.kernel(kname!("nh_conv"))?,
-            ssm: dev.kernel(kname!("nh_ssm"))?,
-            cum: dev.kernel(kname!("nh_ssd_cum"))?,
-            gmat: dev.kernel(kname!("nh_ssd_g"))?,
-            states: dev.kernel(kname!("nh_ssd_states"))?,
-            pass: dev.kernel(kname!("nh_ssd_pass"))?,
-            scan_y: dev.kernel(kname!("nh_ssd_y"))?,
-            gnorm: dev.kernel(kname!("nh_gated_norm"))?,
-            kv_write: dev.kernel(kname!("nh_kv_write"))?,
-            attn: dev.kernel(kname!("nh_attn_parts"))?,
-            attn_merge: dev.kernel(kname!("nh_attn_merge"))?,
-            small: dev.kernel(kname!("small_linear"))?,
+            conv: dev.typed()?,
+            ssm: dev.typed()?,
+            cum: dev.typed()?,
+            gmat: dev.typed()?,
+            states: dev.typed()?,
+            pass: dev.typed()?,
+            scan_y: dev.typed()?,
+            gnorm: dev.typed()?,
+            kv_write: dev.typed()?,
+            attn: dev.typed()?,
+            attn_merge: dev.typed()?,
+            small: dev.typed()?,
         })
     }
 

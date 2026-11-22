@@ -196,6 +196,27 @@ impl Dev {
         unsafe { cu("cuCtxSetCurrent", (driver()?.cuCtxSetCurrent)(self.ctx)) }
     }
 
+    /// This Dev's GPU may read and write GPU `peer`'s memory directly from now on (peer access); already on is no error. The error names the two where the GPUs cannot
+    /// reach each other (`can_reach`). This Dev's context is current on the thread after it.
+    pub fn reach_peer(&self, peer: i32) -> Result<()> {
+        if !can_reach(self.ordinal, peer) {
+            return err(format!("GPU {} cannot reach GPU {peer} directly (no peer access)", self.ordinal));
+        }
+        self.make_current()?;
+        let d = driver()?;
+        let (mut pd, mut ctx) = (0, std::ptr::null_mut());
+        // SAFETY: host out-pointers; the peer's primary context is retained for the process, as `Dev::new` does; 704: access already on.
+        unsafe {
+            cu("cuDeviceGet", (d.cuDeviceGet)(&mut pd, peer))?;
+            cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, pd))?;
+            let r = (d.cuCtxEnablePeerAccess)(ctx, 0);
+            if r != 0 && r != 704 {
+                cu("cuCtxEnablePeerAccess", r)?;
+            }
+        }
+        self.make_current()
+    }
+
     fn open(ordinal: i32, own: bool) -> Result<Dev> {
         let d = driver()?;
         let (mut dev, mut ctx) = (0, std::ptr::null_mut());
@@ -249,6 +270,16 @@ impl Dev {
     }
 
     /// A kernel of kernels/engine.cu by name.
+    /// A kernel of the engine's by its type (`crate::kt`), which says its arguments' types.
+    pub fn typed<T: Typed>(&self) -> Result<T> {
+        self.kernel(T::NAME).map(T::of)
+    }
+
+    /// The kernel of type `T`, held by its arguments' types alone (`ByArgs`).
+    pub fn by_args<T: Typed>(&self) -> Result<ByArgs<T::Args>> {
+        self.kernel(T::NAME).map(|k| ByArgs(k, std::marker::PhantomData))
+    }
+
     pub fn kernel(&self, name: &str) -> Result<Kernel> {
         if self.module.is_null() {
             return err("this build has no CUDA kernels (it was built without nvcc: set NVCC or CUDA_HOME and build again)");
@@ -370,6 +401,101 @@ pub trait KernelArgs {
     fn ptrs(&mut self) -> Vec<*mut c_void>;
 }
 
+impl KernelArgs for () {
+    fn ptrs(&mut self) -> Vec<*mut c_void> {
+        Vec::new()
+    }
+}
+
+/// A kernel of the engine's with its arguments' types (`crate::kt`, made by build.rs from kernels/*.cu): `launch!` with it takes exactly those types, in order, or does not
+/// compile. `Dev::typed` loads one.
+pub trait Typed {
+    const NAME: &'static str;
+    type Args: KernelArgs;
+    fn of(k: Kernel) -> Self;
+    fn kernel(&self) -> &Kernel;
+}
+
+/// What `launch!` launches with arguments `A`: a typed kernel for its own arguments' types only, an untyped `Kernel` for any (as before the types).
+pub trait Launch<A> {
+    fn kernel_of(&self) -> &Kernel;
+}
+
+impl<A: KernelArgs> Launch<A> for Kernel {
+    fn kernel_of(&self) -> &Kernel {
+        self
+    }
+}
+
+impl<A: KernelArgs> Launch<A> for &Kernel {
+    fn kernel_of(&self) -> &Kernel {
+        self
+    }
+}
+
+// (a typed kernel's own `Launch`, for it and for a reference to it, is in `crate::kt`: one impl a kernel, so that the arguments' types follow from it)
+
+/// A typed kernel seen by its arguments' types alone (`crate::kt`'s `sig`): what a choice between kernels that take the same arguments is (`g4_prep256` or `g4_prep512`
+/// by the head's width), still launched with those types only.
+pub struct Sig<'a, A>(&'a Kernel, std::marker::PhantomData<fn(A)>);
+
+impl<A> Clone for Sig<'_, A> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<A> Copy for Sig<'_, A> {}
+
+impl<'a, A> Sig<'a, A> {
+    pub(crate) fn of(k: &'a Kernel) -> Self {
+        Sig(k, std::marker::PhantomData)
+    }
+}
+
+impl<A: KernelArgs> Launch<A> for Sig<'_, A> {
+    fn kernel_of(&self) -> &Kernel {
+        self.0
+    }
+}
+
+/// The arguments' types of a typed kernel (`crate::kt::g4_rmsnorm`'s `(u64, u64, u64, i32, f32)`).
+pub type ArgsOf<T> = <T as Typed>::Args;
+
+/// A typed kernel held by its arguments' types alone (`Dev::by_args`): what an array of kernels that take the same arguments holds (`moe_select8`, `16`, `32`); an
+/// array of kernels that take others does not compile.
+pub struct ByArgs<A>(Kernel, std::marker::PhantomData<fn(A)>);
+
+impl<A> Clone for ByArgs<A> {
+    fn clone(&self) -> Self {
+        ByArgs(self.0, std::marker::PhantomData)
+    }
+}
+
+impl<A: KernelArgs> Launch<A> for ByArgs<A> {
+    fn kernel_of(&self) -> &Kernel {
+        &self.0
+    }
+}
+
+impl<A: KernelArgs> Launch<A> for &ByArgs<A> {
+    fn kernel_of(&self) -> &Kernel {
+        &self.0
+    }
+}
+
+impl<A> std::ops::Deref for ByArgs<A> {
+    type Target = Kernel;
+    fn deref(&self) -> &Kernel {
+        &self.0
+    }
+}
+
+/// The kernel `l` is, where `A` are arguments it takes (`launch!`'s check of their types).
+pub fn kernel_for<'a, A: KernelArgs, L: Launch<A>>(l: &'a L, _args: &A) -> &'a Kernel {
+    l.kernel_of()
+}
+
 macro_rules! impl_args {
     ($($t:ident $i:tt),+) => {
         impl<$($t),+> KernelArgs for ($($t,)+) {
@@ -412,13 +538,17 @@ impl_args!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11, M 12, N
 macro_rules! launch {
     ($k:expr, $grid:expr, $block:expr, $s:expr; $($a:expr),+ $(,)?) => {{
         let mut vals = ($($a,)+);
+        let held = &$k;
+        let k = $crate::dev::kernel_for(held, &vals);
         let mut ptrs = $crate::dev::KernelArgs::ptrs(&mut vals);
-        $k.launch($grid, $block, $s, &mut ptrs)
+        k.launch($grid, $block, $s, &mut ptrs)
     }};
     ($k:expr, $grid:expr, $block:expr, smem $smem:expr, $s:expr; $($a:expr),+ $(,)?) => {{
         let mut vals = ($($a,)+);
+        let held = &$k;
+        let k = $crate::dev::kernel_for(held, &vals);
         let mut ptrs = $crate::dev::KernelArgs::ptrs(&mut vals);
-        $k.launch_smem($grid, $block, $smem, $s, &mut ptrs)
+        k.launch_smem($grid, $block, $smem, $s, &mut ptrs)
     }};
 }
 
@@ -429,17 +559,64 @@ pub fn smem64() -> bool {
     *S.get_or_init(|| cfg!(glyd_hip) || crate::tune!("GLYD_SMEM64").is_some_and(|v| v == "1"))
 }
 
+/// A type whose values are any of its bytes, with no padding: what may be copied to and from device memory as bytes (`Buf::read`, `Buf::write`, `read_dev`,
+/// `Pinned::as_slice_mut`). A `bool`, a `char`, an enum or a struct with padding is not.
+///
+/// # Safety
+/// Every bit pattern of `size_of::<Self>()` bytes is a value of the type, and the type has no padding bytes.
+pub unsafe trait Plain: Copy + 'static {}
+
+macro_rules! plain {
+    ($($t:ty),*) => { $(
+        // SAFETY: a primitive number: any bits are a value, and it has no padding.
+        unsafe impl Plain for $t {}
+    )* };
+}
+plain!(u8, i8, u16, i16, u32, i32, u64, i64, u128, i128, usize, isize, f32, f64);
+// SAFETY: an array of plain values has no padding between them, and its bits are its elements'.
+unsafe impl<T: Plain, const N: usize> Plain for [T; N] {}
+
 /// `out` read from device memory at `src` (synchronously: the caller has waited for the work that writes it).
-pub fn read_dev<T: Copy>(src: u64, out: &mut [T]) -> Result<()> {
+///
+/// # Safety
+/// `src .. src + size_of_val(out)` is device memory the caller may read.
+pub unsafe fn read_dev<T: Plain>(src: u64, out: &mut [T]) -> Result<()> {
     let n = std::mem::size_of_val(out);
-    // SAFETY: n bytes of host memory from n of device memory the caller names; T is plain data.
+    // SAFETY: n bytes of host memory from n of device memory the caller names (its contract); T takes any bytes.
     unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, src, n)) }
 }
 
-/// Device memory, freed when dropped.
+/// Device memory, freed when dropped. It belongs to the context it was made in (its GPU's, for a model split over GPUs or a second model of the process): what it
+/// reads, writes and frees, it does in that context, whichever is current on the thread then. `ptr` and `bytes` are for kernels' arguments; what the buffer does is by
+/// its own copies of them, so a buffer is made only here and changing the two does not change what it frees.
 pub struct Buf {
     pub ptr: u64,
     pub bytes: usize,
+    at: u64,
+    len: usize,
+    ctx: usize,
+}
+
+/// The context current on this thread (0: none).
+fn current_ctx() -> Result<usize> {
+    let mut c = std::ptr::null_mut();
+    // SAFETY: a host out-pointer.
+    unsafe { cu("cuCtxGetCurrent", (driver()?.cuCtxGetCurrent)(&mut c))? };
+    Ok(c as usize)
+}
+
+/// `f` run with context `ctx` current (as it was again after; `ctx` 0: as it is).
+fn in_ctx<R>(ctx: usize, f: impl FnOnce() -> Result<R>) -> Result<R> {
+    let now = current_ctx()?;
+    if ctx == 0 || ctx == now {
+        return f();
+    }
+    // SAFETY: a context a Dev retained or made for the process (a buffer's), then the thread's own again.
+    unsafe { cu("cuCtxSetCurrent", (driver()?.cuCtxSetCurrent)(ctx as *mut c_void))? };
+    let r = f();
+    // SAFETY: as above.
+    unsafe { cu("cuCtxSetCurrent", (driver()?.cuCtxSetCurrent)(now as *mut c_void))? };
+    r
 }
 
 /// The bytes the engine's buffers hold on the GPU now, the most they have held since the program started and when (milliseconds since 1970): counted where `Buf` allocates and frees, so what
@@ -465,7 +642,9 @@ pub struct Held {
 }
 
 impl Buf {
+    /// `bytes` bytes of device memory in the context current on this thread.
     pub fn new(bytes: usize) -> Result<Buf> {
+        let ctx = current_ctx()?;
         let mut p = 0u64;
         // SAFETY: a host out-pointer; at least one byte is taken.
         unsafe { cu("cuMemAlloc", (driver()?.cuMemAlloc_v2)(&mut p, bytes.max(1)))? };
@@ -473,7 +652,12 @@ impl Buf {
         if PEAK.fetch_max(now, Relaxed) < now {
             PEAK_AT.store(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64), Relaxed);
         }
-        Ok(Buf { ptr: p, bytes })
+        Ok(Buf { ptr: p, bytes, at: p, len: bytes, ctx })
+    }
+
+    /// A buffer of no bytes that holds nothing (a stand-in where a kernel's argument is not read).
+    pub fn none() -> Buf {
+        Buf { ptr: 0, bytes: 0, at: 0, len: 0, ctx: 0 }
     }
 
     pub fn zeroed(bytes: usize) -> Result<Buf> {
@@ -483,31 +667,49 @@ impl Buf {
     }
 
     /// `data` copied to the buffer at byte `offset`, complete when this returns.
-    pub fn write<T: Copy>(&self, offset: usize, data: &[T]) -> Result<()> {
+    pub fn write<T: Plain>(&self, offset: usize, data: &[T]) -> Result<()> {
         let n = std::mem::size_of_val(data);
-        if offset + n > self.bytes {
-            return err(format!("a write of {n} bytes at {offset}, past the buffer's {}", self.bytes));
+        if offset.checked_add(n).is_none_or(|end| end > self.len) {
+            return err(format!("a write of {n} bytes at {offset}, past the buffer's {}", self.len));
         }
-        // SAFETY: n bytes of host memory to n of this buffer's.
-        unsafe { cu("cuMemcpyHtoD", (driver()?.cuMemcpyHtoD_v2)(self.ptr + offset as u64, data.as_ptr() as *const c_void, n))? };
-        settle()
+        in_ctx(self.ctx, || {
+            // SAFETY: n bytes of host memory to n of this buffer's (checked above), in its context.
+            unsafe { cu("cuMemcpyHtoD", (driver()?.cuMemcpyHtoD_v2)(self.at + offset as u64, data.as_ptr() as *const c_void, n))? };
+            settle()
+        })
     }
 
     /// The buffer's bytes at `offset` into `out` (synchronously; the work queued on the stream is waited for by the caller).
-    pub fn read<T: Copy>(&self, offset: usize, out: &mut [T]) -> Result<()> {
+    pub fn read<T: Plain>(&self, offset: usize, out: &mut [T]) -> Result<()> {
         let n = std::mem::size_of_val(out);
-        if offset + n > self.bytes {
-            return err(format!("a read of {n} bytes at {offset}, past the buffer's {}", self.bytes));
+        if offset.checked_add(n).is_none_or(|end| end > self.len) {
+            return err(format!("a read of {n} bytes at {offset}, past the buffer's {}", self.len));
         }
-        // SAFETY: n of this buffer's bytes to n of host memory; T is plain data.
-        unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, self.ptr + offset as u64, n)) }
+        in_ctx(self.ctx, || {
+            // SAFETY: n of this buffer's bytes (checked above) to n of host memory, in its context; T takes any bytes.
+            unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, self.at + offset as u64, n)) }
+        })
+    }
+
+    /// Every byte of the buffer set to `v`, queued on `s` (ordered with the work on it).
+    pub fn fill_async(&self, v: u8, s: Stream) -> Result<()> {
+        if self.len == 0 {
+            return Ok(());
+        }
+        // SAFETY: the buffer's own bytes.
+        unsafe { memset_async(self.at, v, self.len, s) }
     }
 
     /// The buffer's bytes set to zero, complete when this returns.
     pub fn zero(&self) -> Result<()> {
-        // SAFETY: the buffer's own bytes.
-        unsafe { cu("cuMemsetD8", (driver()?.cuMemsetD8_v2)(self.ptr, 0, self.bytes.max(1)))? };
-        settle()
+        if self.at == 0 {
+            return Ok(());
+        }
+        in_ctx(self.ctx, || {
+            // SAFETY: the buffer's own bytes (at least the one byte allocated), in its context.
+            unsafe { cu("cuMemsetD8", (driver()?.cuMemsetD8_v2)(self.at, 0, self.len.max(1)))? };
+            settle()
+        })
     }
 }
 
@@ -520,11 +722,19 @@ fn settle() -> Result<()> {
 
 impl Drop for Buf {
     fn drop(&mut self) {
-        if let Ok(d) = driver() {
-            // SAFETY: allocated by Buf::new, freed once.
-            unsafe { (d.cuMemFree_v2)(self.ptr) };
+        if self.at == 0 {
+            return;
         }
-        LIVE.fetch_sub(self.bytes as u64, Relaxed);
+        let free = || {
+            // SAFETY: allocated by Buf::new, freed once.
+            unsafe { cu("cuMemFree", (driver()?.cuMemFree_v2)(self.at)) }
+        };
+        // (in its context; where the thread's context cannot be read, as it is)
+        let _ = match current_ctx() {
+            Ok(_) => in_ctx(self.ctx, free),
+            Err(_) => free(),
+        };
+        LIVE.fetch_sub(self.len as u64, Relaxed);
     }
 }
 
@@ -558,8 +768,9 @@ impl Pinned {
         Ok(Pinned { ptr: p, bytes })
     }
 
-    pub fn as_slice_mut<T>(&mut self) -> &mut [T] {
-        // SAFETY: the allocation holds bytes / size_of::<T>() elements; callers use plain data.
+    pub fn as_slice_mut<T: Plain>(&mut self) -> &mut [T] {
+        assert!((self.ptr as usize).is_multiple_of(std::mem::align_of::<T>()), "pinned memory not aligned for the type");
+        // SAFETY: the allocation holds bytes / size_of::<T>() elements, aligned (checked; the driver's are page-aligned), and T takes any bytes.
         unsafe { std::slice::from_raw_parts_mut(self.ptr as *mut T, self.bytes / std::mem::size_of::<T>()) }
     }
 }
@@ -595,8 +806,12 @@ pub unsafe fn copy_d2d_async(dst: u64, src: u64, bytes: usize, s: Stream) -> Res
     cu("cuMemcpyDtoDAsync", (driver()?.cuMemcpyDtoDAsync_v2)(dst, src, bytes, s))
 }
 
-pub fn memset_async(dst: u64, v: u8, bytes: usize, s: Stream) -> Result<()> {
-    // SAFETY: the caller's device range.
+/// `bytes` bytes of device memory at `dst` set to `v`, queued on `s` (a whole buffer: `Buf::fill_async`).
+///
+/// # Safety
+/// `dst .. dst + bytes` is device memory the caller may write, and nothing queued reads it before this runs unless it is to see the bytes set.
+pub unsafe fn memset_async(dst: u64, v: u8, bytes: usize, s: Stream) -> Result<()> {
+    // SAFETY: the caller's device range (its contract).
     unsafe { cu("cuMemsetD8Async", (driver()?.cuMemsetD8Async)(dst, v, bytes, s)) }
 }
 
@@ -638,8 +853,12 @@ pub struct Graph {
 }
 
 impl Graph {
-    pub fn launch(&self, s: Stream) -> Result<()> {
-        // SAFETY: an instantiated graph.
+    /// The captured work queued again on `s`, with the addresses and arguments it was captured with.
+    ///
+    /// # Safety
+    /// Every buffer, table and kernel the capture used is still alive and still holds what the captured work expects there (the graph holds none of them).
+    pub unsafe fn launch(&self, s: Stream) -> Result<()> {
+        // SAFETY: an instantiated graph; what it reads and writes is alive (the caller's contract).
         unsafe { cu("cuGraphLaunch", (driver()?.cuGraphLaunch)(self.exec, s)) }
     }
 }
@@ -705,14 +924,63 @@ impl Drop for Timer {
     }
 }
 
-/// A timing event.
+/// Whether GPU `a` can read and write GPU `b`'s memory directly (peer access; `Dev::reach_peer` turns it on). False where the driver cannot say.
+pub fn can_reach(a: i32, b: i32) -> bool {
+    let Ok(d) = driver() else { return false };
+    let mut can = 0;
+    // SAFETY: a host out-pointer.
+    unsafe { (d.cuDeviceCanAccessPeer)(&mut can, a, b) == 0 && can != 0 }
+}
+
+/// The calling thread works on GPU `ordinal` from now on, in its primary context (the one `Dev::new` retains for the process): a thread of the engine's that copies
+/// for it (the expert stores' copy threads).
+pub fn bind_thread(ordinal: i32) -> Result<()> {
+    let d = driver()?;
+    let (mut dev, mut ctx) = (0, std::ptr::null_mut());
+    // SAFETY: host out-pointers; the device's primary context, which the engine retains for the process.
+    unsafe {
+        cu("cuDeviceGet", (d.cuDeviceGet)(&mut dev, ordinal))?;
+        cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, dev))?;
+        cu("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))
+    }
+}
+
+/// Host memory `[ptr, ptr + bytes)` (page-aligned) registered with the driver, so that copies from it go at the link's speed without a pinned copy (`flags`: the driver's
+/// CU_MEMHOSTREGISTER flags; 8 for a file's pages, read only).
+///
+/// # Safety
+/// The range is the caller's, stays mapped until `unregister_host`, and is registered once.
+pub unsafe fn register_host(ptr: *mut c_void, bytes: usize, flags: u32) -> Result<()> {
+    // SAFETY: as the caller promises.
+    unsafe { cu("cuMemHostRegister", (driver()?.cuMemHostRegister_v2)(ptr, bytes, flags)) }
+}
+
+/// The registration of `register_host` at `ptr` undone.
+///
+/// # Safety
+/// `ptr` was registered, and no copy from it is still queued.
+pub unsafe fn unregister_host(ptr: *mut c_void) -> Result<()> {
+    // SAFETY: as the caller promises.
+    unsafe { cu("cuMemHostUnregister", (driver()?.cuMemHostUnregister)(ptr)) }
+}
+
+/// An event: a timing one (`new`), or one that only orders work (`untimed`, which the driver records more cheaply).
 pub struct Ev(CuEvent);
 
 impl Ev {
     pub fn new() -> Result<Ev> {
+        Ev::with_flags(0)
+    }
+
+    /// An event with no timing (CU_EVENT_DISABLE_TIMING): for ordering work between streams and threads.
+    pub fn untimed() -> Result<Ev> {
+        Ev::with_flags(2)
+    }
+
+    fn with_flags(flags: u32) -> Result<Ev> {
         let mut e = std::ptr::null_mut();
-        // SAFETY: a host out-pointer; 0: default flags.
-        unsafe { cu("cuEventCreate", (driver()?.cuEventCreate)(&mut e, 0))? };
+        // SAFETY: a host out-pointer.
+        unsafe { cu("cuEventCreate", (driver()?.cuEventCreate)(&mut e, flags))? };
         Ok(Ev(e))
     }
 
@@ -761,7 +1029,7 @@ impl Ev {
     }
 }
 
-/// A handle to an event that another thread may record or make a stream wait for: the event (`Ev::as_ref`) must outlive every use.
+/// A handle to an event that another thread may record or make a stream wait for. Made only by `Ev::as_ref`, whose caller promises that the event outlives every use.
 #[derive(Clone, Copy)]
 pub struct EvRef(usize);
 
@@ -775,11 +1043,20 @@ impl EvRef {
         // SAFETY: as above.
         unsafe { cu("cuStreamWaitEvent", (driver()?.cuStreamWaitEvent)(s, self.0 as CuEvent, 0)) }
     }
+
+    /// The calling thread waits until the work the event was last recorded after has run (a no-op for an event not recorded yet).
+    pub fn wait_host(&self) -> Result<()> {
+        // SAFETY: as above.
+        unsafe { cu("cuEventSynchronize", (driver()?.cuEventSynchronize)(self.0 as CuEvent)) }
+    }
 }
 
 impl Ev {
-    /// A handle for another thread to record the event with (see `EvRef`).
-    pub fn as_ref(&self) -> EvRef {
+    /// A handle for another thread to record the event with, or to wait on (see `EvRef`).
+    ///
+    /// # Safety
+    /// The event outlives every use of the handle and of its copies.
+    pub unsafe fn as_ref(&self) -> EvRef {
         EvRef(self.0 as usize)
     }
 }
@@ -819,6 +1096,54 @@ impl Drop for Side {
             unsafe { (d.cuStreamDestroy_v2)(self.stream) };
         }
     }
+}
+
+/// `bufcheck` (R1a: a buffer belongs to its context): two contexts on GPU 0, its primary one and one of its own (as the split's check on one GPU makes). A buffer of the
+/// second is written, read, zeroed and freed while the first is current, and the other way round: each does it in its own context, the thread's context is the same
+/// after, and the GPU's free memory comes back when the buffer goes (it was freed, not lost).
+#[cfg(feature = "dev")]
+pub fn buf_check() -> Result<()> {
+    let a = Dev::new(0)?;
+    let b = Dev::new_own(0)?;
+    let ctx = |d: &Dev| d.ctx as usize;
+    let mut fails = 0;
+    let mut say = |ok: bool, what: String| {
+        println!("{} {what}", if ok { "PASS" } else { "FAIL" });
+        fails += !ok as usize;
+    };
+    const MB: usize = 256 << 20;
+    for (made, other, name) in [(&b, &a, "a context of its own"), (&a, &b, "the primary context")] {
+        made.make_current()?;
+        let before = made.mem_info()?.0;
+        let buf = Buf::new(MB)?;
+        let pattern: Vec<u32> = (0..1024u32).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+        other.make_current()?;
+        buf.write(4096, &pattern)?;
+        let mut back = vec![0u32; 1024];
+        buf.read(4096, &mut back)?;
+        say(
+            back == pattern && current_ctx()? == ctx(other),
+            format!("a buffer of {name}, written and read while the other is current: the bytes back, the thread's context the same"),
+        );
+        buf.zero()?;
+        buf.read(4096, &mut back)?;
+        say(back.iter().all(|&x| x == 0), "the same buffer zeroed while the other is current".to_string());
+        let held = other.mem_info()?.0;
+        drop(buf);
+        let after = other.mem_info()?.0;
+        say(
+            current_ctx()? == ctx(other) && after >= held + MB / 2 && after + MB / 2 >= before,
+            format!("the same buffer freed while the other is current: {} MB came back, the thread's context the same", (after.saturating_sub(held)) >> 20),
+        );
+    }
+    drop(Buf::none());
+    say(true, "a buffer of no bytes dropped".to_string());
+    a.make_current()?;
+    if fails > 0 {
+        return err(format!("bufcheck: {fails} failed"));
+    }
+    println!("bufcheck: PASS");
+    Ok(())
 }
 
 #[cfg(test)]

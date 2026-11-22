@@ -13,7 +13,7 @@
 //! The arithmetic is fp32 with the roundings of vLLM's fused MoE: the router in fp32 (the logits of a bf16 gate rounded to bf16, as its Linear does), the first product stored in bf16 when the activation is not fused
 //! into it (a clamp, relu squared) and the activation rounded once, each pair's down sums times its weight added in fp32 and rounded once.
 
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Lib, Pack, Result, Stream, Words};
 use crate::launch;
 use crate::moe_hbg::{self, HbgExperts, HbgKern};
@@ -23,12 +23,6 @@ use crate::weights::PackBuf;
 use glyd_gpu::pack::{Tiered, FP4R_TAG, FP4_TAG, INT4_STEP_BYTES, INT4_TAG, INT5_STEP_BYTES, INT5_TAG, INT6_STEP_BYTES, INT6_TAG};
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// Experts a router takes (moe_select8, 16 and 32: 256, 512 and 1,024), and choices a token has.
 pub const MAX_EXPERTS: usize = 1024;
 pub const MAX_TOPK: usize = 32;
@@ -473,24 +467,24 @@ pub struct MoeWeights {
 
 /// The layer's kernels (kernels/moe.cu) with typed launches. Device addresses are `u64`.
 pub struct MoeKern {
-    logits: Kernel,
-    select: [Kernel; 3],
-    act: Kernel,
-    add: Kernel,
-    add_f32: Kernel,
+    logits: crate::kt::moe_logits,
+    select: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::moe_select8>>; 3],
+    act: crate::kt::moe_act,
+    add: crate::kt::moe_add,
+    add_f32: crate::kt::moe_add_f32,
     // DeepSeek-V4's (kernels/dsv4.cu): the activation with each pair's weight in it, the routing by token
-    act_w: Kernel,
-    hash: Kernel,
+    act_w: crate::kt::v4_moe_act,
+    hash: crate::kt::v4_hash_select,
     // the FP8 experts' sum (each pair's own row): the pairs' rows, the weighted sum
-    inv: Kernel,
-    wsum: Kernel,
+    inv: crate::kt::moe_inv,
+    wsum: crate::kt::moe_wsum,
     // the FP8 experts' places in the expert cache: their heads made their own (src/f8.rs F8Places)
-    f8_rebase: Kernel,
+    f8_rebase: crate::kt::moe_f8_rebase,
     // Muse Spark's (kernels/muse.cu): the router of fp32 weights, the activation, the pairs' rows, the normed weighted sum
-    mu_router: Kernel,
-    mu_act: Kernel,
-    mu_inv: Kernel,
-    mu_sum: Kernel,
+    mu_router: crate::kt::muse_router,
+    mu_act: crate::kt::muse_act,
+    mu_inv: crate::kt::muse_inv,
+    mu_sum: crate::kt::muse_moe_sum,
 }
 
 /// The select kernel for `experts` (8, 16 or 32 registers a lane: 256, 512 or 1,024 experts).
@@ -513,20 +507,20 @@ fn aligned(p: u64, what: &str) -> Result<()> {
 impl MoeKern {
     pub fn load(dev: &Dev) -> Result<MoeKern> {
         Ok(MoeKern {
-            logits: dev.kernel(kname!("moe_logits"))?,
-            select: [dev.kernel(kname!("moe_select8"))?, dev.kernel(kname!("moe_select16"))?, dev.kernel(kname!("moe_select32"))?],
-            act: dev.kernel(kname!("moe_act"))?,
-            add: dev.kernel(kname!("moe_add"))?,
-            add_f32: dev.kernel(kname!("moe_add_f32"))?,
-            act_w: dev.kernel(kname!("v4_moe_act"))?,
-            hash: dev.kernel(kname!("v4_hash_select"))?,
-            inv: dev.kernel(kname!("moe_inv"))?,
-            wsum: dev.kernel(kname!("moe_wsum"))?,
-            f8_rebase: dev.kernel(kname!("moe_f8_rebase"))?,
-            mu_router: dev.kernel(kname!("muse_router"))?,
-            mu_act: dev.kernel(kname!("muse_act"))?,
-            mu_inv: dev.kernel(kname!("muse_inv"))?,
-            mu_sum: dev.kernel(kname!("muse_moe_sum"))?,
+            logits: dev.typed()?,
+            select: [dev.by_args::<crate::kt::moe_select8>()?, dev.by_args::<crate::kt::moe_select16>()?, dev.by_args::<crate::kt::moe_select32>()?],
+            act: dev.typed()?,
+            add: dev.typed()?,
+            add_f32: dev.typed()?,
+            act_w: dev.typed()?,
+            hash: dev.typed()?,
+            inv: dev.typed()?,
+            wsum: dev.typed()?,
+            f8_rebase: dev.typed()?,
+            mu_router: dev.typed()?,
+            mu_act: dev.typed()?,
+            mu_inv: dev.typed()?,
+            mu_sum: dev.typed()?,
         })
     }
 
@@ -2326,7 +2320,7 @@ mod tests {
         let rows = random_layer(&mut rng, 256, 256, 64, true, &[2, 3, 2, 3], 1);
         let host = HbgHost::of(&rows).unwrap();
         let cfg = MoeCfg { experts: 4, router_hidden: 256, hidden: 256, inter: 64, router: Router::softmax(2), act: Act::SwiGlu { limit: None } };
-        let none = || Buf { ptr: 0, bytes: 0 };
+        let none = Buf::none;
         for (c, why) in [
             (MoeCfg { experts: 8, ..cfg }, "4 of width 256"),
             (MoeCfg { hidden: 512, router_hidden: 512, ..cfg }, "width 256"),

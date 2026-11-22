@@ -4,12 +4,6 @@ use crate::ffi::Result;
 use crate::model::Engine;
 use std::time::Instant;
 
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 const GIB: f64 = (1u64 << 30) as f64;
 
 pub fn memory(e: &Engine) -> String {
@@ -143,11 +137,11 @@ pub fn bandwidth(dev: &crate::dev::Dev, gib: usize, reps: usize) -> Result<f64> 
 /// asked of L2 by prefetches (then a gap of a spinning block, or none), after loads of it, and warm (read just before): whether a small kernel's blocks can fetch the
 /// next product's bytes while the memory is idle (GLY-312).
 pub fn l2check(dev: &crate::dev::Dev, mibs: &[usize], reps: usize, gap_us: u64) -> Result<()> {
-    use crate::dev::{Buf, Kernel, Timer};
+    use crate::dev::{Buf, Timer};
     use crate::launch;
     let k = crate::kern::Kern::load(dev)?;
-    let ask: Kernel = dev.kernel(kname!("l2_ask"))?;
-    let gap: Kernel = dev.kernel(kname!("gap_wait"))?;
+    let ask = dev.typed::<crate::kt::l2_ask>()?;
+    let gap = dev.typed::<crate::kt::gap_wait>()?;
     let flush = Buf::zeroed(512 << 20)?;
     let out = Buf::zeroed(4)?;
     let blocks = (dev.sms as u32) * 16;

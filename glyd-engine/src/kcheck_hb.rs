@@ -169,7 +169,7 @@ unsafe fn launches(dev: &Dev, lib: &Lib, kern: &HbKern, c: &Case, st: &HbStack, 
     Ok(Out { y: yh, plan: ph, a: ah })
 }
 
-fn upload<T: Copy>(v: &[T]) -> Result<Buf> {
+fn upload<T: crate::dev::Plain>(v: &[T]) -> Result<Buf> {
     let b = Buf::new(std::mem::size_of_val(v))?;
     b.write(0, v)?;
     Ok(b)

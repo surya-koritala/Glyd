@@ -83,7 +83,7 @@ fn read_bf16(e: &EngineQx, b: &crate::dev::Buf, n: usize) -> Result<Vec<f32>> {
     Ok(widen(&v))
 }
 
-fn put<T: Copy>(e: &EngineQx, b: &crate::dev::Buf, v: &[T]) -> Result<()> {
+fn put<T: crate::dev::Plain>(e: &EngineQx, b: &crate::dev::Buf, v: &[T]) -> Result<()> {
     e.dev.sync()?;
     b.write(0, v)
 }
@@ -636,11 +636,13 @@ pub fn bench(a: &Args) -> Result<()> {
                 }
                 Ok(())
             })?;
-            gr.launch(s)?;
+            // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+            unsafe { gr.launch(s) }?;
             e0.record(s)?;
             let k = reps.div_ceil(20);
             for _ in 0..k {
-                gr.launch(s)?;
+                // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+                unsafe { gr.launch(s) }?;
             }
             e1.record(s)?;
             dev.sync()?;
@@ -766,11 +768,13 @@ pub fn bench(a: &Args) -> Result<()> {
         };
         call(0)?;
         let gr = dev.capture(|| (0..40).try_for_each(call))?;
-        gr.launch(s)?;
+        // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+        unsafe { gr.launch(s) }?;
         e0.record(s)?;
         let k = reps.div_ceil(40);
         for _ in 0..k {
-            gr.launch(s)?;
+            // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+            unsafe { gr.launch(s) }?;
         }
         e1.record(s)?;
         dev.sync()?;
@@ -873,9 +877,9 @@ pub fn bench(a: &Args) -> Result<()> {
     // (the mixer's pending update, as the decode step's Gated Residuals take it)
     let (po, pinj) = (up(&bf(rnd(8 * d * 2)))?, up(&(0..32).flat_map(|j| (0.25 + (j % 4) as f32 / 8.0).to_le_bytes()).collect::<Vec<u8>>())?);
     let post = (po.ptr, pinj.ptr);
-    let names = |b: &str| [format!("{b}_1"), format!("{b}_2"), format!("{b}_4"), format!("{b}_8")];
-    let load = |b: &str| -> Result<Vec<crate::dev::Kernel>> { names(b).iter().map(|n| dev.kernel(n)).collect() };
-    let (sh1, sh2) = (load("qx_sh1")?, load("qx_sh2")?);
+    use crate::kt;
+    let sh1 = [dev.by_args::<kt::qx_sh1_1>()?, dev.by_args::<kt::qx_sh1_2>()?, dev.by_args::<kt::qx_sh1_4>()?, dev.by_args::<kt::qx_sh1_8>()?];
+    let sh2 = [dev.by_args::<kt::qx_sh2_1>()?, dev.by_args::<kt::qx_sh2_2>()?, dev.by_args::<kt::qx_sh2_4>()?, dev.by_args::<kt::qx_sh2_8>()?];
     let pick = |n: usize| match n {
         1 => 0,
         2 => 1,

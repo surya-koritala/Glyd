@@ -8,20 +8,14 @@
 //! carry it.
 
 use super::{Opts, Stage};
-use crate::dev::{Buf, Dev, Kernel};
-use crate::ffi::{cu, driver, err, Error, Result, Stream};
+use crate::dev::{Buf, Dev};
+use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
 use crate::model::Sample;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 /// kernels/tp.cu's blocks a gather.
 const BLOCKS: usize = 16;
@@ -127,8 +121,8 @@ pub struct Comm {
     pub rank: usize,
     pub n: usize,
     group: Arc<Group>,
-    gather: Kernel,
-    gather_ll: Option<Kernel>,
+    gather: crate::kt::tp_gather,
+    gather_ll: Option<crate::kt::tp_gather_ll>,
     ch: Vec<Chan>,
     streams: RefCell<Vec<Stream>>,
     min_bytes: usize,
@@ -146,14 +140,7 @@ pub static GATHERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Whether every GPU of `devices` can write to every other directly (peer access), as the layers across GPUs need.
 pub fn reach(devices: &[i32]) -> bool {
-    let Ok(d) = driver() else { return false };
-    devices.iter().all(|&a| {
-        devices.iter().filter(|&&b| b != a).all(|&b| {
-            let mut can = 0;
-            // SAFETY: a host out-pointer.
-            unsafe { (d.cuDeviceCanAccessPeer)(&mut can, a, b) == 0 && can != 0 }
-        })
-    })
+    devices.iter().all(|&a| devices.iter().filter(|&&b| b != a).all(|&b| crate::dev::can_reach(a, b)))
 }
 
 /// The group this thread's GPU is in (None: a GPU on its own).
@@ -165,22 +152,9 @@ impl Comm {
     /// This thread's GPU (`dev`, current) joins the group as `rank`: it can reach every other GPU of the group (peer access; two places on one GPU share its
     /// memory), makes its staging and flags, and waits for the others' to make its table of them. Every GPU of the group calls it at once.
     pub fn join(g: &Arc<Group>, rank: usize, dev: &Dev) -> Result<Rc<Comm>> {
-        let (n, d) = (g.devices.len(), driver()?);
+        let n = g.devices.len();
         for &peer in g.devices.iter().filter(|&&p| p != dev.ordinal) {
-            let (mut can, mut ctx, mut pd) = (0, std::ptr::null_mut(), 0);
-            // SAFETY: host out-pointers; the peer's primary context is retained for the process, as `Dev::new` does; 704: access already on.
-            unsafe {
-                cu("cuDeviceCanAccessPeer", (d.cuDeviceCanAccessPeer)(&mut can, dev.ordinal, peer))?;
-                if can == 0 {
-                    return err(format!("GPU {} cannot reach GPU {peer} directly (no peer access): the layers across GPUs need it", dev.ordinal));
-                }
-                cu("cuDeviceGet", (d.cuDeviceGet)(&mut pd, peer))?;
-                cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, pd))?;
-                let r = (d.cuCtxEnablePeerAccess)(ctx, 0);
-                if r != 0 && r != 704 {
-                    cu("cuCtxEnablePeerAccess", r)?;
-                }
-            }
+            dev.reach_peer(peer).map_err(|e| Error(format!("{}: the layers across GPUs need it", e.msg)))?;
         }
         dev.make_current()?;
         let mut ch = Vec::new();
@@ -209,12 +183,12 @@ impl Comm {
         let min_bytes = crate::tune!("GLYD_TP_MIN_MB").and_then(|v| v.parse::<usize>().ok()).map_or(MIN_BYTES, |m| m << 20);
         // (GLYD_TP_LL=0 in a development build: every gather the regular kind, to compare)
         let ll = crate::tune!("GLYD_TP_LL").is_none_or(|v| v != "0");
-        let gather_ll = if ll { Some(dev.kernel(kname!("tp_gather_ll"))?) } else { None };
+        let gather_ll = if ll { Some(dev.typed::<crate::kt::tp_gather_ll>()?) } else { None };
         let c = Rc::new(Comm {
             rank,
             n,
             group: g.clone(),
-            gather: dev.kernel(kname!("tp_gather"))?,
+            gather: dev.typed()?,
             gather_ll,
             ch,
             streams: RefCell::new(Vec::new()),

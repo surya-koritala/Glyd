@@ -7,7 +7,7 @@
 //! KimiRMSNorm's (two roundings). The CPU reference (src/kimi_ref.rs) checks it (`kimicheck`).
 
 use super::{Dyn, Loaded, ModelDesc, Op, Opts, Slot, Stage, View};
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::glm::GlmKind;
 use crate::kern35::Mat;
@@ -25,36 +25,30 @@ use std::path::Path;
 use std::rc::Rc;
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// kernels/kimi.cu's kernels.
 pub struct KernKimi {
-    gate: Kernel,
-    dense_cnt: Kernel,
-    rms2: Kernel,
-    add: Kernel,
-    mix_norm: Kernel,
-    rows: Kernel,
+    gate: crate::kt::kimi_gate,
+    dense_cnt: crate::kt::kimi_dense_cnt,
+    rms2: crate::kt::kimi_rms2,
+    add: crate::kt::kimi_add,
+    mix_norm: crate::kt::kimi_mix_norm,
+    rows: crate::kt::kimi_rows,
     /// the expert cache's plan and copies on the GPU (src/dynamic/tp_cache.rs's device path)
-    pub dc_plan: Kernel,
-    pub dc_fill: Kernel,
+    pub(crate) dc_plan: crate::kt::dc_plan,
+    pub(crate) dc_fill: crate::kt::dc_fill,
 }
 
 impl KernKimi {
     pub fn load(dev: &Dev) -> Result<KernKimi> {
         Ok(KernKimi {
-            gate: dev.kernel(kname!("kimi_gate"))?,
-            dense_cnt: dev.kernel(kname!("kimi_dense_cnt"))?,
-            rms2: dev.kernel(kname!("kimi_rms2"))?,
-            add: dev.kernel(kname!("kimi_add"))?,
-            mix_norm: dev.kernel(kname!("kimi_mix_norm"))?,
-            rows: dev.kernel(kname!("kimi_rows"))?,
-            dc_plan: dev.kernel(kname!("dc_plan"))?,
-            dc_fill: dev.kernel(kname!("dc_fill"))?,
+            gate: dev.typed()?,
+            dense_cnt: dev.typed()?,
+            rms2: dev.typed()?,
+            add: dev.typed()?,
+            mix_norm: dev.typed()?,
+            rows: dev.typed()?,
+            dc_plan: dev.typed()?,
+            dc_fill: dev.typed()?,
         })
     }
 

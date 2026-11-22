@@ -6,7 +6,7 @@
 //! rotary of the patch's row and column, over every patch of the image) and a GELU MLP; the merger (LayerNorm, a block's 4 patches as one row, two products with a GELU between) into one
 //! row of 2560 a block: the image's tokens in the text (kernels/vision.cu beside the engine's dense products). In the text the image's tokens take M-RoPE positions (`positions`).
 
-use crate::dev::{copy_h2d_async, memset_async, Buf, Dev, Kernel};
+use crate::dev::{copy_h2d_async, memset_async, Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::kern::Kern;
 use crate::launch;
@@ -17,12 +17,6 @@ use std::collections::HashMap;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 /// The shapes this tower is written for (Qwen3.8-Flash-Next's vision_config): kernels/vision.cu has them as constants.
 const HIDDEN: usize = 1152;
@@ -498,12 +492,12 @@ pub fn rope_rows(theta: f64, half: usize, rows: &[[u32; 3]]) -> (Vec<u16>, Vec<u
 // ---- the tower ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 struct KernVis {
-    ln: Kernel,
-    bias: Kernel,
-    embed: Kernel,
-    rope: Kernel,
-    attn: Kernel,
-    pad: Kernel,
+    ln: crate::kt::vis_ln,
+    bias: crate::kt::vis_bias,
+    embed: crate::kt::vis_embed,
+    rope: crate::kt::vis_rope,
+    attn: crate::kt::vis_attn,
+    pad: crate::kt::vis_pad,
 }
 
 /// vis_attn's dynamic shared memory: 320 rows of 88 bf16.
@@ -587,16 +581,9 @@ impl Tower {
             }
             src.insert(n, (map, t.offset as usize, t.bytes as usize));
         }
-        let attn = dev.kernel(kname!("vis_attn"))?;
+        let attn = dev.typed::<crate::kt::vis_attn>()?;
         attn.allow_smem(ATTN_SMEM)?;
-        let k = KernVis {
-            ln: dev.kernel(kname!("vis_ln"))?,
-            bias: dev.kernel(kname!("vis_bias"))?,
-            embed: dev.kernel(kname!("vis_embed"))?,
-            rope: dev.kernel(kname!("vis_rope"))?,
-            attn,
-            pad: dev.kernel(kname!("vis_pad"))?,
-        };
+        let k = KernVis { ln: dev.typed()?, bias: dev.typed()?, embed: dev.typed()?, rope: dev.typed()?, attn, pad: dev.typed()? };
         Ok(Some(Tower { src, depth: cfg.depth, k }))
     }
 

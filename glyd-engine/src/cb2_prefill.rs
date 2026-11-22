@@ -14,20 +14,14 @@
 //! asked for, or a layer of a pack, mapped) and tokens, the time of a call and its sums for a few tokens against src/cpu_cb.rs's.
 
 use crate::cpu_cb::Fmt;
-use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Ev, Kernel, Pinned, Side};
-use crate::ffi::{cu, driver, err, CuEvent, Error, Result, Stream};
+use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, ArgsOf, Buf, ByArgs, Dev, Ev, EvRef, Pinned, Side};
+use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 const HID: usize = 4096;
 const INTER: usize = 2048;
@@ -146,7 +140,7 @@ impl Cb2Host {
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-struct Segs {
+pub(crate) struct Segs {
     n: i32,
     begin: [i32; 16],
     rows: [i32; 16],
@@ -171,44 +165,6 @@ struct Place {
     dbits: u8,
 }
 
-/// An event the copier threads can wait on too: its address, made and destroyed with the driver's calls.
-struct SlotEv(usize);
-
-impl SlotEv {
-    fn new() -> Result<SlotEv> {
-        let mut e: CuEvent = std::ptr::null_mut();
-        // SAFETY: a host out-pointer; 2: no timing.
-        unsafe { cu("cuEventCreate", (driver()?.cuEventCreate)(&mut e, 2))? };
-        Ok(SlotEv(e as usize))
-    }
-
-    fn record(&self, s: Stream) -> Result<()> {
-        // SAFETY: an event of this wrapper.
-        unsafe { cu("cuEventRecord", (driver()?.cuEventRecord)(self.0 as CuEvent, s)) }
-    }
-
-    /// Work queued on `s` from now on waits for the work this event was last recorded after (nothing for an event not recorded yet).
-    fn wait(&self, s: Stream) -> Result<()> {
-        // SAFETY: an event of this wrapper and a stream of the caller's.
-        unsafe { cu("cuStreamWaitEvent", (driver()?.cuStreamWaitEvent)(s, self.0 as CuEvent, 0)) }
-    }
-}
-
-impl Drop for SlotEv {
-    fn drop(&mut self) {
-        if let Ok(d) = driver() {
-            // SAFETY: made in `new`, destroyed once.
-            unsafe { (d.cuEventDestroy_v2)(self.0 as CuEvent) };
-        }
-    }
-}
-
-/// The calling thread waits until the work an event (by address) was last recorded after has run; a no-op for an event not recorded yet.
-fn host_wait(ev: usize) -> Result<()> {
-    // SAFETY: an event of a `SlotEv` that outlives the call.
-    unsafe { cu("cuEventSynchronize", (driver()?.cuEventSynchronize)(ev as CuEvent)) }
-}
-
 struct Ring {
     // micro-batches the buffers hold
     n: usize,
@@ -221,8 +177,9 @@ struct Ring {
     slot_books: usize,
     raw_slot_codes: usize,
     raw_slot_books: usize,
-    ready: Vec<SlotEv>,
-    free: Vec<SlotEv>,
+    // (untimed events, which the copier threads wait on by handle too)
+    ready: Vec<Ev>,
+    free: Vec<Ev>,
     next: usize,
 }
 
@@ -301,8 +258,8 @@ impl Done {
 
 struct Job {
     copies: Vec<(u64, usize, usize)>, // (device address, host address, bytes)
-    // events (addresses) the thread waits for before the first copy: the kernels that last read the slot
-    after: Vec<usize>,
+    // events the thread waits for before the first copy: the kernels that last read the slot
+    after: Vec<EvRef>,
     done: Arc<Done>,
     // the host's bytes are not pinned: copied through the thread's own pinned buffers
     stage: bool,
@@ -319,17 +276,7 @@ struct Copiers {
 }
 
 fn copier(ordinal: i32, rx: Receiver<Job>, up: Sender<std::result::Result<(), String>>) {
-    let bound = (|| -> Result<Side> {
-        let d = driver()?;
-        let (mut dev, mut ctx) = (0, std::ptr::null_mut());
-        // SAFETY: host out-pointers; the device's primary context, which the engine retains for the process.
-        unsafe {
-            cu("cuDeviceGet", (d.cuDeviceGet)(&mut dev, ordinal))?;
-            cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, dev))?;
-            cu("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))?;
-        }
-        Side::new()
-    })();
+    let bound = crate::dev::bind_thread(ordinal).and_then(|_| Side::new());
     let (side, stages) = match bound.and_then(|s| Ok((s, (0..STAGES).map(|_| Ok((Pinned::new(STAGE_BYTES)?, Ev::new()?))).collect::<Result<Vec<_>>>()?))) {
         Ok(s) => {
             let _ = up.send(Ok(()));
@@ -343,8 +290,8 @@ fn copier(ordinal: i32, rx: Receiver<Job>, up: Sender<std::result::Result<(), St
     let mut next = 0usize;
     while let Ok(job) = rx.recv() {
         let r = (|| -> Result<()> {
-            for &ev in &job.after {
-                host_wait(ev)?;
+            for ev in &job.after {
+                ev.wait_host()?;
             }
             for &(dst, src, len) in &job.copies {
                 if !job.stage {
@@ -418,18 +365,18 @@ pub struct Cb2Kern {
     /// the host's share of the next calls (None: the GPU takes every expert), and what the last call's took
     pub host: std::cell::Cell<Option<HostShare>>,
     pub took: std::cell::Cell<HostTook>,
-    add: Kernel,
+    add: crate::kt::c2_add_f32,
     // the products of two, three and four bits
-    up: [Kernel; 3],
-    down: [Kernel; 3],
-    tern: Kernel,
+    up: [ByArgs<ArgsOf<crate::kt::c2_up2_2>>; 3],
+    down: [ByArgs<ArgsOf<crate::kt::c2_down2_2>>; 3],
+    tern: crate::kt::c2_tern_cb2,
     /// the ternary rows' conversion at any width (Qwen's), and the width and neurons the products are made for
-    tern_rows: Kernel,
+    tern_rows: crate::kt::c2_tern_rows,
     /// the products of every width in one launch (Qwen3.8-Flash-Next's experts: `c2qx_*`), the outputs a block of their second, and the first products with 128 pairs a block
     /// (two stages only)
-    mixed: Option<(Kernel, Kernel)>,
+    mixed: Option<(ByArgs<ArgsOf<crate::kt::c2qx_up_2>>, ByArgs<ArgsOf<crate::kt::c2qx_down_2>>)>,
     dout: usize,
-    up128: Option<Kernel>,
+    up128: Option<crate::kt::c2qx_up128_2>,
     hid: usize,
     inter: usize,
     stages: usize,
@@ -462,23 +409,30 @@ impl Cb2Kern {
             (2560, 640) => true,
             _ => return err(format!("the streaming prefill's kernels are made for experts of 2,048 x 4,096 and 640 x 2,560, not {inter} x {hid}")),
         };
-        let pick = |glm: [&'static str; 2], q: [&'static str; 2]| dev.kernel(if qwen { q[stages - 2] } else { glm[stages - 2] });
-        let up = [
-            pick([kname!("c2_up2_2"), kname!("c2_up2_3")], [kname!("c2q_up2_2"), kname!("c2q_up2_3")])?,
-            pick([kname!("c2_up3_2"), kname!("c2_up3_3")], [kname!("c2q_up3_2"), kname!("c2q_up3_3")])?,
-            pick([kname!("c2_up4_2"), kname!("c2_up4_3")], [kname!("c2q_up4_2"), kname!("c2q_up4_3")])?,
-        ];
+        // (GLM-5.3-Flash's or Condor's experts, in two or three stages: one of four kernels that take the same arguments)
+        macro_rules! pick {
+            ($g2:ident, $g3:ident, $q2:ident, $q3:ident) => {
+                match (qwen, stages) {
+                    (false, 2) => dev.by_args::<crate::kt::$g2>()?,
+                    (false, _) => dev.by_args::<crate::kt::$g3>()?,
+                    (true, 2) => dev.by_args::<crate::kt::$q2>()?,
+                    (true, _) => dev.by_args::<crate::kt::$q3>()?,
+                }
+            };
+        }
+        let up =
+            [pick!(c2_up2_2, c2_up2_3, c2q_up2_2, c2q_up2_3), pick!(c2_up3_2, c2_up3_3, c2q_up3_2, c2q_up3_3), pick!(c2_up4_2, c2_up4_3, c2q_up4_2, c2q_up4_3)];
         let down = [
-            pick([kname!("c2_down2_2"), kname!("c2_down2_3")], [kname!("c2q_down2_2"), kname!("c2q_down2_3")])?,
-            pick([kname!("c2_down3_2"), kname!("c2_down3_3")], [kname!("c2q_down3_2"), kname!("c2q_down3_3")])?,
-            pick([kname!("c2_down4_2"), kname!("c2_down4_3")], [kname!("c2q_down4_2"), kname!("c2q_down4_3")])?,
+            pick!(c2_down2_2, c2_down2_3, c2q_down2_2, c2q_down2_3),
+            pick!(c2_down3_2, c2_down3_3, c2q_down3_2, c2q_down3_3),
+            pick!(c2_down4_2, c2_down4_3, c2q_down4_2, c2q_down4_3),
         ];
-        for k in up.iter().chain(&down) {
+        for k in up.iter().map(|k| &**k).chain(down.iter().map(|k| &**k)) {
             k.allow_smem((stages * 24576) as u32)?;
         }
         // (c2qx_up128_2 takes 70.1 KiB, c2qx_down_2 86.5: not where a block takes 64 KiB at most)
         let up128 = if qwen && stages == 2 && !small {
-            let k = dev.kernel(kname!("c2qx_up128_2"))?;
+            let k = dev.typed::<crate::kt::c2qx_up128_2>()?;
             k.allow_smem((2 * UP128_STAGE) as u32)?;
             Some(k)
         } else {
@@ -487,9 +441,9 @@ impl Cb2Kern {
         let dout = if small { 128 } else { 256 };
         let mixed = if qwen {
             let (u, d) = match (stages, small) {
-                (3, _) => (dev.kernel(kname!("c2qx_up_3"))?, dev.kernel(kname!("c2qx_down_3"))?),
-                (_, true) => (dev.kernel(kname!("c2qx_up_2"))?, dev.kernel(kname!("c2qx_down4w_2"))?),
-                _ => (dev.kernel(kname!("c2qx_up_2"))?, dev.kernel(kname!("c2qx_down_2"))?),
+                (3, _) => (dev.by_args::<crate::kt::c2qx_up_3>()?, dev.by_args::<crate::kt::c2qx_down_3>()?),
+                (_, true) => (dev.by_args::<crate::kt::c2qx_up_2>()?, dev.by_args::<crate::kt::c2qx_down4w_2>()?),
+                _ => (dev.by_args::<crate::kt::c2qx_up_2>()?, dev.by_args::<crate::kt::c2qx_down_2>()?),
             };
             u.allow_smem((stages * 24576) as u32)?;
             d.allow_smem((stages * downx_stage(dout)) as u32)?;
@@ -503,11 +457,11 @@ impl Cb2Kern {
         Ok(Cb2Kern {
             host: std::cell::Cell::new(None),
             took: std::cell::Cell::new(HostTook::default()),
-            add: dev.kernel(kname!("c2_add_f32"))?,
+            add: dev.typed()?,
             up,
             down,
-            tern: dev.kernel(kname!("c2_tern_cb2"))?,
-            tern_rows: dev.kernel(kname!("c2_tern_rows"))?,
+            tern: dev.typed()?,
+            tern_rows: dev.typed()?,
             mixed,
             dout,
             up128,
@@ -625,8 +579,8 @@ pub unsafe fn cb2_prefill_experts(
             slot_books,
             raw_slot_codes: raw_codes,
             raw_slot_books: raw_books,
-            ready: (0..ring_n).map(|_| SlotEv::new()).collect::<Result<_>>()?,
-            free: (0..ring_n).map(|_| SlotEv::new()).collect::<Result<_>>()?,
+            ready: (0..ring_n).map(|_| Ev::untimed()).collect::<Result<_>>()?,
+            free: (0..ring_n).map(|_| Ev::untimed()).collect::<Result<_>>()?,
             next: 0,
         });
     }
@@ -1071,7 +1025,7 @@ unsafe fn issue(kern: &Cb2Kern, ring: &Ring, experts: &[ExpertDesc], cs: Stream,
         let done = Done::new(w);
         for t in 0..w {
             let mine: Vec<(u64, usize, usize)> = copies.iter().copied().skip(t).step_by(w).collect();
-            cp.tx[t].send(Job { copies: mine, after: vec![ring.free[slot].0], done: done.clone(), stage: !kern.pinned.get() }).expect("a copier thread");
+            cp.tx[t].send(Job { copies: mine, after: vec![ring.free[slot].as_ref()], done: done.clone(), stage: !kern.pinned.get() }).expect("a copier thread");
         }
         Some(done)
     } else {
@@ -1449,14 +1403,13 @@ mod bench {
         side.sync()?;
         println!("pinned: {:.1} GB/s", gbs(blocks * block, t0.elapsed().as_secs_f64()));
         // registered in place: the pages of the layer's codes range
-        let drv = driver()?;
         let page = 4096usize;
         let lo = (host.codes as usize + page - 1) / page * page;
         let hi = (host.codes as usize + host.experts * CODES) / page * page;
         for flags in [if file_backed { 8u32 } else { 0 }] {
             let t0 = Instant::now();
             // SAFETY: a page-aligned range inside the host's memory, registered once and unregistered below.
-            let r = unsafe { cu("cuMemHostRegister", (drv.cuMemHostRegister_v2)(lo as *mut c_void, hi - lo, flags)) };
+            let r = unsafe { crate::dev::register_host(lo as *mut c_void, hi - lo, flags) };
             let reg = t0.elapsed().as_secs_f64();
             match r {
                 Err(e) => println!("registering {} MB in place (flags {flags}): {}", (hi - lo) >> 20, e.msg),
@@ -1479,8 +1432,8 @@ mod bench {
                     side.sync()?;
                     println!("copies from the registered range: {:.1} GB/s", gbs(moved, t0.elapsed().as_secs_f64()));
                     let t0 = Instant::now();
-                    // SAFETY: registered above.
-                    unsafe { cu("cuMemHostUnregister", (drv.cuMemHostUnregister)(lo as *mut c_void))? };
+                    // SAFETY: registered above; the copies from it are done (synchronized).
+                    unsafe { crate::dev::unregister_host(lo as *mut c_void)? };
                     println!("unregistering: {:.1} ms", t0.elapsed().as_secs_f64() * 1e3);
                 }
             }
@@ -1507,7 +1460,17 @@ mod bench {
             for part in a.flag("fmts").unwrap_or("cb2:1").split(',') {
                 let (name, share) = part.split_once(':').unwrap_or((part, "1"));
                 let (u, d) = name.split_once('+').unwrap_or((name, name));
-                let f = |x: &str| Fmt::parse(x).ok_or_else(|| Error(format!("--fmts {part}: tern, cb2, cb3 or cb4 (X+Y: the up's and the down's)")));
+                // (the names the help gives, or the pack's own letters)
+                let f = |x: &str| {
+                    let code = match x {
+                        "tern" => "t",
+                        "cb2" => "a",
+                        "cb3" => "b",
+                        "cb4" => "c",
+                        other => other,
+                    };
+                    Fmt::parse(code).ok_or_else(|| Error(format!("--fmts {part}: tern, cb2, cb3 or cb4 (X+Y: the up's and the down's)")))
+                };
                 specs.push((f(u)?, f(d)?, share.parse().map_err(|_| Error(format!("--fmts {part}: a number after the colon")))?));
             }
             let total: f64 = specs.iter().map(|x| x.2).sum();
@@ -1616,7 +1579,7 @@ mod bench {
             let t0 = Instant::now();
             if let Some(b) = &scrap {
                 for _ in 0..(busy / 0.75).ceil() as usize {
-                    memset_async(b.ptr, 1, b.bytes, dev.stream)?;
+                    b.fill_async(1, dev.stream)?;
                 }
             }
             // SAFETY: live buffers of the sizes the call reads and writes, host bytes that outlive it.

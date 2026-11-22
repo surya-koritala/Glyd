@@ -1,6 +1,6 @@
 //! The engine's own kernels (kernels/engine.cu) with typed launches. Device addresses are `u64`.
 
-use crate::dev::{Dev, Kernel};
+use crate::dev::{ArgsOf, ByArgs, Dev, Typed};
 use crate::ffi::{Result, Stream};
 use crate::launch;
 
@@ -25,7 +25,7 @@ pub(crate) fn norm_threads(k: i32) -> Result<u32> {
 /// A dense product kernel (kernels/engine.cu, gemm3) and its tile: rows of X and rows of W a block takes, its threads and its dynamic shared memory.
 #[derive(Clone)]
 struct Tile {
-    k: Kernel,
+    k: ByArgs<GemmArgs>,
     name: &'static str,
     bm: u32,
     bn: u32,
@@ -34,29 +34,43 @@ struct Tile {
     smem: u32,
 }
 
+/// The arguments every GEMM tile's kernel takes (kernels/engine.cu's gemm3 family): a tile of another signature is not one of these lists.
+type GemmArgs = ArgsOf<crate::kt::gemm3_256x128_s3>;
+
+/// A tile's kernel loaded.
+type TileLoad = fn(&Dev) -> Result<ByArgs<GemmArgs>>;
+
+fn tile<T: Typed<Args = GemmArgs>>(dev: &Dev) -> Result<ByArgs<GemmArgs>> {
+    dev.by_args::<T>()
+}
+
+/// A tile of a list: its kernel's name and loader, from the one name (they cannot part), and its shape.
+macro_rules! tile {
+    ($k:ident, $($shape:expr),+) => {
+        (stringify!($k), tile::<crate::kt::$k> as TileLoad, $($shape),+)
+    };
+}
+
 /// (kernel, BM, BN, BK, threads, stages): the tiles the products choose among.
-const PLAIN: [(&str, u32, u32, u32, u32, u32); 6] = [
-    (kname!("gemm3_256x128_s3"), 256, 128, 32, 256, 3),
-    (kname!("gemm3_128x256_b64_s2"), 128, 256, 64, 256, 2),
-    (kname!("gemm3_128x128_b64_s3"), 128, 128, 64, 128, 3),
-    (kname!("gemm3_128x256_s3"), 128, 256, 32, 256, 3),
-    (kname!("gemm3_128x128_s4"), 128, 128, 32, 128, 4),
-    (kname!("gemm3_256x128_b64_s2"), 256, 128, 64, 256, 2),
+const PLAIN: [(&str, TileLoad, u32, u32, u32, u32, u32); 6] = [
+    tile!(gemm3_256x128_s3, 256, 128, 32, 256, 3),
+    tile!(gemm3_128x256_b64_s2, 128, 256, 64, 256, 2),
+    tile!(gemm3_128x128_b64_s3, 128, 128, 64, 128, 3),
+    tile!(gemm3_128x256_s3, 128, 256, 32, 256, 3),
+    tile!(gemm3_128x128_s4, 128, 128, 32, 128, 4),
+    tile!(gemm3_256x128_b64_s2, 256, 128, 64, 256, 2),
 ];
 /// The same with silu(gate) * up in the epilogue, for the gate-and-up product.
-const FUSED: [(&str, u32, u32, u32, u32, u32); 3] = [
-    (kname!("gemm3f_256x128_s3"), 256, 128, 32, 256, 3),
-    (kname!("gemm3f_128x256_b64_s2"), 128, 256, 64, 256, 2),
-    (kname!("gemm3f_128x256_s3"), 128, 256, 32, 256, 3),
-];
+const FUSED: [(&str, TileLoad, u32, u32, u32, u32, u32); 3] =
+    [tile!(gemm3f_256x128_s3, 256, 128, 32, 256, 3), tile!(gemm3f_128x256_b64_s2, 128, 256, 64, 256, 2), tile!(gemm3f_128x256_s3, 128, 256, 32, 256, 3)];
 
-fn tiles(dev: &Dev, list: &[(&'static str, u32, u32, u32, u32, u32)]) -> Result<Vec<Tile>> {
+fn tiles(dev: &Dev, list: &[(&'static str, TileLoad, u32, u32, u32, u32, u32)]) -> Result<Vec<Tile>> {
     list.iter()
         // (an AMD build: the tiles whose shared memory fits a block's 64 KiB on RDNA 3 and 4)
-        .filter(|&&(_, bm, bn, bk, _, st)| !cfg!(glyd_hip) || (bm + bn) * bk * 2 * st <= 65536)
-        .map(|&(name, bm, bn, bk, threads, st)| {
+        .filter(|&&(_, _, bm, bn, bk, _, st)| !cfg!(glyd_hip) || (bm + bn) * bk * 2 * st <= 65536)
+        .map(|&(name, load, bm, bn, bk, threads, st)| {
             let smem = (bm + bn) * bk * 2 * st;
-            let k = dev.kernel(name)?;
+            let k = load(dev)?;
             k.allow_smem(smem)?;
             Ok(Tile { k, name, bm, bn, bk, threads, smem })
         })
@@ -70,28 +84,28 @@ pub struct Kern {
     small_f32: Tile,
     sms: u32,
     fused: Vec<Tile>,
-    copy_row: Kernel,
-    copy_rows: Kernel,
-    rmsnorm: Kernel,
-    rmsnorm_add: Kernel,
-    qk_norm_rope: Kernel,
-    silu_mul: Kernel,
-    argmax: Kernel,
-    topk: Kernel,
+    copy_row: crate::kt::copy_row,
+    copy_rows: crate::kt::copy_rows,
+    rmsnorm: crate::kt::rmsnorm,
+    rmsnorm_add: crate::kt::rmsnorm_add,
+    qk_norm_rope: crate::kt::qk_norm_rope,
+    silu_mul: crate::kt::silu_mul,
+    argmax: crate::kt::argmax_bf16,
+    topk: crate::kt::topk64_bf16,
     /// `topk` with a mask per row (a grammar's): None where the kernels have none.
-    topk_masked: Option<Kernel>,
-    expsum: Kernel,
-    count_diff: Kernel,
-    logsumexp: Kernel,
-    row_stats: Kernel,
-    read_stream: Kernel,
-    kv_hist: Kernel,
-    kv_outside_total: Kernel,
-    kv_leaf_hp: Kernel,
-    kv_sweep: Kernel,
-    attn_self: Kernel,
+    topk_masked: Option<crate::kt::topk64_bf16_masked>,
+    expsum: crate::kt::expsum_bf16,
+    count_diff: crate::kt::count_diff_u16,
+    logsumexp: crate::kt::logsumexp_bf16,
+    row_stats: crate::kt::row_stats,
+    read_stream: crate::kt::read_stream,
+    kv_hist: crate::kt::kv_hist,
+    kv_outside_total: crate::kt::kv_outside_total,
+    kv_leaf_hp: crate::kt::kv_leaf_hp,
+    kv_sweep: crate::kt::kv_sweep,
+    attn_self: crate::kt::attn_self,
     /// The prompt attention's tile (warps a block, keys a step) and its kernel.
-    attn: Kernel,
+    attn: ByArgs<ArgsOf<crate::kt::prefill_attn_w4_b64>>,
     attn_warps: u32,
     attn_bn: u32,
 }
@@ -117,42 +131,42 @@ fn attn_shape() -> Result<(u32, u32)> {
 impl Kern {
     pub fn load(dev: &Dev) -> Result<Kern> {
         let (attn_warps, attn_bn) = attn_shape()?;
-        let attn = dev.kernel(match (attn_warps, attn_bn) {
-            (4, 64) => kname!("prefill_attn_w4_b64"),
-            (8, 64) => kname!("prefill_attn_w8_b64"),
-            (4, 32) => kname!("prefill_attn_w4_b32"),
-            _ => kname!("prefill_attn_w8_b32"),
-        })?;
+        let attn = match (attn_warps, attn_bn) {
+            (4, 64) => dev.by_args::<crate::kt::prefill_attn_w4_b64>()?,
+            (8, 64) => dev.by_args::<crate::kt::prefill_attn_w8_b64>()?,
+            (4, 32) => dev.by_args::<crate::kt::prefill_attn_w4_b32>()?,
+            _ => dev.by_args::<crate::kt::prefill_attn_w8_b32>()?,
+        };
         attn.allow_smem((16 * attn_warps + 4 * attn_bn) * 256)?;
-        let small = tiles(dev, &[(kname!("gemm3_64x64_b64_s3"), 64, 64, 64, 128, 3), (kname!("gemm3o_64x64_b64_s3"), 64, 64, 64, 128, 3)])?;
+        let small = tiles(dev, &[tile!(gemm3_64x64_b64_s3, 64, 64, 64, 128, 3), tile!(gemm3o_64x64_b64_s3, 64, 64, 64, 128, 3)])?;
         Ok(Kern {
             plain: tiles(dev, &PLAIN)?,
             small: small[0].clone(),
             small_f32: small[1].clone(),
             sms: dev.sms.max(1) as u32,
             fused: tiles(dev, &FUSED)?,
-            kv_hist: dev.kernel(kname!("kv_hist"))?,
-            kv_outside_total: dev.kernel(kname!("kv_outside_total"))?,
-            kv_leaf_hp: dev.kernel(kname!("kv_leaf_hp"))?,
-            kv_sweep: dev.kernel(kname!("kv_sweep"))?,
-            attn_self: dev.kernel(kname!("attn_self"))?,
+            kv_hist: dev.typed()?,
+            kv_outside_total: dev.typed()?,
+            kv_leaf_hp: dev.typed()?,
+            kv_sweep: dev.typed()?,
+            attn_self: dev.typed()?,
             attn,
             attn_warps,
             attn_bn,
-            copy_row: dev.kernel(kname!("copy_row"))?,
-            copy_rows: dev.kernel(kname!("copy_rows"))?,
-            rmsnorm: dev.kernel(kname!("rmsnorm"))?,
-            rmsnorm_add: dev.kernel(kname!("rmsnorm_add"))?,
-            qk_norm_rope: dev.kernel(kname!("qk_norm_rope"))?,
-            silu_mul: dev.kernel(kname!("silu_mul"))?,
-            argmax: dev.kernel(kname!("argmax_bf16"))?,
-            topk: dev.kernel(kname!("topk64_bf16"))?,
-            topk_masked: dev.kernel(kname!("topk64_bf16_masked")).ok(),
-            expsum: dev.kernel(kname!("expsum_bf16"))?,
-            count_diff: dev.kernel(kname!("count_diff_u16"))?,
-            logsumexp: dev.kernel(kname!("logsumexp_bf16"))?,
-            row_stats: dev.kernel(kname!("row_stats"))?,
-            read_stream: dev.kernel(kname!("read_stream"))?,
+            copy_row: dev.typed()?,
+            copy_rows: dev.typed()?,
+            rmsnorm: dev.typed()?,
+            rmsnorm_add: dev.typed()?,
+            qk_norm_rope: dev.typed()?,
+            silu_mul: dev.typed()?,
+            argmax: dev.typed()?,
+            topk: dev.typed()?,
+            topk_masked: dev.typed::<crate::kt::topk64_bf16_masked>().ok(),
+            expsum: dev.typed()?,
+            count_diff: dev.typed()?,
+            logsumexp: dev.typed()?,
+            row_stats: dev.typed()?,
+            read_stream: dev.typed()?,
         })
     }
 

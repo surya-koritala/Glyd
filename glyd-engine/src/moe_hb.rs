@@ -22,7 +22,7 @@
 //! the pairs the host computed being no experts in the sum's ids. The planner (`Mode`: copy, cpu, split, auto) sees both groups' misses at once, and a copy costs by its group's bytes.
 
 use crate::cpu_hb::{CbView, HbExpert};
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::disk::{Aligned, DirectFile};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::kern35::Mat;
@@ -43,12 +43,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// The share (percent) of a layer's experts at three bits in the recipe hb40, which a plan assumes where it has not read the directory.
 pub const HB40_THREE_BIT_PERCENT: usize = 40;
 /// Neurons a block of `hb_up2` and `hb_up3` takes (kernels/moe_hb.cu defines the same: a test holds them equal).
@@ -66,22 +60,22 @@ fn group_index(bits: u32) -> usize {
 
 /// The Hummingbird layer's kernels (kernels/moe_hb.cu) with typed launches.
 pub struct HbKern {
-    rot: Kernel,
-    group: Kernel,
-    up: [Kernel; 2],
-    down: [Kernel; 2],
-    sum: Kernel,
+    rot: crate::kt::hb_rot_in,
+    group: crate::kt::hb_group_ids,
+    up: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::hb_up2>>; 2],
+    down: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::hb_down2>>; 2],
+    sum: crate::kt::hb_sum_rot,
     sms: usize,
 }
 
 impl HbKern {
     pub fn load(dev: &Dev) -> Result<HbKern> {
         Ok(HbKern {
-            rot: dev.kernel(kname!("hb_rot_in"))?,
-            group: dev.kernel(kname!("hb_group_ids"))?,
-            up: [dev.kernel(kname!("hb_up2"))?, dev.kernel(kname!("hb_up3"))?],
-            down: [dev.kernel(kname!("hb_down2"))?, dev.kernel(kname!("hb_down3"))?],
-            sum: dev.kernel(kname!("hb_sum_rot"))?,
+            rot: dev.typed()?,
+            group: dev.typed()?,
+            up: [dev.by_args::<crate::kt::hb_up2>()?, dev.by_args::<crate::kt::hb_up3>()?],
+            down: [dev.by_args::<crate::kt::hb_down2>()?, dev.by_args::<crate::kt::hb_down3>()?],
+            sum: dev.typed()?,
             sms: dev.sms.max(1) as usize,
         })
     }

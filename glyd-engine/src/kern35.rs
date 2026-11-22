@@ -6,7 +6,7 @@
 //! the rotary on 64 of 256 dims, the causal attention times sigmoid(gate), the o product. Linear attention: the qkvz and ba products, the causal convolution with SiLU,
 //! the gated delta rule (a recurrence, or in chunks for a prompt), the gated norm, the out product.
 
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::kern::norm_threads;
 use crate::launch;
@@ -20,12 +20,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// Bytes of dynamic shared memory gdn_chunk takes (kernels/qwen35.cu).
 const GDN_CHUNK_SMEM: u32 = (2 * 64 * 65 + 64 * 64 + 64 * 64 + 128 * 64 + 2 * 64) * 4;
 /// Keys a tile and the padded row of attn256.
@@ -37,35 +31,35 @@ pub(crate) const ATTN_PART: usize = 258;
 
 /// Qwen3.5's kernels with typed launches.
 pub struct Kern35 {
-    rmsnorm: Kernel,
-    rmsnorm_add: Kernel,
-    prep: Kernel,
-    attn: Kernel,
-    attn_split: Kernel,
-    attn_merge: Kernel,
-    conv: Kernel,
-    rec: Kernel,
-    chunk: Kernel,
-    gnorm: Kernel,
-    small: Kernel,
+    rmsnorm: crate::kt::rmsnorm1p,
+    rmsnorm_add: crate::kt::rmsnorm1p_add,
+    prep: crate::kt::q35_prep,
+    attn: crate::kt::attn256,
+    attn_split: crate::kt::attn256_parts,
+    attn_merge: crate::kt::attn256_merge,
+    conv: crate::kt::conv_silu,
+    rec: crate::kt::gdn_recurrent,
+    chunk: crate::kt::gdn_chunk,
+    gnorm: crate::kt::gated_norm,
+    small: crate::kt::small_linear,
 }
 
 impl Kern35 {
     pub fn load(dev: &Dev) -> Result<Kern35> {
-        let chunk = dev.kernel(kname!("gdn_chunk"))?;
+        let chunk = dev.typed::<crate::kt::gdn_chunk>()?;
         chunk.allow_smem(GDN_CHUNK_SMEM)?;
         Ok(Kern35 {
-            rmsnorm: dev.kernel(kname!("rmsnorm1p"))?,
-            rmsnorm_add: dev.kernel(kname!("rmsnorm1p_add"))?,
-            prep: dev.kernel(kname!("q35_prep"))?,
-            attn: dev.kernel(kname!("attn256"))?,
-            attn_split: dev.kernel(kname!("attn256_parts"))?,
-            attn_merge: dev.kernel(kname!("attn256_merge"))?,
-            conv: dev.kernel(kname!("conv_silu"))?,
-            rec: dev.kernel(kname!("gdn_recurrent"))?,
+            rmsnorm: dev.typed()?,
+            rmsnorm_add: dev.typed()?,
+            prep: dev.typed()?,
+            attn: dev.typed()?,
+            attn_split: dev.typed()?,
+            attn_merge: dev.typed()?,
+            conv: dev.typed()?,
+            rec: dev.typed()?,
             chunk,
-            gnorm: dev.kernel(kname!("gated_norm"))?,
-            small: dev.kernel(kname!("small_linear"))?,
+            gnorm: dev.typed()?,
+            small: dev.typed()?,
         })
     }
 

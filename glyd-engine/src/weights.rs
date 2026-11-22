@@ -328,10 +328,7 @@ fn load_all(jobs: &[Job], stream: Stream) -> Result<std::vec::IntoIter<(String, 
         }
         let dst = cur.as_ref().map_or(0, |c| c.1.ptr) + at as u64;
         // SAFETY: the pinned buffer holds `len` bytes just read; the copy completes at the synchronize, before the buffer is handed back.
-        let r = unsafe { copy_h2d_async(dst, pins[b].ptr, len, stream) }.and_then(|_| {
-            // SAFETY: a stream of this device.
-            unsafe { crate::ffi::cu("cuStreamSynchronize", (crate::ffi::driver()?.cuStreamSynchronize)(stream)) }
-        });
+        let r = unsafe { copy_h2d_async(dst, pins[b].ptr, len, stream) }.and_then(|_| crate::dev::sync_stream(stream));
         if let Err(e) = r {
             result = Err(e);
             break;

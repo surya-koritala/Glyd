@@ -195,6 +195,8 @@ jobs:
           # (two models in one process, R16: each with its scheduler in a runtime context of its own, a round of one between two rounds of the other; every reply the reply alone, each context's figures its own)
           "$E" twomodels gemma4 qwen35
           "$E" twomodels muse kimi
+          # (R1a: a buffer belongs to its context: one of a second context on the GPU written, read, zeroed and freed while the first is current)
+          "$E" bufcheck
       - name: Nemotron-H's developer tools on the executor (a random M*ME model made here, nhtoy with and without the decode graph, nhoffload through the expert cache, kcheck_nh.rs)
         run: |
           d="$RUNNER_TEMP/nh"

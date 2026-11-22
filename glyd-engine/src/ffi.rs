@@ -118,10 +118,11 @@ pub fn err<T>(s: impl Into<String>) -> Result<T> {
     Err(Error(s.into()))
 }
 
-/// A CUDA stream (the runtime's cudaStream_t and the driver's CUstream are the same handle).
+/// A CUDA stream (the runtime's cudaStream_t and the driver's CUstream are the same handle). Made by the device module alone (`dev::Dev`, `dev::Side`; the field is not
+/// public, so a stream is not made from any pointer); `DEFAULT` is the context's legacy stream.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Stream(pub *mut c_void);
+pub struct Stream(pub(crate) *mut c_void);
 
 unsafe impl Send for Stream {}
 
@@ -254,6 +255,7 @@ table! {
         fn cuDevicePrimaryCtxRetain(*mut *mut c_void, c_int) -> c_int;
         fn cuDevicePrimaryCtxRelease_v2(c_int) -> c_int;
         fn cuCtxSetCurrent(*mut c_void) -> c_int;
+        fn cuCtxGetCurrent(*mut *mut c_void) -> c_int;
         fn cuCtxCreate_v2(*mut *mut c_void, c_uint, c_int) -> c_int;
         fn cuCtxSynchronize() -> c_int;
         fn cuDeviceCanAccessPeer(*mut c_int, c_int, c_int) -> c_int;
@@ -314,7 +316,7 @@ mod hip {
     const LIBS: [&str; 2] = ["amdhip64_7.dll", "amdhip64_6.dll"];
 
     /// The driver table's functions by HIP's names (ROCm 6.4 on: hipEventRecordWithFlags), all but the two adapters' below.
-    const NAMES: [(&str, &str); 48] = [
+    const NAMES: [(&str, &str); 49] = [
         ("cuInit", "hipInit"),
         ("cuDriverGetVersion", "hipDriverGetVersion"),
         ("cuDeviceGet", "hipDeviceGet"),
@@ -325,6 +327,7 @@ mod hip {
         ("cuCtxCreate_v2", "hipCtxCreate"),
         ("cuDevicePrimaryCtxRelease_v2", "hipDevicePrimaryCtxRelease"),
         ("cuCtxSetCurrent", "hipCtxSetCurrent"),
+        ("cuCtxGetCurrent", "hipCtxGetCurrent"),
         ("cuCtxSynchronize", "hipDeviceSynchronize"),
         ("cuDeviceCanAccessPeer", "hipDeviceCanAccessPeer"),
         ("cuCtxEnablePeerAccess", "hipCtxEnablePeerAccess"),

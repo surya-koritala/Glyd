@@ -7,15 +7,9 @@
 //! `glyd-engine skinnybench [--bits 4,5,6] [--prefill 2048,8192] [--m 1,2,4,8] [--shapes all|NAME,...] [--mb N (256)]` (a development build's): the kernels against the CPU decode of a packed random matrix and against the library's product, then the
 //! time of both at GLM-5.3-Flash's always-on shapes with the weights cycled through MB megabytes, so that they come from memory and not from the cache, and the bytes a second as a share of the card's 736 GB/s.
 
-use crate::dev::{Dev, Kernel};
+use crate::dev::Dev;
 use crate::ffi::{err, Pack, Result, Stream, Words};
 use crate::launch;
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 /// The layouts' numbers (tiers[0] >> 24; glyd-gpu's INT6_TAG, INT5_TAG and INT4_TAG).
 const INT6: u32 = 4;
@@ -26,15 +20,15 @@ const INT4H: u32 = 13;
 
 pub struct SkinnyKern {
     // [Int4, Int5, Int6]
-    x: [Kernel; 3],
-    x4h: Kernel,
+    x: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::skinnyx4>>; 3],
+    x4h: crate::kt::skinnyx4h,
 }
 
 impl SkinnyKern {
     pub fn load(dev: &Dev) -> Result<SkinnyKern> {
         Ok(SkinnyKern {
-            x: [dev.kernel(kname!("skinnyx4"))?, dev.kernel(kname!("skinnyx5"))?, dev.kernel(kname!("skinnyx6"))?],
-            x4h: dev.kernel(kname!("skinnyx4h"))?,
+            x: [dev.by_args::<crate::kt::skinnyx4>()?, dev.by_args::<crate::kt::skinnyx5>()?, dev.by_args::<crate::kt::skinnyx6>()?],
+            x4h: dev.typed()?,
         })
     }
 

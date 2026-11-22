@@ -25,12 +25,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// The hidden width, the neurons of an expert and the bytes of a row of codes (2 bits a code, 4,096 codes).
 const HIDDEN: usize = 4096;
 const INTER: usize = 2048;
@@ -489,26 +483,26 @@ impl CbPack {
 
 /// The kernels of kernels/glm_cb.cu with typed launches.
 pub struct KernCb {
-    rot_in: crate::dev::Kernel,
-    local: crate::dev::Kernel,
-    up: crate::dev::Kernel,
-    down: crate::dev::Kernel,
+    rot_in: crate::kt::glm_cb_rot_in,
+    local: crate::kt::glm_cb_local,
+    up: crate::kt::glm_cb_up,
+    down: crate::kt::glm_cb_down,
     /// the same for places of any format (a layer that is not all two-bit)
-    upx: crate::dev::Kernel,
-    downx: crate::dev::Kernel,
-    sum_rot: crate::dev::Kernel,
+    upx: crate::kt::glm_cb_upx,
+    downx: crate::kt::glm_cb_downx,
+    sum_rot: crate::kt::glm_cb_sum_rot,
 }
 
 impl KernCb {
     pub fn load(dev: &crate::dev::Dev) -> Result<KernCb> {
         Ok(KernCb {
-            rot_in: dev.kernel(kname!("glm_cb_rot_in"))?,
-            local: dev.kernel(kname!("glm_cb_local"))?,
-            up: dev.kernel(kname!("glm_cb_up"))?,
-            down: dev.kernel(kname!("glm_cb_down"))?,
-            upx: dev.kernel(kname!("glm_cb_upx"))?,
-            downx: dev.kernel(kname!("glm_cb_downx"))?,
-            sum_rot: dev.kernel(kname!("glm_cb_sum_rot"))?,
+            rot_in: dev.typed()?,
+            local: dev.typed()?,
+            up: dev.typed()?,
+            down: dev.typed()?,
+            upx: dev.typed()?,
+            downx: dev.typed()?,
+            sum_rot: dev.typed()?,
         })
     }
 
