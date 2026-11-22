@@ -276,6 +276,8 @@ pub struct Shape {
     pub window: usize,
     /// Recurrent state per sequence (linear attention, Mamba), bytes.
     pub state: f64,
+    /// Latent attention (MLA: `kv_lora_rank`): its cache is one sequence's, never copied, so no states are kept at a prompt's end or at boundaries.
+    pub latent_kv: bool,
     /// Bits a weight of the release has (16 for bf16; 8 for FP8; about 4.25 for FP4 releases): every part's but the routed experts'.
     pub release_bits: f64,
     /// Bits a routed expert's weight has as released, where it differs from the rest (Kimi-K3's MXFP4, DeepSeek-V4's FP4 experts:
@@ -398,6 +400,7 @@ impl Shape {
         let mut sh =
             Shape { arch: if arch.is_empty() { model_type.clone() } else { arch }, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
         sh.window = u("sliding_window");
+        sh.latent_kv = kv_lora > 0.0;
         for (i, kind) in kinds.iter().enumerate() {
             match kind.as_str() {
                 "linear_attention" => {
@@ -765,7 +768,11 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     let fam = ask.family;
     let default_ctx = fam.and_then(|f| f.default_ctx).unwrap_or(TARGET_CTX).min(sh.max_ctx);
     let max_ctx = ask.context.unwrap_or(default_ctx).min(fam.and_then(|f| f.max_ctx).unwrap_or(usize::MAX));
-    let kv_at = |ctx: usize| (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state) * users;
+    // (a model with recurrent states and no latent cache keeps a second copy of each sequence's states at its prompt's end, and the pool of them kept at block
+    // boundaries, src/dynamic/snaps.rs: as the loader makes them)
+    let marked = if sh.state > 0.0 && !sh.latent_kv { sh.state } else { 0.0 };
+    let pool = if marked > 0.0 { crate::dynamic::snaps::count(sh.state as usize) as f64 * sh.state } else { 0.0 };
+    let kv_at = |ctx: usize| (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state + marked) * users + pool;
     let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
     let same: Vec<usize> = (0..m.devices.len()).filter(|&i| m.devices[i].vendor == d0.vendor).collect();
     let gain = if sh.mtp { MTP_GAIN } else { 1.0 };

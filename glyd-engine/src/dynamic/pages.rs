@@ -323,6 +323,11 @@ impl Pages {
         }
     }
 
+    /// The block of group `g` that `key` names now, if any.
+    pub fn named(&self, g: usize, key: u128) -> Option<u32> {
+        self.pools.get(g).and_then(|p| p.index.get(&key).copied())
+    }
+
     /// The longest start of a sequence whose full blocks are named `keys` (in order) that the pools hold by name and a step can go on from, taken by sequence `to`, which
     /// must hold nothing: the tokens `to` then holds (a whole number of blocks), each block with one holder more. A step at n blocks reads every block before in a full group
     /// and the window behind in a sliding one (`slack` as `shrink`'s), so that is what must be there: the most n such that it is. 0, and nothing changes: none.

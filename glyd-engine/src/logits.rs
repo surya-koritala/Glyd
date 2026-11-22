@@ -1903,11 +1903,30 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         None => random_dyn(case, level, "keepcheck")?,
     };
     let (vocab, cuts, marks, window) = (e.desc().vocab as u32, e.cuts(), e.can_mark(), e.least_window());
+    // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart)
+    if !cuts && marks {
+        e.ask_state_every(32);
+    }
     let Some((k, s)) = e.as_step(3)? else { return err(format!("{case}: no scheduler's step")) };
     if k < 3 || !s.keeps() {
         return err(format!("{case}: {k} sequences, a step that keeps: {}", s.keeps()));
     }
     let chunk = s.chunk();
+    // (the boundaries the step keeps recurrent states at, where the scheduler ends a prompt's pieces: 0 none)
+    let every = s.snap_every();
+    // a prompt's pieces from `start` as the scheduler runs them: a chunk's tokens at most, none across a boundary
+    fn pieces(t: &[u32], start: usize, chunk: usize, every: usize) -> Vec<&[u32]> {
+        let (mut out, mut at) = (Vec::new(), start);
+        while at < t.len() {
+            let mut n = (t.len() - at).min(chunk);
+            if every > 0 {
+                n = n.min((at / every + 1) * every - at);
+            }
+            out.push(&t[at..at + n]);
+            at += n;
+        }
+        out
+    }
     let toks = |n: usize, seed: u32| -> Vec<u32> { (0..n as u32).map(|i| 3 + (i * 7919 + seed * 104_729) % (vocab - 3)).collect() };
     // tokens a step at a time, each a row alone
     fn steps(s: &mut dyn ModelStep, slot: i32, start: usize, t: &[u32]) -> Result<()> {
@@ -2271,8 +2290,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     let replay = |s: &mut dyn ModelStep, start: usize, chunks: &[&[u32]], reply: &[u32]| replay_in(s, 0, start, chunks, reply);
     // (the first turn left the prompt and its reply but the last token in the slot)
     let held = p.len() + r1.len() - 1;
-    let first = replay(s, 0, &[&p], &r1)? == r1;
-    let second = replay(s, held, &[&p2[held..]], &r2)?;
+    let first = replay(s, 0, &pieces(&p, 0, chunk, every), &r1)? == r1;
+    let second = replay(s, held, &pieces(&p2, held, chunk, every), &r2)?;
     s.release(&[0])?;
     let ok = hit == held && first && second == r2;
     fails += !ok as usize;
@@ -2288,7 +2307,11 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     );
     // the turn that leaves the reply out: from the prompt's end where the model can (two passes by hand: the prompt, the rest), else from its first token (one)
     let should = if cuts || marks { q.len() } else { 0 };
-    let by_hand = if hit_q > 0 { replay(s, 0, &[&q, &q2[q.len()..]], &rq)? } else { replay(s, 0, &[&q2], &rq)? };
+    let by_hand = if hit_q > 0 {
+        replay(s, 0, &[pieces(&q, 0, chunk, every), pieces(&q2, q.len(), chunk, every)].concat(), &rq)?
+    } else {
+        replay(s, 0, &pieces(&q2, 0, chunk, every), &rq)?
+    };
     s.release(&[0])?;
     let ok = hit_q == should && by_hand == rq;
     fails += !ok as usize;
@@ -2298,11 +2321,26 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         q2.len(),
         if by_hand == rq { "is the same passes' by hand, token for token".to_string() } else { format!("{rq:?} against {by_hand:?} by hand") }
     );
-    // the conversation that begins as another does: the start's full blocks shared where the model has no state (a recurrent model's mark is past what the two share, a
-    // latent cache is one sequence's: from its first token there). By hand: the other conversation as the scheduler ran it, the start shared, the rest; or the prompt whole.
-    let should = if cuts { xs.len() / 16 * 16 } else { 0 };
-    let by_hand = if hit_y > 0 {
-        let chunks: Vec<&[u32]> = xa.chunks(chunk).collect();
+    // the conversation that begins as another does: the start's full blocks shared where the model has no state; a recurrent model's states kept at the newest boundary
+    // within it (the other's mark is past what the two share); a latent cache is one sequence's: from its first token there. By hand: the other conversation as the
+    // scheduler ran it, the start shared, the rest (a recurrent model: its own pieces from its first token, which give the states the other's kept); or the prompt whole.
+    let should = if cuts {
+        xs.len() / 16 * 16
+    } else if every > 0 {
+        xs.len() / every * every
+    } else {
+        0
+    };
+    let by_hand = if hit_y > 0 && !cuts {
+        let first = replay(s, 0, &pieces(&xa, 0, chunk, every), &rx)? == rx;
+        let y = replay_in(s, 1, 0, &pieces(&yb, 0, chunk, every), &ry)?;
+        if first {
+            y
+        } else {
+            Vec::new()
+        }
+    } else if hit_y > 0 {
+        let chunks = pieces(&xa, 0, chunk, every);
         let first = replay(s, 0, &chunks, &rx)? == rx;
         let got = s.share(0, 1, xs.len())?;
         let y = replay_in(s, 1, got, &[&yb[got..]], &ry)?;
@@ -2312,8 +2350,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
             Vec::new()
         }
     } else {
-        let chunks: Vec<&[u32]> = yb.chunks(chunk).collect();
-        replay(s, 0, &chunks, &ry)?
+        replay(s, 0, &pieces(&yb, 0, chunk, every), &ry)?
     };
     s.release(&[0, 1])?;
     let ok = hit_y == should && by_hand == ry;
