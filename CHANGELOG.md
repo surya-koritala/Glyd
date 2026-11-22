@@ -6,6 +6,10 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.34.2 — 2026-11-22
+
+- `glyd-gpu` is on PyPI again at this version: v0.34.1's wheels were not published because their install check failed. v0.34.1's refusal of a model that fits nowhere also answered for the machine (no GPU, a driver too old) in the planner's words before `run` could say it in its own; a machine's problem is `run`'s to say again ("no NVIDIA driver was found on this computer"), and the early refusal is for a model that does not fit.
+
 ## v0.34.1 — 2026-11-22
 
 - `glyd run`, `serve` and `preflight` without a level load the level `glyd fit` plans for Qwen3.5 to 3.8 too (Qwen3.8-27B on a 24 GB card is swift; it was refused as penguin, a level that family does not run at), and refuse a model `fit` fits nowhere with fit's reason before anything is downloaded.

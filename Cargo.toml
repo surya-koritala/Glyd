@@ -1,6 +1,6 @@
 [package]
 name = "glyd"
-version = "0.34.1"
+version = "0.34.2"
 edition = "2021"
 rust-version = "1.89"
 description = "Glyd's file codec (the crate beside the inference engine, glyd-engine): compression for the data that fills object storage: logs and dumps as typed columns, packs of small objects, a store that compresses across objects, versions against the last one, and the fastest reads at every ratio"
@@ -51,7 +51,7 @@ engine = ["dep:glyd-engine"]
 [dependencies]
 preflate-rs = { package = "glyd-preflate", path = "third_party/preflate-rs", version = "0.7.6", optional = true }
 lepton_jpeg = { version = "=0.5.8", optional = true }
-glyd-engine = { path = "glyd-engine", version = "0.34.1", optional = true, default-features = false }
+glyd-engine = { path = "glyd-engine", version = "0.34.2", optional = true, default-features = false }
 
 # The reference codecs are linked by the benchmark examples and tests
 # only; the library and the CLI carry none of them.
