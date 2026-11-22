@@ -1101,7 +1101,9 @@ fn speed_of(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan) -> f64 {
             bw.iter().map(|b| on_gpu / n / (b * GB * eff)).sum::<f64>()
         } + 0.1e-3 * (n - 1.0);
         let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
-        return gain / (gpu_t.max(cpu_t) + if sp.host_bytes > 0 { SYNC_PER_MOE_LAYER * sh.moe_layers as f64 } else { 0.0 });
+        // (the last layers' dense matrices in the computer's memory, src/dense_ram.rs: each copied to the GPU before it runs, every token)
+        let link_t = sp.dense_bytes as f64 / (LINK_GBS * GB);
+        return gain / (gpu_t.max(cpu_t) + link_t + if sp.host_bytes > 0 { SYNC_PER_MOE_LAYER * sh.moe_layers as f64 } else { 0.0 });
     }
     match &lp.experts {
         None => gain * d0.bandwidth * GB * eff / read,
@@ -1131,11 +1133,13 @@ fn ideal_speed(sh: &Shape, m: &Machine, main: usize, level: &str) -> f64 {
 pub const CONFIRM_COST_PCT: f64 = 30.0;
 
 /// What the ladder takes, in the order it takes them (ROADMAP P2d): the KV cache's type (this engine's cache has one, lossless), a shorter context down to the floor,
-/// experts in the computer's memory, dense layers in it (R12: not built), then a lower level, then a refusal.
+/// experts in the computer's memory, dense layers in it (src/dense_ram.rs: one GPU's last layers, where a token's experts do not fit beside them), then a lower level,
+/// then a refusal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StepKind {
     ShorterContext,
     ExpertsInRam,
+    DenseInRam,
     LowerLevel,
 }
 
@@ -1161,10 +1165,7 @@ pub struct Ladder {
 }
 
 /// What this build has not got of the ladder's order.
-pub const UNAVAILABLE: [&str; 2] = [
-    "the KV cache's type: this engine's cache has one type (lossless), so there is no step to a smaller one",
-    "dense layers in the computer's memory (ROADMAP R12): not built, so the ladder goes from experts to a lower level",
-];
+pub const UNAVAILABLE: [&str; 1] = ["the KV cache's type: this engine's cache has one type (lossless), so there is no step to a smaller one"];
 
 impl Ladder {
     /// Whether the model loads as asked (no step), and whether any step is asked about.
@@ -1186,7 +1187,12 @@ impl Ladder {
             "context": self.plan.as_ref().map(|p| p.context),
             "needs_confirmation": self.needs_confirmation(),
             "steps": self.steps.iter().map(|s| serde_json::json!({
-                "kind": match s.kind { StepKind::ShorterContext => "shorter_context", StepKind::ExpertsInRam => "experts_in_ram", StepKind::LowerLevel => "lower_level" },
+                "kind": match s.kind {
+                    StepKind::ShorterContext => "shorter_context",
+                    StepKind::ExpertsInRam => "experts_in_ram",
+                    StepKind::DenseInRam => "dense_in_ram",
+                    StepKind::LowerLevel => "lower_level",
+                },
                 "what": s.what, "cost_percent": (s.cost_pct * 10.0).round() / 10.0, "confirm": s.confirm,
             })).collect::<Vec<_>>(),
             "refusal": self.refusal.as_ref().map(|r| r.what.clone()),
@@ -1236,7 +1242,7 @@ impl Ladder {
 
 /// The ladder of MODEL from `asked` at `want_ctx` tokens of context: each level from the one asked for down, asked of the loader's own sizing (`size`: the plan it
 /// loads, or the refusal it gives), the first that loads, and the steps that took it there: the context it had to shorten, the experts it keeps in the computer's
-/// memory (speed from the planner's model), the lower level. `confirm` marks the steps taken only when asked.
+/// memory and the dense layers it keeps there (each priced by itself, from the planner's model), the lower level. `confirm` marks the steps taken only when asked.
 pub fn ladder(
     sh: &Shape,
     m: &Machine,
@@ -1266,16 +1272,35 @@ pub fn ladder(
                         confirm: false,
                     });
                 }
+                // (the plan with every dense layer on the GPU, were there room: each of the two steps below is priced by itself)
+                let dense = lp.spread.as_ref().filter(|s| s.dense > 0).map(|s| (s.dense, s.dense_bytes));
+                let mut all_on_gpu = lp.clone();
+                if let Some(s) = all_on_gpu.spread.as_mut() {
+                    (s.dense, s.dense_bytes) = (0, 0);
+                }
                 // (the hummingbird level is made for its experts to be in the computer's memory: that is the level asked for, not a step down from it)
                 let in_memory = lp.experts.is_some() || lp.spread.as_ref().is_some_and(|s| s.host_bytes > 0);
                 if in_memory && level != "hummingbird" && !m.devices.is_empty() {
-                    let (ideal, got) = (ideal_speed(sh, m, main, level), speed_of(sh, m, main, &lp));
+                    let (ideal, got) = (ideal_speed(sh, m, main, level), speed_of(sh, m, main, &all_on_gpu));
                     let cost = if ideal > 0.0 { (1.0 - got / ideal) * 100.0 } else { 0.0 };
                     steps.push(Step {
                         kind: StepKind::ExpertsInRam,
                         what: format!(
                             "experts in the computer's memory: {} there, a cache of them on the GPU",
                             crate::ui::gib(lp.ram_bytes() + lp.disk_bytes())
+                        ),
+                        cost_pct: cost,
+                        confirm: cost > CONFIRM_COST_PCT,
+                    });
+                }
+                if let Some((layers, bytes)) = dense.filter(|_| !m.devices.is_empty()) {
+                    let (before, after) = (speed_of(sh, m, main, &all_on_gpu), speed_of(sh, m, main, &lp));
+                    let cost = if before > 0.0 { (1.0 - after / before) * 100.0 } else { 0.0 };
+                    steps.push(Step {
+                        kind: StepKind::DenseInRam,
+                        what: format!(
+                            "dense layers in the computer's memory: the last {layers} layers' matrices ({}) there, each copied to the GPU before it runs",
+                            crate::ui::gib(bytes)
                         ),
                         cost_pct: cost,
                         confirm: cost > CONFIRM_COST_PCT,
@@ -2675,11 +2700,30 @@ mod tests {
         let l = go("swift", 32768, vec![("swift", Err("it needs 90 GiB".into())), ("wren", Ok(Some(lower)))]);
         assert_eq!(l.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ShorterContext, StepKind::ExpertsInRam, StepKind::LowerLevel]);
         assert!(l.steps[2].confirm && l.needs_confirmation() && l.plan.as_ref().unwrap().level == "wren");
-        assert!(
-            l.report().contains("it loads at the wren level") && l.report().contains("not available: dense layers in the computer's memory"),
-            "{}",
-            l.report()
-        );
+        assert!(l.report().contains("it loads at the wren level") && l.report().contains("not available: the KV cache's type"), "{}", l.report());
+        // dense layers in the computer's memory (the dynamic route's plan, src/dense_ram.rs): a step after the experts, priced by itself (their bytes over the link, every token)
+        let spread = |dense: usize, dense_bytes: u64| Spread {
+            cuts: vec![],
+            devices: vec![0],
+            across: false,
+            coded: false,
+            twelve: false,
+            places: vec![26],
+            experts_per_layer: 512,
+            host_bytes: 40 * 512 * (3 << 20),
+            gpu_bytes: base.weights,
+            dense,
+            dense_bytes,
+        };
+        let without = go("swift", base.context, vec![("swift", Ok(Some(LoadPlan { spread: Some(spread(0, 0)), ..base.clone() })))]);
+        assert_eq!(without.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ExpertsInRam]);
+        let with = go("swift", base.context, vec![("swift", Ok(Some(LoadPlan { spread: Some(spread(2, 2 << 30)), ..base.clone() })))]);
+        assert_eq!(with.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ExpertsInRam, StepKind::DenseInRam]);
+        assert_eq!(with.steps[0].cost_pct, without.steps[0].cost_pct, "the experts' step costs what it does without the dense one");
+        // (2 GiB over a 25 GB/s link is 86 ms a token more: over 30% of any speed this model has on the card)
+        assert!(with.steps[1].cost_pct > CONFIRM_COST_PCT && with.steps[1].confirm, "{:?}", with.steps);
+        assert!(with.text().contains("dense layers in the computer's memory: the last 2 layers' matrices (2.0 GiB) there"), "{}", with.text());
+        assert_eq!(with.json()["steps"][1]["kind"], "dense_in_ram");
         // nothing loads: the first refusal, no plan
         let l = go("swift", 32768, vec![("swift", Err("first".into())), ("wren", Err("second".into())), ("hummingbird", Err("third".into()))]);
         assert!(l.plan.is_none() && l.refusal.as_ref().is_some_and(|r| r.what == "first") && l.report().contains("no step loads it (first)"));
