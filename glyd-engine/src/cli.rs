@@ -2313,7 +2313,11 @@ pub(crate) fn size_dynamic(
     let host_bytes = cache.as_ref().map_or(0, |k| k.4);
     // (a hummingbird directory's cache: its places, the experts' bytes at their mean, the memory and the disk they take)
     let experts = cache.as_ref().zip(ram).map(|(k, ram)| {
-        let layers = hb_dir.and_then(|d| crate::hb_pack::HbDir::open(d).ok().flatten()).map_or(0, |d| d.layers.len());
+        // (its layers of experts: a hummingbird directory's own; a release's, the layers the table lists experts of)
+        let layers = match hb_dir.and_then(|d| crate::hb_pack::HbDir::open(d).ok().flatten()) {
+            Some(d) => d.layers.len(),
+            None => crate::dynamic::split::layer_bytes_table(table, nl, 100, 100, &|n| n.contains(".experts.")).0.iter().filter(|&&b| b > 0).count(),
+        };
         crate::offload::CachePlan {
             layers,
             experts: k.5,
@@ -3135,6 +3139,21 @@ mod tests {
         assert!(on_gpus <= room[0].1);
         let e = release_cache(&table, &text, nl, &room, "tiny", 16, false, Some(all / 2 + HOST_MARGIN)).unwrap_err();
         assert!(e.what.contains("keeps the experts its GPUs do not hold in the computer's memory"), "{}", e.what);
+        // (the plan `run` loads and `fit` prints, on a GPU of that room: the cache's layers are the model's layers of experts, and its bytes all the experts')
+        let free = (0..40).fold((0u64, 64u64 << 30), |(lo, hi), _| {
+            let mid = lo + (hi - lo) / 2;
+            if crate::plan::dynamic_room_of(mid) >= room[0].1 {
+                (lo, mid)
+            } else {
+                (mid + 1, hi)
+            }
+        });
+        let gpu = Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: free.1, free: free.1, host: None };
+        let host = Some(all + HOST_MARGIN + (1 << 30));
+        let p = size_dynamic(&args(&["run", "tiny", "--context", "16"]), "tiny", &table, Some(&dir), &text, "DeepSeek-V4", &[gpu], host, &|_| false).unwrap();
+        let c = p.experts.expect("a release's expert cache is in the plan");
+        assert_eq!((c.layers, c.experts), (per.iter().filter(|&&b| b > 0).count(), experts));
+        assert_eq!((c.host_bytes(), p.ram_bytes(), p.disk_bytes()), (all, all, 0));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
