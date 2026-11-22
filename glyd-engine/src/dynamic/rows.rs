@@ -80,6 +80,7 @@ pub(super) fn row_wise(op: &Op) -> bool {
             | Op::GlmHead { .. }
             // (a latent attention block runs its products over every row and its caches' parts by sequence itself: `GlmHost::seq_rows`)
             | Op::Mla { .. }
+            | Op::MambaNorm { .. }
             | Op::Nop
     )
 }
@@ -99,6 +100,10 @@ fn by_sequence(op: &Op) -> bool {
             | Op::MuseAttn { .. }
             | Op::KdaConv { .. }
             | Op::KdaDelta { .. }
+            | Op::MambaConv { .. }
+            | Op::MambaScan { .. }
+            | Op::KvWrite { .. }
+            | Op::AttnNh { .. }
     )
 }
 
@@ -402,7 +407,7 @@ impl Dyn {
         if self.draft.is_some()
             || !self.stage.first
             || !self.stage.last
-            || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash")
+            || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H")
         {
             return Ok(None);
         }
