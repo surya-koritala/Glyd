@@ -2783,8 +2783,9 @@ fn load_dynamic(
             cannot(e.msg)
         }
     })?;
-    // (the weights the route holds are not counted apart: 0)
-    loaded_report(model, &plan, &gpus.iter().filter(|g| devices.contains(&g.ordinal)).collect::<Vec<_>>(), 0);
+    // (the weights the engine holds on one GPU; stages and layers across GPUs hold theirs on their own threads and say none: 0)
+    let weights = crate::conv::Gen::held(&e).map_or(0, |h| h.weights);
+    loaded_report(model, &plan, &gpus.iter().filter(|g| devices.contains(&g.ordinal)).collect::<Vec<_>>(), weights);
     let tok = Tok::load(&dir).map_err(cannot)?;
     // (DeepSeek-V4's and Kimi-K3's releases have their chat formats in Python alone: ours as templates)
     let own = match family {
