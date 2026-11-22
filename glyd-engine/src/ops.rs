@@ -51,25 +51,99 @@ impl Histogram {
     }
 }
 
-pub static TTFT: Histogram = Histogram::new(FIRST_TOKEN);
-pub static TOKEN_GAP: Histogram = Histogram::new(BETWEEN_TOKENS);
-pub static REQUEST_TIME: Histogram = Histogram::new(WHOLE);
-
 // ---- counters and gauges --------------------------------------------------------------------------------------------------------------------------
 
-/// Tokens written to replies, sequences ended by how they ended (stop, length, stopped by the client or a cancel, error).
-static TOKENS_OUT: AtomicU64 = AtomicU64::new(0);
 const ENDS: [&str; 4] = ["stop", "length", "stopped", "error"];
-static ENDED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-
-/// Requests taken, by the API they are for, and requests refused before any work, by status.
 const ROUTES: [&str; 6] = ["chat_completions", "completions", "messages", "responses", "ollama", "other"];
-static REQUESTS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static REFUSED: Mutex<BTreeMap<u16, u64>> = Mutex::new(BTreeMap::new());
 
-/// The cache's pages: all, and those a running sequence holds (set by the scheduler each round; 0 where the engine has no paged cache).
-pub static KV_PAGES: AtomicU64 = AtomicU64::new(0);
-pub static KV_PAGES_HELD: AtomicU64 = AtomicU64::new(0);
+/// What is counted of one served model's requests and sequences (a runtime context's: `runtime::context::Context::figures`).
+pub struct Figures {
+    pub ttft: Histogram,
+    pub token_gap: Histogram,
+    pub request_time: Histogram,
+    /// Tokens written to replies, sequences ended by how they ended (stop, length, stopped by the client or a cancel, error).
+    tokens_out: AtomicU64,
+    ended: [AtomicU64; 4],
+    /// Requests taken, by the API they are for, and requests refused before any work, by status.
+    requests: [AtomicU64; 6],
+    refused: Mutex<BTreeMap<u16, u64>>,
+    /// The cache's pages: all, and those a running sequence holds (set by the scheduler each round; 0 where the engine has no paged cache).
+    pub kv_pages: AtomicU64,
+    pub kv_pages_held: AtomicU64,
+    /// The prompt tokens of the requests an engine with no scheduler ran (the scheduler counts its own, the context's `sched`).
+    prompt_tokens: AtomicU64,
+}
+
+impl Default for Figures {
+    fn default() -> Figures {
+        Figures::new()
+    }
+}
+
+impl Figures {
+    pub const fn new() -> Figures {
+        Figures {
+            ttft: Histogram::new(FIRST_TOKEN),
+            token_gap: Histogram::new(BETWEEN_TOKENS),
+            request_time: Histogram::new(WHOLE),
+            tokens_out: AtomicU64::new(0),
+            ended: [const { AtomicU64::new(0) }; 4],
+            requests: [const { AtomicU64::new(0) }; 6],
+            refused: Mutex::new(BTreeMap::new()),
+            kv_pages: AtomicU64::new(0),
+            kv_pages_held: AtomicU64::new(0),
+            prompt_tokens: AtomicU64::new(0),
+        }
+    }
+
+    /// A request for one of the APIs is taken (`path`: its path); the label of its API.
+    pub fn request(&self, path: &str) {
+        let i = match path {
+            "/v1/chat/completions" => 0,
+            "/v1/completions" => 1,
+            p if p.starts_with("/v1/messages") => 2,
+            "/v1/responses" => 3,
+            p if p.starts_with("/api/") => 4,
+            _ => 5,
+        };
+        self.requests[i].fetch_add(1, Relaxed);
+    }
+
+    /// A request is refused before any work is done for it (the key, the Host, the Origin, a limit, a drain): by its status.
+    pub fn refused(&self, code: u16) {
+        *self.refused.lock().unwrap_or_else(|e| e.into_inner()).entry(code).or_insert(0) += 1;
+    }
+
+    /// A token of a reply written at `now`: the first of a sequence (its `last` is None) is the time since `began`, a later one the time since the last.
+    pub fn token(&self, began: Instant, last: &mut Option<Instant>) {
+        let now = Instant::now();
+        match last {
+            None => self.ttft.observe(now.duration_since(began).as_secs_f64()),
+            Some(t) => self.token_gap.observe(now.duration_since(*t).as_secs_f64()),
+        }
+        *last = Some(now);
+        self.tokens_out.fetch_add(1, Relaxed);
+    }
+
+    /// A sequence ended (`how`: stop, length, stopped or error) `began` ago.
+    pub fn ended(&self, how: &str, began: Instant) {
+        if let Some(i) = ENDS.iter().position(|e| *e == how) {
+            self.ended[i].fetch_add(1, Relaxed);
+        }
+        self.request_time.observe(began.elapsed().as_secs_f64());
+    }
+
+    /// A sequence ended: counted (`ended`) and, where traces are on, its spans sent (`otel::record`).
+    pub fn finished(&self, how: &str, began: Instant, clock: &crate::otel::Clock, generated: usize) {
+        self.ended(how, began);
+        crate::otel::record(clock, how, generated);
+    }
+}
+
+/// The process's own figures (`Context::process`): what the functions below count in, for the callers that name no context.
+pub fn figures() -> &'static Figures {
+    &crate::runtime::context::Context::process().figures
+}
 
 fn start() -> Instant {
     static START: OnceLock<Instant> = OnceLock::new();
@@ -82,47 +156,29 @@ pub fn init() {
     crate::otel::init_from_env();
 }
 
-/// A request for one of the APIs is taken (`path`: its path); the label of its API.
+/// `Figures::request` of the process's.
 pub fn request(path: &str) {
-    let i = match path {
-        "/v1/chat/completions" => 0,
-        "/v1/completions" => 1,
-        p if p.starts_with("/v1/messages") => 2,
-        "/v1/responses" => 3,
-        p if p.starts_with("/api/") => 4,
-        _ => 5,
-    };
-    REQUESTS[i].fetch_add(1, Relaxed);
+    figures().request(path)
 }
 
-/// A request is refused before any work is done for it (the key, the Host, the Origin, a limit, a drain): by its status.
+/// `Figures::refused` of the process's.
 pub fn refused(code: u16) {
-    *REFUSED.lock().unwrap_or_else(|e| e.into_inner()).entry(code).or_insert(0) += 1;
+    figures().refused(code)
 }
 
-/// A token of a reply written at `now`: the first of a sequence (its `last` is None) is the time since `began`, a later one the time since the last.
+/// `Figures::token` of the process's.
 pub fn token(began: Instant, last: &mut Option<Instant>) {
-    let now = Instant::now();
-    match last {
-        None => TTFT.observe(now.duration_since(began).as_secs_f64()),
-        Some(t) => TOKEN_GAP.observe(now.duration_since(*t).as_secs_f64()),
-    }
-    *last = Some(now);
-    TOKENS_OUT.fetch_add(1, Relaxed);
+    figures().token(began, last)
 }
 
-/// A sequence ended (`how`: stop, length, stopped or error) `began` ago.
+/// `Figures::ended` of the process's.
 pub fn ended(how: &str, began: Instant) {
-    if let Some(i) = ENDS.iter().position(|e| *e == how) {
-        ENDED[i].fetch_add(1, Relaxed);
-    }
-    REQUEST_TIME.observe(began.elapsed().as_secs_f64());
+    figures().ended(how, began)
 }
 
-/// A sequence ended: counted (`ended`) and, where traces are on, its spans sent (`otel::record`).
+/// `Figures::finished` of the process's.
 pub fn finished(how: &str, began: Instant, clock: &crate::otel::Clock, generated: usize) {
-    ended(how, began);
-    crate::otel::record(clock, how, generated);
+    figures().finished(how, began, clock, generated)
 }
 
 /// One request of an engine that has no scheduler (a lossy level's): its tokens, first and gaps, and its end, as the scheduler's sequences have them.
@@ -133,13 +189,10 @@ pub struct Timer {
     made: usize,
 }
 
-/// The prompt tokens of the requests an engine with no scheduler ran (the scheduler counts its own, `sched::SHARED`).
-static PROMPT_TOKENS: AtomicU64 = AtomicU64::new(0);
-
 impl Timer {
     /// A request of `prompt` tokens begins.
     pub fn start(prompt: usize) -> Timer {
-        PROMPT_TOKENS.fetch_add(prompt as u64, Relaxed);
+        figures().prompt_tokens.fetch_add(prompt as u64, Relaxed);
         Timer { began: Instant::now(), last: None, clock: crate::otel::Clock::new(prompt), made: 0 }
     }
     pub fn token(&mut self) {
@@ -331,8 +384,15 @@ fn one(v: impl std::fmt::Display) -> Vec<(String, String)> {
     vec![(String::new(), v.to_string())]
 }
 
-/// The metrics in Prometheus's text format (0.0.4): requests, tokens, the histograms of the first token and of the time between tokens, the scheduler's queue and what runs, the cache's pages, the GPUs' memory.
+/// `render_of` the process's context.
 pub fn render(s: &State) -> String {
+    render_of(crate::runtime::context::Context::process(), s)
+}
+
+/// The metrics of the model of `rt` in Prometheus's text format (0.0.4): requests, tokens, the histograms of the first token and of the time between tokens, the scheduler's queue and what runs, the cache's
+/// pages, the GPUs' memory.
+pub fn render_of(rt: &crate::runtime::context::Context, s: &State) -> String {
+    let f = &rt.figures;
     let mut o = String::with_capacity(4096);
     family(
         &mut o,
@@ -357,11 +417,11 @@ pub fn render(s: &State) -> String {
         &one(u8::from(s.life.draining())),
     );
     family(&mut o, "glyd_requests_in_flight", "gauge", "Requests taken and not yet answered to their end.", &one(s.life.inflight()));
-    let reqs: Vec<_> = ROUTES.iter().zip(&REQUESTS).map(|(r, c)| (format!("{{api=\"{r}\"}}"), c.load(Relaxed).to_string())).collect();
+    let reqs: Vec<_> = ROUTES.iter().zip(&f.requests).map(|(r, c)| (format!("{{api=\"{r}\"}}"), c.load(Relaxed).to_string())).collect();
     family(&mut o, "glyd_requests_total", "counter", "Requests taken for an API (chat_completions, completions, messages, responses, ollama).", &reqs);
-    let refused: Vec<_> = REFUSED.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(c, n)| (format!("{{code=\"{c}\"}}"), n.to_string())).collect();
+    let refused: Vec<_> = f.refused.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(c, n)| (format!("{{code=\"{c}\"}}"), n.to_string())).collect();
     family(&mut o, "glyd_requests_refused_total", "counter", "Requests refused before any work (key, Host, Origin, size, time, drain), by status.", &refused);
-    let ends: Vec<_> = ENDS.iter().zip(&ENDED).map(|(r, c)| (format!("{{reason=\"{r}\"}}"), c.load(Relaxed).to_string())).collect();
+    let ends: Vec<_> = ENDS.iter().zip(&f.ended).map(|(r, c)| (format!("{{reason=\"{r}\"}}"), c.load(Relaxed).to_string())).collect();
     family(
         &mut o,
         "glyd_sequences_finished_total",
@@ -372,22 +432,22 @@ pub fn render(s: &State) -> String {
     if !s.engine {
         return o;
     }
-    let v: Vec<u64> = crate::sched::SHARED.iter().take(7).map(|a| a.load(Relaxed)).collect();
-    family(&mut o, "glyd_prompt_tokens_total", "counter", "Prompt tokens run or found in the prefix cache.", &one(v[0] + PROMPT_TOKENS.load(Relaxed)));
+    let v: Vec<u64> = rt.sched.iter().take(7).map(|a| a.load(Relaxed)).collect();
+    family(&mut o, "glyd_prompt_tokens_total", "counter", "Prompt tokens run or found in the prefix cache.", &one(v[0] + f.prompt_tokens.load(Relaxed)));
     family(&mut o, "glyd_prefix_cache_hit_tokens_total", "counter", "Prompt tokens found in the prefix cache.", &one(v[1]));
-    family(&mut o, "glyd_generated_tokens_total", "counter", "Tokens written to replies.", &one(TOKENS_OUT.load(Relaxed)));
-    TTFT.render(
+    family(&mut o, "glyd_generated_tokens_total", "counter", "Tokens written to replies.", &one(f.tokens_out.load(Relaxed)));
+    f.ttft.render(
         &mut o,
         "glyd_time_to_first_token_seconds",
         "Seconds from a sequence being sent to the scheduler to its first token (the queue, the prompt and the first step).",
     );
-    TOKEN_GAP.render(&mut o, "glyd_time_per_output_token_seconds", "Seconds between two tokens of one reply.");
-    REQUEST_TIME.render(&mut o, "glyd_request_duration_seconds", "Seconds from a sequence being sent to the scheduler to its end.");
+    f.token_gap.render(&mut o, "glyd_time_per_output_token_seconds", "Seconds between two tokens of one reply.");
+    f.request_time.render(&mut o, "glyd_request_duration_seconds", "Seconds from a sequence being sent to the scheduler to its end.");
     family(&mut o, "glyd_queue_depth", "gauge", "Sequences waiting for room in the scheduler.", &one(v[6]));
     family(&mut o, "glyd_sequences_running", "gauge", "Sequences the scheduler is running.", &one(v[5]));
-    let pages = KV_PAGES.load(Relaxed);
+    let pages = f.kv_pages.load(Relaxed);
     if pages > 0 {
-        let held = KV_PAGES_HELD.load(Relaxed);
+        let held = f.kv_pages_held.load(Relaxed);
         family(&mut o, "glyd_kv_cache_pages", "gauge", "Pages of the KV cache.", &one(pages));
         family(&mut o, "glyd_kv_cache_pages_used", "gauge", "Pages of the KV cache that running sequences hold.", &one(held));
         family(&mut o, "glyd_kv_cache_usage_ratio", "gauge", "Used pages of the KV cache over all of them (0 to 1).", &one(held as f64 / pages as f64));
@@ -470,10 +530,10 @@ mod tests {
         let life = Life::default();
         request("/v1/chat/completions");
         refused(401);
-        TTFT.observe(0.2);
-        TOKEN_GAP.observe(0.01);
-        KV_PAGES.store(100, Relaxed);
-        KV_PAGES_HELD.store(25, Relaxed);
+        figures().ttft.observe(0.2);
+        figures().token_gap.observe(0.01);
+        figures().kv_pages.store(100, Relaxed);
+        figures().kv_pages_held.store(25, Relaxed);
         let text = render(&State { model: "Qwen/Qwen3-8B", ready: true, life: &life, engine: true });
         for name in [
             "glyd_build_info",
@@ -511,13 +571,14 @@ mod tests {
 
     #[test]
     fn a_timer_counts_the_first_token_the_gaps_and_the_end() {
-        let (t0, g0, r0) = (TTFT.count(), TOKEN_GAP.count(), REQUEST_TIME.count());
+        let f = figures();
+        let (t0, g0, r0) = (f.ttft.count(), f.token_gap.count(), f.request_time.count());
         let mut t = Timer::start(3);
         t.token();
         t.token();
         t.token();
         t.end("stop");
         // (the counts are the process's: other tests add to them, so at least ours)
-        assert!(TTFT.count() > t0 && TOKEN_GAP.count() >= g0 + 2 && REQUEST_TIME.count() > r0);
+        assert!(f.ttft.count() > t0 && f.token_gap.count() >= g0 + 2 && f.request_time.count() > r0);
     }
 }

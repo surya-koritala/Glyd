@@ -154,6 +154,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "logitsbound" => glyd_engine::logits::set_bounds(a),
         "logitsmodel" => glyd_engine::logits::make_model(a),
         "usercheck" => glyd_engine::logits::users_check(a),
+        "twomodels" => glyd_engine::logits::two_models_check(a),
         "muserandom" => glyd_engine::muse_ref::random(Path::new(a.need(1, "OUT")?)),
         "museref" => glyd_engine::muse_ref::cmd(&a),
         "musecheck" => glyd_engine::muse_ref::check(&a),

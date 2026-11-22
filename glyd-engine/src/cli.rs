@@ -952,13 +952,37 @@ pub fn serve(a: &Args) -> i32 {
     };
     let mut about = about(&ready.name, &ready.dir, asked, "penguin", true, "penguin level: lossless, every weight the original's", None, &ready.gpu);
     about.push(("costs", crate::costs::served(&ready.dir, &ready.name, asked, window, ready.engine.chunk(), None)));
-    let _ = server::INFO.set(server::Info { about, gpu: Some(ready.gpu.ordinal), held: None, concurrency: ready.users, window, refused: &[], started });
+    let _ = crate::runtime::context::Context::process().info.set(server::Info {
+        about,
+        gpu: Some(ready.gpu.ordinal),
+        held: None,
+        concurrency: ready.users,
+        window,
+        refused: &[],
+        started,
+    });
     STATUS.ready(); // (serving: from here a failure is the engine's to say, and nothing is started again)
     access_notes(&ui, a);
     ui.borrow_mut().line(&format!("{} is served at http://{addr}: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it.", ready.name));
     let Ready { mut engine, tok, chat, defaults, name, users, .. } = ready;
     let vocab = engine.w.cfg.vocab;
-    server::work(&mut engine, Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused: &[] }), &rx, &tx, users);
+    server::work(
+        &mut engine,
+        Arc::new(server::Shared {
+            vocab,
+            tok,
+            chat,
+            name,
+            defaults,
+            window,
+            thinking: None,
+            refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
+        }),
+        &rx,
+        &tx,
+        users,
+    );
     0
 }
 
@@ -998,13 +1022,14 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>) -> i32 
         Err(r) => return fail(ui, &r),
     };
     if let Some(i) = info {
-        let _ = server::INFO.set(i);
+        let _ = crate::runtime::context::Context::process().info.set(i);
     }
     STATUS.ready();
     access_notes(ui, a);
     ui.borrow_mut().line(&format!("{name} is served at http://{addr}: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it."));
     let refused = if several.is_some() { &[][..] } else { server::ONE_AT_A_TIME };
-    let shared = Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused });
+    let shared =
+        Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused, rt: crate::runtime::context::Context::process().clone() });
     match e.as_step(users) {
         Ok(Some((k, step))) => server::work_with(&mut crate::sched::Sched::new(step, k), shared, &rx, &tx),
         _ => server::work_gen(&mut *e, shared, &rx, &tx),
@@ -1113,7 +1138,23 @@ pub fn run(a: &Args) -> i32 {
     let t = std::thread::spawn(move || chat_loop(chat_tx, defaults, thinking, tty));
     let Ready { mut engine, tok, chat, defaults, name, users, .. } = ready;
     let vocab = engine.w.cfg.vocab;
-    server::work(&mut engine, Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused: &[] }), &rx, &tx, users);
+    server::work(
+        &mut engine,
+        Arc::new(server::Shared {
+            vocab,
+            tok,
+            chat,
+            name,
+            defaults,
+            window,
+            thinking: None,
+            refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
+        }),
+        &rx,
+        &tx,
+        users,
+    );
     let _ = t.join();
     0
 }

@@ -117,7 +117,11 @@ impl Engine for Remote {
 
     fn stats(&self) -> Stats {
         use std::sync::atomic::Ordering::Relaxed;
-        Stats { running: crate::sched::SHARED[5].load(Relaxed), waiting: crate::sched::SHARED[6].load(Relaxed), window: self.window as u64 }
+        Stats {
+            running: crate::runtime::context::Context::process().sched[5].load(Relaxed),
+            waiting: crate::runtime::context::Context::process().sched[6].load(Relaxed),
+            window: self.window as u64,
+        }
     }
 }
 

@@ -1462,6 +1462,139 @@ mod tests {
     }
 }
 
+/// The random model of a case (gemma4, qwen35, muse, kimi, glm) on the description executor at `level`, made in a directory of its own and loaded (the directory is let go).
+fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
+    let dir = std::env::temp_dir().join(format!("glyd-{tag}-{case}-{}", std::process::id()));
+    let o = dyn_opts(level_layout(level)?);
+    let e: Result<Dyn> = (|| {
+        Ok(match case {
+            "gemma4" => {
+                gemma4_random(&dir)?;
+                let c = crate::gemma4::ConfigG4::load(&dir)?;
+                Dyn::new(&dir, crate::dynamic::gemma4::describe(&c), None, &o)?
+            }
+            "qwen35" => {
+                qwen35_random(&dir)?;
+                crate::dynamic::qwen35::load(&dir, &o)?
+            }
+            "muse" => {
+                crate::muse_ref::random(&dir)?;
+                crate::dynamic::muse::load(&dir, &o)?
+            }
+            "kimi" => {
+                crate::kimi_ref::random(&dir, 1, true, 8)?;
+                crate::dynamic::kimi::load(&dir, &o)?
+            }
+            "glm" => {
+                // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
+                crate::kcheck_glm::random(&dir, false, None)?;
+                crate::dynamic::glm::load(&dir, &dyn_opts(Some(Layout::Tiered)), level_layout(level)?.unwrap_or(Layout::Int6))?
+            }
+            other => return err(format!("{other}: gemma4, qwen35, muse, kimi or glm")),
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    e
+}
+
+/// `twomodels [A B] [--level L] [--tokens T]` (R16: two models in one process): two cases' random models (gemma4 and qwen35 unless named) loaded on this GPU in this process, each with a scheduler
+/// in a runtime context of its own. Each of three prompts is replied to by each model alone (`reply`: the reference), then by both at once, their schedulers' rounds one after the other on
+/// this thread, so that a step of one model runs between two steps of the other. Every reply is its reference, token for token, and each context counts its own model's prompt tokens and
+/// not the other's.
+pub fn two_models_check(a: &crate::args::Args) -> Result<()> {
+    use crate::conv::Gen;
+    use crate::runtime::context::Context;
+    use crate::sched::{Ev, Finish, Reply, Sched, Submit};
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    use std::sync::Arc;
+    let (ca, cb) = (a.pos.get(1).map_or("gemma4", String::as_str), a.pos.get(2).map_or("qwen35", String::as_str));
+    let level = a.flag("level").unwrap_or("penguin");
+    let tokens: usize = a.num("tokens", 16usize)?;
+    let (mut ea, mut eb) = (random_dyn(ca, level, "twomodels-a")?, random_dyn(cb, level, "twomodels-b")?);
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: None,
+        stop_ids: Vec::new(),
+    };
+    let prompts = |vocab: u32, seed: u32| -> Vec<Vec<u32>> {
+        (0..3u32).map(|k| (0..7 + 23 * k).map(|i| 3 + (i * 7919 + (k + seed) * 104_729) % (vocab - 3)).collect()).collect()
+    };
+    let (pa, pb) = (prompts(ea.desc().vocab as u32, 1), prompts(eb.desc().vocab as u32, 5));
+    let alone = |e: &mut Dyn, ps: &[Vec<u32>]| -> Result<Vec<Vec<u32>>> { ps.iter().map(|p| e.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect() };
+    let (ra, rb) = (alone(&mut ea, &pa)?, alone(&mut eb, &pb)?);
+    let (Some((_, sa)), Some((_, sb))) = (ea.as_step(1)?, eb.as_step(1)?) else { return err(format!("{ca} or {cb}: no scheduler's step")) };
+    let (rt_a, rt_b) = (Context::new(), Context::new());
+    let before = Context::process().sched[0].load(Relaxed);
+    let (mut sa, mut sb) = (Sched::new(sa, 1).in_context(rt_a.clone()), Sched::new(sb, 1).in_context(rt_b.clone()));
+    let submit = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, p: &[u32]| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.submit(Submit {
+            prompt: p.to_vec(),
+            reply: reply.clone(),
+            out: tx,
+            abort: Arc::new(AtomicBool::new(false)),
+            resumed: Default::default(),
+            images: Vec::new(),
+        });
+        rx
+    };
+    let collect = |r: &std::sync::mpsc::Receiver<Ev>| -> Result<Vec<u32>> {
+        let mut out = Vec::new();
+        loop {
+            match r.recv().map_err(|_| Error("a scheduler dropped a sequence".into()))? {
+                Ev::Token(t) => out.push(t),
+                Ev::Lp(_) => {}
+                Ev::End(Ok(Finish::Length)) => return Ok(out),
+                Ev::End(f) => return err(format!("a sequence ended {f:?} before its {tokens} tokens")),
+            }
+        }
+    };
+    let (mut fails, mut rounds) = (0, [0usize; 2]);
+    for k in 0..3 {
+        let (xa, xb) = (submit(&mut sa, &pa[k]), submit(&mut sb, &pb[k]));
+        // (a round of one model, then a round of the other, until both are done)
+        while !sa.idle() || !sb.idle() {
+            if !sa.idle() {
+                sa.tick()?;
+                rounds[0] += 1;
+            }
+            if !sb.idle() {
+                sb.tick()?;
+                rounds[1] += 1;
+            }
+        }
+        for (name, got, want) in [(ca, collect(&xa)?, &ra[k]), (cb, collect(&xb)?, &rb[k])] {
+            let same = got == *want;
+            fails += !same as usize;
+            println!(
+                "{} {name}, prompt {k} beside the other model: {}",
+                if same { "PASS" } else { "FAIL" },
+                if same { "the reply alone, token for token".into() } else { format!("{got:?} against {want:?}") }
+            );
+        }
+    }
+    // each context counts its own model's prompts
+    let total = |ps: &[Vec<u32>]| ps.iter().map(Vec::len).sum::<usize>() as u64;
+    let (na, nb) = (rt_a.sched[0].load(Relaxed), rt_b.sched[0].load(Relaxed));
+    let own = na == total(&pa) && nb == total(&pb) && Context::process().sched[0].load(Relaxed) == before;
+    println!(
+        "{} the contexts' figures: {na} prompt tokens of {ca} ({} sent), {nb} of {cb} ({} sent); rounds {} and {}",
+        if own { "PASS" } else { "FAIL" },
+        total(&pa),
+        total(&pb),
+        rounds[0],
+        rounds[1]
+    );
+    fails += !own as usize;
+    if fails > 0 {
+        return err(format!("twomodels {ca} {cb}: {fails} failed"));
+    }
+    println!("twomodels {ca} {cb}: PASS");
+    Ok(())
+}
+
 /// `usercheck CASE [--level L] [--users N] [--tokens T]` (gemma4, qwen35, muse, kimi, glm): the case's random model on the description executor, each of N prompts replied to alone as `run` replies (the reference),
 /// then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts
 /// one a pass, decode steps of up to 8 rows: a step's sums). With prompts run together the replies that differ are counted, not refused (a product of more rows may take another route; a random
@@ -1475,34 +1608,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let level = a.flag("level").unwrap_or("penguin");
     let users: usize = a.num("users", 4usize)?;
     let tokens: usize = a.num("tokens", 24usize)?;
-    let dir = std::env::temp_dir().join(format!("glyd-usercheck-{case}-{}", std::process::id()));
-    let o = dyn_opts(level_layout(level)?);
-    let mut e: Dyn = match case {
-        "gemma4" => {
-            gemma4_random(&dir)?;
-            let c = crate::gemma4::ConfigG4::load(&dir)?;
-            Dyn::new(&dir, crate::dynamic::gemma4::describe(&c), None, &o)?
-        }
-        "qwen35" => {
-            qwen35_random(&dir)?;
-            crate::dynamic::qwen35::load(&dir, &o)?
-        }
-        "muse" => {
-            crate::muse_ref::random(&dir)?;
-            crate::dynamic::muse::load(&dir, &o)?
-        }
-        "kimi" => {
-            crate::kimi_ref::random(&dir, 1, true, 8)?;
-            crate::dynamic::kimi::load(&dir, &o)?
-        }
-        "glm" => {
-            // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
-            crate::kcheck_glm::random(&dir, false, None)?;
-            crate::dynamic::glm::load(&dir, &dyn_opts(Some(Layout::Tiered)), level_layout(level)?.unwrap_or(Layout::Int6))?
-        }
-        other => return err(format!("{other}: gemma4, qwen35, muse, kimi or glm")),
-    };
-    let _ = std::fs::remove_dir_all(&dir);
+    let mut e: Dyn = random_dyn(case, level, "usercheck")?;
     let vocab = e.desc().vocab as u32;
     let prompts: Vec<Vec<u32>> = (0..users).map(|k| (0..5 + 29 * k as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (vocab - 3)).collect()).collect();
     let reply = Reply {
@@ -1567,8 +1673,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // replies are then counted, not required to be the same)
     let squeezed = std::env::var_os("GLYD_ENGINE_PAGES").is_some();
     let strict = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0") && !squeezed;
-    let steps: Vec<u64> = crate::sched::SHARED[18..27].iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).collect();
-    let resumed = crate::sched::SHARED[2].load(std::sync::atomic::Ordering::Relaxed);
+    let steps: Vec<u64> = s.context().sched[18..27].iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).collect();
+    let resumed = s.context().sched[2].load(std::sync::atomic::Ordering::Relaxed);
     println!(
         "at once: {same} of {} replies the reply alone (prompts {}); {k} sequences, rows in one pass: {batchable}; decode steps by rows {steps:?}; sequences sent back for room {resumed}",
         prompts.len(),
@@ -1588,7 +1694,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     // (GLYD_ENGINE_ONE_STEP=1, a round that is one step: the longest prompt is longer than a step holds beside the rows of the ones before it, so some step holds both)
     if std::env::var_os("GLYD_ENGINE_ONE_STEP").is_some_and(|v| v == "1") {
-        let both = crate::sched::SHARED[28].load(std::sync::atomic::Ordering::Relaxed);
+        let both = s.context().sched[28].load(std::sync::atomic::Ordering::Relaxed);
         println!("steps of rows that decode and a prompt's chunk together: {both}");
         if batchable && k > 1 && both == 0 {
             println!("FAIL no step held both rows that decode and a prompt's chunk");

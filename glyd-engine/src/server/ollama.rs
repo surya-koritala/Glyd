@@ -204,7 +204,7 @@ fn details(name: &str) -> String {
 /// The model as `/api/tags` and `/api/ps` list it.
 fn model_entry(sh: &Shared, extra: &str) -> String {
     let name = listed_name(&sh.name);
-    let size = INFO.get().and_then(|i| i.held.as_ref()).map_or(0, |h| h.weights);
+    let size = sh.rt.info.get().and_then(|i| i.held.as_ref()).map_or(0, |h| h.weights);
     format!(
         "{{\"name\":{0},\"model\":{0},\"modified_at\":\"{1}\",\"size\":{size},\"digest\":\"{2}\",\"details\":{3}{extra}}}",
         jstr(&name),
@@ -616,7 +616,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req)
         ("POST", "/api/generate") => generate(sh, tx, s, req, false),
         ("GET" | "HEAD", "/api/tags") => ok(s, cors, &format!("{{\"models\":[{}]}}", model_entry(sh, ""))),
         ("GET" | "HEAD", "/api/ps") => {
-            let size = INFO.get().and_then(|i| i.held.as_ref()).map_or(0, |h| h.weights);
+            let size = sh.rt.info.get().and_then(|i| i.held.as_ref()).map_or(0, |h| h.weights);
             ok(
                 s,
                 cors,
