@@ -132,6 +132,11 @@ pub trait ModelStep {
     fn shares_starts(&self) -> bool {
         false
     }
+    /// A step that finds blocks by name and keeps a sequence's recurrent states only at boundaries, every so many tokens: that spacing (a multiple of PAGE), at which a
+    /// prompt's pieces end, so that the states kept there are the states after that token. 0: no boundaries.
+    fn snap_every(&self) -> usize {
+        0
+    }
     /// The sequence in `slot` holds the full blocks `first`, `first + 1`, ... (PAGE tokens each), whose names are `keys` (`kv::block_hash`: of a block's tokens and all
     /// before them, in the request's scope). A step that finds blocks by name finds these by them from now on, while it holds them: a sequence need not.
     fn name(&mut self, _slot: i32, _first: usize, _keys: &[u128]) -> Result<()> {
@@ -351,6 +356,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn shares_starts(&self) -> bool {
         (**self).shares_starts()
+    }
+    fn snap_every(&self) -> usize {
+        (**self).snap_every()
     }
     fn name(&mut self, slot: i32, first: usize, keys: &[u128]) -> Result<()> {
         (**self).name(slot, first, keys)
@@ -675,7 +683,7 @@ impl<B: ModelStep> Sched<B> {
             .map(|k| (common(&k.tokens, head), k.slot))
             .chain(running)
             .max()
-            .filter(|&(n, _)| n >= KEEP_LEAST && self.keep && !names);
+            .filter(|&(n, _)| n >= KEEP_LEAST && self.keep && (!names || (self.be.snap_every() > 0 && n > by_name)));
         let slot = match self.free.as_mut().and_then(Vec::pop) {
             Some(slot) => slot,
             None if self.drop_kept_but(source.map(|x| x.1))? => self.free.as_mut().and_then(Vec::pop).expect("the slot just emptied"),
@@ -692,7 +700,16 @@ impl<B: ModelStep> Sched<B> {
             }
         };
         let held = match source {
-            Some((n, from)) => self.be.share(from, slot, n)?,
+            // (a step that keeps states at boundaries shares another's mark where that is more than a name finds; where it is not, the slot is emptied and the name taken)
+            Some((n, from)) => match self.be.share(from, slot, n)? {
+                h if names && h < by_name => {
+                    if h > 0 {
+                        self.be.release(&[slot])?;
+                    }
+                    self.be.adopt(slot, keys)?
+                }
+                h => h,
+            },
             None if names => self.be.adopt(slot, keys)?,
             None => 0,
         };
@@ -1204,6 +1221,21 @@ impl<B: ModelStep> Sched<B> {
         Ok(())
     }
 
+    /// A prompt piece of `n` tokens from `done`, cut at the next boundary the step keeps a sequence's states at (`ModelStep::snap_every`): the states it keeps there are
+    /// then the states after that token.
+    fn snap_cut(&self, done: usize, n: usize) -> usize {
+        let every = if self.names() { self.be.snap_every() } else { 0 };
+        if every == 0 {
+            return n;
+        }
+        let next = (done / every + 1) * every;
+        if done + n > next {
+            next - done
+        } else {
+            n
+        }
+    }
+
     /// Whether the full blocks of the sequences are told to the step by name and a prompt's start is looked for by name: a slot step that finds blocks so, keeping on.
     fn names(&self) -> bool {
         self.keep && self.free.is_some() && self.be.shares_starts()
@@ -1293,7 +1325,7 @@ impl<B: ModelStep> Sched<B> {
         for id in cands {
             let Some(i) = at(&self.active, id) else { continue };
             let left = self.active[i].tokens.len() - self.active[i].done;
-            let n = if picks.is_empty() { left.min(budget) } else { left };
+            let n = self.snap_cut(self.active[i].done, if picks.is_empty() { left.min(budget) } else { left });
             if n == 0 || used + n > budget || (!picks.is_empty() && n > together) {
                 break;
             }
@@ -1401,7 +1433,7 @@ impl<B: ModelStep> Sched<B> {
         for id in cands {
             let Some(i) = at(&self.active, id) else { continue };
             let left = self.active[i].tokens.len() - self.active[i].done;
-            let n = if picks.is_empty() { left.min(budget) } else { left };
+            let n = self.snap_cut(self.active[i].done, if picks.is_empty() { left.min(budget) } else { left });
             if n == 0 || used + n > budget || (!picks.is_empty() && n > together) {
                 break;
             }
@@ -2677,6 +2709,10 @@ pub(crate) mod tests {
         /// tokens found.
         pub named: std::collections::HashMap<u128, Vec<u32>>,
         pub adopted: Vec<(i32, usize)>,
+        /// A recurrent model that keeps its states at boundaries every `snap_every` tokens (0: none) by the name of the block ending there: each kept state (the tokens
+        /// it stands for). No prompt piece may run across a boundary.
+        pub snap_every: usize,
+        pub snaps: std::collections::HashMap<u128, Vec<u32>>,
     }
 
     impl SlotFake {
@@ -2705,6 +2741,8 @@ pub(crate) mod tests {
                 shared: Vec::new(),
                 named: Default::default(),
                 adopted: Vec::new(),
+                snap_every: 0,
+                snaps: Default::default(),
             }
         }
         fn put(&mut self, slot: &[i32], start: usize, tokens: &[u32]) -> u32 {
@@ -2714,6 +2752,10 @@ pub(crate) mod tests {
             }
             if self.budget.is_some() {
                 assert!(start + tokens.len() <= self.held[slot[0] as usize], "tokens past the room the slot was given");
+            }
+            if self.whole_only && self.snap_every > 0 {
+                let next = (start / self.snap_every + 1) * self.snap_every;
+                assert!(start + tokens.len() <= next, "{} tokens from {start}, past the boundary at {next}", tokens.len());
             }
             let room = &mut self.rooms[slot[0] as usize];
             assert_eq!(room.len(), start, "tokens at {start} where the slot holds {}", room.len());
@@ -2823,7 +2865,14 @@ pub(crate) mod tests {
             Ok(())
         }
         fn shares_starts(&self) -> bool {
-            self.keeps && !self.whole_only
+            self.keeps && (!self.whole_only || self.snap_every > 0)
+        }
+        fn snap_every(&self) -> usize {
+            if self.whole_only {
+                self.snap_every
+            } else {
+                0
+            }
         }
         fn name(&mut self, slot: i32, first: usize, keys: &[u128]) -> Result<()> {
             let room = &self.rooms[slot as usize];
@@ -2831,13 +2880,36 @@ pub(crate) mod tests {
             for (i, &k) in keys.iter().enumerate() {
                 self.named.entry(k).or_insert_with(|| room[(first + i) * PAGE..(first + i + 1) * PAGE].to_vec());
             }
+            // (the state at a boundary the last block named ends on, where the slot ends there too)
+            let end = (first + keys.len()) * PAGE;
+            if let Some(&k) = keys.last().filter(|_| self.whole_only && self.snap_every > 0 && end == room.len() && end % self.snap_every == 0) {
+                let state = room.clone();
+                self.snaps.entry(k).or_insert(state);
+            }
             Ok(())
         }
         fn held_by_name(&self, keys: &[u128]) -> usize {
+            if self.whole_only {
+                let per = (self.snap_every / PAGE).max(1);
+                return (1..=keys.len() / per)
+                    .rev()
+                    .map(|k| k * per)
+                    .find(|&j| self.snaps.contains_key(&keys[j - 1]) && keys[..j].iter().all(|k| self.named.contains_key(k)))
+                    .map_or(0, |j| j * PAGE);
+            }
             keys.iter().take_while(|k| self.named.contains_key(k)).count() * PAGE
         }
         fn adopt(&mut self, slot: i32, keys: &[u128]) -> Result<usize> {
             assert!(self.rooms[slot as usize].is_empty(), "a start looked for into slot {slot}, which holds {}", self.rooms[slot as usize].len());
+            if self.whole_only {
+                let n = self.held_by_name(keys);
+                let state = if n > 0 { self.snaps[&keys[n / PAGE - 1]].clone() } else { Vec::new() };
+                let blocks: Vec<u32> = keys[..n / PAGE].iter().flat_map(|k| self.named[k].iter().copied()).collect();
+                assert_eq!(state, blocks, "a kept state that is not its blocks' tokens");
+                self.adopted.push((slot, n));
+                self.rooms[slot as usize] = state;
+                return Ok(n);
+            }
             let found: Vec<u32> = keys.iter().map_while(|k| self.named.get(k)).flatten().copied().collect();
             self.adopted.push((slot, found.len()));
             self.rooms[slot as usize] = found;
@@ -3106,6 +3178,32 @@ pub(crate) mod tests {
         });
         run(&mut s);
         assert_eq!((collect(&rx).0, s.be.adopted.last().map(|x| x.1), s.be.shared.len()), (reference(&pb, 8), Some(0), 0));
+    }
+
+    /// #142: a recurrent model that keeps its states at boundaries (every 32 tokens here, prompts in chunks of 64) has a start another conversation ran found by name to
+    /// the newest boundary within it, where the other's mark is past what the two share; no prompt piece runs across a boundary (the step's own check); the other
+    /// conversation still goes on from all it left at its next turn. Every reply is the one the whole prompt gives from its first token.
+    #[test]
+    fn a_recurrent_model_finds_a_start_at_its_newest_kept_boundary() {
+        let mut f = SlotFake::new(3, 512, 64);
+        (f.keeps, f.whole_only, f.marking, f.snap_every) = (true, true, true, 32);
+        let mut s = Sched::new(f, 3);
+        let system = prompt(1, 70);
+        let pa: Vec<u32> = [&system[..], &prompt(2, 100)[..]].concat();
+        let ra = turn(&mut s, &pa, 8);
+        assert_eq!(ra, reference(&pa, 8));
+        // 70 tokens in common, the other's mark at its prompt's end (170): the boundary at 64, by name
+        let pb: Vec<u32> = [&system[..], &prompt(3, 30)[..]].concat();
+        assert_eq!(turn(&mut s, &pb, 8), reference(&pb, 8));
+        assert_eq!((s.be.adopted.last(), s.stats.hit), (Some(&(1, 64)), 64));
+        // the first conversation's next turn: from all it left, in its own slot
+        let a2: Vec<u32> = [&pa[..], &ra[..], &prompt(4, 9)[..]].concat();
+        assert_eq!(turn(&mut s, &a2, 8), reference(&a2, 8));
+        assert_eq!(s.be.resumed.last().map(|r| r.2), Some(pa.len() + ra.len() - 1));
+        // a start shorter than a boundary: nothing found
+        let pc: Vec<u32> = [&system[..20], &prompt(5, 10)[..]].concat();
+        assert_eq!(turn(&mut s, &pc, 8), reference(&pc, 8));
+        assert_eq!(s.be.adopted.last().map(|a| a.1), Some(0));
     }
 
     /// A request that comes while another with the same start still runs finds what that one has run; and where the only slot holds a kept conversation whose start it

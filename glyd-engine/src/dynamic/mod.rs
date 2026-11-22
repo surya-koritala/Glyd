@@ -13,6 +13,7 @@ pub mod pages;
 pub mod qwen35;
 pub mod range;
 mod rows;
+pub(crate) mod snaps;
 pub mod split;
 pub mod tp;
 pub mod tp_cache;
@@ -871,6 +872,9 @@ pub struct Dyn {
     /// mark). A kept sequence that cannot be cut back anywhere goes on from its mark (src/dynamic/rows.rs `resume`). Empty where the model has no such state or keeps nothing.
     snaps: Vec<Vec<Buf>>,
     snap_n: Vec<usize>,
+    /// A served, paged model with recurrent states: the states kept at block boundaries by the names of the blocks ending there, for any request that begins the same
+    /// way (src/dynamic/snaps.rs). `every` 0: none.
+    named: snaps::Snaps,
     /// A pass over the rows of several sequences (src/dynamic/rows.rs): each sequence's rows (first row, rows, its caches), the operation running on one of them now (its index), and the rows
     /// the head reads, moved to the pass's last rows first. Empty outside such a pass.
     parts: Vec<rows::Part>,
@@ -1221,6 +1225,7 @@ impl Dyn {
             seqs: vec![None],
             seq: 0,
             snaps: Vec::new(),
+            named: snaps::Snaps::none(),
             snap_n: Vec::new(),
             parts: Vec::new(),
             at: std::cell::Cell::new(None),

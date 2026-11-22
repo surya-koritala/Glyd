@@ -20,6 +20,7 @@
 //! sequence's rows begin. A description with another runs its sequences one pass each, concurrently but not batched.
 
 use super::pages::{Pages, BLOCK};
+use super::snaps;
 use super::{Dyn, Op};
 use crate::dev::{copy_d2d_async, Buf};
 use crate::ffi::{err, Result};
@@ -413,6 +414,7 @@ impl Dyn {
             // the marks' copies first, so the pools are sized by what is left)
             if marks {
                 self.mark_room(users)?;
+                self.snap_room()?;
             }
             self.page(users)?;
             self.add_seqs(users - 1)?;
@@ -436,6 +438,51 @@ impl Dyn {
         self.snaps = (0..slots).map(|_| self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<Vec<_>>>()).collect::<Result<_>>()?;
         self.snap_n = vec![0; slots];
         Ok(())
+    }
+
+    /// The pool of states kept at block boundaries (src/dynamic/snaps.rs): sized by `snaps::count`, boundaries every `snaps::every` tokens (or as `ask_state_every` asked).
+    fn snap_room(&mut self) -> Result<()> {
+        let bytes: Vec<usize> = self.states.iter().map(|b| b.bytes).collect();
+        let n = snaps::count(bytes.iter().sum());
+        let every = if self.named.every > 0 { self.named.every } else { snaps::every(self.chunk, BLOCK) };
+        self.named = if n > 0 { snaps::Snaps::new(n, &bytes, every)? } else { snaps::Snaps::none() };
+        Ok(())
+    }
+
+    /// States kept at boundaries every `every` tokens (a multiple of a block), where the pool is made (`as_step`): a check's short prompts reach boundaries a chunk apart
+    /// would not.
+    #[cfg(feature = "dev")]
+    pub(crate) fn ask_state_every(&mut self, every: usize) {
+        self.named = snaps::Snaps { every: (every / BLOCK).max(1) * BLOCK, ..snaps::Snaps::none() };
+    }
+
+    /// The states of the sequence in `slot` kept under `key`, the name of its block `b`, which ends at its last token (a boundary): where that block is the one the name
+    /// finds and no copy of this run's is kept yet.
+    fn keep_states_at(&mut self, t: usize, b: usize, key: u128) -> Result<()> {
+        let pg = self.paged.as_ref().expect("paged");
+        let blk = pg.pages.table(t, 0)[b];
+        if blk == 0 || pg.pages.named(0, key) != Some(blk) {
+            return Ok(());
+        }
+        let Some(i) = self.named.lru.place(key, blk) else { return Ok(()) };
+        let from = self.part_of(t, 0, 0, 0)?.states;
+        for (j, &src) in from.iter().enumerate() {
+            // SAFETY: the sequence's state and its kept copy's buffer, of the state's bytes.
+            unsafe { copy_d2d_async(self.named.bufs[i][j].ptr, src, self.states[j].bytes, self.dev.stream)? };
+        }
+        Ok(())
+    }
+
+    /// Whether the pool of states kept at boundaries is made (boundaries asked for, and copies to keep them in).
+    fn pooled(&self) -> bool {
+        self.named.every > 0 && !self.named.bufs.is_empty()
+    }
+
+    /// The copy of the pool that holds the states after the first `j` blocks named `keys`: kept for the block their name finds now.
+    fn kept_copy(&self, keys: &[u128], j: usize) -> Option<usize> {
+        let pg = self.paged.as_ref()?;
+        let key = *keys.get(j.checked_sub(1)?)?;
+        self.named.lru.find(key, pg.pages.named(0, key)?)
     }
 
     /// Whether a served model's sequences have their states copied aside at a mark (`ModelStep::mark`), for a kept sequence to go on from: recurrent states, and no latent cache
@@ -708,22 +755,40 @@ impl ModelStep for Dyn {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Self::batch_prefill()
     }
-    /// Full blocks are found by name where the keys and values are paged and nothing of a sequence is a state (`Pages::name`, `Pages::adopt`).
+    /// Full blocks are found by name where the keys and values are paged (`Pages::name`, `Pages::adopt`): where nothing of a sequence is a state, a start of any whole
+    /// number of blocks; a model with recurrent states and the pool of them (`named`), a start that ends at a boundary whose states are kept.
     fn shares_starts(&self) -> bool {
-        self.paged.is_some() && self.cuts()
+        self.paged.is_some() && (self.cuts() || self.pooled())
+    }
+    fn snap_every(&self) -> usize {
+        if self.paged.is_some() && !self.cuts() && self.pooled() {
+            self.named.every
+        } else {
+            0
+        }
     }
     fn name(&mut self, slot: i32, first: usize, keys: &[u128]) -> Result<()> {
-        if self.shares_starts() {
-            let pg = self.paged.as_mut().expect("paged");
-            for (i, &k) in keys.iter().enumerate() {
-                pg.pages.name(slot as usize, first + i, k);
-            }
+        if !self.shares_starts() {
+            return Ok(());
+        }
+        let t = slot as usize;
+        let pg = self.paged.as_mut().expect("paged");
+        for (i, &k) in keys.iter().enumerate() {
+            pg.pages.name(t, first + i, k);
+        }
+        // (a model with recurrent states: the states, where the last block named ends at the sequence's last token and on a boundary, are the states there)
+        let end = (first + keys.len()) * BLOCK;
+        if let Some(&key) = keys.last().filter(|_| !self.cuts() && self.pooled() && end == self.seq_n(t) && end % self.named.every == 0) {
+            self.keep_states_at(t, end / BLOCK - 1, key)?;
         }
         Ok(())
     }
     fn held_by_name(&self, keys: &[u128]) -> usize {
         match &self.paged {
             Some(pg) if self.cuts() => pg.pages.fit(keys, self.chunk) * BLOCK,
+            Some(pg) if self.pooled() => {
+                snaps::hit(keys, self.named.every, BLOCK, |j| self.kept_copy(keys, j).is_some(), |j| pg.pages.fit(&keys[..j], self.chunk))
+            }
             _ => 0,
         }
     }
@@ -735,12 +800,32 @@ impl ModelStep for Dyn {
             return Ok(0);
         }
         let chunk = self.chunk;
-        let n = self.paged.as_mut().expect("paged").pages.adopt(t, keys, chunk);
-        if n > 0 {
-            self.set_seq_n(t, n);
-            self.dev.sync()?;
-            self.upload_tables(t)?;
+        if self.cuts() {
+            let n = self.paged.as_mut().expect("paged").pages.adopt(t, keys, chunk);
+            if n > 0 {
+                self.set_seq_n(t, n);
+                self.dev.sync()?;
+                self.upload_tables(t)?;
+            }
+            return Ok(n);
         }
+        // (recurrent states: the blocks to the newest boundary whose states are kept, and those states)
+        let n = self.held_by_name(keys);
+        let Some(i) = self.kept_copy(keys, n / BLOCK).filter(|_| n > 0) else { return Ok(0) };
+        let pg = self.paged.as_mut().expect("paged");
+        if pg.pages.adopt(t, &keys[..n / BLOCK], chunk) != n {
+            pg.pages.release(t);
+            return Ok(0);
+        }
+        let to = self.part_of(t, 0, 0, 0)?.states;
+        for (j, &dst) in to.iter().enumerate() {
+            // SAFETY: a kept copy's buffer and the sequence's state, of the state's bytes.
+            unsafe { copy_d2d_async(dst, self.named.bufs[i][j].ptr, self.states[j].bytes, self.dev.stream)? };
+        }
+        self.named.lru.touch(i);
+        self.set_seq_n(t, n);
+        self.dev.sync()?;
+        self.upload_tables(t)?;
         Ok(n)
     }
     /// A start shared with an empty sequence (`Pages::share`; paged keys and values only). With no recurrent state and no latent cache: the full blocks of the first `upto`
