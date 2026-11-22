@@ -101,7 +101,49 @@ const INERT: &[&str] = &[
     "max_position_embeddings",
     "auto_map",
     "hidden_dropout",
+    // (transformers' PretrainedConfig writes its generation and training defaults into some releases' configs: Kimi-K3's text config has them all; none is the model's shape)
+    "add_cross_attention",
+    "bad_words_ids",
+    "begin_suppress_tokens",
+    "cross_attention_hidden_size",
+    "diversity_penalty",
+    "do_sample",
+    "early_stopping",
+    "encoder_no_repeat_ngram_size",
+    "exponential_decay_length_penalty",
+    "finetuning_task",
+    "is_decoder",
+    "length_penalty",
+    "max_length",
+    "min_length",
+    "no_repeat_ngram_size",
+    "num_beam_groups",
+    "num_beams",
+    "num_return_sequences",
+    "output_scores",
+    "prefix",
+    "pruned_heads",
+    "remove_invalid_values",
+    "repetition_penalty",
+    "return_dict_in_generate",
+    "suppress_tokens",
+    "task_specific_params",
+    "temperature",
+    "tf_legacy_loss",
+    "top_k",
+    "top_p",
+    "torchscript",
+    "typical_p",
+    "use_bfloat16",
+    // (the loss's ignored label, and the text a prompt marks an image with: the training's and the processor's, not the language model's)
+    "ignore_index",
+    "image_placeholder",
 ];
+
+/// A key that says nothing of the model's shape: one of INERT, or a special token's number (`decoder_start_token_id`, `image_token_index`).
+fn inert(k: &str) -> bool {
+    INERT.contains(&k) || k.ends_with("_token_id") || k.ends_with("_token_index")
+}
 
 /// A config's keys, each read at most through these getters; `finish` names a key nobody read.
 struct Keys<'a> {
@@ -145,7 +187,7 @@ impl<'a> Keys<'a> {
     }
     fn finish(&self) -> Result<()> {
         let used = self.used.borrow();
-        match self.m.keys().find(|k| !used.contains(*k) && !INERT.contains(&k.as_str())) {
+        match self.m.keys().find(|k| !used.contains(*k) && !inert(k)) {
             Some(k) => err(format!("{}: config key {k} is not understood by the description builder", self.what)),
             None => Ok(()),
         }
@@ -1028,7 +1070,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
 /// The top-level keys of a multimodal config that the text model does not read.
 fn top_keys(cfg: &Value, what: &str, known: &[&str]) -> Result<()> {
     for k in cfg.as_object().map(|m| m.keys().collect::<Vec<_>>()).unwrap_or_default() {
-        if !known.contains(&k.as_str()) && !INERT.contains(&k.as_str()) && !k.ends_with("_token_id") && !k.ends_with("_token_index") {
+        if !known.contains(&k.as_str()) && !inert(k) {
             return err(format!("{what}: config key {k} is not understood by the description builder"));
         }
     }
@@ -1060,6 +1102,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
     k.expect("num_expert_group", &Value::from(1))?;
     k.expect("topk_group", &Value::from(1))?;
     k.expect("topk_method", &Value::from("noaux_tc"))?;
+    // (grouped top-k over one group of all the experts, which the two above make it, is the plain top-k)
+    let _ = k.raw("use_grouped_topk");
     k.expect("moe_layer_freq", &Value::from(1))?;
     k.expect("rope_scaling", &Value::Null)?;
     k.opt_usize("max_position_embeddings")?;
@@ -1117,6 +1161,15 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
     k.usize("intermediate_size")?;
     k.usize("moe_intermediate_size")?;
     let ne = k.usize("num_experts")?;
+    // (the routed experts as released: MXFP4, 4-bit floats in groups of 32 with a byte's scale each, as compressed-tensors packs them; every other matrix bf16)
+    let mxfp4 = match k.raw("quantization_config") {
+        None => false,
+        Some(q) => {
+            kimi_mxfp4(q)?;
+            true
+        }
+    };
+    let mut scales = std::collections::BTreeMap::new();
     let shared = k.usize("num_shared_experts")? > 0;
     let lat = k.usize("routed_expert_hidden_size")?;
     let moe = Moe {
@@ -1204,11 +1257,17 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
             ] {
                 r.push((role.to_string(), t(format!("{f}.{x}"))));
             }
-            r.push((
-                "experts_gate_up".into(),
-                Source::Experts((0..ne).map(|e| vec![format!("{f}.experts.{e}.w1.weight"), format!("{f}.experts.{e}.w3.weight")]).collect()),
-            ));
-            r.push(("experts_down".into(), Source::Experts((0..ne).map(|e| vec![format!("{f}.experts.{e}.w2.weight")]).collect())));
+            let mut ex = |e: usize, w: &str| {
+                let n = format!("{f}.experts.{e}.{w}.{}", if mxfp4 { "weight_packed" } else { "weight" });
+                if mxfp4 {
+                    scales.insert(n.clone(), n.replace(".weight_packed", ".weight_scale"));
+                }
+                n
+            };
+            let gate_up: Vec<Vec<String>> = (0..ne).map(|e| vec![ex(e, "w1"), ex(e, "w3")]).collect();
+            let down: Vec<Vec<String>> = (0..ne).map(|e| vec![ex(e, "w2")]).collect();
+            r.push(("experts_gate_up".into(), Source::Experts(gate_up)));
+            r.push(("experts_down".into(), Source::Experts(down)));
             if shared {
                 for x in ["gate", "up", "down"] {
                     r.push((format!("shared_{x}"), t(format!("{f}.shared_experts.{x}_proj.weight"))));
@@ -1219,6 +1278,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
         blocks.push(Block { norm_in: n, body, norm_out: None, residual: Residual::DepthMix(DepthMixP { starts: false }) });
         roles.push(r);
     }
+    // (the checkpoint's next-token-prediction layers, which the description does not use yet)
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
     k.finish()?;
     Ok(Described {
         desc: ModelDesc {
@@ -1240,9 +1301,41 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
             ("out_mix_norm".into(), t(format!("{prefix}output_attn_res_norm.weight"))),
             ("out_mix_proj".into(), t(format!("{prefix}output_attn_res_proj.weight"))),
         ],
-        mtp_layers: 0,
-        scales: Default::default(),
+        mtp_layers,
+        scales,
     })
+}
+
+/// Kimi-K3's `quantization_config` as released: compressed-tensors' `mxfp4-pack-quantized`, 4-bit floats in symmetric groups of 32, the attention, the shared experts, the
+/// dense layer's MLP and the head left out (so only the routed experts are packed). Anything else is refused with what differs.
+fn kimi_mxfp4(q: &Value) -> Result<()> {
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let what = "kimi_linear: quantization_config";
+    if s(q, "quant_method").as_deref() != Some("compressed-tensors") || s(q, "format").as_deref() != Some("mxfp4-pack-quantized") {
+        return err(format!("{what}: {:?} {:?}, where the description reads compressed-tensors' mxfp4-pack-quantized", s(q, "quant_method"), s(q, "format")));
+    }
+    let groups = q.get("config_groups").and_then(Value::as_object).ok_or_else(|| Error(format!("{what}: no config_groups")))?;
+    if groups.len() != 1 {
+        return err(format!("{what}: {} config groups, where the description reads one", groups.len()));
+    }
+    let w = groups.values().next().and_then(|g| g.get("weights")).ok_or_else(|| Error(format!("{what}: a config group with no weights")))?;
+    let n = |k: &str| w.get(k).and_then(Value::as_u64);
+    if n("num_bits") != Some(4)
+        || n("group_size") != Some(32)
+        || s(w, "type").as_deref() != Some("float")
+        || s(w, "strategy").as_deref() != Some("group")
+        || w.get("symmetric").and_then(Value::as_bool) != Some(true)
+    {
+        return err(format!("{what}: weights {w}, where the description reads 4-bit floats in symmetric groups of 32"));
+    }
+    let ignore: Vec<String> =
+        q.get("ignore").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    for part in ["self_attn", "shared_experts", "mlp", "lm_head"] {
+        if !ignore.iter().any(|x| x.contains(part)) {
+            return err(format!("{what}: the {part} matrices are packed too, where the description reads them in bf16"));
+        }
+    }
+    Ok(())
 }
 
 /// Muse Spark (`muse_spark`): GQA with weightless q/k norms, rope and a window on the sliding layers only, a gated output with a per-head
@@ -1407,6 +1500,10 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     k.raw("architectures");
     let released = k.m.contains_key("compress_ratios");
     let fp4 = k.str("expert_dtype")? == Some("fp4");
+    // (the DSpark drafter's settings: its block of draft tokens, its noise token, the layers it reads and its rank. A drafter, not this model's computation; drafters are #333's)
+    for x in ["dspark_block_size", "dspark_noise_token_id", "dspark_target_layer_ids", "dspark_markov_rank"] {
+        let _ = k.raw(x);
+    }
     let fp8 = Fp8::parse(k.raw("quantization_config"), mt)?.is_some();
     let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
     k.opt_f64("partial_rotary_factor")?;

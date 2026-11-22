@@ -1537,6 +1537,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// R3a (#136): a GGUF maps to the same description as a Hugging Face checkpoint. The config.json its metadata makes describes (the description builder of
+    /// src/runtime/describe.rs, as a Hub download's does), and the tensors that description reads are the GGUF's own under their Hugging Face names, all of them.
+    #[test]
+    fn a_gguf_has_the_description_of_its_hugging_face_twin() {
+        let g = Gguf::parse(&tiny_qwen3(BF16, F32)).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&config_json(&g, &g.description().unwrap()).unwrap()).unwrap();
+        let d = crate::runtime::describe::describe(&config).unwrap_or_else(|e| panic!("{}", e.msg));
+        let mapped: std::collections::BTreeSet<String> =
+            g.tensors.iter().map(|t| hf_name(&t.name).unwrap_or_else(|| panic!("{} has no Hugging Face name", t.name))).collect();
+        assert_eq!(d.names(), mapped);
+        assert_eq!(d.desc.blocks.len(), 2 * config["num_hidden_layers"].as_u64().unwrap() as usize);
+    }
+
     #[test]
     fn another_architecture_is_described_and_refused_by_name() {
         let mut b = Build::new();
